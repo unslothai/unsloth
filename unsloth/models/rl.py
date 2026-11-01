@@ -1490,10 +1490,7 @@ def _pin_pristine_sft_loss_type(config_cls):
 
 _UNSLOTH_KBIT_PREP_GUARD_FLAG = "_unsloth_skips_kbit_prep_for_peft_models"
 
-# TRL >= 1.7 enables the aux loss whenever output_router_logits is set; dense configs return no router logits and
-# crash (`aux_loss.to`, or Jamba's load_balancing_loss_func indexing an empty tuple). Dense = every expert count
-# 0 (granite-4.0-h-350m) or 1 (AI21-Jamba-Reasoning-3B builds a plain MLP for 1 expert; a 1-expert router's aux
-# loss is a constant with no gradient anyway). Real MoE keeps its aux loss.
+# Dense models (0 or 1 experts) need the aux loss off: TRL >= 1.7 enables it and they crash.
 _DENSE_ROUTER_AUX_LOSS_OFF = (
     "if getattr(self, 'aux_loss_enabled', False) and hasattr(getattr(self, 'model', None), 'config'):\n"
     "    _text_config = self.model.config\n"
@@ -4993,8 +4990,7 @@ def _packing_honored(backbone, position_transform = None):
     if dtype not in (torch.float16, torch.bfloat16):
         dtype = torch.bfloat16 if params.dtype == torch.float32 else params.dtype
     training = [(module, module.training) for module in backbone.modules()]
-    # Training mode, as in the trainer: some models (gpt-oss) take a different attention path when training.
-    # Dropout off so the comparison is deterministic.
+    # Train mode as in the trainer (gpt-oss differs), dropout off for a deterministic compare.
     backbone.train()
     for module in backbone.modules():
         if isinstance(module, torch.nn.modules.dropout._DropoutNd):

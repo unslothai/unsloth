@@ -183,9 +183,8 @@ def _braced_block(text: str, declaration: str) -> str:
 
 
 def _override_lookup_candidates(*args, **kwargs) -> list[str]:
-    """The real override-key ladder, imported rather than grepped out of inference.py: #8702 moved
-    it to another module unchanged and took four contract tests red with it. The module is
-    import-cheap (stdlib only at import time)."""
+    """Imports the real override-key ladder rather than grepping inference.py: issue 8702 moved it
+    unchanged and took four contract tests red; the module is stdlib-only at import."""
     import sys
 
     backend = str(WORKDIR / "studio" / "backend")
@@ -204,9 +203,8 @@ def _override_lookup_candidates(*args, **kwargs) -> list[str]:
 
 
 def test_models_api_sends_token_via_header_not_query():
-    """getModelConfig / checkVisionModel / checkEmbeddingModel must pass the HF
-    token through hubTokenHeader, never as a ?hf_token= query param (which leaks
-    the credential into server/proxy access logs)."""
+    """getModelConfig, checkVisionModel and checkEmbeddingModel pass the HF token via
+    hubTokenHeader, never as a ?hf_token= query param, which leaks it into access logs."""
     src = _read("features/training/api/models-api.ts")
     assert src.count("hubTokenHeader(") >= 3
     assert "hf_token=" not in src
@@ -220,9 +218,8 @@ def test_model_metadata_probe_never_puts_token_in_query():
 
 
 def test_model_config_page_floors_the_context_ceiling():
-    """The model's native max-context must be FLOORED to the step grid, never
-    rounded up (rounding up can offer/persist a length above the model's real
-    ceiling and break loading)."""
+    """The native max context must be floored to the step grid, never rounded up, since rounding up
+    can offer or persist a length above the real ceiling and break loading."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert re.search(
         r"floorMaxSeqLength\(\s*targetIsNpu\s*\? target\.meta\.contextLength\s*"
@@ -265,18 +262,16 @@ def test_auto_offload_context_is_not_below_the_fit_floor():
 
 
 def test_compare_load_clears_stale_native_lease():
-    """A compare-pane load never comes from the desktop file picker, so it must
-    clear any prior picked file's lease token + expiry, otherwise a reload can
-    send a stale lease for the now-active model."""
+    """A compare-pane load must clear any prior picked file's lease token and expiry, since it never
+    comes from the file picker and a reload could send a stale lease."""
     src = _read("features/chat/shared-composer.tsx")
     assert "activeNativePathToken: null" in src
     assert "activeNativePathExpiresAtMs: null" in src
 
 
 def test_autoload_records_backend_loaded_model_identity():
-    """An inactive-cache inventory row loads by local path, so startup autoload
-    must key both the active checkpoint and its summary by the backend's loaded
-    model identity instead of the catalog repo id."""
+    """Startup autoload keys the active checkpoint and its summary by the backend's loaded model
+    identity, not the catalog repo id, since inactive-cache rows load by local path."""
     src = _read("features/chat/api/chat-adapter.ts")
     autoload = src.split("async function loadAutoLoadCandidate", 1)[1]
     autoload = autoload.split("\n  try {", 1)[0]
@@ -373,9 +368,8 @@ def test_recipe_model_load_toast_is_persistent_and_dismissible():
 
 
 def test_rollback_restores_native_lease_expiry_with_token():
-    """A failed model switch that rolls back to a previously loaded picked GGUF
-    must restore the lease expiry paired with the token, never the token alone
-    (which would look non-expiring and skip the expiry guard)."""
+    """A rollback to a previously picked GGUF must restore the lease expiry with its token, never
+    the token alone, which would look non-expiring and skip the expiry guard."""
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "previousActiveNativePathExpiresAtMs" in src
     assert re.search(
@@ -384,9 +378,8 @@ def test_rollback_restores_native_lease_expiry_with_token():
 
 
 def test_default_caches_keyed_on_inventory_version():
-    """The chat-template and max-position caches must key on the inventory
-    version so a model update in the same session invalidates the cached value
-    instead of showing the stale revision."""
+    """The chat-template and max-position caches key on the inventory version, so a model update in
+    the same session invalidates them instead of showing a stale revision."""
     src = _read("features/model-picker/hooks/use-model-defaults.ts")
     assert src.count("${inventoryVersion}") >= 2
 
@@ -401,9 +394,8 @@ def test_hidden_infra_model_needles_present():
 
 
 def test_hidden_models_dynamic_exact_ids_wired():
-    """The configured embedder arrives from /api/hub/hidden-models as exact
-    repo ids; a substring needle would let a generic basename like "model"
-    hide unrelated chat models."""
+    """The configured embedder arrives from /api/hub/hidden-models as exact repo ids and must match
+    exactly, since a substring needle like model would hide unrelated chat models."""
     src = _read("features/hub/lib/hidden-models.ts")
     assert "toLowerStrings(data.exact_ids)" in src
     assert "dynamicExactIds.includes(lower)" in src
@@ -417,9 +409,8 @@ def test_hidden_model_matchers_refresh_with_inventory_version():
 
 
 def test_diffusion_capability_labeled_image_video_gen():
-    """The diffusion capability detects image and video GENERATORS (FLUX, SDXL,
-    LTX, Wan, text-to-image tags); labeling it "Image to text" showed generators
-    when users asked for captioning models."""
+    """The diffusion capability detects image and video generators, so it must not be labeled Image
+    to text, which showed generators to users looking for captioning models."""
     for rel in (
         "features/hub/lib/model-capabilities.ts",
         "features/hub/lib/model-type-filter.ts",
@@ -432,9 +423,8 @@ def test_diffusion_capability_labeled_image_video_gen():
     assert '{ value: "video-gen", label: "Video gen" }' in hub
     # The badge on a model carries the same two names.
     assert '"Video gen" : "Image gen"' in _read("features/hub/lib/model-capabilities.ts")
-    # Since #14083 the On Device list takes Discover's picks and matcher instead of
-    # keeping its own option list, so the names above are the only ones it shows.
-    # Should it grow its own list again, the diffusion entry must still name generators.
+    # Since issue 14083 the On Device list reuses Discover's picks and matcher, so the names above
+    # are the only ones shown; a list of its own must still name diffusion generators.
     on_device = _read("features/hub/lib/model-type-filter.ts")
     if 'value: "diffusion"' in on_device:
         assert '{ value: "diffusion", label: "Image/video gen" }' in on_device
@@ -600,9 +590,8 @@ def test_model_default_hooks_do_not_reset_state_in_effect():
 
 
 def test_variant_expander_refreshes_after_delete():
-    """Deleting a downloaded quant from an expanded repo that still has other
-    cached quants must bump the expander refresh key, or the deleted quant stays
-    shown as downloaded and clickable and tries to reload the removed file."""
+    """Deleting a quant from an expanded repo that still has cached quants must bump the refresh
+    key, or the deleted quant stays clickable as downloaded and reloads a removed file."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     del_confirm = re.search(
         r"await onDeleteVariant\(v\.quant, v\.cache_ref \?\? v\.cache_path\);.*?setRefreshKey\(\(key\) => key \+ 1\)",
@@ -645,9 +634,8 @@ def test_local_picker_rows_require_chat_capability():
 
 
 def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
-    """The cached listing pins a snapshot when the repo's default ref reaches no copy
-    that loads, and it is the load that has to follow the pin. The id stays the repo
-    id everywhere it is shown, deduped or stored, so only model_path changes."""
+    """A pinned cached row loads from the snapshot the cached listing pins when the default ref has
+    no loadable copy; the id stays the repo id, so only model_path changes."""
     inventory = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
     for mapper in ("toCachedGgufRepo", "toCachedModelRepo"):
         body = re.search(rf"function {mapper}\(.*?\n}}", inventory, re.S)
@@ -721,9 +709,8 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
 
 
 def test_a_local_quant_short_a_shard_is_not_selectable():
-    """The variants endpoint now reports a local folder's torn quant as partial. A folder has no
-    download to resume, so the row has to say so and refuse the pick rather than send validate and
-    load at files that are not on disk."""
+    """A local folder has no download to resume, so a torn quant reported as partial must be
+    disabled and refused rather than sent to validate and load."""
     picker = _read("features/model-picker/components/model-selector/pickers.tsx")
     assert "const unusableLocal = isLocalPath && v.partial === true;" in picker
     assert "disabled={unusableLocal}" in picker
@@ -834,9 +821,8 @@ def _menu_guard_truth(src):
 
 
 def test_partial_safetensors_download_keeps_delete_menu():
-    """A stopped partial safetensors download must keep its options menu (the Delete
-    affordance) like the GGUF card does, or partial downloads can only be cleaned up by
-    finishing or leaving them."""
+    """A stopped partial safetensors download keeps its options menu with Delete, as the GGUF card
+    does, or partials can only be finished or left."""
     src = _read("features/hub/catalog/safetensors-download-card.tsx")
     names, shows_menu = _menu_guard_truth(src)
     for required in ("isDownloaded", "isPartial", "downloading", "localPath"):
@@ -907,9 +893,8 @@ def test_cache_location_update_invalidates_frontend_inventory():
 
 
 def test_downloaded_list_offsets_virtual_rows():
-    """The On Device virtualized list sits below the Pinned block in the same
-    scroll element, so it must pass its measured offset as scrollMargin or rows
-    past the overscan render blank."""
+    """The On Device virtual list sits below the Pinned block in the same scroll element, so it must
+    pass its measured offset as scrollMargin or rows past overscan render blank."""
     src = _read("features/hub/catalog/models-catalog-lists.tsx")
     assert "scrollMargin={scrollMargin}" in src
 
@@ -974,9 +959,8 @@ def test_local_mtp_warning_uses_backend_source_metadata():
 
 
 def test_fixed_layer_gguf_pins_displayed_context():
-    """An already-loaded auto-fit GGUF saved with Manual fixed GPU layers must
-    pin the shown context, so a later fresh load keeps the fitted placement
-    instead of sending native/0 and recreating the OOM."""
+    """A loaded auto-fit GGUF saved with Manual fixed GPU layers must pin its shown context, else a
+    fresh load sends native/0 and recreates the OOM."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "const pinFixedLayerContext =" in src
     assert 'loadableConfig.gpuMemoryMode === "manual"' in src
@@ -1019,18 +1003,16 @@ def test_auto_defaults_not_persisted_as_overrides():
 
 
 def test_compare_pane_context_from_own_config_only():
-    """A compare pane's context comes from its own config only (a saved pin, else
-    null for Auto/native); it must not inherit the active model's shared snapshot,
-    which resolveFitMaxSeqLength would treat as an explicit pin (VRAM/OOM)."""
+    """A compare pane takes its context only from its own config (saved pin, else null), since
+    resolveFitMaxSeqLength would read the shared snapshot as an explicit pin (OOM)."""
     src = _read("features/chat/shared-composer.tsx")
     assert "const effectiveCustomContextLength = ownConfig.customContextLength;" in src
     assert "compareLoadKnobs.customContextLength" not in src
 
 
 def test_reset_max_seq_length_falls_back_to_app_default():
-    """After Reset clears maxSeqLength (null), a non-GGUF active model's shown
-    max sequence length must fall back to the app default, never the loaded
-    runtime snapshot, or a remembered/active override can never be cleared."""
+    """After Reset clears maxSeqLength, a non-GGUF model must fall back to the app default, not the
+    loaded runtime snapshot, or an override can never be cleared."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength)" in src
     assert "clampMaxSeqLength(initialMaxSeqLength" not in src
@@ -1131,9 +1113,8 @@ def test_reset_enabled_for_explicit_context_pin_at_native():
 
 
 def test_compare_pane_non_gguf_falls_back_to_app_default():
-    """A non-GGUF compare pane with no saved maxSeqLength must fall back to the
-    shared app default, not the active model's runtime snapshot; otherwise an
-    unconfigured pane inherits a saved 128K neighbor's context and can OOM."""
+    """A non-GGUF compare pane with no saved maxSeqLength falls back to the shared app default
+    (4096), not the runtime snapshot, or it inherits a saved neighbor's 128K context and can OOM."""
     per_model = _read("features/model-picker/model-config/per-model-config.ts")
     assert "export const DEFAULT_MAX_SEQ_LENGTH = 4096;" in per_model
     barrel = _read("features/model-picker/index.ts")
@@ -1335,9 +1316,8 @@ def test_chat_load_prepares_hf_token_before_gguf_metadata_preflight():
 
 
 def test_chat_autoload_prepares_hf_token_before_gguf_metadata_preflight():
-    """Background autoload performs the same GGUF classification probe as the
-    interactive paths, so a stale saved token must take the same recovery path.
-    """
+    """Background autoload runs the same GGUF classification probe as interactive paths, so it
+    prepares the HF token first and a stale saved token recovers the same way."""
     adapter = _read("features/chat/api/chat-adapter.ts")
     autoload = adapter.split("async function loadAutoLoadCandidate", 1)[1]
     autoload = autoload.split("async function autoLoadSmallestModel", 1)[0]
@@ -1428,9 +1408,8 @@ def test_the_run_settings_footer_does_not_reflow_under_the_pointer():
     blur-committed draft mounted Save, so the click was never dispatched (#10216)."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     before = src.split("<RunSettingsPicker ", 1)[0]
-    # Opening tags of the divs enclosing the settings dropdown, nearest first. The footer column is the one
-    # under the rule. A wrapper just outside it (the picker's sticky pin) may vary by variant, but
-    # only in placement: it must not make the footer wrap either.
+    # Opening div tags enclosing the settings dropdown, nearest first; the footer column is under
+    # the rule, and the sticky pin wrapper may vary but must not make the footer wrap.
     attr = r"""(?:[^>"'{]|"[^"]*"|'[^']*'|\{(?:[^{}]|\{[^{}]*\})*\})*"""
     stack = []
     for match in re.finditer(r"<div\b(" + attr + r")>|</div>", before):
@@ -1490,9 +1469,8 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
 
 
 def test_variant_expander_forwards_the_gguf_filename():
-    """A quant pick must carry the exact .gguf filename. The diffusion pages load
-    by filename and cannot map a quant label back to one, so without it every hub
-    GGUF pick on Images/Video fell through to a silent return and nothing loaded."""
+    """A quant pick must carry the exact .gguf filename, since diffusion pages load by filename and
+    cannot map a quant label back; without it hub GGUF picks silently did nothing."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     handler = re.search(r"const handleVariantClick = useCallback\(.*?\n  \);", src, re.S)
     assert handler, "handleVariantClick not found"
@@ -1553,9 +1531,8 @@ def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
 
 
 def test_a_quantized_load_drops_a_lora_selection_it_cannot_bake():
-    """int8/fp8 builds take adapters only at load time. Switching artifact inside one family
-    keeps the selection (same family, no clear) while the load did not bake it, so Generate
-    would 400 with the picker still showing the adapter as active."""
+    """int8/fp8 builds take adapters only at load time; a same-family artifact switch must not keep
+    a LoRA selection the load did not bake, or Generate would 400."""
     src = _read("features/images/images-page.tsx")
     assert "bakedLorasOnLoad.current = bakeLoras.length > 0;" in src
     guard = re.search(
@@ -1571,9 +1548,8 @@ def test_a_quantized_load_drops_a_lora_selection_it_cannot_bake():
 
 
 def test_diffusion_pages_never_drop_a_gguf_pick_silently():
-    """The fallback branch splits a local path, so a repo pick reaching it has no
-    filename. It used to error; it now resolves the repo's own .gguf. Either way the
-    branch must act: returning with no request and no toast drops the pick."""
+    """The fallback branch must always act on a GGUF pick, since returning with no request and no
+    toast silently drops it; a repo pick with no filename resolves its own .gguf."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
         branch = re.search(
@@ -1587,9 +1563,8 @@ def test_diffusion_pages_never_drop_a_gguf_pick_silently():
 
 
 def test_diffusion_pages_stage_downloads_through_the_manager():
-    """Images/Video must not download inside the load: a Hub pick with missing files goes
-    to the download manager first, so it shares progress, cancel/resume, disk preflight,
-    and manifest verification with every other model."""
+    """Images and Video must stage missing Hub files through the download manager rather than inside
+    the load, so they share progress, cancel/resume, disk preflight and manifest verification."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
         assert "useStagedDownload" in src, f"{rel}: not wired to the download manager"
@@ -1609,9 +1584,8 @@ def test_diffusion_pages_stage_downloads_through_the_manager():
 
 
 def test_every_diffusion_planner_filters_the_cache_before_staging():
-    """Planning every Hub pick is only safe on a planner that skips files already on disk;
-    without that an unchanged, fully cached model stages its whole footprint again. The two
-    move together, so pin them together rather than leaving it to a comment."""
+    """Planning every Hub pick is only safe if each planner skips files already on disk, else a
+    fully cached model re-stages its whole footprint; the test pins both together."""
     root = WORKDIR / "studio" / "backend" / "core" / "inference"
     for name in ("diffusion.py", "sd_cpp_backend.py", "video.py"):
         src = (root / name).read_text(encoding = "utf-8")
@@ -1624,9 +1598,8 @@ def test_every_diffusion_planner_filters_the_cache_before_staging():
 
 
 def test_image_load_fallback_names_requirements_instead_of_only_the_model():
-    """If planning fails and the backend has to fetch files inside the load, its toast must
-    not call companion text encoders and VAEs the selected model. The normal path stages
-    them through Downloads; this wording keeps the defensive fallback honest too."""
+    """If planning fails and the backend fetches inside the load, the toast must name the
+    requirements, not just the model, since companion text encoders and VAEs are also fetched."""
     src = _read("features/images/images-page.tsx")
     assert '"Downloading model requirements…"' in src
     assert '"Downloading model…"' not in src
@@ -1634,9 +1607,8 @@ def test_image_load_fallback_names_requirements_instead_of_only_the_model():
 
 
 def test_a_hidden_diffusion_page_does_not_load_when_its_download_lands():
-    """Images and Video stay mounted behind the router, and a load evicts whoever holds the
-    GPU. A multi-GB staged download finishing while the user is on another page must not take
-    the model out from under them; the pick waits for its page to be visible again."""
+    """Images and Video stay mounted behind the router and a load evicts whoever holds the GPU, so a
+    staged download landing while the page is hidden must wait until visible again."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
         ready = re.search(r"onReady: \(\) => \{.*?\n    \},", src, re.S)
@@ -2038,9 +2010,8 @@ def test_on_device_rows_carry_the_task_the_pickers_filter_on():
 
 
 def test_local_diffusion_routing_is_keyed_by_the_id_the_row_selects():
-    """A local row's click passes m.id (a filesystem load id), while m.model_id is its HF-style
-    name. Keying the routing map on one alone let the lookup miss, so the pick fell through to the
-    chat loader instead of navigating to Images or Video."""
+    """A local row's click passes m.id (a filesystem load id), while m.model_id is an HF-style name,
+    so the diffusion routing map must be keyed by the id the row selects."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     block = re.search(r"const diffusionTaskById = useMemo\(.*?\n  \}, \[", src, re.S)
     assert block, "diffusionTaskById not found"
@@ -2264,9 +2235,8 @@ def test_parallel_slots_are_never_recorded_for_a_diffusion_load():
 
 
 def test_hydration_restores_a_remembered_slot_override():
-    """The control is never seeded from the status echo, so a model running on a remembered
-    override shows a BLANK slot control after a browser reload or a tab move to another
-    GGUF."""
+    """Hydration must restore a remembered slot override via resolveResidentInitialConfig, since the
+    control is never seeded from the status echo and would show blank after a reload."""
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
     status = " ".join(src.split())
     assert (
@@ -2596,9 +2566,8 @@ def test_only_gguf_configs_are_mirrored_to_the_server():
 
 
 def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
-    """A dropped or file-picked GGUF loads through a signed native-path lease, and
-    /api/inference/status reports model_identifier as null for it, so the checkpoint the
-    browser keys settings by is the bare file name the backend echoes back."""
+    """A GGUF loaded via a signed native-path lease is not mirrored to the server;
+    /api/inference/status reports model_identifier as null, so the echoed file name is the key."""
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert "&& !nativePathToken ) { syncModelOverride(" in page
     assert (
@@ -2756,9 +2725,8 @@ def test_backfill_includes_a_standalone_gguf_with_no_variant():
 
 
 def test_monitor_overlay_does_not_pull_in_the_lazy_page():
-    """The overlay is mounted from __root.tsx, so a static import of the page for two label
-    helpers drags the whole 900-line page and its dependency graph into the eagerly
-    loaded bundle and undoes the route's lazyRouteComponent."""
+    """The overlay is mounted from __root.tsx, so it takes label helpers from lifecycle; importing
+    the page would pull it into the eager bundle and undo lazyRouteComponent."""
     overlay = _read("features/api-monitor/api-monitor-overlay.tsx")
     assert 'from "./lifecycle"' in overlay
     assert "api-monitor-page" not in overlay, "the overlay must not reach the page"
@@ -2768,9 +2736,8 @@ def test_monitor_overlay_does_not_pull_in_the_lazy_page():
 
 
 def test_override_writes_are_ordered_per_model():
-    """Two saves for one model, or a save racing the one-time backfill, started independent
-    requests with no sequencing, so the older response could commit last and resurrect
-    the entry the newer one meant to replace."""
+    """Override writes are ordered per model with one in-flight promise per key, so an older save
+    response cannot commit last and resurrect an entry a newer save replaced."""
     src = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
     # One in-flight promise per key is the ordering; what it resolves to is not.
     assert (
@@ -2796,9 +2763,8 @@ def test_backfill_skips_future_schema_local_records():
 
 
 def test_a_failed_detail_fetch_is_retried():
-    """A terminal row's updated_at never advances and selectedIsMissing stays true, so a
-    fetch that failed had nothing left to re-run the effect and the payload stayed
-    unavailable until another row was selected."""
+    """A failed detail fetch is retried up to DETAIL_FETCH_ATTEMPTS, because a terminal row's
+    updated_at never advances and nothing else would re-run the effect."""
     src = " ".join(_read("features/api-monitor/api-monitor-page.tsx").split())
     assert "const DETAIL_FETCH_ATTEMPTS = 3;" in src
     assert "const detailInFlight = selectedId_ != null && loadingDetails.has(selectedId_);" in src
@@ -2914,9 +2880,8 @@ def test_the_chat_picker_marks_ollama_targets_unloadable_by_the_api():
 
 
 def test_the_backfill_fills_in_fields_rather_than_skipping_known_keys():
-    """The backfill reads the override map once and then writes each model in turn, so a
-    save by another tab during that pass was overwritten by this browser's older
-    localStorage copy."""
+    """The backfill reads the override map once, so another tab's save during that pass must not be
+    overwritten; fillAbsentFields fills what the server lacks, not just by key presence."""
     backfill = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
     assert "{ fillAbsentFields: true }," in backfill
     # Key presence alone is not "done": what the server lacks decides.
@@ -3019,9 +2984,8 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
 
 
 def test_a_standalone_gguf_has_one_settings_identity_in_the_picker():
-    """A loose .gguf has no quant to choose between, but llama_cpp falls back to
-    _extract_quant_label(gguf_path) when a load names no variant, and /status echoes
-    that as gguf_variant."""
+    """A loose .gguf has no quant to choose between, yet llama_cpp falls back to
+    _extract_quant_label when a load names no variant, and /status echoes that as gguf_variant."""
     resident = " ".join(_read("features/model-picker/model-config/model-config-handoff.ts").split())
     assert (
         "const settingsGgufVariant = isStandaloneGgufPath(modelId) ? null : ggufVariant;"
@@ -3069,9 +3033,8 @@ def test_a_local_quant_folder_lists_its_variants_by_path():
 
 
 def test_a_repo_id_ending_in_gguf_keeps_its_quant():
-    """Repo ids ending in .gguf are real on the Hub, an iMat repo among them, and
-    those hold every quant. A suffix-only test reads one as a single file, drops
-    the variant, and saves Q4 and Q8 under one key."""
+    """Hub repo ids may end in .gguf (an iMat repo among them) and hold every quant, so a
+    suffix-only test would drop the variant and save Q4 and Q8 under one key."""
     identity = " ".join(_read("features/hub/lib/model-identity.ts").split())
     assert "if (modelId == null || !GGUF_SUFFIX_RE.test(modelId)) { return false; }" in identity
     assert "PUBLIC_ID_PATH_PREFIX_RE.test(modelId) ||" in identity
@@ -3143,9 +3106,8 @@ def test_picker_popover_and_trigger_keep_their_tour_hooks():
 
 
 def test_run_settings_gear_label_names_its_model():
-    """The driver cannot reach the gear through the row -- it is a sibling at 2 of its
-    render sites and an uncle at the rest -- so it matches on this label, and the model
-    name in it is what keeps it off another row's gear."""
+    """The driver cannot reach the gear through the row (a sibling at two render sites, an uncle at
+    the rest), so it matches this label; the model name keeps it off another row's gear."""
     pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
     # The expander's own label is the only one naming both repo and quant.
     assert (
@@ -3396,9 +3358,8 @@ def test_cached_inventory_lookups_take_the_run_signal():
 
 
 def test_download_cancel_survives_the_pending_start_window():
-    """cancel() no-ops on a key with no job, so a click during requestStart's
-    preflights is replayed once the job exists, and exactly once: cancelling
-    patches the job and wakes the subscription."""
+    """cancel() no-ops on a key with no job, so a cancel clicked during requestStart's preflights is
+    replayed exactly once when the job exists, patching it and waking the subscription."""
     src = _read("features/chat/api/chat-adapter.ts")
     helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
     helper = helper.split("async function autoLoadSmallestModel", 1)[0]
@@ -3426,9 +3387,8 @@ def test_a_failed_quant_is_marked_tried_so_the_repo_continues():
 
 
 def test_local_safetensors_chat_capability_is_classified_not_assumed():
-    """An embedding export is config.json plus model.safetensors, which the
-    format-only rule marked chat-capable, and it is small enough to be tried
-    first."""
+    """An embedding export (config.json plus model.safetensors) is small enough to be tried first,
+    so chat capability must be classified, not assumed from format alone."""
     src = _read_backend("hub/services/models/common.py")
     assert "def _local_transformers_can_chat(" in src
     assert "can_chat_override" in src
@@ -3640,9 +3600,8 @@ def test_the_gguf_footprint_is_resolved_per_dependency_group_not_per_repo():
 
 
 def test_every_footprint_group_gets_its_own_resolve_call():
-    """One request per distinct key. The ordinary repo has exactly one key, so the
-    common case stays exactly one request, which is what the representative scheme
-    exists to protect."""
+    """Each distinct footprint dependency key gets its own resolve call; an ordinary repo has one
+    key, keeping the common case at one request as the representative scheme requires."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     effect = src.split("const [companionBytesByKey, setCompanionBytesByKey]", 1)[1]
     effect = effect.split("const variantOptionKeys = useMemo(", 1)[0]
@@ -3724,9 +3683,8 @@ def test_the_dependency_key_survives_the_variant_validator():
 
 
 def test_the_backend_keys_the_footprint_on_family_and_text_encoders():
-    """Both sources of variation have to be in the key. Folding in only the family
-    would give klein-4B and klein-9B the same key inside one repo, which is the
-    exact case the per-row lookup exists for."""
+    """The backend footprint key must include both family and text encoders, since family alone
+    would give klein-4B and klein-9B the same key inside one repo."""
     src = _read_backend("hub/services/models/gguf_variants.py")
     helper = src.split("def _variant_dependency_key(", 1)[1].split("\ndef ", 1)[0]
     assert "detect_family_for_pick(repo_id, filename)" in helper
@@ -3806,9 +3764,8 @@ def test_a_download_only_pick_does_not_strand_a_staged_load():
 
 
 def test_every_optimistic_pick_hands_its_label_back_under_a_guard():
-    """`quantRevert` is one slot. A pick that no longer owns the page must not revert over the label
-    a newer pick has already set, so every `!started` rollback is guarded. Two branches lost that
-    guard when they moved from `handleLoad` to `loadOrStage`."""
+    """quantRevert is one slot: every !started rollback must stay guarded or a stale pick reverts a
+    newer label; two branches lost the guard moving to loadOrStage."""
     src = _read("features/images/images-page.tsx")
     start = src.index("const handleModelSelect = useCallback(")
     # handleDeployAdapter rolls back a deploy, not a pick.
@@ -3854,9 +3811,8 @@ def test_a_download_only_pick_claims_no_label_rollback():
 
 
 def test_a_routed_download_only_arrival_claims_nothing():
-    """A ?model= arrival from the chat picker or the Hub takes the page like a direct pick. Under
-    Download only it must not: claiming there revokes the token of a load that is already staging,
-    and resumePendingLoad then drops that load once its files have finished arriving."""
+    """Under Download only, a ?model= arrival must not claim the page: claiming revokes the token of
+    a load already staging, and resumePendingLoad then drops it once its files arrive."""
     src = _read("features/images/images-page.tsx")
     body = re.search(r"const handledRouteModel = useRef(.*?)\n  \]\);", src, re.S)
     assert body, "the routed-pick effect was not found; this guard has gone stale"
@@ -3882,9 +3838,8 @@ def test_an_unresolvable_download_only_gguf_hands_nothing_back():
 
 
 def test_a_download_only_pick_is_allowed_while_the_page_is_busy():
-    """The busy guard exists because the backend 409s a second load. A Download only pick submits
-    no load, and the selector stays interactive during a generation, so refusing it there was a
-    silent dead click: the user picked a model to download and nothing happened."""
+    """The busy guard only exists because the backend 409s a second load; a Download only pick
+    submits none, so refusing it while busy was a silent dead click."""
     src = _read("features/images/images-page.tsx")
     body = re.search(r"const handleModelSelect = useCallback\(\n(.*?)\n  \);", src, re.S)
     assert body, "handleModelSelect not found"

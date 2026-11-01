@@ -228,8 +228,7 @@ class _Merged:
 
 
 class _FakeST:
-    """A SentenceTransformer stand-in: a sequence of modules, module 0 of
-    which wraps the transformer."""
+    """A SentenceTransformer stand-in: a sequence of modules, where module 0 wraps the transformer."""
 
     def __init__(self, no_modules = False):
         self.tokenizer = _Tok()
@@ -334,11 +333,8 @@ def test_the_forwarding_path_refuses_lora_for_its_own_reason(tmp_path):
 
 
 def test_the_two_lora_refusals_do_not_share_a_message(tmp_path):
-    """Written because the check above can only see one of the pair at a time.
-
-    If both branches were ever collapsed onto one message, each test would still pass on its
-    own substring while the distinction that makes the advice actionable was gone.
-    """
+    """Each refusal is checked alone, so this test compares both: collapsing the two LoRA refusals
+    onto one message would hide the distinction that makes the advice actionable."""
     fn, _ = _extract(1)
     messages = []
     for no_modules in (True, False):

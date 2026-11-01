@@ -135,10 +135,8 @@ def _wait_for_writer(
     writer,
     writer_rank = 0,
 ):
-    """The other ranks wait for the writer's write, so no later collective overtakes it. A store key,
-    not a barrier: a merged or quantized export (and a Hub upload) can outlast the process group's
-    collective timeout, and NCCL ranks blocked in a barrier would abort before the writer arrives.
-    Keyed per writer rank so disjoint sub-meshes do not release each other."""
+    """Store key, not a barrier: other ranks wait so no later collective overtakes the write, and a
+    long export can outlast the collective timeout; keyed per writer rank."""
     _SAVE_COUNTER[writer_rank] = _SAVE_COUNTER.get(writer_rank, 0) + 1
     count = _SAVE_COUNTER[writer_rank]
     key = (
@@ -278,8 +276,7 @@ def fsdp2_gathered(
     if not units or DTensor is None:
         yield None
         return
-    # An eval forward leaves the last block and the lm_head unit gathered; make every
-    # parameter a DTensor again so all ranks gather the same list.
+    # An eval forward leaves units gathered; reshard first so all ranks gather the same list.
     _reshard_units(units)
     dist = _dist()
     rank = dist.get_rank() if dist is not None else 0
@@ -394,8 +391,7 @@ _MERGED_4BIT_METHODS = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit
 
 
 def _merges_onto_dequantized_4bit(model):
-    """unsloth_zoo folds a merged_16bit LoRA onto dequant(W4) for a few architectures (falcon_h1),
-    dequantizing the live packed weight where it sits."""
+    """zoo folds merged_16bit LoRA onto dequantized W4 for some architectures (falcon_h1)."""
     try:
         from unsloth_zoo.saving_utils import (
             _model_type_needs_dequant_merge_base,
@@ -501,8 +497,7 @@ def _gathered_host_bytes(
     DTensor = _dtensor_class()
     if DTensor is None:
         return 0
-    # Counted as the gather will find them: it reshards first, so an eval forward's still
-    # gathered units are DTensors again by then.
+    # Reshards first so the count matches what the gather finds.
     _reshard_units(fsdp2_units(model))
     total = 0
     seen = set()
@@ -745,12 +740,9 @@ def fsdp2_export_on_writer(
     offload_4bit = False,
     convert_on = None,
 ):
-    """An export that rebuilds or quantizes the whole model in one process (GGUF, torchao, OpenVINO),
-    on a model FSDP2 shards. Every rank must call it. The writer (global rank 0, or the lowest rank
-    of a sub-mesh) first checks the gathered weights fit its host RAM, and every rank refuses if
-    not. Then the shards are gathered to the writer's CPU, the writer alone calls `run()`, the
-    ordinary single-process export, and the others wait on the store (a GGUF build can outlast any
-    collective timeout). Every rank returns the writer's result, or raises if the writer raised."""
+    """Every rank must call it. The writer checks gathered weights fit its host RAM (all ranks
+    refuse if not), gathers to CPU, alone runs the single-process export; others wait on the
+    store; all return or raise with the writer."""
     dist = _dist()
     rank = dist.get_rank() if dist is not None else 0
     writer_rank = mesh_writer_rank(model)
@@ -850,9 +842,7 @@ def _has_sharded_4bit(args, kwargs):
 
 
 def _has_native_replicated_4bit(args, kwargs):
-    """A natively sharded model (fsdp2_native, fit layout) whose Linear4bit weights FSDP2 left replicated:
-    they keep bitsandbytes' own `weight.absmax` / `quant_state` entries, which a strict DCP load rejects
-    as unexpected keys although the in-memory QuantState already equals them."""
+    """Replicated Linear4bit weights keep weight.absmax and quant_state keys that strict DCP rejects."""
     model = args[0] if args else kwargs.get("model", None)
     if not isinstance(model, torch.nn.Module) or not getattr(model, "_unsloth_fsdp2_native", False):
         return False
@@ -1063,9 +1053,8 @@ def _restore_quant_state(model, state_dict, options):
             loads_weight, saved = payload[0]
         if not saved:
             if loads_weight:
-                # A checkpoint written before QuantState was saved (a frozen QLoRA base): its packed
-                # bytes are the live ones, so the live scales are theirs. Other bytes would be
-                # dequantized with the wrong scales.
+                # Pre-QuantState checkpoints: live scales apply only when the saved packed bytes
+                # match the live ones.
                 same = _same_packed_bytes(
                     module.weight, state_dict.get(head[:-1]), dist if broadcast else None
                 )
@@ -1218,10 +1207,7 @@ def model_mesh(model):
 
 
 def mesh_all_reduce(tensor, mesh, dist):
-    """Sum `tensor` in place over every rank of `mesh` (the world when None), one all_reduce per mesh
-    dimension (the groups of each dimension partition the mesh, so an HSDP mesh is summed whole).
-    Returns the number of ranks summed. A sub-mesh (several models or replicas on disjoint ranks)
-    reduces only over its own ranks."""
+    """One all_reduce per mesh dim sums an HSDP mesh whole; a sub-mesh reduces only over its own ranks."""
     if mesh is None:
         dist.all_reduce(tensor)
         return dist.get_world_size()

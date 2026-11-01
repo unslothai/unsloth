@@ -1299,9 +1299,8 @@ def test_cli_guard_goes_back_when_the_move_lands_somewhere_still_refused():
 
 
 def test_cli_guard_restores_the_real_sys_path_when_the_move_fails():
-    """The console script passes no list, so the guard has to snapshot the real
-    sys.path before pinning it, or a chdir that then fails leaves the process
-    carrying import roots it never agreed to."""
+    """The console script passes no list, so the guard snapshots the real sys.path before pinning
+    it; otherwise a failed chdir leaves import roots it never agreed to."""
     import sys
 
     before = list(sys.path)

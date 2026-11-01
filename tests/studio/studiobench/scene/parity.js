@@ -268,9 +268,8 @@
     return position;
   };
 
-  // The fallback ordinal is the row's DOM position at observe time, not a lifetime counter:
-  // thread_reopen rebuilds rows in one document. The index is built at most once per mutation
-  // batch and only when needed, keeping O(document) work off the per-mutation path.
+  // Fallback ordinal is DOM position at observe time, not a lifetime counter, since thread_reopen
+  // rebuilds rows; the index is built at most once per mutation batch, only when needed.
   const positionIndex = () => {
     if (VIS.index) return VIS.index;
     const nodes = (D().messages && D().messages()) || [];

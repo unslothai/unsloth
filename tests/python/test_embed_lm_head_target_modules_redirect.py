@@ -218,9 +218,8 @@ def test_flipping_ensure_weight_tying_is_seen_as_a_different_request():
 
 @pytest.mark.slow
 def test_a_classification_repeat_call_is_not_tripped_by_peft_added_modules():
-    """PeftModelForSequenceClassification.__init__ extends modules_to_save with
-    classifier/score unconditionally, so the stored config names modules the caller never
-    asked for. An unchanged request must still pass through."""
+    """PeftModelForSequenceClassification.__init__ adds classifier and score to modules_to_save
+    unconditionally, so an unchanged repeat request must still pass through."""
     from unsloth import FastLanguageModel
 
     core = [m for m in TARGET_MODULES if m not in ("embed_tokens", "lm_head")]

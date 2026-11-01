@@ -130,13 +130,8 @@ class RawTextDataLoader:
         stride,
         return_tokenized = True,
     ):
-        """
-        Intelligent chunking that:
-        1. Respects sentence/paragraph boundaries
-        2. Handles various text formats (.txt, .md, .json, etc.)
-        3. Maintains context with stride overlap
-        4. Returns tokenized chunks directly (more efficient) or text chunks
-        """
+        """Chunks text at sentence or paragraph boundaries with stride overlap, returning tokenized
+        chunks (more efficient) or text chunks; handles .txt, .md, .json and other text formats."""
         if chunk_size <= 0:
             raise ValueError(f"chunk_size must be positive, got {chunk_size}")
         if stride < 0:
@@ -397,13 +392,8 @@ class TextPreprocessor:
         dataset,
         tokenizer = None,
     ):
-        """
-        Check for:
-        - Minimum/maximum sequence lengths
-        - Character encoding issues
-        - Repeated content
-        - Empty chunks
-        """
+        """Checks a dataset for min and max sequence lengths, character encoding issues, repeated
+        content and empty chunks."""
         stats = {
             "total_samples": len(dataset),
             "empty_samples": 0,

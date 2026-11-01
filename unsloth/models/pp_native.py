@@ -349,10 +349,9 @@ def _find_parts(model) -> _Parts:
         base = getattr(child, "original_module", child)  # PEFT modules_to_save wraps it
         norm_like = "norm" in name.lower() or "Norm" in type(base).__name__
         too_big = bool(hidden) and sum(p.numel() for p in base.parameters()) > 4 * hidden
-        # A learned position / token-type table before the layers (GPT-2 wpe, OPT / BART / Whisper
-        # embed_positions): indexed by positions, not tokens, so later stages (whose pre-layer result is
-        # replaced by the received hidden states anyway) need nothing from it. A token-indexed table could
-        # feed the layers a side input and stays refused.
+        # A learned position or token-type table before the layers (GPT-2 wpe, OPT/BART/Whisper
+        # embed_positions) is indexed by positions, so later stages need nothing from it;
+        # token-indexed tables stay refused.
         positional = (
             isinstance(base, nn.Embedding)
             and isinstance(vocab, int)
@@ -1075,10 +1074,9 @@ class PipelineParallel:
         dp_mesh,
         mp_policy = None,
     ):
-        """shard_model(model, FSDP2Config(mesh = dp_mesh)) sharded this stage: make the PipelineStage's module
-        the outer FSDP2 root (no parameters of its own), so torch's PipelineStage defers the gradient
-        reduce-scatter to the end of the step (set_requires_gradient_sync(False) per micro-batch backward,
-        one post_backward in perform_reduce_grad), as torchtitan's stage submodule does."""
+        """After shard_model shards this stage, make the PipelineStage module the outer FSDP2 root
+        with no parameters of its own, so the reduce-scatter defers to perform_reduce_grad, as
+        torchtitan does."""
         from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 
         if self.stages_per_rank > 1:
@@ -1289,10 +1287,9 @@ class PipelineParallel:
         return total[0]
 
     def _average_replicated_grads(self):
-        """Trainable parameters FSDP2 keeps replicated (Unsloth averages them over dp like DDP from an
-        autograd callback, deferred while gradient sync is off): the pipeline schedule runs every micro-batch
-        backward with sync off and reduces FSDP2's own groups outside autograd, so average them here once.
-        Averaging equal values is a no-op, so an earlier per-backward average stays correct."""
+        """Averages trainable FSDP2-replicated parameters over dp here, once: the schedule runs
+        micro-batch backwards with gradient sync off and reduces FSDP2 groups outside autograd;
+        re-averaging equal values is a no-op."""
         params = self.model.__dict__.get("_unsloth_replicated_grad_params")
         if not params:
             return

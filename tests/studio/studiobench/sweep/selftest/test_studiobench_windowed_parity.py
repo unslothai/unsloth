@@ -74,8 +74,7 @@ def test_not_applicable_is_not_folded_into_a_pass_or_a_fail():
 
 
 def test_two_full_mounts_are_still_compared_exactly_as_before():
-    """The refusal must not leak into a normal pair. Same digest is still MATCH, different is
-    still DIFFER, and the windowed machinery is invisible to both."""
+    """Two full mounts compare exactly as before: same digest is MATCH, different is DIFFER."""
     same = P.compare(_capture(18, 18, "x"), _capture(18, 18, "x"))
     assert same["verdict"] == P.MATCH
     differ = P.compare(_capture(18, 18, "x"), _capture(18, 18, "y"))
@@ -109,8 +108,7 @@ def test_the_scroll_extent_invariant_passes_a_virtualizer_that_sizes_its_spacers
 
 
 def test_the_scroll_extent_invariant_fails_a_virtualizer_that_simply_drops_rows():
-    """A scrollbar that says the thread is a third of its real length is a user-visible defect,
-    and it is the failure mode a windowed mount invites first."""
+    """A scrollbar too short for its thread is a user-visible defect that windowing invites."""
     base = _row("select_text", _capture(18, 18), selected_chars = 100, visible_chars = 100)
     treat = _row("select_text", _capture(6, 18), selected_chars = 100, visible_chars = 100)
     treat["census"]["viewport_scroll_height"] = 3_300
@@ -319,9 +317,7 @@ def test_a_timed_out_rebuild_leaves_the_behavioural_run_with_no_verdict(tmp_path
 
 
 def test_an_action_with_no_declared_invariant_is_unchecked_and_not_a_pass():
-    """The scroll extent is a property of the THREAD and holds identically on all eighteen
-    actions. Letting it carry an action to a pass would report `model_change` as verified on a
-    windowed arm when nothing about `model_change` was looked at."""
+    """Scroll extent is a property of the thread, so it must not carry an undeclared action to a pass."""
     base = _row("model_change", _capture(18, 18))
     treat = _row("model_change", _capture(6, 18))
     got = B.compare_behaviour(base, treat)
@@ -352,8 +348,7 @@ def test_an_action_that_did_not_run_is_not_scored_at_all():
 
 
 def test_every_named_first_to_break_action_has_an_invariant():
-    """The five the brief names as the ones that break first. An entry silently missing from the
-    table would make that action UNCHECKED, which reads as clean."""
+    """Each first-to-break action needs an invariant; a missing one reads as clean."""
     for action in (
         "select_all_copy",
         "select_text",
@@ -494,8 +489,7 @@ def test_a_style_probe_that_matched_no_elements_does_not_report_a_match():
 
 
 def test_one_arm_scanning_nothing_is_also_not_a_difference_to_report():
-    """It is a broken probe, not a finding about the build, and saying DIFFER here would send
-    somebody looking for a UI change that nobody has evidence for."""
+    """One arm scanning nothing is a broken probe, not a build difference: NOT_COMPARABLE."""
     verdict, _reason = P.compare_styles(_styled(0), _styled(12))
     assert verdict == P.NOT_COMPARABLE
 
@@ -551,9 +545,7 @@ def test_markdown_source_against_rendered_text_is_not_treated_as_a_difference():
 
 
 def test_without_a_fully_mounted_arm_there_is_no_reference_and_no_verdict():
-    """The reference is the thread's visible text as measured by an arm that has all of it. If
-    neither arm mounts everything, nobody in this payload knows how long the conversation is, and
-    that is reported rather than guessed."""
+    """With no fully mounted arm there is no reference, so no verdict; the gap is reported, not guessed."""
     base = _copy_row(_capture(9, 18), clipboard = 190_000, selected = 118_000, mounted = 9)
     treat = _copy_row(_capture(9, 18), clipboard = 190_000, selected = 118_000, mounted = 9)
     got = B.compare_behaviour(base, treat)
@@ -620,8 +612,7 @@ def test_an_action_that_differs_against_an_identical_build_is_not_counted_agains
 
 
 def test_a_real_visible_difference_outside_the_floor_still_fails(tmp_path):
-    """The floor must not become a way of passing anything. An action the null never saw differ is
-    still a failure."""
+    """The floor must not pass everything: an action the null never saw differ still fails."""
     from studiobench.sweep import ui_parity as U
 
     null = _visible_shard(tmp_path, "null2", differ_actions = {"b"})
@@ -815,8 +806,7 @@ def test_a_visible_message_that_could_not_be_digested_is_printed_and_not_counted
 
 
 def test_a_run_where_nothing_could_be_digested_carries_no_visible_verdict(tmp_path, capsys):
-    """Every pair carrying a residue means every pair was refused, and a mode that refused
-    everything has no verdict to report. 2, not 0."""
+    """If every pair carries a residue, none was digested: no verdict, exit 2, not 0."""
     from studiobench.sweep import ui_parity as U
 
     rows = [
@@ -1080,9 +1070,7 @@ def _one_sided_shard(
 
 
 def test_a_declared_windowed_arm_with_no_row_is_not_scored_structurally(tmp_path):
-    """THE ONE-SIDED HOLE. The declaration fallback was read off the rows the pair HAS, so an arm
-    that failed before emitting an action row was never asked about: the loop saw the base row,
-    found no declaration for the base arm, and classified the pair structural."""
+    """A declared arm that emitted no action row must still be checked, not classed structural."""
     from studiobench.sweep import ui_parity as U
 
     shard = _one_sided_shard(tmp_path, "one_sided")
@@ -1113,9 +1101,7 @@ def test_a_windowed_cell_row_declares_the_arm_even_when_that_arm_has_no_action_r
 def test_a_missing_windowed_arm_does_not_exit_zero_on_the_strength_of_the_other_rung(
     tmp_path, capsys
 ):
-    """THE CONSEQUENCE. The fully mounted 1K pair supplies `matched > 0`, the 100K pair is filed as
-    structurally NOT COMPARABLE, and the command exits 0 -- having never run a windowed report for
-    the rung whose treatment arm produced nothing at all."""
+    """A missing windowed arm must not exit 0 on the strength of another rung's matches."""
     from studiobench.sweep import ui_parity as U
 
     _one_sided_shard(tmp_path, "one_sided_main")
@@ -1221,8 +1207,7 @@ def _held_invariant_pair(cell_suffix = "rep0"):
 
 
 def test_a_cell_that_lost_messages_gets_no_behavioural_pass_either(tmp_path, capsys):
-    """The behavioural invariants are what REPLACE the digest on a windowed arm, so a pass here is
-    the whole UI verdict for that pair."""
+    """A cell that lost messages gets no behavioural pass; invariants replace the digest."""
     from studiobench.sweep import ui_parity as U
 
     rows = [_completeness_gate("r100K.treatment.rep0", False)] + _held_invariant_pair()
@@ -1286,8 +1271,7 @@ def test_a_complete_cell_still_earns_its_behavioural_pass(tmp_path, capsys):
 
 
 def test_a_cell_whose_completeness_gate_PASSED_is_scored_exactly_as_before(tmp_path, capsys):
-    """The positive control. A refusal that fires on every cell measures nothing, and the shipped
-    build passes this gate on every cell it runs."""
+    """A passing completeness gate must still score: a refusal on every cell measures nothing."""
     from studiobench.sweep import ui_parity as U
 
     rows = [_completeness_gate("r100K.treatment.rep0", True)] + _matching_pair()
@@ -1572,8 +1556,7 @@ def test_a_successful_resume_clears_the_dead_attempts_completeness_failure(tmp_p
 
 
 def test_a_resume_that_failed_again_is_still_refused(tmp_path):
-    """The positive control: scoping the gate to the surviving attempt must not lose a real
-    refusal when the retry failed too."""
+    """A resume whose retry also failed is still refused when scoped to the surviving attempt."""
     from studiobench.sweep import ui_parity as U
 
     shard = _resumed_completeness_shard(tmp_path, "resumed_bad", retry_passes = False)
@@ -1668,9 +1651,7 @@ def test_the_coverage_floor_applies_to_a_run_with_no_fully_mounted_pair(tmp_path
 
 
 def test_the_coverage_floor_passes_a_windowed_run_that_compared_enough(tmp_path, capsys):
-    """THE POSITIVE CONTROL, and it is the half that matters most here: a floor that fires on
-    everything is not a floor. The same shape as above with the floor set beneath what the run
-    actually compared has to come out 0, or the test above would pass against a `return 3`."""
+    """Positive control: a floor set beneath what the run compared must give 0, or `return 3` passes."""
     from studiobench.sweep import ui_parity as U
 
     _windowed_only_shard(tmp_path, "winenough", pairs = 4)
@@ -1742,9 +1723,8 @@ def test_the_coverage_floor_is_checked_per_payload_pattern(tmp_path, capsys):
 
 
 def test_a_floor_each_film_clears_on_its_own_still_passes(tmp_path, capsys):
-    """THE POSITIVE CONTROL for the one above: per-pattern must not mean every multi-payload run
-    fails. Two films of 2 pairs each against a floor of 2 is 0, or the test above would pass
-    against an unconditional `return 3`."""
+    """Per-pattern floors must not fail every multi-payload run: two 2-pair films each clear a floor
+    of 2."""
     from studiobench.sweep import ui_parity as U
 
     _windowed_only_shard(tmp_path, "filmA", pairs = 2)

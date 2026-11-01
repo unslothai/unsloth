@@ -447,9 +447,8 @@ HEAD_TEMPERATURE_RANGE = (0.05, 20.0)
 
 
 def _calibrate_clef(config: dict, logits, items) -> dict:
-    # Calibrated against being right (the gold label), not the soft gold distribution: Clef's
-    # confidence is read as the chance the answer is correct, and soft gold targets left a tuned
-    # model underconfident (confidence 0.61 at accuracy 0.78 on typed-decisions).
+    # Hard gold: Clef's confidence is the chance an answer is right; soft targets made it
+    # underconfident.
     common = _laya().common
     hard = [
         {**item, "target": [float(j == item["label"]) for j in range(len(z))]}

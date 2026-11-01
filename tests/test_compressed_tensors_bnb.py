@@ -477,10 +477,8 @@ def test_arm_declines_a_plan_the_installed_compressed_tensors_cannot_parse(monke
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
 def test_the_planner_pass_does_not_consume_the_plan():
-    """The device-map planner preprocesses a meta model built from the very config object the
-    load uses. The plan used to be taken off the config by the first pass, so on a multi-GPU
-    load the real quantizer found none, added no converters, and every packed expert was
-    reported missing and quantized from its random initialisation."""
+    """The device-map planner's pass must not consume the plan on the shared config; otherwise
+    multi-GPU loads add no converters and quantize packed experts from random init."""
     from transformers import LlamaConfig, LlamaForCausalLM
     from transformers.quantizers import AutoHfQuantizer
     from transformers.utils.quantization_config import BitsAndBytesConfig
@@ -879,10 +877,8 @@ def test_classification_load_under_fast_inference_still_requantizes():
 
 @pytest.mark.skipif(not HAS_CONVERTERS, reason = "needs the transformers 5 loader")
 def test_wrapped_many_to_many_op_still_passes_the_converter_type_check():
-    """transformers' WeightConverter allows a many-to-many mapping only when `operations`
-    holds an instance of its internal Ernie ops. The adapter that feeds such an op its
-    original source contract must remain an instance of the op's class, or building the
-    replacement converter raises before any weight loads."""
+    """transformers WeightConverter allows many-to-many only when operations holds an Ernie op
+    instance, so the adapter feeding it must stay that class or building the converter raises."""
     from transformers.core_model_loading import ErnieFuseAndSplitTextVisionExperts, WeightConverter
     from unsloth.models.compressed_tensors_bnb import _WithOriginalSources, _with_original_sources
 
@@ -911,9 +907,8 @@ def test_a_pickled_shard_is_refused_rather_than_read_in_the_model_dtype():
 
 
 def test_load_only_converters_are_dropped_before_save():
-    """transformers reverses every converter on model._weight_conversions in save_pretrained;
-    the decompression converters must not be there, or a bitsandbytes model is saved under
-    the packed names."""
+    """transformers reverses every converter in model._weight_conversions on save_pretrained, so
+    decompression converters must be dropped or the model saves under the packed names."""
     from unsloth.models.compressed_tensors_bnb import (
         _DecompressPackedWeights,
         drop_load_only_conversions,

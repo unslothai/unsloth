@@ -224,9 +224,8 @@ def test_a_broken_symlink_launches_nothing_anywhere(host, spawned, tmp_path, req
 
 
 class _VanishesAfterTheGuard:
-    """There for the existence guard, gone by the branch. The two are separate
-    stats, and a chat deleted or migrated in between is what the endpoint's own
-    tests already simulate one layer up."""
+    """Present for the existence guard but gone by the branch, since the two are separate stats; a
+    chat deleted or migrated in between is simulated one layer up by the endpoint's own tests."""
 
     def __init__(self, real: Path) -> None:
         self._real = real
@@ -264,9 +263,8 @@ def test_a_target_that_vanishes_after_the_guard_never_opens_its_parent(
 
 
 class _SwappedForAFile:
-    """A checked directory replaced by a regular file before the open. A tool
-    runs inside its own sandbox and can do this, and the file branch names the
-    parent on every platform."""
+    """A checked directory replaced by a regular file before the open; a tool inside its own sandbox
+    can do this, and the file branch names the parent on every platform."""
 
     def __init__(self, real: Path) -> None:
         self._real = real

@@ -2490,12 +2490,9 @@ def get_chat_template(
             _mlx_tokenizer_wrapper = tokenizer
             tokenizer = _inner_tokenizer
 
-    # Multimodal checkpoints (gemma-4-E2B, Llava, Qwen-VL, ...) load as a processor,
-    # which carries the text tokenizer in `.tokenizer` -- the same unwrap the save and
-    # loader paths do. Everything below needs the tokenizer itself: the processor never
-    # has the Rust backend the vocab edits use, nor, on MLX, a padding_side of its own.
-    # Match the processor type rather than the attribute: MistralCommonBackend is itself
-    # a tokenizer but also exposes its non-HF backend as `.tokenizer`.
+    # Multimodal processors carry the text tokenizer in .tokenizer, but everything below needs it
+    # directly (no Rust backend, and on MLX no padding_side); match the ProcessorMixin type, since
+    # MistralCommonBackend is itself a tokenizer that also exposes .tokenizer.
     _processor = None
     if isinstance(tokenizer, ProcessorMixin):
         _processor = tokenizer
@@ -2553,10 +2550,9 @@ def get_chat_template(
 
         assert(type(stop_word) is str)
 
-        # gemma_chatml / gemma2_chatml build <|im_end|> by renaming <eos> whether or not the caller opts
-        # out, while the rebuilt tokenizer carries eos_token = stop_word only when the mapping is on, so
-        # honouring the opt-out lets the class default re-add <eos> past the end of the embeddings. Key on
-        # the mapping, or a Gemma checkpoint whose eos_token is <end_of_turn> slips through.
+        # gemma_chatml and gemma2_chatml build <|im_end|> by renaming <eos> even when opted out;
+        # honouring the opt-out lets the class default re-add <eos> past the embeddings. Key on the
+        # mapping, or a Gemma checkpoint whose eos_token is <end_of_turn> slips through.
         if not map_eos_token and yes_map_eos_token and token_mapping is not None:
             logger.warning_once(
                 f"Unsloth: {type_chat_template} builds {stop_word} by renaming existing "\
@@ -2725,10 +2721,9 @@ def get_chat_template(
         if old_pad_token != new_pad_token: tokenizer.pad_token = old_pad_token
 
 
-    # Hand the processor back, not the tokenizer it was carrying: it renders chat
-    # templates off its own attribute, and the vocab edits above may have rebuilt the
-    # tokenizer and remapped eos. The loader mirrors these onto the processor
-    # (models/vision.py), so refresh them here or that copy goes stale.
+    # Hand back the processor, not the tokenizer it carried: it renders chat templates off its own
+    # attribute, and vocab edits may have rebuilt the tokenizer and remapped eos; models/vision.py
+    # mirrors these onto the processor, so refresh them here or that copy goes stale.
     if _processor is not None:
         # GGUF export unwraps the processor before it builds the Ollama Modelfile.
         tokenizer._ollama_modelfile = ollama_modelfile

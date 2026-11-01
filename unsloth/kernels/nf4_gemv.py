@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-# Batch-1 NF4 GEMV for decoding, out[1, 1, N] = X[1, 1, K] @ dequant(W).T, in one Triton launch
-# (nested absmax decode, NF4 lookup and dot product fused) on torch's current stream. Registered
-# as unsloth::gemv_nf4 so torch.compile traces it and CUDA graphs capture it. Each quantization
-# block is summed before scaling, so it matches bitsandbytes to fp32 accumulation noise, not bitwise.
-# Every weight row must start a new quantization block (K % blocksize == 0); callers check.
+# Batch-1 NF4 GEMV for decoding, out[1, 1, N] = X @ dequant(W).T in one launch, registered as
+# unsloth::gemv_nf4 for torch.compile and CUDA graphs; each block is summed before scaling, matching
+# bitsandbytes to fp32 noise, not bitwise; every row must start a quant block (K % blocksize == 0).
 
 import functools
 import os
@@ -191,12 +189,9 @@ _NARROW_CAPS = ((7, 5), (8, 9))
 
 @functools.lru_cache(maxsize = None)
 def _gemv_config(N: int, K: int, blocksize: int, capability, words_ok: bool, force):
-    """(use the words kernel, grid, BLOCK_N, BLOCK_K, num_warps).
-
-    Kernel time (CUDA graphs) over Llama 1B to 70B shapes: before Triton 3.7 the words kernel at
-    one row per program and one warp beat bitsandbytes on T4, L4, A100, RTX PRO 6000 and B200
-    (1.1x to 2.2x, lower error too); Triton 3.7 compiles the byte kernel better, best at 4 rows, BLOCK_K 2048 and
-    4 warps (measured on B200)."""
+    """Config tuple (use the words kernel, grid, BLOCK_N, BLOCK_K, num_warps); the words kernel (one
+    row per program, one warp) beat bitsandbytes on T4, L4, A100, RTX PRO 6000 and B200 before
+    Triton 3.7, and 3.7's byte kernel is best at 4 rows, BLOCK_K 2048, 4 warps (B200)."""
     block_k = max(blocksize, min(2048, triton.next_power_of_2(K)))
     use_words = words_ok and (force == "words" or (force is None and not _TRITON_37))
     if use_words:
@@ -362,14 +357,10 @@ def gemv_nf4(
     dtype,
     out = None,
 ):
-    """X @ dequant(W).T for a single token; returns (1, 1, shape[0]) in X's dtype.
-
-    ``code2/absmax2/offset`` are None for a quant state without double quantization, and
-    ``offset`` is bitsandbytes' 0-dim device tensor (read in the kernel, so no host sync).
-    Eager calls launch the kernel directly: the torch.library dispatcher costs about 20us
-    per call, as much as the kernel itself at decode sizes. Compiled code goes through
-    the registered op so Dynamo sees it.
-    """
+    """X @ dequant(W).T for one token, returning (1, 1, shape[0]) in X's dtype; code2, absmax2 and
+    offset are None without double quant (offset is a 0-dim device tensor, so no host sync);
+    eager calls skip the torch.library dispatcher (costly at decode sizes), compiled code uses
+    the registered op."""
     out_features, in_features = int(shape[0]), int(shape[1])
     if not X.is_contiguous():
         X = X.contiguous()

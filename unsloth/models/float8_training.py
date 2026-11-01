@@ -17,10 +17,9 @@ __all__ = [
 
 FLOAT8_TRAINING_RECIPES = ("tensorwise",)
 
-# Named recipes run only where they were timed faster than bfloat16 at equal loss (Qwen3-1.7B / 4B full
-# finetuning). tensorwise: RTX PRO 6000 (12.0) 15% faster; L4 (8.9) NaN gradients with gradient
-# checkpointing. rowwise: 3% slower on the RTX PRO 6000 and 2% slower on the L4, so it is not offered by
-# name. Any other GPU needs an explicit torchao Float8LinearConfig.
+# Tensorwise only on sm 12.0 (RTX PRO 6000, 15% faster); L4 (sm 8.9) gives NaN gradients with
+# gradient checkpointing; rowwise not offered by name; any other GPU needs an explicit torchao
+# Float8LinearConfig
 _MEASURED_FASTER = {"tensorwise": ((12, 0), (12, 1))}
 
 # Never fp8: output heads (Unsloth's fused CE reads lm_head.weight directly), MoE routers (tiny, precision sensitive).

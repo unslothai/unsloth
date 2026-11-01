@@ -25,8 +25,7 @@ class FunctionCount:
 
     @property
     def key(self) -> tuple[str, int, int]:
-        """Keyed on script and byte offsets, since minified code reuses names and a name key merges
-        functions."""
+        """Keyed by script and byte offsets; minified names repeat and would merge functions."""
         return (self.script_id, self.start_offset, self.end_offset)
 
     def label(self) -> str:
@@ -223,8 +222,7 @@ def ambiguity(snapshot: CoverageSnapshot, name: str) -> int:
     return len(snapshot.find(name))
 
 
-# Harness adapter (INTERFACES.md section 3)
-# Precise coverage disables TurboFan/Maglev, so timings in this cell are void (`timings_void`).
+# INTERFACES.md section 3 adapter; precise coverage disables TurboFan/Maglev, so timings_void.
 
 import time  # noqa: E402
 

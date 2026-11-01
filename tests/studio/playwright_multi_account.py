@@ -48,9 +48,8 @@ def api(
 
 
 def open_login(page: Page) -> None:
-    """After a log-out the open chat page's requests start failing with 401 and the app sends itself to
-    /login (redirectToAuth), which can abort this navigation with ERR_ABORTED. Retry that abort once;
-    anything else, or a second abort, is a real failure."""
+    """After log-out, open chat requests 401 and redirect to /login, which can abort navigation with
+    ERR_ABORTED; retry that abort once, then fail."""
     try:
         page.goto(f"{BASE_URL}/login")
     except PlaywrightError as error:

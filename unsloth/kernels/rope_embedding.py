@@ -133,12 +133,9 @@ def _rope_embedding_QK(
     BLOCK_SIZE: tl.constexpr,
     EVICT_INDICES: tl.constexpr,
 ):
-    """
-    RoPE is Q * cos + rotate_half(Q) * sin; the backward is the same with -sin.
-    One program = one (batch, seq) row x a group of HEADS_Q query heads or HEADS_K key heads,
-    BLOCK_SIZE lanes over half of head_dim, read from any strides and written out of place
-    (or in place when Q_out is Q).
-    """
+    """RoPE is Q x cos + rotate_half(Q) x sin, with minus sin in the backward; one program handles a
+    (batch, seq) row and a group of HEADS_Q or HEADS_K heads over half of head_dim, at any
+    strides, out of place or in place when Q_out is Q."""
     row_position = tl.program_id(0)
     group = tl.program_id(1)
     col_offsets = tl.arange(0, BLOCK_SIZE)

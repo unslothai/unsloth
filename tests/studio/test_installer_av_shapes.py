@@ -734,9 +734,8 @@ def test_a_compiler_started_by_a_compiler_is_one_compile_not_two(
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
 def test_a_record_with_no_parent_field_is_still_scored(tmp_path) -> None:
-    """The whole chain is reported when the schema does not carry ParentProcessName. An
-    absent field reads as empty, and empty must not be mistaken for a compiler parent, or a
-    log that predates the field would report nothing at all."""
+    """The whole chain is still reported when ParentProcessName is absent, since empty must not be
+    read as a compiler parent or old logs would report nothing."""
     script = tmp_path / "probe.ps1"
     script.write_text(
         "\n".join(
@@ -866,13 +865,8 @@ def test_the_watcher_sees_intermediates_the_compiler_cleaned_up(tmp_path) -> Non
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
 def test_the_watcher_still_reports_intermediates_that_were_left_behind(tmp_path) -> None:
-    """The listing half must keep working; the watcher is added to it, not swapped for it.
-
-    A compile that was NOT cleaned up, so the response file is still next to the assembly.
-    This asserted a bare ``leftover.dll`` before, which read as "any DLL under TEMP is a
-    compiler artefact"; that is the rule the job died on, and it is not what this test is
-    for. The vehicle changed, the listing half it checks did not.
-    """
+    """The listing still reports an uncleaned compile's leftovers, such as a response file beside
+    the assembly; a bare DLL under TEMP is not evidence, since that rule killed the job."""
     action = (
         '$dir = Join-Path $env:TEMP "leftover"; '
         "New-Item -ItemType Directory -Force -Path $dir | Out-Null; "
@@ -928,11 +922,8 @@ def test_a_compile_beside_an_unpacked_archive_is_still_caught(tmp_path) -> None:
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
 def test_an_action_that_compiles_nothing_reports_nothing(tmp_path) -> None:
-    """Otherwise the real measurement, which requires neither detector to fire, can never pass.
-
-    A text file is written so the action is not a no-op: the watcher sees the creation and
-    must still discard it, because the extension is not one a compiler writes.
-    """
+    """An action that compiles nothing must report nothing, or the real measurement (which needs
+    neither detector to fire) can never pass; a .txt write must still be discarded."""
     action = (
         'Set-Content -LiteralPath (Join-Path $env:TEMP "notes.txt") -Value "hello"; '
         "Start-Sleep -Milliseconds 400"
@@ -963,9 +954,8 @@ def test_the_compiler_window_is_cut_to_size_by_timecreated() -> None:
 
 
 def test_the_path_resolver_still_has_a_lexical_fallback() -> None:
-    """The point of the change is the acquisition, not the ladder: a host that cannot reach the
-    exact rung must degrade exactly as one that could not compile already did.
-    """
+    """The path resolver keeps its lexical fallback: a host that cannot reach the exact rung must
+    degrade exactly as a host that could not compile already did."""
     text = _text("install.ps1")
     assert "Write-StudioFinalPathDegraded" in text
     assert "Get-StudioLexicalPath" in text

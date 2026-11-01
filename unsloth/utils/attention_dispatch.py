@@ -49,8 +49,7 @@ HAS_XFORMERS = xformers is not None
 def _xformers_runs_on_device(device = "cuda", supports_bf16 = None) -> bool:
     """One tiny attention forward; True iff the xformers kernel actually runs here."""
     try:
-        # Pre-Ampere GPUs (sm < 80: Turing/Volta) have no bfloat16 attention kernel but run xformers fine in
-        # float16, so pick the dtype the device supports.
+        # Pre-Ampere GPUs have no bfloat16 attention kernel but run xformers in float16.
         if supports_bf16 is None:
             supports_bf16 = SUPPORTS_BFLOAT16
         dtype = torch.bfloat16 if supports_bf16 else torch.float16
@@ -73,10 +72,8 @@ def _xformers_disabled_for_capability(
     probe = _xformers_runs_on_device,
     fa3_enabled = _xformers_fa3_enabled,
 ) -> bool:
-    # At sm_120 (RTX 50-series) xformers' cutlass op is capability-rejected (it caps at sm_90) and its
-    # flash-2 op runs only if the build ships an sm_120 kernel, so run one real forward to decide.
-    # On sm_90 FA3 is off only for builds without sm_90a (_utils), which may also ship no sm_90 kernel
-    # at all (conda-forge xformers >= 0.0.33), so probe those too; elsewhere xformers works.
+    # sm_120 and sm_90 builds without sm_90a may lack a kernel, so run one real forward to decide;
+    # conda-forge xformers >= 0.0.33 may ship no sm_90 kernel at all.
     if capability[0] >= 12 or (tuple(capability) == (9, 0) and not fa3_enabled()):
         return not probe()
     return False
@@ -124,12 +121,8 @@ def _inference_sdpa(*args, **kwargs):
     return scaled_dot_product_attention(*args, **kwargs)
 
 
-# Wherever SDPA picks cuDNN attention for a training call (H100 on torch 2.14: the default
-# priority), every new sequence length builds a new cuDNN plan, ~170 ms forward plus backward on
-# H100. Padded batches change length every step, so that cost landed on nearly every step. Padding
-# Q / K / V along the sequence to a multiple of this bucket bounds the plans to max_len / bucket.
-# Causal calls: causal masking hides the padded keys. Masked calls (GRPO / DPO padding): the mask is
-# padded too (new keys masked out, new query rows attend everything and get zero gradient). 0 disables.
+# cuDNN SDPA builds a plan per sequence length (torch 2.14 default priority on H100), so pad Q/K/V
+# to a multiple of the bucket; masked calls pad the mask too; 0 disables.
 try:
     _CUDNN_LENGTH_BUCKET = max(int(os.environ.get("UNSLOTH_SDPA_CUDNN_BUCKET", "128")), 0)
 except ValueError:
@@ -147,8 +140,7 @@ def _cudnn_length_bucket_applies(
 ):
     if not _CUDNN_LENGTH_BUCKET or _CUDNN_CHOICE is None:
         return False
-    # Under context parallelism the tensors can be sequence shards: padding a shard would put unmasked
-    # zero keys inside the global sequence.
+    # Context-parallel shards: padding would put unmasked zero keys in the global sequence.
     if get_cp_manager() is not None:
         return False
     if dropout_p or (attn_mask is None) != bool(is_causal):
@@ -388,8 +380,7 @@ def decode_scaled_dot_product_attention(query, key, value, *args, **kwargs):
             )
         )  # fmt: skip
     ):
-        # Only the caller's own non-cuDNN backends (sdpa_kernel([MATH]) stays math); a cuDNN-only
-        # policy is left as is.
+        # Keep only the caller's non-cuDNN backends; a cuDNN-only policy is left unchanged.
         backends = _DECODE_CUDNN_FREE_BACKENDS[_decode_cudnn_free_index()]
         if backends is not None:
             with _sdpa_kernel(backends):
@@ -1485,9 +1476,8 @@ def _run_attention(
     if sliding_window is not None and sliding_window <= 0:
         sliding_window = None
 
-    # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects (as does the xformers
-    # flash-2 op on sm_100+), so downcast any fp32 Q/K/V to a supported dtype (#1013).
-    # Ring attention (context parallelism) likewise needs a flash-eligible dtype.
+    # DoRA fp32 Q/K/V are rejected by FlashAttention (and xformers flash-2 on sm_100+), so downcast
+    # to a supported dtype (issue 1013); ring attention needs that dtype too.
     ring = backend == SDPA and _ring_attention_active()
     cp_out_dtype = Q.dtype if ring else None
     if (

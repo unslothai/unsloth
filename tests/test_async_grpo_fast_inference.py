@@ -207,9 +207,8 @@ def test_unset_fields_take_the_generation_config_defaults_and_set_fields_win(ser
 
 
 def test_concurrent_requests_all_complete(served):
-    # 256 is well past socketserver's default listen backlog of 5: with that
-    # backlog a burst this size has connections reset every run, while 32 only
-    # tripped it now and then on a loaded runner.
+    # 256 is well past socketserver's default listen backlog of 5, where a burst this size resets
+    # connections every run; 32 only tripped it now and then on a loaded runner.
     server, _ = served
     count = 256
     results = [None] * count

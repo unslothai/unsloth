@@ -11734,10 +11734,9 @@ def disable_torchao_if_torch_too_old():
     return True
 
 
-# vLLM inspects architectures in a separate process that imports torchao itself, never sees a
-# parent monkey-patch, and fails the same way. sitecustomize is the one hook reaching a process
-# we do not launch: site imports it at startup off the inherited PYTHONPATH. A .pth would need
-# a real site directory, which a library has no business writing into.
+# vLLM's separate process imports torchao itself, never sees a parent monkey-patch and fails the
+# same way; sitecustomize is the one hook reaching a process we do not launch (site imports it off
+# the inherited PYTHONPATH); a .pth needs a real site directory a library should not write into.
 
 _SUBPROCESS_FIX_DIRNAME = "unsloth_subprocess_import_fix"
 

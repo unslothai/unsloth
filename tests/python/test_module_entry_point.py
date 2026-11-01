@@ -178,12 +178,9 @@ def test_the_attached_np_short_is_still_canonicalised(monkeypatch):
     ids = ["module", "trampoline"],
 )
 def test_help_matches_the_console_script_under_a_narrow_encoding(argv_builder):
-    """rich draws box characters cp1252 cannot encode; --help must still agree.
-
-    -X utf8 is dropped for this case on purpose: it would hand the child a utf
-    stream anyway, which is exactly the situation the stream guard in
-    unsloth_cli/__init__ does not need to handle.
-    """
+    """rich draws box characters cp1252 cannot encode, so --help must still match; -X utf8 is
+    dropped on purpose since it would give the child a utf stream the stream guard in
+    unsloth_cli/__init__ does not need to handle."""
     strip = ("-X", "utf8")
     argv = [arg for arg in argv_builder("--help") if arg not in strip]
     env = dict(os.environ)
@@ -220,13 +217,9 @@ def test_the_module_entry_source_keeps_its_two_load_bearing_details():
 
 @requires_this_checkout_installed
 def test_the_advertised_module_route_ignores_a_shadowing_directory(tmp_path):
-    """`-m` resolves the package before __main__.py runs, so -I is load bearing.
-
-    A shell sitting in a directory that has an `unsloth_cli` folder is not exotic:
-    it is anyone standing in an unsloth checkout. Without -I that copy wins and the
-    printed recovery command drives the wrong install, which nothing inside
-    __main__.py can detect or undo.
-    """
+    """-m resolves the package before __main__.py runs, so -I is load-bearing: without it a
+    shadowing unsloth_cli folder in the cwd wins and the printed recovery command drives the
+    wrong install."""
     shadow = tmp_path / "unsloth_cli"
     shadow.mkdir()
     (shadow / "__init__.py").write_text("app = None\n", encoding = "utf-8")

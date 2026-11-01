@@ -1655,10 +1655,8 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
                 builder_end = index
                 break
     assert builder_end is not None, "unbalanced `const buttonClass = cn(` in the sidebar"
-    # On the row button itself, not merely somewhere in the function. The row also renders a
-    # pin, and handing buttonClass to it or another element while the button
-    # went without would leave every padding check below describing classes that reach nothing
-    # the gutters are measured against.
+    # The row also renders a pin, so buttonClass must reach the row button itself: if the button
+    # went without it, padding checks would measure classes that reach nothing.
     carriers = [
         tag
         for tag in _opening_jsx_tags(applied, "<SidebarMenuButton")
@@ -2238,9 +2236,8 @@ def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
     assert '"failed"' not in call
 
 
-# `_ui_source` hides whether a length still scales, so the scaling is asserted here, per
-# variant (`h-[...]` and `hover:h-[...]` differ).
-# Images, Audio and Video line their model picker up with Chat: same left inset, same control height.
+# _ui_source hides whether a length still scales, so scaling is asserted per variant (h-[...] and
+# hover:h-[...] differ); Images, Audio and Video match Chat's picker inset and height.
 _MEDIA_PICKER_CLASS = (
     'className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 '
     '!h-[var(--studio-chat-control-height,34px)]"'
@@ -2256,18 +2253,14 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (AUDIO_PAGE, "@[50rem]:", "pt", "60px", 2),
     (DIFFUSION_TRAIN_PANEL, "@[50rem]:", "pt", "42px", 1),
     (DIFFUSION_TRAIN_PANEL, "", "pt", "42px", 1),
-    # The sidebar row: its height, the gap it sets when pinned, and the indent a project row
-    # takes. These are hand-set one-off lengths, which is exactly the spacing that used to
-    # stay put while the labels grew, so the row clips its own text at a larger setting.
-    # Seven rows: #11589 added the drop-cue row, #12016 a second section header for the
-    # custom sidebar sections, and #12927 the pinned-pages label; #13575 dropped the inline
-    # rename input (one 30px height, one 39px indent).
+    # Hand-set sidebar lengths stay put as labels grow, so rows clip their text; seven 30px rows
+    # (ref 11589 drop-cue row, ref 12016 second section header, ref 12927 pinned-pages label) and
+    # ref 13575 removed the inline rename input (one 30px, one 39px indent).
     (APP_SIDEBAR, "", "h", "30px", 7),
     (APP_SIDEBAR, "", "gap", "8.5px", 6),
     (APP_SIDEBAR, "", "pl", "39px", 1),
-    # The 34px pill controls in the media headers, in all three spellings the pages use. The
-    # band around them scales and so does their own text, so a control left fixed is the one
-    # thing in that row that does not move, and it crowds out its label.
+    # The 34px pill controls in the media headers are checked in all three spellings, since a
+    # control left fixed would not scale with the band and would crowd its label.
     (IMAGES_PAGE, "!", "h", "34px", 1),
     (IMAGES_PAGE, "", "h", "34px", 1),
     (IMAGES_PAGE, "[&>button]:", "h", "34px", 1),

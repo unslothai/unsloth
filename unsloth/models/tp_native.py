@@ -3516,8 +3516,7 @@ def _install_tp_accelerate_hooks():
                 init_fn.func, *init_fn.args, **{**init_fn.keywords, "rank": dp_rank}
             )
         cls = type(self)
-        # accelerate shards the batches by num_processes / process_index: give it the dp layout, so the tp
-        # ranks of a replica read the same batches.
+        # accelerate shards by process index: give it the dp layout so tp ranks share batches.
         self.__class__ = type(
             "UnslothTensorParallelDataAccelerator",
             (cls,),

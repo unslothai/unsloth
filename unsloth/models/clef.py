@@ -91,17 +91,15 @@ def _span_mask(starts, ends, begin, end, dtype):
 
 
 def _norm_pool_forward(hidden, weight, bias, memory_weight, starts, ends, eps, chunk, matmul_dtype):
-    # hidden_norm in fp32 one chunk of tokens at a time: only the [B, L, width] memory and the span
-    # means are kept, never the [B, L, hidden] fp32 copy. The memory projection runs in
-    # matmul_dtype, as autocast runs Cloudflare's head.
+    # Normalizes hidden in fp32 one token chunk at a time, never keeping a full [B, L, hidden] fp32
+    # copy; the memory projection runs in matmul_dtype, as autocast runs the Cloudflare head
     batch, length, _ = hidden.shape
     memory = hidden.new_empty((batch, length, memory_weight.shape[0]), dtype = matmul_dtype)
     pooled = hidden.new_zeros((batch, starts.shape[1], hidden.shape[-1]), dtype = weight.dtype)
     projection = memory_weight.to(matmul_dtype).t()
     for begin in range(0, length, chunk):
         end = min(length, begin + chunk)
-        # aten directly, as the backward does: Unsloth patches F.layer_norm into a function that
-        # compiles itself, which would add a graph inside this opaque op.
+        # Calls aten directly: the patched F.layer_norm compiles itself inside the op.
         normalized = torch.ops.aten.native_layer_norm(
             hidden[:, begin:end].to(weight.dtype), weight.shape, weight, bias, eps
         )[0]
@@ -477,8 +475,7 @@ def batched_logits(head, hidden_states, output_embedding_weight, layout, checkpo
 
 
 class JointSchemaHead(ReferenceJointSchemaHead):
-    # Same parameters and state dict as Cloudflare's head; the forward also takes an fp32 copy of
-    # the head over 16-bit hidden states.
+    # Same state dict as Cloudflare's head; forward uses an fp32 copy of it for 16-bit inputs.
     def __init__(
         self,
         hidden_size: int,

@@ -71,8 +71,7 @@ def test_each_model_gets_its_own_dict():
 
 
 def test_an_existing_dict_is_left_exactly_as_it_was():
-    """This is the whole backwards-compatibility claim: on transformers 4.x and
-    5.0, where the attribute is already a dict, the guard must be a no-op --
+    """On transformers 4.x and 5.0 the attribute is already a dict, so the guard must be a no-op:
     same object, same contents, nothing rebound."""
     m = _Bare()
     original = {"estimate_tokens": True, "other": 1}
@@ -107,9 +106,8 @@ def test_running_twice_is_idempotent():
 
 @pytest.mark.parametrize("value", [None, "Qwen/Qwen2.5-1.5B", 7, object()])
 def test_non_modules_are_left_alone_without_raising(value):
-    """trl accepts a repo id string and builds the model itself. Attaching an
-    attribute to whatever was passed is not this function's job, and it must
-    never be the thing that raises."""
+    """trl accepts a repo id string and builds the model itself, so the guard must leave non-modules
+    alone and never be the thing that raises."""
     GUARD(value)
     assert not hasattr(value, "warnings_issued")
 
@@ -259,9 +257,8 @@ def test_trl_still_writes_the_attribute_unconditionally():
 
 
 def test_the_installed_transformers_tells_us_which_side_of_5_1_we_are_on():
-    """Not an assertion about which version is installed -- a check that the
-    two possible worlds behave as claimed. 4.x/5.0 ship the attribute and the
-    guard is a no-op; 5.1+ do not and the guard is what makes trl work."""
+    """Checks both possible worlds behave as claimed rather than which version is installed: 4.x/5.0
+    ship warnings_issued and 5.1+ do not, where the guard makes trl work."""
     transformers = pytest.importorskip("transformers")
     import transformers.modeling_utils as mu
 
@@ -536,9 +533,8 @@ def test_trainer_kwargs_still_go_to_the_trainer(tmp_path):
 
 
 def test_auto_packing_wraps_inside_the_backwards_compatible_wrapper():
-    """Auto-packing reads `packing` off the config to block VLMs, custom collators
-    and the blocklist, so it has to wrap first and see the moved value. Wrapped
-    last it decides on the old one, and the block is undone right after."""
+    """Auto-packing reads packing off the config to block VLMs, collators and the blocklist, so it
+    must wrap first to see the moved value; wrapped last, the block is undone right after."""
     for node in ast.walk(ast.parse(SRC)):
         if isinstance(node, ast.FunctionDef) and node.name == "_patch_trl_trainer":
             body = ast.get_source_segment(SRC, node)
@@ -567,9 +563,8 @@ def test_auto_packing_failure_still_leaves_the_wrapper_installed():
 
 
 def test_a_plain_training_arguments_keeps_the_moved_kwargs(tmp_path):
-    """The old notebook shape: transformers.TrainingArguments plus SFT kwargs on the trainer. trl
-    rebuilds a plain TrainingArguments with SFTConfig(**args.to_dict()), which drops anything set
-    as an attribute, so packing, the text field and the length used to fall back to defaults."""
+    """Plain TrainingArguments plus SFT kwargs: trl rebuilds via SFTConfig(**args.to_dict()), which
+    drops attributes set on args, so packing, text field and length must survive."""
     from transformers import TrainingArguments
 
     Trainer, config_class = _wrapped_recording()

@@ -882,12 +882,9 @@ class FastDecisionModel:
         images = None,
         audio = None,
     ) -> dict:
-        """Answers one Decision API request: {name: answer} at the calibrated temperatures.
-        `images` (as in a row: PIL images, data URLs, or bytes / path dicts) are read by a Clef whose base model has a vision tower.
-        `audio` (as in a row: data URLs, bytes / path dicts, or decoded 16 kHz mono clips) is heard by a Clef whose base model has an audio tower.
-        Each answer is the Decision API's (choice / confidence, score / legend, or noul) plus
-        "answer" (the option, True / False for noul, the level number for score) and
-        "probabilities" over every option."""
+        """Answers a Decision API request at calibrated temperatures; images (PIL, data URLs, bytes
+        or path dicts) need a vision tower, audio (data URLs, bytes, path dicts or decoded 16 kHz
+        mono clips) an audio tower; each answer adds answer and probabilities"""
         import torch
 
         from unsloth._vendor.clef.joint_schema_model import systemone_answer

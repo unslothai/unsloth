@@ -121,9 +121,8 @@ def test_the_generated_password_is_printed_once_studio_writes_it(tmp_path: Path)
 
 @behavioural
 def test_a_stale_file_from_an_interrupted_launch_is_not_printed(tmp_path: Path):
-    """The CLI writes the bootstrap file before committing the admin row. A launch
-    interrupted between the two leaves a file whose password the next launch
-    replaces, so the file is read only once the row exists."""
+    """The CLI writes the bootstrap file before committing the admin row, so an interrupted launch
+    leaves a stale file; the wrapper reads it only once the row exists."""
     auth = tmp_path / "auth"
     auth.mkdir()
     (auth / ".bootstrap_password").write_bytes(b"stale one\n")
@@ -303,9 +302,8 @@ def _run_wrapper(
 def test_stored_means_an_admin_row_whose_password_was_changed(
     tmp_path: Path, db: str, stored: bool
 ):
-    """A bare auth.db from an interrupted first launch, or a seeded row nobody
-    changed, still accepts an initial password; only must_change_password=0 is
-    "stored"."""
+    """A bare auth.db from an interrupted first launch, or a seeded admin row nobody changed, still
+    accepts an initial password; only must_change_password=0 counts as stored."""
     if db == "empty":
         _auth_db(tmp_path, must_change = None)
     elif db == "seeded":
@@ -487,9 +485,8 @@ def test_the_image_wires_the_scripts_in():
 
 
 def test_the_summary_is_coloured_unless_no_color_is_set(tmp_path: Path):
-    """The block is the one thing worth reading in a long startup log; plain text
-    left it indistinguishable from the supervisord and Jupyter lines around it.
-    NO_COLOR (no-color.org) is the documented way off, for log collectors."""
+    """The summary block is coloured so it stands out in a long startup log beside supervisord and
+    Jupyter lines; NO_COLOR is the documented way to turn colour off."""
     env = {"UNSLOTH_STUDIO_PASSWORD_STATE": "generated"}
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()
