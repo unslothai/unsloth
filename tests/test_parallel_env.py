@@ -1396,3 +1396,23 @@ def test_block_compile_cells_carry_a_torch_floor():
     assert caps.cell_status(_q(compile = "block", **moe))[0] == "supported"
     assert caps.cell_status(_q(compile = "block", torch = (2, 10), **moe))[0] == "unverified"
     assert caps.cell_status(_q(compile = "eager", torch = (2, 10), **moe))[0] == "supported"
+
+
+def test_tp_checkpoint_layout_records_the_cp_width(clean_env, monkeypatch):
+    # Failing before: dp_mesh is the flattened (dp, cp) mesh, so a tp=2,cp=2 checkpoint (one data replica) and a
+    # tp=2 one with two replicas had the same layout, and a resume across them skipped the wrong number of rows.
+    from types import SimpleNamespace
+
+    from unsloth.models import tp_env, tp_native
+
+    mesh = SimpleNamespace(size = lambda: 2)
+    monkeypatch.setattr(tp_native, "_tp_meshes", lambda model: (mesh, mesh))
+    monkeypatch.setattr(tp_native, "_pp_size", lambda model: 1)
+    monkeypatch.setattr(tp_native, "_ddp_mesh", lambda model: object())
+    trainer = SimpleNamespace(model = torch.nn.Linear(4, 4))
+    layouts = {}
+    for cp in (1, 2):
+        monkeypatch.setattr(tp_env, "_LAYOUT", SimpleNamespace(cp = cp))
+        layouts[cp] = tp_native._tp_layout(trainer)
+    assert layouts[1] != layouts[2] and layouts[2]["cp"] == 2
+    assert "cp" not in layouts[1]  # tp-only checkpoints keep their old keys

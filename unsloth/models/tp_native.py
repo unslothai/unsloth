@@ -3271,6 +3271,12 @@ def _ckpt_path(directory, rank):
     return os.path.join(directory, _CKPT_DIR, f"rank{rank:05d}.pt")
 
 
+def _cp_width():
+    from . import tp_env
+    layout = tp_env._LAYOUT if tp_env._LAYOUT is not tp_env._UNSET else None
+    return int(getattr(layout, "cp", 1) or 1)
+
+
 def _tp_layout(trainer):
     import torch.distributed as dist
 
@@ -3281,11 +3287,15 @@ def _tp_layout(trainer):
         if p.requires_grad
     ]
     pp = _pp_size(trainer.model)
+    cp = _cp_width()
     return {
         "world": dist.get_world_size() if dist.is_initialized() else 1,
         **(
             {"pp": pp} if pp > 1 else {}
         ),  # pp_env Trainer checkpoints (a tp-only layout keeps its old keys)
+        # dp_mesh is the flattened (dp, cp) mesh: without cp, tp=2,cp=2 and tp=2 x 2 replicas look alike, and the
+        # resumed step count would skip the wrong number of rows.
+        **({"cp": cp} if cp > 1 else {}),
         "tp": tp_mesh.size() if tp_mesh is not None else 1,
         "dp": dp_mesh.size() if dp_mesh is not None else 1,
         "dp_kind": None
@@ -3396,13 +3406,13 @@ def _tp_resume_payload(self, checkpoint):
     if want != got:
         diff = {
             k: (got.get(k), want.get(k))
-            for k in ("world", "pp", "tp", "dp", "dp_kind")
+            for k in ("world", "pp", "cp", "tp", "dp", "dp_kind")
             if got.get(k) != want.get(k)
         }
         raise RuntimeError(
             f"Unsloth: tensor parallel resume from {checkpoint}: the checkpoint was written on another layout "
             f"({diff or 'trainable parameter names / shard shapes differ'}); resume with the same world size, "
-            "UNSLOTH_TP_SIZE and data parallel mode."
+            "UNSLOTH_TP_SIZE / UNSLOTH_CP_SIZE and data parallel mode."
         )
     self.__dict__["_unsloth_tp_resume"] = (checkpoint, payload)
     return payload
