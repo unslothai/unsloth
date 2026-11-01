@@ -1456,8 +1456,7 @@ def test_cached_inventory_requests_share_scan(monkeypatch, inventory_request, sc
 
 
 def test_cached_inventory_scan_keeps_off_the_default_executor(monkeypatch):
-    """The walk is off the loop's default executor: one cold scan over a large cache queued every
-    other to_thread caller behind it, which #14038 fixed for the variant listings."""
+    """The cache walk must not run on the loop's default executor (#14038)."""
     threads = []
 
     def scan(**_kwargs):

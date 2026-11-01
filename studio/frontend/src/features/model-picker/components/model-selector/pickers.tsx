@@ -2046,8 +2046,7 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
           <ModelRowMenu
             ariaLabel={`More options for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
             cachePath={{ repoId: c.repo_id, variant: variant.quant }}
-            // The expander holds what only the Hub knows (an update, a pending companion), so it
-            // opens on request and a collapsed row never asks.
+            // The expander reads Hub-only state (updates, companions); a collapsed row never asks.
             items={[
               ...(ejectMenuItemsFor(actions, c.repo_id, ejectable) ?? []),
               {

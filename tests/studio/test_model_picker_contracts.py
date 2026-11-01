@@ -692,8 +692,7 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     assert "loadPickerGgufVariants(" in picker
     sole = re.search(r"async function readSoleQuant\(.*?\n}", picker, re.S)
     assert sole and "localOnly: true," in sole.group(0)
-    # The collapsed row answers from disk only: no follow-up listing may be issued to decide how
-    # it renders. Hub state (an update, a pending companion) is read by the expander.
+    # Collapsed rows read disk only; the expander asks the Hub.
     assert "hubWithdrawsSoleQuant(" not in picker
     assert "soleQuantNeedsExpander(" not in picker
     sole_reader = re.search(r"function useSoleDownloadedQuants\(.*?\n}\n", picker, re.S)
