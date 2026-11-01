@@ -116,7 +116,7 @@ def test_l2_probe_only_reports_measured_arches(monkeypatch, capability, l2, expe
     [
         (LARGE, True, torch.bfloat16, True),
         (SMALL, False, torch.bfloat16, True),
-        # Rowwise scaled_mm cannot write float32 before torch 2.14: float32 keeps dequant there.
+        # Rowwise scaled_mm cannot write float32 before torch 2.14 off cuBLAS (sm89 here): float32 keeps dequant.
         (LARGE, False, torch.float32, True),
         (LARGE, True, torch.float32, False),
     ],
@@ -136,6 +136,7 @@ def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled, dtype,
     monkeypatch.setattr(F8, "weight_dequant", fake_dequant)
     monkeypatch.setattr(F8, "_fp8_l2_cache_bytes", lambda device: L2)
     monkeypatch.setattr(F8, "_SCALED_MM_FP16_OUT_BROKEN", out_broken)
+    monkeypatch.setattr(F8, "_scaled_mm_float32_out", lambda device: False)
     N, K = shape
     with FakeTensorMode(), torch.no_grad():
         X = torch.empty(1, 32, K, device = "cuda", dtype = dtype)
@@ -193,7 +194,56 @@ def test_every_rowwise_scaled_mm_call_uses_the_out_dtype_helper():
         for kw in node.keywords:
             if kw.arg == "out_dtype":
                 out[node.lineno] = ast.unparse(kw.value)
-    # The backend probe asks for bf16 directly; every activation-dtype call goes through the helper.
-    data_calls = {line: v for line, v in out.items() if v != "torch.bfloat16"}
+    # The probes ask for bf16 / float32 directly; every activation-dtype call goes through the helper.
+    data_calls = {line: v for line, v in out.items() if v not in ("torch.bfloat16", "torch.float32")}
     assert len(data_calls) >= 2, out
     assert all(v.startswith("_scaled_mm_out_dtype(") for v in data_calls.values()), out
+
+
+@pytest.mark.parametrize("float32_out, expected", [(True, "scaled_mm"), (False, "dequant")])
+def test_float32_keeps_scaled_mm_where_rowwise_writes_float32(monkeypatch, float32_out, expected):
+    """torch 2.10 - 2.13 write float32 rowwise through cuBLAS on sm90 with CUDA 12.9+ (CUTLASS elsewhere
+    cannot): float32 activations dequantize only where the probe says _scaled_mm cannot write float32."""
+    calls = []
+
+    def fake_scaled_mm(a, b, **kwargs):
+        calls.append(("scaled_mm", kwargs["out_dtype"]))
+        return torch.empty(a.shape[0], b.shape[1], device = a.device, dtype = kwargs["out_dtype"])
+
+    def fake_dequant(w, s, dtype):
+        calls.append(("dequant", dtype))
+        return torch.empty(w.shape, device = w.device, dtype = dtype)
+
+    monkeypatch.setattr(torch, "_scaled_mm", fake_scaled_mm)
+    monkeypatch.setattr(F8, "weight_dequant", fake_dequant)
+    monkeypatch.setattr(F8, "_fp8_l2_cache_bytes", lambda device: L2)
+    monkeypatch.setattr(F8, "_SCALED_MM_FP16_OUT_BROKEN", True)
+    monkeypatch.setattr(F8, "_scaled_mm_float32_out", lambda device: float32_out)
+    N, K = LARGE
+    with FakeTensorMode(), torch.no_grad():
+        X = torch.empty(1, 128, K, device = "cuda", dtype = torch.float32)
+        w = torch.empty(N, K, device = "cuda", dtype = torch.float8_e4m3fn)
+        s = torch.empty(N, 1, device = "cuda", dtype = torch.float32)
+        y = F8.FbgemmFp8Linear_matmul.apply(X, w, s, None, "scaled_mm")
+    assert y.shape == (1, 128, N) and y.dtype == torch.float32
+    assert calls == [(expected, torch.float32)]
+
+
+@pytest.mark.parametrize("cutlass", [True, False])
+def test_float32_probe_asks_scaled_mm_for_float32(monkeypatch, cutlass):
+    """The probe runs one rowwise float32 _scaled_mm: CUTLASS raises (sm89, sm100, CUDA < 12.9), cuBLAS answers."""
+    seen = []
+
+    def fake_scaled_mm(a, b, scale_a, scale_b, out_dtype, **kwargs):
+        seen.append((tuple(scale_a.shape), tuple(scale_b.shape), out_dtype))
+        if cutlass and out_dtype == torch.float32:
+            raise ValueError("Only bf16 and fp16 high precision output types are supported for row-wise scaling.")
+        return torch.full((a.shape[0], b.shape[1]), 128.0, dtype = out_dtype)
+
+    monkeypatch.setattr(torch, "_scaled_mm", fake_scaled_mm)
+    F8._probe_scaled_mm_float32_out.cache_clear()
+    try:
+        assert F8._probe_scaled_mm_float32_out(torch.device("cpu")) is (not cutlass)
+    finally:
+        F8._probe_scaled_mm_float32_out.cache_clear()
+    assert seen == [((128, 1), (1, 128), torch.float32)]
