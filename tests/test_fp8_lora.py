@@ -733,3 +733,20 @@ def test_merge_of_a_deepcopy_merges_the_copy_only(offload_on_cpu):
     plain_layer = dict(plain.named_modules())[name]
     plain_layer.merge()
     assert torch.equal(twin_layer.base_layer.weight, plain_layer.base_layer.weight)
+
+
+def test_compiled_fp8_lora_ops_are_counted():
+    # Under torch.compile the fp8 forward and dgrad are opaque custom ops; the counter names them.
+    torch._dynamo.reset()
+    W = _weight()
+    state = FL.Fp8LoRABaseState(W)
+
+    def run(x, dy):
+        return state.matmul(x, W), state.dgrad(dy, W)
+
+    compiled = torch.compile(run, backend = "aot_eager", fullgraph = True)
+    x, dy = torch.randn(32, 256).bfloat16(), torch.randn(32, 384).bfloat16()
+    compiled(x, dy)
+    with P.count_lowp_gemms() as counts:
+        compiled(x, dy)
+    assert counts["unsloth::fp8_lora_fwd"] == 1 and counts["unsloth::fp8_lora_dgrad"] == 1, dict(counts)
