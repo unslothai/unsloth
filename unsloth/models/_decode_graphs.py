@@ -232,6 +232,10 @@ def alloc_decode_buffers(
                 store.clear()
                 BUFFER_EPOCH += 1
             bufs = store[key] = (paged, temp_QA, temp_KV, RH_Q, temp_O, scores)
+        elif FULL:
+            # A reused buffer still holds the last generation's rows: a whole-step graph reads them
+            # past this one's length, and a masked inf / NaN there still turns 0 * V into NaN.
+            bufs[0][seq_len:].zero_()
         paged, temp_QA, temp_KV, RH_Q, temp_O, scores = bufs
         # A new sequence: its first graph step re-checks the fingerprint (adapters toggled or
         # merged since the last one, also in decode loops that do not go through generate()).
