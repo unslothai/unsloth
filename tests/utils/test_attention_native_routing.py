@@ -102,6 +102,9 @@ def _dense(monkeypatch, dtype, mask):
 def _gqa_falls_to_math(Q, K, masked):
     # Expand K/V only where GQA leaves math (or nothing) while the expanded call has a faster kernel:
     # before torch 2.14 the memory-efficient kernel rejects GQA, so masked fp32 GQA had only math.
+    # Torch 2.4 has no enable_gqa at all: dispatch always expands K/V there.
+    if not ad.SDPA_HAS_GQA:
+        return True
     mask = (
         torch.ones(Q.shape[0], 1, Q.shape[2], K.shape[2], dtype = torch.bool, device = Q.device)
         if masked
@@ -122,6 +125,26 @@ def _gqa_falls_to_math(Q, K, masked):
     gqa = choice(K, True)
     mha = choice(K.repeat_interleave(Q.shape[1] // K.shape[1], dim = 1), False)
     return gqa is None or (gqa == math and mha not in (math, None))
+
+
+def test_oracle_expects_expansion_without_enable_gqa(monkeypatch):
+    def choice(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        dropout_p = 0.0,
+        is_causal = False,
+        scale = None,
+    ):
+        return EFFICIENT
+
+    monkeypatch.setattr(torch, "_fused_sdp_choice", choice)
+    monkeypatch.setattr(ad, "SDPA_HAS_GQA", False)
+    Q = torch.zeros(1, 8, 4, 64)
+    K = torch.zeros(1, 2, 4, 64)
+    assert _gqa_falls_to_math(Q, K, True) is True
+    assert _gqa_falls_to_math(Q, K, False) is True
 
 
 @needs_cuda
