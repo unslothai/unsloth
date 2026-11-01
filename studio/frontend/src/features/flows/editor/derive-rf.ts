@@ -137,6 +137,7 @@ export class RfDeriver {
         position: pos,
         data: { noteId },
         selected: isSelected,
+        // The box the user drew; long text scrolls inside it.
         style: { width: note.rect[2], height: note.rect[3] },
         ...(size ? { measured: size } : {}),
       };

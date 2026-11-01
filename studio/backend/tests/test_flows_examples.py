@@ -30,7 +30,8 @@ def _example(name: str) -> dict:
 
 
 def test_the_example_count():
-    assert len(BUILT) == 56
+    # 56 hand-built examples plus the 9 Data Recipes learning recipes as Recipe groups.
+    assert len(BUILT) == 65
 
 
 @pytest.mark.parametrize("name", IDS)

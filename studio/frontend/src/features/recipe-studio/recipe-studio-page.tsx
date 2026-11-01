@@ -110,6 +110,7 @@ export type RecipeStudioPageProps = {
   initialPayload: RecipePayload;
   initialSavedAt: number;
   onPersistRecipe: (input: PersistRecipeInput) => Promise<PersistRecipeResult>;
+  onOpenInFlows?: () => void;
 };
 
 export function RecipeStudioPage({
@@ -118,6 +119,7 @@ export function RecipeStudioPage({
   initialPayload,
   initialSavedAt,
   onPersistRecipe,
+  onOpenInFlows,
 }: RecipeStudioPageProps): ReactElement {
   const {
     nodes,
@@ -846,6 +848,15 @@ export function RecipeStudioPage({
             onSaveRecipe={() => {
               void persistRecipe();
             }}
+            onOpenInFlows={
+              onOpenInFlows
+                ? () => {
+                    void persistRecipe().then(
+                      (saved) => saved && onOpenInFlows(),
+                    );
+                  }
+                : undefined
+            }
           />
           <div
             data-tour="recipe-canvas"

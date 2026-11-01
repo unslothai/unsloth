@@ -5946,6 +5946,27 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	font-size: calc(0.75rem * var(--ui-font-scale, 1));
 }
 
+/* Flows port colours are 300/400 tints made for a dark canvas; darken them on light. */
+.flows-editor {
+	--flows-port-mix: 68%;
+}
+.dark .flows-editor {
+	--flows-port-mix: 100%;
+}
+
+/* A recipe column's link to its model preset or tool profile: a reference, not data. The edge
+   draws itself (curved or on the bus) with inline styles, hence !important on the stroke. */
+.react-flow__edge.flows-reference-edge .react-flow__edge-path {
+	stroke: var(--muted-foreground) !important;
+	stroke-width: 1.25px !important;
+	stroke-dasharray: 5 4 !important;
+	opacity: 0.55 !important;
+}
+.react-flow__edge.flows-reference-edge circle {
+	fill: var(--muted-foreground);
+	opacity: 0.55;
+}
+
 /* Radix hides the select viewport scrollbar (the viewport is the scroller
    so menu corners stay rounded); restore the app's thin one. The inline
    scrollbar-width on the viewport handles Firefox. */
