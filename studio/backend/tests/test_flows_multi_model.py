@@ -224,3 +224,29 @@ def test_a_call_queued_behind_an_alongside_load_counts_against_the_new_model():
         assert inside == ["first", "second"]
 
     asyncio.run(go())
+
+
+def test_unload_after_run_matches_a_gguf_listed_with_its_variant(monkeypatch):
+    from core.flows import engine
+    from studio_mcp import loading
+
+    unloaded = []
+
+    async def resident(_caller):
+        return {"llm": [BIG, f"{SMALL}:Q4_K_M"]}
+
+    async def unload(_caller, name):
+        unloaded.append(name)
+
+    monkeypatch.setattr(loading, "resident_slots", resident)
+    monkeypatch.setattr(loading, "unload_llm", unload)
+
+    class _Rs:
+        caller = object()
+        initial_resident = {"llm": [BIG]}
+
+        def emit(self, *a, **k):
+            pass
+
+    asyncio.run(engine.FlowEngine._unload_loaded(None, _Rs(), {SMALL.lower(): "n1"}))
+    assert unloaded == [f"{SMALL}:Q4_K_M"]
