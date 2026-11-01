@@ -4,12 +4,10 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   GREETING_ICON_LIMITS,
   GREETING_IMAGE_LIMITS,
@@ -20,7 +18,9 @@ import {
   useUserProfileStore,
   validGreetingUpload,
 } from "@/features/profile";
-import { useT } from "@/i18n";
+import { type TranslationKey, useT } from "@/i18n";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { MenuTickIcon } from "@/lib/tick-icon";
 import { Upload01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef, useState } from "react";
@@ -28,9 +28,37 @@ import { SettingsRow } from "./settings-row";
 
 type UploadField = "greetingIconDataUrl" | "greetingImageDataUrl";
 type UploadError = "file" | "image";
+type GreetingMode = "unsloth" | "customIcon" | "textOnly" | "image" | "off";
 
 const PROFILE_STORAGE_KEY = "unsloth_user_profile";
 const ACCEPT = GREETING_IMAGE_TYPES.join(",");
+const MODES: { mode: GreetingMode; label: TranslationKey }[] = [
+  { mode: "unsloth", label: "settings.profile.greetingUnsloth" },
+  { mode: "customIcon", label: "settings.profile.greetingCustomIcon" },
+  { mode: "textOnly", label: "settings.profile.greetingTextOnly" },
+  { mode: "image", label: "settings.profile.greetingImage" },
+  { mode: "off", label: "settings.profile.greetingOff" },
+];
+// "Off" keeps writing showGreetingSloth, so the old switch's value maps straight onto a mode.
+const MODE_PATCH = {
+  unsloth: {
+    showGreetingSloth: true,
+    greetingStyle: "text",
+    greetingIcon: "sloth",
+  },
+  customIcon: {
+    showGreetingSloth: true,
+    greetingStyle: "text",
+    greetingIcon: "custom",
+  },
+  textOnly: {
+    showGreetingSloth: true,
+    greetingStyle: "text",
+    greetingIcon: "none",
+  },
+  image: { showGreetingSloth: true, greetingStyle: "image" },
+  off: { showGreetingSloth: false },
+} as const;
 
 // A full localStorage quota drops the write silently; check it landed before claiming success.
 function persistedValue(field: UploadField): unknown {
@@ -44,18 +72,37 @@ function persistedValue(field: UploadField): unknown {
   }
 }
 
-function useGreetingUpload(field: UploadField) {
+function useGreetingMode(): GreetingMode {
+  const on = useUserProfileStore((s) => s.showGreetingSloth);
+  const style = useUserProfileStore((s) => s.greetingStyle);
+  const icon = useUserProfileStore((s) => s.greetingIcon);
+  if (!on) {
+    return "off";
+  }
+  if (style === "image") {
+    return "image";
+  }
+  if (icon === "custom") {
+    return "customIcon";
+  }
+  return icon === "none" ? "textOnly" : "unsloth";
+}
+
+function useGreetingUpload() {
   const setGreeting = useUserProfileStore((s) => s.setGreeting);
   const [error, setError] = useState<UploadError | null>(null);
   const [busy, setBusy] = useState(false);
-  const upload = async (file: File | undefined): Promise<boolean> => {
+  const upload = async (
+    field: UploadField,
+    file: File | undefined,
+  ): Promise<void> => {
     if (!file) {
-      return false;
+      return;
     }
     setError(null);
     if (!validGreetingUpload(file)) {
       setError("file");
-      return false;
+      return;
     }
     setBusy(true);
     try {
@@ -80,246 +127,186 @@ function useGreetingUpload(field: UploadField) {
         setGreeting({ [field]: previous });
         throw new Error("storage");
       }
-      return true;
     } catch {
       setError("image");
-      return false;
     } finally {
       setBusy(false);
     }
   };
-  return { upload, error, busy };
+  return { upload, error, setError, busy };
 }
 
-function UploadButton({
-  hasValue,
-  busy,
-  onPick,
-  label,
-}: {
-  hasValue: boolean;
-  busy: boolean;
-  onPick: (file: File | undefined) => Promise<boolean>;
-  label: string;
-}) {
+// Every greeting option lives in this one row: the mode list, then the upload or text for that mode.
+export function GreetingSettingsRows() {
   const t = useT();
+  const mode = useGreetingMode();
+  const setGreeting = useUserProfileStore((s) => s.setGreeting);
+  const text = useUserProfileStore((s) => s.greetingText);
+  const iconDataUrl = useUserProfileStore((s) => s.greetingIconDataUrl);
+  const imageDataUrl = useUserProfileStore((s) => s.greetingImageDataUrl);
+  const { upload, error, setError, busy } = useGreetingUpload();
   const input = useRef<HTMLInputElement>(null);
+  const uploadField: UploadField | null =
+    mode === "customIcon"
+      ? "greetingIconDataUrl"
+      : mode === "image"
+        ? "greetingImageDataUrl"
+        : null;
+  const preview =
+    mode === "customIcon"
+      ? iconDataUrl
+      : mode === "image"
+        ? imageDataUrl
+        : null;
+  const showsText =
+    mode === "unsloth" || mode === "customIcon" || mode === "textOnly";
+  const label = MODES.find((m) => m.mode === mode)?.label ?? MODES[0].label;
   return (
-    <>
+    <SettingsRow
+      label={t("settings.profile.greetingSloth")}
+      description={t("settings.profile.greetingSlothDescription")}
+    >
+      {/* Outside the popover so a pick still lands if the file dialog closes it. */}
       <input
         ref={input}
         className="sr-only"
         tabIndex={-1}
-        aria-label={label}
+        aria-label={`${t("settings.profile.greetingSloth")}: ${t("chatBackground.upload")}`}
         type="file"
         accept={ACCEPT}
-        disabled={busy}
+        disabled={busy || !uploadField}
         onChange={(event) => {
-          onPick(event.target.files?.[0]);
+          const file = event.target.files?.[0];
           event.target.value = "";
+          if (uploadField) {
+            upload(uploadField, file);
+          }
         }}
       />
-      <Button
-        className="text-foreground"
-        type="button"
-        variant="outline"
-        size="sm"
-        disabled={busy}
-        onClick={() => input.current?.click()}
-      >
-        <HugeiconsIcon
-          icon={Upload01Icon}
-          strokeWidth={1.75}
-          className="size-4"
-          aria-hidden="true"
-        />
-        {busy
-          ? t("common.loading")
-          : t(hasValue ? "chatBackground.replace" : "chatBackground.upload")}
-      </Button>
-    </>
-  );
-}
-
-function UploadErrorText({ error }: { error: UploadError | null }) {
-  const t = useT();
-  if (!error) {
-    return null;
-  }
-  return (
-    <p role="alert" className="text-xs text-destructive">
-      {t(
-        error === "file"
-          ? "settings.profile.greetingFileError"
-          : "settings.profile.greetingImageError",
-      )}
-    </p>
-  );
-}
-
-function GreetingIconRow() {
-  const t = useT();
-  const icon = useUserProfileStore((s) => s.greetingIcon);
-  const iconDataUrl = useUserProfileStore((s) => s.greetingIconDataUrl);
-  const setGreeting = useUserProfileStore((s) => s.setGreeting);
-  const { upload, error, busy } = useGreetingUpload("greetingIconDataUrl");
-  const custom = icon === "custom";
-  return (
-    <SettingsRow
-      label={t("settings.profile.greetingIcon")}
-      description={t("settings.profile.greetingIconDescription")}
-      below={<UploadErrorText error={error} />}
-      wideControl={true}
-    >
-      <div className="flex items-center gap-2">
-        {custom && iconDataUrl && (
-          <img
-            src={iconDataUrl}
-            alt=""
-            className="size-8 shrink-0 object-contain"
-            data-greeting-icon-preview=""
-          />
-        )}
-        {custom && (
-          <UploadButton
-            hasValue={Boolean(iconDataUrl)}
-            busy={busy}
-            label={t("settings.profile.greetingIcon")}
-            onPick={upload}
-          />
-        )}
-        <Select
-          value={icon}
-          onValueChange={(next) => {
-            if (next === "sloth" || next === "custom" || next === "none") {
-              setGreeting({ greetingIcon: next });
-            }
-          }}
-        >
-          <SelectTrigger
-            className="w-32"
-            aria-label={t("settings.profile.greetingIcon")}
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="sloth">
-              {t("settings.profile.greetingIconSloth")}
-            </SelectItem>
-            <SelectItem value="custom">
-              {t("settings.profile.greetingIconCustom")}
-            </SelectItem>
-            <SelectItem value="none">
-              {t("settings.profile.noneLabel")}
-            </SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-    </SettingsRow>
-  );
-}
-
-function GreetingTextRow() {
-  const t = useT();
-  const text = useUserProfileStore((s) => s.greetingText);
-  const setGreeting = useUserProfileStore((s) => s.setGreeting);
-  return (
-    <SettingsRow
-      label={t("settings.profile.greetingText")}
-      description={t("settings.profile.greetingTextDescription")}
-    >
-      <Input
-        className="w-60"
-        aria-label={t("settings.profile.greetingText")}
-        value={text}
-        maxLength={GREETING_TEXT_MAX_LENGTH}
-        placeholder={t("welcome.onYourMind")}
-        onChange={(event) => setGreeting({ greetingText: event.target.value })}
-      />
-    </SettingsRow>
-  );
-}
-
-function GreetingImageRow() {
-  const t = useT();
-  const imageDataUrl = useUserProfileStore((s) => s.greetingImageDataUrl);
-  const { upload, error, busy } = useGreetingUpload("greetingImageDataUrl");
-  return (
-    <SettingsRow
-      label={t("settings.profile.greetingImage")}
-      description={t("settings.profile.greetingImageDescription")}
-      below={<UploadErrorText error={error} />}
-      wideControl={true}
-    >
-      <div className="flex items-center gap-2">
-        {imageDataUrl && (
-          <img
-            src={imageDataUrl}
-            alt=""
-            className="h-8 max-w-24 shrink-0 object-contain"
-            data-greeting-image-preview=""
-          />
-        )}
-        <UploadButton
-          hasValue={Boolean(imageDataUrl)}
-          busy={busy}
-          label={t("settings.profile.greetingImage")}
-          onPick={upload}
-        />
-      </div>
-    </SettingsRow>
-  );
-}
-
-// "Off" keeps writing showGreetingSloth, so the old switch's value maps straight onto this select.
-export function GreetingSettingsRows() {
-  const t = useT();
-  const on = useUserProfileStore((s) => s.showGreetingSloth);
-  const style = useUserProfileStore((s) => s.greetingStyle);
-  const setGreeting = useUserProfileStore((s) => s.setGreeting);
-  return (
-    <>
-      <SettingsRow
-        label={t("settings.profile.greetingSloth")}
-        description={t("settings.profile.greetingSlothDescription")}
-      >
-        <Select
-          value={on ? style : "off"}
-          onValueChange={(next) => {
-            if (next === "off") {
-              setGreeting({ showGreetingSloth: false });
-            } else if (next === "text" || next === "image") {
-              setGreeting({ showGreetingSloth: true, greetingStyle: next });
-            }
-          }}
-        >
-          <SelectTrigger
-            className="w-40"
+      <Popover onOpenChange={(open) => open || setError(null)}>
+        <PopoverTrigger asChild={true}>
+          <Button
+            variant="picker"
             id="profile-greeting-sloth"
             aria-label={t("settings.profile.greetingSloth")}
+            className="w-40 justify-between font-normal"
           >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="text">
-              {t("settings.profile.greetingStyleText")}
-            </SelectItem>
-            <SelectItem value="image">
-              {t("settings.profile.greetingStyleImage")}
-            </SelectItem>
-            <SelectItem value="off">
-              {t("settings.profile.greetingOff")}
-            </SelectItem>
-          </SelectContent>
-        </Select>
-      </SettingsRow>
-      {on && style === "text" && (
-        <>
-          <GreetingIconRow />
-          <GreetingTextRow />
-        </>
-      )}
-      {on && style === "image" && <GreetingImageRow />}
-    </>
+            {t(label)}
+            <HugeiconsIcon
+              icon={ChevronDownStandardIcon}
+              strokeWidth={2}
+              className="size-4 text-muted-foreground"
+            />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="end"
+          className="w-72 gap-0 rounded-lg p-1 font-heading"
+          data-greeting-menu=""
+        >
+          <div
+            role="radiogroup"
+            aria-label={t("settings.profile.greetingSloth")}
+          >
+            {MODES.map((m) => (
+              <button
+                key={m.mode}
+                type="button"
+                role="radio"
+                aria-checked={mode === m.mode}
+                className="relative flex w-full cursor-pointer items-center rounded-md py-2 pr-9 pl-3 text-left text-sm outline-hidden hover:bg-accent focus-visible:bg-accent"
+                onClick={() => {
+                  setError(null);
+                  setGreeting(MODE_PATCH[m.mode]);
+                }}
+              >
+                {t(m.label)}
+                {mode === m.mode && (
+                  <HugeiconsIcon
+                    icon={MenuTickIcon}
+                    strokeWidth={2}
+                    className="absolute right-3 size-4"
+                  />
+                )}
+              </button>
+            ))}
+          </div>
+          {(uploadField || showsText) && (
+            <>
+              <div className="-mx-1 my-1 h-px bg-border" />
+              <div className="flex flex-col gap-2 px-3 pt-1 pb-2">
+                {uploadField && (
+                  <div className="flex items-center gap-2">
+                    {preview && (
+                      <img
+                        src={preview}
+                        alt=""
+                        className="h-8 max-w-24 shrink-0 object-contain"
+                        data-greeting-preview=""
+                      />
+                    )}
+                    <Button
+                      className="text-foreground"
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => input.current?.click()}
+                    >
+                      <HugeiconsIcon
+                        icon={Upload01Icon}
+                        strokeWidth={1.75}
+                        className="size-4"
+                        aria-hidden="true"
+                      />
+                      {busy
+                        ? t("common.loading")
+                        : t(
+                            preview
+                              ? "chatBackground.replace"
+                              : "chatBackground.upload",
+                          )}
+                    </Button>
+                  </div>
+                )}
+                {uploadField && (
+                  <p className="text-xs text-muted-foreground">
+                    {t("settings.profile.greetingUploadHint")}
+                  </p>
+                )}
+                {error && (
+                  <p role="alert" className="text-xs text-destructive">
+                    {t(
+                      error === "file"
+                        ? "settings.profile.greetingFileError"
+                        : "settings.profile.greetingImageError",
+                    )}
+                  </p>
+                )}
+                {showsText && (
+                  <>
+                    <p className="text-xs text-muted-foreground">
+                      {t("settings.profile.greetingText")}
+                    </p>
+                    <Input
+                      aria-label={t("settings.profile.greetingText")}
+                      value={text}
+                      maxLength={GREETING_TEXT_MAX_LENGTH}
+                      placeholder={t("welcome.onYourMind")}
+                      onChange={(event) =>
+                        setGreeting({ greetingText: event.target.value })
+                      }
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {t("settings.profile.greetingTextDescription")}
+                    </p>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </PopoverContent>
+      </Popover>
+    </SettingsRow>
   );
 }
