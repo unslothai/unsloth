@@ -87,7 +87,6 @@ def test_rewrite_with_the_old_mtime_is_reread(client, folder, opens):
     st = path.stat()
     assert _dims(client) == {"a.png": (8, 6)}
     Image.new("RGB", (6, 8)).save(path)
-    # Same size and mtime: ctime still moves.
     assert path.stat().st_size == st.st_size
     os.utime(path, ns = (st.st_atime_ns, st.st_mtime_ns))
     assert _dims(client) == {"a.png": (6, 8)}
