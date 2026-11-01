@@ -34851,9 +34851,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _fit_step_retry_eligible(
-        cmd: "list[str]",
-        extra_args: "Optional[Iterable[str]]",
-        env: "Optional[Mapping[str, str]]",
+        cmd: "list[str]", extra_args: "Optional[Iterable[str]]", env: "Optional[Mapping[str, str]]"
     ) -> bool:
         """Only a fitter Unsloth turned on: a user's -fit/--fit or LLAMA_ARG_FIT is kept."""
         if _extra_args_set_any_flag(extra_args, {"-fit", "--fit"}):
