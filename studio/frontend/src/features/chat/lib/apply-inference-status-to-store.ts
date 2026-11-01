@@ -108,6 +108,7 @@ function ensureActiveModelInStoreList(
     audioType: status.audio_type ?? null,
     hasAudioInput: status.has_audio_input ?? false,
     hasVideoInput: status.has_video_input ?? false,
+    speaks: status.speaks ?? false,
   };
   const existing = store.models.find((model) => model.id === checkpointId);
   if (existing) {
@@ -228,6 +229,7 @@ export function applyActiveModelStatusToStore(
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const incomingMlxKvQuant = normalizeMlxKvQuant(status.mlx_kv_quant_requested);
   const incomingMlxInt8Prefill = status.mlx_int8_prefill_requested === true;
+  const incomingMlxAnePrefill = status.mlx_ane_prefill_requested === true;
   const incomingMlxOffload = mlxOffloadStateFrom(status);
   const prevState = useChatRuntimeStore.getState();
   // A pin is one model's; clamp the chat's own level once the model is actually resident.
@@ -540,6 +542,7 @@ export function applyActiveModelStatusToStore(
               status.chat_template_override_reason ?? null,
             mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
             loadedMlxInt8PrefillRequested: incomingMlxInt8Prefill,
+            loadedMlxAnePrefillRequested: incomingMlxAnePrefill,
             ...incomingMlxOffload,
             ...((hydratingExistingModel ||
               (prevState.mlxPleOffload ?? null) ===
@@ -561,6 +564,11 @@ export function applyActiveModelStatusToStore(
                 prevState.loadedMlxInt8PrefillRequested) && {
               mlxInt8Prefill: incomingMlxInt8Prefill,
             }),
+            ...((hydratingExistingModel ||
+              prevState.mlxAnePrefill ===
+                prevState.loadedMlxAnePrefillRequested) && {
+              mlxAnePrefill: incomingMlxAnePrefill,
+            }),
           }
         : {
             loadedMlxKvQuantRequested: null,
@@ -568,6 +576,7 @@ export function applyActiveModelStatusToStore(
             chatTemplateOverrideReason: null,
             mlxKvQuantNote: null,
             loadedMlxInt8PrefillRequested: false,
+            loadedMlxAnePrefillRequested: false,
             ...incomingMlxOffload,
           })),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank

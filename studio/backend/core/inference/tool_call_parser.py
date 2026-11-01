@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 # Qwen/Hermes, Qwen3.5 XML and Gemma 4 live in core.tool_healing; this module adds the rest
 from core import tool_healing as _tool_healing
+from core.inference.relaxed_json import relaxed_allowed_at, relaxed_json_object, relaxed_object_end
 
 # Shared with tool_healing so every markerless parse path applies the same guard; wrapped and marker forms are unaffected.
 _markerless_promotable = _tool_healing._markerless_promotable
@@ -384,6 +385,8 @@ _GEMMA_STR_END = '<|"|>'
 _GEMMA_TC_END = "<tool_call|>"
 
 # skip_special_tokens strips the wrapper, so streamed Gemma calls arrive bare.
+# A value OPENED by Gemma's string delimiter (``key:<|"|>``); a literal one inside another quote is data.
+_GEMMA_QUOTED_VALUE_RE = re.compile(r'(?:^|[{,\[])\s*[A-Za-z_][\w.\-]*\s*:\s*<\|"\|>')
 _GEMMA_BARE_TC_RE = re.compile(r"(?<!\w)call\s*:\s*([\w\.\-]+)\s*\{")
 # Partial prefix so the streaming buffer holds it instead of leaking visible text.
 _GEMMA_BARE_TC_PREFIX_RE = re.compile(r"(?<!\w)call\s*(?::\s*[\w\.\-]*)?$")
@@ -2326,12 +2329,120 @@ def parse_tool_calls_from_text(
         return calls
 
     # Gemma wrapper-less ``call:NAME{...}``: markerless, so the same enabled-name gate applies
-    return _parse_gemma_tool_calls(
+    calls = _parse_gemma_tool_calls(
         fallback_content,
         id_offset = id_offset,
         allow_incomplete = allow_incomplete,
         enabled_tool_names = enabled_tool_names,
     )
+    if calls or not allow_incomplete:
+        return calls
+    # Last, and only when nothing parsed: a closed call whose one string argument holds unescaped quotes.
+    return _parse_closed_call_unescaped_quotes(content, id_offset = id_offset)
+
+
+# ``{"name": N, "arguments"|"parameters": {"KEY": "VALUE"}}`` with nothing after VALUE but the closers.
+_ONE_STRING_ARG_CALL_RE = re.compile(
+    r'\A\s*\{\s*"name"\s*:\s*"([\w.\-]+)"\s*,\s*"(?:arguments|parameters)"\s*:\s*'
+    r'\{\s*"([A-Za-z_][\w\-]*)"\s*:\s*"(.*)"\s*\}\s*\}\s*\Z',
+    re.DOTALL,
+)
+# A lost second argument or outer key (``", "key":``, ``", 'key':``, ``", key:``, ``"}, "key":``): the
+# value's end is no longer knowable, so it is refused.
+_SECOND_KEY_RE = re.compile(
+    r'"[\s}\]]*,\s*(?:"[A-Za-z_][\w\-]*"|\'[A-Za-z_][\w\-]*\'|[A-Za-z_][\w\-]*)\s*:'
+)
+
+
+def _escape_bare_quotes(raw: str) -> str:
+    """Escape the ``"`` no backslash escapes. A model that left bare quotes was not JSON-escaping quotes, so a
+    ``\\"`` it wrote next to them is the code's own escape and stays a backslash-quote; other escapes (``\\n``)
+    are JSON's. With no bare quote at all, every escape is JSON's."""
+    tokens: list[str] = []
+    bare = False
+    i, n = 0, len(raw)
+    while i < n:
+        if raw[i] == "\\" and i + 1 < n:
+            tokens.append(raw[i : i + 2])
+            i += 2
+            continue
+        bare = bare or raw[i] == '"'
+        tokens.append(raw[i])
+        i += 1
+    if not bare:
+        return raw
+    return "".join('\\"' if tok == '"' else '\\\\\\"' if tok == '\\"' else tok for tok in tokens)
+
+
+def _parse_closed_call_unescaped_quotes(content: str, *, id_offset: int) -> list[dict]:
+    """A ``<tool_call>`` closed by ``</tool_call>`` whose single string argument (code, a command) holds
+    quotes the model did not escape, so strict JSON and brace matching both lose the call. The closer
+    bounds the body, so the value is everything between its opening quote and the final ``"}}``. Only a
+    single-argument call, outside reasoning and code fences, with no sign of a second argument."""
+    out: list[dict] = []
+    if _TC_JSON_START_RE.search(content) is None:
+        return out
+    think_spans = _tool_healing._think_spans_outside_tool_markup(content)
+    code_spans = _tool_healing._code_spans(content)
+    # Inside another marker's span (an unclosed call before it) the opener is that call's argument data.
+    coverage = _tool_healing.marker_coverage(content)
+    pos = 0
+    while True:
+        start = content.find(_OPEN_CALL_OPENER, pos)
+        if start < 0:
+            return out
+        body_start = start + len(_OPEN_CALL_OPENER)
+        end = content.find("</tool_call>", body_start)
+        if end < 0:
+            return out
+        pos = end + len("</tool_call>")
+        if (
+            any(a <= start < b for a, b in think_spans)
+            or any(a < start < b for a, b in coverage)
+            or _tool_healing._in_code(code_spans, start)
+        ):
+            continue
+        body = content[body_start:end]
+        if _OPEN_CALL_OPENER in body:
+            continue
+        m = _ONE_STRING_ARG_CALL_RE.match(body)
+        if m is None or _SECOND_KEY_RE.search(m.group(3)):
+            continue
+        try:
+            value = json.loads('"' + _escape_bare_quotes(m.group(3)) + '"', strict = False)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        out.append(
+            {
+                "id": f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {"name": m.group(1), "arguments": json.dumps({m.group(2): value})},
+            }
+        )
+
+
+def _loads_call_object(text: str, *, relaxed: bool = True):
+    """A wrapped call's JSON object: strict first; near-JSON a model sampled (single quotes, a trailing comma,
+    True/None, unquoted keys) only when strict fails and healing is on. None when neither reads an object."""
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return relaxed_json_object(text) if relaxed else None
+
+
+def _call_object_end(
+    text: str,
+    start: int,
+    relaxed: bool = True,
+) -> "tuple[int | None, bool]":
+    """The call object's closing brace, and whether near-JSON may still be read. A relaxed read matches
+    single-quoted strings too, so a brace in one never ends the call and scanning never resumes inside its
+    argument; an object that never closes that way gets JSON brace matching, strict for the rest of the text."""
+    if relaxed and relaxed_allowed_at(text, start):
+        end = relaxed_object_end(text, start)
+        if end is not None:
+            return end, True
+    return _balanced_brace_end(text, start), False
 
 
 def _parse_tool_call_json(
@@ -2341,17 +2452,17 @@ def _parse_tool_call_json(
     allow_incomplete: bool = True,
 ) -> list[dict]:
     out: list[dict] = []
+    relaxed = allow_incomplete
     for m in _TC_JSON_START_RE.finditer(content):
         brace_start = m.end() - 1
-        end = _balanced_brace_end(content, brace_start)
+        end, relaxed = _call_object_end(content, brace_start, relaxed)
         if end is None:
             continue
         # Strict: a body that never closed ``<tool_call>`` is truncated; trailing prose is tolerated.
         if not allow_incomplete and not content[end + 1 :].lstrip().startswith("</tool_call>"):
             continue
-        try:
-            obj = json.loads(content[brace_start : end + 1])
-        except (json.JSONDecodeError, ValueError):
+        obj = _loads_call_object(content[brace_start : end + 1], relaxed = relaxed)
+        if not isinstance(obj, dict):
             continue
         name = obj.get("name", "")
         args = obj.get("arguments")
@@ -2377,6 +2488,7 @@ def _parse_tool_call_json(
 
 # Identical to the healer's copy; imported so the two cannot drift.
 _trim_param_value = _tool_healing._trim_param_value
+_json_object_body = _tool_healing._json_object_body
 
 
 def _inside_open_parameter(text: str, pos: int) -> bool:
@@ -2458,6 +2570,8 @@ def _parse_function_xml(
         # Strict mode: a dangling parameter means the call was cut off; a closed zero-parameter call stays valid.
         if not allow_incomplete and param_unclosed:
             continue
+        if allow_incomplete and not param_starts:
+            args = _json_object_body(body) or args
 
         out.append(
             {
@@ -2604,6 +2718,8 @@ def _parse_llama3_python_tag(
     # 2. ``<|python_tag|>{json}``; raw_decode peels ``;``-separated objects.
     if not out:
         decoder = json.JSONDecoder()
+        # Relaxed spans already tried never overlap, so every char is brace-matched at most once (no O(n^2)).
+        relaxed_from = 0 if allow_incomplete else len(content)
         idx = content.find(_LLAMA3_PYTHON_TAG)
         while idx >= 0:
             search_from = idx + len(_LLAMA3_PYTHON_TAG)
@@ -2619,8 +2735,16 @@ def _parse_llama3_python_tag(
                 try:
                     obj, end_offset = decoder.raw_decode(content[brace:])
                 except (json.JSONDecodeError, ValueError):
-                    cursor = brace + 1
-                    continue
+                    obj = None
+                    if brace >= relaxed_from and relaxed_allowed_at(content, brace):
+                        close = relaxed_object_end(content, brace)
+                        relaxed_from = len(content) if close is None else close + 1
+                        if close is not None:
+                            obj = relaxed_json_object(content[brace : close + 1])
+                    if obj is None:
+                        cursor = brace + 1
+                        continue
+                    end_offset = close + 1 - brace
                 if not isinstance(obj, dict):
                     cursor = brace + end_offset
                     continue
@@ -2776,14 +2900,15 @@ def _parse_mistral_tool_calls(
     if content[k] == "[":
         return _parse_mistral_array(content, k, id_offset, allow_incomplete = allow_incomplete)
 
+    relaxed = allow_incomplete
     if content[k] == "{":
         # Pre-v11 single ``{"name":...}``; fall through without a ``name`` so v11+ still runs.
-        end = _balanced_brace_end(content, k)
+        end, relaxed = _call_object_end(content, k, relaxed)
         if end is not None:
             try:
-                obj = json.loads(content[k : end + 1])
+                obj = _loads_call_object(content[k : end + 1], relaxed = relaxed)
                 if isinstance(obj, dict) and obj.get("name"):
-                    _consume_mistral_call(content[k : end + 1], out, id_offset)
+                    _consume_mistral_call(content[k : end + 1], out, id_offset, relaxed = relaxed)
                     return out
             except (json.JSONDecodeError, ValueError):
                 pass
@@ -2806,14 +2931,10 @@ def _parse_mistral_tool_calls(
         if after_name >= len(content) or content[after_name] != "{":
             pos = content.find(_MISTRAL_TRIGGER, cur)
             continue
-        end = _balanced_brace_end(content, after_name)
+        end, relaxed = _call_object_end(content, after_name, relaxed)
         if end is None:
             break
-        try:
-            args = json.loads(content[after_name : end + 1])
-        except (json.JSONDecodeError, ValueError):
-            pos = content.find(_MISTRAL_TRIGGER, end + 1)
-            continue
+        args = _loads_call_object(content[after_name : end + 1], relaxed = relaxed)
         if not isinstance(args, dict):
             pos = content.find(_MISTRAL_TRIGGER, end + 1)
             continue
@@ -2881,23 +3002,27 @@ def _parse_mistral_array(
     # Advance past each balanced object instead of rescanning from every ``{`` (ReDoS).
     pos = 0
     blen = len(body)
+    relaxed = allow_incomplete
     while pos < blen:
         brace = body.find("{", pos)
         if brace < 0:
             break
-        end = _balanced_brace_end(body, brace)
+        end, relaxed = _call_object_end(body, brace, relaxed)
         if end is None:
             break  # truncated mid-object: nothing after it can balance
-        _consume_mistral_call(body[brace : end + 1], out, id_offset)
+        _consume_mistral_call(body[brace : end + 1], out, id_offset, relaxed = relaxed)
         pos = end + 1
     return out
 
 
-def _consume_mistral_call(obj_text: str, out: list[dict], id_offset: int) -> None:
-    try:
-        obj = json.loads(obj_text)
-    except (json.JSONDecodeError, ValueError):
-        return
+def _consume_mistral_call(
+    obj_text: str,
+    out: list[dict],
+    id_offset: int,
+    *,
+    relaxed: bool = True,
+) -> None:
+    obj = _loads_call_object(obj_text, relaxed = relaxed)
     if not isinstance(obj, dict):
         return
     name = obj.get("name") or ""
@@ -3018,7 +3143,7 @@ def _parse_gemma_tool_calls(
             code_spans, code_from = None, cursor
         body = content[body_start + 1 : end]
         try:
-            args = _gemma_parse_stripped_body(body)
+            args = _gemma_bare_body_arguments(body)
         except Exception:
             args = {}
         out.append(
@@ -3550,6 +3675,77 @@ def _gemma_strip_quoted_leaves(value: Any) -> Any:
     return value
 
 
+_GEMMA_SLOT = "\ue000"
+_GEMMA_SLOT_RE = re.compile(_GEMMA_SLOT + r"(\d+)" + _GEMMA_SLOT)
+
+
+def _slot_gemma_values(body: str) -> "tuple[str, list[str]]":
+    """``body`` with each ``<|"|>`` value that opens a value outside an ordinary quoted string replaced by a
+    placeholder, and the raw values in order. Quotes open where the quote-less parser opens them."""
+    out: list[str] = []
+    raw: list[str] = []
+    quote = ""
+    prev = ":"
+    i, n = 0, len(body)
+    while i < n:
+        ch = body[i]
+        if quote:
+            if ch == "\\" and i + 1 < n:
+                out.append(body[i : i + 2])
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif prev in ":{[," and body.startswith(_GEMMA_STR_END, i):
+            end = body.find(_GEMMA_STR_END, i + len(_GEMMA_STR_END))
+            if end < 0:
+                out.append(body[i:])
+                break
+            raw.append(body[i + len(_GEMMA_STR_END) : end])
+            out.append(f'"{_GEMMA_SLOT}{len(raw) - 1}{_GEMMA_SLOT}"')
+            i = end + len(_GEMMA_STR_END)
+            prev = '"'
+            continue
+        elif ch in "\"'" and prev in ":{[(,=":
+            quote = ch
+        out.append(ch)
+        if not ch.isspace():
+            prev = ch
+        i += 1
+    return "".join(out), raw
+
+
+def _gemma_bare_body_arguments(body: str) -> dict[str, Any]:
+    """Each ``<|"|>``-quoted value is read raw, every other value as the quote-less parser reads it (single
+    quotes, nesting). A delimiter that does not end up a whole value (a literal one inside another quoted
+    value) keeps the quote-less reading of the whole body."""
+    if _GEMMA_QUOTED_VALUE_RE.search(body) is None or _GEMMA_SLOT in body:
+        return _gemma_parse_stripped_body(body)
+    slotted, raw = _slot_gemma_values(body)
+    used: list[int] = []
+
+    def fill(v: Any) -> Any:
+        if isinstance(v, dict):
+            return {k: fill(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [fill(x) for x in v]
+        if isinstance(v, str) and _GEMMA_SLOT in v:
+            m = _GEMMA_SLOT_RE.fullmatch(v)
+            if m is None:
+                raise ValueError("delimiter inside a value")
+            used.append(int(m.group(1)))
+            return raw[used[-1]]
+        return v
+
+    try:
+        args = fill(_gemma_parse_stripped_body(slotted))
+    except ValueError:
+        args = None
+    if args is None or sorted(used) != list(range(len(raw))):
+        return _gemma_parse_stripped_body(body)
+    return args
+
+
 def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
     """Quote-less body: values end at the next top-level ', key:' boundary, so commas in code survive."""
     out: dict[str, Any] = {}
@@ -3677,18 +3873,64 @@ def _parse_deepseek_tool_calls(
     allow_incomplete: bool = True,
 ) -> list[dict]:
     """R1 wraps arguments in a json fence, V3.x does not; the five opener variants follow llama.cpp."""
-    out: list[dict] = []
     begin = _DEEPSEEK_BEGIN_RE.search(content)
     if not begin:
-        return out
+        return []
+    out, end_pos = _parse_deepseek_envelope(
+        content, begin, id_offset = id_offset, allow_incomplete = allow_incomplete
+    )
+    # Auto-Heal only: a model that closes its envelope and opens another runs both, but only once the
+    # first envelope parses strictly, and only closed, strictly parsed envelopes follow it.
+    if (
+        out
+        and allow_incomplete
+        and end_pos >= 0
+        and _DEEPSEEK_BEGIN_RE.search(content, end_pos + len(_DEEPSEEK_END)) is not None
+        and _parse_deepseek_envelope(content, begin, id_offset = 0, allow_incomplete = False)[0]
+    ):
+        out.extend(
+            _parse_glued_deepseek_envelopes(
+                content, end_pos + len(_DEEPSEEK_END), id_offset = id_offset + len(out)
+            )
+        )
+    return out
+
+
+# Code, think tags or other markup between two envelopes: the later one is quoted, not a call.
+_DEEPSEEK_GLUE_GAP_STOP_RE = re.compile(r"[`<>\[\]{}]")
+
+
+def _parse_glued_deepseek_envelopes(content: str, pos: int, *, id_offset: int) -> list[dict]:
+    """Closed envelopes after the first, separated by whitespace or plain prose only. Linear: each
+    envelope is scanned once and the walk stops at the first gap or envelope that does not qualify."""
+    out: list[dict] = []
+    while True:
+        nxt = _DEEPSEEK_BEGIN_RE.search(content, pos)
+        if nxt is None or _DEEPSEEK_GLUE_GAP_STOP_RE.search(content, pos, nxt.start()):
+            return out
+        calls, end_pos = _parse_deepseek_envelope(
+            content, nxt, id_offset = id_offset + len(out), allow_incomplete = False
+        )
+        if not calls:
+            return out
+        out.extend(calls)
+        pos = end_pos + len(_DEEPSEEK_END)
+
+
+def _parse_deepseek_envelope(
+    content: str, begin: "re.Match", *, id_offset: int, allow_incomplete: bool
+) -> "tuple[list[dict], int]":
+    """Calls in the envelope opened by ``begin`` and the index of its close (-1 when unclosed)."""
+    out: list[dict] = []
     scan_start = begin.end()
     # Search outside JSON strings: an argument may contain the literal end token.
     end_pos = _find_outside_json_strings(content, _DEEPSEEK_END, scan_start)
     # Strict mode: an unclosed envelope is truncated; reject, don't heal to EOF.
     if not allow_incomplete and end_pos < 0:
-        return out
+        return out, end_pos
     scan_end = end_pos if end_pos >= 0 else len(content)
     body = content[scan_start:scan_end]
+    relaxed = allow_incomplete
 
     pos = 0
     while pos < len(body):
@@ -3707,14 +3949,10 @@ def _parse_deepseek_tool_calls(
         if json_start >= len(body) or body[json_start] != "{":
             pos = json_start
             continue
-        brace_end = _balanced_brace_end(body, json_start)
+        brace_end, relaxed = _call_object_end(body, json_start, relaxed)
         if brace_end is None:
             break
-        try:
-            args = json.loads(body[json_start : brace_end + 1])
-        except (json.JSONDecodeError, ValueError):
-            pos = brace_end + 1
-            continue
+        args = _loads_call_object(body[json_start : brace_end + 1], relaxed = relaxed)
         if not isinstance(args, dict):
             pos = brace_end + 1
             continue
@@ -3739,7 +3977,7 @@ def _parse_deepseek_tool_calls(
             )
         pos = close_m.end() if close_m else brace_end + 1
     if out:
-        return out
+        return out, end_pos
 
     pos = 0
     while pos < len(body):
@@ -3757,7 +3995,7 @@ def _parse_deepseek_tool_calls(
         if json_start >= len(body) or body[json_start] != "{":
             pos = sep_pos + len(_DEEPSEEK_SEP)
             continue
-        brace_end = _balanced_brace_end(body, json_start)
+        brace_end, relaxed = _call_object_end(body, json_start, relaxed)
         if brace_end is None:
             break
         if not allow_incomplete:
@@ -3767,11 +4005,7 @@ def _parse_deepseek_tool_calls(
             if not body.startswith(_DEEPSEEK_CALL_END, after):
                 pos = brace_end + 1
                 continue
-        try:
-            args = json.loads(body[json_start : brace_end + 1])
-        except (json.JSONDecodeError, ValueError):
-            pos = brace_end + 1
-            continue
+        args = _loads_call_object(body[json_start : brace_end + 1], relaxed = relaxed)
         if not isinstance(args, dict):
             pos = brace_end + 1
             continue
@@ -3788,7 +4022,7 @@ def _parse_deepseek_tool_calls(
             )
         # Seeking the end marker could land on a later call's and skip the one between.
         pos = brace_end + 1
-    return out
+    return out, end_pos
 
 
 def _parse_glm_tool_calls(
@@ -3938,6 +4172,7 @@ def _parse_kimi_section_body(
     """Parse one Kimi K2 section body (between begin / end markers)."""
     out: list[dict] = []
     pos = 0
+    relaxed = allow_incomplete
     while pos < len(body):
         call_start = body.find(_KIMI_CALL_BEGIN, pos)
         if call_start < 0:
@@ -3972,7 +4207,7 @@ def _parse_kimi_section_body(
         if json_start >= len(body) or body[json_start] != "{":
             pos = arg_begin + len(_KIMI_ARG_BEGIN)
             continue
-        brace_end = _balanced_brace_end(body, json_start)
+        brace_end, relaxed = _call_object_end(body, json_start, relaxed)
         if brace_end is None:
             # Skip a malformed call but keep parsing later ones (vLLM recovers them).
             nxt = body.find(_KIMI_CALL_BEGIN, json_start)
@@ -3980,11 +4215,7 @@ def _parse_kimi_section_body(
                 break
             pos = nxt
             continue
-        try:
-            args = json.loads(body[json_start : brace_end + 1])
-        except (json.JSONDecodeError, ValueError):
-            pos = brace_end + 1
-            continue
+        args = _loads_call_object(body[json_start : brace_end + 1], relaxed = relaxed)
         if not isinstance(args, dict):
             pos = brace_end + 1
             continue

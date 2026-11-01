@@ -8,10 +8,10 @@ import {
   Cancel01Icon,
   Delete02Icon,
   Download01Icon,
-  Folder01Icon,
   ImageIcon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { type KeyboardEventHandler, type ReactNode, useRef, useState } from "react";

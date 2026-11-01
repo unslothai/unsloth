@@ -37,6 +37,7 @@ import { useTrainingCacheReconciliation } from "./hooks/use-training-cache-recon
 import { LiveTrainingView } from "./live-training-view";
 import { DatasetPreviewDialog } from "./sections/dataset-preview-dialog";
 import { TrainSubNav } from "./studio-navigation";
+import { TrainingApiButton } from "./training-api-button";
 import {
   studioHistoryTourSteps,
   studioTourSteps,
@@ -176,7 +177,7 @@ export function StudioPage(): ReactElement {
   const showHistoryBack = activeTab === "history" && !!selectedHistoryRunId;
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
+    <div data-wallpaper-page-canvas="" className="flex h-full min-h-0 flex-col bg-background">
       <Tabs
         value={activeTab}
         onValueChange={(value) => handleTabChange(value as TrainSubTab)}
@@ -209,6 +210,7 @@ export function StudioPage(): ReactElement {
                   showTrainingView={showTrainingView}
                 />
                 <div className="ml-auto flex items-center gap-2">
+                  <TrainingApiButton />
                   <MediaPageLink
                     to="/images"
                     label={t("studio.imageTraining")}

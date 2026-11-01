@@ -407,11 +407,12 @@ def add_chunks(
         rag_db.ensure_vec(conn, len(vectors[0]), document_id)
     epoch_before = vec_cache.read_epoch(conn, scope) if vec_cache.enabled() else None
     vec_rowids: list[int] = []
+    chunk_rowids: list[int] = []
     for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
         chunk_id = f"{document_id}:{chunk.chunk_index}"
         chunk_regions = regions[i] if regions and i < len(regions) else None
         regions_json = json.dumps(chunk_regions) if chunk_regions else None
-        conn.execute(
+        cur = conn.execute(
             "INSERT OR REPLACE INTO chunks("
             "id, document_id, scope, chunk_index, text, page_number, "
             "source_page_index, page_char_start, page_char_end, token_count, "
@@ -433,6 +434,7 @@ def add_chunks(
                 regions_json,
             ),
         )
+        chunk_rowids.append(cur.lastrowid)
         conn.execute(
             "INSERT INTO chunks_fts(text, chunk_id, scope) VALUES(?,?,?)",
             (chunk.text, chunk_id, scope),
@@ -463,6 +465,7 @@ def add_chunks(
             vec_rowids,
             [f"{document_id}:{chunk.chunk_index}" for chunk in chunks[: len(vec_rowids)]],
             vectors[: len(vec_rowids)],
+            chunk_rowids = chunk_rowids,
         )
 
 

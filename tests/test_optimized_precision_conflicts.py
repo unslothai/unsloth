@@ -28,6 +28,16 @@ def _mistral_format_names(tree):
     return names
 
 
+def _tiling_names(tree):
+    """Names loader.py imports from ..tiling (tiled MLP), which these precision checks never reach."""
+    return {
+        alias.asname or alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == "tiling" and node.level == 2
+        for alias in node.names
+    }
+
+
 def _loader_utils_functions(tree, path, method):
     """Real definitions of the .loader_utils functions loader.py imports and `method` calls."""
     imported = {
@@ -133,6 +143,8 @@ def loader():
     # No fixture is Mistral-format: stub each loader.py helper deciding that, new ones included.
     for name in _mistral_format_names(tree):
         env.setdefault(name, RuntimeError if name[0].isupper() else (lambda *args, **kwargs: False))
+    for name in _tiling_names(tree):
+        env.setdefault(name, lambda *args, **kwargs: None)
     # Real loader_utils helpers (e.g. the fp8 dequantize check from #14516) where no stub is given.
     env.setdefault("inspect", inspect)
     real = [n for n in _loader_utils_functions(tree, path, method) if n.name not in env]

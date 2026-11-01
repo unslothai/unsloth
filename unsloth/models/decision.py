@@ -365,11 +365,49 @@ class ClefDecisionModel(torch.nn.Module):
         return padded, None
 
 
+class _TokenIds:
+    __slots__ = ("input_ids",)
+
+    def __init__(self, input_ids):
+        self.input_ids = input_ids
+
+
+class _MemoTokenizer:
+    """encode_record tokenizes ~70 short, mostly repeated strings per row one call at a time.
+    Shared token ints stop every stored id from holding its own int object."""
+
+    MAX_CACHED_CHARS = 512
+    MAX_ENTRIES = 16384
+
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+        self.cache, self.ints = {}, {}
+
+    def __call__(
+        self,
+        text,
+        add_special_tokens = True,
+        **kwargs,
+    ):
+        if add_special_tokens or kwargs or not isinstance(text, str):
+            return self.tokenizer(text, add_special_tokens = add_special_tokens, **kwargs)
+        ids = self.cache.get(text)
+        if ids is None:
+            raw = self.tokenizer(text, add_special_tokens = False).input_ids
+            ids = tuple(map(self.ints.setdefault, raw, raw))
+            if len(text) <= self.MAX_CACHED_CHARS:
+                if len(self.cache) >= self.MAX_ENTRIES:
+                    self.cache.clear()
+                self.cache[text] = ids
+        # A fresh list every call: encode_record extends the first one it gets.
+        return _TokenIds(list(ids))
+
+
 def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
     from .clef import QUESTION_TYPES as CLEF_TYPES, encode_record, question_options
 
     processor = tokenizer if hasattr(tokenizer, "tokenizer") else None
-    tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    tokenizer = _MemoTokenizer(getattr(tokenizer, "tokenizer", tokenizer))
     items = []
     for index, row in enumerate(rows):
         row = row if isinstance(row, dict) else {}
