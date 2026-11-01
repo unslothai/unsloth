@@ -735,6 +735,10 @@ def test_compile_counters_count_breaks_and_recompiles():
         ("dp_replicate=2,tp=2", {"tp": 2, "dp": 2, "fsdp": False}),
         ("fsdp=1,dp=2", {"fsdp": True, "dp": 2}),  # 0 / 1 stays the switch
         ("fsdp=0,tp=2", {"fsdp": False, "tp": 2}),
+        # Failing before: the size-1 axis was compared with the other's dp and refused as a conflict.
+        ("dp_shard=1,dp_replicate=2", {"dp": 2, "fsdp": False}),
+        ("dp_shard=2,dp_replicate=1", {"dp": 2, "fsdp": True}),
+        ("dp=2,dp_shard=1,dp_replicate=2", {"dp": 2, "fsdp": False}),
     ],
 )
 def test_distributed_config_names_are_accepted(raw, want):

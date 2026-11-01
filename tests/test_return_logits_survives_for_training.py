@@ -254,3 +254,25 @@ def test_generated_trainer_init_never_writes_the_flag():
     )
     assert FLAG not in ast.unparse(patcher)
     assert FLAG not in _template()
+
+
+def test_train_restores_eval_without_a_replica_on_a_parallel_trainer():
+    # Failing before: the restore called for_inference, which gathers a whole replica under tensor / pipeline
+    # parallel and is refused for pp x tp, so train() raised after the training finished.
+    calls = []
+    model = _Model()
+    model.for_inference = lambda: calls.append("for_inference")
+    model.for_training = lambda use_gradient_checkpointing = None: model.train()
+
+    class _Trainer:
+        args = types.SimpleNamespace(gradient_checkpointing = False)
+        _unsloth_tensor_parallel = True
+
+        def train(self):
+            return "trained"
+
+    trainer = _Trainer()
+    trainer.model = model
+    model.eval()
+    assert _prepare_for_training_mode()(_Trainer.train)(trainer) == "trained"
+    assert model.training is False and calls == []

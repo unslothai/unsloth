@@ -172,19 +172,20 @@ def parse_parallel_spec(raw, source = FLAG):
         raise ValueError(
             f"Unsloth: {source}={raw!r}: dp_shard x dp_replicate (HSDP) is not supported by {FLAG} yet; give one."
         )
-    for size, fsdp in ((shard, True), (replicate, False)):
-        if size is None:
-            continue
+    if shard is not None or replicate is not None:
+        # Together: a size-1 axis is inactive (dp_shard=1,dp_replicate=2 is plain DDP over 2 ranks).
+        size = (shard or 1) * (replicate or 1)
+        fsdp = True if (shard or 1) > 1 else False if (replicate or 1) > 1 else None
         if "dp" in spec and spec["dp"] != size:
             raise ValueError(
                 f"Unsloth: {source}={raw!r}: dp={spec['dp']} disagrees with the dp_shard / dp_replicate size."
             )
-        if "fsdp" in spec and spec["fsdp"] != fsdp and size > 1:
+        if fsdp is not None and "fsdp" in spec and spec["fsdp"] != fsdp:
             raise ValueError(
                 f"Unsloth: {source}={raw!r}: fsdp={_format(spec['fsdp'])} disagrees with the dp_shard / dp_replicate key."
             )
         spec["dp"] = size
-        if size > 1:
+        if fsdp is not None:
             spec["fsdp"] = fsdp
     # cp_backend with cp = 1 and pp_schedule / pp_microbatches with pp = 1 are accepted and unused: a launcher
     # writes every axis, and may pass the user's backend / schedule through for a layout without that axis.
