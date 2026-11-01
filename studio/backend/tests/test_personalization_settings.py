@@ -767,7 +767,6 @@ def test_greeting_sizes_are_capped():
 
 
 def test_unknown_greeting_choices_fall_back_to_defaults():
-    # A record from a newer build must not break the GET for this one.
     p = PersonalizationPayload.model_validate(
         {"profile": {"greetingStyle": "video", "greetingIcon": "rocket"}}
     )

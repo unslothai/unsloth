@@ -296,7 +296,6 @@ export function usePersonalizationSync(enabled: boolean): void {
             ...DEFAULT_GREETING,
             ...remote.profile,
           });
-          // greetingCustomSaved is absent on older servers, which drop these fields.
           const keepLocalCustomGreeting =
             remote.greetingCustomSaved !== true &&
             !isDefaultCustomGreeting(localProfile);

@@ -4560,7 +4560,6 @@ def _is_bundled_avatar_url(value: str) -> bool:
     return path[path.index(marker) :].lower().endswith(".png")
 
 
-# Raster only: SVG can carry script.
 _GREETING_DATA_URL_PATTERN = r"^data:image/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$"
 MAX_GREETING_ICON_DATA_URL_LENGTH = 96 * 1024
 MAX_GREETING_IMAGE_DATA_URL_LENGTH = MAX_AVATAR_DATA_URL_BYTES
@@ -4588,7 +4587,6 @@ class PersonalizationProfile(BaseModel):
         pattern = _GREETING_DATA_URL_PATTERN,
     )
 
-    # A value from a newer build must not fail the whole GET.
     @field_validator("greetingStyle", "greetingIcon", mode = "before")
     @classmethod
     def _known_greeting_choice(cls, value: object, info) -> object:

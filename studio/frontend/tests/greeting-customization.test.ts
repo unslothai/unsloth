@@ -85,7 +85,6 @@ test("custom without an icon is text only; custom words only show in custom", ()
     }),
     { kind: "text", icon: { kind: "none" }, text: "Hi" },
   );
-  // Default keeps the built-in lines even when words were typed under Custom earlier.
   assert.deepEqual(
     resolveGreeting({ ...DEFAULT_GREETING, greetingText: "Hi" }),
     { kind: "text", icon: { kind: "sloth" }, text: null },
@@ -131,7 +130,6 @@ test("uploads are image types under the cap, never SVG", () => {
   );
 });
 
-// The encoded data URL is ~4/3 of maxBytes; the server must accept the largest one the client makes.
 test("the client size limits fit inside the server caps", () => {
   const source = readText("../../backend/routes/settings.py");
   const icon = /MAX_GREETING_ICON_DATA_URL_LENGTH = (\d+) \* 1024/.exec(source);

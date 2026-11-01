@@ -3,12 +3,10 @@
 
 import type { ResizeLimits } from "./utils/resize-image-file";
 
-// showGreetingSloth stays the on/off switch so older builds and records keep reading it.
 export type GreetingStyle = "text" | "image";
 export type GreetingIcon = "sloth" | "custom" | "none";
 export const GREETING_TEXT_MAX_LENGTH = 100;
 
-// No SVG: uploads are re-encoded through a canvas, and the server and renderer only accept these.
 export const GREETING_IMAGE_TYPES = [
   "image/png",
   "image/jpeg",
@@ -16,7 +14,6 @@ export const GREETING_IMAGE_TYPES = [
   "image/gif",
 ] as const;
 export const GREETING_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
-// Must stay under MAX_GREETING_*_DATA_URL_LENGTH in backend/routes/settings.py.
 export const GREETING_ICON_LIMITS: ResizeLimits = {
   maxEdge: 128,
   minEdge: 64,
@@ -60,7 +57,6 @@ export const DEFAULT_GREETING: GreetingSettings = {
   greetingImageDataUrl: null,
 };
 
-// Remote and persisted values are untrusted; anything unknown falls back to today's greeting.
 export function sanitizeGreeting(
   input: Partial<Record<keyof GreetingSettings, unknown>>,
 ): GreetingSettings {
@@ -93,12 +89,9 @@ export type ResolvedGreeting =
         | { kind: "sloth" }
         | { kind: "none" }
         | { kind: "custom"; src: string };
-      // Null keeps the built-in lines that change with the time of day.
       text: string | null;
     };
 
-// Default is the sloth (or no icon) with the built-in lines; Custom is the user's icon (or none)
-// with their words. A missing image falls back to Default rather than an empty greeting.
 export function resolveGreeting(settings: GreetingSettings): ResolvedGreeting {
   const s = sanitizeGreeting(settings);
   if (!s.showGreetingSloth) {

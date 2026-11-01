@@ -53,10 +53,8 @@ const MODE_PATCH = {
   off: { showGreetingSloth: false },
 } as const;
 const SLOTH_PREVIEW = "Sloth emojis/large sloth wave.png";
-// A type specimen, not a word, so the tiles need no translation.
 const SAMPLE_TEXT = "Aa";
 
-// A full localStorage quota drops the write silently; check it landed before claiming success.
 function persistedValue(field: UploadField): unknown {
   try {
     const raw = window.localStorage.getItem(PROFILE_STORAGE_KEY);
@@ -114,7 +112,7 @@ function useGreetingUpload() {
         setGreeting({ [field]: dataUrl });
         stored = persistedValue(field) === dataUrl;
       } catch {
-        // Handled below: a throwing quota write is the same failure as a dropped one.
+        // Checked below.
       }
       if (!stored) {
         setGreeting({ [field]: previous });

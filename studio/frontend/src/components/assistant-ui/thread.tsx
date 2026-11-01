@@ -2800,7 +2800,6 @@ const ThreadWelcome: FC<{
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9">
           {/* The setting hides the whole greeting; the incognito title is a status, so it stays. */}
           {greeting.kind === "image" && !incognito && (
-            // Grows upward from the text row's slot, so the composer stays where it was.
             <div
               className={cn(
                 "unsloth-welcome-greeting flex flex-row items-end justify-center",
@@ -2821,7 +2820,6 @@ const ThreadWelcome: FC<{
             <div
               className={cn(
                 "unsloth-welcome-greeting flex flex-row items-center justify-center gap-[calc(15px*var(--ui-space-scale,1))]",
-                // Without an icon the row keeps the icon's height, so the composer does not move.
                 !incognito &&
                   greeting.kind === "text" &&
                   greeting.icon.kind === "none" &&
