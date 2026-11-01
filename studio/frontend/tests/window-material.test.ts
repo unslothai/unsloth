@@ -134,3 +134,17 @@ test("glass panes thicken over images that would wash out their text", async () 
 	assert.match(css, /var\(--glass-sidebar-fill\) min\(96%, calc\(max\(var\(--glass-tint\), var\(--glass-pane-floor\)\) \* var\(--glass-opacity, 1\)\)\)/);
 	assert.match(css, /var\(--glass-panel-fill\) min\(96%, calc\(max\(var\(--glass-tint\), var\(--glass-pane-floor\)\) \* var\(--glass-opacity, 1\)\)\)/);
 });
+
+test("resetting local preferences also resets the glass theme", () => {
+	const tab = readFileSync(new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url), "utf8");
+	const material = readFileSync(new URL("../src/features/chat-background/material.ts", import.meta.url), "utf8");
+	const key = /MATERIAL_STORAGE_KEY = "([^"]+)"/.exec(material)?.[1];
+	assert.ok(key);
+	assert.ok(tab.includes(`"${key}",`));
+});
+
+test("the lens refreshes its tint when the composer's fill changes", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	// Glass strength or style change the fill without resizing anything; the cache key must see it.
+	assert.match(lens, /opacity,\n\s*fill\.backgroundColor,\n\s*fill\.backgroundImage,\n\s*\]\.join\(\)/);
+});
