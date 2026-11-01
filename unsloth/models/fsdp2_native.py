@@ -3492,25 +3492,29 @@ def _has_cpu_tensors(optimizer, grads = False):
 
 def _local_grads_if_mixed(optimizer):
     """Swap DTensor grads for their local shards when DTensor and plain grads mix: one foreach unscale
-    takes one tensor kind ("got mixed torch.Tensor and DTensor"). Elementwise, so the shard result is the same."""
+    takes one tensor kind ("got mixed torch.Tensor and DTensor"), or when a DTensor grad lives on the CPU
+    (CPUOffloadPolicy): DTensor's found_inf reduce would be a collective on CPU tensors, which a NCCL-only
+    process group cannot run. Elementwise, so the shard result is the same; ShardedGradScaler.unscale_
+    agrees found_inf over ranks itself."""
     try:
         from torch.distributed.tensor import DTensor
     except ImportError:
         return optimizer
-    groups, dtensor, plain = [], False, False
+    groups, dtensor, plain, cpu_dtensor = [], False, False, False
     for group in optimizer.param_groups:
         params = []
         for p in group["params"]:
             grad = p.grad
             if isinstance(grad, DTensor):
                 dtensor = True
+                cpu_dtensor = cpu_dtensor or grad.device.type == "cpu"
                 p = types.SimpleNamespace(grad = grad._local_tensor)
             elif grad is not None:
                 plain = True
             # Plain grads keep their parameter: upstream reassigns a coalesced float16 sparse grad to it.
             params.append(p)
         groups.append({"params": params})
-    if not (dtensor and plain):
+    if not ((dtensor and plain) or cpu_dtensor):
         return optimizer
     return types.SimpleNamespace(param_groups = groups)
 
