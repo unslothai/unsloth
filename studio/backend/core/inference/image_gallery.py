@@ -321,31 +321,38 @@ def _parse_meta(raw: Any) -> Optional[dict[str, Any]]:
     return meta
 
 
-def _read_meta(path: Path, *, strict_io: bool = False) -> Optional[dict[str, Any]]:
+def _read_chunk(path: Path, *, strict_io: bool = False) -> tuple[Any, bool]:
+    """(raw recipe chunk or None, whether a retry could read something else)."""
     from PIL import Image
     try:
         with Image.open(path) as im:
             # The chunk is written before IDAT; im.text would decode every pixel to find later chunks.
-            raw = im.info.get(_META_KEY) or im.text.get(_META_KEY)  # type: ignore[attr-defined]
+            return im.info.get(_META_KEY) or im.text.get(_META_KEY), False  # type: ignore[attr-defined]
     except OSError as exc:
         if strict_io and exc.errno not in (None, errno.ENOENT):
             raise
-        return None
+        return None, True
+    except MemoryError:
+        return None, True
     except Exception:
-        return None
-    return _parse_meta(raw)
+        return None, False
 
 
-# Recipe chunks the listing read, by path, while the file keeps the identity it had then.
+def _read_meta(path: Path, *, strict_io: bool = False) -> Optional[dict[str, Any]]:
+    return _parse_meta(_read_chunk(path, strict_io = strict_io)[0])
+
+
 _CHUNK_CACHE_MAX = 8192
 _CHUNK_CACHE_ITEM_MAX = 64 * 1024
-_chunk_cache: OrderedDict[str, tuple[tuple, Any]] = OrderedDict()
+_CHUNK_CACHE_BYTES = 32 * 1024 * 1024
+_chunk_cache: OrderedDict[str, tuple[tuple, Any, int]] = OrderedDict()
+_chunk_cache_bytes = 0
 _chunk_cache_lock = threading.Lock()
 
 
 def _listed_meta(path: Path, info: Optional[os.stat_result]) -> Optional[dict[str, Any]]:
-    """``_read_meta(path)`` for a listing that took ``info`` from ``path`` just before: a chunk
-    is parsed again only once its file changed."""
+    """``_read_meta(path)``, reparsing a chunk only once the file changed since ``info``, a stat
+    of ``path`` taken before this read."""
     if info is None:
         return _read_meta(path)
     # A write moves mtime or ctime and a replace the inode, so a key that agrees means the same bytes.
@@ -356,24 +363,17 @@ def _listed_meta(path: Path, info: Optional[os.stat_result]) -> Optional[dict[st
         if hit is not None and hit[0] == key:
             _chunk_cache.move_to_end(name)
             return _parse_meta(hit[1])
-    from PIL import Image
-
-    try:
-        with Image.open(path) as im:
-            raw = im.info.get(_META_KEY) or im.text.get(_META_KEY)  # type: ignore[attr-defined]
-    except (OSError, MemoryError):
-        # Never kept: a read that may go through next time is tried again, as before.
-        return None
-    except Exception:
-        raw = None
-    # Studio's own recipes are small; a hand-dropped PNG with a huge chunk is not pinned in memory.
-    if isinstance(raw, (str, bytes)) and len(raw) > _CHUNK_CACHE_ITEM_MAX:
+    raw, transient = _read_chunk(path)
+    size = len(raw) if isinstance(raw, (str, bytes)) else 0
+    if transient or size > _CHUNK_CACHE_ITEM_MAX:
         return _parse_meta(raw)
+    global _chunk_cache_bytes
     with _chunk_cache_lock:
-        _chunk_cache[name] = (key, raw)
-        _chunk_cache.move_to_end(name)
-        while len(_chunk_cache) > _CHUNK_CACHE_MAX:
-            _chunk_cache.popitem(last = False)
+        old = _chunk_cache.pop(name, None)
+        _chunk_cache[name] = (key, raw, size)
+        _chunk_cache_bytes += size - (old[2] if old else 0)
+        while len(_chunk_cache) > _CHUNK_CACHE_MAX or _chunk_cache_bytes > _CHUNK_CACHE_BYTES:
+            _chunk_cache_bytes -= _chunk_cache.popitem(last = False)[1][2]
     return _parse_meta(raw)
 
 

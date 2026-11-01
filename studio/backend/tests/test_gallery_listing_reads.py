@@ -27,6 +27,7 @@ def _tmp_gallery(monkeypatch, tmp_path):
     monkeypatch.setattr(videos, "studio_root", lambda: tmp_path)
     if hasattr(images, "_chunk_cache"):
         monkeypatch.setattr(images, "_chunk_cache", type(images._chunk_cache)())
+        monkeypatch.setattr(images, "_chunk_cache_bytes", 0)
 
 
 def _meta(**over):
@@ -144,11 +145,23 @@ def test_a_huge_chunk_is_read_but_not_kept(monkeypatch):
     assert sorted(r["prompt"] for r in images.list_images()) == ["short", "x" * 1000]
 
 
-def test_concurrent_listings_agree():
+def test_the_chunk_cache_holds_a_byte_budget(monkeypatch):
+    monkeypatch.setattr(images, "_CHUNK_CACHE_BYTES", 1000)
+    for k in range(5):
+        images.save(Image.new("RGB", (8, 8)), _meta(prompt = "p" * 300, seed = k))
+    first = images.list_images()
+    assert 0 < len(images._chunk_cache) < 5
+    assert images._chunk_cache_bytes == sum(v[2] for v in images._chunk_cache.values()) <= 1000
+    assert images.list_images() == first and len(first) == 5
+
+
+def test_concurrent_listings_agree(monkeypatch):
     for k in range(20):
         images.save(Image.new("RGB", (8, 8)), _meta(seed = k))
     expected = images.list_images()
-    getattr(images, "_chunk_cache", {}).clear()
+    if hasattr(images, "_chunk_cache"):
+        monkeypatch.setattr(images, "_chunk_cache", type(images._chunk_cache)())
+        monkeypatch.setattr(images, "_chunk_cache_bytes", 0)
     results, errors = [], []
 
     def run():
