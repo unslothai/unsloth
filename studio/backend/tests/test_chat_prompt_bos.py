@@ -67,7 +67,11 @@ _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 _stub_if_missing("unsloth_zoo")
 _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
-from core.inference.inference import _prompt_already_has_bos, _tokenize_prompt  # noqa: E402
+from core.inference.inference import (  # noqa: E402
+    _probe_prompt_bos,
+    _prompt_already_has_bos,
+    _tokenize_prompt,
+)
 
 # Drop the stubs now the name is bound; one left behind outlives this module.
 for _name in reversed(_STUBBED):
@@ -164,16 +168,21 @@ def _tokenize_like_base(tokenizer, prompt):
     return tokenizer(prompt, return_tensors = "pt", add_special_tokens = add_special_tokens)
 
 
+def _tokenize_like_head(tokenizer, prompt):
+    probe = _probe_prompt_bos(tokenizer, prompt)
+    return _tokenize_prompt(tokenizer, prompt, probe is None, probe)
+
+
 @pytest.mark.parametrize("auto_adds_bos", [True, False])
 @pytest.mark.parametrize(
     "prompt",
     ["<s> user hello world", "user hello world", "", " <s> hello", "<s> <s> hello", "</s> hello"],
 )
-def test_reused_check_encoding_matches_a_fresh_tokenization(auto_adds_bos, prompt):
+def test_reused_probe_encoding_matches_a_fresh_tokenization(auto_adds_bos, prompt):
     pytest.importorskip("torch")
     tokenizer = _tokenizer(auto_adds_bos)
     expected = _tokenize_like_base(tokenizer, prompt)
-    got = _tokenize_prompt(tokenizer, prompt, not _prompt_already_has_bos(tokenizer, prompt))
+    got = _tokenize_like_head(tokenizer, prompt)
 
     assert set(got.keys()) == set(expected.keys())
     for key in expected:
@@ -193,29 +202,26 @@ def test_prompt_with_bos_is_tokenized_once():
             return original(self, *args, **kwargs)
 
     tokenizer.__class__ = _Counting
-    prompt = "<s> user hello world"
-    inputs = _tokenize_prompt(tokenizer, prompt, not _prompt_already_has_bos(tokenizer, prompt))
+    inputs = _tokenize_like_head(tokenizer, "<s> user hello world")
 
     assert calls == [False]
     assert inputs["input_ids"].tolist() == [[0, 4, 2, 3]]
     # Without BOS in the text the tokenizer must add it, so the probe is not reused.
     calls.clear()
-    prompt = "user hello world"
-    _tokenize_prompt(tokenizer, prompt, not _prompt_already_has_bos(tokenizer, prompt))
+    _tokenize_like_head(tokenizer, "user hello world")
     assert calls == [False, True]
 
 
-def test_check_encoding_is_not_reused_for_another_prompt_or_tokenizer():
+def test_probe_is_not_reused_for_another_prompt_or_tokenizer():
     pytest.importorskip("torch")
     tokenizer = _tokenizer(auto_adds_bos = True)
     other = _tokenizer(auto_adds_bos = True)
-    assert _prompt_already_has_bos(tokenizer, "<s> hello") is True
-    assert _tokenize_prompt(tokenizer, "<s> world", False)["input_ids"].tolist() == [[0, 3]]
-    assert _prompt_already_has_bos(tokenizer, "<s> hello") is True
+    probe = _probe_prompt_bos(tokenizer, "<s> hello")
+    assert probe is not None
+    assert _tokenize_prompt(tokenizer, "<s> world", False, probe)["input_ids"].tolist() == [[0, 3]]
     expected = other("<s> hello", return_tensors = "pt", add_special_tokens = True)
     assert (
-        _tokenize_prompt(other, "<s> hello", True)["input_ids"].tolist()
+        _tokenize_prompt(other, "<s> hello", True, probe)["input_ids"].tolist()
         == expected["input_ids"].tolist()
     )
-    assert _prompt_already_has_bos(tokenizer, "<s> hello") is True
-    assert _tokenize_prompt(other, "<s> hello", False)["input_ids"].tolist() == [[0, 2]]
+    assert _tokenize_prompt(other, "<s> hello", False, probe)["input_ids"].tolist() == [[0, 2]]

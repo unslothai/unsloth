@@ -729,49 +729,51 @@ def _truncates_past_window(model) -> bool:
     )
 
 
-def _prompt_already_has_bos(tokenizer, prompt):
-    """Most templates render BOS, so no second one is added; zephyr and tinyllama-chat do not."""
+def _probe_prompt_bos(tokenizer, prompt):
+    """(tokenizer, prompt, encoding) when the rendered prompt already starts with BOS, else None.
+    Most templates render BOS, so no second one is added; zephyr and tinyllama-chat do not."""
     tok = getattr(tokenizer, "tokenizer", tokenizer)
     bos_token_id = getattr(tok, "bos_token_id", None)
     if bos_token_id is None:
-        return False
+        return None
     try:
         encoding = tok(prompt, add_special_tokens = False)
         ids = encoding["input_ids"]
     except Exception:
-        return False
+        return None
     while isinstance(ids, (list, tuple)) and ids and isinstance(ids[0], (list, tuple)):
         ids = ids[0]
-    has_bos = bool(len(ids)) and ids[0] == bos_token_id
-    global _BOS_CHECK_ENCODING
-    # A True verdict means the prompt is tokenized next with this exact call; keep it for that.
-    _BOS_CHECK_ENCODING = (tok, prompt, encoding) if has_bos else None
-    return has_bos
+    if len(ids) and ids[0] == bos_token_id:
+        return tok, prompt, encoding
+    return None
 
 
-_BOS_CHECK_ENCODING = None
+def _prompt_already_has_bos(tokenizer, prompt):
+    return _probe_prompt_bos(tokenizer, prompt) is not None
 
 
-def _tokenize_prompt(tokenizer, prompt, add_special_tokens):
-    """``tokenizer(prompt, return_tensors="pt", add_special_tokens=...)``, reusing the encoding
-    _prompt_already_has_bos just made for the same tokenizer and prompt instead of a second pass."""
-    global _BOS_CHECK_ENCODING
-    held, _BOS_CHECK_ENCODING = _BOS_CHECK_ENCODING, None
-    if (
-        not add_special_tokens
-        and held is not None
-        and held[0] is tokenizer
-        and held[1] == prompt
-        and isinstance(held[2], BatchEncoding)
-        and isinstance(held[2]["input_ids"], list)
-        and not (held[2]["input_ids"] and isinstance(held[2]["input_ids"][0], (list, tuple)))
-    ):
-        encoding = held[2]
-        return BatchEncoding(
-            {key: [value] for key, value in encoding.items()},
-            encoding = encoding.encodings,
-            tensor_type = "pt",
-        )
+def _tokenize_prompt(
+    tokenizer,
+    prompt,
+    add_special_tokens,
+    bos_probe = None,
+):
+    """``tokenizer(prompt, return_tensors="pt", ...)``, reusing the bos_probe encoding of the same
+    tokenizer and prompt instead of tokenizing a long prompt twice."""
+    if not add_special_tokens and bos_probe is not None:
+        probe_tok, probe_prompt, encoding = bos_probe
+        ids = encoding["input_ids"] if isinstance(encoding, BatchEncoding) else None
+        if (
+            probe_tok is tokenizer
+            and probe_prompt == prompt
+            and isinstance(ids, list)
+            and not (ids and isinstance(ids[0], (list, tuple)))
+        ):
+            return BatchEncoding(
+                {key: [value] for key, value in encoding.items()},
+                encoding = encoding.encodings,
+                tensor_type = "pt",
+            )
     return tokenizer(prompt, return_tensors = "pt", add_special_tokens = add_special_tokens)
 
 
@@ -1886,6 +1888,7 @@ class InferenceBackend:
             template_messages = messages
         reasoning_channel_markers_resolved = False
         add_special_tokens = True
+        bos_probe = None
         try:
             if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
                 raise ValueError(
@@ -1951,7 +1954,8 @@ class InferenceBackend:
             reasoning_channel_markers = render_result.reasoning_channel_markers
             reasoning_channel_markers_resolved = True
             # suppress the tokenizer's BOS only when the template already emitted one.
-            add_special_tokens = not _prompt_already_has_bos(tokenizer, formatted_prompt)
+            bos_probe = _probe_prompt_bos(tokenizer, formatted_prompt)
+            add_special_tokens = bos_probe is None
 
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
         except Exception as e:
@@ -1981,6 +1985,7 @@ class InferenceBackend:
             else tool_protocol_active,
             add_special_tokens = add_special_tokens,
             stop = stop,
+            _bos_probe = bos_probe,
         )
 
     def _generate_deepseek_ocr_response(
@@ -2250,10 +2255,9 @@ class InferenceBackend:
             formatted_prompt = self.format_chat_prompt(
                 messages, system_prompt, continue_final_message = continue_final_message
             )
+            bos_probe = _probe_prompt_bos(raw_tokenizer, formatted_prompt)
             inputs = _tokenize_prompt(
-                raw_tokenizer,
-                formatted_prompt,
-                not _prompt_already_has_bos(raw_tokenizer, formatted_prompt),
+                raw_tokenizer, formatted_prompt, bos_probe is None, bos_probe
             ).to(model.device)
             prompt_text = formatted_prompt
 
@@ -2834,6 +2838,7 @@ class InferenceBackend:
         preserve_tool_tokens: bool = False,
         add_special_tokens: bool = True,
         stop: Optional[list] = None,
+        _bos_probe = None,
     ) -> Generator[str, None, None]:
         """Rendered chat prompts pass add_special_tokens=False; raw prompts keep the tokenizer's BOS
         default."""
@@ -2861,7 +2866,9 @@ class InferenceBackend:
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
 
         try:
-            inputs = _tokenize_prompt(tokenizer, prompt, add_special_tokens).to(model.device)
+            inputs = _tokenize_prompt(tokenizer, prompt, add_special_tokens, _bos_probe).to(
+                model.device
+            )
 
             import threading
 
