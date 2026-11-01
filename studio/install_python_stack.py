@@ -11739,7 +11739,8 @@ def _git_remote_commit(
     env.setdefault("GIT_ASKPASS", "echo")
     try:
         probe = subprocess.run(
-            [exe, "ls-remote", "--", url, revision],
+            # A pattern-filtered ls-remote omits the peeled line unless it is asked for.
+            [exe, "ls-remote", "--", url, revision, f"{revision}^{{}}"],
             capture_output = True,
             text = True,
             encoding = "utf-8",
