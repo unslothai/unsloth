@@ -94,6 +94,8 @@ def test_segmented_only_keeps_buffer_untouched_past_the_prompt():
         head_dim = 2,
     )  # fmt: skip
     args = (1, 2, 1, 2, 4, torch.float32, torch.device("cpu"), 256)
-    G.alloc_decode_buffers(attn, torch.full((1, 1, 8, 2), 3.0), torch.full((1, 1, 8, 2), 3.0), *args)
+    G.alloc_decode_buffers(
+        attn, torch.full((1, 1, 8, 2), 3.0), torch.full((1, 1, 8, 2), 3.0), *args
+    )
     G.alloc_decode_buffers(attn, torch.ones(1, 1, 2, 2), torch.ones(1, 1, 2, 2), *args)
     assert (attn.paged_attention_K[2:8] == 3.0).all()
