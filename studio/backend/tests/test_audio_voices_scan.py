@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Listing saved voices resolves the folder once and reads each sidecar once, with the same
-skips and order as reading every voice twice."""
+"""list_voices resolves the folder once, with the same skips and order as before."""
 
 from __future__ import annotations
 
