@@ -280,15 +280,22 @@ def _generate_kwargs(new_tokens = 5):
     )
 
 
+def _skip_without_flex_prefill(model, kw):
+    # Only an unusable flex backend may skip: probe a plain flex prefill, then let generate() raise.
+    try:
+        with torch.no_grad():
+            model(input_ids = kw["input_ids"], attention_mask = kw["attention_mask"])
+    except Exception as e:
+        pytest.skip(f"flex_attention unavailable on this CPU build: {e!r}")
+
+
 def test_real_generate_prefills_on_flex_and_decodes_off_flex():
     model = _tiny_gemma3()
-    seen = _record_paths(model, model.model.layers[0])
     kw = _generate_kwargs()
-    try:
-        with _NonFlexGenerate(model):
-            out = model.generate(**kw)
-    except Exception as e:  # flex_attention unavailable on this CPU build
-        pytest.skip(f"flex_attention generate failed on CPU: {e!r}")
+    _skip_without_flex_prefill(model, kw)
+    seen = _record_paths(model, model.model.layers[0])
+    with _NonFlexGenerate(model):
+        out = model.generate(**kw)
     assert seen[0] == ("flex_attention", 20, "BlockMask")
     assert seen[1:] == [("eager", 1, "Tensor")] * 4
     assert model.config._attn_implementation == "flex_attention"
@@ -300,6 +307,8 @@ def test_real_generate_prefills_on_flex_and_decodes_off_flex():
 def test_lora_generate_routes_each_step(base_patched):
     peft = pytest.importorskip("peft")
     model = _tiny_gemma3()
+    kw = _generate_kwargs()
+    _skip_without_flex_prefill(model, kw)
     seen = _record_paths(model, model.model.layers[0])
     lora = peft.get_peft_model(model, peft.LoraConfig(r = 4, target_modules = ["q_proj", "v_proj"]))
 
@@ -315,11 +324,7 @@ def test_lora_generate_routes_each_step(base_patched):
     if base_patched:
         scoped(model)
     scoped(lora)
-    kw = _generate_kwargs()
-    try:
-        out = lora.generate(**kw)
-    except Exception as e:  # flex_attention unavailable on this CPU build
-        pytest.skip(f"flex_attention generate failed on CPU: {e!r}")
+    out = lora.generate(**kw)
     assert seen[0] == ("flex_attention", 20, "BlockMask")
     assert seen[1:] == [("eager", 1, "Tensor")] * 4
     assert model.config._attn_implementation == "flex_attention"
