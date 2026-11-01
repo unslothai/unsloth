@@ -11,11 +11,12 @@ const Backdrop = lazy(() =>
 export function ChatBackground({
 	active = true,
 	backdrop = false,
-}: { active?: boolean; backdrop?: boolean }) {
+	image = true,
+}: { active?: boolean; backdrop?: boolean; image?: boolean }) {
 	const { value, ready } = useChatBackground();
 	const material = useMaterialStore((s) => s.material);
 	if (!active) return null;
-	if (!value)
+	if (!(value && image))
 		return backdrop && ready && material !== "solid" ? (
 			<Suspense fallback={null}>
 				<Backdrop />

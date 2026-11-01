@@ -26,10 +26,20 @@ export function sanitizeMaterial(value: unknown): WindowMaterial {
 		? (value as WindowMaterial)
 		: "solid";
 }
-export function sanitizeStrength(value: unknown): number {
+export function sanitizeStrength(value: unknown, fallback = 50): number {
 	return typeof value === "number" && Number.isFinite(value)
 		? Math.max(0, Math.min(100, Math.round(value)))
-		: 50;
+		: fallback;
+}
+export type GlassStrengths = { light: number; dark: number };
+export const DEFAULT_GLASS_STRENGTH: GlassStrengths = { light: 40, dark: 15 };
+export function sanitizeStrengths(value: unknown): GlassStrengths {
+	const stored =
+		value && typeof value === "object" ? (value as Partial<GlassStrengths>) : {};
+	return {
+		light: sanitizeStrength(stored.light, DEFAULT_GLASS_STRENGTH.light),
+		dark: sanitizeStrength(stored.dark, DEFAULT_GLASS_STRENGTH.dark),
+	};
 }
 /** Relative luminance of the image's darker quarter, its middle and its brighter quarter. */
 export type ImageTone = { lo: number; mid: number; hi: number };
@@ -43,7 +53,7 @@ export function toneOf(values: number[]): ImageTone {
 const clamp = (v: number, lo: number, hi: number) =>
 	Math.max(lo, Math.min(hi, v));
 
-/** Dark mode: pane under ~0.15 luminance over the bright quarter; light mode: over ~0.5 over the dark quarter (pane ~0.9). */
+/** Dark mode: pane under ~0.15 luminance over the bright quarter; light mode: over ~0.72 over the dark quarter (pane ~0.95), since muted ink is mid-grey. */
 export function glassReadability(
 	tone: ImageTone,
 	dark: boolean,
@@ -55,7 +65,7 @@ export function glassReadability(
 		};
 	return {
 		floor:
-			tone.lo >= 0.5 ? 0 : clamp((0.5 - tone.lo) / (0.9 - tone.lo), 0, 0.85),
+			tone.lo >= 0.72 ? 0 : clamp((0.72 - tone.lo) / (0.95 - tone.lo), 0, 0.88),
 		shade: clamp((tone.mid - 0.45) / 0.4, 0, 1) * 0.12,
 	};
 }
@@ -80,14 +90,19 @@ export const POSITIONS = [
 export const DEFAULT_ADJUSTMENTS = {
 	effect: "None" as BackgroundEffect,
 	visibility: 70,
+	darkVisibility: 40,
 	blur: 0,
-	fade: true,
+	// null: off under glass, on without it, until the user picks.
+	fade: null as boolean | null,
 	outline: true,
 	sizing: "cover" as ImageSizing,
 	zoom: 100,
 	position: "50% 50%",
 };
 export type BackgroundAdjustments = typeof DEFAULT_ADJUSTMENTS;
+export function effectiveFade(fade: boolean | null, glass: boolean): boolean {
+	return fade ?? !glass;
+}
 export type ChatBackgroundValue = BackgroundAdjustments & { blob: Blob };
 export type BackgroundError =
 	| "storage"
@@ -110,8 +125,9 @@ export function sanitizeAdjustments(
 			? input.effect!
 			: "None",
 		visibility: bounded(input.visibility, 100, 70),
+		darkVisibility: bounded(input.darkVisibility, 100, 40),
 		blur: bounded(input.blur, 20, 0),
-		fade: typeof input.fade === "boolean" ? input.fade : true,
+		fade: typeof input.fade === "boolean" ? input.fade : null,
 		outline: typeof input.outline === "boolean" ? input.outline : true,
 		sizing: IMAGE_SIZING.includes(input.sizing as ImageSizing)
 			? input.sizing!
