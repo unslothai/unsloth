@@ -12862,7 +12862,9 @@ class DiffusionBackend:
                 break
         if not seen:
             dtype = getattr(vae, "dtype", None)
-            return dtype if dtype is not None and getattr(dtype, "is_floating_point", False) else None
+            return (
+                dtype if dtype is not None and getattr(dtype, "is_floating_point", False) else None
+            )
         if any(dtype == torch.float32 for dtype in seen):
             return torch.float32
         return seen[0]
