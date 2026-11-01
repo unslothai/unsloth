@@ -133,9 +133,7 @@ def test_dictation_stream_skips_the_gallery(monkeypatch):
     async def scenario():
         events = [
             json.loads(line)
-            async for line in transcript_stream.stream_transcript(
-                transcribe, "clip", save = False
-            )
+            async for line in transcript_stream.stream_transcript(transcribe, "clip", save = False)
         ]
         assert events[-1]["text"] == "spoken"
         assert events[-1]["record"] is None

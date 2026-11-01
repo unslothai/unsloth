@@ -17,7 +17,11 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
-async def stream_transcript(transcribe, title: str, save: bool = True):
+async def stream_transcript(
+    transcribe,
+    title: str,
+    save: bool = True,
+):
     """Stream progress and the result as NDJSON.
 
     ``save`` keeps a completed transcript in the Audio gallery. Dictation turns it

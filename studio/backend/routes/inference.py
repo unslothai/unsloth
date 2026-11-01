@@ -25287,9 +25287,8 @@ def _prefer_downloaded_stt_engine(engine: str, model: Optional[str]) -> str:
         return engine
     from core.inference import stt_ggml_sidecar, stt_sidecar
 
-    if (
-        stt_ggml_sidecar._cached_model_path(model) is None
-        and stt_sidecar.is_model_downloaded(model)
+    if stt_ggml_sidecar._cached_model_path(model) is None and stt_sidecar.is_model_downloaded(
+        model
     ):
         return "transformers"
     return engine
@@ -25476,9 +25475,7 @@ async def stt_keep_alive(
         for candidate in ("transformers", "gguf"):
             if candidate == target:
                 continue
-            alternative = await asyncio.to_thread(
-                stt_registry.keep_alive, candidate, model
-            )
+            alternative = await asyncio.to_thread(stt_registry.keep_alive, candidate, model)
             if alternative.get("held"):
                 result = alternative
                 break

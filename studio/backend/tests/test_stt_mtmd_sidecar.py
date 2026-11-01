@@ -574,7 +574,14 @@ def test_a_recorder_wav_skips_the_decode_round_trip(spawned, monkeypatch):
     monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"reencoded")
     posted = {}
 
-    def post(self, port, model_id, wav, seconds = None, **kwargs):
+    def post(
+        self,
+        port,
+        model_id,
+        wav,
+        seconds = None,
+        **kwargs,
+    ):
         posted.update(wav = wav, seconds = seconds)
         return "hi"
 
@@ -605,7 +612,14 @@ def test_long_audio_is_cut_into_windows_that_fit_the_context(spawned, monkeypatc
     posted = []
     progress = []
 
-    def post(self, port, model_id, wav, seconds = None, **kwargs):
+    def post(
+        self,
+        port,
+        model_id,
+        wav,
+        seconds = None,
+        **kwargs,
+    ):
         posted.append(seconds)
         if kwargs.get("on_progress"):
             kwargs["on_progress"]({"text": f"part{len(posted)}"})
@@ -614,9 +628,7 @@ def test_long_audio_is_cut_into_windows_that_fit_the_context(spawned, monkeypatc
     monkeypatch.setattr(MtmdSttSidecar, "_post_transcribe", post)
 
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
-    result = sidecar.transcribe(
-        b"audio", model = "qwen3-asr-0.6b", on_progress = progress.append
-    )
+    result = sidecar.transcribe(b"audio", model = "qwen3-asr-0.6b", on_progress = progress.append)
 
     assert len(posted) == 3, posted
     assert all(seconds <= 60 for seconds in posted), posted
