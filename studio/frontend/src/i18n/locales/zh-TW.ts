@@ -1024,7 +1024,7 @@ export const zhTW = {
       deleteProjects: "刪除專案",
       deleteProjectsTitle: "刪除專案",
       deleteProjectsDescription:
-        "要刪除 {count} 個專案嗎？其中的聊天將被永久刪除。",
+        "{count} 個專案及其所有聊天將被永久刪除。此動作無法復原。",
       deleteProjectsFilesDescription:
         "每個專案的工作區資料夾都會從磁碟中移除。",
       countSelected: "已選取 {count} 個",
@@ -1035,7 +1035,7 @@ export const zhTW = {
       markRead: "標示為已讀",
       deleteChats: "刪除聊天",
       deleteTitle: "刪除聊天",
-      deleteDescription: "要刪除 {count} 個聊天嗎？此動作無法復原。",
+      deleteDescription: "{count} 個聊天及其訊息將被永久刪除。此動作無法復原。",
       deleteFilesDescription:
         "每個聊天專屬的沙箱資料夾都會從磁碟中移除。它們在專案中寫入的檔案會保留在該專案的工作區。",
       deleteFilesLabel: "刪除檔案與沙箱資料夾",
@@ -1083,7 +1083,7 @@ export const zhTW = {
     dialog: {
       deleteChat: {
         title: "刪除聊天",
-        description: "確定要刪除聊天「{name}」嗎？",
+        description: "聊天「{name}」及其訊息將被永久刪除。此動作無法復原。",
       },
       deleteRun: {
         title: "刪除訓練執行作業",
@@ -3311,10 +3311,10 @@ export const zhTW = {
         movedChatsToRecents: "已移至「最近項目」的聊天：{count}",
         moveFailed: "無法移動聊天",
         deleteChatsTitle: "刪除聊天（{count}）",
-        deleteChatsWarning: "要刪除所選的聊天（{count}）嗎？此動作無法復原。",
+        deleteChatsWarning: "{count} 個聊天及其訊息將被永久刪除。此動作無法復原。",
         deleteArchivedTitle: "刪除 {count} 個已封存的聊天",
         deleteArchivedWarning:
-          "要刪除所選的已封存聊天（{count}）嗎？此動作無法復原。",
+          "{count} 個已封存聊天及其訊息將被永久刪除。此動作無法復原。",
         deleting: "正在刪除...",
       },
       title: "資料",
@@ -4774,9 +4774,9 @@ export const zhTW = {
       },
       dialog: {
         renameChat: "重新命名聊天",
-        deleteChatDescription: "此聊天將被永久刪除。此動作無法復原。",
+        deleteChatDescription: "此聊天及其訊息將被永久刪除。此動作無法復原。",
         deleteProjectDescription:
-          "此專案及其聊天（{count}）將被永久刪除。此動作無法復原。",
+          "此專案及其聊天（{count} 個）將被永久刪除。此動作無法復原。",
         deleteFilesMany: "同時移除這些聊天建立的檔案和沙箱資料夾。",
         deleteProjectFilesLabel: "刪除專案工作區資料夾",
         deleteProjectFiles: "專案工作區資料夾將從磁碟中移除。",
@@ -5244,14 +5244,14 @@ export const zhTW = {
     renameChat: "重新命名聊天",
     chatName: "聊天名稱",
     deleteChat: "刪除聊天",
-    deleteChatDescription: "確定要刪除 {name} 嗎？其訊息將被永久刪除。",
+    deleteChatDescription: "聊天「{name}」及其訊息將被永久刪除。此動作無法復原。",
     importChats: "匯入聊天",
     importDestination: "選擇要將 {name} 匯入至何處：",
     selectDestination: "選取目的地",
     recents: "最近項目",
     import: "匯入",
     deleteProject: "刪除專案",
-    deleteProjectDescription: "確定要刪除 {name} 嗎？其中的聊天將被永久刪除。",
+    deleteProjectDescription: "專案「{name}」及其所有聊天將被永久刪除。此動作無法復原。",
     deleteProjectFiles: "專案工作區資料夾將從磁碟中移除。",
     deleteAll: "全部刪除",
     projectFallback: "專案",

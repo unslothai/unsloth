@@ -1082,7 +1082,7 @@ export const vi = {
       deleteProjects: "Xóa dự án",
       deleteProjectsTitle: "Xóa dự án",
       deleteProjectsDescription:
-        "Xóa {count} dự án? Các cuộc trò chuyện trong đó sẽ bị xóa vĩnh viễn.",
+        "{count} dự án và tất cả cuộc trò chuyện của chúng sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
       deleteProjectsFilesDescription:
         "Thư mục không gian làm việc của từng dự án sẽ bị xóa khỏi ổ đĩa.",
       countSelected: "Đã chọn {count}",
@@ -1094,7 +1094,7 @@ export const vi = {
       deleteChats: "Xóa cuộc trò chuyện",
       deleteTitle: "Xóa cuộc trò chuyện",
       deleteDescription:
-        "Xóa {count} cuộc trò chuyện? Không thể hoàn tác thao tác này.",
+        "{count} cuộc trò chuyện và các tin nhắn của chúng sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
       deleteFilesDescription:
         "Thư mục sandbox riêng của từng cuộc trò chuyện sẽ bị xóa khỏi ổ đĩa. Các tệp chúng đã ghi bên trong một dự án vẫn nằm trong không gian làm việc của dự án đó.",
       deleteFilesLabel: "Xóa tệp và thư mục sandbox",
@@ -1143,7 +1143,7 @@ export const vi = {
       deleteChat: {
         title: "Xóa cuộc trò chuyện",
         description:
-          "Bạn có chắc chắn muốn xóa cuộc trò chuyện “{name}” này không?",
+          "Cuộc trò chuyện “{name}” và các tin nhắn của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
       },
       deleteRun: {
         title: "Xóa lượt huấn luyện",
@@ -3486,10 +3486,10 @@ export const vi = {
         moveFailed: "Không thể di chuyển cuộc trò chuyện",
         deleteChatsTitle: "Xóa cuộc trò chuyện ({count})",
         deleteChatsWarning:
-          "Xóa các cuộc trò chuyện đã chọn ({count})? Không thể hoàn tác thao tác này.",
+          "{count} cuộc trò chuyện và các tin nhắn của chúng sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
         deleteArchivedTitle: "Xóa {count} cuộc trò chuyện đã lưu trữ",
         deleteArchivedWarning:
-          "Xóa các cuộc trò chuyện đã lưu trữ được chọn ({count})? Không thể hoàn tác thao tác này.",
+          "{count} cuộc trò chuyện đã lưu trữ và các tin nhắn của chúng sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
         deleting: "Đang xóa...",
       },
       title: "Dữ liệu",
@@ -5057,9 +5057,9 @@ export const vi = {
       dialog: {
         renameChat: "Đổi tên cuộc trò chuyện",
         deleteChatDescription:
-          "Cuộc trò chuyện này sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
+          "Cuộc trò chuyện và các tin nhắn của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
         deleteProjectDescription:
-          "Dự án và các cuộc trò chuyện của dự án ({count}) sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
+          "Dự án và các cuộc trò chuyện của nó ({count}) sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
         deleteFilesMany:
           "Đồng thời xóa các tệp và thư mục sandbox mà những cuộc trò chuyện này đã tạo.",
         deleteProjectFilesLabel: "Xóa thư mục không gian làm việc của dự án",
@@ -5557,7 +5557,7 @@ export const vi = {
     chatName: "Tên cuộc trò chuyện",
     deleteChat: "Xóa cuộc trò chuyện",
     deleteChatDescription:
-      "Bạn có chắc muốn xóa {name}? Các tin nhắn trong đó sẽ bị xóa vĩnh viễn.",
+      "Cuộc trò chuyện “{name}” và các tin nhắn của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
     importChats: "Nhập cuộc trò chuyện",
     importDestination: "Chọn nơi để nhập {name}:",
     selectDestination: "Chọn đích đến",
@@ -5565,7 +5565,7 @@ export const vi = {
     import: "Nhập",
     deleteProject: "Xóa dự án",
     deleteProjectDescription:
-      "Bạn có chắc muốn xóa {name}? Các cuộc trò chuyện trong đó sẽ bị xóa vĩnh viễn.",
+      "Dự án “{name}” và tất cả cuộc trò chuyện của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
     deleteProjectFiles:
       "Thư mục không gian làm việc của dự án sẽ bị xóa khỏi ổ đĩa.",
     deleteAll: "Xóa tất cả",

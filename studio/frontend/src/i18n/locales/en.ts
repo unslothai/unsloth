@@ -986,7 +986,7 @@ export const en = {
       deleteProjects: "Delete projects",
       deleteProjectsTitle: "Delete projects",
       deleteProjectsDescription:
-        "Delete {count} projects? Their chats are permanently deleted.",
+        "This permanently deletes {count} projects and all of their chats. This cannot be undone.",
       deleteProjectsFilesDescription:
         "Each project workspace folder is removed from disk.",
       countSelected: "{count} selected",
@@ -997,7 +997,7 @@ export const en = {
       markRead: "Mark as read",
       deleteChats: "Delete chats",
       deleteTitle: "Delete chats",
-      deleteDescription: "Delete {count} chats? This cannot be undone.",
+      deleteDescription: "This permanently deletes {count} chats and their messages. This cannot be undone.",
       deleteFilesDescription:
         "Each chat's own sandbox folder is removed from disk. Files they wrote inside a project stay in that project's workspace.",
       deleteFilesLabel: "Delete files and sandbox folder",
@@ -1046,7 +1046,7 @@ export const en = {
     dialog: {
       deleteChat: {
         title: "Delete chat",
-        description: 'Are you sure you want to delete this chat "{name}"?',
+        description: 'This permanently deletes "{name}" and its messages. This cannot be undone.',
       },
       deleteRun: {
         title: "Delete training run",
@@ -3230,9 +3230,9 @@ export const en = {
         movedChatsToRecents: "Chats moved to Recents: {count}",
         moveFailed: "Failed to move chats",
         deleteChatsTitle: "Delete chats ({count})",
-        deleteChatsWarning: "Delete the selected chats ({count})? This cannot be undone.",
+        deleteChatsWarning: "This permanently deletes {count} chats and their messages. This cannot be undone.",
         deleteArchivedTitle: "Delete {count} archived chats",
-        deleteArchivedWarning: "Delete the selected archived chats ({count})? This cannot be undone.",
+        deleteArchivedWarning: "This permanently deletes {count} archived chats and their messages. This cannot be undone.",
         deleting: "Deleting...",
       },
       title: "Data",
@@ -4719,8 +4719,8 @@ export const en = {
       },
       dialog: {
         renameChat: "Rename chat",
-        deleteChatDescription: "This chat will be permanently deleted. This cannot be undone.",
-        deleteProjectDescription: "The project and its chats ({count}) will be permanently deleted. This cannot be undone.",
+        deleteChatDescription: "This permanently deletes the chat and its messages. This cannot be undone.",
+        deleteProjectDescription: "This permanently deletes the project and its chats ({count}). This cannot be undone.",
         deleteFilesMany: "Also remove the files and sandbox folders these chats created.",
         deleteProjectFilesLabel: "Delete project workspace folder",
         deleteProjectFiles: "The project workspace folder will be removed from disk.",
@@ -5192,14 +5192,14 @@ export const en = {
     renameChat: "Rename chat",
     chatName: "Chat name",
     deleteChat: "Delete chat",
-    deleteChatDescription: "Are you sure you want to delete {name}? Its messages will be permanently deleted.",
+    deleteChatDescription: 'This permanently deletes "{name}" and its messages. This cannot be undone.',
     importChats: "Import chats",
     importDestination: "Choose where to import {name}:",
     selectDestination: "Select destination",
     recents: "Recents",
     import: "Import",
     deleteProject: "Delete project",
-    deleteProjectDescription: "Are you sure you want to delete {name}? Its chats will be permanently deleted.",
+    deleteProjectDescription: 'This permanently deletes the project "{name}" and all of its chats. This cannot be undone.',
     deleteProjectFiles: "The project workspace folder will be removed from disk.",
     deleteAll: "Delete all",
     projectFallback: "project",

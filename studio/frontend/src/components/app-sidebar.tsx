@@ -337,29 +337,6 @@ import { Tick02Icon } from "@/lib/tick-icon";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
 
-const EMPHASIS_MARKER = "__UNSLOTH_I18N_EMPHASIS_MARKER__";
-
-type AppT = ReturnType<typeof useT>;
-
-function renderEmphasizedTranslation(
-  t: AppT,
-  key: TranslationKey,
-  emphasizedValue: string,
-): ReactNode {
-  const translated = t(key, { name: EMPHASIS_MARKER });
-  const parts = translated.split(EMPHASIS_MARKER);
-  if (parts.length === 1) return translated;
-
-  const nodes: ReactNode[] = [];
-  parts.forEach((part, index) => {
-    if (part.length > 0) nodes.push(part);
-    if (index < parts.length - 1) {
-      nodes.push(<em key={`emphasis-${index}`}>{emphasizedValue}</em>);
-    }
-  });
-  return nodes;
-}
-
 const SETTINGS_TAB_MENU_ITEMS: Record<
   "profile" | "appearance" | "resources" | "chat" | "connections",
   { icon: typeof ZapIcon; labelKey: TranslationKey }
@@ -6960,7 +6937,7 @@ export function AppSidebar() {
             {confirmingDelete?.kind === "run"
               ? t("shell.dialog.deleteRun.title")
               : confirmingDelete?.kind === "project"
-                ? "Delete project"
+                ? t("projectsPage.deleteProject")
                 : confirmingDelete?.kind === "chats"
                   ? t("shell.selection.deleteTitle")
                   : confirmingDelete?.kind === "projects"
@@ -6969,17 +6946,13 @@ export function AppSidebar() {
           </DialogTitle>
           <DialogDescription>
             {confirmingDelete?.kind === "run" ? (
-              renderEmphasizedTranslation(
-                t,
-                "shell.dialog.deleteRun.description",
-                getTrainingRunDisplayTitle(confirmingDelete.run),
-              )
+              t("shell.dialog.deleteRun.description", {
+                name: getTrainingRunDisplayTitle(confirmingDelete.run),
+              })
             ) : confirmingDelete?.kind === "chat" ? (
-              renderEmphasizedTranslation(
-                t,
-                "shell.dialog.deleteChat.description",
-                confirmingDelete.item.title,
-              )
+              t("shell.dialog.deleteChat.description", {
+                name: confirmingDelete.item.title,
+              })
             ) : confirmingDelete?.kind === "chats" ? (
               t("shell.selection.deleteDescription", {
                 count: confirmingDelete.items.length,
@@ -6989,13 +6962,9 @@ export function AppSidebar() {
                 count: confirmingDelete.projects.length,
               })
             ) : confirmingDelete?.kind === "project" ? (
-              <>
-                Delete{" "}
-                <span className="font-medium text-foreground">
-                  &quot;{confirmingDelete.project.name}&quot;
-                </span>
-                ? Its chats will be permanently deleted.
-              </>
+              t("projectsPage.deleteProjectDescription", {
+                name: confirmingDelete.project.name,
+              })
             ) : null}
           </DialogDescription>
         </DialogHeader>

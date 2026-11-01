@@ -981,7 +981,7 @@ export const es = {
       deleteProjects: "Eliminar proyectos",
       deleteProjectsTitle: "Eliminar proyectos",
       deleteProjectsDescription:
-        "¿Eliminar {count} proyectos? Sus chats se eliminan de forma permanente.",
+        "Se eliminarán permanentemente {count} proyectos y todos sus chats. Esta acción no se puede deshacer.",
       deleteProjectsFilesDescription:
         "La carpeta del espacio de trabajo de cada proyecto se elimina del disco.",
       countSelected: "{count} seleccionados",
@@ -992,7 +992,7 @@ export const es = {
       markRead: "Marcar como leído",
       deleteChats: "Eliminar chats",
       deleteTitle: "Eliminar chats",
-      deleteDescription: "¿Eliminar {count} chats? Esta acción no se puede deshacer.",
+      deleteDescription: "Se eliminarán permanentemente {count} chats y sus mensajes. Esta acción no se puede deshacer.",
       deleteFilesDescription:
         "Se elimina del disco la carpeta de entorno aislado de cada chat. Los archivos que hayan escrito dentro de un proyecto permanecen en el espacio de trabajo de ese proyecto.",
       deleteFilesLabel: "Eliminar archivos y carpeta de espacio aislado",
@@ -1040,7 +1040,7 @@ export const es = {
     dialog: {
       deleteChat: {
         title: "Eliminar chat",
-        description: '¿Seguro que quieres eliminar este chat "{name}"?',
+        description: 'Se eliminarán permanentemente el chat "{name}" y sus mensajes. Esta acción no se puede deshacer.',
       },
       deleteRun: {
         title: "Eliminar ejecución de entrenamiento",
@@ -3251,9 +3251,9 @@ export const es = {
         movedChatsToRecents: "Chats movidos a Recientes: {count}",
         moveFailed: "No se pudieron mover los chats",
         deleteChatsTitle: "Eliminar chats ({count})",
-        deleteChatsWarning: "¿Eliminar los chats seleccionados ({count})? Esta acción no se puede deshacer.",
+        deleteChatsWarning: "Se eliminarán permanentemente {count} chats y sus mensajes. Esta acción no se puede deshacer.",
         deleteArchivedTitle: "Eliminar {count} chats archivados",
-        deleteArchivedWarning: "¿Eliminar los chats archivados seleccionados ({count})? Esta acción no se puede deshacer.",
+        deleteArchivedWarning: "Se eliminarán permanentemente {count} chats archivados y sus mensajes. Esta acción no se puede deshacer.",
         deleting: "Eliminando...",
       },
       title: "Datos",
@@ -4773,8 +4773,8 @@ export const es = {
       },
       dialog: {
         renameChat: "Renombrar chat",
-        deleteChatDescription: "Este chat se eliminará de forma permanente. Esta acción no se puede deshacer.",
-        deleteProjectDescription: "El proyecto y sus chats ({count}) se eliminarán de forma permanente. Esta acción no se puede deshacer.",
+        deleteChatDescription: "Se eliminarán permanentemente el chat y sus mensajes. Esta acción no se puede deshacer.",
+        deleteProjectDescription: "Se eliminarán permanentemente el proyecto y sus chats ({count}). Esta acción no se puede deshacer.",
         deleteFilesMany: "Eliminar también los archivos y carpetas de sandbox que crearon estos chats.",
         deleteProjectFilesLabel: "Eliminar la carpeta de trabajo del proyecto",
         deleteProjectFiles: "La carpeta de trabajo del proyecto se eliminará del disco.",
@@ -5230,14 +5230,14 @@ export const es = {
     renameChat: "Renombrar chat",
     chatName: "Nombre del chat",
     deleteChat: "Eliminar chat",
-    deleteChatDescription: "¿Seguro que quieres eliminar {name}? Sus mensajes se eliminarán de forma permanente.",
+    deleteChatDescription: 'Se eliminarán permanentemente el chat "{name}" y sus mensajes. Esta acción no se puede deshacer.',
     importChats: "Importar chats",
     importDestination: "Elige dónde importar {name}:",
     selectDestination: "Seleccionar destino",
     recents: "Recientes",
     import: "Importar",
     deleteProject: "Eliminar proyecto",
-    deleteProjectDescription: "¿Seguro que quieres eliminar {name}? Sus chats se eliminarán de forma permanente.",
+    deleteProjectDescription: 'Se eliminarán permanentemente el proyecto "{name}" y todos sus chats. Esta acción no se puede deshacer.',
     deleteProjectFiles: "La carpeta de trabajo del proyecto se eliminará del disco.",
     deleteAll: "Eliminar todo",
     projectFallback: "proyecto",
