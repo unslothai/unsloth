@@ -651,6 +651,19 @@ def _mamba_raw_weight_leaf(model, name) -> bool:
     return leaf in _RAW_WEIGHT_LEAVES and _is_mamba_mixer(parent)
 
 
+def _block_swapped_modules(model) -> set:
+    """ids of every module inside a decoder layer managed by block swap (install_block_swap)."""
+    out = set()
+    for module in model.modules():
+        swapper = module.__dict__.get("_unsloth_block_swap")
+        if swapper is None or not isinstance(module, torch.nn.ModuleList):
+            continue
+        for index in getattr(swapper, "indices", ()) or ():
+            if 0 <= index < len(module):
+                out.update(id(m) for m in module[index].modules())
+    return out
+
+
 def enable_fp8_lora(
     model,
     recipe = None,
@@ -672,6 +685,7 @@ def enable_fp8_lora(
     uses = {}
     for _, p in model.named_parameters(remove_duplicate = False):
         uses[id(p)] = uses.get(id(p), 0) + 1
+    swapped = _block_swapped_modules(model)
     offload = kernels.offload_supported()
     offloaded = 0
     for name, module in model.named_modules():
@@ -688,6 +702,10 @@ def enable_fp8_lora(
                 why = f"weight on {device}"
             elif torch.cuda.get_device_capability(device) < (8, 9):
                 why = "compute capability below 8.9"
+        if why is None and id(base) in swapped:
+            # Block swap (offload_layers) streams these weights in and out and leaves empty placeholders: no fp8
+            # copy of a weight that is not there.
+            why = "block-swapped layer"
         if why is None and uses.get(id(base.weight), 0) > 1:
             # A Parameter shared by two modules (tied weights): a merge through one reader would leave the other's
             # fp8 copy stale (same storage and version), so it stays a 16-bit base.

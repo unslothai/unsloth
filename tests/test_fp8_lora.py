@@ -1055,3 +1055,19 @@ def test_a_base_weight_shared_by_two_lora_layers_stays_16bit(offload_on_cpu):
     x = torch.randn(32, 64).bfloat16()
     with torch.no_grad():
         torch.testing.assert_close(inner.a(x), inner.b(x))
+
+
+def test_block_swapped_layers_are_not_converted(offload_on_cpu):
+    # Failing before: layers managed by block swap (offload_layers) were converted, and an evicted layer's empty
+    # placeholder weight crashed quantization ("cannot compute the inf norm on an empty tensor").
+    import types
+
+    model = _tiny_qwen3_peft()
+    layers = model.base_model.model.model.layers
+    layers._unsloth_block_swap = types.SimpleNamespace(indices = [1])
+    for m in layers[1].modules():
+        if isinstance(m, torch.nn.Linear) and not m.weight.requires_grad:
+            m.weight = torch.nn.Parameter(torch.empty(0, dtype = m.weight.dtype), requires_grad = False)
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    converted = f8t.enable_fp8_lora(model, allow_cpu = True)
+    assert converted and all(".layers.0." in name for name in converted)
