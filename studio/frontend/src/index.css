@@ -7145,7 +7145,6 @@ html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .
 .glass-lens-fill .glass-lens-copy {
   filter: blur(var(--glass-blur, 12px)) saturate(var(--glass-saturate, 150%));
 }
-/* A hairline: the padding box minus the content box, so the outline is the colour right behind it. */
 .glass-lens-rim {
   padding: 1px;
   mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);

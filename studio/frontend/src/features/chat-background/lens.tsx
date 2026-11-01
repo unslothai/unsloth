@@ -73,7 +73,6 @@ function Lens({
       const w = wallpaper.getBoundingClientRect();
       const h = host.getBoundingClientRect();
       const opacity = getComputedStyle(wallpaper).opacity;
-      // The composer's own fill too: Glass strength and style change it with no resize to notice.
       const fill = getComputedStyle(host);
       const key = [
         w.left,
@@ -138,7 +137,6 @@ function Lens({
       subtree: true,
       attributes: true,
     });
-    // Moves without a resize (the welcome composer docking) and the conversation dim have no event.
     const poll = window.setInterval(place, 300);
     window.addEventListener("resize", place);
     return () => {
@@ -148,7 +146,6 @@ function Lens({
       window.removeEventListener("resize", place);
       cancelAnimationFrame(frame);
     };
-    // Each mode has its own scale, so a mode change (which adds or drops the fill) re-runs this.
   }, [host, wallpaper, scale]);
   return (
     <div ref={root} aria-hidden="true" className="glass-lens" data-lens={lens}>
