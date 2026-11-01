@@ -8,10 +8,13 @@ export const ptBR = {
   chatBackground: {
     noBackground: "Sem fundo",
     sizing: "Dimensionamento da imagem",
+    sizingPosition: "Dimensionamento e posição da imagem",
     fill: "Preencher",
     fit: "Ajustar",
     stretch: "Esticar",
     original: "Tamanho original",
+    fitWidth: "Ajustar à largura",
+    fitHeight: "Ajustar à altura",
     zoom: "Zoom",
     outline: "Contorno do campo de mensagem",
     fade: "Esmaecer para o fundo",
@@ -30,6 +33,12 @@ export const ptBR = {
     visibility: "Visibilidade",
     blur: "Desfoque da imagem",
     position: "Posição",
+    horizontal: "Posição horizontal",
+    vertical: "Posição vertical",
+    scope: "Mostrar em",
+    scopeNewChat: "Página de novo chat",
+    scopeChats: "Chats",
+    scopeAll: "Todas as páginas",
     positionValue: "Horizontal {x}%, vertical {y}%",
     newChat: "Novo chat",
     conversation: "Conversa",
@@ -2359,6 +2368,22 @@ export const ptBR = {
         label: "Doces ou travessuras",
         description:
           "Temas de Halloween e saudações assustadoras, até 1º de novembro.",
+      },
+      code: {
+        title: "Código",
+        fontDescription: "Blocos de código no chat, prévias de arquivos e exemplos da API.",
+        lineNumbers: {
+          label: "Números de linha",
+          description: "Numerar as linhas dos blocos de código no chat.",
+        },
+        wordWrap: {
+          label: "Quebra de linha",
+          description: "Quebrar linhas longas nos blocos de código em vez de rolar para o lado.",
+        },
+        ligatures: {
+          label: "Ligaduras da fonte",
+          description: "Unir símbolos como => e != em um único glifo quando a fonte de código oferece suporte.",
+        },
       },
       custom: {
         chatWidth: {
@@ -5264,6 +5289,18 @@ export const ptBR = {
     flaggedIntro: "Nosso verificador automático encontrou problemas, incluindo:",
     nothingFlagged:
       "Nosso verificador automático não encontrou arquivos preocupantes, mas confira mesmo assim.",
+    unscannedTitle: "Não foi possível verificar os arquivos do modelo",
+    unscannedBody: "{model} inclui pesos pickle, que podem executar código ao carregar, e não há verificação de malware disponível para eles, então não pode ser carregado. {note}",
+    unscannedIntro: "Arquivos que não puderam ser verificados:",
+    switchSourceNote: "Mude a fonte de modelos para Hugging Face em Configurações para carregá-lo.",
+    reconnectNote: "Conecte-se ao Hugging Face para que a verificação possa ser lida e tente novamente.",
+    managedTitle: "O código personalizado está desativado nesta conta",
+    managedNote: "Ele está desativado em contas gerenciadas. Peça ao proprietário da instalação para ativá-lo.",
+    notFoundTitle: "Não encontrado em {source}",
+    notFoundBody: "{model} não foi encontrado em {source}, então as verificações de segurança não puderam ser executadas. Confira o nome ou defina um token com acesso se o repositório for privado.",
+    notOnModelScopeBody: "{model} não está disponível no ModelScope, então as verificações de segurança não puderam ser executadas e ele não pode ser carregado de lá. Mude a fonte de modelos para Hugging Face em Configurações para usá-lo.",
+    checksFailedTitle: "Não foi possível executar as verificações de segurança",
+    checksFailedBody: "Não foi possível ler {model} de {source}, então as verificações de segurança não puderam ser concluídas e ele não pode ser carregado. Verifique sua conexão e seu token e tente novamente. {note}",
     enableAndContinue: "Ativar e continuar",
   },
   tour: {

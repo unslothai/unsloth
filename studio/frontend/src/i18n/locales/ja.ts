@@ -9,10 +9,13 @@ export const ja = {
   chatBackground: {
     noBackground: "背景なし",
     sizing: "画像のサイズ調整",
+    sizingPosition: "画像のサイズと位置",
     fill: "埋める",
     fit: "全体を表示",
     stretch: "引き伸ばす",
     original: "元のサイズ",
+    fitWidth: "幅に合わせる",
+    fitHeight: "高さに合わせる",
     zoom: "ズーム",
     outline: "入力欄の枠線",
     fade: "背景にフェード",
@@ -31,6 +34,12 @@ export const ja = {
     visibility: "表示強度",
     blur: "画像のぼかし",
     position: "位置",
+    horizontal: "水平位置",
+    vertical: "垂直位置",
+    scope: "表示する場所",
+    scopeNewChat: "新規チャットページ",
+    scopeChats: "チャット",
+    scopeAll: "すべてのページ",
     positionValue: "横 {x}%、縦 {y}%",
     newChat: "新しいチャット",
     conversation: "会話",
@@ -2325,6 +2334,22 @@ export const ja = {
         label: "トリック・オア・トリート",
         description:
           "11月1日まで、ハロウィンのテーマと怖いあいさつを楽しめます。",
+      },
+      code: {
+        title: "コード",
+        fontDescription: "チャット内のコードブロック、ファイルのプレビュー、API の例。",
+        lineNumbers: {
+          label: "行番号",
+          description: "チャット内のコードブロックに行番号を表示します。",
+        },
+        wordWrap: {
+          label: "折り返し",
+          description: "コードブロックの長い行を横スクロールせずに折り返します。",
+        },
+        ligatures: {
+          label: "合字",
+          description: "コードフォントが対応していれば、=> や != などの記号を 1 つの字形で表示します。",
+        },
       },
       custom: {
         chatWidth: {
@@ -5184,6 +5209,18 @@ export const ja = {
     flaggedIntro: "自動スキャナーが次のような問題を検出しました:",
     nothingFlagged:
       "自動スキャナーは懸念のあるファイルを検出しませんでしたが、念のためご自身でも確認してください。",
+    unscannedTitle: "モデルファイルをスキャンできませんでした",
+    unscannedBody: "{model} には読み込み時にコードを実行できる pickle 重みが含まれており、マルウェアスキャンの結果もないため読み込めません。{note}",
+    unscannedIntro: "スキャンできなかったファイル:",
+    switchSourceNote: "設定でモデルソースを Hugging Face に切り替えると読み込めます。",
+    reconnectNote: "Hugging Face に接続してスキャン結果を読み取れるようにしてから、もう一度お試しください。",
+    managedTitle: "このアカウントではカスタムコードが無効です",
+    managedNote: "管理対象アカウントでは無効になっています。インストールの所有者に有効化を依頼してください。",
+    notFoundTitle: "{source} に見つかりません",
+    notFoundBody: "{model} は {source} に見つからないため、セキュリティチェックを実行できませんでした。名前を確認するか、非公開リポジトリの場合はアクセス権のあるトークンを設定してください。",
+    notOnModelScopeBody: "{model} は ModelScope で利用できないため、セキュリティチェックを実行できず、そこから読み込むこともできません。設定でモデルソースを Hugging Face に切り替えてください。",
+    checksFailedTitle: "セキュリティチェックを実行できませんでした",
+    checksFailedBody: "{source} から {model} を読み取れなかったため、セキュリティチェックを完了できず、読み込めません。接続とトークンを確認して、もう一度お試しください。{note}",
     enableAndContinue: "有効にして続行",
   },
   tour: {

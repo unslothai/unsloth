@@ -26,6 +26,7 @@ import signal
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 import asyncio
+import contextvars
 import queue
 import random
 import re
@@ -132,6 +133,9 @@ EMPTY_SEARCH_RESULTS = (
 )
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
+# While text engines fail, no early image lookup: its answer is discarded and adds to rate limiting.
+_TEXT_SEARCH_FAILURE_HOLD_S = 120.0
+_text_search_failed_at: "float | None" = None
 # Not "connection error": DNS failures and refused connections are not resets (#12638).
 _DDGS_RESET_MARKERS = (
     "connection reset",
@@ -9988,6 +9992,23 @@ def _project_workdir_for(session_id: "str | None") -> "str | None":
     return _get_project_workdir(session_id)
 
 
+def session_runs_in_user_folder(session_id: "str | None") -> bool:
+    """Whether this session's code tools run in the owner's chosen project folder, resolved as the executor does."""
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    try:
+        from storage.studio_db import available_project_working_folder, get_chat_project
+
+        # One read rules out most projects before the four the full resolution makes.
+        project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+        if not available_project_working_folder(project):
+            return False
+        workdir = _project_workdir_for(session_id)
+        return bool(workdir) and _is_user_project_folder(session_id, workdir)
+    except Exception:
+        return False
+
+
 def _get_project_workdir(session_id: str) -> str | None:
     # Host project paths are single-user only; managed accounts use their sandbox.
     if not is_owner_context():
@@ -16653,7 +16674,74 @@ def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) ->
     cls._unsloth_http1_retry = True
 
 
-def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
+class _ImageSweep:
+    """Image lookup started beside the text search; the caller still decides whether to register it."""
+
+    def __init__(self, lookup) -> None:
+        from .search_images import cache_generation
+
+        # Read before the sweep so a clear-all during it invalidates new entries.
+        self.generation = cache_generation()
+        self._done = threading.Event()
+        self._value = None
+        self._error: BaseException | None = None
+        context = contextvars.copy_context()
+        threading.Thread(
+            target = context.run,
+            args = (self._run, lookup),
+            name = "web-search-images",
+            daemon = True,
+        ).start()
+
+    def _run(self, lookup) -> None:
+        try:
+            self._value = lookup()
+        except BaseException as exc:  # noqa: BLE001 - re-raised to the caller by result()
+            self._error = exc
+        finally:
+            self._done.set()
+
+    def result(self):
+        self._done.wait()
+        if self._error is not None:
+            raise self._error
+        return self._value
+
+    @classmethod
+    def start(cls, subjects, query, wanted, timeout, website_policy) -> "_ImageSweep | None":
+        """None when the serial path would not reach the network."""
+        try:
+            from ddgs import DDGS
+
+            if not callable(getattr(DDGS, "images", None)):
+                return None
+            if subjects:
+                cleaned = _clean_image_queries(subjects)
+                if not cleaned:
+                    return None
+                return cls(lambda: _image_lookups(cleaned, timeout, website_policy))
+            from .search_images import MAX_IMAGES_PER_SEARCH
+
+            images_fn = DDGS(timeout = timeout).images
+            return cls(
+                lambda: images_fn(
+                    query,
+                    max_results = max(wanted, MAX_IMAGES_PER_SEARCH * 2),
+                    safesearch = "moderate",
+                )
+            )
+        except Exception:  # noqa: BLE001 - the serial path stays available
+            logger.debug("image lookup not started early", exc_info = True)
+            return None
+
+
+def _image_search_or_none(
+    subjects: list,
+    timeout,
+    cancel_event,
+    website_policy,
+    sweep = None,
+) -> "str | None":
     """Returns None on failure: an image error must not discard the text results already found."""
     try:
         return _image_search(
@@ -16661,6 +16749,7 @@ def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy)
             timeout = timeout,
             cancel_event = cancel_event,
             website_policy = website_policy,
+            sweep = sweep,
         )
     except Exception as exc:  # noqa: BLE001 - a garnish must not become the answer
         logger.debug("image lookup failed (%s)", type(exc).__name__)
@@ -16668,7 +16757,13 @@ def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy)
 
 
 def _empty_result_with_requested_images(
-    empty_text: str, subjects: list, include_images: bool, timeout, cancel_event, website_policy
+    empty_text: str,
+    subjects: list,
+    include_images: bool,
+    timeout,
+    cancel_event,
+    website_policy,
+    sweep = None,
 ) -> str:
     """Explicitly named image subjects still return pictures when the text search comes back empty."""
     if not subjects:
@@ -16678,7 +16773,7 @@ def _empty_result_with_requested_images(
         return empty_text + "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
     if cancel_event is not None and cancel_event.is_set():
         return empty_text
-    found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
+    found = _image_search_or_none(subjects, timeout, cancel_event, website_policy, sweep)
     if found is None:
         return empty_text
     return empty_text + "\n\n---\n\n" + found
@@ -16735,6 +16830,16 @@ def _usable_search_results(results, website_policy):
     ]
 
 
+def _note_text_search_outcome(found: bool, error, timeout) -> None:
+    """Holds back early image lookups after an engine failure; any answer, even empty, clears it."""
+    global _text_search_failed_at
+    if found:
+        _text_search_failed_at = None
+    elif error is not None:
+        empty = _search_failure_message(error, timeout) == EMPTY_SEARCH_RESULTS[0]
+        _text_search_failed_at = None if empty else time.monotonic()
+
+
 def _web_search(
     query: str,
     max_results: int = 5,
@@ -16771,6 +16876,7 @@ def _web_search(
     # DDGS.text() is blocking, so cancellation is checked before and after the call.
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
+    sweep = None
     try:
         from .web_access_policy import check_url_access, scope_search_query
 
@@ -16798,6 +16904,13 @@ def _web_search(
                 raise RuntimeError("no approved search engine is available.")
             # reset after setup to keep the primary budget; the earlier deadline bounds fallback.
             deadline = time.monotonic() + timeout if timeout else None
+            failed_at = _text_search_failed_at
+            if include_images and (
+                failed_at is None or time.monotonic() - failed_at > _TEXT_SEARCH_FAILURE_HOLD_S
+            ):
+                sweep = _ImageSweep.start(
+                    subjects, effective_query, wanted, timeout, website_policy
+                )
             client = DDGS(timeout = timeout)
             # DDGS uses per-client timeouts; tiers share one budget and images reuse the client.
             for backend in engine_tiers:
@@ -16819,6 +16932,7 @@ def _web_search(
                     break
         except Exception as exc:
             last_error = exc
+        _note_text_search_outcome(bool(results) or rejected_results, last_error, timeout)
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
@@ -16859,6 +16973,7 @@ def _web_search(
                 timeout,
                 cancel_event,
                 website_policy,
+                sweep,
             )
         parts = []
         for r in results:
@@ -16879,6 +16994,7 @@ def _web_search(
                 timeout,
                 cancel_event,
                 website_policy,
+                sweep,
             )
         text = "\n\n---\n\n".join(parts)
         if wikipedia_fallback:
@@ -16894,7 +17010,7 @@ def _web_search(
         )
         if include_images and subjects:
             # named subjects require one image each rather than a generic image batch.
-            found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
+            found = _image_search_or_none(subjects, timeout, cancel_event, website_policy, sweep)
             if found is not None:
                 text += "\n\n---\n\n" + found
         elif include_images and not wikipedia_fallback:
@@ -16904,6 +17020,7 @@ def _web_search(
                 wanted,
                 cancel_event,
                 website_policy,
+                sweep,
             )
         elif subjects:
             # replayed history must retain the disabled-search reminder.
@@ -16920,6 +17037,7 @@ def _web_search(
                 timeout,
                 cancel_event,
                 website_policy,
+                sweep,
             )
         return failure
 
@@ -16949,33 +17067,12 @@ def _clean_image_queries(queries) -> list[str]:
     return cleaned
 
 
-def _image_search(
-    queries,
-    timeout: int = _EXEC_TIMEOUT,
-    cancel_event = None,
-    website_policy: dict | None = None,
-) -> str:
-    # One lookup per subject, concurrently; same registry and tokens as web_search.
+def _image_lookups(cleaned: list, timeout, website_policy) -> list:
     from concurrent.futures import ThreadPoolExecutor
 
-    from .search_images import cache_generation, images_envelope, register_images
+    from ddgs import DDGS
 
-    cleaned = _clean_image_queries(queries)
-    if not cleaned:
-        return "No subjects provided."
-    if cancel_event is not None and cancel_event.is_set():
-        return "Search cancelled."
-    expected_generation = cache_generation()
-    try:
-        from ddgs import DDGS
-
-        from .web_access_policy import scope_search_query
-    except Exception as e:
-        return _search_failure_message(e, timeout)
-    _install_ddgs_http1_retry()
-    _install_ddgs_connect_timeout()
-    if not callable(getattr(DDGS, "images", None)):
-        return "Image search is unavailable in this install."
+    from .web_access_policy import scope_search_query
 
     def lookup(subject: str) -> list:
         # A client per call: ddgs instances are not documented thread-safe.
@@ -16993,7 +17090,40 @@ def _image_search(
             return []
 
     with ThreadPoolExecutor(max_workers = len(cleaned)) as pool:
-        raw_by_subject = list(pool.map(lookup, cleaned))
+        return list(pool.map(lookup, cleaned))
+
+
+def _image_search(
+    queries,
+    timeout: int = _EXEC_TIMEOUT,
+    cancel_event = None,
+    website_policy: dict | None = None,
+    sweep: "_ImageSweep | None" = None,
+) -> str:
+    # Same registry and tokens as web_search; a sweep is these lookups already under way.
+    from .search_images import cache_generation, images_envelope, register_images
+
+    cleaned = _clean_image_queries(queries)
+    if not cleaned:
+        return "No subjects provided."
+    if cancel_event is not None and cancel_event.is_set():
+        return "Search cancelled."
+    expected_generation = cache_generation() if sweep is None else sweep.generation
+    try:
+        from ddgs import DDGS
+
+        from .web_access_policy import scope_search_query  # noqa: F401 - fail here, as before
+    except Exception as e:
+        return _search_failure_message(e, timeout)
+    _install_ddgs_http1_retry()
+    _install_ddgs_connect_timeout()
+    if not callable(getattr(DDGS, "images", None)):
+        return "Image search is unavailable in this install."
+
+    if sweep is not None:
+        raw_by_subject = sweep.result()
+    else:
+        raw_by_subject = _image_lookups(cleaned, timeout, website_policy)
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
 
@@ -17027,7 +17157,14 @@ def _image_search(
     return header + "\n\n" + "\n\n".join(sections) + images_envelope(entries_all)
 
 
-def _web_search_images_suffix(client, query, wanted, cancel_event, website_policy) -> str:
+def _web_search_images_suffix(
+    client,
+    query,
+    wanted,
+    cancel_event,
+    website_policy,
+    sweep = None,
+) -> str:
     # "" when images are unavailable; never raises, the text results stand on their own.
     from .search_images import (
         MAX_IMAGES_PER_SEARCH,
@@ -17041,11 +17178,14 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
     if not callable(images_fn):
         return ""
     # Read before the sweep so a clear-all during it invalidates new entries.
-    expected_generation = cache_generation()
+    expected_generation = cache_generation() if sweep is None else sweep.generation
     try:
-        raw = images_fn(
-            query, max_results = max(wanted, MAX_IMAGES_PER_SEARCH * 2), safesearch = "moderate"
-        )
+        if sweep is not None:
+            raw = sweep.result()
+        else:
+            raw = images_fn(
+                query, max_results = max(wanted, MAX_IMAGES_PER_SEARCH * 2), safesearch = "moderate"
+            )
     except Exception as exc:  # noqa: BLE001 - optional extra; the text results stand on their own
         logger.debug("web_search image lookup skipped (%s)", type(exc).__name__)
         return ""

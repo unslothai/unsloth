@@ -16,6 +16,7 @@ import {
   toolApprovalScope,
   toolResultParams,
 } from "../src/features/chat/mcp-apps/mcp-ui.ts";
+import { stripBase64Runs } from "../src/features/chat/utils/chat-search-text.ts";
 import { splitMcpToolName } from "../src/features/chat/utils/mcp-tool-name.ts";
 
 const read = (path: string) =>
@@ -170,8 +171,9 @@ test("the search index keeps a widget's shown text, not its seed", () => {
   const searchableText = new Function(
     "splitMcpImages",
     "isMcpUiToolResult",
+    "stripBase64Runs",
     `${js}; return searchableText;`,
-  )(splitMcpImages, isMcpUiToolResult) as (
+  )(splitMcpImages, isMcpUiToolResult, stripBase64Runs) as (
     value: unknown,
     depth?: number,
     toolName?: string,

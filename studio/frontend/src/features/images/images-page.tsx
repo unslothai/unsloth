@@ -11,10 +11,13 @@ import type { CompareRun } from "./compare/compare-run";
 import ComparePanel from "./compare/compare-panel";
 import {
   type DragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  memo,
   type ReactNode,
   type SetStateAction,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -25,7 +28,7 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  Image03Icon,
+  Image01Icon,
   ImageAdd02Icon,
   ImageCropIcon,
   InformationCircleIcon,
@@ -121,7 +124,7 @@ import { GalleryItemMenu, GalleryPinBadge } from "@/components/gallery-item-menu
 import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
 import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
 import { StripDropLine } from "@/components/gallery-strip-reorder";
-import { useStripReorder } from "@/hooks/use-strip-reorder";
+import { type StripDropCue, useStripReorder } from "@/hooks/use-strip-reorder";
 import { MediaApiButton } from "@/components/media-api-button";
 import { LibraryPageLink, SiblingMediaPageLink } from "@/components/media-page-link";
 import { translate, useT } from "@/i18n";
@@ -367,6 +370,7 @@ import {
   shouldOfferGenerateAnyway,
   shouldRunQueuedOversizedRetry,
 } from "./lib/memory-refusal";
+import { HELD_BY_OTHER_ACCOUNT_NOTICE, heldByOtherAccount, ownDiffusionStatus } from "./lib/resident-owner";
 import {
   AUTOMATIC_SCHEDULE,
   DEFAULT_SAMPLER,
@@ -1592,6 +1596,131 @@ function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
   const text = shortPrompt(prompt);
   return text ? t("library.viewer.openImageNamed", { prompt: text }) : t("library.viewer.openImage");
 }
+
+/** Page callbacks a tile reads at event time, so new page closures never re-render it. */
+interface StripTileActions {
+  tileProps: ReturnType<typeof useStripReorder>["tileProps"];
+  select: (id: string) => void;
+  setMenuId: (id: string | null) => void;
+  togglePin: (id: string, pinned: boolean) => void;
+  archive: (id: string) => void;
+  remove: (id: string) => void;
+  download: (image: GalleryImage) => void;
+  addToProject: (id: string, projectId: string) => Promise<{ already: boolean }>;
+  toggleFavorite: (key: string) => void;
+  editImage: (image: GalleryImage) => void;
+}
+
+class StripTileActionsBox {
+  private actions: StripTileActions | null = null;
+  set(actions: StripTileActions) {
+    this.actions = actions;
+  }
+  get(): StripTileActions {
+    return this.actions as StripTileActions;
+  }
+}
+
+function EditImageMenuItem({ onClick }: { onClick: () => void }) {
+  return (
+    <DropdownMenuItem onClick={onClick}>
+      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+      Edit image
+    </DropdownMenuItem>
+  );
+}
+
+const GalleryStripTile = memo(function GalleryStripTile({
+  image,
+  src,
+  selected,
+  menuOpen,
+  active,
+  favorite,
+  dragging,
+  cueEdge,
+  actions,
+}: {
+  image: GalleryImage;
+  src: string | undefined;
+  selected: boolean;
+  menuOpen: boolean;
+  active: boolean;
+  favorite: boolean;
+  dragging: boolean;
+  cueEdge: StripDropCue["edge"] | null;
+  actions: StripTileActionsBox;
+}) {
+  const id = image.id;
+  return (
+    <div
+      data-image-id={id}
+      data-reorder-id={id}
+      draggable={true}
+      onDragStart={(event: DragEvent<HTMLElement>) => actions.get().tileProps(id).onDragStart(event)}
+      onDragEnd={() => actions.get().tileProps(id).onDragEnd()}
+      onKeyDown={(event: ReactKeyboardEvent<HTMLElement>) => actions.get().tileProps(id).onKeyDown(event)}
+      // Desktop only: a browser's own image menu works on these thumbnails, so keep it there.
+      // Portalled children (the New project dialog) bubble here too: leave their menu alone.
+      onContextMenu={(event) => {
+        if (!isTauri || !event.currentTarget.contains(event.target as Node)) return;
+        event.preventDefault();
+        actions.get().setMenuId(id);
+      }}
+      className={cn("group relative size-16 shrink-0", dragging && "opacity-40")}
+    >
+      {cueEdge && <StripDropLine edge={cueEdge} />}
+      <button
+        type="button"
+        onClick={() => actions.get().select(id)}
+        className="relative size-full overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {src ? (
+          <img
+            src={src}
+            alt={image.prompt}
+            draggable={false}
+            className="size-full object-cover"
+          />
+        ) : (
+          <span className="flex size-full items-center justify-center">
+            <Spinner className="size-4 text-muted-foreground" />
+          </span>
+        )}
+        {/* Selection marker on a non-focusable overlay, so the button's focus state cannot mask it. */}
+        {selected && (
+          <span className="pointer-events-none absolute inset-0 rounded-lg border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
+        )}
+      </button>
+      {image.pinned && (
+        <GalleryPinBadge
+          noun="image"
+          className="bottom-0.5 left-0.5"
+          onUnpin={() => actions.get().togglePin(id, false)}
+        />
+      )}
+      <div className="absolute right-0.5 top-0.5">
+        <GalleryItemMenu
+          variant="overlay"
+          noun="image"
+          active={active}
+          open={menuOpen}
+          onOpenChange={(open) => actions.get().setMenuId(open ? id : null)}
+          pinned={Boolean(image.pinned)}
+          archived={Boolean(image.archived)}
+          favorite={favorite}
+          onToggleFavorite={() => actions.get().toggleFavorite(`image:${id}`)}
+          onTogglePin={() => actions.get().togglePin(id, !image.pinned)}
+          onToggleArchive={() => actions.get().archive(id)}
+          onDelete={() => actions.get().remove(id)}
+          onDownload={() => actions.get().download(image)}
+          onAddToProject={(projectId) => actions.get().addToProject(id, projectId)}
+          leadingItems={<EditImageMenuItem onClick={() => actions.get().editImage(image)} />}
+        />
+      </div>
+    </div>
+  );
+});
 
 export function ImagesPage({
   active = true,
@@ -3197,7 +3326,7 @@ export function ImagesPage({
   const refreshStatus = useCallback(async () => {
     const ticket = ++statusTicket.current;
     try {
-      setStatusIfNewest(ticket, await getDiffusionStatus());
+      setStatusIfNewest(ticket, ownDiffusionStatus(await getDiffusionStatus()));
     } catch {
       // Status is best-effort; a failed poll should not surface an error toast.
     }
@@ -3313,7 +3442,7 @@ export function ImagesPage({
       if (p.phase === "ready") {
         dismissLoadToast();
         const ticket = ++statusTicket.current;
-        const loaded = await getDiffusionStatus();
+        const loaded = ownDiffusionStatus(await getDiffusionStatus());
         if (seq !== cancelSeq.current) {
           // Cancelled mid-read: drop it, the unload's own response is authoritative.
           return;
@@ -3480,7 +3609,7 @@ export function ImagesPage({
           void pollLoadProgress();
         } else if (p.phase === "ready") {
           const ticket = ++statusTicket.current;
-          const loaded = await getDiffusionStatus();
+          const loaded = ownDiffusionStatus(await getDiffusionStatus());
           setStatusIfNewest(ticket, loaded);
           const resumed = finishedLoadTarget<LastLoad>(null, loaded);
           if (resumed) {
@@ -3899,11 +4028,24 @@ export function ImagesPage({
     applyEditSource(dataUrl);
   }, [pendingLibraryEdit, capabilitiesKnown, applyEditSource]);
   const editImageItem = (image: GalleryImage) => (
-    <DropdownMenuItem onClick={() => void editGalleryImage(image)}>
-      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-      Edit image
-    </DropdownMenuItem>
+    <EditImageMenuItem onClick={() => void editGalleryImage(image)} />
   );
+  // Refreshed after every commit, read only from tile event handlers, so new page closures never re-render a tile.
+  const [stripTileActions] = useState(() => new StripTileActionsBox());
+  useLayoutEffect(() => {
+    stripTileActions.set({
+      tileProps: stripReorder.tileProps,
+      select: setSelectedId,
+      setMenuId: setTileMenuId,
+      togglePin: (id, pinned) => void handleTogglePin(id, pinned),
+      archive: (id) => void handleArchive(id),
+      remove: (id) => void handleDelete(id),
+      download: (image) => void handleQuickDownload(image),
+      addToProject: addGalleryImageToProject,
+      toggleFavorite,
+      editImage: (image) => void editGalleryImage(image),
+    });
+  });
   const { openCrop: openInpaintCrop, cropDialog: inpaintCropDialog } = useImageCrop(
     initImage,
     handleInitChange,
@@ -6929,6 +7071,11 @@ export function ImagesPage({
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
           <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-3">
+            {!external && busy === null && heldByOtherAccount(status) && (
+              <p role="status" className="w-full text-center text-ui-11 leading-snug text-muted-foreground">
+                {HELD_BY_OTHER_ACCOUNT_NOTICE}
+              </p>
+            )}
             {busy === "generating" ? (
               <Button
                 className="relative z-10 text-ui-13 hover:bg-muted dark:hover:bg-muted"
@@ -7186,7 +7333,7 @@ export function ImagesPage({
               </>
             ) : busy === "generating" ? null : (
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <HugeiconsIcon icon={Image03Icon} className="size-12" strokeWidth={1.5} />
+                <HugeiconsIcon icon={Image01Icon} className="size-12" strokeWidth={1.5} />
                 <p className="text-sm">
                   {status?.loaded || external
                     ? "Enter a prompt and hit Generate."
@@ -7241,74 +7388,18 @@ export function ImagesPage({
                 </div>
               )}
               {images.map((image) => (
-                <div
+                <GalleryStripTile
                   key={image.id}
-                  data-image-id={image.id}
-                  {...stripReorder.tileProps(image.id)}
-                  // Desktop only: a browser's own image menu works on these thumbnails, so keep it there.
-                  // Portalled children (the New project dialog) bubble here too: leave their menu alone.
-                  onContextMenu={(event) => {
-                    if (!isTauri || !event.currentTarget.contains(event.target as Node)) return;
-                    event.preventDefault();
-                    setTileMenuId(image.id);
-                  }}
-                  className={cn(
-                    "group relative size-16 shrink-0",
-                    stripReorder.draggingId === image.id && "opacity-40",
-                  )}
-                >
-                  {stripReorder.cue?.id === image.id && (
-                    <StripDropLine edge={stripReorder.cue.edge} />
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setSelectedId(image.id)}
-                    className="relative size-full overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    {(thumbById[image.id] ?? srcById[image.id]) ? (
-                      <img
-                        src={thumbById[image.id] ?? srcById[image.id]}
-                        alt={image.prompt}
-                        draggable={false}
-                        className="size-full object-cover"
-                      />
-                    ) : (
-                      <span className="flex size-full items-center justify-center">
-                        <Spinner className="size-4 text-muted-foreground" />
-                      </span>
-                    )}
-                    {/* Selection marker on a non-focusable overlay, so the button's focus state cannot mask it. */}
-                    {image.id === selected?.id && (
-                      <span className="pointer-events-none absolute inset-0 rounded-lg border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
-                    )}
-                  </button>
-                  {image.pinned && (
-                    <GalleryPinBadge
-                      noun="image"
-                      className="bottom-0.5 left-0.5"
-                      onUnpin={() => void handleTogglePin(image.id, false)}
-                    />
-                  )}
-                  <div className="absolute right-0.5 top-0.5">
-                    <GalleryItemMenu
-                      variant="overlay"
-                      noun="image"
-                      active={active}
-                      open={tileMenuId === image.id}
-                      onOpenChange={(open) => setTileMenuId(open ? image.id : null)}
-                      pinned={Boolean(image.pinned)}
-                      archived={Boolean(image.archived)}
-                      favorite={isFavorite(`image:${image.id}`)}
-                      onToggleFavorite={() => toggleFavorite(`image:${image.id}`)}
-                      onTogglePin={() => void handleTogglePin(image.id, !image.pinned)}
-                      onToggleArchive={() => void handleArchive(image.id)}
-                      onDelete={() => void handleDelete(image.id)}
-                    onDownload={() => void handleQuickDownload(image)}
-                    onAddToProject={(projectId) => addGalleryImageToProject(image.id, projectId)}
-                      leadingItems={editImageItem(image)}
-                    />
-                  </div>
-                </div>
+                  image={image}
+                  src={thumbById[image.id] ?? srcById[image.id]}
+                  selected={image.id === selected?.id}
+                  menuOpen={tileMenuId === image.id}
+                  active={active}
+                  favorite={isFavorite(`image:${image.id}`)}
+                  dragging={stripReorder.draggingId === image.id}
+                  cueEdge={stripReorder.cue?.id === image.id ? stripReorder.cue.edge : null}
+                  actions={stripTileActions}
+                />
               ))}
               {hasMore && (
                 <div className="flex size-16 shrink-0 items-center justify-center">

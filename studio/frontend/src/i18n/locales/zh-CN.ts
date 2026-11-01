@@ -8,10 +8,13 @@ export const zhCN = {
   chatBackground: {
     noBackground: "无背景",
     sizing: "图片缩放方式",
+    sizingPosition: "图片缩放与位置",
     fill: "填充",
     fit: "适应",
     stretch: "拉伸",
     original: "原始尺寸",
+    fitWidth: "适应宽度",
+    fitHeight: "适应高度",
     zoom: "缩放",
     outline: "消息输入框边框",
     fade: "渐隐至背景",
@@ -30,6 +33,12 @@ export const zhCN = {
     visibility: "可见度",
     blur: "图片模糊",
     position: "位置",
+    horizontal: "水平位置",
+    vertical: "垂直位置",
+    scope: "显示位置",
+    scopeNewChat: "新聊天页面",
+    scopeChats: "聊天",
+    scopeAll: "所有页面",
     positionValue: "水平 {x}%，垂直 {y}%",
     newChat: "新聊天",
     conversation: "对话",
@@ -2328,6 +2337,22 @@ export const zhCN = {
         label: "不给糖就捣蛋",
         description:
           "万圣节主题和惊悚问候，持续到 11 月 1 日。",
+      },
+      code: {
+        title: "代码",
+        fontDescription: "聊天中的代码块、文件预览和 API 示例。",
+        lineNumbers: {
+          label: "行号",
+          description: "为聊天中的代码块显示行号。",
+        },
+        wordWrap: {
+          label: "自动换行",
+          description: "代码块中的长行自动换行，而不是横向滚动。",
+        },
+        ligatures: {
+          label: "字体连字",
+          description: "代码字体支持时，将 => 和 != 等符号合成一个字形。",
+        },
       },
       custom: {
         chatWidth: {
@@ -5135,6 +5160,18 @@ export const zhCN = {
     flaggedIntro: "我们的自动扫描器标记了以下问题：",
     nothingFlagged:
       "我们的自动扫描器未标记任何可疑文件，但请再次确认。",
+    unscannedTitle: "无法扫描模型文件",
+    unscannedBody: "{model} 包含 pickle 权重,这类文件在加载时可能运行代码,而且没有可用的恶意软件扫描结果,因此无法加载。{note}",
+    unscannedIntro: "无法扫描的文件:",
+    switchSourceNote: "请在设置中将模型来源切换为 Hugging Face 后加载。",
+    reconnectNote: "请连接到 Hugging Face 以读取其扫描结果,然后重试。",
+    managedTitle: "此账户已关闭自定义代码",
+    managedNote: "托管账户已关闭此功能。请联系安装所有者启用。",
+    notFoundTitle: "在 {source} 上未找到",
+    notFoundBody: "在 {source} 上未找到 {model},因此无法运行安全检查。请检查名称;如果仓库是私有的,请设置有访问权限的令牌。",
+    notOnModelScopeBody: "{model} 在 ModelScope 上不可用,因此无法运行安全检查,也无法从该来源加载。请在设置中将模型来源切换为 Hugging Face 后使用。",
+    checksFailedTitle: "无法运行安全检查",
+    checksFailedBody: "无法从 {source} 读取 {model},因此安全检查未能完成,也无法加载。请检查网络连接和令牌后重试。{note}",
     enableAndContinue: "启用并继续",
   },
   tour: {
