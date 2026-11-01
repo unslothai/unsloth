@@ -69,6 +69,7 @@ def _case_units(rank, world, tmp):
     best = _trainer_args(
         tmp, 2, load_best_model_at_end = True, eval_strategy = "steps", save_strategy = "steps"
     )
+    smoothed = _trainer_args(tmp, 2, label_smoothing_factor = 0.3)
     try:
         from trl import SFTConfig, SFTTrainer
         packed = SFTConfig(output_dir = tmp, packing = True, report_to = [], use_cpu = True)
@@ -166,6 +167,15 @@ def _case_units(rank, world, tmp):
     out["plain"] = _raised(lambda: pp_env.pp_trainer_refusals(PlainSubclass, args, lay))
     out["trainer"] = _raised(lambda: pp_env.pp_trainer_refusals(transformers.Trainer, args, lay))
     out["best"] = _raised(lambda: pp_env.pp_trainer_refusals(transformers.Trainer, best, lay))
+    # Failing before: label smoothing and compute_loss_func were accepted and silently skipped.
+    out["smoothing"] = _raised(
+        lambda: pp_env.pp_trainer_refusals(transformers.Trainer, smoothed, lay)
+    )
+    out["loss_func"] = _raised(
+        lambda: pp_env.pp_trainer_refusals(
+            transformers.Trainer, args, lay, compute_loss_func = lambda *a, **k: None
+        )
+    )
     if SFTTrainer is not None:
         out["packing"] = _raised(lambda: pp_env.pp_trainer_refusals(SFTTrainer, packed, lay))
         out["sft"] = _raised(lambda: pp_env.pp_trainer_refusals(SFTTrainer, plain_sft, lay))
@@ -315,6 +325,8 @@ def _case_env(
     stage = pp_native.pipeline_stage_of(trainer.model)
     if stage is not None:
         res["stage"] = stage.stage_index
+        # Every stage seeds its train sampler per dp replica (LengthGroupedSampler would draw from the global RNG).
+        res["sampler_hooked"] = "_get_train_sampler" in trainer.__dict__
         res["owned"] = sorted(n for n, p in trainer.model.named_parameters() if p.requires_grad)
         res["kept_on_cpu"] = (
             all(p.device.type == "cpu" for _, _, m, _ in stage._kept for p in m.parameters())
@@ -682,6 +694,8 @@ def test_pp_env_layout_and_refusals():
     assert "overrides compute_loss" in (res["custom_loss"] or ""), res["custom_loss"]
     assert res["plain"] is None and res["trainer"] is None, (res["plain"], res["trainer"])
     assert "load_best_model_at_end" in (res["best"] or ""), res["best"]
+    assert "label_smoothing_factor" in (res["smoothing"] or ""), res["smoothing"]
+    assert "compute_loss_func" in (res["loss_func"] or ""), res["loss_func"]
     if res["sft"] != "no trl":
         assert res["sft"] is None, res["sft"]
         assert "packing" in (res["packing"] or ""), res["packing"]
@@ -715,6 +729,7 @@ def test_pp_env_trainer_matches_one_process(world, env, ref_bs):
                 res["seen"],
             )
         assert "DistributedDataParallel" not in res["wrapped"]
+        assert res["sampler_hooked"], res
         _close(res, ref, what = rank)
         stages.add(res["stage"])
     assert stages == {0, 1}

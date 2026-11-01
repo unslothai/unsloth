@@ -1046,6 +1046,24 @@ def _refuse_generate(*args, **kwargs):
     )
 
 
+def _batch_kwargs(kwargs, bsz, device, what):
+    """Tensor kwargs with the batch dimension first: a size-1 batch dimension (broadcast position_ids) is
+    expanded so the schedule splits it per micro-batch like input_ids."""
+    out = {}
+    for key, value in kwargs.items():
+        if isinstance(value, torch.Tensor):
+            if value.dim() == 0 or value.shape[0] not in (1, bsz):
+                raise ValueError(
+                    f"Unsloth: PipelineParallel.{what} {key} must have the batch dimension first "
+                    f"({bsz} or 1), got {tuple(value.shape)}."
+                )
+            if value.shape[0] == 1 and bsz > 1:
+                value = value.expand(bsz, *value.shape[1:])
+            value = value.to(device)
+        out[key] = value
+    return out
+
+
 class PipelineParallel:
     """This rank's pipeline stage of a model split by apply_pipeline_parallel."""
 
@@ -1369,18 +1387,7 @@ class PipelineParallel:
         # FSDP2 / DDP-style dp average the gradients over dp: dp x (this replica's token loss sum / global tokens).
         self._loss_multiplier = (dp_mesh.size() if dp_mesh is not None else 1) * float(loss_scale)
         schedule = self._schedule_for(bsz // m, seq, m)
-        step_kwargs = {}
-        for key, value in kwargs.items():
-            if isinstance(value, torch.Tensor):
-                if value.dim() == 0 or value.shape[0] not in (1, bsz):
-                    raise ValueError(
-                        f"Unsloth: PipelineParallel.step {key} must have the batch dimension first "
-                        f"({bsz} or 1), got {tuple(value.shape)}."
-                    )
-                if value.shape[0] == 1 and bsz > 1:
-                    value = value.expand(bsz, *value.shape[1:])  # split per micro-batch on dim 0
-                value = value.to(device)
-            step_kwargs[key] = value
+        step_kwargs = _batch_kwargs(kwargs, bsz, device, "step")
         step_kwargs["labels"] = labels.to(device)
         if self._needs_stage_ids():
             step_kwargs[_STAGE_IDS] = input_ids.to(device)
@@ -1456,10 +1463,7 @@ class PipelineParallel:
         device = self.device
         if num_items_in_batch is None:
             num_items_in_batch = int((labels[:, 1:] != -100).sum())
-        step_kwargs = {
-            key: (value.to(device) if isinstance(value, torch.Tensor) else value)
-            for key, value in kwargs.items()
-        }
+        step_kwargs = _batch_kwargs(kwargs, bsz, device, "eval_loss")
         step_kwargs["labels"] = labels.to(device)
         if self._needs_stage_ids():
             step_kwargs[_STAGE_IDS] = input_ids.to(device)

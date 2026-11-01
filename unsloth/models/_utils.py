@@ -6593,16 +6593,19 @@ def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
     if layout is None or layout.pp == 1:
         return
     training_args = kwargs.get("args")
-    if training_args is None:
+    compute_loss_func = kwargs.get("compute_loss_func")
+    if training_args is None or (compute_loss_func is None and args):
         try:
             import inspect
+
             bound = inspect.signature(init).bind_partial(trainer, *args, **kwargs)
-            training_args = bound.arguments.get("args")
+            training_args = bound.arguments.get("args", training_args)
+            compute_loss_func = bound.arguments.get("compute_loss_func", compute_loss_func)
         except (TypeError, ValueError):
-            training_args = None
+            pass
     from .pp_env import pp_trainer_refusals
 
-    pp_trainer_refusals(type(trainer), training_args, layout)
+    pp_trainer_refusals(type(trainer), training_args, layout, compute_loss_func = compute_loss_func)
 
 
 def _tensor_parallel_env_trainer_pre(model):

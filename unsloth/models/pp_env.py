@@ -540,7 +540,12 @@ def _trainer_classes(cls):
     return [c for c in cls.__mro__ if c is not object]
 
 
-def pp_trainer_refusals(trainer_cls, args, layout):
+def pp_trainer_refusals(
+    trainer_cls,
+    args,
+    layout,
+    compute_loss_func = None,
+):
     """Before Trainer.__init__ splits anything: the trainers / arguments the pipeline step cannot honour."""
     hint = _hint()
     builtin = ("transformers.", "trl.", "unsloth", "Unsloth")
@@ -568,9 +573,16 @@ def pp_trainer_refusals(trainer_cls, args, layout):
                     "pipeline parallel the loss is computed by the pipeline schedule (the causal LM loss on "
                     f"`labels`), so the override would be skipped.{hint}"
                 )
+    if compute_loss_func is not None:
+        raise NotImplementedError(
+            f"Unsloth: {layout.env_vars} (pipeline parallel): Trainer(compute_loss_func = ...) would be skipped, "
+            f"the pipeline schedule computes the causal LM loss on `labels`.{hint}"
+        )
     problems = []
     if args is None:
         return
+    if getattr(args, "label_smoothing_factor", 0) or 0:
+        problems.append("label_smoothing_factor (the pipeline computes the plain causal LM loss)")
     if getattr(args, "deepspeed", None):
         problems.append("DeepSpeed")
     if getattr(args, "fsdp", None) or getattr(args, "parallelism_config", None) is not None:
@@ -829,11 +841,15 @@ def pp_trainer_setup(trainer):
         _tp_load_from_checkpoint,
         _tp_load_optimizer_and_scheduler,
         _tp_save_optimizer_and_scheduler,
+        _tp_train_sampler,
     )
 
     stage = _stage_of(trainer.model)
     dp, dp_rank, _ = _dp_info(stage)
     accelerator = trainer.accelerator
+    if not trainer.__dict__.get("_unsloth_tensor_parallel"):
+        # Every stage must draw the same rows: seed the train sampler per dp replica, not from the global RNG.
+        _tp_train_sampler(trainer, dp, dp_rank)
     _install_tp_accelerate_hooks()  # map-style data sharded over dp only, no DDP / device move of the model
     accelerator.__dict__[_TP_DATA] = (dp, dp_rank)
     accelerator.__dict__["_unsloth_pp_stage"] = stage
