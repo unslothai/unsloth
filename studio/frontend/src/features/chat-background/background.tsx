@@ -213,6 +213,24 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 		};
 	}, [appWallpaper, tone, skin.light, glass]);
 	useEffect(() => {
+		// Firefox can keep a backdrop-filter's snapshot from before the image painted (a dark box until
+		// something repaints), so nudge every glass blur once the frame has faded in.
+		if (!(appWallpaper && glass && frameUrl)) return;
+		const root = document.documentElement;
+		let frame = 0;
+		const timer = setTimeout(() => {
+			root.style.setProperty("--glass-repaint", "1");
+			frame = requestAnimationFrame(() =>
+				root.style.removeProperty("--glass-repaint"),
+			);
+		}, 250);
+		return () => {
+			clearTimeout(timer);
+			cancelAnimationFrame(frame);
+			root.style.removeProperty("--glass-repaint");
+		};
+	}, [appWallpaper, glass, frameUrl]);
+	useEffect(() => {
 		// Only the app's own wallpaper drives the titlebar; a settings preview never marks the root.
 		const parent = host.current?.parentElement;
 		if (!shownReady || !parent) return;

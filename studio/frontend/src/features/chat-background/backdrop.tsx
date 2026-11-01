@@ -6,6 +6,8 @@ import { ROOT_READY, ROOT_WORKSPACE_READY, markRoot } from "./background";
 import { ComposerGlassLenses } from "./lens";
 
 const BACKDROP_SAFE = "0.55";
+// Glass over the plain page, with no image: light mode tunes its menus for that.
+const ROOT_PLAIN = "data-glass-plain";
 
 export function GlassBackdrop() {
 	const host = useRef<HTMLDivElement>(null);
@@ -15,7 +17,7 @@ export function GlassBackdrop() {
 		if (!parent?.hasAttribute("data-wallpaper-workspace")) return;
 		setAppWallpaper(host.current);
 		parent.style.setProperty("--wallpaper-safe", BACKDROP_SAFE);
-		const unmark = markRoot([ROOT_READY, ROOT_WORKSPACE_READY]);
+		const unmark = markRoot([ROOT_READY, ROOT_WORKSPACE_READY, ROOT_PLAIN]);
 		return () => {
 			unmark();
 			parent.style.removeProperty("--wallpaper-safe");
