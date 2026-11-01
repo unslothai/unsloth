@@ -800,7 +800,7 @@ def _push_mlx_merged(
             if written:
                 written = _mlx_kept_sidecars(model, output_path, written)
         if not output_is_fresh and not written:
-            # Untracked, so upload a clean second save; without a local save this is the only one.
+            # Without a local save this is the only one.
             upload_dir = stack.enter_context(
                 _staging_dir(Path(output_path).parent)
                 if output_path
