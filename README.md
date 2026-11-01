@@ -407,7 +407,7 @@ Cap Unsloth's native CPU thread pools on high-core hosts: `UNSLOTH_CPU_THREADS=8
 
 #### Vulkan, custom llama.cpp backends:
 
-You can force the backend during installation: 
+Pick the llama.cpp build GGUF chat runs on during installation. PyTorch is picked separately from your GPU, so this does not change it:
 ```bash
 export UNSLOTH_LLAMA_CPP_BACKEND=vulkan   # or cpu, cuda, rocm, auto
 curl -fsSL https://unsloth.ai/install.sh | sh
@@ -415,6 +415,15 @@ curl -fsSL https://unsloth.ai/install.sh | sh
 ```powershell
 $env:UNSLOTH_LLAMA_CPP_BACKEND="vulkan"   # or cpu, cuda, rocm, auto
 irm https://unsloth.ai/install.ps1 | iex
+```
+
+To choose PyTorch yourself, pin its index:
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_TORCH_INDEX_FAMILY=cpu sh   # or a family like rocm7.2
+```
+Or skip PyTorch for GGUF chat only:
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
 ```
 
 #### audio.cpp audio engine:
