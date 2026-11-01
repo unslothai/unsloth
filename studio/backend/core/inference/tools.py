@@ -9992,6 +9992,23 @@ def _project_workdir_for(session_id: "str | None") -> "str | None":
     return _get_project_workdir(session_id)
 
 
+def session_runs_in_user_folder(session_id: "str | None") -> bool:
+    """Whether this session's code tools run in the owner's chosen project folder, resolved as the executor does."""
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    try:
+        from storage.studio_db import available_project_working_folder, get_chat_project
+
+        # One read rules out most projects before the four the full resolution makes.
+        project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+        if not available_project_working_folder(project):
+            return False
+        workdir = _project_workdir_for(session_id)
+        return bool(workdir) and _is_user_project_folder(session_id, workdir)
+    except Exception:
+        return False
+
+
 def _get_project_workdir(session_id: str) -> str | None:
     # Host project paths are single-user only; managed accounts use their sandbox.
     if not is_owner_context():
