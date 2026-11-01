@@ -4,6 +4,9 @@
 """The per-width launch settings cache must not hash a symbolic width: a traced norm op's fake run
 under dynamic=True passes one, outside Dynamo (is_compiling() is False there)."""
 
+import types
+import warnings
+
 import pytest
 import torch
 
@@ -55,3 +58,30 @@ def test_an_int_width_still_uses_the_cache(module):
         assert module._settings(256) == calculate_settings(256)
     info = module._cached_arch_settings.cache_info()
     assert info.misses == 1 and info.hits == 2
+
+
+def test_multirow_self_check_gets_a_concrete_width(monkeypatch):
+    # A cold dynamic=True compile reaches the self-check with a symbolic width; its real Triton launches
+    # hash it, and a failure there turns the narrow-row path off for the whole process.
+    seen = []
+
+    def self_check(device, dtype, W_dtype, n_cols, eps, gemma, multirow):
+        seen.append((n_cols, multirow))
+        hash((n_cols, multirow))
+        return True
+
+    monkeypatch.setattr(rms_layernorm, "_MULTIROW", True)
+    monkeypatch.setattr(rms_layernorm, "_MULTIROW_CHECKED", {})
+    monkeypatch.setattr(rms_layernorm, "_multirow_self_check", self_check)
+    monkeypatch.setattr(torch.version, "hip", None)
+    X = types.SimpleNamespace(
+        shape = (_symbolic(8), _symbolic(64)), device = torch.device("cpu"), dtype = torch.bfloat16
+    )
+    W = types.SimpleNamespace(dtype = torch.bfloat16)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        multirow = rms_layernorm._multirow_checked(X, W, 1e-6, False)
+    assert rms_layernorm._MULTIROW
+    assert [type(n) for n, _ in seen] == [int]
+    assert all(type(v) is int for v in seen[0][1])
+    assert multirow == seen[0][1] == (64, 64, 2, 4)

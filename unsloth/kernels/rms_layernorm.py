@@ -672,7 +672,9 @@ def _multirow_checked(X, W, eps, gemma):
     multirow = _multirow_settings(n_cols, X.device)
     if multirow is None:
         return None
-    key = (X.device, X.dtype, W.dtype, int(n_cols), float(eps), gemma)
+    # The self-check launches real kernels, which cannot take the symbolic width of a dynamic compile.
+    n_cols, multirow = int(n_cols), tuple(int(v) for v in multirow)
+    key = (X.device, X.dtype, W.dtype, n_cols, float(eps), gemma)
     verdict = _MULTIROW_CHECKED.get(key)
     if verdict is None:
         if X.device.type == "cuda" and torch.cuda.is_current_stream_capturing():
