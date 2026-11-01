@@ -1019,34 +1019,29 @@ def _sdpa_packed_segments(
 ) -> Optional[Tensor]:
     """Q (1, H, T, D), K / V (1, H_kv, T, D) -> (1, T, H, D), the block-diagonal mask's result;
     None when the lengths do not tile the row."""
-    if sum(length for length in lengths if length > 0) != Q.shape[-2]:
-        return None
-    expanded = None
-
-    def kv(gqa):
-        nonlocal expanded
-        if n_groups == 1 or gqa:
-            return K, V
-        if expanded is None:
-            expanded = (
-                K.repeat_interleave(n_groups, dim = 1),
-                V.repeat_interleave(n_groups, dim = 1),
-            )
-        return expanded
-
-    outs, start, i = [], 0, 0
     lengths = [length for length in lengths if length > 0]
+    if not lengths or sum(lengths) != Q.shape[-2]:
+        return None
+    runs, i = [], 0
     while i < len(lengths):
         length = lengths[i]
-        j = i
+        j = i + 1
         while j < len(lengths) and lengths[j] == length:
             j += 1
-        n = j - i
-        end = start + n * length
+        runs.append((j - i, length))
+        i = j
+    sizes = [n * length for n, length in runs]
 
-        def split(x):
-            return x[0, :, start:end].unflatten(1, (n, length)).transpose(0, 1)
+    def split_runs(x):
+        return (x.squeeze(0),) if len(runs) == 1 else x.squeeze(0).split(sizes, dim = 1)
 
+    def per_segment(x, n, length):
+        return x.unflatten(1, (n, length)).transpose(0, 1)
+
+    Q_runs, K_runs, V_runs = (split_runs(x) for x in (Q, K, V))
+    expanded_runs = None
+    outs = []
+    for idx, (n, length) in enumerate(runs):
         kwargs = dict(sdpa_kwargs)
         windowed = sliding_window is not None and length > sliding_window
         if windowed:
@@ -1058,27 +1053,34 @@ def _sdpa_packed_segments(
                 is_causal = is_causal,
             )
         kwargs["is_causal"] = is_causal and not windowed
-        Q_run = split(Q)
+        Q_run = per_segment(Q_runs[idx], n, length)
+        K_run = per_segment(K_runs[idx], n, length)
+        V_run = per_segment(V_runs[idx], n, length)
         # Probe the run's own tensors: a one-token run has different eligibility than the row.
         gqa = n_groups != 1 and _sdpa_takes_gqa(
             Q_run,
-            split(K),
+            K_run,
             kwargs["is_causal"],
             windowed,
-            split(V),
+            V_run,
             kwargs.get("dropout_p", 0.0),
             # Passed only when set: callers and tests wrap the probe with the old signature.
             **({"no_cudnn": True} if _avoids_cudnn(Q_run, training) else {}),
         )
         if gqa:
             kwargs["enable_gqa"] = True
-        K_run, V_run = kv(gqa)
-        out = (_training_sdpa if training else _inference_sdpa)(
-            Q_run, split(K_run), split(V_run), **kwargs
-        )
+        elif n_groups != 1:
+            if expanded_runs is None:
+                expanded_runs = (
+                    split_runs(K.repeat_interleave(n_groups, dim = 1)),
+                    split_runs(V.repeat_interleave(n_groups, dim = 1)),
+                )
+            K_run = per_segment(expanded_runs[0][idx], n, length)
+            V_run = per_segment(expanded_runs[1][idx], n, length)
+        out = (_training_sdpa if training else _inference_sdpa)(Q_run, K_run, V_run, **kwargs)
         outs.append(out.transpose(1, 2).flatten(0, 1))
-        start, i = end, j
-    return torch.cat(outs, dim = 0).unsqueeze(0)
+    # One run: its output is already the row, so skip the copy.
+    return (outs[0] if len(outs) == 1 else torch.cat(outs, dim = 0)).unsqueeze(0)
 
 
 # PrefixGrouper kernel, resolved once when the env gate is on so PG-off users never load torch flex_attention.
