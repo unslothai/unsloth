@@ -31,8 +31,7 @@ def enabled() -> bool:
 
 
 def _filtered(pixels: Any, bpp: int, start: int, stop: int) -> bytes:
-    """Rows [start, stop) as ZipEncode.c filters them: None, Up, Sub, Paeth, each kept only on a strictly lower
-    sum of |signed byte|."""
+    """ZipEncode.c's choice: None, Up, Sub, Paeth, each kept only on a strictly lower sum of |signed byte|."""
     import numpy as np
 
     x = pixels[start:stop]
