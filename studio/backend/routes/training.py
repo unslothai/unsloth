@@ -4343,7 +4343,6 @@ async def upload_diffusion_dataset(
                 "then upload again."
             ),
         )
-    # Listing, writes and the summary block for up to ~0.4 s per slice, so they run on a worker thread.
     return await _run_holding_import_lock(
         _lock, _store_diffusion_dataset_upload, folder, cleaned, files, create_only
     )
@@ -4378,15 +4377,13 @@ async def _run_holding_import_lock(_lock: "threading.Lock", fn, *args):
         while not worker.done():
             try:
                 await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                pass
             except BaseException:
-                break
+                pass
         raise
 
 
 def _read_upload_chunk(f: UploadFile, cancelled: "threading.Event") -> bytes:
-    """``UploadFile.read`` off the event loop; a cancelled request stops staging at the next chunk."""
+    """A cancelled request stops staging at the next chunk."""
     if cancelled.is_set():
         raise asyncio.CancelledError()
     return f.file.read(1024 * 1024)

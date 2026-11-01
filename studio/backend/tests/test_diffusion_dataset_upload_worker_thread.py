@@ -112,14 +112,12 @@ def test_cancelled_request_keeps_lock_until_worker_finishes():
             await asyncio.sleep(0.01)
         task.cancel()
         await asyncio.sleep(0.05)
-        # The request stays pending while the worker runs, so the training interlock and the
-        # import lock both still see the folder as busy.
+        # Pending request = training interlock and import lock still held.
         assert not task.done()
         assert lock.locked()
         proceed.set()
         with pytest.raises(asyncio.CancelledError):
             await task
-        # The cancelled request ends only after the worker released the lock.
         assert not lock.locked()
 
     asyncio.run(main())
@@ -166,7 +164,7 @@ def test_cancel_during_staging_rolls_back(ds_root):
     with pytest.raises(asyncio.CancelledError):
         training._store_diffusion_dataset_upload(folder, "newset", files, True, lock, cancelled)
     assert not lock.locked()
-    # create_only made the folder, so a cancelled first slice removes it with its staged file.
+    # create_only made the folder, so the cancel removes it.
     assert not folder.exists()
 
 
