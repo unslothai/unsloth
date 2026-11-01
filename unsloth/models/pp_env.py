@@ -374,6 +374,8 @@ def gather_replica(
     owned = [name for name, p in stage.model.named_parameters() if p.requires_grad]
     for container, key, module, _ in stage._kept:
         _move(module, device, set())
+        # Detached while the caller set the mode (model.eval() before generate): follow the root's mode.
+        module.train(stage.model.training)
         _put(container, key, module)
     stage.replica = {"persistent": persistent}
     try:
@@ -831,6 +833,14 @@ def _pp_clip(accelerator, stage):
     return clip_grad_norm_
 
 
+def _pp_save_optimizer_and_scheduler(self, output_dir):
+    """A checkpoint records this rank's stage only: drop a replica left by generate / for_inference first."""
+    from .tp_native import _tp_save_optimizer_and_scheduler
+
+    release_replica(self.model)
+    return _tp_save_optimizer_and_scheduler(self, output_dir)
+
+
 def pp_trainer_setup(trainer):
     """After Trainer.__init__ (models/_utils.py) for a model split under UNSLOTH_PP_SIZE."""
     from .tp_native import (
@@ -865,7 +875,7 @@ def pp_trainer_setup(trainer):
         ("training_step", _pp_training_step),
         ("prediction_step", _pp_prediction_step),
         ("save_model", _pp_save_model),
-        ("_save_optimizer_and_scheduler", _tp_save_optimizer_and_scheduler),
+        ("_save_optimizer_and_scheduler", _pp_save_optimizer_and_scheduler),
         ("_load_optimizer_and_scheduler", _tp_load_optimizer_and_scheduler),
         ("_load_from_checkpoint", _tp_load_from_checkpoint),
     ):

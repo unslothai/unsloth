@@ -357,12 +357,17 @@ def _case_env(
         prompt = ids[:1, :4]
         refusal = pp_env.replica_refusal(stage, "generate") if stage is not None else None
         if refusal is None:
+            trainer.model.eval()
             out = trainer.model.generate(
                 input_ids = prompt, max_new_tokens = 4, do_sample = False, pad_token_id = 0
             )
             res["generated"] = out.tolist()
             if stage is not None:
                 res["replica_active"] = stage.replica is not None
+                # Failing before: the other stages' modules came back in training mode (dropout on).
+                res["replica_training"] = sorted(
+                    n for n, m in trainer.model.named_modules() if m.training
+                )[:3]
                 # An export: the whole one-GPU state dict, built on rank 0 only (the others wait).
                 full = pp_env.pp_collective(
                     trainer.model,
@@ -372,6 +377,10 @@ def _case_env(
                 res["export"] = full if rank == 0 else None
                 # The other ranks return rank 0's result (as tp_replica's collective saves do).
                 res["export_other"] = sorted(full) if rank != 0 else None
+                # Failing before: a checkpoint written with the replica active recorded every stage's params.
+                trainer._save_optimizer_and_scheduler(os.path.join(tmp, "ckpt_with_replica"))
+                res["released_by_save"] = stage.replica is None
+                trainer.model.train()
                 pp_env.release_replica(trainer.model)
                 res["released"] = stage.replica is None and all(
                     not isinstance(layer, torch.nn.Module)
@@ -760,6 +769,8 @@ def test_pp_env_trainer_matches_one_process(world, env, ref_bs):
             assert res["kept_on_cpu"] is True, res["kept_on_cpu"]
             assert res["generated"] == ref["generated"], (rank, res["generated"], ref["generated"])
             assert res["replica_active"] and res["released"], res
+            assert res["replica_training"] == [], res["replica_training"]
+            assert res["released_by_save"], res
             assert res["after_generate"] is None, res["after_generate"]
             if rank == 0:
                 _same_tensors(res["export"], ref["export"], what = "export")
