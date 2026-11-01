@@ -93,14 +93,12 @@ def test_strikes_grow_per_crash_of_the_same_load_and_cap():
     other = GgufLoadIntent(gguf_path = "/m.gguf", model_identifier = "m", n_ctx = 65536)
     backend._note_gpu_oom_strike(other)
     assert backend._gpu_oom_strikes == (backend._metal_oom_key(other), 1)
-    # A Speculative-mode change keeps the strike: it is the same placement.
-    assert backend._gpu_oom_fit_floor_mib(
-        GgufLoadIntent(
-            gguf_path = "/m.gguf", model_identifier = "m", n_ctx = 65536, speculative_type = "off"
-        ),
-        auto_fit = False,
-    ) == (llama_cpp._LLAMA_FIT_TARGET_DEFAULT_MIB + llama_cpp._GPU_OOM_HEADROOM_STEP_MIB)
-    assert backend._gpu_oom_fit_floor_mib(INTENT, auto_fit = False) == 0.0
+    # A speculative-mode change keeps the strike: it is the same placement.
+    off = GgufLoadIntent(
+        gguf_path = "/m.gguf", model_identifier = "m", n_ctx = 65536, speculative_type = "off"
+    )
+    assert backend._gpu_oom_headroom_mib(off) == llama_cpp._GPU_OOM_HEADROOM_STEP_MIB
+    assert backend._gpu_oom_headroom_mib(INTENT) == 0.0
 
 
 def _spawn_cmd(backend, intent):
@@ -150,3 +148,29 @@ def test_respawn_after_gpu_oom_keeps_more_free_vram(
     assert backend._gpu_oom_strikes is not None
     backend.unload_model()
     assert backend._gpu_oom_strikes is None
+
+
+def test_mixed_cards_keep_their_own_margins_plus_the_headroom(tmp_path, monkeypatch):
+    B = LlamaCppBackend
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    for k in ("CUDA_VISIBLE_DEVICES", "LLAMA_ARG_DEVICE", "LLAMA_ARG_SPLIT_MODE", "LLAMA_ARG_RPC"):
+        monkeypatch.delenv(k, raising = False)
+    monkeypatch.setattr(llama_cpp, "_metal_capable_host", lambda: False)
+    monkeypatch.setattr(B, "_GPU_IDS_ARE_PCI_INDICES", True)
+    monkeypatch.setattr(B, "_smi_uuid_mask_order", staticmethod(lambda: None))
+    monkeypatch.setattr(B, "_visibility_mask_is_unmappable", staticmethod(lambda: False))
+    monkeypatch.setattr(B, "_SMI_MIG_INDICES", frozenset())
+    monkeypatch.setattr(B, "_host_torch_is_rocm", staticmethod(lambda: False))
+    monkeypatch.setattr(llama_cpp, "_active_vram_fraction", lambda: 0.8)
+    memory = ((0, 80_000, 80_000), (1, 8_000, 8_000))
+    backend, gguf = h.cards(tmp_path, memory = memory)
+    intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 8192)
+    before = h.margins(_spawn_cmd(backend, intent))
+
+    backend, gguf = h.cards(tmp_path, memory = memory)
+    backend._model_identifier = "test"
+    backend._note_gpu_oom_strike(intent)
+    with llama_cpp._automatic_recovery_load():
+        after = h.margins(_spawn_cmd(backend, intent))
+    assert len(before) == 2
+    assert after == [m + 1024 for m in before]

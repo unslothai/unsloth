@@ -24497,6 +24497,23 @@ class LlamaCppBackend:
                                 for _idx, _free, _total in _gpu_mem
                             }
 
+                    # Each card keeps its own margin plus the headroom a mid-session OOM earned.
+                    _oom_headroom_mib = self._gpu_oom_headroom_mib(intent)
+                    if _oom_headroom_mib:
+                        _min_delta = _VRAM_FLOOR_RESERVE_MIB - (
+                            _VRAM_FLOOR_RESERVE_MIB
+                            if gpu_memory_mode == "manual" and gpu_layers < 0
+                            else _LLAMA_FIT_TARGET_DEFAULT_MIB
+                        )
+                        _fit_target_delta_mib = (
+                            max(_min_delta, _fit_target_delta_mib) + _oom_headroom_mib
+                        )
+                        if _fit_target_delta_by_idx:
+                            _fit_target_delta_by_idx = {
+                                _idx: max(_min_delta, _delta) + _oom_headroom_mib
+                                for _idx, _delta in _fit_target_delta_by_idx.items()
+                            }
+
                     _sysmem_fallback = self._sysmem_fallback_risk(binary)
 
                     def _gpu_usable(g, frac = _vram_frac):
@@ -27672,14 +27689,6 @@ class LlamaCppBackend:
                                 None,
                             ),
                         )
-                    )
-                    _metal_fit_target_floor_mib = max(
-                        _metal_fit_target_floor_mib,
-                        self._gpu_oom_fit_floor_mib(
-                            intent,
-                            auto_fit = (gpu_memory_mode == "manual" and gpu_layers < 0),
-                            fit_target_delta_mib = _fit_target_delta_mib if use_fit else 0.0,
-                        ),
                     )
                     _fit_margin_mib = (
                         max(
@@ -36527,12 +36536,12 @@ class LlamaCppBackend:
         except Exception:
             pass
 
-    def _gpu_oom_fit_floor_mib(self, intent, **margin_kw) -> float:
-        """--fit-target floor for a reload of the load that ran out of GPU memory; 0 otherwise."""
+    def _gpu_oom_headroom_mib(self, intent) -> float:
+        """Extra --fit-target for a reload of the load that ran out of GPU memory; 0 otherwise."""
         prior = getattr(self, "_gpu_oom_strikes", None)
         if prior is None or intent is None or prior[0] != self._metal_oom_key(intent):
             return 0.0
-        return self._fit_target_margin_mib(**margin_kw) + prior[1] * _GPU_OOM_HEADROOM_STEP_MIB
+        return prior[1] * _GPU_OOM_HEADROOM_STEP_MIB
 
     def _metal_oom_is_terminal(self, intent) -> bool:
         """Whether ``intent`` already ran out of Metal memory twice (no more replays)."""
