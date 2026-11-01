@@ -270,7 +270,6 @@ def test_the_filesystem_root_finds_a_real_nested_mount():
         assert found is not None and found.startswith("contains a nested host mount: /")
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX walk")
 def test_a_directory_swapped_before_it_is_listed_answers_as_the_ismount_walk(tmp_path, monkeypatch):
     # G/B is swapped for B2 after G's loop stat'ed B and before B is listed; B2 carries a bind of
     # itself onto B2/C, which a recorded stat of the old B would not reveal.
