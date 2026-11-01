@@ -40,7 +40,12 @@ def _stats():
     yield
 
 
-def _weight(N = 384, K = 256, dtype = torch.bfloat16, seed = 0):
+def _weight(
+    N = 384,
+    K = 256,
+    dtype = torch.bfloat16,
+    seed = 0,
+):
     g = torch.Generator().manual_seed(seed)
     return (torch.randn(N, K, generator = g) * K**-0.5).to(dtype)
 
@@ -135,7 +140,13 @@ def test_quantized_once_and_requantized_after_an_in_place_change(monkeypatch):
 class _Proj(torch.nn.Module):
     """A PEFT lora.Linear stand-in: base_layer + lora_A / lora_B ModuleDicts."""
 
-    def __init__(self, K, N, r = 8, seed = 0):
+    def __init__(
+        self,
+        K,
+        N,
+        r = 8,
+        seed = 0,
+    ):
         super().__init__()
         g = torch.Generator().manual_seed(seed)
         self.base_layer = torch.nn.Linear(K, N, bias = False, dtype = torch.bfloat16)
@@ -267,7 +278,15 @@ def _tiny_qwen3_peft():
     lora = LoraConfig(
         r = 8,
         lora_alpha = 16,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
         init_lora_weights = False,
     )
     return get_peft_model(model, lora)
@@ -463,7 +482,9 @@ def test_loaded_adapter_is_converted_when_marked(monkeypatch):
     model = _tiny_qwen3_peft()
     calls = []
     real = f8t.enable_fp8_lora
-    monkeypatch.setattr(f8t, "enable_fp8_lora", lambda m, r = None, **k: calls.append(r) or real(m, r, allow_cpu = True))
+    monkeypatch.setattr(
+        f8t, "enable_fp8_lora", lambda m, r = None, **k: calls.append(r) or real(m, r, allow_cpu = True)
+    )
     f8t.mark_fp8_lora(model, f8t.FP8_LORA_RECIPE)
     assert calls == [f8t.FP8_LORA_RECIPE]
     assert P.engaged(model)[f8t.FP8_LORA_RECIPE]["modules"] == 14
@@ -473,7 +494,9 @@ def test_default_no_transposed_cache_matches_cached(monkeypatch):
     W = _weight()
     dy = torch.randn(32, 384).bfloat16()
     lean = FL.Fp8LoRABaseState(W)
-    assert lean.w8t is None  # default: one fp8 copy (+1 byte / weight), transposed inside the dgrad op
+    assert (
+        lean.w8t is None
+    )  # default: one fp8 copy (+1 byte / weight), transposed inside the dgrad op
     monkeypatch.setattr(FL, "_CACHE_T", True)
     cached = FL.Fp8LoRABaseState(W)
     assert cached.w8t is not None
@@ -492,7 +515,6 @@ def test_compiled_graph_has_no_fp8_transpose_outside_the_ops():
 
     def backend(gm, example_inputs):
         from torch._functorch.aot_autograd import aot_module_simplified
-
         def capture(g, _):
             graphs.append(g)
             return g
@@ -516,7 +538,9 @@ def test_compiled_graph_has_no_fp8_transpose_outside_the_ops():
                 targets.append(str(node.target))
     assert targets == [], targets
     names = {str(n.target) for g in graphs for n in g.graph.nodes if n.op == "call_function"}
-    assert any("fp8_lora_fwd" in t for t in names) and any("fp8_lora_dgrad" in t for t in names), names
+    assert any("fp8_lora_fwd" in t for t in names) and any(
+        "fp8_lora_dgrad" in t for t in names
+    ), names
 
 
 # ---- host master: the GPU keeps only the fp8 copy (memory at or below bf16 LoRA) ----------------------------
@@ -529,7 +553,12 @@ def offload_on_cpu(monkeypatch):
     monkeypatch.delenv("WORLD_SIZE", raising = False)
 
 
-def _frozen_linear(K = 256, N = 384, bias = False, seed = 0):
+def _frozen_linear(
+    K = 256,
+    N = 384,
+    bias = False,
+    seed = 0,
+):
     torch.manual_seed(seed)
     lin = torch.nn.Linear(K, N, bias = bias, dtype = torch.bfloat16)
     return lin.requires_grad_(False)
@@ -545,9 +574,17 @@ def test_host_master_leaves_only_fp8_bytes_on_the_compute_device(offload_on_cpu)
     assert torch.equal(lin.weight, W0)  # the host master is the exact 16-bit weight
     numel = 256 * 384
     # Per converted layer: fp8 copy (1 byte / weight) + one fp32 scale; no 16-bit bytes on the device.
-    assert state.resident_bytes(lin) == {"fp8": numel + 4, "master_device": 0, "master_host": 2 * numel}
+    assert state.resident_bytes(lin) == {
+        "fp8": numel + 4,
+        "master_device": 0,
+        "master_host": 2 * numel,
+    }
     # Before: the 16-bit master stayed beside the fp8 copy (3 bytes / weight on the device).
-    assert ref_state.resident_bytes(ref) == {"fp8": numel + 4, "master_device": 2 * numel, "master_host": 0}
+    assert ref_state.resident_bytes(ref) == {
+        "fp8": numel + 4,
+        "master_device": 2 * numel,
+        "master_host": 0,
+    }
     assert FL.fp8_lora_memory(torch.nn.Sequential(lin, ref))["total"] == {
         "fp8": 2 * (numel + 4),
         "master_device": 2 * numel,
@@ -611,7 +648,10 @@ def test_module_moves_keep_or_restore_the_host_master(offload_on_cpu):
     assert torch.equal(lin.weight, W0.half())
     x = torch.randn(32, 256).half()
     y = lin(x)  # requantized from the converted weight
-    assert y.dtype == torch.float16 and _rel(y, x.float() @ W0.float().t() + lin.bias.float()) < FP8_FWD_TOL
+    assert (
+        y.dtype == torch.float16
+        and _rel(y, x.float() @ W0.float().t() + lin.bias.float()) < FP8_FWD_TOL
+    )
 
 
 def test_no_host_master_for_16bit_dgrad_or_distributed(offload_on_cpu, monkeypatch):
@@ -705,7 +745,9 @@ def test_square_tile_transpose_kernel_byte_exact_under_the_triton_interpreter():
         """
     )
     env = dict(os.environ, TRITON_INTERPRET = "1", CUDA_VISIBLE_DEVICES = "")
-    p = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, env = env, timeout = 600)
+    p = subprocess.run(
+        [sys.executable, "-c", code], capture_output = True, text = True, env = env, timeout = 600
+    )
     assert "TRANSPOSE_OK" in p.stdout, p.stdout[-2000:] + p.stderr[-4000:]
     # One BLOCK constexpr for both tile sides: non-square tiles miscompile fp8 transposed stores on sm89.
     import inspect
@@ -749,4 +791,6 @@ def test_compiled_fp8_lora_ops_are_counted():
     compiled(x, dy)
     with P.count_lowp_gemms() as counts:
         compiled(x, dy)
-    assert counts["unsloth::fp8_lora_fwd"] == 1 and counts["unsloth::fp8_lora_dgrad"] == 1, dict(counts)
+    assert counts["unsloth::fp8_lora_fwd"] == 1 and counts["unsloth::fp8_lora_dgrad"] == 1, dict(
+        counts
+    )

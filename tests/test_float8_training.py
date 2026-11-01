@@ -247,7 +247,9 @@ def test_loader_float8_training_for_lora_needs_a_16bit_base():
     for loader in (FastLanguageModel, FastModel):
         with pytest.raises(ValueError, match = "load_in_4bit = False"):
             loader.from_pretrained(
-                "trl-internal-testing/tiny-Qwen3ForCausalLM", load_in_4bit = True, float8_training = True
+                "trl-internal-testing/tiny-Qwen3ForCausalLM",
+                load_in_4bit = True,
+                float8_training = True,
             )
 
 

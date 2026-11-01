@@ -1,13 +1,18 @@
-# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#     http://www.apache.org/licenses/LICENSE-2.0
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Unsloth Zoo - Utilities for Unsloth
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 """FP8 LoRA on a frozen 16-bit base: the base GEMMs (forward y = x W^T and input gradient dx = dy W) run in
 fp8 through torch._scaled_mm, the LoRA branch stays in the activation dtype (Megatron-Bridge TEFusedLoRALinear
@@ -387,7 +392,9 @@ def fp8_lora_dgrad(
         dy8, dy_inv = quantize_rowwise(dy, E4M3)
         out_dtype = torch.bfloat16
     else:
-        dy8, dy_inv = quantize_tensorwise(dy, E5M2 if _DGRAD_DTYPE in (None, "auto") else _DGRAD_DTYPE)
+        dy8, dy_inv = quantize_tensorwise(
+            dy, E5M2 if _DGRAD_DTYPE in (None, "auto") else _DGRAD_DTYPE
+        )
         out_dtype = _out_dtype(dy.dtype)
     out = _scaled_mm(dy8, w8t.t(), dy_inv, w_inv, out_dtype, _DGRAD_FAST_ACCUM)
     return out if out.dtype == dy.dtype else out.to(dy.dtype)
@@ -424,7 +431,13 @@ class Fp8LoRABaseState:
     # ---- cache ---------------------------------------------------------------------------------------
     @staticmethod
     def _weight_key(weight):
-        return (weight.data_ptr(), weight._version, weight.device, weight.dtype, tuple(weight.shape))
+        return (
+            weight.data_ptr(),
+            weight._version,
+            weight.device,
+            weight.dtype,
+            tuple(weight.shape),
+        )
 
     def refresh(self, weight: torch.Tensor):
         """Quantize `weight` unless the cache already holds it (same storage, version, device)."""
@@ -471,7 +484,9 @@ class Fp8LoRABaseState:
         if weight.is_cuda:
             try:
                 host = torch.empty(weight.shape, dtype = weight.dtype, device = "cpu", pin_memory = True)
-            except RuntimeError:  # pinned host memory exhausted: pageable works, restores are slower
+            except (
+                RuntimeError
+            ):  # pinned host memory exhausted: pageable works, restores are slower
                 host = None
         if host is None:
             host = torch.empty(weight.shape, dtype = weight.dtype, device = "cpu")
@@ -506,8 +521,11 @@ class Fp8LoRABaseState:
         compute device, 'master_host': master bytes in host RAM}."""
         fp8 = sum(
             t.numel() * t.element_size()
-            for t in {id(t): t for t in (self.w8, self.w8t, self.w_inv, self.w_inv_fwd, self.w_inv_dgrad)
-                      if t is not None}.values()
+            for t in {
+                id(t): t
+                for t in (self.w8, self.w8t, self.w_inv, self.w_inv_fwd, self.w_inv_dgrad)
+                if t is not None
+            }.values()
         )
         out = {"fp8": fp8, "master_device": 0, "master_host": 0}
         if module is not None:
@@ -520,7 +538,11 @@ class Fp8LoRABaseState:
         return out
 
     # ---- kernels.utils packed-state protocol ------------------------------------------------------------
-    def dequantize(self, W = None, dtype = None):
+    def dequantize(
+        self,
+        W = None,
+        dtype = None,
+    ):
         # W is the 16-bit weight (or its .t()): exact, nothing to decode. A host master is copied to the compute
         # device as is (merged save must not lose precision), never rebuilt from fp8.
         if W is not None and W.device != self.device:
@@ -532,7 +554,12 @@ class Fp8LoRABaseState:
             X.numel() // max(X.shape[-1], 1) >= _MIN_ROWS
         )
 
-    def matmul(self, X, W, out = None):
+    def matmul(
+        self,
+        X,
+        W,
+        out = None,
+    ):
         """``X @ W.t()`` as matmul_lora computes it: the forward when W is the stored weight, the input
         gradient when W is its transposed view."""
         shape = X.shape
@@ -547,7 +574,11 @@ class Fp8LoRABaseState:
         result = result.view(*shape[:-1], result.shape[-1])
         return result if out is None else out.copy_(result)
 
-    def dgrad(self, dY, W = None):
+    def dgrad(
+        self,
+        dY,
+        W = None,
+    ):
         """dY [..., out] @ W -> [..., in]: the base layer's input gradient."""
         shape = dY.shape
         dY2 = dY.reshape(-1, shape[-1])
@@ -574,7 +605,9 @@ class _Fp8FrozenLinear(torch.autograd.Function):
         # w8t None: the backward transposes w8 inside the dgrad op.
         ctx.w_is_t = w8t is not None
         ctx.save_for_backward(
-            weight, w8t if w8t is not None else w8, w_inv_fwd if w_inv_dgrad is None else w_inv_dgrad
+            weight,
+            w8t if w8t is not None else w8,
+            w_inv_fwd if w_inv_dgrad is None else w_inv_dgrad,
         )
         shape = x.shape
         x2 = x.reshape(-1, shape[-1])
@@ -641,7 +674,6 @@ def offload_supported() -> bool:
         if int(os.environ.get("WORLD_SIZE", "1")) > 1:
             return False
         import torch.distributed as dist
-
         if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
             return False
     except Exception:
@@ -649,7 +681,11 @@ def offload_supported() -> bool:
     return True
 
 
-def _fp8_base_apply(self, fn, recurse = True):
+def _fp8_base_apply(
+    self,
+    fn,
+    recurse = True,
+):
     # nn.Module.to / cuda / half reach the base layer here. A move to where the fp8 copy already lives (the
     # Trainer's model.to(device)) leaves the host master alone; anything else brings it back first.
     state = self.__dict__.get("_unsloth_fp8_lora")

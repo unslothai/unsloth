@@ -535,7 +535,12 @@ def _load_fp8_lora_kernels():
         return module
 
 
-def _merge_with_master(self, *args, _unsloth_method = "merge", **kwargs):
+def _merge_with_master(
+    self,
+    *args,
+    _unsloth_method = "merge",
+    **kwargs,
+):
     # Resolved from self (not captured), so a deepcopy of the model merges its own layers.
     base = getattr(self, "base_layer", None)
     if base is not None:
@@ -555,7 +560,11 @@ def _restore_master_before_merge(lora_module):
         object.__setattr__(lora_module, method, types.MethodType(fn, lora_module))
 
 
-def enable_fp8_lora(model, recipe = None, allow_cpu = False):
+def enable_fp8_lora(
+    model,
+    recipe = None,
+    allow_cpu = False,
+):
     """Attach the fp8 frozen-base state to every LoRA base nn.Linear (frozen, 16-bit, dims % 16, not a
     high-precision layer). Returns the converted names. A no-op unless the model was loaded with it."""
     recipe = recipe or _fp8_lora_request(model)
@@ -592,7 +601,9 @@ def enable_fp8_lora(model, recipe = None, allow_cpu = False):
         if why is not None:
             skipped[name] = why
             continue
-        state = kernels.attach_fp8_lora_base(base, offload = offload and uses.get(id(base.weight), 0) == 1)
+        state = kernels.attach_fp8_lora_base(
+            base, offload = offload and uses.get(id(base.weight), 0) == 1
+        )
         offloaded += int(state.offloaded)
         _restore_master_before_merge(module)
         converted.append(name)
