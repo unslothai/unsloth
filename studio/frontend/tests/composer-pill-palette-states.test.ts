@@ -13,7 +13,6 @@ const HEX = /^#[0-9a-f]{6}$/i;
 const PALETTE_ATTR = /data-palette="([\w-]+)"/g;
 const DIM_RULE =
   /\n\t:root:is\(([^)]*)\)\.dark\s+:is\(\.composer-pill-btn, \.unsloth-thinking-pill\)\[data-active="false"\] \{\s*color: color-mix\(in oklab, var\(--foreground\) 60%, transparent\);/;
-// Every dark palette sits above 0.13 (OKLab); one under this would need its off pills dimmed.
 const COLLIDES = 0.1;
 
 function darkTokens(selector: string): Map<string, string> {

@@ -380,7 +380,6 @@
 	--chat-icon-fg-hover: var(--foreground);
 	--chat-icon-bg-hover-base: #ededec;
 
-	/* Follows the brand accent. Resolved at use, so .dark's --primary flows through. */
 	--control-accent: var(--primary);
 	--control-accent-foreground: var(--primary-foreground);
 
@@ -6729,7 +6728,6 @@ html.dark[data-glass="macos"] {
   --glass-line: rgb(255 255 255 / .13);
   --glass-line-strong: rgb(255 255 255 / .17);
 }
-/* An inset line beside the 1px border would double the edge. */
 html:not(.dark):not([data-glass^="liquid"])[data-glass][data-chat-wallpaper-workspace-ready] :is([data-slot="sidebar-inner"], [data-slot="chat-settings-panel"]) {
   box-shadow: none;
 }
@@ -6968,7 +6966,6 @@ html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [d
   /* !important: the base dropdown shadow rules are. */
   box-shadow: var(--glass-rim), var(--glass-lift) !important;
 }
-/* A white Liquid hover vanishes on a near-white light menu. */
 html[data-glass^="liquid"][data-glass-menus]:not(.dark) :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
   --glass-hover: color-mix(in srgb, var(--foreground) 7%, transparent);
 }
@@ -7054,7 +7051,7 @@ html[data-glass]:not(.dark) [data-wallpaper-workspace][data-wallpaper-route="pag
   background-color: var(--glass-control-pill);
   box-shadow: var(--glass-control-rim);
 }
-/* A lit row shell lights its row button too; glass hovers are translucent, so two layers show as a second, narrower pill. */
+/* Translucent hovers stack: a lit row shell and its button would show two pills. */
 html[data-glass] [class*="hover:bg-sidebar-accent"]:is(:hover, :has(:focus-visible), :has([data-state="open"]), .bg-sidebar-accent) [class*="hover:bg-sidebar-accent"] {
   background-color: transparent;
 }
@@ -7148,7 +7145,6 @@ html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .
 .glass-lens-fill .glass-lens-copy {
   filter: blur(var(--glass-blur, 12px)) saturate(var(--glass-saturate, 150%));
 }
-/* A hairline: the padding box minus the content box, so the outline is the colour right behind it. */
 .glass-lens-rim {
   padding: 1px;
   mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);

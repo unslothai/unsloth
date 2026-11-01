@@ -52,7 +52,6 @@ export function sanitizeStrengths(value: unknown): GlassStrengths {
 		dark: sanitizeStrength(stored.dark, DEFAULT_GLASS_STRENGTH.dark),
 	};
 }
-/** Relative luminance of the image's darker quarter, its middle and its brighter quarter. */
 export type ImageTone = { lo: number; mid: number; hi: number };
 export function toneOf(values: number[]): ImageTone {
 	const sorted = [...values].sort((a, b) => a - b);
@@ -64,7 +63,7 @@ export function toneOf(values: number[]): ImageTone {
 const clamp = (v: number, lo: number, hi: number) =>
 	Math.max(lo, Math.min(hi, v));
 
-/** Dark mode: pane under ~0.15 luminance over the bright quarter; light mode: over ~0.72 over the dark quarter (pane ~0.95), since muted ink is mid-grey. */
+/** Target pane luminance: under ~0.15 in dark mode, over ~0.72 in light mode (muted ink is mid-grey). */
 export function glassReadability(
 	tone: ImageTone,
 	dark: boolean,
