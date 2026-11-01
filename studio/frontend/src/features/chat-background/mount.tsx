@@ -14,7 +14,6 @@ function inScope(
 const Renderer = lazy(() =>
 	import("./background").then((module) => ({ default: module.ChatBackground })),
 );
-/** `route` is where the caller sits; the user's scope decides whether the wallpaper shows there. */
 export function ChatBackground({
 	active = true,
 	route,

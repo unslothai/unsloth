@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-// Where the wallpaper shows; on "all" the sidebar stays solid.
+// On "all" the sidebar stays solid.
 export const SCOPES = ["newChat", "chats", "all"] as const;
 export type BackgroundScope = (typeof SCOPES)[number];
 

@@ -36,7 +36,6 @@ test("background preferences repair malformed persisted data", () => {
     assert.equal(sanitizeAdjustments({ position: "101% 0%" }).position, "50% 50%");
     assert.equal(sanitizeAdjustments({ sizing: "width" }).sizing, "width");
     assert.equal(sanitizeAdjustments({ sizing: "contain" }).sizing, "contain");
-    // Saved before scopes existed: keep showing on chats, as it always did.
     assert.equal(sanitizeAdjustments({}).scope, "chats");
     assert.equal(sanitizeAdjustments({ scope: "all" }).scope, "all");
     assert.equal(sanitizeAdjustments({ scope: "newChat" }).scope, "newChat");
