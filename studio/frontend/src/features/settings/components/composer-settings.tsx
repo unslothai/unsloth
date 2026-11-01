@@ -144,16 +144,37 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
             />
           </SettingsRow>
           <SettingsRow
-            label={t("composerSettings.richPaste")}
-            description={t("composerSettings.richPasteDescription", {
+            label={t("composerSettings.richText")}
+            description={t("composerSettings.richTextDescription", {
               shortcut: isMacPlatform() ? "\u21e7\u2318V" : "Ctrl+Shift+V",
             })}
           >
-            <Switch
-              aria-label={t("composerSettings.richPaste")}
-              checked={prefs.richTextPaste}
-              onCheckedChange={prefs.setRichTextPaste}
-            />
+            <Select
+              value={prefs.composerRichText}
+              onValueChange={(value) =>
+                prefs.setComposerRichText(
+                  value === "full" || value === "off" ? value : "paste",
+                )
+              }
+            >
+              <SelectTrigger
+                className="w-auto max-w-72"
+                aria-label={t("composerSettings.richText")}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="full">
+                  {t("composerSettings.richTextFull")}
+                </SelectItem>
+                <SelectItem value="paste">
+                  {t("composerSettings.richTextPasteOnly")}
+                </SelectItem>
+                <SelectItem value="off">
+                  {t("composerSettings.richTextOff")}
+                </SelectItem>
+              </SelectContent>
+            </Select>
           </SettingsRow>
           <SettingsRow label={t("composerSettings.showContext")}>
             <Switch

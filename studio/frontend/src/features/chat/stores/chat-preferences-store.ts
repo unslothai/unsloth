@@ -18,6 +18,11 @@ import {
   type DisplayVisibility,
   migrateVisibility,
 } from "../utils/display-visibility.ts";
+import {
+  type ComposerRichText,
+  DEFAULT_COMPOSER_RICH_TEXT,
+  migrateComposerRichText,
+} from "../utils/composer-rich-text.ts";
 
 // Client-side chat UI prefs kept in localStorage, not the chat DB. confirmDeleteChats: off skips
 // the delete confirm dialog. alwaysDeleteChatFiles: on also removes the sandbox folder.
@@ -71,8 +76,8 @@ export interface ChatPreferencesState {
   setFilesPanelCollapsed: (value: boolean) => void;
   newChatComposerAtBottom: boolean;
   setNewChatComposerAtBottom: (value: boolean) => void;
-  richTextPaste: boolean;
-  setRichTextPaste: (value: boolean) => void;
+  composerRichText: ComposerRichText;
+  setComposerRichText: (value: ComposerRichText) => void;
 }
 
 // A stale stored value would leave the dropdown blank and unfixable.
@@ -135,8 +140,8 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       newChatComposerAtBottom: false,
       setNewChatComposerAtBottom: (newChatComposerAtBottom) =>
         set({ newChatComposerAtBottom }),
-      richTextPaste: true,
-      setRichTextPaste: (richTextPaste) => set({ richTextPaste }),
+      composerRichText: DEFAULT_COMPOSER_RICH_TEXT,
+      setComposerRichText: (composerRichText) => set({ composerRichText }),
     }),
     {
       name: "unsloth_chat_preferences",
@@ -148,11 +153,12 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           : persisted,
       merge: (persisted, current) => {
         const saved = persisted as Partial<ChatPreferencesState> | undefined;
-        // Records written before the three-state settings carry two booleans instead.
+        // Records written before the three-state settings carry booleans instead.
         const legacy = persisted as
           | {
               collapseThinkingByDefault?: unknown;
               collapseToolActivityByDefault?: unknown;
+              richTextPaste?: unknown;
             }
           | undefined;
         return {
@@ -182,7 +188,10 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           autoScrollWhileGenerating: saved?.autoScrollWhileGenerating ?? true,
           notifyWhenReplyFinishes: saved?.notifyWhenReplyFinishes === true,
           filesPanelCollapsed: saved?.filesPanelCollapsed === true,
-          richTextPaste: saved?.richTextPaste !== false,
+          composerRichText: migrateComposerRichText(
+            saved?.composerRichText,
+            legacy?.richTextPaste,
+          ),
           newChatComposerAtBottom: saved?.newChatComposerAtBottom === true,
         };
       },

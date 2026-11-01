@@ -625,7 +625,7 @@ export function SharedComposer({
 }): ReactElement {
   const t = useT();
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
-  const richTextPaste = useChatPreferencesStore((s) => s.richTextPaste);
+  const richTextPaste = useChatPreferencesStore((s) => s.composerRichText !== "off");
   const navigate = useNavigate();
   const handleExitCompare = useCallback(() => {
     if (onExitCompare) {

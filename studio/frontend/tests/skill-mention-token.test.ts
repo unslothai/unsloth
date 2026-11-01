@@ -60,7 +60,7 @@ test("both composers replace the whole token", () => {
   assert.match(popover, /const next = replaceMentionToken\(text, range, directive\);/);
   assert.match(
     popover,
-    /registerSelectItemOverride\(\(item\) => \{\n\s*const input = document\.activeElement;\n\s*if \(!\(input instanceof HTMLTextAreaElement\)\) return false;/,
+    /registerSelectItemOverride\(\(item\) => \{\n\s*const input = document\.activeElement;\n\s*if \(!isComposerField\(input\)\) return false;/,
   );
   assert.match(popover, /aui\.composer\(\)\.setText\(next\.text\);\n\s*setCursorPosition\(next\.caret\);/);
   assert.match(popover, /<MentionTokenReplacer \/>/);
