@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 REDACTED = "<redacted>"
 
@@ -208,8 +207,8 @@ def _redact_cookie(match: re.Match[str]) -> str:
     return f"{match.group('key')}{match.group('sep')}{REDACTED}{tail}"
 
 
-# Per _PATTERNS rule, a literal every one of its matches contains, so a text without it cannot change; None always runs the rule. These rules are case-sensitive, so plain substring tests are exact.
-_PATTERN_LITERALS: tuple[Optional[tuple[str, ...]], ...] = (
+# Per _PATTERNS rule, literals every match contains (None = always run). Those rules are case-sensitive, so substring tests are exact.
+_PATTERN_LITERALS: tuple[tuple[str, ...] | None, ...] = (
     ("hf_",),
     ("sk-",),
     (
@@ -231,26 +230,24 @@ _PATTERN_LITERALS: tuple[Optional[tuple[str, ...]], ...] = (
     None,
     ("=",),
 )
-_PATTERN_GATES: tuple[Optional[re.Pattern[str]], ...] = tuple(
+_PATTERN_GATES: tuple[re.Pattern[str] | None, ...] = tuple(
     None if literals is None else re.compile("|".join(re.escape(literal) for literal in literals))
     for literals in _PATTERN_LITERALS
 )
 if len(_PATTERN_GATES) != len(_PATTERNS):
     raise RuntimeError("every _PATTERNS rule needs an entry in _PATTERN_GATES")
 
-# The IGNORECASE rules need a key word. Every _SECRET_KEYS alternative contains one of _SECRET_KEY_WORDS.
 _SECRET_KEY_WORDS = ("authorization", "key", "token", "secret", "pass")
 if not all(any(word in key for word in _SECRET_KEY_WORDS) for key in _SECRET_KEYS.split("|")):
     raise RuntimeError("every _SECRET_KEYS alternative needs a word in _SECRET_KEY_WORDS")
-# Off ASCII the engine decides, with the same case folding as the rule itself (the Kelvin sign is a "k").
+# Off ASCII, IGNORECASE folds e.g. the Kelvin sign onto "k", so the engine decides.
 _FOLDED_GATE_RES = {
     words: re.compile("(?i)" + "|".join(words))
     for words in (("authorization",), ("bearer",), ("cookie",), _SECRET_KEY_WORDS)
 }
 
 
-def _has_folded(text: str, lowered: Optional[str], words: tuple[str, ...]) -> bool:
-    """lowered is text.lower() for ASCII text, where lowercasing is exact, and None otherwise."""
+def _has_folded(text: str, lowered: str | None, words: tuple[str, ...]) -> bool:
     if lowered is None:
         return _FOLDED_GATE_RES[words].search(text) is not None
     for word in words:
@@ -259,7 +256,7 @@ def _has_folded(text: str, lowered: Optional[str], words: tuple[str, ...]) -> bo
     return False
 
 
-def _lowered(text: str) -> Optional[str]:
+def _lowered(text: str) -> str | None:
     return text.lower() if text.isascii() else None
 
 
@@ -270,7 +267,6 @@ def redact_log_text(text: str) -> str:
     # Nothing anchored below survives an escape between a key and its value, so strip first, guarded by one introducer scan: ordinary content is untouched.
     if _ANSI_INTRODUCER_RE.search(text):
         text = _strip_ansi(text)
-    # A rule runs only when the text holds a literal every match of it needs, so the output equals running every rule.
     for (pattern, replacement), gate in zip(_PATTERNS, _PATTERN_GATES):
         if gate is None or gate.search(text) is not None:
             text = pattern.sub(replacement, text)

@@ -139,6 +139,35 @@ _FRAGMENTS = [
     "eos_token_id",
     "checkpoint-sk-9f8a",
 ]
+# One real-shaped secret per alternative of every gated rule: a gate missing a literal leaves its sample clear.
+_SHAPED_SECRETS = [
+    "hf_abcdefghijklmnopqrstuvwx",
+    "hf_oauth_abcdefghijklmnopqrstuvwx",
+    "sk-abcdefghijklmnop1234",
+    "sk-proj-abcdefghijklmnop1234",
+    *(
+        prefix + "abcdefghijklmnop1234"
+        for prefix in (
+            "gsk_",
+            "xai-",
+            "ghp_",
+            "gho_",
+            "ghu_",
+            "ghs_",
+            "ghr_",
+            "github_pat_",
+            "glpat-",
+            "ya29.",
+        )
+    ),
+    *("xox" + c + "-abcdefghijklmnop1234" for c in "abpsr"),
+    "AIzaabcdefghijklmnopqrstuvwxyz0123456",
+    "AKIAABCDEFGHIJKLMNOP",
+    "ASIAABCDEFGHIJKLMNOP",
+    "eyJabcdefghijk.abcdefghijk.abcdef",
+    "https://h/x?sig=abcdef",
+]
+_FRAGMENTS += _SHAPED_SECRETS
 _ALNUM = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./=+~"
 
 
@@ -167,7 +196,6 @@ def test_gated_output_equals_every_rule(seed):
         expected = _reference(line)
         assert lr.redact_log_text(line) == expected, repr(line)
         redacted += expected != line
-    # The fuzz must exercise the rules, not only clean lines.
     assert redacted > 2_000
 
 
@@ -212,3 +240,9 @@ def test_every_pattern_gate_literal_is_in_its_rule():
             )
             # A case-insensitive rule could match the literal in another case, which the plain substring gate misses.
             assert not pattern.flags & re.IGNORECASE or literal.upper() == literal.lower(), literal
+
+
+@pytest.mark.parametrize("secret", _SHAPED_SECRETS)
+def test_every_gated_alternative_is_redacted(secret):
+    line = f"log {secret} end"
+    assert lr.redact_log_text(line) == _reference(line) != line
