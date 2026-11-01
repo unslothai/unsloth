@@ -141,3 +141,11 @@ test("the lens refreshes its tint when the composer's fill changes", () => {
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
 	assert.match(lens, /opacity,\n\s*fill\.backgroundColor,\n\s*fill\.backgroundImage,\n\s*\]\.join\(\)/);
 });
+
+test("glass off writes no strength or tone to the page", () => {
+	const material = readFileSync(new URL("../src/features/chat-background/material.ts", import.meta.url), "utf8");
+	const background = readFileSync(new URL("../src/features/chat-background/background.tsx", import.meta.url), "utf8");
+	assert.match(material, /if \(material === "solid" \|\| strength === 50\) \{\n\s*root\.style\.removeProperty\("--glass-strength"\);/);
+	assert.match(background, /if \(!\(frameUrl && glass\)\) return;\n\s*let cancelled = false;\n\s*measureTone\(frameUrl\)/);
+	assert.match(background, /if \(!\(appWallpaper && tone && glass\)\) return;/);
+});

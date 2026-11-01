@@ -101,18 +101,27 @@ export const POSITIONS = [
 export const DEFAULT_ADJUSTMENTS = {
 	effect: "None" as BackgroundEffect,
 	visibility: 70,
-	darkVisibility: 40,
 	blur: 0,
-	// null: off under glass, on without it, until the user picks.
-	fade: null as boolean | null,
+	fade: true,
 	outline: true,
 	sizing: "cover" as ImageSizing,
 	zoom: 100,
 	position: "50% 50%",
+	// Used only while glass is on, so turning glass on never changes how the image looked without it.
+	glassLightVisibility: 70,
+	glassDarkVisibility: 40,
+	glassFade: false,
 };
 export type BackgroundAdjustments = typeof DEFAULT_ADJUSTMENTS;
-export function effectiveFade(fade: boolean | null, glass: boolean): boolean {
-	return fade ?? !glass;
+export function visibilityKey(
+	glass: boolean,
+	dark: boolean,
+): "visibility" | "glassLightVisibility" | "glassDarkVisibility" {
+	if (!glass) return "visibility";
+	return dark ? "glassDarkVisibility" : "glassLightVisibility";
+}
+export function fadeKey(glass: boolean): "fade" | "glassFade" {
+	return glass ? "glassFade" : "fade";
 }
 export type ChatBackgroundValue = BackgroundAdjustments & { blob: Blob };
 export type BackgroundError =
@@ -136,9 +145,8 @@ export function sanitizeAdjustments(
 			? input.effect!
 			: "None",
 		visibility: bounded(input.visibility, 100, 70),
-		darkVisibility: bounded(input.darkVisibility, 100, 40),
 		blur: bounded(input.blur, 20, 0),
-		fade: typeof input.fade === "boolean" ? input.fade : null,
+		fade: typeof input.fade === "boolean" ? input.fade : true,
 		outline: typeof input.outline === "boolean" ? input.outline : true,
 		sizing: IMAGE_SIZING.includes(input.sizing as ImageSizing)
 			? input.sizing!
@@ -147,6 +155,9 @@ export function sanitizeAdjustments(
 		position: POSITIONS.includes(input.position as (typeof POSITIONS)[number])
 			? input.position!
 			: "50% 50%",
+		glassLightVisibility: bounded(input.glassLightVisibility, 100, 70),
+		glassDarkVisibility: bounded(input.glassDarkVisibility, 100, 40),
+		glassFade: typeof input.glassFade === "boolean" ? input.glassFade : false,
 	};
 }
 export function validUpload(file: Pick<File, "type" | "size">): boolean {
