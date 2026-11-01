@@ -179,7 +179,13 @@ export function WindowMaterialMount() {
     // A transparent page over an opaque window would show the webview's blank fill.
     void setNativeVibrancy(true)
       .then((applied) => {
-        if (cancelled) return;
+        if (cancelled) {
+          // Switched away while the shell was applying it: undo a late success unless macOS is back.
+          if (!applied) return;
+          if (useMaterialStore.getState().material === "macos") nativeApplied = true;
+          else void setNativeVibrancy(false).catch(() => undefined);
+          return;
+        }
         if (!applied) throw new Error("unsupported");
         nativeApplied = true;
         show("macos");
