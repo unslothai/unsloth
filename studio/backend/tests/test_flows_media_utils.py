@@ -327,3 +327,11 @@ def test_edit_video_keeps_every_picture_of_a_millisecond_timed_webm():
         ]
         src.close()
         assert shown == list(picks), (speed, shown)
+
+
+def test_edit_video_a_trim_shorter_than_a_frame_keeps_one_frame():
+    import av
+
+    src = av.open(io.BytesIO(mu.edit_video(_clip(frames = 12, fps = 12), end_s = 0.01)))
+    assert sum(1 for _ in src.decode(src.streams.video[0])) == 1
+    src.close()

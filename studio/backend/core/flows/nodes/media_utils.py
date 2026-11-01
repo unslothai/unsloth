@@ -256,6 +256,8 @@ def edit_video(
         if out is not None:
             last = held_t + frame_s
             emit_until(min(last, end_s) if end_s is not None else last)
+            if emitted == 0:
+                emit_until(base + slack + step / 2)
         if out is None:
             raise FlowNodeError("Nothing is left of the clip after trimming")
         for packet in vout.encode():
