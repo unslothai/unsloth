@@ -505,9 +505,18 @@ def _sdp_flags():
             cuda.math_sdp_enabled())  # fmt: skip
 
 
+@pytest.fixture
+def cudnn_sdp_on():
+    """Start from torch's default, cuDNN SDPA on: importing vLLM turns it off process-wide."""
+    was = torch.backends.cuda.cudnn_sdp_enabled()
+    torch.backends.cuda.enable_cudnn_sdp(True)
+    yield
+    torch.backends.cuda.enable_cudnn_sdp(was)
+
+
 @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
 @pytest.mark.parametrize("first", ["cudnn_only", "fallback"])
-def test_aot_compiled_call_follows_a_later_policy(probe_dq_nan, backend, first):
+def test_aot_compiled_call_follows_a_later_policy(cudnn_sdp_on, probe_dq_nan, backend, first):
     # AOTAutograd fixes SDPA's backend while tracing and Dynamo does not guard the backend flags:
     # a call compiled under one policy and invoked under another must not keep the first one's
     # kernel (a cuDNN-only compile must not leave cuDNN in place once a fallback is enabled).
