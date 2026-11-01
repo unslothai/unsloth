@@ -4679,19 +4679,17 @@ def _load_metadata_captions(folder: Path) -> dict[str, str]:
     return out
 
 
-# Header dimensions the labeling grid listed, by path, while the file keeps the identity it had then.
 _IMAGE_SIZE_CACHE_MAX = 8192
 _image_size_cache: "OrderedDict[str, tuple[tuple, tuple[int, int]]]" = OrderedDict()
 _image_size_cache_lock = threading.Lock()
 
 
 def _dataset_image_size(image_path: Path, info: Optional[os.stat_result]) -> tuple[int, int]:
-    """``Image.open(image_path).size``, or 0x0 when it cannot be read. ``info`` is the stat the
-    caller took just before: a header is opened again only once its file changed."""
+    """Header size (0x0 if unreadable), reused while the file's stat ``info`` is unchanged."""
     key = None
     name = str(image_path)
     if info is not None:
-        # A write moves mtime or ctime and a replace the inode, so a key that agrees means the same bytes.
+        # POSIX: any write moves ctime, even with mtime restored; a replace moves the inode.
         key = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
         with _image_size_cache_lock:
             hit = _image_size_cache.get(name)
@@ -4702,8 +4700,7 @@ def _dataset_image_size(image_path: Path, info: Optional[os.stat_result]) -> tup
         from PIL import Image
         with Image.open(image_path) as im:
             size = im.size
-    except Exception:  # noqa: BLE001 -- an unreadable image still lists (0x0) rather than 500
-        # Never kept: a read that may go through next time is tried again, as before.
+    except Exception:  # noqa: BLE001 -- lists as 0x0 rather than 500; not cached, so retried
         return 0, 0
     if key is not None:
         with _image_size_cache_lock:
@@ -4745,7 +4742,7 @@ def _image_record(
             caption = meta
             source = "metadata"
     try:
-        info: Optional[os.stat_result] = image_path.stat()
+        info = image_path.stat()
         size_bytes = info.st_size
     except OSError:
         info = None
