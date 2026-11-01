@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const fr = {
   chatBackground: {
-    previewNote: "Voici à quoi ressembleront vos discussions.",
     noBackground: "Aucun arrière-plan",
     sizing: "Dimensionnement de l’image",
     sizingPosition: "Dimensionnement et position de l’image",
@@ -41,8 +40,8 @@ export const fr = {
     scopeChats: "Discussions",
     scopeAll: "Toutes les pages",
     positionValue: "Horizontal {x} %, vertical {y} %",
-    newChat: "Nouveau chat",
-    conversation: "Conversation",
+    newChat: "Aperçu d'une nouvelle discussion",
+    conversation: "Aperçu d'une conversation",
     prompt: "Que souhaitez-vous explorer ?",
     response: "Votre conversation reste lisible sur l’arrière-plan.",
     storageError: "Impossible d’enregistrer l’arrière-plan. Vérifiez le stockage du navigateur.",

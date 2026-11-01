@@ -3,7 +3,6 @@
 
 export const it = {
   chatBackground: {
-    previewNote: "Ecco come appariranno le tue chat.",
     noBackground: "Nessuno sfondo",
     sizing: "Dimensionamento immagine",
     sizingPosition: "Dimensionamento e posizione immagine",
@@ -38,8 +37,8 @@ export const it = {
     scopeChats: "Chat",
     scopeAll: "Tutte le pagine",
     positionValue: "Orizzontale {x}%, verticale {y}%",
-    newChat: "Nuova chat",
-    conversation: "Conversazione",
+    newChat: "Anteprima nuova chat",
+    conversation: "Anteprima conversazione",
     prompt: "Cosa vorresti esplorare?",
     response: "La conversazione rimane leggibile sullo sfondo.",
     storageError: "Impossibile salvare lo sfondo. Controlla lo spazio del browser.",

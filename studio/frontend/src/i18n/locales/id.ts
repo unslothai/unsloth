@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const id = {
   chatBackground: {
-    previewNote: "Begini tampilan chat Anda nantinya.",
     noBackground: "Tanpa latar belakang",
     sizing: "Ukuran gambar",
     sizingPosition: "Ukuran dan posisi gambar",
@@ -41,8 +40,8 @@ export const id = {
     scopeChats: "Chat",
     scopeAll: "Semua halaman",
     positionValue: "Horizontal {x}%, vertikal {y}%",
-    newChat: "Chat baru",
-    conversation: "Percakapan",
+    newChat: "Pratinjau chat baru",
+    conversation: "Pratinjau percakapan",
     prompt: "Apa yang ingin Anda jelajahi?",
     response: "Percakapan Anda tetap jelas di atas latar belakang.",
     storageError: "Tidak dapat menyimpan latar belakang. Periksa ruang penyimpanan browser.",

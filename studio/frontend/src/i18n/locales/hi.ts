@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const hi = {
   chatBackground: {
-    previewNote: "आपकी चैट ऐसी दिखेंगी।",
     noBackground: "कोई पृष्ठभूमि नहीं",
     sizing: "छवि का आकार",
     sizingPosition: "छवि का आकार और स्थिति",
@@ -41,8 +40,8 @@ export const hi = {
     scopeChats: "चैट",
     scopeAll: "सभी पेज",
     positionValue: "क्षैतिज {x}%, लंबवत {y}%",
-    newChat: "नई चैट",
-    conversation: "बातचीत",
+    newChat: "नई चैट का पूर्वावलोकन",
+    conversation: "बातचीत का पूर्वावलोकन",
     prompt: "आप क्या जानना चाहेंगे?",
     response: "पृष्ठभूमि पर भी आपकी बातचीत स्पष्ट रहती है।",
     storageError: "पृष्ठभूमि सहेजी नहीं जा सकी। ब्राउज़र का संग्रहण जाँचें।",

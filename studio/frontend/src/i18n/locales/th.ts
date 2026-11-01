@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const th = {
   chatBackground: {
-    previewNote: "แชทของคุณจะมีหน้าตาแบบนี้",
     noBackground: "ไม่มีพื้นหลัง",
     sizing: "การปรับขนาดภาพ",
     sizingPosition: "ขนาดและตำแหน่งภาพ",
@@ -41,8 +40,8 @@ export const th = {
     scopeChats: "แชท",
     scopeAll: "ทุกหน้า",
     positionValue: "แนวนอน {x}% แนวตั้ง {y}%",
-    newChat: "แชทใหม่",
-    conversation: "การสนทนา",
+    newChat: "ตัวอย่างแชทใหม่",
+    conversation: "ตัวอย่างการสนทนา",
     prompt: "คุณอยากสำรวจอะไร?",
     response: "ข้อความสนทนายังคงอ่านได้ชัดเจนบนพื้นหลัง",
     storageError: "บันทึกพื้นหลังไม่ได้ ตรวจสอบพื้นที่จัดเก็บของเบราว์เซอร์",

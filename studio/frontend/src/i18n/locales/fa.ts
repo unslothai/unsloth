@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const fa = {
   chatBackground: {
-    previewNote: "گفتگوهای شما این‌طور دیده می‌شوند.",
     noBackground: "بدون پس‌زمینه",
     sizing: "اندازه‌بندی تصویر",
     sizingPosition: "اندازه و موقعیت تصویر",
@@ -41,8 +40,8 @@ export const fa = {
     scopeChats: "گفتگوها",
     scopeAll: "همهٔ صفحه‌ها",
     positionValue: "افقی {x}٪، عمودی {y}٪",
-    newChat: "گفتگوی جدید",
-    conversation: "گفتگو",
+    newChat: "پیش‌نمایش گفتگوی جدید",
+    conversation: "پیش‌نمایش گفتگو",
     prompt: "می‌خواهید چه چیزی را بررسی کنید؟",
     response: "متن گفتگو روی پس‌زمینه خوانا می‌ماند.",
     storageError: "ذخیرهٔ پس‌زمینه ممکن نشد. فضای ذخیره‌سازی مرورگر را بررسی کنید.",

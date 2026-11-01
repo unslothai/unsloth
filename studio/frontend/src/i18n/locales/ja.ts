@@ -7,7 +7,6 @@ import type { en } from "./en.ts";
 
 export const ja = {
   chatBackground: {
-    previewNote: "チャットはこのように表示されます。",
     noBackground: "背景なし",
     sizing: "画像のサイズ調整",
     sizingPosition: "画像のサイズと位置",
@@ -42,8 +41,8 @@ export const ja = {
     scopeChats: "チャット",
     scopeAll: "すべてのページ",
     positionValue: "横 {x}%、縦 {y}%",
-    newChat: "新しいチャット",
-    conversation: "会話",
+    newChat: "新しいチャットのプレビュー",
+    conversation: "会話のプレビュー",
     prompt: "何を調べたいですか？",
     response: "背景があっても会話は読みやすく表示されます。",
     storageError: "背景を保存できませんでした。ブラウザーの空き容量を確認してください。",

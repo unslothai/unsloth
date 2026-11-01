@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const vi = {
   chatBackground: {
-    previewNote: "Các cuộc trò chuyện của bạn sẽ trông như thế này.",
     noBackground: "Không có nền",
     sizing: "Kích thước ảnh",
     sizingPosition: "Kích thước và vị trí ảnh",
@@ -41,8 +40,8 @@ export const vi = {
     scopeChats: "Trò chuyện",
     scopeAll: "Mọi trang",
     positionValue: "Ngang {x}%, dọc {y}%",
-    newChat: "Cuộc trò chuyện mới",
-    conversation: "Cuộc trò chuyện",
+    newChat: "Xem trước cuộc trò chuyện mới",
+    conversation: "Xem trước hội thoại",
     prompt: "Bạn muốn khám phá điều gì?",
     response: "Nội dung trò chuyện vẫn rõ ràng trên nền.",
     storageError: "Không thể lưu nền. Kiểm tra dung lượng lưu trữ của trình duyệt.",

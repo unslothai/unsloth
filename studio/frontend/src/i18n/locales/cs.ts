@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const cs = {
   chatBackground: {
-    previewNote: "Takto budou vypadat vaše chaty.",
     noBackground: "Bez pozadí",
     sizing: "Velikost obrázku",
     sizingPosition: "Velikost a pozice obrázku",
@@ -41,8 +40,8 @@ export const cs = {
     scopeChats: "Chaty",
     scopeAll: "Všechny stránky",
     positionValue: "Vodorovně {x} %, svisle {y} %",
-    newChat: "Nový chat",
-    conversation: "Konverzace",
+    newChat: "Náhled nového chatu",
+    conversation: "Náhled konverzace",
     prompt: "Co chcete prozkoumat?",
     response: "Konverzace zůstává na pozadí čitelná.",
     storageError: "Pozadí se nepodařilo uložit. Zkontrolujte dostupné úložiště prohlížeče.",

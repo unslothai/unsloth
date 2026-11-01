@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const de = {
   chatBackground: {
-    previewNote: "So sehen deine Chats aus.",
     noBackground: "Kein Hintergrund",
     sizing: "Bildskalierung",
     sizingPosition: "Bildskalierung und Position",
@@ -41,8 +40,8 @@ export const de = {
     scopeChats: "Chats",
     scopeAll: "Allen Seiten",
     positionValue: "Horizontal {x} %, vertikal {y} %",
-    newChat: "Neuer Chat",
-    conversation: "Unterhaltung",
+    newChat: "Vorschau für neuen Chat",
+    conversation: "Vorschau der Unterhaltung",
     prompt: "Was möchtest du erkunden?",
     response: "Deine Unterhaltung bleibt vor dem Hintergrund gut lesbar.",
     storageError: "Der Hintergrund konnte nicht gespeichert werden. Prüfe den Browserspeicher.",

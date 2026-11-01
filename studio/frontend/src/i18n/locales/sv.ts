@@ -3,7 +3,6 @@
 
 export const sv = {
   chatBackground: {
-    previewNote: "Så här kommer dina chattar att se ut.",
     noBackground: "Ingen bakgrund",
     sizing: "Bildstorlek",
     sizingPosition: "Bildstorlek och position",
@@ -38,8 +37,8 @@ export const sv = {
     scopeChats: "Chattar",
     scopeAll: "Alla sidor",
     positionValue: "Horisontellt {x} %, vertikalt {y} %",
-    newChat: "Ny chatt",
-    conversation: "Konversation",
+    newChat: "Förhandsvisning av ny chatt",
+    conversation: "Förhandsvisning av konversation",
     prompt: "Vad vill du utforska?",
     response: "Konversationen förblir tydlig mot bakgrunden.",
     storageError: "Det gick inte att spara bakgrunden. Kontrollera webbläsarens lagringsutrymme.",

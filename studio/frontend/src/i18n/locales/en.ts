@@ -3,7 +3,6 @@
 
 export const en = {
   chatBackground: {
-    previewNote: "Here's how your chats will look.",
     noBackground: "No background",
     sizing: "Image sizing",
     sizingPosition: "Image sizing & position",
@@ -38,8 +37,8 @@ export const en = {
     scopeChats: "Chats",
     scopeAll: "All pages",
     positionValue: "Horizontal {x}%, vertical {y}%",
-    newChat: "New chat",
-    conversation: "Conversation",
+    newChat: "New chat preview",
+    conversation: "Conversation preview",
     prompt: "What would you like to explore?",
     response: "Your conversation stays clear over the background.",
     storageError: "Could not save the background. Check available browser storage.",

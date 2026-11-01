@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const nl = {
   chatBackground: {
-    previewNote: "Zo zien je chats eruit.",
     noBackground: "Geen achtergrond",
     sizing: "Afbeeldingsgrootte",
     sizingPosition: "Afbeeldingsgrootte en positie",
@@ -41,8 +40,8 @@ export const nl = {
     scopeChats: "Chats",
     scopeAll: "Alle pagina’s",
     positionValue: "Horizontaal {x}%, verticaal {y}%",
-    newChat: "Nieuwe chat",
-    conversation: "Gesprek",
+    newChat: "Voorbeeld nieuwe chat",
+    conversation: "Voorbeeld gesprek",
     prompt: "Wat wil je ontdekken?",
     response: "Je gesprek blijft goed leesbaar op de achtergrond.",
     storageError: "Kan de achtergrond niet opslaan. Controleer de beschikbare browseropslag.",

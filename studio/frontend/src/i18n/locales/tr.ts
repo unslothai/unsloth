@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const tr = {
   chatBackground: {
-    previewNote: "Sohbetleriniz böyle görünecek.",
     noBackground: "Arka plan yok",
     sizing: "Görüntü boyutlandırma",
     sizingPosition: "Görüntü boyutu ve konumu",
@@ -41,8 +40,8 @@ export const tr = {
     scopeChats: "Sohbetler",
     scopeAll: "Tüm sayfalar",
     positionValue: "Yatay %{x}, dikey %{y}",
-    newChat: "Yeni sohbet",
-    conversation: "Sohbet",
+    newChat: "Yeni sohbet önizlemesi",
+    conversation: "Konuşma önizlemesi",
     prompt: "Ne keşfetmek istersiniz?",
     response: "Sohbetiniz arka plan üzerinde okunaklı kalır.",
     storageError: "Arka plan kaydedilemedi. Tarayıcının kullanılabilir depolama alanını kontrol edin.",

@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const es419 = {
   chatBackground: {
-    previewNote: "Así se verán tus chats.",
     noBackground: "Sin fondo",
     sizing: "Tamaño de imagen",
     sizingPosition: "Tamaño y posición de imagen",
@@ -41,8 +40,8 @@ export const es419 = {
     scopeChats: "Chats",
     scopeAll: "Todas las páginas",
     positionValue: "Horizontal {x} %, vertical {y} %",
-    newChat: "Nuevo chat",
-    conversation: "Conversación",
+    newChat: "Vista previa del chat nuevo",
+    conversation: "Vista previa de la conversación",
     prompt: "¿Qué te gustaría explorar?",
     response: "Tu conversación sigue siendo legible sobre el fondo.",
     storageError: "No se pudo guardar el fondo. Comprueba el almacenamiento del navegador.",

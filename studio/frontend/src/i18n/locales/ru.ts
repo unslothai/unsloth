@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const ru = {
   chatBackground: {
-    previewNote: "Так будут выглядеть ваши чаты.",
     noBackground: "Без фона",
     sizing: "Масштабирование изображения",
     sizingPosition: "Масштаб и положение изображения",
@@ -41,8 +40,8 @@ export const ru = {
     scopeChats: "В чатах",
     scopeAll: "На всех страницах",
     positionValue: "По горизонтали {x}%, по вертикали {y}%",
-    newChat: "Новый чат",
-    conversation: "Переписка",
+    newChat: "Предпросмотр нового чата",
+    conversation: "Предпросмотр беседы",
     prompt: "Что вы хотите изучить?",
     response: "Переписка остаётся хорошо видимой на фоне.",
     storageError: "Не удалось сохранить фон. Проверьте хранилище браузера.",

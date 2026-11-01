@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const zhTW = {
   chatBackground: {
-    previewNote: "你的聊天會是這個樣子。",
     noBackground: "無背景",
     sizing: "圖片縮放方式",
     sizingPosition: "圖片縮放與位置",
@@ -41,8 +40,8 @@ export const zhTW = {
     scopeChats: "聊天",
     scopeAll: "所有頁面",
     positionValue: "水平 {x}%，垂直 {y}%",
-    newChat: "新對話",
-    conversation: "對話",
+    newChat: "新聊天預覽",
+    conversation: "對話預覽",
     prompt: "你想探索什麼？",
     response: "對話內容在背景上保持清晰。",
     storageError: "無法儲存背景。請檢查瀏覽器可用儲存空間。",

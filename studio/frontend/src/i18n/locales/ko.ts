@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const ko = {
   chatBackground: {
-    previewNote: "채팅이 이렇게 보입니다.",
     noBackground: "배경 없음",
     sizing: "이미지 크기 조정",
     sizingPosition: "이미지 크기 및 위치",
@@ -41,8 +40,8 @@ export const ko = {
     scopeChats: "채팅",
     scopeAll: "모든 페이지",
     positionValue: "가로 {x}%, 세로 {y}%",
-    newChat: "새 채팅",
-    conversation: "대화",
+    newChat: "새 채팅 미리보기",
+    conversation: "대화 미리보기",
     prompt: "무엇을 알아보고 싶으신가요?",
     response: "배경 위에서도 대화가 선명하게 표시됩니다.",
     storageError: "배경을 저장할 수 없습니다. 브라우저 저장 공간을 확인하세요.",

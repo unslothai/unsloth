@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const ptBR = {
   chatBackground: {
-    previewNote: "Veja como suas conversas vão ficar.",
     noBackground: "Sem fundo",
     sizing: "Dimensionamento da imagem",
     sizingPosition: "Dimensionamento e posição da imagem",
@@ -41,8 +40,8 @@ export const ptBR = {
     scopeChats: "Chats",
     scopeAll: "Todas as páginas",
     positionValue: "Horizontal {x}%, vertical {y}%",
-    newChat: "Novo chat",
-    conversation: "Conversa",
+    newChat: "Prévia de nova conversa",
+    conversation: "Prévia da conversa",
     prompt: "O que você gostaria de explorar?",
     response: "Sua conversa continua legível sobre o fundo.",
     storageError: "Não foi possível salvar o fundo. Verifique o armazenamento do navegador.",

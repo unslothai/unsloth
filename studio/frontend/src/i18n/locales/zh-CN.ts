@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const zhCN = {
   chatBackground: {
-    previewNote: "你的聊天将会是这样。",
     noBackground: "无背景",
     sizing: "图片缩放方式",
     sizingPosition: "图片缩放与位置",
@@ -41,8 +40,8 @@ export const zhCN = {
     scopeChats: "聊天",
     scopeAll: "所有页面",
     positionValue: "水平 {x}%，垂直 {y}%",
-    newChat: "新聊天",
-    conversation: "对话",
+    newChat: "新聊天预览",
+    conversation: "对话预览",
     prompt: "你想探索什么？",
     response: "背景上的对话依然清晰可读。",
     storageError: "无法保存背景。请检查浏览器存储空间。",

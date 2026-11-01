@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const uk = {
   chatBackground: {
-    previewNote: "Так виглядатимуть ваші чати.",
     noBackground: "Без тла",
     sizing: "Масштабування зображення",
     sizingPosition: "Масштаб і позиція зображення",
@@ -41,8 +40,8 @@ export const uk = {
     scopeChats: "У чатах",
     scopeAll: "На всіх сторінках",
     positionValue: "По горизонталі {x}%, по вертикалі {y}%",
-    newChat: "Новий чат",
-    conversation: "Розмова",
+    newChat: "Попередній перегляд нового чату",
+    conversation: "Попередній перегляд розмови",
     prompt: "Що хочете дослідити?",
     response: "Розмова залишається чіткою на тлі.",
     storageError: "Не вдалося зберегти тло. Перевірте доступне сховище браузера.",

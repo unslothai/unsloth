@@ -6,7 +6,6 @@ import type { en } from "./en";
 
 export const he = {
   chatBackground: {
-    previewNote: "כך ייראו הצ'אטים שלך.",
     noBackground: "ללא רקע",
     sizing: "התאמת גודל תמונה",
     sizingPosition: "גודל ומיקום התמונה",
@@ -41,8 +40,8 @@ export const he = {
     scopeChats: "צ׳אטים",
     scopeAll: "כל הדפים",
     positionValue: "אופקי {x}%, אנכי {y}%",
-    newChat: "צ׳אט חדש",
-    conversation: "שיחה",
+    newChat: "תצוגה מקדימה של צ'אט חדש",
+    conversation: "תצוגה מקדימה של שיחה",
     prompt: "מה תרצו לחקור?",
     response: "השיחה נשארת ברורה על גבי הרקע.",
     storageError: "לא ניתן לשמור את הרקע. בדקו את שטח האחסון בדפדפן.",

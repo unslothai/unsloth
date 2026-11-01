@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const pl = {
   chatBackground: {
-    previewNote: "Tak będą wyglądać Twoje czaty.",
     noBackground: "Brak tła",
     sizing: "Skalowanie obrazu",
     sizingPosition: "Skalowanie i pozycja obrazu",
@@ -41,8 +40,8 @@ export const pl = {
     scopeChats: "Czatach",
     scopeAll: "Wszystkich stronach",
     positionValue: "Poziomo {x}%, pionowo {y}%",
-    newChat: "Nowy czat",
-    conversation: "Rozmowa",
+    newChat: "Podgląd nowego czatu",
+    conversation: "Podgląd rozmowy",
     prompt: "Co chcesz odkryć?",
     response: "Rozmowa pozostaje czytelna na tle.",
     storageError: "Nie udało się zapisać tła. Sprawdź dostępne miejsce w pamięci przeglądarki.",

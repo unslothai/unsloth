@@ -6,7 +6,6 @@ import type { en } from "./en.ts";
 
 export const ar = {
   chatBackground: {
-    previewNote: "هكذا ستبدو محادثاتك.",
     noBackground: "بدون خلفية",
     sizing: "تحجيم الصورة",
     sizingPosition: "تحجيم الصورة والموضع",
@@ -41,8 +40,8 @@ export const ar = {
     scopeChats: "المحادثات",
     scopeAll: "كل الصفحات",
     positionValue: "أفقي {x}%، عمودي {y}%",
-    newChat: "دردشة جديدة",
-    conversation: "محادثة",
+    newChat: "معاينة محادثة جديدة",
+    conversation: "معاينة المحادثة",
     prompt: "ماذا تود استكشافه؟",
     response: "تبقى محادثتك واضحة فوق الخلفية.",
     storageError: "تعذر حفظ الخلفية. تحقق من مساحة تخزين المتصفح.",
