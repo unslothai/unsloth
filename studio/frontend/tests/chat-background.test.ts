@@ -34,7 +34,7 @@ test("background preferences repair malformed persisted data", () => {
     assert.equal(sanitizeAdjustments({ zoom: 500 }).zoom, 300);
     assert.equal(sanitizeAdjustments({ zoom: 0 }).zoom, 100);
     assert.equal(sanitizeAdjustments({ zoom: NaN }).zoom, 100);
-	assert.equal(sanitizeAdjustments({ fade: "false" as never }).fade, true);
+	assert.equal(sanitizeAdjustments({ fade: "false" as never }).fade, null);
 });
 test("uploads bound processing dimensions", () => {
 	assert.deepEqual(normalizedSize(6000, 4000), [2048, 1365]);
