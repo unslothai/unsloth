@@ -85,8 +85,7 @@ def test_idle_worker_shutdown_has_no_fixed_sleep(monkeypatch):
     proc = o._proc
     assert o._shutdown_subprocess() is True
     assert not proc.is_alive() and o._proc is None
-    # The old path slept a fixed 0.5 s before even sending shutdown. The recorded sleeps prove
-    # that is gone; wall time is not asserted because spawned process exit is slow on Windows.
+    # No wall-time assert: spawned process exit is slow on Windows.
     assert rec.sleeps == [] and rec.terminated == []
 
 
@@ -110,8 +109,7 @@ def test_cancelled_generation_finishes_before_exit(monkeypatch):
 
 
 def test_late_cancel_with_full_pipe_still_exits_cleanly(monkeypatch):
-    # Ignores cancel for 0.8 s while writing ~4 KB tokens: well past a 64 KB pipe after one drain.
-    # The worker cannot exit until its queue feeder flushes, so the parent must keep draining.
+    # 0.8 s of ~4 KB tokens overfills a 64 KB pipe: the worker exits only if the parent keeps draining.
     rec = _Recorder(monkeypatch)
     o = _live(ignore_cancel_s = 0.8, tok_bytes = 4096, generating = True)
     proc = o._proc
@@ -174,7 +172,6 @@ def test_condition_never_met_keeps_old_budget_then_escalates(monkeypatch):
     started = time.monotonic()
     assert o._shutdown_subprocess(timeout = 0.3) is True
     waited = time.monotonic() - started
-    # Old budget: 0.5 s fixed grace plus join(timeout) before escalating.
     assert 0.3 + orch_mod._SHUTDOWN_CANCEL_GRACE_S - 0.05 <= waited < 2.0, waited
     assert terminated == [proc.pid]
     assert proc.joins and all(t <= orch_mod._SHUTDOWN_JOIN_SLICE_S + 1e-9 for t in proc.joins[:-1])
@@ -201,8 +198,7 @@ def test_source_has_no_fixed_switch_sleeps():
 
 @pytest.mark.parametrize("reader", ["direct", "dispatched"])
 def test_streaming_reader_keeps_its_tail_across_a_switch(monkeypatch, reader):
-    # A stream reading slower than the worker writes still holds unread tokens and gen_done when
-    # the switch cancels; teardown must neither drop them nor swap the handle before it reads them.
+    # A reader slower than the worker still holds its tail at cancel; teardown must not drop it.
     _Recorder(monkeypatch)
     o = _live()
     proc = o._proc
@@ -263,7 +259,6 @@ def test_streaming_reader_keeps_its_tail_across_a_switch(monkeypatch, reader):
     assert not proc.is_alive()
     assert seen["error"] is None, seen
     assert seen["finished"] and seen["tokens"] > 0, seen
-    # Every token the worker sent before gen_done reached the stream.
     assert stats["stats"]["tokens"] == seen["tokens"], (stats, seen)
 
 
