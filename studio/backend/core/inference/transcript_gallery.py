@@ -5,11 +5,14 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
 import re
+import threading
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -156,6 +159,18 @@ def save(result: dict, title: str) -> dict:
     return record
 
 
+def _load(path: Path, transcript_id: str) -> dict | None:
+    """The record stored at ``path`` once its base keys check out, before any sanitizing."""
+    record = json.loads(path.read_text(encoding = "utf-8"))
+    if not isinstance(record, dict) or record.get("id") != transcript_id:
+        return None
+    if not all(
+        isinstance(record.get(key), str) for key in ("text", "model", "title", "created_at")
+    ):
+        return None
+    return record
+
+
 def _read(directory: Path, transcript_id: str) -> dict | None:
     if not _ID_RE.fullmatch(transcript_id):
         return None
@@ -163,12 +178,8 @@ def _read(directory: Path, transcript_id: str) -> dict | None:
     if path.is_symlink():
         return None
     try:
-        record = json.loads(path.read_text(encoding = "utf-8"))
-        if not isinstance(record, dict) or record.get("id") != transcript_id:
-            return None
-        if not all(
-            isinstance(record.get(key), str) for key in ("text", "model", "title", "created_at")
-        ):
+        record = _load(path, transcript_id)
+        if record is None:
             return None
         if any(key not in _BASE_KEYS for key in record):
             return _sanitize_details(record)
@@ -185,6 +196,74 @@ def get(transcript_id: str) -> dict | None:
     return record
 
 
+def _row_size(row: dict) -> int | None:
+    """Rough bytes a cached row pins, or None when a hand-edited base value is not a scalar."""
+    size = 4096
+    for key in _BASE_KEYS:
+        value = row[key]
+        if isinstance(value, str):
+            size += len(value)
+        elif value is not None and not isinstance(value, (bool, int, float)):
+            return None
+    return size
+
+
+# Listing rows by path, kept while the file keeps the identity it had when it was read. The path
+# carries the account's directory, so accounts never share a row.
+_ROW_CACHE_MAX = 4096
+_ROW_CACHE_ITEM_MAX = 4 * 1024 * 1024
+_ROW_CACHE_BUDGET = 64 * 1024 * 1024
+_row_cache: OrderedDict[str, tuple[tuple, dict, int]] = OrderedDict()
+_row_cache_bytes = 0
+_row_cache_lock = threading.Lock()
+
+
+def _cached_row(directory: Path, transcript_id: str) -> dict | None:
+    """The listing row of ``_read(directory, transcript_id)``; callers must not mutate it."""
+    global _row_cache_bytes
+    if not _ID_RE.fullmatch(transcript_id):
+        return None
+    path = directory / f"{transcript_id}.json"
+    if path.is_symlink():
+        return None
+    try:
+        info = os.stat(path)
+    except OSError:
+        info = None
+    name = str(path)
+    ident = None
+    if info is not None:
+        # A write moves mtime or ctime and os.replace the inode: an identity that agrees means the
+        # same bytes.
+        ident = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        with _row_cache_lock:
+            hit = _row_cache.get(name)
+            if hit is not None and hit[0] == ident:
+                _row_cache.move_to_end(name)
+                return hit[1]
+    try:
+        record = _load(path, transcript_id)
+        if record is None:
+            return None
+        if any(key not in _BASE_KEYS for key in record):
+            record = _sanitize_details(record)
+        row = summary(record)
+    except (OSError, ValueError):
+        # Never kept: a read that may go through next time is tried again, as before.
+        return None
+    size = _row_size(row) if ident is not None else None
+    if size is not None and size <= _ROW_CACHE_ITEM_MAX:
+        with _row_cache_lock:
+            old = _row_cache.pop(name, None)
+            if old is not None:
+                _row_cache_bytes -= old[2]
+            _row_cache[name] = (ident, row, size)
+            _row_cache_bytes += size
+            while len(_row_cache) > _ROW_CACHE_MAX or _row_cache_bytes > _ROW_CACHE_BUDGET:
+                _row_cache_bytes -= _row_cache.popitem(last = False)[1][2]
+    return row
+
+
 def list_transcripts(
     limit: int = 50,
     before: str | None = None,
@@ -192,22 +271,29 @@ def list_transcripts(
 ) -> dict:
     directory = gallery_dir()
     flags = gallery_flags.read(directory)
-    records = []
+    rows = []
     for path in directory.glob("*.json"):
-        record = _read(directory, path.stem)
-        if record is None or gallery_flags.is_archived(flags, path.stem) != archived:
+        # Archive state is read fresh from the flags store each call, never from a cached row.
+        if gallery_flags.is_archived(flags, path.stem) != archived:
             continue
-        cursor = f"{record['created_at']}|{record['id']}"
+        row = _cached_row(directory, path.stem)
+        if row is None:
+            continue
+        cursor = f"{row['created_at']}|{row['id']}"
         if before is not None and cursor >= before:
             continue
-        record["archived"] = archived
-        records.append(summary(record))
-    records.sort(key = lambda record: (record["created_at"], record["id"]), reverse = True)
-    visible = records[:limit]
+        rows.append(row)
+    rows.sort(key = lambda row: (row["created_at"], row["id"]), reverse = True)
+    visible = []
+    for row in rows[:limit]:
+        # Cached rows are shared across requests; each response gets its own copy.
+        row = copy.deepcopy(row)
+        row["archived"] = archived
+        visible.append(row)
     return {
         "transcripts": visible,
         "next_cursor": (
-            f"{visible[-1]['created_at']}|{visible[-1]['id']}" if len(records) > limit else None
+            f"{visible[-1]['created_at']}|{visible[-1]['id']}" if len(rows) > limit else None
         ),
     }
 
