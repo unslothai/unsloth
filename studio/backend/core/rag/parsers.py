@@ -991,8 +991,7 @@ _docx_xpath = threading.local()
 
 
 def _docx_run_text(run) -> str:
-    # CT_R.text's children plus checkbox fields and symbols, compiled once per thread: run.xpath()
-    # recompiles per run, and lxml locks an evaluator shared between threads.
+    # Per thread: run.xpath() recompiles per call; lxml locks an evaluator shared across threads.
     parts = getattr(_docx_xpath, "run_parts", None)
     if parts is None:
         from lxml import etree
