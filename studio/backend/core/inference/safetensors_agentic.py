@@ -133,6 +133,7 @@ def _is_rehearsal_prefix(
     active_tools: list[dict],
     *,
     unrestricted: bool = False,
+    _names: Optional[list] = None,
 ) -> bool:
     """Names that are not markerless-promotable stream as prose rather than being held for a call."""
     if not stripped or any(ch.isspace() for ch in stripped):
@@ -143,11 +144,11 @@ def _is_rehearsal_prefix(
         name, bracket, _ = stripped.partition("[")
         # Until '[' lands the name is open: terminal may yet become terminal_logs.
         return not bracket or _markerless_promotable(name, None)
-    for name in _active_tool_names(active_tools):
+    for name in _active_tool_names(active_tools) if _names is None else _names:
         # Shared gate, not the built-in three: refuses mcp__* names too, and holding a suffix hides text.
-        if not _markerless_promotable(name, None):
-            continue
-        if stripped == name or f"{name}[ARGS]".startswith(stripped):
+        if (stripped == name or f"{name}[ARGS]".startswith(stripped)) and _markerless_promotable(
+            name, None
+        ):
             return True
     return False
 
@@ -159,12 +160,13 @@ def _held_rehearsal_tail_len(
     unrestricted: bool = False,
 ) -> int:
     """Length of a trailing bare tool-name token held while streaming so the name does not leak; also call:NAME{ prefixes, seen only once the brace arrives."""
+    names = None if unrestricted else _active_tool_names(active_tools)
     # Restricted mode: same NAME[ARGS] bound as llama_cpp._held_rehearsal_tail_len.
     limit = (
         len(text)
         if unrestricted
         else max(
-            (len(name) for name in _active_tool_names(active_tools) if isinstance(name, str)),
+            (len(name) for name in names if isinstance(name, str)),
             default = 0,
         )
         + len("[ARGS]")
@@ -178,15 +180,10 @@ def _held_rehearsal_tail_len(
         len(tail)
         if tail
         and len(tail) <= limit
-        and _is_rehearsal_prefix(tail, active_tools, unrestricted = unrestricted)
+        and _is_rehearsal_prefix(tail, active_tools, unrestricted = unrestricted, _names = names)
         else 0
     )
-    return max(
-        held,
-        held_bare_gemma_tail_len(
-            text, lambda: None if unrestricted else _active_tool_names(active_tools)
-        ),
-    )
+    return max(held, held_bare_gemma_tail_len(text, lambda: names))
 
 
 def _rehearsal_name_start(
