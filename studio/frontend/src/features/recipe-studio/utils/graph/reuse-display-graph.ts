@@ -11,44 +11,27 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
-function shallowEqual(
+function sameEntries(
   a: Record<string, unknown>,
   b: Record<string, unknown>,
+  same: (x: unknown, y: unknown) => boolean,
 ): boolean {
-  const aKeys = Object.keys(a);
-  if (aKeys.length !== Object.keys(b).length) {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) {
     return false;
   }
-  for (const key of aKeys) {
-    if (!(Object.hasOwn(b, key) && Object.is(a[key], b[key]))) {
-      return false;
-    }
-  }
-  return true;
+  return keys.every((key) => Object.hasOwn(b, key) && same(a[key], b[key]));
 }
 
 /** Equal own keys, each value identical or a plain object whose own values are identical. */
 function sameDisplayItem(a: object, b: object): boolean {
-  const left = a as Record<string, unknown>;
-  const right = b as Record<string, unknown>;
-  const keys = Object.keys(left);
-  if (keys.length !== Object.keys(right).length) {
-    return false;
-  }
-  for (const key of keys) {
-    if (!Object.hasOwn(right, key)) {
-      return false;
-    }
-    const x = left[key];
-    const y = right[key];
-    if (Object.is(x, y)) {
-      continue;
-    }
-    if (!(isPlainObject(x) && isPlainObject(y) && shallowEqual(x, y))) {
-      return false;
-    }
-  }
-  return true;
+  return sameEntries(
+    a as Record<string, unknown>,
+    b as Record<string, unknown>,
+    (x, y) =>
+      Object.is(x, y) ||
+      (isPlainObject(x) && isPlainObject(y) && sameEntries(x, y, Object.is)),
+  );
 }
 
 function reuseItems<T extends { id: string }>(prev: T[], next: T[]): T[] {
@@ -86,11 +69,7 @@ export function reuseDisplayGraph(
   return { nodes, edges };
 }
 
-/**
- * Hands back the previous display node / edge object wherever the new one has the same content,
- * so React Flow keeps its internal node and skips re-rendering nodes and edges that did not change
- * (a drag otherwise re-renders every node of the graph per pointer move).
- */
+// React Flow re-renders every node whose object identity changed, so a drag step would re-render the whole graph.
 export function createDisplayGraphReuser(): (
   next: DisplayGraph,
 ) => DisplayGraph {

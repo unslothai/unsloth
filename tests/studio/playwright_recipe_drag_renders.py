@@ -185,7 +185,17 @@ def run(page, expected_nodes: int) -> dict[str, int]:
             if attempt == 2:
                 raise
             info(f"graph did not load ({type(error).__name__}), retrying")
-    page.wait_for_timeout(1500)
+    # Node rects are only meaningful once fit-view has moved the viewport and it stopped moving.
+    page.wait_for_function(
+        """() => {
+          const t = document.querySelector('.react-flow__viewport')?.style.transform;
+          const settled = t && !t.endsWith('scale(1)') && t === window.__lastViewport;
+          window.__lastViewport = t;
+          return settled;
+        }""",
+        polling = 300,
+        timeout = 60_000,
+    )
     box = page.evaluate(
         """() => {
           for (const node of document.querySelectorAll('.react-flow__node')) {
