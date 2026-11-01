@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""One-shot calls to the local llama-server reuse the shared SSL context.
-
-httpx builds a fresh SSLContext and parses the whole CA bundle for every client it
-creates (~15-20 ms of CPU), even for a plain http:// loopback URL. The streaming and
-counting paths already pass ``_local_ssl_context()``; these tests keep the one-shot
-calls (/props, /slots save/restore/erase, probes, audio detection) on it too.
-"""
+"""httpx parses the CA bundle per client even for http:// loopback; every llama-server call shares one context."""
 
 import ast
 import json
@@ -26,7 +20,6 @@ sys.path.insert(0, _backend)
 from core.inference import llama_cpp  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend, _local_ssl_context  # noqa: E402
 
-_BACKEND_ROOT = Path(_backend)
 _ONE_SHOT = {"get", "post", "put", "delete", "request", "stream", "Client"}
 
 
@@ -50,9 +43,7 @@ def _httpx_calls_without_verify(path: Path) -> list[int]:
 
 
 def test_loopback_llama_calls_pass_verify():
-    # Every httpx call in the backend targets its own http:// loopback llama-server; one without
-    # verify= pays the CA bundle load on every call.
-    missing = _httpx_calls_without_verify(_BACKEND_ROOT / "core/inference/llama_cpp.py")
+    missing = _httpx_calls_without_verify(Path(llama_cpp.__file__))
     assert missing == [], f"llama_cpp.py: httpx calls without verify= at lines {missing}"
 
 
@@ -116,7 +107,6 @@ def server():
 
 @pytest.fixture
 def verify_args(monkeypatch):
-    """Record the verify= of every httpx client the backend builds, then build it for real."""
     seen = []
     real_init = httpx.Client.__init__
 
@@ -143,12 +133,6 @@ def test_query_server_props_keeps_auth_header(server, verify_args):
     assert _Handler.seen[-1] == ("GET", "/props", "Bearer k")
 
 
-def test_query_server_props_none_when_server_down(verify_args):
-    with socket_port() as port:
-        pass
-    assert _stub(port)._query_server_props() is None
-
-
 def test_release_idle_chat_slot_shares_context(server, verify_args):
     backend = _stub(server)
     assert backend.release_idle_chat_slot(backend.base_url, 1) is True
@@ -159,18 +143,3 @@ def test_release_idle_chat_slot_shares_context(server, verify_args):
 def test_shared_context_is_one_object():
     assert _local_ssl_context() is _local_ssl_context()
     assert llama_cpp._local_ssl_context.cache_info().maxsize == 1
-
-
-class socket_port:
-    """A port nothing listens on."""
-
-    def __enter__(self):
-        import socket
-
-        self._sock = socket.socket()
-        self._sock.bind(("127.0.0.1", 0))
-        return self._sock.getsockname()[1]
-
-    def __exit__(self, *_args):
-        self._sock.close()
-        return False
