@@ -681,8 +681,7 @@ def _parse_meta(raw: str) -> Optional[dict[str, Any]]:
     return meta
 
 
-# Sidecar text the listing read, by path, while the file keeps the identity it had then. Text, not
-# the parsed dict: every call decodes its own copy, so no caller can change what the next one gets.
+# Raw text, not the dict: each call decodes its own copy, so callers cannot mutate later listings.
 _SIDECAR_CACHE_MAX = 8192
 _SIDECAR_CACHE_ITEM_MAX = 64 * 1024
 _SIDECAR_CACHE_BUDGET = 16 * 1024 * 1024
@@ -692,14 +691,12 @@ _sidecar_cache_lock = threading.Lock()
 
 
 def _listed_meta(sidecar: Path) -> Optional[dict[str, Any]]:
-    """``_read_meta(sidecar)``, reading the file again only once it changed."""
     global _sidecar_cache_chars
     try:
         info = os.stat(sidecar)
     except OSError:
         return _read_meta(sidecar)
-    # A write moves mtime or ctime and os.replace the inode, so a key that agrees means the same
-    # bytes. Taken before the read: a write in between leaves a key that no longer agrees.
+    # Stat before the read: a write in between leaves a key that no longer matches.
     key = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
     name = str(sidecar)
     with _sidecar_cache_lock:
@@ -714,7 +711,6 @@ def _listed_meta(sidecar: Path) -> Optional[dict[str, Any]]:
     try:
         raw = sidecar.read_text(encoding = "utf-8")
     except (OSError, UnicodeError):
-        # Never kept: a read that may go through next time is tried again, as before.
         return None
     if len(raw) <= _SIDECAR_CACHE_ITEM_MAX:
         with _sidecar_cache_lock:
@@ -755,13 +751,12 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
-# Path.glob matches case-insensitively on Windows only, on every supported Python.
+# Path.glob folds case on Windows only.
 _GLOB_FOLDS_CASE = os.name == "nt"
 
 
 def _listed_mp4s(directory: Path) -> list[tuple[str, float, bool]]:
-    """(stem, mtime, plain) for each entry ``directory.glob("*.mp4")`` lists, in its order, from one
-    scandir pass: mtime is what _mtime would read, plain says the entry is a regular file."""
+    """(stem, mtime, is regular file) per ``directory.glob("*.mp4")`` entry, in glob order."""
     found: list[tuple[str, float, bool]] = []
     with os.scandir(directory) as entries:
         try:
@@ -777,11 +772,11 @@ def _listed_mp4s(directory: Path) -> list[tuple[str, float, bool]]:
                     plain = entry.is_file(follow_symlinks = False)
                 except OSError:
                     plain = False
-                # Path.stem; a dot-led name (".mp4", and "..mp4" on 3.14) can be all stem.
+                # Path.stem: a dot-led name (".mp4", "..mp4" on 3.14) can be all stem.
                 stem = Path(name).stem if name.startswith(".") else name[:-4]
                 found.append((stem, mtime, plain))
         except OSError:
-            # Path.glob read the folder in one go and listed a failed read as empty.
+            # Path.glob listed a failed read as empty.
             return []
     return found
 
@@ -816,7 +811,7 @@ def list_videos(
         meta = _listed_meta(_sidecar_path(stem, directory))
         if meta is None:
             continue
-        # A plain file under a safe id is what video_path accepts, so the sort's stat is its mtime.
+        # A regular file under a safe id is what video_path accepts: reuse the sort's mtime.
         record = _record(
             stem,
             meta,
