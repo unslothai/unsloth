@@ -9995,7 +9995,7 @@ def session_runs_in_user_folder(session_id: "str | None") -> bool:
     try:
         from storage.studio_db import available_project_working_folder, get_chat_project
 
-        # Necessary for the check below and one read, versus the four the full resolution makes.
+        # One read rules out most projects before the four the full resolution makes.
         project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
         if not available_project_working_folder(project):
             return False

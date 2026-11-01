@@ -5650,12 +5650,10 @@ def _project_folder_tip(tool_names) -> str:
 
 
 async def _tools_run_in_user_folder(payload, tools) -> bool:
-    """Whether this request's code tools will run in the owner's chosen project folder."""
     session_id = getattr(payload, "session_id", None)
     names = {
         (tool.get("function") or {}).get("name") for tool in tools or () if isinstance(tool, dict)
     }
-    # Only these can read the folder, which is what the sentence asks for.
     if not session_id or not names.intersection({"terminal", "python"}):
         return False
     from core.inference.tools import session_runs_in_user_folder

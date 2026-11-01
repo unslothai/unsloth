@@ -2364,7 +2364,6 @@ export async function buildLocalTokenCountExtras(
       ...localMediaTools,
     ],
     mcp_enabled: mcpEnabledForChat,
-    // A project's chosen working folder adds a sentence to the nudge; the completion sends the same id.
     ...(sessionId ? { session_id: sessionId } : {}),
     // Top level, not in rag_scope: archived threads add search_conversation regardless of RAG.
     ...threadField,
