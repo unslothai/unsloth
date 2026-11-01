@@ -1201,7 +1201,9 @@ class MtmdSttSidecar:
             # samples. Decoding a long recorder WAV again is nothing next to transcribing it.
             decoded_audio = _decode_audio_bounded(audio, cancel_event)
             wav_bytes = _pcm_to_wav_bytes(decoded_audio)
-            audio_seconds = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
+            audio_seconds = (
+                (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
+            )
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         if decoded_audio is not None and audio_seconds and audio_seconds > _MTMD_WINDOW_SECONDS:

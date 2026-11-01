@@ -185,9 +185,7 @@ def test_the_keepalive_route_forwards_without_loading(monkeypatch):
 
     import routes.inference as inference_route
 
-    assert "/audio/stt/keepalive" in [
-        route.path for route in inference_route.studio_router.routes
-    ]
+    assert "/audio/stt/keepalive" in [route.path for route in inference_route.studio_router.routes]
 
     calls = []
 
@@ -196,9 +194,7 @@ def test_the_keepalive_route_forwards_without_loading(monkeypatch):
         return {"held": True}
 
     monkeypatch.setattr(stt_registry, "keep_alive", keep)
-    response = asyncio.run(
-        inference_route.stt_keep_alive(engine = None, model = "qwen3-asr-0.6b")
-    )
+    response = asyncio.run(inference_route.stt_keep_alive(engine = None, model = "qwen3-asr-0.6b"))
 
     assert calls == [(None, "qwen3-asr-0.6b")]
     assert response.status_code == 200
