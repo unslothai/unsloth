@@ -827,7 +827,9 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
     moe_q = dict(family = "qwen3_moe", moe = True, expert_lora = True)
     assert caps.cell_status(_q(cp = 2, cp_backend = "ulysses", **moe_q))[0] == "supported"
     # LoRA on the experts under cp: eager only (block compile recompiles more than one process).
-    assert caps.cell_status(_q(cp = 2, cp_backend = "ulysses", compile = "block", **moe_q))[0] != "supported"
+    assert (
+        caps.cell_status(_q(cp = 2, cp_backend = "ulysses", compile = "block", **moe_q))[0] != "supported"
+    )
     caps.check(_q(dp = 2, cp = 2, fsdp2 = True, cp_backend = "ulysses", **moe_q))
     caps.check(
         _q(
