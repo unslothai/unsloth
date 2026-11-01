@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """The Gemma body brace scan resumes a saved walk of a prefix; every answer must match a fresh walk."""
 
 import random
