@@ -72,7 +72,9 @@ def test_windows_backslash_spelling_of_a_prefix_maps_into_cwd(monkeypatch):
 
     mod = _load_shim()
     cwd = "C:\\sandbox\\work"
-    fake_os = types.SimpleNamespace(**{name: getattr(os, name) for name in dir(os) if not name.startswith("__")})
+    fake_os = types.SimpleNamespace(
+        **{name: getattr(os, name) for name in dir(os) if not name.startswith("__")}
+    )
     fake_os.sep = "\\"
     fake_os.path = types.SimpleNamespace(
         **{name: getattr(ntpath, name) for name in dir(ntpath) if not name.startswith("__")}
