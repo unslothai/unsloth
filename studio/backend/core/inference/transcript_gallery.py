@@ -208,8 +208,7 @@ def _row_size(row: dict) -> int | None:
     return size
 
 
-# Listing rows by path, kept while the file keeps the identity it had when it was read. The path
-# carries the account's directory, so accounts never share a row.
+# Listing rows keyed by full path (which includes the account directory) and stat identity.
 _ROW_CACHE_MAX = 4096
 _ROW_CACHE_ITEM_MAX = 4 * 1024 * 1024
 _ROW_CACHE_BUDGET = 64 * 1024 * 1024
@@ -233,8 +232,7 @@ def _cached_row(directory: Path, transcript_id: str) -> dict | None:
     name = str(path)
     ident = None
     if info is not None:
-        # A write moves mtime or ctime and os.replace the inode: an identity that agrees means the
-        # same bytes.
+        # Studio writes via os.replace (new inode); any other write moves size, mtime or ctime.
         ident = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
         with _row_cache_lock:
             hit = _row_cache.get(name)
@@ -249,7 +247,6 @@ def _cached_row(directory: Path, transcript_id: str) -> dict | None:
             record = _sanitize_details(record)
         row = summary(record)
     except (OSError, ValueError):
-        # Never kept: a read that may go through next time is tried again, as before.
         return None
     size = _row_size(row) if ident is not None else None
     if size is not None and size <= _ROW_CACHE_ITEM_MAX:
@@ -273,7 +270,7 @@ def list_transcripts(
     flags = gallery_flags.read(directory)
     rows = []
     for path in directory.glob("*.json"):
-        # Archive state is read fresh from the flags store each call, never from a cached row.
+        # Archive state comes from the flags store, never from a cached row.
         if gallery_flags.is_archived(flags, path.stem) != archived:
             continue
         row = _cached_row(directory, path.stem)
@@ -286,7 +283,6 @@ def list_transcripts(
     rows.sort(key = lambda row: (row["created_at"], row["id"]), reverse = True)
     visible = []
     for row in rows[:limit]:
-        # Cached rows are shared across requests; each response gets its own copy.
         row = copy.deepcopy(row)
         row["archived"] = archived
         visible.append(row)
