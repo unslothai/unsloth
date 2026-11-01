@@ -31,8 +31,8 @@ export const LENS_MODES = ["off", "magnify", "shrink"] as const;
 export type LensMode = (typeof LENS_MODES)[number];
 export const LENS_SCALE: Record<LensMode, number> = {
 	off: 1,
-	magnify: 1.22,
-	shrink: 0.84,
+	magnify: 1.18,
+	shrink: 0.87,
 };
 export function sanitizeLens(value: unknown): LensMode {
 	return LENS_MODES.includes(value as LensMode) ? (value as LensMode) : "off";
