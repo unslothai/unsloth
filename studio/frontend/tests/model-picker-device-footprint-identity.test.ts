@@ -6,10 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "@typescript/typescript6";
 
-// GgufVariantExpander refetches companion download sizes when resolveDownloadFootprint changes
-// identity. The Images and Video pages rebuild that resolver when the text encoder, VAE, memory
-// mode or GPU change, so every expander must receive the page's resolver itself, never a stable
-// forwarder that hides the change.
+// The expander refetches companion sizes when the resolver changes identity: a stable forwarder hides that.
 const path = "../src/features/model-picker/components/model-selector/pickers.tsx";
 const source = ts.createSourceFile(
   path,

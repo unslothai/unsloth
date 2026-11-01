@@ -371,8 +371,7 @@ type ModelRowOptionProps = {
   "aria-current"?: "true";
 };
 
-/** Holds a value built during render. Set after commit and read only from event handlers, so a
- *  memoized row can call the latest callbacks without taking them as props. */
+/** Set after commit, read only from handlers, so memoized rows reach the latest callbacks. */
 class LatestBox<T> {
   private value: T | null = null;
   set(value: T) {
@@ -529,7 +528,6 @@ function useRovingModelList({
     [activeOptionKey, getOptionDomId, listboxId, moveFocus],
   );
 
-  // For memoized rows: they take the id and active flag as data and reach moveFocus through this.
   const [optionEvents] = useState(() => new LatestBox<RovingOptionEvents>());
   useLayoutEffect(() => {
     optionEvents.set({ setRovingOptionKey, moveFocus });
@@ -1660,9 +1658,6 @@ function ModelRow({
   return content;
 }
 
-/** What the On Device rows call back into the picker with. The picker refills it after each
- *  commit and rows read it only from event handlers, so a row re-renders when its own data
- *  changes rather than on every picker render (each search keystroke, each quant probe). */
 interface DeviceRowActions {
   hfToken: string | undefined;
   select: (id: string, meta: ModelSelectorChangeMeta) => void;
@@ -1686,7 +1681,6 @@ interface DeviceRowActions {
 
 type DeviceRowActionsBox = LatestBox<DeviceRowActions>;
 
-/** Data every On Device row of one picker shares. */
 interface DeviceRowListProps {
   actions: DeviceRowActionsBox;
   optionEvents: LatestBox<RovingOptionEvents>;
@@ -1696,7 +1690,6 @@ interface DeviceRowListProps {
   deleteDisabled: boolean;
 }
 
-/** Data the quant expander under a GGUF row reads from the picker. */
 interface DeviceRowExpanderProps {
   diffusionLoad: boolean;
   hostPooledMemory: boolean;
@@ -1704,8 +1697,7 @@ interface DeviceRowExpanderProps {
   gpuGb: number | undefined;
   systemRamGb: number | undefined;
   budgetKnown: boolean;
-  /** Passed as is, not forwarded: the expander refetches companion sizes when its identity
-   *  changes (the Images and Video pages rebuild it when the text encoder, VAE or memory mode do). */
+  /** Never wrap: the expander refetches companion sizes when this changes identity. */
   resolveDownloadFootprint: ModelDownloadFootprintResolver | undefined;
   hfToken: string | undefined;
 }
@@ -2212,7 +2204,6 @@ const DownloadedGgufDeviceRow = memo(function DownloadedGgufDeviceRow({
   );
 });
 
-/** A model from a custom folder, LM Studio or the models directory. */
 const LocalModelDeviceRow = memo(function LocalModelDeviceRow({
   model: m,
   optionKey,
@@ -6865,8 +6856,6 @@ export function HubModelPicker({
     );
   };
 
-  // Rows read these from event handlers only; refilled after every commit, since onSelect and
-  // friends are rebuilt on each render.
   const [deviceRowActions] = useState(() => new LatestBox<DeviceRowActions>());
   useLayoutEffect(() => {
     deviceRowActions.set({

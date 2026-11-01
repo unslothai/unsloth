@@ -186,11 +186,9 @@ class MockApi:
         route.fulfill(status = 200, content_type = "application/json", body = json.dumps(payload))
 
 
-# 600 rows mount once, then each probe answer may re-render its own row a few times. Re-rendering
-# every row per answer is tens of thousands.
+# Head 750; re-rendering every row per probe answer is tens of thousands.
 SETTLE_BOUND = 3000
-# Rows whose list position changes must re-render (their option id carries it): at most ~400 for
-# this query. Re-rendering every remaining row per keystroke is several thousand.
+# Rows that move must re-render (their option id carries the position): at most ~400 here.
 TYPING_BOUND = 1500
 
 
@@ -270,8 +268,7 @@ def main() -> int:
                 errors: list[str] = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
 
-                # Warm-up: one full pass lets the dev server finish optimizing dependencies, whose
-                # reload would otherwise land in the middle of a measurement.
+                # Warm-up, so vite's dependency-optimizing reload cannot land mid-measurement.
                 page.goto(f"{BASE}/chat", timeout = 120_000)
                 for attempt in range(4):
                     try:
@@ -297,8 +294,7 @@ def main() -> int:
                     "() => document.querySelectorAll('[data-model-picker-option]').length"
                 )
 
-                # The probes landed: GGUF rows carry their one quant as a chip. A loaded runner can
-                # paint the last chips after the render counts went quiet, so wait for them first.
+                # A loaded runner can paint the last quant chips after the render counts go quiet.
                 chip_count = "() => (document.body.innerText.match(/\\bQ4_K_M\\b/g) || []).length"
                 with contextlib.suppress(PlaywrightTimeoutError):
                     page.wait_for_function(f"({chip_count})() >= {CACHED}", timeout = 30_000)
