@@ -21,6 +21,7 @@ import unsloth_cli  # noqa: E402
 
 LAZY_MODULES = (
     "unsloth_cli.commands.train",
+    "unsloth_cli.commands.dataset",
     "unsloth_cli.commands.inference",
     "unsloth_cli.commands.chat",
     "unsloth_cli.commands.export",
@@ -176,6 +177,7 @@ EAGER_ORDER = [
     "run",
     "install-kernels",
     "studio",
+    "dataset",
     "start",
     "mcp",
     "connect",

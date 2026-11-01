@@ -103,6 +103,7 @@ _COMMAND_ORDER = (
     "run",
     "install-kernels",
     "studio",
+    "dataset",
     "start",
     "mcp",
     "connect",
@@ -126,6 +127,7 @@ del _cli_args
 
 if _load_every_command:
     from unsloth_cli.commands.train import train
+    from unsloth_cli.commands.dataset import dataset_app
     from unsloth_cli.commands.inference import inference
     from unsloth_cli.commands.chat import chat
     from unsloth_cli.commands.start import start_app
@@ -269,6 +271,7 @@ def main(
 
 _LAZY_COMMANDS = (
     "train",
+    "dataset",
     "inference",
     "chat",
     "export",
@@ -287,6 +290,9 @@ def _register_command(app, name):
     if name == "train":
         from unsloth_cli.commands.train import train
         app.command()(train)
+    elif name == "dataset":
+        from unsloth_cli.commands.dataset import dataset_app
+        app.add_typer(dataset_app, name = "dataset")
     elif name == "inference":
         from unsloth_cli.commands.inference import inference
         app.command()(inference)

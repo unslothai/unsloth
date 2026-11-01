@@ -148,12 +148,17 @@ def _mask(tokenizer, model_name: str, encoded: dict, final_format: str) -> tuple
     return list(trainer.train_dataset["labels"]), masking
 
 
-def _format_rows(tokenizer, config: dict, rows: list) -> tuple[list, str]:
-    from datasets import Dataset
+def prepare_text_dataset(
+    tokenizer,
+    config: dict,
+    dataset,
+    *,
+    collect_row_statistics = False,
+) -> dict:
+    """Shared preview/audit formatting, retaining diagnostics before callers select rows."""
     from utils.datasets import format_and_template_dataset
     from utils.datasets.raw_text import prepare_raw_text_dataset
 
-    dataset = Dataset.from_list(rows)
     if config.get("raw_text"):
         result = prepare_raw_text_dataset(
             dataset,
@@ -162,8 +167,13 @@ def _format_rows(tokenizer, config: dict, rows: list) -> tuple[list, str]:
             eos_token = getattr(tokenizer, "eos_token", None),
             append_eos = True,
         )
-        return list(result.dataset["text"]), "raw_text"
+        return {
+            "dataset": result.dataset,
+            "final_format": "raw_text",
+            "warnings": [notice.message for notice in result.notices],
+        }
 
+    row_statistics = {} if collect_row_statistics else None
     info = format_and_template_dataset(
         dataset,
         model_name = config["model_name"],
@@ -172,11 +182,21 @@ def _format_rows(tokenizer, config: dict, rows: list) -> tuple[list, str]:
         format_type = config.get("format_type") or "auto",
         dataset_name = config.get("dataset_name"),
         custom_format_mapping = config.get("custom_format_mapping"),
-        # In-process: a pool for three rows costs seconds and changes nothing in the output.
+        # Keep tokenizer-only diagnostics in this process; worker pools add startup overhead.
         num_proc = 1,
+        **({"row_statistics": row_statistics} if collect_row_statistics else {}),
     )
     if not info.get("success", True):
         raise ValueError("; ".join(info.get("errors") or []) or "Dataset formatting failed")
+    if collect_row_statistics:
+        info["row_statistics"] = row_statistics
+    return info
+
+
+def _format_rows(tokenizer, config: dict, rows: list) -> tuple[list, str]:
+    from datasets import Dataset
+
+    info = prepare_text_dataset(tokenizer, config, Dataset.from_list(rows))
     final_format = str(info.get("final_format", "")).lower()
     if final_format == PRETOKENIZED_FORMAT:
         return info["dataset"].to_list(), final_format

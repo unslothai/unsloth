@@ -81,6 +81,17 @@ def test_a_single_exchange_converts_as_before():
     ]
 
 
+@pytest.mark.parametrize("workers", [1, 2])
+def test_optional_statistics_track_expansion_and_empty_sources_without_changing_rows(workers):
+    dataset = Dataset.from_dict({"messages": [_messages(1), [], _messages(2), []]})
+    row_statistics = {}
+    converted = convert_chatml_to_alpaca(
+        dataset, batch_size = 1, num_proc = workers, row_statistics = row_statistics
+    )
+    assert converted.to_list() == _expected(1) + _expected(2)
+    assert row_statistics == {"expanded_rows": 4, "dropped_source_rows": 2}
+
+
 def test_role_names_are_matched_case_and_whitespace_insensitively():
     dataset = Dataset.from_dict(
         {
