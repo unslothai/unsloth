@@ -219,7 +219,6 @@ def test_edge_lines_match_reference(line):
 
 
 def test_non_ascii_key_still_redacted():
-    # U+017F folds to "s" under IGNORECASE but is not "s" after lower(), so the gate must ask the regex engine.
     assert lr.redact_log_text("paſſword=abcdef12") == "paſſword=" + lr.REDACTED
 
 
