@@ -307,6 +307,8 @@ def _model_manifest_attestation(commit) -> dict:
 #    including temporary files, live outside refs/ (scan_cache_dir reads refs).
 # 5. Only the winning success may reclaim, under the publication lock, with the
 #    published commit and every active attempt's commit protected from deletion.
+# 6. Each active attempt holds a native file lock until finish. A released owner
+#    lock proves cancellation, including SIGKILL and backend/orphan shutdown.
 #
 # Start and finish linearize under the same cross-process lock. Never pin main
 # before transfer: immutable SHA downloads do not write it, so rollback is just
@@ -326,9 +328,10 @@ class _MainRefState:
     published_sequence: int = 0
     published_commit: str | None = None
     attempts: tuple[tuple[int, str], ...] = ()
+    owners: tuple[tuple[int, str], ...] = ()
 
 
-def _start_main_ref(state: _MainRefState, commit: str) -> tuple[_MainRefState, int]:
+def _start_main_ref(state: _MainRefState, commit: str, owner: str) -> tuple[_MainRefState, int]:
     """Pure start decision; sequence allocation defines the attempt's start order."""
     sequence = state.next_sequence
     return _MainRefState(
@@ -336,6 +339,7 @@ def _start_main_ref(state: _MainRefState, commit: str) -> tuple[_MainRefState, i
         state.published_sequence,
         state.published_commit,
         (*state.attempts, (sequence, commit)),
+        (*state.owners, (sequence, owner)),
     ), sequence
 
 
@@ -349,7 +353,44 @@ def _finish_main_ref(state: _MainRefState, sequence: int, verified: bool) -> _Ma
         sequence if publish else state.published_sequence,
         commit if publish else state.published_commit,
         tuple(attempts.items()),
+        tuple((seq, owner) for seq, owner in state.owners if seq != sequence),
     )
+
+
+def _prune_main_ref_attempts(state: _MainRefState, owner_is_alive) -> _MainRefState:
+    """A dead owner is a cancellation, never a verified success."""
+    for sequence, owner in state.owners:
+        if not owner_is_alive(owner):
+            state = _finish_main_ref(state, sequence, False)
+    return state
+
+
+def _main_ref_owner_lock(lock_dir: Path, owner: str):
+    # WeakFileLock may fall back to a soft lock, whose file survives SIGKILL.
+    # Require an OS-held lock instead: neither PID reuse nor backend restarts
+    # can make a dead owner look alive. Every attempt has a unique lock name.
+    from filelock import FileLock, SoftFileLock
+
+    lock = FileLock(lock_dir / f"studio-main-owner-{owner}.lock")
+    lock.acquire(timeout = 0)
+    if isinstance(lock, SoftFileLock):
+        lock.release()
+        raise OSError("refs/main attempt ownership requires native file locks")
+    return lock
+
+
+def _main_ref_owner_is_alive(lock_dir: Path, owner: str) -> bool:
+    from filelock import Timeout
+
+    try:
+        lock = _main_ref_owner_lock(lock_dir, owner)
+    except Timeout:
+        return True
+    # A live worker keeps its lock even while waiting for the publication lock.
+    # No future attempt will reuse this UUID, so removing a dead lock is safe.
+    lock.release()
+    Path(lock.lock_file).unlink(missing_ok = True)
+    return False
 
 
 def _load_main_ref_state(path: Path, previous: str | None) -> _MainRefState:
@@ -365,6 +406,7 @@ def _load_main_ref_state(path: Path, previous: str | None) -> _MainRefState:
         data["published_sequence"],
         data["published_commit"],
         tuple(tuple(attempt) for attempt in data["attempts"]),
+        tuple(tuple(owner) for owner in data.get("owners", ())),
     )
     if (
         type(state.next_sequence) is not int
@@ -380,7 +422,17 @@ def _load_main_ref_state(path: Path, previous: str | None) -> _MainRefState:
             or not _COMMIT_SHA.fullmatch(commit)
             for sequence, commit in state.attempts
         )
+        or len(dict(state.owners)) != len(state.owners)
+        or set(dict(state.owners)) != set(dict(state.attempts))
+        or any(
+            type(sequence) is not int
+            or not isinstance(owner, str)
+            or re.fullmatch(r"[0-9a-f]{32}", owner) is None
+            for sequence, owner in state.owners
+        )
     ):
+        # An old journal with active ownerless workers cannot be safely pruned:
+        # fail closed rather than guessing whether those workers have died.
         raise ValueError(f"Invalid refs/main publication state: {path}")
     return state
 
@@ -392,6 +444,7 @@ def _update_main_ref(
     sequence: int | None = None,
     verified: bool = False,
     on_publish = None,
+    owner: str | None = None,
 ) -> int | None:
     """Persist one decision under the lock; no network, transfer or verification here."""
     from huggingface_hub.utils import WeakFileLock
@@ -402,9 +455,14 @@ def _update_main_ref(
     ref = repo_dir / "refs" / "main"
     with WeakFileLock(lock_dir / "studio-main.lock"):
         previous = _read_ref(ref)
-        before = _load_main_ref_state(state_path, previous)
+        before = _prune_main_ref_attempts(
+            _load_main_ref_state(state_path, previous),
+            lambda attempt_owner: _main_ref_owner_is_alive(lock_dir, attempt_owner),
+        )
         if commit is not None:
-            state, sequence = _start_main_ref(before, commit)
+            if owner is None:
+                raise ValueError("refs/main attempt requires a live owner")
+            state, sequence = _start_main_ref(before, commit, owner)
         else:
             state = _finish_main_ref(before, sequence, verified)
         try:
@@ -444,35 +502,49 @@ def _pinned_snapshot_download(
     No provisional refs and no unpinned retries: Hub's legacy cache fallback must
     neither expose partial bytes nor turn a failed update into an older success.
     ``on_publish`` runs only for the winning verified attempt, under the lock.
-    An unresolved legacy download cannot authorize reclamation.
+    Resolve metadata fallbacks before enrollment; never let the Hub write main.
     """
     from hub.utils.snapshot_reuse import repo_cache_dir
 
     repo_type, repo_id = kwargs.get("repo_type") or "model", kwargs["repo_id"]
+    repo_dir = repo_cache_dir(repo_type, repo_id)
+    if commit is None:
+        # An offline repeat can use the already-published immutable snapshot.
+        # GGUF resumes prefer their manifest's attested commit at the caller.
+        commit = _read_ref(repo_dir / "refs" / "main")
     pin = _pinned_revision(repo_type, repo_id, commit)
     if not pin:
-        # Metadata-unavailable legacy downloads cannot participate in a protocol
-        # whose ordering and verification require a resolved immutable commit.
-        return snapshot_download(**kwargs)
+        raise OSError(
+            f"Cannot resolve an immutable revision for {repo_id}; retry when metadata is available"
+        )
 
-    repo_dir = repo_cache_dir(repo_type, repo_id)
-    sequence = _update_main_ref(repo_dir, commit = commit)
+    lock_dir = repo_dir.parent / ".locks" / repo_dir.name
+    lock_dir.mkdir(parents = True, exist_ok = True)
+    owner = uuid.uuid4().hex
+    owner_lock = _main_ref_owner_lock(lock_dir, owner)
     try:
-        path = snapshot_download(**kwargs, **pin)
-        if Path(path).name != commit or not Path(path).is_dir():
-            raise OSError(f"Pinned download of {repo_id} returned a snapshot other than {commit}")
-        # Legacy Hub can return an existing incomplete snapshot after metadata
-        # fails. Check before making it visible to offline repo-ID resolution.
-        if expected_files:
-            from hub.utils.download_manifest import Manifest, verify_against_disk
-            manifest = Manifest(repo_type, repo_id, None, "", tuple(expected_files))
-            if not verify_against_disk(manifest, Path(path)).ok:
-                raise OSError(f"Pinned snapshot of {repo_id} is incomplete")
-    except BaseException:
-        _update_main_ref(repo_dir, sequence = sequence)
-        raise
-    _update_main_ref(repo_dir, sequence = sequence, verified = True, on_publish = on_publish)
-    return path
+        sequence = _update_main_ref(repo_dir, commit = commit, owner = owner)
+        try:
+            path = snapshot_download(**kwargs, **pin)
+            if Path(path).name != commit or not Path(path).is_dir():
+                raise OSError(
+                    f"Pinned download of {repo_id} returned a snapshot other than {commit}"
+                )
+            # Legacy Hub can return an existing incomplete snapshot after metadata
+            # fails. Check before making it visible to offline repo-ID resolution.
+            if expected_files:
+                from hub.utils.download_manifest import Manifest, verify_against_disk
+                manifest = Manifest(repo_type, repo_id, None, "", tuple(expected_files))
+                if not verify_against_disk(manifest, Path(path)).ok:
+                    raise OSError(f"Pinned snapshot of {repo_id} is incomplete")
+        except BaseException:
+            _update_main_ref(repo_dir, sequence = sequence)
+            raise
+        _update_main_ref(repo_dir, sequence = sequence, verified = True, on_publish = on_publish)
+        return path
+    finally:
+        owner_lock.release()
+        Path(owner_lock.lock_file).unlink(missing_ok = True)
 
 
 def _rebuild_header_only_ggufs(
@@ -1013,6 +1085,8 @@ def _download_gguf_variant(
             )
             sys.exit(1)
         plan = plan_from_expected_files(variant, manifest.expected_files)
+        if manifest.metadata_derived:
+            commit = download_manifest.normalized_commit_hash(manifest.commit_hash)
         targets = list(plan.target_filenames)
         expected_files = list(plan.expected_files)
         download_manifest.write_manifest(
@@ -1021,6 +1095,7 @@ def _download_gguf_variant(
             variant,
             expected_files,
             mode,
+            **_model_manifest_attestation(commit),
         )
         main_blob_hashes = plan.main_hashes
         companion_blob_hashes = plan.companion_hashes

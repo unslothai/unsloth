@@ -137,9 +137,10 @@ def test_every_publication_interleaving(workers, orderings, previous):
     assert len(schedules) == orderings
     checked = 0
     # The fake transfer records completion; verification independently returns
-    # success, failure, or cancellation. Only the final step may change a ref.
+    # success, failure, cancellation, or a killed owner. Only the final step may
+    # change a ref; killed attempts leave via the production pruning reducer.
     for assignments in itertools.product(
-        itertools.product((_OLD, _NEW), ("ok", "fail", "cancel")), repeat = workers
+        itertools.product((_OLD, _NEW), ("ok", "fail", "cancel", "killed")), repeat = workers
     ):
         for schedule in schedules:
             state = w._MainRefState(published_commit = previous)
@@ -156,7 +157,7 @@ def test_every_publication_interleaving(workers, orderings, previous):
                 commit, outcome = assignments[worker]
                 if phase == 0:
                     started.append(worker)
-                    state, sequences[worker] = w._start_main_ref(state, commit)
+                    state, sequences[worker] = w._start_main_ref(state, commit, str(worker))
                 elif phase == 1:
                     transferred.add(worker)  # fake transfer: no ref side effects
                 elif phase == 2:
@@ -164,10 +165,14 @@ def test_every_publication_interleaving(workers, orderings, previous):
                     verified[worker] = outcome == "ok"
                 else:
                     finished.add(worker)
-                    finished.add(worker)
                     ok = verified[worker]
                     before = ref
-                    state = w._finish_main_ref(state, sequences[worker], ok)
+                    if outcome == "killed":
+                        state = w._prune_main_ref_attempts(
+                            state, lambda owner: owner != str(worker)
+                        )
+                    else:
+                        state = w._finish_main_ref(state, sequences[worker], ok)
                     if ok:
                         succeeded.add(worker)
                         ref = state.published_commit
@@ -182,9 +187,13 @@ def test_every_publication_interleaving(workers, orderings, previous):
                 assert dict(state.attempts) == {
                     sequences[i]: assignments[i][0] for i in started if i not in finished
                 }
+                assert dict(state.owners) == {
+                    sequences[i]: str(i) for i in started if i not in finished
+                }
             assert not state.attempts
+            assert not state.owners
             checked += 1
-    assert checked == orderings * 6**workers
+    assert checked == orderings * 8**workers
     print(f"{workers} workers, initial={previous}: {checked:,} schedules checked")
 
 
