@@ -52,8 +52,7 @@ function firstLetter(node: Element | RootContent): string | null {
   return null;
 }
 
-// A tight item's text has no paragraph; an inline dir="auto" wrapper orders it by its own letters
-// while the item keeps the list's direction for its marker.
+// A tight item has no paragraph to carry dir; the item itself keeps the list's side for its marker.
 function wrapTightItemText(item: Element): void {
   let end = 0;
   while (end < item.children.length) {
@@ -72,7 +71,6 @@ function wrapTightItemText(item: Element): void {
   item.children.splice(0, end, wrapper);
 }
 
-/** Each text block takes its direction from its own first letter, so Persian, Arabic or Hebrew replies read right to left. */
 export const rehypeAutoDirection: Plugin<[], Root> =
   function rehypeAutoDirection() {
     return (tree) => {
@@ -84,8 +82,7 @@ export const rehypeAutoDirection: Plugin<[], Root> =
           if (TEXT_BLOCKS.has(node.tagName)) {
             node.properties.dir = "auto";
           } else if (CONTAINERS.has(node.tagName)) {
-            // Lists carry the marker padding, so they flip with their text. Explicit ltr too, or an
-            // English list nested in an RTL one would inherit rtl.
+            // Explicit ltr too, or an English list nested in an RTL one inherits rtl.
             const letter = firstLetter(node);
             if (letter) {
               node.properties.dir = RTL_LETTER.test(letter) ? "rtl" : "ltr";
