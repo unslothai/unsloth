@@ -28,6 +28,7 @@ export const en = {
     halftone: "Halftone",
     scanlines: "Scanlines",
     visibility: "Visibility",
+    conversationVisibility: "Visibility in conversations",
     blur: "Image blur",
     position: "Position",
     horizontal: "Horizontal position",
@@ -46,6 +47,26 @@ export const en = {
     dimensionsError: "Choose an image smaller than 40 megapixels.",
     decodeError: "Could not decode this image. Try another file.",
     effectError: "Could not render the effect. Try None or choose another image.",
+    material: "Glass",
+    materialSolid: "Off",
+    materialTransparent: "Transparent",
+    materialFrosted: "Frosted",
+    materialBlurred: "Blurred",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "macOS system glass",
+    materialMacosNote: "Uses the macOS translucent window material, so your desktop shows through.",
+    materialNativeFailed: "This version of Unsloth Desktop cannot use the macOS material. Update the app to turn it on.",
+    glassTheme: "Glass theme",
+    materialStyle: "Style",
+    materialMenus: "Glass menus",
+    materialMenusDescription: "Dropdowns, menus and pickers use the glass too.",
+    materialStrength: "Glass strength",
+    lens: "Glass lens",
+    lensDescription: "Bends the image under the composer like real glass.",
+    lensOff: "Off",
+    lensMagnify: "Magnify",
+    lensShrink: "Shrink",
   },
 
   linkMenu: {
@@ -728,38 +749,6 @@ export const en = {
     compactEmpty: "Nothing to compact yet",
     compactUnsupported: "Compaction requires a GGUF or MLX model with tool support",
   },
-  // The sidebar's October "Trick or treat" row, its dialog, and the spooky chat greetings.
-  halloween: {
-    navLabel: "Trick or treat…",
-    title: "Trick or Treat?!",
-    description:
-      "We’ve been brewing a few frights for Unsloth, here for the rest of October.",
-    chooseTheme: "Choose a frightful theme",
-    spookyGreetings: "Spooky greetings",
-    spookyGreetingsDescription: "The sloth greets new chats with a scare.",
-    decorations: "Spiders and bats",
-    decorationsDescription:
-      "Webs, plus the odd spider or bat.",
-    surprise: "Trick or treat!",
-    surpriseDescription: "Let the sloth pick a theme for you.",
-    themesTitle: "Frightful themes",
-    back: "Back",
-    footer: "Unsloth returns to normal at midnight on November 1.",
-    removeNow: "Remove now",
-    hideFromSidebar: "Hide from sidebar",
-    greeting: {
-      pumpkins: "The pumpkins are carved. What’s next?",
-      brewing: "Let’s get brewing",
-      trickOrTreat: "Trick or treat?",
-      manor: "Welcome to the manor",
-      manorName: "Welcome to the manor, {name}",
-      happyHalloween: "Happy Halloween",
-      happyHalloweenName: "Happy Halloween, {name}",
-      spirits: "The spirits are listening…",
-      mysteries: "What mysteries shall we uncover tonight?",
-      conjure: "What can I conjure up for you?",
-    },
-  },
   // The empty chat's greeting; {name} is the user's nickname or first name.
   welcome: {
     goodToSeeYou: "Good to see you",
@@ -986,7 +975,7 @@ export const en = {
       deleteProjects: "Delete projects",
       deleteProjectsTitle: "Delete projects",
       deleteProjectsDescription:
-        "Delete {count} projects? Their chats are permanently deleted.",
+        "This permanently deletes {count} projects and all of their chats. This cannot be undone.",
       deleteProjectsFilesDescription:
         "Each project workspace folder is removed from disk.",
       countSelected: "{count} selected",
@@ -997,7 +986,7 @@ export const en = {
       markRead: "Mark as read",
       deleteChats: "Delete chats",
       deleteTitle: "Delete chats",
-      deleteDescription: "Delete {count} chats? This cannot be undone.",
+      deleteDescription: "This permanently deletes {count} chats and their messages. This cannot be undone.",
       deleteFilesDescription:
         "Each chat's own sandbox folder is removed from disk. Files they wrote inside a project stay in that project's workspace.",
       deleteFilesLabel: "Delete files and sandbox folder",
@@ -1046,7 +1035,7 @@ export const en = {
     dialog: {
       deleteChat: {
         title: "Delete chat",
-        description: 'Are you sure you want to delete this chat "{name}"?',
+        description: 'This permanently deletes "{name}" and its messages. This cannot be undone.',
       },
       deleteRun: {
         title: "Delete training run",
@@ -2180,10 +2169,14 @@ export const en = {
         label: "Install type",
         description:
           "Chat only (GGUF). The full install adds training, export, video, safetensors models and additional image generation features.",
+        descriptionCpu:
+          "Chat only (GGUF). No supported GPU was found, so the full install adds training on the CPU.",
         action: "Upgrade to full install",
         confirmTitle: "Upgrade to the full install?",
         confirmDescription:
           "This Chat only install runs GGUF models. The full install adds PyTorch for this machine's GPU, which enables training, export, video, safetensors models and additional image generation features. It downloads several gigabytes (at least 5 GB of disk space) and restarts the server. Chats, models and settings are kept. This can take several minutes.",
+        confirmDescriptionCpu:
+          "This Chat only install runs GGUF models. No supported GPU was found on this machine, so the full install adds PyTorch for the CPU, which enables training on the CPU. CPU training is much slower than GPU training. It needs at least 5 GB of disk space and restarts the server. Chats, models and settings are kept. This can take several minutes.",
         confirmAction: "Upgrade",
         keywords:
           "full install upgrade install type chat only gguf add training train training fine-tune pytorch torch export video image generation safetensors",
@@ -2352,15 +2345,7 @@ export const en = {
         label: "Theme",
         description: "Colors used across Unsloth, in light and dark mode.",
         standard: "Standard",
-        classic: "Classic",
-        minimal: "Minimal",
         moreThemes: "More themes",
-        halloween: "Halloween",
-      },
-      trickOrTreat: {
-        label: "Trick or treat",
-        description:
-          "Halloween themes and spooky greetings, until November 1.",
       },
       code: {
         title: "Code",
@@ -3237,9 +3222,9 @@ export const en = {
         movedChatsToRecents: "Chats moved to Recents: {count}",
         moveFailed: "Failed to move chats",
         deleteChatsTitle: "Delete chats ({count})",
-        deleteChatsWarning: "Delete the selected chats ({count})? This cannot be undone.",
+        deleteChatsWarning: "This permanently deletes {count} chats and their messages. This cannot be undone.",
         deleteArchivedTitle: "Delete {count} archived chats",
-        deleteArchivedWarning: "Delete the selected archived chats ({count})? This cannot be undone.",
+        deleteArchivedWarning: "This permanently deletes {count} archived chats and their messages. This cannot be undone.",
         deleting: "Deleting...",
       },
       title: "Data",
@@ -3628,6 +3613,8 @@ export const en = {
   },
   studio: {
     routeTitle: "Train",
+    cpuTrainingNotice:
+      "No GPU was found, so training runs on the CPU. It is much slower than GPU training and supports text models only (LoRA or full finetuning).",
     wizard: {
       modelTitle: "Model",
       modelDescription: "Select model and training method",
@@ -4726,8 +4713,8 @@ export const en = {
       },
       dialog: {
         renameChat: "Rename chat",
-        deleteChatDescription: "This chat will be permanently deleted. This cannot be undone.",
-        deleteProjectDescription: "The project and its chats ({count}) will be permanently deleted. This cannot be undone.",
+        deleteChatDescription: "This permanently deletes the chat and its messages. This cannot be undone.",
+        deleteProjectDescription: "This permanently deletes the project and its chats ({count}). This cannot be undone.",
         deleteFilesMany: "Also remove the files and sandbox folders these chats created.",
         deleteProjectFilesLabel: "Delete project workspace folder",
         deleteProjectFiles: "The project workspace folder will be removed from disk.",
@@ -5199,14 +5186,14 @@ export const en = {
     renameChat: "Rename chat",
     chatName: "Chat name",
     deleteChat: "Delete chat",
-    deleteChatDescription: "Are you sure you want to delete {name}? Its messages will be permanently deleted.",
+    deleteChatDescription: 'This permanently deletes "{name}" and its messages. This cannot be undone.',
     importChats: "Import chats",
     importDestination: "Choose where to import {name}:",
     selectDestination: "Select destination",
     recents: "Recents",
     import: "Import",
     deleteProject: "Delete project",
-    deleteProjectDescription: "Are you sure you want to delete {name}? Its chats will be permanently deleted.",
+    deleteProjectDescription: 'This permanently deletes the project "{name}" and all of its chats. This cannot be undone.',
     deleteProjectFiles: "The project workspace folder will be removed from disk.",
     deleteAll: "Delete all",
     projectFallback: "project",

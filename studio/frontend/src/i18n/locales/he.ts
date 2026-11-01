@@ -31,6 +31,7 @@ export const he = {
     halftone: "חצי גוון",
     scanlines: "קווי סריקה",
     visibility: "נראות",
+    conversationVisibility: "נראות בשיחות",
     blur: "טשטוש תמונה",
     position: "מיקום",
     horizontal: "מיקום אופקי",
@@ -49,6 +50,26 @@ export const he = {
     dimensionsError: "בחרו תמונה קטנה מ־40 מגה־פיקסל.",
     decodeError: "לא ניתן לקרוא את התמונה. נסו קובץ אחר.",
     effectError: "לא ניתן ליצור את האפקט. בחרו ללא או תמונה אחרת.",
+    material: "זכוכית",
+    materialSolid: "כבוי",
+    materialTransparent: "שקוף",
+    materialFrosted: "חלבי",
+    materialBlurred: "מטושטש",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "זכוכית המערכת של macOS",
+    materialMacosNote: "משתמש בחומר החלון השקוף-למחצה של macOS, כך ששולחן העבודה נראה מבעדו.",
+    materialNativeFailed: "גרסה זו של Unsloth Desktop לא יכולה להשתמש בחומר של macOS. עדכנו את האפליקציה כדי להפעיל אותו.",
+    glassTheme: "ערכת נושא זכוכית",
+    materialStyle: "סגנון",
+    materialMenus: "תפריטי זכוכית",
+    materialMenusDescription: "גם תפריטים נפתחים, תפריטים ובוררים משתמשים בזכוכית.",
+    materialStrength: "עוצמת הזכוכית",
+    lens: "עדשת זכוכית",
+    lensDescription: "מעקמת את התמונה מתחת לתיבת הכתיבה כמו זכוכית אמיתית.",
+    lensOff: "כבוי",
+    lensMagnify: "הגדלה",
+    lensShrink: "הקטנה",
   },
 
   linkMenu: {
@@ -762,36 +783,6 @@ export const he = {
     compactEmpty: "אין עדיין מה לכווץ",
     compactUnsupported: "כיווץ שיחה דורש מודל GGUF או MLX עם תמיכה בכלים",
   },
-  halloween: {
-    navLabel: "ממתק או תעלול…",
-    title: "ממתק או תעלול?!",
-    description: "רקחנו כמה הפחדות בשביל Unsloth, כאן עד סוף אוקטובר.",
-    chooseTheme: "בחירת ערכת נושא מפחידה",
-    spookyGreetings: "ברכות מפחידות",
-    spookyGreetingsDescription: "העצלן מקבל שיחות חדשות בהפחדה.",
-    decorations: "עכבישים ועטלפים",
-    decorationsDescription:
-      "קורי עכביש בפינות, ומדי פעם עכביש או עטלף בערכת נושא של ליל כל הקדושים.",
-    surprise: "ממתק או תעלול!",
-    surpriseDescription: "העצלן יבחר בשבילך ערכת נושא.",
-    themesTitle: "ערכות נושא מפחידות",
-    back: "חזרה",
-    footer: "Unsloth יחזור לרגיל בחצות של 1 בנובמבר.",
-    removeNow: "הסרה עכשיו",
-    hideFromSidebar: "הסתרה מסרגל הצד",
-    greeting: {
-      pumpkins: "הדלעות כבר מגולפות. מה הלאה?",
-      brewing: "בואו נרקח משהו",
-      trickOrTreat: "ממתק או תעלול?",
-      manor: "ברוכים הבאים לאחוזה",
-      manorName: "ברוכים הבאים לאחוזה, {name}",
-      happyHalloween: "ליל כל הקדושים שמח",
-      happyHalloweenName: "ליל כל הקדושים שמח, {name}",
-      spirits: "הרוחות מקשיבות…",
-      mysteries: "אילו תעלומות נגלה הלילה?",
-      conjure: "מה אוכל לכשף בשבילך?",
-    },
-  },
   welcome: {
     goodToSeeYou: "טוב לראות אותך",
     goodToSeeYouName: "טוב לראות אותך, {name}",
@@ -1013,7 +1004,7 @@ export const he = {
       deleteProjects: "מחק פרויקטים",
       deleteProjectsTitle: "מחיקת פרויקטים",
       deleteProjectsDescription:
-        "למחוק {count} פרויקטים? הצ'אטים שלהם יימחקו לצמיתות.",
+        "{count} פרויקטים וכל הצ'אטים שלהם יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
       deleteProjectsFilesDescription:
         "תיקיית סביבת העבודה של כל פרויקט תוסר מהדיסק.",
       countSelected: "{count} נבחרו",
@@ -1024,7 +1015,7 @@ export const he = {
       markRead: "סמן כנקרא",
       deleteChats: "מחק צ'אטים",
       deleteTitle: "מחיקת צ'אטים",
-      deleteDescription: "למחוק {count} צ'אטים? פעולה זו אינה ניתנת לביטול.",
+      deleteDescription: "{count} צ'אטים וההודעות שלהם יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
       deleteFilesDescription:
         "תיקיית ארגז החול של כל צ'אט תוסר מהדיסק. קבצים שנכתבו בתוך פרויקט יישארו בסביבת העבודה שלו.",
       deleteFilesLabel: "מחק קבצים ותיקיית ארגז חול",
@@ -1072,7 +1063,7 @@ export const he = {
     dialog: {
       deleteChat: {
         title: "מחיקת צ'אט",
-        description: 'האם אתה בטוח שברצונך למחוק את הצ\'אט "{name}"?',
+        description: "הצ'אט \"{name}\" וההודעות שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
       },
       deleteRun: {
         title: "מחיקת הרצת אימון",
@@ -2220,10 +2211,14 @@ export const he = {
         label: "סוג התקנה",
         description:
           "צ'אט בלבד (GGUF). ההתקנה המלאה מוסיפה אימון, ייצוא, וידאו, מודלים של safetensors ותכונות נוספות ליצירת תמונות.",
+        descriptionCpu:
+          "צ'אט בלבד (GGUF). לא נמצא GPU נתמך, ולכן ההתקנה המלאה מוסיפה אימון על ה-CPU.",
         action: "שדרג להתקנה מלאה",
         confirmTitle: "לשדרג להתקנה המלאה?",
         confirmDescription:
           "התקנה זו של צ'אט בלבד מריצה מודלים של GGUF. ההתקנה המלאה מוסיפה את PyTorch עבור ה-GPU של מכונה זו, ומאפשרת אימון, ייצוא, וידאו, מודלים של safetensors ותכונות נוספות ליצירת תמונות. היא מורידה כמה ג'יגה-בייט (לפחות 5 GB של שטח דיסק) ומפעילה מחדש את השרת. הצ'אטים, המודלים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
+        confirmDescriptionCpu:
+          "התקנה זו של צ'אט בלבד מריצה מודלים של GGUF. לא נמצא GPU נתמך במכונה זו, ולכן ההתקנה המלאה מוסיפה את PyTorch עבור ה-CPU, ומאפשרת אימון על ה-CPU. אימון על CPU איטי בהרבה מאימון על GPU. היא דורשת לפחות 5 GB של שטח דיסק ומפעילה מחדש את השרת. הצ'אטים, המודלים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
         confirmAction: "שדרג",
         keywords:
           "full install upgrade סוג התקנה התקנה מלאה שדרוג צ'אט בלבד chat only gguf add training אימון train fine-tune pytorch torch ייצוא וידאו יצירת תמונות safetensors",
@@ -2392,15 +2387,7 @@ export const he = {
         label: "ערכת נושא",
         description: "הצבעים שבשימוש בכל רחבי Unsloth, במצב בהיר וכהה.",
         standard: "סטנדרטית",
-        classic: "קלאסית",
-        minimal: "מינימלית",
         moreThemes: "ערכות נושא נוספות",
-        halloween: "האלווין",
-      },
-      trickOrTreat: {
-        label: "ממתק או תעלול",
-        description:
-          "ערכות נושא של ליל כל הקדושים וברכות מפחידות, עד 1 בנובמבר.",
       },
       code: {
         title: "קוד",
@@ -3303,10 +3290,10 @@ export const he = {
         moveFailed: "העברת הצ'אטים נכשלה",
         deleteChatsTitle: "מחיקת צ'אטים ({count})",
         deleteChatsWarning:
-          "למחוק את הצ'אטים שנבחרו ({count})? פעולה זו אינה ניתנת לביטול.",
+          "{count} צ'אטים וההודעות שלהם יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleteArchivedTitle: "מחיקת {count} צ'אטים מהארכיון",
         deleteArchivedWarning:
-          "למחוק את הצ'אטים שנבחרו מהארכיון ({count})? פעולה זו אינה ניתנת לביטול.",
+          "{count} צ'אטים בארכיון וההודעות שלהם יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleting: "מוחק...",
       },
       title: "נתונים",
@@ -3698,6 +3685,8 @@ export const he = {
   },
   studio: {
     routeTitle: "אימון",
+    cpuTrainingNotice:
+      "לא נמצא GPU, ולכן האימון רץ על ה-CPU. הוא איטי בהרבה מאימון על GPU ותומך במודלי טקסט בלבד (LoRA או כוונון מלא).",
     wizard: {
       modelTitle: "מודל",
       modelDescription: "בחר מודל ושיטת אימון",
@@ -4789,9 +4778,9 @@ export const he = {
       dialog: {
         renameChat: "שינוי שם צ'אט",
         deleteChatDescription:
-          "צ'אט זה יימחק לצמיתות. פעולה זו אינה ניתנת לביטול.",
+          "הצ'אט וההודעות שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleteProjectDescription:
-          "הפרויקט והצ'אטים שלו ({count}) יימחקו לצמיתות. פעולה זו אינה ניתנת לביטול.",
+          "הפרויקט והצ'אטים שלו ({count}) יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleteFilesMany: "הסר גם את הקבצים ותיקיות ארגז החול שצ'אטים אלה יצרו.",
         deleteProjectFilesLabel: "מחק את תיקיית סביבת העבודה של הפרויקט",
         deleteProjectFiles: "תיקיית סביבת העבודה של הפרויקט תוסר מהדיסק.",
@@ -5260,14 +5249,14 @@ export const he = {
     renameChat: "שינוי שם הצ'אט",
     chatName: "שם הצ'אט",
     deleteChat: "מחיקת צ'אט",
-    deleteChatDescription: "למחוק את {name}? ההודעות שלו יימחקו לצמיתות.",
+    deleteChatDescription: "הצ'אט \"{name}\" וההודעות שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
     importChats: "ייבוא צ'אטים",
     importDestination: "בחרו לאן לייבא את {name}:",
     selectDestination: "בחירת יעד",
     recents: "אחרונים",
     import: "ייבוא",
     deleteProject: "מחיקת פרויקט",
-    deleteProjectDescription: "למחוק את {name}? הצ'אטים שלו יימחקו לצמיתות.",
+    deleteProjectDescription: "הפרויקט \"{name}\" וכל הצ'אטים שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
     deleteProjectFiles: "תיקיית העבודה של הפרויקט תוסר מהדיסק.",
     deleteAll: "מחיקת הכול",
     projectFallback: "פרויקט",

@@ -19,6 +19,7 @@ from contextlib import ExitStack, closing, contextmanager, nullcontext
 from typing import Optional, Generator
 from core.inference.worker import RowRefused
 from core.inference import context_refusal
+from core.inference.incremental_decode import IncrementalDecode
 from core.inference.native_tool_tokens import (
     NativeToolTokenDecoder,
     closes_an_open_envelope,
@@ -1159,10 +1160,20 @@ _MLX_LEGACY_SCOPES = (
 )
 
 
+def _fast_verify_kwargs(fast_verify):
+    return {} if fast_verify is None else {"fast_verify": fast_verify}
+
+
 @contextmanager
-def _mlx_inference_scopes(model, call, int8_prefill):
+def _mlx_inference_scopes(
+    model,
+    call,
+    int8_prefill,
+    fast_verify = None,
+):
     """Hold the Zoo scopes Zoo picks for `call` (its call traits), so a new Zoo scope needs no Studio change.
-    A Zoo without the registry keeps the scopes Studio listed before it (none for the text batch)."""
+    A Zoo without the registry keeps the scopes Studio listed before it (none for the text batch).
+    `fast_verify` is the load's settled decision (None under a Zoo without it): a refusal here would drop every scope."""
     compose = _mlx_inference_patch("inference_scopes")
     with ExitStack() as scope:
         if compose is None and "batch" not in call:
@@ -1178,6 +1189,7 @@ def _mlx_inference_scopes(model, call, int8_prefill):
                         call,
                         int8_prefill = int8_prefill,
                         on_error = _mlx_scope_refused,
+                        **_fast_verify_kwargs(fast_verify),
                     )
                 )
             except Exception as error:
@@ -1187,14 +1199,18 @@ def _mlx_inference_scopes(model, call, int8_prefill):
         yield model
 
 
-def _mlx_warm_inference(model, int8_prefill):
+def _mlx_warm_inference(
+    model,
+    int8_prefill,
+    fast_verify = None,
+):
     """Zoo's warm-up generation, so the first request skips the scopes' kernel builds and first-use
     checks. A Zoo without it, or a failed warm-up, leaves them to the first request."""
     warm = _mlx_inference_patch("warm_inference")
     if warm is None:
         return
     try:
-        warm(model, int8_prefill = int8_prefill)
+        warm(model, int8_prefill = int8_prefill, **_fast_verify_kwargs(fast_verify))
     except Exception as error:
         if is_metal_queue_dead(error):
             raise
@@ -1279,6 +1295,60 @@ def _ane_prefill_status(requested, model):
     else:
         logger.info("MLX Neural Engine prefill not applied: %s", verdict.reason)
     return status
+
+
+def _fast_verify_zoo():
+    """unsloth_zoo's MLX inference module when it can run Fast Verify, else None."""
+    try:
+        zoo = importlib.import_module("unsloth_zoo.mlx.inference")
+        if "fast_verify" in inspect.signature(zoo.inference_scopes).parameters:
+            return zoo
+    except Exception:
+        pass
+    return None
+
+
+def _fast_verify_status(requested, model):
+    """Whether a load builds any drafter for Fast Verify: asked for, and the loaded model can use it here."""
+    status = {"requested": bool(requested), "active": False, "reason": ""}
+    if not requested:
+        return status
+    zoo = _fast_verify_zoo()
+    if zoo is None:
+        status["reason"] = "unsupported_zoo"
+        return status
+    try:
+        verdict = zoo.fast_verify_available(model)
+    except Exception as exc:
+        if is_metal_queue_dead(exc):
+            raise
+        logger.warning("MLX Fast Verify check failed: %s", exc)
+        status["reason"] = "probe_failed"
+        return status
+    status["reason"] = verdict.reason
+    status["active"] = verdict.available
+    if not verdict.available:
+        logger.info("MLX Fast Verify not applied: %s", verdict.reason)
+    return status
+
+
+def _settle_fast_verify(status, model, drafter):
+    """Pin the load's decision on `model` once its drafter is built, so every later Zoo call agrees,
+    including those that take no argument and would read UNSLOTH_MLX_FAST_VERIFY. Without a drafter
+    it is off: Zoo's scopes serve only speculative calls, so a plain decode has nothing to gain."""
+    zoo = _fast_verify_zoo()
+    if zoo is None:
+        return status
+    decided = status["active"] and drafter is not None
+    try:
+        zoo.pin_fast_verify(model, decided)
+    except ValueError:
+        # A drafter that failed after pinning its target holds it until reload, so generations must follow.
+        logger.warning("MLX Fast Verify stays on without a drafter: a failed build pinned it")
+        return status
+    if decided == status["active"]:
+        return status
+    return {**status, "active": False, "reason": "no_drafter"}
 
 
 _MLX_OFFLOAD_PARTS = (("ple", "PLE tables"), ("experts", "quantized routed experts"))
@@ -1554,6 +1624,19 @@ def mlx_ane_prefill_checkpoint_status(model_dir) -> tuple[bool, str]:
             while len(_ane_prefill_checkpoint_cache) > 32:
                 _ane_prefill_checkpoint_cache.pop(next(iter(_ane_prefill_checkpoint_cache)))
     return answer
+
+
+def mlx_fast_verify_checkpoint_status(model_dir) -> tuple[bool, str]:
+    """(available, reason) of Fast Verify for a downloaded MLX checkpoint, without loading it."""
+    zoo = _fast_verify_zoo()
+    if zoo is None:
+        return False, "unsupported_zoo"
+    try:
+        verdict = zoo.fast_verify_checkpoint_available(model_dir)
+    except Exception as exc:
+        logger.debug("MLX Fast Verify checkpoint check failed for %s: %s", model_dir, exc)
+        return False, "probe_failed"
+    return bool(verdict.available), verdict.reason
 
 
 def _vlm_generation_context():
@@ -2279,17 +2362,57 @@ def _require_row_detokenizer(streamed):
         raise RowRefused("no independent detokenizer to decode this row's ids")
 
 
-def _native_reply_text(decoder, token_ids, stop_ids, prefix) -> str:
-    """A native-protocol reply re-decoded from its ids. A runtime may stop on an allowlisted
-    control (<|end_message|>): the trailing stop id stays only when it closes an open envelope,
-    judged with the prefill, since a restored <think> lives in the prompt."""
-    ids = list(token_ids)
-    if ids and ids[-1] in stop_ids:
-        whole = decoder.decode(ids)
-        closer = whole[len(decoder.decode(ids[:-1])) :]
-        if not closes_an_open_envelope(prefix + whole, closer):
-            ids = ids[:-1]
-    return decoder.decode(ids)
+class _ReplyText:
+    """A reply's decode, fed one id at a time or called as ``decode(ids)`` on an append-only list.
+    With a native ``decoder`` a runtime may stop on an allowlisted control (<|end_message|>): the
+    trailing stop id stays only when it closes an open envelope, judged with the prefill, since a
+    restored <think> lives in the prompt."""
+
+    def __init__(
+        self,
+        tokenizer = None,
+        decode_kwargs = None,
+        *,
+        decoder = None,
+        stop_ids = (),
+        prefix = "",
+    ):
+        self._tokenizer = tokenizer
+        self._decode_kwargs = decode_kwargs
+        self._decoder = decoder
+        self._stop_ids = stop_ids
+        self._prefix = prefix
+        self._reset()
+
+    def _reset(self):
+        decoder = self._decoder
+        if decoder is None:
+            self._text = IncrementalDecode(self._tokenizer, self._decode_kwargs)
+        elif callable(getattr(decoder, "incremental", None)):
+            self._text = decoder.incremental()
+        else:
+            self._text = IncrementalDecode(None, fallback = decoder.decode)
+        self._count = 0
+        self.text = ""
+
+    def feed(self, token_id) -> str:
+        self._count += 1
+        before = self._text.text
+        whole = self._text.feed(token_id)
+        if self._decoder is not None and token_id in self._stop_ids:
+            if not closes_an_open_envelope(self._prefix + whole, whole[len(before) :]):
+                whole = before
+        self.text = whole
+        return whole
+
+    def __call__(self, ids) -> str:
+        if len(ids) == self._count + 1:
+            return self.feed(ids[-1])
+        if len(ids) != self._count:
+            self._reset()
+            for token_id in ids:
+                self.feed(token_id)
+        return self.text
 
 
 def _mlx_stop_cut(text: str, stops) -> tuple[int, bool]:
@@ -5128,6 +5251,7 @@ class MLXInferenceBackend:
         self._kv_quant = _kv_quant_status(None, None, False)
         self._int8_prefill = _int8_prefill_status(False, None)
         self._ane_prefill = _ane_prefill_status(False, None)
+        self._fast_verify = _fast_verify_status(False, None)
         self._kv_cache_window = None
         self._kv_context_budget = None
         self._served_context = None
@@ -5215,6 +5339,7 @@ class MLXInferenceBackend:
             self._kv_cache_window,
             bool(self._int8_prefill.get("active")),
             bool(self._ane_prefill.get("active")),
+            bool(self._fast_verify.get("active")),
             self._prefill_step,
             self._resume_load_args,
         )
@@ -5558,7 +5683,13 @@ class MLXInferenceBackend:
         """Zoo's scopes for a generation of this load, under its Int8 Prefill decision. Nested in
         _prefill_decision_scopes, which stays outermost."""
         active = (getattr(self, "_int8_prefill", None) or {}).get("active", False)
-        return _mlx_inference_scopes(self._model, call, active)
+        return _mlx_inference_scopes(self._model, call, active, self._fast_verify_decision())
+
+    def _fast_verify_decision(self):
+        """This load's settled Fast Verify, or None under a Zoo that takes no such argument."""
+        if _fast_verify_zoo() is None:
+            return None
+        return (getattr(self, "_fast_verify", None) or {}).get("active", False)
 
     def _kv_quant_bits(self):
         return (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
@@ -5826,6 +5957,7 @@ class MLXInferenceBackend:
         chat_template_override = None,
         int8_prefill = False,
         ane_prefill = False,
+        fast_verify = False,
         speculative_type = None,
         spec_draft_n_max = None,
         spec_draft_model = None,
@@ -6114,6 +6246,7 @@ class MLXInferenceBackend:
                 if spec_mode == "auto" and not spec_draft_model
                 else mlx_speculative.RUNTIME_ERROR
             )
+        self._fast_verify = _fast_verify_status(fast_verify, self._model)
         if speculates:
             model_dir = _snapshot_dir(self._model, model_name)
             resolution = mlx_speculative.resolve_speculation(
@@ -6156,6 +6289,7 @@ class MLXInferenceBackend:
                 fits = _fits,
                 stretch = _stretch,
                 draft_n_max = _positive_int(spec_draft_n_max),
+                fast_verify = self._fast_verify_decision(),
             )
             logger.info(
                 "MLX speculative decoding: %s (mode %s, reason %s)",
@@ -6163,6 +6297,9 @@ class MLXInferenceBackend:
                 spec_mode,
                 spec_reason,
             )
+        self._fast_verify = _settle_fast_verify(
+            self._fast_verify, self._model, getattr(self._speculative_draft, "drafter", None)
+        )
         # TurboQuant's layout is not one the planner prices, and a refused one stays full width:
         # fit either at full width, which only ever under-promises.
         _requested_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits)
@@ -6314,6 +6451,9 @@ class MLXInferenceBackend:
             "mlx_ane_prefill": self._ane_prefill["active"],
             "mlx_ane_prefill_requested": self._ane_prefill["requested"],
             "mlx_ane_prefill_reason": self._ane_prefill["reason"],
+            "mlx_fast_verify": self._fast_verify["active"],
+            "mlx_fast_verify_requested": self._fast_verify["requested"],
+            "mlx_fast_verify_reason": self._fast_verify["reason"],
             "mlx_offload": _offload,
             "chat_template_override_requested": self._template_override["requested"],
             "chat_template_override_reason": self._template_override["reason"],
@@ -6332,7 +6472,9 @@ class MLXInferenceBackend:
         # Every rank of a distributed load must run each forward together.
         if not is_distributed:
             with mlx_rng_preserved(), self._prefill_decision_scopes():
-                _mlx_warm_inference(model, self._int8_prefill["active"])
+                _mlx_warm_inference(
+                    model, self._int8_prefill["active"], self._fast_verify_decision()
+                )
             if self._ane_prefill["active"]:
                 self._ane_prefill = _ane_prefill_status(True, model)
                 self.models[model_name].update(
@@ -6443,6 +6585,7 @@ class MLXInferenceBackend:
             except Exception as exc:
                 logger.warning("MLX Neural Engine prefill release failed: %s", exc)
             self._ane_prefill = _ane_prefill_status(False, None)
+        self._fast_verify = _fast_verify_status(False, None)
         if model_name in self.models:
             del self.models[model_name]
         self._speculative_draft = None
@@ -6971,6 +7114,26 @@ class MLXInferenceBackend:
             else None
         )
         token_ids = []
+        if preserve_native_channels:
+            reply_text = None
+        elif native_token_decoder is not None:
+            reply_text = _ReplyText(
+                decoder = native_token_decoder, stop_ids = stop_token_ids, prefix = think_prefix
+            )
+        else:
+            reply_text = _ReplyText(
+                self._tokenizer,
+                dict(
+                    skip_special_tokens = True,
+                    # Cleanup would rewrite " ." inside a grammar-approved string,
+                    # and llama-server returns a raw completion's pieces as is.
+                    **(
+                        {"clean_up_tokenization_spaces": False}
+                        if constraint is not None or prompt_ids is not None
+                        else {}
+                    ),
+                ),
+            )
         normalizer = (
             make_reasoning_normalizer(
                 reasoning_channel_markers,
@@ -7070,22 +7233,7 @@ class MLXInferenceBackend:
                     else:
                         # Re-decoding every id rebuilds rather than extends, so an invalid byte sequence can revise
                         # characters already shown. Predates stop handling and affects plain replies too.
-                        if native_token_decoder is not None:
-                            sampled = _native_reply_text(
-                                native_token_decoder, token_ids, stop_token_ids, think_prefix
-                            )
-                        else:
-                            sampled = self._tokenizer.decode(
-                                token_ids,
-                                skip_special_tokens = True,
-                                # Cleanup would rewrite " ." inside a grammar-approved string,
-                                # and llama-server returns a raw completion's pieces as is.
-                                **(
-                                    {"clean_up_tokenization_spaces": False}
-                                    if constraint is not None or prompt_ids is not None
-                                    else {}
-                                ),
-                            )
+                        sampled = reply_text.feed(response.token)
                         if not sequences:
                             # A character whose bytes span tokens decodes to U+FFFD until its last token lands, and
                             # consumers diff snapshots by length, so yielding that would replace it for good (#8594).
@@ -7299,17 +7447,19 @@ class MLXInferenceBackend:
         if streamed is not None:
             decode = None
         elif native_token_decoder is not None:
-            decode = lambda ids: _native_reply_text(
-                native_token_decoder, ids, stop_token_ids, think_prefix
+            decode = _ReplyText(
+                decoder = native_token_decoder, stop_ids = stop_token_ids, prefix = think_prefix
             )
         else:
-            decode = lambda ids: self._tokenizer.decode(
-                ids,
-                skip_special_tokens = True,
-                **(
-                    {"clean_up_tokenization_spaces": False}
-                    if constraint is not None or prompt_ids is not None
-                    else {}
+            decode = _ReplyText(
+                self._tokenizer,
+                dict(
+                    skip_special_tokens = True,
+                    **(
+                        {"clean_up_tokenization_spaces": False}
+                        if constraint is not None or prompt_ids is not None
+                        else {}
+                    ),
                 ),
             )
         row = _RowStream(
@@ -7996,6 +8146,14 @@ class MLXInferenceBackend:
                         )
                     ) as responses:
                         raw_ids = [] if prompt_ids is not None else None
+                        raw_text = (
+                            _ReplyText(
+                                self._tokenizer,
+                                dict(skip_special_tokens = True, clean_up_tokenization_spaces = False),
+                            )
+                            if raw_ids is not None
+                            else None
+                        )
                         for response in responses:
                             final_response = response
                             raw_id = (
@@ -8016,11 +8174,7 @@ class MLXInferenceBackend:
                                             self._tokenizer,
                                         )
                                     )
-                                decoded = self._tokenizer.decode(
-                                    raw_ids,
-                                    skip_special_tokens = True,
-                                    clean_up_tokenization_spaces = False,
-                                ).rstrip("\ufffd")
+                                decoded = raw_text.feed(raw_ids[-1]).rstrip("\ufffd")
                                 token_text = (
                                     decoded[len(sampled) :] if decoded.startswith(sampled) else ""
                                 )

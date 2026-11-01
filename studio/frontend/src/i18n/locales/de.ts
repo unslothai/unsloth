@@ -31,6 +31,7 @@ export const de = {
     halftone: "Halbton",
     scanlines: "Scanlinien",
     visibility: "Sichtbarkeit",
+    conversationVisibility: "Sichtbarkeit in Unterhaltungen",
     blur: "Bildunschärfe",
     position: "Position",
     horizontal: "Horizontale Position",
@@ -49,6 +50,26 @@ export const de = {
     dimensionsError: "Wähle ein Bild mit weniger als 40 Megapixeln.",
     decodeError: "Das Bild konnte nicht gelesen werden. Versuche eine andere Datei.",
     effectError: "Der Effekt konnte nicht erstellt werden. Wähle Keiner oder ein anderes Bild.",
+    material: "Glas",
+    materialSolid: "Aus",
+    materialTransparent: "Transparent",
+    materialFrosted: "Milchglas",
+    materialBlurred: "Verschwommen",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "macOS-Systemglas",
+    materialMacosNote: "Nutzt das durchscheinende Fenstermaterial von macOS, sodass dein Schreibtisch durchscheint.",
+    materialNativeFailed: "Diese Version von Unsloth Desktop kann das macOS-Material nicht verwenden. Aktualisiere die App, um es einzuschalten.",
+    glassTheme: "Glas-Design",
+    materialStyle: "Stil",
+    materialMenus: "Glasmenüs",
+    materialMenusDescription: "Auch Dropdowns, Menüs und Auswahlfelder verwenden Glas.",
+    materialStrength: "Glasstärke",
+    lens: "Glaslinse",
+    lensDescription: "Krümmt das Bild unter dem Eingabefeld wie echtes Glas.",
+    lensOff: "Aus",
+    lensMagnify: "Vergrößern",
+    lensShrink: "Verkleinern",
   },
 
   linkMenu: {
@@ -724,38 +745,6 @@ export const de = {
     compactEmpty: "Noch nichts zu komprimieren",
     compactUnsupported: "Die Komprimierung erfordert ein GGUF- oder MLX-Modell mit Tool-Unterstützung",
   },
-  halloween: {
-    navLabel: "Süßes oder Saures…",
-    title: "Süßes oder Saures?!",
-    description:
-      "Für Unsloth haben wir ein paar Schauer zusammengebraut, noch bis Ende Oktober.",
-    chooseTheme: "Schauriges Design auswählen",
-    spookyGreetings: "Gruselige Begrüßungen",
-    spookyGreetingsDescription:
-      "Das Faultier begrüßt neue Chats mit einem Schreck.",
-    decorations: "Spinnen und Fledermäuse",
-    decorationsDescription:
-      "Spinnweben in den Ecken und ab und zu eine Spinne oder Fledermaus bei einem Halloween-Design.",
-    surprise: "Süßes oder Saures!",
-    surpriseDescription: "Das Faultier sucht ein Design für dich aus.",
-    themesTitle: "Schaurige Designs",
-    back: "Zurück",
-    footer: "Unsloth wird am 1. November um Mitternacht wieder normal.",
-    removeNow: "Jetzt entfernen",
-    hideFromSidebar: "Aus der Seitenleiste ausblenden",
-    greeting: {
-      pumpkins: "Die Kürbisse sind geschnitzt. Was kommt als Nächstes?",
-      brewing: "Lass uns was zusammenbrauen",
-      trickOrTreat: "Süßes oder Saures?",
-      manor: "Willkommen im Herrenhaus",
-      manorName: "Willkommen im Herrenhaus, {name}",
-      happyHalloween: "Fröhliches Halloween",
-      happyHalloweenName: "Fröhliches Halloween, {name}",
-      spirits: "Die Geister hören zu…",
-      mysteries: "Welche Geheimnisse lüften wir heute Nacht?",
-      conjure: "Was darf ich für dich herbeizaubern?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Schön, dich zu sehen",
     goodToSeeYouName: "Schön, dich zu sehen, {name}",
@@ -982,7 +971,7 @@ export const de = {
       deleteProjects: "Projekte löschen",
       deleteProjectsTitle: "Projekte löschen",
       deleteProjectsDescription:
-        "{count} Projekte löschen? Ihre Chats werden dauerhaft gelöscht.",
+        "Dadurch werden {count} Projekte und alle ihre Chats endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
       deleteProjectsFilesDescription:
         "Der Arbeitsbereich-Ordner jedes Projekts wird von der Festplatte entfernt.",
       countSelected: "{count} ausgewählt",
@@ -993,7 +982,7 @@ export const de = {
       markRead: "Als gelesen markieren",
       deleteChats: "Chats löschen",
       deleteTitle: "Chats löschen",
-      deleteDescription: "{count} Chats löschen? Das lässt sich nicht rückgängig machen.",
+      deleteDescription: "Dadurch werden {count} Chats und ihre Nachrichten endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
       deleteFilesDescription:
         "Der eigene Sandbox-Ordner jedes Chats wird von der Festplatte entfernt. Dateien, die sie in einem Projekt erstellt haben, bleiben im Arbeitsbereich dieses Projekts.",
       deleteFilesLabel: "Dateien und Sandbox-Ordner löschen",
@@ -1041,7 +1030,7 @@ export const de = {
     dialog: {
       deleteChat: {
         title: "Chat löschen",
-        description: "Möchten Sie den Chat „{name}“ wirklich löschen?",
+        description: "Dadurch werden der Chat „{name}“ und seine Nachrichten endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
       },
       deleteRun: {
         title: "Trainingslauf löschen",
@@ -2176,10 +2165,14 @@ export const de = {
         label: "Installationstyp",
         description:
           "Nur Chat (GGUF). Die vollständige Installation ergänzt Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung.",
+        descriptionCpu:
+          "Nur Chat (GGUF). Es wurde keine unterstützte GPU gefunden, daher ergänzt die vollständige Installation Training auf der CPU.",
         action: "Auf vollständige Installation upgraden",
         confirmTitle: "Auf die vollständige Installation upgraden?",
         confirmDescription:
           "Diese Nur-Chat-Installation führt GGUF-Modelle aus. Die vollständige Installation ergänzt PyTorch für die GPU dieses Rechners und ermöglicht damit Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung. Sie lädt mehrere Gigabyte herunter (mindestens 5 GB Speicherplatz) und startet den Server neu. Chats, Modelle und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
+        confirmDescriptionCpu:
+          "Diese Nur-Chat-Installation führt GGUF-Modelle aus. Auf diesem Rechner wurde keine unterstützte GPU gefunden, daher ergänzt die vollständige Installation PyTorch für die CPU und ermöglicht damit Training auf der CPU. CPU-Training ist deutlich langsamer als GPU-Training. Sie benötigt mindestens 5 GB Speicherplatz und startet den Server neu. Chats, Modelle und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
         confirmAction: "Upgraden",
         keywords:
           "full install upgrade installationstyp vollständige installation nur chat chat only gguf add training training trainieren train fine-tune pytorch torch export video bildgenerierung safetensors",
@@ -2367,15 +2360,7 @@ export const de = {
         label: "Design",
         description: "Farben, die in Unsloth im hellen und dunklen Modus verwendet werden.",
         standard: "Standard",
-        classic: "Klassisch",
-        minimal: "Minimal",
         moreThemes: "Weitere Designs",
-        halloween: "Halloween",
-      },
-      trickOrTreat: {
-        label: "Süßes oder Saures",
-        description:
-          "Halloween-Designs und gruselige Begrüßungen, bis zum 1. November.",
       },
       code: {
         title: "Code",
@@ -3266,9 +3251,9 @@ export const de = {
         movedChatsToRecents: "Nach Zuletzt verwendet verschobene Chats: {count}",
         moveFailed: "Chats konnten nicht verschoben werden",
         deleteChatsTitle: "Chats löschen ({count})",
-        deleteChatsWarning: "Ausgewählte Chats löschen ({count})? Dies kann nicht rückgängig gemacht werden.",
+        deleteChatsWarning: "Dadurch werden {count} Chats und ihre Nachrichten endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
         deleteArchivedTitle: "{count} archivierte Chats löschen",
-        deleteArchivedWarning: "Ausgewählte archivierte Chats löschen ({count})? Dies kann nicht rückgängig gemacht werden.",
+        deleteArchivedWarning: "Dadurch werden {count} archivierte Chats und ihre Nachrichten endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
         deleting: "Wird gelöscht...",
       },
       title: "Daten",
@@ -3668,6 +3653,8 @@ export const de = {
     imageTraining: "Bildtraining",
     goToImageTraining: "Bild-LoRAs trainieren",
     routeTitle: "Trainieren",
+    cpuTrainingNotice:
+      "Es wurde keine GPU gefunden, daher läuft das Training auf der CPU. Es ist deutlich langsamer als GPU-Training und unterstützt nur Textmodelle (LoRA oder vollständiges Finetuning).",
     wizard: {
       modelTitle: "Modell",
       modelDescription: "Modell und Trainingsmethode auswählen",
@@ -4781,8 +4768,8 @@ export const de = {
       },
       dialog: {
         renameChat: "Chat umbenennen",
-        deleteChatDescription: "Dieser Chat wird endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
-        deleteProjectDescription: "Das Projekt und seine Chats ({count}) werden endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
+        deleteChatDescription: "Dadurch werden der Chat und seine Nachrichten endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
+        deleteProjectDescription: "Dadurch werden das Projekt und seine Chats ({count}) endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
         deleteFilesMany: "Auch die Dateien und Sandbox-Ordner entfernen, die diese Chats erstellt haben.",
         deleteProjectFilesLabel: "Projekt-Arbeitsordner löschen",
         deleteProjectFiles: "Der Arbeitsordner des Projekts wird von der Festplatte entfernt.",
@@ -5238,14 +5225,14 @@ export const de = {
     renameChat: "Chat umbenennen",
     chatName: "Chatname",
     deleteChat: "Chat löschen",
-    deleteChatDescription: "Möchtest du {name} wirklich löschen? Die Nachrichten werden dauerhaft gelöscht.",
+    deleteChatDescription: "Dadurch werden der Chat „{name}“ und seine Nachrichten endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
     importChats: "Chats importieren",
     importDestination: "Wähle aus, wohin {name} importiert werden soll:",
     selectDestination: "Ziel auswählen",
     recents: "Neueste",
     import: "Importieren",
     deleteProject: "Projekt löschen",
-    deleteProjectDescription: "Möchtest du {name} wirklich löschen? Die Chats werden dauerhaft gelöscht.",
+    deleteProjectDescription: "Dadurch werden das Projekt „{name}“ und alle seine Chats endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
     deleteProjectFiles: "Der Arbeitsordner des Projekts wird von der Festplatte entfernt.",
     deleteAll: "Alles löschen",
     projectFallback: "Projekt",

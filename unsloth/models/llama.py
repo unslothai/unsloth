@@ -776,15 +776,17 @@ def LlamaAttention_fast_forward_inference(
     if static is not None:
         # Captured step: the cache slot is on the device; the attention itself runs eagerly
         # between two captured segments (static.attention), over the true length.
-        self.paged_attention_K.index_copy_(
-            0, static.slot, K_slot.view(1, bsz, n_kv_heads, head_dim)
+        # K and V scratch are adjacent ([2, bsz, 1, n_kv_heads * head_dim]), as are their cache
+        # rows ([rows, 2, bsz, n_kv_heads, head_dim]): one index_copy_ writes both.
+        self.paged_attention.index_copy_(
+            0, static.slot, self.temp_KV.view(1, 2, bsz, n_kv_heads, head_dim)
         )
-        self.paged_attention_V.index_copy_(
-            0, static.slot, V_slot.view(1, bsz, n_kv_heads, head_dim)
-        )
-        A = static.attention(
-            lambda: _decode_attention_core(self, Qn, static.kv_len, static.mask, bsz, True)[0]
-        )
+        if static.span is not None:
+            A = _decode_attention_span(self, Qn, static, bsz, True)
+        else:
+            A = static.attention(
+                lambda: _decode_attention_core(self, Qn, static.kv_len, static.mask, bsz, True)[0]
+            )
         A = A.transpose(1, 2).reshape(bsz, 1, attention_size)
         return fast_linear_forward(self.o_proj, A, out = self.temp_O), (None, None)
 
@@ -938,6 +940,36 @@ def _decode_attention_core(self, Qn, kv_seq_len, attention_mask, bsz, sdpa_gqa_w
                 Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = is_causal
             )
     return A, Kn, Vn
+
+
+def _decode_attention_span(self, Qn, static, bsz, sdpa_gqa_with_batch_mask):
+    """softmax(Q K^T) V of one decode token inside a whole-step graph: over the first static.span
+    cache rows, rows past the true length masked by the device-side static.keep. The same ops as
+    _decode_attention_core on a longer (masked) row, so only the reduction order differs."""
+    span = static.span
+    keep = static.keep[..., :span]
+    drop = static.drop[..., :span]
+    n_heads = self.__dict__.get("_unsloth_tp_heads", self.config.num_attention_heads)
+    n_groups = self.num_key_value_groups
+    n_kv_heads = self.__dict__.get("_unsloth_tp_kv_heads", self.config.num_key_value_heads)
+    head_dim = self.head_dim
+    Knn = self.paged_attention_K[:span].permute(1, 2, 0, 3)
+    Vnn = self.paged_attention_V[:span].permute(1, 2, 0, 3)
+    if bsz == 1:
+        Qn *= self.scalar
+        A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :span])
+        A.masked_fill_(drop, float("-inf"))
+        A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
+        return _gqa_decode_values(A, Vnn, Qn)
+    # The mask is always batched here: as the eager core, Qwen3 expands K / V instead of SDPA GQA.
+    if SDPA_HAS_GQA and sdpa_gqa_with_batch_mask:
+        return scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = keep, enable_gqa = True)
+    if n_groups != 1:
+        Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, span, head_dim)
+        Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, span, head_dim)
+        Knn = Knn.reshape(bsz, n_heads, span, head_dim)
+        Vnn = Vnn.reshape(bsz, n_heads, span, head_dim)
+    return scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = keep)
 
 
 _decode_graphs.register_attention(LlamaAttention_fast_forward_inference)

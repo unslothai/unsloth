@@ -28,6 +28,7 @@ export const it = {
     halftone: "Mezzitoni",
     scanlines: "Linee di scansione",
     visibility: "Visibilità",
+    conversationVisibility: "Visibilità nelle conversazioni",
     blur: "Sfocatura immagine",
     position: "Posizione",
     horizontal: "Posizione orizzontale",
@@ -46,6 +47,26 @@ export const it = {
     dimensionsError: "Scegli un’immagine inferiore a 40 megapixel.",
     decodeError: "Impossibile leggere l’immagine. Prova un altro file.",
     effectError: "Impossibile creare l’effetto. Scegli Nessuno o un’altra immagine.",
+    material: "Vetro",
+    materialSolid: "Disattivato",
+    materialTransparent: "Trasparente",
+    materialFrosted: "Smerigliato",
+    materialBlurred: "Sfocato",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "Vetro di sistema macOS",
+    materialMacosNote: "Usa il materiale traslucido delle finestre di macOS, quindi la scrivania traspare.",
+    materialNativeFailed: "Questa versione di Unsloth Desktop non può usare il materiale di macOS. Aggiorna l’app per attivarlo.",
+    glassTheme: "Tema vetro",
+    materialStyle: "Stile",
+    materialMenus: "Menu in vetro",
+    materialMenusDescription: "Anche menu a discesa, menu e selettori usano il vetro.",
+    materialStrength: "Intensità del vetro",
+    lens: "Lente di vetro",
+    lensDescription: "Curva l'immagine sotto il compositore come un vero vetro.",
+    lensOff: "Disattivato",
+    lensMagnify: "Ingrandisci",
+    lensShrink: "Riduci",
   },
 
   linkMenu: {
@@ -849,7 +870,7 @@ export const it = {
       deleteProjects: "Elimina i progetti",
       deleteProjectsTitle: "Elimina i progetti",
       deleteProjectsDescription:
-        "Eliminare {count} progetti? Le loro chat vengono eliminate definitivamente.",
+        "{count} progetti e tutte le relative chat verranno eliminati definitivamente. Questa azione non può essere annullata.",
       deleteProjectsFilesDescription:
         "La cartella dello spazio di lavoro di ogni progetto viene rimossa dal disco.",
       countSelected: "{count} selezionate",
@@ -860,7 +881,7 @@ export const it = {
       markRead: "Segna come letta",
       deleteChats: "Elimina le chat",
       deleteTitle: "Elimina le chat",
-      deleteDescription: "Eliminare {count} chat? L'operazione non è reversibile.",
+      deleteDescription: "{count} chat e i relativi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
       deleteFilesDescription:
         "La cartella sandbox di ogni chat viene rimossa dal disco. I file scritti dentro un progetto restano nello spazio di lavoro di quel progetto.",
       deleteFilesLabel: "Elimina i file e la cartella sandbox",
@@ -908,7 +929,7 @@ export const it = {
     dialog: {
       deleteChat: {
         title: "Elimina la chat",
-        description: "Vuoi davvero eliminare la chat «{name}»?",
+        description: "La chat «{name}» e i suoi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
       },
       deleteRun: {
         title: "Elimina il run di addestramento",
@@ -2063,10 +2084,14 @@ export const it = {
         label: "Tipo di installazione",
         description:
           "Solo chat (GGUF). L'installazione completa aggiunge addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini.",
+        descriptionCpu:
+          "Solo chat (GGUF). Non è stata trovata una GPU supportata, quindi l'installazione completa aggiunge l'addestramento sulla CPU.",
         action: "Passa all'installazione completa",
         confirmTitle: "Passare all'installazione completa?",
         confirmDescription:
           "Questa installazione solo chat esegue modelli GGUF. L'installazione completa aggiunge PyTorch per la GPU di questa macchina, abilitando addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini. Scarica diversi gigabyte (almeno 5 GB di spazio su disco) e riavvia il server. Le chat, i modelli e le impostazioni vengono mantenuti. L'operazione può richiedere alcuni minuti.",
+        confirmDescriptionCpu:
+          "Questa installazione solo chat esegue modelli GGUF. Su questa macchina non è stata trovata una GPU supportata, quindi l'installazione completa aggiunge PyTorch per la CPU, abilitando l'addestramento sulla CPU. L'addestramento su CPU è molto più lento che su GPU. Richiede almeno 5 GB di spazio su disco e riavvia il server. Le chat, i modelli e le impostazioni vengono mantenuti. L'operazione può richiedere alcuni minuti.",
         confirmAction: "Aggiorna",
         keywords:
           "full install upgrade tipo di installazione installazione completa aggiorna solo chat chat only gguf add training addestramento addestrare train fine-tune pytorch torch esportazione video generazione di immagini safetensors",
@@ -2235,15 +2260,7 @@ export const it = {
         label: "Tema",
         description: "Colori usati in Unsloth, nei temi chiaro e scuro.",
         standard: "Standard",
-        classic: "Classica",
-        minimal: "Minimale",
         moreThemes: "Altri temi",
-        halloween: "Halloween",
-      },
-      trickOrTreat: {
-        label: "Dolcetto o scherzetto",
-        description:
-          "Temi di Halloween e saluti spaventosi, fino al 1° novembre.",
       },
       code: {
         title: "Codice",
@@ -3128,9 +3145,9 @@ export const it = {
         movedChatsToRecents: "Chat spostate in Recenti: {count}",
         moveFailed: "Impossibile spostare le chat",
         deleteChatsTitle: "Elimina chat ({count})",
-        deleteChatsWarning: "Eliminare le chat selezionate ({count})? L'azione non può essere annullata.",
+        deleteChatsWarning: "{count} chat e i relativi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
         deleteArchivedTitle: "Elimina {count} chat archiviate",
-        deleteArchivedWarning: "Eliminare le chat archiviate selezionate ({count})? L'azione non può essere annullata.",
+        deleteArchivedWarning: "{count} chat archiviate e i relativi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
         deleting: "Eliminazione...",
       },
       title: "Dati",
@@ -3567,38 +3584,6 @@ export const it = {
     compactEmpty: "Ancora niente da compattare",
     compactUnsupported: "La compattazione richiede un modello GGUF o MLX con supporto per gli strumenti",
   },
-  halloween: {
-    navLabel: "Dolcetto o scherzetto…",
-    title: "Dolcetto o scherzetto?!",
-    description:
-      "Abbiamo preparato qualche spavento per Unsloth, fino alla fine di ottobre.",
-    chooseTheme: "Scegli un tema da brivido",
-    spookyGreetings: "Saluti da brivido",
-    spookyGreetingsDescription:
-      "Il bradipo accoglie le nuove chat con uno spavento.",
-    decorations: "Ragni e pipistrelli",
-    decorationsDescription:
-      "Ragnatele negli angoli e ogni tanto un ragno o un pipistrello con un tema di Halloween.",
-    surprise: "Dolcetto o scherzetto!",
-    surpriseDescription: "Lascia che il bradipo scelga un tema per te.",
-    themesTitle: "Temi da brivido",
-    back: "Indietro",
-    footer: "Unsloth torna alla normalità alla mezzanotte del 1° novembre.",
-    removeNow: "Rimuovi ora",
-    hideFromSidebar: "Nascondi dalla barra laterale",
-    greeting: {
-      pumpkins: "Le zucche sono intagliate. E adesso?",
-      brewing: "Prepariamo la pozione",
-      trickOrTreat: "Dolcetto o scherzetto?",
-      manor: "Ti diamo il benvenuto nel maniero",
-      manorName: "Ti diamo il benvenuto nel maniero, {name}",
-      happyHalloween: "Buon Halloween",
-      happyHalloweenName: "Buon Halloween, {name}",
-      spirits: "Gli spiriti ci ascoltano…",
-      mysteries: "Quali misteri sveleremo stanotte?",
-      conjure: "Cosa posso evocare per te?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Che piacere vederti",
     goodToSeeYouName: "Che piacere vederti, {name}",
@@ -3663,6 +3648,8 @@ export const it = {
     imageTraining: "Addestramento immagini",
     goToImageTraining: "Addestra LoRA per immagini",
     routeTitle: "Addestra",
+    cpuTrainingNotice:
+      "Non è stata trovata alcuna GPU, quindi l'addestramento viene eseguito sulla CPU. È molto più lento che su GPU e supporta solo modelli di testo (LoRA o finetuning completo).",
     wizard: {
       modelTitle: "Modello",
       modelDescription: "Seleziona il modello e il metodo di addestramento",
@@ -4776,8 +4763,8 @@ export const it = {
       },
       dialog: {
         renameChat: "Rinomina chat",
-        deleteChatDescription: "Questa chat verrà eliminata definitivamente. L’operazione non può essere annullata.",
-        deleteProjectDescription: "Il progetto e le sue chat ({count}) verranno eliminati definitivamente. L’operazione non può essere annullata.",
+        deleteChatDescription: "La chat e i suoi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
+        deleteProjectDescription: "Il progetto e le sue chat ({count}) verranno eliminati definitivamente. Questa azione non può essere annullata.",
         deleteFilesMany: "Rimuovi anche i file e le cartelle sandbox create da queste chat.",
         deleteProjectFilesLabel: "Elimina la cartella di lavoro del progetto",
         deleteProjectFiles: "La cartella di lavoro del progetto verrà rimossa dal disco.",
@@ -5233,14 +5220,14 @@ export const it = {
     renameChat: "Rinomina chat",
     chatName: "Nome chat",
     deleteChat: "Elimina chat",
-    deleteChatDescription: "Vuoi davvero eliminare {name}? I suoi messaggi verranno eliminati definitivamente.",
+    deleteChatDescription: "La chat «{name}» e i suoi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
     importChats: "Importa chat",
     importDestination: "Scegli dove importare {name}:",
     selectDestination: "Seleziona destinazione",
     recents: "Recenti",
     import: "Importa",
     deleteProject: "Elimina progetto",
-    deleteProjectDescription: "Vuoi davvero eliminare {name}? Le sue chat verranno eliminate definitivamente.",
+    deleteProjectDescription: "Il progetto «{name}» e tutte le sue chat verranno eliminati definitivamente. Questa azione non può essere annullata.",
     deleteProjectFiles: "La cartella di lavoro del progetto verrà rimossa dal disco.",
     deleteAll: "Elimina tutto",
     projectFallback: "progetto",

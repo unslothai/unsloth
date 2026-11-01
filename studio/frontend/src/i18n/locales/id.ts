@@ -31,6 +31,7 @@ export const id = {
     halftone: "Halftone",
     scanlines: "Garis pindai",
     visibility: "Visibilitas",
+    conversationVisibility: "Visibilitas dalam percakapan",
     blur: "Keburaman gambar",
     position: "Posisi",
     horizontal: "Posisi horizontal",
@@ -49,6 +50,26 @@ export const id = {
     dimensionsError: "Pilih gambar di bawah 40 megapiksel.",
     decodeError: "Tidak dapat mendekode gambar ini. Coba file lain.",
     effectError: "Tidak dapat merender efek. Pilih Tidak ada atau gambar lain.",
+    material: "Kaca",
+    materialSolid: "Mati",
+    materialTransparent: "Transparan",
+    materialFrosted: "Buram kaca",
+    materialBlurred: "Kabur",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "Kaca sistem macOS",
+    materialMacosNote: "Menggunakan material jendela tembus cahaya macOS, sehingga desktop Anda terlihat di baliknya.",
+    materialNativeFailed: "Versi Unsloth Desktop ini tidak dapat menggunakan material macOS. Perbarui aplikasi untuk mengaktifkannya.",
+    glassTheme: "Tema kaca",
+    materialStyle: "Gaya",
+    materialMenus: "Menu kaca",
+    materialMenusDescription: "Dropdown, menu, dan pemilih juga menggunakan kaca.",
+    materialStrength: "Kekuatan kaca",
+    lens: "Lensa kaca",
+    lensDescription: "Membengkokkan gambar di bawah kotak tulis seperti kaca sungguhan.",
+    lensOff: "Mati",
+    lensMagnify: "Perbesar",
+    lensShrink: "Perkecil",
   },
   linkMenu: {
     openInBrowser: "Buka di browser Unsloth",
@@ -821,38 +842,6 @@ export const id = {
     compactUnsupported:
       "Pemadatan memerlukan model GGUF atau MLX yang mendukung alat",
   },
-  halloween: {
-    navLabel: "Trick or treat…",
-    title: "Trick or Treat?!",
-    description:
-      "Kami menyiapkan beberapa kejutan seram untuk Unsloth, tersedia hingga akhir Oktober.",
-    chooseTheme: "Pilih tema seram",
-    spookyGreetings: "Sapaan seram",
-    spookyGreetingsDescription:
-      "Si sloth menyapa chat baru dengan kejutan seram.",
-    decorations: "Laba-laba dan kelelawar",
-    decorationsDescription:
-      "Sarang laba-laba, ditambah sesekali laba-laba atau kelelawar.",
-    surprise: "Trick or treat!",
-    surpriseDescription: "Biarkan si sloth memilihkan tema untuk Anda.",
-    themesTitle: "Tema seram",
-    back: "Kembali",
-    footer: "Unsloth kembali normal pada tengah malam 1 November.",
-    removeNow: "Hapus sekarang",
-    hideFromSidebar: "Sembunyikan dari bilah sisi",
-    greeting: {
-      pumpkins: "Labu sudah diukir. Apa selanjutnya?",
-      brewing: "Mari mulai meramu",
-      trickOrTreat: "Trick or treat?",
-      manor: "Selamat datang di rumah tua",
-      manorName: "Selamat datang di rumah tua, {name}",
-      happyHalloween: "Selamat Halloween",
-      happyHalloweenName: "Selamat Halloween, {name}",
-      spirits: "Para arwah sedang mendengarkan…",
-      mysteries: "Misteri apa yang akan kita ungkap malam ini?",
-      conjure: "Apa yang bisa saya sihirkan untuk Anda?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Senang bertemu Anda",
     goodToSeeYouName: "Senang bertemu Anda, {name}",
@@ -1080,7 +1069,7 @@ export const id = {
       deleteProjects: "Hapus proyek",
       deleteProjectsTitle: "Hapus proyek",
       deleteProjectsDescription:
-        "Hapus {count} proyek? Chat di dalamnya akan dihapus secara permanen.",
+        "{count} proyek dan semua chat di dalamnya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
       deleteProjectsFilesDescription:
         "Folder ruang kerja setiap proyek akan dihapus dari disk.",
       countSelected: "{count} dipilih",
@@ -1092,7 +1081,7 @@ export const id = {
       deleteChats: "Hapus chat",
       deleteTitle: "Hapus chat",
       deleteDescription:
-        "Hapus {count} chat? Tindakan ini tidak dapat diurungkan.",
+        "{count} chat dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
       deleteFilesDescription:
         "Folder sandbox milik setiap chat akan dihapus dari disk. File yang ditulisnya di dalam proyek tetap berada di ruang kerja proyek tersebut.",
       deleteFilesLabel: "Hapus file dan folder sandbox",
@@ -1140,7 +1129,7 @@ export const id = {
     dialog: {
       deleteChat: {
         title: "Hapus chat",
-        description: 'Yakin ingin menghapus chat "{name}" ini?',
+        description: 'Chat "{name}" dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.',
       },
       deleteRun: {
         title: "Hapus proses pelatihan",
@@ -2356,10 +2345,14 @@ export const id = {
         label: "Jenis instalasi",
         description:
           "Hanya chat (GGUF). Instalasi lengkap menambahkan pelatihan, ekspor, video, model safetensors, dan fitur pembuatan gambar tambahan.",
+        descriptionCpu:
+          "Hanya chat (GGUF). Tidak ditemukan GPU yang didukung, jadi instalasi lengkap menambahkan pelatihan di CPU.",
         action: "Tingkatkan ke instalasi lengkap",
         confirmTitle: "Tingkatkan ke instalasi lengkap?",
         confirmDescription:
           "Instalasi Hanya chat ini menjalankan model GGUF. Instalasi lengkap menambahkan PyTorch untuk GPU mesin ini, yang mengaktifkan pelatihan, ekspor, video, model safetensors, dan fitur pembuatan gambar tambahan. Proses ini mengunduh beberapa gigabyte (minimal 5 GB ruang disk) dan memulai ulang server. Chat, model, dan pengaturan tetap disimpan. Proses ini dapat memakan waktu beberapa menit.",
+        confirmDescriptionCpu:
+          "Instalasi Hanya chat ini menjalankan model GGUF. Tidak ditemukan GPU yang didukung di mesin ini, jadi instalasi lengkap menambahkan PyTorch untuk CPU, yang mengaktifkan pelatihan di CPU. Pelatihan di CPU jauh lebih lambat daripada di GPU. Proses ini memerlukan ruang disk minimal 5 GB dan memulai ulang server. Chat, model, dan pengaturan tetap disimpan. Proses ini dapat memakan waktu beberapa menit.",
         confirmAction: "Tingkatkan",
         keywords:
           "full install upgrade install type chat only gguf add training train training fine-tune pytorch torch export video image generation safetensors instalasi lengkap tingkatkan pelatihan latih ekspor gambar",
@@ -2536,14 +2529,7 @@ export const id = {
         description:
           "Warna yang digunakan di seluruh Unsloth, dalam mode terang dan gelap.",
         standard: "Standar",
-        classic: "Klasik",
-        minimal: "Minimal",
         moreThemes: "Tema lainnya",
-        halloween: "Halloween",
-      },
-      trickOrTreat: {
-        label: "Trick or treat",
-        description: "Tema Halloween dan sapaan seram, hingga 1 November.",
       },
       code: {
         title: "Kode",
@@ -3492,10 +3478,10 @@ export const id = {
         moveFailed: "Gagal memindahkan chat",
         deleteChatsTitle: "Hapus chat ({count})",
         deleteChatsWarning:
-          "Hapus chat yang dipilih ({count})? Tindakan ini tidak dapat diurungkan.",
+          "{count} chat dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleteArchivedTitle: "Hapus {count} chat yang diarsipkan",
         deleteArchivedWarning:
-          "Hapus chat yang diarsipkan yang dipilih ({count})? Tindakan ini tidak dapat diurungkan.",
+          "{count} chat yang diarsipkan dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleting: "Menghapus...",
       },
       title: "Data",
@@ -3914,6 +3900,8 @@ export const id = {
   },
   studio: {
     routeTitle: "Latih",
+    cpuTrainingNotice:
+      "Tidak ditemukan GPU, jadi pelatihan berjalan di CPU. Pelatihan ini jauh lebih lambat daripada di GPU dan hanya mendukung model teks (LoRA atau finetuning penuh).",
     wizard: {
       modelTitle: "Model",
       modelDescription: "Pilih model dan metode pelatihan",
@@ -5068,9 +5056,9 @@ export const id = {
       dialog: {
         renameChat: "Ganti nama chat",
         deleteChatDescription:
-          "Chat ini akan dihapus secara permanen. Tindakan ini tidak dapat diurungkan.",
+          "Chat dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleteProjectDescription:
-          "Proyek beserta chat-nya ({count}) akan dihapus secara permanen. Tindakan ini tidak dapat diurungkan.",
+          "Proyek dan chat di dalamnya ({count}) akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleteFilesMany:
           "Hapus juga file dan folder sandbox yang dibuat oleh chat ini.",
         deleteProjectFilesLabel: "Hapus folder ruang kerja proyek",
@@ -5564,7 +5552,7 @@ export const id = {
     chatName: "Nama chat",
     deleteChat: "Hapus chat",
     deleteChatDescription:
-      "Yakin ingin menghapus {name}? Pesan-pesannya akan dihapus secara permanen.",
+      'Chat "{name}" dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.',
     importChats: "Impor chat",
     importDestination: "Pilih tujuan impor {name}:",
     selectDestination: "Pilih tujuan",
@@ -5572,7 +5560,7 @@ export const id = {
     import: "Impor",
     deleteProject: "Hapus proyek",
     deleteProjectDescription:
-      "Yakin ingin menghapus {name}? Chat di dalamnya akan dihapus secara permanen.",
+      'Proyek "{name}" dan semua chat di dalamnya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.',
     deleteProjectFiles: "Folder ruang kerja proyek akan dihapus dari disk.",
     deleteAll: "Hapus semua",
     projectFallback: "proyek",

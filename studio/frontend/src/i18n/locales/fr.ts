@@ -31,6 +31,7 @@ export const fr = {
     halftone: "Demi-teinte",
     scanlines: "Lignes de balayage",
     visibility: "Visibilité",
+    conversationVisibility: "Visibilité dans les conversations",
     blur: "Flou de l’image",
     position: "Position",
     horizontal: "Position horizontale",
@@ -49,6 +50,26 @@ export const fr = {
     dimensionsError: "Choisissez une image de moins de 40 mégapixels.",
     decodeError: "Impossible de lire cette image. Essayez un autre fichier.",
     effectError: "Impossible de générer l’effet. Choisissez Aucun ou une autre image.",
+    material: "Verre",
+    materialSolid: "Désactivé",
+    materialTransparent: "Transparent",
+    materialFrosted: "Dépoli",
+    materialBlurred: "Flou",
+    materialLiquid: "Verre liquide",
+    materialLiquid3d: "Verre liquide 3D",
+    materialMacos: "Verre système macOS",
+    materialMacosNote: "Utilise le matériau de fenêtre translucide de macOS : votre bureau apparaît en transparence.",
+    materialNativeFailed: "Cette version d’Unsloth Desktop ne peut pas utiliser le matériau macOS. Mettez l’app à jour pour l’activer.",
+    glassTheme: "Thème verre",
+    materialStyle: "Style",
+    materialMenus: "Menus en verre",
+    materialMenusDescription: "Les listes déroulantes, menus et sélecteurs utilisent aussi le verre.",
+    materialStrength: "Intensité du verre",
+    lens: "Lentille de verre",
+    lensDescription: "Courbe l’image sous la zone de saisie comme du vrai verre.",
+    lensOff: "Désactivé",
+    lensMagnify: "Agrandir",
+    lensShrink: "Réduire",
   },
 
   linkMenu: {
@@ -724,38 +745,6 @@ export const fr = {
     compactEmpty: "Rien à compacter pour le moment",
     compactUnsupported: "Le compactage nécessite un modèle GGUF ou MLX prenant en charge les outils",
   },
-  halloween: {
-    navLabel: "Un bonbon ou un sort…",
-    title: "Un bonbon ou un sort ?!",
-    description:
-      "Nous avons concocté quelques frayeurs pour Unsloth, jusqu’à la fin d’octobre.",
-    chooseTheme: "Choisissez un thème effrayant",
-    spookyGreetings: "Salutations effrayantes",
-    spookyGreetingsDescription:
-      "Le paresseux accueille les nouvelles discussions avec une frayeur.",
-    decorations: "Araignées et chauves-souris",
-    decorationsDescription:
-      "Des toiles dans les coins, et de temps en temps une araignée ou une chauve-souris avec un thème d’Halloween.",
-    surprise: "Un bonbon ou un sort !",
-    surpriseDescription: "Laissez le paresseux choisir un thème pour vous.",
-    themesTitle: "Thèmes effrayants",
-    back: "Retour",
-    footer: "Unsloth redevient normal à minuit le 1er novembre.",
-    removeNow: "Retirer maintenant",
-    hideFromSidebar: "Masquer de la barre latérale",
-    greeting: {
-      pumpkins: "Les citrouilles sont sculptées. Et ensuite ?",
-      brewing: "Préparons la potion",
-      trickOrTreat: "Un bonbon ou un sort ?",
-      manor: "Bienvenue au manoir",
-      manorName: "Bienvenue au manoir, {name}",
-      happyHalloween: "Joyeux Halloween",
-      happyHalloweenName: "Joyeux Halloween, {name}",
-      spirits: "Les esprits écoutent…",
-      mysteries: "Quels mystères allons-nous percer ce soir ?",
-      conjure: "Que puis-je faire apparaître pour vous ?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Ravi de vous voir",
     goodToSeeYouName: "Ravi de vous voir, {name}",
@@ -982,7 +971,7 @@ export const fr = {
       deleteProjects: "Supprimer les projets",
       deleteProjectsTitle: "Supprimer les projets",
       deleteProjectsDescription:
-        "Supprimer {count} projets ? Leurs discussions seront supprimées définitivement.",
+        "{count} projets et tous leurs chats seront définitivement supprimés. Cette action est irréversible.",
       deleteProjectsFilesDescription:
         "Le dossier de travail de chaque projet est retiré du disque.",
       countSelected: "{count} sélectionnés",
@@ -993,7 +982,7 @@ export const fr = {
       markRead: "Marquer comme lu",
       deleteChats: "Supprimer les discussions",
       deleteTitle: "Supprimer les discussions",
-      deleteDescription: "Supprimer {count} discussions ? Cette action est irréversible.",
+      deleteDescription: "{count} chats et leurs messages seront définitivement supprimés. Cette action est irréversible.",
       deleteFilesDescription:
         "Le dossier bac à sable propre à chaque discussion est supprimé du disque. Les fichiers écrits dans un projet restent dans l'espace de travail de ce projet.",
       deleteFilesLabel: "Supprimer les fichiers et le dossier bac à sable",
@@ -1041,7 +1030,7 @@ export const fr = {
     dialog: {
       deleteChat: {
         title: "Supprimer la discussion",
-        description: 'Voulez-vous vraiment supprimer cette discussion "{name}" ?',
+        description: 'Le chat "{name}" et ses messages seront définitivement supprimés. Cette action est irréversible.',
       },
       deleteRun: {
         title: "Supprimer l'entraînement",
@@ -2174,10 +2163,14 @@ export const fr = {
         label: "Type d'installation",
         description:
           "Chat uniquement (GGUF). L'installation complète ajoute l'entraînement, l'export, la vidéo, les modèles safetensors et des fonctionnalités supplémentaires de génération d'images.",
+        descriptionCpu:
+          "Chat uniquement (GGUF). Aucun GPU compatible n'a été trouvé, l'installation complète ajoute donc l'entraînement sur le CPU.",
         action: "Passer à l'installation complète",
         confirmTitle: "Passer à l'installation complète ?",
         confirmDescription:
           "Cette installation Chat uniquement exécute des modèles GGUF. L'installation complète ajoute PyTorch pour le GPU de cette machine, ce qui active l'entraînement, l'export, la vidéo, les modèles safetensors et des fonctionnalités supplémentaires de génération d'images. Elle télécharge plusieurs gigaoctets (au moins 5 Go d'espace disque) et redémarre le serveur. Les discussions, les modèles et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
+        confirmDescriptionCpu:
+          "Cette installation Chat uniquement exécute des modèles GGUF. Aucun GPU compatible n'a été trouvé sur cette machine, l'installation complète ajoute donc PyTorch pour le CPU, ce qui active l'entraînement sur le CPU. L'entraînement sur CPU est beaucoup plus lent que sur GPU. Elle nécessite au moins 5 Go d'espace disque et redémarre le serveur. Les discussions, les modèles et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
         confirmAction: "Mettre à niveau",
         keywords:
           "full install upgrade type d'installation installation complète mise à niveau chat uniquement chat only gguf add training entraînement entraîner train fine-tune pytorch torch export vidéo génération d'images safetensors",
@@ -2365,15 +2358,7 @@ export const fr = {
         label: "Thème",
         description: "Couleurs utilisées dans Unsloth, en mode clair et sombre.",
         standard: "Standard",
-        classic: "Classique",
-        minimal: "Minimale",
         moreThemes: "Plus de thèmes",
-        halloween: "Halloween",
-      },
-      trickOrTreat: {
-        label: "Un bonbon ou un sort",
-        description:
-          "Thèmes d’Halloween et salutations effrayantes, jusqu’au 1er novembre.",
       },
       code: {
         title: "Code",
@@ -3263,9 +3248,9 @@ export const fr = {
         movedChatsToRecents: "Discussions déplacées vers Récentes : {count}",
         moveFailed: "Impossible de déplacer les discussions",
         deleteChatsTitle: "Supprimer les discussions ({count})",
-        deleteChatsWarning: "Supprimer les discussions sélectionnées ({count}) ? Cette action est irréversible.",
+        deleteChatsWarning: "{count} chats et leurs messages seront définitivement supprimés. Cette action est irréversible.",
         deleteArchivedTitle: "Supprimer {count} discussions archivées",
-        deleteArchivedWarning: "Supprimer les discussions archivées sélectionnées ({count}) ? Cette action est irréversible.",
+        deleteArchivedWarning: "{count} chats archivés et leurs messages seront définitivement supprimés. Cette action est irréversible.",
         deleting: "Suppression...",
       },
       title: "Données",
@@ -3670,6 +3655,8 @@ export const fr = {
     imageTraining: "Entraînement d'image",
     goToImageTraining: "Entraîner des LoRA d'image",
     routeTitle: "Entraîner",
+    cpuTrainingNotice:
+      "Aucun GPU n'a été trouvé, l'entraînement s'exécute donc sur le CPU. Il est beaucoup plus lent que sur GPU et ne prend en charge que les modèles de texte (LoRA ou finetuning complet).",
     wizard: {
       modelTitle: "Modèle",
       modelDescription: "Sélectionner le modèle et la méthode d'entraînement",
@@ -4791,8 +4778,8 @@ export const fr = {
       },
       dialog: {
         renameChat: "Renommer la discussion",
-        deleteChatDescription: "Cette discussion sera définitivement supprimée. Cette action est irréversible.",
-        deleteProjectDescription: "Le projet et ses discussions ({count}) seront définitivement supprimés. Cette action est irréversible.",
+        deleteChatDescription: "Le chat et ses messages seront définitivement supprimés. Cette action est irréversible.",
+        deleteProjectDescription: "Le projet et ses chats ({count}) seront définitivement supprimés. Cette action est irréversible.",
         deleteFilesMany: "Supprimer aussi les fichiers et dossiers sandbox créés par ces discussions.",
         deleteProjectFilesLabel: "Supprimer le dossier de travail du projet",
         deleteProjectFiles: "Le dossier de travail du projet sera supprimé du disque.",
@@ -5248,14 +5235,14 @@ export const fr = {
     renameChat: "Renommer le chat",
     chatName: "Nom du chat",
     deleteChat: "Supprimer le chat",
-    deleteChatDescription: "Voulez-vous vraiment supprimer {name} ? Ses messages seront définitivement supprimés.",
+    deleteChatDescription: 'Le chat "{name}" et ses messages seront définitivement supprimés. Cette action est irréversible.',
     importChats: "Importer des chats",
     importDestination: "Choisissez où importer {name} :",
     selectDestination: "Choisir la destination",
     recents: "Récents",
     import: "Importer",
     deleteProject: "Supprimer le projet",
-    deleteProjectDescription: "Voulez-vous vraiment supprimer {name} ? Ses chats seront définitivement supprimés.",
+    deleteProjectDescription: 'Le projet "{name}" et tous ses chats seront définitivement supprimés. Cette action est irréversible.',
     deleteProjectFiles: "Le dossier de travail du projet sera supprimé du disque.",
     deleteAll: "Tout supprimer",
     projectFallback: "projet",

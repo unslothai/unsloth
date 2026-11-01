@@ -31,6 +31,7 @@ export const ar = {
     halftone: "نصف نغمة",
     scanlines: "خطوط المسح",
     visibility: "الظهور",
+    conversationVisibility: "الظهور في المحادثات",
     blur: "تمويه الصورة",
     position: "الموضع",
     horizontal: "الموضع الأفقي",
@@ -49,6 +50,26 @@ export const ar = {
     dimensionsError: "اختر صورة أصغر من 40 ميغابكسل.",
     decodeError: "تعذرت قراءة الصورة. جرّب ملفًا آخر.",
     effectError: "تعذر إنشاء التأثير. اختر بلا أو صورة أخرى.",
+    material: "الزجاج",
+    materialSolid: "إيقاف",
+    materialTransparent: "شفاف",
+    materialFrosted: "مصنفر",
+    materialBlurred: "ضبابي",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "زجاج نظام macOS",
+    materialMacosNote: "يستخدم مادة النافذة الشفافة في macOS، لذا يظهر سطح المكتب من خلالها.",
+    materialNativeFailed: "لا يمكن لهذا الإصدار من Unsloth Desktop استخدام مادة macOS. حدّث التطبيق لتفعيلها.",
+    glassTheme: "سمة الزجاج",
+    materialStyle: "النمط",
+    materialMenus: "قوائم زجاجية",
+    materialMenusDescription: "تستخدم القوائم المنسدلة والقوائم وأدوات الاختيار الزجاج أيضًا.",
+    materialStrength: "قوة الزجاج",
+    lens: "عدسة الزجاج",
+    lensDescription: "تحني الصورة تحت مربع الكتابة كالزجاج الحقيقي.",
+    lensOff: "إيقاف",
+    lensMagnify: "تكبير",
+    lensShrink: "تصغير",
   },
 
   linkMenu: {
@@ -724,37 +745,6 @@ export const ar = {
     compactEmpty: "لا يوجد ما يمكن ضغطه بعد",
     compactUnsupported: "ضغط المحادثة يتطلب نموذج GGUF أو MLX يدعم الأدوات",
   },
-  halloween: {
-    navLabel: "حلوى أم خدعة…",
-    title: "حلوى أم خدعة?!",
-    description:
-      "حضّرنا بعض المفاجآت المخيفة لـ Unsloth، وستبقى حتى نهاية أكتوبر.",
-    chooseTheme: "اختر سمة مخيفة",
-    spookyGreetings: "تحيات مخيفة",
-    spookyGreetingsDescription: "يستقبل الكسلان المحادثات الجديدة بإخافة.",
-    decorations: "عناكب وخفافيش",
-    decorationsDescription:
-      "شباك عنكبوت في الزوايا، وعنكبوت أو خفاش بين حين وآخر مع سمة الهالوين.",
-    surprise: "حلوى أم خدعة!",
-    surpriseDescription: "دع الكسلان يختار سمة لك.",
-    themesTitle: "سمات مخيفة",
-    back: "رجوع",
-    footer: "يعود Unsloth إلى طبيعته عند منتصف ليل 1 نوفمبر.",
-    removeNow: "إزالة الآن",
-    hideFromSidebar: "إخفاء من الشريط الجانبي",
-    greeting: {
-      pumpkins: "نُحتت اليقطينات. ما التالي؟",
-      brewing: "هيا نحضّر الجرعة",
-      trickOrTreat: "حلوى أم خدعة؟",
-      manor: "مرحبًا بك في القصر",
-      manorName: "مرحبًا بك في القصر يا {name}",
-      happyHalloween: "هالوين سعيد",
-      happyHalloweenName: "هالوين سعيد يا {name}",
-      spirits: "الأرواح تُصغي…",
-      mysteries: "ما الأسرار التي سنكشفها الليلة؟",
-      conjure: "ماذا أستحضر لك؟",
-    },
-  },
   welcome: {
     goodToSeeYou: "سعيد برؤيتك",
     goodToSeeYouName: "سعيد برؤيتك يا {name}",
@@ -977,7 +967,7 @@ export const ar = {
       deleteProjects: "حذف المشاريع",
       deleteProjectsTitle: "حذف المشاريع",
       deleteProjectsDescription:
-        "هل تريد حذف {count} مشاريع؟ ستُحذف محادثاتها نهائيًا.",
+        "سيتم حذف المشاريع ({count}) وجميع محادثاتها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
       deleteProjectsFilesDescription:
         "يُحذف مجلد مساحة عمل كل مشروع من القرص.",
       countSelected: "{count} محددة",
@@ -988,7 +978,7 @@ export const ar = {
       markRead: "وضع علامة كمقروءة",
       deleteChats: "حذف المحادثات",
       deleteTitle: "حذف المحادثات",
-      deleteDescription: "هل تريد حذف {count} محادثة؟ لا يمكن التراجع عن ذلك.",
+      deleteDescription: "سيتم حذف المحادثات ({count}) ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
       deleteFilesDescription:
         "يُحذف مجلد بيئة العزل الخاص بكل محادثة من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
       deleteFilesLabel: "حذف الملفات ومجلد بيئة العزل",
@@ -1036,7 +1026,7 @@ export const ar = {
     dialog: {
       deleteChat: {
         title: "حذف المحادثة",
-        description: "هل أنت متأكد من رغبتك في حذف هذه المحادثة «{name}»؟",
+        description: "سيتم حذف المحادثة «{name}» ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
       },
       deleteRun: {
         title: "حذف عملية التدريب",
@@ -2146,10 +2136,14 @@ export const ar = {
         label: "نوع التثبيت",
         description:
           "دردشة فقط (GGUF). يضيف التثبيت الكامل التدريب والتصدير والفيديو ونماذج safetensors وميزات إضافية لتوليد الصور.",
+        descriptionCpu:
+          "دردشة فقط (GGUF). لم يُعثر على وحدة معالجة رسومات مدعومة، لذا يضيف التثبيت الكامل التدريب على المعالج المركزي.",
         action: "الترقية إلى التثبيت الكامل",
         confirmTitle: "هل تريد الترقية إلى التثبيت الكامل؟",
         confirmDescription:
           "يشغّل تثبيت الدردشة فقط هذا نماذج GGUF. يضيف التثبيت الكامل PyTorch لوحدة معالجة الرسومات في هذا الجهاز، ما يتيح التدريب والتصدير والفيديو ونماذج safetensors وميزات إضافية لتوليد الصور. ينزّل عدة غيغابايت (5 غيغابايت على الأقل من مساحة القرص) ثم يعيد تشغيل الخادم. تُحفظ المحادثات والنماذج والإعدادات. قد يستغرق ذلك عدة دقائق.",
+        confirmDescriptionCpu:
+          "يشغّل تثبيت الدردشة فقط هذا نماذج GGUF. لم يُعثر على وحدة معالجة رسومات مدعومة في هذا الجهاز، لذا يضيف التثبيت الكامل PyTorch للمعالج المركزي، ما يتيح التدريب على المعالج المركزي. التدريب على المعالج المركزي أبطأ بكثير من التدريب على وحدة معالجة الرسومات. يحتاج إلى 5 غيغابايت على الأقل من مساحة القرص ثم يعيد تشغيل الخادم. تُحفظ المحادثات والنماذج والإعدادات. قد يستغرق ذلك عدة دقائق.",
         confirmAction: "ترقية",
         keywords:
           "full install upgrade نوع التثبيت التثبيت الكامل ترقية دردشة فقط chat only gguf add training تدريب train fine-tune pytorch torch تصدير فيديو توليد الصور safetensors",
@@ -2337,15 +2331,7 @@ export const ar = {
         label: "السمة",
         description: "الألوان المستخدمة في Unsloth في الوضعين الفاتح والداكن.",
         standard: "قياسية",
-        classic: "كلاسيكية",
-        minimal: "بسيطة",
         moreThemes: "المزيد من السمات",
-        halloween: "هالوين",
-      },
-      trickOrTreat: {
-        label: "حلوى أم خدعة",
-        description:
-          "سمات الهالوين وتحيات مخيفة حتى 1 نوفمبر.",
       },
       code: {
         title: "الشيفرة",
@@ -3222,9 +3208,9 @@ export const ar = {
         movedChatsToRecents: "المحادثات المنقولة إلى الأخيرة: {count}",
         moveFailed: "تعذر نقل المحادثات",
         deleteChatsTitle: "حذف المحادثات ({count})",
-        deleteChatsWarning: "هل تريد حذف المحادثات المحددة ({count})؟ لا يمكن التراجع عن هذا الإجراء.",
+        deleteChatsWarning: "سيتم حذف المحادثات ({count}) ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
         deleteArchivedTitle: "حذف المحادثات المؤرشفة ({count})",
-        deleteArchivedWarning: "هل تريد حذف المحادثات المؤرشفة المحددة ({count})؟ لا يمكن التراجع عن هذا الإجراء.",
+        deleteArchivedWarning: "سيتم حذف المحادثات المؤرشفة ({count}) ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
         deleting: "جارٍ الحذف...",
       },
       title: "البيانات",
@@ -3617,6 +3603,8 @@ export const ar = {
     imageTraining: "تدريب الصور",
     goToImageTraining: "تدريب LoRA للصور",
     routeTitle: "تدريب",
+    cpuTrainingNotice:
+      "لم يُعثر على وحدة معالجة رسومات، لذا يجري التدريب على المعالج المركزي. وهو أبطأ بكثير من التدريب على وحدة معالجة الرسومات ويدعم النماذج النصية فقط (LoRA أو الضبط الدقيق الكامل).",
     wizard: {
       modelTitle: "النموذج",
       modelDescription: "اختر النموذج وطريقة التدريب",
@@ -4706,8 +4694,8 @@ export const ar = {
       },
       dialog: {
         renameChat: "إعادة تسمية المحادثة",
-        deleteChatDescription: "سيتم حذف هذه المحادثة نهائيًا. لا يمكن التراجع عن ذلك.",
-        deleteProjectDescription: "سيتم حذف المشروع ومحادثاته ({count}) نهائيًا. لا يمكن التراجع عن ذلك.",
+        deleteChatDescription: "سيتم حذف المحادثة ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
+        deleteProjectDescription: "سيتم حذف المشروع ومحادثاته ({count}) نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
         deleteFilesMany: "احذف أيضًا الملفات ومجلدات بيئة الاختبار التي أنشأتها هذه المحادثات.",
         deleteProjectFilesLabel: "حذف مجلد مساحة عمل المشروع",
         deleteProjectFiles: "ستتم إزالة مجلد مساحة عمل المشروع من القرص.",
@@ -5163,14 +5151,14 @@ export const ar = {
     renameChat: "إعادة تسمية المحادثة",
     chatName: "اسم المحادثة",
     deleteChat: "حذف المحادثة",
-    deleteChatDescription: "هل تريد بالتأكيد حذف {name}؟ ستُحذف رسائلها نهائيًا.",
+    deleteChatDescription: "سيتم حذف المحادثة «{name}» ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
     importChats: "استيراد المحادثات",
     importDestination: "اختر مكان استيراد {name}:",
     selectDestination: "اختر الوجهة",
     recents: "الأحدث",
     import: "استيراد",
     deleteProject: "حذف المشروع",
-    deleteProjectDescription: "هل تريد بالتأكيد حذف {name}؟ ستُحذف محادثاته نهائيًا.",
+    deleteProjectDescription: "سيتم حذف المشروع «{name}» وجميع محادثاته نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
     deleteProjectFiles: "ستتم إزالة مجلد عمل المشروع من القرص.",
     deleteAll: "حذف الكل",
     projectFallback: "مشروع",

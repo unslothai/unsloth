@@ -28,6 +28,7 @@ export const sv = {
     halftone: "Raster",
     scanlines: "Skanningslinjer",
     visibility: "Synlighet",
+    conversationVisibility: "Synlighet i konversationer",
     blur: "Bildoskärpa",
     position: "Position",
     horizontal: "Horisontell position",
@@ -46,6 +47,26 @@ export const sv = {
     dimensionsError: "Välj en bild mindre än 40 megapixlar.",
     decodeError: "Det gick inte att läsa bilden. Prova en annan fil.",
     effectError: "Det gick inte att skapa effekten. Välj Ingen eller en annan bild.",
+    material: "Glas",
+    materialSolid: "Av",
+    materialTransparent: "Genomskinligt",
+    materialFrosted: "Frostat",
+    materialBlurred: "Suddigt",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "macOS-systemglas",
+    materialMacosNote: "Använder macOS genomskinliga fönstermaterial så att skrivbordet syns igenom.",
+    materialNativeFailed: "Den här versionen av Unsloth Desktop kan inte använda macOS-materialet. Uppdatera appen för att aktivera det.",
+    glassTheme: "Glastema",
+    materialStyle: "Stil",
+    materialMenus: "Glasmenyer",
+    materialMenusDescription: "Rullgardinsmenyer, menyer och väljare använder också glas.",
+    materialStrength: "Glasstyrka",
+    lens: "Glaslins",
+    lensDescription: "Böjer bilden under skrivfältet som riktigt glas.",
+    lensOff: "Av",
+    lensMagnify: "Förstora",
+    lensShrink: "Förminska",
   },
 
   linkMenu: {
@@ -777,38 +798,6 @@ export const sv = {
     compactEmpty: "Inget att komprimera än",
     compactUnsupported: "Komprimering kräver en GGUF- eller MLX-modell med verktygsstöd",
   },
-  halloween: {
-    navLabel: "Bus eller godis…",
-    title: "Bus eller godis?!",
-    description:
-      "Vi har bryggt ihop lite skräck för Unsloth, här resten av oktober.",
-    chooseTheme: "Välj ett läskigt tema",
-    spookyGreetings: "Läskiga hälsningar",
-    spookyGreetingsDescription:
-      "Sengångaren hälsar nya chattar med en liten skräck.",
-    decorations: "Spindlar och fladdermöss",
-    decorationsDescription:
-      "Spindelnät i hörnen och då och då en spindel eller fladdermus med ett halloweentema.",
-    surprise: "Bus eller godis!",
-    surpriseDescription: "Låt sengångaren välja ett tema åt dig.",
-    themesTitle: "Läskiga teman",
-    back: "Tillbaka",
-    footer: "Unsloth återgår till det normala vid midnatt den 1 november.",
-    removeNow: "Ta bort nu",
-    hideFromSidebar: "Dölj från sidofältet",
-    greeting: {
-      pumpkins: "Pumporna är snidade. Vad händer nu?",
-      brewing: "Dags att brygga",
-      trickOrTreat: "Bus eller godis?",
-      manor: "Välkommen till herrgården",
-      manorName: "Välkommen till herrgården, {name}",
-      happyHalloween: "Glad halloween",
-      happyHalloweenName: "Glad halloween, {name}",
-      spirits: "Andarna lyssnar…",
-      mysteries: "Vilka mysterier ska vi avslöja i natt?",
-      conjure: "Vad kan jag trolla fram åt dig?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Kul att se dig",
     goodToSeeYouName: "Kul att se dig, {name}",
@@ -1032,7 +1021,7 @@ export const sv = {
       deleteProjects: "Ta bort projekt",
       deleteProjectsTitle: "Ta bort projekt",
       deleteProjectsDescription:
-        "Ta bort {count} projekt? Deras chattar tas bort permanent.",
+        "{count} projekt och alla deras chattar raderas permanent. Det går inte att ångra.",
       deleteProjectsFilesDescription:
         "Varje projekts arbetsytemapp tas bort från disken.",
       countSelected: "{count} markerade",
@@ -1044,7 +1033,7 @@ export const sv = {
       deleteChats: "Ta bort chattar",
       deleteTitle: "Ta bort chattar",
       deleteDescription:
-        "Ta bort {count} chattar? Åtgärden går inte att ångra.",
+        "{count} chattar och deras meddelanden raderas permanent. Det går inte att ångra.",
       deleteFilesDescription:
         "Varje chatts egen sandlådemapp tas bort från disken. Filer som skrivits i ett projekt blir kvar i projektets arbetsyta.",
       deleteFilesLabel: "Ta bort filer och sandlådemapp",
@@ -1092,7 +1081,7 @@ export const sv = {
     dialog: {
       deleteChat: {
         title: "Ta bort chatt",
-        description: 'Är du säker på att du vill ta bort chatten "{name}"?',
+        description: 'Chatten "{name}" och dess meddelanden raderas permanent. Det går inte att ångra.',
       },
       deleteRun: {
         title: "Ta bort träningskörning",
@@ -2292,10 +2281,14 @@ export const sv = {
         label: "Installationstyp",
         description:
           "Endast chatt (GGUF). Den fullständiga installationen lägger till träning, export, video, safetensors-modeller och fler funktioner för bildgenerering.",
+        descriptionCpu:
+          "Endast chatt (GGUF). Ingen GPU som stöds hittades, så den fullständiga installationen lägger till träning på CPU:n.",
         action: "Uppgradera till fullständig installation",
         confirmTitle: "Uppgradera till den fullständiga installationen?",
         confirmDescription:
           "Den här installationen med endast chatt kör GGUF-modeller. Den fullständiga installationen lägger till PyTorch för den här datorns GPU, vilket aktiverar träning, export, video, safetensors-modeller och fler funktioner för bildgenerering. Den laddar ner flera gigabyte (minst 5 GB diskutrymme) och startar om servern. Chattar, modeller och inställningar behålls. Det kan ta flera minuter.",
+        confirmDescriptionCpu:
+          "Den här installationen med endast chatt kör GGUF-modeller. Ingen GPU som stöds hittades på den här datorn, så den fullständiga installationen lägger till PyTorch för CPU:n, vilket aktiverar träning på CPU:n. Träning på CPU är mycket långsammare än på GPU. Den kräver minst 5 GB diskutrymme och startar om servern. Chattar, modeller och inställningar behålls. Det kan ta flera minuter.",
         confirmAction: "Uppgradera",
         keywords:
           "full install upgrade installationstyp fullständig installation uppgradera endast chatt chat only gguf add training träning träna train fine-tune pytorch torch export video bildgenerering safetensors",
@@ -2464,15 +2457,7 @@ export const sv = {
         label: "Tema",
         description: "Färger som används i Unsloth, i ljust och mörkt läge.",
         standard: "Standard",
-        classic: "Klassisk",
-        minimal: "Minimal",
         moreThemes: "Fler teman",
-        halloween: "Halloween",
-      },
-      trickOrTreat: {
-        label: "Bus eller godis",
-        description:
-          "Halloweenteman och kusliga hälsningar, till 1 november.",
       },
       code: {
         title: "Kod",
@@ -3395,10 +3380,10 @@ export const sv = {
         moveFailed: "Det gick inte att flytta chattar",
         deleteChatsTitle: "Ta bort chattar ({count})",
         deleteChatsWarning:
-          "Ta bort de valda chattarna ({count})? Detta kan inte ångras.",
+          "{count} chattar och deras meddelanden raderas permanent. Det går inte att ångra.",
         deleteArchivedTitle: "Ta bort {count} arkiverade chattar",
         deleteArchivedWarning:
-          "Ta bort de valda arkiverade chattarna ({count})? Detta kan inte ångras.",
+          "{count} arkiverade chattar och deras meddelanden raderas permanent. Det går inte att ångra.",
         deleting: "Tar bort...",
       },
       title: "Data",
@@ -3805,6 +3790,8 @@ export const sv = {
   },
   studio: {
     routeTitle: "Träna",
+    cpuTrainingNotice:
+      "Ingen GPU hittades, så träningen körs på CPU:n. Den är mycket långsammare än GPU-träning och stöder endast textmodeller (LoRA eller fullständig finjustering).",
     wizard: {
       modelTitle: "Modell",
       modelDescription: "Välj modell och träningsmetod",
@@ -4926,9 +4913,9 @@ export const sv = {
       dialog: {
         renameChat: "Byt namn på chatt",
         deleteChatDescription:
-          "Den här chatten tas bort permanent. Det går inte att ångra.",
+          "Chatten och dess meddelanden raderas permanent. Det går inte att ångra.",
         deleteProjectDescription:
-          "Projektet och dess chattar ({count}) tas bort permanent. Det går inte att ångra.",
+          "Projektet och dess chattar ({count}) raderas permanent. Det går inte att ångra.",
         deleteFilesMany:
           "Ta även bort filerna och sandlådemapparna som de här chattarna skapade.",
         deleteProjectFilesLabel: "Ta bort projektets arbetsytemapp",
@@ -5407,14 +5394,14 @@ export const sv = {
     renameChat: "Byt namn på chatt",
     chatName: "Chattnamn",
     deleteChat: "Ta bort chatt",
-    deleteChatDescription: "Vill du verkligen ta bort {name}? Dess meddelanden tas bort permanent.",
+    deleteChatDescription: 'Chatten "{name}" och dess meddelanden raderas permanent. Det går inte att ångra.',
     importChats: "Importera chattar",
     importDestination: "Välj var {name} ska importeras:",
     selectDestination: "Välj mål",
     recents: "Senaste",
     import: "Importera",
     deleteProject: "Ta bort projekt",
-    deleteProjectDescription: "Vill du verkligen ta bort {name}? Dess chattar tas bort permanent.",
+    deleteProjectDescription: 'Projektet "{name}" och alla dess chattar raderas permanent. Det går inte att ångra.',
     deleteProjectFiles: "Projektets arbetsmapp tas bort från disken.",
     deleteAll: "Ta bort allt",
     projectFallback: "projekt",

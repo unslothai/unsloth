@@ -233,6 +233,77 @@ _CODE_SPAN_RE = re.compile(
     re.DOTALL | re.MULTILINE,
 )
 
+# A single tool tag (and at most a name) alone in an inline code span (`<tool_call>`, `[TOOL_CALLS]name`) names the
+# format: no call body fits inside. No lookahead past the closing run, so append-only growth never revokes a match.
+# Runs of three or more are fences; reasoning tags decide the think segmentation, not a call.
+_TAG_MENTION_RE = re.compile(
+    r"(?<!`)(``?)[ \t]*("
+    r"<(?!/?think(?:ing)?>)[^<>`\n]+>[\w.\-]*"
+    r"|\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\][\w.\-]*"
+    r")[ \t]*\1"
+)
+# Any tag still pairs its backticks above, but only tool-call families are returned: masking `<div>` changes no strip
+# output. A match never crosses a newline, so pairing restarts per line and only lines holding a tool tag are scanned.
+_TOOL_TAG_PREFIXES = (
+    "<tool",
+    "</tool",
+    "<function",
+    "</function",
+    "<param",
+    "</param",
+    "<arg_",
+    "</arg_",
+    "<minimax:",
+    "</minimax:",
+    "<|",
+    "<｜",
+    "[",
+)
+_TOOL_TAG_HINT_RE = re.compile(
+    r"</?(?:tool|function|param|arg_|minimax:)|<[|｜]|\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\]"
+)
+
+
+def tag_mention_spans(text: str) -> list[tuple[int, int]]:
+    """Ordered spans of the tag inside each lone-tag inline code span (backticks excluded)."""
+    if "`" not in text:
+        return []
+    spans = []
+    line_end = 0
+    for hint in _TOOL_TAG_HINT_RE.finditer(text):
+        if hint.start() < line_end:
+            continue
+        line_start = text.rfind("\n", 0, hint.start()) + 1
+        line_end = text.find("\n", hint.end())
+        if line_end < 0:
+            line_end = len(text)
+        spans.extend(
+            m.span(2)
+            for m in _TAG_MENTION_RE.finditer(text, line_start, line_end)
+            if m.group(2).startswith(_TOOL_TAG_PREFIXES)
+        )
+    if not spans:
+        return spans
+    # One inside a real call (found with the mentions blanked, so none reads as an opener) is that call's data:
+    # masking it would let the call's strip swallow a mask and drop every mention's protection.
+    parts, prev = [], 0
+    for start, end in spans:
+        parts.append(text[prev:start])
+        parts.append(" " * (end - start))
+        prev = end
+    parts.append(text[prev:])
+    calls = _tool_call_markup_spans("".join(parts))
+    if not calls:
+        return spans
+    return [s for s in spans if not any(cs <= s[0] < ce for cs, ce in calls)]
+
+
+def in_tag_mention(spans, pos: int) -> bool:
+    """Whether ``pos`` falls in one of ``tag_mention_spans`` (a span may start at ``pos``)."""
+    i = bisect.bisect_right(spans, (pos, float("inf"))) - 1
+    return i >= 0 and spans[i][0] <= pos < spans[i][1]
+
+
 # Above this size skip the balanced scan; the linear regex catch-all bounds pathological output.
 _MAX_BRACKET_SCAN_CHARS = 1_000_000
 
@@ -1073,10 +1144,13 @@ def parse_tool_calls_from_text(
         i = bisect.bisect_right(coverage_starts, pos) - 1
         return i >= 0 and pos < coverage_max_ends[i]
 
+    mention_spans = tag_mention_spans(content) if "<function" in content else []
     func_starts = [
         fm
         for fm in _TC_FUNC_START_RE.finditer(content)
         if not inside(fm.start())
+        # `<function=NAME>` alone in backticks names the format; the display keeps it, so it must not run.
+        and not in_tag_mention(mention_spans, fm.start())
         and not _in_think(fm.start())
         and not _in_blocked(fm.start())
         and not _covered(fm.start())
@@ -1269,6 +1343,10 @@ def _tool_call_markup_spans(text: str) -> list[tuple[int, int]]:
             continue
         spans.extend(m.span() for m in pat.finditer(text, 0, scan_end))
     spans.extend((start, end) for start, end, _kind, _m in _iter_bracket_spans(text))
+    if "<minimax:tool_call>" in text:
+        # Parameter-aware block bounds, so a quoted closer cannot end the span; lazy, as that module imports this one.
+        from core.inference.tool_call_parser import _minimax_block_spans
+        spans.extend((start, end) for start, end, _closed in _minimax_block_spans(text))
     # An unclosed opener is a real incomplete call only outside closed/bracket spans.
     for pat in _TOOL_OPEN_XML_TAIL_PATS:
         for m in pat.finditer(text):
@@ -1299,7 +1377,20 @@ def _think_spans_outside_tool_markup(text: str) -> list[tuple[int, int]]:
         return think_spans
     if not call_spans:
         return think_spans
-    return [(s, e) for (s, e) in think_spans if not any(cs <= s < ce for cs, ce in call_spans)]
+    # Merged and bisected: a pairwise scan is quadratic on long output.
+    merged: list[list[int]] = []
+    for cs, ce in sorted(call_spans):
+        if merged and cs <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], ce)
+        else:
+            merged.append([cs, ce])
+    starts = [cs for cs, _ in merged]
+    kept = []
+    for s, e in think_spans:
+        i = bisect.bisect_right(starts, s) - 1
+        if i < 0 or s >= merged[i][1]:
+            kept.append((s, e))
+    return kept
 
 
 def strip_outside_think(text: str, strip_segment) -> str:

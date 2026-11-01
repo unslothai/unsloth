@@ -31,6 +31,7 @@ export const nl = {
     halftone: "Halftoon",
     scanlines: "Scanlijnen",
     visibility: "Zichtbaarheid",
+    conversationVisibility: "Zichtbaarheid in gesprekken",
     blur: "Afbeelding vervagen",
     position: "Positie",
     horizontal: "Horizontale positie",
@@ -49,6 +50,26 @@ export const nl = {
     dimensionsError: "Kies een afbeelding kleiner dan 40 megapixels.",
     decodeError: "Kan deze afbeelding niet decoderen. Probeer een ander bestand.",
     effectError: "Kan het effect niet weergeven. Kies Geen of een andere afbeelding.",
+    material: "Glas",
+    materialSolid: "Uit",
+    materialTransparent: "Transparant",
+    materialFrosted: "Matglas",
+    materialBlurred: "Vervaagd",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "macOS-systeemglas",
+    materialMacosNote: "Gebruikt het doorschijnende venstermateriaal van macOS, zodat je bureaublad doorschijnt.",
+    materialNativeFailed: "Deze versie van Unsloth Desktop kan het macOS-materiaal niet gebruiken. Werk de app bij om het in te schakelen.",
+    glassTheme: "Glasthema",
+    materialStyle: "Stijl",
+    materialMenus: "Glazen menu's",
+    materialMenusDescription: "Ook dropdowns, menu's en kiezers gebruiken glas.",
+    materialStrength: "Glassterkte",
+    lens: "Glaslens",
+    lensDescription: "Buigt de afbeelding onder het invoerveld als echt glas.",
+    lensOff: "Uit",
+    lensMagnify: "Vergroten",
+    lensShrink: "Verkleinen",
   },
   linkMenu: {
     openInBrowser: "Openen in Unsloth-browser",
@@ -832,38 +853,6 @@ export const nl = {
     compactUnsupported:
       "Comprimeren vereist een GGUF- of MLX-model met toolondersteuning",
   },
-  halloween: {
-    navLabel: "Snoep of je leven…",
-    title: "Snoep of je leven?!",
-    description:
-      "We hebben een paar griezels voor Unsloth gebrouwen, hier voor de rest van oktober.",
-    chooseTheme: "Kies een griezelig thema",
-    spookyGreetings: "Spookachtige begroetingen",
-    spookyGreetingsDescription:
-      "De luiaard begroet nieuwe chats met een schrikmoment.",
-    decorations: "Spinnen en vleermuizen",
-    decorationsDescription:
-      "Spinnenwebben, plus af en toe een spin of vleermuis.",
-    surprise: "Snoep of je leven!",
-    surpriseDescription: "Laat de luiaard een thema voor je kiezen.",
-    themesTitle: "Griezelige thema's",
-    back: "Terug",
-    footer: "Unsloth wordt op 1 november om middernacht weer normaal.",
-    removeNow: "Nu verwijderen",
-    hideFromSidebar: "Verbergen in zijbalk",
-    greeting: {
-      pumpkins: "De pompoenen zijn uitgehold. Wat nu?",
-      brewing: "Laten we gaan brouwen",
-      trickOrTreat: "Snoep of je leven?",
-      manor: "Welkom in het landhuis",
-      manorName: "Welkom in het landhuis, {name}",
-      happyHalloween: "Fijne Halloween",
-      happyHalloweenName: "Fijne Halloween, {name}",
-      spirits: "De geesten luisteren mee…",
-      mysteries: "Welke mysteries gaan we vannacht ontrafelen?",
-      conjure: "Wat kan ik voor je tevoorschijn toveren?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Fijn je te zien",
     goodToSeeYouName: "Fijn je te zien, {name}",
@@ -1093,7 +1082,7 @@ export const nl = {
       deleteProjects: "Projecten verwijderen",
       deleteProjectsTitle: "Projecten verwijderen",
       deleteProjectsDescription:
-        "{count} projecten verwijderen? Hun chats worden definitief verwijderd.",
+        "Hiermee worden {count} projecten en al hun chats definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
       deleteProjectsFilesDescription:
         "De werkruimtemap van elk project wordt van de schijf verwijderd.",
       countSelected: "{count} geselecteerd",
@@ -1105,7 +1094,7 @@ export const nl = {
       deleteChats: "Chats verwijderen",
       deleteTitle: "Chats verwijderen",
       deleteDescription:
-        "{count} chats verwijderen? Dit kan niet ongedaan worden gemaakt.",
+        "Hiermee worden {count} chats en hun berichten definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
       deleteFilesDescription:
         "De eigen sandboxmap van elke chat wordt van de schijf verwijderd. Bestanden die ze in een project hebben geschreven, blijven in de werkruimte van dat project.",
       deleteFilesLabel: "Bestanden en sandboxmap verwijderen",
@@ -1154,7 +1143,7 @@ export const nl = {
     dialog: {
       deleteChat: {
         title: "Chat verwijderen",
-        description: 'Weet je zeker dat je de chat "{name}" wilt verwijderen?',
+        description: 'Hiermee worden de chat "{name}" en de berichten ervan definitief verwijderd. Dit kan niet ongedaan worden gemaakt.',
       },
       deleteRun: {
         title: "Trainingsrun verwijderen",
@@ -2395,10 +2384,14 @@ export const nl = {
         label: "Installatietype",
         description:
           "Alleen chat (GGUF). De volledige installatie voegt training, export, video, safetensors-modellen en extra functies voor het genereren van afbeeldingen toe.",
+        descriptionCpu:
+          "Alleen chat (GGUF). Er is geen ondersteunde GPU gevonden, dus de volledige installatie voegt training op de CPU toe.",
         action: "Upgraden naar volledige installatie",
         confirmTitle: "Upgraden naar de volledige installatie?",
         confirmDescription:
           "Deze installatie voor Alleen chat draait GGUF-modellen. De volledige installatie voegt PyTorch toe voor de GPU van deze machine, waarmee training, export, video, safetensors-modellen en extra functies voor het genereren van afbeeldingen beschikbaar worden. Er worden enkele gigabytes gedownload (minimaal 5 GB schijfruimte) en de server wordt opnieuw gestart. Chats, modellen en instellingen blijven behouden. Dit kan enkele minuten duren.",
+        confirmDescriptionCpu:
+          "Deze installatie voor Alleen chat draait GGUF-modellen. Er is op deze machine geen ondersteunde GPU gevonden, dus de volledige installatie voegt PyTorch voor de CPU toe, waarmee training op de CPU beschikbaar wordt. Training op de CPU is veel trager dan op een GPU. Er is minimaal 5 GB schijfruimte nodig en de server wordt opnieuw gestart. Chats, modellen en instellingen blijven behouden. Dit kan enkele minuten duren.",
         confirmAction: "Upgraden",
         keywords:
           "volledige installatie upgraden installeren installatietype alleen chat gguf training trainen finetunen fine-tune pytorch torch export exporteren video afbeeldingen genereren safetensors",
@@ -2573,15 +2566,7 @@ export const nl = {
         description:
           "Kleuren die in heel Unsloth worden gebruikt, in de lichte en donkere modus.",
         standard: "Standaard",
-        classic: "Klassiek",
-        minimal: "Minimaal",
         moreThemes: "Meer thema's",
-        halloween: "Halloween",
-      },
-      trickOrTreat: {
-        label: "Snoep of je leven",
-        description:
-          "Halloweenthema's en griezelige begroetingen, tot 1 november.",
       },
       code: {
         title: "Code",
@@ -3535,10 +3520,10 @@ export const nl = {
         moveFailed: "Kan chats niet verplaatsen",
         deleteChatsTitle: "Chats verwijderen ({count})",
         deleteChatsWarning:
-          "De geselecteerde chats ({count}) verwijderen? Dit kan niet ongedaan worden gemaakt.",
+          "Hiermee worden {count} chats en hun berichten definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
         deleteArchivedTitle: "{count} gearchiveerde chats verwijderen",
         deleteArchivedWarning:
-          "De geselecteerde gearchiveerde chats ({count}) verwijderen? Dit kan niet ongedaan worden gemaakt.",
+          "Hiermee worden {count} gearchiveerde chats en hun berichten definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
         deleting: "Verwijderen...",
       },
       title: "Gegevens",
@@ -3963,6 +3948,8 @@ export const nl = {
   },
   studio: {
     routeTitle: "Trainen",
+    cpuTrainingNotice:
+      "Er is geen GPU gevonden, dus training draait op de CPU. Dit is veel trager dan training op een GPU en ondersteunt alleen tekstmodellen (LoRA of volledige finetuning).",
     wizard: {
       modelTitle: "Model",
       modelDescription: "Selecteer model en trainingsmethode",
@@ -5118,9 +5105,9 @@ export const nl = {
       dialog: {
         renameChat: "Naam van chat wijzigen",
         deleteChatDescription:
-          "Deze chat wordt definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
+          "Hiermee worden de chat en de berichten ervan definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
         deleteProjectDescription:
-          "Het project en de bijbehorende chats ({count}) worden definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
+          "Hiermee worden het project en de chats ervan ({count}) definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
         deleteFilesMany:
           "Ook de bestanden en sandboxmappen verwijderen die deze chats hebben gemaakt.",
         deleteProjectFilesLabel: "Werkruimtemap van project verwijderen",
@@ -5619,7 +5606,7 @@ export const nl = {
     chatName: "Chatnaam",
     deleteChat: "Chat verwijderen",
     deleteChatDescription:
-      "Weet je zeker dat je {name} wilt verwijderen? De berichten worden definitief verwijderd.",
+      'Hiermee worden de chat "{name}" en de berichten ervan definitief verwijderd. Dit kan niet ongedaan worden gemaakt.',
     importChats: "Chats importeren",
     importDestination: "Kies waar je {name} wilt importeren:",
     selectDestination: "Bestemming selecteren",
@@ -5627,7 +5614,7 @@ export const nl = {
     import: "Importeren",
     deleteProject: "Project verwijderen",
     deleteProjectDescription:
-      "Weet je zeker dat je {name} wilt verwijderen? De chats ervan worden definitief verwijderd.",
+      'Hiermee worden het project "{name}" en al zijn chats definitief verwijderd. Dit kan niet ongedaan worden gemaakt.',
     deleteProjectFiles:
       "De werkruimtemap van het project wordt van de schijf verwijderd.",
     deleteAll: "Alles verwijderen",

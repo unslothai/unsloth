@@ -41,6 +41,7 @@ TOOL_XML_SIGNALS = (
     "<|tool_calls_section_begin|>",
     "<|tool_call_begin|>",
     "<|content_invoke_tool_json|>",
+    "<minimax:tool_call>",
 )
 
 
@@ -377,6 +378,12 @@ _KIMI_CALL_BEGIN = "<|tool_call_begin|>"
 _KIMI_ARG_BEGIN = "<|tool_call_argument_begin|>"
 _KIMI_CALL_END = "<|tool_call_end|>"
 _KIMI_ID_RE = re.compile(r"^(?:functions\.)?([\w\.\-]+)(?::(\d+))?$")
+
+# MiniMax-M2 / M2.1: ``<minimax:tool_call><invoke name="NAME"><parameter name="KEY">VALUE</parameter></invoke></minimax:tool_call>``.
+_MINIMAX_BLOCK_OPEN = "<minimax:tool_call>"
+_MINIMAX_BLOCK_CLOSE = "</minimax:tool_call>"
+_MINIMAX_INVOKE_OPEN_RE = re.compile(r'<invoke\s+name="([\w\.\-]+)">')
+_MINIMAX_INVOKE_CLOSE = "</invoke>"
 
 # Gemma 4: ``<|tool_call>call:NAME{...}<tool_call|>``, ``<|"|>`` wraps strings.
 _GEMMA_TC_RE = re.compile(r"<\|tool_call>\s*call\s*:\s*([\w\.\-]+)\s*\{")
@@ -798,6 +805,7 @@ _CONTAINING_WRAPPERS = (
     "<function=",
     '<function name="',
     "[TOOL_CALLS]",
+    "<minimax:tool_call>",
 ) + _INFERENCE_WRAPPER_OPENERS
 
 
@@ -1063,9 +1071,16 @@ def _mask_blocked_bodies(
     enabled_tool_names,
     *,
     think: bool = False,
+    mentions: bool = False,
 ) -> tuple:
-    """With think, reasoning is masked so a rehearsed call cannot execute; parse only, strip passes think=False. Returns (masked_text, bodies), restored in order."""
+    """With think, reasoning is masked so a rehearsed call cannot execute; parse only, strip passes think=False. With
+    mentions (display strips), a tag alone in backticks is masked so no strip arm reads it as an opener or closer.
+    Returns (masked_text, bodies), restored in order."""
     spans = _blocked_markerless_body_spans(text, enabled_tool_names)
+    if mentions:
+        mention_spans = _tool_healing.tag_mention_spans(text)
+        if mention_spans:
+            spans = _merge_spans(spans + mention_spans)
     if think:
         # Merged, not just sorted: sorting alone moves the masking cursor backward and re-appends the reasoning block of a blocked body unmasked.
         think_spans = _tool_healing._think_spans_outside_tool_markup(text)
@@ -1295,6 +1310,21 @@ def _strip_glm_calls(text: str, *, final: bool) -> str:
     return "".join(out)
 
 
+def _strip_minimax_calls(text: str, *, final: bool) -> str:
+    """Strip ``<minimax:tool_call>`` blocks at the close the parser uses; ``final`` drops a trailing unclosed block."""
+    if _MINIMAX_BLOCK_OPEN not in text:
+        return text
+    out: list[str] = []
+    pos = 0
+    for start, end, closed in _minimax_block_spans(text):
+        if not (closed or final):
+            break
+        out.append(text[pos:start])
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def strip_segment(
     segment: str,
     *,
@@ -1303,6 +1333,7 @@ def strip_segment(
 ) -> str:
     """Strips markup from one non-think segment; seg_final enables end-of-turn arms. routes/inference.py differs, pinned by tests/test_route_strip_drift.py."""
     seg = _strip_mistral_closed_calls(segment)
+    seg = _strip_minimax_calls(seg, final = seg_final)
     # Name-gated: an inactive ``foo[ARGS]{..}`` is prose and is kept.
     seg = _tool_healing._strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
     if seg_final:
@@ -1375,7 +1406,7 @@ def strip_tool_markup(
         )
 
     # Reasoning stays verbatim, display included; a literal think marker in call arguments is data and goes with the call; blocked call bodies are masked.
-    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names)
+    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names, mentions = True)
     result = _tool_healing.strip_outside_think(masked, _strip_segment)
     if bodies:
         restored = _unmask_blocked_bodies(result, bodies)
@@ -1397,6 +1428,7 @@ _STRIP_SENTINELS = (
     "[ARGS]",  # reasoning-model rehearsal
     "<|python_tag|>",  # Llama-3 built-in tools
     "<|content_invoke_tool_json|>",
+    "<minimax:tool_call>",
     "<｜",  # DeepSeek's full-width pipe opens every one of its markers
     "<think",  # reasoning segmentation
     "</think",
@@ -1419,6 +1451,7 @@ _OPEN_CALL_TRIGGERS = (
     "<function",
     "[TOOL_CALLS]",
     "[ARGS]",
+    "<minimax:tool_call>",
     "<｜",
     "<think",
     "</think",
@@ -1767,7 +1800,7 @@ class StreamingMarkupStripper:
 
         # Mask as strip_tool_markup does: consumers get append-only snapshots, so a corrupted one
         # emitted earlier could never be repaired.
-        masked, bodies = _mask_blocked_bodies(text, self._enabled_tool_names)
+        masked, bodies = _mask_blocked_bodies(text, self._enabled_tool_names, mentions = True)
         result = _tool_healing.strip_outside_think(masked, _seg)
         if not bodies:
             return result
@@ -1879,7 +1912,13 @@ def has_tool_signal(text: str) -> bool:
 
 # A Qwen/Hermes envelope whose args carry DeepSeek/Kimi markers must parse as the outer call.
 _EMBEDDED_MARKER_RE = re.compile(
-    _DEEPSEEK_OPEN_RE_SRC + "|" + re.escape(_KIMI_SECTION_BEGIN) + "|" + re.escape(_KIMI_CALL_BEGIN)
+    _DEEPSEEK_OPEN_RE_SRC
+    + "|"
+    + re.escape(_KIMI_SECTION_BEGIN)
+    + "|"
+    + re.escape(_KIMI_CALL_BEGIN)
+    + "|"
+    + re.escape(_MINIMAX_BLOCK_OPEN)
 )
 # The lookahead mirrors the ``_TOOL_ALL_PATS`` python_tag arm so a prose mention is not one.
 _OUTER_ENVELOPE_OPEN_RE = re.compile(
@@ -2268,9 +2307,11 @@ def parse_tool_calls_from_text(
         _km_section = content.find(_KIMI_SECTION_BEGIN)
         _km_bare = content.find(_KIMI_CALL_BEGIN)
         _km_pos = min(p for p in (_km_section, _km_bare, len(content)) if p >= 0)
+        _mm_pos = content.find(_MINIMAX_BLOCK_OPEN)
         pre_pass = [
             (_ds_pos, _parse_deepseek_tool_calls),
             (_km_pos, _parse_kimi_tool_calls),
+            (_mm_pos if _mm_pos >= 0 else len(content), _parse_minimax_tool_calls),
         ]
         pre_pass.sort(key = lambda pair: pair[0])
         for _pos, parser in pre_pass:
@@ -2548,9 +2589,14 @@ def _parse_function_xml(
     allow_incomplete: bool = True,
 ) -> list[dict]:
     out: list[dict] = []
-    # Skip openers inside an open parameter value, else they become a second call.
+    mention_spans = _tool_healing.tag_mention_spans(content)
+    # Skip openers inside an open parameter value, else they become a second call; one alone in backticks names the format.
     inside = _tool_healing._OpenParameterIndex(content, **_OPEN_PARAMETER_TAGS).inside
-    func_starts = [fm for fm in _TC_FUNC_START_RE.finditer(content) if not inside(fm.start())]
+    func_starts = [
+        fm
+        for fm in _TC_FUNC_START_RE.finditer(content)
+        if not inside(fm.start()) and not _tool_healing.in_tag_mention(mention_spans, fm.start())
+    ]
     for idx, fm in enumerate(func_starts):
         # group(1) is ``<function=name>``, group(2) is ``<function name="...">``.
         func_name = fm.group(1) or fm.group(2)
@@ -4309,4 +4355,129 @@ def _parse_kimi_section_body(
             )
         # Seeking <|tool_call_end|> could skip the next call when this one's marker is missing.
         pos = brace_end + 1
+    return out
+
+
+class _MinimaxValueIndex:
+    """Whether a tag sits inside an unclosed ``<parameter>`` value (argument text, not markup), O(log n) per query."""
+
+    __slots__ = ("_param_starts", "_param_ends", "_param_closers", "_func_closers")
+
+    def __init__(self, text: str):
+        starts: list[int] = []
+        ends: list[int] = []
+        for m in _TC_PARAM_START_RE.finditer(text):
+            starts.append(m.start())
+            # Bounded at the tag's own ">", as the helper's endpos-limited match is.
+            ends.append(text.index(">", m.start()) + 1)
+        self._param_starts = starts
+        self._param_ends = ends
+        self._param_closers = self._positions(text, ("</parameter>", "</param>"))
+        self._func_closers = self._positions(text, (_MINIMAX_INVOKE_CLOSE, _MINIMAX_BLOCK_CLOSE))
+
+    @staticmethod
+    def _positions(text: str, tags) -> list[int]:
+        found: list[int] = []
+        for tag in tags:
+            at = text.find(tag)
+            while at >= 0:
+                found.append(at)
+                at = text.find(tag, at + len(tag))
+        return sorted(found)
+
+    @staticmethod
+    def _any_in(positions: list[int], lo: int, hi: int) -> bool:
+        i = bisect.bisect_left(positions, lo)
+        return i < len(positions) and positions[i] <= hi
+
+    def inside(self, pos: int) -> bool:
+        idx = bisect.bisect_right(self._param_ends, pos) - 1
+        if idx < 0:
+            return False
+        last = self._param_starts[idx]
+        if self._any_in(self._param_closers, last, pos):
+            return False
+        if self._param_closers and self._param_closers[-1] >= pos + 1:
+            return True
+        return not self._any_in(self._func_closers, last, pos)
+
+
+def _minimax_block_spans(text: str) -> list[tuple[int, int, bool]]:
+    """``(start, end, closed)`` per ``<minimax:tool_call>`` block; an unclosed block runs to the end of the text."""
+    spans: list[tuple[int, int, bool]] = []
+    if _MINIMAX_BLOCK_OPEN not in text:
+        return spans
+    inside = _MinimaxValueIndex(text).inside
+    pos = 0
+    while True:
+        start = text.find(_MINIMAX_BLOCK_OPEN, pos)
+        if start < 0:
+            return spans
+        if inside(start):
+            pos = start + len(_MINIMAX_BLOCK_OPEN)
+            continue
+        close = text.find(_MINIMAX_BLOCK_CLOSE, start + len(_MINIMAX_BLOCK_OPEN))
+        while close >= 0 and inside(close):
+            close = text.find(_MINIMAX_BLOCK_CLOSE, close + 1)
+        if close < 0:
+            spans.append((start, len(text), False))
+            return spans
+        pos = close + len(_MINIMAX_BLOCK_CLOSE)
+        spans.append((start, pos, True))
+
+
+def _parse_minimax_tool_calls(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
+    """Values stay strings as in the ``<function=...>`` form; the tool loop coerces them by schema. A block inside
+    reasoning (a ``<think>`` span, or before a stray ``</think>`` the template opened) is a rehearsal and is skipped."""
+    out: list[dict] = []
+    if _MINIMAX_BLOCK_OPEN not in content:
+        return out
+    # Tool-aware, so a think tag in another block's arguments neither hides nor opens reasoning.
+    think_spans = _merge_spans(_tool_healing._think_spans_outside_tool_markup(content))
+    think_starts = [s for s, _ in think_spans]
+    inside = _MinimaxValueIndex(content).inside
+    for start, end, closed in _minimax_block_spans(content):
+        think_idx = bisect.bisect_right(think_starts, start) - 1
+        if think_idx >= 0 and start < think_spans[think_idx][1]:
+            continue
+        body_end = end - len(_MINIMAX_BLOCK_CLOSE) if closed else end
+        invokes = [
+            m
+            for m in _MINIMAX_INVOKE_OPEN_RE.finditer(content, start, body_end)
+            if not inside(m.start())
+        ]
+        for idx, im in enumerate(invokes):
+            next_invoke = invokes[idx + 1].start() if idx + 1 < len(invokes) else body_end
+            close = content.find(_MINIMAX_INVOKE_CLOSE, im.end(), next_invoke)
+            while close >= 0 and inside(close):
+                close = content.find(_MINIMAX_INVOKE_CLOSE, close + 1, next_invoke)
+            if close < 0 and not allow_incomplete:
+                continue
+            body = content[im.end() : close if close >= 0 else next_invoke]
+            args: dict = {}
+            param_unclosed = False
+            body_inside = _MinimaxValueIndex(body).inside
+            params = [pm for pm in _TC_PARAM_START_RE.finditer(body) if not body_inside(pm.start())]
+            for pidx, pm in enumerate(params):
+                next_param = params[pidx + 1].start() if pidx + 1 < len(params) else len(body)
+                raw_val = body[pm.end() : next_param]
+                param_closed = raw_val.rstrip().endswith(("</parameter>", "</param>"))
+                if not param_closed:
+                    param_unclosed = True
+                val = _TC_PARAM_CLOSE_RE.sub("", raw_val) if param_closed else raw_val
+                args[pm.group(1) or pm.group(2)] = _trim_param_value(val)
+            if param_unclosed and not allow_incomplete:
+                continue
+            out.append(
+                {
+                    "id": f"call_{id_offset + len(out)}",
+                    "type": "function",
+                    "function": {"name": im.group(1), "arguments": json.dumps(args)},
+                }
+            )
     return out

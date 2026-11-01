@@ -31,6 +31,7 @@ export const ko = {
     halftone: "하프톤",
     scanlines: "주사선",
     visibility: "표시 강도",
+    conversationVisibility: "대화 중 표시 정도",
     blur: "이미지 흐림",
     position: "위치",
     horizontal: "가로 위치",
@@ -49,6 +50,26 @@ export const ko = {
     dimensionsError: "4천만 화소 미만의 이미지를 선택하세요.",
     decodeError: "이미지를 읽을 수 없습니다. 다른 파일을 시도하세요.",
     effectError: "효과를 생성할 수 없습니다. 없음 또는 다른 이미지를 선택하세요.",
+    material: "유리",
+    materialSolid: "끄기",
+    materialTransparent: "투명",
+    materialFrosted: "반투명",
+    materialBlurred: "흐림",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "macOS 시스템 유리",
+    materialMacosNote: "macOS의 반투명 창 재질을 사용하므로 데스크톱이 비쳐 보입니다.",
+    materialNativeFailed: "이 버전의 Unsloth Desktop에서는 macOS 재질을 사용할 수 없습니다. 켜려면 앱을 업데이트하세요.",
+    glassTheme: "유리 테마",
+    materialStyle: "스타일",
+    materialMenus: "유리 메뉴",
+    materialMenusDescription: "드롭다운, 메뉴 및 선택기에도 유리를 사용합니다.",
+    materialStrength: "유리 강도",
+    lens: "유리 렌즈",
+    lensDescription: "입력창 아래의 이미지를 실제 유리처럼 굴절시킵니다.",
+    lensOff: "끄기",
+    lensMagnify: "확대",
+    lensShrink: "축소",
   },
 
   linkMenu: {
@@ -724,36 +745,6 @@ export const ko = {
     compactEmpty: "아직 압축할 내용이 없습니다",
     compactUnsupported: "대화 압축에는 도구를 지원하는 GGUF 또는 MLX 모델이 필요합니다",
   },
-  halloween: {
-    navLabel: "트릭 오어 트릿…",
-    title: "트릭 오어 트릿?!",
-    description: "Unsloth를 위해 오싹한 깜짝 선물을 준비했어요. 10월 말까지 만나 보세요.",
-    chooseTheme: "오싹한 테마 선택",
-    spookyGreetings: "오싹한 인사말",
-    spookyGreetingsDescription: "새 채팅을 시작하면 나무늘보가 깜짝 놀래 줘요.",
-    decorations: "거미와 박쥐",
-    decorationsDescription:
-      "할로윈 테마에서 모서리에 거미줄이 생기고, 가끔 거미나 박쥐가 나타납니다.",
-    surprise: "트릭 오어 트릿!",
-    surpriseDescription: "나무늘보가 테마를 골라 드려요.",
-    themesTitle: "오싹한 테마",
-    back: "뒤로",
-    footer: "Unsloth는 11월 1일 자정에 원래대로 돌아가요.",
-    removeNow: "지금 제거",
-    hideFromSidebar: "사이드바에서 숨기기",
-    greeting: {
-      pumpkins: "호박 조각이 끝났어요. 다음은 뭘까요?",
-      brewing: "자, 마법의 물약을 만들어 볼까요",
-      trickOrTreat: "트릭 오어 트릿?",
-      manor: "저택에 오신 것을 환영해요",
-      manorName: "{name}님, 저택에 오신 것을 환영해요",
-      happyHalloween: "해피 핼러윈",
-      happyHalloweenName: "{name}님, 해피 핼러윈",
-      spirits: "영혼들이 듣고 있어요…",
-      mysteries: "오늘 밤엔 어떤 비밀을 밝혀볼까요?",
-      conjure: "무엇을 마법으로 불러낼까요?",
-    },
-  },
   welcome: {
     goodToSeeYou: "반가워요",
     goodToSeeYouName: "{name}님, 반가워요",
@@ -976,7 +967,7 @@ export const ko = {
       deleteProjects: "프로젝트 삭제",
       deleteProjectsTitle: "프로젝트 삭제",
       deleteProjectsDescription:
-        "프로젝트 {count}개를 삭제할까요? 포함된 채팅이 영구히 삭제됩니다.",
+        "프로젝트 {count}개와 모든 채팅이 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
       deleteProjectsFilesDescription:
         "각 프로젝트의 작업 공간 폴더가 디스크에서 삭제됩니다.",
       countSelected: "{count}개 선택됨",
@@ -987,7 +978,7 @@ export const ko = {
       markRead: "읽음으로 표시",
       deleteChats: "채팅 삭제",
       deleteTitle: "채팅 삭제",
-      deleteDescription: "채팅 {count}개를 삭제할까요? 되돌릴 수 없습니다.",
+      deleteDescription: "채팅 {count}개와 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
       deleteFilesDescription:
         "각 채팅 전용 샌드박스 폴더가 디스크에서 삭제됩니다. 프로젝트 안에서 만든 파일은 해당 프로젝트 작업 공간에 남습니다.",
       deleteFilesLabel: "파일 및 샌드박스 폴더 삭제",
@@ -1035,7 +1026,7 @@ export const ko = {
     dialog: {
       deleteChat: {
         title: "채팅 삭제",
-        description: '이름이 "{name}"인 채팅을 삭제하시겠습니까?',
+        description: '채팅 "{name}" 및 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.',
       },
       deleteRun: {
         title: "학습 실행 삭제",
@@ -2139,10 +2130,14 @@ export const ko = {
         label: "설치 유형",
         description:
           "채팅 전용(GGUF). 전체 설치에는 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능이 추가됩니다.",
+        descriptionCpu:
+          "채팅 전용(GGUF). 지원되는 GPU가 없어 전체 설치에는 CPU 학습이 추가됩니다.",
         action: "전체 설치로 업그레이드",
         confirmTitle: "전체 설치로 업그레이드할까요?",
         confirmDescription:
           "이 채팅 전용 설치는 GGUF 모델을 실행합니다. 전체 설치는 이 컴퓨터의 GPU에 맞는 PyTorch를 추가하여 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능을 사용할 수 있게 합니다. 수 GB(디스크 공간 5GB 이상)를 다운로드하고 서버를 다시 시작합니다. 채팅, 모델, 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
+        confirmDescriptionCpu:
+          "이 채팅 전용 설치는 GGUF 모델을 실행합니다. 이 컴퓨터에서 지원되는 GPU를 찾지 못했으므로 전체 설치는 CPU용 PyTorch를 추가하여 CPU에서 학습할 수 있게 합니다. CPU 학습은 GPU 학습보다 훨씬 느립니다. 디스크 공간이 5GB 이상 필요하며 서버를 다시 시작합니다. 채팅, 모델, 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
         confirmAction: "업그레이드",
         keywords:
           "full install upgrade 설치 유형 전체 설치 업그레이드 채팅 전용 chat only gguf add training 학습 훈련 train fine-tune pytorch torch 내보내기 동영상 이미지 생성 safetensors",
@@ -2330,15 +2325,7 @@ export const ko = {
         label: "테마",
         description: "라이트 모드와 다크 모드에서 Unsloth 전반에 쓰이는 색상입니다.",
         standard: "표준",
-        classic: "클래식",
-        minimal: "미니멀",
         moreThemes: "더 많은 테마",
-        halloween: "할로윈",
-      },
-      trickOrTreat: {
-        label: "트릭 오어 트릿",
-        description:
-          "11월 1일까지 핼러윈 테마와 으스스한 인사말을 즐겨 보세요.",
       },
       code: {
         title: "코드",
@@ -3213,9 +3200,9 @@ export const ko = {
         movedChatsToRecents: "최근 항목으로 이동한 채팅: {count}개",
         moveFailed: "채팅을 이동하지 못했습니다",
         deleteChatsTitle: "채팅 삭제 ({count}개)",
-        deleteChatsWarning: "선택한 채팅 {count}개를 삭제할까요? 이 작업은 취소할 수 없습니다.",
+        deleteChatsWarning: "채팅 {count}개와 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
         deleteArchivedTitle: "보관된 채팅 {count}개 삭제",
-        deleteArchivedWarning: "선택한 보관된 채팅 {count}개를 삭제할까요? 이 작업은 취소할 수 없습니다.",
+        deleteArchivedWarning: "보관된 채팅 {count}개와 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
         deleting: "삭제 중...",
       },
       title: "데이터",
@@ -3607,6 +3594,8 @@ export const ko = {
     imageTraining: "이미지 학습",
     goToImageTraining: "이미지 LoRA 학습",
     routeTitle: "학습",
+    cpuTrainingNotice:
+      "GPU를 찾지 못해 학습이 CPU에서 실행됩니다. GPU 학습보다 훨씬 느리며 텍스트 모델(LoRA 또는 전체 파인튜닝)만 지원합니다.",
     wizard: {
       modelTitle: "모델",
       modelDescription: "모델과 학습 방법 선택",
@@ -4696,8 +4685,8 @@ export const ko = {
       },
       dialog: {
         renameChat: "채팅 이름 변경",
-        deleteChatDescription: "이 채팅은 영구적으로 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
-        deleteProjectDescription: "프로젝트와 채팅({count}개)이 영구적으로 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
+        deleteChatDescription: "채팅과 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
+        deleteProjectDescription: "프로젝트와 채팅({count}개)이 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
         deleteFilesMany: "이 채팅들이 만든 파일과 샌드박스 폴더도 삭제합니다.",
         deleteProjectFilesLabel: "프로젝트 작업 폴더 삭제",
         deleteProjectFiles: "프로젝트 작업 폴더가 디스크에서 삭제됩니다.",
@@ -5153,14 +5142,14 @@ export const ko = {
     renameChat: "채팅 이름 바꾸기",
     chatName: "채팅 이름",
     deleteChat: "채팅 삭제",
-    deleteChatDescription: "{name}을(를) 삭제하시겠습니까? 메시지가 영구적으로 삭제됩니다.",
+    deleteChatDescription: '채팅 "{name}" 및 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.',
     importChats: "채팅 가져오기",
     importDestination: "{name}을(를) 가져올 위치를 선택하세요:",
     selectDestination: "대상 선택",
     recents: "최근 항목",
     import: "가져오기",
     deleteProject: "프로젝트 삭제",
-    deleteProjectDescription: "{name}을(를) 삭제하시겠습니까? 채팅이 영구적으로 삭제됩니다.",
+    deleteProjectDescription: '프로젝트 "{name}" 및 모든 채팅이 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.',
     deleteProjectFiles: "프로젝트 작업 폴더가 디스크에서 제거됩니다.",
     deleteAll: "모두 삭제",
     projectFallback: "프로젝트",

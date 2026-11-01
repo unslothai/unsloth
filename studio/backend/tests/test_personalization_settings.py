@@ -486,7 +486,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
         },
         "appearance": {
             "theme": "dark",
-            "palette": "classic",
+            "palette": "matcha",
             "language": "en",
             "customization": {
                 "colors": {
@@ -699,7 +699,7 @@ def test_personalization_put_preserves_existing_fields_on_stale_write(monkeypatc
             "profile": {"displayName": "Mike", "showGreetingSloth": False},
             "appearance": {
                 "theme": "light",
-                "palette": "classic",
+                "palette": "matcha",
                 "customization": {"uiFont": "Georgia"},
             },
         }
@@ -714,12 +714,12 @@ def test_personalization_put_preserves_existing_fields_on_stale_write(monkeypatc
 
     put_body = put.json()
     assert put_body["appearance"]["theme"] == "dark"
-    assert put_body["appearance"]["palette"] == "classic"
+    assert put_body["appearance"]["palette"] == "matcha"
     assert put_body["appearance"]["customization"]["uiFont"] == "Georgia"
 
     stored_appearance = store[pers.PERSONALIZATION_SETTING_KEY]["appearance"]
     assert stored_appearance["theme"] == "dark"
-    assert stored_appearance["palette"] == "classic"
+    assert stored_appearance["palette"] == "matcha"
     assert stored_appearance["customization"]["uiFont"] == "Georgia"
 
     body = client.get("/api/settings/personalization").json()

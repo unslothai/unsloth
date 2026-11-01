@@ -31,6 +31,7 @@ export const fa = {
     halftone: "نیم‌سایه",
     scanlines: "خطوط اسکن",
     visibility: "میزان نمایش",
+    conversationVisibility: "میزان نمایش در گفتگوها",
     blur: "تاری تصویر",
     position: "موقعیت",
     horizontal: "موقعیت افقی",
@@ -49,6 +50,26 @@ export const fa = {
     dimensionsError: "تصویری کوچک‌تر از 40 مگاپیکسل انتخاب کنید.",
     decodeError: "رمزگشایی تصویر ممکن نشد. فایل دیگری را امتحان کنید.",
     effectError: "رندر جلوه ممکن نشد. هیچ‌کدام یا تصویر دیگری را انتخاب کنید.",
+    material: "شیشه",
+    materialSolid: "خاموش",
+    materialTransparent: "شفاف",
+    materialFrosted: "مات",
+    materialBlurred: "محو",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "شیشهٔ سیستمی macOS",
+    materialMacosNote: "از مادهٔ نیمه‌شفاف پنجرهٔ macOS استفاده می‌کند، بنابراین دسکتاپ شما از پشت آن دیده می‌شود.",
+    materialNativeFailed: "این نسخه از Unsloth Desktop نمی‌تواند از مادهٔ macOS استفاده کند. برای روشن کردن آن برنامه را به‌روزرسانی کنید.",
+    glassTheme: "پوسته شیشه‌ای",
+    materialStyle: "سبک",
+    materialMenus: "منوهای شیشه‌ای",
+    materialMenusDescription: "منوهای کشویی، منوها و انتخابگرها هم از شیشه استفاده می‌کنند.",
+    materialStrength: "شدت شیشه",
+    lens: "عدسی شیشه",
+    lensDescription: "تصویر زیر کادر نوشتن را مانند شیشه واقعی خم می‌کند.",
+    lensOff: "خاموش",
+    lensMagnify: "بزرگ‌نمایی",
+    lensShrink: "کوچک‌نمایی",
   },
   linkMenu: {
     openInBrowser: "باز کردن در مرورگر Unsloth",
@@ -819,37 +840,6 @@ export const fa = {
     compactUnsupported:
       "فشرده‌سازی به یک مدل GGUF یا MLX با پشتیبانی از ابزار نیاز دارد",
   },
-  halloween: {
-    navLabel: "حقه یا خوراکی…",
-    title: "حقه یا خوراکی؟!",
-    description:
-      "چند ترفند ترسناک برای Unsloth آماده کرده‌ایم که تا پایان ماه اکتبر اینجاست.",
-    chooseTheme: "یک پوستهٔ ترسناک انتخاب کنید",
-    spookyGreetings: "خوشامدهای ترسناک",
-    spookyGreetingsDescription:
-      "تنبل گفتگوهای جدید را با یک ترس کوچک خوشامد می‌گوید.",
-    decorations: "عنکبوت‌ها و خفاش‌ها",
-    decorationsDescription: "تار عنکبوت، به‌علاوهٔ گاه‌گاهی یک عنکبوت یا خفاش.",
-    surprise: "حقه یا خوراکی!",
-    surpriseDescription: "بگذارید تنبل برایتان یک پوسته انتخاب کند.",
-    themesTitle: "پوسته‌های ترسناک",
-    back: "بازگشت",
-    footer: "Unsloth در نیمه‌شب 1 نوامبر به حالت عادی برمی‌گردد.",
-    removeNow: "حذف همین حالا",
-    hideFromSidebar: "پنهان کردن از نوار کناری",
-    greeting: {
-      pumpkins: "کدوها تراشیده شده‌اند. قدم بعدی چیست؟",
-      brewing: "بیایید معجون را هم بزنیم",
-      trickOrTreat: "حقه یا خوراکی؟",
-      manor: "به عمارت خوش آمدید",
-      manorName: "به عمارت خوش آمدید، {name}",
-      happyHalloween: "هالووین مبارک",
-      happyHalloweenName: "هالووین مبارک، {name}",
-      spirits: "ارواح گوش می‌دهند…",
-      mysteries: "امشب چه رازهایی را کشف کنیم؟",
-      conjure: "چه چیزی برایتان احضار کنم؟",
-    },
-  },
   welcome: {
     goodToSeeYou: "از دیدنتان خوشحالیم",
     goodToSeeYouName: "از دیدنتان خوشحالیم، {name}",
@@ -1074,7 +1064,7 @@ export const fa = {
       deleteProjects: "حذف پروژه‌ها",
       deleteProjectsTitle: "حذف پروژه‌ها",
       deleteProjectsDescription:
-        "{count} پروژه حذف شود؟ گفتگوهای آن‌ها برای همیشه حذف می‌شوند.",
+        "{count} پروژه و همه گفتگوهای آن‌ها برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
       deleteProjectsFilesDescription:
         "پوشهٔ فضای کار هر پروژه از دیسک حذف می‌شود.",
       countSelected: "{count} مورد انتخاب شده",
@@ -1085,7 +1075,7 @@ export const fa = {
       markRead: "علامت‌گذاری به‌عنوان خوانده‌شده",
       deleteChats: "حذف گفتگوها",
       deleteTitle: "حذف گفتگوها",
-      deleteDescription: "{count} گفتگو حذف شود؟ این کار قابل بازگشت نیست.",
+      deleteDescription: "{count} گفتگو و پیام‌های آن‌ها برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
       deleteFilesDescription:
         "پوشهٔ سندباکس اختصاصی هر گفتگو از دیسک حذف می‌شود. فایل‌هایی که گفتگوها درون یک پروژه نوشته‌اند در فضای کار همان پروژه باقی می‌مانند.",
       deleteFilesLabel: "حذف فایل‌ها و پوشهٔ سندباکس",
@@ -1134,7 +1124,7 @@ export const fa = {
     dialog: {
       deleteChat: {
         title: "حذف گفتگو",
-        description: "آیا مطمئن هستید که می‌خواهید گفتگوی «{name}» را حذف کنید؟",
+        description: "گفتگوی «{name}» و پیام‌های آن برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
       },
       deleteRun: {
         title: "حذف اجرای آموزش",
@@ -2346,10 +2336,14 @@ export const fa = {
         label: "نوع نصب",
         description:
           "فقط گفتگو (GGUF). نصب کامل، آموزش، خروجی گرفتن، ویدیو، مدل‌های safetensors و قابلیت‌های بیشتر تولید تصویر را اضافه می‌کند.",
+        descriptionCpu:
+          "فقط گفتگو (GGUF). هیچ GPU پشتیبانی‌شده‌ای پیدا نشد، بنابراین نصب کامل آموزش روی CPU را اضافه می‌کند.",
         action: "ارتقا به نصب کامل",
         confirmTitle: "به نصب کامل ارتقا داده شود؟",
         confirmDescription:
           "این نصبِ «فقط گفتگو» مدل‌های GGUF را اجرا می‌کند. نصب کامل، PyTorch را برای GPU این دستگاه اضافه می‌کند که آموزش، خروجی گرفتن، ویدیو، مدل‌های safetensors و قابلیت‌های بیشتر تولید تصویر را فعال می‌کند. چندین گیگابایت دانلود می‌کند (دست‌کم 5 GB فضای دیسک) و سرور را دوباره راه‌اندازی می‌کند. گفتگوها، مدل‌ها و تنظیمات حفظ می‌شوند. این کار ممکن است چند دقیقه طول بکشد.",
+        confirmDescriptionCpu:
+          "این نصبِ «فقط گفتگو» مدل‌های GGUF را اجرا می‌کند. هیچ GPU پشتیبانی‌شده‌ای روی این دستگاه پیدا نشد، بنابراین نصب کامل PyTorch را برای CPU اضافه می‌کند که آموزش روی CPU را فعال می‌کند. آموزش روی CPU بسیار کندتر از آموزش روی GPU است. دست‌کم 5 GB فضای دیسک لازم دارد و سرور را دوباره راه‌اندازی می‌کند. گفتگوها، مدل‌ها و تنظیمات حفظ می‌شوند. این کار ممکن است چند دقیقه طول بکشد.",
         confirmAction: "ارتقا",
         keywords:
           "نصب کامل ارتقا نوع نصب فقط گفتگو افزودن آموزش تنظیم دقیق خروجی ویدیو تولید تصویر full install upgrade chat only gguf training fine-tune pytorch torch export video image generation safetensors",
@@ -2524,14 +2518,7 @@ export const fa = {
         description:
           "رنگ‌هایی که در سراسر Unsloth، در حالت روشن و تیره، استفاده می‌شوند.",
         standard: "استاندارد",
-        classic: "کلاسیک",
-        minimal: "مینیمال",
         moreThemes: "پوسته‌های بیشتر",
-        halloween: "هالووین",
-      },
-      trickOrTreat: {
-        label: "حقه یا خوراکی",
-        description: "پوسته‌های هالووین و خوشامدگویی‌های ترسناک، تا 1 نوامبر.",
       },
       code: {
         title: "کد",
@@ -3476,10 +3463,10 @@ export const fa = {
         moveFailed: "انتقال گفتگوها انجام نشد",
         deleteChatsTitle: "حذف گفتگوها ({count})",
         deleteChatsWarning:
-          "گفتگوهای انتخاب‌شده ({count}) حذف شوند؟ این کار قابل بازگشت نیست.",
+          "{count} گفتگو و پیام‌های آن‌ها برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
         deleteArchivedTitle: "حذف {count} گفتگوی بایگانی‌شده",
         deleteArchivedWarning:
-          "گفتگوهای بایگانی‌شدهٔ انتخاب‌شده ({count}) حذف شوند؟ این کار قابل بازگشت نیست.",
+          "{count} گفتگوی بایگانی‌شده و پیام‌های آن‌ها برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
         deleting: "در حال حذف...",
       },
       title: "داده‌ها",
@@ -3901,6 +3888,8 @@ export const fa = {
   },
   studio: {
     routeTitle: "آموزش",
+    cpuTrainingNotice:
+      "هیچ GPU پیدا نشد، بنابراین آموزش روی CPU اجرا می‌شود. این کار بسیار کندتر از آموزش روی GPU است و فقط از مدل‌های متنی پشتیبانی می‌کند (LoRA یا تنظیم دقیق کامل).",
     wizard: {
       modelTitle: "مدل",
       modelDescription: "انتخاب مدل و روش آموزش",
@@ -5038,9 +5027,9 @@ export const fa = {
       dialog: {
         renameChat: "تغییر نام گفتگو",
         deleteChatDescription:
-          "این گفتگو برای همیشه حذف خواهد شد. این کار قابل بازگشت نیست.",
+          "این گفتگو و پیام‌های آن برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
         deleteProjectDescription:
-          "پروژه و گفتگوهای آن ({count}) برای همیشه حذف خواهند شد. این کار قابل بازگشت نیست.",
+          "پروژه و گفتگوهای آن ({count}) برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
         deleteFilesMany:
           "فایل‌ها و پوشه‌های سندباکسی که این گفتگوها ایجاد کرده‌اند نیز حذف شوند.",
         deleteProjectFilesLabel: "حذف پوشهٔ فضای کار پروژه",
@@ -5531,7 +5520,7 @@ export const fa = {
     chatName: "نام گفتگو",
     deleteChat: "حذف گفتگو",
     deleteChatDescription:
-      "آیا مطمئن هستید که می‌خواهید {name} را حذف کنید؟ پیام‌های آن برای همیشه حذف خواهند شد.",
+      "گفتگوی «{name}» و پیام‌های آن برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
     importChats: "وارد کردن گفتگوها",
     importDestination: "محل وارد کردن {name} را انتخاب کنید:",
     selectDestination: "انتخاب مقصد",
@@ -5539,7 +5528,7 @@ export const fa = {
     import: "وارد کردن",
     deleteProject: "حذف پروژه",
     deleteProjectDescription:
-      "آیا مطمئن هستید که می‌خواهید {name} را حذف کنید؟ گفتگوهای آن برای همیشه حذف خواهند شد.",
+      "پروژه «{name}» و همه گفتگوهای آن برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
     deleteProjectFiles: "پوشهٔ فضای کار پروژه از دیسک حذف خواهد شد.",
     deleteAll: "حذف همه",
     projectFallback: "پروژه",

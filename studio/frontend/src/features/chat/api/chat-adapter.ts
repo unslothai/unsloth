@@ -2735,6 +2735,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedMlxInt8PrefillRequested",
   "mlxAnePrefill",
   "loadedMlxAnePrefillRequested",
+  "mlxFastVerify",
+  "loadedMlxFastVerifyRequested",
   "mlxPleOffload",
   "mlxExpertOffload",
   "loadedMlxPleOffloadRequested",
@@ -2886,6 +2888,7 @@ const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
   "text-to-audio",
   "audio-to-audio",
   "automatic-speech-recognition",
+  "speech-recognition-unsupported",
 ]);
 
 // ollama is excluded: local_model_resolver.py skips its scanner. hermes is read-only, so included.
@@ -3710,6 +3713,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       mlx_kv_quant: config.mlxKvQuant ?? null,
       mlx_int8_prefill: config.mlxInt8Prefill ?? false,
       mlx_ane_prefill: config.mlxAnePrefill ?? false,
+      mlx_fast_verify: config.mlxFastVerify ?? false,
       mlx_ple_offload: config.mlxPleOffload ?? null,
       mlx_expert_offload: config.mlxExpertOffload ?? null,
       speculative_type: effectiveSpeculativeType,

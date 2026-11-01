@@ -78,9 +78,31 @@ def _opaque_under_compile(name, fake):
             ValueError,
         ):  # Already registered by an earlier import of this module.
             pass
-        return fn
+        if name not in _EAGER_COUNTED_LOWP_GEMMS:
+            return fn
+        from ..precision import engage
+
+        # Eager calls launch Triton directly and never dispatch the op, so count_lowp_gemms() is told here.
+        @functools.wraps(fn)
+        def counted(*args, **kwargs):
+            if torch.compiler.is_compiling() or not engage._active():
+                return fn(*args, **kwargs)
+            entered = engage.note_lowp_gemm(f"unsloth::{name}")
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                engage.release_lowp_gemm(entered)
+
+        return counted
 
     return decorator
+
+
+_EAGER_COUNTED_LOWP_GEMMS = (
+    "fp8_block_matmul_triton",
+    "fp8_block_small_m_linear",
+    "fp8_block_matmul_torchao",
+)
 
 
 try:
