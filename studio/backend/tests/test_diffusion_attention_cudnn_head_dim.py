@@ -175,3 +175,25 @@ def test_kill_switch_pins_cudnn_without_asking(monkeypatch):
         types.SimpleNamespace(transformer = t), "_native_cudnn", target = _target()
     ) == ("_native_cudnn")
     assert seen == []
+
+
+@pytest.mark.parametrize(
+    "kernels, expected",
+    [
+        (("cudnn", "mem_efficient", "math"), "_native_cudnn"),
+        (("mem_efficient", "math"), None),
+        (("math",), None),
+        (("flash", "cudnn", "math"), "_native_flash"),
+    ],
+)
+def test_exclusive_flash_needs_a_flash_kernel_and_falls_back_to_cudnn_only_where_it_runs(
+    monkeypatch, kernels, expected
+):
+    # #16294: a torch build without flash SDPA must not pin FLASH_ATTENTION, nor fall back to a cuDNN it lacks.
+    _stub_probe(monkeypatch, served = (64, 128))
+    monkeypatch.setattr(att, "available_sdpa_kernels", lambda target: kernels)
+    monkeypatch.setattr(att, "_native_dispatches_cudnn", lambda *a, **k: False)
+    t = _Transformer(config = {"attention_head_dim": 128})
+    engaged = apply_attention_backend(types.SimpleNamespace(transformer = t), "_native_flash", target = _target())
+    assert engaged == expected
+    assert ("_native_flash" in t.calls) == (expected == "_native_flash")
