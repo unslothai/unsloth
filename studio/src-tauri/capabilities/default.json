@@ -9,6 +9,7 @@
     "core:window:allow-hide",
     "core:window:allow-set-focus",
     "core:window:allow-request-user-attention",
+    "core:window:allow-set-progress-bar",
     "core:window:allow-set-position",
     "core:window:allow-set-size",
     "core:window:allow-set-resizable",
