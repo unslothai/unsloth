@@ -781,6 +781,10 @@ class _HostLinearMover:
     def _staging(self, slot: str, nbytes: int) -> Any:
         import torch
 
+        from .host_pinning import host_pinning_allowed
+
+        if not host_pinning_allowed(self.device):
+            return None
         buf = self._pinned.get(slot)
         if buf is None or buf.numel() < nbytes:
             self._pinned[slot] = None
