@@ -291,6 +291,15 @@ static PERCENT_RE: LazyLock<Regex> = LazyLock::new(|| {
     ))
     .expect("percent regex")
 });
+/// A capitalized ordinary word after a percentage is a speech-model artefact,
+/// not a proper noun: "18% Less" -> "18% less". Only common function and
+/// comparison words are touched, so "20% Pakistani" and names survive.
+static PERCENT_CAPITAL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(\d+(?:\.\d+)?%)\s+(Less|More|Higher|Lower|Faster|Slower|Better|Worse|Than|Compared|And|But|Or|The|A|An|In|On|At|To|Of|For|With|From|By|As|Is|Are|Was|Were|Will|Would|Can|Could|Should|Has|Have|Had|Do|Does|Did|Not|This|That|These|Those|It|We|You|They|He|She|There|Here|Now|Then|Today|Yesterday|Tomorrow)\b",
+    )
+    .expect("percent capital regex")
+});
 static TIME_WORDS_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
         r"(?i)\b((?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?:\s+(?:oh\s+)?(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty))?)\s*(a\.?m\.?|p\.?m\.?)\b"
@@ -1129,6 +1138,13 @@ fn normalize_numbers(text: &str) -> (String, usize) {
         })
         .into_owned();
 
+    out = PERCENT_CAPITAL_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            changes.set(changes.get() + 1);
+            format!("{} {}", &caps[1], caps[2].to_ascii_lowercase())
+        })
+        .into_owned();
+
     out = ORDINAL_CONTEXT_RE
         .replace_all(&out, |caps: &regex::Captures<'_>| {
             let Some(value) = parse_ordinal(&caps[1]) else {
@@ -1741,6 +1757,10 @@ mod tests {
         assert!(range.contains("$10 to $20"), "{range}");
         let between = fix("the price is between 10 and 20 dollars");
         assert!(between.contains("between $10 and $20"), "{between}");
+        let percent_cap = fix("Internet speed is now 18% Less compared to yesterday.");
+        assert!(percent_cap.contains("18% less compared"), "{percent_cap}");
+        let percent_name = fix("20% Pakistani users");
+        assert!(percent_name.contains("20% Pakistani"), "{percent_name}");
         let room = fix("the room is 10 by 12");
         assert!(room.contains("10x12"), "{room}");
         let ratio = fix("the ratio is 10 by 20");
