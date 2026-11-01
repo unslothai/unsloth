@@ -133,7 +133,9 @@ def _fusion_modules(model, modules):
 PLAIN_HELPERS = {
     "_fusion_modules": _fusion_modules,
     # Private names zoo's speculative.py imports (unsloth_zoo #2330); only their presence matters here.
-    "_SparseDrafter": type("_SparseDrafter", (), {}),
+    "_SparseDrafter": type(
+        "_SparseDrafter", (), {"__init__": lambda self, *_args, **_kwargs: None}
+    ),
     "_VERIFY_GDN_MAX_ROWS": 16,
 }
 
@@ -145,9 +147,14 @@ def _fused_drafter_ops(model, *_args, **_kwargs):
 
 
 # Plain calls whose zoo body cannot run here, so the stub returns their do-nothing answer instead.
+def _unless_failed_buffer(error):
+    """zoo re-raises a failed Metal command buffer (unsloth_zoo #2333); the stub has none to fail."""
+
+
 NEUTRAL_PLAIN_HELPERS = {
     "fused_drafter_ops": _fused_drafter_ops,
     "fused_drafter_layers": _fused_drafter_ops,
+    "_unless_failed_buffer": _unless_failed_buffer,
 }
 
 
