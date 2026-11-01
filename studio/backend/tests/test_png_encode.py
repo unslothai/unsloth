@@ -27,10 +27,7 @@ def _fresh(monkeypatch, tmp_path):
 
 
 def _fast_here():
-    """True where this Python's zlib and Pillow's agree (the probe passes); else every image goes to Pillow.
-
-    Pillow's macOS and Windows wheels can bundle a different zlib, so there the fast path steps aside.
-    """
+    """False where Pillow's bundled zlib (macOS / Windows wheels) differs from Python's."""
     saved = dict(png_encode._PROBED)
     png_encode._PROBED.clear()
     try:
@@ -58,7 +55,6 @@ def _pixels(
     bands,
     seed = 0,
 ):
-    """Smooth rows, flat rows, repeated rows and noise rows, so every filter wins somewhere."""
     rng = np.random.default_rng(seed)
     yy, xx = np.mgrid[0:height, 0:width].astype(np.float32)
     smooth = np.stack(
@@ -107,7 +103,6 @@ def test_bytes_match_pillow(mode, size, level):
 
 @needs_fast
 def test_bytes_match_pillow_without_text_and_across_idat_buffers():
-    # 1500 rows of noise come to several 64 KiB IDAT buffers; a width over 16384 px widens the buffer.
     for size in ((1500, 400), (40, 20000)):
         image = Image.fromarray(
             np.random.default_rng(3).integers(0, 256, (*size, 3), dtype = np.uint8), "RGB"
@@ -147,7 +142,6 @@ def test_other_modes_are_left_to_pillow(mode):
 
 
 def test_level_zero_is_left_to_pillow():
-    # Stored blocks follow the encoder's output buffer sizes, which this path does not reproduce.
     assert png_encode.encode(_image("RGB", 64, 64), compress_level = 0) is None
 
 
@@ -167,7 +161,6 @@ def test_a_failed_probe_keeps_pillow_for_that_mode_and_level(monkeypatch):
     assert png_encode.encode(image, compress_level = 1) is None
     assert png_encode._PROBED == {("RGB", 1): False}
     monkeypatch.setattr(png_encode, "_deflated", real)
-    # Decided once per process: a later call does not probe again.
     assert png_encode.encode(image, compress_level = 1) is None
 
 
@@ -185,7 +178,6 @@ def test_an_encode_error_falls_back(monkeypatch):
 
 @needs_fast
 def test_the_filter_worker_stays_a_few_bands_ahead_of_deflate(monkeypatch):
-    # Deflate is the slow side at high levels; a worker free to run ahead would hold the whole filtered image.
     import threading
     import time
 
@@ -222,7 +214,6 @@ def test_the_filter_worker_stays_a_few_bands_ahead_of_deflate(monkeypatch):
     monkeypatch.setattr(png_encode.zlib, "compressobj", SlowCompressor)
     assert png_encode.encode(image, compress_level = 1) == expected
     assert state["filtered"] == state["deflated"] >= 6
-    # The band being deflated plus the ones queued behind it, however slow deflate is.
     assert state["lead"] <= png_encode._AHEAD + 1
 
 
@@ -246,7 +237,6 @@ def test_gallery_writes_pillows_bytes(monkeypatch, level):
     images = [_image("RGB", 257, 300, seed = i) for i in range(4)]
     before = png_encode.engaged
     records = list(gallery.save_many((image, _meta(i)) for i, image in enumerate(images)))
-    # Where the probe fails every image goes to Pillow; the files must be Pillow's bytes either way.
     assert png_encode.engaged == before + (4 if FAST_HERE else 0)
     monkeypatch.setenv(png_encode.FAST_ENV, "0")
     for i, (image, record) in enumerate(zip(images, records)):
@@ -272,7 +262,6 @@ def test_gallery_falls_back_to_pillow_when_the_fast_path_steps_aside(monkeypatch
 
 
 def test_encode_returns_pillows_bytes_or_steps_aside_on_every_platform():
-    # Runs everywhere: a served result is always Pillow's bytes, and a failed probe serves nothing.
     image = _image("RGBA", 120, 90, seed = 5)
     data = png_encode.encode(image, pnginfo = _info(), compress_level = 1)
     if FAST_HERE:

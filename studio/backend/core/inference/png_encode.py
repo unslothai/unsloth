@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The exact bytes Pillow's PNG save writes, in about half the time.
+"""Pillow's exact PNG bytes, with ZipEncode.c's per-row filter choice done in numpy beside deflate.
 
-Pillow spends half of a level 1 encode choosing each row's filter one byte at a time (ZipEncode.c). Here the same
-choice runs in numpy on a helper thread while this thread deflates the rows already filtered, with Pillow's zlib
-settings. Pillow still writes every chunk around the pixel data (it saves a 1x1 crop of the image with the same
-options). The fast path is used for a (mode, level) only after a probe image came out byte-identical to Pillow's in
-this process, so a Pillow or zlib whose output differs keeps Pillow's own encoder. UNSLOTH_IMAGE_PNG_FAST=0 turns it
-off."""
+Used per (mode, level) only after a probe matched Pillow byte for byte in this process; UNSLOTH_IMAGE_PNG_FAST=0 off."""
 
 from __future__ import annotations
 
@@ -20,16 +15,13 @@ import zlib
 from typing import Any, Iterator, Optional
 
 FAST_ENV = "UNSLOTH_IMAGE_PNG_FAST"
-# 8-bit modes Pillow saves with its own rawmode, mapped to bytes per pixel and the IHDR colour type.
+# mode -> (bytes per pixel, IHDR colour type)
 _MODES = {"L": (1, 0), "LA": (2, 4), "RGB": (3, 2), "RGBA": (4, 6)}
-# Bytes of rows filtered per task: small enough to stay in cache, large enough that a batch's concurrent encodes do
-# not queue on the GIL between numpy calls (32 rows of a 512 px image made four encodes at once 1.6x slower).
+# Smaller bands made a batch's concurrent encodes queue on the GIL (32 rows of 512 px: 4 at once 1.6x slower).
 _BAND_BYTES = 192 * 1024
-# Bands filtered or queued ahead of the one being deflated.
 _AHEAD = 2
 _PROBE_LOCK = threading.Lock()
 _PROBED: dict[tuple[str, int], bool] = {}
-# Encodes the fast path served, for tests and benchmarks; a batch encodes on several threads at once.
 engaged = 0
 _ENGAGED_LOCK = threading.Lock()
 
@@ -39,8 +31,8 @@ def enabled() -> bool:
 
 
 def _filtered(pixels: Any, bpp: int, start: int, stop: int) -> bytes:
-    """Rows [start, stop) as ZipEncode.c writes them: the filter byte, then the row under None, Up, Sub or Paeth,
-    tried in that order, each replacing the one before only on a strictly lower sum of |signed byte|."""
+    """Rows [start, stop) as ZipEncode.c filters them: None, Up, Sub, Paeth, each kept only on a strictly lower
+    sum of |signed byte|."""
     import numpy as np
 
     x = pixels[start:stop]
@@ -83,7 +75,6 @@ def _filtered(pixels: Any, bpp: int, start: int, stop: int) -> bytes:
 
 
 def _deflated(pixels: Any, bpp: int, level: int) -> Iterator[bytes]:
-    """The zlib stream of the filtered rows: ZipEncode.c's deflateInit2 settings, rows filtered one band ahead."""
     height, stride = pixels.shape
     compressor = zlib.compressobj(level, zlib.DEFLATED, 15, 9, zlib.Z_FILTERED)
     rows = max(1, _BAND_BYTES // (stride + 1))
@@ -96,8 +87,7 @@ def _deflated(pixels: Any, bpp: int, level: int) -> Iterator[bytes]:
         from concurrent.futures import ThreadPoolExecutor
         from itertools import islice
 
-        # One worker filters the bands in order, at most _AHEAD bands ahead of the deflate below: deflate is the slower
-        # side at higher levels, and a worker left to run ahead would hold a filtered copy of the whole image.
+        # Bounded lead: deflate is slower at high levels, an unbounded worker would hold the whole filtered image.
         with ThreadPoolExecutor(max_workers = 1, thread_name_prefix = "png-filter") as pool:
             todo = iter(bands)
             futures = deque(
@@ -117,7 +107,6 @@ def _deflated(pixels: Any, bpp: int, level: int) -> Iterator[bytes]:
 
 
 def _chunks(data: bytes) -> Optional[list[tuple[bytes, int, int]]]:
-    """(type, offset, length) of every chunk after the signature, or None when ``data`` does not parse."""
     if data[:8] != b"\x89PNG\r\n\x1a\n":
         return None
     out = []
@@ -130,8 +119,7 @@ def _chunks(data: bytes) -> Optional[list[tuple[bytes, int, int]]]:
 
 
 def _framing(image: Any, mode: str, save_kwargs: dict) -> Optional[tuple[bytes, bytes]]:
-    """Pillow's bytes before and after the pixel data of ``image``: those of a 1x1 crop saved with the same options
-    (the crop keeps ``image.info``), with the real size in IHDR."""
+    """Pillow's bytes around the IDATs: a 1x1 crop (keeps ``info``) saved with the same options, real size in IHDR."""
     buffer = io.BytesIO()
     image.crop((0, 0, 1, 1)).save(buffer, format = "PNG", **save_kwargs)
     data = buffer.getvalue()
@@ -142,7 +130,6 @@ def _framing(image: Any, mode: str, save_kwargs: dict) -> Optional[tuple[bytes, 
     if not idat or idat != list(range(idat[0], idat[-1] + 1)):
         return None
     ihdr = bytearray(data[16:29])
-    # 8-bit, this mode's colour type, deflate, adaptive filtering, no interlace.
     if bytes(ihdr[8:13]) != bytes((8, _MODES[mode][1], 0, 0, 0)):
         return None
     ihdr[0:8] = struct.pack(">II", image.width, image.height)
@@ -167,11 +154,10 @@ def _encode(image: Any, mode: str, level: int, save_kwargs: dict) -> Optional[by
     pixels = np.asarray(image)
     bpp = _MODES[mode][0]
     pixels = np.ascontiguousarray(pixels.reshape(image.height, image.width * bpp), dtype = np.uint8)
-    # One IDAT per buffer ImageFile._save hands the encoder; every buffer but the last comes back full.
+    # ImageFile._save's buffer: one full IDAT per buffer, the last one short.
     bufsize = max(int(ImageFile.MAXBLOCK), image.width * 4)
     out = io.BytesIO()
     out.write(framing[0])
-    # IDAT chunks are cut while deflate runs, so the stream is never held twice beside the output.
     pending = bytearray()
 
     def idat(piece: Any) -> None:
@@ -191,13 +177,12 @@ def _encode(image: Any, mode: str, level: int, save_kwargs: dict) -> Optional[by
 
 
 def _probe_image(mode: str) -> Any:
-    """Every filter wins some rows; the stream runs past zlib's 32 KiB window and over one 64 KiB IDAT buffer."""
+    """Every filter wins some rows; the stream passes zlib's 32 KiB window and one 64 KiB IDAT buffer."""
     import numpy as np
     from PIL import Image
 
     rng = np.random.default_rng(20261030)
     bands = len(mode)
-    # About 1 KiB per row in every mode.
     height, width = 224, 1028 // bands + 1
     yy, xx = np.mgrid[0:height, 0:width].astype(np.float32)
     smooth = np.stack(
@@ -247,13 +232,12 @@ def encode(
     pnginfo: Any = None,
     compress_level: int,
 ) -> Optional[bytes]:
-    """``image.save(fp, "PNG", pnginfo = pnginfo, compress_level = compress_level)``'s bytes, or None when this
-    path does not apply (the caller then saves with Pillow)."""
+    """``image.save(fp, "PNG", pnginfo = ..., compress_level = ...)``'s bytes, or None: the caller uses Pillow."""
     global engaged
     mode = getattr(image, "mode", None)
     if (
         mode not in _MODES
-        # Level 0 stores the rows in blocks sized by the encoder's output buffer, which this path cannot match.
+        # Level 0 stored blocks follow Pillow's output buffer size.
         or not 1 <= int(compress_level) <= 9
         or min(getattr(image, "size", (0, 0))) < 1
         or not enabled()
