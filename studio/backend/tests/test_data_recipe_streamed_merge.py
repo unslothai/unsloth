@@ -223,3 +223,32 @@ def test_an_unreadable_shard_fails_the_merge_as_the_folder_read_does(
         "batch_00001.parquet",
     ]
     assert not list(base.glob("*.merging"))
+
+
+def test_a_failed_background_write_fails_the_merge_and_keeps_the_shards(
+    tmp_path: Path, worker, monkeypatch
+) -> None:
+    base = tmp_path / "dataset"
+    parquet_dir = _write_dataset(base, 10, 100, drift = False)
+    before = {p.name: p.read_bytes() for p in parquet_dir.iterdir()}
+    original = pq.ParquetWriter.write_table
+    calls: list[int] = []
+
+    def failing(
+        self,
+        table,
+        row_group_size = None,
+    ):
+        if table.num_rows:
+            calls.append(table.num_rows)
+            if len(calls) == 3:
+                raise OSError("disk full")
+        return original(self, table, row_group_size = row_group_size)
+
+    monkeypatch.setattr(pq.ParquetWriter, "write_table", failing)
+    monkeypatch.setattr(worker, "_MERGE_BUFFER_BYTES", 1)
+    with pytest.raises(OSError, match = "disk full"):
+        worker._merge_batches_to_single_parquet(base)
+
+    assert {p.name: p.read_bytes() for p in parquet_dir.iterdir()} == before
+    assert not list(base.glob("*.merging"))
