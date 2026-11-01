@@ -1794,7 +1794,7 @@ export const en = {
         pauseAudio: "Pause recording",
         seekLabel: "Seek through the recording",
         metaWords: "Words: {count}",
-        metaCharacters: "Characters (no spaces): {count}",
+        metaCharacters: "Characters: {count}",
         metaSpaces: "Spaces: {count}",
         metaSymbols: "Symbols: {count}",
         metaFixes: "Fixes: {count}",
@@ -1984,6 +1984,13 @@ export const en = {
         grammarFixerLabel: "Advanced grammar fixer",
         grammarFixerDescription:
           "Fix spelling, capitalisation, repeated words and punctuation on device",
+        contractionsLabel: "Use contractions",
+        contractionsDescription:
+          "Shorten phrases like \"I have\" to \"I've\". Some forms read informally, so this is off by default for standard written English.",
+        macosPermissionHint:
+          "Allow Unsloth in System Settings → Privacy & Security → Accessibility and Input Monitoring so the shortcut can hear keys outside the app.",
+        linuxWaylandHint:
+          "Global shortcuts use X11. On Wayland, use the in-app dictation shortcut if the system shortcut does not respond.",
         llmPromptLabel: "Post-processing prompt",
         llmPromptDescription:
           "Use ${output} where the raw transcript should be inserted",

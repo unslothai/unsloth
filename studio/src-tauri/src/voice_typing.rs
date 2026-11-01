@@ -24,6 +24,8 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod cross_shortcut;
 mod hud;
 pub(crate) mod paste;
 
@@ -210,7 +212,9 @@ pub fn init(app: &AppHandle) {
     log::info!("Voice typing is waiting for the frontend to push its settings");
     #[cfg(target_os = "windows")]
     shortcut_poller::spawn(app.clone());
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    cross_shortcut::spawn(app.clone());
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     let _ = app;
 }
 
@@ -228,7 +232,8 @@ pub struct VoiceTypingInfo {
 
 #[tauri::command]
 pub fn voice_typing_info() -> VoiceTypingInfo {
-    let shortcut_supported = cfg!(target_os = "windows");
+    let shortcut_supported =
+        cfg!(any(target_os = "windows", target_os = "macos", target_os = "linux"));
     VoiceTypingInfo {
         os: std::env::consts::OS.to_string(),
         shortcut_supported,
@@ -262,7 +267,12 @@ pub fn voice_typing_configure(
     let chord = parse_chord(&shortcut)?;
     // Platforms without a shortcut layer keep the feature dormant instead of failing
     // the call: the settings section is hidden there anyway.
-    let enabled = enabled && cfg!(target_os = "windows");
+    let enabled = enabled
+        && cfg!(any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "linux"
+        ));
     let canonical = chord.canonical();
     if let Some(ref pos) = hud_position {
         hud::set_position_mode(&app, Some(pos.as_str()));
@@ -520,6 +530,10 @@ fn map_key(raw: &str) -> Option<(u16, String)> {
             let number = raw.strip_prefix('f').and_then(|rest| rest.parse::<u8>().ok());
             match number {
                 Some(number) if (1..=24).contains(&number) => {
+                    // rdev (macOS/Linux) exposes F1-F12 only.
+                    if cfg!(not(target_os = "windows")) && number > 12 {
+                        return None;
+                    }
                     return Some((0x70 + (number - 1) as u16, format!("F{number}")));
                 }
                 _ => return None,

@@ -1299,7 +1299,7 @@ function compileDictionaryRules(
 export function applyDictationDictionary(
   transcript: string,
   dictionary?: string[],
-  options: { snippets?: boolean } = {},
+  options: { snippets?: boolean; onReplace?: () => void } = {},
 ): string {
   const entries =
     dictionary ?? useVoiceSettingsStore.getState().dictionary;
@@ -1313,7 +1313,10 @@ export function applyDictationDictionary(
     // Callback form avoids $-pattern expansion.
     result = result.replace(
       regex,
-      (_match, prefix: string) => `${prefix}${replacement}`,
+      (_match, prefix: string) => {
+        options.onReplace?.();
+        return `${prefix}${replacement}`;
+      },
     );
   }
   return result;

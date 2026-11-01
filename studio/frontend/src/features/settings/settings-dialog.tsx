@@ -333,8 +333,10 @@ export function SettingsDialog() {
       lastTabRef.current = activeTab;
       return;
     }
+    const isHistoryButton = (event: MouseEvent) =>
+      event.button === 3 || event.button === 4;
     const onMouseDown = (event: MouseEvent) => {
-      if (event.button !== 3 && event.button !== 4) return;
+      if (!isHistoryButton(event)) return;
       // The settings modal owns these buttons while it is open. Stop the
       // event here so the chat page behind it never runs its own history
       // navigation as well.
@@ -361,8 +363,26 @@ export function SettingsDialog() {
       tabHistoryRef.current.push(activeTab);
       setActiveTab(next);
     };
+    // Chromium can still turn the release or the follow-up auxclick into
+    // history navigation after a prevented mousedown. Swallow every phase
+    // while the dialog owns the buttons.
+    const swallowHistoryButton = (event: MouseEvent) => {
+      if (!isHistoryButton(event)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
     window.addEventListener("mousedown", onMouseDown, true);
-    return () => window.removeEventListener("mousedown", onMouseDown, true);
+    window.addEventListener("mouseup", swallowHistoryButton, true);
+    window.addEventListener("auxclick", swallowHistoryButton, true);
+    window.addEventListener("pointerdown", swallowHistoryButton, true);
+    window.addEventListener("pointerup", swallowHistoryButton, true);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown, true);
+      window.removeEventListener("mouseup", swallowHistoryButton, true);
+      window.removeEventListener("auxclick", swallowHistoryButton, true);
+      window.removeEventListener("pointerdown", swallowHistoryButton, true);
+      window.removeEventListener("pointerup", swallowHistoryButton, true);
+    };
   }, [open, activeTab, setActiveTab]);
 
   // Prefetch other panels on idle once opened; nothing runs while closed.

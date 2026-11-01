@@ -53,6 +53,10 @@ time = { version = "0.3", features = ["formatting"] }
 # dictionary stays the only meaningful size cost.
 harper-core = { version = "3.0.0", default-features = false, features = ["concurrent"] }
 
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+# Global press/release events for voice typing outside Windows (X11 on Linux).
+rdev = "0.5.3"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 signal-hook = "0.4"

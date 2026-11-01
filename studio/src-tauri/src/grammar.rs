@@ -192,15 +192,15 @@ fn safe_token(source: &[char], start: usize, end: usize) -> Option<Vec<char>> {
 /// Dictation engines sometimes omit the capital letter at the very start.
 /// Capitalise it unless the first token looks like code (so `llama.cpp` and
 /// `RTX4090` keep their casing).
-fn capitalize_start(source: &mut [char]) {
+fn capitalize_start(source: &mut [char]) -> bool {
     let Some(start) = source.iter().position(|ch| ch.is_alphabetic()) else {
-        return;
+        return false;
     };
     if source[..start]
         .iter()
         .any(|ch| !ch.is_whitespace() && !matches!(*ch, '"' | '\'' | '(' | '[' | '{'))
     {
-        return;
+        return false;
     }
     let end = source[start..]
         .iter()
@@ -215,13 +215,15 @@ fn capitalize_start(source: &mut [char]) {
                 '.' | '_' | '/' | '\\' | '@' | ':' | '=' | '#' | '&' | '+' | '*' | '<' | '>'
             )
     }) {
-        return;
+        return false;
     }
     if source[start].is_lowercase() {
         if let Some(upper) = source[start].to_uppercase().next() {
             source[start] = upper;
+            return true;
         }
     }
+    false
 }
 
 fn custom_word_set(custom_words: &[String]) -> HashSet<String> {
@@ -403,6 +405,67 @@ static DOMAIN_RE: LazyLock<Regex> = LazyLock::new(|| {
         r"(?i)\b([a-z0-9][a-z0-9-]{1,})\s+dot\s+(com|org|net|io|ai|dev|co|app|cpp|js|py|rs)\b",
     )
     .expect("domain regex")
+});
+/// Common top-level domains. A spoken "x dot y" is only a domain when the last
+/// label is known, so "the dot product" and "version dot two" stay prose.
+const KNOWN_TLDS: &[&str] = &[
+    "com", "org", "net", "edu", "gov", "mil", "int", "io", "ai", "dev", "app", "co", "me",
+    "info", "biz", "xyz", "tech", "online", "site", "store", "blog", "cloud", "design",
+    "art", "music", "video", "live", "news", "wiki", "page", "link", "ly", "to", "gg",
+    "tv", "fm", "cc", "ws", "uk", "us", "ca", "de", "fr", "es", "it", "nl", "se", "no",
+    "fi", "dk", "pl", "cz", "at", "ch", "be", "ie", "pt", "gr", "tr", "ru", "ua", "in",
+    "pk", "bd", "lk", "np", "ae", "sa", "qa", "kw", "bh", "om", "eg", "za", "ng", "ke",
+    "au", "nz", "jp", "cn", "kr", "tw", "hk", "sg", "my", "id", "ph", "th", "vn", "br",
+    "mx", "ar", "cl", "co", "pe", "ve", "uy", "py", "bo", "ec", "js", "ts", "py", "rs",
+    "cpp", "html", "css", "json", "xml", "sh", "md", "pdf",
+];
+/// A single-word local part before "at" is only an address when it is a name.
+const EMAIL_STOPWORDS: &[&str] = &[
+    "a", "an", "the", "me", "you", "us", "him", "her", "them", "it", "this", "that",
+    "these", "those", "i", "we", "they", "he", "she", "my", "your", "our", "their",
+    "his", "its", "there", "here", "where", "when", "what", "who", "whom", "whose",
+    "which", "how", "why", "is", "are", "was", "were", "be", "been", "being", "am",
+    "do", "does", "did", "have", "has", "had", "can", "could", "will", "would",
+    "should", "may", "might", "must", "not", "no", "yes", "so", "if", "then", "than",
+    "as", "by", "about", "into", "over", "under", "again", "very", "just", "also",
+    "in", "on", "at", "for", "with", "from", "to", "of", "and", "or", "but", "up",
+    "down", "out", "off", "near", "around", "through", "between", "after", "before",
+];
+const PHONE_CONTEXT_WORDS: &[&str] = &[
+    "call", "phone", "dial", "text", "whatsapp", "mobile", "cell", "contact", "reach",
+    "ring", "telephone", "landline", "hotline", "fax",
+];
+const EMAIL_CUES: &[&str] = &[
+    "email", "mail", "contact", "write", "send", "message", "ping", "reply", "reach",
+    "address",
+];
+static SPOKEN_EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b([a-z0-9][a-z0-9._-]*(?:\s+(?:dot|underscore|dash|hyphen|plus)\s+[a-z0-9][a-z0-9._-]*)*)\s+(?:at|at\s+the\s+rate)\s+([a-z0-9-]+(?:\s+dot\s+[a-z0-9-]+)+)\b",
+    )
+    .expect("spoken email regex")
+});
+static SPOKEN_PROTOCOL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(https?)\s+colon\s+(?:forward\s+)?slash\s+(?:forward\s+)?slash\s+([a-z0-9-]+(?:\s+dot\s+[a-z0-9-]+)+)((?:\s+(?:forward\s+)?slash\s+[a-z0-9._~%-]+(?:\s+dot\s+[a-z0-9._~%-]+)*)*)",
+    )
+    .expect("spoken protocol regex")
+});
+static SPOKEN_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b([a-z0-9-]+(?:\s+dot\s+[a-z0-9-]+)+)((?:\s+(?:forward\s+)?slash\s+[a-z0-9._~%-]+(?:\s+dot\s+[a-z0-9._~%-]+)*)*)",
+    )
+    .expect("spoken url regex")
+});
+static SPOKEN_PHONE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b((?:(?:zero|oh|one|two|three|four|five|six|seven|eight|nine)[\s,.-]+){9,10}(?:zero|oh|one|two|three|four|five|six|seven|eight|nine))\b",
+    )
+    .expect("spoken phone regex")
+});
+static PHONE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(1)?[ -]?(\d{3})[ -]?(\d{3})[ -]?(\d{4})\b")
+        .expect("phone regex")
 });
 static KILO_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b(\d+)\s+k\b").expect("kilo regex"));
@@ -911,14 +974,214 @@ fn normalize_currency_expressions(text: &str) -> (String, usize) {
     (out, changes.get())
 }
 
+fn normalize_addresses(text: &str) -> (String, usize) {
+    let changes = Cell::new(0usize);
+
+    let mut out = SPOKEN_EMAIL_RE
+        .replace_all(text, |caps: &regex::Captures<'_>| {
+            let local_raw = caps[1].trim();
+            let local_tokens: Vec<&str> = local_raw.split_whitespace().collect();
+            let single_word = local_tokens.len() == 1;
+            if single_word
+                && EMAIL_STOPWORDS.contains(&local_raw.to_ascii_lowercase().as_str())
+            {
+                return caps[0].to_string();
+            }
+            // A lone "word at domain dot tld" is usually prose ("the guide
+            // lives at docs dot example dot com"). Require an email cue first
+            // unless the local part itself is visibly structured.
+            if single_word {
+                let start = caps.get(0).map(|m| m.start()).unwrap_or(0);
+                let before = text
+                    .get(start.saturating_sub(48)..start)
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let at_start = start == 0;
+                if !at_start && !EMAIL_CUES.iter().any(|cue| before.contains(cue)) {
+                    return caps[0].to_string();
+                }
+            }
+            let domain = normalize_spoken_domain(&caps[2]);
+            if !domain_has_known_tld(&domain) {
+                return caps[0].to_string();
+            }
+            let Some(local) = normalize_spoken_local(local_raw) else {
+                return caps[0].to_string();
+            };
+            changes.set(changes.get() + 1);
+            format!("{local}@{domain}")
+        })
+        .into_owned();
+
+    out = SPOKEN_PROTOCOL_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            let domain = normalize_spoken_domain(&caps[2]);
+            if !domain_has_known_tld(&domain) {
+                return caps[0].to_string();
+            }
+            let path = normalize_spoken_path(&caps[3]);
+            changes.set(changes.get() + 1);
+            format!("{}://{domain}{path}", caps[1].to_ascii_lowercase())
+        })
+        .into_owned();
+
+    out = SPOKEN_URL_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            let domain = normalize_spoken_domain(&caps[1]);
+            if !domain_has_known_tld(&domain) {
+                return caps[0].to_string();
+            }
+            let path = normalize_spoken_path(&caps[2]);
+            changes.set(changes.get() + 1);
+            format!("{domain}{path}")
+        })
+        .into_owned();
+
+    (out, changes.get())
+}
+
+/// "john dot doe" -> john.doe; returns None when only separators remain.
+fn normalize_spoken_local(local: &str) -> Option<String> {
+    let mut out = String::new();
+    for token in local.split_whitespace() {
+        match token.to_ascii_lowercase().as_str() {
+            "dot" => out.push('.'),
+            "underscore" => out.push('_'),
+            "dash" | "hyphen" => out.push('-'),
+            "plus" => out.push('+'),
+            _ => out.push_str(token),
+        }
+    }
+    let trimmed = out.trim_matches(|ch: char| ch == '.' || ch == '_' || ch == '-');
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn normalize_spoken_domain(domain: &str) -> String {
+    let mut out = String::new();
+    for token in domain.split_whitespace() {
+        if token.eq_ignore_ascii_case("dot") {
+            out.push('.');
+        } else {
+            out.push_str(&token.to_ascii_lowercase());
+        }
+    }
+    out
+}
+
+fn normalize_spoken_path(path: &str) -> String {
+    let mut out = String::new();
+    for token in path.split_whitespace() {
+        if token.eq_ignore_ascii_case("forward") {
+            continue;
+        }
+        if token.eq_ignore_ascii_case("slash") {
+            out.push('/');
+        } else if token.eq_ignore_ascii_case("dot") {
+            out.push('.');
+        } else {
+            out.push_str(token);
+        }
+    }
+    out
+}
+
+fn domain_has_known_tld(domain: &str) -> bool {
+    domain
+        .rsplit('.')
+        .next()
+        .map(|tld| KNOWN_TLDS.contains(&tld.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+fn phone_context(text: &str, start: usize, end: usize) -> bool {
+    let before = text
+        .get(start.saturating_sub(56)..start)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let after = text
+        .get(end..(end + 56).min(text.len()))
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    [before, after].iter().any(|chunk| {
+        chunk
+            .split_whitespace()
+            .map(|word| {
+                word.trim_matches(|ch: char| !ch.is_alphabetic())
+                    .to_string()
+            })
+            .any(|word| PHONE_CONTEXT_WORDS.contains(&word.as_str()))
+    })
+}
+
+fn digit_word_value(word: &str) -> Option<char> {
+    Some(match word.to_ascii_lowercase().as_str() {
+        "zero" | "oh" => '0',
+        "one" => '1',
+        "two" => '2',
+        "three" => '3',
+        "four" => '4',
+        "five" => '5',
+        "six" => '6',
+        "seven" => '7',
+        "eight" => '8',
+        "nine" => '9',
+        _ => return None,
+    })
+}
+
+fn format_phone_digits(digits: &str) -> Option<String> {
+    let digits: String = digits.chars().filter(char::is_ascii_digit).collect();
+    match digits.len() {
+        10 => Some(format!(
+            "{}-{}-{}",
+            &digits[0..3],
+            &digits[3..6],
+            &digits[6..10]
+        )),
+        11 if digits.starts_with('1') => Some(format!(
+            "+1 {}-{}-{}",
+            &digits[1..4],
+            &digits[4..7],
+            &digits[7..11]
+        )),
+        _ => None,
+    }
+}
+
+fn normalize_spoken_phones(text: &str) -> (String, usize) {
+    let changes = Cell::new(0usize);
+    let out = SPOKEN_PHONE_RE
+        .replace_all(text, |caps: &regex::Captures<'_>| {
+            let start = caps.get(0).map(|m| m.start()).unwrap_or(0);
+            let end = caps.get(0).map(|m| m.end()).unwrap_or(0);
+            if !phone_context(text, start, end) {
+                return caps[0].to_string();
+            }
+            let digits: String = caps[1]
+                .split(|ch: char| ch.is_whitespace() || matches!(ch, ',' | '.' | '-'))
+                .filter_map(digit_word_value)
+                .collect();
+            let Some(formatted) = format_phone_digits(&digits) else {
+                return caps[0].to_string();
+            };
+            changes.set(changes.get() + 1);
+            formatted
+        })
+        .into_owned();
+    (out, changes.get())
+}
+
 fn normalize_numbers(text: &str) -> (String, usize) {
-    let (currency_text, currency_changes) = normalize_currency_expressions(text);
-    let changes = Cell::new(currency_changes);
+    let (address_text, address_changes) = normalize_addresses(text);
+    let (currency_text, currency_changes) = normalize_currency_expressions(&address_text);
+    let changes = Cell::new(currency_changes + address_changes);
+    let (phone_text, phone_changes) = normalize_spoken_phones(&currency_text);
+    changes.set(changes.get() + phone_changes);
 
     // Repair the speech model's hyphenated or split number words before any
     // currency/number rule sees them: "twenty-five" -> "twenty five".
     let mut out = HYPHENATED_NUMBER_RE
-        .replace_all(&currency_text, |caps: &regex::Captures<'_>| {
+        .replace_all(&phone_text, |caps: &regex::Captures<'_>| {
             let first = caps[1].to_ascii_lowercase();
             let second = caps[2].to_ascii_lowercase();
             if is_number_word(&first) && is_number_word(&second) {
@@ -1193,6 +1456,44 @@ fn normalize_numbers(text: &str) -> (String, usize) {
         .replace_all(&out, |caps: &regex::Captures<'_>| {
             changes.set(changes.get() + 1);
             format!("~{}", &caps[1])
+        })
+        .into_owned();
+
+    // Already-numeric phone numbers ("415 555 1234"). Context keeps dates,
+    // IDs and other ten-digit values untouched.
+    let phone_source = out.clone();
+    out = PHONE_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            let start = caps.get(0).map(|m| m.start()).unwrap_or(0);
+            let end = caps.get(0).map(|m| m.end()).unwrap_or(0);
+            let preceding = phone_source
+                .get(..start)
+                .and_then(|prefix| prefix.chars().next_back());
+            let following = phone_source
+                .get(end..)
+                .and_then(|suffix| suffix.chars().next());
+            if preceding == Some('+')
+                || preceding == Some('(')
+                || following == Some(')')
+                || preceding.is_some_and(|ch| ch.is_ascii_digit())
+            {
+                return caps[0].to_string();
+            }
+            if !phone_context(&phone_source, start, end) {
+                return caps[0].to_string();
+            }
+            let digits = format!(
+                "{}{}{}{}",
+                caps.get(1).map(|m| m.as_str()).unwrap_or(""),
+                &caps[2],
+                &caps[3],
+                &caps[4]
+            );
+            let Some(formatted) = format_phone_digits(&digits) else {
+                return caps[0].to_string();
+            };
+            changes.set(changes.get() + 1);
+            formatted
         })
         .into_owned();
 
@@ -1621,7 +1922,12 @@ fn normalize_contractions(text: &str) -> (String, usize) {
     (out, changes.get())
 }
 
-fn correct(text: &str, language: &str, custom_words: &[String]) -> (String, usize) {
+fn correct(
+    text: &str,
+    language: &str,
+    custom_words: &[String],
+    use_contractions: bool,
+) -> (String, usize) {
     if text.trim().is_empty() || text.chars().count() > MAX_TEXT_CHARS {
         return (text.to_owned(), 0);
     }
@@ -1687,16 +1993,24 @@ fn correct(text: &str, language: &str, custom_words: &[String]) -> (String, usiz
 
     let raw_fixed: String = source.into_iter().collect();
     let (math_fixed, math_fixes) = normalize_math(&raw_fixed);
-    let (contraction_fixed, contraction_fixes) = normalize_contractions(&math_fixed);
+    let (contraction_fixed, contraction_fixes) = if use_contractions {
+        normalize_contractions(&math_fixed)
+    } else {
+        (math_fixed, 0)
+    };
     let mut fixed: Vec<char> = contraction_fixed.chars().collect();
-    capitalize_start(&mut fixed);
+    let capitalized = capitalize_start(&mut fixed);
     let fixed: String = fixed.into_iter().collect();
     if fixed.trim().is_empty() {
         (text.to_owned(), 0)
     } else {
         (
             fixed,
-            applied + number_fixes + math_fixes + contraction_fixes,
+            applied
+                + number_fixes
+                + math_fixes
+                + contraction_fixes
+                + usize::from(capitalized),
         )
     }
 }
@@ -1717,6 +2031,7 @@ pub async fn fix_grammar(
     text: String,
     language: Option<String>,
     custom_words: Option<Vec<String>>,
+    contractions: Option<bool>,
 ) -> GrammarResult {
     // Linting is CPU work and the first call may build the dictionary; keep it
     // off the webview thread.
@@ -1724,12 +2039,15 @@ pub async fn fix_grammar(
     tauri::async_runtime::spawn_blocking(move || {
         let language = language.unwrap_or_default();
         let custom_words = custom_words.unwrap_or_default();
-        std::panic::catch_unwind(|| correct(&text, &language, &custom_words))
-            .map(|(text, fixes)| GrammarResult { text, fixes })
-            .unwrap_or(GrammarResult {
-                text,
-                fixes: 0,
-            })
+        let use_contractions = contractions.unwrap_or(false);
+        std::panic::catch_unwind(|| {
+            correct(&text, &language, &custom_words, use_contractions)
+        })
+        .map(|(text, fixes)| GrammarResult { text, fixes })
+        .unwrap_or(GrammarResult {
+            text,
+            fixes: 0,
+        })
     })
     .await
     .unwrap_or(GrammarResult {
@@ -1743,7 +2061,37 @@ mod tests {
     use super::*;
 
     fn fix(text: &str) -> String {
-        correct(text, "en", &[]).0
+        correct(text, "en", &[], true).0
+    }
+
+    #[test]
+    fn normalizes_addresses_and_phone_numbers() {
+        let email = fix("send the notes to alice dot smith at acme dot com");
+        assert!(email.contains("alice.smith@acme.com"), "{email}");
+        let protocol = fix("open https colon slash slash example dot com slash docs slash start");
+        assert!(
+            protocol.contains("https://example.com/docs/start"),
+            "{protocol}"
+        );
+        let url = fix("the guide lives at docs dot example dot com slash setup");
+        assert!(url.contains("docs.example.com/setup"), "{url}");
+        let prose = fix("compare the dot product of two vectors");
+        assert!(prose.contains("dot product"), "{prose}");
+        let meeting = fix("meet me at the studio");
+        assert!(
+            meeting.to_ascii_lowercase().contains("meet me at the studio"),
+            "{meeting}"
+        );
+        let spoken_phone = fix("call the office on four one five five five five one two three four");
+        assert!(spoken_phone.contains("415-555-1234"), "{spoken_phone}");
+        let digit_phone = fix("dial 415 555 1234 for support");
+        assert!(digit_phone.contains("415-555-1234"), "{digit_phone}");
+        let plus_phone = fix("call +1 415-555-1234");
+        assert!(plus_phone.contains("+1 415-555-1234"), "{plus_phone}");
+        let parentheses = fix("call (415) 555-1234");
+        assert!(parentheses.contains("(415) 555-1234"), "{parentheses}");
+        let not_phone = fix("the shipment id is 415 555 1234");
+        assert!(not_phone.contains("415 555 1234"), "{not_phone}");
     }
 
     #[test]
@@ -1765,6 +2113,19 @@ mod tests {
         assert!(room.contains("10x12"), "{room}");
         let ratio = fix("the ratio is 10 by 20");
         assert!(ratio.contains("10/20"), "{ratio}");
+    }
+
+    #[test]
+    fn counts_capitalisation_and_formatting_fixes() {
+        let (text, fixes) = correct(
+            "throughput is now 27% Higher than last week",
+            "en",
+            &[],
+            true,
+        );
+        assert!(text.contains("27% higher"), "{text}");
+        assert!(text.starts_with("Throughput"), "{text}");
+        assert!(fixes >= 2, "expected capitalisation and percent fixes, got {fixes}");
     }
 
     #[test]
@@ -1869,6 +2230,8 @@ mod tests {
     fn applies_common_contractions() {
         let bike = fix("I have a bike.");
         assert!(bike.contains("I've a bike."), "{bike}");
+        let plain = correct("I have a bike.", "en", &[], false).0;
+        assert!(plain.contains("I have a bike."), "{plain}");
         let apples = fix("I have 5 apples.");
         assert!(apples.contains("I have 5 apples."), "{apples}");
         let money = fix("I have $87.14.");
@@ -1902,7 +2265,7 @@ mod tests {
 
     #[test]
     fn respects_custom_words() {
-        let fixed = correct("unsloth is great", "en", &["Unsloth".to_string()]).0;
+        let fixed = correct("unsloth is great", "en", &["Unsloth".to_string()], true).0;
         assert!(fixed.contains("Unsloth"), "{fixed}");
     }
 
@@ -1914,6 +2277,6 @@ mod tests {
         assert!(is_english_like("hello there", "auto"));
 
         let spanish = "esto es una prueba de que el corrector no deberia cambiar nada";
-        assert_eq!(correct(spanish, "auto", &[]), (spanish.to_owned(), 0));
+        assert_eq!(correct(spanish, "auto", &[], true), (spanish.to_owned(), 0));
     }
 }

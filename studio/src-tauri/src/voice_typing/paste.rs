@@ -446,11 +446,17 @@ fn send_submit_key(key: SubmitKey) -> bool {
 
 #[cfg(target_os = "macos")]
 fn direct_type(text: &str) -> bool {
-    let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+    // Pass the transcript as an argument, never interpolate it into the
+    // AppleScript source: dictated quotes or newlines must not change the script.
     std::process::Command::new("osascript")
         .args([
             "-e",
-            &format!("tell application \"System Events\" to keystroke \"{escaped}\""),
+            "on run argv",
+            "-e",
+            "tell application \"System Events\" to keystroke (item 1 of argv)",
+            "-e",
+            "end run",
+            text,
         ])
         .status()
         .map(|status| status.success())

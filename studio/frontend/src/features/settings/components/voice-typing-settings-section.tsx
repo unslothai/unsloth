@@ -374,6 +374,12 @@ export function VoiceTypingSettingsSection() {
   const setGrammarFixerEnabled = useVoiceTypingStore(
     (state) => state.setGrammarFixerEnabled,
   );
+  const useContractions = useVoiceTypingStore(
+    (state) => state.useContractions,
+  );
+  const setUseContractions = useVoiceTypingStore(
+    (state) => state.setUseContractions,
+  );
   const soundEnabled = useVoiceTypingStore((state) => state.soundEnabled);
   const setSoundEnabled = useVoiceTypingStore((state) => state.setSoundEnabled);
   const soundTheme = useVoiceTypingStore((state) => state.soundTheme);
@@ -622,6 +628,16 @@ export function VoiceTypingSettingsSection() {
         />
       </SettingsRow>
 
+      {info.os === "macos" ? (
+        <p className="pb-2 text-xs text-muted-foreground">
+          {t("settings.voice.voiceTyping.macosPermissionHint")}
+        </p>
+      ) : info.os === "linux" ? (
+        <p className="pb-2 text-xs text-muted-foreground">
+          {t("settings.voice.voiceTyping.linuxWaylandHint")}
+        </p>
+      ) : null}
+
       {enabled ? (
         <>
           <SettingsRow
@@ -714,6 +730,22 @@ export function VoiceTypingSettingsSection() {
               aria-label={t("settings.voice.voiceTyping.grammarFixerLabel")}
             />
           </SettingsRow>
+
+          {grammarFixerEnabled ? (
+            <SettingsRow
+              label={t("settings.voice.voiceTyping.contractionsLabel")}
+              description={t(
+                "settings.voice.voiceTyping.contractionsDescription",
+              )}
+            >
+              <Switch
+                checked={useContractions}
+                onCheckedChange={setUseContractions}
+                data-testid="voice-typing-contractions"
+                aria-label={t("settings.voice.voiceTyping.contractionsLabel")}
+              />
+            </SettingsRow>
+          ) : null}
 
           <SettingsRow
             label={t("settings.voice.voiceTyping.llmPostProcessLabel")}

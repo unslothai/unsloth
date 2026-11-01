@@ -130,6 +130,9 @@ function repair(
   if (typeof saved.grammarFixerEnabled !== "boolean") {
     saved.grammarFixerEnabled = true;
   }
+  if (typeof saved.useContractions !== "boolean") {
+    saved.useContractions = false;
+  }
   if (typeof saved.llmPostProcessEnabled !== "boolean") {
     saved.llmPostProcessEnabled = false;
   }
@@ -249,6 +252,8 @@ interface VoiceTypingSettings {
   micWarmSeconds: number;
   /** Advanced rule-based grammar and formatting fixer (Harper-inspired). */
   grammarFixerEnabled: boolean;
+  /** Rewrite full forms as contractions ("I have" -> "I've") when it reads naturally. */
+  useContractions: boolean;
   /** Turn spoken punctuation ("comma", "new line") into marks. */
   spokenPunctuation: boolean;
   /** Enter key or chord sent after inserting, for chat boxes that send on Enter. */
@@ -287,6 +292,7 @@ interface VoiceTypingSettings {
   setIdleStopMs: (idleMs: number) => void;
   setMicWarmSeconds: (seconds: number) => void;
   setGrammarFixerEnabled: (enabled: boolean) => void;
+  setUseContractions: (enabled: boolean) => void;
   setSpokenPunctuation: (enabled: boolean) => void;
   setSubmitAfterInsert: (enabled: boolean) => void;
   setInsertSubmitKey: (key: VoiceTypingSubmitKey) => void;
@@ -320,6 +326,7 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
       idleStopMs: DEFAULT_VOICE_TYPING_IDLE_STOP_MS,
       micWarmSeconds: 0,
       grammarFixerEnabled: true,
+      useContractions: false,
       spokenPunctuation: false,
       insertSubmitKey: "none",
       pasteAutomatically: true,
@@ -353,6 +360,7 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
       setMicWarmSeconds: () => set({ micWarmSeconds: 0 }),
       setGrammarFixerEnabled: (grammarFixerEnabled) =>
         set({ grammarFixerEnabled }),
+      setUseContractions: (useContractions) => set({ useContractions }),
       setSpokenPunctuation: (spokenPunctuation) => set({ spokenPunctuation }),
       setSubmitAfterInsert: (submitAfterInsert) =>
         set({ insertSubmitKey: submitAfterInsert ? "enter" : "none" }),

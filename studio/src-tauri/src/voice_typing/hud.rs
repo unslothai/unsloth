@@ -229,7 +229,7 @@ fn emit_snapshot(app: &AppHandle) {
 }
 
 fn position(window: &WebviewWindow) {
-    let monitor = cursor_position()
+    let monitor = cursor_position(window)
         .and_then(|(x, y)| window.app_handle().monitor_from_point(x, y).ok().flatten())
         .or_else(|| window.primary_monitor().ok().flatten());
     let Some(monitor) = monitor else {
@@ -252,20 +252,9 @@ fn position(window: &WebviewWindow) {
 }
 
 /// Physical point of the mouse cursor, so the overlay follows the active monitor.
-#[cfg(target_os = "windows")]
-fn cursor_position() -> Option<(f64, f64)> {
-    use windows_sys::Win32::Foundation::POINT;
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
-
-    let mut point = POINT { x: 0, y: 0 };
-    if unsafe { GetCursorPos(&mut point) } != 0 {
-        Some((point.x as f64, point.y as f64))
-    } else {
-        None
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn cursor_position() -> Option<(f64, f64)> {
-    None
+fn cursor_position(window: &WebviewWindow) -> Option<(f64, f64)> {
+    window
+        .cursor_position()
+        .ok()
+        .map(|point| (point.x, point.y))
 }

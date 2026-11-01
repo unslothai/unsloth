@@ -118,7 +118,9 @@ function ensureTerminalPeriod(text: string): string {
 
 async function fixGrammarOnDevice(
   text: string,
-): Promise<{ text: string; fixes: number }> {  const { dictationLanguage, dictionary } = useVoiceSettingsStore.getState();
+): Promise<{ text: string; fixes: number }> {
+  const { dictationLanguage, dictionary } = useVoiceSettingsStore.getState();
+  const { useContractions } = useVoiceTypingStore.getState();
   try {
     const result = await invoke<{ text: string; fixes: number }>(
       "fix_grammar",
@@ -126,6 +128,7 @@ async function fixGrammarOnDevice(
         text,
         language: dictationLanguage,
         customWords: dictionary,
+        contractions: useContractions,
       },
     );
     if (result?.text?.trim()) {
@@ -845,7 +848,14 @@ export class VoiceTypingController {
       fixes = corrected.fixes;
     }
     // Grammar rules can re-case a custom word; make the user's spelling win.
-    text = applyDictationDictionary(text, undefined, { snippets: false });
+    let dictionaryFixes = 0;
+    text = applyDictationDictionary(text, undefined, {
+      snippets: false,
+      onReplace: () => {
+        dictionaryFixes += 1;
+      },
+    });
+    fixes += dictionaryFixes;
     const withTerminal = ensureTerminalPeriod(text);
     if (withTerminal !== text) fixes += 1;
     text = withTerminal;
