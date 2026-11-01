@@ -93,6 +93,12 @@ def count_lowp_gemms():
     counts = {name: 0 for name in targets}
 
     class _Counter(TorchDispatchMode):
+        # Stay out of torch.compile's tracing (a plain mode makes Dynamo refuse fullgraph frames) and observe the
+        # compiled artifact at runtime. Older torch has no such hook and just ignores the classmethod.
+        @classmethod
+        def ignore_compile_internals(cls):
+            return True
+
         def __torch_dispatch__(
             self,
             func,

@@ -428,6 +428,29 @@ def test_require_and_counter(monkeypatch):
     assert c["_scaled_mm"] == 1
 
 
+def test_counter_runs_fullgraph_compiled_calls():
+    # Failing before: a plain TorchDispatchMode makes Dynamo refuse fullgraph frames ("non-infra torch dispatch
+    # mode present"), so the engagement check crashed around compiled models.
+    a = torch.ones(16, 16).to(torch.float8_e4m3fn)
+    b = torch.ones(16, 16).to(torch.float8_e4m3fn).t()
+    one = torch.ones((), dtype = torch.float32)
+
+    def f(a, b):
+        return torch._scaled_mm(a, b, scale_a = one, scale_b = one, out_dtype = torch.bfloat16)
+
+    try:
+        expected = f(a, b)
+    except (RuntimeError, NotImplementedError):
+        pytest.skip("no CPU _scaled_mm in this torch")
+    torch._dynamo.reset()
+    compiled = torch.compile(f, backend = "aot_eager", fullgraph = True)
+    compiled(a, b)
+    with P.count_lowp_gemms() as c:
+        out = compiled(a, b)
+    assert torch.equal(out, expected)
+    assert c["_scaled_mm"] == 1
+
+
 def test_decoder_layers_is_the_block_stack_not_an_experts_list():
     # Failing before: the longest ModuleList won, so a model with more experts than layers returned
     # model.layers.0.mlp.experts and first_n / last_n kept experts in high precision instead of blocks.
