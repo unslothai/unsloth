@@ -73,13 +73,31 @@ def _out_features(module) -> Optional[int]:
     return getattr(module, "out_features", None)
 
 
+def _router_width(module) -> Optional[int]:
+    """Output width of a router: its own 2-D weight, else the one 2-D weight inside it (a gating module that
+    wraps a Linear, GraniteMoE's `router.layer`)."""
+    out = _out_features(module)
+    if out is not None:
+        return out
+    inner = [p for p in module.parameters() if p.dim() == 2]
+    return int(inner[0].shape[0]) if len(inner) == 1 else None
+
+
+def _is_stacked_experts(module, n_cfg) -> bool:
+    """A container holding all experts' weights as 3-D parameters [num_experts, ...] (GraniteMoE's
+    ParallelExperts `input_linear`), whatever it is called. Convolutions (Mamba's conv1d) are 3-D too."""
+    if not n_cfg or isinstance(module, torch.nn.modules.conv._ConvNd):
+        return False
+    return any(p.dim() == 3 and p.shape[0] == n_cfg for p in module.parameters(recurse = False))
+
+
 def find_routers(model) -> Dict[str, str]:
     """{fqn: reason} for every module that scores tokens over experts.
 
     A module is a router when its output width equals the expert count and it sits in the same block as an
-    experts container (a child whose name contains 'expert', excluding shared experts). With no experts
-    container in its block, the config's expert count plus a 2-D weight whose width matches is enough only
-    for a module whose leaf name is a known router name."""
+    experts container (a child whose name contains 'expert', excluding shared experts, or one holding stacked
+    3-D expert weights). With no experts container in its block, the config's expert count plus a 2-D weight
+    whose width matches is enough only for a module whose leaf name is a known router name."""
     config = getattr(model, "config", None)
     n_cfg = num_experts_of(config) if config is not None else None
     found = {}
@@ -91,7 +109,8 @@ def find_routers(model) -> Dict[str, str]:
         experts = [
             (n, c)
             for n, c in parent.named_children()
-            if "expert" in n.lower() and "shared" not in n.lower()
+            if ("expert" in n.lower() and "shared" not in n.lower())
+            or _is_stacked_experts(c, n_cfg)
         ]
         counts = {_experts_count(c) for _, c in experts} - {None}
         if not counts and n_cfg is None:
@@ -100,7 +119,7 @@ def find_routers(model) -> Dict[str, str]:
         for child_name, child in parent.named_children():
             if any(child is c for _, c in experts) or "shared" in child_name.lower():
                 continue
-            out = _out_features(child)
+            out = _router_width(child) if counts else _out_features(child)
             if out is None or out not in widths:
                 continue
             # No experts container beside it: only a router name counts; `gate_proj` is excluded here
@@ -134,9 +153,19 @@ def find_output_heads(model) -> Dict[str, str]:
             ptrs.add(out.weight.data_ptr())
         except Exception:
             pass
+    # No output embedding (sequence classification, reward / value heads): the head is every Linear outside
+    # the base model (`score`, `classifier`).
+    base = getattr(model, "base_model", None) if out is None else None
+    outside = set()
+    if isinstance(base, torch.nn.Module) and base is not model:
+        inside = {id(m) for m in base.modules()}
+        outside = {id(m) for m in model.modules() if id(m) not in inside}
     for name, module in model.named_modules():
         if out is not None and module is out:
             heads[name] = "output head (get_output_embeddings)"
+            continue
+        if id(module) in outside and isinstance(module, torch.nn.Linear):
+            heads[name] = "task head outside the base model"
             continue
         w = getattr(module, "weight", None)
         if isinstance(module, torch.nn.Linear) and isinstance(w, torch.Tensor) and ptrs:
@@ -173,40 +202,66 @@ _NON_DECODER_PARTS = (
 )
 
 
-def _language_decoder(model):
-    """(fqn, module) of the language decoder: HF `get_decoder()` when it names a proper submodule, else the model."""
+def _is_block_stack(module) -> bool:
+    """A non-empty ModuleList whose entries each hold a Linear inside them (not a list of bare Linears such as
+    Gemma3n's `altup_projections`). Hybrid stacks (Jamba, Zamba) mix block classes, which is fine."""
+    if not isinstance(module, torch.nn.ModuleList) or len(module) < 1:
+        return False
+    return all(
+        any(isinstance(m, torch.nn.Linear) for m in block.modules() if m is not block)
+        for block in module
+    )
+
+
+def _language_roots(model):
+    """(fqn, module) of the language decoder: the innermost of HF `get_decoder()` (when it names a proper
+    submodule) and the nearest ancestor of the input embedding that holds a block stack; else the model."""
+    modules = dict(model.named_modules())
+    roots = []
     get_decoder = getattr(model, "get_decoder", None)
     try:
         decoder = get_decoder() if callable(get_decoder) else None
     except Exception:
         decoder = None
     if isinstance(decoder, torch.nn.Module) and decoder is not model:
-        for name, module in model.named_modules():
-            if module is decoder:
-                return name, module
-    return "", model
+        roots += [(n, m) for n, m in modules.items() if m is decoder][:1]
+    try:
+        inp = model.get_input_embeddings()
+    except Exception:
+        inp = None
+    emb = next((n for n, m in modules.items() if inp is not None and m is inp), None)
+    if emb:
+        parts = emb.split(".")
+        for i in range(len(parts) - 1, -1, -1):
+            name = ".".join(parts[:i])
+            if any(_is_block_stack(m) for m in modules[name].modules()):
+                roots.append((name, modules[name]))
+                break
+    # Keep a root only when no other candidate lies inside it (Idefics3: get_decoder() is the whole
+    # multimodal model, the embedding's ancestor is its text model). Unrelated roots: get_decoder() wins
+    # (T5: the shared embedding sits above both stacks).
+    roots = [
+        (n, m)
+        for n, m in roots
+        if not any(o != n and (not n or o.startswith(n + ".")) for o, _ in roots)
+    ]
+    return roots[0] if roots else ("", model)
 
 
 def decoder_layers(model):
     """(fqn prefix of the decoder layer list, number of layers): the longest ModuleList of blocks that each
-    hold Linear layers inside the language decoder, ignoring experts lists, vision / audio / encoder
-    stacks and any list nested inside another such list (an MoE model can have more experts per block than
-    blocks). (None, 0) when there is none."""
-    root, decoder = _language_decoder(model)
+    hold Linear layers inside the language decoder (the stack beside the input embedding, or HF
+    `get_decoder()`), ignoring experts lists and any list nested inside another such list (an MoE model can
+    have more experts per block than blocks). Searching the whole model, vision / audio / encoder stacks
+    lose to any other stack; an encoder-only model (BERT) gets its single stack. One block is a stack.
+    (None, 0) when there is none."""
+    root, decoder = _language_roots(model)
     candidates = []
     for name, module in decoder.named_modules():
         name = f"{root}.{name}" if root and name else (root or name)
-        parts = name.lower().split(".")
-        if not root and any(p.startswith(_NON_DECODER_PARTS) for p in parts):
-            continue
-        if not isinstance(module, torch.nn.ModuleList) or len(module) < 2:
+        if not _is_block_stack(module):
             continue
         if any("expert" in part.lower() for part in name.split(".")):
-            continue
-        # Hybrid stacks (Jamba, Zamba) mix block classes; every block only needs to hold a Linear.
-        if not all(
-            any(isinstance(m, torch.nn.Linear) for m in block.modules()) for block in module
-        ):
             continue
         candidates.append((name, len(module)))
     # A list inside a block of another candidate list (`layers.0.<...>`) is part of that block, not the stack.
@@ -215,6 +270,13 @@ def decoder_layers(model):
         for name, n in candidates
         if not any(o != name and o and name.startswith(o + ".") for o, _ in candidates)
     ]
+    if not root:
+        language = [
+            (name, n)
+            for name, n in outer
+            if not any(p.startswith(_NON_DECODER_PARTS) for p in name.lower().split("."))
+        ]
+        outer = language or outer
     best = (None, 0)
     for name, n in outer:
         # A tie goes to the shallower list.

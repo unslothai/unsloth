@@ -561,3 +561,46 @@ def test_decoder_layers_accepts_a_hybrid_stack_of_mixed_block_classes():
         None, "model.layers.3.self_attn.q_proj"
     )
     assert not is_hp(None, "model.layers.1.self_attn.q_proj")
+
+
+def test_counter_counts_opaque_custom_ops_once_at_their_boundary(monkeypatch):
+    # Failing before: only torch.ops.aten targets were resolved, so a low-precision GEMM inside an opaque
+    # custom op (unsloth::nvfp4_qat_linear, fbgemm::f8f8bf16_rowwise) counted zero.
+    from unsloth.precision import engage
+
+    a = torch.ones(16, 16).to(torch.float8_e4m3fn)
+    b = torch.ones(16, 16).to(torch.float8_e4m3fn).t()
+    one = torch.ones((), dtype = torch.float32)
+    try:
+        torch._scaled_mm(a, b, scale_a = one, scale_b = one, out_dtype = torch.bfloat16)
+    except (RuntimeError, NotImplementedError):
+        pytest.skip("no CPU _scaled_mm in this torch")
+
+    name = "unsloth_precision_test::opaque_fp8_mm"
+    if not hasattr(torch.ops.unsloth_precision_test, "opaque_fp8_mm"):
+
+        @torch.library.custom_op(name, mutates_args = ())
+        def _opaque(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+            one = torch.ones((), dtype = torch.float32)
+            return torch._scaled_mm(a, b, scale_a = one, scale_b = one, out_dtype = torch.bfloat16)
+
+    monkeypatch.setattr(engage, "LOWP_GEMM_CUSTOM_OPS", engage.LOWP_GEMM_CUSTOM_OPS + (name,))
+    with P.count_lowp_gemms() as c:
+        torch.ops.unsloth_precision_test.opaque_fp8_mm(a, b)
+    assert c[name] == 1 and c["_scaled_mm"] == 0  # the boundary, not the hidden inner call
+    assert "fbgemm::f8f8bf16_rowwise" in c  # absent namespace: listed, never resolved
+
+
+@needs_torchao
+def test_counter_counts_the_real_nvfp4_qat_linear_op():
+    from unsloth.models._utils import _nvfp4_qat_linear_op
+
+    try:
+        op = _nvfp4_qat_linear_op()
+    except Exception as e:
+        pytest.skip(f"torchao NVFP4 internals unavailable: {e!r}")
+    x = torch.empty(16, 64, device = "meta", dtype = torch.bfloat16)
+    w = torch.empty(32, 64, device = "meta", dtype = torch.bfloat16)
+    with P.count_lowp_gemms() as c:
+        op(x, w, None, False, False, False, False, None)
+    assert c["unsloth::nvfp4_qat_linear"] == 1
