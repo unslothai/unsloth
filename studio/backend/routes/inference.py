@@ -47711,7 +47711,12 @@ def _require_resolved_image_base_access(request, fam, kind: str, engine_name) ->
     """A managed account must clear the base the predicted engine will publish as ``base_repo``, the same
     ``require_model_access`` that /images/generate runs on it. Without it a cached gated base loads and every
     generate then 404s. Refuses only when every base that engine could publish is refused (#16178)."""
-    if fam is None or kind == "pipeline" or engine_name is None or not account_access.managed_account():
+    if (
+        fam is None
+        or kind == "pipeline"
+        or engine_name is None
+        or not account_access.managed_account()
+    ):
         return
     from core.inference.diffusion import _resolve_base_repo
     from core.inference.diffusion_families import named_variant_base, resolve_base_repo
@@ -47727,7 +47732,6 @@ def _require_resolved_image_base_access(request, fam, kind: str, engine_name) ->
     if engine_name == ENGINE_SD_CPP:
         candidates = [resolve_base_repo(fam, request.base_repo)]
         from core.inference.sd_cpp_backend import _SAMPLE_SIGMAS_FAMILIES
-
         if not explicit and fam.name in _SAMPLE_SIGMAS_FAMILIES:
             # With a sampling grid sd.cpp publishes the card's or the named variant's base instead.
             candidates += [
@@ -47736,7 +47740,6 @@ def _require_resolved_image_base_access(request, fam, kind: str, engine_name) ->
             ]
     elif engine_name == ENGINE_MLX and not explicit:
         from core.inference.mlx_diffusion_backend import resolve_variant_base
-
         candidates = [
             resolve_variant_base(
                 request.model_path,

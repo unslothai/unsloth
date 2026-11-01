@@ -124,7 +124,6 @@ def test_the_installation_owner_is_not_asked_for_a_grant(client, monkeypatch):
 
 def _req(**kw):
     import types
-
     return types.SimpleNamespace(
         model_path = kw.get("model_path", "org/some-GGUF"),
         base_repo = kw.get("base_repo"),
@@ -150,13 +149,11 @@ def allowed(monkeypatch):
 
 def _family(name):
     from core.inference.diffusion_families import _FAMILIES
-
     return next(f for f in _FAMILIES if f.name == name)
 
 
 def test_an_unknown_engine_is_not_checked_against_a_guessed_base(allowed, monkeypatch):
     from routes import inference as routes
-
     monkeypatch.setattr(
         diffusion_module, "_resolve_base_repo", lambda *a, **k: pytest.fail("no engine, no guess")
     )
@@ -183,7 +180,9 @@ def test_sd_cpp_grid_family_passes_when_any_base_it_could_publish_is_allowed(all
     from routes import inference as routes
 
     fam = _family("qwen-image-2.1")
-    monkeypatch.setattr(diffusion_module, "_resolve_base_repo", lambda *a, **k: "Qwen/Qwen-Image-2.1-Turbo")
+    monkeypatch.setattr(
+        diffusion_module, "_resolve_base_repo", lambda *a, **k: "Qwen/Qwen-Image-2.1-Turbo"
+    )
     allowed.add("Qwen/Qwen-Image-2.1-Turbo")
     routes._require_resolved_image_base_access(_req(), fam, "gguf", "sd_cpp")
     allowed.clear()
