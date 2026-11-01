@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type {
+  RemoteCodeBlockCause,
   RemoteCodeFinding,
   RemoteCodeScan,
   RemoteCodeSeverity,
@@ -20,6 +21,9 @@ interface SnippetRowResponse {
 }
 
 interface RemoteCodeScanResponse {
+  block_cause?: string | null;
+  block_source?: string;
+  block_target?: string | null;
   requires_trust_remote_code?: boolean;
   has_remote_code?: boolean;
   approvable?: boolean;
@@ -91,6 +95,9 @@ export async function getRemoteCodeScan(
     level: u.level ?? "unsafe",
   }));
   return {
+    blockCause: (data.block_cause as RemoteCodeBlockCause | null) ?? null,
+    blockSource: data.block_source ?? "Hugging Face",
+    blockTarget: data.block_target ?? null,
     requiresTrustRemoteCode: Boolean(
       data.requires_trust_remote_code ?? data.has_remote_code,
     ),

@@ -2312,6 +2312,8 @@ export async function buildLocalTokenCountExtras(
     ? await projectHasSources(ragProjectId)
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
+  // Same id the completion sends (resolveSandboxSessionId).
+  const sessionId = sandboxSessionIdFor(threadId, ragProjectId);
 
   // re-fetch for every counted user turn so skills created since page load match request pricing.
   await settleSkillsForText(userTexts(messages).join("\n"));
@@ -2362,6 +2364,7 @@ export async function buildLocalTokenCountExtras(
       ...localMediaTools,
     ],
     mcp_enabled: mcpEnabledForChat,
+    ...(sessionId ? { session_id: sessionId } : {}),
     // Top level, not in rag_scope: archived threads add search_conversation regardless of RAG.
     ...threadField,
     // Armed research puts the deep_research schema in the prompt, so the count carries it.
@@ -2883,6 +2886,7 @@ const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
   "text-to-audio",
   "audio-to-audio",
   "automatic-speech-recognition",
+  "speech-recognition-unsupported",
 ]);
 
 // ollama is excluded: local_model_resolver.py skips its scanner. hermes is read-only, so included.

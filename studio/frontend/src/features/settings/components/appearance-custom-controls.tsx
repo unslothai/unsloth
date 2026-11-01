@@ -846,6 +846,24 @@ export function CodeFontSizeRow() {
   );
 }
 
+export function CodeDisplaySwitch({
+  field,
+  label,
+}: {
+  field: "codeLineNumbers" | "codeWordWrap" | "codeLigatures";
+  label: string;
+}) {
+  const checked = useAppearanceCustomStore((s) => s.customization[field]);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  return (
+    <Switch
+      aria-label={label}
+      checked={checked}
+      onCheckedChange={(next) => patch({ [field]: next })}
+    />
+  );
+}
+
 export function FontSmoothingSwitch() {
   const fontSmoothing = useAppearanceCustomStore(
     (s) => s.customization.fontSmoothing,

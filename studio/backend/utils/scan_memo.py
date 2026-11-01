@@ -44,6 +44,12 @@ def scan_memo() -> Iterator[None]:
         _scope.reset(token)
 
 
+def scan_memo_active() -> bool:
+    """Whether the caller runs inside an open scan_memo() scope."""
+    memo = _scope.get()
+    return memo is not None and _CLOSED not in memo
+
+
 def memoized(key: Hashable, compute: Callable[[], _T]) -> _T:
     """compute() once per scope for key; a raise is not cached."""
     memo = _scope.get()

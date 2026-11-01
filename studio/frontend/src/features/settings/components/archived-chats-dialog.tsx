@@ -367,12 +367,13 @@ export function ArchivedChatsView() {
                   })}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {confirmingDelete.length === 1 && (
-                <>{confirmingDelete[0]?.title}. </>
-              )}
-              {t("settings.data.library.deleteArchivedWarning", {
-                count: confirmingDelete.length,
-              })}
+              {confirmingDelete.length === 1
+                ? t("shell.dialog.deleteChat.description", {
+                    name: confirmingDelete[0]?.title ?? "",
+                  })
+                : t("settings.data.library.deleteArchivedWarning", {
+                    count: confirmingDelete.length,
+                  })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <fieldset disabled={busy}>

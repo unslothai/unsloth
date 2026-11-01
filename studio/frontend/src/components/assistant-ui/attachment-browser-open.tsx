@@ -8,6 +8,7 @@ import { authFetch } from "@/features/auth";
 import { attachmentBodyText, fetchChatAttachmentBlob, parseAttachmentText } from "@/features/chat";
 import { openFileInBrowser } from "@/features/browser";
 import { isStudioUrl } from "@/lib/api-base";
+import { urlToBlob } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { useAuiState } from "@assistant-ui/react";
 import { Slot } from "radix-ui";
@@ -38,11 +39,8 @@ function localLoader(source: AttachmentSource): (() => Promise<Opened>) | null {
       const { video, src } = source;
       const url = video ? (video.data.startsWith("data:") ? video.data : `data:${video.mimeType};base64,${video.data}`) : src;
       if (!url) return null;
-      return () =>
-        fetch(url).then(async (response) => {
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          return { blob: await response.blob() };
-        });
+      // Not fetch(): connect-src allows no data:, so a packaged or served build refuses it.
+      return () => urlToBlob(url).then((blob) => ({ blob }));
     }
     case "document":
       return !source.hasOriginal && text !== undefined
@@ -126,12 +124,9 @@ function blobLoader(source: AttachmentSource): (() => Promise<Blob>) | null {
   const local = localLoader(source);
   if (local) return () => local().then(({ blob }) => blob);
   if (src) {
+    if (/^(blob|data):/i.test(src)) return () => urlToBlob(src);
     // Only Studio's own URLs get the sign-in; a foreign image must not receive it.
-    const request = /^(blob|data):/i.test(src)
-      ? () => fetch(src)
-      : isStudioUrl(src)
-        ? () => authFetch(src)
-        : () => fetch(src, { credentials: "omit" });
+    const request = isStudioUrl(src) ? () => authFetch(src) : () => fetch(src, { credentials: "omit" });
     return () =>
       request().then((response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);

@@ -7,10 +7,12 @@ import {
   useRef,
   useEffect,
   useCallback,
+  useMemo,
   type ComponentProps,
   type FC,
 } from "react";
-import { useMessage } from "@assistant-ui/react";
+import { useAuiState } from "@assistant-ui/react";
+import { memoOnArray } from "@/components/assistant-ui/message-derived";
 import { cn } from "@/lib/utils";
 import { Badge, badgeVariants, type BadgeProps } from "./badge";
 import {
@@ -176,41 +178,68 @@ const SourceBadge: FC<{ source: SourceData; allowRemoteIcons?: boolean }> = ({
   );
 };
 
+const NO_SOURCES: readonly SourceData[] = [];
+
+// The URL sources of a message as a string, so the selector result keeps its value while a
+// reply streams: every token rebuilds the content array, but not its source parts.
+const urlSourcesKey = memoOnArray((content: readonly unknown[]): string => {
+  const sources: SourceData[] = [];
+  for (const item of content) {
+    const part = item as {
+      type?: unknown;
+      sourceType?: unknown;
+      url?: unknown;
+      id?: unknown;
+      title?: string;
+      metadata?: { description?: string };
+    };
+    if (
+      part.type === "source" &&
+      "sourceType" in part &&
+      part.sourceType === "url" &&
+      "url" in part &&
+      part.url
+    ) {
+      const url = part.url as string;
+      sources.push({
+        id: typeof part.id === "string" ? part.id : url,
+        url,
+        title: part.title || "",
+        description: part.metadata?.description,
+      });
+    }
+  }
+  return sources.length === 0 ? "" : JSON.stringify(sources);
+});
+
 const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> = ({
   sources: suppliedSources,
   allowRemoteIcons = true,
 }) => {
-  const message = useMessage();
+  const key = useAuiState(({ message }) =>
+    suppliedSources || !Array.isArray(message.content)
+      ? ""
+      : urlSourcesKey(message.content),
+  );
+  const messageSources = useMemo<readonly SourceData[]>(
+    () => (key === "" ? NO_SOURCES : (JSON.parse(key) as SourceData[])),
+    [key],
+  );
+  return (
+    <SourcesGroupView
+      sources={suppliedSources ?? messageSources}
+      allowRemoteIcons={allowRemoteIcons}
+    />
+  );
+};
+
+const SourcesGroupView = memo<{
+  sources: readonly SourceData[];
+  allowRemoteIcons: boolean;
+}>(({ sources, allowRemoteIcons }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [visibleCount, setVisibleCount] = useState<number | null>(null);
   const [expanded, setExpanded] = useState(false);
-
-  const messageSources: SourceData[] = [];
-  if (!suppliedSources && message.content) {
-    for (const part of message.content) {
-      if (
-        part.type === "source" &&
-        "sourceType" in part &&
-        part.sourceType === "url" &&
-        "url" in part &&
-        part.url
-      ) {
-        const url = part.url as string;
-        const partId =
-          typeof (part as { id?: unknown }).id === "string"
-            ? ((part as { id: string }).id)
-            : url;
-        messageSources.push({
-          id: partId,
-          url,
-          title: (part as { title?: string }).title || "",
-          description: (part as { metadata?: { description?: string } })
-            .metadata?.description,
-        });
-      }
-    }
-  }
-  const sources = suppliedSources ?? messageSources;
 
   const measure = useCallback(() => {
     const container = containerRef.current;
@@ -311,7 +340,9 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
       </div>
     </div>
   );
-};
+});
+
+SourcesGroupView.displayName = "SourcesGroupView";
 
 const SourcesNoop: FC<Record<string, unknown>> = () => null;
 

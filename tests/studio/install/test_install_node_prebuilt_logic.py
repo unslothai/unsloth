@@ -3,6 +3,7 @@
 import importlib.util
 import io
 import contextlib
+import dataclasses
 import json
 import os
 import sys
@@ -69,10 +70,10 @@ def _host(node_os: str, node_arch: str) -> HostInfo:
 @pytest.mark.parametrize(
     "system,machine,exp_os,exp_arch,exp_ext",
     [
-        ("Linux", "x86_64", "linux", "x64", ".tar.gz"),
-        ("Linux", "aarch64", "linux", "arm64", ".tar.gz"),
-        ("Darwin", "x86_64", "darwin", "x64", ".tar.gz"),
-        ("Darwin", "arm64", "darwin", "arm64", ".tar.gz"),
+        ("Linux", "x86_64", "linux", "x64", ".tar.xz"),
+        ("Linux", "aarch64", "linux", "arm64", ".tar.xz"),
+        ("Darwin", "x86_64", "darwin", "x64", ".tar.xz"),
+        ("Darwin", "arm64", "darwin", "arm64", ".tar.xz"),
         ("Windows", "AMD64", "win", "x64", ".zip"),
         ("Windows", "ARM64", "win", "arm64", ".zip"),
     ],
@@ -1656,3 +1657,106 @@ def test_swap_into_place_reports_the_managed_parent_when_aside_is_denied(
     parent_takeown = f'takeown /F "{install_dir.parent}"'
     assert any(parent_takeown in line for line in recovery), recovery
     assert not any(parent_takeown in line and " /R " in line for line in recovery), recovery
+
+
+def test_detect_host_without_lzma_keeps_tar_gz(monkeypatch):
+    monkeypatch.setattr(M.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(M.platform, "machine", lambda: "x86_64")
+    monkeypatch.delitem(sys.modules, "lzma", raising = False)
+    monkeypatch.setitem(sys.modules, "_lzma", None)
+    assert M.detect_host().archive_ext == ".tar.gz"
+
+
+def test_every_pinned_tar_gz_has_a_tar_xz():
+    for assets in M.load_pins()["versions"].values():
+        for name in assets:
+            if name.endswith(".tar.gz"):
+                assert name.replace(".tar.gz", ".tar.xz") in assets
+
+
+def test_extract_tar_xz(tmp_path):
+    root = tmp_path / "src" / "node"
+    (root / "bin").mkdir(parents = True)
+    (root / "bin" / "node").write_text("x")
+    archive = tmp_path / "node.tar.xz"
+    with tarfile.open(archive, "w:xz") as tar:
+        tar.add(root, arcname = "node")
+    M.extract_archive(archive, tmp_path / "out")
+    assert (tmp_path / "out" / "node" / "bin" / "node").read_text() == "x"
+
+
+def test_tar_gz_install_is_kept_after_the_switch_to_tar_xz(tmp_path, monkeypatch):
+    pins = {
+        "versions": {
+            "1.0.0": {
+                "node-v1.0.0-linux-x64.tar.gz": "a" * 64,
+                "node-v1.0.0-linux-x64.tar.xz": "b" * 64,
+                "node-v1.0.0-linux-arm64.tar.gz": "c" * 64,
+            }
+        }
+    }
+    asset = "node-v1.0.0-linux-x64.tar.xz"
+    monkeypatch.setattr(M, "load_metadata", lambda d: {"asset": "node-v1.0.0-linux-x64.tar.gz"})
+    assert M.pin_to_keep(pins, "1.0.0", asset, tmp_path) == "a" * 64
+    monkeypatch.setattr(M, "load_metadata", lambda d: {"asset": "node-v1.0.0-linux-arm64.tar.gz"})
+    assert M.pin_to_keep(pins, "1.0.0", asset, tmp_path) == "b" * 64
+    monkeypatch.setattr(M, "load_metadata", lambda d: None)
+    assert M.pin_to_keep(pins, "1.0.0", asset, tmp_path) == "b" * 64
+    monkeypatch.setattr(M, "load_metadata", lambda d: {"asset": "node-v1.0.0-linux-x64.tar.zst"})
+    assert M.pin_to_keep(pins, "1.0.0", asset, tmp_path) == "b" * 64
+
+
+def test_mirror_without_tar_xz_falls_back_to_pinned_tar_gz(tmp_path, monkeypatch):
+    install_dir = tmp_path / "node"
+    version = M.pinned_default_version(M.load_pins())
+    host = dataclasses.replace(_host("linux", "x64"), archive_ext = ".tar.xz")
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "_ensure_npm_floor", lambda d, h: None)
+    fetched = []
+
+    def fake_download(url, path, **kw):
+        fetched.append(path.name)
+        if path.name.endswith(".tar.xz"):
+            raise OSError("HTTP Error 404: Not Found")
+        path.write_bytes(b"gz")
+
+    monkeypatch.setattr(M, "download_file_verified", fake_download)
+    monkeypatch.setattr(
+        M, "extract_archive", lambda a, d: (d / "node-root" / "bin").mkdir(parents = True)
+    )
+
+    assert M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False) == 0
+    gz = f"node-v{version}-linux-x64.tar.gz"
+    assert fetched == [f"node-v{version}-linux-x64.tar.xz", gz]
+    meta = M.load_metadata(install_dir)
+    assert meta["asset"] == gz
+    assert meta["sha256"] == M.pinned_sha256(M.load_pins(), version, gz)
+
+
+def test_format_switched_by_another_installer_while_waiting_is_kept(tmp_path, monkeypatch):
+    install_dir = tmp_path / "node"
+    install_dir.mkdir()
+    pins = M.load_pins()
+    version = M.pinned_default_version(pins)
+    gz, xz = (f"node-v{version}-linux-x64.tar.{ext}" for ext in ("gz", "xz"))
+    M.write_metadata(install_dir, version = version, asset = gz, sha256 = "stale")
+    host = dataclasses.replace(_host("linux", "x64"), archive_ext = ".tar.xz")
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    real_lock = M.install_lock
+
+    @contextlib.contextmanager
+    def lock_after_other_installer(path):
+        M.write_metadata(
+            install_dir, version = version, asset = xz, sha256 = M.pinned_sha256(pins, version, xz)
+        )
+        with real_lock(path):
+            yield
+
+    monkeypatch.setattr(M, "install_lock", lock_after_other_installer)
+    monkeypatch.setattr(M, "download_file_verified", lambda *a, **k: pytest.fail("downloaded"))
+
+    assert M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False) == 0
