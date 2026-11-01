@@ -530,3 +530,32 @@ def test_decoder_layers_is_the_language_decoder_not_a_longer_encoder():
     with torch.device("meta"):
         w = WhisperForConditionalGeneration(whisper)
     assert P.decoder_layers(w) == ("model.decoder.layers", 2)
+
+
+def test_decoder_layers_accepts_a_hybrid_stack_of_mixed_block_classes():
+    # Failing before: a stack had to be one block class, so Jamba (Mamba + attention blocks) returned
+    # (None, 0) and first_n / last_n protected nothing.
+    from transformers import JambaConfig, JambaForCausalLM
+
+    config = JambaConfig(
+        vocab_size = 256,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 4,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        num_experts = 1,
+        attn_layer_period = 2,
+        attn_layer_offset = 1,
+        mamba_d_state = 8,
+        mamba_d_conv = 4,
+        mamba_expand = 2,
+        use_mamba_kernels = False,
+    )
+    with torch.device("meta"):
+        m = JambaForCausalLM(config)
+    assert len({type(b) for b in m.model.layers}) == 2
+    assert P.decoder_layers(m) == ("model.layers", 4)
+    is_hp = P.hp_filter(m, P.HPLayerPolicy(first_n = 1, last_n = 1))
+    assert is_hp(None, "model.layers.0.mamba.in_proj") and is_hp(None, "model.layers.3.self_attn.q_proj")
+    assert not is_hp(None, "model.layers.1.self_attn.q_proj")

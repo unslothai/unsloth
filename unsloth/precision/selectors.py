@@ -188,8 +188,8 @@ def _language_decoder(model):
 
 
 def decoder_layers(model):
-    """(fqn prefix of the decoder layer list, number of layers): the longest ModuleList of same-type blocks
-    that hold Linear layers inside the language decoder, ignoring experts lists, vision / audio / encoder
+    """(fqn prefix of the decoder layer list, number of layers): the longest ModuleList of blocks that each
+    hold Linear layers inside the language decoder, ignoring experts lists, vision / audio / encoder
     stacks and any list nested inside another such list (an MoE model can have more experts per block than
     blocks). (None, 0) when there is none."""
     root, decoder = _language_decoder(model)
@@ -203,10 +203,8 @@ def decoder_layers(model):
             continue
         if any("expert" in part.lower() for part in name.split(".")):
             continue
-        types = {type(m) for m in module}
-        if len(types) != 1:
-            continue
-        if not any(isinstance(m, torch.nn.Linear) for m in module[0].modules()):
+        # Hybrid stacks (Jamba, Zamba) mix block classes; every block only needs to hold a Linear.
+        if not all(any(isinstance(m, torch.nn.Linear) for m in block.modules()) for block in module):
             continue
         candidates.append((name, len(module)))
     # A list inside a block of another candidate list (`layers.0.<...>`) is part of that block, not the stack.
