@@ -19,7 +19,7 @@ try {
   root.style.colorScheme = dark ? "dark" : "light";
   // Keep in sync with COLOR_THEME_IDS ("standard" sets no attribute).
   var palettes = [
-    "classic", "minimal", "blueberry", "butterfly-pea", "cherry",
+    "blueberry", "butterfly-pea", "cherry",
     "cinnamon", "cotton-candy", "dragon-fruit", "earl-grey", "espresso",
     "honey", "licorice", "macaron", "matcha", "mint", "neon-cyberpunk",
     "oat-milk", "peach", "pina-paraiso", "plum", "tangerine", "taro",

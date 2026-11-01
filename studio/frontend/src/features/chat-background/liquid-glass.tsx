@@ -14,11 +14,11 @@ import { useMaterialStore } from "./material";
 // Narrow bezels: the bend and the lit rim stay within a few pixels of the edge, like real glass.
 const OPTICS = {
   composer: {
-    liquid: { refraction: 30, bezel: 6, specular: 0.3, dispersion: 0 },
+    liquid: { refraction: 30, bezel: 6, specular: 0.15, dispersion: 0 },
     "liquid-3d": {
       refraction: 60,
       bezel: 10,
-      specular: 0.5,
+      specular: 0.25,
       dispersion: 0.08,
     },
   },

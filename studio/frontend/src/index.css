@@ -380,8 +380,7 @@
 	--chat-icon-fg-hover: var(--foreground);
 	--chat-icon-bg-hover-base: #ededec;
 
-	/* Follows the brand accent; neutral-primary palettes (Classic) override it so small controls keep
-	   a hue. Resolved at use, so .dark's --primary flows through. */
+	/* Follows the brand accent. Resolved at use, so .dark's --primary flows through. */
 	--control-accent: var(--primary);
 	--control-accent-foreground: var(--primary-foreground);
 
@@ -554,141 +553,6 @@
 /* Palettes are orthogonal to light/dark, carried as `data-palette` on <html> (theme-store.ts);
    no attribute is Standard. They override only color tokens. Light blocks use :not(.dark) so the
    base .dark block wins the mode dimension. */
-
-/* -------------------------------- Classic -------------------------------- */
-:root[data-palette="classic"]:not(.dark) {
-	--background: #ffffff;
-	--foreground-base: #1a1c1f;
-	--card-base: #ffffff;
-	--card-foreground-base: #1a1c1f;
-	--popover-base: #ffffff;
-	--popover-foreground-base: #1a1c1f;
-	/* Neutral black primary; blue is reserved for small controls via --control-accent. */
-	--primary: #0d0d0d;
-	--primary-foreground: #ffffff;
-	--control-accent: #339cff;
-	--control-accent-foreground: #ffffff;
-	--secondary-base: #f5f5f5;
-	--secondary-foreground-base: #1a1c1f;
-	--muted-base: #f7f7f7;
-	/* 4.88:1 on white; #8f8f8f was 3.23:1, under AA. */
-	--muted-foreground: #717171;
-	--accent-base: #ececec;
-	--accent-foreground-base: #1a1c1f;
-	--bypass: #9a7b1e;
-	--border-base: #e6e6e6;
-	--input-base: #e6e6e6;
-	--ring: #1a1c1f;
-	--chart-1: #339cff;
-	--chart-2: #8fa3b8;
-	--chart-3: #0f6fd6;
-	--chart-4: #b8c4d0;
-	--chart-5: #5b7189;
-	--sidebar-base: #ffffff;
-	--sidebar-foreground-base: #1a1c1f;
-	--sidebar-primary: #0d0d0d;
-	--sidebar-primary-foreground: #ffffff;
-	--sidebar-accent-base: #ececec;
-	--sidebar-accent-foreground-base: #1a1c1f;
-	--sidebar-border-base: #f2f2f2;
-	--sidebar-ring: #1a1c1f;
-
-	--nav-fg-base: #2d2f31;
-	--nav-fg-muted-base: #8f8f8f;
-	--nav-surface-hover-base: #ececec;
-	--nav-icon-idle-base: #8f8f8f;
-	--nav-beta-border: #e0e0e0;
-	--panel-surface-hover-base: #ececec;
-	--panel-input-surface-base: #f4f4f4;
-	--panel-input-surface-hover-base: #ededed;
-	/* Same lift on the contrast-slider base: #7a7c7e was 4.19:1. Now 4.90:1. */
-	--panel-surface-fg-muted: #6f7174;
-	--panel-slider-fg-base: #9b9d9f;
-	--chat-icon-fg-base: #5d5f61;
-	--chat-icon-bg-hover-base: #ececec;
-}
-
-/* Dark surfaces come from the base .dark block; Classic only swaps the accents. */
-:root[data-palette="classic"].dark {
-	--primary: #ececec;
-	--primary-foreground: #0d0d0d;
-	--control-accent: #4dabff;
-	--control-accent-foreground: #ffffff;
-	--bypass: #d9b40b;
-	--ring: #ececec;
-	--chart-1: #4dabff;
-	--chart-2: #8ab6de;
-	--chart-3: #1f7fe8;
-	--chart-4: #b3d4f5;
-	--chart-5: #6d87a3;
-	--sidebar-primary: #ececec;
-	--sidebar-primary-foreground: #0d0d0d;
-	--sidebar-ring: #ececec;
-}
-
-/* -------------------------------- Minimal -------------------------------- */
-:root[data-palette="minimal"]:not(.dark) {
-	--background: #ffffff;
-	--foreground-base: #171717;
-	--card-base: #ffffff;
-	--card-foreground-base: #171717;
-	--popover-base: #ffffff;
-	--popover-foreground-base: #171717;
-	--primary: #171717;
-	--primary-foreground: #ffffff;
-	--secondary-base: #f5f5f5;
-	--secondary-foreground-base: #262626;
-	--muted-base: #f5f5f5;
-	--muted-foreground: #6f6f6f;
-	--accent-base: #ebebeb;
-	--accent-foreground-base: #171717;
-	--bypass: #6f6f6f;
-	--border-base: #e2e2e2;
-	--input-base: #e2e2e2;
-	--ring: #171717;
-	--chart-1: #171717;
-	--chart-2: #4d4d4d;
-	--chart-3: #7a7a7a;
-	--chart-4: #a6a6a6;
-	--chart-5: #d1d1d1;
-	--sidebar-base: #ffffff;
-	--sidebar-foreground-base: #171717;
-	--sidebar-primary: #171717;
-	--sidebar-primary-foreground: #ffffff;
-	--sidebar-accent-base: #ebebeb;
-	--sidebar-accent-foreground-base: #171717;
-	--sidebar-border-base: #e8e8e8;
-	--sidebar-ring: #171717;
-
-	--nav-fg-base: #333333;
-	--nav-fg-muted-base: #8a8a8a;
-	--nav-surface-hover-base: #efefef;
-	--nav-icon-idle-base: #8f8f8f;
-	--nav-beta-border: #dddddd;
-	--panel-surface-hover-base: #ececec;
-	--panel-input-surface-base: #f4f4f4;
-	--panel-input-surface-hover-base: #ededed;
-	--panel-surface-fg-muted: #757575;
-	--panel-slider-fg-base: #9b9b9b;
-	--chat-icon-fg-base: #555555;
-	--chat-icon-bg-hover-base: #ececec;
-}
-
-/* Dark surfaces come from the base .dark block; Minimal only swaps the accents. */
-:root[data-palette="minimal"].dark {
-	--primary: #ededed;
-	--primary-foreground: #111111;
-	--bypass: #9c9c9c;
-	--ring: #ededed;
-	--chart-1: #ededed;
-	--chart-2: #bdbdbd;
-	--chart-3: #8f8f8f;
-	--chart-4: #616161;
-	--chart-5: #3d3d3d;
-	--sidebar-primary: #ededed;
-	--sidebar-primary-foreground: #111111;
-	--sidebar-ring: #ededed;
-}
 
 /* ---------------------------------------------------------------------------
    Flavor themes (Theme > More themes). Each sets --th-* seeds per mode; the
@@ -3003,15 +2867,15 @@ html[data-chat-font] .aui-root {
 		background-color: var(--panel-input-surface-hover);
 	}
 
-	/* Images and Video: a lighter border in the Standard, Classic and Minimal light themes. */
-	html:not(.dark):is(:not([data-palette]), [data-palette="classic"], [data-palette="minimal"]) .diffusion-surface {
+	/* Images and Video: a lighter border in the Standard light theme. */
+	html:not(.dark):not([data-palette]) .diffusion-surface {
 		--border-base: #e9e9e9;
 		--input-base: #e9e9e9;
 		--border: var(--border-base);
 		--input: var(--input-base);
 	}
 	/* The :root derivation is already substituted, so a scoped base must redo it for the slider. */
-	html[data-contrast-adjust]:not(.dark):is(:not([data-palette]), [data-palette="classic"], [data-palette="minimal"]) .diffusion-surface {
+	html[data-contrast-adjust]:not(.dark):not([data-palette]) .diffusion-surface {
 		--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
 		--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
 	}
@@ -3673,11 +3537,6 @@ html[data-chat-font] .aui-root {
 	/* Dark composer controls: softer hover and open state. */
 	.dark :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]) {
 		background-color: color-mix(in srgb, var(--accent) 60%, var(--card));
-	}
-	/* Classic and Minimal dark --primary is near the resting ink: dim off pills (#12025). */
-	:root:is([data-palette="classic"], [data-palette="minimal"]).dark
-		:is(.composer-pill-btn, .unsloth-thinking-pill)[data-active="false"] {
-		color: color-mix(in oklab, var(--foreground) 60%, transparent);
 	}
 	/* Permission-level pill: higher-contrast grey than the resting pills so
 	   the active level stays legible (darker in light mode, lighter in dark).
@@ -6820,9 +6679,10 @@ html[data-chat-wallpaper-workspace-ready] [data-slot="window-titlebar"][data-wal
 /* Glass materials (html[data-glass]): sidebar and composer frost over the wallpaper; "macos" over the desktop.
    The unprefixed backdrop-filter goes last: the minifier keeps only the last of the pair, and Chromium
    (WebView2, Chrome) ignores the -webkit- one. */
-/* --glass-strength (Settings, 0.2-2, default 1) scales every material's tint and blur; the cap keeps it glass. */
+/* Glass strength (material.ts) sets --glass-strength (blur, 0.2-2x) and --glass-opacity (each pane's final
+   opacity, 0.35-2x, after the readability floors; capped at 96% so it stays glass). */
 html[data-glass] {
-  --glass-tint: min(92%, calc(var(--glass-tint-base) * var(--glass-strength, 1)));
+  --glass-tint: var(--glass-tint-base);
   --glass-blur: calc(var(--glass-blur-base) * var(--glass-strength, 1));
 }
 html[data-glass="transparent"] { --glass-tint-base: 42%; --glass-blur-base: 0px; --glass-saturate: 100%; }
@@ -6831,15 +6691,66 @@ html[data-glass="blurred"] { --glass-tint-base: 26%; --glass-blur-base: 48px; --
 html[data-glass="liquid"] { --glass-tint-base: 14%; --glass-blur-base: 10px; --glass-saturate: 190%; }
 html[data-glass="liquid-3d"] { --glass-tint-base: 14%; --glass-blur-base: 10px; --glass-saturate: 190%; }
 html[data-glass="macos"] { --glass-tint-base: 30%; --glass-blur-base: 24px; --glass-saturate: 160%; }
-/* A floor: navigation text sits over the image on every page. */
+/* The solid surface colours, resolved on <html>, for panes that turn the surfaces inside them translucent
+   (dialogs, menus, All pages). */
+html {
+  --glass-page-bg: var(--background);
+  --glass-page-popover: var(--popover);
+  --glass-page-card: var(--card);
+  --glass-page-muted: var(--muted);
+  --glass-page-secondary: var(--secondary);
+  --glass-page-input: var(--panel-input-surface);
+}
+/* A floor: navigation text sits over the image on every page. --glass-read-floor and --glass-shade
+   (background.tsx, from the image's tone) raise it further so text reads over this image, and shade
+   light panes so they stand apart from a light image. */
 html { --glass-sidebar-floor: 52%; }
 html.dark { --glass-sidebar-floor: 40%; }
+html[data-glass] {
+  --glass-pane-floor: max(var(--glass-sidebar-floor), var(--glass-read-floor, 0%));
+  --glass-sidebar-fill: color-mix(in srgb, var(--sidebar), var(--foreground) var(--glass-shade, 0%));
+  --glass-panel-fill: color-mix(in srgb, var(--panel-surface), var(--foreground) var(--glass-shade, 0%));
+  --glass-composer-fill: color-mix(in srgb, var(--background), var(--foreground) var(--glass-shade, 0%));
+}
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"],
 html[data-glass="macos"] [data-slot="sidebar-inner"] {
-  background-color: color-mix(in srgb, var(--sidebar) max(var(--glass-tint), var(--glass-sidebar-floor)), transparent);
+  background-color: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   box-shadow: inset -1px 0 0 color-mix(in srgb, var(--foreground) 9%, transparent);
+}
+/* The BETA badge: an outline on the glass, not an opaque chip with a dark drop shadow. */
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] .nav-badge,
+html[data-glass="macos"] [data-slot="sidebar-inner"] .nav-badge {
+  border-color: color-mix(in srgb, var(--foreground) 22%, transparent);
+  background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+  color: color-mix(in srgb, var(--foreground) 72%, transparent);
+  box-shadow: none;
+}
+/* Borders and dividers are glass lines: the colour of the text at low alpha instead of an opaque grey, so
+   they show the glass and image through them. Set on the base tokens, which every derived border reads;
+   Images and Video pin their own base, so they get it too. */
+html[data-glass][data-chat-wallpaper-workspace-ready],
+html[data-glass="macos"] {
+  --glass-line: color-mix(in srgb, var(--foreground-base) 13%, transparent);
+  --glass-line-strong: color-mix(in srgb, var(--foreground-base) 18%, transparent);
+  --border-base: var(--glass-line);
+  --input-base: var(--glass-line-strong);
+  --sidebar-border-base: var(--glass-line);
+  --sidebar-edge: var(--glass-line);
+  --panel-edge: var(--glass-line);
+}
+html.dark[data-glass][data-chat-wallpaper-workspace-ready],
+html.dark[data-glass="macos"] {
+  --glass-line: rgb(255 255 255 / .13);
+  --glass-line-strong: rgb(255 255 255 / .17);
+}
+html[data-glass][data-chat-wallpaper-workspace-ready] .diffusion-surface,
+html[data-glass="macos"] .diffusion-surface {
+  --border-base: var(--glass-line);
+  --input-base: var(--glass-line-strong);
+  --border: var(--border-base);
+  --input: var(--input-base);
 }
 /* Sticky section labels would otherwise paint solid sidebar bands across the glass. */
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-sticky-label),
@@ -6849,7 +6760,7 @@ html[data-glass="macos"] [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-s
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
 html[data-glass] .wallpaper-preview-composer,
 html[data-glass="macos"] .unsloth-composer-surface {
-  background-color: color-mix(in srgb, var(--background) calc(var(--glass-tint) + 14%), transparent);
+  background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc(max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   --composer-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 14%, transparent), inset 0 1px 0 rgb(255 255 255 / .1);
@@ -6871,14 +6782,14 @@ html.dark[data-glass^="liquid"] {
   --glass-rim: inset 0 1px 0 rgb(255 255 255 / .16), inset 0 0 0 1px rgb(255 255 255 / .05);
 }
 html[data-glass="liquid-3d"] {
-  --glass-edge: linear-gradient(135deg, rgb(255 255 255 / .45), rgb(255 255 255 / .08) 30%, transparent 55%, rgb(255 255 255 / .08) 80%, rgb(255 255 255 / .3));
+  --glass-edge: linear-gradient(135deg, rgb(255 255 255 / .3), rgb(255 255 255 / .04) 30%, transparent 55%, rgb(255 255 255 / .04) 80%, rgb(255 255 255 / .18));
   --glass-rim: inset 0 1px 1px rgb(255 255 255 / .7), inset 0 16px 30px -20px rgb(255 255 255 / .8), inset 0 -18px 34px -20px rgb(255 255 255 / .6);
   --glass-sheen: radial-gradient(70% 130% at 12% -15%, rgb(255 255 255 / .55), transparent 60%), radial-gradient(55% 120% at 92% 118%, rgb(255 255 255 / .4), transparent 62%), linear-gradient(172deg, rgb(255 255 255 / .14), transparent 50%);
   --glass-bead: radial-gradient(120% 120% at 30% 12%, rgb(255 255 255 / .6), rgb(255 255 255 / .14) 62%, rgb(255 255 255 / .28));
   --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .8), inset 0 -2px 5px rgb(255 255 255 / .3), inset 0 0 0 1px rgb(255 255 255 / .2);
 }
 html.dark[data-glass="liquid-3d"] {
-  --glass-edge: linear-gradient(135deg, rgb(255 255 255 / .2), rgb(255 255 255 / .04) 30%, transparent 55%, rgb(255 255 255 / .04) 80%, rgb(255 255 255 / .12));
+  --glass-edge: linear-gradient(135deg, rgb(255 255 255 / .12), rgb(255 255 255 / .02) 30%, transparent 55%, rgb(255 255 255 / .02) 80%, rgb(255 255 255 / .07));
   --glass-rim: inset 0 1px 1px rgb(255 255 255 / .22), inset 0 16px 30px -20px rgb(255 255 255 / .22), inset 0 -18px 34px -20px rgb(255 255 255 / .14);
   --glass-sheen: radial-gradient(70% 130% at 12% -15%, rgb(255 255 255 / .16), transparent 60%), radial-gradient(55% 120% at 92% 118%, rgb(255 255 255 / .08), transparent 62%);
   --glass-bead: radial-gradient(120% 120% at 30% 12%, rgb(255 255 255 / .2), rgb(255 255 255 / .04) 62%, rgb(255 255 255 / .08));
@@ -6927,7 +6838,7 @@ html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-
   box-shadow: inset 0 1px 0 rgb(255 255 255 / .5);
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="window-titlebar"][data-wallpaper-sidebar-pinned] > [data-wallpaper-chrome-controls]:first-child {
-  background: color-mix(in srgb, var(--sidebar) var(--glass-tint), transparent);
+  background: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
 }
 
 /* Composer outline off: no ring or bevel on glass either. */
@@ -6947,7 +6858,7 @@ html[data-glass="liquid-3d"] .wallpaper-preview:has(> .chat-wallpaper[data-outli
 /* Run settings panel: the same pane as the sidebar; its header and fields keep their own fills. */
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"],
 html[data-glass="macos"] [data-slot="chat-settings-panel"] {
-  background-color: color-mix(in srgb, var(--panel-surface) var(--glass-tint), transparent);
+  background-color: color-mix(in srgb, var(--glass-panel-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
@@ -7028,7 +6939,7 @@ html[data-glass="macos"] :is([data-slot="sidebar-inset"], [data-slot="window-tit
   background-color: color-mix(in srgb, var(--background) 52%, transparent);
 }
 html[data-glass="macos"] [data-slot="window-titlebar"][data-wallpaper-sidebar-pinned] > [data-wallpaper-chrome-controls]:first-child {
-  background: color-mix(in srgb, var(--sidebar) var(--glass-tint), transparent);
+  background: color-mix(in srgb, var(--sidebar) min(96%, calc(var(--glass-tint) * var(--glass-opacity, 1))), transparent);
 }
 html[data-glass="macos"] :is([data-chat-page-root], .aui-thread-viewport, [data-wallpaper-page-canvas], .hub-page, .hub-page .hub-canvas, [data-side-panel-inset]:not(.chat-header-fade)) {
   background: transparent;
@@ -7037,10 +6948,30 @@ html[data-glass="macos"] :is(.chat-header-fade, [data-slot="window-titlebar-deco
   visibility: hidden;
 }
 
-/* Glass menus (html[data-glass-menus]): readable over anything, so always some blur and a heavier tint. */
+/* Glass menus (html[data-glass-menus]): readable over anything, so always some blur and a heavier tint.
+   Menus that pin their fill with a layered !important (More menu, lifted dropdowns) read --sidebar or
+   --dropdown-lift-surface, so those are pointed at the glass instead. */
+html[data-glass] {
+  --glass-menu-fill: color-mix(in srgb, var(--popover) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 30%)), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent);
+}
 html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
+  --sidebar: var(--glass-menu-fill);
+  --dropdown-lift-surface: var(--glass-menu-fill);
+  --dropdown-lift-accent: var(--glass-hover);
+  /* Pills and fields inside (picker tabs, Search Hub, Eject) become lighter glass, not solid chips. */
+  --background: color-mix(in srgb, var(--glass-page-bg) 65%, transparent);
+  --card: color-mix(in srgb, var(--glass-page-card) 65%, transparent);
+  --popover: color-mix(in srgb, var(--glass-page-popover) 65%, transparent);
+  --color-background: var(--background);
+  --color-card: var(--card);
+  --color-popover: var(--popover);
   --accent: var(--glass-hover);
-  background-color: color-mix(in srgb, var(--popover) min(100%, calc(var(--glass-tint) + 30%)), transparent);
+  --sidebar-accent: var(--glass-hover);
+  --muted: var(--glass-hover);
+  --color-accent: var(--glass-hover);
+  --color-sidebar-accent: var(--glass-hover);
+  --color-muted: var(--glass-hover);
+  background-color: var(--glass-menu-fill);
   -webkit-backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate));
   backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate));
 }
@@ -7054,13 +6985,81 @@ html[data-glass][data-glass-menus] :is([role="menuitem"], [role="menuitemradio"]
 }
 /* Tooltips and hover cards (context usage, token counts) take the same glass over their own dark fill. */
 html[data-glass][data-glass-menus] :is(.tooltip-compact, .tooltip-rich) {
-  background-color: color-mix(in srgb, var(--tooltip-bg) min(100%, calc(var(--glass-tint) + 40%)), transparent);
+  background-color: color-mix(in srgb, var(--tooltip-bg) min(96%, calc(min(100%, calc(var(--glass-tint) + 40%)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate));
   backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate));
 }
 html[data-glass^="liquid"][data-glass-menus] :is(.tooltip-compact, .tooltip-rich) {
   background-image: var(--glass-sheen);
   box-shadow: var(--glass-rim);
+}
+/* Dialogs (Settings, search) are one glass pane; the surfaces inside turn translucent, as on All pages.
+   The --glass-page-* tokens hold the solid colours, resolved on <html>. */
+html[data-glass][data-glass-menus] [data-slot="dialog-content"] {
+  background-color: color-mix(in srgb, var(--glass-page-bg) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 40%)), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent);
+  -webkit-backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
+  --background: transparent;
+  --popover: transparent;
+  --sidebar: color-mix(in srgb, var(--glass-page-card) 35%, transparent);
+  --card: color-mix(in srgb, var(--glass-page-card) 55%, transparent);
+  --muted: color-mix(in srgb, var(--glass-page-muted) 60%, transparent);
+  --secondary: color-mix(in srgb, var(--glass-page-secondary) 60%, transparent);
+  --panel-input-surface: color-mix(in srgb, var(--glass-page-input) 60%, transparent);
+  --accent: var(--glass-hover);
+  --sidebar-accent: var(--glass-hover);
+  --color-background: transparent;
+  --color-popover: transparent;
+  --color-sidebar: var(--sidebar);
+  --color-card: var(--card);
+  --color-muted: var(--muted);
+  --color-secondary: var(--secondary);
+  --color-accent: var(--glass-hover);
+  --color-sidebar-accent: var(--glass-hover);
+}
+html[data-glass^="liquid"][data-glass-menus] [data-slot="dialog-content"] {
+  background-image: var(--glass-sheen);
+  box-shadow: var(--glass-rim);
+}
+/* Toasts too. !important: Sonner injects its base rules at runtime, and the toast rules above use it. */
+html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] {
+  --accent: var(--glass-hover);
+  --muted: var(--glass-hover);
+  --secondary: var(--glass-field);
+  background-color: color-mix(in srgb, var(--popover) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 30%)), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent) !important;
+  -webkit-backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate)) !important;
+  backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 10%, transparent) !important;
+}
+html[data-glass^="liquid"][data-glass-menus] [data-sonner-toast][data-styled="true"] {
+  background-image: var(--glass-sheen);
+  box-shadow: var(--glass-rim) !important;
+}
+html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] [data-close-button] {
+  background: transparent !important;
+}
+html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] :is([data-close-button], [data-cancel]):hover {
+  background: var(--glass-hover) !important;
+  box-shadow: var(--glass-hover-rim);
+}
+
+/* Glass with no background image (backdrop.tsx): soft colour fields from the theme accent, so the glass
+   has something to frost. */
+.glass-backdrop {
+  background:
+    radial-gradient(55% 60% at 14% 18%, color-mix(in oklab, var(--primary) 42%, transparent), transparent 70%),
+    radial-gradient(50% 55% at 86% 22%, rgb(236 72 153 / .32), transparent 70%),
+    radial-gradient(60% 55% at 72% 88%, rgb(59 130 246 / .30), transparent 70%),
+    radial-gradient(45% 50% at 22% 86%, rgb(245 158 11 / .24), transparent 70%),
+    var(--background);
+}
+.dark .glass-backdrop {
+  background:
+    radial-gradient(55% 60% at 14% 18%, color-mix(in oklab, var(--primary) 38%, transparent), transparent 70%),
+    radial-gradient(50% 55% at 86% 22%, rgb(190 24 93 / .36), transparent 70%),
+    radial-gradient(60% 55% at 72% 88%, rgb(37 99 235 / .34), transparent 70%),
+    radial-gradient(45% 50% at 22% 86%, rgb(217 119 6 / .22), transparent 70%),
+    var(--background);
 }
 
 /* All pages under glass: each page sits on one frosted pane (tint and blur follow Glass strength, with a
@@ -7069,14 +7068,9 @@ html[data-glass^="liquid"][data-glass-menus] :is(.tooltip-compact, .tooltip-rich
    blocks; hover fills take the glass wash. --glass-page-* hold the solid colours, resolved on <html>. */
 html {
   --glass-page-floor: 70%;
-  --glass-page-bg: var(--background);
-  --glass-page-card: var(--card);
-  --glass-page-muted: var(--muted);
-  --glass-page-secondary: var(--secondary);
-  --glass-page-input: var(--panel-input-surface);
 }
 html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] {
-  background-color: color-mix(in srgb, var(--glass-page-bg) clamp(var(--glass-page-floor), calc(var(--glass-tint) + 22%), 88%), transparent);
+  background-color: color-mix(in srgb, var(--glass-page-bg) min(96%, calc(max(clamp(var(--glass-page-floor), calc(var(--glass-tint) + 22%), 88%), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent);
   background-image: var(--glass-sheen, none);
   --background: color-mix(in srgb, var(--glass-page-bg) 35%, transparent);
   --card: color-mix(in srgb, var(--glass-page-card) 55%, transparent);
@@ -7139,25 +7133,32 @@ html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .
 .glass-lens-fill .glass-lens-copy {
   filter: blur(var(--glass-blur, 12px)) saturate(var(--glass-saturate, 150%));
 }
-/* A hairline: the padding box minus the content box, so the outline is the colour right behind it. */
+/* A hairline: the padding box minus the content box, so the outline is the colour right behind it,
+   softened and lit more along the top and bottom edges than the sides. */
 .glass-lens-rim {
   padding: 1px;
   mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
-  opacity: .8;
+  opacity: .55;
 }
 .glass-lens-rim .glass-lens-copy {
-  filter: blur(1px) saturate(2.2) brightness(1.5);
+  filter: blur(1.5px) saturate(1.5) brightness(1.4);
 }
-/* Light catching the top edge. */
+.glass-lens-rim::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(rgb(255 255 255 / .35), transparent 30%, transparent 75%, rgb(255 255 255 / .15));
+}
+/* A faint bevel: light along the inside of the top edge, a soft shade inside the bottom. */
 .glass-lens::after {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / .3);
+  box-shadow: inset 0 1px 1px -.5px rgb(255 255 255 / .3), inset 0 4px 4px -4px rgb(255 255 255 / .22), inset 0 -3px 4px -3px rgb(0 0 0 / .1);
 }
 .dark .glass-lens::after {
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / .14);
+  box-shadow: inset 0 1px 1px -.5px rgb(255 255 255 / .14), inset 0 4px 4px -4px rgb(255 255 255 / .08), inset 0 -3px 4px -3px rgb(0 0 0 / .35);
 }
 /* The lit rim is the outline now. */
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface:has(> .glass-lens) {
@@ -7185,12 +7186,16 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
   --lq-rim-lo: rgb(255 255 255 / .07);
 }
 .unsloth-liquid-layer[data-liquid-layer="composer"] {
-  --lq-tint: color-mix(in srgb, var(--background) min(100%, calc((var(--glass-tint) + 14%) * 2)), transparent);
-  --lq-tint-deep: color-mix(in srgb, var(--background) calc(var(--glass-tint) + 14%), transparent);
+  --lq-tint: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc(max(min(100%, calc((var(--glass-tint) + 14%) * 2)), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent);
+  --lq-tint-deep: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc(max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent);
+}
+/* The composer's outline is the lens hairline; the library's fallback ring would draw a second, even one. */
+.unsloth-liquid-layer[data-liquid-layer="composer"] .liqui-glass__shine {
+  display: none;
 }
 .unsloth-liquid-layer[data-liquid-layer="menu"] {
-  --lq-tint: color-mix(in srgb, var(--popover) min(100%, calc(var(--glass-tint) + 30%)), transparent);
-  --lq-tint-deep: color-mix(in srgb, var(--popover) calc(var(--glass-tint) + 20%), transparent);
+  --lq-tint: color-mix(in srgb, var(--glass-page-popover) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 30%)), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent);
+  --lq-tint-deep: color-mix(in srgb, var(--glass-page-popover) min(96%, calc(calc(var(--glass-tint) + 20%) * var(--glass-opacity, 1))), transparent);
 }
 /* The layer brings its own blur and tint. A host keeping its backdrop-filter would be a backdrop root,
    and the layer's refraction would then see only the host, not the page; !important beats the glass
