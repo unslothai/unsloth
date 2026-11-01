@@ -5640,7 +5640,7 @@ export const es419 = {
     chatName: "Nombre del chat",
     deleteChat: "Eliminar chat",
     deleteChatDescription:
-      "Se eliminarán permanentemente el chat {name} y sus mensajes. Esta acción no se puede deshacer.",
+      'Se eliminarán permanentemente el chat "{name}" y sus mensajes. Esta acción no se puede deshacer.',
     importChats: "Importar chats",
     importDestination: "Elige dónde importar {name}:",
     selectDestination: "Seleccionar destino",

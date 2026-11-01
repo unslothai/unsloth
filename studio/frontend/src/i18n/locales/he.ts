@@ -5253,7 +5253,7 @@ export const he = {
     renameChat: "שינוי שם הצ'אט",
     chatName: "שם הצ'אט",
     deleteChat: "מחיקת צ'אט",
-    deleteChatDescription: "הצ'אט {name} וההודעות שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
+    deleteChatDescription: "הצ'אט \"{name}\" וההודעות שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
     importChats: "ייבוא צ'אטים",
     importDestination: "בחרו לאן לייבא את {name}:",
     selectDestination: "בחירת יעד",

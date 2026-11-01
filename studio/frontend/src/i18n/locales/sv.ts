@@ -5400,7 +5400,7 @@ export const sv = {
     renameChat: "Byt namn på chatt",
     chatName: "Chattnamn",
     deleteChat: "Ta bort chatt",
-    deleteChatDescription: "Chatten {name} och dess meddelanden raderas permanent. Det går inte att ångra.",
+    deleteChatDescription: 'Chatten "{name}" och dess meddelanden raderas permanent. Det går inte att ångra.',
     importChats: "Importera chattar",
     importDestination: "Välj var {name} ska importeras:",
     selectDestination: "Välj mål",

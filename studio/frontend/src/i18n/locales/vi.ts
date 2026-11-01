@@ -5557,7 +5557,7 @@ export const vi = {
     chatName: "Tên cuộc trò chuyện",
     deleteChat: "Xóa cuộc trò chuyện",
     deleteChatDescription:
-      "Cuộc trò chuyện {name} và các tin nhắn của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
+      "Cuộc trò chuyện “{name}” và các tin nhắn của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
     importChats: "Nhập cuộc trò chuyện",
     importDestination: "Chọn nơi để nhập {name}:",
     selectDestination: "Chọn đích đến",

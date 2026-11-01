@@ -5192,7 +5192,7 @@ export const en = {
     renameChat: "Rename chat",
     chatName: "Chat name",
     deleteChat: "Delete chat",
-    deleteChatDescription: "This permanently deletes {name} and its messages. This cannot be undone.",
+    deleteChatDescription: 'This permanently deletes "{name}" and its messages. This cannot be undone.',
     importChats: "Import chats",
     importDestination: "Choose where to import {name}:",
     selectDestination: "Select destination",

@@ -5156,7 +5156,7 @@ export const ar = {
     renameChat: "إعادة تسمية المحادثة",
     chatName: "اسم المحادثة",
     deleteChat: "حذف المحادثة",
-    deleteChatDescription: "سيتم حذف المحادثة {name} ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
+    deleteChatDescription: "سيتم حذف المحادثة «{name}» ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
     importChats: "استيراد المحادثات",
     importDestination: "اختر مكان استيراد {name}:",
     selectDestination: "اختر الوجهة",

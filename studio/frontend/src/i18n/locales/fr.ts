@@ -5241,7 +5241,7 @@ export const fr = {
     renameChat: "Renommer le chat",
     chatName: "Nom du chat",
     deleteChat: "Supprimer le chat",
-    deleteChatDescription: "Le chat {name} et ses messages seront définitivement supprimés. Cette action est irréversible.",
+    deleteChatDescription: 'Le chat "{name}" et ses messages seront définitivement supprimés. Cette action est irréversible.',
     importChats: "Importer des chats",
     importDestination: "Choisissez où importer {name} :",
     selectDestination: "Choisir la destination",

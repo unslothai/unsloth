@@ -5612,7 +5612,7 @@ export const nl = {
     chatName: "Chatnaam",
     deleteChat: "Chat verwijderen",
     deleteChatDescription:
-      "Hiermee worden de chat {name} en de berichten ervan definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
+      'Hiermee worden de chat "{name}" en de berichten ervan definitief verwijderd. Dit kan niet ongedaan worden gemaakt.',
     importChats: "Chats importeren",
     importDestination: "Kies waar je {name} wilt importeren:",
     selectDestination: "Bestemming selecteren",

@@ -5057,7 +5057,7 @@ export const zhCN = {
     renameChat: "重命名聊天",
     chatName: "聊天名称",
     deleteChat: "删除聊天",
-    deleteChatDescription: "聊天{name}及其消息将被永久删除。此操作无法撤销。",
+    deleteChatDescription: "聊天“{name}”及其消息将被永久删除。此操作无法撤销。",
     importChats: "导入聊天",
     importDestination: "选择 {name} 的导入位置：",
     selectDestination: "选择目标",

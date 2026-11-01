@@ -5557,7 +5557,7 @@ export const id = {
     chatName: "Nama chat",
     deleteChat: "Hapus chat",
     deleteChatDescription:
-      "Chat {name} dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
+      'Chat "{name}" dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.',
     importChats: "Impor chat",
     importDestination: "Pilih tujuan impor {name}:",
     selectDestination: "Pilih tujuan",

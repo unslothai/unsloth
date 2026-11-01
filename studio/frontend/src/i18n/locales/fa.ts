@@ -5524,7 +5524,7 @@ export const fa = {
     chatName: "نام گفتگو",
     deleteChat: "حذف گفتگو",
     deleteChatDescription:
-      "گفتگوی {name} و پیام‌های آن برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
+      "گفتگوی «{name}» و پیام‌های آن برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
     importChats: "وارد کردن گفتگوها",
     importDestination: "محل وارد کردن {name} را انتخاب کنید:",
     selectDestination: "انتخاب مقصد",

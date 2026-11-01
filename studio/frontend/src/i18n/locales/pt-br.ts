@@ -5186,7 +5186,7 @@ export const ptBR = {
     renameChat: "Renomear chat",
     chatName: "Nome do chat",
     deleteChat: "Excluir chat",
-    deleteChatDescription: "O chat {name} e suas mensagens serão excluídos permanentemente. Essa ação não pode ser desfeita.",
+    deleteChatDescription: 'O chat "{name}" e suas mensagens serão excluídos permanentemente. Essa ação não pode ser desfeita.',
     importChats: "Importar chats",
     importDestination: "Escolha onde importar {name}:",
     selectDestination: "Selecionar destino",

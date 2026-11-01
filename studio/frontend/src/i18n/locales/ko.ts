@@ -5146,7 +5146,7 @@ export const ko = {
     renameChat: "채팅 이름 바꾸기",
     chatName: "채팅 이름",
     deleteChat: "채팅 삭제",
-    deleteChatDescription: "채팅 {name} 및 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
+    deleteChatDescription: '채팅 "{name}" 및 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.',
     importChats: "채팅 가져오기",
     importDestination: "{name}을(를) 가져올 위치를 선택하세요:",
     selectDestination: "대상 선택",

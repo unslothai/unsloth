@@ -5244,7 +5244,7 @@ export const zhTW = {
     renameChat: "重新命名聊天",
     chatName: "聊天名稱",
     deleteChat: "刪除聊天",
-    deleteChatDescription: "聊天{name}及其訊息將被永久刪除。此動作無法復原。",
+    deleteChatDescription: "聊天「{name}」及其訊息將被永久刪除。此動作無法復原。",
     importChats: "匯入聊天",
     importDestination: "選擇要將 {name} 匯入至何處：",
     selectDestination: "選取目的地",

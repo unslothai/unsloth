@@ -5230,7 +5230,7 @@ export const es = {
     renameChat: "Renombrar chat",
     chatName: "Nombre del chat",
     deleteChat: "Eliminar chat",
-    deleteChatDescription: "Se eliminarán permanentemente el chat {name} y sus mensajes. Esta acción no se puede deshacer.",
+    deleteChatDescription: 'Se eliminarán permanentemente el chat "{name}" y sus mensajes. Esta acción no se puede deshacer.',
     importChats: "Importar chats",
     importDestination: "Elige dónde importar {name}:",
     selectDestination: "Seleccionar destino",

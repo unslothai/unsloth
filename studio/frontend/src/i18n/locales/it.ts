@@ -5226,7 +5226,7 @@ export const it = {
     renameChat: "Rinomina chat",
     chatName: "Nome chat",
     deleteChat: "Elimina chat",
-    deleteChatDescription: "La chat {name} e i suoi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
+    deleteChatDescription: "La chat «{name}» e i suoi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
     importChats: "Importa chat",
     importDestination: "Scegli dove importare {name}:",
     selectDestination: "Seleziona destinazione",

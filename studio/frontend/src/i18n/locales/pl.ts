@@ -5605,7 +5605,7 @@ export const pl = {
     chatName: "Nazwa czatu",
     deleteChat: "Usuń czat",
     deleteChatDescription:
-      "Czat {name} i jego wiadomości zostaną trwale usunięte. Tej operacji nie można cofnąć.",
+      "Czat „{name}” i jego wiadomości zostaną trwale usunięte. Tej operacji nie można cofnąć.",
     importChats: "Importuj czaty",
     importDestination: "Wybierz, gdzie zaimportować: {name}",
     selectDestination: "Wybierz miejsce docelowe",

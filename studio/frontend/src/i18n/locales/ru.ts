@@ -5184,7 +5184,7 @@ export const ru = {
     renameChat: "Переименовать чат",
     chatName: "Название чата",
     deleteChat: "Удалить чат",
-    deleteChatDescription: "Чат {name} и его сообщения будут удалены навсегда. Это действие нельзя отменить.",
+    deleteChatDescription: "Чат «{name}» и его сообщения будут удалены навсегда. Это действие нельзя отменить.",
     importChats: "Импорт чатов",
     importDestination: "Выберите, куда импортировать {name}:",
     selectDestination: "Выберите место",

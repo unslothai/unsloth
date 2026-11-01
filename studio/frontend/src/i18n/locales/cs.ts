@@ -5573,7 +5573,7 @@ export const cs = {
     chatName: "Název chatu",
     deleteChat: "Smazat chat",
     deleteChatDescription:
-      "Chat {name} a jeho zprávy budou trvale smazány. Tuto akci nelze vrátit zpět.",
+      "Chat „{name}“ a jeho zprávy budou trvale smazány. Tuto akci nelze vrátit zpět.",
     importChats: "Importovat chaty",
     importDestination: "Vyberte, kam importovat {name}:",
     selectDestination: "Vybrat cíl",

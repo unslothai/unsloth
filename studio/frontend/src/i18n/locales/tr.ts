@@ -5552,7 +5552,7 @@ export const tr = {
     chatName: "Sohbet adı",
     deleteChat: "Sohbeti sil",
     deleteChatDescription:
-      "{name} sohbeti ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
+      "“{name}” sohbeti ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
     importChats: "Sohbetleri içe aktar",
     importDestination: "{name} öğesinin içe aktarılacağı yeri seçin:",
     selectDestination: "Hedef seçin",

@@ -5106,7 +5106,7 @@ export const ja = {
     renameChat: "チャット名を変更",
     chatName: "チャット名",
     deleteChat: "チャットを削除",
-    deleteChatDescription: "チャット{name}とそのメッセージは完全に削除されます。この操作は取り消せません。",
+    deleteChatDescription: "チャット「{name}」とそのメッセージは完全に削除されます。この操作は取り消せません。",
     importChats: "チャットをインポート",
     importDestination: "{name} のインポート先を選択してください:",
     selectDestination: "インポート先を選択",

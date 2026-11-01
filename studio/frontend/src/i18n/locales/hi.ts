@@ -5167,7 +5167,7 @@ export const hi = {
     renameChat: "चैट का नाम बदलें",
     chatName: "चैट का नाम",
     deleteChat: "चैट हटाएँ",
-    deleteChatDescription: "चैट {name} और उसके संदेश स्थायी रूप से मिटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।",
+    deleteChatDescription: 'चैट "{name}" और उसके संदेश स्थायी रूप से मिटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।',
     importChats: "चैट इंपोर्ट करें",
     importDestination: "चुनें कि {name} को कहाँ इंपोर्ट करना है:",
     selectDestination: "गंतव्य चुनें",
