@@ -613,7 +613,7 @@ def test_counter_hears_eager_fp8_triton_launchers_and_not_the_fp16_gemv():
 
     assert "unsloth::fp8_block_gemv" not in engage.LOWP_GEMM_CUSTOM_OPS
     with P.count_lowp_gemms() as c:
-        engage.note_lowp_gemm("unsloth::fp8_block_small_m_linear")
+        engage.release_lowp_gemm(engage.note_lowp_gemm("unsloth::fp8_block_small_m_linear"))
     assert c["unsloth::fp8_block_small_m_linear"] == 1
     engage.note_lowp_gemm("unsloth::fp8_block_small_m_linear")  # no counter open: a no-op
     assert c["unsloth::fp8_block_small_m_linear"] == 1 and not engage._ACTIVE
@@ -630,3 +630,24 @@ def test_mxfp8_qat_registry_admits_only_bfloat16_like_its_backend():
     assert P.check_recipe("qat:mxfp8", gpu = "sm100", input_dtype = torch.bfloat16, mode = "full")
     with pytest.raises(ValueError):
         P.check_recipe("qat:mxfp8", gpu = "sm100", input_dtype = torch.float32, mode = "full")
+
+
+def test_nested_counters_close_by_identity_and_delegated_gemms_count_once():
+    # Failing before: list.remove matched the outer (equal, all-zero) dict when the inner scope closed, so
+    # the outer cleanup raised; and a launcher that delegates to another counted launcher counted twice.
+    from unsloth.precision import engage
+
+    with P.count_lowp_gemms() as outer:
+        with P.count_lowp_gemms() as inner:
+            pass
+        assert any(a is outer for a in engage._ACTIVE) and not any(a is inner for a in engage._ACTIVE)
+        entered = engage.note_lowp_gemm("unsloth::fp8_block_matmul_torchao")
+        try:  # the delegated Triton launch inside the torchao one
+            engage.release_lowp_gemm(engage.note_lowp_gemm("unsloth::fp8_block_matmul_triton"))
+        finally:
+            engage.release_lowp_gemm(entered)
+    assert not engage._ACTIVE
+    assert outer["unsloth::fp8_block_matmul_torchao"] == 1
+    assert outer.get("unsloth::fp8_block_matmul_triton", 0) == 0
+    assert inner.get("unsloth::fp8_block_matmul_torchao", 0) == 0
+

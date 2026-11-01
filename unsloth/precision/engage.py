@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import threading
 from typing import Dict
 
 __all__ = [
@@ -94,11 +95,32 @@ LOWP_GEMM_CUSTOM_OPS = (
 
 # Counters open right now; eager launchers that bypass dispatch (Triton fp8 kernels) report through note_lowp_gemm.
 _ACTIVE = []
+# ids of the counters already inside a counted GEMM on this thread: a GEMM that delegates to another counted
+# launcher or op (torchao block matmul -> Triton) counts once, at its outer boundary.
+_INSIDE = threading.local()
+
+
+def _inside():
+    ids = getattr(_INSIDE, "ids", None)
+    if ids is None:
+        ids = _INSIDE.ids = set()
+    return ids
 
 
 def note_lowp_gemm(name):
+    """Count one GEMM in every open counter not already inside a counted GEMM; returns the ids to release
+    with `release_lowp_gemm` once the call returns."""
+    inside = _inside()
+    entered = [id(counts) for counts in _ACTIVE if id(counts) not in inside]
     for counts in _ACTIVE:
-        counts[name] = counts.get(name, 0) + 1
+        if id(counts) in entered:
+            counts[name] = counts.get(name, 0) + 1
+    inside.update(entered)
+    return entered
+
+
+def release_lowp_gemm(entered):
+    _inside().difference_update(entered)
 
 
 @contextlib.contextmanager
@@ -130,13 +152,24 @@ def count_lowp_gemms():
             kwargs = None,
         ):
             key = names.get(getattr(getattr(func, "_schema", None), "name", None))
-            if key is not None:
-                counts[key] += 1
-            return func(*args, **(kwargs or {}))
+            inside = _inside()
+            if key is None or id(counts) in inside:
+                return func(*args, **(kwargs or {}))
+            counts[key] += 1
+            inside.add(id(counts))
+            try:
+                return func(*args, **(kwargs or {}))
+            finally:
+                inside.discard(id(counts))
 
     _ACTIVE.append(counts)
     try:
         with _Counter():
             yield counts
     finally:
-        _ACTIVE.remove(counts)
+        # By identity: nested counters start as equal dicts, and list.remove compares by value.
+        for i, active in enumerate(_ACTIVE):
+            if active is counts:
+                del _ACTIVE[i]
+                break
+        _inside().discard(id(counts))
