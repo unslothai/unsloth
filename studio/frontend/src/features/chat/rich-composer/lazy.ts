@@ -3,7 +3,6 @@
 
 import { lazy } from "react";
 
-// The editor and its vendored ProseMirror load only when the Full setting is on.
 export const LazyRichComposerInput = lazy(
   () => import("./rich-composer-input"),
 );

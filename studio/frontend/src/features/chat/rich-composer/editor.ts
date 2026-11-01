@@ -38,7 +38,6 @@ const OPEN_FENCE = /^```([^\s`]*)$/;
 const inCodeBlock = (state: EditorState) =>
   state.selection.$from.parent.type === codeBlock;
 
-// "```lang" alone on a line, caret at its end: the line becomes an empty code block.
 const fenceToCodeBlock: Command = (state, dispatch) => {
   const { $from, empty } = state.selection;
   if (!empty || $from.parent.type !== paragraph) return false;
@@ -65,7 +64,6 @@ const fenceToCodeBlock: Command = (state, dispatch) => {
   return true;
 };
 
-// Leaves a code block for the paragraph after it, adding one at the end of the document.
 function exitCodeBlock(
   state: EditorState,
   dispatch: Parameters<Command>[1],
@@ -85,7 +83,6 @@ function exitCodeBlock(
   return true;
 }
 
-// In a code block, a closing ``` line or a third line break at the end leaves it.
 const newlineInCodeBlock: Command = (state, dispatch) => {
   if (!inCodeBlock(state)) return false;
   const { $from, empty } = state.selection;
@@ -99,7 +96,7 @@ const newlineInCodeBlock: Command = (state, dispatch) => {
   return true;
 };
 
-// A line break, never a new paragraph: the composer's text has no paragraphs, only lines.
+// Never a new paragraph: the sent text has lines, not paragraphs.
 const insertLineBreak: Command = (state, dispatch) => {
   if (dispatch) {
     const marks = state.storedMarks ?? state.selection.$from.marks();
@@ -116,7 +113,6 @@ const newline: Command = (state, dispatch, view) =>
   fenceToCodeBlock(state, dispatch, view) ||
   insertLineBreak(state, dispatch, view);
 
-// A code block first or last in the document has nothing to arrow into, so make the paragraph.
 function arrowOutOfCodeBlock(direction: "up" | "down"): Command {
   return (state, dispatch, view) => {
     if (
@@ -141,7 +137,6 @@ function arrowOutOfCodeBlock(direction: "up" | "down"): Command {
   };
 }
 
-// Backspace at the start of an empty code block turns it back into a line.
 const clearEmptyCodeBlock: Command = (state, dispatch) => {
   const { $from, empty } = state.selection;
   if (
@@ -223,7 +218,6 @@ export function createComposerState(
   return EditorState.create({ doc, plugins, selection: Selection.atEnd(doc) });
 }
 
-// Pasted or inserted Markdown, styled; inside a code block it stays the text it is.
 export function insertMarkdown(state: EditorState, markdown: string) {
   if (inCodeBlock(state)) return state.tr.insertText(markdown).scrollIntoView();
   return state.tr.replaceSelection(markdownSlice(markdown)).scrollIntoView();

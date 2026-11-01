@@ -27,7 +27,6 @@ type Rule = {
 const { bold, italic, code } = composerSchema.marks;
 const { paragraph, hard_break: hardBreak } = composerSchema.nodes;
 
-// Typed text, unstyled: lines joined by breaks.
 function typed(text: string) {
   const content = text
     .split("\n")
@@ -38,7 +37,6 @@ function typed(text: string) {
   return composerSchema.node("doc", null, [paragraph.create(null, content)]);
 }
 
-// What typing `char` at the end of `before` leaves, or null when the rule does not fire.
 function type(
   before: string,
   char: string,
@@ -59,7 +57,6 @@ function type(
     $from.pos - (match[0].length - char.length),
     $from.pos,
   );
-  // The text loses its markers; the Markdown it sends keeps them.
   return tr ? `${serializeMarkdown(tr.doc)} | ${tr.doc.textContent}` : null;
 }
 

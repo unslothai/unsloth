@@ -21,7 +21,6 @@ const { useChatPreferencesStore } = await import(
 test("the old rich paste switch maps onto the three-way setting", () => {
   assert.equal(migrateComposerRichText(undefined, true), "paste");
   assert.equal(migrateComposerRichText(undefined, false), "off");
-  // Never saved: today's behaviour.
   assert.equal(migrateComposerRichText(undefined, undefined), "paste");
   assert.equal(DEFAULT_COMPOSER_RICH_TEXT, "paste");
 });
@@ -59,7 +58,6 @@ test("a saved rich paste switch is read into the new setting", async () => {
       .composerRichText,
     "full",
   );
-  // The next write drops the old key.
   useChatPreferencesStore.getState().setComposerRichText("off");
   const written = JSON.parse(
     store.get("unsloth_chat_preferences") ?? "{}",

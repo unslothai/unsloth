@@ -8,8 +8,6 @@ import {
   Slice,
 } from "../../../vendor/prosemirror-model/index.js";
 
-// The composer's text stays the Markdown that is sent, so this covers only what the editor styles:
-// everything else (headings, lists, tables, links, `_`) is literal text and passes through as is.
 export const composerSchema = new Schema({
   nodes: {
     doc: { content: "block+" },
@@ -46,7 +44,7 @@ export const composerSchema = new Schema({
       toDOM: () => ["br"],
     },
   },
-  // Order is nesting order when serialising: code stays innermost.
+  // Schema order is nesting order: code stays innermost.
   marks: {
     bold: {
       parseDOM: [{ tag: "strong" }, { tag: "b" }],
@@ -79,7 +77,7 @@ const DELIMITERS = [
 ] as const;
 const OPEN_FENCE = /^```([^\s`]*)$/;
 const CLOSE_FENCE = "```";
-// Delimiter matching is quadratic on a line of unmatched markers; past this a line stays literal.
+// Delimiter matching is quadratic on unmatched markers.
 const MAX_STYLED_LINE = 2000;
 
 type Run = { text: string; marks: readonly string[] };
@@ -105,8 +103,7 @@ const isSpace = (char: string | undefined) =>
 
 type Piece = Run & { run: number; at: number };
 
-// Emphasis around whitespace is not Markdown, so edge spaces move outside a mark that does not
-// continue past them. Code spans keep theirs.
+// `**a **` is not emphasis, so edge spaces move outside the markers.
 function expelWhitespace(runs: Run[]): Piece[] {
   const out: Piece[] = [];
   runs.forEach((run, index) => {
@@ -150,7 +147,6 @@ function expelWhitespace(runs: Run[]): Piece[] {
 const sameMarks = (a: readonly string[], b: readonly string[]) =>
   a.length === b.length && a.every((mark, i) => mark === b[i]);
 
-// One line of inline Markdown; `at` reports where each piece of each run landed in the output.
 function serializeLine(
   runs: Run[],
   at?: (run: number, runOffset: number, offset: number, length: number) => void,
@@ -186,7 +182,6 @@ function serializeLine(
   return out;
 }
 
-// Schema order, which is also nesting order.
 const markNames = (marks: readonly Mark[]) =>
   marks.map((mark) => mark.type.name);
 
@@ -194,7 +189,6 @@ type Segment = { pos: number; offset: number; length: number };
 
 export type Serialized = {
   text: string;
-  // Text and line breaks, in document order: doc position -> Markdown offset is 1:1 inside each.
   segments: Segment[];
 };
 
@@ -265,8 +259,7 @@ export function serializeMarkdown(doc: Node): string {
   return serializeDoc(doc).text;
 }
 
-// A caret on a mark boundary maps to the earlier run's end, before any closing marker, so text
-// typed there continues the run and an `@` token stays contiguous.
+// A boundary caret maps before the closing marker, so an `@` token stays contiguous.
 export function docPosToOffset(doc: Node, pos: number): number {
   const { segments, text } = serializeDoc(doc);
   let best = 0;
@@ -279,7 +272,6 @@ export function docPosToOffset(doc: Node, pos: number): number {
   return Math.min(best, text.length);
 }
 
-// Offsets inside markers or fence lines snap to the next text position.
 export function offsetToDocPos(doc: Node, offset: number): number {
   const { segments } = serializeDoc(doc);
   for (const segment of segments) {
@@ -422,14 +414,12 @@ function parseBlocks(markdown: string, styled: boolean): Node {
   return composerSchema.node("doc", null, blocks);
 }
 
-// Always reads back to exactly `markdown`; anything the styled reading would change stays literal.
 export function parseMarkdown(markdown: string): Node {
   const styled = parseBlocks(markdown, true);
   if (serializeMarkdown(styled) === markdown) return styled;
   return parseBlocks(markdown, false);
 }
 
-// A paste or insertion: inline when it is one paragraph, so it joins the line at the caret.
 export function markdownSlice(markdown: string): Slice {
   const doc = parseMarkdown(markdown);
   const first = doc.firstChild;
@@ -442,7 +432,6 @@ export function markdownSlice(markdown: string): Slice {
   );
 }
 
-// Copy out of the editor: the Markdown the selection would send.
 export function sliceToMarkdown(slice: Slice): string {
   const first = slice.content.firstChild;
   try {

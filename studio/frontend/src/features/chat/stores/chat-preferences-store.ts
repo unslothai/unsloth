@@ -38,8 +38,7 @@ import {
 // a local model's layers ended up after it loads.
 // filesPanelCollapsed: on shrinks Chat with files to a header and
 // a row of pills. newChatComposerAtBottom: on docks a new chat's composer at the bottom, as once
-// the chat has messages, instead of under the greeting mid-page. composerRichText: full, paste
-// or off, see composer-rich-text.ts.
+// the chat has messages, instead of under the greeting mid-page.
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
   setPlainTextComposer: (value: boolean) => void;

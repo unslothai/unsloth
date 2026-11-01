@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 /* Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0 */
 
-/* A contenteditable never matches :placeholder-shown, so the textarea's empty-state rules
-   (index.css, .unsloth-composer-input) are repeated on data-empty. */
+/* The textarea's :placeholder-shown rules (index.css), which a contenteditable never matches. */
 .unsloth-composer-input.unsloth-rich-input[data-empty] {
   max-height: calc(40px * var(--ui-space-scale, 1)) !important;
   overflow-y: hidden !important;

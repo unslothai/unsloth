@@ -34,7 +34,6 @@ import {
 
 type Handler = (event: unknown) => void;
 
-// What ComposerPrimitive.Input hands its `render` element: a textarea's props.
 type RichComposerInputProps = {
   ref?: Ref<HTMLElement>;
   value?: string;
@@ -51,7 +50,6 @@ type RichComposerInputProps = {
   [prop: string]: unknown;
 };
 
-// Props a textarea takes that mean nothing here.
 const DROPPED = new Set([
   "name",
   "autoFocus",
@@ -61,7 +59,6 @@ const DROPPED = new Set([
   "rows",
 ]);
 
-// React handlers read these off the event; `currentTarget` is the field, as on the textarea.
 function reactEvent<E extends Event>(
   native: E,
   field: HTMLElement,
@@ -105,7 +102,7 @@ function keyEvent(native: KeyboardEvent, field: HTMLElement) {
   });
 }
 
-// The inputType the composer's send guard reads (applySentTextGuard), from what made the change.
+// For applySentTextGuard.
 function inputTypeOf(tr: Transaction, view: EditorView): string {
   if (isHistoryTransaction(tr)) return "historyUndo";
   const ui = tr.getMeta("uiEvent");
@@ -210,8 +207,7 @@ export default function RichComposerInput(props: RichComposerInputProps) {
         latest.current.onSelect?.(reactEvent(new Event("select"), view.dom));
     };
 
-    // The composer text is the source of truth; anything else (a send, a draft, dictation, a
-    // refused change) resets the document, as a controlled textarea would.
+    // The composer text is the source of truth, as for a controlled textarea.
     const sync = () => {
       if (view.composing) {
         pendingSync = true;
@@ -275,8 +271,7 @@ export default function RichComposerInput(props: RichComposerInputProps) {
         dispatchTransaction,
         clipboardTextSerializer: (slice) => sliceToMarkdown(slice),
         handleDOMEvents: {
-          // The composer's handlers (send, IME gate, @ picker) run first; what they take, the
-          // editor never sees.
+          // The composer's handlers (send, IME gate, @ picker) run first.
           keydown: (_view, event) => {
             plainPasteAt = isPlainPasteChord(event) ? performance.now() : 0;
             latest.current.onKeyDown?.(keyEvent(event, view.dom));
@@ -300,7 +295,6 @@ export default function RichComposerInput(props: RichComposerInputProps) {
             }, 50);
             return false;
           },
-          // Files, long text and links are the composer's; text it leaves is inserted here.
           paste: (_view, event) => {
             const plain = plainPasteStillCounts(
               plainPasteAt,
@@ -317,7 +311,6 @@ export default function RichComposerInput(props: RichComposerInputProps) {
             if (!data) return false;
             event.preventDefault();
             const text = data.getData("text/plain").replace(/\r\n?/g, "\n");
-            // Copied from this editor: its plain text is already the Markdown.
             const own = data.getData("text/html").includes("data-pm-slice");
             const markdown =
               inCodeBlock(view.state) || plain || own
@@ -326,7 +319,6 @@ export default function RichComposerInput(props: RichComposerInputProps) {
             if (markdown ?? text) insert(markdown ?? text, "paste");
             return true;
           },
-          // Files go to the composer's dropzone.
           drop: (_view, event) => (event.dataTransfer?.files.length ?? 0) > 0,
         },
         handleDrop: (_view, event, _slice, moved) => {
@@ -402,7 +394,6 @@ export default function RichComposerInput(props: RichComposerInputProps) {
     };
   }, [aui]);
 
-  // Attribute and editable changes re-render the view; text changes from outside reset it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the view reads them through `latest`; these are triggers.
   useLayoutEffect(() => {
     viewRef.current?.setProps({});

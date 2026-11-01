@@ -2982,9 +2982,8 @@ const Composer: FC<{
     (state) => state.pastedTextMinChars,
   );
   const composerRichText = useChatPreferencesStore((s) => s.composerRichText);
-  // Image edits take plain instructions, so Full falls back to the textarea there.
+  // Image edits keep the textarea.
   const fullRichText = composerRichText === "full" && !overlay;
-  // Full inserts its own pastes; the textarea converts them here.
   const textareaRichPaste = composerRichText !== "off" && !fullRichText;
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
   const submitIntentRef = useRef<ComposerSubmitIntent>("default");
@@ -5656,7 +5655,6 @@ const Composer: FC<{
   // Skills off sends no read_skill, so a mention would load nothing.
   const [skillsSwitchOn] = useSkillsSwitch();
 
-  // Full renders the same input through the vendored editor; the textarea stands in while it loads.
   const composerInput = (render?: ReactElement) => (
     <ComposerPrimitive.Input
       render={render}

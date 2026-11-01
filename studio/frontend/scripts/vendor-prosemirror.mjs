@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Re-creates src/vendor/<package>/ from the pinned npm tarballs: checks each tarball's integrity,
-// copies the built ESM + types + LICENSE, and points the bare imports between the packages at the
-// sibling folders, so Vite, tsc and `node --test` resolve them without an npm dependency.
-// Usage: node scripts/vendor-prosemirror.mjs
+// Re-creates src/vendor/ from the pinned npm tarballs. Usage: node scripts/vendor-prosemirror.mjs
 
 import { execFileSync } from "node:child_process";
 import {

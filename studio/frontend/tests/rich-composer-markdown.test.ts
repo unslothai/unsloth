@@ -33,7 +33,6 @@ const t = (text: string, ...marks: string[]) =>
     marks.map((name) => composerSchema.marks[name].create()),
   );
 
-// What a block's styled content is, as [text, marks] pairs and "\n" for breaks.
 function inline(node: Node): (string | [string, string])[] {
   const out: (string | [string, string])[] = [];
   for (const child of node.children) {
@@ -147,7 +146,6 @@ test("markers become marks and fences become code blocks", () => {
   );
   assert.equal(fenced.child(1).attrs.language, "ts");
   assert.equal(fenced.child(1).textContent, "let a;");
-  // Underscores, headings and lists are not styled; they stay text.
   assert.deepEqual(inline(parseMarkdown("_x_ # h").child(0)), [
     ["_x_ # h", ""],
   ]);
@@ -168,17 +166,14 @@ test("a styled document serialises to the Markdown it shows", () => {
     ),
     "**bold** ***both*** ~~x~~",
   );
-  // A mark's edge spaces go outside its markers.
   assert.equal(
     serializeMarkdown(doc(p(t("bold ", "bold"), "next"))),
     "**bold** next",
   );
   assert.equal(serializeMarkdown(doc(p("a", t(" b", "italic")))), "a *b*");
-  // Code keeps its spaces and gets a longer fence around backticks.
   assert.equal(serializeMarkdown(doc(p(t(" a ", "code")))), "` a `");
   assert.equal(serializeMarkdown(doc(p(t("a`b", "code")))), "``a`b``");
   assert.equal(serializeMarkdown(doc(p(t("x", "bold", "code")))), "**`x`**");
-  // Marks close at a line break.
   assert.equal(
     serializeMarkdown(
       doc(p(t("a", "bold"), hardBreak.create(), t("b", "bold"))),
@@ -198,10 +193,8 @@ test("a styled document serialises to the Markdown it shows", () => {
 test("caret positions map to Markdown offsets and back", () => {
   const markdown = "ab **cd** @sk\n```\nxy\n```\nz";
   const parsed = parseMarkdown(markdown);
-  // Positions: p opens at 0, text starts at 1.
   assert.equal(docPosToOffset(parsed, 1), 0);
   assert.equal(docPosToOffset(parsed, 3), 2); // after "ab"
-  // Run boundaries map to the earlier run's end: before an opening or closing marker.
   assert.equal(docPosToOffset(parsed, 4), 3);
   assert.equal(docPosToOffset(parsed, 5), 6);
   assert.equal(docPosToOffset(parsed, 6), 7);
@@ -210,14 +203,12 @@ test("caret positions map to Markdown offsets and back", () => {
     markdown.slice(0, docPosToOffset(parsed, offsetToDocPos(parsed, mention))),
     "ab **cd** @sk",
   );
-  // Code block text and the paragraph after it.
   const x = markdown.indexOf("xy");
   assert.equal(docPosToOffset(parsed, offsetToDocPos(parsed, x + 1)), x + 1);
   assert.equal(
     docPosToOffset(parsed, offsetToDocPos(parsed, markdown.length)),
     markdown.length,
   );
-  // An offset inside a fence line snaps forward to the code text.
   assert.equal(
     docPosToOffset(parsed, offsetToDocPos(parsed, markdown.indexOf("```") + 1)),
     x,
