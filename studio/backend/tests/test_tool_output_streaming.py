@@ -566,31 +566,28 @@ def test_bash_exec_invalid_utf8_identical_with_streaming():
     _os_isolated_tools(),
     reason = "a PID namespace kills the background job with the leader; see below",
 )
-def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
-    # With timeout=None the drain waits for EOF like communicate(), keeping late output.
+def test_bash_exec_unlimited_timeout_stops_grandchild_holding_stdout():
+    # Like the PID namespace, a job still holding stdout after the leader exits ends with the call.
     command = "( sleep 7; echo late-grandchild-output ) & echo parent-done"
     chunks: list[str] = []
+    started = time.monotonic()
     result = _bash_exec(command, timeout = None, output_callback = chunks.append)
+    assert time.monotonic() - started < 5
     assert "parent-done" in result
-    assert "late-grandchild-output" in result
-    assert "late-grandchild-output" in "".join(chunks)
+    assert "late-grandchild-output" not in result
+    assert "late-grandchild-output" not in "".join(chunks)
 
 
 @pytest.mark.skipif(
     not _os_isolated_tools(), reason = "no PID namespace here, so nothing reaps the job"
 )
 def test_bash_exec_unlimited_timeout_does_not_wait_for_a_job_the_namespace_reaps():
-    from core.inference import tools as tools_module
-
     command = "( sleep 7; echo late-grandchild-output ) & echo parent-done"
     started = time.monotonic()
     result = _bash_exec(command, timeout = None, output_callback = lambda _t: None)
     elapsed = time.monotonic() - started
     assert "parent-done" in result
-    if tools_module._last_tool_execution_record.os_isolation:
-        assert elapsed < 5
-    else:
-        assert "late-grandchild-output" in result
+    assert elapsed < 5
 
 
 def test_bash_exec_finite_timeout_kills_grandchild_holding_stdout(tmp_path):
@@ -599,8 +596,8 @@ def test_bash_exec_finite_timeout_kills_grandchild_holding_stdout(tmp_path):
     gate = tmp_path / "gate"
     command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
     result = _bash_exec(command, timeout = 1, output_callback = lambda _t: None)
-    if not _os_isolated_tools():
-        assert "timed out" in result
+    assert "parent-done" in result
+    assert "timed out" not in result
     _assert_grandchild_was_killed(gate, sentinel)
 
 
@@ -611,8 +608,8 @@ def test_bash_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
     gate = tmp_path / "gate"
     command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
     result = _bash_exec(command, timeout = 1)
-    if not _os_isolated_tools():
-        assert "timed out" in result
+    assert "parent-done" in result
+    assert "timed out" not in result
     _assert_grandchild_was_killed(gate, sentinel)
 
 
@@ -673,7 +670,7 @@ def test_captured_group_survives_fast_leader_reap(tmp_path):
     proc.wait()
 
     output, timed_out, _ = _drain_process_output(proc, 0.5, None, pgid = pgid)
-    assert timed_out
+    assert not timed_out
     assert "parent-done" in output
     _assert_grandchild_was_killed(gate, sentinel)
 

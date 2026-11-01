@@ -277,10 +277,22 @@ def _prepare_connection() -> tuple[sqlite3.Connection, bool]:
     return conn, db_path.resolve() in _schema_ready
 
 
-_SPLICE_OK_SQL = (
-    "json_valid(payload_json) AND instr(payload_json, char(10))=0"
-    " AND instr(payload_json, char(13))=0"
-)
+_SPLICE_OK_SQL = "json_valid({0}) AND instr({0}, char(10))=0 AND instr({0}, char(13))=0"
+
+
+def _execute_splice(
+    conn: sqlite3.Connection, query: str, column: str, params: tuple
+) -> sqlite3.Cursor:
+    """Run query with {} as whether column is one line of valid JSON, safe to splice into a frame."""
+    global _SPLICE_OK_SQL
+    try:
+        return conn.execute(query.format(_SPLICE_OK_SQL.format(column)), params)
+    except sqlite3.OperationalError as exc:
+        # SQLite built without JSON1: re-encode every row, as the parsed read does.
+        if "json_valid" not in str(exc):
+            raise
+        _SPLICE_OK_SQL = "0"
+        return conn.execute(query.format("0"), params)
 
 
 def _dumps_payload(payload: Any) -> str:
@@ -333,14 +345,14 @@ def canonical_request(
     return request_json, hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
-def _run_from_row(row: sqlite3.Row) -> dict[str, Any]:
+def _run_fields(row: sqlite3.Row, request_payload: Any) -> dict[str, Any]:
     return {
         "id": row["id"],
         "threadId": row["thread_id"],
         "userMessageId": row["user_message_id"],
         "assistantMessageId": row["assistant_message_id"],
         "requestHash": row["request_hash"],
-        "requestPayload": _loads(row["request_json"], {}),
+        "requestPayload": request_payload,
         "status": row["status"],
         "cancelRequested": bool(row["cancel_requested"]),
         "lastEventSeq": int(row["last_event_seq"]),
@@ -351,6 +363,27 @@ def _run_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "startedAt": row["started_at"],
         "completedAt": row["completed_at"],
     }
+
+
+def _run_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return _run_fields(row, _loads(row["request_json"], {}))
+
+
+def _run_json_from_row(row: sqlite3.Row) -> str:
+    """json.dumps(_run_from_row(row), ensure_ascii=False, separators=(",", ":")) without parsing
+    request_json: canonical_request's output is a fixed point of loads then dumps with these options."""
+    fields = _run_fields(row, None)
+    keys = list(fields)
+    split = keys.index("requestPayload")
+    head, tail = (
+        json.dumps(
+            {key: fields[key] for key in part},
+            ensure_ascii = False,
+            separators = (",", ":"),
+        )
+        for part in (keys[:split], keys[split + 1 :])
+    )
+    return f'{head[:-1]},"requestPayload":{row["request_json"]},{tail[1:]}'
 
 
 def _append_events_locked(
@@ -675,6 +708,33 @@ def get_run_state(run_id: str) -> dict[str, Any] | None:
         conn.close()
 
 
+def get_run_frame(run_id: str) -> tuple[dict[str, Any], str] | None:
+    """get_run_state's fields plus get_run's row as its compact JSON text, without parsing request_json.
+
+    A request_json SQLite does not see as one line of valid JSON (corrupt, hand edited) takes the old
+    parse and re-encode, so the route never splices text the client cannot parse or that splits the frame."""
+    conn = _connect()
+    try:
+        row = _execute_splice(
+            conn,
+            "SELECT *, {} AS splice_ok FROM chat_generation_runs WHERE id=?",
+            "request_json",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        state = {
+            "status": row["status"],
+            "lastEventSeq": int(row["last_event_seq"]),
+            "updatedAt": int(row["updated_at"]),
+        }
+        if row["splice_ok"]:
+            return state, _run_json_from_row(row)
+        return state, json.dumps(_run_from_row(row), ensure_ascii = False, separators = (",", ":"))
+    finally:
+        conn.close()
+
+
 def get_worker_token(run_id: str) -> str | None:
     conn = _connect()
     try:
@@ -949,21 +1009,13 @@ def list_events(
     """raw=True returns the stored text as "payloadJson": it is already _dumps_payload output, the SSE
     route's encoding. Rows that are not one line of valid JSON (corrupt, hand edited, NaN) are
     re-encoded so the route never splices text the client cannot parse or that splits the frame."""
-    global _SPLICE_OK_SQL
     conn = _connect()
     try:
         if raw:
             query = """SELECT seq, event_type, payload_json, created_at, {} AS splice_ok
                        FROM chat_generation_events
                        WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?"""
-            try:
-                rows = conn.execute(query.format(_SPLICE_OK_SQL), (run_id, after, limit)).fetchall()
-            except sqlite3.OperationalError as exc:
-                # SQLite built without JSON1: re-encode every row, as the parsed read does.
-                if "json_valid" not in str(exc):
-                    raise
-                _SPLICE_OK_SQL = "0"
-                rows = conn.execute(query.format("0"), (run_id, after, limit)).fetchall()
+            rows = _execute_splice(conn, query, "payload_json", (run_id, after, limit)).fetchall()
             return [
                 {
                     "seq": int(row["seq"]),

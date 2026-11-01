@@ -11263,7 +11263,11 @@ class VideoBackend:
                 umem_target, attention_backend, speed_active = effective_speed != SPEED_OFF
             )
             try:
-                h3_attn_backend = h3_attention_backend(h3_attn_backend, requested = attention_backend)
+                h3_attn_backend = h3_attention_backend(
+                    h3_attn_backend,
+                    requested = attention_backend,
+                    target = types.SimpleNamespace(device = device, dtype = dtype),
+                )
             except Exception:  # noqa: BLE001 -- keep the generic pick
                 pass
             attention_engaged = apply_attention_backend(
@@ -11752,6 +11756,7 @@ class VideoBackend:
         flow_shift: Optional[float] = None,
         audio_flow_shift: Optional[float] = None,
         video_id: Optional[str] = None,
+        decoded_reference_audios: Optional[Any] = None,
         expected_state: Optional[object] = None,
         live_preview: Optional[bool] = None,
         before_commit: Optional[Callable[[], None]] = None,
@@ -11793,6 +11798,7 @@ class VideoBackend:
                 reference_image_size,
                 canvas_w,
                 canvas_h,
+                decoded_audios = decoded_reference_audios,
             )
             shift, audio_shift = self._resolve_flow_shifts(
                 state.family, state.engine, flow_shift, audio_flow_shift
@@ -13115,6 +13121,8 @@ class VideoBackend:
         reference_image_size: Optional[str],
         width: int,
         height: int,
+        *,
+        decoded_audios: Optional[Any] = None,
     ) -> Any:
         """Sizing is settled here so both engines' min(1, ...) scales are no-ops; native refuses max."""
         from .video_minimax_h3 import (
@@ -13187,13 +13195,16 @@ class VideoBackend:
                         "silent earlier video. Reorder the videos so ones with soundtracks "
                         "come first, or add a replacement soundtrack to each earlier video."
                     )
-        decoded_audios = tuple(
-            decode_h3_reference_audio(_decode_b64_media(item)) for item in audios
-        )
+        # The route's readability check may have decoded these exact inputs already.
+        reused_audios = decoded_audios.for_inputs(audios) if decoded_audios is not None else None
+        if reused_audios is None:
+            reused_audios = tuple(
+                decode_h3_reference_audio(_decode_b64_media(item)) for item in audios
+            )
         return MiniMaxH3References(
             images = fitted_images,
             videos = tuple(decoded_videos),
-            audios = decoded_audios,
+            audios = reused_audios,
         )
 
     def _h3_native_server_render(

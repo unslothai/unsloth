@@ -1939,25 +1939,32 @@ def _audio_ref_data_url(ref) -> str:
     )
 
 
-def _refuse_unreadable_audio(audios: Optional[list[str]]) -> None:
-    """Decode each reference audio the engine would, refusing one it could not read."""
+def _refuse_unreadable_audio(audios: Optional[list[str]]):
+    """Decode each reference audio the engine would, refusing one it could not read.
+
+    Returns the decoded audios for this request's render to reuse, or None when nothing was decoded."""
     if not audios:
-        return
+        return None
     from core.inference.video import _decode_b64_media
 
     try:
-        from core.inference.video_minimax_h3 import decode_h3_reference_audio
+        from core.inference.video_minimax_h3 import (
+            DecodedReferenceAudios,
+            decode_h3_reference_audio,
+        )
     except ImportError:  # no media decoder here; begin_generate reports it
-        return
+        return None
+    decoded = []
     for index, item in enumerate(audios):
         try:
-            decode_h3_reference_audio(_decode_b64_media(item))
+            decoded.append(decode_h3_reference_audio(_decode_b64_media(item)))
         except ImportError:
-            return
+            return None
         except Exception:  # noqa: BLE001 -- any decode failure is client input feedback
             raise _openai_video_error(
                 400, f"reference_audios[{index}] is not readable audio.", param = "reference_audios"
             )
+    return DecodedReferenceAudios(sources = tuple(audios), decoded = tuple(decoded))
 
 
 def _conditioning_param(
@@ -2261,6 +2268,7 @@ async def _start_openai_video(
     size, seconds, reference_audios = inputs.size, inputs.seconds, inputs.reference_audios
     width, height = size if size is not None else (None, None)
     audio_checked = [False]
+    decoded_audios = [None]
 
     def _refuse_unservable_request(pick) -> None:
         from core.inference.media_model_index import expected_partition
@@ -2271,7 +2279,7 @@ async def _start_openai_video(
             return
         _refuse_family_inputs(fam, expected_partition(pick), body, reference, inputs)
         # Decoded here, like the images above, so unreadable audio never costs a switch.
-        _refuse_unreadable_audio(reference_audios)
+        decoded_audios[0] = _refuse_unreadable_audio(reference_audios)
         audio_checked[0] = True
 
     pin_requested_model = bool(
@@ -2294,7 +2302,7 @@ async def _start_openai_video(
         )
     if not audio_checked[0]:
         # No switch ran the check, and the engine's own decode can fail with more than ValueError.
-        await asyncio.to_thread(_refuse_unreadable_audio, reference_audios)
+        decoded_audios[0] = await asyncio.to_thread(_refuse_unreadable_audio, reference_audios)
 
     backend = get_video_backend()
     # Managed callers are authorized against the exact resident state, pinned to the reservation;
@@ -2350,6 +2358,8 @@ async def _start_openai_video(
                 reference_audios = reference_audios,
             )
             generate_kwargs.update({k: v for k, v in controls.items() if v is not None})
+            if decoded_audios[0] is not None:
+                generate_kwargs["decoded_reference_audios"] = decoded_audios[0]
             if expected_state is not None:
                 generate_kwargs["expected_state"] = expected_state
             resolved = await asyncio.to_thread(

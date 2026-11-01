@@ -724,35 +724,76 @@ def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
     counts: dict[str, int] = {}
     counted_by: list = [None]
 
-    def _count(t: str) -> int:
-        with _compute_lock:
-            tok = _get(model_name).tokenizer
-            owner = counted_by[0]
-            if owner is None or owner() is not tok:
-                counts.clear()
+    def _count_many(texts) -> list[int]:
+        texts = list(texts)
+        out = [0] * len(texts)
+        # The lock is released between batches so a query encode never waits out a whole document.
+        for start in range(0, len(texts), _ST_COUNT_BATCH):
+            with _compute_lock:
+                tok = _get(model_name).tokenizer
+                owner = counted_by[0]
+                if owner is None or owner() is not tok:
+                    counts.clear()
+                    try:
+                        counted_by[0] = weakref.ref(tok)
+                    except TypeError:
+                        counted_by[0] = None
+                memoize = counted_by[0] is not None
+                misses: dict[str, list[int]] = {}
+                loose: list[int] = []
+                for i in range(start, min(start + _ST_COUNT_BATCH, len(texts))):
+                    t = texts[i]
+                    memo = memoize and type(t) is str
+                    known = counts.get(t) if memo else None
+                    if known is not None:
+                        out[i] = known
+                    elif memo:
+                        misses.setdefault(t, []).append(i)
+                    else:
+                        loose.append(i)
+                if not misses and not loose:
+                    # Leave the environment a tokenize would.
+                    if os.environ.get("TOKENIZERS_PARALLELISM") != "false":
+                        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+                    continue
+                keys = list(misses)
+                os.environ["TOKENIZERS_PARALLELISM"] = "true"
                 try:
-                    counted_by[0] = weakref.ref(tok)
-                except TypeError:
-                    counted_by[0] = None
-            memo = counted_by[0] is not None and type(t) is str
-            known = counts.get(t) if memo else None
-            if known is not None:
-                # Leave the environment a tokenize would.
-                if os.environ.get("TOKENIZERS_PARALLELISM") != "false":
+                    lengths = _encoded_lengths(tok, keys + [texts[i] for i in loose])
+                finally:
                     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-                return known
-            os.environ["TOKENIZERS_PARALLELISM"] = "true"
-            try:
-                n = len(tok.encode(t, add_special_tokens = False))
-            finally:
-                os.environ["TOKENIZERS_PARALLELISM"] = "false"
-            if memo:
-                if len(counts) >= _ST_COUNT_CACHE_SIZE:
-                    counts.pop(next(iter(counts)))
-                counts[t] = n
-            return n
+                for key, n in zip(keys, lengths):
+                    for i in misses[key]:
+                        out[i] = n
+                    if len(counts) >= _ST_COUNT_CACHE_SIZE:
+                        counts.pop(next(iter(counts)))
+                    counts[key] = n
+                for i, n in zip(loose, lengths[len(keys) :]):
+                    out[i] = n
+        return out
 
+    def _count(t: str) -> int:
+        return _count_many((t,))[0]
+
+    _count.many = _count_many
     return _count
+
+
+_ST_COUNT_BATCH = 256
+
+
+def _encoded_lengths(tok, texts: list) -> list[int]:
+    """``len(tok.encode(t, add_special_tokens=False))`` per text; a fast tokenizer's batch call is the path encode wraps."""
+    if len(texts) > 1 and getattr(tok, "is_fast", False) is True:
+        ids = tok(
+            texts,
+            add_special_tokens = False,
+            return_attention_mask = False,
+            return_token_type_ids = False,
+        )["input_ids"]
+        if len(ids) == len(texts):
+            return [len(row) for row in ids]
+    return [len(tok.encode(t, add_special_tokens = False)) for t in texts]
 
 
 def _release_st_model() -> bool:
@@ -1450,11 +1491,11 @@ def token_counter(model_name: str | None = None) -> Callable[[str], int]:
     state = (backend, backend.token_counter(model_name = model_name))
     counter_lock = threading.Lock()
 
-    def _count(text: str) -> int:
+    def _served(use):
         nonlocal state
         served_backend, served_count = state
         try:
-            return served_count(text)
+            return use(served_count)
         except RuntimeError:
             if not (
                 _is_llama_backend(served_backend) and getattr(served_backend, "_closed", False)
@@ -1471,6 +1512,21 @@ def token_counter(model_name: str | None = None) -> Callable[[str], int]:
                     replacement.token_counter(model_name = model_name),
                 )
             retry = state[1]
-        return retry(text)
+        return use(retry)
 
+    def _count(text: str) -> int:
+        return _served(lambda count: count(text))
+
+    def _count_many(texts) -> list[int]:
+        texts = list(texts)
+        return _served(lambda count: _many(count, texts))
+
+    # Only a batching backend (sentence-transformers) changes how chunking asks for counts.
+    if getattr(state[1], "many", None) is not None:
+        _count.many = _count_many
     return _count
+
+
+def _many(count, texts: list) -> list[int]:
+    many = getattr(count, "many", None)
+    return list(many(texts)) if many is not None else [count(t) for t in texts]

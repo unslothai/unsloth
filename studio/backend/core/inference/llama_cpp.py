@@ -2544,24 +2544,30 @@ def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
     return ""
 
 
-def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
+def _is_rehearsal_prefix(
+    stripped: str,
+    active_tools: list[dict],
+    *,
+    _names: Optional[list] = None,
+) -> bool:
     """Execution-class names stream rather than being held; otherwise it mirrors the safetensors loop."""
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
-    for name in _gguf_active_tool_names(active_tools):
+    for name in _gguf_active_tool_names(active_tools) if _names is None else _names:
         # Use the shared gate, which also refuses mcp__* names.
-        if not _markerless_promotable(name, None):
-            continue
-        if stripped == name or f"{name}[ARGS]".startswith(stripped):
+        if (stripped == name or f"{name}[ARGS]".startswith(stripped)) and _markerless_promotable(
+            name, None
+        ):
             return True
     return False
 
 
 def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
     """Holds a trailing bare tool name back while its [ARGS] may still arrive, including a bare-Gemma call:NAME{ prefix that the signal scan misses until its brace."""
+    names = _gguf_active_tool_names(active_tools)
     # A tail longer than every NAME[ARGS] cannot be a prefix, so the scan stops there (CJK has no spaces).
     limit = max(
-        (len(name) for name in _gguf_active_tool_names(active_tools) if isinstance(name, str)),
+        (len(name) for name in names if isinstance(name, str)),
         default = 0,
     ) + len("[ARGS]")
     i = len(text)
@@ -2570,11 +2576,11 @@ def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
         i -= 1
     tail = text[i:]
     held = (
-        len(tail) if tail and len(tail) <= limit and _is_rehearsal_prefix(tail, active_tools) else 0
+        len(tail)
+        if tail and len(tail) <= limit and _is_rehearsal_prefix(tail, active_tools, _names = names)
+        else 0
     )
-    return max(
-        held, held_bare_gemma_tail_len(text, lambda: set(_gguf_active_tool_names(active_tools)))
-    )
+    return max(held, held_bare_gemma_tail_len(text, lambda: set(names)))
 
 
 def _should_suppress_forced_no_tool_output(text: str, previous: str = "") -> bool:
@@ -40016,7 +40022,7 @@ class LlamaCppBackend:
                 # Loop-ending turn offers no tools, so this notice must not ask for a retry; it rides the result.
                 _over_cap_final = bool(_over_cap) and (
                     tool_controller.force_final_answer
-                    or not tool_controller.active_tools()
+                    or not tool_controller.has_active_tools()
                     or (_turn_executed_real_tool and _tool_iters_done + 1 >= max_tool_iterations)
                     # Fold feedback only into a result from the SAME tool, since templates label the block with the tool name; a retry notice for skipped calls is never folded.
                     or iteration + 1 >= max_tool_iterations + _extra + _continuation_credits
@@ -40149,7 +40155,7 @@ class LlamaCppBackend:
 
                 # Clear tool status badge before next generation/final pass.
                 yield {"type": "status", "text": ""}
-                if tool_controller.force_final_answer or not tool_controller.active_tools():
+                if tool_controller.force_final_answer or not tool_controller.has_active_tools():
                     _append_budget_exhausted_nudge = False
                     break
                 # Only real tool turns use the cap, so reserved re-prompt slots never add rounds (GGUF parity).

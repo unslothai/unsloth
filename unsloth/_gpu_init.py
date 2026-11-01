@@ -274,9 +274,13 @@ except Exception:
 # TORCHINDUCTOR_COMPILE_THREADS.
 if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
     try:
-        torch._inductor.config.compile_threads = 1
+        from unsloth_zoo.torch_config import set_torch_config
+        set_torch_config(torch._inductor.config, "compile_threads", 1)
     except Exception:
-        pass
+        try:
+            torch._inductor.config.compile_threads = 1
+        except Exception:
+            pass
     os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
 
     def _force_single_compile_worker_in_zoo():

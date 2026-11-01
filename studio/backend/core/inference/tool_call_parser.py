@@ -262,7 +262,9 @@ def starved_result_message(tool_name: str, result: str) -> str:
 
 
 def repeated_result_message(tool_name: str, times: int, last_result: str) -> str:
-    """Appended to a repeated, unchanged result; keeps the last one, which may be the truncation notice."""
+    """Appended to a result the tool has now returned unchanged several times. The last result is
+    kept rather than replaced: it may be the truncation notice that caused the repeats, and
+    dropping it would leave the model with less than it had."""
     return (
         f"{last_result}\n\n"
         f"[{tool_name} returned exactly this {times} times; it will not change. Continue "
@@ -297,7 +299,10 @@ def reasoning_cap_spent_message(max_tokens: Optional[int] = None) -> str:
 
 
 def continue_after_length_message() -> str:
-    """Sent when a turn ran out of room while reasoning: act now, more deliberation ends the same way."""
+    """The user message appended when a turn ended inside its own reasoning. The instruction is to
+    ACT, not to think more carefully: the previous turn ended with nothing to show because
+    thinking consumed the whole window, so asking for more deliberation is asking for the same
+    ending a second time."""
     return (
         "You ran out of room while thinking, so nothing was produced. Stop thinking and "
         "act: call a tool or answer now. If it will not all fit, deliver the first part "
@@ -554,7 +559,9 @@ _BARE_JSON_ARGS_KEYS = ("arguments", "parameters", "args")
 
 
 def _decoded_key(literal: str) -> "str | None":
-    """Decoded VALUE of a JSON string literal, or None; source spelling missed escaped keys."""
+    """The VALUE of a JSON string literal, or None. ``"argu\\u006dents"`` is ``arguments`` to
+    ``json.loads``; comparing the source spelling left such a body unmasked and the healer
+    promoted the wrapper quoted inside it."""
     if "\\" not in literal:
         return literal[1:-1] if len(literal) >= 2 else None
     try:
@@ -767,7 +774,8 @@ def _merge_spans(spans: list) -> list:
 
 
 def _strictly_inside(spans: list, pos: int) -> bool:
-    """Strictly inside a span, not at its opening; a blocked rehearsal opens its own span."""
+    """Whether ``pos`` sits INSIDE one of ``spans`` rather than opening it: a blocked
+    rehearsal is itself tool markup, so its own span starts where it does."""
     i = bisect.bisect_right(spans, (pos, pos)) - 1
     return i >= 0 and spans[i][0] < pos < spans[i][1]
 
@@ -794,7 +802,8 @@ _CONTAINING_WRAPPERS = (
 
 
 def _balanced_paren_end(text: str, paren_start: int) -> "int | None":
-    """Index of the ) matching the ( at paren_start, or None; parens inside quotes are skipped."""
+    """Index of the ``)`` matching the ``(`` at ``paren_start``, or None. Quotes are honoured
+    so a paren inside a kwarg string does not close the call."""
     if paren_start >= len(text) or text[paren_start] != "(":
         return None
     depth = 0
@@ -877,8 +886,11 @@ def _inference_wrapper_spans(text: str) -> list:
         spans.append((m.end(), len(text) if end is None else end))
     # Attribute-form calls have no JSON body; protect the element interior so a genuine call's
     # arguments are not masked.
+    close = -2  # Not yet sought, as ``brace`` above.
     for m in _ATTR_FUNC_OPEN_RE.finditer(text):
-        close = text.find("</function>", m.end())
+        # Re-seek only once the close falls behind this opener; seeking per opener is quadratic.
+        if close != -1 and close < m.end():
+            close = text.find("</function>", m.end())
         spans.append((m.end(), len(text) if close < 0 else close))
     # A streaming Mistral array has no ``]`` yet but is still parsed; trust the envelope through EOS.
     pos = text.find(_MISTRAL_TRIGGER)
@@ -1081,7 +1093,8 @@ def _mask_blocked_bodies(
 
 
 def _unmask_blocked_bodies(text: str, bodies: list) -> Optional[str]:
-    """Puts bodies back, or None if a pass disturbed the runs; the caller keeps unmasked text."""
+    """Put the bodies back, or ``None`` when a pass disturbed the runs and the caller
+    should fall back to the unmasked result rather than emit a mangled body."""
     if not bodies:
         return text
     restored = iter(bodies)
@@ -1163,10 +1176,11 @@ _FUNC_CLOSE_TAG_RE = re.compile(r"</function>")
 
 
 def _strip_function_xml_calls(text: str, *, final: bool) -> str:
-    """Strips <function=...> calls as the parser reads them; final drops a trailing unclosed one."""
-    starts = [
-        m for m in _TC_FUNC_START_RE.finditer(text) if not _inside_open_parameter(text, m.start())
-    ]
+    """Strip ``<function=...>`` calls by mirroring the parser: an opener inside an open
+    ``<parameter>`` is data and each call closes at its first ``</function>`` that is not
+    parameter data; ``final`` drops a trailing unclosed call."""
+    inside = _tool_healing._OpenParameterIndex(text, **_OPEN_PARAMETER_TAGS).inside
+    starts = [m for m in _TC_FUNC_START_RE.finditer(text) if not inside(m.start())]
     if not starts:
         return text
     out: list[str] = []
@@ -1178,7 +1192,7 @@ def _strip_function_xml_calls(text: str, *, final: bool) -> str:
         next_start = starts[idx + 1].start() if idx + 1 < len(starts) else len(text)
         close = None
         for cm in _FUNC_CLOSE_TAG_RE.finditer(text, m.end(), next_start):
-            if not _inside_open_parameter(text, cm.start()):
+            if not inside(cm.start()):
                 close = cm  # first close that is not parameter data = the real close
                 break
         if close is not None:
@@ -1413,16 +1427,21 @@ _OPEN_CALL_TRIGGERS = (
 )
 _OPEN_CALL_TRIGGER_MAX_LEN = max(len(trigger) for trigger in _OPEN_CALL_TRIGGERS)
 _OPEN_CALL_WS_RE = re.compile(r"\s*")
+# ``<function=NAME>`` (bare or inside ``<tool_call>``) closes at ``</function>``; other bodies get the same set.
+_OPEN_BODY_TRIGGERS = _OPEN_CALL_TRIGGERS + ("</function",)
+_OPEN_BODY_TRIGGER_MAX_LEN = max(len(trigger) for trigger in _OPEN_BODY_TRIGGERS)
+# The scanner's opener without its trailing ``\s*``, so the body starts at a fixed offset.
+_OPEN_FUNCTION_OPENER_RE = re.compile(r'<function(?:=[\w\.\-]+|\s+name="[\w\.\-]+")>')
 
 
 def _promotable_gemma_call_pos(text: str, start: int, enabled_tool_names) -> int:
     """The sentinel find is exact, not a heuristic: sweeping call-free prose per chunk was quadratic."""
-    start = text.find(_GEMMA_BARE_SENTINEL, start)
-    if start < 0:
-        return -1
-    for m in _GEMMA_BARE_TC_RE.finditer(text, start):
+    # Every match starts with the literal: same matches as ``finditer``, without sweeping the buffer per chunk.
+    m = _search_from_literal(_GEMMA_BARE_TC_RE, _GEMMA_BARE_SENTINEL, text, start)
+    while m is not None:
         if _markerless_promotable(m.group(1), enabled_tool_names):
             return m.start()
+        m = _search_from_literal(_GEMMA_BARE_TC_RE, _GEMMA_BARE_SENTINEL, text, m.end())
     return -1
 
 
@@ -1537,6 +1556,7 @@ class StreamingMarkupStripper:
         "_gate_out",
         "_gate_dead",
         "_gate_from",
+        "_gate_triggers",
         "_gate_scanned",
         "_gate_call_ws",
     )
@@ -1574,6 +1594,7 @@ class StreamingMarkupStripper:
         # (floor, first) the gate can never arm for; append-only growth cannot undo its reason.
         self._gate_dead = None
         self._gate_from = 0
+        self._gate_triggers = _OPEN_CALL_TRIGGERS
         self._gate_scanned = 0
         # Where a ``call`` followed only by whitespace so far resumes its colon check, else -1.
         self._gate_call_ws = -1
@@ -1581,10 +1602,16 @@ class StreamingMarkupStripper:
     def _gate_clean(self, text: str) -> bool:
         """Scan only text appended since the last call (plus an overlap) for anything that could change the strip."""
         n = len(text)
-        lo = self._gate_scanned - _OPEN_CALL_TRIGGER_MAX_LEN + 1
+        triggers = self._gate_triggers
+        overlap = (
+            _OPEN_CALL_TRIGGER_MAX_LEN
+            if triggers is _OPEN_CALL_TRIGGERS
+            else _OPEN_BODY_TRIGGER_MAX_LEN
+        )
+        lo = self._gate_scanned - overlap + 1
         if lo < self._gate_from:
             lo = self._gate_from
-        for trigger in _OPEN_CALL_TRIGGERS:
+        for trigger in triggers:
             if text.find(trigger, lo) >= 0:
                 return False
         at = self._gate_call_ws
@@ -1609,18 +1636,17 @@ class StreamingMarkupStripper:
         return True
 
     def _gate_try_arm(self, text: str, seg_start: int, out: str, seg_out: str):
-        """Arms on P + <tool_call> + B: P has no <, [, { or call:, and B starts with { with no
-        trigger or call:; the segment strips to P until a trigger arrives"""
+        """Arm on ``text[seg_start:]`` = ``P + O + B``: P without ``<``, ``[``, ``{``, ``call\\s*:``; O ``<tool_call>``
+        and/or ``<function=NAME>``; B without a trigger or ``call\\s*:``. Arms reaching past O run to the end, the rest
+        need ``<`` or ``[`` in P, so the segment strips to P (``seg_final``) or itself until a trigger arrives."""
         key = (self._floor, self._first)
         if self._gate_dead == key:
             return
         start = self._floor + self._first
         prefix = text[seg_start:start]
-        body = start + len(_OPEN_CALL_OPENER)
         if (
-            not text.startswith(_OPEN_CALL_OPENER, start)
             # ``<param`` in the kept head makes the cut depend on later text (``_inside_open_parameter``).
-            or text.find("<param", self._floor, seg_start) >= 0
+            text.find("<param", self._floor, seg_start) >= 0
             or "<" in prefix
             or "[" in prefix
             or "{" in prefix
@@ -1631,14 +1657,39 @@ class StreamingMarkupStripper:
         ):
             self._gate_dead = key
             return
-        brace = _OPEN_CALL_WS_RE.match(text, body).end()
-        if brace == len(text):
-            return
+        triggers = _OPEN_BODY_TRIGGERS
+        if text.startswith(_OPEN_CALL_OPENER, start):
+            body = start + len(_OPEN_CALL_OPENER)
+            nxt = _OPEN_CALL_WS_RE.match(text, body).end()
+            if nxt == len(text):
+                return
+            if text[nxt] == "{":
+                triggers = _OPEN_CALL_TRIGGERS
+            elif text[nxt] == "<":
+                fn = _OPEN_FUNCTION_OPENER_RE.match(text, nxt)
+                if fn is not None:
+                    body = fn.end()
+                elif text.find(">", nxt) < 0:
+                    # Possibly a ``<function=NAME>`` still arriving.
+                    return
+        else:
+            fn = _OPEN_FUNCTION_OPENER_RE.match(text, start)
+            if fn is None:
+                rest = len(text) - start
+                if text.find(">", start) < 0 and (
+                    (rest < len(_OPEN_CALL_OPENER) and _OPEN_CALL_OPENER.startswith(text[start:]))
+                    or text.startswith("<function", start)
+                ):
+                    return
+                self._gate_dead = key
+                return
+            body = fn.end()
         # Fail closed if the full strip just run disagrees with the reasoning above.
-        if text[brace] != "{" or seg_out != (prefix if self._seg_final else text[seg_start:]):
+        if seg_out != (prefix if self._seg_final else text[seg_start:]):
             self._gate_dead = key
             return
         self._gate_from = body
+        self._gate_triggers = triggers
         self._gate_scanned = body
         self._gate_call_ws = -1
         if not self._gate_clean(text):
@@ -1951,8 +2002,9 @@ def _xml_signal_inside_leading_mistral(content: str) -> bool:
     first_xml = _first_foreign_tool_signal(content)
     if first_xml is not None and first_xml < trig:
         return False
-    # Only plain prose may precede the trigger, or a later XML literal takes the turn; mentions
-    # don't.
+    # Only plain prose precedes the trigger: a visible preface must not hand the turn to a later XML literal
+    # (preamble-tolerant, like the wrapperless-Gemma guard). Prose that merely mentions the marker has no parseable
+    # region and keeps the normal order.
     return _mistral_region_end(content, trig, open_envelope_runs_to_eof = True) is not None
 
 
@@ -2010,7 +2062,9 @@ def _first_foreign_tool_signal(content: str) -> int | None:
 
 
 def _xml_signal_inside_leading_bare_json(content: str) -> bool:
-    """True when the first foreign signal is quoted data in a leading bare-JSON call or answer."""
+    """True when the first foreign tool signal is a quoted literal inside a LEADING bare-JSON call
+    object or JSON answer -- data, not a real call (sibling of
+    ``_xml_signal_inside_leading_mistral``)."""
     i = 0
     n = len(content)
     while i < n and content[i] in " \t\n\r":
@@ -2100,8 +2154,10 @@ def _inside_leading_markerless_body(
 def _disabled_gemma_call_end_containing_signal(
     content: str, enabled_tool_names: Optional[set]
 ) -> int | None:
-    """End (exclusive) of the earliest prose (non-promotable) wrapper-less Gemma call holding the
-    first foreign signal, else None; the caller drops that span and parses the tail"""
+    """End offset (exclusive) of the earliest PROSE (non-promotable) wrapper-less Gemma call whose
+    balanced body holds the first foreign signal, else None. A prose name makes the quoted literal
+    data, so the caller drops the span and parses the tail; a promotable call defers to the
+    enabled-call guard."""
     first = _first_foreign_tool_signal(content)
     trig = content.find(_MISTRAL_TRIGGER)
     if trig >= 0 and (first is None or trig < first):
@@ -2472,15 +2528,17 @@ _trim_param_value = _tool_healing._trim_param_value
 _json_object_body = _tool_healing._json_object_body
 
 
+# Shared by the helper and ``_tool_healing._OpenParameterIndex`` so the two cannot drift.
+_OPEN_PARAMETER_TAGS = {
+    "param_start_re": _TC_PARAM_START_RE,
+    "param_closers": ("</parameter>", "</param>"),
+    "func_closers": ("</function>", "</tool_call>"),
+}
+
+
 def _inside_open_parameter(text: str, pos: int) -> bool:
     """An opener inside an unclosed parameter block is a literal in an argument value, not a nested call."""
-    return _tool_healing._inside_open_parameter(
-        text,
-        pos,
-        param_start_re = _TC_PARAM_START_RE,
-        param_closers = ("</parameter>", "</param>"),
-        func_closers = ("</function>", "</tool_call>"),
-    )
+    return _tool_healing._inside_open_parameter(text, pos, **_OPEN_PARAMETER_TAGS)
 
 
 def _parse_function_xml(
@@ -2491,11 +2549,8 @@ def _parse_function_xml(
 ) -> list[dict]:
     out: list[dict] = []
     # Skip openers inside an open parameter value, else they become a second call.
-    func_starts = [
-        fm
-        for fm in _TC_FUNC_START_RE.finditer(content)
-        if not _inside_open_parameter(content, fm.start())
-    ]
+    inside = _tool_healing._OpenParameterIndex(content, **_OPEN_PARAMETER_TAGS).inside
+    func_starts = [fm for fm in _TC_FUNC_START_RE.finditer(content) if not inside(fm.start())]
     for idx, fm in enumerate(func_starts):
         # group(1) is ``<function=name>``, group(2) is ``<function name="...">``.
         func_name = fm.group(1) or fm.group(2)
@@ -2504,7 +2559,7 @@ def _parse_function_xml(
         # The first close not inside an open parameter ends the call (mirrors _strip_function_xml_calls).
         close_match = None
         for cm in _TC_END_TAG_RE.finditer(content, body_start, next_func):
-            if not _inside_open_parameter(content, cm.start()):
+            if not inside(cm.start()):
                 close_match = cm
                 break
         has_close = close_match is not None
@@ -2522,10 +2577,9 @@ def _parse_function_xml(
         args: dict = {}
         param_unclosed = False
         # A ``<parameter>`` opener inside an open parameter value is literal text.
+        body_inside = _tool_healing._OpenParameterIndex(body, **_OPEN_PARAMETER_TAGS).inside
         param_starts = [
-            pm
-            for pm in _TC_PARAM_START_RE.finditer(body)
-            if not _inside_open_parameter(body, pm.start())
+            pm for pm in _TC_PARAM_START_RE.finditer(body) if not body_inside(pm.start())
         ]
         if len(param_starts) == 1:
             pm = param_starts[0]
@@ -2565,7 +2619,8 @@ def _parse_function_xml(
 
 
 def _llama3_kv_value(body: str, p: int, n: int) -> tuple[Any, int | None]:
-    """One .call value at body[p:] (string, number, true, false or null); (None, None) if none."""
+    """One ``.call`` value (string/number/true/false/null) at ``body[p:]``. Returns ``(value,
+    consumed_len)`` or ``(None, None)`` if none matches."""
     if p >= n:
         return None, None
     if body[p] == '"':
@@ -3140,22 +3195,49 @@ def _parse_gemma_tool_calls(
 _balanced_brace_end = _tool_healing._balanced_brace_end
 
 
+# Streaming rescans one growing body per token: saved walks resume at their old end.
+_GEMMA_BODY_SCAN_SLOTS = 8
+_GEMMA_BODY_SCAN_MIN = 256
+_gemma_body_scans: list = [None] * _GEMMA_BODY_SCAN_SLOTS
+_gemma_body_scan_next = 0
+
+
 def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:
     """Closing brace of a Gemma body; quotes hide braces, but a single quote opens only at value start, so apostrophes in prose do not."""
+    global _gemma_body_scan_next
     if brace_pos >= len(text) or text[brace_pos] != "{":
         return None
+    n = len(text)
     depth = 0
     quote = ""
     prev = ""
     prev_raw = ""
     i = brace_pos
-    n = len(text)
+    hit = -1
+    for k, entry in enumerate(tuple(_gemma_body_scans)):
+        if (
+            entry is not None
+            and entry[1] == brace_pos
+            and entry[2] > i
+            and len(entry[0]) <= n
+            and text.startswith(entry[0])
+        ):
+            if entry[3] is not None:
+                return entry[3]
+            i, depth, quote, prev, prev_raw = entry[2], entry[4], entry[5], entry[6], entry[7]
+            hit = k
+            break
+    start = i
+    end = None
     while i < n:
         ch = text[i]
         if quote:
-            if ch == "\\" and i + 1 < n:
-                i += 2
-                continue
+            if ch == "\\":
+                if i + 1 < n:
+                    i += 2
+                    continue
+                # A trailing backslash escapes whatever arrives next: stop before it.
+                break
             if ch == quote:
                 quote = ""
         elif ch in "\"'" and (prev in ":{[(,=" or (ch == '"' and prev_raw.isspace())):
@@ -3165,12 +3247,20 @@ def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:
         elif ch == "}":
             depth -= 1
             if depth == 0:
-                return i
+                end = i
+                break
         if not ch.isspace():
             prev = ch
         prev_raw = ch
         i += 1
-    return None
+    if i > start and (hit >= 0 or i - start >= _GEMMA_BODY_SCAN_MIN):
+        prefix = text if end is None and i == n else text[: (end + 1 if end is not None else i)]
+        slot = hit
+        if slot < 0:
+            slot = _gemma_body_scan_next % _GEMMA_BODY_SCAN_SLOTS
+            _gemma_body_scan_next = slot + 1
+        _gemma_body_scans[slot] = (prefix, brace_pos, i, end, depth, quote, prev, prev_raw)
+    return end
 
 
 _BARE_JSON_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
@@ -3592,7 +3682,8 @@ def _gemma_parse_value(
 
 
 def _gemma_parse_array(text: str, start: int):
-    """One-pass Gemma [...] array parse from text[start]; returns (list, next_index, closed)."""
+    """Parse a Gemma ``[...]`` array at ``text[start] == '['`` in one forward pass; returns ``(list,
+    next_index, closed)``."""
     items: list[Any] = []
     i, n = start + 1, len(text)
     while i < n:

@@ -8,10 +8,13 @@ export const nl = {
   chatBackground: {
     noBackground: "Geen achtergrond",
     sizing: "Afbeeldingsgrootte",
+    sizingPosition: "Afbeeldingsgrootte en positie",
     fill: "Vullen",
     fit: "Passend maken",
     stretch: "Uitrekken",
     original: "Oorspronkelijke grootte",
+    fitWidth: "Passend in breedte",
+    fitHeight: "Passend in hoogte",
     zoom: "Zoom",
     outline: "Rand om berichtveld",
     fade: "Vervagen naar achtergrond",
@@ -30,6 +33,12 @@ export const nl = {
     visibility: "Zichtbaarheid",
     blur: "Afbeelding vervagen",
     position: "Positie",
+    horizontal: "Horizontale positie",
+    vertical: "Verticale positie",
+    scope: "Tonen op",
+    scopeNewChat: "Pagina nieuwe chat",
+    scopeChats: "Chats",
+    scopeAll: "Alle pagina’s",
     positionValue: "Horizontaal {x}%, verticaal {y}%",
     newChat: "Nieuwe chat",
     conversation: "Gesprek",
@@ -1084,7 +1093,7 @@ export const nl = {
       deleteProjects: "Projecten verwijderen",
       deleteProjectsTitle: "Projecten verwijderen",
       deleteProjectsDescription:
-        "{count} projecten verwijderen? Hun chats worden definitief verwijderd.",
+        "Hiermee worden {count} projecten en al hun chats definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
       deleteProjectsFilesDescription:
         "De werkruimtemap van elk project wordt van de schijf verwijderd.",
       countSelected: "{count} geselecteerd",
@@ -1096,7 +1105,7 @@ export const nl = {
       deleteChats: "Chats verwijderen",
       deleteTitle: "Chats verwijderen",
       deleteDescription:
-        "{count} chats verwijderen? Dit kan niet ongedaan worden gemaakt.",
+        "Hiermee worden {count} chats en hun berichten definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
       deleteFilesDescription:
         "De eigen sandboxmap van elke chat wordt van de schijf verwijderd. Bestanden die ze in een project hebben geschreven, blijven in de werkruimte van dat project.",
       deleteFilesLabel: "Bestanden en sandboxmap verwijderen",
@@ -1145,7 +1154,7 @@ export const nl = {
     dialog: {
       deleteChat: {
         title: "Chat verwijderen",
-        description: 'Weet je zeker dat je de chat "{name}" wilt verwijderen?',
+        description: 'Hiermee worden de chat "{name}" en de berichten ervan definitief verwijderd. Dit kan niet ongedaan worden gemaakt.',
       },
       deleteRun: {
         title: "Trainingsrun verwijderen",
@@ -2386,10 +2395,14 @@ export const nl = {
         label: "Installatietype",
         description:
           "Alleen chat (GGUF). De volledige installatie voegt training, export, video, safetensors-modellen en extra functies voor het genereren van afbeeldingen toe.",
+        descriptionCpu:
+          "Alleen chat (GGUF). Er is geen ondersteunde GPU gevonden, dus de volledige installatie voegt training op de CPU toe.",
         action: "Upgraden naar volledige installatie",
         confirmTitle: "Upgraden naar de volledige installatie?",
         confirmDescription:
           "Deze installatie voor Alleen chat draait GGUF-modellen. De volledige installatie voegt PyTorch toe voor de GPU van deze machine, waarmee training, export, video, safetensors-modellen en extra functies voor het genereren van afbeeldingen beschikbaar worden. Er worden enkele gigabytes gedownload (minimaal 5 GB schijfruimte) en de server wordt opnieuw gestart. Chats, modellen en instellingen blijven behouden. Dit kan enkele minuten duren.",
+        confirmDescriptionCpu:
+          "Deze installatie voor Alleen chat draait GGUF-modellen. Er is op deze machine geen ondersteunde GPU gevonden, dus de volledige installatie voegt PyTorch voor de CPU toe, waarmee training op de CPU beschikbaar wordt. Training op de CPU is veel trager dan op een GPU. Er is minimaal 5 GB schijfruimte nodig en de server wordt opnieuw gestart. Chats, modellen en instellingen blijven behouden. Dit kan enkele minuten duren.",
         confirmAction: "Upgraden",
         keywords:
           "volledige installatie upgraden installeren installatietype alleen chat gguf training trainen finetunen fine-tune pytorch torch export exporteren video afbeeldingen genereren safetensors",
@@ -2566,6 +2579,22 @@ export const nl = {
         label: "Snoep of je leven",
         description:
           "Halloweenthema's en griezelige begroetingen, tot 1 november.",
+      },
+      code: {
+        title: "Code",
+        fontDescription: "Codeblokken in de chat, bestandsvoorbeelden en API-voorbeelden.",
+        lineNumbers: {
+          label: "Regelnummers",
+          description: "Nummer de regels van codeblokken in de chat.",
+        },
+        wordWrap: {
+          label: "Regelterugloop",
+          description: "Lange regels in codeblokken laten teruglopen in plaats van horizontaal te scrollen.",
+        },
+        ligatures: {
+          label: "Ligaturen",
+          description: "Voeg tekens zoals => en != samen tot één glyph als het codelettertype dat ondersteunt.",
+        },
       },
       custom: {
         chatWidth: {
@@ -3503,10 +3532,10 @@ export const nl = {
         moveFailed: "Kan chats niet verplaatsen",
         deleteChatsTitle: "Chats verwijderen ({count})",
         deleteChatsWarning:
-          "De geselecteerde chats ({count}) verwijderen? Dit kan niet ongedaan worden gemaakt.",
+          "Hiermee worden {count} chats en hun berichten definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
         deleteArchivedTitle: "{count} gearchiveerde chats verwijderen",
         deleteArchivedWarning:
-          "De geselecteerde gearchiveerde chats ({count}) verwijderen? Dit kan niet ongedaan worden gemaakt.",
+          "Hiermee worden {count} gearchiveerde chats en hun berichten definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
         deleting: "Verwijderen...",
       },
       title: "Gegevens",
@@ -3931,6 +3960,8 @@ export const nl = {
   },
   studio: {
     routeTitle: "Trainen",
+    cpuTrainingNotice:
+      "Er is geen GPU gevonden, dus training draait op de CPU. Dit is veel trager dan training op een GPU en ondersteunt alleen tekstmodellen (LoRA of volledige finetuning).",
     wizard: {
       modelTitle: "Model",
       modelDescription: "Selecteer model en trainingsmethode",
@@ -5086,9 +5117,9 @@ export const nl = {
       dialog: {
         renameChat: "Naam van chat wijzigen",
         deleteChatDescription:
-          "Deze chat wordt definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
+          "Hiermee worden de chat en de berichten ervan definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
         deleteProjectDescription:
-          "Het project en de bijbehorende chats ({count}) worden definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
+          "Hiermee worden het project en de chats ervan ({count}) definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
         deleteFilesMany:
           "Ook de bestanden en sandboxmappen verwijderen die deze chats hebben gemaakt.",
         deleteProjectFilesLabel: "Werkruimtemap van project verwijderen",
@@ -5587,7 +5618,7 @@ export const nl = {
     chatName: "Chatnaam",
     deleteChat: "Chat verwijderen",
     deleteChatDescription:
-      "Weet je zeker dat je {name} wilt verwijderen? De berichten worden definitief verwijderd.",
+      'Hiermee worden de chat "{name}" en de berichten ervan definitief verwijderd. Dit kan niet ongedaan worden gemaakt.',
     importChats: "Chats importeren",
     importDestination: "Kies waar je {name} wilt importeren:",
     selectDestination: "Bestemming selecteren",
@@ -5595,7 +5626,7 @@ export const nl = {
     import: "Importeren",
     deleteProject: "Project verwijderen",
     deleteProjectDescription:
-      "Weet je zeker dat je {name} wilt verwijderen? De chats ervan worden definitief verwijderd.",
+      'Hiermee worden het project "{name}" en al zijn chats definitief verwijderd. Dit kan niet ongedaan worden gemaakt.',
     deleteProjectFiles:
       "De werkruimtemap van het project wordt van de schijf verwijderd.",
     deleteAll: "Alles verwijderen",
@@ -5683,6 +5714,18 @@ export const nl = {
       "Onze automatische scanner heeft onder andere deze problemen gevonden:",
     nothingFlagged:
       "Onze automatische scanner heeft geen verdachte bestanden gevonden, maar controleer het zelf nog even.",
+    unscannedTitle: "Modelbestanden konden niet worden gescand",
+    unscannedBody: "{model} bevat pickle-gewichten, die bij het laden code kunnen uitvoeren, en er is geen malwarescan voor beschikbaar. Het kan daarom niet worden geladen. {note}",
+    unscannedIntro: "Bestanden die niet konden worden gescand:",
+    switchSourceNote: "Stel in Instellingen Hugging Face in als modelbron om het te laden.",
+    reconnectNote: "Maak verbinding met Hugging Face zodat de scan kan worden gelezen en probeer het opnieuw.",
+    managedTitle: "Aangepaste code staat uit voor dit account",
+    managedNote: "Dit staat uit voor beheerde accounts. Vraag de eigenaar van de installatie om het in te schakelen.",
+    notFoundTitle: "Niet gevonden op {source}",
+    notFoundBody: "{model} is niet gevonden op {source}, dus de beveiligingscontroles konden niet worden uitgevoerd. Controleer de naam of stel een token met toegang in als de repository privé is.",
+    notOnModelScopeBody: "{model} is niet beschikbaar op ModelScope, dus de beveiligingscontroles konden niet worden uitgevoerd en het kan daar niet worden geladen. Stel in Instellingen Hugging Face in als modelbron om het te gebruiken.",
+    checksFailedTitle: "Beveiligingscontroles konden niet worden uitgevoerd",
+    checksFailedBody: "{model} kon niet worden gelezen van {source}, dus de beveiligingscontroles konden niet worden voltooid en het kan niet worden geladen. Controleer je verbinding en token en probeer het opnieuw. {note}",
     enableAndContinue: "Inschakelen en doorgaan",
   },
   tour: {

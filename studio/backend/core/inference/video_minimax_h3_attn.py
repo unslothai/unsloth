@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""H3 attention fast paths, each off at 0: UNSLOTH_H3_STRIDED_ATTN, UNSLOTH_H3_FUSED_QKV,
-UNSLOTH_H3_SHARED_QKV_QUANT, UNSLOTH_H3_ATTN_ARCH; all but ATTN_ARCH are bit-identical"""
+"""MiniMax-H3 attention fast paths, each off with its env var set to 0: UNSLOTH_H3_STRIDED_ATTN
+(permuted SDPA views, no copies), UNSLOTH_H3_FUSED_QKV (one row-concatenated int8 to_qkv),
+UNSLOTH_H3_SHARED_QKV_QUANT (unfused Q / K / V on one rotation + act quant), UNSLOTH_H3_ATTN_ARCH
+(flash only on H3_FLASH_FASTER_ARCHS when flash SDPA is available); all but the last are bit-identical."""
 
 from __future__ import annotations
 
@@ -37,12 +39,35 @@ def _capability(device: Any = None) -> Optional[tuple[int, int]]:
         return None
 
 
+def _flash_sdpa_ready(target: Any = None) -> bool:
+    """Whether this torch build can actually run flash SDPA. Empty / failed probes refuse the upgrade (#16294)."""
+    if target is not None:
+        try:
+            from .diffusion_attention import SDPA_FLASH, available_sdpa_kernels
+            kernels = available_sdpa_kernels(target)
+            # Empty means unanswerable, not "flash works".
+            return bool(kernels) and SDPA_FLASH in kernels
+        except Exception:  # noqa: BLE001 -- a probe failure must not force flash
+            return False
+    try:
+        import torch
+        check = getattr(torch.backends.cuda, "is_flash_attention_available", None)
+        if callable(check):
+            return bool(check())
+    except Exception:  # noqa: BLE001
+        return False
+    # No target and no torch flag: keep the measured arch upgrade for builds that never expose the check.
+    return True
+
+
 def h3_attention_backend(
     selected: Optional[str],
     capability: Optional[tuple[int, int]] = None,
     requested: Optional[str] = None,
+    target: Any = None,
 ) -> Optional[str]:
-    """Only an automatic cuDNN pick moves, and only to flash on a measured-faster arch."""
+    """Moves only the automatic cuDNN pick (``requested`` auto / unset), and only to flash on a measured-faster arch
+    whose torch build actually has flash SDPA; anything else unchanged (keep ``selected`` so ``_AutoCudnn`` survives)."""
     if selected != _CUDNN or not _enabled(ATTN_ARCH_ENV):
         return selected
     try:
@@ -53,6 +78,8 @@ def h3_attention_backend(
         return selected
     cap = capability if capability is not None else _capability()
     if cap is None or tuple(cap) not in H3_FLASH_FASTER_ARCHS:
+        return selected
+    if not _flash_sdpa_ready(target):
         return selected
     return _FLASH
 
