@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import weakref
 from pathlib import PurePath
 from typing import Any, Optional
 from urllib.parse import quote
@@ -63,7 +64,7 @@ async def load_document(ctx: NodeContext) -> dict:
 
 
 # Lookup-then-create is two requests, so parallel adds to a new knowledge base would each create one.
-_KB_LOCKS: dict[tuple[int, str], asyncio.Lock] = {}
+_KB_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 async def _knowledge_base(ctx: NodeContext, create: bool) -> tuple[str, str]:
@@ -72,8 +73,8 @@ async def _knowledge_base(ctx: NodeContext, create: bool) -> tuple[str, str]:
         raise FlowNodeError("Name the knowledge base")
     if not create:
         return await _find_or_create(ctx, name, create)
-    key = (id(asyncio.get_running_loop()), name.lower())
-    lock = _KB_LOCKS.setdefault(key, asyncio.Lock())
+    locks = _KB_LOCKS.setdefault(asyncio.get_running_loop(), {})
+    lock = locks.setdefault(name.lower(), asyncio.Lock())
     async with lock:
         return await _find_or_create(ctx, name, create)
 
