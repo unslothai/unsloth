@@ -1876,11 +1876,13 @@ def _install_router_capture_hooks(model):
     ):
         return 0
     installed = 0
-    # Outermost first, as transformers would: an install recurses into nested models and flags them.
+    # Outermost first, as transformers would: an install recurses into nested models and flags them. Its
+    # recursion does not check that flag, so a module with an already hooked descendant (an earlier eager
+    # capturing forward) is skipped: installing it would hook that descendant twice (duplicated outputs).
     for module in model.modules():
         flags = registry.get(str(type(module))) or {}
-        if "router_logits" not in flags or getattr(
-            module, "_output_capturing_hooks_installed", False
+        if "router_logits" not in flags or any(
+            getattr(m, "_output_capturing_hooks_installed", False) for m in module.modules()
         ):
             continue
         try:

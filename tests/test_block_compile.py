@@ -1580,6 +1580,29 @@ def test_router_logits_after_a_forward_without_them(request, monkeypatch):
     torch._dynamo.reset()
 
 
+def test_router_hooks_are_not_installed_twice_after_an_eager_capture(request, monkeypatch):
+    """Failing before: an eager capturing forward hooks the inner model; installing on the unflagged outer
+    CausalLM recursed into it again and every captured tuple held each layer twice."""
+    misc = pytest.importorskip("unsloth_zoo.temporary_patches.misc")
+    if not hasattr(misc, "output_capture_scratch"):
+        pytest.skip("needs an unsloth_zoo with output_capture_scratch (unsloth-zoo#2041)")
+    misc.patch_output_collector_for_compiled_submodules()
+    M = _load()
+    torch.manual_seed(0)
+    model = _tiny_qwen3_moe(request, monkeypatch).train()
+    ids = torch.randint(0, 100, (2, 8))
+    kwargs = dict(use_cache = False, output_router_logits = True, output_hidden_states = True)
+    model(input_ids = ids, **kwargs)
+    monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
+    _install_blocks(M, model, monkeypatch)
+    torch._dynamo.reset()
+    out = model(input_ids = ids, **kwargs)
+    layers = model.config.num_hidden_layers
+    assert len(out.router_logits) == layers, len(out.router_logits)
+    assert len(out.hidden_states) == layers + 1, len(out.hidden_states)
+    torch._dynamo.reset()
+
+
 def test_router_logits_capture_compiles_one_graph_for_every_layer(monkeypatch):
     """A capture hook inside the block appends to an empty scratch list on every call.
 
