@@ -2867,7 +2867,6 @@ html[data-chat-font] .aui-root {
 		background-color: var(--panel-input-surface-hover);
 	}
 
-	/* Images and Video: a lighter border in the Standard light theme. */
 	html:not(.dark):not([data-palette]) .diffusion-surface {
 		--border-base: #e9e9e9;
 		--input-base: #e9e9e9;
@@ -6656,7 +6655,6 @@ html[data-chat-wallpaper-workspace-ready] [data-slot="window-titlebar"][data-wal
 [data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) [data-chat-page-root] {
   background: transparent;
 }
-/* Other pages carry dense UI, so they read over a near-solid wash whatever the image's contrast. */
 [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] {
   background: color-mix(in srgb, var(--background) max(86%, calc((1 - var(--wallpaper-safe, 0)) * 100%)), transparent);
 }
@@ -6665,7 +6663,6 @@ html[data-chat-wallpaper-workspace-ready] [data-slot="window-titlebar"][data-wal
   .wallpaper-preview-composer { background: var(--background); }
 }
 
-/* Fade off means the image runs to the bottom edge, so drop the solid band the thread fades into behind the composer. */
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready] .chat-wallpaper-image[data-fade="false"]) .thread-bottom-fade {
   display: none;
 }
@@ -6676,11 +6673,7 @@ html[data-chat-wallpaper-workspace-ready] [data-slot="window-titlebar"][data-wal
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .unsloth-composer-surface,
 .wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer { --composer-shadow: none; }
 
-/* Glass materials (html[data-glass]): sidebar and composer frost over the wallpaper; "macos" over the desktop.
-   The unprefixed backdrop-filter goes last: the minifier keeps only the last of the pair, and Chromium
-   (WebView2, Chrome) ignores the -webkit- one. */
-/* Glass strength (material.ts) sets --glass-strength (blur, 0.2-2x) and --glass-opacity (each pane's final
-   opacity, 0.35-2x, after the readability floors; capped at 96% so it stays glass). */
+/* Glass materials (html[data-glass]): unprefixed backdrop-filter goes last, the minifier keeps only the last of the pair and Chromium ignores -webkit-. */
 html[data-glass] {
   --glass-tint: var(--glass-tint-base);
   --glass-blur: calc(var(--glass-blur-base) * var(--glass-strength, 1));
@@ -6691,8 +6684,6 @@ html[data-glass="blurred"] { --glass-tint-base: 26%; --glass-blur-base: 48px; --
 html[data-glass="liquid"] { --glass-tint-base: 14%; --glass-blur-base: 10px; --glass-saturate: 190%; }
 html[data-glass="liquid-3d"] { --glass-tint-base: 14%; --glass-blur-base: 10px; --glass-saturate: 190%; }
 html[data-glass="macos"] { --glass-tint-base: 30%; --glass-blur-base: 24px; --glass-saturate: 160%; }
-/* The solid surface colours, resolved on <html>, for panes that turn the surfaces inside them translucent
-   (dialogs, menus, All pages). */
 html {
   --glass-page-bg: var(--background);
   --glass-page-popover: var(--popover);
@@ -6701,9 +6692,6 @@ html {
   --glass-page-secondary: var(--secondary);
   --glass-page-input: var(--panel-input-surface);
 }
-/* A floor: navigation text sits over the image on every page. --glass-read-floor and --glass-shade
-   (background.tsx, from the image's tone) raise it further so text reads over this image, and shade
-   light panes so they stand apart from a light image. */
 html { --glass-sidebar-floor: 52%; }
 html.dark { --glass-sidebar-floor: 40%; }
 html[data-glass] {
@@ -6719,7 +6707,6 @@ html[data-glass="macos"] [data-slot="sidebar-inner"] {
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   box-shadow: inset -1px 0 0 color-mix(in srgb, var(--foreground) 9%, transparent);
 }
-/* The BETA badge: an outline on the glass, not an opaque chip with a dark drop shadow. */
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] .nav-badge,
 html[data-glass="macos"] [data-slot="sidebar-inner"] .nav-badge {
   border-color: color-mix(in srgb, var(--foreground) 22%, transparent);
@@ -6727,9 +6714,6 @@ html[data-glass="macos"] [data-slot="sidebar-inner"] .nav-badge {
   color: color-mix(in srgb, var(--foreground) 72%, transparent);
   box-shadow: none;
 }
-/* Borders and dividers are glass lines: the colour of the text at low alpha instead of an opaque grey, so
-   they show the glass and image through them. Set on the base tokens, which every derived border reads;
-   Images and Video pin their own base, so they get it too. */
 html[data-glass][data-chat-wallpaper-workspace-ready],
 html[data-glass="macos"] {
   --glass-line: color-mix(in srgb, var(--foreground-base) 13%, transparent);
@@ -6752,7 +6736,6 @@ html[data-glass="macos"] .diffusion-surface {
   --border: var(--border-base);
   --input: var(--input-base);
 }
-/* Sticky section labels would otherwise paint solid sidebar bands across the glass. */
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-sticky-label),
 html[data-glass="macos"] [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-sticky-label) {
   background-color: transparent;
@@ -6770,9 +6753,6 @@ html[data-glass="frosted"] :is([data-wallpaper-workspace], [data-chat-content-ro
 html[data-glass="frosted"] .wallpaper-preview-composer {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .07 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
-/* Liquid Glass: a nearly clear pane with a thin lit rim and a sheen (--glass-rim, --glass-sheen). No outer
-   shadows on any glass. Liquid Glass 3D adds a lit bevel (--glass-edge), light pooling inside the top and
-   bottom edges and bead-like controls (--glass-bead). */
 html[data-glass^="liquid"] {
   --glass-sheen: radial-gradient(130% 90% at 18% 0%, rgb(255 255 255 / .3), transparent 58%), linear-gradient(rgb(255 255 255 / .08), transparent 45%, rgb(255 255 255 / .06));
   --glass-rim: inset 0 1px 0 rgb(255 255 255 / .5), inset 0 0 0 1px rgb(255 255 255 / .12);
@@ -6820,7 +6800,6 @@ html[data-glass="liquid-3d"] .wallpaper-preview-composer::before {
   mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
   pointer-events: none;
 }
-/* Controls inside are glass beads; the send button and switched-on pills are tinted, glossy glass. */
 html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface .unsloth-composer-plus:not(:hover, [data-state="open"], :focus-visible) {
   background-image: var(--glass-bead);
   box-shadow: var(--glass-bead-rim);
@@ -6841,7 +6820,6 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="window-titleba
   background: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
 }
 
-/* Composer outline off: no ring or bevel on glass either. */
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .unsloth-composer-surface,
 html[data-glass] .wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer {
   --composer-shadow: none;
@@ -6855,7 +6833,6 @@ html[data-glass="liquid-3d"] .wallpaper-preview:has(> .chat-wallpaper[data-outli
   content: none;
 }
 
-/* Run settings panel: the same pane as the sidebar; its header and fields keep their own fills. */
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"],
 html[data-glass="macos"] [data-slot="chat-settings-panel"] {
   background-color: color-mix(in srgb, var(--glass-panel-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
@@ -6874,7 +6851,6 @@ html.dark[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot=
   box-shadow: inset 1px 0 0 rgb(255 255 255 / .08);
 }
 
-/* Hover and open fills on glass: a translucent wash (lit on liquid glass) instead of a solid grey chip. */
 html[data-glass] {
   --glass-hover: color-mix(in srgb, var(--foreground) 9%, transparent);
   --glass-hover-rim: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 5%, transparent);
@@ -6921,7 +6897,6 @@ html[data-glass="macos"] :is([data-slot="sidebar-inner"], [data-slot="chat-setti
   --color-chat-icon-bg-hover: var(--glass-hover);
   --color-muted: var(--glass-hover);
 }
-/* Dark pills mix their fill with the opaque card. */
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]):not(:focus-visible),
 html[data-glass="macos"] .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]):not(:focus-visible),
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] [data-slot="sidebar-menu-button"]:is(:hover, [data-active="true"]),
@@ -6930,7 +6905,7 @@ html[data-glass="macos"] [data-slot="sidebar-inner"] [data-slot="sidebar-menu-bu
   box-shadow: var(--glass-hover-rim);
 }
 
-/* macOS: the shell puts the system's vibrancy view under a transparent webview. */
+/* Menus that pin their fill with a layered !important read --sidebar or --dropdown-lift-surface, so point those at the glass. */
 html[data-glass="macos"],
 html[data-glass="macos"] body {
   background: transparent;
@@ -6948,9 +6923,6 @@ html[data-glass="macos"] :is(.chat-header-fade, [data-slot="window-titlebar-deco
   visibility: hidden;
 }
 
-/* Glass menus (html[data-glass-menus]): readable over anything, so always some blur and a heavier tint.
-   Menus that pin their fill with a layered !important (More menu, lifted dropdowns) read --sidebar or
-   --dropdown-lift-surface, so those are pointed at the glass instead. */
 html[data-glass] {
   --glass-menu-fill: color-mix(in srgb, var(--popover) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 30%)), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent);
 }
@@ -6958,7 +6930,6 @@ html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$=
   --sidebar: var(--glass-menu-fill);
   --dropdown-lift-surface: var(--glass-menu-fill);
   --dropdown-lift-accent: var(--glass-hover);
-  /* Pills and fields inside (picker tabs, Search Hub, Eject) become lighter glass, not solid chips. */
   --background: color-mix(in srgb, var(--glass-page-bg) 65%, transparent);
   --card: color-mix(in srgb, var(--glass-page-card) 65%, transparent);
   --popover: color-mix(in srgb, var(--glass-page-popover) 65%, transparent);
@@ -6977,13 +6948,12 @@ html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$=
 }
 html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
   background-image: var(--glass-sheen);
-  /* !important: the base dropdown shadow rules are. No outer shadow on glass. */
+  /* !important: the base dropdown shadow rules are. */
   box-shadow: var(--glass-rim) !important;
 }
 html[data-glass][data-glass-menus] :is([role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"]):is([data-highlighted], :focus-visible) {
   box-shadow: var(--glass-hover-rim);
 }
-/* Tooltips and hover cards (context usage, token counts) take the same glass over their own dark fill. */
 html[data-glass][data-glass-menus] :is(.tooltip-compact, .tooltip-rich) {
   background-color: color-mix(in srgb, var(--tooltip-bg) min(96%, calc(min(100%, calc(var(--glass-tint) + 40%)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate));
@@ -6993,8 +6963,6 @@ html[data-glass^="liquid"][data-glass-menus] :is(.tooltip-compact, .tooltip-rich
   background-image: var(--glass-sheen);
   box-shadow: var(--glass-rim);
 }
-/* Dialogs (Settings, search) are one glass pane; the surfaces inside turn translucent, as on All pages.
-   The --glass-page-* tokens hold the solid colours, resolved on <html>. */
 html[data-glass][data-glass-menus] [data-slot="dialog-content"] {
   background-color: color-mix(in srgb, var(--glass-page-bg) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 40%)), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
@@ -7021,7 +6989,7 @@ html[data-glass^="liquid"][data-glass-menus] [data-slot="dialog-content"] {
   background-image: var(--glass-sheen);
   box-shadow: var(--glass-rim);
 }
-/* Toasts too. !important: Sonner injects its base rules at runtime, and the toast rules above use it. */
+/* !important: Sonner injects its base rules at runtime. */
 html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] {
   --accent: var(--glass-hover);
   --muted: var(--glass-hover);
@@ -7043,8 +7011,6 @@ html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] :is([
   box-shadow: var(--glass-hover-rim);
 }
 
-/* Glass with no background image (backdrop.tsx): soft colour fields from the theme accent, so the glass
-   has something to frost. */
 .glass-backdrop {
   background:
     radial-gradient(55% 60% at 14% 18%, color-mix(in oklab, var(--primary) 42%, transparent), transparent 70%),
@@ -7062,10 +7028,6 @@ html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] :is([
     var(--background);
 }
 
-/* All pages under glass: each page sits on one frosted pane (tint and blur follow Glass strength, with a
-   floor so dense pages stay readable over any image). Inside it the surface tokens turn translucent, so
-   page canvases, headers, cards, fields and chips become lighter glass over the pane rather than solid
-   blocks; hover fills take the glass wash. --glass-page-* hold the solid colours, resolved on <html>. */
 html {
   --glass-page-floor: 70%;
 }
@@ -7091,17 +7053,13 @@ html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .
   --color-chat-icon-bg-hover: var(--glass-hover);
 }
 html.dark { --glass-page-floor: 60%; }
-/* The image itself is frosted on these pages rather than through a backdrop-filter on the pane: a pane
-   that is a backdrop root makes every sticky header inside re-tint it into a visible band. !important
-   beats the inline image blur, which this always exceeds. */
+/* Frost the image, not the pane: a backdrop-root pane makes sticky headers inside re-tint it into bands. */
 html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper[data-ready] .chat-wallpaper-artwork {
   filter: blur(max(var(--glass-blur), 22px)) saturate(var(--glass-saturate)) !important;
 }
-/* The top wash is for the chat header; on a frosted page it shows as a band behind page headers. */
 html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper::after {
   content: none;
 }
-/* Sticky headers frost the rows scrolling under them instead of painting a band over the pane. */
 html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] .sticky {
   background-color: transparent;
   -webkit-backdrop-filter: blur(16px);
