@@ -558,30 +558,37 @@ def _merge_with_master(
 def _move_adapter_with_master(self, adapter_name, *args, **kwargs):
     """PEFT puts a new adapter on base_layer.weight's device, which is the host for an offloaded master: place it
     on the fp8 compute device. DoRA reads the base weight in its forward, so a DoRA adapter brings the master
-    back to that device."""
-    out = type(self)._move_adapter_to_device_of_base_layer(self, adapter_name, *args, **kwargs)
+    back to that device first (PEFT then places it and its magnitude vector there)."""
     base = getattr(self, "base_layer", None)
     state = base.__dict__.get("_unsloth_fp8_lora") if base is not None else None
-    if state is None or not state.offloaded:
-        return out
-    if getattr(self, "use_dora", {}).get(adapter_name, False):
+    if (
+        state is not None
+        and state.offloaded
+        and getattr(self, "use_dora", {}).get(adapter_name, False)
+    ):
         _load_fp8_lora_kernels().restore_fp8_lora_master(base)
+    out = type(self)._move_adapter_to_device_of_base_layer(self, adapter_name, *args, **kwargs)
+    if state is None or not state.offloaded:
         return out
     for name in tuple(getattr(self, "adapter_layer_names", ())) + tuple(
         getattr(self, "other_param_names", ())
     ):
         layer = getattr(self, name, None)
         if (
-            isinstance(layer, (torch.nn.ModuleDict, torch.nn.ParameterDict))
-            and adapter_name in layer
+            not isinstance(layer, (torch.nn.ModuleDict, torch.nn.ParameterDict))
+            or adapter_name not in layer
         ):
-            layer[adapter_name] = (
-                layer[adapter_name].to(state.device)
-                if isinstance(layer, torch.nn.ModuleDict)
-                else torch.nn.Parameter(
-                    layer[adapter_name].data.to(state.device),
-                    requires_grad = layer[adapter_name].requires_grad,
-                )
+            continue
+        entry = layer[adapter_name]
+        tensors = list(entry.parameters()) if isinstance(entry, torch.nn.Module) else [entry]
+        if any(t.device.type == "meta" for t in tensors):
+            # low_cpu_mem_usage: PEFT leaves meta parameters for the checkpoint loader to materialize.
+            continue
+        if isinstance(entry, torch.nn.Module):
+            layer[adapter_name] = entry.to(state.device)
+        else:
+            layer[adapter_name] = torch.nn.Parameter(
+                entry.data.to(state.device), requires_grad = entry.requires_grad
             )
     return out
 

@@ -712,11 +712,23 @@ def attach_fp8_lora_base(module, offload: Optional[bool] = None) -> Fp8LoRABaseS
         module.__dict__["_unsloth_fp8_lora"] = state
         module.forward = types.MethodType(_fp8_base_forward, module)
         module._apply = types.MethodType(_fp8_base_apply, module)
+        module.__dict__["_unsloth_fp8_lora_load_hook"] = module.register_load_state_dict_post_hook(
+            _fp8_requantize_after_load
+        )
     if offload is None:
         offload = offload_supported()
     if offload:
         state.offload(module)
     return state
+
+
+def _fp8_requantize_after_load(module, incompatible_keys):
+    # Eagerly, outside any compiled region: refresh() is skipped while tracing, so a compiled forward after
+    # load_state_dict would otherwise keep using the previous fp8 copy.
+    state = module.__dict__.get("_unsloth_fp8_lora")
+    if state is not None:
+        state._key = None
+        state.refresh(module.weight)
 
 
 def restore_fp8_lora_master(module) -> bool:
@@ -728,6 +740,9 @@ def restore_fp8_lora_master(module) -> bool:
 def detach_fp8_lora_base(module):
     restore_fp8_lora_master(module)
     module.__dict__.pop("_unsloth_fp8_lora", None)
+    hook = module.__dict__.pop("_unsloth_fp8_lora_load_hook", None)
+    if hook is not None:
+        hook.remove()
     module.__dict__.pop("forward", None)
     module.__dict__.pop("_apply", None)
 

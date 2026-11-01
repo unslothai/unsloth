@@ -872,3 +872,48 @@ def test_an_added_adapter_lands_on_the_compute_device(offload_on_cpu, monkeypatc
     model.add_adapter("third", LoraConfig(r = 4, target_modules = ["v_proj"], use_dora = True))
     dora = [m for m in layers if "third" in m.lora_A]
     assert dora and not any(m.base_layer.__dict__["_unsloth_fp8_lora"].offloaded for m in dora)
+
+
+def test_low_cpu_mem_adapters_stay_on_meta_for_the_loader(offload_on_cpu):
+    # Failing before: the placement wrapper moved PEFT's meta parameters (low_cpu_mem_usage) and raised.
+    from peft import LoraConfig
+
+    model = _tiny_qwen3_peft()
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    f8t.enable_fp8_lora(model, allow_cpu = True)
+    model.add_adapter("second", LoraConfig(r = 4, target_modules = ["q_proj"]), low_cpu_mem_usage = True)
+    added = [m for m in model.modules() if hasattr(m, "lora_A") and "second" in m.lora_A]
+    assert added and all(m.lora_A["second"].weight.device.type == "meta" for m in added)
+
+
+def test_a_dora_adapter_restores_the_master_before_placement(offload_on_cpu, monkeypatch):
+    # Failing before: PEFT placed the DoRA adapter (and its magnitude) by the host master, then the master moved.
+    from peft import LoraConfig
+    from peft.tuners.lora import LoraLayer
+
+    model = _tiny_qwen3_peft()
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    f8t.enable_fp8_lora(model, allow_cpu = True)
+    seen = []
+    real = LoraLayer._move_adapter_to_device_of_base_layer
+
+    def spy(self, adapter_name, *args, **kwargs):
+        if adapter_name == "dora":
+            seen.append(self.base_layer.__dict__["_unsloth_fp8_lora"].offloaded)
+        return real(self, adapter_name, *args, **kwargs)
+
+    monkeypatch.setattr(LoraLayer, "_move_adapter_to_device_of_base_layer", spy)
+    model.add_adapter("dora", LoraConfig(r = 4, target_modules = ["v_proj"], use_dora = True))
+    assert seen and not any(seen)
+
+
+def test_load_state_dict_requantizes_for_compiled_calls():
+    # Failing before: refresh() is skipped while compiled, so new base weights kept the old fp8 copy.
+    torch._dynamo.reset()
+    lin = _frozen_linear()
+    FL.attach_fp8_lora_base(lin, offload = False)
+    compiled = torch.compile(lin, backend = "aot_eager", fullgraph = True)
+    x = torch.randn(32, 256).bfloat16()
+    assert compiled(x).abs().sum() > 0
+    lin.load_state_dict({"weight": torch.zeros_like(lin.weight)})
+    assert compiled(x).abs().sum() == 0
