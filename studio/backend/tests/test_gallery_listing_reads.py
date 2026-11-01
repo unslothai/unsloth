@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import threading
 from pathlib import Path
 
@@ -218,13 +217,15 @@ def test_video_path_misses():
     assert videos.video_path("") is None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "symlinks need privileges on Windows")
 def test_symlinked_clips_still_take_the_full_check(tmp_path):
     directory = videos.gallery_dir()
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "far.mp4").write_bytes(b"x")
-    (directory / "escape.mp4").symlink_to(outside / "far.mp4")
+    try:
+        (directory / "escape.mp4").symlink_to(outside / "far.mp4")
+    except (OSError, NotImplementedError):
+        pytest.skip("this account cannot create symlinks")
     (directory / "inner.bin").write_bytes(b"y")
     (directory / "inside.mp4").symlink_to(directory / "inner.bin")
     (directory / "dangling.mp4").symlink_to(directory / "nothing")
