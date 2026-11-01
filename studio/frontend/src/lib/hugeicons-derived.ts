@@ -133,9 +133,9 @@ export const ChipIcon: IconSvgElement = [
 ];
 
 export const SiteInfoIcon: IconSvgElement = [
-  ["path", { d: "M10 8H20M4 16H14", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "0" }],
-  ["circle", { cx: "7", cy: "8", r: "2.5", stroke: "currentColor", strokeWidth: "1.5", key: "1" }],
-  ["circle", { cx: "17", cy: "16", r: "2.5", stroke: "currentColor", strokeWidth: "1.5", key: "2" }],
+  ["path", { d: "M12.325 7.125H19.625M4.375 16.875H11.675", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "0" }],
+  ["circle", { cx: "5.975", cy: "7.125", r: "2.6", stroke: "currentColor", strokeWidth: "1.5", key: "1" }],
+  ["circle", { cx: "18.025", cy: "16.875", r: "2.6", stroke: "currentColor", strokeWidth: "1.5", key: "2" }],
 ];
 
 // Hugeicons "settings-01" from core-free-icons 4.4.0; the pinned 4.1.1 has the older drawing.
