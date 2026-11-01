@@ -20,21 +20,24 @@ from utils import hub_settings
 
 pytestmark = pytest.mark.xdist_group("hub_source_env_reset_between_tests")
 
-# Read at collection, before either test runs: an operator may already have ModelScope selected.
-_INHERITED = os.environ.get(hub_settings.SOURCE_ENV)
-_OTHER = (
-    hub_settings.HUGGINGFACE
-    if hub_settings.active_source() == hub_settings.MODELSCOPE
-    else hub_settings.MODELSCOPE
-)
+# Read when the first test starts, not at collection: importing the app later in collection runs
+# apply_hub_settings(), which writes the variable, and conftest restores what each test started with.
+_SEEN: dict = {}
 
 
 def test_a_test_leaves_another_source_selected():
+    _SEEN["inherited"] = os.environ.get(hub_settings.SOURCE_ENV)
+    _SEEN["other"] = (
+        hub_settings.HUGGINGFACE
+        if hub_settings.active_source() == hub_settings.MODELSCOPE
+        else hub_settings.MODELSCOPE
+    )
     # Assigned, not monkeypatched: apply_hub_settings() writes it the same way.
-    os.environ[hub_settings.SOURCE_ENV] = _OTHER
-    assert hub_settings.active_source() == _OTHER
+    os.environ[hub_settings.SOURCE_ENV] = _SEEN["other"]
+    assert hub_settings.active_source() == _SEEN["other"]
 
 
 def test_the_next_test_starts_on_the_source_it_inherited():
-    assert os.environ.get(hub_settings.SOURCE_ENV) == _INHERITED
-    assert hub_settings.active_source() != _OTHER
+    assert _SEEN, "test_a_test_leaves_another_source_selected must run first, on this worker"
+    assert os.environ.get(hub_settings.SOURCE_ENV) == _SEEN["inherited"]
+    assert hub_settings.active_source() != _SEEN["other"]
