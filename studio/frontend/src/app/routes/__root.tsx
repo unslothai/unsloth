@@ -39,7 +39,10 @@ import { useExportRuntimeLifecycle } from "@/features/export";
 import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
 import { InterfaceZoom, zoomInterfaceFromMenu } from "@/features/interface-zoom";
-import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
+import {
+  bootstrapPersistedCredentials,
+  takeStartupCredentialBootstrap,
+} from "@/features/credentials/bootstrap";
 import {
   ManagedEngineOfferDialog,
   SharedRunConfigLinkHandler,
@@ -296,7 +299,9 @@ function CredentialBootstrapGate({
         return;
       }
       setReady(false);
-      void bootstrapPersistedCredentials().finally(() => {
+      void (
+        takeStartupCredentialBootstrap() ?? bootstrapPersistedCredentials()
+      ).finally(() => {
         if (
           mounted &&
           revision === runRevision.current &&
