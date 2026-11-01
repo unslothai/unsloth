@@ -309,9 +309,7 @@ def _posix_tail(path: str) -> list[str]:
 
 
 def _name_parts(path: str) -> tuple[str, str]:
-    """Path(path).suffix and .stem, split by hand for plain relative ASCII paths, which every pathlib flavour and
-    version reads alike; anything else (drives, backslashes, a name starting or ending in a dot) goes through
-    Path."""
+    """Path(path).suffix and .stem; by hand only for plain relative ASCII names, which every pathlib flavour and version reads alike."""
     if path.isascii() and not path.startswith("/") and "\\" not in path and ":" not in path:
         name = path[path.rfind("/") + 1 :]
         dot = name.rfind(".")
@@ -322,7 +320,6 @@ def _name_parts(path: str) -> tuple[str, str]:
 
 
 def _marked_parts(path: str, prefix: str, which: str) -> list[str]:
-    # The root ("/" or "//") is never marked, so the tail alone decides; the parent drops the name.
     parts = _posix_tail(path)
     if which != "parts":
         parts = parts[:-1]
@@ -392,7 +389,6 @@ def _label_in_name(name: str, label: str) -> bool:
 
 @functools.lru_cache(maxsize = 256)
 def _label_matcher(label: str) -> re.Pattern[str]:
-    """Compiled once per label: a Hub listing asks about every file, folder and label."""
     return re.compile(rf"(?:^|{_SEP}){re.escape(label)}(?:$|{_SEP})")
 
 

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seed path classification reads each Hub file name by string where pathlib would read it the same way: the
-hand-split parts, suffixes, stems and compiled label matchers give exactly what PurePosixPath / Path / a fresh
-re.search gave, for the POSIX and Windows flavours, on plain names and on the odd ones that fall back."""
+"""The string-split seed path helpers equal PurePosixPath / Path / a fresh re.search, POSIX and Windows flavours."""
 
 import importlib.util
 import random
