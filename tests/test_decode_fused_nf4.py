@@ -524,11 +524,19 @@ def test_qk_norm_alone_keys_the_signature():
 
     def plan():
         entry = types.SimpleNamespace(
-            ln1 = plain, ln2 = plain, sites = {"o": site}, qk_norm = (qn.weight, torch.ones(8), 1e-6, 1e-6),
+            ln1 = plain,
+            ln2 = plain,
+            sites = {"o": site},
+            qk_norm = (qn.weight, torch.ones(8), 1e-6, 1e-6),
         )
         return types.SimpleNamespace(
-            device = t.device, dtype = torch.bfloat16, hidden = 8, intermediate = 16, eps = 1e-5,
-            final_norm = plain, layers = [entry],
+            device = t.device,
+            dtype = torch.bfloat16,
+            hidden = 8,
+            intermediate = 16,
+            eps = 1e-5,
+            final_norm = plain,
+            layers = [entry],
         )
 
     qn.enable_adapters(True)
