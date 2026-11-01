@@ -99,6 +99,105 @@ def warm_compile_pool(logger: Any = None) -> bool:
     return True
 
 
+PREWARM_ENV = "UNSLOTH_DIFFUSION_DEFERRED_PREWARM"
+_PREWARM_LOCK = threading.Lock()
+_PREWARM_THREAD: Optional[threading.Thread] = None
+
+
+def prewarm_enabled() -> bool:
+    raw = (os.environ.get(PREWARM_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _triton_key_fn() -> Optional[Callable[[], Any]]:
+    for name in ("triton.runtime.cache", "triton.compiler.compiler"):
+        try:
+            module = __import__(name, fromlist = ["triton_key"])
+        except Exception:  # noqa: BLE001 - another Triton layout
+            continue
+        fn = getattr(module, "triton_key", None)
+        if callable(fn):
+            return fn
+    return None
+
+
+def warm_triton_key(logger: Any = None) -> bool:
+    """Fill Triton's per-process ``triton_key()`` cache (a hash of its sources and libtriton, 1-1.5 s), which the
+    first Triton JIT call in a process pays even on a warm disk cache."""
+    fn = _triton_key_fn()
+    if fn is None:
+        return False
+    t0 = time.perf_counter()
+    try:
+        fn()
+    except Exception as exc:  # noqa: BLE001 - the first JIT call computes it as before
+        if logger is not None:
+            logger.debug("diffusion.bg_compile: triton key warm-up skipped: %s", exc)
+        return False
+    if logger is not None:
+        logger.info("diffusion.bg_compile: triton key ready in %.2f s", time.perf_counter() - t0)
+    return True
+
+
+def warm_engage_imports(logger: Any = None) -> int:
+    """First-use work of the profile's engagement that changes no model: the patch helpers' import (unsloth_zoo) and
+    the fused VAE kernel definitions. Returns how many steps ran."""
+    import importlib
+
+    done = 0
+    steps: list[Callable[[], Any]] = [
+        # Import only: diffusion_patch_backend._helpers() keeps its own retry (import unsloth) for the 3rd image.
+        lambda: importlib.import_module("unsloth_zoo.temporary_patches.utils"),
+        lambda: importlib.import_module(f"{__package__}.diffusion_vae_fused")._kernels(),
+    ]
+    for step in steps:
+        try:
+            step()
+            done += 1
+        except Exception as exc:  # noqa: BLE001 - the 3rd image does this inline as before
+            if logger is not None:
+                logger.debug("diffusion.bg_compile: engage warm-up step skipped: %s", exc)
+    return done
+
+
+def start_deferred_prewarm(logger: Any = None) -> bool:
+    """2nd image of a deferred session: start the compile pool, fill the Triton key and do the engagement's first-use
+    imports on a side thread, so none of it lands inside a render. ``PREWARM_ENV=0`` warms the pool inline as
+    before."""
+    global _PREWARM_THREAD
+    if not prewarm_enabled():
+        return warm_compile_pool(logger)
+    with _PREWARM_LOCK:
+        if _PREWARM_THREAD is not None:
+            return False
+
+        def run() -> None:
+            t0 = time.perf_counter()
+            warm_compile_pool(logger)
+            warm_triton_key(logger)
+            n = warm_engage_imports(logger)
+            if logger is not None:
+                logger.info(
+                    "diffusion.bg_compile: deferred profile warm-up done in %.2f s (%d import steps)",
+                    time.perf_counter() - t0,
+                    n,
+                )
+
+        _PREWARM_THREAD = threading.Thread(target = run, name = "unsloth-deferred-prewarm", daemon = True)
+        _PREWARM_THREAD.start()
+    return True
+
+
+def wait_prewarm(timeout: Optional[float] = 60.0) -> bool:
+    """Join the side warm-up before the profile engages (no second pool start, no second key hash)."""
+    with _PREWARM_LOCK:
+        thread = _PREWARM_THREAD
+    if thread is None or thread is threading.current_thread():
+        return True
+    thread.join(timeout)
+    return not thread.is_alive()
+
+
 def slice_seconds(eager_render_s: Optional[float]) -> float:
     """Compile seconds a render lets run before it pauses the compile: ``SLICE_ENV`` when set, else the load's
     fastest eager render (0 when none was timed), clamped to [0, 30]."""

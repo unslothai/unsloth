@@ -13118,6 +13118,7 @@ class DiffusionBackend:
     def _engage_deferred_profile(self, state: _LoadState) -> None:
         """Runs the deferred speed profile at the 3rd generation under _generate_lock; the flag clears first so it never retries."""
         object.__setattr__(state, "speed_deferred", False)
+        bg_compile.wait_prewarm()
         from .diffusion_qwenimage21_eager import demote
 
         demote(getattr(state, "pipe", None))
@@ -13452,8 +13453,8 @@ class DiffusionBackend:
                     and not aux_pass
                     and str(getattr(state, "device", "")).startswith("cuda")
                 ):
-                    # 2nd image: warm inductor's workers so the deferred compile does not wait on them.
-                    bg_compile.warm_compile_pool(logger)
+                    # 2nd image: warm inductor's workers and Triton's key off this render's thread.
+                    bg_compile.start_deferred_prewarm(logger)
                 if (
                     state.speed_deferred
                     and state.generation_count >= 2
