@@ -445,3 +445,57 @@ def test_signature_follows_saved_norm_weights():
     wrapper.enable_adapters(False)
     assert D._signature(plan()) != on
     assert D._adapter_key(wrapper) != before
+
+
+def test_plan_goes_stale_when_a_tensor_scale_changes_in_place():
+    # prepare_model_for_compiled_hotswap makes scales tensors; hotswap fill_()s them in place.
+    D = _driver()
+    layer = _Lora()
+    layer.scaling = {"default": torch.tensor(2.0)}
+    plan = types.SimpleNamespace(watch = [layer], adapter_state = D._adapter_state([layer]))
+    assert not D._plan_stale(plan)
+    layer.scaling["default"].fill_(6.0)
+    assert D._plan_stale(plan)
+    plan.adapter_state = D._adapter_state([layer])
+    assert not D._plan_stale(plan)
+    layer.scaling["default"] *= 0.5  # LoraLayer.scale_layer
+    assert D._plan_stale(plan)
+
+
+_NO_TRITON_OP = textwrap.dedent(
+    """
+    import importlib.util, os, sys, types
+    import torch
+    for name in ("triton_op", "wrap_triton"):  # absent before torch 2.6
+        if hasattr(torch.library, name):
+            delattr(torch.library, name)
+    from packaging.version import Version
+    root = os.path.join(sys.argv[1], "unsloth")
+    zoo = types.ModuleType("unsloth_zoo"); zoo.__path__ = []
+    zoo_utils = types.ModuleType("unsloth_zoo.utils"); zoo_utils.Version = Version
+    sys.modules["unsloth_zoo"] = zoo; sys.modules["unsloth_zoo.utils"] = zoo_utils
+    pkg = types.ModuleType("dfn"); pkg.__path__ = []
+    models = types.ModuleType("dfn.models"); models.__path__ = [os.path.join(root, "models")]
+    kernels = types.ModuleType("dfn.kernels"); kernels.__path__ = [os.path.join(root, "kernels")]
+    kernels.utils = types.ModuleType("dfn.kernels.utils")
+    sys.modules.update({"dfn": pkg, "dfn.models": models, "dfn.kernels": kernels})
+    sys.modules["dfn.kernels.utils"] = kernels.utils
+    spec = importlib.util.spec_from_file_location(
+        "dfn.models._decode_fused_nf4", os.path.join(root, "models", "_decode_fused_nf4.py")
+    )
+    D = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(D)
+    assert D.F is None
+    print("refused:", D._build(None, torch.zeros(1, 1, 8)))
+    """
+)
+
+
+def test_kernels_unavailable_keeps_the_regular_path():
+    # torch 2.4 / 2.5: kernels/nf4.py needs torch.library.triton_op; importing the driver must not fail.
+    pytest.importorskip("triton")
+    result = subprocess.run(
+        [sys.executable, "-c", _NO_TRITON_OP, str(REPO)], capture_output = True, text = True
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "refused: fused NF4 kernels unavailable" in result.stdout
