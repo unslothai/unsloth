@@ -675,9 +675,8 @@ _OPEN_PARAMETER_SCAN_LIMIT = 16
 
 
 class _OpenParameterIndex:
-    """``_inside_open_parameter`` for many offsets of one text: per-tag calls were quadratic on long output.
-    The first few queries scan as the helper does; then sorted tag offsets answer each in O(log n). Valid
-    for the ``<parameter``/``<param`` openers (a tag ends at its first ``>``), as the reverse search is."""
+    """``_inside_open_parameter`` for many offsets of one text by bisecting sorted tag offsets (per-call
+    scans were quadratic). Valid only for ``<parameter``/``<param`` openers, as the reverse search is."""
 
     __slots__ = (
         "_content",
@@ -741,7 +740,6 @@ class _OpenParameterIndex:
         if idx < 0:
             return False
         last = self._param_starts[idx]
-        # A parameter close at or after the opener and at or before pos ends the value.
         closers = self._param_closers
         i = bisect.bisect_left(closers, last)
         if i < len(closers) and closers[i] <= pos:
@@ -853,7 +851,6 @@ def _build_markers(content: str):
     many_candidates = len(candidates) > 1
     has_parameter = "<parameter=" in content if many_candidates else True
     last_brace = content.rfind("}") if many_candidates else None
-    # One index answers every candidate; a per-candidate scan was quadratic on long output.
     inside = _OpenParameterIndex(content).inside
     for m, gemma, kind in candidates:
         if has_parameter and inside(m.start()):
@@ -1068,8 +1065,7 @@ def parse_tool_calls_from_text(
         parsed_items.append((start, span_end, name, arguments))
 
     inside = _OpenParameterIndex(content).inside
-    # Coverage follows the markers' start order, so a running max of ends answers each opener by
-    # bisect; scanning every span per opener was quadratic.
+    # Coverage is start-sorted: a running max of ends answers each opener by bisect.
     coverage_starts = [s for s, _e in coverage]
     coverage_max_ends = list(itertools.accumulate((e for _s, e in coverage), max))
 
@@ -1089,7 +1085,7 @@ def parse_tool_calls_from_text(
         func_name = fm.group(1)
         body_start = fm.end()
         next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
-        # Bounded at the next opener (body_end is capped there anyway); a search to EOF per call was quadratic.
+        # Bounded at the next opener, where body_end is capped anyway.
         end_tag = _TC_END_TAG_RE.search(content, body_start, next_func)
         if end_tag:
             body_end = end_tag.start()
@@ -1147,7 +1143,6 @@ def parse_tool_calls_from_text(
             arguments = _json_object_body(body) or arguments
 
         span_start = fm.start()
-        # Anchored scans, not a search over the whole prefix and a copy of the suffix per call.
         ws_start = span_start
         while ws_start > 0 and content[ws_start - 1].isspace():
             ws_start -= 1
