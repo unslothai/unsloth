@@ -4325,11 +4325,6 @@ async def upload_diffusion_dataset(
     _interlock: None = Depends(diffusion_dataset_interlock),
 ):
     """repeat uploads accumulate in one Unsloth dataset folder; pass its name as ``data_dir`` to /diffusion/start."""
-    import os
-    import tempfile
-
-    from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
-
     _require_diffusion_dataset_mutable()
     cleaned = _clean_diffusion_dataset_name(name)
     if cleaned.casefold() in _reserved_diffusion_dataset_names():
@@ -4348,8 +4343,57 @@ async def upload_diffusion_dataset(
                 "then upload again."
             ),
         )
+    # Listing, writes and the summary block for up to ~0.4 s per slice, so they run on a worker thread.
+    return await _run_holding_import_lock(
+        _lock, _store_diffusion_dataset_upload, folder, cleaned, files, create_only
+    )
+
+
+async def _run_holding_import_lock(_lock: "threading.Lock", fn, *args):
+    """Runs ``fn(*args, _lock, cancelled)`` on a worker thread that releases the acquired ``_lock`` itself,
+    so a cancelled request never frees the lock under a running import."""
+    cancelled = threading.Event()
+    guard = threading.Lock()
+    started = False
+
+    def run():
+        nonlocal started
+        with guard:
+            if cancelled.is_set():
+                return None
+            started = True
+        return fn(*args, _lock, cancelled)
+
+    try:
+        return await asyncio.to_thread(run)
+    except BaseException:
+        with guard:
+            cancelled.set()
+            if not started:
+                _lock.release()
+        raise
+
+
+def _read_upload_chunk(f: UploadFile, cancelled: "threading.Event") -> bytes:
+    """``UploadFile.read`` off the event loop; a cancelled request stops staging at the next chunk."""
+    if cancelled.is_set():
+        raise asyncio.CancelledError()
+    return f.file.read(1024 * 1024)
+
+
+def _store_diffusion_dataset_upload(
+    folder: Path,
+    cleaned: str,
+    files: list[UploadFile],
+    create_only: bool,
+    _lock: "threading.Lock",
+    cancelled: "threading.Event",
+) -> "DiffusionDatasetUploadResponse":
+    """Validates, stages and commits one upload slice; called with ``_lock`` held and releases it."""
     created_folder = False
     try:
+        from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
+
         if create_only:
             occupied = (
                 next(
@@ -4480,7 +4524,7 @@ async def upload_diffusion_dataset(
                 tmp = folder / f".upload-{_uuid.uuid4().hex}.part"
                 staged.append((tmp, dest))
                 with open(tmp, "wb") as out:
-                    while chunk := await f.read(1024 * 1024):
+                    while chunk := _read_upload_chunk(f, cancelled):
                         total_bytes += len(chunk)
                         if total_bytes > limit_bytes:
                             raise HTTPException(
