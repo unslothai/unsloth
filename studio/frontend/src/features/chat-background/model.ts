@@ -12,7 +12,6 @@ export const EFFECTS = [
 	"Scanlines",
 ] as const;
 export type BackgroundEffect = (typeof EFFECTS)[number];
-/** Glass for the sidebar and composer; "macos" is the system window material (Desktop only). */
 export const MATERIALS = [
 	"solid",
 	"transparent",
@@ -28,7 +27,6 @@ export function sanitizeMaterial(value: unknown): WindowMaterial {
 		? (value as WindowMaterial)
 		: "solid";
 }
-/** 0-100; 50 is each material's own tint and blur. */
 export function sanitizeStrength(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value)
 		? Math.max(0, Math.min(100, Math.round(value)))
@@ -46,12 +44,7 @@ export function toneOf(values: number[]): ImageTone {
 const clamp = (v: number, lo: number, hi: number) =>
 	Math.max(lo, Math.min(hi, v));
 
-/**
-* How opaque glass panes must be for their text to read over this image, and (light mode) how far to
-* shade them so a pane still stands apart from a light image. Dark mode: light text needs the pane
-* under ~0.15 luminance over the image's bright quarter. Light mode: dark text needs it over ~0.5 over
-* the dark quarter, taking the pane colour as ~0.9.
-*/
+/** Dark mode: pane under ~0.15 luminance over the bright quarter; light mode: over ~0.5 over the dark quarter (pane ~0.9). */
 export function glassReadability(
 	tone: ImageTone,
 	dark: boolean,

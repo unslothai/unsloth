@@ -93,10 +93,8 @@ test("glass panes thicken over images that would wash out their text", async () 
 	const { glassReadability, toneOf } = await import("../src/features/chat-background/model.ts");
 	const light = toneOf(Array.from({ length: 100 }, (_, i) => 0.6 + i * 0.003));
 	const dark = toneOf(Array.from({ length: 100 }, () => 0.02));
-	// Dark mode: light text over a light image needs a nearly opaque pane; a dark image needs none.
 	assert.ok(glassReadability(light, true).floor > 0.75);
 	assert.equal(glassReadability(dark, true).floor, 0);
-	// Light mode: dark text over a dark image needs a lighter pane; a light image shades it instead.
 	assert.ok(glassReadability(dark, false).floor > 0.5);
 	assert.equal(glassReadability(light, false).floor, 0);
 	assert.ok(glassReadability(light, false).shade > 0);

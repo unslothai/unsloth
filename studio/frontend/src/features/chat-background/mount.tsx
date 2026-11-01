@@ -8,7 +8,6 @@ const Renderer = lazy(() =>
 const Backdrop = lazy(() =>
 	import("./backdrop").then((module) => ({ default: module.GlassBackdrop })),
 );
-/** `backdrop`: the app's own instance, which shows the glass backdrop when glass is on without an image. */
 export function ChatBackground({
 	active = true,
 	backdrop = false,
