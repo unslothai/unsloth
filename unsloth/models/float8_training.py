@@ -616,6 +616,21 @@ def _restore_master_before_merge(lora_module):
         )
 
 
+def _mamba_raw_weight_leaf(model, name) -> bool:
+    parent_name, _, leaf = name.rpartition(".")
+    try:
+        from ._mamba_lora import _RAW_WEIGHT_LEAVES
+    except Exception:
+        _RAW_WEIGHT_LEAVES = ("x_proj", "dt_proj", "out_proj")
+    if leaf not in _RAW_WEIGHT_LEAVES:
+        return False
+    try:
+        parent = model.get_submodule(parent_name) if parent_name else model
+    except AttributeError:
+        return False
+    return "mamba" in type(parent).__name__.lower()
+
+
 def enable_fp8_lora(
     model,
     recipe = None,
@@ -657,10 +672,13 @@ def enable_fp8_lora(
         if why is not None:
             skipped[name] = why
             continue
-        # DoRA's forward reads the base weight itself (its column norm), so it keeps the master on the device.
-        dora = any(getattr(module, "use_dora", {}).values())
+        # DoRA's forward reads the base weight itself (its column norm), and Unsloth's fused Mamba kernels read the
+        # raw x_proj / dt_proj / out_proj weights (W + delta): both keep the master on the device.
+        reads_raw = any(getattr(module, "use_dora", {}).values()) or _mamba_raw_weight_leaf(
+            model, name
+        )
         state = kernels.attach_fp8_lora_base(
-            base, offload = offload and uses.get(id(base.weight), 0) == 1 and not dora
+            base, offload = offload and uses.get(id(base.weight), 0) == 1 and not reads_raw
         )
         offloaded += int(state.offloaded)
         _restore_master_before_merge(module)

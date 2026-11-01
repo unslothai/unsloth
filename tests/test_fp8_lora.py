@@ -947,3 +947,38 @@ def test_a_pissa_adapter_requantizes_the_rewritten_base(offload_on_cpu):
     for m in layers:
         state = m.base_layer.__dict__["_unsloth_fp8_lora"]
         assert state._key == state._weight_key(m.base_layer.weight)
+
+
+def test_mamba_raw_weight_projections_keep_the_master(offload_on_cpu):
+    # Failing before: an offloaded x_proj / dt_proj / out_proj master met the device adapter delta in Unsloth's
+    # fused Mamba path (W + delta), a device mismatch on the GPU.
+    from peft import LoraConfig, get_peft_model
+
+    class MambaMixer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.in_proj = torch.nn.Linear(64, 64, bias = False, dtype = torch.bfloat16)
+            self.out_proj = torch.nn.Linear(64, 64, bias = False, dtype = torch.bfloat16)
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.mixer = MambaMixer()
+
+    model = get_peft_model(Model(), LoraConfig(r = 4, target_modules = ["in_proj", "out_proj"]))
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    assert len(f8t.enable_fp8_lora(model, allow_cpu = True)) == 2
+    mixer = model.base_model.model.mixer
+    assert not mixer.out_proj.base_layer.__dict__["_unsloth_fp8_lora"].offloaded
+    assert mixer.in_proj.base_layer.__dict__["_unsloth_fp8_lora"].offloaded
+
+
+def test_legacy_scaled_mm_tuple_return(monkeypatch):
+    # torch 2.4 returns (output, amax) from torch._scaled_mm; the fp8 path must take the output.
+    real = torch._scaled_mm
+    monkeypatch.setattr(torch, "_scaled_mm", lambda *a, **k: (real(*a, **k), torch.zeros(())))
+    W = _weight()
+    state = FL.Fp8LoRABaseState(W)
+    y = state.matmul(torch.randn(32, 256).bfloat16(), W)
+    dx = state.dgrad(torch.randn(32, 384).bfloat16(), W)
+    assert torch.is_tensor(y) and torch.is_tensor(dx)

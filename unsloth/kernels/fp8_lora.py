@@ -315,7 +315,7 @@ def _out_dtype(dtype):
 
 
 def _scaled_mm(a, b, scale_a, scale_b, out_dtype, fast_accum):
-    return torch._scaled_mm(
+    out = torch._scaled_mm(
         a,
         b,
         scale_a = scale_a,
@@ -323,6 +323,8 @@ def _scaled_mm(a, b, scale_a, scale_b, out_dtype, fast_accum):
         out_dtype = out_dtype,
         use_fast_accum = fast_accum,
     )
+    # torch 2.4 returns (output, amax).
+    return out[0] if isinstance(out, tuple) else out
 
 
 # Module level: a torch.library.Library deregisters its ops once collected.
