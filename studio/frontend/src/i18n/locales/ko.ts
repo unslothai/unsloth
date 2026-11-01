@@ -8,6 +8,7 @@ export const ko = {
   chatBackground: {
     noBackground: "배경 없음",
     sizing: "이미지 크기 조정",
+    sizingPosition: "이미지 크기 및 위치",
     fill: "채우기",
     fit: "맞추기",
     stretch: "늘이기",

@@ -8,6 +8,7 @@ export const hi = {
   chatBackground: {
     noBackground: "कोई पृष्ठभूमि नहीं",
     sizing: "छवि का आकार",
+    sizingPosition: "छवि का आकार और स्थिति",
     fill: "भरें",
     fit: "फ़िट करें",
     stretch: "खींचें",

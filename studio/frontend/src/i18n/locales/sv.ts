@@ -5,6 +5,7 @@ export const sv = {
   chatBackground: {
     noBackground: "Ingen bakgrund",
     sizing: "Bildstorlek",
+    sizingPosition: "Bildstorlek och position",
     fill: "Fyll",
     fit: "Anpassa",
     stretch: "Sträck ut",
