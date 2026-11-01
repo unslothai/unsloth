@@ -758,8 +758,7 @@ def _tokenize_prompt(
     add_special_tokens,
     bos_probe = None,
 ):
-    """``tokenizer(prompt, return_tensors="pt", ...)``, reusing the bos_probe encoding of the same
-    tokenizer and prompt instead of tokenizing a long prompt twice."""
+    """``tokenizer(prompt, return_tensors="pt", ...)``, reusing a matching bos_probe encoding."""
     if not add_special_tokens and bos_probe is not None:
         probe_tok, probe_prompt, encoding = bos_probe
         ids = encoding["input_ids"] if isinstance(encoding, BatchEncoding) else None

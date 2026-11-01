@@ -206,7 +206,6 @@ def test_prompt_with_bos_is_tokenized_once():
 
     assert calls == [False]
     assert inputs["input_ids"].tolist() == [[0, 4, 2, 3]]
-    # Without BOS in the text the tokenizer must add it, so the probe is not reused.
     calls.clear()
     _tokenize_like_head(tokenizer, "user hello world")
     assert calls == [False, True]
