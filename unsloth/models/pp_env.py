@@ -371,7 +371,7 @@ def gather_replica(
             f"not fit: {detail}. Save the adapter (model.save_pretrained) and run `{what}` on one GPU, or free "
             f"memory first.{_hint()}"
         )
-    owned = [name for name, p in stage.model.named_parameters() if p.requires_grad]
+    owned = _trained_names(stage)
     for container, key, module, _ in stage._kept:
         _move(module, device, set())
         # Detached while the caller set the mode (model.eval() before generate): follow the root's mode.
@@ -390,6 +390,18 @@ def gather_replica(
             "CPU copies of the other stages); the next training step splits it again."
         )
     return stage
+
+
+def _note_trained(stage):
+    """Remember which parameters this stage trains: a later requires_grad_(False) (before generate / export) must
+    not drop them from the replica sync."""
+    seen = stage.__dict__.setdefault("_unsloth_trained_names", set())
+    seen.update(name for name, p in stage.model.named_parameters() if p.requires_grad)
+
+
+def _trained_names(stage):
+    seen = stage.__dict__.get("_unsloth_trained_names", ())
+    return [name for name, p in stage.model.named_parameters() if p.requires_grad or name in seen]
 
 
 def _sync_trained(stage, owned):
@@ -712,6 +724,7 @@ def _pp_training_step(
     **kwargs,
 ):
     stage = self.__dict__["_unsloth_pipeline_parallel"]
+    _note_trained(stage)
     model.train()
     if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
         self.optimizer.train()
@@ -888,6 +901,15 @@ def _pp_save_optimizer_and_scheduler(self, output_dir):
     return _tp_save_optimizer_and_scheduler(self, output_dir)
 
 
+def _pp_load_from_checkpoint(self, *args, **kwargs):
+    """A checkpoint holds this rank's stage only: drop a replica left by generate / for_inference before the
+    layout check, as the optimizer save does."""
+    from .tp_native import _tp_load_from_checkpoint
+
+    release_replica(self.model)
+    return _tp_load_from_checkpoint(self, *args, **kwargs)
+
+
 def pp_trainer_setup(trainer):
     """After Trainer.__init__ (models/_utils.py) for a model split under UNSLOTH_PP_SIZE."""
     from .tp_native import (
@@ -895,7 +917,6 @@ def pp_trainer_setup(trainer):
         _TP_DATA,
         _dp_sync_before_step,
         _install_tp_accelerate_hooks,
-        _tp_load_from_checkpoint,
         _tp_load_optimizer_and_scheduler,
         _tp_save_optimizer_and_scheduler,
         _tp_train_sampler,
@@ -924,7 +945,7 @@ def pp_trainer_setup(trainer):
         ("save_model", _pp_save_model),
         ("_save_optimizer_and_scheduler", _pp_save_optimizer_and_scheduler),
         ("_load_optimizer_and_scheduler", _tp_load_optimizer_and_scheduler),
-        ("_load_from_checkpoint", _tp_load_from_checkpoint),
+        ("_load_from_checkpoint", _pp_load_from_checkpoint),
     ):
         trainer.__dict__[name] = types.MethodType(method, trainer)
     trainer.__dict__["_has_mixed_mesh_grads"] = lambda model: False

@@ -1251,3 +1251,34 @@ def test_pp_dp_optimizer_hook_takes_self_optimizer_when_create_returns_none():
     # The wrapper must not hand None to the step hook (a create_optimizer override may only set self.optimizer).
     src = inspect.getsource(pp_env)
     assert "optimizer = trainer.optimizer" in src
+
+
+def test_pp_replica_syncs_parameters_trained_before_a_freeze():
+    # Failing before: gather_replica synced only parameters that currently require grad, so freezing the model
+    # for generate / export dropped the trained adapters from the other stages' copies.
+    import types
+
+    import torch
+    from unsloth.models import pp_env
+
+    model = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Linear(2, 2))
+    model[0].requires_grad_(False)
+    stage = types.SimpleNamespace(model = model)
+    pp_env._note_trained(stage)
+    model.requires_grad_(False)
+    assert pp_env._trained_names(stage) == ["1.weight", "1.bias"]
+
+
+def test_pp_checkpoint_load_releases_the_replica_first(monkeypatch):
+    # Failing before: a replica left by generate made the checkpoint layout check see every stage's parameters.
+    import unsloth.models.tp_native as tp_native
+    from unsloth.models import pp_env
+
+    order = []
+    monkeypatch.setattr(pp_env, "release_replica", lambda model: order.append("release"))
+    monkeypatch.setattr(
+        tp_native, "_tp_load_from_checkpoint", lambda self, *a, **k: order.append("load")
+    )
+    trainer = __import__("types").SimpleNamespace(model = object())
+    pp_env._pp_load_from_checkpoint(trainer, "ckpt")
+    assert order == ["release", "load"]
