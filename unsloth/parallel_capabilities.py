@@ -142,7 +142,7 @@ RULES = (
         "cp x tp",
         "context parallel x tensor parallel on full finetuning",
         lambda q: q.cp > 1 and q.tp > 1 and q.mode == "full",
-        "tensor parallel trains LoRA adapters (full finetuning is refused by UNSLOTH_TP_SIZE)",
+        "full finetuning under cp x tp has no parity evidence yet (tensor parallel alone trains it)",
         "use LoRA, or UNSLOTH_FSDP2=1 with cp for full finetuning",
     ),
     Rule(
@@ -202,11 +202,11 @@ RULES = (
         "packing = False, or drop pp",
     ),
     Rule(
-        "pp / tp x mode",
-        "pipeline / tensor parallel full finetuning",
-        lambda q: (q.pp > 1 or q.tp > 1) and q.mode == "full",
-        "pipeline and tensor parallel train LoRA adapters",
-        "use LoRA, or UNSLOTH_FSDP2=1 (dp) for full finetuning",
+        "pp x mode",
+        "pipeline parallel full finetuning",
+        lambda q: q.pp > 1 and q.mode == "full",
+        "pipeline parallel trains LoRA adapters",
+        "use LoRA, or UNSLOTH_FSDP2=1 (dp) / UNSLOTH_TP_SIZE (tp) for full finetuning",
     ),
     Rule(
         "pp x schedule",
@@ -244,14 +244,6 @@ RULES = (
         "summed wrong (the aux-loss injection design has not landed). TRL's SFTTrainer turns it on from the "
         "architecture's router_aux_loss_coef by default",
         "router_aux_loss_coef = 0.0 in the trainer config (and output_router_logits = False), or drop pp / cp",
-    ),
-    Rule(
-        "MoE x tp",
-        "MoE models under tensor parallel",
-        lambda q: q.moe and q.tp > 1,
-        "tensor parallel shards attention / MLP projections, not routed experts (expert parallel is not "
-        "supported yet)",
-        "drop tp (FSDP2 / DDP keep the experts whole), or a dense model",
     ),
     Rule(
         "fsdp2 / tp x optimizer",
@@ -594,7 +586,7 @@ _MOE_EVIDENCE = {
 
 def _moe_note(family, precision, aux, mode):
     if mode == "tp":
-        return "refused by the MoE x tp rule (no expert parallel)"
+        return "tensor parallel MoE runs (models/tp_native.py, its own gloo tests); no registry parity row yet"
     if aux and mode in ("cp", "pp"):
         return "refused by the MoE x pp / cp rule (aux-loss injection first)"
     if mode == "pp":
@@ -636,11 +628,9 @@ def _strict() -> bool:
 
 
 def _gated(query: Query) -> bool:
-    """Compositions opened by the one-flag work, and MoE under any model parallel axis: they run only with a
-    cell carrying all three kinds of evidence."""
-    return (query.cp > 1 and (query.tp > 1 or query.pp > 1)) or (
-        query.moe and (query.cp > 1 or query.pp > 1 or query.tp > 1)
-    )
+    """Compositions opened by the one-flag work, and MoE under context / pipeline parallel: they run only with a
+    cell carrying all three kinds of evidence. MoE under tensor parallel alone keeps tp_native's own support."""
+    return (query.cp > 1 and (query.tp > 1 or query.pp > 1)) or (query.moe and (query.cp > 1 or query.pp > 1))
 
 
 def cell_status(query: Query) -> tuple:

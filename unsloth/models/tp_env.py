@@ -116,6 +116,10 @@ _REFUSED_LOAD_FLAGS = (
     ("load_in_8bit", "8-bit weights (load_in_8bit = True; load in 4-bit or 16-bit)"),
     ("load_in_fp8", "fp8 weights (load_in_fp8)"),
 )
+_REFUSED_PIPELINE_LOAD_FLAGS = (
+    ("full_finetuning", "full finetuning (full_finetuning = True; use UNSLOTH_FSDP2=1 instead)"),
+    ("qat_scheme", "QAT (qat_scheme)"),
+)
 
 
 def _bound(fn, args, kwargs):
@@ -161,6 +165,8 @@ def tensor_parallel_env_load(fn):
         )
         unset = " / ".join(var.split("=")[0] for var in layout.env_vars.split())
         refused = [what_ for key, what_ in _REFUSED_LOAD_FLAGS if values.get(key)]
+        if layout.pp > 1:  # tensor parallel alone trains these; pipeline parallel v1 trains LoRA adapters
+            refused += [what_ for key, what_ in _REFUSED_PIPELINE_LOAD_FLAGS if values.get(key)]
         if refused:
             raise NotImplementedError(
                 f"Unsloth: {layout.env_vars} ({what}) does not support "

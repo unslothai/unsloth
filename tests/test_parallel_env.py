@@ -348,6 +348,18 @@ def _q(**kw):
     return Query(**base)
 
 
+def test_tensor_parallel_alone_keeps_what_tp_native_supports():
+    """Tensor parallel trains full finetuning and MoE models by itself (models/tp_native.py and its gloo
+    tests): the registry reports those layouts and runs them; only their compositions it has no row for refuse."""
+    from unsloth import parallel_capabilities as caps
+
+    for extra in (dict(mode = "full"), dict(moe = True, family = "qwen3_moe")):
+        assert caps.cell_status(_q(tp = 2, **extra))[0] in ("single", "unverified"), extra
+        caps.check(_q(tp = 2, **extra))
+    with pytest.raises(NotImplementedError, match = r"^Unsloth: pp x mode"):
+        caps.check(_q(pp = 2, mode = "full"))
+
+
 @pytest.mark.parametrize(
     "query, axis, instead",
     [
@@ -366,7 +378,7 @@ def _q(**kw):
         (dict(cp = 2, torch = (2, 6)), "cp x torch", "upgrade torch"),
         (dict(pp = 2, trainer = "grpo"), "pp x trainer", "drop pp"),
         (dict(pp = 2, packing = True), "pp x packing", "packing = False"),
-        (dict(tp = 2, mode = "full"), "pp / tp x mode", "use LoRA, or UNSLOTH_FSDP2=1"),
+        (dict(pp = 2, mode = "full"), "pp x mode", "use LoRA, or UNSLOTH_FSDP2=1"),
         (dict(tp = 2, vllm = True), "pp / tp x vLLM", "fast_inference = False"),
     ],
 )
@@ -728,8 +740,9 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
         caps.check(_q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **moe_q))
     with pytest.raises(NotImplementedError, match = r"x pp' lacks parity, engagement, compile evidence; pipeline"):
         caps.check(_q(pp = 2, **moe_q))
-    with pytest.raises(NotImplementedError, match = r"^Unsloth: MoE x tp"):
-        caps.check(_q(tp = 2, **moe_q))
+    # Tensor parallel MoE runs (main's tp_native support): reported, not refused.
+    assert caps.cell_status(_q(tp = 2, **moe_q))[0] == "unverified"
+    caps.check(_q(tp = 2, **moe_q))
     assert caps.cell_status(_q(dp = 2, fsdp2 = True, router_aux_loss = True, **moe_q))[0] == "supported"
     assert caps.cell_status(_q(dp = 2, router_aux_loss = True, **{**moe_q, "family": "gpt_oss"}))[0] == "unverified"
     caps.check(_q(dp = 2, router_aux_loss = True, **{**moe_q, "family": "gpt_oss"}))  # dp alone: reported, runs
