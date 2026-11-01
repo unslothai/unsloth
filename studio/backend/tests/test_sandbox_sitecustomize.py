@@ -64,6 +64,32 @@ def test_always_remap_prefixes_map_into_cwd(monkeypatch, tmp_path):
     assert mod._remap("relative.txt") == "relative.txt"
 
 
+def test_windows_backslash_spelling_of_a_prefix_maps_into_cwd(monkeypatch):
+    """On Windows str(Path("/mnt/data/x")) is "\\mnt\\data\\x"; the forward-slash prefix match alone missed it, so a
+    write fell back to the basename heal and the matching read failed (staging Windows leg, #16210)."""
+    import ntpath
+    import types
+
+    mod = _load_shim()
+    cwd = "C:\\sandbox\\work"
+    fake_os = types.SimpleNamespace(**{name: getattr(os, name) for name in dir(os) if not name.startswith("__")})
+    fake_os.sep = "\\"
+    fake_os.path = types.SimpleNamespace(
+        **{name: getattr(ntpath, name) for name in dir(ntpath) if not name.startswith("__")}
+    )
+    fake_os.path.exists = lambda p: False
+    fake_os.getcwd = lambda: cwd
+    monkeypatch.setattr(mod, "os", fake_os)
+    assert mod._remap("\\mnt\\data\\out.txt") == ntpath.join(cwd, "out.txt")
+    assert mod._remap("/mnt/data/sub\\out.txt") == ntpath.join(cwd, "sub", "out.txt")
+    assert mod._remap("\\mnt\\data") == cwd
+    assert mod._remap("\\mnt\\data\\..\\..\\escape.txt") == ntpath.join(cwd, "escape.txt")
+    # A drive-qualified path is a real host location, never a code-interpreter convention.
+    assert mod._remap("D:\\mnt\\data\\out.txt") == "D:\\mnt\\data\\out.txt"
+    assert mod._remap("\\\\server\\share\\mnt\\data\\x") == "\\\\server\\share\\mnt\\data\\x"
+    assert mod._remap("data\\out.txt") == "data\\out.txt"
+
+
 def test_prefix_remap_contains_parent_traversal_inside_cwd(monkeypatch, tmp_path):
     # '..' components are dropped so the remap never escapes the per-conversation CWD.
     mod = _load_shim()

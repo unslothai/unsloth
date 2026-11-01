@@ -151,6 +151,9 @@ def _remap(path, notify = True):
         return path
     if not isinstance(text, str):
         return path
+    # Windows renders Path("/mnt/data/x") as "\\mnt\\data\\x"; match a drive-less root path in either spelling.
+    if os.sep == "\\" and not os.path.splitdrive(text)[0]:
+        text = text.replace("\\", "/")
     for prefix in _PREFIXES + _CONDITIONAL_PREFIXES:
         # Heal only while the prefix directory is absent, so a real host mount is never shadowed.
         if (text == prefix or text.startswith(prefix + "/")) and not os.path.exists(prefix):
