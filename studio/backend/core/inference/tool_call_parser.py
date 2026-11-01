@@ -805,6 +805,7 @@ _CONTAINING_WRAPPERS = (
     "<function=",
     '<function name="',
     "[TOOL_CALLS]",
+    "<minimax:tool_call>",
 ) + _INFERENCE_WRAPPER_OPENERS
 
 

@@ -132,8 +132,13 @@ def test_a_multiline_code_value_keeps_its_text():
 
 @pytest.mark.parametrize(
     "code",
-    ['print("<think>hello</think>")', 'print("</minimax:tool_call><think>hello</think>")'],
-    ids = ["think", "closer_then_think"],
+    [
+        'print("<think>hello</think>")',
+        'print("</minimax:tool_call><think>hello</think>")',
+        'call:python{"code":"print(1)"}',
+        'python[ARGS]{"code":"print(1)"}',
+    ],
+    ids = ["think", "closer_then_think", "gemma_example", "rehearsal_example"],
 )
 def test_a_think_tag_in_a_value_is_argument_text(code):
     from routes.inference import _strip_tool_xml_for_display
