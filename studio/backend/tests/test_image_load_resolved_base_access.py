@@ -64,7 +64,6 @@ def test_a_load_the_account_may_make_can_also_generate(client, managed, monkeypa
     managed.add(account_access._grant_key("krea/Krea-2-Turbo", "model"))
     backend = diffusion_module.get_diffusion_backend()
     real_begin = backend.begin_load
-    # The real engine reports the base it resolved, so the fake does too.
     monkeypatch.setattr(
         backend,
         "begin_load",
