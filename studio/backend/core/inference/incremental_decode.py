@@ -40,11 +40,11 @@ def _decoder_steps(config):
 
 def _step_is_local(config, fused) -> bool:
     kind = config.get("type") if isinstance(config, dict) else None
-    if kind in ("ByteLevel", "Metaspace", "Fuse"):
-        return True
-    if kind == "ByteFallback":
-        # After Fuse, ordinary pieces spelling "<0x41>" form one byte token.
+    if kind in ("ByteLevel", "ByteFallback"):
+        # Both map whole pieces; after Fuse or ByteLevel joins them the piece is the whole reply.
         return not fused
+    if kind in ("Metaspace", "Fuse"):
+        return True
     if kind == "Replace":
         pattern = config.get("pattern") or {}
         return isinstance(pattern.get("String"), str) and len(pattern["String"]) == 1
@@ -61,7 +61,7 @@ def _decoder_is_local(config) -> bool:
     for step in steps:
         if not _step_is_local(step, fused):
             return False
-        fused = fused or step.get("type") == "Fuse"
+        fused = fused or step.get("type") in ("Fuse", "ByteLevel")
     return True
 
 
