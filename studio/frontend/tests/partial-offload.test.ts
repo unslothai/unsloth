@@ -97,6 +97,8 @@ test("every load path reads the response the same way", () => {
       cpu_fallback_reason: null,
       // biome-ignore lint/style/useNamingConvention: api schema
       gpu_backend_unavailable: false,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      metal_unsupported_weight_types: null,
     }),
     {
       offloaded: 38,
@@ -106,6 +108,7 @@ test("every load path reads the response the same way", () => {
       offloadOverridden: false,
       cpuFallbackReason: null,
       gpuBackendUnavailable: false,
+      metalUnsupportedWeightTypes: null,
     },
   );
 });
@@ -199,4 +202,32 @@ test("the advice does not promise that a smaller quantization fits", () => {
     assert.match(text, /smaller quantization or a shorter context may/);
     assert.doesNotMatch(text, /would fit entirely|would leave room/);
   }
+});
+
+test("weights Metal cannot run are reported even when every layer is offloaded", () => {
+  // #15409: MiniMax-M3.1-Flash on an M3 Ultra logs 61/61 layers while its NVFP4 experts run on the CPU.
+  const counts = offloadCountsFrom({
+    // biome-ignore lint/style/useNamingConvention: api schema
+    offloaded_layers: 61,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    offload_total_layers: 61,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    metal_unsupported_weight_types: ["nvfp4"],
+  });
+  const warning = offloadWarning(counts);
+  assert.equal(warning?.titleSuffix, ", partly on CPU");
+  assert.match(warning?.description ?? "", /Metal cannot run this model's NVFP4 weights/);
+  assert.match(warning?.description ?? "", /without NVFP4 tensors runs fully on the GPU/);
+  // A layer split the user pinned does not explain these weights away.
+  assert.notEqual(offloadWarning({ ...counts, gpuMemoryMode: "manual", gpuLayers: 61 }), null);
+  assert.match(
+    offloadWarning({ ...counts, metalUnsupportedWeightTypes: ["nvfp4", "tq1_0"] })?.description ?? "",
+    /NVFP4 and TQ1_0 weights/,
+  );
+  // Nothing reported, or nothing on the GPU at all: the existing messages stand.
+  assert.equal(offloadWarning({ offloaded: 61, total: 61, metalUnsupportedWeightTypes: [] }), null);
+  assert.match(
+    offloadWarning({ offloaded: 0, total: 61, metalUnsupportedWeightTypes: ["nvfp4"] })?.description ?? "",
+    /None of the 61 layers fit on the GPU/,
+  );
 });
