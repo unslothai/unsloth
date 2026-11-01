@@ -8,10 +8,13 @@ export const tr = {
   chatBackground: {
     noBackground: "Arka plan yok",
     sizing: "Görüntü boyutlandırma",
+    sizingPosition: "Görüntü boyutu ve konumu",
     fill: "Doldur",
     fit: "Sığdır",
     stretch: "Uzat",
     original: "Özgün boyut",
+    fitWidth: "Genişliğe sığdır",
+    fitHeight: "Yüksekliğe sığdır",
     zoom: "Yakınlaştırma",
     outline: "Mesaj kutusu kenarlığı",
     fade: "Arka plana doğru soldur",
@@ -30,6 +33,12 @@ export const tr = {
     visibility: "Görünürlük",
     blur: "Görüntü bulanıklığı",
     position: "Konum",
+    horizontal: "Yatay konum",
+    vertical: "Dikey konum",
+    scope: "Gösterileceği yer",
+    scopeNewChat: "Yeni sohbet sayfası",
+    scopeChats: "Sohbetler",
+    scopeAll: "Tüm sayfalar",
     positionValue: "Yatay %{x}, dikey %{y}",
     newChat: "Yeni sohbet",
     conversation: "Sohbet",
@@ -2533,6 +2542,22 @@ export const tr = {
         label: "Şeker mi şaka mı",
         description:
           "1 Kasım'a kadar Cadılar Bayramı temaları ve ürkütücü selamlamalar.",
+      },
+      code: {
+        title: "Kod",
+        fontDescription: "Sohbetteki kod blokları, dosya önizlemeleri ve API örnekleri.",
+        lineNumbers: {
+          label: "Satır numaraları",
+          description: "Sohbetteki kod bloklarının satırlarını numaralandırır.",
+        },
+        wordWrap: {
+          label: "Satır kaydırma",
+          description: "Kod bloklarındaki uzun satırları yana kaydırmak yerine alt satıra geçirir.",
+        },
+        ligatures: {
+          label: "Yazı tipi bitişik harfleri",
+          description: "Kod yazı tipi destekliyorsa => ve != gibi simgeleri tek bir karakterde birleştirir.",
+        },
       },
       custom: {
         chatWidth: {
@@ -5633,6 +5658,18 @@ export const tr = {
     flaggedIntro: "Otomatik tarayıcımız şunlar dahil sorunlar işaretledi:",
     nothingFlagged:
       "Otomatik tarayıcımız endişe verici bir dosya işaretlemedi, ancak lütfen yine de kontrol edin.",
+    unscannedTitle: "Model dosyaları taranamadı",
+    unscannedBody: "{model}, yüklenirken kod çalıştırabilen pickle ağırlıkları içeriyor ve bunlar için kötü amaçlı yazılım taraması yok, bu yüzden yüklenemiyor. {note}",
+    unscannedIntro: "Taranamayan dosyalar:",
+    switchSourceNote: "Yüklemek için Ayarlar'dan model kaynağını Hugging Face olarak değiştirin.",
+    reconnectNote: "Taramanın okunabilmesi için Hugging Face'e bağlanın ve yeniden deneyin.",
+    managedTitle: "Bu hesapta özel kod kapalı",
+    managedNote: "Yönetilen hesaplarda kapalıdır. Kurulum sahibinden etkinleştirmesini isteyin.",
+    notFoundTitle: "{source} üzerinde bulunamadı",
+    notFoundBody: "{model}, {source} üzerinde bulunamadı, bu yüzden güvenlik denetimleri çalıştırılamadı. Adı kontrol edin veya depo özelse erişimi olan bir belirteç ayarlayın.",
+    notOnModelScopeBody: "{model}, ModelScope'ta yok, bu yüzden güvenlik denetimleri çalıştırılamadı ve oradan yüklenemiyor. Kullanmak için Ayarlar'dan model kaynağını Hugging Face olarak değiştirin.",
+    checksFailedTitle: "Güvenlik denetimleri çalıştırılamadı",
+    checksFailedBody: "{model}, {source} kaynağından okunamadı, bu yüzden güvenlik denetimleri tamamlanamadı ve yüklenemiyor. Bağlantınızı ve belirtecinizi kontrol edip yeniden deneyin. {note}",
     enableAndContinue: "Etkinleştir ve devam et",
   },
   tour: {

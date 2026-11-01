@@ -3,12 +3,12 @@ import { WindowTitlebar } from "./src/components/tauri/window-titlebar";
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ChatBackground } from "./src/features/chat-background/background";
-import { BACKGROUND_ON_ALL_PAGES } from "./src/features/chat-background/model";
 import { ChatBackgroundControls } from "./src/features/chat-background/controls";
 import {
   resetChatBackground,
   patchBackground,
   useBackgroundStore,
+  useChatBackground,
 } from "./src/features/chat-background/storage";
 import { TooltipProvider } from "./src/components/ui/tooltip";
 import "./src/index.css";
@@ -30,6 +30,7 @@ function App() {
     [sidebar, setSidebar] = useState(false),
     [otherPage, setOtherPage] = useState(false),
     [dark, setDark] = useState(false);
+  const scope = useChatBackground().value?.scope ?? "chats";
   return (
     <TooltipProvider>
       <div className="p-4 text-foreground">
@@ -60,7 +61,14 @@ function App() {
             data-wallpaper-route={otherPage ? "page" : "chat"}
             className="relative h-[700px] overflow-hidden rounded-xl border bg-background"
           >
-            <ChatBackground active={active && (!otherPage || BACKGROUND_ON_ALL_PAGES)} />
+            <ChatBackground
+              active={
+                active &&
+                (otherPage
+                  ? scope === "all"
+                  : !(conversation && scope === "newChat"))
+              }
+            />
             <WindowTitlebar showSidebarSurface />
             {sidebar && <aside data-slot="sidebar" className="absolute inset-y-0 left-0 z-50 w-40 bg-sidebar p-4">Unsloth<br />New chat<br />Model hub</aside>}
             <main data-slot="sidebar-inset" className="relative h-full" style={{marginLeft: sidebar ? 160 : 0}}>

@@ -8,10 +8,13 @@ export const cs = {
   chatBackground: {
     noBackground: "Bez pozadí",
     sizing: "Velikost obrázku",
+    sizingPosition: "Velikost a pozice obrázku",
     fill: "Vyplnit",
     fit: "Přizpůsobit",
     stretch: "Roztáhnout",
     original: "Původní velikost",
+    fitWidth: "Přizpůsobit šířce",
+    fitHeight: "Přizpůsobit výšce",
     zoom: "Přiblížení",
     outline: "Obrys pole zprávy",
     fade: "Prolnout do pozadí",
@@ -30,6 +33,12 @@ export const cs = {
     visibility: "Viditelnost",
     blur: "Rozmazání obrázku",
     position: "Pozice",
+    horizontal: "Vodorovná pozice",
+    vertical: "Svislá pozice",
+    scope: "Zobrazit na",
+    scopeNewChat: "Stránka nového chatu",
+    scopeChats: "Chaty",
+    scopeAll: "Všechny stránky",
     positionValue: "Vodorovně {x} %, svisle {y} %",
     newChat: "Nový chat",
     conversation: "Konverzace",
@@ -2557,6 +2566,22 @@ export const cs = {
         label: "Koledu, nebo něco provedu",
         description:
           "Halloweenské motivy a strašidelné pozdravy, do 1. listopadu.",
+      },
+      code: {
+        title: "Kód",
+        fontDescription: "Bloky kódu v chatu, náhledy souborů a příklady API.",
+        lineNumbers: {
+          label: "Čísla řádků",
+          description: "Číslovat řádky bloků kódu v chatu.",
+        },
+        wordWrap: {
+          label: "Zalamování řádků",
+          description: "Zalamovat dlouhé řádky v blocích kódu místo vodorovného posouvání.",
+        },
+        ligatures: {
+          label: "Ligatury písma",
+          description: "Spojovat symboly jako => a != do jednoho znaku, pokud to písmo kódu podporuje.",
+        },
       },
       custom: {
         chatWidth: {
@@ -5655,6 +5680,18 @@ export const cs = {
     flaggedIntro: "Náš automatický skener označil mimo jiné tyto problémy:",
     nothingFlagged:
       "Náš automatický skener neoznačil žádné znepokojivé soubory, přesto to prosím ověřte.",
+    unscannedTitle: "Soubory modelu se nepodařilo zkontrolovat",
+    unscannedBody: "{model} obsahuje váhy pickle, které mohou při načtení spustit kód, a kontrola malwaru pro ně není k dispozici, takže jej nelze načíst. {note}",
+    unscannedIntro: "Soubory, které se nepodařilo zkontrolovat:",
+    switchSourceNote: "Pro načtení přepněte zdroj modelů v Nastavení na Hugging Face.",
+    reconnectNote: "Připojte se k Hugging Face, aby bylo možné načíst výsledek kontroly, a zkuste to znovu.",
+    managedTitle: "Vlastní kód je pro tento účet vypnutý",
+    managedNote: "Pro spravované účty je vypnutý. Požádejte vlastníka instalace o jeho zapnutí.",
+    notFoundTitle: "Nenalezeno na {source}",
+    notFoundBody: "{model} nebyl na {source} nalezen, takže bezpečnostní kontroly nemohly proběhnout. Zkontrolujte název, nebo nastavte token s přístupem, pokud je repozitář soukromý.",
+    notOnModelScopeBody: "{model} není na ModelScope k dispozici, takže bezpečnostní kontroly nemohly proběhnout a odtud jej nelze načíst. Pro použití přepněte zdroj modelů v Nastavení na Hugging Face.",
+    checksFailedTitle: "Bezpečnostní kontroly nemohly proběhnout",
+    checksFailedBody: "{model} se nepodařilo načíst z {source}, takže bezpečnostní kontroly nemohly být dokončeny a nelze jej načíst. Zkontrolujte připojení a token a zkuste to znovu. {note}",
     enableAndContinue: "Povolit a pokračovat",
   },
   tour: {

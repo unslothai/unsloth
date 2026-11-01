@@ -14,6 +14,7 @@ import {
   type QueuedPrompt,
 } from "@/features/chat/utils/queued-text-attachments";
 import { getAuthSessionEpoch } from "@/features/auth";
+import { useMarkChatWelcome } from "@/features/chat-background";
 
 import {
   ComposerAttachments,
@@ -2758,6 +2759,7 @@ const ThreadWelcome: FC<{
     (s) => s.newChatComposerAtBottom,
   );
   const spooky = useSpookyGreetings();
+  useMarkChatWelcome();
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
   const t = useT();
 
@@ -2781,7 +2783,12 @@ const ThreadWelcome: FC<{
           "aui-thread-welcome-center flex w-full grow flex-col items-center",
           composerAtBottom
             ? "justify-center pb-[calc(160px*var(--ui-space-scale,1))]"
-            : "justify-start pt-[27.5dvh] has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]",
+            : "justify-start has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]",
+          // Without the greeting, its row and gap become padding, so the composer stays where it was.
+          !composerAtBottom &&
+            (showGreetingSloth || incognito
+              ? "pt-[27.5dvh]"
+              : "pt-[calc(27.5dvh_+_44px*var(--ui-space-scale,1)_+_2.25rem)]"),
         )}
       >
         {/* No padding, so the composer here is as wide as once it docks. */}
@@ -8905,7 +8912,9 @@ const UserMessage: FC = () => {
 
       <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
         {hasContent ? (
-          <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
+          <div
+            dir="auto"
+            className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
             <MessagePrimitive.Parts />
           </div>
         ) : null}

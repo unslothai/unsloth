@@ -63,7 +63,8 @@ jobs:
 
       - name: Install the Kaggle client
         # kaggle 1.7.4.5's authenticate() cannot read KAGGLE_API_TOKEN.
-        run: python -m pip install --quiet 'kaggle==2.2.4'
+        # kaggle imports six without declaring it; python-dateutil 4.0 stopped pulling it in.
+        run: python -m pip install --quiet 'kaggle==2.2.4' 'six'
 
       - name: Collect this account's kernels
         id: collect

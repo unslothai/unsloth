@@ -14,11 +14,12 @@ import re
 import sys
 import threading
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any, Optional
 
-from core.inference import gallery_flags
+from core.inference import gallery_flags, png_encode
 from loggers import get_logger
 from utils.account_context import is_owner_context
 from utils.paths import ensure_account_dir, studio_root
@@ -131,6 +132,9 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     info = PngInfo()
     info.add_text(_META_KEY, json.dumps(meta))
     info.add_text("parameters", _params_text(meta))
+    data = png_encode.encode(image, pnginfo = info, compress_level = png_compress_level())
+    if data is not None:
+        return data
     buf = io.BytesIO()
     image.save(buf, format = "PNG", pnginfo = info, compress_level = png_compress_level())
     return buf.getvalue()
@@ -265,21 +269,22 @@ def _record(
     flags: Optional[dict[str, dict[str, Any]]] = None,
     *,
     directory: Optional[Path] = None,
+    mtime: Optional[float] = None,
 ) -> dict[str, Any]:
     if directory is None:
         directory = gallery_dir()
     # flags are library state, not recipe: they come from the sidecar store, never the PNG chunk
     if flags is None:
         flags = gallery_flags.read(directory)
+    if mtime is None:
+        mtime = _mtime(directory / f"{image_id}.png")
     return {
         **meta,
         "id": image_id,
         "url": f"/api/inference/images/gallery/{image_id}/file",
         **gallery_flags.flags_for(flags, image_id),
         # The server's own sort key, so a client re-sort agrees with it (created_at can differ).
-        "order_at": gallery_flags.order_rank(
-            flags, image_id, _mtime(directory / f"{image_id}.png")
-        ),
+        "order_at": gallery_flags.order_rank(flags, image_id, mtime),
     }
 
 
@@ -307,19 +312,7 @@ def image_b64(image_id: str) -> Optional[str]:
 _REQUIRED_META = ("prompt", "width", "height", "steps", "guidance", "seed", "created_at")
 
 
-def _read_meta(path: Path, *, strict_io: bool = False) -> Optional[dict[str, Any]]:
-    from PIL import Image
-
-    try:
-        with Image.open(path) as im:
-            # The chunk is written before IDAT; im.text would decode every pixel to find later chunks.
-            raw = im.info.get(_META_KEY) or im.text.get(_META_KEY)  # type: ignore[attr-defined]
-    except OSError as exc:
-        if strict_io and exc.errno not in (None, errno.ENOENT):
-            raise
-        return None
-    except Exception:
-        return None
+def _parse_meta(raw: Any) -> Optional[dict[str, Any]]:
     if not raw:
         return None
     try:
@@ -329,6 +322,61 @@ def _read_meta(path: Path, *, strict_io: bool = False) -> Optional[dict[str, Any
     if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED_META):
         return None
     return meta
+
+
+def _read_chunk(path: Path, *, strict_io: bool = False) -> tuple[Any, bool]:
+    """(raw recipe chunk or None, whether a retry could read something else)."""
+    from PIL import Image
+    try:
+        with Image.open(path) as im:
+            # The chunk is written before IDAT; im.text would decode every pixel to find later chunks.
+            return im.info.get(_META_KEY) or im.text.get(_META_KEY), False  # type: ignore[attr-defined]
+    except OSError as exc:
+        if strict_io and exc.errno not in (None, errno.ENOENT):
+            raise
+        return None, True
+    except MemoryError:
+        return None, True
+    except Exception:
+        return None, False
+
+
+def _read_meta(path: Path, *, strict_io: bool = False) -> Optional[dict[str, Any]]:
+    return _parse_meta(_read_chunk(path, strict_io = strict_io)[0])
+
+
+_CHUNK_CACHE_MAX = 8192
+_CHUNK_CACHE_ITEM_MAX = 64 * 1024
+_CHUNK_CACHE_BYTES = 32 * 1024 * 1024
+_chunk_cache: OrderedDict[str, tuple[tuple, Any, int]] = OrderedDict()
+_chunk_cache_bytes = 0
+_chunk_cache_lock = threading.Lock()
+
+
+def _listed_meta(path: Path, info: Optional[os.stat_result]) -> Optional[dict[str, Any]]:
+    """``_read_meta(path)``, reparsed only once the file changed since ``info`` (stat taken before)."""
+    if info is None:
+        return _read_meta(path)
+    # A write moves mtime or ctime and a replace the inode, so a key that agrees means the same bytes.
+    key = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    name = str(path)
+    with _chunk_cache_lock:
+        hit = _chunk_cache.get(name)
+        if hit is not None and hit[0] == key:
+            _chunk_cache.move_to_end(name)
+            return _parse_meta(hit[1])
+    raw, transient = _read_chunk(path)
+    size = len(raw) if isinstance(raw, (str, bytes)) else 0
+    if transient or size > _CHUNK_CACHE_ITEM_MAX:
+        return _parse_meta(raw)
+    global _chunk_cache_bytes
+    with _chunk_cache_lock:
+        old = _chunk_cache.pop(name, None)
+        _chunk_cache[name] = (key, raw, size)
+        _chunk_cache_bytes += size - (old[2] if old else 0)
+        while len(_chunk_cache) > _CHUNK_CACHE_MAX or _chunk_cache_bytes > _CHUNK_CACHE_BYTES:
+            _chunk_cache_bytes -= _chunk_cache.popitem(last = False)[1][2]
+    return _parse_meta(raw)
 
 
 def owned_image_path(image_id: str) -> Optional[Path]:
@@ -377,10 +425,20 @@ def list_images(
     flags = gallery_flags.read(directory)
     # Shelf split and pin sort use file stems before any recipe read, keeping the early break intact.
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
+    # The sort's stat keys the recipe read, so it must precede it.
+    stats: dict[Path, os.stat_result] = {}
+
+    def mtime(path: Path) -> float:
+        try:
+            stats[path] = info = path.stat()
+        except OSError:
+            return 0.0
+        return info.st_mtime
+
     paths.sort(
         key = lambda p: (
             gallery_flags.pin_rank(flags, p.stem),
-            gallery_flags.order_rank(flags, p.stem, _mtime(p)),
+            gallery_flags.order_rank(flags, p.stem, mtime(p)),
         ),
         reverse = True,
     )
@@ -388,10 +446,17 @@ def list_images(
     want = None if limit is None else offset + limit
     records = []
     for path in paths:
-        meta = _read_meta(path)
+        info = stats.get(path)
+        meta = _listed_meta(path, info)
         if meta is None:
             continue
-        record = _record(path.stem, meta, flags, directory = directory)
+        record = _record(
+            path.stem,
+            meta,
+            flags,
+            directory = directory,
+            mtime = None if info is None else info.st_mtime,
+        )
         if valid is not None and not valid(record):
             continue
         records.append(record)

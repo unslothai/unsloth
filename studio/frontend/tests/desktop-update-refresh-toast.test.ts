@@ -13,6 +13,8 @@ import { readSrc } from "./helpers/kit.ts";
 
 const RUNTIME = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
 const RAG = readSrc("features/rag/components/use-rag-documents.ts");
+const PIN_HOOK = readSrc("features/chat/hooks/use-pinned-chats-sync.ts");
+const PIN_SYNC = readSrc("features/chat/sync-pinned-chats.ts");
 
 function region(source: string, from: string, to: string): string {
   const start = source.indexOf(from);
@@ -118,6 +120,18 @@ test("the documents refresh latches the flag at issue and checks it before repor
   );
   assert.ok(latch !== -1 && latch < refresh.indexOf("} catch (err) {"));
   assert.ok(guard !== -1 && guard < refresh.indexOf("toast.error"));
+});
+
+test("the pin sync poll stands down under the update screen", () => {
+  const refresh = region(PIN_HOOK, "const refresh = () => {", "const reconcileSession");
+  const gate = refresh.indexOf("if (isBackendDownForDesktopUpdate()) return;");
+  assert.ok(gate !== -1 && gate < refresh.indexOf("loadRuntime()"));
+});
+
+test("the pin sync error toast checks for an update failure first", () => {
+  const onError = region(PIN_SYNC, "onError: (error) => {", "// Every delete path");
+  const guard = onError.indexOf("if (isPinFailureUnderDesktopUpdate(error)) return;");
+  assert.ok(guard !== -1 && guard < onError.indexOf("toast.error"));
 });
 
 test("the update layer drives the flag and resyncs chat when the screen drops", () => {
