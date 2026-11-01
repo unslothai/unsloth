@@ -8,6 +8,7 @@ import {
   addScanFolder,
   listScanFolders,
   removeScanFolder,
+  renameScanFolder,
 } from "./api";
 
 /** One copy of the custom folder list for every surface (folders dialog, model picker, Download
@@ -103,13 +104,14 @@ export interface AddScanFolderResult {
   alreadyAdded: boolean;
 }
 
-/** `recursive` undefined keeps the stored flag of a folder that is already registered. */
+/** `recursive` or `label` undefined keeps that stored value of a folder that is already registered. */
 export async function addScanFolderToStore(
   path: string,
   recursive?: boolean,
+  label?: string,
 ): Promise<AddScanFolderResult> {
   const known = new Map(state.folders.map((row) => [row.id, row]));
-  const folder = await mutate(() => addScanFolder(path, recursive));
+  const folder = await mutate(() => addScanFolder(path, recursive, label));
   const previous = known.get(folder.id);
   // The add route answers "ok" without scanning; keep a known row's last status.
   upsert({ ...folder, status: previous?.status ?? folder.status });
@@ -117,8 +119,18 @@ export async function addScanFolderToStore(
     folder,
     alreadyAdded:
       previous !== undefined &&
-      Boolean(previous.recursive) === Boolean(folder.recursive),
+      Boolean(previous.recursive) === Boolean(folder.recursive) &&
+      (previous.label ?? null) === (folder.label ?? null),
   };
+}
+
+/** A blank label clears the name. */
+export async function renameScanFolderInStore(
+  folder: ScanFolderInfo,
+  label: string,
+): Promise<void> {
+  const renamed = await mutate(() => renameScanFolder(folder.id, label));
+  upsert({ ...renamed, status: folder.status ?? renamed.status });
 }
 
 export async function setScanFolderRecursive(

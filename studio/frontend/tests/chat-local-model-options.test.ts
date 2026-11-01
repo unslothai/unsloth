@@ -49,6 +49,16 @@ test("Ollama rows are offered under their own label", () => {
   assert.equal(localGgufKindFor(option, true), "direct");
 });
 
+test("a named custom folder is offered under its name", () => {
+  const [named, unnamed] = chatLocalModelOptions([
+    // biome-ignore lint/style/useNamingConvention: API schema
+    row({ id: "/jan/a", path: "/jan/a", source: "custom", source_label: "Jan" }),
+    row({ id: "/misc/b", path: "/misc/b", source: "custom" }),
+  ]);
+  assert.equal(named?.baseModel, "Jan");
+  assert.equal(unnamed?.baseModel, "Custom Folders");
+});
+
 test("Hermes downloads are offered under their own label", () => {
   const options = chatLocalModelOptions([
     row({

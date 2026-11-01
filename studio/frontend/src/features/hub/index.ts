@@ -119,11 +119,13 @@ export { scanFolderStatusCopy } from "./lib/scan-folder-status";
 export {
   countModelsPerFolder,
   folderDisplayName,
+  scanFolderName,
 } from "./lib/scan-folder-models";
 export {
   addScanFolderToStore,
   refreshScanFolders,
   removeScanFolderFromStore,
+  renameScanFolderInStore,
   setScanFolderRecursive,
   useScanFolders,
   type AddScanFolderResult,

@@ -27,6 +27,7 @@ export {
   listLocalModels,
   listScanFolders,
   removeScanFolder,
+  renameScanFolder,
   type CachedDatasetRepo,
   type CachedGgufRepo,
   type CachedModelRepo,

@@ -16,7 +16,13 @@ import type {
   LocalInventoryRow,
 } from "./types";
 
-export function localSourceLabel(source: LocalModelInfo["source"]): string {
+/** A custom folder the user named shows that name (e.g. the engine that owns it). */
+export function localSourceLabel(
+  source: LocalModelInfo["source"],
+  folderLabel?: string | null,
+): string {
+  const named = source === "custom" ? folderLabel?.trim() : "";
+  if (named) return named;
   switch (source) {
     case "lmstudio":
       return "LM Studio";
@@ -274,7 +280,8 @@ export function buildLocalInventoryRows(
     .map((model) => {
       const repoId = getLocalHubId(model);
       const baseModel = model.base_model?.trim() || null;
-      const owner = repoId ? ownerOf(repoId) : localSourceLabel(model.source);
+      const sourceLabel = localSourceLabel(model.source, model.source_label);
+      const owner = repoId ? ownerOf(repoId) : sourceLabel;
       const title = repoId ? repoOf(repoId) : model.display_name;
       const fallbackIsGguf =
         isOllamaInventoryModel(model) ||
@@ -302,7 +309,8 @@ export function buildLocalInventoryRows(
         owner,
         title,
         source: model.source,
-        sourceLabel: localSourceLabel(model.source),
+        sourceLabel,
+        folderLabel: model.source_label?.trim() || null,
         modelId: model.model_id ?? null,
         displayName: model.display_name,
         path: model.path,
