@@ -1159,6 +1159,37 @@ def test_the_collector_installs_the_client_the_gpu_workflows_install():
     ), f"the workflows disagree on the kaggle client: {pins}"
 
 
+def test_every_kaggle_client_install_also_installs_six():
+    """kaggle 2.2.x imports six in kaggle/models/upload_file.py without declaring
+    it. python-dateutil < 4 brought it in; 4.0 dropped it, and every collector
+    pass then died on ModuleNotFoundError before it reached the token."""
+    for path in (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF):
+        lines = re.findall(r"pip install [^\n]*'kaggle==[^\n]*", path.read_text(encoding = "utf-8"))
+        assert lines, f"{path.name} pins no kaggle client"
+        for line in lines:
+            assert re.search(r"'six(?:[=<>!~][^']*)?'", line), f"{path.name}: {line}"
+
+
+def test_a_client_that_cannot_import_is_not_reported_as_a_bad_token(
+    tmp_path, monkeypatch, capsys
+):
+    """An ImportError means the token was never tried; blaming it sends the
+    reader to rotate a secret that is fine while the install stays broken."""
+
+    def _no(*a, **k):
+        raise ModuleNotFoundError("No module named 'six'", name = "six")
+
+    monkeypatch.setattr(launch, "_api", _no)
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "a-token-that-is-fine")
+    monkeypatch.setattr(sys, "argv", ["collect", "--outdir", str(tmp_path), "--require-auth"])
+    assert collect.main() == 1
+    out = capsys.readouterr().out
+    assert "Kaggle client import failed" in out
+    assert "No module named 'six'" in out
+    assert "Kaggle authentication failed" not in out
+    assert "a-token-that-is-fine" not in out
+
+
 def test_dispatch_refuses_a_ref_that_is_not_a_commit(monkeypatch, capsys):
     """`slug_name` falls back to the legacy unattributable form for anything not
     hex, so a branch here pushes a kernel that runs, bills and reports to
