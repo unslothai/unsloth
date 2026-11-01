@@ -7293,3 +7293,20 @@ def test_appended_notice_keeps_an_image_part_an_image():
         {"type": "text", "text": "\n\nStop."},
     ]
     assert _with_appended_text("Over the cap.", "\n\nStop.") == "Over the cap.\n\nStop."
+
+
+def test_no_post_tool_nudge_when_only_the_user_can_unblock(monkeypatch):
+    """The tool said to ask the user and the model asked; that reply is the answer."""
+    streams = [
+        [_tool_call_sse("web_search", {"query": "music"}, "call_first"), _done()],
+        [_sse({"content": "Load the music model and I will make the song."}), _done()],
+        [_sse({"content": "unreachable"}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "Error: [needs_user_load kind=audio page=Audio] Not loaded.")
+    messages = [{"role": "user", "content": "Make a song."}]
+    events = _run_tool_loop(
+        backend, messages, [_WEB_SEARCH_TOOL], max_tool_iterations = 3, nudge_tool_calls = True
+    )
+    content = "".join(e.get("text", "") for e in events if e.get("type") == "content")
+    assert len(payloads) == 2 and "I will make the song" in content

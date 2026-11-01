@@ -6,8 +6,12 @@
 from __future__ import annotations
 
 from fastmcp import FastMCP
+from fastmcp.tools import Tool
 
 from studio_mcp import prompts
+from studio_mcp.profile import AGENT, CHAT, CallerProfile
+from studio_mcp.surface import render, render_schema
+from studio_mcp.tool_access import StudioToolAccess
 from studio_mcp.tools import (
     audio,
     cancel,
@@ -42,30 +46,78 @@ INSTRUCTIONS = " ".join(
 )
 
 
-def create_studio_mcp() -> FastMCP:
-    """Create the Unsloth MCP server and register the high-value tools."""
-    mcp = FastMCP("Unsloth Studio", instructions = INSTRUCTIONS)
+TOOL_MODULES = (
+    status,
+    models,
+    text,
+    images,
+    audio,
+    video,
+    jobs,
+    data,
+    training,
+    export,
+    library,
+    cancel,
+)
 
-    for module in (
-        status,
-        models,
-        text,
-        images,
-        audio,
-        video,
-        jobs,
-        data,
-        training,
-        export,
-        library,
-        cancel,
-    ):
+
+def tool_catalog() -> list[dict[str, str]]:
+    """Every tool as ``{name, area}`` in registration order; the area is its module's short name."""
+    return [
+        {"name": tool.__name__, "area": module.__name__.rsplit(".", 1)[-1]}
+        for module in TOOL_MODULES
+        for tool, *_ in module.TOOLS
+    ]
+
+
+def tool_names() -> tuple[str, ...]:
+    return tuple(entry["name"] for entry in tool_catalog())
+
+
+def tool_facts() -> dict[str, frozenset[str]]:
+    """What each tool declares about itself (studio_mcp.profile), for the profiles to choose by."""
+    return {
+        name: frozenset(facts)
+        for module in TOOL_MODULES
+        for name, facts in getattr(module, "FACTS", {}).items()
+    }
+
+
+def withheld(profile: CallerProfile = CHAT) -> dict[str, str]:
+    """The tools ``profile`` is never offered, each with the reason."""
+    return profile.withheld(tool_facts())
+
+
+def surface(profile: CallerProfile) -> frozenset[str]:
+    return profile.tools(tool_facts(), tool_names())
+
+
+def create_studio_mcp(profile: CallerProfile = AGENT, exclude: frozenset = frozenset()) -> FastMCP:
+    """The Unsloth MCP server as ``profile`` sees it: its tools minus ``exclude``, their text rendered for that surface."""
+    mcp = FastMCP("Unsloth Studio", instructions = INSTRUCTIONS)
+    mcp.add_middleware(StudioToolAccess())
+    tools = surface(profile) - exclude
+
+    for module in TOOL_MODULES:
         for tool, annotations, *schema in module.TOOLS:
-            mcp.tool(
+            if tool.__name__ not in tools:
+                continue
+            built = Tool.from_function(
                 tool, annotations = annotations, **({"output_schema": schema[0]} if schema else {})
             )
+            mcp.add_tool(
+                built.model_copy(
+                    update = {
+                        "description": render(built.description, tools),
+                        "parameters": render_schema(built.parameters, tools),
+                        "output_schema": render_schema(built.output_schema, tools),
+                    }
+                )
+            )
 
-    for prompt, title in prompts.PROMPTS:
-        mcp.prompt(prompt, title = title)
+    if profile.prompts:
+        for prompt, title in prompts.PROMPTS:
+            mcp.prompt(prompt, title = title)
 
     return mcp

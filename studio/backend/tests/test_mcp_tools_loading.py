@@ -1402,7 +1402,13 @@ def test_a_padded_keep_loaded_refusal_names_unload_model(monkeypatch):
         "Loading this model would unload the chat model unsloth/Qwen3-0.6B, and Keep multiple"
         " models loaded is set to Always. Unload that model first, or choose When they fit."
     )
-    padded = " " * 40 + json.dumps({"_deferred_error": {"status_code": 409, "detail": refusal}})
+    # The headers the load route copies into a padded answer.
+    headers = {
+        "x-unsloth-refusal": "multi-model-always",
+        "x-unsloth-problem": "multi_model_always kind=chat",
+    }
+    deferred = {"status_code": 409, "detail": refusal, "headers": headers}
+    padded = " " * 40 + json.dumps({"_deferred_error": deferred})
     routes = {**PAYLOADS, LOAD: Response(padded.encode(), media_type = "application/json")}
     result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
     message = result["content"][0]["text"]

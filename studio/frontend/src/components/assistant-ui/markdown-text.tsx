@@ -39,6 +39,7 @@ import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
 import { withDataImageSupport } from "@/lib/markdown-data-images";
 import { downloadFile, isDownloadCancelled, urlToBlob } from "@/lib/native-files";
+import { backendPathUrl, desktopSignedMediaPath, protectedBackendPath } from "@/lib/api-base";
 import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -108,6 +109,7 @@ import { AudioPlayer } from "./audio-player";
 import {
   type ContextFile,
   FileContextMenu,
+  loadBackendFile,
   loadSandboxFile,
   WebLinkContextMenu,
 } from "./link-context-menu";
@@ -226,10 +228,12 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const projectId = useChatProjectScope();
   const file = src
-    ? markdownSandboxImageSrc(src, {
+    ? (markdownSandboxImageSrc(src, {
         threadId: remoteId ?? activeThreadId ?? undefined,
         projectId,
-      })
+      }) ??
+      desktopSignedMediaPath(src) ??
+      protectedBackendPath(src))
     : null;
   const sandbox = useSandboxImage(file);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
@@ -353,13 +357,22 @@ function MarkdownLink({ href, children, ...props }: ComponentProps<"a">) {
       </SandboxFileLink>
     );
   }
+  const backend = href ? protectedBackendPath(href) : null;
+  if (backend !== null) {
+    return (
+      <BackendFileLink href={backend} dom={dom}>
+        {children}
+      </BackendFileLink>
+    );
+  }
+  const target = href ? backendPathUrl(href) : href;
   const link = (
     <a
-      href={href}
+      href={target}
       rel="noopener noreferrer"
       className={LINK_CLASS}
       onClick={(e) => {
-        if (href && openLink(href)) {
+        if (target && openLink(target)) {
           e.preventDefault();
         }
       }}
@@ -368,7 +381,57 @@ function MarkdownLink({ href, children, ...props }: ComponentProps<"a">) {
       {children}
     </a>
   );
-  return href ? <WebLinkContextMenu href={href}>{link}</WebLinkContextMenu> : link;
+  return target ? <WebLinkContextMenu href={target}>{link}</WebLinkContextMenu> : link;
+}
+
+/** A backend file the chat's tools linked (a saved voice sample): fetched with the session's credentials. */
+function BackendFileLink({
+  href,
+  dom,
+  children,
+}: {
+  href: string;
+  dom: Omit<ComponentProps<"a">, "href" | "children">;
+  children: ReactNode;
+}) {
+  const t = useT();
+  const parts = href.split(/[?#]/)[0].split("/").filter(Boolean);
+  const tail = decodeSegment(parts.at(-1) ?? "");
+  const base = tail === "file" ? decodeSegment(parts.at(-2) ?? "file") : tail;
+  const named = (blob: Blob) => {
+    const ext = blob.type.split("/")[1]?.split(/[;+]/)[0];
+    return base.includes(".") || !ext ? base : `${base}.${ext === "mpeg" ? "mp3" : ext}`;
+  };
+  const target: ContextFile = { name: base, load: () => loadBackendFile(href) };
+  const openFile = () => {
+    void target
+      .load()
+      .then(async (blob) => {
+        if (filesOpenInBrowser()) {
+          openFileInBrowser({ blob, name: named(blob), contentType: blob.type, key: `backend:${href}` });
+          return;
+        }
+        await downloadFile(blob, named(blob), blob.type || undefined);
+      })
+      .catch((error) => {
+        if (!isDownloadCancelled(error)) toast.error(t("linkMenu.openFailed", { name: base }));
+      });
+  };
+  return (
+    <FileContextMenu file={{ ...target, open: openFile }}>
+      <a
+        href={backendPathUrl(href)}
+        className={LINK_CLASS}
+        onClick={(event) => {
+          event.preventDefault();
+          openFile();
+        }}
+        {...dom}
+      >
+        {children}
+      </a>
+    </FileContextMenu>
+  );
 }
 
 function SandboxFileLink({

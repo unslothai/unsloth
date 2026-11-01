@@ -1764,6 +1764,7 @@ DEEP_RESEARCH_WORKFLOW_KEY_NAME = "deep-research workflow"
 UNSLOTH_START_API_KEY_NAME = "Coding agents (unsloth start)"
 # Authority follows this mint stamp, not the name: older Studios let any caller pick the name.
 UNSLOTH_START_API_KEY_PURPOSE = "unsloth_start"
+STUDIO_CHAT_TOOLS_KEY_NAME = "Unsloth Studio chat tools"
 
 
 def create_api_key(
@@ -1907,6 +1908,23 @@ def revoke_internal_api_key(key_id: int) -> bool:
         conn.close()
 
 
+def delete_internal_api_key(key_id: int) -> bool:
+    """Delete an internal key row and its account copy. For keys minted per call, which would
+    otherwise leave one inactive row behind for every call."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM account_api_keys "
+            "WHERE key_hash = (SELECT key_hash FROM api_keys WHERE id = ? AND is_internal = 1)",
+            (key_id,),
+        )
+        cursor = conn.execute("DELETE FROM api_keys WHERE id = ? AND is_internal = 1", (key_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
 def is_internal_api_key(raw_key: str) -> bool:
     """Memoized: it runs on the event loop per API-key request, and a key's origin never changes."""
     if not raw_key.startswith(API_KEY_PREFIX):
@@ -1988,7 +2006,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
                 touch = False
         cur = conn.execute(
             f"""
-            SELECT k.id, k.username, k.name, k.purpose, k.is_active, k.expires_at,
+            SELECT k.id, k.username, k.name, k.purpose, k.is_active, k.is_internal, k.expires_at,
                    u.account_id, u.role, u.is_active AS account_active,
                    COALESCE(u.account_jwt_secret, u.jwt_secret) AS jwt_secret
             FROM api_keys k JOIN auth_user u ON u.username = k.username
@@ -2033,6 +2051,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
             "expires_at": row["expires_at"],
             "key_name": row["name"],
             "key_purpose": row["purpose"],
+            "key_internal": bool(row["is_internal"]),
         }
         return record, secret
     finally:

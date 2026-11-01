@@ -7,6 +7,7 @@ import pytest
 from fastapi.responses import JSONResponse
 
 from models.inference import AudioRunRequest
+from studio_mcp import audio_runs
 from studio_mcp.tools import audio
 
 from .mcp_harness import bodies, fake_studio, run_tool, sequence
@@ -60,7 +61,7 @@ def test_a_cancel_during_take_two_keeps_take_one_and_sends_no_third(monkeypatch)
     def run(request, body):
         if json.loads(body)["take"] == 1:
             return _take("var-1", seed = 41)
-        assert audio.stop_run("owner", "run-abc12") is False
+        assert audio_runs.stop_run("owner", "run-abc12") is False
         return JSONResponse({"detail": "Audio generation cancelled"}, status_code = 499)
 
     result, studio = _music(monkeypatch, run)
@@ -81,7 +82,7 @@ def test_a_cancel_during_take_two_keeps_take_one_and_sends_no_third(monkeypatch)
 
 def test_a_cancel_as_a_take_ends_stops_before_the_next(monkeypatch):
     def run(request, body):
-        audio.stop_run("owner", "run-abc12")
+        audio_runs.stop_run("owner", "run-abc12")
         return _take("var-1")
 
     result, studio = _music(monkeypatch, run)
@@ -198,3 +199,20 @@ def test_an_unsaved_oversized_later_take_keeps_the_saved_takes(monkeypatch):
     assert [c["id"] for c in out["clips"]] == ["var-1"] and out["group_id"]
     assert "too large to return inline" in out["warnings"][-1]
     assert len(bodies(studio, "/v1/audio/run")) == 2
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_takes_follow_the_music_model_kept_beside_the_chat_model(monkeypatch, named):
+    takes = iter(range(1, 10))
+    chat = {"active_model": "unsloth/Qwen-GGUF", "serving": ["unsloth/Qwen-GGUF", "ace-step"]}
+    music = {**_status("sequential"), "active_model": "ace-step"}
+
+    def status(request, body):  # the bare status describes the chat model
+        return music if request.query_params.get("model") == "ace-step" else chat
+
+    run = {RUN: lambda request, body: _take(f"var-{next(takes)}"), STATUS: status, **GALLERY}
+    args = {**SONG, "model": "ace-step"} if named else SONG
+    result, studio = _music(monkeypatch, None, args = args, studio = fake_studio(run))
+    assert result["isError"] is False, result
+    # One request per take, as the kept model makes them, not one batch it would refuse.
+    assert [b.get("take") for b in bodies(studio, "/v1/audio/run")] == [1, 2, 3]
