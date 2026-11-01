@@ -61,7 +61,7 @@ RAW = {
 
 
 def test_normalize_world_repairs_references():
-    w = normalize_world(RAW, seed = 5, biome = "forest")
+    w = normalize_world(RAW, seed=5, biome="forest")
     WorldSpec.model_validate(w)
     ids = [n["id"] for n in w["npcs"]]
     assert ids == ["baker_bea", "bea"] and len(set(ids)) == 2
@@ -76,7 +76,7 @@ def test_normalize_world_repairs_references():
 
 
 def _state(**kw):
-    w = normalize_world(RAW, seed = 1)
+    w = normalize_world(RAW, seed=1)
     base = {
         "world": w,
         "npc_id": "bea",
@@ -90,7 +90,7 @@ def _state(**kw):
 
 
 def test_npc_reply_validation_only_allows_known_effects():
-    s = _state(inventory = ["rod"])
+    s = _state(inventory=["rod"])
     out = validate_npc_reply(
         {
             "text": " Oh   my rod! ",
@@ -112,26 +112,26 @@ def test_npc_reply_validation_only_allows_known_effects():
         {"text": "x", "complete_quest": "q"}, _state()
     )
     assert "complete_quest" not in validate_npc_reply(
-        {"text": "x", "complete_quest": "q"}, _state(npc_id = "baker_bea", inventory = ["rod"])
+        {"text": "x", "complete_quest": "q"}, _state(npc_id="baker_bea", inventory=["rod"])
     )
     assert "complete_quest" not in validate_npc_reply(
-        {"text": "x", "complete_quest": "q"}, _state(inventory = ["rod"], completed_quests = ["q"])
+        {"text": "x", "complete_quest": "q"}, _state(inventory=["rod"], completed_quests=["q"])
     )
-    assert validate_npc_reply({"text": "My rod!"}, _state(inventory = ["rod"])) == {
+    assert validate_npc_reply({"text": "My rod!"}, _state(inventory=["rod"])) == {
         "text": "My rod!",
         "complete_quest": "q",
         "take_item": "rod",
     }
     assert "complete_quest" not in validate_npc_reply(
-        {"text": "x"}, _state(npc_id = "baker_bea", inventory = ["rod"])
+        {"text": "x"}, _state(npc_id="baker_bea", inventory=["rod"])
     )
     assert "give_item" not in validate_npc_reply({"text": "Here.", "give_item": "rod"}, _state())
     assert "give_item" not in validate_npc_reply(
-        {"text": "x", "give_item": "pie"}, _state(inventory = ["pie"])
+        {"text": "x", "give_item": "pie"}, _state(inventory=["pie"])
     )
     assert validate_npc_reply("plain text", _state()) == {"text": "plain text"}
     with pytest.raises(WorldError):
-        validate_npc_reply({"text": "x"}, _state(npc_id = "ghost"))
+        validate_npc_reply({"text": "x"}, _state(npc_id="ghost"))
 
 
 def test_npc_reply_actions_are_a_fixed_validated_set():
@@ -144,7 +144,7 @@ def test_npc_reply_actions_are_a_fixed_validated_set():
         validate_npc_reply({"text": "Bye", "action": "stop_following"}, s)["action"]
         == "stop_following"
     )
-    asked = _state(player_message = "Meet me at the pond later?")
+    asked = _state(player_message="Meet me at the pond later?")
     assert validate_npc_reply(
         {"text": "See you there", "action": "go_to", "place": "pond"}, asked
     ) == {
@@ -163,9 +163,11 @@ def test_npc_reply_actions_are_a_fixed_validated_set():
         ("Please don\u2019t follow me", "stop_following"),
         ("Do not come with me", "stop_following"),
         ("No need to walk with me", "stop_following"),
+        ("I don't want you to follow me", "stop_following"),
+        ("Don't stop following me", None),
     ):
         out = validate_npc_reply(
-            {"text": "Sure", "action": "go_to", "place": "pond"}, _state(player_message = msg)
+            {"text": "Sure", "action": "go_to", "place": "pond"}, _state(player_message=msg)
         )
         assert out.get("action") == want and "place" not in out, msg
     for bad in (
@@ -176,14 +178,14 @@ def test_npc_reply_actions_are_a_fixed_validated_set():
     ):
         out = validate_npc_reply({"text": "Hm.", **bad}, s)
         assert out == {"text": "Hm."}, bad
-    system, prompt = npc_prompt(_state(following = True), "")
+    system, prompt = npc_prompt(_state(following=True), "")
     assert "follow_player" in system and "Pond (id pond)" in system
     assert "You are walking with the player." in prompt
     assert "walking with" not in npc_prompt(_state(), "")[1]
 
 
 def test_a_villager_who_stays_put_takes_no_movement_action():
-    s = _state(player_message = "Could you follow me?")
+    s = _state(player_message="Could you follow me?")
     w = s["world"]
     s["world"] = {
         **w,
@@ -194,16 +196,16 @@ def test_a_villager_who_stays_put_takes_no_movement_action():
 
 
 def test_simulation_needs_flag_defaults_on():
-    w = normalize_world({**RAW, "simulation": True}, seed = 1)
+    w = normalize_world({**RAW, "simulation": True}, seed=1)
     assert w["simulation"]["needs"] is True
-    w = normalize_world({**RAW, "simulation": {"needs": False}}, seed = 1)
+    w = normalize_world({**RAW, "simulation": {"needs": False}}, seed=1)
     assert w["simulation"]["needs"] is False
-    assert "simulation" not in normalize_world(RAW, seed = 1)
+    assert "simulation" not in normalize_world(RAW, seed=1)
 
 
 def test_npc_prompt_mentions_quest_and_inventory():
     system, prompt = npc_prompt(
-        _state(inventory = ["rod"], history = [{"role": "player", "text": "yo"}]), "Be brief."
+        _state(inventory=["rod"], history=[{"role": "player", "text": "yo"}]), "Be brief."
     )
     assert "Old Tom" in system and "Be brief." in system
     assert (
@@ -212,7 +214,7 @@ def test_npc_prompt_mentions_quest_and_inventory():
 
 
 def test_resolve_world_prefers_downstream_and_adds_npc_nodes():
-    w = normalize_world(RAW, seed = 1)
+    w = normalize_world(RAW, seed=1)
     doc = {
         "id": "f",
         "name": "w",
@@ -260,7 +262,7 @@ def test_world_spec_param_authored():
 
 
 def test_render_and_view3d_are_kept_and_cleaned():
-    plain = normalize_world(RAW, seed = 1)
+    plain = normalize_world(RAW, seed=1)
     assert "render" not in plain and "view3d" not in plain
     w = normalize_world(
         {
@@ -276,7 +278,7 @@ def test_render_and_view3d_are_kept_and_cleaned():
                 "colour": "red",
             },
         },
-        seed = 1,
+        seed=1,
     )
     assert w["render"] == "3d"
     assert w["view3d"] == {
@@ -288,7 +290,7 @@ def test_render_and_view3d_are_kept_and_cleaned():
     }
     WorldSpec.model_validate(w)
     bad = normalize_world(
-        {**RAW, "render": "4d", "view3d": {"time_of_day": "noon", "sky": "blue"}}, seed = 1
+        {**RAW, "render": "4d", "view3d": {"time_of_day": "noon", "sky": "blue"}}, seed=1
     )
     assert "render" not in bad and "view3d" not in bad
 
@@ -376,13 +378,13 @@ def test_the_world_player_fed_by_the_chosen_world_sets_the_view():
 def test_generator_and_art_handlers():
     ctx = FakeCtx(
         "world.generator",
-        params = {"premise": "a cozy village", "biome": "town"},
-        seed = 11,
-        llm = lambda **kw: RAW,
+        params={"premise": "a cozy village", "biome": "town"},
+        seed=11,
+        llm=lambda **kw: RAW,
     )
     w = run(world_nodes.world_generator(ctx))["world"]
     assert w["biome"] == "town" and w["player"]["name"] == "Pip" and w["seed"] == 11
-    art = FakeCtx("world.art", inputs = {"world": w})
+    art = FakeCtx("world.art", inputs={"world": w})
     painted = run(world_nodes.world_art(art))["world"]
     assert set(painted["tileset"]) == set(BIOME_TILES["town"])
     assert (
@@ -396,11 +398,11 @@ def test_generator_and_art_handlers():
 
 
 def test_npc_reply_handler():
-    s = _state(inventory = ["rod"])
+    s = _state(inventory=["rod"])
     ctx = FakeCtx(
         "world.npc_reply",
-        inputs = {"state": s},
-        llm = lambda **kw: {"text": "My rod!", "complete_quest": "q"},
+        inputs={"state": s},
+        llm=lambda **kw: {"text": "My rod!", "complete_quest": "q"},
     )
     reply = run(world_nodes.world_npc_reply(ctx))["reply"]
     assert reply == {"text": "My rod!", "complete_quest": "q", "take_item": "rod"}
@@ -411,13 +413,13 @@ def test_npc_reply_handler():
 
 def test_npc_node():
     out = run(
-        world_nodes.world_npc(FakeCtx("world.npc", params = {"name": "Old Tom", "persona": "p"}))
+        world_nodes.world_npc(FakeCtx("world.npc", params={"name": "Old Tom", "persona": "p"}))
     )["npc"]
     assert out["id"] == "old_tom"
 
 
 def test_props3d_are_cleaned_and_old_worlds_get_none():
-    plain = normalize_world(RAW, seed = 1)
+    plain = normalize_world(RAW, seed=1)
     assert "props3d" not in plain
     asset = {"kind": "model", "ref": "sha256:" + "a" * 64, "url": "/api/flows/assets/x"}
     w = normalize_world(
@@ -435,7 +437,7 @@ def test_props3d_are_cleaned_and_old_worlds_get_none():
                 {"id": "nan-1", "kind": "rock", "x": float("nan"), "y": 1},
             ],
         },
-        seed = 1,
+        seed=1,
     )
     props = {p["id"]: p for p in w["props3d"]}
     assert list(props) == ["house-1", "lamp-1", "m-1"]

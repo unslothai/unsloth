@@ -314,7 +314,7 @@ def normalize_world(
         # One side panel at a time: Mayor mode wins over Village Rivals (normalised above).
         world["city"] = city
         world.pop("rivals", None)
-    return WorldSpec.model_validate(world).model_dump(exclude_none = True)
+    return WorldSpec.model_validate(world).model_dump(exclude_none=True)
 
 
 TIMES_OF_DAY = ("dawn", "day", "dusk", "night")
@@ -483,7 +483,7 @@ def apply_play_view(
         n for n in doc.get("nodes") or [] if n["type"] == "world.play" and not n.get("disabled")
     ]
     fed = {e["target"] for e in doc.get("edges") or [] if source and e.get("source") == source}
-    players.sort(key = lambda n: (n["id"] != source, n["id"] not in fed))
+    players.sort(key=lambda n: (n["id"] != source, n["id"] not in fed))
     for n in players:
         p = n.get("params") or {}
         if p.get("view") in ("2d", "3d"):
@@ -659,9 +659,23 @@ def world_schema(npcs: int, items: int) -> dict:
 REPLY_ACTIONS = ("follow_player", "stop_following", "go_to")
 FOLLOW_ASK = re.compile(r"\b(follow me|come with me|come along|walk with me|tag along)\b")
 FOLLOW_STOP = re.compile(
-    r"\b(stop following|go (back )?home|you can go|wait (for me )?here|stay here"
-    r"|(don['\u2019]?t|do not|never|no need to) (follow|come with|come along|walk with|tag along))\b"
+    r"\b(stop following|go (back )?home|you can go|wait (for me )?here|stay here)\b"
 )
+# "don't follow me", "I don't want you to stop following": the clause's negation flips the phrase.
+NEGATION = re.compile(r"\b(don['\u2019]?t|do not|never|no need to|not)\b(\W+\w+){0,4}\W*$")
+
+
+def _phrase(pattern: re.Pattern, text: str) -> str | None:
+    """'plain' if a clause asks for the phrase, 'negated' if one only negates it."""
+    found = None
+    for clause in re.split(r"[.!?;,]", text):
+        for m in pattern.finditer(clause):
+            if not NEGATION.search(clause[: m.start()]):
+                return "plain"
+            found = "negated"
+    return found
+
+
 TRADE_ASK = re.compile(r"\b(buy|sell|trade|for sale|wares|what do you have|how much)\b")
 
 NPC_REPLY_SCHEMA = {
@@ -865,11 +879,12 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
             for w in re.findall(r"[a-z]+", str(p.get("name") or "").lower())
         )
     }
+    stop, ask = _phrase(FOLLOW_STOP, asked), _phrase(FOLLOW_ASK, asked)
     if npc.get("wander") is False:
         pass  # A villager who stays put (a shopkeeper at their stall) takes no movement action.
-    elif FOLLOW_STOP.search(asked):
+    elif stop == "plain" or ask == "negated":
         out["action"] = "stop_following"
-    elif FOLLOW_ASK.search(asked):
+    elif ask == "plain" and stop is None:
         out["action"] = "follow_player"
     elif action == "go_to" and place in named:
         out["action"], out["place"] = action, place
@@ -1096,7 +1111,7 @@ def director_schema(state: dict) -> dict:
         )
     regions = [r.get("id") for r in world.get("regions") or []]
     if regions:
-        props["region"] = string_enum(regions, allow_empty = True)
+        props["region"] = string_enum(regions, allow_empty=True)
     return strict_schema({**DIRECTOR_SCHEMA, "properties": props})
 
 
@@ -1729,7 +1744,7 @@ def resolve_world_report(
                 extra.append(v)
     if extra:
         raw["npcs"] = list(raw.get("npcs") or []) + extra
-    world = normalize_world(raw, seed = int(raw.get("seed") or doc.get("seed") or 0))
+    world = normalize_world(raw, seed=int(raw.get("seed") or doc.get("seed") or 0))
     eps = dict(world.get("entry_points") or {})
     for n in doc.get("nodes") or []:
         name = WORLD_ENTRY_TYPES.get(n["type"])
@@ -1737,7 +1752,7 @@ def resolve_world_report(
             eps[name] = n["id"]
     world["entry_points"] = eps
     world = WorldSpec.model_validate(apply_play_view(world, doc, node_outputs, source)).model_dump(
-        exclude_none = True
+        exclude_none=True
     )
     reply = next((n for n in doc.get("nodes") or [] if n["id"] == eps.get("npc_reply")), None)
     if reply is not None and (reply.get("params") or {}).get("summarise") is False:
