@@ -765,7 +765,7 @@ def test_closure_forward_override_is_declined_but_bound_methods_are_rebound():
     assert replica.proj.forward.__self__ is replica.proj
 
 
-def test_replica_reapplies_recorded_compile(monkeypatch):
+def test_replica_reapplies_recorded_compile(monkeypatch, real_cuda):
     mg.install_compile_recorder()
     dit = _Dit()
     dit.proj.compile(backend = "eager")
