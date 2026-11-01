@@ -25,7 +25,7 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  Image03Icon,
+  Image01Icon,
   ImageAdd02Icon,
   ImageCropIcon,
   InformationCircleIcon,
@@ -7186,7 +7186,7 @@ export function ImagesPage({
               </>
             ) : busy === "generating" ? null : (
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <HugeiconsIcon icon={Image03Icon} className="size-12" strokeWidth={1.5} />
+                <HugeiconsIcon icon={Image01Icon} className="size-12" strokeWidth={1.5} />
                 <p className="text-sm">
                   {status?.loaded || external
                     ? "Enter a prompt and hit Generate."

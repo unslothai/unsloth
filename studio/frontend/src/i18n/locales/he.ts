@@ -8,10 +8,13 @@ export const he = {
   chatBackground: {
     noBackground: "ללא רקע",
     sizing: "התאמת גודל תמונה",
+    sizingPosition: "גודל ומיקום התמונה",
     fill: "מילוי",
     fit: "התאמה",
     stretch: "מתיחה",
     original: "גודל מקורי",
+    fitWidth: "התאמה לרוחב",
+    fitHeight: "התאמה לגובה",
     zoom: "זום",
     outline: "מסגרת שדה ההודעה",
     fade: "דעיכה אל הרקע",
@@ -30,6 +33,12 @@ export const he = {
     visibility: "נראות",
     blur: "טשטוש תמונה",
     position: "מיקום",
+    horizontal: "מיקום אופקי",
+    vertical: "מיקום אנכי",
+    scope: "הצגה ב",
+    scopeNewChat: "דף צ׳אט חדש",
+    scopeChats: "צ׳אטים",
+    scopeAll: "כל הדפים",
     positionValue: "אופקי {x}%, אנכי {y}%",
     newChat: "צ׳אט חדש",
     conversation: "שיחה",
@@ -2385,6 +2394,22 @@ export const he = {
         label: "ממתק או תעלול",
         description:
           "ערכות נושא של ליל כל הקדושים וברכות מפחידות, עד 1 בנובמבר.",
+      },
+      code: {
+        title: "קוד",
+        fontDescription: "בלוקי קוד בצ׳אט, תצוגות מקדימות של קבצים ודוגמאות API.",
+        lineNumbers: {
+          label: "מספרי שורות",
+          description: "מספור השורות של בלוקי קוד בצ׳אט.",
+        },
+        wordWrap: {
+          label: "גלישת שורות",
+          description: "גלישת שורות ארוכות בבלוקי קוד במקום גלילה הצידה.",
+        },
+        ligatures: {
+          label: "ליגטורות גופן",
+          description: "איחוד סמלים כמו => ו-!= לגליף אחד כשגופן הקוד תומך בכך.",
+        },
       },
       custom: {
         chatWidth: {
@@ -5318,6 +5343,18 @@ export const he = {
     flaggedIntro: "הסורק האוטומטי שלנו סימן בעיות, ביניהן:",
     nothingFlagged:
       "הסורק האוטומטי שלנו לא סימן קבצים מדאיגים, אבל כדאי לבדוק שוב.",
+    unscannedTitle: "לא ניתן היה לסרוק את קובצי המודל",
+    unscannedBody: "{model} כולל משקלי pickle, שיכולים להריץ קוד בזמן הטעינה, ואין עבורם סריקת תוכנות זדוניות זמינה, ולכן לא ניתן לטעון אותו. {note}",
+    unscannedIntro: "קבצים שלא ניתן היה לסרוק:",
+    switchSourceNote: "כדי לטעון אותו, החליפו את מקור המודלים ל-Hugging Face בהגדרות.",
+    reconnectNote: "התחברו ל-Hugging Face כדי שאפשר יהיה לקרוא את הסריקה, ונסו שוב.",
+    managedTitle: "קוד מותאם אישית כבוי בחשבון זה",
+    managedNote: "הוא כבוי בחשבונות מנוהלים. בקשו מבעל ההתקנה להפעיל אותו.",
+    notFoundTitle: "לא נמצא ב-{source}",
+    notFoundBody: "{model} לא נמצא ב-{source}, ולכן לא ניתן היה להריץ את בדיקות האבטחה. בדקו את השם, או הגדירו אסימון עם גישה אם המאגר פרטי.",
+    notOnModelScopeBody: "{model} אינו זמין ב-ModelScope, ולכן לא ניתן היה להריץ את בדיקות האבטחה ולא ניתן לטעון אותו משם. כדי להשתמש בו, החליפו את מקור המודלים ל-Hugging Face בהגדרות.",
+    checksFailedTitle: "לא ניתן היה להריץ את בדיקות האבטחה",
+    checksFailedBody: "לא ניתן היה לקרוא את {model} מ-{source}, ולכן לא ניתן היה להשלים את בדיקות האבטחה ולא ניתן לטעון אותו. בדקו את החיבור ואת האסימון ונסו שוב. {note}",
     enableAndContinue: "הפעל והמשך",
   },
   tour: {

@@ -1127,9 +1127,9 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
         return None
     return {
         "error": (
-            f"Model '{decision.model_name}' ships custom code flagged as "
-            f"{decision.max_severity} by the security scan. Review it and "
-            f"re-run with approval to proceed.\n\n{decision.findings_summary}"
+            f"{decision.blocked_message()}\n\n{decision.findings_summary}"
+            if decision.max_severity
+            else decision.blocked_message()
         ),
         "error_kind": "remote_code_blocked",
         "remote_code": decision.response_payload(),
@@ -2110,6 +2110,38 @@ def _rebind_in_already_imported_modules(*, attr_name: str, old_obj: Any, new_obj
 
 
 _TVM_FFI_BROKEN_VERSIONS = ("0.1.10", "0.1.11")
+
+
+def _install_metadata_scan_cache() -> Any:
+    """Share one packages_distributions() scan between transformers and TRL (unsloth's own window
+    opens after this worker's first transformers import). Loaded by path: the package would run
+    unsloth's whole init. None when the helper is missing (older unsloth) or fails."""
+    try:
+        spec = importlib.util.find_spec("unsloth")
+        for root in list(getattr(spec, "submodule_search_locations", None) or ()):
+            path = os.path.join(root, "_import_metadata_cache.py")
+            if not os.path.isfile(path):
+                continue
+            helper_spec = importlib.util.spec_from_file_location(
+                "_unsloth_studio_import_metadata_cache", path
+            )
+            helper = importlib.util.module_from_spec(helper_spec)
+            helper_spec.loader.exec_module(helper)
+            token = helper.install()
+            return None if token is None else (helper, token)
+    except Exception:
+        pass
+    return None
+
+
+def _uninstall_metadata_scan_cache(installed: Any) -> None:
+    if installed is None:
+        return
+    helper, token = installed
+    try:
+        helper.uninstall(token)
+    except Exception:
+        pass
 
 
 def _guard_fla_tilelang() -> None:
@@ -3982,6 +4014,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         "true" if sys.platform in ("win32", "darwin") else "false"
     )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
+    # Until unsloth is imported below; transformers is first imported well before that.
+    metadata_scan_cache = _install_metadata_scan_cache()
 
     from utils.security.hub_data_files import install as guard_hub_data_files
     from utils.security.dataset_media import allow_dataset_repos, install as guard_dataset_media
@@ -4659,6 +4693,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             }
         )
         return
+    finally:
+        _uninstall_metadata_scan_cache(metadata_scan_cache)
 
     if config.get("offload_layers"):
         from utils.models.diffusion_lm import diffusion_lm_profile_for_model
