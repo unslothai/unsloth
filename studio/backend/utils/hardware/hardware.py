@@ -54,7 +54,7 @@ CHAT_ONLY_REASON: Optional[str] = None
 CHAT_ONLY_DETAIL: Optional[str] = None
 # (reason, hint) from the last detection pass that found a torch mismatch.
 _CHAT_ONLY_HINT: Optional[tuple[Optional[str], Optional[str]]] = None
-# The verdict under which training here runs on the CPU backend (unsloth/_cpu_init.py): "no_gpu" when the CPU fallback off Mac found a PyTorch that imports, "no_torch" for a --no-torch install with no card a GPU build could train on, else None. Read through trains_on_cpu(), which matches it against the verdict it is asked about.
+# Verdict under which training runs on the CPU backend (unsloth/_cpu_init.py): "no_gpu" with PyTorch, "no_torch" with no card a GPU build could use, else None. Read via trains_on_cpu().
 _CPU_TRAINING_REASON: Optional[str] = None
 # The vendors whose cards established the two mismatch reasons, empty otherwise: current_chat_only_verdict() freezes a mismatch while the inventory cannot answer, and without this a detached AMD eGPU stays "unusable" for as long as nvidia-smi is broken on a host that never had an NVIDIA card.
 CHAT_ONLY_MISMATCH_VENDORS: frozenset = frozenset()
@@ -1935,7 +1935,7 @@ def _uncertainty_could_hide_the_frozen_mismatch(inventory: Dict[str, Any]) -> bo
 
 
 def trains_on_cpu(reason: Optional[str]) -> bool:
-    """Whether training on this host runs on the CPU backend, for ``reason`` from current_chat_only_verdict(): "no_gpu" with PyTorch installed (Train is enabled), or "no_torch" without a GPU (the full install would train on CPU). CHAT_ONLY stays True on both, so chat stays GGUF-only and Export and Video keep their own GPU verdicts."""
+    """Whether ``reason`` (from current_chat_only_verdict()) trains on the CPU backend; CHAT_ONLY stays True either way."""
     return reason is not None and reason == _CPU_TRAINING_REASON
 
 
