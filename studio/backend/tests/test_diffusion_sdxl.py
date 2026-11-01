@@ -126,8 +126,7 @@ def test_align_vae_dtype_skips_gguf_packed_uint8_params():
 
 
 def test_align_vae_dtype_falls_back_to_pipe_dtype_when_denoiser_is_all_packed():
-    # Qwen-Image-2.1 GGUF Edit/Reference: transformer weights are packed uint8 only; without a
-    # pipe/TE fallback the fp32 VAE stays against Half condition images (#16375).
+    # Qwen-Image-2.1 GGUF Edit: an all-uint8 transformer falls back to the pipe dtype (#16375).
     import torch
 
     class _AllPacked:

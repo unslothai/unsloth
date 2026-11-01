@@ -12869,8 +12869,7 @@ class DiffusionBackend:
                 (p.dtype for p in denoiser.parameters() if p.dtype.is_floating_point),
                 None,
             )
-            # GGUF denoisers are often packed uint8 only; fall back to the pipe/TE dtype so Edit /
-            # Reference do not leave an fp32 VAE against Half condition images (#16375).
+            # Packed-uint8 GGUF denoisers carry no float dtype (#16375).
             if target_dtype is None:
                 target_dtype = DiffusionBackend._pipeline_compute_dtype(pipe)
             if target_dtype is None:
