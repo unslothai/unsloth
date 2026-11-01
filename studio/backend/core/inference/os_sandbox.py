@@ -331,9 +331,9 @@ def _walk_for_host_channels(
     # Only an unaccounted hard link leads outside; cp -al, git clone --local and pip make nlink > 1.
     links: dict[tuple[int, int], list] = {}
     unreadable: list[str] = []
-    # POSIX: each directory's own stat, read before it is listed (the root with stat, as scandir follows it; the rest
-    # from the parent's lstat of a non-link). It stands in for the stat of path/.. that ismount reads and is the
-    # witness signature; any directory missing here takes the original calls.
+    # POSIX: each directory's own stat (the root with stat, as scandir follows it; the rest from the parent's lstat of
+    # a non-link). While the directory still has that identity when it is walked, it stands in for the stat of
+    # path/.. that ismount reads; any directory missing here, or swapped since, takes the original calls.
     listed: dict[str, os.stat_result] = {}
     if not _NT_PATHS:
         try:
@@ -345,12 +345,12 @@ def _walk_for_host_channels(
         root, followlinks = False, onerror = lambda exc: unreadable.append(exc.filename or root)
     ):
         parent = listed.pop(base, None)
+        signature = directory_signature(base) if witness is not None or parent is not None else None
+        if parent is not None and signature[1:3] != (parent.st_dev, parent.st_ino):
+            # base was swapped for another directory after its parent listed it: take the original calls.
+            parent = None
         if witness is not None:
-            witness.append(
-                directory_signature(base)
-                if parent is None
-                else (base, parent.st_dev, parent.st_ino, parent.st_mtime_ns)
-            )
+            witness.append(signature)
         if unreadable:
             return f"{unreadable[0]} cannot be fully inspected"
         for name in (*dirs, *names):

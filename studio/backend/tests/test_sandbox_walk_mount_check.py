@@ -268,3 +268,57 @@ def test_the_filesystem_root_finds_a_real_nested_mount():
     assert found == _reference_walk("/", 1_000_000, None)
     if os.path.ismount("/proc"):
         assert found is not None and found.startswith("contains a nested host mount: /")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX walk")
+def test_a_directory_swapped_before_it_is_listed_answers_as_the_ismount_walk(tmp_path, monkeypatch):
+    # G/B is swapped for B2 after G's loop stat'ed B and before B is listed; B2 carries a bind of
+    # itself onto B2/C, which a recorded stat of the old B would not reveal.
+    def run(walker):
+        work = tmp_path / f"race_{len(results)}"
+        root, out = work / "root", work / "out"
+        (root / "G" / "B").mkdir(parents = True)
+        (out / "B2" / "C").mkdir(parents = True)
+        b2 = os.lstat(out / "B2")
+        c_info = os.lstat(out / "B2" / "C")
+        c_key = (c_info.st_dev, c_info.st_ino)
+        real_lstat, real_scandir = os.lstat, os.scandir
+        swapped = []
+
+        def lstat(path, *args, **kwargs):
+            info = real_lstat(path, *args, **kwargs)
+            if (info.st_dev, info.st_ino) == c_key:
+                fields = list(info)
+                fields[stat.ST_INO], fields[stat.ST_DEV] = b2.st_ino, b2.st_dev
+                return os.stat_result(fields, {"st_mtime_ns": info.st_mtime_ns})
+            return info
+
+        def scandir(
+            path = ".",
+            *args,
+            **kwargs,
+        ):
+            if os.fspath(path) == str(root / "G" / "B") and not swapped:
+                os.rename(root / "G" / "B", work / "old_B")
+                os.rename(out / "B2", root / "G" / "B")
+                swapped.append(1)
+            return real_scandir(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "lstat", lstat)
+        monkeypatch.setattr(os, "scandir", scandir)
+        try:
+            witness: list = []
+            verdict = walker(str(root), witness)
+            if verdict is not None:
+                verdict = verdict.replace(str(root), "<root>")
+            return verdict, os_sandbox.directory_witness_matches(witness)
+        finally:
+            monkeypatch.setattr(os, "lstat", real_lstat)
+            monkeypatch.setattr(os, "scandir", real_scandir)
+
+    results: list = []
+    results.append(run(lambda root, witness: _walk(root, witness = witness)))
+    results.append(run(lambda root, witness: _reference_walk(root, 50_000, witness)))
+    head, base = results
+    assert head == base
+    assert head[0] == f"contains a nested host mount: {os.path.join('<root>', 'G', 'B', 'C')}"
