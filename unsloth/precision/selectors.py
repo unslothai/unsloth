@@ -161,12 +161,35 @@ def find_embeddings(model) -> Dict[str, str]:
     return emb
 
 
+_NON_DECODER_PARTS = ("vision", "visual", "image", "audio", "speech", "encoder", "tower", "projector")
+
+
+def _language_decoder(model):
+    """(fqn, module) of the language decoder: HF `get_decoder()` when it names a proper submodule, else the model."""
+    get_decoder = getattr(model, "get_decoder", None)
+    try:
+        decoder = get_decoder() if callable(get_decoder) else None
+    except Exception:
+        decoder = None
+    if isinstance(decoder, torch.nn.Module) and decoder is not model:
+        for name, module in model.named_modules():
+            if module is decoder:
+                return name, module
+    return "", model
+
+
 def decoder_layers(model):
     """(fqn prefix of the decoder layer list, number of layers): the longest ModuleList of same-type blocks
-    that hold Linear layers, ignoring experts lists and any list nested inside another such list (an MoE
-    model can have more experts per block than blocks). (None, 0) when there is none."""
+    that hold Linear layers inside the language decoder, ignoring experts lists, vision / audio / encoder
+    stacks and any list nested inside another such list (an MoE model can have more experts per block than
+    blocks). (None, 0) when there is none."""
+    root, decoder = _language_decoder(model)
     candidates = []
-    for name, module in model.named_modules():
+    for name, module in decoder.named_modules():
+        name = f"{root}.{name}" if root and name else (root or name)
+        parts = name.lower().split(".")
+        if not root and any(p.startswith(_NON_DECODER_PARTS) for p in parts):
+            continue
         if not isinstance(module, torch.nn.ModuleList) or len(module) < 2:
             continue
         if any("expert" in part.lower() for part in name.split(".")):
