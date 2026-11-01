@@ -85,8 +85,6 @@ function GlassStyleRow() {
 		</SettingsRow>
 	);
 }
-/** Glass has its own section, switched from its heading; it works over the background image or the
-    built-in backdrop. */
 export function GlassControls() {
 	const t = useT();
 	const { material, setEnabled } = useMaterialStore();
