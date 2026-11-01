@@ -130,6 +130,22 @@ def test_a_multiline_code_value_keeps_its_text():
     )
 
 
+def test_a_think_tag_in_a_value_is_argument_text():
+    from routes.inference import _strip_tool_xml_for_display
+
+    code = 'print("<think>hello</think>")'
+    text = (
+        'Running it.\n<minimax:tool_call>\n<invoke name="python">\n<parameter name="code">'
+        + code
+        + "</parameter>\n</invoke>\n</minimax:tool_call>"
+    )
+    assert _calls(text) == [("python", {"code": code})]
+    assert strip_tool_markup(text, final = True, enabled_tool_names = ENABLED) == "Running it."
+    assert _streamed(text).strip() == "Running it."
+    shown = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True, enabled_tool_names = ENABLED)
+    assert shown.strip() == "Running it."
+
+
 def test_values_stay_strings_like_the_function_xml_form():
     text = SEARCH.replace("</invoke>", '<parameter name="max_results">5</parameter>\n</invoke>')
     assert _calls(text) == [("web_search", {"query": "weather in Paris", "max_results": "5"})]
