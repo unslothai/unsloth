@@ -337,25 +337,20 @@ def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
     )
 
 
-# Shards are buffered up to this many bytes before a row group is written, so peak memory stays near
-# this plus the shards being read ahead, not the whole dataset as a dataframe.
+# Peak memory ~ this buffer + shards in flight, not the whole dataset.
 _MERGE_BUFFER_BYTES = 128 * 1024 * 1024
-# pyarrow's own row group cap for write_table, which the dataframe path used.
+# write_table's default row group cap, as the dataframe path cut them.
 _MERGE_ROW_GROUP_ROWS = 1024 * 1024
 _MERGE_READ_AHEAD = 4
 
 
 def _stream_merge_batches(parquet_dir: Path, parquet_files: list[Path], staged_file: Path) -> bool:
-    """Stream the shards into ``staged_file`` in order, as the same file the dataframe path writes
-    (``pd.read_parquet(dtype_backend = "pyarrow")`` then ``to_parquet(index = False)``): same rows, order,
-    Arrow types and pandas metadata. Returns False, writing nothing, when the shards are not plainly
-    concatenable (their types differ, or the folder holds something else the folder read would pick up)."""
+    """Write the file the dataframe merge would, shard by shard; False (nothing written) when it could differ."""
     import pandas
     import pyarrow
     import pyarrow.parquet as pyarrow_parquet
 
-    # The folder read skips names starting with "." or "_" and reads everything else, subfolders included.
-    # The glob lists such names too, so a shard named that way would be merged here but not there.
+    # The folder read skips "."/"_" names and reads everything else (subfolders too); the glob does not skip them.
     if any(path.name.startswith((".", "_")) for path in parquet_files):
         return False
     listed = {path.name for path in parquet_files}
@@ -366,14 +361,14 @@ def _stream_merge_batches(parquet_dir: Path, parquet_files: list[Path], staged_f
     try:
         schemas = [pyarrow_parquet.read_schema(path) for path in parquet_files]
     except Exception:
-        # An unreadable shard: the folder read raises its own error, naming the file, as before.
+        # Let the folder read raise its own error naming the file.
         return False
     source_schema = schemas[0]
     for schema in schemas[1:]:
         if schema.names != source_schema.names or schema.types != source_schema.types:
             return False
 
-    # The output schema (pandas metadata included) comes from running the dataframe path on zero rows.
+    # Output schema + pandas metadata: the dataframe path run on zero rows.
     probe = pyarrow.BufferOutputStream()
     pyarrow_parquet.write_table(source_schema.empty_table(), probe)
     frame = pandas.read_parquet(pyarrow.BufferReader(probe.getvalue()), dtype_backend = "pyarrow")
@@ -393,7 +388,6 @@ def _stream_merge_batches(parquet_dir: Path, parquet_files: list[Path], staged_f
             if not pending:
                 return
             table = pyarrow.concat_tables(pending)
-            # Full row groups go out as the dataframe path cuts them; a remainder waits for more rows.
             full = table.num_rows - table.num_rows % _MERGE_ROW_GROUP_ROWS
             if final or pending_bytes >= _MERGE_BUFFER_BYTES:
                 full = table.num_rows
@@ -403,8 +397,7 @@ def _stream_merge_batches(parquet_dir: Path, parquet_files: list[Path], staged_f
             pending = [rest] if rest.num_rows else []
             pending_rows, pending_bytes = rest.num_rows, rest.nbytes if rest.num_rows else 0
 
-        # Later shards are read while this one is buffered or written (both release the GIL), several at a
-        # time like the folder read. One thread per file unless there are too few files to keep the pool busy.
+        # Read ahead while writing (both release the GIL); per-file threads only when the pool would idle.
         use_threads = len(parquet_files) < _MERGE_READ_AHEAD
 
         def read(path: Path) -> Any:
