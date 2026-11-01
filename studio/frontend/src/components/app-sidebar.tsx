@@ -140,7 +140,6 @@ import {
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
-  Settings02Icon,
   Sun03Icon,
   UserCircleIcon,
   ViewIcon,
@@ -158,6 +157,7 @@ import {
   AiSpeechIcon,
   ChipIcon,
   MessageCircleIcon,
+  Settings01Icon,
   TestTubeOutlineIcon,
   withNoticeDot,
 } from "@/lib/hugeicons-derived";
@@ -4555,7 +4555,7 @@ export function AppSidebar() {
       body = (
         <>
           <DropdownMenuItem onSelect={() => setSectionDialog({ mode: "rename", section })}>
-            <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} className="size-icon" />
             <span>{t("shell.sections.edit")}</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -5681,7 +5681,7 @@ export function AppSidebar() {
             <span>{isProjectPinned ? "Unpin" : "Pin"}</span>
           </P.Item>
           <P.Item onSelect={() => setEditingProject(project)}>
-            <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} className="size-icon" />
             <span>Edit</span>
           </P.Item>
           <P.Separator />
@@ -6425,7 +6425,7 @@ export function AppSidebar() {
                             })
                         }
                       >
-                        <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
+                        <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} />
                         <span className="min-w-0 flex-1 truncate">
                           {t("shell.navigation.customizeSidebar")}
                         </span>
@@ -6734,7 +6734,7 @@ export function AppSidebar() {
               sits above the avatar instead. */}
           <NavItem
             className="hidden group-data-[collapsible=icon]:block"
-            icon={Settings02Icon}
+            icon={Settings01Icon}
             label={t("shell.navigation.settings")}
             active={false}
             onClick={() => {
@@ -6776,7 +6776,7 @@ export function AppSidebar() {
                 <DropdownMenuItem
                   onSelect={() => useSettingsDialogStore.getState().openDialog()}
                 >
-                  <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+                  <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} className="size-icon" />
                   <span>{t("shell.navigation.settings")}</span>
                   {settingsShortcutLabel && (
                     <DropdownMenuShortcut>
@@ -6843,6 +6843,11 @@ export function AppSidebar() {
                     >
                       <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} className="size-icon" />
                       <span>{t(tab.labelKey)}</span>
+                      {settingsTabId === "appearance" && (
+                        <Badge variant="accent" className="-my-0.5 ml-auto">
+                          {t("shell.navigation.newBadge")}
+                        </Badge>
+                      )}
                     </DropdownMenuItem>
                   );
                 })}
@@ -6919,7 +6924,7 @@ export function AppSidebar() {
               className="absolute right-2 top-1/2 flex size-[calc(32px*var(--ui-space-scale,1))] -translate-y-1/2 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
             >
               <HugeiconsIcon
-                icon={Settings02Icon}
+                icon={Settings01Icon}
                 strokeWidth={1.5}
                 className="!size-[calc(18px*var(--ui-space-scale,1))]"
               />

@@ -22,6 +22,7 @@ import os
 import re
 import sys
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from fastapi import (
@@ -4415,6 +4416,8 @@ async def upload_diffusion_dataset(
         seen_names: set = set()
         first_name_by_casefold: dict = {}
         media_names_by_stem_cf: dict = {}
+        # Listed lazily, once; iterdir order keeps the reported clash the first listed match.
+        existing_media_by_stem_cf: Optional[dict] = None
         for f in files:
             # Path.name does not split on a backslash on POSIX, so fold them first.
             filename = Path((f.filename or "").replace("\\", "/")).name.strip().replace("\x00", "")
@@ -4453,8 +4456,20 @@ async def upload_diffusion_dataset(
                     # A casefold-equal name is exempt unless the stems match exactly.
                     return other.stem == stem or other_name.casefold() != fname_cf
 
+                if existing_media_by_stem_cf is None:
+                    existing_media_by_stem_cf = {}
+                    for p in folder.iterdir():
+                        other = Path(p.name)
+                        if other.suffix.lower() in _DIFFUSION_DATASET_MEDIA_EXTS:
+                            existing_media_by_stem_cf.setdefault(other.stem.casefold(), []).append(
+                                p
+                            )
                 clash = next(
-                    (p.name for p in folder.iterdir() if p.is_file() and _shares_sidecar(p.name)),
+                    (
+                        p.name
+                        for p in existing_media_by_stem_cf.get(stem_cf, ())
+                        if p.is_file() and _shares_sidecar(p.name)
+                    ),
                     None,
                 )
                 if clash is None:
@@ -4699,6 +4714,38 @@ def _load_metadata_captions(folder: Path) -> dict[str, str]:
     return out
 
 
+_IMAGE_SIZE_CACHE_MAX = 8192
+_image_size_cache: "OrderedDict[str, tuple[tuple, tuple[int, int]]]" = OrderedDict()
+_image_size_cache_lock = threading.Lock()
+
+
+def _dataset_image_size(image_path: Path, info: Optional[os.stat_result]) -> tuple[int, int]:
+    """Header size (0x0 if unreadable), reused while the file's stat ``info`` is unchanged."""
+    key = None
+    name = str(image_path)
+    if info is not None:
+        # POSIX: any write moves ctime, even with mtime restored; a replace moves the inode.
+        key = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        with _image_size_cache_lock:
+            hit = _image_size_cache.get(name)
+            if hit is not None and hit[0] == key:
+                _image_size_cache.move_to_end(name)
+                return hit[1]
+    try:
+        from PIL import Image
+        with Image.open(image_path) as im:
+            size = im.size
+    except Exception:  # noqa: BLE001 -- lists as 0x0 rather than 500; not cached, so retried
+        return 0, 0
+    if key is not None:
+        with _image_size_cache_lock:
+            _image_size_cache[name] = (key, size)
+            _image_size_cache.move_to_end(name)
+            while len(_image_size_cache) > _IMAGE_SIZE_CACHE_MAX:
+                _image_size_cache.popitem(last = False)
+    return size
+
+
 def _image_record(
     folder: Path, image_path: Path, meta_captions: dict[str, str]
 ) -> DiffusionDatasetImageRecord:
@@ -4730,18 +4777,15 @@ def _image_record(
             caption = meta
             source = "metadata"
     try:
-        size_bytes = image_path.stat().st_size
+        info = image_path.stat()
+        size_bytes = info.st_size
     except OSError:
+        info = None
         size_bytes = 0
     is_clip = image_path.suffix.lower() in _DIFFUSION_DATASET_CLIP_EXTS
     width = height = 0
     if not is_clip:
-        try:
-            from PIL import Image
-            with Image.open(image_path) as im:
-                width, height = im.size
-        except Exception:  # noqa: BLE001 -- an unreadable image still lists (0x0) rather than 500
-            pass
+        width, height = _dataset_image_size(image_path, info)
     return DiffusionDatasetImageRecord(
         filename = image_path.name,
         caption = caption,

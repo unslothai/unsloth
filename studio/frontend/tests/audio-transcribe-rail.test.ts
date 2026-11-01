@@ -18,6 +18,7 @@ test("the rail takes audio through the shared input card, worded for Transcribe 
     rail,
     /<AudioHistoryProvider value=\{historyClips\}>\s*<div data-tour="audio-record">\s*<AudioSourceInput[\s\S]*?maxRecordSeconds=\{RECORDING_MAX_SECONDS\}\s*expiredMessage="This upload expired\. Add it again\."\s*usesFirstSeconds=\{null\}\s*recordHint="Record up to 30 minutes, then transcribe it\."/,
   );
+  assert.match(rail, /label="Audio"\s*hint=\{switches\.sourceHint\}/);
 });
 
 test("both switches come from the model's capabilities, an always-on one reads as a fact", () => {

@@ -4605,7 +4605,7 @@ html[data-chat-font] .aui-root {
 	[data-streamdown="unordered-list"] {
 		list-style-type: disc;
 		list-style-position: outside;
-		padding-left: calc(1.25rem * var(--ui-space-scale, 1));
+		padding-inline-start: calc(1.25rem * var(--ui-space-scale, 1));
 		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
@@ -4613,7 +4613,7 @@ html[data-chat-font] .aui-root {
 	[data-streamdown="ordered-list"] {
 		list-style-type: decimal;
 		list-style-position: outside;
-		padding-left: 1.6em;
+		padding-inline-start: 1.6em;
 		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
@@ -4622,15 +4622,21 @@ html[data-chat-font] .aui-root {
 			:has(> li:nth-child(10)),
 			[start]:not([start="1"], [start="2"], [start="3"], [start="4"], [start="5"], [start="6"], [start="7"], [start="8"], [start="9"])
 		) {
-		padding-left: 2.2em;
+		padding-inline-start: 2.2em;
 	}
 
 	[data-streamdown="ordered-list"]:has(> li:nth-child(100)) {
-		padding-left: 2.8em;
+		padding-inline-start: 2.8em;
 	}
 
 	[data-streamdown="list-item"] {
 		display: list-item;
+	}
+
+	/* Code stays LTR inside a reply or list that rehype-auto-direction made RTL. */
+	:is([data-streamdown="code-block"], [data-streamdown="inline-code"], .aui-reasoning-code-fragment) {
+		direction: ltr;
+		unicode-bidi: isolate;
 	}
 
 	.aui-reasoning-code-fragment {
@@ -4947,6 +4953,11 @@ html[data-chat-font] .aui-root {
 		margin-left: calc(-1.25rem * var(--ui-space-scale, 1));
 		width: calc(100% + 1.25rem * var(--ui-space-scale, 1));
 		max-width: calc(100% + 1.25rem * var(--ui-space-scale, 1));
+	}
+
+	.aui-thread-root [dir="rtl"] > [data-streamdown="list-item"] > [data-streamdown="code-block"] {
+		margin-left: 0;
+		margin-right: calc(-1.25rem * var(--ui-space-scale, 1));
 	}
 
 	.dark .aui-thread-root [data-streamdown="code-block"] {
@@ -6761,7 +6772,7 @@ html.force-reduced-motion .spooky-still :is(.spooky-spider, .spooky-bat) {
   background: color-mix(in srgb, var(--background) max(92%, calc((1 - var(--wallpaper-safe, 0)) * 100%)), transparent);
   backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
   /* An outline over the image instead of a drop shadow, through the composer's one shadow variable. */
-  --composer-shadow: inset 0 0 0 1px var(--border);
+  --composer-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) var(--wallpaper-outline, 30%), transparent);
   box-shadow: var(--composer-shadow);
 }
 .wallpaper-preview-prose { background: var(--background); }
