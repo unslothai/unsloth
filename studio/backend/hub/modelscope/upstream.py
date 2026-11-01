@@ -67,7 +67,6 @@ _PINNED_COMMITS = {
         "ibm-research/dac.speech.v1.0",
         "1ea7f64cd0678415e2d8c32d67b190722cb9b149",
     ): "3268c083add6c07ae3c4a36650863eb2c3bb6717",
-    # ggml-org GGUFs the Decision API pins (core/systemone/catalog.py GGUF_COMPANIONS).
     (
         "model",
         "ggml-org/clef-flash-gguf",
