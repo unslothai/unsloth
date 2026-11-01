@@ -18,12 +18,12 @@ import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
-  OctagonXIcon,
+  Image01Icon,
   SmileIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useId, useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { SettingsRow } from "./settings-row";
 
 type UploadField = "greetingIconDataUrl" | "greetingImageDataUrl";
@@ -250,37 +250,6 @@ function GreetingModeOptions({ mode }: { mode: GreetingMode }) {
   return null;
 }
 
-// A small landscape in the accent colour, so an empty Image tile still reads as "a picture".
-function ImagePlaceholder() {
-  const id = useId();
-  return (
-    <svg
-      viewBox="0 0 64 36"
-      aria-hidden="true"
-      className="h-8 w-14 overflow-hidden rounded-[5px]"
-    >
-      <defs>
-        <linearGradient id={`${id}-sky`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="var(--primary)" stopOpacity="0.32" />
-          <stop offset="1" stopColor="var(--primary)" stopOpacity="0.08" />
-        </linearGradient>
-      </defs>
-      <rect width="64" height="36" fill={`url(#${id}-sky)`} />
-      <circle cx="47" cy="11" r="5" fill="var(--primary)" fillOpacity="0.55" />
-      <path
-        d="M0 36 L18 17 L30 28 L38 21 L64 36 Z"
-        fill="var(--primary)"
-        fillOpacity="0.45"
-      />
-      <path
-        d="M0 36 L12 27 L22 33 L36 24 L52 31 L64 26 L64 36 Z"
-        fill="var(--primary)"
-        fillOpacity="0.8"
-      />
-    </svg>
-  );
-}
-
 function GreetingTiles({ mode }: { mode: GreetingMode }) {
   const t = useT();
   const setGreeting = useUserProfileStore((s) => s.setGreeting);
@@ -314,11 +283,11 @@ function GreetingTiles({ mode }: { mode: GreetingMode }) {
         className="max-h-8 max-w-[80%] object-contain"
       />
     ) : (
-      <ImagePlaceholder />
+      <HugeiconsIcon icon={Image01Icon} strokeWidth={1.75} className="size-5" />
     ),
     off: (
       <HugeiconsIcon
-        icon={OctagonXIcon}
+        icon={Cancel01Icon}
         strokeWidth={1.75}
         className="size-5 text-muted-foreground"
       />
