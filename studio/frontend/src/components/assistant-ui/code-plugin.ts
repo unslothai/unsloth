@@ -19,16 +19,24 @@ import {
   bundledLanguages,
   bundledLanguagesInfo,
 } from "shiki/langs";
-import { type BundledTheme, bundledThemes } from "shiki/themes";
+
+// The only themes ever named: the defaults below, and Streamdown's own default (tool cells and
+// previews that pass no theme). Every other caller passes a theme object, which needs no entry.
+// shiki's full themes map is one lazy chunk per bundled theme, none of them reachable.
+type NamedTheme = "github-light" | "github-dark";
+const NAMED_THEMES = {
+  "github-light": () => import("@shikijs/themes/github-light"),
+  "github-dark": () => import("@shikijs/themes/github-dark"),
+};
 
 // shiki's own createHighlighter, minus its default Oniguruma engine: every call below passes the
 // JavaScript engine, so the WASM engine never ran and only cost startup bytes.
 const createHighlighter = createBundledHighlighter<
   BundledLanguage,
-  BundledTheme
+  NamedTheme
 >({
   langs: bundledLanguages,
-  themes: bundledThemes,
+  themes: NAMED_THEMES,
   engine: () => createJavaScriptRegexEngine({ forgiving: true }),
 });
 
