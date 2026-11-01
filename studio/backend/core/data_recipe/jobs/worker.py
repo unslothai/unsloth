@@ -381,10 +381,15 @@ def _stream_merge_batches(parquet_dir: Path, parquet_files: list[Path], staged_f
 
     pending: list[Any] = []
     pending_rows = pending_bytes = 0
-    with pyarrow_parquet.ParquetWriter(staged_file, target_schema) as writer:
+    writing = None
+    # One row group is written in the background while the next is read: neither waits on the other.
+    with (
+        pyarrow_parquet.ParquetWriter(staged_file, target_schema) as writer,
+        ThreadPoolExecutor(max_workers = 1) as write_pool,
+    ):
 
         def flush(final: bool) -> None:
-            nonlocal pending, pending_rows, pending_bytes
+            nonlocal pending, pending_rows, pending_bytes, writing
             if not pending:
                 return
             table = pyarrow.concat_tables(pending)
@@ -392,12 +397,16 @@ def _stream_merge_batches(parquet_dir: Path, parquet_files: list[Path], staged_f
             if final or pending_bytes >= _MERGE_BUFFER_BYTES:
                 full = table.num_rows
             if full:
-                writer.write_table(table.slice(0, full), row_group_size = _MERGE_ROW_GROUP_ROWS)
+                if writing is not None:
+                    writing.result()
+                writing = write_pool.submit(
+                    writer.write_table, table.slice(0, full), row_group_size = _MERGE_ROW_GROUP_ROWS
+                )
             rest = table.slice(full)
             pending = [rest] if rest.num_rows else []
             pending_rows, pending_bytes = rest.num_rows, rest.nbytes if rest.num_rows else 0
 
-        # Read ahead while writing (both release the GIL); per-file threads only when the pool would idle.
+        # Per-file threads only when the pool would idle.
         use_threads = len(parquet_files) < _MERGE_READ_AHEAD
 
         def read(path: Path) -> Any:
@@ -420,6 +429,8 @@ def _stream_merge_batches(parquet_dir: Path, parquet_files: list[Path], staged_f
                 if pending_rows >= _MERGE_ROW_GROUP_ROWS or pending_bytes >= _MERGE_BUFFER_BYTES:
                     flush(final = False)
         flush(final = True)
+        if writing is not None:
+            writing.result()
     return True
 
 
