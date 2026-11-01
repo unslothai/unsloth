@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import types
 import weakref
 from typing import Iterator, Optional
 
@@ -782,6 +783,7 @@ def _refuse_model_parallel_cp(
     model,
     trainer_cls = None,
     config = None,
+    peft_config = None,
 ) -> None:
     """Before the trainer's __init__ touches the model: a CP manager building its own (dp, cp) mesh would make
     its cp groups the tensor parallel / pipeline data parallel groups of a tp / pp launch, so the step would run
@@ -815,7 +817,7 @@ def _refuse_model_parallel_cp(
             schedule = None,
         )
         backend = getattr(config, "context_parallel_backend", None)
-        check_layout(alone, trainer_cls, model, config, cp_backend = backend)
+        check_layout(alone, trainer_cls, model, config, cp_backend = backend, peft_config = peft_config)
         return
 
     layout = _composed_layout(size) if all("UNSLOTH_" in a for a in axes) else None
@@ -823,7 +825,9 @@ def _refuse_model_parallel_cp(
         from .parallel_capabilities import check_layout
 
         backend = getattr(config, "context_parallel_backend", None) or layout.cp_backend
-        check_layout(layout, trainer_cls, model, config, cp_backend = backend)
+        check_layout(
+            layout, trainer_cls, model, config, cp_backend = backend, peft_config = peft_config
+        )
         return
     env_cp = str(os.environ.get("UNSLOTH_CP_SIZE", "")).strip()
     hint = ""
@@ -845,6 +849,49 @@ def _trainer_model_argument(args, kwargs):
         return kwargs["model"]
     # (self, model, args, ...) for every Trainer / TRL trainer __init__.
     return args[1] if len(args) > 1 else None
+
+
+_CP_KWARGS = ("context_parallel_size", "context_parallel_backend", "context_parallel_rotate_method")
+
+
+def _default_cp_config(
+    config_cls,
+    args,
+    kwargs,
+    name = None,
+):
+    """The trainer was called without `args` but with context parallel on (UNSLOTH_CP_SIZE, cp in
+    UNSLOTH_PARALLEL, or context_parallel_size = N as a constructor kwarg). The trainer's __init__ takes no
+    such kwarg, and _backwards_compatible_trainer only moves them into a config it was given, so build the
+    default config the trainer would build, move the CP kwargs onto it and pass it as `args`."""
+    config = config_cls(name) if name else config_cls()
+    for key in _CP_KWARGS:
+        if key in kwargs:
+            setattr(config, key, kwargs.pop(key))
+    if len(args) > 1:  # SFTTrainer(model, None, ...): args excludes self
+        args = args[:1] + (config,) + args[2:]
+    else:
+        kwargs["args"] = config
+    return config, args
+
+
+def _cp_requested(kwargs) -> bool:
+    from .parallel_env import env_cp_size
+
+    forwarded = kwargs.get("context_parallel_size")
+    forwarded = forwarded if isinstance(forwarded, int) and not isinstance(forwarded, bool) else 1
+    return forwarded > 1 or env_cp_size() > 1
+
+
+def _sft_default_name(model):
+    # TRL's SFTTrainer: args = SFTConfig(f"{model_name}-SFT").
+    name = (
+        model
+        if isinstance(model, str)
+        else getattr(getattr(model, "config", None), "_name_or_path", None)
+    )
+    name = str(name or "").rstrip("/").split("/")[-1]
+    return f"{name}-SFT" if name else None
 
 
 def _inject_env_cp(config, kwargs, requested: int, trainer_name: str) -> int:
@@ -894,6 +941,20 @@ def _resolve_auto_backend(
     )
     if (current or "auto") != "auto":
         return
+    if isinstance(model, str) and not rl:
+        # A model id is loaded inside the trainer's __init__, after this commits the backend: read its heads
+        # from the config now, so 'auto' picks ring when they cannot be split over cp.
+        try:
+            from transformers import AutoConfig
+
+            init_kwargs = getattr(config, "model_init_kwargs", None) or {}
+            model_config = AutoConfig.from_pretrained(
+                model,
+                trust_remote_code = bool(init_kwargs.get("trust_remote_code", False)),
+            )
+            model = types.SimpleNamespace(config = model_config)
+        except Exception:
+            model = None
     layout = _composed_layout(size)
     resolved = resolve_cp_backend(
         "auto", size, model, tp = layout.tp if layout is not None else 1, rl = rl
@@ -1141,13 +1202,30 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             forwarded = kwargs["context_parallel_size"]
             valid = isinstance(forwarded, int) and not isinstance(forwarded, bool)
             requested = forwarded if valid else 1
+        if config is None and (requested > 1 or _cp_requested(kwargs)):
+            import sys
+
+            import trl
+
+            model = _trainer_model_argument((self,) + args, kwargs)
+            module = sys.modules.get(trainer_cls.__module__)
+            config_cls = getattr(module, "UnslothSFTConfig", None) or getattr(
+                module, "SFTConfig", None
+            )
+            config, args = _default_cp_config(
+                config_cls or trl.SFTConfig, args, kwargs, _sft_default_name(model)
+            )
         requested = _inject_env_cp(config, kwargs, requested, "SFTTrainer")
         if requested > 1:
             _resolve_auto_backend(
                 config, kwargs, requested, _trainer_model_argument((self,) + args, kwargs)
             )
             _refuse_model_parallel_cp(
-                requested, _trainer_model_argument((self,) + args, kwargs), type(self), config
+                requested,
+                _trainer_model_argument((self,) + args, kwargs),
+                type(self),
+                config,
+                peft_config = kwargs.get("peft_config"),
             )
             # Before the original __init__: Unsloth wraps instance methods there (auto packing's
             # train reset, the token budget's training_step), and they must capture the CP ones.
@@ -1791,11 +1869,27 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
             requested = context_parallel_options(config)[0]
         except ValueError:
             requested = 1  # Raised again after the original __init__.
+        # Positional arguments past the model: the config's position differs per trainer, so leave those.
+        if config is None and "args" not in kwargs and len(args) <= 1 and _cp_requested(kwargs):
+            import sys
+
+            # The generated Unsloth{X}Trainer builds Unsloth{X}Config() for args = None.
+            config_cls = getattr(
+                sys.modules.get(trainer_cls.__module__),
+                trainer_cls.__name__.replace("Trainer", "Config"),
+                None,
+            )
+            if config_cls is not None:
+                config, args = _default_cp_config(config_cls, args, kwargs)
         requested = _inject_env_cp(config, kwargs, requested, trainer_cls.__name__)
         if requested > 1:
             _resolve_auto_backend(config, kwargs, requested, None, rl = True)
             _refuse_model_parallel_cp(
-                requested, _trainer_model_argument((self,) + args, kwargs), type(self), config
+                requested,
+                _trainer_model_argument((self,) + args, kwargs),
+                type(self),
+                config,
+                peft_config = kwargs.get("peft_config"),
             )
             # Before the original __init__, so instance wrappers made there capture the CP methods.
             install_methods()

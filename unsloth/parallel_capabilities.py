@@ -1043,8 +1043,12 @@ def query_from(
     cp = None,
     cp_backend = None,
     optimizer = None,
+    peft_config = None,
 ):
     family, hybrid, multimodal, windowed = _model_traits(model)
+    mode = _mode(model)
+    if peft_config is not None and mode == "full":
+        mode = "lora"  # SFTTrainer(peft_config = ...) attaches the adapters inside its __init__
     moe, _ = _moe(model)
     router_aux_loss = _aux_loss_on(model, args, _trainer_kind(trainer_cls))
     packing = bool(getattr(args, "packing", False) or getattr(args, "padding_free", False))
@@ -1055,7 +1059,7 @@ def query_from(
         hybrid = hybrid,
         multimodal = multimodal,
         windowed = windowed,
-        mode = _mode(model),
+        mode = mode,
         packing = packing,
         cp_backend = cp_backend if cp_backend is not None else getattr(layout, "cp_backend", None),
         torch = _torch_version(),
@@ -1110,6 +1114,7 @@ def check_layout(
     cp_backend = None,
     cells = True,
     optimizer = None,
+    peft_config = None,
 ):
     """`check` for a ParallelLayout (and what is known of the trainer / model / arguments). `cells = False`:
     the rules and feature declarations only (the model and trainer are not known yet)."""
@@ -1117,7 +1122,10 @@ def check_layout(
     if size > 1 and cp_backend in (None, "auto"):
         from .context_parallel import resolve_cp_backend
         cp_backend = resolve_cp_backend("auto", size, model, tp = getattr(layout, "tp", 1))
-    check(query_from(layout, trainer_cls, model, args, cp, cp_backend, optimizer), cells = cells)
+    check(
+        query_from(layout, trainer_cls, model, args, cp, cp_backend, optimizer, peft_config),
+        cells = cells,
+    )
 
 
 def markdown_table(kind = "rules") -> str:

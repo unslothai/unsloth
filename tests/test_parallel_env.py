@@ -1040,3 +1040,130 @@ def test_router_aux_loss_after_init_is_refused_under_cp_for_each_trl_trainer(kin
         caps.query_from(None, type(f"{kind.upper()}Trainer", (), {}), model, args).router_aux_loss
         is False
     )
+
+
+def _strict_sft(monkeypatch, inits):
+    """A trainer whose __init__ takes no unknown keyword, like TRL's SFTTrainer: a CP option left in the
+    constructor kwargs is a TypeError there."""
+    import trl
+
+    class SFTTrainer:
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            train_dataset = None,
+            peft_config = None,
+        ):
+            inits.append(args)
+            self.model, self.args = model, args
+
+    monkeypatch.setattr(trl, "SFTTrainer", SFTTrainer)
+    cp.patch_sft_trainer()
+    return SFTTrainer
+
+
+def _stop_at_cp_runtime(monkeypatch):
+    def stop(self, *a, **k):
+        raise RuntimeError(
+            "stop"
+        )  # past the pre-init steps; the CP runtime checks need a process group
+
+    monkeypatch.setattr(cp, "_check_cp_runtime", stop)
+
+
+@pytest.mark.parametrize("via", ["env", "kwarg"])
+def test_cp_without_trainer_args_builds_the_default_config(clean_env, via):
+    import trl
+
+    inits = []
+    Trainer = _strict_sft(clean_env, inits)
+    _stop_at_cp_runtime(clean_env)
+    kwargs = {}
+    if via == "env":
+        clean_env.setenv("UNSLOTH_CP_SIZE", "2")
+        clean_env.setenv("UNSLOTH_CP_BACKEND", "ulysses")
+    else:
+        kwargs = dict(context_parallel_size = 2, context_parallel_backend = "ulysses")
+    with pytest.raises(RuntimeError, match = "stop"):
+        Trainer(model = torch.nn.Linear(2, 2), train_dataset = [], **kwargs)
+    (args,) = inits
+    assert isinstance(args, trl.SFTConfig), type(args)
+    assert args.context_parallel_size == 2 and args.context_parallel_backend == "ulysses"
+
+
+def test_auto_backend_reads_the_config_of_a_model_id(clean_env):
+    import types
+
+    import transformers
+
+    inits = []
+    Trainer = _strict_sft(clean_env, inits)
+    _stop_at_cp_runtime(clean_env)
+    loaded = []
+
+    def from_pretrained(name, *a, **k):
+        loaded.append(name)
+        return types.SimpleNamespace(
+            num_attention_heads = 6, num_key_value_heads = 6, model_type = "llama"
+        )
+
+    clean_env.setattr(transformers.AutoConfig, "from_pretrained", from_pretrained)
+    args = types.SimpleNamespace(context_parallel_size = 4, context_parallel_backend = "auto")
+    with pytest.raises(RuntimeError, match = "stop"):
+        Trainer(model = "org/six-heads", args = args)
+    assert loaded == ["org/six-heads"]
+    # 6 heads do not split over cp 4: the loaded model would fail Ulysses' divisibility check.
+    assert args.context_parallel_backend == "ring", args.context_parallel_backend
+    assert args._unsloth_cp_backend_auto is True
+
+
+def test_pre_init_query_reads_a_pending_peft_config(clean_env):
+    import types
+
+    from peft import LoraConfig
+
+    inits = []
+    Trainer = _strict_sft(clean_env, inits)
+    _stop_at_cp_runtime(clean_env)
+    clean_env.setenv("UNSLOTH_TP_SIZE", "2")
+    clean_env.setenv("UNSLOTH_CP_SIZE", "2")
+    clean_env.setenv("WORLD_SIZE", "4")
+    clean_env.setenv("UNSLOTH_CP_BACKEND", "ulysses")
+    model = _Packable(
+        4
+    )  # a dense llama, trainable, no adapters yet: full finetuning without the peft_config
+    args = lambda: types.SimpleNamespace(context_parallel_size = 1)
+    with pytest.raises(NotImplementedError, match = "cp x tp"):
+        Trainer(model = model, args = args())
+    with pytest.raises(RuntimeError, match = "stop"):
+        Trainer(model = model, args = args(), peft_config = LoraConfig(r = 8))
+
+
+class UnslothDPOConfig:  # what the generated module defines next to UnslothDPOTrainer
+    context_parallel_size = 1
+    context_parallel_backend = "auto"
+
+
+def test_rl_cp_without_trainer_args_builds_the_default_config(clean_env):
+    inits = []
+
+    class UnslothDPOTrainer:
+        def __init__(
+            self,
+            model = None,
+            ref_model = None,
+            args = None,
+            train_dataset = None,
+        ):
+            inits.append(args)
+            self.model, self.args = model, args
+
+    UnslothDPOTrainer.__module__ = __name__
+    cp.patch_rl_trainer(UnslothDPOTrainer, "dpo_trainer")
+    _stop_at_cp_runtime(clean_env)
+    clean_env.setenv("UNSLOTH_CP_SIZE", "2")
+    with pytest.raises(RuntimeError, match = "stop"):
+        UnslothDPOTrainer(model = torch.nn.Linear(2, 2), train_dataset = [])
+    (args,) = inits
+    assert isinstance(args, UnslothDPOConfig) and args.context_parallel_size == 2
