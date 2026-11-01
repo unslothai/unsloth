@@ -75,3 +75,37 @@ test("an unloaded or unknown model keeps 1024", () => {
     DEFAULT_RESOLUTION,
   );
 });
+
+test("SDXL-Turbo defaults to its native 512 on every build", () => {
+  for (const repo of [
+    "stabilityai/sdxl-turbo",
+    "unsloth/sdxl-turbo",
+    "local/SDXL_Turbo",
+  ]) {
+    for (const build of [
+      { modelKind: "pipeline", transformerQuant: null },
+      { modelKind: "pipeline", transformerQuant: "int8" },
+      { modelKind: "single_file", transformerQuant: "fp8" },
+      { modelKind: "gguf", transformerQuant: null },
+    ]) {
+      assert.deepEqual(
+        resolutionFor(repo, build),
+        { width: 512, height: 512 },
+        `${repo} ${build.modelKind}`,
+      );
+    }
+  }
+});
+
+test("SDXL base keeps 1024", () => {
+  for (const repo of [
+    "stabilityai/stable-diffusion-xl-base-1.0",
+    "unsloth/sdxl-base",
+  ]) {
+    assert.deepEqual(
+      resolutionFor(repo, { modelKind: "pipeline", transformerQuant: null }),
+      DEFAULT_RESOLUTION,
+      repo,
+    );
+  }
+});

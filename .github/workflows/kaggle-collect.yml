@@ -57,13 +57,14 @@ jobs:
           # Only the posting step gets GH_TOKEN; checkout would persist the job token into .git.
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.12'
 
       - name: Install the Kaggle client
         # kaggle 1.7.4.5's authenticate() cannot read KAGGLE_API_TOKEN.
-        run: python -m pip install --quiet 'kaggle==2.2.4'
+        # kaggle imports six without declaring it; python-dateutil 4.0 stopped pulling it in.
+        run: python -m pip install --quiet 'kaggle==2.2.4' 'six'
 
       - name: Collect this account's kernels
         id: collect

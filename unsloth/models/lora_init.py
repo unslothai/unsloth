@@ -198,6 +198,11 @@ def _routed(base):
     )
 
 
+def _pp_placeholder(weight):
+    # pipeline_sharded_loading's zero-stride stand-in for a weight another pipeline rank reads.
+    return bool(getattr(weight, "_unsloth_pp_placeholder", False))
+
+
 def _check_float_weight(weight, init):
     # FSDP-QLoRA packs Params4bit into a float quant_storage: its dtype alone looks dense.
     if type(weight).__name__ in ("Params4bit", "Int8Params") or hasattr(weight, "quant_state"):
@@ -219,12 +224,7 @@ def _pissa_init(self, adapter_name, init_lora_weights):
     _check_float_weight(weight, init_lora_weights)
     dtype = weight.dtype
     r = self.r[adapter_name]
-    if (
-        dtype not in _FLOATS
-        or r > min(weight.shape)
-        or weight.device.type == "meta"
-        or not torch.isfinite(weight).all()
-    ):
+    if dtype not in _FLOATS or r > min(weight.shape) or weight.device.type == "meta":
         return _ORIGINAL["pissa_init"](self, adapter_name, init_lora_weights)
     if init_lora_weights == "pissa":
         n_iter, n_oversamples = 6, None
@@ -234,6 +234,12 @@ def _pissa_init(self, adapter_name, init_lora_weights):
             return _ORIGINAL["pissa_init"](self, adapter_name, init_lora_weights)
         # PEFT's svd_lowrank(q = r, niter = N), device-independent so reloads rebuild the same residual.
         n_iter, n_oversamples = int(parts[-1]), 0
+    if _pp_placeholder(weight):
+        # Another pipeline stage owns this layer (pipeline_sharded_loading): its rank computes the init from
+        # the real weight, and the split drops this adapter. The fast path draws no global RNG either.
+        return
+    if not torch.isfinite(weight).all():
+        return _ORIGINAL["pissa_init"](self, adapter_name, init_lora_weights)
     _STATE["pissa"] = True
     self._unsloth_fast_pissa = getattr(self, "_unsloth_fast_pissa", set()) | {adapter_name}
     W = transpose(weight.to(torch.float32), self.fan_in_fan_out)
@@ -258,6 +264,8 @@ def _mica_init(self, adapter_name):
         return _ORIGINAL["mica_init"](self, adapter_name)
     weight = self.get_base_layer().weight
     _check_float_weight(weight, "mica")
+    if _pp_placeholder(weight):
+        return  # another pipeline stage owns this layer (see _pissa_init)
     r = self.r[adapter_name]
     if (
         self.lora_B[adapter_name].weight.device.type == "meta"

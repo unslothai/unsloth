@@ -91,7 +91,7 @@ from core.inference.lookup_tables import (
     is_per_layer_embedding as _is_per_layer_embedding,
     lazy_read_bytes as _lookup_lazy_read_bytes,
 )
-from core.inference.stream_errors import stream_error_from_chunk
+from core.inference.stream_errors import is_tool_parse_rejection, stream_error_from_chunk
 from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import (
     call_hub_with_anonymous_retry,
@@ -4045,6 +4045,54 @@ _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
 _WINDOWS_SYSMEM_FALLBACK_RESERVE_MIB = _LLAMA_FIT_TARGET_DEFAULT_MIB
 _WINDOWS_SYSMEM_FALLBACK_MAX_FRACTION = 0.125
 
+# WDDM backs GPU allocations with system commit the process never touches (#16015).
+_WINDOWS_GPU_UNTOUCHED_COMMIT_MIN_MIB = 2048
+_WINDOWS_GPU_COMMIT_HEADROOM_WARN_MIB = 4096
+
+
+def _windows_private_memory(pid: int) -> Optional[tuple[int, int]]:
+    """(PrivateUsage, PrivateWorkingSetSize) in bytes; None when unreadable (needs Windows 10 1809+).
+    psutil's uss and wset both count mmap'd GGUF pages, which would hide untouched commit."""
+    from ctypes import wintypes
+
+    class _COUNTERS_EX2(ctypes.Structure):
+        _fields_ = (
+            [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)]
+            + [
+                (name, ctypes.c_size_t)
+                for name in (
+                    "PeakWorkingSetSize",
+                    "WorkingSetSize",
+                    "QuotaPeakPagedPoolUsage",
+                    "QuotaPagedPoolUsage",
+                    "QuotaPeakNonPagedPoolUsage",
+                    "QuotaNonPagedPoolUsage",
+                    "PagefileUsage",
+                    "PeakPagefileUsage",
+                    "PrivateUsage",
+                    "PrivateWorkingSetSize",
+                )
+            ]
+            + [("SharedCommitUsage", ctypes.c_ulonglong)]
+        )
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        counters = _COUNTERS_EX2()
+        counters.cb = ctypes.sizeof(counters)
+        if not kernel32.K32GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+            return None
+        return int(counters.PrivateUsage), int(counters.PrivateWorkingSetSize)
+    finally:
+        kernel32.CloseHandle(handle)
+
 
 def _vram_reserve_floor_mib(total_mib: float, *, sysmem_fallback: bool = False) -> float:
     """Floor 512 MiB, capped at the default reserve to keep the budget monotonic; sysmem_fallback raises it and deliberately overrides a 100% budget."""
@@ -5670,6 +5718,28 @@ def requested_video_fps(
     except (TypeError, ValueError):
         return None
     return rate if rate > 0 else None
+
+
+def _video_tools_reachable(
+    cmd: Sequence[str],
+    env: Optional[Mapping[str, str]] = None,
+    cwd: Optional[str] = None,
+) -> bool:
+    """Whether the child can launch ffmpeg and ffprobe, which /props' video modality never checks (#16065)."""
+    source = os.environ if env is None else env
+    try:
+        bin_dir = _last_flag_value(cmd, frozenset({"--video-ffmpeg-dir"}))
+    except Exception:
+        return True
+    search = bin_dir or source.get("LLAMA_ARG_VIDEO_FFMPEG_DIR")
+    names = ("ffmpeg.exe", "ffprobe.exe") if sys.platform == "win32" else ("ffmpeg", "ffprobe")
+    if not search:
+        search = source.get("PATH", os.defpath)
+        if sys.platform == "win32":
+            # CreateProcess also searches the binary's folder and the working directory.
+            launch_dir = os.path.dirname(str(cmd[0])) if cmd else ""
+            search = os.pathsep.join(d for d in (launch_dir, cwd or os.getcwd(), search) if d)
+    return all(shutil.which(name, path = search) for name in names)
 
 
 def _env_sets_mmproj_offload(env: Optional[Mapping[str, str]] = None) -> bool:
@@ -7518,6 +7588,19 @@ def _llama_chunk_has_generated_output(data: dict) -> bool:
         if choice.get("text") not in (None, ""):
             return True
     return False
+
+
+def _structured_calls_complete(calls: dict) -> bool:
+    for call in calls.values():
+        function = call.get("function") or {}
+        if not function.get("name", "").strip():
+            return False
+        try:
+            if not isinstance(json.loads(function.get("arguments") or ""), dict):
+                return False
+        except ValueError:
+            return False
+    return bool(calls)
 
 
 def _perf_callback_wants_timings(callback) -> bool:
@@ -15880,6 +15963,47 @@ class LlamaCppBackend:
             f"Auto.{kv_hint}"
         )
 
+    @staticmethod
+    def _gpu_commit_headroom_message(
+        untouched_mib: int, headroom_mib: Optional[int]
+    ) -> Optional[str]:
+        """Advisory for commit Windows reserves for GPU memory; None while there is room."""
+        if headroom_mib is None or untouched_mib < _WINDOWS_GPU_UNTOUCHED_COMMIT_MIN_MIB:
+            return None
+        if headroom_mib >= _WINDOWS_GPU_COMMIT_HEADROOM_WARN_MIB:
+            return None
+        held_gib = untouched_mib / 1024
+        return (
+            f"On Windows the GPU driver reserves system commit for the model's GPU memory: "
+            f"llama-server holds about {held_gib:.1f} GiB of commit it never uses in RAM, and "
+            f"only {headroom_mib / 1024:.1f} GiB of commit is left on this system. Studio cannot "
+            f"release it, and when the commit limit runs out other apps can fail to start or "
+            f"crash. Let Windows manage the page file size, or raise it by at least "
+            f"{math.ceil(held_gib)} GiB, under System > About > Advanced system settings > "
+            f"Performance > Advanced > Virtual memory."
+        )
+
+    @staticmethod
+    def _windows_gpu_commit_notice(pid: Optional[int], binary: Optional[str]) -> Optional[str]:
+        """Measures a loaded GPU child on Windows; never raises, since it only adds a notice."""
+        if sys.platform != "win32" or not pid:
+            return None
+        try:
+            if not LlamaCppBackend._installed_ggml_backends(binary) & {"cuda", "hip", "vulkan"}:
+                return None
+            from .diffusion_memory import _windows_commit_headroom_mib
+
+            counters = _windows_private_memory(pid)
+            if counters is None:
+                return None
+            untouched_mib = max(0, counters[0] - counters[1]) // (1024 * 1024)
+            return LlamaCppBackend._gpu_commit_headroom_message(
+                untouched_mib, _windows_commit_headroom_mib()
+            )
+        except Exception as e:  # noqa: BLE001 - a failed probe must not fail the load
+            logger.debug("GPU commit headroom check failed: %s", e)
+            return None
+
     # Skip the wait when the last kill is older than this; the driver has already reclaimed it.
     _VRAM_SETTLE_WINDOW_S: float = 15.0
 
@@ -20051,8 +20175,31 @@ class LlamaCppBackend:
 
         # Header-rejected basenames, so the search moves past an impostor to the real sidecar.
         rejected: set[str] = set()
+        # Once per call; an empty answer (also a failed model_info) is asked again, as before.
+        remote_sizes: dict[str, int] = {}
 
-        def _pick_dflash(candidates: list[str]) -> Optional[str]:
+        def _remote_sizes() -> dict[str, int]:
+            nonlocal remote_sizes
+            if not remote_sizes:
+                remote_sizes = self._remote_root_gguf_sizes(hf_repo, hf_token)
+            return remote_sizes
+
+        snap = _snapshot_dir_of(near_path) if near_path else None
+
+        def _local_sizes(candidates: list[str]) -> dict[str, int]:
+            sizes: dict[str, int] = {}
+            if snap is None:
+                return sizes
+            for name in candidates:
+                if "/" in name:
+                    continue
+                try:
+                    sizes[name] = (snap / name).stat().st_size
+                except OSError:
+                    continue
+            return sizes
+
+        def _pick_dflash(candidates: list[str], *, local: bool = False) -> Optional[str]:
             # Ranked against the weight loaded, not precision alone, so model B does not get model A's drafter; a sidecar naming no family stays eligible.
             from utils.models.drafters import (
                 dflash_repo_preference_key,
@@ -20075,22 +20222,28 @@ class LlamaCppBackend:
             ]
             if not eligible:
                 return None
-            # Same size bound as dflash_plan_files: header reads only after download, a drafter is a few layers of its target, and an unlisted size keeps the candidate.
-            sizes = self._remote_root_gguf_sizes(hf_repo, hf_token)
             try:
                 target_bytes = (self._get_gguf_size_bytes(near_path) or 0) if near_path else 0
             except OSError:
                 target_bytes = 0
-            files = sorted(
-                (
+
+            def _under_bound(sizes: Mapping[str, int]) -> list[str]:
+                # Same size bound as dflash_plan_files: header reads only after download, a drafter is a few layers of its target, and an unlisted size keeps the candidate.
+                return [
                     name
                     for name in eligible
                     # Whole set, not the picked shard: each half of a split weight can sit under the target while the set does not.
                     if not (
                         target_bytes and _drafter_set_bytes(sizes, Path(name).name) >= target_bytes
                     )
-                ),
-                key = lambda name: dflash_repo_preference_key(name, weight_name, others),
+                ]
+
+            # On-disk sizes settle it only when they keep every candidate, as an unanswered model_info does; else ask the Hub.
+            kept = _under_bound(_local_sizes(candidates)) if local else None
+            if kept is None or len(kept) != len(eligible):
+                kept = _under_bound(_remote_sizes())
+            files = sorted(
+                kept, key = lambda name: dflash_repo_preference_key(name, weight_name, others)
             )
             return files[0] if files else None
 
@@ -20110,7 +20263,9 @@ class LlamaCppBackend:
         cached: Optional[str] = None
         seen_siblings: set[str] = set()
         while near_path and not cancel_event.is_set():
-            sibling = _companion_snapshot_sibling(near_path, _pick_dflash)
+            sibling = _companion_snapshot_sibling(
+                near_path, functools.partial(_pick_dflash, local = True)
+            )
             if sibling is None or sibling in seen_siblings:
                 break
             seen_siblings.add(sibling)
@@ -32325,6 +32480,15 @@ class LlamaCppBackend:
                             else None
                         ),
                     )
+                elif not intent.cpu_fallback:
+                    _gpu_commit_notice = self._windows_gpu_commit_notice(
+                        getattr(self._process, "pid", None), binary
+                    )
+                    if _gpu_commit_notice:
+                        if self._last_load_warning:
+                            self._amend_load_warning(" " + _gpu_commit_notice)
+                        else:
+                            self._record_load_warning(_gpu_commit_notice)
                 if not self._publish_healthy():
                     # Teardown began after the 200; publishing would report a model that is gone.
                     _cleanup_cancelled_load("App shut down as the load was completing")
@@ -32359,6 +32523,13 @@ class LlamaCppBackend:
                 self._has_video_input = False
                 # Use _extra_args_as_requested: the drafter-drop snapshot would restore the Metal zero-context strip.
                 self._reconcile_effective_ctx_with_server(ctx_override or 0)
+                if self._has_video_input:
+                    self._has_video_input = _video_tools_reachable(_last_spawn_cmd, env, _spawn_cwd)
+                    if not self._has_video_input:
+                        logger.warning(
+                            "Video input disabled: llama-server decodes video with ffmpeg and "
+                            "ffprobe, and neither --video-ffmpeg-dir nor PATH provides both."
+                        )
                 if self._kv_cache_context_total is not None:
                     self._n_ubatch = min(
                         self._n_ubatch,
@@ -35774,6 +35945,57 @@ class LlamaCppBackend:
             return False
         return _llama_chunk_has_generated_output(data)
 
+    def _iter_tool_round_text(
+        self,
+        response: "httpx.Response",
+        payload: dict,
+        cancel_event: Optional[threading.Event],
+        first_token_deadline: Optional[float],
+        on_respawn: Optional[Callable[[], None]] = None,
+    ) -> Generator[str, None, None]:
+        """Raw SSE text of one tool round. A tool-call parse rejection before any output (Llama 3.x
+        ``{"type": "function", ...}``, ``;``-joined calls) is retried once with tool_choice "none",
+        which turns llama-server's parser off so Studio's parser reads the raw reply."""
+        stream = self._iter_text_cancellable(
+            response, cancel_event, first_token_deadline = first_token_deadline
+        )
+        if not payload.get("tools") or payload.get("tool_choice") == "none":
+            yield from stream
+            return
+        pending = ""
+        for chunk in stream:
+            pending += chunk
+            while "\n" in pending:
+                line, pending = pending.split("\n", 1)
+                data = None
+                stripped = line.strip()
+                if stripped.startswith("data: ") and stripped != "data: [DONE]":
+                    try:
+                        data = json.loads(stripped[6:])
+                    except json.JSONDecodeError:
+                        pass
+                if is_tool_parse_rejection(data):
+                    logger.info(
+                        "llama-server could not parse the reply as tool calls; "
+                        "asking again with its tool-call parser off"
+                    )
+                    response.close()
+                    payload["tool_choice"] = "none"
+                    with self._open_chat_stream_with_respawn_retry(
+                        payload, cancel_event, on_respawn = on_respawn
+                    ) as (retry_response, retry_deadline):
+                        yield from self._iter_text_cancellable(
+                            retry_response, cancel_event, first_token_deadline = retry_deadline
+                        )
+                    return
+                yield line + "\n"
+                # Output already reached the caller: a second request could not be joined to it.
+                if isinstance(data, dict) and _llama_chunk_has_generated_output(data):
+                    yield pending
+                    yield from stream
+                    return
+        yield pending
+
     @staticmethod
     def _iter_text_cancellable(
         response: "httpx.Response",
@@ -37104,6 +37326,34 @@ class LlamaCppBackend:
         # Caller's continue_final_message is restored once a turn progresses; forced only to join one answer.
         _final_answer_stripper = _StreamingMarkupStripper(_enabled_names_gate, seg_final = False)
 
+        def _final_answer_visible(
+            cleaned: str,
+            answer: str,
+            *,
+            at_end: bool = False,
+        ):
+            """tool_choice "none" leaves a Llama 3.x bare-JSON call in the answer text: hold while a leading
+            ;-chain of objects has an open peer (its name may not have arrived), then drop the enabled calls
+            as the tool rounds do. None means hold."""
+            if not _enabled_names_gate or not cleaned.endswith(answer):
+                return cleaned
+            probe = strip_llama3_leading_sentinels(answer.lstrip())
+            if not probe.startswith("{"):
+                return cleaned
+            if not at_end and len(probe) < _MAX_BARE_JSON_BUFFER:
+                chain = probe
+                while chain.startswith("{"):
+                    end = _balanced_brace_end(chain, 0)
+                    if end is None:
+                        return None
+                    chain = strip_llama3_leading_sentinels(chain[end + 1 :].lstrip()).lstrip(
+                        " \t\n\r;"
+                    )
+            kept = strip_leading_bare_json_call(answer, _enabled_names_gate)
+            if kept == answer:
+                return cleaned
+            return cleaned[: len(cleaned) - len(answer)] + kept
+
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
@@ -37809,10 +38059,12 @@ class LlamaCppBackend:
                     for truncation in _respawn_truncations:
                         yield {"type": "context_truncated", **truncation}
                     raw_buf = ""
-                    for raw_chunk in self._iter_text_cancellable(
+                    for raw_chunk in self._iter_tool_round_text(
                         response,
+                        payload,
                         cancel_event,
-                        first_token_deadline = first_token_deadline,
+                        first_token_deadline,
+                        on_respawn = _refit_iteration_after_respawn,
                     ):
                         raw_buf += raw_chunk
                         while "\n" in raw_buf:
@@ -37872,6 +38124,19 @@ class LlamaCppBackend:
                                 # Error chunks have no choices; don't drop them.
                                 _stream_error = stream_error_from_chunk(chunk_data)
                                 if _stream_error is not None:
+                                    # A rejected later call (`;`-joined) must not lose the complete ones before it.
+                                    if (
+                                        has_structured_tc
+                                        and is_tool_parse_rejection(chunk_data)
+                                        and _structured_calls_complete(tool_calls_acc)
+                                    ):
+                                        logger.info(
+                                            "llama-server rejected a later tool call; "
+                                            "running the %d complete one(s) before it",
+                                            len(tool_calls_acc),
+                                        )
+                                        _stream_done = True
+                                        break
                                     raise _stream_error
                                 choices = chunk_data.get("choices", [])
                                 if not choices:
@@ -40427,14 +40692,26 @@ class LlamaCppBackend:
                                             if auto_heal_tool_calls
                                             else cumulative
                                         )
+                                        if auto_heal_tool_calls:
+                                            cleaned = _final_answer_visible(cleaned, answer_text)
                                         # Emit only when cleaned text grows (monotonic).
-                                        if len(cleaned) > len(_last_emitted):
+                                        if cleaned is not None and len(cleaned) > len(
+                                            _last_emitted
+                                        ):
                                             _last_emitted = cleaned
                                             yield {"type": "content", "text": cleaned}
                             except json.JSONDecodeError:
                                 logger.debug(f"Skipping malformed SSE line: {line[:100]}")
                         if _stream_done:
                             break  # exit outer for
+                    if auto_heal_tool_calls and has_content_tokens and not in_thinking:
+                        # Release an answer still held as a possible bare-JSON call.
+                        _flushed = _final_answer_visible(
+                            _final_answer_stripper.strip(cumulative), answer_text, at_end = True
+                        )
+                        if len(_flushed) > len(_last_emitted):
+                            _last_emitted = _flushed
+                            yield {"type": "content", "text": _flushed}
                     # Commit the candidate only once another stream runs, so usage is not double counted; replay only new text, or the fragment is repeated.
                     _shown_this_attempt = _last_emitted[len(_attempt_started_at) :]
                     if (

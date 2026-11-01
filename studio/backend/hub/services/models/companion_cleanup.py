@@ -305,7 +305,7 @@ def _shared_folder_extra_bytes(repo_id: str, keys: list[str]) -> int:
     deleting = {key.lower() for key in keys}
     listed: dict[str, int] = {}
     kept: set[str] = set()
-    for candidate in model.variants:
+    for candidate in model.cache_variants:
         files = {f.path for f in candidate.files}
         if candidate.primary and gguf_variant_key(candidate.primary).lower() in deleting:
             for path in files:

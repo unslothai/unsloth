@@ -7,6 +7,7 @@ import asyncio
 import sqlite3
 import threading
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -30,9 +31,10 @@ from routes import inference as inference_routes
 from routes.scheduled_tasks import router
 from storage import scheduled_tasks_db as db
 from storage import studio_db
-from utils.account_context import OWNER
+from utils.account_context import OWNER, AccountContext, run_as
 
-DAY = 24 * 60 * 60 * 1000
+HOUR = 60 * 60 * 1000
+DAY = 24 * HOUR
 
 
 def ms(iso: str) -> int:
@@ -121,6 +123,44 @@ def client():
 def test_next_run_after(schedule, zone, after, expected):
     following = next_run_after(parse_schedule(schedule), zone, ms(f"{after}:00+00:00"))
     assert following == ms(f"{expected}:00+00:00")
+
+
+@pytest.mark.parametrize("hours", [1, 2, 5, 24])
+def test_hourly_schedules_start_one_full_interval_from_now(hours):
+    now = ms("2026-10-14T09:23:45.123+00:00")
+    schedule = parse_schedule({"kind": "hourly", "hours": hours})
+    assert next_run_after(schedule, "UTC", now) == now + hours * HOUR
+
+
+@pytest.mark.parametrize(
+    "zone, anchor, hours, elapsed_ms, expected",
+    [
+        # One millisecond of polling delay must not shift the next occurrence.
+        ("UTC", "2026-10-14T09:00:00+00:00", 1, 1, "2026-10-14T10:00:00+00:00"),
+        # Five-hour intervals continue across midnight instead of resetting each day.
+        ("UTC", "2026-10-14T23:00:00+00:00", 5, 0, "2026-10-15T04:00:00+00:00"),
+        # Missed occurrences are skipped while keeping the original cadence.
+        ("UTC", "2026-10-14T09:00:00+00:00", 2, 7 * HOUR, "2026-10-14T17:00:00+00:00"),
+        # A future persisted occurrence remains the next one.
+        ("UTC", "2026-10-14T09:00:00+00:00", 2, -1, "2026-10-14T09:00:00+00:00"),
+        # New York jumps from 01:59 to 03:00; elapsed hours remain exactly one hour.
+        ("America/New_York", "2026-03-08T06:30:00+00:00", 1, 0, "2026-03-08T07:30:00+00:00"),
+        # Both occurrences of 01:30 are one elapsed hour apart when the clocks fall back.
+        ("America/New_York", "2026-11-01T05:30:00+00:00", 1, 0, "2026-11-01T06:30:00+00:00"),
+    ],
+)
+def test_hourly_schedules_keep_their_elapsed_cadence(zone, anchor, hours, elapsed_ms, expected):
+    anchor_ms = ms(anchor)
+    schedule = parse_schedule({"kind": "hourly", "hours": hours})
+    assert next_run_after(schedule, zone, anchor_ms + elapsed_ms, anchor_ms = anchor_ms) == ms(
+        expected
+    )
+
+
+@pytest.mark.parametrize("hours", [0, -1, 25, 1.5, 2.0, True, False, "2", None])
+def test_hourly_intervals_require_whole_hours_in_range(hours):
+    with pytest.raises(ValidationError):
+        parse_schedule({"kind": "hourly", "hours": hours})
 
 
 def test_a_one_time_task_has_no_run_left_once_its_time_passes():
@@ -386,6 +426,74 @@ def test_create_list_and_read(client, monkeypatch):
 def test_invalid_tasks_are_refused(client, overrides, status):
     assert create(client, **overrides).status_code == status
     assert client.get("/api/scheduled-tasks").json()["tasks"] == []
+
+
+@pytest.mark.parametrize("hours", [0, -1, 25, 1.5, 2.0, True, "2", None])
+def test_invalid_hourly_intervals_are_refused_on_create_and_update(client, hours):
+    invalid = {"kind": "hourly", "hours": hours}
+    assert create(client, schedule = invalid).status_code == 422
+    task = create(client).json()
+    response = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"schedule": invalid})
+    assert response.status_code == 422
+    assert client.get(f"/api/scheduled-tasks/{task['id']}").json() == task
+
+
+def test_hourly_tasks_persist_and_restart_the_interval_on_timing_changes(client, monkeypatch):
+    now = ms("2026-10-14T09:23:45.123+00:00")
+    monkeypatch.setattr(db, "now_ms", lambda: now)
+    schedule = {"kind": "hourly", "hours": 2}
+    response = create(client, schedule = schedule)
+    assert response.status_code == 201
+    task = response.json()
+    url = f"/api/scheduled-tasks/{task['id']}"
+    due = now + 2 * HOUR
+    assert task["schedule"] == schedule
+    assert task["nextRunAt"] == due
+    assert client.get(url).json() == task
+    assert client.get("/api/scheduled-tasks").json()["tasks"] == [task]
+
+    now = due + HOUR
+    # Saving unchanged timing and renaming must preserve the overdue occurrence.
+    unchanged = client.patch(
+        url,
+        json = {"title": "Hourly brief", "schedule": schedule, "enabled": True, "timezone": "UTC"},
+    ).json()
+    assert unchanged["nextRunAt"] == due
+
+    edited = client.patch(url, json = {"schedule": {"kind": "hourly", "hours": 5}}).json()
+    assert edited["nextRunAt"] == now + 5 * HOUR
+    paused = client.patch(url, json = {"enabled": False}).json()
+    assert paused["status"] == "paused" and paused["nextRunAt"] is None
+    now += DAY
+    resumed = client.patch(url, json = {"enabled": True}).json()
+    assert resumed["status"] == "active"
+    assert resumed["nextRunAt"] == now + 5 * HOUR
+    now += HOUR
+    rezoned = client.patch(url, json = {"timezone": "Europe/London"}).json()
+    assert rezoned["nextRunAt"] == now + 5 * HOUR
+
+
+def test_late_hourly_claims_skip_missed_runs_without_drift_and_manual_runs_keep_the_cadence():
+    due = ms("2026-10-14T09:23:45.123+00:00")
+    make_task(schedule = {"kind": "hourly", "hours": 2}, nextRunAt = due)
+    now = due + 7 * HOUR + 1
+    task, run = db.claim_next(now, "worker", next_run_for)
+    assert run["scheduledFor"] == due
+    assert task["nextRunAt"] == due + 8 * HOUR
+    assert db.claim_next(now, "worker", next_run_for) is None
+    db.finish_run(run["id"], "worker", status = "succeeded")
+    assert db.claim_next(now, "worker", next_run_for) is None
+
+    db.request_run(task["id"])
+    manual_task, manual = db.claim_next(now, "worker", next_run_for)
+    assert manual["source"] == "manual"
+    assert manual_task["nextRunAt"] == due + 8 * HOUR
+    db.finish_run(manual["id"], "worker", status = "succeeded")
+
+    # The next pass reads only persisted state, so a process restart does not reset the cadence.
+    following, following_run = db.claim_next(due + 8 * HOUR + 57, "new-worker", next_run_for)
+    assert following_run["scheduledFor"] == due + 8 * HOUR
+    assert following["nextRunAt"] == due + 10 * HOUR
 
 
 def test_the_task_limit(client, monkeypatch):
@@ -952,6 +1060,187 @@ def test_a_run_asks_the_loaded_model_for_text_only(monkeypatch):
     assert request.headers["x-unsloth-require-text"] == "1"
     assert request.state.api_monitor_via_api_key is False
     assert request.state.keyless_api_admitted is False
+
+
+@pytest.fixture
+def projects_home(tmp_path, monkeypatch):
+    # Project folders otherwise land in the real ~/Documents/Unsloth Studio.
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+
+@pytest.mark.usefixtures("projects_home")
+def test_a_run_reads_the_memory_and_the_project_instructions_as_chat_does(monkeypatch):
+    from core import agents_md
+
+    agents_md.write_memory("I prefer metric units.")
+    studio_db.upsert_chat_project(
+        {
+            "id": "proj-1",
+            "name": "Weather",
+            "instructions": "Always answer in French.",
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+    note = scheduler_module.system_prompt({"timezone": "UTC"}, db.now_ms())
+    producer = FakeProducer(completion("Il fait beau."))
+
+    generate(monkeypatch, producer, make_task(projectId = "proj-1"))
+
+    system, user = producer.payload.messages
+    assert system.content.startswith("<agents_md>\n# Source: ")
+    assert system.content.endswith(
+        "I prefer metric units.\n</agents_md>\n\n"
+        "<project_instructions>\nAlways answer in French.\n</project_instructions>\n\n" + note
+    )
+    assert user.content == "Write a haiku about mornings."
+
+    agents_md.set_memory_enabled(False)
+    generate(monkeypatch, producer, make_task(id = "task-2"))
+    assert producer.payload.messages[0].content == note
+
+
+def _project_with(instructions, **extra):
+    return studio_db.upsert_chat_project(
+        {
+            "id": "proj-1",
+            "name": "Weather",
+            "instructions": instructions,
+            "createdAt": 1,
+            "updatedAt": 1,
+            **extra,
+        }
+    )
+
+
+@pytest.mark.usefixtures("projects_home")
+@pytest.mark.parametrize("state", ["deleted", "archived", "blank"])
+def test_a_project_chat_would_not_read_adds_nothing_to_a_run(monkeypatch, state):
+    instructions = "   " if state == "blank" else "Always answer in French."
+    _project_with(instructions, archived = state == "archived")
+    if state == "deleted":
+        studio_db.delete_chat_project("proj-1")
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+    producer = FakeProducer(completion("Fine."))
+
+    generate(monkeypatch, producer, make_task(projectId = "proj-1"))
+
+    note = scheduler_module.system_prompt({"timezone": "UTC"}, db.now_ms())
+    assert producer.payload.messages[0].content == note
+
+
+@pytest.mark.usefixtures("projects_home")
+def test_turning_memory_off_keeps_the_project_instructions_of_a_run(monkeypatch):
+    from core import agents_md
+
+    agents_md.write_memory("I prefer metric units.")
+    agents_md.set_memory_enabled(False)
+    _project_with("Always answer in French.")
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+    producer = FakeProducer(completion("Il fait beau."))
+
+    generate(monkeypatch, producer, make_task(projectId = "proj-1"))
+
+    note = scheduler_module.system_prompt({"timezone": "UTC"}, db.now_ms())
+    assert producer.payload.messages[0].content == (
+        "<project_instructions>\nAlways answer in French.\n</project_instructions>\n\n" + note
+    )
+
+
+@pytest.mark.usefixtures("projects_home")
+def test_a_run_reads_the_project_folder_file_as_chat_does(monkeypatch):
+    from core import agents_md
+
+    def system_of_a_run(task_id, **task_fields):
+        producer = FakeProducer(completion("Done."))
+        generate(monkeypatch, producer, make_task(id = task_id, **task_fields))
+        return producer.payload.messages[0].content
+
+    agents_md.write_memory("I prefer metric units.")
+    project = _project_with("   ")
+    Path(project["rootPath"], "AGENTS.md").write_text("Use the folder rules.", encoding = "utf-8")
+
+    system = system_of_a_run("task-1", projectId = "proj-1")
+    assert system.index("I prefer metric units.") < system.index("Use the folder rules.")
+    assert "<project_instructions>" not in system
+
+    agents_md.set_memory_enabled(False)
+    system = system_of_a_run("task-2", projectId = "proj-1")
+    assert "Use the folder rules." in system and "metric" not in system
+
+    _project_with("   ", archived = True)
+    assert "Use the folder rules." not in system_of_a_run("task-3", projectId = "proj-1")
+
+    def as_member():
+        member = _project_with("   ")
+        Path(member["rootPath"], "AGENTS.md").write_text("Member folder.", encoding = "utf-8")
+        return system_of_a_run("task-4", projectId = "proj-1")
+
+    assert "Member folder." not in run_as(AccountContext("alice", "alice"), as_member)
+
+
+def test_a_stalled_instruction_read_ends_the_run_at_its_deadline(monkeypatch):
+    released = threading.Event()
+    monkeypatch.setattr(scheduler_module, "_RUN_TIMEOUT_SECONDS", 0.05)
+    # Bounded: the event loop's shutdown waits for this thread.
+    monkeypatch.setattr(scheduler_module, "_run_instructions", lambda *_: released.wait(0.5))
+    producer = FakeProducer(completion("unused"))
+
+    with pytest.raises(RunFailed) as failure:
+        generate(monkeypatch, producer)
+
+    assert failure.value.code == "timeout"
+    assert producer.payload is None
+
+
+@pytest.mark.usefixtures("projects_home")
+def test_a_connection_run_gets_the_same_instructions_as_a_local_one(monkeypatch):
+    from core import agents_md
+    from storage import providers_db
+
+    agents_md.write_memory("I prefer metric units.")
+    _project_with("Always answer in French.")
+    config = {"id": "conn-1", "is_enabled": 1, "display_name": "OpenAI", "provider_type": "openai"}
+    monkeypatch.setattr(providers_db, "get_provider", lambda provider_id: config)
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+    local, external = FakeProducer(completion("Oui.")), FakeProducer(completion("Oui."))
+
+    generate(monkeypatch, local, make_task(projectId = "proj-1"))
+    generate(
+        monkeypatch,
+        external,
+        make_task(id = "task-2", projectId = "proj-1", model = "external::conn-1::gpt-5-mini"),
+    )
+
+    assert external.payload.provider_id == "conn-1"
+    assert "I prefer metric units." in external.payload.messages[0].content
+    assert external.payload.messages[0].content == local.payload.messages[0].content
+
+
+@pytest.mark.usefixtures("projects_home")
+def test_a_run_reads_the_memory_and_project_of_the_account_it_runs_for(monkeypatch):
+    from core import agents_md
+
+    def set_up(notes, instructions):
+        agents_md.write_memory(notes)
+        _project_with(instructions)
+        return make_task(projectId = "proj-1")
+
+    alice, bob = AccountContext("alice", "alice"), AccountContext("bob", "bob")
+    alice_task = run_as(alice, set_up, "Alice's notes.", "Alice's project.")
+    bob_task = run_as(bob, set_up, "Bob's notes.", "Bob's project.")
+    alice_run, bob_run = FakeProducer(completion("A")), FakeProducer(completion("B"))
+
+    run_as(alice, generate, monkeypatch, alice_run, alice_task)
+    run_as(bob, generate, monkeypatch, bob_run, bob_task)
+
+    alice_system = alice_run.payload.messages[0].content
+    assert "Alice's notes." in alice_system and "Alice's project." in alice_system
+    assert "Bob" not in alice_system
+    bob_system = bob_run.payload.messages[0].content
+    assert "Bob's notes." in bob_system and "Bob's project." in bob_system
+    assert "Alice" not in bob_system
 
 
 @pytest.mark.parametrize("primary", [None, "gemma-3"])

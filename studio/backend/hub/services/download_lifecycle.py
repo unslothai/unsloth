@@ -272,7 +272,10 @@ def resolve_requested_use_xet(
 def resolve_auto_use_xet(*, largest_file_bytes: Optional[int] = None) -> tuple[bool, str]:
     """Pick a transport for a download the user left on "Auto". Returns ``(use_xet, reason)``. Server-side on purpose: only the backend can see this machine's RAM, its hf_xet build, and whether Xet has been failing here. Probing IS allowed here, unlike in the capabilities endpoint the UI polls on render, because this runs once per download request and the verdict is memoized."""
     if not resolve_effective_use_xet(True):
-        return (False, "hf_xet is not installed")
+        reason = download_registry.download_transport_unavailable_reason(
+            download_registry.TRANSPORT_XET
+        )
+        return (False, reason or "hf_xet is not installed")
     http_ceiling_reason = download_registry.http_size_ceiling_reason(largest_file_bytes)
     if http_ceiling_reason is not None:
         # Health and RAM preferences cannot select HTTP when the file exceeds its limit.
