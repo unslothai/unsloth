@@ -5816,6 +5816,7 @@ def _deep_merge_settings(current: dict[str, Any], updates: dict[str, Any]) -> di
 # merges, since a deep merge can only add or overwrite (#14068). Keys, not rows, so a concurrent edit
 # to a key the command does not name survives.
 _FORGET_PARAMS_KEY = "forgetInferenceParamsByModel"
+_MODEL_PRESETS_KEY = "modelPresets"
 
 
 def _merge_settings_updates(current: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
@@ -5834,7 +5835,14 @@ def _merge_settings_updates(current: dict[str, Any], updates: dict[str, Any]) ->
             else:
                 del pruned[model_id]
         current = {**current, "inferenceParamsByModel": pruned}
-    return _deep_merge_settings(current, updates)
+    merged = _deep_merge_settings(current, updates)
+    # A null link is the patch removing it, so it is dropped rather than stored.
+    links = merged.get(_MODEL_PRESETS_KEY)
+    if isinstance(links, dict) and any(value is None for value in links.values()):
+        merged[_MODEL_PRESETS_KEY] = {
+            model_id: name for model_id, name in links.items() if name is not None
+        }
+    return merged
 
 
 def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:

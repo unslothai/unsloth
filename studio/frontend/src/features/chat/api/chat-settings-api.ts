@@ -42,6 +42,9 @@ export interface PersistedChatSettings {
   customPresets?: PersistedChatPreset[];
   activePreset?: string;
   activePresetSource?: ChatPresetSource;
+  /** Per model id, the custom preset applied whenever that model is selected. Merged per key on
+   *  the server, so an outgoing null removes one model's link. */
+  modelPresets?: Record<string, string | null>;
   autoTitle?: boolean;
   reasoningEffort?: ReasoningEffort;
   preserveThinking?: boolean;
