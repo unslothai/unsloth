@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { HugeiconsIcon } from "@hugeicons/react";
-import { Handle, type NodeProps, Position, useStore } from "@xyflow/react";
-import { memo } from "react";
+import { Badge } from "@/components/ui/badge";
+import {
+  type ControlPosition,
+  NodeResizeControl,
+  type NodeProps,
+  type OnResizeEnd,
+  ResizeControlVariant,
+  useStore,
+} from "@xyflow/react";
+import { memo, useLayoutEffect, useRef, useState } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useDocStore } from "../stores/doc-store";
 import {
@@ -18,9 +25,29 @@ import {
   inHandle,
   outHandle,
 } from "./connection-rules";
+import { CARD_MIN_WIDTH, cardContentMinHeight, cardMinHeight } from "./card-size";
 import type { RfNode } from "./derive-rf";
 import { nodeIcon } from "./icons";
+import { LLM_SETTINGS_NODES } from "./llm-settings";
+import { LlmReloadHint } from "./llm-settings-panel";
 import { MediaThumb, isMediaValue } from "./media";
+import {
+  CollapsedPorts,
+  type FieldRow,
+  FlowInHandle,
+  NodeCard,
+  NodeCardHeader,
+  NodeDisclosure,
+  NodeError,
+  NodeFieldRows,
+  NodePorts,
+  NodeStatusBadges,
+  type PortRowSpec,
+} from "./node-card";
+import { NODE_LOOKS } from "./node-looks";
+import { CATEGORY_TONES } from "./node-tones";
+import { CopyTextButton } from "./copy-text";
+import { outputCopyText, shownOutputIds } from "./value-kinds";
 import { StructuredBadge, isStructuredValue } from "./value-viewers";
 
 /** Below this zoom the text is unreadable anyway; hiding it (layout kept, so handles stay put)
@@ -29,30 +56,6 @@ const LOW_DETAIL_ZOOM = 0.45;
 const lowDetailSelector = (s: { transform: [number, number, number] }) =>
   s.transform[2] < LOW_DETAIL_ZOOM;
 
-const STATUS_RING: Record<string, string> = {
-  queued: "ring-1 ring-sky-400/50",
-  waiting: "ring-2 ring-amber-400/70",
-  loading_model: "ring-2 ring-sky-400 animate-pulse",
-  running: "ring-2 ring-sky-400 shadow-[0_0_24px_-4px] shadow-sky-500/60",
-  done: "ring-1 ring-emerald-400/70",
-  cached: "ring-1 ring-emerald-400/40",
-  failed: "ring-2 ring-red-500",
-  cancelled: "ring-1 ring-zinc-500",
-  skipped: "opacity-60",
-};
-
-const STATUS_LABEL: Record<string, string> = {
-  queued: "Queued",
-  waiting: "Waiting",
-  loading_model: "Loading model",
-  running: "Running",
-  done: "Done",
-  cached: "Cached",
-  failed: "Failed",
-  cancelled: "Cancelled",
-  skipped: "Skipped",
-};
-
 function portColorOf(
   colors: Record<string, string> | undefined,
   port: PortSpec,
@@ -60,32 +63,45 @@ function portColorOf(
   return colors?.[port.type] ?? "#cbd5e1";
 }
 
-function summarizeParams(node: FlowNode, spec: NodeSpec): string[] {
-  const lines: string[] = [];
+function shortText(value: unknown): string {
+  const text = String(value).trim();
+  return text.length > 60 ? `${text.slice(0, 60)}…` : text;
+}
+
+/** Up to three key settings as inline fields; long text goes behind "Show inputs". */
+function nodeFields(
+  node: FlowNode,
+  spec: NodeSpec,
+): { rows: FieldRow[]; long: { label: string; text: string }[] } {
+  const rows: FieldRow[] = [];
+  const long: { label: string; text: string }[] = [];
   for (const param of spec.params) {
-    if (lines.length >= 2) break;
     const value = node.params[param.id];
     if (value === null || value === undefined || value === "") continue;
+    if (param.kind === "textarea") {
+      const text = String(value).trim();
+      if (text) long.push({ label: param.label, text });
+      continue;
+    }
+    if (rows.length >= 3) continue;
     if (param.kind === "model") {
       const repo = (value as { repo?: string }).repo;
-      if (repo) lines.push(repo.split("/").pop() ?? repo);
+      if (repo) rows.push({ label: param.label, value: repo.split("/").pop() ?? repo });
       continue;
     }
-    if (param.kind === "textarea" || param.kind === "text") {
-      const text = String(value).trim();
-      if (text) lines.push(text.length > 90 ? `${text.slice(0, 90)}…` : text);
-      continue;
+    if (param.kind === "text" || param.kind === "select") {
+      const text = shortText(value);
+      if (text) rows.push({ label: param.label, value: text });
     }
-    if (param.kind === "select" && lines.length < 2)
-      lines.push(`${param.label}: ${String(value)}`);
   }
-  return lines;
+  return { rows, long };
 }
 
 function OutputPreview({
   runtime,
   spec,
-}: { runtime: NodeRuntime; spec: NodeSpec }) {
+  expanded = false,
+}: { runtime: NodeRuntime; spec: NodeSpec; expanded?: boolean }) {
   if (
     runtime.preview &&
     (runtime.status === "running" || runtime.status === "loading_model")
@@ -94,14 +110,14 @@ function OutputPreview({
       <img
         src={runtime.preview}
         alt=""
-        className="aspect-square w-full rounded-md object-cover"
+        className="aspect-square w-full rounded-md object-cover group-data-[sized]/node:aspect-auto group-data-[sized]/node:h-full group-data-[sized]/node:object-contain"
         draggable={false}
       />
     );
   }
   if ((runtime.status === "running" || !runtime.outputs) && runtime.text) {
     return (
-      <p className="line-clamp-4 whitespace-pre-wrap text-[11px] leading-snug text-zinc-300">
+      <p className="line-clamp-4 whitespace-pre-wrap text-ui-11 leading-snug text-foreground group-data-[sized]/node:line-clamp-none">
         {runtime.text}
       </p>
     );
@@ -114,33 +130,54 @@ function OutputPreview({
     const at = runtime.partialStep;
     return (
       <div className="flex flex-col gap-1">
-        <span className="text-[10px] uppercase tracking-wide text-amber-300/80">
+        <span className="text-ui-10 font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
           {at
             ? runtime.status === "running"
               ? `Partial: ${at.step} of ${at.total}`
               : `Partial (stopped at ${at.step} of ${at.total})`
             : "Partial"}
         </span>
-        <OutputValues outputs={runtime.partial} spec={spec} />
+        <OutputValues
+          outputs={runtime.partial}
+          spec={spec}
+          expanded={expanded}
+        />
       </div>
     );
   }
   const outputs = runtime.outputs;
   if (!outputs) return null;
-  return <OutputValues outputs={outputs} spec={spec} />;
+  return <OutputValues outputs={outputs} spec={spec} expanded={expanded} />;
+}
+
+/** A list or object written out in full, for a card resized big enough to read it. */
+export function expandedText(value: unknown): string {
+  if (Array.isArray(value))
+    return value
+      .map((item) =>
+        typeof item === "string" ? item : JSON.stringify(item, null, 2),
+      )
+      .join("\n");
+  return JSON.stringify(value, null, 2);
 }
 
 function OutputValues({
   outputs,
   spec,
-}: { outputs: Record<string, unknown>; spec: NodeSpec }) {
-  for (const port of spec.outputs) {
-    const value = outputs[port.id];
+  expanded = false,
+}: {
+  outputs: Record<string, unknown>;
+  spec: NodeSpec;
+  expanded?: boolean;
+}) {
+  const ids = shownOutputIds(spec.outputs, outputs);
+  for (const id of ids) {
+    const value = outputs[id];
     if (isMediaValue(value)) {
       return (
         <MediaThumb
           media={value}
-          className="max-h-48 w-full rounded-md object-cover"
+          className="max-h-48 w-full rounded-md object-cover group-data-[sized]/node:h-full group-data-[sized]/node:max-h-full group-data-[sized]/node:object-contain"
         />
       );
     }
@@ -162,275 +199,247 @@ function OutputValues({
       );
     }
   }
-  for (const port of spec.outputs) {
-    const value = outputs[port.id];
+  for (const id of ids) {
+    const value = outputs[id];
     if (value === undefined || value === null) continue;
     if (isStructuredValue(value)) return <StructuredBadge value={value} />;
+    if (expanded && typeof value === "object") {
+      return (
+        <pre
+          className="nowheel min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words font-mono text-ui-11 leading-snug text-foreground"
+          data-testid="flow-output-expanded"
+        >
+          {expandedText(value)}
+        </pre>
+      );
+    }
     if (typeof value === "string") {
       return (
-        <p className="line-clamp-4 whitespace-pre-wrap text-[11px] leading-snug text-zinc-300">
+        <p className="line-clamp-4 whitespace-pre-wrap text-ui-11 leading-snug text-foreground group-data-[sized]/node:line-clamp-none">
           {value}
         </p>
       );
     }
     if (typeof value === "number" || typeof value === "boolean") {
       return (
-        <span className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[11px] text-zinc-200">
+        <Badge variant="secondary" className="text-ui-11 tabular-nums">
           {String(value)}
-        </span>
+        </Badge>
       );
     }
     if (Array.isArray(value)) {
       return (
-        <span className="rounded bg-white/5 px-1.5 py-0.5 text-[11px] text-zinc-300">
+        <Badge variant="secondary" className="text-ui-11">
           {value.length} items
-        </span>
+        </Badge>
       );
     }
     return (
-      <span className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[11px] text-zinc-300">
+      <Badge variant="secondary" className="max-w-full font-mono text-ui-11">
         {"{ "}
         {Object.keys(value as object)
           .slice(0, 4)
           .join(", ")}
         {" }"}
-      </span>
+      </Badge>
     );
   }
   return null;
 }
 
-function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
+const SIDES: ControlPosition[] = ["top", "bottom", "left", "right"];
+const CORNERS: ControlPosition[] = [
+  "top-left",
+  "top-right",
+  "bottom-left",
+  "bottom-right",
+];
+/** Invisible edge and corner handles; one undo step per resize, committed on release. */
+function CardResizer({ id, minHeight }: { id: string; minHeight: number }) {
+  const onResizeEnd: OnResizeEnd = (_, p) =>
+    useDocStore.getState().updateNode(id, {
+      pos: [Math.round(p.x), Math.round(p.y)],
+      size: [Math.round(p.width), Math.round(p.height)],
+    });
+  const common = { minWidth: CARD_MIN_WIDTH, minHeight, onResizeEnd };
+  return (
+    <>
+      {SIDES.map((position) => (
+        <NodeResizeControl
+          key={position}
+          {...common}
+          position={position}
+          variant={ResizeControlVariant.Line}
+          className={
+            position === "top" || position === "bottom"
+              ? "!h-2 !border-0"
+              : "!w-2 !border-0"
+          }
+        />
+      ))}
+      {CORNERS.map((position) => (
+        <NodeResizeControl
+          key={position}
+          {...common}
+          position={position}
+          className="!size-3 !border-transparent !bg-transparent"
+        />
+      ))}
+    </>
+  );
+}
+
+function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
   const node = useDocStore((s) => s.graph.nodes[id]);
   const spec = useCatalogStore((s) => (node ? s.specs[node.type] : undefined));
-  const color =
-    useCatalogStore((s) =>
-      spec ? s.categories[spec.category]?.color : undefined,
-    ) ?? "#64748b";
+  const category = useCatalogStore((s) =>
+    spec ? s.categories[spec.category] : undefined,
+  );
   const portColors = useCatalogStore((s) => s.catalog?.port_colors);
   const runtime = useRuntimeStore((s) => s.nodes[id]) ?? IDLE_RUNTIME;
   const lowDetail = useStore(lowDetailSelector);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [contentMin, setContentMin] = useState(0);
+  // Re-measured each render: an error or a new field row grows the floor without resizing the card.
+  useLayoutEffect(() => {
+    const card = cardRef.current;
+    if (!card) return;
+    const next = cardContentMinHeight(card);
+    if (next !== contentMin) setContentMin(next);
+  });
   if (!node) return null;
   if (!spec) {
     return (
-      <div className="w-60 rounded-xl border border-red-500/60 bg-zinc-900 p-3 text-xs text-red-300">
-        Unknown node type <code>{node.type}</code>
-      </div>
+      <NodeCard runtime={runtime} className="border-destructive/60 p-3">
+        <p className="text-xs text-destructive">
+          Unknown node type <code>{node.type}</code>
+        </p>
+      </NodeCard>
     );
   }
+  const look = NODE_LOOKS[node.type] ?? {};
   const title = node.label || spec.title;
-  const ring = STATUS_RING[runtime.status] ?? "";
-  const running =
-    runtime.status === "running" || runtime.status === "loading_model";
-  const summary = node.collapsed ? [] : summarizeParams(node, spec);
+  const categoryTitle = category?.title ?? spec.category;
+  const subtitle = look.subtitle
+    ? look.subtitle(node, spec)
+    : node.label && node.label !== spec.title
+      ? `${categoryTitle} · ${spec.title}`
+      : categoryTitle;
   const collapsed = !!node.collapsed;
+  const fields = collapsed || look.Body ? null : nodeFields(node, spec);
+  const choices =
+    node.type === "story.choice"
+      ? (node.params.choices as string[] | undefined)
+      : undefined;
+  const flowOuts: PortRowSpec[] = spec.flow_out
+    .map((name, i) => ({
+      handleId: flowOutHandle(name),
+      label: `${choices?.[i] ?? name.replace(/_/g, " ")} ›`,
+      labelClassName: "italic text-foreground",
+      hidden: !!choices && i >= choices.length,
+    }))
+    .filter((port) => !port.hidden);
+  const { HeaderExtra, Ports, Body } = look;
+  const copyText =
+    (runtime.status === "running" || !runtime.outputs) && runtime.text
+      ? runtime.text
+      : outputCopyText(spec.outputs, runtime.outputs ?? runtime.partial);
 
   return (
-    <div
-      className={`group/node relative w-65 rounded-xl border bg-zinc-900 text-zinc-100 shadow-md shadow-black/30 transition-opacity ${
-        selected ? "border-white/60" : "border-white/10"
-      } ${ring} ${node.disabled ? "opacity-45" : ""} ${lowDetail ? "[&_.flow-detail]:invisible" : ""}`}
+    <NodeCard
+      runtime={runtime}
+      disabled={node.disabled}
+      lowDetail={lowDetail}
+      sized={!!node.size && !collapsed}
       data-node-id={id}
-      data-status={runtime.status}
+      ref={cardRef}
+      // A card saved smaller than its fields (or that later grew an error) still shows them.
+      style={node.size && !collapsed && contentMin ? { minHeight: contentMin } : undefined}
     >
-      <div
-        className="flow-node-drag flex cursor-grab items-center gap-2 rounded-t-xl px-3 py-2 active:cursor-grabbing"
-        style={{
-          background: `linear-gradient(90deg, ${color}33, transparent 80%)`,
-          borderTop: `2px solid ${color}`,
-        }}
-      >
-        {spec.flow_in && (
-          <Handle
-            type="target"
-            id={FLOW_IN_HANDLE}
-            position={Position.Left}
-            className="!h-3 !w-3 !rounded-sm !border-2 !border-white !bg-zinc-900"
-            style={{ top: 18 }}
-          />
-        )}
-        <HugeiconsIcon
-          icon={nodeIcon(spec.icon)}
-          size={15}
-          strokeWidth={1.8}
-          style={{ color }}
+      {/* First, so the port handles paint above the side handles. */}
+      {!collapsed && (
+        <CardResizer
+          id={id}
+          minHeight={Math.max(cardMinHeight(spec), contentMin)}
         />
-        <span className="min-w-0 flex-1 truncate font-medium text-[13px]">
-          {title}
-        </span>
-        {runtime.cached && runtime.status !== "running" && (
-          <span className="rounded bg-emerald-500/15 px-1 text-[10px] text-emerald-300">
-            cached
-          </span>
-        )}
-        {runtime.status !== "idle" && !runtime.cached && (
-          <span
-            className={`text-[10px] ${runtime.status === "failed" ? "text-red-300" : running ? "text-sky-300" : "text-zinc-400"}`}
-            title={runtime.error ?? undefined}
-          >
-            {STATUS_LABEL[runtime.status] ?? runtime.status}
-          </span>
-        )}
-        {spec.lane === "gpu" && runtime.status === "idle" && (
-          <span className="rounded bg-white/5 px-1 text-[9px] uppercase tracking-wide text-zinc-500">
-            gpu
-          </span>
-        )}
-      </div>
+      )}
+      <NodeCardHeader
+        icon={look.icon?.(node) ?? nodeIcon(spec.icon)}
+        tone={look.tone ? look.tone(node) : CATEGORY_TONES[spec.category]}
+        accent={look.accent?.(node) ?? category?.color ?? "#64748b"}
+        title={title}
+        subtitle={subtitle}
+        leading={spec.flow_in ? <FlowInHandle id={FLOW_IN_HANDLE} /> : null}
+      >
+        {HeaderExtra && <HeaderExtra node={node} />}
+        <NodeStatusBadges runtime={runtime} gpu={spec.lane === "gpu"} />
+      </NodeCardHeader>
 
       {collapsed ? (
-        <div className="relative h-0">
-          {spec.inputs.map((port) => (
-            <Handle
-              key={port.id}
-              type="target"
-              id={inHandle(port.id)}
-              position={Position.Left}
-              className="!opacity-0"
-              style={{ top: -18 }}
-            />
-          ))}
-          {spec.outputs.map((port) => (
-            <Handle
-              key={port.id}
-              type="source"
-              id={outHandle(port.id)}
-              position={Position.Right}
-              className="!opacity-0"
-              style={{ top: -18 }}
-            />
-          ))}
-          {spec.flow_out.map((name) => (
-            <Handle
-              key={name}
-              type="source"
-              id={flowOutHandle(name)}
-              position={Position.Right}
-              className="!opacity-0"
-              style={{ top: -18 }}
-            />
-          ))}
-        </div>
+        Ports ? (
+          <Ports node={node} collapsed={true} />
+        ) : (
+          <CollapsedPorts
+            inputs={spec.inputs.map((port) => inHandle(port.id))}
+            outputs={[
+              ...spec.outputs.map((port) => outHandle(port.id)),
+              ...spec.flow_out.map(flowOutHandle),
+            ]}
+          />
+        )
       ) : (
-        <div className="flex flex-col gap-1.5 py-2">
-          {(spec.inputs.length > 0 || spec.outputs.length > 0) && (
-            <div className="flex justify-between gap-2">
-              <div className="flex min-w-0 flex-col gap-1">
-                {spec.inputs.map((port) => (
-                  <div
-                    key={port.id}
-                    className="relative flex h-5 items-center pl-3 pr-1"
-                  >
-                    <Handle
-                      type="target"
-                      id={inHandle(port.id)}
-                      position={Position.Left}
-                      className="!h-2.5 !w-2.5 !border-2 !border-zinc-900"
-                      style={{
-                        background: portColorOf(portColors, port),
-                        left: -5,
-                      }}
-                    />
-                    <span className="flow-detail truncate text-[11px] text-zinc-400">
-                      {port.label}
-                      {port.multi ? "+" : ""}
-                    </span>
-                  </div>
-                ))}
-              </div>
-              <div className="flex min-w-0 flex-col items-end gap-1">
-                {spec.outputs.map((port) => (
-                  <div
-                    key={port.id}
-                    className="relative flex h-5 items-center pl-1 pr-3"
-                  >
-                    <span className="flow-detail truncate text-[11px] text-zinc-400">
-                      {port.label}
-                    </span>
-                    <Handle
-                      type="source"
-                      id={outHandle(port.id)}
-                      position={Position.Right}
-                      className="!h-2.5 !w-2.5 !border-2 !border-zinc-900"
-                      style={{
-                        background: portColorOf(portColors, port),
-                        right: -5,
-                      }}
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
+        <div
+          data-card-body={true}
+          className="flex flex-col gap-1.5 py-2 group-data-[sized]/node:min-h-0 group-data-[sized]/node:flex-1 group-data-[sized]/node:[overflow-y:clip]"
+        >
+          {Ports ? (
+            <Ports node={node} collapsed={false} />
+          ) : (
+            <NodePorts
+              inputs={spec.inputs.map((port) => ({
+                handleId: inHandle(port.id),
+                label: `${port.label}${port.multi ? "+" : ""}`,
+                color: portColorOf(portColors, port),
+              }))}
+              outputs={spec.outputs.map((port) => ({
+                handleId: outHandle(port.id),
+                label: port.label,
+                color: portColorOf(portColors, port),
+              }))}
+            />
           )}
-          {spec.flow_out.length > 0 && (
-            <div className="flex flex-col items-end gap-1">
-              {spec.flow_out.map((name, i) => {
-                const choices =
-                  node.type === "story.choice"
-                    ? (node.params.choices as string[] | undefined)
-                    : undefined;
-                const label = choices?.[i] ?? name.replace(/_/g, " ");
-                if (choices && i >= choices.length) return null;
-                return (
-                  <div
-                    key={name}
-                    className="relative flex h-5 max-w-full items-center pl-1 pr-3"
-                  >
-                    <span className="flow-detail truncate text-[11px] italic text-zinc-300">
-                      {label} ›
-                    </span>
-                    <Handle
-                      type="source"
-                      id={flowOutHandle(name)}
-                      position={Position.Right}
-                      className="!h-3 !w-3 !rounded-sm !border-2 !border-white !bg-zinc-900"
-                      style={{ right: -6 }}
-                    />
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          {summary.length > 0 && (
-            <div className="flex flex-col gap-0.5 px-3">
-              {summary.map((line) => (
-                <p
-                  key={line}
-                  className="flow-detail line-clamp-2 text-[11px] leading-snug text-zinc-500"
-                >
-                  {line}
-                </p>
-              ))}
-            </div>
-          )}
+          {flowOuts.length > 0 && <NodePorts inputs={[]} outputs={flowOuts} />}
+          {Body ? <Body node={node} /> : null}
+          {fields && <NodeFieldRows rows={fields.rows} />}
+          {LLM_SETTINGS_NODES.has(node.type) && <LlmReloadHint node={node} />}
+          {fields && <NodeDisclosure sections={fields.long} />}
           {(runtime.outputs ||
             runtime.partial ||
             runtime.text ||
             runtime.preview) && (
-            <div className="flow-detail px-3">
-              <OutputPreview runtime={runtime} spec={spec} />
+            <div
+              data-card-grow={true}
+              className={`flow-detail relative px-3 group-data-[sized]/node:flex group-data-[sized]/node:min-h-0 group-data-[sized]/node:flex-1 group-data-[sized]/node:flex-col${copyText ? " pr-9" : ""}`}>
+              {copyText && (
+                <CopyTextButton
+                  text={copyText}
+                  label="Copy output"
+                  className="absolute -top-1 right-2 z-10 bg-card opacity-0 group-hover/node:opacity-100 focus-visible:opacity-100"
+                />
+              )}
+              <OutputPreview
+                runtime={runtime}
+                spec={spec}
+                expanded={!!node.size}
+              />
             </div>
           )}
           {runtime.status === "failed" && runtime.error && (
-            <p className="mx-3 line-clamp-3 rounded bg-red-500/10 px-2 py-1 text-[11px] text-red-300">
-              {runtime.error}
-            </p>
+            <NodeError message={runtime.error} />
           )}
         </div>
       )}
-      {running && (
-        <div className="absolute inset-x-0 bottom-0 h-1 overflow-hidden rounded-b-xl bg-white/5">
-          <div
-            className={`h-full bg-sky-400 transition-[width] duration-300 ${runtime.progress === null ? "w-1/3 animate-pulse" : ""}`}
-            style={
-              runtime.progress === null
-                ? undefined
-                : { width: `${Math.round(runtime.progress * 100)}%` }
-            }
-          />
-        </div>
-      )}
-    </div>
+    </NodeCard>
   );
 }
 

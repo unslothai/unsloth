@@ -3278,8 +3278,11 @@ export function HubModelPicker({
   const loadedRows = useMemo(() => {
     if (!isChatPicker || section !== "recommended") return [];
     const q = debouncedQuery.trim().toLowerCase();
-    return loadedModels.filter((m) => m.id.toLowerCase().includes(q));
-  }, [isChatPicker, section, debouncedQuery, loadedModels]);
+    return loadedModels.filter(
+      (m) =>
+        m.id.toLowerCase().includes(q) && (!rowFilter || rowFilter({ id: m.id })),
+    );
+  }, [isChatPicker, section, debouncedQuery, loadedModels, rowFilter]);
   const loadedRowIds = useMemo(
     () => new Set(loadedRows.map((m) => m.id.toLowerCase())),
     [loadedRows],

@@ -72,6 +72,9 @@ export function dragHasFiles(types: readonly string[]): boolean {
   return types.includes("Files");
 }
 
+/** Fit never zooms out past where card text hides (0.45): wide flows pan instead. */
+export const FIT_MIN_ZOOM = 0.5;
+
 export function toolbarNodeId(
   selected: readonly string[],
   isBlock: (id: string) => boolean,
@@ -79,10 +82,6 @@ export function toolbarNodeId(
 ): string | null {
   if (readOnly || selected.length !== 1) return null;
   return isBlock(selected[0]) ? selected[0] : null;
-}
-
-export function quickModelParam(spec: NodeSpec | undefined): ParamSpec | null {
-  return spec?.params.find((p) => p.kind === "model") ?? null;
 }
 
 export type OutputDownload =

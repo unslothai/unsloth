@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
@@ -11,7 +12,7 @@ registerBundlerResolver();
 const { dragHasFiles, inputForAssetKind, inputForFile } = await import(
   "../src/features/flows/editor/canvas-rules.ts"
 );
-const { outputDownload, quickModelParam, toolbarNodeId } = await import(
+const { outputDownload, toolbarNodeId } = await import(
   "../src/features/flows/editor/canvas-rules.ts"
 );
 
@@ -50,14 +51,10 @@ test("the toolbar shows for one selected block in an editable flow", () => {
   assert.equal(toolbarNodeId(["group:g1"], isBlock, false), null);
 });
 
-test("the model switch appears only for blocks with a model setting", () => {
-  const spec = (kinds: string[]) =>
-    ({
-      params: kinds.map((kind, i) => ({ id: `p${i}`, kind })),
-    }) as never;
-  assert.equal(quickModelParam(spec(["text", "model"]))?.id, "p1");
-  assert.equal(quickModelParam(spec(["text"])), null);
-  assert.equal(quickModelParam(undefined), null);
+test("the card toolbar holds actions only: no model picker or other setting", () => {
+  const bar = readFileSync(new URL("../src/features/flows/editor/node-toolbar.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(bar, /ParamField|node-toolbar-model|Use the loaded/);
+  for (const id of ["run", "reroll", "download", "delete"]) assert.match(bar, new RegExp(`data-testid="node-toolbar-${id}"`));
 });
 
 test("Download gives the first media output, else the outputs as JSON", () => {
