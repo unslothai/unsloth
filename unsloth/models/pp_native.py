@@ -1646,10 +1646,9 @@ class PipelineParallel:
     def unscale_(self, scaler, optimizer):
         """scaler.unscale_(optimizer), then found_inf is the MAX over every stage, so all stages skip the
         same steps (scaler.step / scaler.update after this)."""
+        if scaler.is_enabled():
+            self._bind_scaler(scaler)
         scaler.unscale_(optimizer)
-        if not scaler.is_enabled():
-            return
-        self._agree_found_inf(scaler, optimizer)
 
     def _bind_scaler(self, scaler):
         """Make scaler.unscale_ / scaler.step agree found_inf over every stage, or one stage steps while another skips.
@@ -1661,6 +1660,7 @@ class PipelineParallel:
             return
         cls = type(scaler)
         unscale = cls.unscale_.__get__(scaler)
+        check_inf = cls._check_inf_per_device.__get__(scaler)
         update = cls.update.__get__(scaler)
         pipeline = weakref.ref(self)
 
@@ -1670,11 +1670,19 @@ class PipelineParallel:
             if pp is not None and scaler.is_enabled():
                 pp._agree_found_inf(scaler, optimizer)
 
+        def check_inf_(optimizer):
+            # Fused Adam / AdamW step() checks infs here without calling unscale_.
+            found = check_inf(optimizer)
+            pp = pipeline()
+            if pp is not None and scaler.is_enabled():
+                pp._agree_found_inf(scaler, optimizer)
+            return found
+
         def update_(new_scale = None):
             try:
                 return update(new_scale)
             finally:
-                for name in ("unscale_", "update", "_unsloth_pp_agree"):
+                for name in ("unscale_", "_check_inf_per_device", "update", "_unsloth_pp_agree"):
                     scaler.__dict__.pop(name, None)
                 pp = pipeline()
                 if pp is not None and pp._step_scaler is scaler:
@@ -1683,6 +1691,7 @@ class PipelineParallel:
                     )
 
         scaler.unscale_ = unscale_
+        scaler._check_inf_per_device = check_inf_
         scaler.update = update_
         scaler._unsloth_pp_agree = pipeline
 
