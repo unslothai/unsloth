@@ -13227,7 +13227,7 @@ class VideoBackend:
                         "silent earlier video. Reorder the videos so ones with soundtracks "
                         "come first, or add a replacement soundtrack to each earlier video."
                     )
-        # The route's readability check already decoded these exact inputs in this request.
+        # The route's readability check may have decoded these exact inputs already.
         reused_audios = decoded_audios.for_inputs(audios) if decoded_audios is not None else None
         if reused_audios is None:
             reused_audios = tuple(

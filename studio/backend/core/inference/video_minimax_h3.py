@@ -978,12 +978,9 @@ class MiniMaxH3References:
 
 @dataclass(frozen = True)
 class DecodedReferenceAudios:
-    """Standalone reference audios one request already decoded, with the exact inputs they came from.
-
-    Reused only when the render resolves the same strings, so a different input decodes afresh."""
+    """Untrimmed ``decode_h3_reference_audio`` results for ``sources``, reused only for those exact inputs."""
 
     sources: tuple = ()
-    # decode_h3_reference_audio(...) per source, untrimmed, in order.
     decoded: tuple = ()
 
     def for_inputs(self, audios: list) -> Optional[tuple]:
@@ -1006,8 +1003,7 @@ H3_REF_FRAME_WRITERS = 4
 
 
 def _write_h3_reference_frames(directory: Path, frames: Any) -> None:
-    """Write ``frames`` as 00000.png onward. A frame object repeated to reach 24 fps is encoded once and its bytes
-    written to each of its files; each file is what ``frame.save(path)`` writes."""
+    """Write ``frames`` as 00000.png onward, encoding a repeated frame object (24 fps fill) once."""
     import io
     from concurrent.futures import ThreadPoolExecutor
 
@@ -1037,8 +1033,7 @@ def _write_h3_reference_frames(directory: Path, frames: Any) -> None:
     try:
         futures = [pool.submit(write, slot) for slot in work]
         for future in futures:
-            # The first failure in frame order is raised, as the sequential loop would.
-            future.result()
+            future.result()  # first failure in frame order, as the sequential loop raised
     finally:
         pool.shutdown(wait = True, cancel_futures = True)
 
