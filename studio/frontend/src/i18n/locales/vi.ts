@@ -2412,7 +2412,6 @@ export const vi = {
       greetingSlothDescription: "Hiển thị lời chào trong cuộc trò chuyện mới.",
       greetingDefault: "Mặc định",
       greetingCustom: "Tùy chỉnh",
-      greetingSlothIcon: "Biểu tượng con lười",
       greetingImage: "Hình ảnh",
       greetingUploadHint: "PNG, JPEG, WebP hoặc GIF, tối đa 10 MB.",
       greetingOff: "Tắt",

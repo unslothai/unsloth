@@ -2251,7 +2251,6 @@ export const es = {
       greetingSlothDescription: "Mostrar el saludo en los chats nuevos.",
       greetingDefault: "Predeterminado",
       greetingCustom: "Personalizado",
-      greetingSlothIcon: "Icono del perezoso",
       greetingImage: "Imagen",
       greetingUploadHint: "PNG, JPEG, WebP o GIF, hasta 10 MB.",
       greetingOff: "Desactivado",

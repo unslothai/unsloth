@@ -2219,7 +2219,6 @@ export const ko = {
       greetingSlothDescription: "새 채팅에 인사말을 표시합니다.",
       greetingDefault: "기본값",
       greetingCustom: "사용자 지정",
-      greetingSlothIcon: "나무늘보 아이콘",
       greetingImage: "이미지",
       greetingUploadHint: "PNG, JPEG, WebP 또는 GIF, 최대 10MB.",
       greetingOff: "끄기",

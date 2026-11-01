@@ -2229,7 +2229,6 @@ export const ptBR = {
       greetingSlothDescription: "Mostrar a saudação nas novas conversas.",
       greetingDefault: "Padrão",
       greetingCustom: "Personalizado",
-      greetingSlothIcon: "Ícone do bicho-preguiça",
       greetingImage: "Imagem",
       greetingUploadHint: "PNG, JPEG, WebP ou GIF, até 10 MB.",
       greetingOff: "Desativada",

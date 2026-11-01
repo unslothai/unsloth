@@ -2302,7 +2302,6 @@ export const th = {
       greetingSlothDescription: "แสดงคำทักทายในแชทใหม่",
       greetingDefault: "ค่าเริ่มต้น",
       greetingCustom: "กำหนดเอง",
-      greetingSlothIcon: "ไอคอนสลอธ",
       greetingImage: "รูปภาพ",
       greetingUploadHint: "PNG, JPEG, WebP หรือ GIF ขนาดไม่เกิน 10 MB",
       greetingOff: "ปิด",

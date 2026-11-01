@@ -2406,7 +2406,6 @@ export const id = {
       greetingSlothDescription: "Tampilkan sapaan di chat baru.",
       greetingDefault: "Bawaan",
       greetingCustom: "Kustom",
-      greetingSlothIcon: "Ikon sloth",
       greetingImage: "Gambar",
       greetingUploadHint: "PNG, JPEG, WebP, atau GIF, hingga 10 MB.",
       greetingOff: "Mati",

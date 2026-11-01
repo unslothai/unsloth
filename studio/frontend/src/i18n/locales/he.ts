@@ -2270,7 +2270,6 @@ export const he = {
       greetingSlothDescription: "הצגת הברכה בצ'אטים חדשים.",
       greetingDefault: "ברירת מחדל",
       greetingCustom: "מותאם אישית",
-      greetingSlothIcon: "סמל העצלן",
       greetingImage: "תמונה",
       greetingUploadHint: "PNG, JPEG, WebP או GIF, עד 10 MB.",
       greetingOff: "כבוי",

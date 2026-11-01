@@ -2230,7 +2230,6 @@ export const en = {
       greetingSlothDescription: "Show the greeting on new chats.",
       greetingDefault: "Default",
       greetingCustom: "Custom",
-      greetingSlothIcon: "Sloth icon",
       greetingImage: "Image",
       greetingUploadHint: "PNG, JPEG, WebP or GIF, up to 10 MB.",
       greetingOff: "Off",

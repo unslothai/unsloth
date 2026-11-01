@@ -2400,7 +2400,6 @@ export const tr = {
       greetingSlothDescription: "Yeni sohbetlerde karşılamayı gösterin.",
       greetingDefault: "Varsayılan",
       greetingCustom: "Özel",
-      greetingSlothIcon: "Tembel hayvan simgesi",
       greetingImage: "Görsel",
       greetingUploadHint: "PNG, JPEG, WebP veya GIF, en fazla 10 MB.",
       greetingOff: "Kapalı",

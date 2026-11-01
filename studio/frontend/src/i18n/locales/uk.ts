@@ -2430,7 +2430,6 @@ export const uk = {
       greetingSlothDescription: "Показувати привітання в нових чатах.",
       greetingDefault: "За замовчуванням",
       greetingCustom: "Власне",
-      greetingSlothIcon: "Значок лінивця",
       greetingImage: "Зображення",
       greetingUploadHint: "PNG, JPEG, WebP або GIF, до 10 МБ.",
       greetingOff: "Вимкнено",

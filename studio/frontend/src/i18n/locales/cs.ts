@@ -2423,7 +2423,6 @@ export const cs = {
       greetingSlothDescription: "Zobrazovat pozdrav v nových chatech.",
       greetingDefault: "Výchozí",
       greetingCustom: "Vlastní",
-      greetingSlothIcon: "Ikona lenochoda",
       greetingImage: "Obrázek",
       greetingUploadHint: "PNG, JPEG, WebP nebo GIF, nejvýše 10 MB.",
       greetingOff: "Vypnuto",

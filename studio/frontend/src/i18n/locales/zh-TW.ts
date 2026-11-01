@@ -2289,7 +2289,6 @@ export const zhTW = {
       greetingSlothDescription: "在新聊天中顯示問候語。",
       greetingDefault: "預設",
       greetingCustom: "自訂",
-      greetingSlothIcon: "樹懶圖示",
       greetingImage: "圖片",
       greetingUploadHint: "PNG、JPEG、WebP 或 GIF，最大 10 MB。",
       greetingOff: "關閉",

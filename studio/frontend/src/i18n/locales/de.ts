@@ -2256,7 +2256,6 @@ export const de = {
       greetingSlothDescription: "Die Begrüßung in neuen Chats anzeigen.",
       greetingDefault: "Standard",
       greetingCustom: "Eigene",
-      greetingSlothIcon: "Faultier-Symbol",
       greetingImage: "Bild",
       greetingUploadHint: "PNG, JPEG, WebP oder GIF, bis 10 MB.",
       greetingOff: "Aus",

@@ -2196,7 +2196,6 @@ export const ja = {
       greetingSlothDescription: "新しいチャットにあいさつを表示します。",
       greetingDefault: "デフォルト",
       greetingCustom: "カスタム",
-      greetingSlothIcon: "ナマケモノのアイコン",
       greetingImage: "画像",
       greetingUploadHint: "PNG、JPEG、WebP、GIF（10 MB まで）。",
       greetingOff: "オフ",

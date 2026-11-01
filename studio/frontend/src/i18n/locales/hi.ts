@@ -2232,7 +2232,6 @@ export const hi = {
       greetingSlothDescription: "नई चैट में अभिवादन दिखाएँ।",
       greetingDefault: "डिफ़ॉल्ट",
       greetingCustom: "कस्टम",
-      greetingSlothIcon: "स्लॉथ आइकन",
       greetingImage: "चित्र",
       greetingUploadHint: "PNG, JPEG, WebP या GIF, 10 MB तक।",
       greetingOff: "बंद",

@@ -2342,7 +2342,6 @@ export const sv = {
       greetingSlothDescription: "Visa hälsningen i nya chattar.",
       greetingDefault: "Standard",
       greetingCustom: "Egen",
-      greetingSlothIcon: "Sengångarikon",
       greetingImage: "Bild",
       greetingUploadHint: "PNG, JPEG, WebP eller GIF, högst 10 MB.",
       greetingOff: "Av",

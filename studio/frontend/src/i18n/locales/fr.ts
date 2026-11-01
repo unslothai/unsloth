@@ -2254,7 +2254,6 @@ export const fr = {
       greetingSlothDescription: "Afficher le message d'accueil dans les nouvelles discussions.",
       greetingDefault: "Par défaut",
       greetingCustom: "Personnalisé",
-      greetingSlothIcon: "Icône du paresseux",
       greetingImage: "Image",
       greetingUploadHint: "PNG, JPEG, WebP ou GIF, jusqu'à 10 Mo.",
       greetingOff: "Désactivé",

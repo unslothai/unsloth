@@ -2396,7 +2396,6 @@ export const fa = {
       greetingSlothDescription: "نمایش خوشامدگویی در گفتگوهای جدید.",
       greetingDefault: "پیش‌فرض",
       greetingCustom: "سفارشی",
-      greetingSlothIcon: "نماد تنبل",
       greetingImage: "تصویر",
       greetingUploadHint: "PNG، JPEG، WebP یا GIF، حداکثر ۱۰ مگابایت.",
       greetingOff: "خاموش",

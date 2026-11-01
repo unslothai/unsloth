@@ -2226,7 +2226,6 @@ export const ar = {
       greetingSlothDescription: "إظهار التحية في المحادثات الجديدة.",
       greetingDefault: "افتراضي",
       greetingCustom: "مخصص",
-      greetingSlothIcon: "أيقونة الكسلان",
       greetingImage: "صورة",
       greetingUploadHint: "PNG أو JPEG أو WebP أو GIF، حتى 10 ميغابايت.",
       greetingOff: "إيقاف",

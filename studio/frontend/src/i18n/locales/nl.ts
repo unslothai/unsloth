@@ -2445,7 +2445,6 @@ export const nl = {
       greetingSlothDescription: "De begroeting tonen bij nieuwe chats.",
       greetingDefault: "Standaard",
       greetingCustom: "Aangepast",
-      greetingSlothIcon: "Luiaardpictogram",
       greetingImage: "Afbeelding",
       greetingUploadHint: "PNG, JPEG, WebP of GIF, tot 10 MB.",
       greetingOff: "Uit",

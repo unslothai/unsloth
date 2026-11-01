@@ -2113,7 +2113,6 @@ export const it = {
       greetingSlothDescription: "Mostra il saluto nelle nuove chat.",
       greetingDefault: "Predefinito",
       greetingCustom: "Personalizzato",
-      greetingSlothIcon: "Icona del bradipo",
       greetingImage: "Immagine",
       greetingUploadHint: "PNG, JPEG, WebP o GIF, fino a 10 MB.",
       greetingOff: "Disattivato",

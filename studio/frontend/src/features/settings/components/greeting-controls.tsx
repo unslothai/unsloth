@@ -4,7 +4,6 @@
 import { MascotImg } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import {
   GREETING_ICON_LIMITS,
   GREETING_IMAGE_LIMITS,
@@ -19,12 +18,11 @@ import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
-  Image01Icon,
   SmileIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useId, useRef, useState } from "react";
 import { SettingsRow } from "./settings-row";
 
 type UploadField = "greetingIconDataUrl" | "greetingImageDataUrl";
@@ -134,11 +132,9 @@ function useGreetingUpload() {
 function UploadControls({
   field,
   preview,
-  removable,
 }: {
   field: UploadField;
   preview: string | null;
-  removable: boolean;
 }) {
   const t = useT();
   const setGreeting = useUserProfileStore((s) => s.setGreeting);
@@ -169,7 +165,7 @@ function UploadControls({
             data-greeting-preview=""
           />
         )}
-        {removable && preview && (
+        {preview && (
           <Button
             className="text-foreground"
             type="button"
@@ -229,34 +225,13 @@ function UploadControls({
 function GreetingModeOptions({ mode }: { mode: GreetingMode }) {
   const t = useT();
   const setGreeting = useUserProfileStore((s) => s.setGreeting);
-  const icon = useUserProfileStore((s) => s.greetingIcon);
   const text = useUserProfileStore((s) => s.greetingText);
   const iconDataUrl = useUserProfileStore((s) => s.greetingIconDataUrl);
   const imageDataUrl = useUserProfileStore((s) => s.greetingImageDataUrl);
-  if (mode === "default") {
-    return (
-      <div className="flex items-center justify-end gap-3">
-        <span className="text-xs text-muted-foreground">
-          {t("settings.profile.greetingSlothIcon")}
-        </span>
-        <Switch
-          aria-label={t("settings.profile.greetingSlothIcon")}
-          checked={icon !== "none"}
-          onCheckedChange={(on) =>
-            setGreeting({ greetingIcon: on ? "sloth" : "none" })
-          }
-        />
-      </div>
-    );
-  }
   if (mode === "custom") {
     return (
       <div className="flex flex-col gap-3">
-        <UploadControls
-          field="greetingIconDataUrl"
-          preview={iconDataUrl}
-          removable={true}
-        />
+        <UploadControls field="greetingIconDataUrl" preview={iconDataUrl} />
         <Input
           aria-label={t("settings.profile.greetingText")}
           value={text}
@@ -274,28 +249,52 @@ function GreetingModeOptions({ mode }: { mode: GreetingMode }) {
   }
   if (mode === "image") {
     return (
-      <UploadControls
-        field="greetingImageDataUrl"
-        preview={imageDataUrl}
-        removable={false}
-      />
+      <UploadControls field="greetingImageDataUrl" preview={imageDataUrl} />
     );
   }
   return null;
 }
 
+// A small landscape in the accent colour, so an empty Image tile still reads as "a picture".
+function ImagePlaceholder() {
+  const id = useId();
+  return (
+    <svg
+      viewBox="0 0 64 36"
+      aria-hidden="true"
+      className="h-8 w-14 overflow-hidden rounded-[5px]"
+    >
+      <defs>
+        <linearGradient id={`${id}-sky`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="var(--primary)" stopOpacity="0.32" />
+          <stop offset="1" stopColor="var(--primary)" stopOpacity="0.08" />
+        </linearGradient>
+      </defs>
+      <rect width="64" height="36" fill={`url(#${id}-sky)`} />
+      <circle cx="47" cy="11" r="5" fill="var(--primary)" fillOpacity="0.55" />
+      <path
+        d="M0 36 L18 17 L30 28 L38 21 L64 36 Z"
+        fill="var(--primary)"
+        fillOpacity="0.45"
+      />
+      <path
+        d="M0 36 L12 27 L22 33 L36 24 L52 31 L64 26 L64 36 Z"
+        fill="var(--primary)"
+        fillOpacity="0.8"
+      />
+    </svg>
+  );
+}
+
 function GreetingTiles({ mode }: { mode: GreetingMode }) {
   const t = useT();
   const setGreeting = useUserProfileStore((s) => s.setGreeting);
-  const icon = useUserProfileStore((s) => s.greetingIcon);
   const iconDataUrl = useUserProfileStore((s) => s.greetingIconDataUrl);
   const imageDataUrl = useUserProfileStore((s) => s.greetingImageDataUrl);
   const art: Record<GreetingMode, ReactNode> = {
     default: (
       <span className="flex items-center gap-1.5 text-sm font-medium">
-        {icon !== "none" && (
-          <MascotImg src={SLOTH_PREVIEW} className="size-5" />
-        )}
+        <MascotImg src={SLOTH_PREVIEW} className="size-5" />
         {SAMPLE_TEXT}
       </span>
     ),
@@ -320,7 +319,7 @@ function GreetingTiles({ mode }: { mode: GreetingMode }) {
         className="max-h-8 max-w-[80%] object-contain"
       />
     ) : (
-      <HugeiconsIcon icon={Image01Icon} strokeWidth={1.75} className="size-5" />
+      <ImagePlaceholder />
     ),
     off: null,
   };
@@ -328,7 +327,7 @@ function GreetingTiles({ mode }: { mode: GreetingMode }) {
     <div
       role="radiogroup"
       aria-label={t("settings.profile.greetingSloth")}
-      className="grid w-full grid-cols-4 gap-2"
+      className="grid w-[calc(24rem*var(--ui-space-scale,1))] max-w-full grid-cols-4 gap-2"
     >
       {MODES.map((m) => (
         <button
@@ -343,7 +342,7 @@ function GreetingTiles({ mode }: { mode: GreetingMode }) {
             className={cn(
               "flex h-14 w-full items-center justify-center rounded-lg border bg-background text-foreground transition-colors",
               mode === m.mode
-                ? "border-primary ring-1 ring-primary"
+                ? "border-primary"
                 : "border-border group-hover:border-[color-mix(in_srgb,var(--foreground)_calc(30%*var(--contrast-wash-gain,1)),transparent)]",
               m.mode === "off" && "border-dashed",
             )}
@@ -364,7 +363,8 @@ function GreetingTiles({ mode }: { mode: GreetingMode }) {
   );
 }
 
-// Every greeting option lives in this one row: tiles that preview each mode, then its controls.
+// Every greeting option lives in this one row: tiles beside the title that preview each mode,
+// then the chosen mode's upload or text underneath.
 export function GreetingSettingsRows() {
   const t = useT();
   const mode = useGreetingMode();
@@ -372,12 +372,16 @@ export function GreetingSettingsRows() {
     <SettingsRow
       label={t("settings.profile.greetingSloth")}
       description={t("settings.profile.greetingSlothDescription")}
+      wideControl={true}
       below={
-        <div className="flex w-full max-w-[calc(26rem*var(--ui-space-scale,1))] flex-col gap-3">
-          <GreetingTiles mode={mode} />
-          <GreetingModeOptions mode={mode} />
-        </div>
+        mode === "custom" || mode === "image" ? (
+          <div className="flex w-[calc(24rem*var(--ui-space-scale,1))] max-w-full flex-col gap-3">
+            <GreetingModeOptions mode={mode} />
+          </div>
+        ) : undefined
       }
-    />
+    >
+      <GreetingTiles mode={mode} />
+    </SettingsRow>
   );
 }

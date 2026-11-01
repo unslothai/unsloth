@@ -2437,7 +2437,6 @@ export const pl = {
       greetingSlothDescription: "Pokazuj powitanie w nowych czatach.",
       greetingDefault: "Domyślne",
       greetingCustom: "Własne",
-      greetingSlothIcon: "Ikona leniwca",
       greetingImage: "Obraz",
       greetingUploadHint: "PNG, JPEG, WebP lub GIF, do 10 MB.",
       greetingOff: "Wyłączone",

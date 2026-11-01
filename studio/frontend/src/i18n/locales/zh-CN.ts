@@ -2188,7 +2188,6 @@ export const zhCN = {
       greetingSlothDescription: "在新聊天中显示问候语。",
       greetingDefault: "默认",
       greetingCustom: "自定义",
-      greetingSlothIcon: "树懒图标",
       greetingImage: "图片",
       greetingUploadHint: "PNG、JPEG、WebP 或 GIF，最大 10 MB。",
       greetingOff: "关闭",

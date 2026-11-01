@@ -2236,7 +2236,6 @@ export const ru = {
       greetingSlothDescription: "Показывать приветствие в новых чатах.",
       greetingDefault: "По умолчанию",
       greetingCustom: "Своё",
-      greetingSlothIcon: "Значок ленивца",
       greetingImage: "Изображение",
       greetingUploadHint: "PNG, JPEG, WebP или GIF, до 10 МБ.",
       greetingOff: "Выкл.",
