@@ -135,6 +135,15 @@ def test_the_chunk_cache_is_bounded(monkeypatch):
     assert images.list_images() == first and len(first) == 5
 
 
+def test_a_huge_chunk_is_read_but_not_kept(monkeypatch):
+    monkeypatch.setattr(images, "_CHUNK_CACHE_ITEM_MAX", 600)
+    images.save(Image.new("RGB", (8, 8)), _meta(prompt = "x" * 1000))
+    images.save(Image.new("RGB", (8, 8)), _meta(prompt = "short"))
+    assert sorted(r["prompt"] for r in images.list_images()) == ["short", "x" * 1000]
+    assert len(images._chunk_cache) == 1
+    assert sorted(r["prompt"] for r in images.list_images()) == ["short", "x" * 1000]
+
+
 def test_concurrent_listings_agree():
     for k in range(20):
         images.save(Image.new("RGB", (8, 8)), _meta(seed = k))

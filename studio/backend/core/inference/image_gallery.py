@@ -338,6 +338,7 @@ def _read_meta(path: Path, *, strict_io: bool = False) -> Optional[dict[str, Any
 
 # Recipe chunks the listing read, by path, while the file keeps the identity it had then.
 _CHUNK_CACHE_MAX = 8192
+_CHUNK_CACHE_ITEM_MAX = 64 * 1024
 _chunk_cache: OrderedDict[str, tuple[tuple, Any]] = OrderedDict()
 _chunk_cache_lock = threading.Lock()
 
@@ -365,6 +366,9 @@ def _listed_meta(path: Path, info: Optional[os.stat_result]) -> Optional[dict[st
         return None
     except Exception:
         raw = None
+    # Studio's own recipes are small; a hand-dropped PNG with a huge chunk is not pinned in memory.
+    if isinstance(raw, (str, bytes)) and len(raw) > _CHUNK_CACHE_ITEM_MAX:
+        return _parse_meta(raw)
     with _chunk_cache_lock:
         _chunk_cache[name] = (key, raw)
         _chunk_cache.move_to_end(name)
