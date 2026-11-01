@@ -285,6 +285,7 @@ def _case_env(
     optim = "adamw_torch",
     ga = 2,
     eval_bs = None,
+    noisy = False,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -313,6 +314,14 @@ def _case_env(
         }
         # Uneven token counts per micro-batch / replica, the same per row however the rows are batched.
         batch["labels"][batch["labels"] % 5 == 0] = -100
+        if noisy:
+            # A stochastic collator whose RNG the stages advance differently (as dropout over different layers).
+            if rank % 2 == 1:
+                torch.rand(7)
+            swap = torch.rand(batch["input_ids"].shape) < 0.3
+            batch["input_ids"] = torch.where(
+                swap, torch.randint_like(batch["input_ids"], 1, 50), batch["input_ids"]
+            )
         seen.append(batch["input_ids"].sum().item())
         return transformers.BatchEncoding(
             batch
@@ -870,6 +879,21 @@ def test_pp_env_gradient_accumulation_and_microbatches(ga, bs, mb, schedule, arc
     ):
         _close(res, ref, what = rank)
         _same_tensors(res["adapter"] or ref["adapter"], ref["adapter"])
+
+
+@needs_pipelining
+def test_pp_env_stages_train_on_the_first_stage_batch():
+    # Failing before: each stage collated its own batch, so with a stochastic collator the last stage scored labels
+    # for tokens the first stage never embedded.
+    results = _spawn(
+        "env", 2, {"UNSLOTH_PP_SIZE": "2"}, bs = 2, noisy = True, evaluate = False, post = False
+    )
+    first, last = sorted(results, key = lambda r: r["stage"])
+    assert first["seen"] != last["seen"]  # the collators did diverge
+    assert last["stage_ids"] and sum(last["stage_ids"]) == sum(first["seen"]), (
+        last["stage_ids"],
+        first["seen"],
+    )
 
 
 @needs_pipelining

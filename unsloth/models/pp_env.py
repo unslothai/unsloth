@@ -636,6 +636,28 @@ def _batch(stage, inputs):
     return input_ids, labels, extra
 
 
+def _first_stage_batch(stage, input_ids, labels, extra, count):
+    """Every stage takes the first stage's batch (and its token count). The sampler gives the stages the same rows,
+    but a stochastic collator or dataset transform draws from each rank's own RNG, which the stages advance
+    differently (dropout over different layers), so the stage embedding the tokens and the stage scoring the labels
+    could otherwise see different batches."""
+    import torch.distributed as dist
+
+    if getattr(stage, "num_stages", 1) <= 1 or not dist.is_available() or not dist.is_initialized():
+        return input_ids, labels, extra, count
+    src = stage._global_ranks[0]
+    payload = [None]
+    if dist.get_rank() == src:
+        tensors = {"input_ids": input_ids, "labels": labels, **extra}
+        payload = [({k: v.detach().cpu() for k, v in tensors.items()}, count)]
+    dist.broadcast_object_list(payload, src = src, group = stage.group, device = _comm_device(stage))
+    tensors, count = payload[0]
+    device = input_ids.device
+    tensors = {k: v.to(device) for k, v in tensors.items()}
+    input_ids, labels = tensors.pop("input_ids"), tensors.pop("labels")
+    return input_ids, labels, tensors, count
+
+
 def _global_items(trainer, stage, num_items_in_batch):
     """The token count of the whole accumulation window over every dp replica. The Trainer's own count is
     gathered over accelerator.gather, which counts the dp group only here (see _dp_gather)."""
@@ -675,6 +697,7 @@ def _pp_training_step(
     inputs = self._prepare_inputs(inputs)
     input_ids, labels, extra = _batch(stage, inputs)
     n = _global_items(self, stage, num_items_in_batch)
+    input_ids, labels, extra, n = _first_stage_batch(stage, input_ids, labels, extra, n)
     scale = 1.0
     if n is None:
         # No window token count: each step averages its own tokens, the window averages the steps.
@@ -740,8 +763,9 @@ def _pp_prediction_step(
         )
     inputs = self._prepare_inputs(inputs)
     input_ids, labels, extra = _batch(stage, inputs)
-    m, pad = resolve_microbatches(stage, input_ids.shape[0], train = False)
     count = _eval_items(self, inputs, labels)
+    input_ids, labels, extra, count = _first_stage_batch(stage, input_ids, labels, extra, count)
+    m, pad = resolve_microbatches(stage, input_ids.shape[0], train = False)
     input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
     loss = stage.eval_loss(input_ids, labels, num_items_in_batch = count, n_microbatches = m, **extra)
     return (loss.detach().to(self.args.device), None, None)
