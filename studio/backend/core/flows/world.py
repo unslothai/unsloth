@@ -661,6 +661,27 @@ FOLLOW_ASK = re.compile(r"\b(follow me|come with me|come along|walk with me|tag 
 FOLLOW_STOP = re.compile(
     r"\b(stop following|go (back )?home|you can go|wait (for me )?here|stay here)\b"
 )
+# Only a negation right before the phrase flips it; one further back ("don't forget to follow me")
+# may negate another verb, so the model's own action stands.
+NEGATION = re.compile(r"\b(don['\u2019]?t|do not|never|no need to)\W*$")
+NEGATION_NEAR = re.compile(r"\b(don['\u2019]?t|do not|never|no need to|not)\b(\W+\w+){1,4}\W*$")
+
+
+def _phrase(pattern: re.Pattern, text: str) -> str | None:
+    """'plain', 'negated' or 'unclear' for the strongest match of the phrase over clauses."""
+    found = None
+    for clause in re.split(r"[.!?;,]", text):
+        for m in pattern.finditer(clause):
+            before = clause[: m.start()]
+            if NEGATION.search(before):
+                found = found or "negated"
+            elif NEGATION_NEAR.search(before):
+                found = "unclear"
+            else:
+                return "plain"
+    return found
+
+
 TRADE_ASK = re.compile(r"\b(buy|sell|trade|for sale|wares|what do you have|how much)\b")
 
 NPC_REPLY_SCHEMA = {
@@ -864,11 +885,12 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
             for w in re.findall(r"[a-z]+", str(p.get("name") or "").lower())
         )
     }
+    stop, ask = _phrase(FOLLOW_STOP, asked), _phrase(FOLLOW_ASK, asked)
     if npc.get("wander") is False:
         pass  # A villager who stays put (a shopkeeper at their stall) takes no movement action.
-    elif FOLLOW_STOP.search(asked):
+    elif stop == "plain" or ask == "negated":
         out["action"] = "stop_following"
-    elif FOLLOW_ASK.search(asked):
+    elif ask == "plain" and stop is None:
         out["action"] = "follow_player"
     elif action == "go_to" and place in named:
         out["action"], out["place"] = action, place
