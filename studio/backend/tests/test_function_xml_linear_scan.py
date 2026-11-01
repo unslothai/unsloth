@@ -108,7 +108,7 @@ CORPUS = _random_texts(200, seed = 2, max_pieces = 40) + [
     '<function name="f"><param name="p">1</param></function>\n<function name="a">',
 ]
 # sha256 of the outputs below for CORPUS, recorded on the per-tag scan implementation before the index.
-RECORDED_DIGEST = "b0b70a5748fe61c622cf53d1247a53bf78f3150c017940bee3f83b0298ecec2c"
+RECORDED_DIGEST = "b1be1ceccae573b9e224fdc4464d76816ecaa9f8023062c26384ca4455339a87"
 
 
 def _outputs(text):

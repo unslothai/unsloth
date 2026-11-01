@@ -997,7 +997,7 @@ export const fr = {
       deleteProjects: "Supprimer les projets",
       deleteProjectsTitle: "Supprimer les projets",
       deleteProjectsDescription:
-        "Supprimer {count} projets ? Leurs discussions seront supprimées définitivement.",
+        "{count} projets et tous leurs chats seront définitivement supprimés. Cette action est irréversible.",
       deleteProjectsFilesDescription:
         "Le dossier de travail de chaque projet est retiré du disque.",
       countSelected: "{count} sélectionnés",
@@ -1008,7 +1008,7 @@ export const fr = {
       markRead: "Marquer comme lu",
       deleteChats: "Supprimer les discussions",
       deleteTitle: "Supprimer les discussions",
-      deleteDescription: "Supprimer {count} discussions ? Cette action est irréversible.",
+      deleteDescription: "{count} chats et leurs messages seront définitivement supprimés. Cette action est irréversible.",
       deleteFilesDescription:
         "Le dossier bac à sable propre à chaque discussion est supprimé du disque. Les fichiers écrits dans un projet restent dans l'espace de travail de ce projet.",
       deleteFilesLabel: "Supprimer les fichiers et le dossier bac à sable",
@@ -1056,7 +1056,7 @@ export const fr = {
     dialog: {
       deleteChat: {
         title: "Supprimer la discussion",
-        description: 'Voulez-vous vraiment supprimer cette discussion "{name}" ?',
+        description: 'Le chat "{name}" et ses messages seront définitivement supprimés. Cette action est irréversible.',
       },
       deleteRun: {
         title: "Supprimer l'entraînement",
@@ -2189,10 +2189,14 @@ export const fr = {
         label: "Type d'installation",
         description:
           "Chat uniquement (GGUF). L'installation complète ajoute l'entraînement, l'export, la vidéo, les modèles safetensors et des fonctionnalités supplémentaires de génération d'images.",
+        descriptionCpu:
+          "Chat uniquement (GGUF). Aucun GPU compatible n'a été trouvé, l'installation complète ajoute donc l'entraînement sur le CPU.",
         action: "Passer à l'installation complète",
         confirmTitle: "Passer à l'installation complète ?",
         confirmDescription:
           "Cette installation Chat uniquement exécute des modèles GGUF. L'installation complète ajoute PyTorch pour le GPU de cette machine, ce qui active l'entraînement, l'export, la vidéo, les modèles safetensors et des fonctionnalités supplémentaires de génération d'images. Elle télécharge plusieurs gigaoctets (au moins 5 Go d'espace disque) et redémarre le serveur. Les discussions, les modèles et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
+        confirmDescriptionCpu:
+          "Cette installation Chat uniquement exécute des modèles GGUF. Aucun GPU compatible n'a été trouvé sur cette machine, l'installation complète ajoute donc PyTorch pour le CPU, ce qui active l'entraînement sur le CPU. L'entraînement sur CPU est beaucoup plus lent que sur GPU. Elle nécessite au moins 5 Go d'espace disque et redémarre le serveur. Les discussions, les modèles et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
         confirmAction: "Mettre à niveau",
         keywords:
           "full install upgrade type d'installation installation complète mise à niveau chat uniquement chat only gguf add training entraînement entraîner train fine-tune pytorch torch export vidéo génération d'images safetensors",
@@ -3269,9 +3273,9 @@ export const fr = {
         movedChatsToRecents: "Discussions déplacées vers Récentes : {count}",
         moveFailed: "Impossible de déplacer les discussions",
         deleteChatsTitle: "Supprimer les discussions ({count})",
-        deleteChatsWarning: "Supprimer les discussions sélectionnées ({count}) ? Cette action est irréversible.",
+        deleteChatsWarning: "{count} chats et leurs messages seront définitivement supprimés. Cette action est irréversible.",
         deleteArchivedTitle: "Supprimer {count} discussions archivées",
-        deleteArchivedWarning: "Supprimer les discussions archivées sélectionnées ({count}) ? Cette action est irréversible.",
+        deleteArchivedWarning: "{count} chats archivés et leurs messages seront définitivement supprimés. Cette action est irréversible.",
         deleting: "Suppression...",
       },
       title: "Données",
@@ -3676,6 +3680,8 @@ export const fr = {
     imageTraining: "Entraînement d'image",
     goToImageTraining: "Entraîner des LoRA d'image",
     routeTitle: "Entraîner",
+    cpuTrainingNotice:
+      "Aucun GPU n'a été trouvé, l'entraînement s'exécute donc sur le CPU. Il est beaucoup plus lent que sur GPU et ne prend en charge que les modèles de texte (LoRA ou finetuning complet).",
     wizard: {
       modelTitle: "Modèle",
       modelDescription: "Sélectionner le modèle et la méthode d'entraînement",
@@ -4797,8 +4803,8 @@ export const fr = {
       },
       dialog: {
         renameChat: "Renommer la discussion",
-        deleteChatDescription: "Cette discussion sera définitivement supprimée. Cette action est irréversible.",
-        deleteProjectDescription: "Le projet et ses discussions ({count}) seront définitivement supprimés. Cette action est irréversible.",
+        deleteChatDescription: "Le chat et ses messages seront définitivement supprimés. Cette action est irréversible.",
+        deleteProjectDescription: "Le projet et ses chats ({count}) seront définitivement supprimés. Cette action est irréversible.",
         deleteFilesMany: "Supprimer aussi les fichiers et dossiers sandbox créés par ces discussions.",
         deleteProjectFilesLabel: "Supprimer le dossier de travail du projet",
         deleteProjectFiles: "Le dossier de travail du projet sera supprimé du disque.",
@@ -5254,14 +5260,14 @@ export const fr = {
     renameChat: "Renommer le chat",
     chatName: "Nom du chat",
     deleteChat: "Supprimer le chat",
-    deleteChatDescription: "Voulez-vous vraiment supprimer {name} ? Ses messages seront définitivement supprimés.",
+    deleteChatDescription: 'Le chat "{name}" et ses messages seront définitivement supprimés. Cette action est irréversible.',
     importChats: "Importer des chats",
     importDestination: "Choisissez où importer {name} :",
     selectDestination: "Choisir la destination",
     recents: "Récents",
     import: "Importer",
     deleteProject: "Supprimer le projet",
-    deleteProjectDescription: "Voulez-vous vraiment supprimer {name} ? Ses chats seront définitivement supprimés.",
+    deleteProjectDescription: 'Le projet "{name}" et tous ses chats seront définitivement supprimés. Cette action est irréversible.',
     deleteProjectFiles: "Le dossier de travail du projet sera supprimé du disque.",
     deleteAll: "Tout supprimer",
     projectFallback: "projet",

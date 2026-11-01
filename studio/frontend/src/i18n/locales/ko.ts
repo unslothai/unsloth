@@ -991,7 +991,7 @@ export const ko = {
       deleteProjects: "프로젝트 삭제",
       deleteProjectsTitle: "프로젝트 삭제",
       deleteProjectsDescription:
-        "프로젝트 {count}개를 삭제할까요? 포함된 채팅이 영구히 삭제됩니다.",
+        "프로젝트 {count}개와 모든 채팅이 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
       deleteProjectsFilesDescription:
         "각 프로젝트의 작업 공간 폴더가 디스크에서 삭제됩니다.",
       countSelected: "{count}개 선택됨",
@@ -1002,7 +1002,7 @@ export const ko = {
       markRead: "읽음으로 표시",
       deleteChats: "채팅 삭제",
       deleteTitle: "채팅 삭제",
-      deleteDescription: "채팅 {count}개를 삭제할까요? 되돌릴 수 없습니다.",
+      deleteDescription: "채팅 {count}개와 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
       deleteFilesDescription:
         "각 채팅 전용 샌드박스 폴더가 디스크에서 삭제됩니다. 프로젝트 안에서 만든 파일은 해당 프로젝트 작업 공간에 남습니다.",
       deleteFilesLabel: "파일 및 샌드박스 폴더 삭제",
@@ -1050,7 +1050,7 @@ export const ko = {
     dialog: {
       deleteChat: {
         title: "채팅 삭제",
-        description: '이름이 "{name}"인 채팅을 삭제하시겠습니까?',
+        description: '채팅 "{name}" 및 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.',
       },
       deleteRun: {
         title: "학습 실행 삭제",
@@ -2154,10 +2154,14 @@ export const ko = {
         label: "설치 유형",
         description:
           "채팅 전용(GGUF). 전체 설치에는 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능이 추가됩니다.",
+        descriptionCpu:
+          "채팅 전용(GGUF). 지원되는 GPU가 없어 전체 설치에는 CPU 학습이 추가됩니다.",
         action: "전체 설치로 업그레이드",
         confirmTitle: "전체 설치로 업그레이드할까요?",
         confirmDescription:
           "이 채팅 전용 설치는 GGUF 모델을 실행합니다. 전체 설치는 이 컴퓨터의 GPU에 맞는 PyTorch를 추가하여 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능을 사용할 수 있게 합니다. 수 GB(디스크 공간 5GB 이상)를 다운로드하고 서버를 다시 시작합니다. 채팅, 모델, 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
+        confirmDescriptionCpu:
+          "이 채팅 전용 설치는 GGUF 모델을 실행합니다. 이 컴퓨터에서 지원되는 GPU를 찾지 못했으므로 전체 설치는 CPU용 PyTorch를 추가하여 CPU에서 학습할 수 있게 합니다. CPU 학습은 GPU 학습보다 훨씬 느립니다. 디스크 공간이 5GB 이상 필요하며 서버를 다시 시작합니다. 채팅, 모델, 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
         confirmAction: "업그레이드",
         keywords:
           "full install upgrade 설치 유형 전체 설치 업그레이드 채팅 전용 chat only gguf add training 학습 훈련 train fine-tune pytorch torch 내보내기 동영상 이미지 생성 safetensors",
@@ -3219,9 +3223,9 @@ export const ko = {
         movedChatsToRecents: "최근 항목으로 이동한 채팅: {count}개",
         moveFailed: "채팅을 이동하지 못했습니다",
         deleteChatsTitle: "채팅 삭제 ({count}개)",
-        deleteChatsWarning: "선택한 채팅 {count}개를 삭제할까요? 이 작업은 취소할 수 없습니다.",
+        deleteChatsWarning: "채팅 {count}개와 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
         deleteArchivedTitle: "보관된 채팅 {count}개 삭제",
-        deleteArchivedWarning: "선택한 보관된 채팅 {count}개를 삭제할까요? 이 작업은 취소할 수 없습니다.",
+        deleteArchivedWarning: "보관된 채팅 {count}개와 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
         deleting: "삭제 중...",
       },
       title: "데이터",
@@ -3613,6 +3617,8 @@ export const ko = {
     imageTraining: "이미지 학습",
     goToImageTraining: "이미지 LoRA 학습",
     routeTitle: "학습",
+    cpuTrainingNotice:
+      "GPU를 찾지 못해 학습이 CPU에서 실행됩니다. GPU 학습보다 훨씬 느리며 텍스트 모델(LoRA 또는 전체 파인튜닝)만 지원합니다.",
     wizard: {
       modelTitle: "모델",
       modelDescription: "모델과 학습 방법 선택",
@@ -4702,8 +4708,8 @@ export const ko = {
       },
       dialog: {
         renameChat: "채팅 이름 변경",
-        deleteChatDescription: "이 채팅은 영구적으로 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
-        deleteProjectDescription: "프로젝트와 채팅({count}개)이 영구적으로 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
+        deleteChatDescription: "채팅과 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
+        deleteProjectDescription: "프로젝트와 채팅({count}개)이 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
         deleteFilesMany: "이 채팅들이 만든 파일과 샌드박스 폴더도 삭제합니다.",
         deleteProjectFilesLabel: "프로젝트 작업 폴더 삭제",
         deleteProjectFiles: "프로젝트 작업 폴더가 디스크에서 삭제됩니다.",
@@ -5159,14 +5165,14 @@ export const ko = {
     renameChat: "채팅 이름 바꾸기",
     chatName: "채팅 이름",
     deleteChat: "채팅 삭제",
-    deleteChatDescription: "{name}을(를) 삭제하시겠습니까? 메시지가 영구적으로 삭제됩니다.",
+    deleteChatDescription: '채팅 "{name}" 및 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.',
     importChats: "채팅 가져오기",
     importDestination: "{name}을(를) 가져올 위치를 선택하세요:",
     selectDestination: "대상 선택",
     recents: "최근 항목",
     import: "가져오기",
     deleteProject: "프로젝트 삭제",
-    deleteProjectDescription: "{name}을(를) 삭제하시겠습니까? 채팅이 영구적으로 삭제됩니다.",
+    deleteProjectDescription: '프로젝트 "{name}" 및 모든 채팅이 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.',
     deleteProjectFiles: "프로젝트 작업 폴더가 디스크에서 제거됩니다.",
     deleteAll: "모두 삭제",
     projectFallback: "프로젝트",

@@ -1097,7 +1097,7 @@ export const cs = {
       deleteProjects: "Smazat projekty",
       deleteProjectsTitle: "Smazat projekty",
       deleteProjectsDescription:
-        "Smazat projekty (počet: {count})? Jejich chaty budou trvale smazány.",
+        "Projekty ({count}) a všechny jejich chaty budou trvale smazány. Tuto akci nelze vrátit zpět.",
       deleteProjectsFilesDescription:
         "Složka pracovního prostoru každého projektu bude odstraněna z disku.",
       countSelected: "Vybráno: {count}",
@@ -1109,7 +1109,7 @@ export const cs = {
       deleteChats: "Smazat chaty",
       deleteTitle: "Smazat chaty",
       deleteDescription:
-        "Smazat chaty (počet: {count})? Tuto akci nelze vrátit zpět.",
+        "Chaty ({count}) a jejich zprávy budou trvale smazány. Tuto akci nelze vrátit zpět.",
       deleteFilesDescription:
         "Vlastní složka sandboxu každého chatu bude odstraněna z disku. Soubory, které chaty zapsaly do projektu, zůstanou v pracovním prostoru daného projektu.",
       deleteFilesLabel: "Smazat soubory a složku sandboxu",
@@ -1157,7 +1157,7 @@ export const cs = {
     dialog: {
       deleteChat: {
         title: "Smazat chat",
-        description: "Opravdu chcete smazat chat „{name}“?",
+        description: "Chat „{name}“ a jeho zprávy budou trvale smazány. Tuto akci nelze vrátit zpět.",
       },
       deleteRun: {
         title: "Smazat běh trénování",
@@ -2388,10 +2388,14 @@ export const cs = {
         label: "Typ instalace",
         description:
           "Pouze chat (GGUF). Úplná instalace přidává trénování, export, video, modely safetensors a další funkce generování obrázků.",
+        descriptionCpu:
+          "Pouze chat (GGUF). Nebyla nalezena podporovaná GPU, takže úplná instalace přidává trénování na CPU.",
         action: "Upgradovat na úplnou instalaci",
         confirmTitle: "Upgradovat na úplnou instalaci?",
         confirmDescription:
           "Tato instalace Pouze chat spouští modely GGUF. Úplná instalace přidává PyTorch pro GPU tohoto počítače, což umožňuje trénování, export, video, modely safetensors a další funkce generování obrázků. Stáhne několik gigabajtů (potřeba je alespoň 5 GB místa na disku) a restartuje server. Chaty, modely a nastavení zůstanou zachovány. Může to trvat několik minut.",
+        confirmDescriptionCpu:
+          "Tato instalace Pouze chat spouští modely GGUF. V tomto počítači nebyla nalezena podporovaná GPU, takže úplná instalace přidává PyTorch pro CPU, což umožňuje trénování na CPU. Trénování na CPU je mnohem pomalejší než na GPU. Je potřeba alespoň 5 GB místa na disku a server se restartuje. Chaty, modely a nastavení zůstanou zachovány. Může to trvat několik minut.",
         confirmAction: "Upgradovat",
         keywords:
           "úplná instalace upgrade typ instalace pouze chat gguf přidat trénování trénovat doladění fine-tune pytorch torch export video generování obrázků safetensors full install training",
@@ -3514,10 +3518,10 @@ export const cs = {
         moveFailed: "Chaty se nepodařilo přesunout",
         deleteChatsTitle: "Smazat chaty ({count})",
         deleteChatsWarning:
-          "Smazat vybrané chaty ({count})? Tuto akci nelze vrátit zpět.",
+          "Chaty ({count}) a jejich zprávy budou trvale smazány. Tuto akci nelze vrátit zpět.",
         deleteArchivedTitle: "Smazat archivované chaty ({count})",
         deleteArchivedWarning:
-          "Smazat vybrané archivované chaty ({count})? Tuto akci nelze vrátit zpět.",
+          "Archivované chaty ({count}) a jejich zprávy budou trvale smazány. Tuto akci nelze vrátit zpět.",
         deleting: "Mazání...",
       },
       title: "Data",
@@ -3939,6 +3943,8 @@ export const cs = {
   },
   studio: {
     routeTitle: "Trénování",
+    cpuTrainingNotice:
+      "Nebyla nalezena žádná GPU, takže trénování běží na CPU. Je mnohem pomalejší než trénování na GPU a podporuje pouze textové modely (LoRA nebo úplné doladění).",
     wizard: {
       modelTitle: "Model",
       modelDescription: "Vyberte model a metodu trénování",
@@ -5089,7 +5095,7 @@ export const cs = {
       dialog: {
         renameChat: "Přejmenovat chat",
         deleteChatDescription:
-          "Tento chat bude trvale smazán. Tuto akci nelze vrátit zpět.",
+          "Chat a jeho zprávy budou trvale smazány. Tuto akci nelze vrátit zpět.",
         deleteProjectDescription:
           "Projekt a jeho chaty ({count}) budou trvale smazány. Tuto akci nelze vrátit zpět.",
         deleteFilesMany:
@@ -5586,7 +5592,7 @@ export const cs = {
     chatName: "Název chatu",
     deleteChat: "Smazat chat",
     deleteChatDescription:
-      "Opravdu chcete smazat chat {name}? Jeho zprávy budou trvale smazány.",
+      "Chat „{name}“ a jeho zprávy budou trvale smazány. Tuto akci nelze vrátit zpět.",
     importChats: "Importovat chaty",
     importDestination: "Vyberte, kam importovat {name}:",
     selectDestination: "Vybrat cíl",
@@ -5594,7 +5600,7 @@ export const cs = {
     import: "Importovat",
     deleteProject: "Smazat projekt",
     deleteProjectDescription:
-      "Opravdu chcete smazat projekt {name}? Jeho chaty budou trvale smazány.",
+      "Projekt „{name}“ a všechny jeho chaty budou trvale smazány. Tuto akci nelze vrátit zpět.",
     deleteProjectFiles:
       "Složka pracovního prostoru projektu bude odstraněna z disku.",
     deleteAll: "Smazat vše",

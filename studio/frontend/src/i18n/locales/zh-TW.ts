@@ -1039,7 +1039,7 @@ export const zhTW = {
       deleteProjects: "刪除專案",
       deleteProjectsTitle: "刪除專案",
       deleteProjectsDescription:
-        "要刪除 {count} 個專案嗎？其中的聊天將被永久刪除。",
+        "{count} 個專案及其所有聊天將被永久刪除。此動作無法復原。",
       deleteProjectsFilesDescription:
         "每個專案的工作區資料夾都會從磁碟中移除。",
       countSelected: "已選取 {count} 個",
@@ -1050,7 +1050,7 @@ export const zhTW = {
       markRead: "標示為已讀",
       deleteChats: "刪除聊天",
       deleteTitle: "刪除聊天",
-      deleteDescription: "要刪除 {count} 個聊天嗎？此動作無法復原。",
+      deleteDescription: "{count} 個聊天及其訊息將被永久刪除。此動作無法復原。",
       deleteFilesDescription:
         "每個聊天專屬的沙箱資料夾都會從磁碟中移除。它們在專案中寫入的檔案會保留在該專案的工作區。",
       deleteFilesLabel: "刪除檔案與沙箱資料夾",
@@ -1098,7 +1098,7 @@ export const zhTW = {
     dialog: {
       deleteChat: {
         title: "刪除聊天",
-        description: "確定要刪除聊天「{name}」嗎？",
+        description: "聊天「{name}」及其訊息將被永久刪除。此動作無法復原。",
       },
       deleteRun: {
         title: "刪除訓練執行作業",
@@ -2254,10 +2254,14 @@ export const zhTW = {
         label: "安裝類型",
         description:
           "僅聊天（GGUF）。完整安裝會加入訓練、匯出、影片、safetensors 模型及更多圖片生成功能。",
+        descriptionCpu:
+          "僅聊天（GGUF）。找不到支援的 GPU，因此完整安裝會加入 CPU 訓練。",
         action: "升級為完整安裝",
         confirmTitle: "要升級為完整安裝嗎？",
         confirmDescription:
           "此「僅聊天」安裝可執行 GGUF 模型。完整安裝會為這台電腦的 GPU 加入 PyTorch，以啟用訓練、匯出、影片、safetensors 模型及更多圖片生成功能。這會下載數 GB 的資料（至少需要 5 GB 磁碟空間）並重新啟動伺服器。聊天、模型和設定都會保留。此程序可能需要幾分鐘。",
+        confirmDescriptionCpu:
+          "此「僅聊天」安裝可執行 GGUF 模型。這台電腦找不到支援的 GPU，因此完整安裝會加入 CPU 版的 PyTorch，以啟用 CPU 訓練。CPU 訓練比 GPU 訓練慢得多。這需要至少 5 GB 磁碟空間，並會重新啟動伺服器。聊天、模型和設定都會保留。此程序可能需要幾分鐘。",
         confirmAction: "升級",
         keywords:
           "完整安裝 升級 安裝類型 僅聊天 gguf 加入訓練 訓練 微調 pytorch torch 匯出 影片 圖片生成 safetensors full install upgrade chat only training fine-tune export video image generation",
@@ -3324,10 +3328,10 @@ export const zhTW = {
         movedChatsToRecents: "已移至「最近項目」的聊天：{count}",
         moveFailed: "無法移動聊天",
         deleteChatsTitle: "刪除聊天（{count}）",
-        deleteChatsWarning: "要刪除所選的聊天（{count}）嗎？此動作無法復原。",
+        deleteChatsWarning: "{count} 個聊天及其訊息將被永久刪除。此動作無法復原。",
         deleteArchivedTitle: "刪除 {count} 個已封存的聊天",
         deleteArchivedWarning:
-          "要刪除所選的已封存聊天（{count}）嗎？此動作無法復原。",
+          "{count} 個已封存聊天及其訊息將被永久刪除。此動作無法復原。",
         deleting: "正在刪除...",
       },
       title: "資料",
@@ -3724,6 +3728,8 @@ export const zhTW = {
   },
   studio: {
     routeTitle: "訓練",
+    cpuTrainingNotice:
+      "找不到 GPU，因此訓練會在 CPU 上執行。它比 GPU 訓練慢得多，且僅支援文字模型（LoRA 或完整微調）。",
     wizard: {
       modelTitle: "模型",
       modelDescription: "選取模型與訓練方法",
@@ -4787,9 +4793,9 @@ export const zhTW = {
       },
       dialog: {
         renameChat: "重新命名聊天",
-        deleteChatDescription: "此聊天將被永久刪除。此動作無法復原。",
+        deleteChatDescription: "此聊天及其訊息將被永久刪除。此動作無法復原。",
         deleteProjectDescription:
-          "此專案及其聊天（{count}）將被永久刪除。此動作無法復原。",
+          "此專案及其聊天（{count} 個）將被永久刪除。此動作無法復原。",
         deleteFilesMany: "同時移除這些聊天建立的檔案和沙箱資料夾。",
         deleteProjectFilesLabel: "刪除專案工作區資料夾",
         deleteProjectFiles: "專案工作區資料夾將從磁碟中移除。",
@@ -5257,14 +5263,14 @@ export const zhTW = {
     renameChat: "重新命名聊天",
     chatName: "聊天名稱",
     deleteChat: "刪除聊天",
-    deleteChatDescription: "確定要刪除 {name} 嗎？其訊息將被永久刪除。",
+    deleteChatDescription: "聊天「{name}」及其訊息將被永久刪除。此動作無法復原。",
     importChats: "匯入聊天",
     importDestination: "選擇要將 {name} 匯入至何處：",
     selectDestination: "選取目的地",
     recents: "最近項目",
     import: "匯入",
     deleteProject: "刪除專案",
-    deleteProjectDescription: "確定要刪除 {name} 嗎？其中的聊天將被永久刪除。",
+    deleteProjectDescription: "專案「{name}」及其所有聊天將被永久刪除。此動作無法復原。",
     deleteProjectFiles: "專案工作區資料夾將從磁碟中移除。",
     deleteAll: "全部刪除",
     projectFallback: "專案",

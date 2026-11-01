@@ -1047,7 +1047,7 @@ export const sv = {
       deleteProjects: "Ta bort projekt",
       deleteProjectsTitle: "Ta bort projekt",
       deleteProjectsDescription:
-        "Ta bort {count} projekt? Deras chattar tas bort permanent.",
+        "{count} projekt och alla deras chattar raderas permanent. Det går inte att ångra.",
       deleteProjectsFilesDescription:
         "Varje projekts arbetsytemapp tas bort från disken.",
       countSelected: "{count} markerade",
@@ -1059,7 +1059,7 @@ export const sv = {
       deleteChats: "Ta bort chattar",
       deleteTitle: "Ta bort chattar",
       deleteDescription:
-        "Ta bort {count} chattar? Åtgärden går inte att ångra.",
+        "{count} chattar och deras meddelanden raderas permanent. Det går inte att ångra.",
       deleteFilesDescription:
         "Varje chatts egen sandlådemapp tas bort från disken. Filer som skrivits i ett projekt blir kvar i projektets arbetsyta.",
       deleteFilesLabel: "Ta bort filer och sandlådemapp",
@@ -1107,7 +1107,7 @@ export const sv = {
     dialog: {
       deleteChat: {
         title: "Ta bort chatt",
-        description: 'Är du säker på att du vill ta bort chatten "{name}"?',
+        description: 'Chatten "{name}" och dess meddelanden raderas permanent. Det går inte att ångra.',
       },
       deleteRun: {
         title: "Ta bort träningskörning",
@@ -2307,10 +2307,14 @@ export const sv = {
         label: "Installationstyp",
         description:
           "Endast chatt (GGUF). Den fullständiga installationen lägger till träning, export, video, safetensors-modeller och fler funktioner för bildgenerering.",
+        descriptionCpu:
+          "Endast chatt (GGUF). Ingen GPU som stöds hittades, så den fullständiga installationen lägger till träning på CPU:n.",
         action: "Uppgradera till fullständig installation",
         confirmTitle: "Uppgradera till den fullständiga installationen?",
         confirmDescription:
           "Den här installationen med endast chatt kör GGUF-modeller. Den fullständiga installationen lägger till PyTorch för den här datorns GPU, vilket aktiverar träning, export, video, safetensors-modeller och fler funktioner för bildgenerering. Den laddar ner flera gigabyte (minst 5 GB diskutrymme) och startar om servern. Chattar, modeller och inställningar behålls. Det kan ta flera minuter.",
+        confirmDescriptionCpu:
+          "Den här installationen med endast chatt kör GGUF-modeller. Ingen GPU som stöds hittades på den här datorn, så den fullständiga installationen lägger till PyTorch för CPU:n, vilket aktiverar träning på CPU:n. Träning på CPU är mycket långsammare än på GPU. Den kräver minst 5 GB diskutrymme och startar om servern. Chattar, modeller och inställningar behålls. Det kan ta flera minuter.",
         confirmAction: "Uppgradera",
         keywords:
           "full install upgrade installationstyp fullständig installation uppgradera endast chatt chat only gguf add training träning träna train fine-tune pytorch torch export video bildgenerering safetensors",
@@ -3401,10 +3405,10 @@ export const sv = {
         moveFailed: "Det gick inte att flytta chattar",
         deleteChatsTitle: "Ta bort chattar ({count})",
         deleteChatsWarning:
-          "Ta bort de valda chattarna ({count})? Detta kan inte ångras.",
+          "{count} chattar och deras meddelanden raderas permanent. Det går inte att ångra.",
         deleteArchivedTitle: "Ta bort {count} arkiverade chattar",
         deleteArchivedWarning:
-          "Ta bort de valda arkiverade chattarna ({count})? Detta kan inte ångras.",
+          "{count} arkiverade chattar och deras meddelanden raderas permanent. Det går inte att ångra.",
         deleting: "Tar bort...",
       },
       title: "Data",
@@ -3811,6 +3815,8 @@ export const sv = {
   },
   studio: {
     routeTitle: "Träna",
+    cpuTrainingNotice:
+      "Ingen GPU hittades, så träningen körs på CPU:n. Den är mycket långsammare än GPU-träning och stöder endast textmodeller (LoRA eller fullständig finjustering).",
     wizard: {
       modelTitle: "Modell",
       modelDescription: "Välj modell och träningsmetod",
@@ -4932,9 +4938,9 @@ export const sv = {
       dialog: {
         renameChat: "Byt namn på chatt",
         deleteChatDescription:
-          "Den här chatten tas bort permanent. Det går inte att ångra.",
+          "Chatten och dess meddelanden raderas permanent. Det går inte att ångra.",
         deleteProjectDescription:
-          "Projektet och dess chattar ({count}) tas bort permanent. Det går inte att ångra.",
+          "Projektet och dess chattar ({count}) raderas permanent. Det går inte att ångra.",
         deleteFilesMany:
           "Ta även bort filerna och sandlådemapparna som de här chattarna skapade.",
         deleteProjectFilesLabel: "Ta bort projektets arbetsytemapp",
@@ -5413,14 +5419,14 @@ export const sv = {
     renameChat: "Byt namn på chatt",
     chatName: "Chattnamn",
     deleteChat: "Ta bort chatt",
-    deleteChatDescription: "Vill du verkligen ta bort {name}? Dess meddelanden tas bort permanent.",
+    deleteChatDescription: 'Chatten "{name}" och dess meddelanden raderas permanent. Det går inte att ångra.',
     importChats: "Importera chattar",
     importDestination: "Välj var {name} ska importeras:",
     selectDestination: "Välj mål",
     recents: "Senaste",
     import: "Importera",
     deleteProject: "Ta bort projekt",
-    deleteProjectDescription: "Vill du verkligen ta bort {name}? Dess chattar tas bort permanent.",
+    deleteProjectDescription: 'Projektet "{name}" och alla dess chattar raderas permanent. Det går inte att ångra.',
     deleteProjectFiles: "Projektets arbetsmapp tas bort från disken.",
     deleteAll: "Ta bort allt",
     projectFallback: "projekt",

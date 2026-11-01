@@ -989,7 +989,7 @@ export const zhCN = {
       deleteProjects: "删除项目",
       deleteProjectsTitle: "删除项目",
       deleteProjectsDescription:
-        "删除 {count} 个项目？其中的对话将被永久删除。",
+        "{count} 个项目及其所有聊天将被永久删除。此操作无法撤销。",
       deleteProjectsFilesDescription:
         "每个项目的工作区文件夹会从磁盘中删除。",
       countSelected: "已选择 {count} 个",
@@ -1000,7 +1000,7 @@ export const zhCN = {
       markRead: "标记为已读",
       deleteChats: "删除对话",
       deleteTitle: "删除对话",
-      deleteDescription: "删除 {count} 个对话？此操作无法撤销。",
+      deleteDescription: "{count} 个聊天及其消息将被永久删除。此操作无法撤销。",
       deleteFilesDescription:
         "每个对话自己的沙盒文件夹会从磁盘中删除。它们在项目内写入的文件仍保留在该项目的工作区中。",
       deleteFilesLabel: "删除文件和沙盒文件夹",
@@ -1048,7 +1048,7 @@ export const zhCN = {
     dialog: {
       deleteChat: {
         title: "删除聊天",
-        description: "确定要删除聊天“{name}”吗？",
+        description: "聊天“{name}”及其消息将被永久删除。此操作无法撤销。",
       },
       deleteRun: {
         title: "删除训练运行",
@@ -2137,10 +2137,14 @@ export const zhCN = {
         label: "安装类型",
         description:
           "仅聊天 (GGUF)。完整安装会添加训练、导出、视频、safetensors 模型和更多图像生成功能。",
+        descriptionCpu:
+          "仅聊天 (GGUF)。未找到受支持的 GPU，因此完整安装会添加 CPU 训练。",
         action: "升级到完整安装",
         confirmTitle: "要升级到完整安装吗？",
         confirmDescription:
           "此仅聊天安装运行 GGUF 模型。完整安装会为本机 GPU 添加 PyTorch，从而启用训练、导出、视频、safetensors 模型和更多图像生成功能。它会下载几 GB 数据（至少 5 GB 磁盘空间）并重启服务器。聊天记录、模型和设置会保留。这可能需要几分钟。",
+        confirmDescriptionCpu:
+          "此仅聊天安装运行 GGUF 模型。本机未找到受支持的 GPU，因此完整安装会添加 CPU 版 PyTorch，从而启用 CPU 训练。CPU 训练比 GPU 训练慢得多。它需要至少 5 GB 磁盘空间并会重启服务器。聊天记录、模型和设置会保留。这可能需要几分钟。",
         confirmAction: "升级",
         keywords:
           "full install upgrade 安装类型 完整安装 升级 仅聊天 chat only gguf add training 训练 微调 train fine-tune pytorch torch 导出 视频 图像生成 safetensors",
@@ -3179,9 +3183,9 @@ export const zhCN = {
         movedChatsToRecents: "已将 {count} 个聊天移至最近使用",
         moveFailed: "无法移动聊天",
         deleteChatsTitle: "删除聊天（{count} 个）",
-        deleteChatsWarning: "删除所选的 {count} 个聊天？此操作无法撤销。",
+        deleteChatsWarning: "{count} 个聊天及其消息将被永久删除。此操作无法撤销。",
         deleteArchivedTitle: "删除 {count} 个已归档聊天",
-        deleteArchivedWarning: "删除所选的 {count} 个已归档聊天？此操作无法撤销。",
+        deleteArchivedWarning: "{count} 个已归档聊天及其消息将被永久删除。此操作无法撤销。",
         deleting: "正在删除...",
       },
       title: "数据",
@@ -3563,6 +3567,8 @@ export const zhCN = {
     imageTraining: "图像训练",
     goToImageTraining: "训练图像 LoRA",
     routeTitle: "训练",
+    cpuTrainingNotice:
+      "未找到 GPU，因此训练在 CPU 上运行。它比 GPU 训练慢得多，并且仅支持文本模型（LoRA 或完整微调）。",
     wizard: {
       modelTitle: "模型",
       modelDescription: "选择模型和训练方法",
@@ -4613,8 +4619,8 @@ export const zhCN = {
       },
       dialog: {
         renameChat: "重命名聊天",
-        deleteChatDescription: "此聊天将被永久删除，且无法撤销。",
-        deleteProjectDescription: "该项目及其聊天（{count} 个）将被永久删除，且无法撤销。",
+        deleteChatDescription: "该聊天及其消息将被永久删除。此操作无法撤销。",
+        deleteProjectDescription: "该项目及其聊天（{count} 个）将被永久删除。此操作无法撤销。",
         deleteFilesMany: "同时删除这些聊天创建的文件和沙盒文件夹。",
         deleteProjectFilesLabel: "删除项目工作文件夹",
         deleteProjectFiles: "项目工作文件夹将从磁盘中删除。",
@@ -5070,14 +5076,14 @@ export const zhCN = {
     renameChat: "重命名聊天",
     chatName: "聊天名称",
     deleteChat: "删除聊天",
-    deleteChatDescription: "确定要删除 {name} 吗？其消息将被永久删除。",
+    deleteChatDescription: "聊天“{name}”及其消息将被永久删除。此操作无法撤销。",
     importChats: "导入聊天",
     importDestination: "选择 {name} 的导入位置：",
     selectDestination: "选择目标",
     recents: "最近",
     import: "导入",
     deleteProject: "删除项目",
-    deleteProjectDescription: "确定要删除 {name} 吗？其聊天将被永久删除。",
+    deleteProjectDescription: "项目“{name}”及其所有聊天将被永久删除。此操作无法撤销。",
     deleteProjectFiles: "项目工作文件夹将从磁盘中删除。",
     deleteAll: "全部删除",
     projectFallback: "项目",
