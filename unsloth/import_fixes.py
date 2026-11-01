@@ -2182,6 +2182,30 @@ def _packed_row_boundaries(kwargs, device, total):
 
     disabled = _PACKED_ROW_BOUNDARIES_DISABLED
     if disabled is not None and torch.compiler.is_compiling():
+        from .utils.packing import _PACKED_INFO_CACHE, _cache_hit
+
+        entry = _PACKED_INFO_CACHE.get(device)
+        if (
+            entry is not None
+            and entry["seq_lengths"] is kwargs.get("packed_seq_lengths")
+            and _cache_hit(entry)
+            and "row_shape" in entry
+        ):
+            # The outer forward already prepared host metadata. Shapes are traceable and
+            # symbolic, unlike cached Python ints, so warm calls need no graph break.
+            covered, max_seqlen = entry["row_shape"].shape
+            if covered > total:
+                return None
+            cu_seqlens = entry["result"][1]
+            if covered < total:
+                cu_seqlens = torch.cat([cu_seqlens, cu_seqlens.new_full((1,), total)])
+                max_seqlen = max(max_seqlen, total - covered)
+            return {
+                "cu_seq_lens_q": cu_seqlens,
+                "cu_seq_lens_k": cu_seqlens,
+                "max_length_q": max_seqlen,
+                "max_length_k": max_seqlen,
+            }
         return disabled(kwargs, device, total)
     return _packed_row_boundaries_eager(kwargs, device, total)
 
