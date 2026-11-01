@@ -751,7 +751,6 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
-# Path.glob folds case on Windows only.
 _GLOB_FOLDS_CASE = os.name == "nt"
 
 

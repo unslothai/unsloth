@@ -295,7 +295,6 @@ def test_an_uppercase_name_keeps_the_full_check(monkeypatch):
     (directory / "c1.mp4").rename(directory / "C2.MP4")
     (directory / "c1.json").rename(directory / "C2.json")
     monkeypatch.setattr(gallery, "_GLOB_FOLDS_CASE", True)
-    # Listed as on Windows; order_at is what video_path("C2") gives on this filesystem.
     expected = os.stat(directory / "C2.mp4").st_mtime if (directory / "C2.mp4").is_file() else 0.0
     [record] = gallery.list_videos()
     assert record["id"] == "C2"
