@@ -174,7 +174,7 @@ _USAGE_DETAIL_FIELDS = (
 
 _STEP_DONE = object()
 
-# URL reads from one batch that may be in flight at once, one per host; every other call waits its turn.
+# Max URL reads of one batch in flight, one per host.
 _WEB_FETCH_CONCURRENCY = 4
 
 
@@ -1292,7 +1292,7 @@ def _advance_tool_stream(generator: Any, outcome: dict[str, Any]) -> Any:
 
 
 def _web_fetch_host(tool_name: str, arguments: Any) -> str | None:
-    """Host of a web_search URL read, the one call that may start before its turn in a batch; else None."""
+    """Host of a web_search URL read, else None."""
     if tool_name != "web_search" or not isinstance(arguments, dict):
         return None
     if UNPARSED_ARGUMENTS_KEY in arguments:
@@ -1308,8 +1308,7 @@ def _web_fetch_host(tool_name: str, arguments: Any) -> str | None:
 
 
 class _StartedToolStream:
-    """A URL read started ahead of its turn in the batch. It pulls the tool stream on its own thread and
-    keeps every event, in order, until the loop reaches the call and reads it like a stream it started."""
+    """A URL read started before its turn; buffers its stream's events until the loop reads them."""
 
     def __init__(self, stream: Any, decision: Any, cancel_event: threading.Event) -> None:
         self.decision = decision
@@ -1318,10 +1317,9 @@ class _StartedToolStream:
         self._cancel_event = cancel_event
         self._events: queue.Queue = queue.Queue()
         self._stop = threading.Event()
-        # Set by the pump once the stream has returned or raised; read by close().
         self._pumped = threading.Event()
         self._finished = False
-        # The same context a step thread would copy, so the tool runs as the same account.
+        # Same account context as a step thread.
         context = contextvars.copy_context()
         self._thread = threading.Thread(
             target = context.run,
@@ -1341,7 +1339,7 @@ class _StartedToolStream:
                     self._events.put((True, stop.value))
                     return
                 self._events.put((False, event))
-            # Only after close(): the stream's own early-close path joins its worker.
+            # Only after close(): the stream's early-close path joins its worker.
             self._stream.close()
             self._events.put((True, None))
         except BaseException as exc:  # noqa: BLE001 - re-raised to the reader in order
@@ -1363,7 +1361,6 @@ class _StartedToolStream:
         raise StopIteration(value)
 
     def serves(self, decision: Any) -> bool:
-        """Whether the loop, reaching this call, made the decision the read was started on."""
         started = self.decision
         return (
             decision.tool_name == started.tool_name
@@ -1376,8 +1373,7 @@ class _StartedToolStream:
         self._thread.join()
 
     def close(self) -> None:
-        """Closing a stream mid-run cancels its tool, as closing the generator itself does."""
-        # A stream that already returned has nothing to cancel; its thread may still be exiting.
+        """Cancels the tool, as closing the generator mid-run does."""
         if self._finished or self._pumped.is_set():
             return
         if self._thread.is_alive():
@@ -1389,8 +1385,7 @@ class _StartedToolStream:
 async def _settle_started_stream(
     started: _StartedToolStream, cancel_event: threading.Event
 ) -> None:
-    """A started read the loop will not use: stopped if the turn is cancelled, else left to finish, since
-    stopping it would cancel the rest of the turn too."""
+    """An unused started read: stopped on cancel, else awaited, since stopping it cancels the turn."""
     if cancel_event.is_set():
         started.close()
         return
@@ -1430,8 +1425,7 @@ async def stream_with_studio_tools(
     cancel_event: threading.Event,
     mcp_image = None,
 ) -> AsyncIterator[str]:
-    # URL reads started ahead of their turn; a stream closed or failing mid-batch stops them, as closing a
-    # running tool stream does, instead of leaving them to finish against a turn that is gone.
+    # A stream closed or failing mid-batch stops reads started ahead of their turn.
     started_fetches: dict[int, _StartedToolStream] = {}
     inner = _stream_with_studio_tools(
         transport,
@@ -1877,7 +1871,6 @@ async def _stream_with_studio_tools(
         turn_mcp_images: list[list[dict[str, Any]]] = []
         turn_executed_real_tool = False
 
-        # URL reads already running for calls later in this batch, by index.
         started_fetches.clear()
         for call_index, call in enumerate(calls):
             if cancel_event.is_set():
@@ -2139,7 +2132,7 @@ async def _stream_with_studio_tools(
                 and not strict_isolation
                 and image_share is None
             ):
-                # Not expected: the read was started on this same decision. Its answer is not used.
+                # Not expected; its answer is not used.
                 await _settle_started_stream(tool_stream, cancel_event)
                 tool_stream = None
             if tool_stream is None:
@@ -2150,10 +2143,8 @@ async def _stream_with_studio_tools(
                     tool_call_id = card_id,
                     cancel_event = cancel_event,
                 )
-            # Start the URL reads that follow this one now. Each must be exactly the call the loop runs when it
-            # gets there: a web_search URL read, on a host not already being read, that executes without asking,
-            # inside the budget, and whose key repeats no read still in flight. Results are still read and
-            # recorded in call order below.
+            # Start following URL reads now only if each is exactly the call the loop will run: new host, no
+            # approval, within budget, key not in flight. Results are still emitted in call order.
             current_host = _web_fetch_host(name, arguments)
             if current_host is not None and not cancel_event.is_set():
                 in_flight_hosts = {current_host}
@@ -2270,7 +2261,7 @@ async def _stream_with_studio_tools(
             if _completion_images:
                 turn_mcp_images.append(_completion_images)
 
-        # Left only by a cancelled batch; never recorded, as the serial loop never ran them.
+        # Only a cancelled batch leaves these; never recorded.
         for started in started_fetches.values():
             await _settle_started_stream(started, cancel_event)
         started_fetches.clear()

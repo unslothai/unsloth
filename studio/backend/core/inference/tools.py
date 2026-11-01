@@ -133,8 +133,7 @@ EMPTY_SEARCH_RESULTS = (
 )
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
-# While the text engines are failing (rate limited, blocked, down), the image lookup is not sent beside
-# the text search: its answer would be thrown away and the extra requests add to the rate limiting.
+# While text engines fail, no early image lookup: its answer is discarded and adds to rate limiting.
 _TEXT_SEARCH_FAILURE_HOLD_S = 120.0
 _text_search_failed_at: "float | None" = None
 # Not "connection error": DNS failures and refused connections are not resets (#12638).
@@ -16659,16 +16658,12 @@ def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) ->
 
 
 class _ImageSweep:
-    """The image lookup's network round trip, started beside the text search instead of after it.
-
-    Only the request moves: the caller still decides afterwards whether to use it, and registers
-    the images where the serial path did, so a sweep whose answer is discarded registers nothing.
-    """
+    """Image lookup started beside the text search; the caller still decides whether to register it."""
 
     def __init__(self, lookup) -> None:
         from .search_images import cache_generation
 
-        # Read before the sweep, as the serial path does, so a clear-all during it invalidates new entries.
+        # Read before the sweep so a clear-all during it invalidates new entries.
         self.generation = cache_generation()
         self._done = threading.Event()
         self._value = None
@@ -16690,7 +16685,6 @@ class _ImageSweep:
             self._done.set()
 
     def result(self):
-        # Bounded by the lookup's own ddgs timeout, as the serial call is.
         self._done.wait()
         if self._error is not None:
             raise self._error
@@ -16698,7 +16692,7 @@ class _ImageSweep:
 
     @classmethod
     def start(cls, subjects, query, wanted, timeout, website_policy) -> "_ImageSweep | None":
-        """None whenever the serial path would not reach the network, so it runs unchanged."""
+        """None when the serial path would not reach the network."""
         try:
             from ddgs import DDGS
 
@@ -16820,7 +16814,7 @@ def _usable_search_results(results, website_policy):
 
 
 def _note_text_search_outcome(found: bool, error, timeout) -> None:
-    """Holds back early image lookups after a text search the engines failed; an answer, even empty, ends it."""
+    """Holds back early image lookups after an engine failure; any answer, even empty, clears it."""
     global _text_search_failed_at
     if found:
         _text_search_failed_at = None
@@ -16897,7 +16891,6 @@ def _web_search(
             if include_images and (
                 failed_at is None or time.monotonic() - failed_at > _TEXT_SEARCH_FAILURE_HOLD_S
             ):
-                # The image lookup needs nothing from the text results, so its round trip overlaps theirs.
                 sweep = _ImageSweep.start(
                     subjects, effective_query, wanted, timeout, website_policy
                 )
@@ -17058,7 +17051,7 @@ def _clean_image_queries(queries) -> list[str]:
 
 
 def _image_lookups(cleaned: list, timeout, website_policy) -> list:
-    """Raw ddgs image results per subject, in subject order; one lookup per subject, concurrently."""
+    """Raw ddgs image results per subject, in order, looked up concurrently."""
     from concurrent.futures import ThreadPoolExecutor
 
     from ddgs import DDGS
@@ -17091,7 +17084,7 @@ def _image_search(
     website_policy: dict | None = None,
     sweep: "_ImageSweep | None" = None,
 ) -> str:
-    # Same registry and tokens as web_search; a sweep is the same lookups, already under way.
+    # Same registry and tokens as web_search; a sweep is these lookups already under way.
     from .search_images import cache_generation, images_envelope, register_images
 
     cleaned = _clean_image_queries(queries)
