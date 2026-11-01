@@ -1520,6 +1520,14 @@ def test_merge_chat_template_kwargs_user_keys_win_and_emit_once():
     assert json.loads(cmd[idx + 1]) == {"reasoning_effort": "none", "preserve_thinking": True}
 
 
+def test_merge_chat_template_kwargs_keeps_an_invalid_user_value_for_llama_server():
+    merge = _lsa.merge_chat_template_kwargs_argv
+    cmd_in = ["--chat-template-kwargs", '{"reasoning_effort":"high"}']
+    extras_in = ["--chat-template-kwargs", "{not json"]
+    assert merge(cmd_in, extras_in) == (cmd_in, extras_in)
+    assert merge(cmd_in, ["--chat-template-kwargs=[1]"]) == (cmd_in, ["--chat-template-kwargs=[1]"])
+
+
 def test_merge_chat_template_kwargs_leaves_argv_alone_without_extras_flag():
     merge = _lsa.merge_chat_template_kwargs_argv
     cmd_in = ["--chat-template-kwargs", '{"reasoning_effort":"high"}']

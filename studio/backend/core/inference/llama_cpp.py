@@ -29445,8 +29445,7 @@ class LlamaCppBackend:
                             _emit_extra_args, env = _child_spec_env(_emit_extra_args)
                         ),
                     )
-                    # Extras after managed reasoning kwargs must not emit a second
-                    # --chat-template-kwargs: llama.cpp keeps only the last value (#16317).
+                    # llama.cpp keeps only the last --chat-template-kwargs, dropping managed keys.
                     cmd, _emit_extra_args = merge_chat_template_kwargs_argv(cmd, _emit_extra_args)
                     cmd.extend(str(a) for a in _emit_extra_args)
                     logger.info(
