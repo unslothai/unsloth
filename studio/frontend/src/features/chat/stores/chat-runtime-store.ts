@@ -2606,7 +2606,7 @@ type ChatRuntimeStore = {
       fromModelDefaults?: boolean;
       maxTokensCap?: number;
       migrateOwnedGlobalQwenDefaults?: boolean;
-      /** A preset pick: not an edit of the loaded model, so its remembered params are dropped
+      /** A preset pick or save: not an edit of the loaded model, so its remembered params are dropped
        *  instead of overwritten, and its recommendation applies again on the next load. */
       fromPreset?: boolean;
     },
