@@ -79,13 +79,21 @@ async function load(options: { tauri: boolean; state?: string }) {
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() >= deadline) return false;
+    await wait(5);
+  }
+  return true;
+}
+
 test("a grant is remembered and never prompts again", async () => {
   const { module, control } = await load({ tauri: true });
   const store = module.useMicrophonePermissionStore;
 
   const pending = store.getState().request("voice-typing");
-  await wait(10);
-  assert.equal(store.getState().dialogOpen, true, "the branded dialog opens");
+  assert.equal(await waitFor(() => store.getState().dialogOpen), true, "the branded dialog opens");
 
   await store.getState().allow();
   assert.equal(await pending, true);
@@ -128,8 +136,7 @@ test("ask again clears the saved answer before asking", async () => {
   await store.getState().load();
 
   const pending = store.getState().askAgain("settings");
-  await wait(10);
-  assert.equal(store.getState().dialogOpen, true);
+  assert.equal(await waitFor(() => store.getState().dialogOpen), true);
   assert.deepEqual(
     control.calls.map((call) => call.command),
     ["microphone_permission_state", "reset_microphone_permission"],

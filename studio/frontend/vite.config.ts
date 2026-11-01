@@ -99,7 +99,7 @@ export default defineConfig({
       // The overlay window loads its own tiny entry (voice-hud.html) instead of the
       // whole shell, so both pages have to be part of the build.
       input: {
-        main: path.resolve(__dirname, "index.html"),
+        index: path.resolve(__dirname, "index.html"),
         "voice-hud": path.resolve(__dirname, "voice-hud.html"),
       },
       // import() of a statically imported module defers nothing and splits extra startup chunks,
