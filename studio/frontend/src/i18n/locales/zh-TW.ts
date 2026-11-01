@@ -6,7 +6,7 @@ import type { en } from "./en.ts";
 
 export const zhTW = {
   chatBackground: {
-    previewNote: "目前設定的預覽。",
+    previewNote: "你的聊天會是這個樣子。",
     noBackground: "無背景",
     sizing: "圖片縮放方式",
     sizingPosition: "圖片縮放與位置",

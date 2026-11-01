@@ -6,7 +6,7 @@ import type { en } from "./en.ts";
 
 export const uk = {
   chatBackground: {
-    previewNote: "Попередній перегляд поточних налаштувань.",
+    previewNote: "Так виглядатимуть ваші чати.",
     noBackground: "Без тла",
     sizing: "Масштабування зображення",
     sizingPosition: "Масштаб і позиція зображення",

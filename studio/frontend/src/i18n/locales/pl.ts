@@ -6,7 +6,7 @@ import type { en } from "./en.ts";
 
 export const pl = {
   chatBackground: {
-    previewNote: "Podgląd bieżących ustawień.",
+    previewNote: "Tak będą wyglądać Twoje czaty.",
     noBackground: "Brak tła",
     sizing: "Skalowanie obrazu",
     sizingPosition: "Skalowanie i pozycja obrazu",

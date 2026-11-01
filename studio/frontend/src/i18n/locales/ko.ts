@@ -6,7 +6,7 @@ import type { en } from "./en.ts";
 
 export const ko = {
   chatBackground: {
-    previewNote: "현재 설정의 미리보기입니다.",
+    previewNote: "채팅이 이렇게 보입니다.",
     noBackground: "배경 없음",
     sizing: "이미지 크기 조정",
     sizingPosition: "이미지 크기 및 위치",

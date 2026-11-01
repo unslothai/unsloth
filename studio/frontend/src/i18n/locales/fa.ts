@@ -6,7 +6,7 @@ import type { en } from "./en.ts";
 
 export const fa = {
   chatBackground: {
-    previewNote: "پیش‌نمایش تنظیمات فعلی شما.",
+    previewNote: "گفتگوهای شما این‌طور دیده می‌شوند.",
     noBackground: "بدون پس‌زمینه",
     sizing: "اندازه‌بندی تصویر",
     sizingPosition: "اندازه و موقعیت تصویر",

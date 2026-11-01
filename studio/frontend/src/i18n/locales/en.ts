@@ -3,7 +3,7 @@
 
 export const en = {
   chatBackground: {
-    previewNote: "Previews of your current settings.",
+    previewNote: "Here's how your chats will look.",
     noBackground: "No background",
     sizing: "Image sizing",
     sizingPosition: "Image sizing & position",

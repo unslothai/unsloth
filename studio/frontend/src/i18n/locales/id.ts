@@ -6,7 +6,7 @@ import type { en } from "./en.ts";
 
 export const id = {
   chatBackground: {
-    previewNote: "Pratinjau pengaturan Anda saat ini.",
+    previewNote: "Begini tampilan chat Anda nantinya.",
     noBackground: "Tanpa latar belakang",
     sizing: "Ukuran gambar",
     sizingPosition: "Ukuran dan posisi gambar",

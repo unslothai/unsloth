@@ -6,7 +6,7 @@ import type { en } from "./en.ts";
 
 export const ar = {
   chatBackground: {
-    previewNote: "معاينة لإعداداتك الحالية.",
+    previewNote: "هكذا ستبدو محادثاتك.",
     noBackground: "بدون خلفية",
     sizing: "تحجيم الصورة",
     sizingPosition: "تحجيم الصورة والموضع",

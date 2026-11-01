@@ -6,7 +6,7 @@ import type { en } from "./en.ts";
 
 export const vi = {
   chatBackground: {
-    previewNote: "Bản xem trước cài đặt hiện tại của bạn.",
+    previewNote: "Các cuộc trò chuyện của bạn sẽ trông như thế này.",
     noBackground: "Không có nền",
     sizing: "Kích thước ảnh",
     sizingPosition: "Kích thước và vị trí ảnh",

@@ -6,7 +6,7 @@ import type { en } from "./en.ts";
 
 export const hi = {
   chatBackground: {
-    previewNote: "आपकी मौजूदा सेटिंग्स का पूर्वावलोकन।",
+    previewNote: "आपकी चैट ऐसी दिखेंगी।",
     noBackground: "कोई पृष्ठभूमि नहीं",
     sizing: "छवि का आकार",
     sizingPosition: "छवि का आकार और स्थिति",

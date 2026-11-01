@@ -3,7 +3,7 @@
 
 export const sv = {
   chatBackground: {
-    previewNote: "Förhandsvisning av dina nuvarande inställningar.",
+    previewNote: "Så här kommer dina chattar att se ut.",
     noBackground: "Ingen bakgrund",
     sizing: "Bildstorlek",
     sizingPosition: "Bildstorlek och position",

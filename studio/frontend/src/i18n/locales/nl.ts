@@ -6,7 +6,7 @@ import type { en } from "./en.ts";
 
 export const nl = {
   chatBackground: {
-    previewNote: "Voorbeeld van je huidige instellingen.",
+    previewNote: "Zo zien je chats eruit.",
     noBackground: "Geen achtergrond",
     sizing: "Afbeeldingsgrootte",
     sizingPosition: "Afbeeldingsgrootte en positie",

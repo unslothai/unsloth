@@ -6,7 +6,7 @@ import type { en } from "./en.ts";
 
 export const tr = {
   chatBackground: {
-    previewNote: "Mevcut ayarlarınızın önizlemesi.",
+    previewNote: "Sohbetleriniz böyle görünecek.",
     noBackground: "Arka plan yok",
     sizing: "Görüntü boyutlandırma",
     sizingPosition: "Görüntü boyutu ve konumu",

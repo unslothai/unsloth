@@ -6,7 +6,7 @@ import type { en } from "./en";
 
 export const he = {
   chatBackground: {
-    previewNote: "תצוגה מקדימה של ההגדרות הנוכחיות שלך.",
+    previewNote: "כך ייראו הצ'אטים שלך.",
     noBackground: "ללא רקע",
     sizing: "התאמת גודל תמונה",
     sizingPosition: "גודל ומיקום התמונה",

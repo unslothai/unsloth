@@ -7,7 +7,7 @@ import type { en } from "./en.ts";
 
 export const ja = {
   chatBackground: {
-    previewNote: "現在の設定のプレビューです。",
+    previewNote: "チャットはこのように表示されます。",
     noBackground: "背景なし",
     sizing: "画像のサイズ調整",
     sizingPosition: "画像のサイズと位置",

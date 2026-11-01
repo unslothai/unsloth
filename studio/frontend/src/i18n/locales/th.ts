@@ -6,7 +6,7 @@ import type { en } from "./en.ts";
 
 export const th = {
   chatBackground: {
-    previewNote: "ตัวอย่างการตั้งค่าปัจจุบันของคุณ",
+    previewNote: "แชทของคุณจะมีหน้าตาแบบนี้",
     noBackground: "ไม่มีพื้นหลัง",
     sizing: "การปรับขนาดภาพ",
     sizingPosition: "ขนาดและตำแหน่งภาพ",

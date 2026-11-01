@@ -18,6 +18,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
+  OctagonXIcon,
   SmileIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
@@ -315,7 +316,13 @@ function GreetingTiles({ mode }: { mode: GreetingMode }) {
     ) : (
       <ImagePlaceholder />
     ),
-    off: null,
+    off: (
+      <HugeiconsIcon
+        icon={OctagonXIcon}
+        strokeWidth={1.75}
+        className="size-5 text-muted-foreground"
+      />
+    ),
   };
   return (
     <div
