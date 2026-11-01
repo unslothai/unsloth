@@ -141,10 +141,8 @@ def _lookup_base_model(checkpoint_dir: Path, history: _History) -> Optional[str]
     return None
 
 
-# trainer_state.json grows with log_history (MBs on long runs) and the export page rescans every
-# checkpoint, so the loss is cached per file. A hit needs the same inode, size, mtime and ctime;
-# files changed within the settle window are never cached, since a coarse filesystem clock could
-# give a rewrite the same timestamps.
+# trainer_state.json reaches MBs on long runs. Files changed within the settle window are not
+# cached: a coarse filesystem clock can give a same-size rewrite identical timestamps.
 _LOSS_CACHE: "OrderedDict[str, tuple[tuple, Optional[float]]]" = OrderedDict()
 _LOSS_CACHE_MAX = 4096
 _LOSS_CACHE_SETTLE_NS = 2_000_000_000

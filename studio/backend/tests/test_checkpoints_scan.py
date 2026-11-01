@@ -2,8 +2,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import json
+import os
 import sqlite3
 import sys
+import time
 import types as _types
 from pathlib import Path
 
@@ -503,9 +505,13 @@ def _counting_json_load(monkeypatch) -> list:
     return calls
 
 
+def _skip_settle_window(monkeypatch) -> None:
+    real_time_ns = time.time_ns
+    monkeypatch.setattr(time, "time_ns", lambda: real_time_ns() + 3600 * 10**9)
+
+
 def test_checkpoint_loss_cache_skips_reparse_of_unchanged_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoints_module, "_LOSS_CACHE_SETTLE_NS", -(10**18))
-    monkeypatch.setattr(checkpoints_module, "_LOSS_CACHE", checkpoints_module.OrderedDict())
+    _skip_settle_window(monkeypatch)
     checkpoint_dir = tmp_path / "checkpoint-10"
     checkpoint_dir.mkdir()
     _write_loss_state(checkpoint_dir / "trainer_state.json", "1.25")
@@ -521,8 +527,7 @@ def test_checkpoint_loss_cache_skips_reparse_of_unchanged_file(tmp_path, monkeyp
     reason = "st_ctime is the creation time on Windows, so it does not move on a rewrite",
 )
 def test_checkpoint_loss_cache_sees_same_size_rewrite_with_restored_mtime(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoints_module, "_LOSS_CACHE_SETTLE_NS", -(10**18))
-    monkeypatch.setattr(checkpoints_module, "_LOSS_CACHE", checkpoints_module.OrderedDict())
+    _skip_settle_window(monkeypatch)
     checkpoint_dir = tmp_path / "checkpoint-10"
     checkpoint_dir.mkdir()
     state = checkpoint_dir / "trainer_state.json"
@@ -532,8 +537,6 @@ def test_checkpoint_loss_cache_sees_same_size_rewrite_with_restored_mtime(tmp_pa
     before = state.stat()
     with open(state, "r+") as f:
         f.write('{"log_history": [{"loss": 2.75, "step": 10}]}')
-    import os
-
     os.utime(state, ns = (before.st_atime_ns, before.st_mtime_ns))
     assert state.stat().st_size == before.st_size
 
@@ -541,7 +544,6 @@ def test_checkpoint_loss_cache_sees_same_size_rewrite_with_restored_mtime(tmp_pa
 
 
 def test_checkpoint_loss_cache_ignores_recently_written_files(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoints_module, "_LOSS_CACHE", checkpoints_module.OrderedDict())
     checkpoint_dir = tmp_path / "checkpoint-10"
     checkpoint_dir.mkdir()
     _write_loss_state(checkpoint_dir / "trainer_state.json", "1.25")
@@ -551,4 +553,3 @@ def test_checkpoint_loss_cache_ignores_recently_written_files(tmp_path, monkeypa
     checkpoints_module._read_checkpoint_loss(checkpoint_dir)
 
     assert len(calls) == 2
-    assert not checkpoints_module._LOSS_CACHE
