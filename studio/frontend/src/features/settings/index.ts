@@ -56,6 +56,7 @@ export {
   DEFAULT_CUSTOMIZATION,
   applyCustomizationToDocument,
   isDefaultCustomization,
+  migrateAppearanceMenuDefault,
   migrateShippedSidebarNavDefault,
   prefersReducedMotion,
   sanitizeCustomization,

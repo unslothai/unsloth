@@ -8,6 +8,7 @@ export const uk = {
   chatBackground: {
     noBackground: "Без тла",
     sizing: "Масштабування зображення",
+    sizingPosition: "Масштаб і позиція зображення",
     fill: "Заповнити",
     fit: "Вписати",
     stretch: "Розтягнути",

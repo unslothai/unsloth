@@ -8,6 +8,7 @@ export const ar = {
   chatBackground: {
     noBackground: "بدون خلفية",
     sizing: "تحجيم الصورة",
+    sizingPosition: "تحجيم الصورة والموضع",
     fill: "ملء",
     fit: "احتواء",
     stretch: "تمديد",

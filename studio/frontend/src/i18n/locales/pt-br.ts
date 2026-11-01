@@ -8,6 +8,7 @@ export const ptBR = {
   chatBackground: {
     noBackground: "Sem fundo",
     sizing: "Dimensionamento da imagem",
+    sizingPosition: "Dimensionamento e posição da imagem",
     fill: "Preencher",
     fit: "Ajustar",
     stretch: "Esticar",

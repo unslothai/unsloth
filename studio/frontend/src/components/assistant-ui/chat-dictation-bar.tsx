@@ -14,7 +14,7 @@ import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 const BAR_COUNT = 48;
-// Bar heights in px (scaled by --ui-space-scale); the peak stays inside the 40px pill.
+// The peak stays inside the 40px pill.
 const MIN_HEIGHT = 4;
 const MAX_HEIGHT = 26;
 const PUSH_INTERVAL_MS = 120;
@@ -206,7 +206,6 @@ export const ChatDictationBar: FC<{
       <div
         ref={rowRef}
         aria-hidden="true"
-        // Older samples fade out at the left edge, so the wave reads as flowing in from the right.
         className="unsloth-dictation-wave grid h-10 min-w-0 flex-1 items-center overflow-hidden pl-4 pr-2 [mask-image:linear-gradient(to_right,transparent,#000_28%)]"
         style={{
           gridTemplateColumns: `repeat(${BAR_COUNT}, minmax(2px, 3px))`,

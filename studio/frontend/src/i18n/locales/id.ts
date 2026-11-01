@@ -8,6 +8,7 @@ export const id = {
   chatBackground: {
     noBackground: "Tanpa latar belakang",
     sizing: "Ukuran gambar",
+    sizingPosition: "Ukuran dan posisi gambar",
     fill: "Isi",
     fit: "Sesuaikan",
     stretch: "Regangkan",

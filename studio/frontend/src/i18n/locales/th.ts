@@ -8,6 +8,7 @@ export const th = {
   chatBackground: {
     noBackground: "ไม่มีพื้นหลัง",
     sizing: "การปรับขนาดภาพ",
+    sizingPosition: "ขนาดและตำแหน่งภาพ",
     fill: "เติมเต็ม",
     fit: "พอดี",
     stretch: "ยืด",

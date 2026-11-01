@@ -8,6 +8,7 @@ export const zhTW = {
   chatBackground: {
     noBackground: "無背景",
     sizing: "圖片縮放方式",
+    sizingPosition: "圖片縮放與位置",
     fill: "填滿",
     fit: "符合",
     stretch: "延展",

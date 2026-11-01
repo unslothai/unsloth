@@ -9,6 +9,7 @@ export const ja = {
   chatBackground: {
     noBackground: "背景なし",
     sizing: "画像のサイズ調整",
+    sizingPosition: "画像のサイズと位置",
     fill: "埋める",
     fit: "全体を表示",
     stretch: "引き伸ばす",

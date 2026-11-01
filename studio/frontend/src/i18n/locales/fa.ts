@@ -8,6 +8,7 @@ export const fa = {
   chatBackground: {
     noBackground: "بدون پس‌زمینه",
     sizing: "اندازه‌بندی تصویر",
+    sizingPosition: "اندازه و موقعیت تصویر",
     fill: "پر کردن",
     fit: "جا دادن",
     stretch: "کشیدن",

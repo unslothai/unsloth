@@ -5,6 +5,7 @@ export const it = {
   chatBackground: {
     noBackground: "Nessuno sfondo",
     sizing: "Dimensionamento immagine",
+    sizingPosition: "Dimensionamento e posizione immagine",
     fill: "Riempi",
     fit: "Adatta",
     stretch: "Allunga",

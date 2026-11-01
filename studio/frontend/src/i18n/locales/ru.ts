@@ -8,6 +8,7 @@ export const ru = {
   chatBackground: {
     noBackground: "Без фона",
     sizing: "Масштабирование изображения",
+    sizingPosition: "Масштаб и положение изображения",
     fill: "Заполнить",
     fit: "Вписать",
     stretch: "Растянуть",

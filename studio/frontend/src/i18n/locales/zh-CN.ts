@@ -8,6 +8,7 @@ export const zhCN = {
   chatBackground: {
     noBackground: "无背景",
     sizing: "图片缩放方式",
+    sizingPosition: "图片缩放与位置",
     fill: "填充",
     fit: "适应",
     stretch: "拉伸",

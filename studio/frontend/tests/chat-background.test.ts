@@ -27,7 +27,6 @@ test("background preferences repair malformed persisted data", () => {
 	);
 	assert.equal(sanitizeAdjustments({ visibility: NaN }).visibility, 70);
 	assert.equal(sanitizeAdjustments({ fade: false }).fade, false);
-    // Stored booleans from the old switch map onto the strength slider.
     assert.equal(sanitizeAdjustments({ outline: false as never }).outline, 0);
     assert.equal(sanitizeAdjustments({ outline: true as never }).outline, DEFAULT_ADJUSTMENTS.outline);
     assert.equal(sanitizeAdjustments({ outline: "false" as never }).outline, DEFAULT_ADJUSTMENTS.outline);
