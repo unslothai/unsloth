@@ -289,6 +289,13 @@ def _pinned_revision(repo_type: RepoType, repo_id: str, commit) -> dict:
     return {"revision": commit}
 
 
+def _model_manifest_attestation(commit) -> dict:
+    """Date copied files only when metadata resolved an immutable revision."""
+    if isinstance(commit, str) and _COMMIT_SHA.fullmatch(commit):
+        return {"commit_hash": commit, "metadata_derived": True}
+    return {}
+
+
 # refs/main publication contract for cooperating, SHA-pinned workers:
 # 1. At quiescence, main names the most recently STARTED verified successful
 #    attempt, or the value before the attempts if none succeeded. A previous
@@ -298,6 +305,8 @@ def _pinned_revision(repo_type: RepoType, repo_id: str, commit) -> dict:
 # 3. Verification failure raises; it cannot succeed via an older cache fallback.
 # 4. Transfers and verification run without the lock. All coordination files,
 #    including temporary files, live outside refs/ (scan_cache_dir reads refs).
+# 5. Only the winning success may reclaim, under the publication lock, with the
+#    published commit and every active attempt's commit protected from deletion.
 #
 # Start and finish linearize under the same cross-process lock. Never pin main
 # before transfer: immutable SHA downloads do not write it, so rollback is just
@@ -305,9 +314,10 @@ def _pinned_revision(repo_type: RepoType, repo_id: str, commit) -> dict:
 # publish. A running newer attempt does not prevent an older success publishing;
 # it supersedes that publication only if it too succeeds. This also handles ABA
 # commits and successful no-op downloads without inspecting snapshot mutations.
-# The lock/state must be shared by all writers; unrelated Hub writers and cache
-# deletion are outside this protocol. This is not a power-loss transaction across
-# the JSON file and main; I/O errors fail closed rather than retrying unpinned.
+# The lock/state must be shared by all writers; unrelated Hub writers and
+# unrelated cache deletion are outside this protocol. This is not a power-loss
+# transaction across the JSON file and main; I/O errors fail closed rather than
+# retrying unpinned.
 
 
 @dataclass(frozen = True)
@@ -381,6 +391,7 @@ def _update_main_ref(
     commit: str | None = None,
     sequence: int | None = None,
     verified: bool = False,
+    on_publish = None,
 ) -> int | None:
     """Persist one decision under the lock; no network, transfer or verification here."""
     from huggingface_hub.utils import WeakFileLock
@@ -413,6 +424,10 @@ def _update_main_ref(
                     else:
                         _write_ref(ref, previous)
             raise
+        # Check ownership and reclaim in the same critical section: no peer can
+        # start or publish between the winner check and the last deletion.
+        if verified and state.published_sequence == sequence and on_publish is not None:
+            on_publish(state)
     return sequence
 
 
@@ -421,12 +436,15 @@ def _pinned_snapshot_download(
     commit,
     *,
     expected_files = (),
+    on_publish = None,
     **kwargs,
 ):
     """Transfer at an immutable SHA, verify, then publish by start order.
 
     No provisional refs and no unpinned retries: Hub's legacy cache fallback must
     neither expose partial bytes nor turn a failed update into an older success.
+    ``on_publish`` runs only for the winning verified attempt, under the lock.
+    An unresolved legacy download cannot authorize reclamation.
     """
     from hub.utils.snapshot_reuse import repo_cache_dir
 
@@ -453,7 +471,7 @@ def _pinned_snapshot_download(
     except BaseException:
         _update_main_ref(repo_dir, sequence = sequence)
         raise
-    _update_main_ref(repo_dir, sequence = sequence, verified = True)
+    _update_main_ref(repo_dir, sequence = sequence, verified = True, on_publish = on_publish)
     return path
 
 
@@ -876,7 +894,14 @@ def _download_snapshot(
     if info is not None:
         ignore_patterns, expected_files = _snapshot_download_plan(info)
         # The manifest verifies the finalized files under snapshots/, which both transports produce identically; XET's block-level dedup lives only in the chunk cache.
-        download_manifest.write_manifest("model", repo_id, None, expected_files, mode)
+        download_manifest.write_manifest(
+            "model",
+            repo_id,
+            None,
+            expected_files,
+            mode,
+            **_model_manifest_attestation(getattr(info, "sha", None)),
+        )
     else:
         ignore_patterns = list(SNAPSHOT_IGNORE_PATTERNS)
         expected_files = []
@@ -957,6 +982,7 @@ def _download_gguf_variant(
         plan = None
         metadata_unavailable = True
 
+    commit = None if metadata_unavailable else _RESOLVED_COMMITS.get(repo_id)
     if not metadata_unavailable:
         if plan is None:
             print(
@@ -974,6 +1000,7 @@ def _download_gguf_variant(
             variant,
             expected_files,
             mode,
+            **_model_manifest_attestation(commit),
         )
     else:
         # Metadata unreachable: resume the exact shards the original attempt recorded so snapshot_download can range over the surviving .incomplete blobs.
@@ -1039,15 +1066,36 @@ def _download_gguf_variant(
     to_download = (
         expected_files
         if metadata_unavailable
-        else _reuse_unchanged_files(
-            "model", repo_id, _RESOLVED_COMMITS.get(repo_id), expected_files, hf_token
-        )
+        else _reuse_unchanged_files("model", repo_id, commit, expected_files, hf_token)
     )
     _preflight_disk_space("model", repo_id, to_download)
+
+    def reclaim(state: _MainRefState) -> None:
+        try:
+            from hub.services.models.deletion import reclaim_replaced_gguf_variant
+            from hub.utils.snapshot_reuse import repo_cache_dir
+            reclaim_replaced_gguf_variant(
+                repo_id,
+                variant,
+                plan.main_hashes,
+                hf_token,
+                hub_cache = repo_cache_dir("model", repo_id).parent,
+                protected_revisions = frozenset(
+                    [state.published_commit, *(sha for _, sha in state.attempts)]
+                ),
+            )
+        except Exception as e:
+            print(
+                f"Verified GGUF update for {repo_id} [{variant}], but stale-cache "
+                f"reclaim failed ({type(e).__name__}: {e})",
+                file = sys.stderr,
+            )
+
     snapshot_path = _pinned_snapshot_download(
         snapshot_download,
-        None if metadata_unavailable else _RESOLVED_COMMITS.get(repo_id),
+        commit,
         expected_files = expected_files,
+        on_publish = reclaim,
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = targets,
@@ -1061,22 +1109,6 @@ def _download_gguf_variant(
         snapshot_path,
         metadata_unavailable = metadata_unavailable,
     )
-    if plan is not None:
-        try:
-            from hub.services.models.deletion import reclaim_replaced_gguf_variant
-            reclaim_replaced_gguf_variant(
-                repo_id,
-                variant,
-                plan.main_hashes,
-                hf_token,
-                hub_cache = Path(snapshot_path).parents[2],
-            )
-        except Exception as e:
-            print(
-                f"Verified GGUF update for {repo_id} [{variant}], but stale-cache "
-                f"reclaim failed ({type(e).__name__}: {e})",
-                file = sys.stderr,
-            )
 
 
 def _download_scoped_snapshot(
@@ -1127,7 +1159,14 @@ def _download_scoped_snapshot(
         from hub.utils.snapshot_filters import blob_hashes_for_siblings
 
         blob_hashes = blob_hashes_for_siblings(siblings)
-        download_manifest.write_manifest("model", repo_id, scope, expected_files, mode)
+        download_manifest.write_manifest(
+            "model",
+            repo_id,
+            scope,
+            expected_files,
+            mode,
+            **_model_manifest_attestation(getattr(info, "sha", None)),
+        )
 
     download_manifest.clear_cancel_marker("model", repo_id, scope)
     purged = prepare_cache_for_transport(
