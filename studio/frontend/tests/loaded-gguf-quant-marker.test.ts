@@ -12,9 +12,10 @@ const picker = readSrc(
 
 test("every quant list and cached GGUF row marks the quant each loaded model runs", () => {
   const expanders = picker.match(/<GgufVariantExpander\b/g)?.length ?? 0;
-  // Plus the two memoized On Device rows, which take the list for their expander.
-  assert.equal(picker.match(/loadedQuants=\{/g)?.length ?? 0, expanders + 2);
+  // Plus the three memoized On Device rows, which take the list for their expander.
+  assert.equal(picker.match(/loadedQuants=\{/g)?.length ?? 0, expanders + 3);
   assert.match(picker, /<DownloadedGgufDeviceRow[\s\S]*?loadedQuants=\{loadedQuantsFor\(c\.repo_id\)\}/);
+  assert.match(picker, /<SoleQuantGgufDeviceRow[\s\S]*?loadedQuants=\{loadedQuantsFor\(c\.repo_id\)\}/);
   assert.match(picker, /<LocalModelDeviceRow[\s\S]*?loadedQuants=\{\s*isGguf && !directGguf \? loadedQuantsFor\(m\.id\) : EMPTY_LOADED_QUANTS\s*\}/);
   assert.match(
     picker,

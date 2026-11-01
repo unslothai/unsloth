@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import json
 import asyncio
+import contextvars
+import functools
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -78,6 +81,19 @@ class _CachedInventoryScan(NamedTuple):
 _cached_inventory_flights: dict[
     tuple[asyncio.AbstractEventLoop, tuple[str, int]], asyncio.Task[list[dict]]
 ] = {}
+
+# Own pool: on the default executor a cold walk queued every asyncio.to_thread caller (#14038).
+_CACHED_INVENTORY_POOL = ThreadPoolExecutor(
+    max_workers = 2, thread_name_prefix = "cached-inventory-scan"
+)
+
+
+async def _inventory_scan_thread(fn, /, *args):
+    """``asyncio.to_thread`` on the inventory pool, context variables carried along."""
+    loop = asyncio.get_running_loop()
+    call = functools.partial(contextvars.copy_context().run, fn, *args)
+    return await loop.run_in_executor(_CACHED_INVENTORY_POOL, call)
+
 
 # Retrying a superseded scan is only worth it while invalidations are occasional; past this the endpoint has to answer instead of restarting the walk forever.
 _INVENTORY_SCAN_MAX_ATTEMPTS = 8
@@ -856,7 +872,7 @@ async def _shared_cached_inventory_scan(name: str, scanner) -> _CachedInventoryS
             rows = await hf_cache_scan.shared_scan(
                 _cached_inventory_flights,
                 (name, epoch),
-                lambda expected_epoch = epoch: asyncio.to_thread(
+                lambda expected_epoch = epoch: _inventory_scan_thread(
                     _scan_cached_inventory_snapshot, scanner, expected_epoch
                 ),
             )
