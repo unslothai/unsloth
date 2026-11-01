@@ -204,7 +204,9 @@ def decoder_layers(model):
         if any("expert" in part.lower() for part in name.split(".")):
             continue
         # Hybrid stacks (Jamba, Zamba) mix block classes; every block only needs to hold a Linear.
-        if not all(any(isinstance(m, torch.nn.Linear) for m in block.modules()) for block in module):
+        if not all(
+            any(isinstance(m, torch.nn.Linear) for m in block.modules()) for block in module
+        ):
             continue
         candidates.append((name, len(module)))
     # A list inside a block of another candidate list (`layers.0.<...>`) is part of that block, not the stack.

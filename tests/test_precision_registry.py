@@ -557,5 +557,7 @@ def test_decoder_layers_accepts_a_hybrid_stack_of_mixed_block_classes():
     assert len({type(b) for b in m.model.layers}) == 2
     assert P.decoder_layers(m) == ("model.layers", 4)
     is_hp = P.hp_filter(m, P.HPLayerPolicy(first_n = 1, last_n = 1))
-    assert is_hp(None, "model.layers.0.mamba.in_proj") and is_hp(None, "model.layers.3.self_attn.q_proj")
+    assert is_hp(None, "model.layers.0.mamba.in_proj") and is_hp(
+        None, "model.layers.3.self_attn.q_proj"
+    )
     assert not is_hp(None, "model.layers.1.self_attn.q_proj")
