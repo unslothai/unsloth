@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""UNSLOTH_FSDP2_CPU_OFFLOAD=1 (CPUOffloadPolicy) in float16: every gradient is a DTensor shard on the CPU. Unscaling
-DTensor grads goes through DTensor's found_inf reduce, a collective on CPU tensors, which a NCCL-only process group
-(the torchrun / Trainer default) cannot run: 2 x T4 failed the first step with "No backend type associated with
-device type cpu". The scaler must unscale the local shards (elementwise, same result) and leave the cross-rank
-found_inf agreement to ShardedGradScaler, which copies CPU found_inf to the device for its all-reduce."""
+"""CPUOffloadPolicy fp16: DTensor grads live on the CPU, and DTensor's found_inf reduce is a CPU collective a
+NCCL-only group cannot run (2 x T4 failed with "No backend type associated with device type cpu"). The scaler must
+unscale local shards and leave found_inf agreement to ShardedGradScaler."""
 
 import os
 import sys
@@ -66,12 +64,10 @@ def test_cpu_dtensor_grads_unscale_as_local_shards(cpu_mesh, monkeypatch, overfl
         return parent(self, optimizer, *a, **k)
 
     monkeypatch.setattr(ShardedGradScaler, "_unscale_grads_", recording)
-    scaler.scale(
-        torch.ones(())
-    )  # initializes the scale (2 ** 8): the grads above stand for scaled ones
+    scaler.scale(torch.ones(()))  # initializes the scale; the grads above stand for scaled ones
     scaler.unscale_(opt)
     assert seen and not any(issubclass(t, DTensor) for t in seen), seen
-    assert isinstance(p.grad, DTensor)  # the parameter keeps its DTensor grad, unscaled in place
+    assert isinstance(p.grad, DTensor)
     state = scaler._per_optimizer_states[id(opt)]
     found = sum(float(v.sum()) for v in state["found_inf_per_device"].values())
     assert found == (1.0 if overflow else 0.0)

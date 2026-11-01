@@ -3492,10 +3492,9 @@ def _has_cpu_tensors(optimizer, grads = False):
 
 def _local_grads_if_mixed(optimizer):
     """Swap DTensor grads for their local shards when DTensor and plain grads mix: one foreach unscale
-    takes one tensor kind ("got mixed torch.Tensor and DTensor"), or when a DTensor grad lives on the CPU
-    (CPUOffloadPolicy): DTensor's found_inf reduce would be a collective on CPU tensors, which a NCCL-only
-    process group cannot run. Elementwise, so the shard result is the same; ShardedGradScaler.unscale_
-    agrees found_inf over ranks itself."""
+    takes one tensor kind ("got mixed torch.Tensor and DTensor"), or when a DTensor grad is on the CPU
+    (CPUOffloadPolicy): DTensor's found_inf reduce would need a CPU collective a NCCL-only group lacks.
+    Elementwise, so the shard result is the same; ShardedGradScaler.unscale_ agrees found_inf over ranks."""
     try:
         from torch.distributed.tensor import DTensor
     except ImportError:
