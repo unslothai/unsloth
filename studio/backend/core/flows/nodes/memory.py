@@ -86,8 +86,7 @@ def _set_vectors(records: list[dict], vectors: Optional[list], model: Optional[s
         record["embed_model"] = model
 
 
-# Studio's /v1/embeddings takes at most this many inputs per request (routes/inference.py
-# _STUDIO_EMBED_MAX_INPUTS); a stream holds up to 5000 records, so larger batches are split.
+# routes/inference.py _STUDIO_EMBED_MAX_INPUTS; streams hold up to MAX_RECORDS (5000).
 EMBED_BATCH = 2048
 
 
