@@ -3,6 +3,12 @@
 
 import { defaultParams, getSpec } from "../stores/catalog-store";
 import { newId, useDocStore } from "../stores/doc-store";
+import {
+  connectColumns,
+  insertStarterRecipe,
+  insideRecipeGroup,
+} from "../recipe/recipe-actions";
+import { COLUMN_TYPE, GENERATE_TYPE } from "../recipe/recipe-columns";
 import type { FlowEdge, FlowNode, PortSpec } from "../types";
 import {
   FLOW_IN_HANDLE,
@@ -59,6 +65,8 @@ export function tryConnect(req: ConnectRequest): string | null {
   ) {
     return "That would make a loop. Use For Each to repeat steps.";
   }
+  if (sourceNode.type === COLUMN_TYPE || targetNode.type === COLUMN_TYPE)
+    return connectColumns(req.source, req.target);
   const targetPort = targetSpec?.inputs.find((p) => p.id === check.targetPort);
   const edge: FlowEdge = {
     id: newId("e"),
@@ -84,8 +92,24 @@ export function addNodeConnected(
   },
   port?: string,
 ): FlowNode | null {
+  if (type === COLUMN_TYPE) return null;
   const node = createNode(type, pos);
   if (!node) return null;
+  if (
+    type === GENERATE_TYPE &&
+    !insideRecipeGroup(useDocStore.getState().graph, pos)
+  ) {
+    const generate = insertStarterRecipe(pos, node.params);
+    if (from && port && from.side === "in" && from.kind === "data") {
+      tryConnect({
+        source: generate.id,
+        sourceHandle: outHandle(port),
+        target: from.nodeId,
+        targetHandle: from.handleId,
+      });
+    }
+    return generate;
+  }
   useDocStore.getState().addNode(node);
   if (from && port) {
     if (from.kind === "flow") {

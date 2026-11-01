@@ -25,6 +25,7 @@ from auth.authentication import get_current_subject
 from core.flows import assets as asset_store
 from core.flows import caller as flow_caller
 from core.flows import capabilities, compiler, notebook_import, package, replication, triggers
+from core.flows.recipe_import import flow_from_recipe
 from core.flows.examples import build_examples as examples
 from core.flows.compiler import CompileError
 from core.flows.engine import get_engine
@@ -81,6 +82,12 @@ class InvokeBody(BaseModel):
     stream: bool = False
     warm: bool = False
     background: bool = False
+
+
+class RecipeImportBody(BaseModel):
+    recipe_id: Optional[str] = Field(default = None, min_length = 1, max_length = 128)
+    payload: Optional[dict[str, Any]] = None
+    name: Optional[str] = Field(default = None, max_length = 200)
 
 
 class SessionBody(BaseModel):
@@ -245,6 +252,67 @@ async def import_notebook(request: Request, name: str = "notebook.ipynb") -> dic
     record, _report = await asyncio.to_thread(_import_doc, json.dumps(doc).encode())
     report["missing_models"] = await _missing_models(request, record["doc"])
     return {"flow": record, "report": report}
+
+
+def _recipe_flow(payload: Any, name: str, source: Optional[dict]) -> tuple[dict, list[str]]:
+    try:
+        doc, notices = flow_from_recipe(payload, name = name, source = source)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    doc["id"] = uuid.uuid4().hex
+    return _save(_doc_or_400(doc), None), notices
+
+
+def _recipe_source(record: dict) -> dict:
+    return {"id": record["id"], "name": record.get("name"), "updatedAt": record.get("updatedAt")}
+
+
+@router.post("/import/recipe")
+def import_recipe(body: RecipeImportBody) -> dict:
+    """A saved Data Recipe (by id) or recipe JSON as a new flow; the recipe itself is left alone.
+    Asking again for an unchanged saved recipe opens the flow made last time."""
+    from storage import data_recipes_db
+
+    if body.recipe_id:
+        record = data_recipes_db.get_recipe(body.recipe_id)
+        if record is None:
+            raise HTTPException(status_code = 404, detail = "Recipe not found")
+        # The recipe unchanged since its newest flow was made: open that flow again.
+        known = flows_db.recipe_flows().get(record["id"])
+        existing = flows_db.get_flow(known) if known else None
+        made_from = ((existing or {}).get("doc", {}).get("meta") or {}).get("from_recipe") or {}
+        if existing and made_from.get("updatedAt") == record.get("updatedAt") and not body.name:
+            return {"flow": existing, "report": {"notices": [], "reused": True}}
+        payload, name, source = record["payload"], record.get("name"), _recipe_source(record)
+    elif body.payload is not None:
+        payload, name, source = body.payload, None, None
+    else:
+        raise HTTPException(status_code = 400, detail = "Send a recipe_id or a recipe payload")
+    flow, notices = _recipe_flow(payload, body.name or name or "Data Recipe", source)
+    return {"flow": flow, "report": {"notices": notices}}
+
+
+@router.post("/import/recipes")
+def import_all_recipes() -> dict:
+    """A flow per saved Data Recipe not in Flows yet. Safe to repeat; recipes are left alone."""
+    from storage import data_recipes_db
+
+    known = flows_db.recipe_flows()
+    created, skipped, failed = [], [], []
+    for record in data_recipes_db.list_recipes():
+        if record["id"] in known:
+            skipped.append({"recipe_id": record["id"], "flow_id": known[record["id"]]})
+            continue
+        name = str(record.get("name") or "Data Recipe")
+        try:
+            flow, notices = _recipe_flow(record["payload"], name, _recipe_source(record))
+        except HTTPException as exc:
+            failed.append({"recipe_id": record["id"], "name": name, "error": str(exc.detail)})
+            continue
+        created.append(
+            {"recipe_id": record["id"], "flow_id": flow["id"], "name": name, "notices": notices}
+        )
+    return {"created": created, "skipped": skipped, "failed": failed}
 
 
 @router.post("/assets")
@@ -687,6 +755,49 @@ def node_history(
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", node_id):
         raise HTTPException(status_code = 400, detail = "Invalid node id")
     return {"entries": flows_db.node_output_history(flow_id, node_id, limit)}
+
+
+@router.get("/{flow_id}/nodes/{node_id}/recipe-runs")
+def recipe_runs(
+    flow_id: str,
+    node_id: str,
+    limit: int = Query(50, ge = 1, le = 200),
+) -> dict:
+    """A Recipe Dataset step's runs as Recipe Studio execution records, newest first."""
+    _flow_or_404(flow_id)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", node_id):
+        raise HTTPException(status_code = 400, detail = "Invalid node id")
+    return {"executions": flows_db.recipe_runs(flow_id, node_id, limit)}
+
+
+@router.get("/{flow_id}/nodes/{node_id}/recipe-runs/{run_id}")
+def recipe_run(flow_id: str, node_id: str, run_id: str) -> dict:
+    """One run with its rows."""
+    _flow_or_404(flow_id)
+    record = flows_db.recipe_run(flow_id, node_id, run_id)
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Run not found")
+    return record
+
+
+class DatasetRowsBody(BaseModel):
+    value: dict[str, Any]
+    offset: int = Field(0, ge = 0, le = 100_000)
+    limit: int = Field(20, ge = 1, le = 100)
+
+
+@router.post("/dataset-rows")
+def dataset_rows(request: Request, body: DatasetRowsBody) -> dict:
+    """A page of a flow `dataset` value's rows (Hub, uploaded or Data Recipe), for the viewers."""
+    from core.flows.dataset_rows import DatasetRowsError
+    from core.flows.dataset_rows import dataset_rows as read_rows
+
+    try:
+        return read_rows(body.value, body.offset, body.limit, _hf_token(request))
+    except DatasetRowsError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
 
 @router.get("/{flow_id}/latest-outputs")
