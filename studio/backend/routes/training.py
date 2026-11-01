@@ -4395,6 +4395,8 @@ async def upload_diffusion_dataset(
         seen_names: set = set()
         first_name_by_casefold: dict = {}
         media_names_by_stem_cf: dict = {}
+        # Listed lazily, once; iterdir order keeps the reported clash the first listed match.
+        existing_media_by_stem_cf: Optional[dict] = None
         for f in files:
             # Path.name does not split on a backslash on POSIX, so fold them first.
             filename = Path((f.filename or "").replace("\\", "/")).name.strip().replace("\x00", "")
@@ -4433,8 +4435,20 @@ async def upload_diffusion_dataset(
                     # A casefold-equal name is exempt unless the stems match exactly.
                     return other.stem == stem or other_name.casefold() != fname_cf
 
+                if existing_media_by_stem_cf is None:
+                    existing_media_by_stem_cf = {}
+                    for p in folder.iterdir():
+                        other = Path(p.name)
+                        if other.suffix.lower() in _DIFFUSION_DATASET_MEDIA_EXTS:
+                            existing_media_by_stem_cf.setdefault(other.stem.casefold(), []).append(
+                                p
+                            )
                 clash = next(
-                    (p.name for p in folder.iterdir() if p.is_file() and _shares_sidecar(p.name)),
+                    (
+                        p.name
+                        for p in existing_media_by_stem_cf.get(stem_cf, ())
+                        if p.is_file() and _shares_sidecar(p.name)
+                    ),
                     None,
                 )
                 if clash is None:
