@@ -4,7 +4,6 @@
 import { type CSSProperties, useEffect, useRef } from "react";
 import { ROOT_READY, ROOT_WORKSPACE_READY, markRoot } from "./background";
 
-/** A ready .chat-wallpaper, so the glass rules apply exactly as over an image. */
 const BACKDROP_SAFE = "0.55";
 
 export function GlassBackdrop() {

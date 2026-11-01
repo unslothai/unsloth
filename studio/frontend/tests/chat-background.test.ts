@@ -196,7 +196,6 @@ test("effect textures retain their established appearance", () => {
 });
 
 test("glass image defaults apply only while glass is on", () => {
-	// An image saved before glass keeps its own visibility and fade without glass, in both modes.
 	const saved = sanitizeAdjustments({ visibility: 100, fade: true });
 	for (const dark of [false, true]) assert.equal(saved[visibilityKey(false, dark)], 100);
 	assert.equal(saved[fadeKey(false)], true);

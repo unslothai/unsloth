@@ -36,7 +36,6 @@ test("glass menus only apply on top of an applied material", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const rules = [...css.matchAll(/^([^\n{]*\[data-glass-menus\][^\n{]*)\{/gm)].map((m) => m[1]);
 	assert.ok(rules.length > 0);
-	// Without data-glass the tint variables are unset and color-mix would drop the menu fill.
 	for (const rule of rules) assert.match(rule, /^html\[data-glass(\^?="[a-z0-9-]+")?\]\[data-glass-menus\]/);
 });
 
