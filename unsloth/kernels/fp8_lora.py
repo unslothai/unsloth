@@ -658,6 +658,12 @@ def eligible_base(module) -> Optional[str]:
     if type(weight) not in (torch.Tensor, torch.nn.Parameter):
         # DTensor (FSDP2 / TP shards), tensor subclasses: the cached fp8 copy would be a local shard.
         return f"weight is a {type(weight).__name__}"
+    if getattr(weight, "_unsloth_fsdp2_preload", None) is not None or tuple(weight.shape) != (
+        module.out_features,
+        module.in_features,
+    ):
+        # Native FSDP2 sharded loading leaves a rank-local chunk here until the gather.
+        return f"weight is a {tuple(weight.shape)} shard of {module.out_features} x {module.in_features}"
     if weight.dtype not in (torch.bfloat16, torch.float16):
         return f"weight dtype {weight.dtype}"
     if weight.requires_grad:

@@ -5221,7 +5221,9 @@ class FastLlamaModel:
 
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
-        model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
+        model = FastLlamaModel.patch_peft_model(
+            model, use_gradient_checkpointing, _defer_fp8_lora = True
+        )
         offload_embedding_if_tight(model)
         install_block_swap(
             model,
@@ -5229,6 +5231,8 @@ class FastLlamaModel:
             prefetch_depth = prefetch_depth,
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
+        # After block swap so its streamed layers keep 16-bit; block compile traces only at the first forward.
+        enable_fp8_lora(model)
         skip_checkpointing(model, checkpoint_skip_layers)
 
         if ensure_weight_tying:
@@ -5329,7 +5333,11 @@ class FastLlamaModel:
         return model
 
     @staticmethod
-    def patch_peft_model(model, use_gradient_checkpointing = "unsloth"):
+    def patch_peft_model(
+        model,
+        use_gradient_checkpointing = "unsloth",
+        _defer_fp8_lora = False,
+    ):
         # Persist the GC mode: for_inference() clears it every GRPO step and TrainingArguments defaults
         # it to False, which would silently disable it at train time.
         model._unsloth_gradient_checkpointing = use_gradient_checkpointing
@@ -5559,7 +5567,9 @@ class FastLlamaModel:
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
         # float8_training with LoRA: fp8 frozen base, before any block compile traces the layers.
-        enable_fp8_lora(model)
+        # get_peft_model converts later, once block swap has picked its layers.
+        if not _defer_fp8_lora:
+            enable_fp8_lora(model)
         _unsloth_install_pretrain_detector(model)
         _legacy_block_compile(model)
         return model

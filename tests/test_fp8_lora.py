@@ -1071,3 +1071,28 @@ def test_block_swapped_layers_are_not_converted(offload_on_cpu):
     f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
     converted = f8t.enable_fp8_lora(model, allow_cpu = True)
     assert converted and all(".layers.0." in name for name in converted)
+
+
+def test_sharded_or_preloaded_weights_are_not_eligible():
+    # Failing before: native FSDP2 sharded loading leaves a rank-local row chunk (tagged for the later gather) in a
+    # plain Parameter, so its fp8 copy was quantized from one shard and the forward produced the wrong shape.
+    linear = torch.nn.Linear(64, 64, bias = False).bfloat16().requires_grad_(False)
+    linear.weight = torch.nn.Parameter(linear.weight.data[:32].clone(), requires_grad = False)
+    assert "shard" in FL.eligible_base(linear)
+    full = torch.nn.Linear(64, 64, bias = False).bfloat16().requires_grad_(False)
+    full.weight.__dict__["_unsloth_fsdp2_preload"] = object()
+    assert "shard" in FL.eligible_base(full)
+
+
+def test_get_peft_model_converts_after_block_swap():
+    # Failing before: FastLanguageModel.get_peft_model converted inside patch_peft_model, before install_block_swap
+    # picked its layers, so streamed layers kept fp8 state over evicted placeholder weights.
+    import inspect
+    from unsloth.models.llama import FastLlamaModel
+
+    get_src = inspect.getsource(FastLlamaModel.get_peft_model)
+    assert "_defer_fp8_lora = True" in get_src
+    swap = get_src.index("install_block_swap(")
+    assert get_src.index("enable_fp8_lora(model)", swap) > swap
+    patch_src = inspect.getsource(FastLlamaModel.patch_peft_model)
+    assert "if not _defer_fp8_lora:" in patch_src
