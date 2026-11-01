@@ -1292,7 +1292,6 @@ def _advance_tool_stream(generator: Any, outcome: dict[str, Any]) -> Any:
 
 
 def _web_fetch_host(tool_name: str, arguments: Any) -> str | None:
-    """Host of a web_search URL read, else None."""
     if tool_name != "web_search" or not isinstance(arguments, dict):
         return None
     if UNPARSED_ARGUMENTS_KEY in arguments:

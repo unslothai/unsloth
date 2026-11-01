@@ -24,10 +24,6 @@ from core.inference import tools
 from core.inference.studio_tool_loop import ToolLoopPolicy, ToolLoopRun, stream_with_studio_tools
 
 
-# ---------------------------------------------------------------------------------------------
-# Tool loop harness
-# ---------------------------------------------------------------------------------------------
-
 WEB = {
     "type": "function",
     "function": {
@@ -188,7 +184,6 @@ def _serial_and_overlapped(monkeypatch, recorder, calls, **policy):
     lines, overlapped_s = _run(transport, cancel_event = cancel, **policy)
     # A batch that finished cleanly never cancels the turn it belongs to.
     assert not cancel.is_set()
-    # Same events in the same order, and the same history replayed to the model.
     assert lines == serial_lines
     assert transport.requests == serial_transport.requests
     # Same calls executed; start order among calls running together is not observable.
@@ -260,7 +255,6 @@ def test_reads_that_ask_first_are_never_started_early(monkeypatch, recorder):
     _serial_and_overlapped(monkeypatch, recorder, calls, permission_mode = "auto", confirm_calls = True)
     assert recorder.peak == 1
     starts = sorted(span[0] for span in recorder.spans.values())
-    # Each read starts only after its own approval.
     assert all(start >= answer for start, answer in zip(starts, answers[-3:]))
 
 
@@ -357,11 +351,6 @@ def test_closing_the_stream_between_calls_stops_started_reads(monkeypatch):
     assert cancel.is_set()
 
 
-# ---------------------------------------------------------------------------------------------
-# Real guarded fetcher through the overlapped path
-# ---------------------------------------------------------------------------------------------
-
-
 class _Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -438,11 +427,6 @@ def test_guards_hold_on_every_hop_of_overlapped_reads(monkeypatch, local_sites):
     assert results["c1"].startswith("Blocked")
     assert results["c2"] == "Failed to fetch URL: too many redirects."
     assert len(seen) == 6
-
-
-# ---------------------------------------------------------------------------------------------
-# Image lookup beside the text search
-# ---------------------------------------------------------------------------------------------
 
 
 class _FakeDDGS:

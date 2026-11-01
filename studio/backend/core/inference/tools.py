@@ -17051,7 +17051,6 @@ def _clean_image_queries(queries) -> list[str]:
 
 
 def _image_lookups(cleaned: list, timeout, website_policy) -> list:
-    """Raw ddgs image results per subject, in order, looked up concurrently."""
     from concurrent.futures import ThreadPoolExecutor
 
     from ddgs import DDGS
