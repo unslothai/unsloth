@@ -159,3 +159,66 @@ def test_cancel_final_read_cannot_race_a_successful_peer(monkeypatch, tmp_path):
     assert not a.is_alive() and not b.is_alive()
     assert not failures, failures
     assert ref.read_text() == _NEW
+
+
+@pytest.mark.parametrize("restart_commit", [_NEW, "c" * 40])
+def test_cancelled_restart_cannot_hide_a_surviving_peers_snapshot(
+    monkeypatch, tmp_path, restart_commit
+):
+    from hub.workers import hf_download as w
+    from huggingface_hub import constants, hf_hub_download
+
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    repo = tmp_path / "models--fake--repo"
+    ref = repo / "refs" / "main"
+    ref.parent.mkdir(parents = True)
+    ref.write_text(_OLD)
+    (repo / "snapshots" / _OLD).mkdir(parents = True)
+    ready, release = threading.Event(), threading.Event()
+    results, failures = [], []
+    target = repo / "snapshots" / _NEW
+    weights = "model-Q8_0.gguf"
+
+    def peer_transfer(**kw):
+        assert kw["revision"] == _NEW
+        ready.set()
+        assert release.wait(10), "peer was not released"
+        target.mkdir(parents = True)
+        (target / weights).write_bytes(b"GGUF-new")
+        return str(target)
+
+    def peer():
+        try:
+            results.append(w._pinned_snapshot_download(peer_transfer, _NEW, repo_id = _REPO))
+        except BaseException as exc:
+            failures.append(exc)
+
+    b = threading.Thread(target = peer, name = "surviving-peer")
+
+    def first_transfer(**kw):
+        b.start()  # B joins A's generation before A rolls the ref back.
+        assert ready.wait(5), "peer did not start"
+        raise KeyboardInterrupt
+
+    def restart_transfer(**kw):
+        assert kw["revision"] == restart_commit
+        raise KeyboardInterrupt
+
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            w._pinned_snapshot_download(first_transfer, _NEW, repo_id = _REPO)
+        assert ref.read_text() == _OLD
+        with pytest.raises(KeyboardInterrupt):
+            w._pinned_snapshot_download(restart_transfer, restart_commit, repo_id = _REPO)
+        assert ref.read_text() == _OLD
+    finally:
+        release.set()
+        if b.ident is not None:
+            b.join(10)
+    assert not b.is_alive()
+    assert not failures, failures
+    assert results == [str(target)]
+    # A successful peer must publish its files through the actual offline repo-ID resolver.
+    loaded = hf_hub_download(_REPO, weights, cache_dir = str(tmp_path), local_files_only = True)
+    assert Path(loaded).read_bytes() == b"GGUF-new"
+    assert ref.read_text() == _NEW

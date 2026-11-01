@@ -327,9 +327,9 @@ def _pinned_snapshot_download(
     expected_files = (),
     **kwargs,
 ):
-    """``snapshot_download(**kwargs)`` at ``commit``. A failure before anything of ``commit`` lands puts refs/main
-    back and reruns the unpinned call, keeping its offline fallback to the older snapshot (an unpinned download
-    moves the ref only after the Hub answers)."""
+    """``snapshot_download(**kwargs)`` at ``commit``. A failure before anything of ``commit`` lands rolls refs/main
+    back. Transfer failures retry unpinned, but a planned manifest must still resolve to the requested commit.
+    Verification failures roll back too, then raise without retrying."""
     from hub.utils.snapshot_reuse import repo_cache_dir
     from huggingface_hub.utils import WeakFileLock
 
@@ -349,7 +349,9 @@ def _pinned_snapshot_download(
         with WeakFileLock(lock_path):
             previous = _read_ref(ref)
             generation = _read_ref(generation_path)
-            if previous != commit:
+            # Only a successful publication advances the generation. A restarted
+            # attempt that rolls back must not disown a still-running peer.
+            if generation is None:
                 generation = uuid.uuid4().hex
                 _write_ref(generation_path, generation)
             pin = _pinned_revision(repo_type, repo_id, commit)
@@ -362,8 +364,10 @@ def _pinned_snapshot_download(
         return snapshot_download(**kwargs)
     if not pin:
         return snapshot_download(**kwargs)
+    transfer_complete = False
     try:
         path = snapshot_download(**kwargs, **pin)
+        transfer_complete = True
         # Legacy Hub can return an existing, incomplete snapshot after a metadata error.
         # Reuse may have created it before this call; verify inside the rollback boundary.
         if expected_files:
@@ -390,17 +394,21 @@ def _pinned_snapshot_download(
                         _write_ref(ref, previous)
         except OSError:
             raise e
-        if not isinstance(e, Exception):
+        if not isinstance(e, Exception) or transfer_complete:
             raise
         print(
             f"Pinned download of {repo_id} failed before any file landed "
             f"({type(e).__name__}: {e}); retrying unpinned.",
             file = sys.stderr,
         )
-        return snapshot_download(**kwargs)
+        path = snapshot_download(**kwargs)
+        # A cache fallback to the older snapshot cannot satisfy this commit's manifest.
+        if expected_files and Path(path).name != commit:
+            raise OSError(f"Retry of {repo_id} returned an older snapshot instead of {commit}")
+        return path
     with WeakFileLock(lock_path):
-        # Repair a rollback only within this publication's generation. A later
-        # revision or completion owns its ref even when this worker started on it.
+        # Repair a rollback unless a newer completion owns the ref, even when
+        # this worker started on that completion's commit.
         if _read_ref(generation_path) == generation:
             if _read_ref(ref) in (previous, None) or previous == commit:
                 _pinned_revision(repo_type, repo_id, commit)

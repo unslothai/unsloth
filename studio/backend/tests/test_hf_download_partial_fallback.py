@@ -13,12 +13,19 @@ from .test_hf_download_pinned_revision import _FakeHub, _FULL, _NEW, _OLD, _repo
 
 
 @pytest.mark.parametrize("kind", ["full", "scoped", "gguf"])
-def test_reused_file_and_failed_update_keep_old_weights_loadable(tmp_path, kind):
+@pytest.mark.parametrize("same_size", [False, True])
+def test_reused_file_and_failed_update_keep_old_weights_loadable(tmp_path, kind, same_size):
     hub = _FakeHub()
     try:
         hub.commits[_NEW]["config.json"] = hub.commits[_OLD]["config.json"]
         for commit in (_OLD, _NEW):
             hub.commits[commit]["mmproj-F16.gguf"] = b"GGUF" + b"shared" * 16
+        if same_size:
+            # Presence and size verification cannot distinguish these old and new weights.
+            for name in ("model.safetensors", "model-Q4_K_M.gguf"):
+                size = len(hub.commits[_OLD][name])
+                hub.commits[_NEW][name] = hub.commits[_NEW][name][:size]
+                assert hub.commits[_NEW][name] != hub.commits[_OLD][name]
         hub.head, hub.down = _NEW, True
         repo = _repo_dir(tmp_path)
         old = repo / "snapshots" / _OLD
@@ -38,7 +45,7 @@ def test_reused_file_and_failed_update_keep_old_weights_loadable(tmp_path, kind)
         reused = "mmproj-F16.gguf" if kind == "gguf" else "config.json"
         weights = "model-Q4_K_M.gguf" if kind == "gguf" else "model.safetensors"
         result = _run(hub, tmp_path, *extra)
-        assert result.returncode != 0
+        assert result.returncode != 0, result.stderr
         assert (repo / "snapshots" / _NEW / reused).is_file(), result.stderr
         assert not (repo / "snapshots" / _NEW / weights).exists()
         assert ref.read_text() == _OLD, result.stderr
