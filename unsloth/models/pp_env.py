@@ -372,10 +372,13 @@ def gather_replica(
             f"memory first.{_hint()}"
         )
     owned = _trained_names(stage)
+    adapters = _adapter_state(stage.model)
     for container, key, module, _ in stage._kept:
         _move(module, device, set())
         # Detached while the caller set the mode (model.eval() before generate): follow the root's mode.
         module.train(stage.model.training)
+        # The same for PEFT's adapter switches (disable_adapter(), set_adapter) made while they were detached.
+        _apply_adapter_state(module, adapters)
         _put(container, key, module)
     stage.replica = {"persistent": persistent}
     try:
@@ -390,6 +393,31 @@ def gather_replica(
             "CPU copies of the other stages); the next training step splits it again."
         )
     return stage
+
+
+def _adapter_state(model):
+    """(disabled, active adapters) of the attached PEFT tuner layers, or None without any."""
+    try:
+        from peft.tuners.tuners_utils import BaseTunerLayer
+    except ImportError:
+        return None
+    for module in model.modules():
+        if isinstance(module, BaseTunerLayer):
+            return bool(module.disable_adapters), module.active_adapter
+    return None
+
+
+def _apply_adapter_state(root, state):
+    # PEFT's private fields, not enable_adapters / set_adapter: those also flip requires_grad on the adapters.
+    if state is None:
+        return
+    from peft.tuners.tuners_utils import BaseTunerLayer
+
+    disabled, active = state
+    for module in root.modules():
+        if isinstance(module, BaseTunerLayer):
+            module._disable_adapters = disabled
+            module._active_adapter = active
 
 
 def _note_trained(stage):

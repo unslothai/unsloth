@@ -1456,3 +1456,33 @@ def test_sft_ring_packing_reaches_the_released_fallback():
     # Other trainers have no such fallback: still refused before anything runs.
     with pytest.raises(NotImplementedError, match = "ring context parallel with packed rows"):
         caps.check_layout(layout, None, None, args, cp_backend = "ring")
+
+
+def test_pp_replica_restores_detached_layers_with_the_live_adapter_state():
+    # Failing before: gather_replica put the other stages' LoRA layers back with their adapters enabled, so
+    # generate inside model.disable_adapter() ran a partly adapted model, a different part on each rank.
+    import inspect
+
+    from peft import LoraConfig, get_peft_model
+    from peft.tuners.tuners_utils import BaseTunerLayer
+
+    from unsloth.models import pp_env
+
+    class Two(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.a = torch.nn.Linear(8, 8)
+            self.b = torch.nn.Linear(8, 8)
+
+    model = get_peft_model(Two(), LoraConfig(r = 2, target_modules = ["a", "b"]))
+    inner = model.base_model.model
+    detached = inner.b  # another stage's layer, kept off the model while split
+    inner.b = torch.nn.Identity()
+    grads = {n: p.requires_grad for n, p in detached.named_parameters()}
+    with model.disable_adapter():
+        pp_env._apply_adapter_state(detached, pp_env._adapter_state(model))
+        assert all(m.disable_adapters for m in detached.modules() if isinstance(m, BaseTunerLayer))
+    pp_env._apply_adapter_state(detached, pp_env._adapter_state(model))
+    assert not any(m.disable_adapters for m in detached.modules() if isinstance(m, BaseTunerLayer))
+    assert {n: p.requires_grad for n, p in detached.named_parameters()} == grads
+    assert "_apply_adapter_state(module, adapters)" in inspect.getsource(pp_env.gather_replica)
