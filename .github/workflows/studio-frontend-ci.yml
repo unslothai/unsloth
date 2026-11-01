@@ -41,6 +41,7 @@ on:
       - 'tests/studio/playwright_user_message_time.py'
       - 'tests/studio/playwright_progressive_rows.py'
       - 'tests/studio/playwright_model_picker_renders.py'
+      - 'tests/studio/playwright_recipe_drag_renders.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
       - 'tests/studio/_playwright_robust.py'
@@ -87,6 +88,7 @@ on:
       - 'tests/studio/playwright_user_message_time.py'
       - 'tests/studio/playwright_progressive_rows.py'
       - 'tests/studio/playwright_model_picker_renders.py'
+      - 'tests/studio/playwright_recipe_drag_renders.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
       - 'tests/studio/_playwright_robust.py'
@@ -531,6 +533,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         timeout-minutes: 8
         run: python3 tests/studio/playwright_model_picker_renders.py
+
+      # A drag step moves one node; the other nodes of the graph must not re-render.
+      - name: Browser check for Recipe Studio drag re-renders
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        run: python3 tests/studio/playwright_recipe_drag_renders.py
 
       # Two small sizes and one repetition on Chromium: enough to prove the fixture still
       # renders every kind of content it claims to and that the curve still rises, which is all

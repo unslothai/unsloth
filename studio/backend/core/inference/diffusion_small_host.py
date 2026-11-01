@@ -910,6 +910,41 @@ def encoder_resident_mode() -> Optional[bool]:
     return None
 
 
+def encoder_resident_keep_mib(host_total_mib: Optional[int]) -> int:
+    return host_reserve_mib(host_total_mib) + _ENCODER_RESIDENT_RUNTIME_MIB
+
+
+def encoder_resident_share_mib(
+    streamed_mib: int,
+    *,
+    host_total_mib: Optional[int],
+    host_available_mib: Optional[int],
+    host_commit_mib: Optional[int] = None,
+    min_share_mib: int = 0,
+) -> tuple[int, str]:
+    """MiB of ``streamed_mib`` that fit under ``decide_encoder_resident``'s reserve; ``host_available_mib`` read after placement."""
+    if streamed_mib <= 0:
+        return 0, "no memory-mapped encoder weights"
+    if host_available_mib is None:
+        return 0, "host RAM unreadable"
+    keep = encoder_resident_keep_mib(host_total_mib)
+    room = int(host_available_mib) - keep
+    if host_commit_mib is not None:
+        room = min(room, int(host_commit_mib) - keep)
+    share = max(0, min(int(streamed_mib), room))
+    if share <= 0 or share < int(min_share_mib):
+        return (
+            0,
+            f"{host_available_mib} MiB available host RAM leaves {max(0, room)} MiB above the "
+            f"{keep} MiB the load keeps",
+        )
+    return (
+        share,
+        f"{share} of {streamed_mib} MiB leaves {int(host_available_mib) - share} MiB of "
+        f"{host_available_mib} MiB available host RAM (keeps {keep} MiB)",
+    )
+
+
 def decide_encoder_resident(
     streamed_mib: int,
     *,
@@ -930,7 +965,7 @@ def decide_encoder_resident(
         return False, "the int8 denoiser already spills to disk"
     if host_available_mib is None:
         return False, "host RAM unreadable"
-    keep = host_reserve_mib(host_total_mib) + _ENCODER_RESIDENT_RUNTIME_MIB
+    keep = encoder_resident_keep_mib(host_total_mib)
     left = int(host_available_mib) - int(streamed_mib)
     if left < keep:
         return (

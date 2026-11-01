@@ -3756,6 +3756,25 @@ def _wait_or_pause_bg_compile(bg: Any, state: Any, loras: Any, cancel: Any) -> A
         return None
     pipe = getattr(state, "pipe", None)
     if bg.yields() and not _has_active_lora(loras) and not getattr(pipe, "_unsloth_loras", ()):
+        if getattr(bg, "idle", False):
+            # Freeze only a resident denoiser: its eager forward moves no weight
+            freeze = getattr(state, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE
+            waited, paused = bg.pause(cancel, budget_s = 0.0, freeze = freeze)
+            if paused:
+                logger.info(
+                    "diffusion.bg_compile: render stopped the background compile in %.3f s (%s); it resumes "
+                    "once no render runs",
+                    waited,
+                    "frozen mid-trace"
+                    if getattr(bg, "_frozen", False)
+                    else "parked at a block boundary"
+                    if getattr(bg, "_parked", False)
+                    else "stops at its next Python call"
+                    if getattr(bg, "_freeze_ok", False)
+                    else "stops at the next block boundary",
+                )
+                return bg
+            return None
         budget = bg_compile.slice_seconds(getattr(pipe, "_unsloth_eager_render_s", None))
         waited, paused = bg.pause(cancel, budget_s = budget)
         if paused:
@@ -13099,6 +13118,7 @@ class DiffusionBackend:
     def _engage_deferred_profile(self, state: _LoadState) -> None:
         """Runs the deferred speed profile at the 3rd generation under _generate_lock; the flag clears first so it never retries."""
         object.__setattr__(state, "speed_deferred", False)
+        bg_compile.wait_prewarm()
         from .diffusion_qwenimage21_eager import demote
 
         demote(getattr(state, "pipe", None))
@@ -13433,8 +13453,8 @@ class DiffusionBackend:
                     and not aux_pass
                     and str(getattr(state, "device", "")).startswith("cuda")
                 ):
-                    # 2nd image: warm inductor's workers so the deferred compile does not wait on them.
-                    bg_compile.warm_compile_pool(logger)
+                    # 2nd image: warm inductor's workers and Triton's key off this render's thread.
+                    bg_compile.start_deferred_prewarm(logger)
                 if (
                     state.speed_deferred
                     and state.generation_count >= 2
