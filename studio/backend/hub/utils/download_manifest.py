@@ -615,6 +615,7 @@ def _is_reserved_dataset_completion_payload(data: dict) -> bool:
 
 
 def _read_migration_payload(path: Path) -> Optional[dict]:
+    # OSError propagates: an unreadable file is skipped by the caller and keeps the pass unclean.
     try:
         with path.open("rb") as handle:
             prefix = handle.read(_MANIFEST_MIGRATION_PREFIX_BYTES)
@@ -626,7 +627,7 @@ def _read_migration_payload(path: Path) -> Optional[dict]:
         if len(raw) > _MANIFEST_MIGRATION_MAX_BYTES:
             return None
         data = json.loads(raw)
-    except (OSError, ValueError):
+    except ValueError:
         return None
     return data if isinstance(data, dict) else None
 

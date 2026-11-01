@@ -241,6 +241,23 @@ def test_failed_write_is_not_recorded_and_retries(home, monkeypatch):
     assert download_manifest.migrate_ordinary_v2_manifests_for_downgrade() >= 3
 
 
+def test_unreadable_manifest_is_not_recorded_and_retries(home, monkeypatch):
+    _populate(home)
+    _settle(state_dir.manifests_dir())
+    real_open = Path.open
+
+    def locked(self, *a, **k):
+        if self.name.endswith(".json") and self.parent.name != "hub-state":
+            raise PermissionError(13, "sharing violation", str(self))
+        return real_open(self, *a, **k)
+
+    with monkeypatch.context() as m:
+        m.setattr(Path, "open", locked)
+        assert download_manifest.migrate_ordinary_v2_manifests_for_downgrade() == 0
+    assert not _marker().exists()
+    assert download_manifest.migrate_ordinary_v2_manifests_for_downgrade() >= 3
+
+
 def test_file_cap_is_not_recorded(home, monkeypatch):
     _populate(home)
     _settle(state_dir.manifests_dir())
