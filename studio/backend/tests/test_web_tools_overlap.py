@@ -521,6 +521,8 @@ def _norm(text: str) -> str:
     ids = ["generic", "named"],
 )
 def test_image_lookup_overlaps_text_search(monkeypatch, fake_ddgs, kwargs):
+    # Untimed: the first search in a process pays one-off imports the serial arm below would skip.
+    tools._web_search("paris", timeout = 20, **kwargs)
     t0 = time.perf_counter()
     overlapped = tools._web_search("paris", timeout = 20, **kwargs)
     overlapped_s = time.perf_counter() - t0
