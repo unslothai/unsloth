@@ -616,19 +616,39 @@ def _restore_master_before_merge(lora_module):
         )
 
 
+_RAW_READS = {}
+
+
+def _reads_raw_weight(parent, leaf) -> bool:
+    """The parent's class source reads `<leaf>.weight` directly (fused Mamba / Falcon-H1 kernels, WavLM's
+    F.multi_head_attention_forward) instead of calling the child: that tensor must stay on the compute device."""
+    import inspect
+    import re
+
+    key = (type(parent), leaf)
+    if key not in _RAW_READS:
+        try:
+            source = inspect.getsource(type(parent))
+        except (OSError, TypeError):
+            source = ""
+        _RAW_READS[key] = re.search(rf"\b{re.escape(leaf)}\.weight\b", source) is not None
+    return _RAW_READS[key]
+
+
 def _mamba_raw_weight_leaf(model, name) -> bool:
     parent_name, _, leaf = name.rpartition(".")
-    try:
-        from ._mamba_lora import _RAW_WEIGHT_LEAVES
-    except Exception:
-        _RAW_WEIGHT_LEAVES = ("x_proj", "dt_proj", "out_proj")
-    if leaf not in _RAW_WEIGHT_LEAVES:
-        return False
     try:
         parent = model.get_submodule(parent_name) if parent_name else model
     except AttributeError:
         return False
-    return "mamba" in type(parent).__name__.lower()
+    if _reads_raw_weight(parent, leaf):
+        return True
+    try:
+        from ._mamba_lora import _RAW_WEIGHT_LEAVES, _is_mamba_mixer
+    except Exception:
+        return False
+    # Unsloth's fused Mamba LoRA path builds W + delta from these leaves of any Mamba-style mixer.
+    return leaf in _RAW_WEIGHT_LEAVES and _is_mamba_mixer(parent)
 
 
 def enable_fp8_lora(
@@ -672,8 +692,8 @@ def enable_fp8_lora(
         if why is not None:
             skipped[name] = why
             continue
-        # DoRA's forward reads the base weight itself (its column norm), and Unsloth's fused Mamba kernels read the
-        # raw x_proj / dt_proj / out_proj weights (W + delta): both keep the master on the device.
+        # DoRA's forward reads the base weight itself (its column norm), and some parents read a child's weight
+        # directly (fused Mamba / Falcon-H1 kernels, WavLM attention): those keep the master on the device.
         reads_raw = any(getattr(module, "use_dora", {}).values()) or _mamba_raw_weight_leaf(
             model, name
         )

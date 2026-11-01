@@ -982,3 +982,36 @@ def test_legacy_scaled_mm_tuple_return(monkeypatch):
     y = state.matmul(torch.randn(32, 256).bfloat16(), W)
     dx = state.dgrad(torch.randn(32, 384).bfloat16(), W)
     assert torch.is_tensor(y) and torch.is_tensor(dx)
+
+
+@pytest.mark.parametrize("arch", ["falcon_h1", "wavlm"])
+def test_parents_reading_a_child_weight_keep_its_master(offload_on_cpu, arch):
+    # Failing before: only class names with "mamba" were kept; Falcon-H1's mixer and WavLM attention read
+    # out_proj / q_proj .weight themselves, so an offloaded master met the device activations.
+
+    if arch == "falcon_h1":
+        mod = pytest.importorskip("transformers.models.falcon_h1.modeling_falcon_h1")
+        parent_cls, leaf = mod.FalconH1Mixer, "out_proj"
+    else:
+        mod = pytest.importorskip("transformers.models.wavlm.modeling_wavlm")
+        parent_cls, leaf = mod.WavLMAttention, "q_proj"
+    parent = parent_cls.__new__(parent_cls)
+    torch.nn.Module.__init__(parent)
+    setattr(parent, leaf, torch.nn.Linear(4, 4))
+    model = torch.nn.Module()
+    model.block = parent
+    assert f8t._mamba_raw_weight_leaf(model, f"block.{leaf}")
+
+
+def test_refresh_under_inference_mode_builds_trainable_fp8_tensors():
+    # Failing before: a merge / unmerge inside inference_mode rebuilt the cache as inference tensors, which the
+    # next training step could not save for backward.
+    lin = _frozen_linear()
+    state = FL.attach_fp8_lora_base(lin, offload = False)
+    with torch.inference_mode():
+        state._key = None
+        state.refresh(lin.weight)
+    assert not state.w8.is_inference()
+    x = torch.randn(32, 256).bfloat16().requires_grad_(True)
+    lin(x).float().sum().backward()
+    assert x.grad is not None

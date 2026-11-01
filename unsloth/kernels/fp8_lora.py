@@ -448,7 +448,8 @@ class Fp8LoRABaseState:
         key = self._weight_key(weight)
         if key == self._key:
             return self
-        with torch.no_grad():
+        # Not inference tensors even when refreshed under inference_mode (a merge there): training saves them.
+        with torch.inference_mode(False), torch.no_grad():
             w = weight.detach()
             if self.offloaded:
                 # The host master changed in place (load_state_dict): requantize on the compute device.
