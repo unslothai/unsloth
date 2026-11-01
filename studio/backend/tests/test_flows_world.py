@@ -163,7 +163,9 @@ def test_npc_reply_actions_are_a_fixed_validated_set():
         ("Please don\u2019t follow me", "stop_following"),
         ("Do not come with me", "stop_following"),
         ("No need to walk with me", "stop_following"),
-        ("I don't want you to follow me", "stop_following"),
+        ("I don't want you to follow me", None),
+        ("Don't forget to follow me", None),
+        ("Do not hesitate to come with me", None),
         ("Don't stop following me", None),
     ):
         out = validate_npc_reply(

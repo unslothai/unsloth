@@ -661,18 +661,24 @@ FOLLOW_ASK = re.compile(r"\b(follow me|come with me|come along|walk with me|tag 
 FOLLOW_STOP = re.compile(
     r"\b(stop following|go (back )?home|you can go|wait (for me )?here|stay here)\b"
 )
-# "don't follow me", "I don't want you to stop following": the clause's negation flips the phrase.
-NEGATION = re.compile(r"\b(don['\u2019]?t|do not|never|no need to|not)\b(\W+\w+){0,4}\W*$")
+# Only a negation right before the phrase flips it; one further back ("don't forget to follow me")
+# may negate another verb, so the model's own action stands.
+NEGATION = re.compile(r"\b(don['\u2019]?t|do not|never|no need to)\W*$")
+NEGATION_NEAR = re.compile(r"\b(don['\u2019]?t|do not|never|no need to|not)\b(\W+\w+){1,4}\W*$")
 
 
 def _phrase(pattern: re.Pattern, text: str) -> str | None:
-    """'plain' if a clause asks for the phrase, 'negated' if one only negates it."""
+    """'plain', 'negated' or 'unclear' for the strongest match of the phrase over clauses."""
     found = None
     for clause in re.split(r"[.!?;,]", text):
         for m in pattern.finditer(clause):
-            if not NEGATION.search(clause[: m.start()]):
+            before = clause[: m.start()]
+            if NEGATION.search(before):
+                found = found or "negated"
+            elif NEGATION_NEAR.search(before):
+                found = "unclear"
+            else:
                 return "plain"
-            found = "negated"
     return found
 
 
