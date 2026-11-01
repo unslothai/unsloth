@@ -445,8 +445,12 @@ export const BUDGET = {
   // the eager English catalog and its search rows. Raised by that.
   // Chat wallpaper prefs, reset and English strings: +6,365 B raw / +3,589 B transfer (Node 24,
   // 85 -> 89 eager chunks). Renderer, contrast and pixel worker stay lazy.
-  transferBytes: 1_853_999,
-  rawBytes: 5_997_755,
+  // The per-tool MCP switches at the end of Settings > Agents (#14348) add 3,593 B raw / 1,086 B transfer
+  // (6,972,239 -> 6,975,832 B raw, 2,102,226 -> 2,103,312 B transfer against a5956882f6, one machine and build,
+  // Node 24, 103 chunks both): the Agents panel and its tools dialog are lazy, so the growth is their strings in the
+  // eager English catalog plus the agents-mcp scroll target. Raised by that growth.
+  transferBytes: 1_855_085,
+  rawBytes: 6_001_348,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

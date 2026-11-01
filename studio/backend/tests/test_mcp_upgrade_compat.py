@@ -96,6 +96,19 @@ def test_the_installed_fastmcp_meets_the_declared_floor():
     assert (major, minor) >= (3, 0), f"fastmcp {version} is below the declared >=3.0.2"
 
 
+def test_the_middleware_hooks_tool_access_overrides_still_exist():
+    """StudioToolAccess hides turned-off tools and prompts through these four hooks."""
+    from fastmcp.exceptions import PromptError
+    from fastmcp.server.middleware import Middleware
+
+    from studio_mcp.tool_access import StudioToolAccess
+
+    for hook in ("on_list_tools", "on_call_tool", "on_list_prompts", "on_get_prompt"):
+        assert callable(getattr(Middleware, hook, None)), hook
+        assert hook in vars(StudioToolAccess), hook
+    assert issubclass(PromptError, Exception)
+
+
 def test_tool_errors_are_still_distinguishable_from_transport_errors():
     """The whole keep-or-drop-the-session decision rests on this import."""
     from fastmcp.exceptions import ToolError

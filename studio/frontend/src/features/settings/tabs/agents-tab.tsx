@@ -79,12 +79,14 @@ import {
   UNSLOTH_START_DOCS_URL,
   detailsFor,
 } from "../components/coding-agent-list";
+import { McpAccessSection } from "../components/mcp-access-section";
 import { SettingsSection } from "../components/settings-section";
 import {
   isChatGenerativeHubModel,
   isClassifierOrRerankerHubModel,
   isSpeechOnlyHubModel,
 } from "../lib/agent-hub-model.ts";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import {
   type ExampleOs,
   useSettingsPanelPrefsStore,
@@ -1514,6 +1516,22 @@ export function AgentsTab() {
         <div className="pt-3">
           <CommandBlock command={shellCommands.dryRun} />
         </div>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.mcp.title")}>
+        <McpAccessSection apiKey={freshApiKey} />
+        <p className="pt-1 text-xs leading-snug text-muted-foreground">
+          {t("settings.mcp.keyHint")}{" "}
+          <button
+            type="button"
+            className="rounded-sm font-medium text-foreground underline underline-offset-2 transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            onClick={() =>
+              useSettingsDialogStore.getState().setActiveTab("api-keys")
+            }
+          >
+            {t("settings.mcp.createKey")}
+          </button>
+        </p>
       </SettingsSection>
     </div>
   );
