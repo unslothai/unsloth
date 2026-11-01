@@ -130,14 +130,15 @@ export function WindowMaterialMount() {
       strength <= 50 ? 0.2 + (0.8 * strength) / 50 : 1 + (strength - 50) / 50;
     const opacity =
       strength <= 50 ? 0.35 + (0.65 * strength) / 50 : 1 + (strength - 50) / 50;
-    if (strength === 50) {
+    // Glass off writes nothing to the page.
+    if (material === "solid" || strength === 50) {
       root.style.removeProperty("--glass-strength");
       root.style.removeProperty("--glass-opacity");
     } else {
       root.style.setProperty("--glass-strength", blur.toFixed(3));
       root.style.setProperty("--glass-opacity", opacity.toFixed(3));
     }
-  }, [strength]);
+  }, [strength, material]);
   useEffect(() => {
     document.documentElement.toggleAttribute(
       "data-glass-menus",
