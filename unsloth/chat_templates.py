@@ -2696,7 +2696,7 @@ def get_chat_template(
             for key in ("role", "content", "user", "assistant")
         )
         chat_template = \
-            "{%- if 'role' not in messages[0] -%}" + \
+            "{%- if " + role + " in messages[0] and " + content + " in messages[0] -%}" + \
             "{%- set sharegpt = namespace(messages = []) -%}" + \
             "{%- for message in messages -%}" + \
             "{%- set role = {" + user + " : 'user', " + assistant + " : 'assistant'}" + \
