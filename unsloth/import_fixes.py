@@ -7835,7 +7835,11 @@ def fix_cudnn_sdpa_backward_grad_layout():
 
 _SDPA_CUDNN_KNOWN_BAD_FLAG = "_unsloth_avoids_cudnn_sdpa_known_bad_shapes"
 _SDPA_CUDNN_KNOWN_BAD_WARNED = set()
-_SDPA_CUDNN_SWITCHED = []  # one entry per active wrapped call: did it turn cuDNN off
+# The backend flags are process-wide: wrapped calls in flight on any thread that hold cuDNN off.
+# cuDNN goes off with the first and back on with the last, so a call overlapping another one
+# never runs (or is routed) under a flag the other already restored.
+_SDPA_CUDNN_HELD = [0]
+_SDPA_CUDNN_LOCK = threading.Lock()
 _SDPA_CUDNN_DECODE = "decode"
 _SDPA_CUDNN_DQ_NAN = "dq_nan"
 
@@ -7949,7 +7953,9 @@ class _SdpaCudnnPolicy(types.ModuleType):
         import torch
 
         cuda = torch.backends.cuda
-        return cuda.cudnn_sdp_enabled() and (
+        # While a wrapped call holds cuDNN off, the caller's flag is still on: another thread's
+        # matching call must take the switch too, not run unprotected once the holder restores.
+        return (cuda.cudnn_sdp_enabled() or _SDPA_CUDNN_HELD[0] > 0) and (
             cuda.flash_sdp_enabled() or cuda.mem_efficient_sdp_enabled() or cuda.math_sdp_enabled()
         )
 
@@ -7959,23 +7965,32 @@ _SDPA_CUDNN_POLICY = _SdpaCudnnPolicy("unsloth_sdpa_cudnn_policy")
 
 def _sdpa_cudnn_off(key_length = None):
     """Turn cuDNN SDPA off unless it is the only enabled backend (or key_length, when given, is not
-    64 mod 128), saving the caller's flag. A symbolic length counts as a hit. Returns the switch."""
+    64 mod 128). A symbolic length counts as a hit. Returns the switch, for _sdpa_cudnn_restore.
+    Refcounted across threads: the count goes up before the flag goes off, and the flag comes back
+    on before the count drops, so an unlocked policy read never sees the caller's cuDNN as off."""
     import torch
 
-    switch = (
-        key_length is None or isinstance(key_length, torch.SymInt) or key_length % 128 == 64
-    ) and _SDPA_CUDNN_POLICY.cudnn_off
-    _SDPA_CUDNN_SWITCHED.append(switch)
-    if switch:
-        torch._C._set_sdp_use_cudnn(False)
-    return switch
+    if not (key_length is None or isinstance(key_length, torch.SymInt) or key_length % 128 == 64):
+        return False
+    with _SDPA_CUDNN_LOCK:
+        if _SDPA_CUDNN_HELD[0] == 0 and not _SDPA_CUDNN_POLICY.cudnn_off:
+            return False
+        _SDPA_CUDNN_HELD[0] += 1
+        if _SDPA_CUDNN_HELD[0] == 1:
+            torch._C._set_sdp_use_cudnn(False)
+    return True
 
 
-def _sdpa_cudnn_restore():
-    """Undo the matching _sdpa_cudnn_off: only the cuDNN flag it turned off is turned back on."""
+def _sdpa_cudnn_restore(switch):
+    """Undo a _sdpa_cudnn_off that returned True: the last call in flight turns cuDNN back on."""
     import torch
-    if _SDPA_CUDNN_SWITCHED.pop():
-        torch._C._set_sdp_use_cudnn(True)
+
+    if not switch:
+        return
+    with _SDPA_CUDNN_LOCK:
+        if _SDPA_CUDNN_HELD[0] == 1:
+            torch._C._set_sdp_use_cudnn(True)
+        _SDPA_CUDNN_HELD[0] -= 1
 
 
 _SDPA_CUDNN_ORIGINALS = {}  # install token -> the SDPA it wraps (a graph constant, unlike a function)
@@ -8004,7 +8019,7 @@ def _sdpa_without_cudnn(token, bug, key_length, query, key, value, *args, **kwar
             )
         return _SDPA_CUDNN_ORIGINALS[token](query, key, value, *args, **kwargs)
     finally:
-        _sdpa_cudnn_restore()
+        _sdpa_cudnn_restore(switch)
 
 
 def fix_cudnn_sdpa_known_bad_shapes():

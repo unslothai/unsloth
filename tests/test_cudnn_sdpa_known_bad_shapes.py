@@ -326,14 +326,15 @@ class TestWrapper:
 def test_cudnn_off_tests_the_key_length_value():
     with sdpa_kernel(ALL_BACKENDS):
         for length, off in ((192, True), (256, False), (None, True)):
-            fixes._sdpa_cudnn_off(length)
+            switch = fixes._sdpa_cudnn_off(length)
+            assert switch is off
             assert torch.backends.cuda.cudnn_sdp_enabled() is not off
-            fixes._sdpa_cudnn_restore()
+            fixes._sdpa_cudnn_restore(switch)
             assert torch.backends.cuda.cudnn_sdp_enabled()
     with sdpa_kernel([SDPBackend.CUDNN_ATTENTION]):  # cuDNN-only: left alone
-        fixes._sdpa_cudnn_off(192)
+        assert fixes._sdpa_cudnn_off(192) is False
         assert torch.backends.cuda.cudnn_sdp_enabled()
-        fixes._sdpa_cudnn_restore()
+        fixes._sdpa_cudnn_restore(False)
 
 
 @pytest.fixture
@@ -449,7 +450,7 @@ def test_raising_sdpa_restores_the_policy(cpu_dq_nan, monkeypatch, mode):
     fn = lambda q, k, v: wrapped(q, k, v)  # noqa: E731
     if mode == "eager_graph":
         fn = torch.compile(fn, backend = "eager", fullgraph = True, dynamic = False)
-    depth = len(fixes._SDPA_CUDNN_SWITCHED)
+    depth = fixes._SDPA_CUDNN_HELD[0]
     try:
         with sdpa_kernel(CUDNN_MATH):
             before = _sdp_flags()
@@ -458,9 +459,9 @@ def test_raising_sdpa_restores_the_policy(cpu_dq_nan, monkeypatch, mode):
                     fn(*_qkv(192))
                 # Checked inside the context: its exit would restore the flags itself.
                 assert _sdp_flags() == before
-                assert len(fixes._SDPA_CUDNN_SWITCHED) == depth
+                assert fixes._SDPA_CUDNN_HELD[0] == depth
     finally:
-        del fixes._SDPA_CUDNN_SWITCHED[depth:]
+        fixes._SDPA_CUDNN_HELD[0] = depth
         torch._dynamo.reset()
 
 
@@ -553,3 +554,106 @@ def test_opt_out_and_unaffected_host(monkeypatch):
     monkeypatch.setattr(fixes, "_sdpa_cudnn_known_bad_devices", lambda: (NONE, NONE))
     fixes.fix_cudnn_sdpa_known_bad_shapes()
     assert F.scaled_dot_product_attention is sentinel
+
+
+def _held_count():
+    return fixes._SDPA_CUDNN_HELD[0]
+
+
+def _cell(wrapper, name):
+    return wrapper.__closure__[wrapper.__code__.co_freevars.index(name)]
+
+
+def test_overlapping_calls_keep_cudnn_off(recorder):
+    # The backend flags are process-wide: a matching call that starts while another one has cuDNN
+    # off must still run without cuDNN after the first call restores the flag.
+    import threading
+
+    F, calls = recorder
+    a_inside, b_inside, a_done = threading.Event(), threading.Event(), threading.Event()
+    seen = {}
+    token = _cell(F.scaled_dot_product_attention, "token").cell_contents
+    inner = fixes._SDPA_CUDNN_ORIGINALS[token]
+
+    def gated(query, key, value, *args, **kwargs):
+        if threading.current_thread().name == "A":
+            seen["A"] = torch.backends.cuda.cudnn_sdp_enabled()
+            a_inside.set()
+            b_inside.wait(5)
+        else:
+            b_inside.set()
+            a_done.wait(5)  # backend selection after A restored its flag
+            seen["B"] = torch.backends.cuda.cudnn_sdp_enabled()
+        return inner(query, key, value, *args, **kwargs)
+
+    fixes._SDPA_CUDNN_ORIGINALS[token] = gated
+    # A call that bypasses the cuDNN switch goes straight to the wrapped SDPA: route it here too.
+    wrapper = F.scaled_dot_product_attention
+    original_cell = _cell(wrapper, "original")
+    saved = original_cell.cell_contents
+    original_cell.cell_contents = gated
+    try:
+        q, k = _FakeCuda(1, 8, 1, 64), _FakeCuda(1, 8, 9, 64)
+
+        def run_a():
+            F.scaled_dot_product_attention(q, k, k)
+            a_done.set()
+
+        def run_b():
+            a_inside.wait(5)
+            F.scaled_dot_product_attention(q, k, k)
+
+        threads = [threading.Thread(target = run_a, name = "A"),
+                   threading.Thread(target = run_b, name = "B")]  # fmt: skip
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        assert seen == {"A": False, "B": False}
+        assert torch.backends.cuda.cudnn_sdp_enabled()
+        assert _held_count() == 0
+    finally:
+        original_cell.cell_contents = saved
+        fixes._SDPA_CUDNN_ORIGINALS[token] = inner
+
+
+def test_many_threads_never_see_cudnn(recorder):
+    # Stress: every matching call from 8 threads runs with cuDNN off; the caller's flag is back on
+    # (and no switch is left held) once all of them return.
+    import threading
+    import time
+
+    F, calls = recorder
+    token = _cell(F.scaled_dot_product_attention, "token").cell_contents
+    inner = fixes._SDPA_CUDNN_ORIGINALS[token]
+    wrapper = F.scaled_dot_product_attention
+    original_cell = _cell(wrapper, "original")
+    saved = original_cell.cell_contents
+    bad = []
+
+    def slow(query, key, value, *args, **kwargs):
+        time.sleep(0.0002)  # yields the GIL, as a real kernel launch does
+        if torch.backends.cuda.cudnn_sdp_enabled():
+            bad.append(threading.current_thread().name)
+        return "out"
+
+    fixes._SDPA_CUDNN_ORIGINALS[token] = slow
+    original_cell.cell_contents = slow
+    try:
+        q, k = _FakeCuda(1, 8, 1, 64), _FakeCuda(1, 8, 9, 64)
+
+        def worker():
+            for _ in range(200):
+                F.scaled_dot_product_attention(q, k, k)
+
+        threads = [threading.Thread(target = worker, name = f"t{i}") for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        assert not bad, f"{len(bad)} matching calls ran with cuDNN on"
+        assert torch.backends.cuda.cudnn_sdp_enabled()
+        assert _held_count() == 0
+    finally:
+        original_cell.cell_contents = saved
+        fixes._SDPA_CUDNN_ORIGINALS[token] = inner
