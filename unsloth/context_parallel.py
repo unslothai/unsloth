@@ -784,6 +784,7 @@ def _refuse_model_parallel_cp(
     trainer_cls = None,
     config = None,
     peft_config = None,
+    backend = None,
 ) -> None:
     """Before the trainer's __init__ touches the model: a CP manager building its own (dp, cp) mesh would make
     its cp groups the tensor parallel / pipeline data parallel groups of a tp / pp launch, so the step would run
@@ -816,7 +817,8 @@ def _refuse_model_parallel_cp(
             cp_backend = None,
             schedule = None,
         )
-        backend = getattr(config, "context_parallel_backend", None)
+        # A constructor kwarg (context_parallel_backend = ...) overrides the config's value.
+        backend = backend or getattr(config, "context_parallel_backend", None)
         check_layout(alone, trainer_cls, model, config, cp_backend = backend, peft_config = peft_config)
         return
 
@@ -824,7 +826,7 @@ def _refuse_model_parallel_cp(
     if layout is not None:
         from .parallel_capabilities import check_layout
 
-        backend = getattr(config, "context_parallel_backend", None) or layout.cp_backend
+        backend = backend or getattr(config, "context_parallel_backend", None) or layout.cp_backend
         check_layout(
             layout, trainer_cls, model, config, cp_backend = backend, peft_config = peft_config
         )
@@ -899,6 +901,35 @@ def _declares_cp_fields(config) -> bool:
     if not dataclasses.is_dataclass(config):
         return True  # a plain namespace / object keeps what is set on it
     return "context_parallel_size" in {f.name for f in dataclasses.fields(config)}
+
+
+def _positional_config_to_keyword(init, self, args, kwargs):
+    """(args, kwargs) with a positional trainer config passed as `args = ...` instead (every positional bound
+    to its name), so Unsloth's trainer wrapper rebuilds it with the cp values set as kwargs. Unchanged when the
+    signature cannot bind them."""
+    import inspect
+
+    try:
+        bound = inspect.signature(init).bind(self, *args, **kwargs)
+    except (TypeError, ValueError):
+        return args, kwargs
+    params = inspect.signature(init).parameters
+    if any(
+        p.kind is inspect.Parameter.VAR_POSITIONAL and bound.arguments.get(n)
+        for n, p in params.items()
+    ):
+        return args, kwargs
+    if "args" not in bound.arguments:
+        return args, kwargs
+    out = {}
+    for i, (name, value) in enumerate(bound.arguments.items()):
+        if i == 0:
+            continue  # self
+        if params[name].kind is inspect.Parameter.VAR_KEYWORD:
+            out.update(value)
+        else:
+            out[name] = value
+    return (), out
 
 
 def _inject_env_cp(config, kwargs, requested: int, trainer_name: str) -> int:
@@ -1226,6 +1257,12 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             config, args = _default_cp_config(
                 config_cls or trl.SFTConfig, args, kwargs, _sft_default_name(model)
             )
+        if "args" not in kwargs and config is not None and not _declares_cp_fields(config):
+            from .parallel_env import env_cp_size
+            if env_cp_size() > 1:
+                # A positional plain TrainingArguments: the env cp values go into kwargs, which Unsloth's
+                # trainer wrapper only folds into a keyword `args`.
+                args, kwargs = _positional_config_to_keyword(original_init, self, args, kwargs)
         requested = _inject_env_cp(config, kwargs, requested, "SFTTrainer")
         if requested > 1:
             _resolve_auto_backend(
@@ -1237,6 +1274,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 type(self),
                 config,
                 peft_config = kwargs.get("peft_config"),
+                backend = kwargs.get("context_parallel_backend"),
             )
             # Before the original __init__: Unsloth wraps instance methods there (auto packing's
             # train reset, the token budget's training_step), and they must capture the CP ones.
@@ -1901,6 +1939,7 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
                 type(self),
                 config,
                 peft_config = kwargs.get("peft_config"),
+                backend = kwargs.get("context_parallel_backend"),
             )
             # Before the original __init__, so instance wrappers made there capture the CP methods.
             install_methods()

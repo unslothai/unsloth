@@ -4,6 +4,7 @@
 """Context parallelism beside UNSLOTH_TP_SIZE (or a model split by hand) is refused before the trainer __init__,
 without a process group (tests/test_parallel_cp_compose_gloo.py trains the layouts on gloo ranks)."""
 
+import functools
 import types
 
 import pytest
@@ -156,3 +157,62 @@ def test_env_cp_sets_trl_style_configs_in_place(clean_env):
     kwargs = {}
     assert cp._inject_env_cp(config, kwargs, 1, "SFTTrainer") == 2
     assert config.context_parallel_size == 2 and "context_parallel_size" not in kwargs
+
+
+def test_env_cp_with_positional_plain_training_arguments_becomes_a_keyword(clean_env, monkeypatch):
+    # Failing before: SFTTrainer(model, TrainingArguments(...)) got context_parallel_size as a kwarg while the
+    # config stayed positional; Unsloth's trainer wrapper folds cp kwargs only into a keyword `args`, so the
+    # original __init__ raised "unexpected keyword argument".
+    import trl
+    from transformers import TrainingArguments
+
+    clean_env.setenv("UNSLOTH_CP_SIZE", "2")
+    monkeypatch.setattr(cp, "_check_cp_runtime", lambda *a, **k: None)
+    monkeypatch.setattr(cp, "_resolve_auto_backend", lambda *a, **k: None)
+    monkeypatch.setattr(cp, "_refuse_model_parallel_cp", lambda *a, **k: None)
+    calls = []
+
+    def signature(
+        self,
+        model = None,
+        args = None,
+        data_collator = None,
+        **kwargs,
+    ):
+        pass
+
+    # As Unsloth's trainer wrapper: (*args, **kwargs) behind functools.wraps of the real signature.
+    @functools.wraps(signature)
+    def init(self, *args, **kwargs):
+        calls.append((args, kwargs))
+
+    class Trainer:
+        __init__ = init
+
+    monkeypatch.setattr(trl, "SFTTrainer", Trainer)
+    cp.patch_sft_trainer()
+    model, training_args = (
+        torch.nn.Linear(2, 2),
+        TrainingArguments(output_dir = "unused", report_to = "none"),
+    )
+    try:
+        trl.SFTTrainer(model, training_args)
+    except Exception:
+        pass  # past the original __init__ the CP setup needs a process group
+    assert calls, "the original __init__ never ran"
+    got_args, got_kwargs = calls[0]
+    assert got_args == () and got_kwargs["model"] is model and got_kwargs["args"] is training_args
+    assert got_kwargs.get("context_parallel_size") == 2
+
+
+def test_a_backend_kwarg_overrides_the_config_in_the_pre_init_check(clean_env, monkeypatch):
+    # Failing before: the capability check read the config's backend (ring) although the constructor kwarg
+    # (ulysses) is what the trainer uses, refusing a valid ulysses + packing call.
+    import unsloth.parallel_capabilities as caps
+
+    seen = []
+    monkeypatch.setattr(
+        caps, "check_layout", lambda *a, cp_backend = None, **k: seen.append(cp_backend)
+    )
+    cp._refuse_model_parallel_cp(2, torch.nn.Linear(2, 2), None, _config(2), backend = "ulysses")
+    assert seen == ["ulysses"]
