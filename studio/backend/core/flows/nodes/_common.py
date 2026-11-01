@@ -287,6 +287,7 @@ async def _alongside(ctx: Any, repo: str, variant: Optional[str]) -> Optional[di
     except Exception as exc:
         raise FlowNodeError(f"Could not load {repo} alongside {serving[0]}: {exc}") from None
     ctx.resident.clear()
+    note_loaded(ctx, "llm", repo)
     ctx.chat_model = name
     ctx.set_status("running")
     return {"repo": repo, "variant": variant}
