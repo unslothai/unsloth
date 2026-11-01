@@ -52,9 +52,10 @@ def num_experts_of(config) -> Optional[int]:
 
 
 def _experts_count(module) -> Optional[int]:
-    """Expert count of an experts container: ModuleList length, `num_experts` attribute, or the leading dim
-    of its 3-D parameters (stacked expert weights)."""
-    if isinstance(module, torch.nn.ModuleList) and len(module) > 1:
+    """Expert count of an experts container: ModuleList / ModuleDict length (SwitchTransformers keeps its
+    experts in a ModuleDict), `num_experts` attribute, or the leading dim of its 3-D parameters (stacked
+    expert weights)."""
+    if isinstance(module, (torch.nn.ModuleList, torch.nn.ModuleDict)) and len(module) > 1:
         return len(module)
     for key in _EXPERT_COUNT_KEYS:
         v = getattr(module, key, None)
@@ -91,6 +92,30 @@ def _is_stacked_experts(module, n_cfg) -> bool:
     return any(p.dim() == 3 and p.shape[0] == n_cfg for p in module.parameters(recurse = False))
 
 
+def _is_experts_child(name, module, n_cfg) -> bool:
+    return ("expert" in name.lower() and "shared" not in name.lower()) or _is_stacked_experts(
+        module, n_cfg
+    )
+
+
+def _expert_subtrees(model, n_cfg) -> set:
+    """ids of modules inside an individual expert or a shared expert: the subtree of every experts child
+    (`experts.3`, `experts.expert_0`) and of every shared-expert MLP. An MoE container that owns stacked
+    expert weights in its children, and so routes over them itself (JetMoE's attention `experts`, whose
+    router is `experts.router`), is not a collection of experts and stays inspectable."""
+    inside = set()
+    for _, parent in model.named_modules():
+        for name, child in parent.named_children():
+            if "shared" not in name.lower() and not _is_experts_child(name, child, n_cfg):
+                continue
+            if "shared" not in name.lower() and any(
+                _is_stacked_experts(c, n_cfg) for c in child.children()
+            ):
+                continue
+            inside.update(id(m) for m in child.modules())
+    return inside
+
+
 def find_routers(model) -> Dict[str, str]:
     """{fqn: reason} for every module that scores tokens over experts.
 
@@ -101,17 +126,13 @@ def find_routers(model) -> Dict[str, str]:
     config = getattr(model, "config", None)
     n_cfg = num_experts_of(config) if config is not None else None
     found = {}
+    inside_experts = _expert_subtrees(model, n_cfg)
     for parent_name, parent in model.named_modules():
         # Inside an expert or shared expert (`experts.3`, `shared_expert`): its projections can be as wide as
         # the expert count (Qwen3-Next: 512 experts, moe_intermediate_size 512) but never route.
-        if any("expert" in part.lower() for part in parent_name.split(".")):
+        if id(parent) in inside_experts:
             continue
-        experts = [
-            (n, c)
-            for n, c in parent.named_children()
-            if ("expert" in n.lower() and "shared" not in n.lower())
-            or _is_stacked_experts(c, n_cfg)
-        ]
+        experts = [(n, c) for n, c in parent.named_children() if _is_experts_child(n, c, n_cfg)]
         counts = {_experts_count(c) for _, c in experts} - {None}
         if not counts and n_cfg is None:
             continue

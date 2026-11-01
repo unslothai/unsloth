@@ -652,6 +652,47 @@ FAMILIES = {
         (),
         {"score"},
     ),
+    # Experts in a ModuleDict (`experts.expert_<i>`); one sparse layer each in the encoder and the decoder.
+    "switch_transformers": (
+        lambda: _build(
+            "SwitchTransformersForConditionalGeneration",
+            "SwitchTransformersConfig",
+            vocab_size = 128,
+            d_model = 32,
+            d_kv = 8,
+            d_ff = 64,
+            expert_capacity = 8,
+            num_layers = 3,
+            num_sparse_encoder_layers = 1,
+            num_decoder_layers = 3,
+            num_sparse_decoder_layers = 1,
+            num_heads = 4,
+            num_experts = 4,
+            decoder_start_token_id = 0,
+        ),
+        ["decoder.block"],
+        3,
+        {"encoder.block.1.layer.1.mlp.router", "decoder.block.1.layer.2.mlp.router"},
+        None,
+    ),
+    # Attention MoE too: `self_attention.experts` (JetMoeMoA) owns stacked expert weights and its own router.
+    "jetmoe": (
+        _causal(
+            "JetMoe",
+            kv_channels = 16,
+            intermediate_size = 64,
+            num_local_experts = 4,
+            num_experts_per_tok = 2,
+        ),
+        ["model.layers"],
+        3,
+        {
+            f"model.layers.{i}.{m}.router"
+            for i in range(3)
+            for m in ("mlp", "self_attention.experts")
+        },
+        None,
+    ),
     "qwen3_tied_real_weights": (
         lambda: _build(
             "Qwen3ForCausalLM", "Qwen3Config", meta = False, **_text(tie_word_embeddings = True)
@@ -714,7 +755,13 @@ def test_selectors_on_family(family):
     ), family
 
     # Routers: exactly the router modules, never an expert, shared expert or dense MLP.
-    expected_routers = {
-        k for k in names if router_suffixes and k.endswith(router_suffixes) and "expert" not in k
-    }
+    # A set is the exact expected fqns; a tuple is suffixes matched outside any expert subtree.
+    if isinstance(router_suffixes, set):
+        expected_routers = router_suffixes
+    else:
+        expected_routers = {
+            k
+            for k in names
+            if router_suffixes and k.endswith(router_suffixes) and "expert" not in k
+        }
     assert set(P.find_routers(model)) == expected_routers, family

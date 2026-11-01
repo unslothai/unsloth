@@ -694,6 +694,38 @@ def test_float8_filter_keeps_a_wrapped_router_and_its_inner_linear_in_high_preci
     assert fn(m.layers[0].moe.experts[0], "layers.0.moe.experts.0")
 
 
+def test_float8_filter_keeps_a_router_beside_moduledict_experts_in_high_precision():
+    # Failing before: only a ModuleList counted as an experts collection, so with 16 experts in a ModuleDict
+    # (SwitchTransformers' layout) the wrapped router `wg` was not found and `wg.proj` was converted to fp8.
+    class Gate(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(64, 16, bias = False)
+
+        def forward(self, x):
+            return self.proj(x)
+
+    class Moe(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.wg = Gate()
+            self.experts = torch.nn.ModuleDict(
+                {f"expert_{i}": torch.nn.Linear(64, 64, bias = False) for i in range(16)}
+            )
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = types.SimpleNamespace(num_experts = 16)
+            self.layers = torch.nn.ModuleList([Moe(), Moe()])
+
+    m = Model()
+    assert set(P.find_routers(m)) == {"layers.0.wg", "layers.1.wg"}
+    fn = f8t.float8_training_filter(m, "tensorwise", size_filter = False)
+    assert not fn(m.layers[0].wg.proj, "layers.0.wg.proj")
+    assert fn(m.layers[0].experts.expert_0, "layers.0.experts.expert_0")
+
+
 def test_gemm_counters_are_per_thread():
     # Failing before: the active-counter list was process-global, so an eager launch on one thread was
     # counted by a counter open on another.
