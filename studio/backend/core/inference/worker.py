@@ -255,6 +255,26 @@ def _send_response(resp_queue: Any, response: dict) -> None:
         logger.error("Failed to send response: %s", exc)
 
 
+def _exit_after_shutdown(resp_queue: Any) -> None:
+    """Models are unloaded and acked; interpreter shutdown can stall 10s+ on Windows CUDA (#16330)."""
+    try:
+        resp_queue.close()
+        resp_queue.join_thread()
+    except Exception:
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    try:
+        from utils.worker_stderr import stop_worker_stderr_mirror
+        stop_worker_stderr_mirror()
+    except Exception:
+        pass
+    os._exit(0)
+
+
 def _encode_share_object(obj: Any) -> bytes:
     data = json.dumps(obj, separators = (",", ":"), ensure_ascii = False).encode("utf-8")
     if len(data) > _SHARE_OBJECT_MAX_BYTES:
@@ -2665,7 +2685,7 @@ def run_inference_process(
                         "type": "shutdown_ack",
                     },
                 )
-                return
+                _exit_after_shutdown(resp_queue)
 
             else:
                 logger.warning("Unknown command type: %s", cmd_type)
