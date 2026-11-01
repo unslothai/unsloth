@@ -490,10 +490,22 @@ def test_decoder_layers_is_the_language_decoder_not_a_longer_encoder():
         WhisperForConditionalGeneration,
     )
 
-    text = LlamaConfig(vocab_size = 256, hidden_size = 64, intermediate_size = 128, num_hidden_layers = 2,
-                       num_attention_heads = 4, num_key_value_heads = 2)
-    vision = CLIPVisionConfig(hidden_size = 32, intermediate_size = 64, num_hidden_layers = 4,
-                              num_attention_heads = 4, image_size = 32, patch_size = 16)
+    text = LlamaConfig(
+        vocab_size = 256,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+    )
+    vision = CLIPVisionConfig(
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 4,
+        num_attention_heads = 4,
+        image_size = 32,
+        patch_size = 16,
+    )
     with torch.device("meta"):
         llava = LlavaForConditionalGeneration(LlavaConfig(vision_config = vision, text_config = text))
     name, n = P.decoder_layers(llava)
@@ -501,10 +513,20 @@ def test_decoder_layers_is_the_language_decoder_not_a_longer_encoder():
     is_hp = P.hp_filter(llava, P.HPLayerPolicy(first_n = 1, last_n = 1))
     assert is_hp(None, f"{name}.0.self_attn.q_proj") and is_hp(None, f"{name}.1.mlp.down_proj")
 
-    whisper = WhisperConfig(vocab_size = 256, d_model = 32, encoder_layers = 4, decoder_layers = 2,
-                            encoder_attention_heads = 4, decoder_attention_heads = 4,
-                            encoder_ffn_dim = 64, decoder_ffn_dim = 64, pad_token_id = 0, bos_token_id = 1,
-                            eos_token_id = 2, decoder_start_token_id = 1)
+    whisper = WhisperConfig(
+        vocab_size = 256,
+        d_model = 32,
+        encoder_layers = 4,
+        decoder_layers = 2,
+        encoder_attention_heads = 4,
+        decoder_attention_heads = 4,
+        encoder_ffn_dim = 64,
+        decoder_ffn_dim = 64,
+        pad_token_id = 0,
+        bos_token_id = 1,
+        eos_token_id = 2,
+        decoder_start_token_id = 1,
+    )
     with torch.device("meta"):
         w = WhisperForConditionalGeneration(whisper)
     assert P.decoder_layers(w) == ("model.decoder.layers", 2)

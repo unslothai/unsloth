@@ -161,7 +161,16 @@ def find_embeddings(model) -> Dict[str, str]:
     return emb
 
 
-_NON_DECODER_PARTS = ("vision", "visual", "image", "audio", "speech", "encoder", "tower", "projector")
+_NON_DECODER_PARTS = (
+    "vision",
+    "visual",
+    "image",
+    "audio",
+    "speech",
+    "encoder",
+    "tower",
+    "projector",
+)
 
 
 def _language_decoder(model):
