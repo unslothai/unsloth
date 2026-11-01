@@ -230,7 +230,8 @@ Write-Host "a Triton swap that strands the venv must fail the setup"
 # Both triton installs failing must fail setup, or install.ps1 commits a broken venv.
 $_bothFailed = if ($setupText -match '(?s)(neither triton would reinstall.*?\n\s*\}\s*\n)') { $Matches[1] } else { "" }
 Check "the both-failed branch was found" ($_bothFailed -ne "")
-Check "it sets a nonzero stack exit"     ($_bothFailed -match '\$stackExit = \$tritonBackExit')
+# A fallback that exits 0 without a working triton still fails (test_xpu_triton_windows_swap.ps1 runs it).
+Check "it sets a nonzero stack exit"     ($_bothFailed -match '\$stackExit = if \(\$tritonBackExit -ne 0\) \{ \$tritonBackExit \} else \{ 1 \}')
 Check "the exit code is the real failure" (-not ($_bothFailed -match '\$stackExit = 0'))
 Check "a nonzero stack exit fails setup" ($setupText -match '(?s)if \(\$stackExit -ne 0\) \{.*?Exit-SetupFailure')
 
