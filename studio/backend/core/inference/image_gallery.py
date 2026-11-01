@@ -351,8 +351,7 @@ _chunk_cache_lock = threading.Lock()
 
 
 def _listed_meta(path: Path, info: Optional[os.stat_result]) -> Optional[dict[str, Any]]:
-    """``_read_meta(path)``, reparsing a chunk only once the file changed since ``info``, a stat
-    of ``path`` taken before this read."""
+    """``_read_meta(path)``, reparsed only once the file changed since ``info`` (stat taken before)."""
     if info is None:
         return _read_meta(path)
     # A write moves mtime or ctime and a replace the inode, so a key that agrees means the same bytes.
@@ -423,7 +422,7 @@ def list_images(
     flags = gallery_flags.read(directory)
     # Shelf split and pin sort use file stems before any recipe read, keeping the early break intact.
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
-    # The stat the sort takes also keys the recipe read: it comes before that read.
+    # The sort's stat keys the recipe read, so it must precede it.
     stats: dict[Path, os.stat_result] = {}
 
     def mtime(path: Path) -> float:
@@ -448,7 +447,6 @@ def list_images(
         meta = _listed_meta(path, info)
         if meta is None:
             continue
-        # The mtime it was sorted by, so its order_at agrees with its place.
         record = _record(
             path.stem,
             meta,

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The image listing reads a PNG's recipe chunk again only when the file changed, and the video
-listing resolves only a symlinked clip, with the answers they gave before."""
+"""Image listing rereads a PNG chunk only on change; video listing resolves only symlinked clips."""
 
 from __future__ import annotations
 
