@@ -125,7 +125,12 @@ def build(
     return get_peft_model(model, config).train()
 
 
-def batch(bsz = 4, seq = 8, seed = 1, mask = True):
+def batch(
+    bsz = 4,
+    seq = 8,
+    seed = 1,
+    mask = True,
+):
     g = torch.Generator().manual_seed(seed)
     ids = torch.randint(0, VOCAB, (bsz, seq), generator = g)
     labels = ids.clone()
@@ -161,7 +166,11 @@ def _reference(model, ids, labels, attention_mask, n_mb, steps):
             total += float(out.loss)
             aux_total += float(out.aux_loss) if out.aux_loss is not None else 0.0
         if step == 0:
-            grads = {n: p.grad.detach().clone() for n, p in model.named_parameters() if p.grad is not None}
+            grads = {
+                n: p.grad.detach().clone()
+                for n, p in model.named_parameters()
+                if p.grad is not None
+            }
         opt.step()
         opt.zero_grad(set_to_none = True)
         losses.append(total)
@@ -180,7 +189,16 @@ def _group(name):
     return prefix + "other"
 
 
-def _case_parity(rank, world, tmp, n_mb = 2, schedule = "gpipe", mask = True, steps = 2, **build_kw):
+def _case_parity(
+    rank,
+    world,
+    tmp,
+    n_mb = 2,
+    schedule = "gpipe",
+    mask = True,
+    steps = 2,
+    **build_kw,
+):
     from torch.distributed.device_mesh import init_device_mesh
 
     ids, labels, attention_mask = batch(mask = mask)
@@ -266,7 +284,10 @@ def _case_refusals(rank, world, tmp):
         module.load_balancing_loss_func = original
     # pipeline_sharded_loading keeps refusing mixture-of-experts models.
     model = build()
-    catch("sharded_loading", lambda: ppn._refuse_unsupported(model, ppn._find_parts(model), allow_moe = False))
+    catch(
+        "sharded_loading",
+        lambda: ppn._refuse_unsupported(model, ppn._find_parts(model), allow_moe = False),
+    )
     # pp x dp over a mixture-of-experts stage (shard_model checks it before sharding).
     pp = ppn.apply_pipeline_parallel(build(), mesh)
     dp = init_device_mesh("cpu", (world, 1), mesh_dim_names = ("pp", "dp"))["dp"]
@@ -301,7 +322,11 @@ def _worker(rank, world, port, case, tmp, kwargs):
         dist.destroy_process_group()
 
 
-def _spawn(case, world = 2, **kwargs):
+def _spawn(
+    case,
+    world = 2,
+    **kwargs,
+):
     try:
         ppn._check_torch_pipelining()
     except RuntimeError as exc:
@@ -345,7 +370,10 @@ def test_pp2_moe_aux_matches_gradient_accumulation(cell):
     ref = results[0]["ref"]
     aux_on = kwargs.get("aux", True)
     for res in results:
-        assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5, abs = 1e-6), (res["losses"], ref)
+        assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5, abs = 1e-6), (
+            res["losses"],
+            ref,
+        )
         if aux_on:
             assert res["aux"] == pytest.approx(ref["aux"], rel = 1e-5, abs = 1e-6), (res["aux"], ref)
             assert min(ref["aux"]) > 0

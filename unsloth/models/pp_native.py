@@ -443,7 +443,9 @@ def _check_loss_normalization(inner):
 class _MoEAux:
     """How a stage collects its routers' logits and forms the load-balancing loss (_moe_aux_plan)."""
 
-    owner: nn.Module  # the CausalLM (num_experts, num_experts_per_tok, router_aux_loss_coef, config)
+    owner: (
+        nn.Module
+    )  # the CausalLM (num_experts, num_experts_per_tok, router_aux_loss_coef, config)
     router_class: type  # the module whose output[index] is a layer's router logits
     index: int
     num_experts: int
@@ -473,7 +475,11 @@ def _router_statistics(
     """float32 [2 E + 1]: per-expert top-k assignments, per-expert routing probability sums (differentiable)
     and the row count over `logits` (router logits of several layers), weighted by the 2-D attention mask as
     transformers' load_balancing_loss_func weights them. Summed over all layers, they give that loss."""
-    device = logits[0].device if logits else (attention_mask.device if attention_mask is not None else None)
+    device = (
+        logits[0].device
+        if logits
+        else (attention_mask.device if attention_mask is not None else None)
+    )
     counts = torch.zeros(num_experts, dtype = torch.float32, device = device)
     probs = torch.zeros(num_experts, dtype = torch.float32, device = device)
     rows = torch.zeros((), dtype = torch.float32, device = device)
@@ -541,7 +547,9 @@ def _moe_aux_plan(parts):
     inner = parts.inner
     if type(inner).__name__ not in _PP_MOE_AUX_FAMILIES:
         return None
-    recorder = (getattr(type(parts.decoder), "_can_record_outputs", None) or {}).get("router_logits")
+    recorder = (getattr(type(parts.decoder), "_can_record_outputs", None) or {}).get(
+        "router_logits"
+    )
     router_class = getattr(recorder, "target_class", None)
     index = getattr(recorder, "index", None)
     if (
@@ -552,14 +560,20 @@ def _moe_aux_plan(parts):
         return None
     num_experts = getattr(inner, "num_experts", None)
     top_k = getattr(inner, "num_experts_per_tok", None)
-    if not isinstance(num_experts, int) or not isinstance(top_k, int) or not 0 < top_k <= num_experts:
+    if (
+        not isinstance(num_experts, int)
+        or not isinstance(top_k, int)
+        or not 0 < top_k <= num_experts
+    ):
         return None
     routers = {}
     for i, layer in enumerate(parts.layers):
         count = sum(isinstance(m, router_class) for m in layer.modules())
         if count:
             routers[i] = count
-    if not routers or not _statistics_match_transformers(type(inner).__module__, num_experts, top_k):
+    if not routers or not _statistics_match_transformers(
+        type(inner).__module__, num_experts, top_k
+    ):
         return None
     return _MoEAux(inner, router_class, index, num_experts, routers)
 
@@ -570,7 +584,11 @@ def _record_router(ctx, module, args, output):
         ctx.router_logits.append(output[index] if isinstance(output, (tuple, list)) else output)
 
 
-def _refuse_unsupported(model, parts, allow_moe = True):
+def _refuse_unsupported(
+    model,
+    parts,
+    allow_moe = True,
+):
     """Refusals before anything is cut. Returns the _MoEAux of a mixture-of-experts family whose router
     auxiliary loss PipelineParallel carries (allow_moe), else None."""
     text = _text_config(model)
@@ -1034,7 +1052,9 @@ class _PPStageModule(nn.Module):
                 ctx.router_logits, carry, kwargs.get("attention_mask"), hidden.device
             )
             if stats is None:  # auxiliary loss off: nothing to carry (a zero placeholder)
-                stats = torch.zeros(2 * moe.num_experts + 1, dtype = torch.float32, device = hidden.device)
+                stats = torch.zeros(
+                    2 * moe.num_experts + 1, dtype = torch.float32, device = hidden.device
+                )
             return hidden, stats
         finally:
             ctx.active = False
@@ -1050,7 +1070,9 @@ class _PPStageModule(nn.Module):
         if not isinstance(loss, torch.Tensor) or loss.dim() != 0:
             raise RuntimeError("Unsloth: the last pipeline stage needs labels to return a loss.")
         if moe is not None:
-            stats = self._router_statistics(captured, carry, kwargs.get("attention_mask"), loss.device)
+            stats = self._router_statistics(
+                captured, carry, kwargs.get("attention_mask"), loss.device
+            )
             if stats is not None:
                 # transformers' CausalLM forward: loss += router_aux_loss_coef * load_balancing_loss.
                 aux = _load_balancing_from_statistics(stats, moe.num_experts)
@@ -1363,7 +1385,10 @@ class PipelineParallel:
                 # The router load-balancing statistics travel with the hidden states (gradient back to
                 # every stage's routers).
                 stats = torch.empty(
-                    (2 * moe.num_experts + 1,), dtype = torch.float32, device = "meta", requires_grad = True
+                    (2 * moe.num_experts + 1,),
+                    dtype = torch.float32,
+                    device = "meta",
+                    requires_grad = True,
                 )
                 if index != 0:
                     example_in = (example_in, stats)

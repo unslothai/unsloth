@@ -1985,7 +1985,6 @@ def _check_pp_tp_composition(model, tp_mesh):
         )
     if stage.ctx.moe is not None:
         from .pp_native import _PP_MOE_COMPOSED
-
         raise ValueError(_PP_MOE_COMPOSED)
     if stage.dp_mesh is not None:
         raise ValueError(
