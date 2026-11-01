@@ -15,7 +15,6 @@ export function ChatBackground({
 	const { value, ready } = useChatBackground();
 	const material = useMaterialStore((s) => s.material);
 	if (!active) return null;
-	// macOS glass shows the desktop instead.
 	if (!value)
 		return backdrop && ready && material !== "solid" && material !== "macos" ? (
 			<Suspense fallback={null}>
