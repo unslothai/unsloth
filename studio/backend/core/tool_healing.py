@@ -280,7 +280,20 @@ def tag_mention_spans(text: str) -> list[tuple[int, int]]:
             for m in _TAG_MENTION_RE.finditer(text, line_start, line_end)
             if m.group(2).startswith(_TOOL_TAG_PREFIXES)
         )
-    return spans
+    if not spans:
+        return spans
+    # One inside a real call (found with the mentions blanked, so none reads as an opener) is that call's data:
+    # masking it would let the call's strip swallow a mask and drop every mention's protection.
+    parts, prev = [], 0
+    for start, end in spans:
+        parts.append(text[prev:start])
+        parts.append(" " * (end - start))
+        prev = end
+    parts.append(text[prev:])
+    calls = _tool_call_markup_spans("".join(parts))
+    if not calls:
+        return spans
+    return [s for s in spans if not any(cs <= s[0] < ce for cs, ce in calls)]
 
 
 def in_tag_mention(spans, pos: int) -> bool:

@@ -569,3 +569,18 @@ def test_messages_api_reducer_keeps_held_text_ahead_of_the_tool_block():
     types = [b["type"] for b in json.loads(response.body)["content"]]
     assert types[0] == "text"
     assert "text" not in types[1:], types
+
+
+def test_mention_survives_a_real_call_quoting_a_backticked_tag():
+    call = '<tool_call>{"name": "web_search", "arguments": {"query": "explain `<tool_call>` tags"}}</tool_call>'
+    text = "Use `<tool_call>` tags.\n" + call
+    assert _route(text) == "Use `<tool_call>` tags.\n"
+    assert (
+        strip_tool_markup(text, final = True, enabled_tool_names = NAMES) == "Use `<tool_call>` tags."
+    )
+    assert _calls(text) == [("web_search", {"query": "explain `<tool_call>` tags"})]
+    # Once streamed, the sentence is never taken back (a partial real opener's brief leak is pre-existing).
+    sentence = "Use `<tool_call>` tags.\n"
+    stream = _StreamingDisplayStrip(auto_heal_tool_calls = True, enabled_tool_names = NAMES)
+    for i in range(len(sentence), len(text) + 1):
+        assert stream.strip(_hold_pending_mention(text[:i], True)).startswith(sentence), i
