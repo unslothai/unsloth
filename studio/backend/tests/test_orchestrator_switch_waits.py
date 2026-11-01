@@ -270,7 +270,6 @@ def test_streaming_reader_keeps_its_tail_across_a_switch(monkeypatch, reader):
 def test_idle_switch_does_not_wait_for_readers(monkeypatch):
     rec = _Recorder(monkeypatch)
     o = _live()
-    started = time.monotonic()
     assert o._shutdown_subprocess() is True
-    assert time.monotonic() - started < orch_mod._SHUTDOWN_READER_GRACE_S
-    assert rec.sleeps == []
+    # _let_readers_finish sleeps only while a reader is registered; wall time is load-dependent.
+    assert rec.sleeps == [] and rec.terminated == []

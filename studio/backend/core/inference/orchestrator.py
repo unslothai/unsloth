@@ -223,7 +223,7 @@ _CANCELLED_ROWS_GRACE = 5.0
 # Old fixed post-cancel sleep, now added to the exit wait so a slow cancel keeps its full budget.
 _SHUTDOWN_CANCEL_GRACE_S = 0.5
 _SHUTDOWN_JOIN_SLICE_S = 0.05
-# Old fixed sleeps on a switch (0.3 + 0.5): now only a live stream waits, to read its own tail.
+# Old fixed sleeps on a switch (0.3 + 0.5): now only a live stream waits, after worker exit, to read its tail.
 _SHUTDOWN_READER_GRACE_S = 0.8
 
 # Transformers TTS only; generous since _ensure_subprocess_alive already catches dead workers.
@@ -868,7 +868,6 @@ class InferenceOrchestrator:
 
         self._teardown_going_out()
         self._cancel_generation()
-        cancelled_at = time.monotonic()
         self._drain_unread_replies()
 
         # The worker reads commands in order, so shutdown runs once the cancelled reply ends.
@@ -910,7 +909,7 @@ class InferenceOrchestrator:
             )
             return False
 
-        self._let_readers_finish(cancelled_at + _SHUTDOWN_READER_GRACE_S)
+        self._let_readers_finish(time.monotonic() + _SHUTDOWN_READER_GRACE_S)
         # Without this flag every model switch replayed a healthy worker's stderr at ERROR.
         self._worker_stopped_deliberately = True
         self._proc = None
@@ -925,8 +924,7 @@ class InferenceOrchestrator:
         return True
 
     def _join_worker_draining(self, timeout: float) -> None:
-        """Wait for worker exit, emptying replies meanwhile: a child exits only once its queue
-        feeder flushes, and a full pipe would hold it until the terminate fallback."""
+        """Join while draining replies: a child exits only once its queue feeder flushes."""
         proc = self._proc
         try:
             if getattr(proc, "sentinel", None) is None:
@@ -945,9 +943,8 @@ class InferenceOrchestrator:
             pass
 
     def _drain_unread_replies(self) -> None:
-        """Route the reply queue to the dispatched mailboxes still waiting on it, standing in for the
-        stopped dispatcher; without the old sleeps a cancelled stream's tail and gen_done would be
-        discarded. A direct reader reads (and routes) the queue itself, so leave it to that reader."""
+        """Stand in for the stopped dispatcher so a cancelled stream keeps its tail; a direct reader
+        reads the queue itself."""
         with self._mailbox_lock:
             if self._direct_mailboxes:
                 return
@@ -961,8 +958,7 @@ class InferenceOrchestrator:
                 mbox.put(resp)
 
     def _let_readers_finish(self, deadline: float) -> None:
-        """A stream bails with a worker-crash error once the handle swaps, so give one still reading
-        its cancelled reply's tail until ``deadline``; an idle switch does not wait at all."""
+        """A stream reports a worker crash once the handle swaps, so let it read its tail first."""
         while time.monotonic() < deadline:
             with self._mailbox_lock:
                 if not self._mailboxes and not self._direct_mailboxes:
