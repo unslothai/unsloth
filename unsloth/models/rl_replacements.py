@@ -3350,6 +3350,9 @@ def _unsloth_vllm_peft_merge_out_of_place(base, layers):
     the base tensors and return {id(param): merged tensor}; the live parameters keep their exact bytes."""
     params = list(base.parameters(recurse = False))
     originals = [param.data for param in params]
+    # FP8 LoRA bases (kernels/fp8_lora.py) requantize on merge: keep the live fp8 copy and host master state.
+    fp8 = base.__dict__.get("_unsloth_fp8_lora")
+    fp8_saved = dict(fp8.__dict__) if fp8 is not None else None
     states = [
         (layer, list(getattr(layer, "merged_adapters", [])), dict(getattr(layer, "_caches", {})))
         for layer in layers
@@ -3372,6 +3375,9 @@ def _unsloth_vllm_peft_merge_out_of_place(base, layers):
             module.training = training
         for param, data in zip(params, originals):
             param.data = data
+        if fp8 is not None:
+            fp8.__dict__.clear()
+            fp8.__dict__.update(fp8_saved)
         for layer, merged_adapters, caches in states:
             if hasattr(layer, "merged_adapters"):
                 layer.merged_adapters[:] = merged_adapters

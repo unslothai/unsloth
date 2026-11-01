@@ -1015,3 +1015,19 @@ def test_refresh_under_inference_mode_builds_trainable_fp8_tensors():
     x = torch.randn(32, 256).bfloat16().requires_grad_(True)
     lin(x).float().sum().backward()
     assert x.grad is not None
+
+
+def test_grpo_out_of_place_merge_leaves_the_fp8_copy_alone(offload_on_cpu):
+    # Failing before: the merge wrapper requantized the temporarily merged base into the live fp8 state, and the
+    # sync helper restored only param.data, so compiled forwards kept the merged base under an unmerged adapter.
+    from unsloth.models.rl_replacements import _unsloth_vllm_peft_merge_out_of_place
+
+    model = _tiny_qwen3_peft()
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    f8t.enable_fp8_lora(model, allow_cpu = True)
+    layer = next(m for m in model.modules() if hasattr(m, "lora_A") and hasattr(m, "base_layer"))
+    state = layer.base_layer.__dict__["_unsloth_fp8_lora"]
+    w8, key, offloaded = state.w8, state._key, state.offloaded
+    merged = _unsloth_vllm_peft_merge_out_of_place(layer.base_layer, [layer])
+    assert merged
+    assert state.w8 is w8 and state._key == key and state.offloaded == offloaded
