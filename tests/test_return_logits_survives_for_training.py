@@ -75,7 +75,10 @@ def _fast_base_model():
     # Follow the lifted code into every other _utils.py helper it names, so a guard either method
     # gains (for_inference's tensor parallel refusal, #15137) runs here instead of resolving to None.
     helpers = {n.name: n for n in utils.body if isinstance(n, ast.FunctionDef)}
-    lifted = {n.name for n in wanted}
+    # Helpers that import a sibling module (a relative import has no package in this namespace): stubbed with what
+    # they return for these fakes. A model split by hand (apply_pipeline_parallel) keeps no UNSLOTH_PP_SIZE replica.
+    stubbed = {"_pipeline_keeps_replica": lambda model: False}
+    lifted = {n.name for n in wanted} | set(stubbed)
     todo = list(wanted)
     while todo:
         for ref in ast.walk(todo.pop()):
@@ -85,7 +88,9 @@ def _fast_base_model():
                 lifted.add(node.name)
                 wanted.insert(0, node)
                 todo.append(node)
-    namespace = _Namespace(os = os, inspect = inspect, torch = _torch_or_stub(), functools = functools)
+    namespace = _Namespace(
+        os = os, inspect = inspect, torch = _torch_or_stub(), functools = functools, **stubbed
+    )
     module = ast.fix_missing_locations(ast.Module(body = wanted, type_ignores = []))
     exec(compile(module, str(MODELS / "vision.py"), "exec"), namespace)
     for name in ("for_inference", "for_training"):
