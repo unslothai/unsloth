@@ -108,6 +108,86 @@ def test_gemini_through_a_proxy_gets_no_native_page_size(mock_http):
     assert "pageSize" not in mock_http[-1].url.params
 
 
+def _gemini_row(name):
+    return {"name": f"models/{name}", "supportedGenerationMethods": ["generateContent"]}
+
+
+def test_gemini_follows_next_page_token(mock_http):
+    pages = {
+        None: {"models": [_gemini_row("gemini-2.5-flash")], "nextPageToken": "p2"},
+        "p2": {"models": [_gemini_row("gemini-2.5-pro")], "nextPageToken": "p3"},
+        "p3": {"models": [_gemini_row("gemini-3.6-pro")]},
+    }
+    mock_http.state["handler"] = lambda request: httpx.Response(
+        200, json = pages[request.url.params.get("pageToken")]
+    )
+    base = "https://generativelanguage.googleapis.com/v1beta"
+    models = _run(ExternalProviderClient("gemini", base, "AIza").list_models())
+    assert [m["id"] for m in models] == ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.6-pro"]
+    assert [r.url.params.get("pageToken") for r in mock_http] == [None, "p2", "p3"]
+    assert all(r.url.params["pageSize"] == "1000" for r in mock_http)
+    assert all(r.headers["x-goog-api-key"] == "AIza" for r in mock_http)
+
+
+def test_gemini_through_a_proxy_follows_its_page_token(mock_http):
+    def handle(request):
+        if request.url.params.get("pageToken") == "next":
+            return httpx.Response(200, json = {"models": [_gemini_row("gemini-2.5-pro")]})
+        return httpx.Response(
+            200, json = {"models": [_gemini_row("gemini-2.5-flash")], "nextPageToken": "next"}
+        )
+
+    mock_http.state["handler"] = handle
+    client = ExternalProviderClient("gemini", "https://gateway.example/v1beta", "sk")
+    assert [m["id"] for m in _run(client.list_models())] == ["gemini-2.5-flash", "gemini-2.5-pro"]
+    assert dict(mock_http[-1].url.params) == {"pageToken": "next"}
+
+
+def test_gemini_paging_stops_on_a_repeated_token(mock_http):
+    mock_http.state["handler"] = lambda request: httpx.Response(
+        200, json = {"models": [_gemini_row("gemini-2.5-flash")], "nextPageToken": "same"}
+    )
+    base = "https://generativelanguage.googleapis.com/v1beta"
+    _run(ExternalProviderClient("gemini", base, "AIza").list_models())
+    assert len(mock_http) == 2
+
+
+def test_gemini_paging_stops_at_the_page_cap(mock_http):
+    count = iter(range(1_000))
+    mock_http.state["handler"] = lambda request: httpx.Response(
+        200, json = {"models": [], "nextPageToken": f"t{next(count)}"}
+    )
+    base = "https://generativelanguage.googleapis.com/v1beta"
+    _run(ExternalProviderClient("gemini", base, "AIza").list_models())
+    assert len(mock_http) == ep._GEMINI_MAX_MODEL_PAGES
+
+
+def test_gemini_later_page_error_is_reported(mock_http):
+    def handle(request):
+        if request.url.params.get("pageToken"):
+            return httpx.Response(429)
+        return httpx.Response(200, json = {"models": [], "nextPageToken": "p2"})
+
+    mock_http.state["handler"] = handle
+    base = "https://generativelanguage.googleapis.com/v1beta"
+    with pytest.raises(httpx.HTTPStatusError):
+        _run(ExternalProviderClient("gemini", base, "AIza").list_models())
+
+
+def test_gemini_route_lists_allowlisted_models_from_later_pages(mock_http):
+    filler = [_gemini_row(f"gemma-3-{n}b-it") for n in range(50)]
+    pages = {
+        None: {"models": [_gemini_row("gemini-2.5-flash"), *filler], "nextPageToken": "p2"},
+        "p2": {"models": [_gemini_row("gemini-3.6-pro"), _gemini_row("imagen-4.0")]},
+    }
+    mock_http.state["handler"] = lambda request: httpx.Response(
+        200, json = pages[request.url.params.get("pageToken")]
+    )
+    payload = ProviderModelsRequest(provider_type = "gemini")
+    listed = _run(providers_route.list_provider_models(payload, "tester", False))
+    assert [m.id for m in listed] == ["gemini-2.5-flash", "gemini-3.6-pro"]
+
+
 @pytest.mark.parametrize(
     "status,expected",
     [
