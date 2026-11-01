@@ -111,15 +111,16 @@ def test_cancelled_request_keeps_lock_until_worker_finishes():
         while not entered.is_set():
             await asyncio.sleep(0.01)
         task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        # The worker is still running: a second import must still see the folder as busy.
+        await asyncio.sleep(0.05)
+        # The request stays pending while the worker runs, so the training interlock and the
+        # import lock both still see the folder as busy.
+        assert not task.done()
         assert lock.locked()
         proceed.set()
-        for _ in range(500):
-            if not lock.locked():
-                break
-            await asyncio.sleep(0.01)
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The cancelled request ends only after the worker released the lock.
+        assert not lock.locked()
 
     asyncio.run(main())
     assert not lock.locked()

@@ -4364,13 +4364,24 @@ async def _run_holding_import_lock(_lock: "threading.Lock", fn, *args):
             started = True
         return fn(*args, _lock, cancelled)
 
+    worker = asyncio.ensure_future(asyncio.to_thread(run))
     try:
-        return await asyncio.to_thread(run)
+        return await asyncio.shield(worker)
     except BaseException:
         with guard:
             cancelled.set()
             if not started:
                 _lock.release()
+                raise
+        # Hold the request (and with it the training interlock and the open uploads) until the
+        # worker stops; it checks ``cancelled`` at its next chunk read, so the wait is bounded.
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                pass
+            except BaseException:
+                break
         raise
 
 
