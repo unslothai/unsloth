@@ -4031,13 +4031,11 @@ export function ImagesPage({
   const editImageItem = (image: GalleryImage) => (
     <EditImageMenuItem onClick={() => void editGalleryImage(image)} />
   );
-  // tileProps is rebuilt on every render, so this refreshes after every commit. Read only from tile event handlers, so a tile does not
-  // re-render when the page builds new handlers.
+  // Refreshed after every commit, read only from tile event handlers, so new page closures never re-render a tile.
   const [stripTileActions] = useState(() => new StripTileActionsBox());
-  const tileProps = stripReorder.tileProps;
   useLayoutEffect(() => {
     stripTileActions.set({
-      tileProps,
+      tileProps: stripReorder.tileProps,
       select: setSelectedId,
       setMenuId: setTileMenuId,
       togglePin: (id, pinned) => void handleTogglePin(id, pinned),
@@ -4048,16 +4046,7 @@ export function ImagesPage({
       toggleFavorite,
       editImage: (image) => void editGalleryImage(image),
     });
-  }, [
-    stripTileActions,
-    tileProps,
-    handleTogglePin,
-    handleArchive,
-    handleDelete,
-    handleQuickDownload,
-    toggleFavorite,
-    editGalleryImage,
-  ]);
+  });
   const { openCrop: openInpaintCrop, cropDialog: inpaintCropDialog } = useImageCrop(
     initImage,
     handleInitChange,

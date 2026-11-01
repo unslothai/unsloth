@@ -2310,13 +2310,11 @@ function VideoGenerator({
     [dropFromStrip],
   );
 
-  // tileProps is rebuilt on every render, so this refreshes after every commit. Read only from card event handlers, so a card does not
-  // re-render when the page builds new handlers.
+  // Refreshed after every commit, read only from card event handlers, so new page closures never re-render a card.
   const [stripTileActions] = useState(() => new VideoStripTileActionsBox());
-  const tileProps = stripReorder.tileProps;
   useLayoutEffect(() => {
     stripTileActions.set({
-      tileProps,
+      tileProps: stripReorder.tileProps,
       select: setSelectedId,
       posterError: handlePosterError,
       togglePin: (id, pinned) => void handleTogglePin(id, pinned),
@@ -2326,16 +2324,7 @@ function VideoGenerator({
       addToProject: addGalleryVideoToProject,
       toggleFavorite,
     });
-  }, [
-    stripTileActions,
-    tileProps,
-    handlePosterError,
-    handleTogglePin,
-    handleArchive,
-    handleDelete,
-    handleQuickDownload,
-    toggleFavorite,
-  ]);
+  });
 
   const handleClearAll = useCallback(async () => {
     setClearingGallery(true);
