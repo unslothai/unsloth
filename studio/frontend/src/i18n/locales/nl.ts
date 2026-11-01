@@ -8,10 +8,13 @@ export const nl = {
   chatBackground: {
     noBackground: "Geen achtergrond",
     sizing: "Afbeeldingsgrootte",
+    sizingPosition: "Afbeeldingsgrootte en positie",
     fill: "Vullen",
     fit: "Passend maken",
     stretch: "Uitrekken",
     original: "Oorspronkelijke grootte",
+    fitWidth: "Passend in breedte",
+    fitHeight: "Passend in hoogte",
     zoom: "Zoom",
     outline: "Rand om berichtveld",
     fade: "Vervagen naar achtergrond",
@@ -30,6 +33,12 @@ export const nl = {
     visibility: "Zichtbaarheid",
     blur: "Afbeelding vervagen",
     position: "Positie",
+    horizontal: "Horizontale positie",
+    vertical: "Verticale positie",
+    scope: "Tonen op",
+    scopeNewChat: "Pagina nieuwe chat",
+    scopeChats: "Chats",
+    scopeAll: "Alle pagina’s",
     positionValue: "Horizontaal {x}%, verticaal {y}%",
     newChat: "Nieuwe chat",
     conversation: "Gesprek",
@@ -2584,6 +2593,22 @@ export const nl = {
         label: "Snoep of je leven",
         description:
           "Halloweenthema's en griezelige begroetingen, tot 1 november.",
+      },
+      code: {
+        title: "Code",
+        fontDescription: "Codeblokken in de chat, bestandsvoorbeelden en API-voorbeelden.",
+        lineNumbers: {
+          label: "Regelnummers",
+          description: "Nummer de regels van codeblokken in de chat.",
+        },
+        wordWrap: {
+          label: "Regelterugloop",
+          description: "Lange regels in codeblokken laten teruglopen in plaats van horizontaal te scrollen.",
+        },
+        ligatures: {
+          label: "Ligaturen",
+          description: "Voeg tekens zoals => en != samen tot één glyph als het codelettertype dat ondersteunt.",
+        },
       },
       custom: {
         chatWidth: {
@@ -5701,6 +5726,18 @@ export const nl = {
       "Onze automatische scanner heeft onder andere deze problemen gevonden:",
     nothingFlagged:
       "Onze automatische scanner heeft geen verdachte bestanden gevonden, maar controleer het zelf nog even.",
+    unscannedTitle: "Modelbestanden konden niet worden gescand",
+    unscannedBody: "{model} bevat pickle-gewichten, die bij het laden code kunnen uitvoeren, en er is geen malwarescan voor beschikbaar. Het kan daarom niet worden geladen. {note}",
+    unscannedIntro: "Bestanden die niet konden worden gescand:",
+    switchSourceNote: "Stel in Instellingen Hugging Face in als modelbron om het te laden.",
+    reconnectNote: "Maak verbinding met Hugging Face zodat de scan kan worden gelezen en probeer het opnieuw.",
+    managedTitle: "Aangepaste code staat uit voor dit account",
+    managedNote: "Dit staat uit voor beheerde accounts. Vraag de eigenaar van de installatie om het in te schakelen.",
+    notFoundTitle: "Niet gevonden op {source}",
+    notFoundBody: "{model} is niet gevonden op {source}, dus de beveiligingscontroles konden niet worden uitgevoerd. Controleer de naam of stel een token met toegang in als de repository privé is.",
+    notOnModelScopeBody: "{model} is niet beschikbaar op ModelScope, dus de beveiligingscontroles konden niet worden uitgevoerd en het kan daar niet worden geladen. Stel in Instellingen Hugging Face in als modelbron om het te gebruiken.",
+    checksFailedTitle: "Beveiligingscontroles konden niet worden uitgevoerd",
+    checksFailedBody: "{model} kon niet worden gelezen van {source}, dus de beveiligingscontroles konden niet worden voltooid en het kan niet worden geladen. Controleer je verbinding en token en probeer het opnieuw. {note}",
     enableAndContinue: "Inschakelen en doorgaan",
   },
   tour: {

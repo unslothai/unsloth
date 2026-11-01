@@ -8,10 +8,13 @@ export const vi = {
   chatBackground: {
     noBackground: "Không có nền",
     sizing: "Kích thước ảnh",
+    sizingPosition: "Kích thước và vị trí ảnh",
     fill: "Lấp đầy",
     fit: "Vừa khung",
     stretch: "Kéo giãn",
     original: "Kích thước gốc",
+    fitWidth: "Vừa chiều rộng",
+    fitHeight: "Vừa chiều cao",
     zoom: "Thu phóng",
     outline: "Viền ô soạn tin",
     fade: "Mờ dần vào nền",
@@ -30,6 +33,12 @@ export const vi = {
     visibility: "Độ hiển thị",
     blur: "Độ mờ ảnh",
     position: "Vị trí",
+    horizontal: "Vị trí ngang",
+    vertical: "Vị trí dọc",
+    scope: "Hiển thị trên",
+    scopeNewChat: "Trang trò chuyện mới",
+    scopeChats: "Trò chuyện",
+    scopeAll: "Mọi trang",
     positionValue: "Ngang {x}%, dọc {y}%",
     newChat: "Cuộc trò chuyện mới",
     conversation: "Cuộc trò chuyện",
@@ -2551,6 +2560,22 @@ export const vi = {
         label: "Cho kẹo hay bị ghẹo",
         description:
           "Chủ đề Halloween và lời chào rùng rợn, đến hết ngày 1 tháng 11.",
+      },
+      code: {
+        title: "Mã",
+        fontDescription: "Khối mã trong trò chuyện, bản xem trước tệp và ví dụ API.",
+        lineNumbers: {
+          label: "Số dòng",
+          description: "Đánh số dòng cho khối mã trong trò chuyện.",
+        },
+        wordWrap: {
+          label: "Ngắt dòng",
+          description: "Ngắt các dòng dài trong khối mã thay vì cuộn ngang.",
+        },
+        ligatures: {
+          label: "Chữ ghép",
+          description: "Ghép các ký hiệu như => và != thành một ký tự khi phông chữ mã hỗ trợ.",
+        },
       },
       custom: {
         chatWidth: {
@@ -5646,6 +5671,18 @@ export const vi = {
       "Trình quét tự động của chúng tôi đã phát hiện các vấn đề, bao gồm:",
     nothingFlagged:
       "Trình quét tự động của chúng tôi không phát hiện tệp đáng lo ngại nào, nhưng vui lòng kiểm tra lại.",
+    unscannedTitle: "Không thể quét các tệp mô hình",
+    unscannedBody: "{model} có trọng số pickle, loại tệp có thể chạy mã khi tải, và không có kết quả quét phần mềm độc hại cho chúng nên không thể tải. {note}",
+    unscannedIntro: "Các tệp không thể quét:",
+    switchSourceNote: "Hãy chuyển nguồn mô hình sang Hugging Face trong Cài đặt để tải.",
+    reconnectNote: "Hãy kết nối với Hugging Face để đọc được kết quả quét, rồi thử lại.",
+    managedTitle: "Mã tùy chỉnh đã tắt cho tài khoản này",
+    managedNote: "Tính năng này bị tắt với tài khoản được quản lý. Hãy yêu cầu chủ sở hữu bản cài đặt bật nó.",
+    notFoundTitle: "Không tìm thấy trên {source}",
+    notFoundBody: "Không tìm thấy {model} trên {source} nên không thể chạy kiểm tra bảo mật. Hãy kiểm tra tên, hoặc đặt token có quyền truy cập nếu kho lưu trữ là riêng tư.",
+    notOnModelScopeBody: "{model} không có trên ModelScope nên không thể chạy kiểm tra bảo mật và không thể tải từ đó. Hãy chuyển nguồn mô hình sang Hugging Face trong Cài đặt để sử dụng.",
+    checksFailedTitle: "Không thể chạy kiểm tra bảo mật",
+    checksFailedBody: "Không thể đọc {model} từ {source} nên không thể hoàn tất kiểm tra bảo mật và không thể tải. Hãy kiểm tra kết nối và token rồi thử lại. {note}",
     enableAndContinue: "Bật và tiếp tục",
   },
   tour: {

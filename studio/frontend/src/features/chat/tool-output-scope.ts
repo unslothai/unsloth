@@ -36,12 +36,15 @@ export function useToolOutputFor(
   toolCallId: string,
 ): string {
   const unresolvedScope = useUnresolvedToolPaneScope();
-  // Only a running thread may fall back; local ids repeat, so others would show its stdout.
-  const isRunning = useAuiState(({ thread }) => thread.isRunning);
   const own = map[toolOutputKey(paneScope, toolCallId)];
-  if (own !== undefined) return own;
-  if (!isRunning) return "";
-  return map[toolOutputKey(unresolvedScope, toolCallId)] ?? "";
+  // Only a running thread may fall back (local ids repeat). Select the string, not isRunning,
+  // so a run starting or ending does not re-render every tool card in the history.
+  const fallback = useAuiState(({ thread }) =>
+    own === undefined && thread.isRunning
+      ? (map[toolOutputKey(unresolvedScope, toolCallId)] ?? "")
+      : "",
+  );
+  return own ?? fallback;
 }
 
 export function toolOutputKey(paneScope: string, toolCallId: string): string {

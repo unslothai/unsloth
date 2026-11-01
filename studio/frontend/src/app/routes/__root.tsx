@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  BACKGROUND_ON_ALL_PAGES,
   ChatBackground,
   WindowMaterialMount,
 } from "@/features/chat-background";
@@ -731,7 +730,7 @@ function RootLayout() {
           data-wallpaper-route={isChatRoute ? "chat" : "page"}
           className="relative !min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
-          <ChatBackground active={isChatRoute || BACKGROUND_ON_ALL_PAGES} backdrop />
+          <ChatBackground route={isChatRoute ? "chat" : "page"} backdrop />
           <AppSidebar />
           <SidebarEdgeTrigger />
           <SidebarInset

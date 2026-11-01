@@ -8,10 +8,13 @@ export const zhTW = {
   chatBackground: {
     noBackground: "無背景",
     sizing: "圖片縮放方式",
+    sizingPosition: "圖片縮放與位置",
     fill: "填滿",
     fit: "符合",
     stretch: "延展",
     original: "原始大小",
+    fitWidth: "符合寬度",
+    fitHeight: "符合高度",
     zoom: "縮放",
     outline: "訊息輸入框外框",
     fade: "漸隱至背景",
@@ -30,6 +33,12 @@ export const zhTW = {
     visibility: "可見度",
     blur: "圖片模糊",
     position: "位置",
+    horizontal: "水平位置",
+    vertical: "垂直位置",
+    scope: "顯示位置",
+    scopeNewChat: "新聊天頁面",
+    scopeChats: "聊天",
+    scopeAll: "所有頁面",
     positionValue: "水平 {x}%，垂直 {y}%",
     newChat: "新對話",
     conversation: "對話",
@@ -2425,6 +2434,22 @@ export const zhTW = {
       trickOrTreat: {
         label: "不給糖就搗蛋",
         description: "萬聖節主題與詭異問候語，持續到 11 月 1 日。",
+      },
+      code: {
+        title: "程式碼",
+        fontDescription: "聊天中的程式碼區塊、檔案預覽和 API 範例。",
+        lineNumbers: {
+          label: "行號",
+          description: "為聊天中的程式碼區塊顯示行號。",
+        },
+        wordWrap: {
+          label: "自動換行",
+          description: "程式碼區塊中的長行自動換行，而不是水平捲動。",
+        },
+        ligatures: {
+          label: "字型連字",
+          description: "程式碼字型支援時，將 => 和 != 等符號合成一個字形。",
+        },
       },
       custom: {
         chatWidth: {
@@ -5320,6 +5345,18 @@ export const zhTW = {
     trustNote: "只有在您信任此模型來源時才繼續。",
     flaggedIntro: "我們的自動掃描程式標記出下列問題：",
     nothingFlagged: "我們的自動掃描程式未標記任何可疑的檔案，但仍請再次確認。",
+    unscannedTitle: "無法掃描模型檔案",
+    unscannedBody: "{model} 包含 pickle 權重,這類檔案在載入時可能執行程式碼,而且沒有可用的惡意軟體掃描結果,因此無法載入。{note}",
+    unscannedIntro: "無法掃描的檔案:",
+    switchSourceNote: "請在設定中將模型來源切換為 Hugging Face 後載入。",
+    reconnectNote: "請連線到 Hugging Face 以讀取其掃描結果,然後重試。",
+    managedTitle: "此帳戶已關閉自訂程式碼",
+    managedNote: "受管理帳戶已關閉此功能。請聯絡安裝擁有者啟用。",
+    notFoundTitle: "在 {source} 上找不到",
+    notFoundBody: "在 {source} 上找不到 {model},因此無法執行安全檢查。請檢查名稱;如果儲存庫是私人的,請設定有存取權限的權杖。",
+    notOnModelScopeBody: "{model} 在 ModelScope 上無法使用,因此無法執行安全檢查,也無法從該來源載入。請在設定中將模型來源切換為 Hugging Face 後使用。",
+    checksFailedTitle: "無法執行安全檢查",
+    checksFailedBody: "無法從 {source} 讀取 {model},因此安全檢查未能完成,也無法載入。請檢查網路連線和權杖後重試。{note}",
     enableAndContinue: "啟用並繼續",
   },
   tour: {

@@ -8,10 +8,13 @@ export const pl = {
   chatBackground: {
     noBackground: "Brak tła",
     sizing: "Skalowanie obrazu",
+    sizingPosition: "Skalowanie i pozycja obrazu",
     fill: "Wypełnij",
     fit: "Dopasuj",
     stretch: "Rozciągnij",
     original: "Oryginalny rozmiar",
+    fitWidth: "Dopasuj do szerokości",
+    fitHeight: "Dopasuj do wysokości",
     zoom: "Powiększenie",
     outline: "Obramowanie pola wiadomości",
     fade: "Przenikanie do tła",
@@ -30,6 +33,12 @@ export const pl = {
     visibility: "Widoczność",
     blur: "Rozmycie obrazu",
     position: "Pozycja",
+    horizontal: "Pozycja w poziomie",
+    vertical: "Pozycja w pionie",
+    scope: "Pokazuj na",
+    scopeNewChat: "Stronie nowego czatu",
+    scopeChats: "Czatach",
+    scopeAll: "Wszystkich stronach",
     positionValue: "Poziomo {x}%, pionowo {y}%",
     newChat: "Nowy czat",
     conversation: "Rozmowa",
@@ -2576,6 +2585,22 @@ export const pl = {
       trickOrTreat: {
         label: "Cukierek albo psikus",
         description: "Motywy Halloween i upiorne powitania, do 1 listopada.",
+      },
+      code: {
+        title: "Kod",
+        fontDescription: "Bloki kodu na czacie, podglądy plików i przykłady API.",
+        lineNumbers: {
+          label: "Numery wierszy",
+          description: "Numeruj wiersze bloków kodu na czacie.",
+        },
+        wordWrap: {
+          label: "Zawijanie wierszy",
+          description: "Zawijaj długie wiersze w blokach kodu zamiast przewijać w poziomie.",
+        },
+        ligatures: {
+          label: "Ligatury czcionki",
+          description: "Łącz symbole takie jak => i != w jeden glif, jeśli czcionka kodu to obsługuje.",
+        },
       },
       custom: {
         chatWidth: {
@@ -5693,6 +5718,18 @@ export const pl = {
     flaggedIntro: "Nasz automatyczny skaner wykrył problemy, w tym:",
     nothingFlagged:
       "Nasz automatyczny skaner nie wykrył niepokojących plików, ale sprawdź to jeszcze raz.",
+    unscannedTitle: "Nie można przeskanować plików modelu",
+    unscannedBody: "{model} zawiera wagi pickle, które mogą uruchamiać kod podczas ładowania, a skanowanie pod kątem złośliwego oprogramowania jest dla nich niedostępne, więc nie można go załadować. {note}",
+    unscannedIntro: "Pliki, których nie można przeskanować:",
+    switchSourceNote: "Zmień źródło modeli na Hugging Face w Ustawieniach, aby go załadować.",
+    reconnectNote: "Połącz się z Hugging Face, aby można było odczytać wynik skanowania, i spróbuj ponownie.",
+    managedTitle: "Kod niestandardowy jest wyłączony dla tego konta",
+    managedNote: "Jest wyłączony dla kont zarządzanych. Poproś właściciela instalacji o jego włączenie.",
+    notFoundTitle: "Nie znaleziono w {source}",
+    notFoundBody: "Nie znaleziono {model} w {source}, więc nie można było uruchomić kontroli bezpieczeństwa. Sprawdź nazwę lub ustaw token z dostępem, jeśli repozytorium jest prywatne.",
+    notOnModelScopeBody: "{model} nie jest dostępny w ModelScope, więc nie można było uruchomić kontroli bezpieczeństwa ani załadować go z tego źródła. Zmień źródło modeli na Hugging Face w Ustawieniach, aby go użyć.",
+    checksFailedTitle: "Nie można uruchomić kontroli bezpieczeństwa",
+    checksFailedBody: "Nie można odczytać {model} z {source}, więc nie udało się ukończyć kontroli bezpieczeństwa i nie można go załadować. Sprawdź połączenie i token, a następnie spróbuj ponownie. {note}",
     enableAndContinue: "Włącz i kontynuuj",
   },
   tour: {

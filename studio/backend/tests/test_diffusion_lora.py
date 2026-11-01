@@ -896,3 +896,163 @@ def test_pinned_lora_change_also_sets_a_text_encoder_embedding_scale(monkeypatch
     assert diff._pin_baked_lora_scales(pipe, "cpu") == 2
     assert diff._set_pinned_lora_scales(pipe, {"a": 0.5}) is True
     assert emb.scaling == {"a": 1.0}  # 0.5 * alpha / r
+
+
+def _real_file_specs(monkeypatch, root):
+    """resolve_specs over real files under ``root``, so the adapter files can be stat'ed and rewritten."""
+    for stem in ("styleA", "styleB"):
+        (root / f"{stem}.safetensors").write_bytes(stem.encode() * 8)
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(
+                i, dl.sanitize_alias(i), str(root / f"{i}.safetensors"), "safetensors", w
+            )
+            for i, w in specs
+        ],
+    )
+
+
+def test_diffusers_weight_only_change_sets_scales_without_reloading(monkeypatch, tmp_path):
+    import threading
+
+    from core.inference import diffusion as diffusion_mod
+
+    _real_file_specs(monkeypatch, tmp_path)
+    resets: list = []
+    invalidated: list = []
+    monkeypatch.setattr(
+        diffusion_mod.cuda_graph, "reset_all", lambda handles: resets.append(handles)
+    )
+    monkeypatch.setattr(
+        diffusion_mod, "invalidate_cfg_replica", lambda pipe, why, log: invalidated.append(why)
+    )
+    pipe = _FakePipe()
+    b = _backend()
+    state = _fake_state(pipe)
+    b._apply_loras(state, [("styleA", 1.0), ("styleB", 0.5)], threading.Event())
+    loaded = list(pipe.loaded)
+    resets.clear()
+    invalidated.clear()
+
+    b._apply_loras(state, [("styleA", 0.6), ("styleB", 0.5)], threading.Event())
+
+    assert pipe.unloaded == 0
+    assert pipe.loaded == loaded
+    assert pipe.active == (["styleA", "styleB"], [0.6, 0.5])
+    assert [(n, w) for n, _p, w in pipe._unsloth_loras] == [("styleA", 0.6), ("styleB", 0.5)]
+    # Scales are Python values a captured graph or a CFG replica bakes in, so both are still dropped.
+    assert len(resets) == 1 and len(invalidated) == 1
+
+
+def test_diffusers_weight_only_change_matches_a_fresh_load(monkeypatch, tmp_path):
+    import threading
+
+    _real_file_specs(monkeypatch, tmp_path)
+    fast, fresh = _FakePipe(), _FakePipe()
+    b = _backend()
+    b._apply_loras(_fake_state(fast), [("styleA", 1.0)], threading.Event())
+    b._apply_loras(_fake_state(fast), [("styleA", 0.3)], threading.Event())
+    b._apply_loras(_fake_state(fresh), [("styleA", 0.3)], threading.Event())
+    assert fast.active == fresh.active
+    assert fast.loaded == fresh.loaded
+    assert fast._unsloth_loras == fresh._unsloth_loras
+
+
+def test_diffusers_weight_change_reloads_a_rewritten_adapter_file(monkeypatch, tmp_path):
+    import threading
+
+    _real_file_specs(monkeypatch, tmp_path)
+    pipe = _FakePipe()
+    b = _backend()
+    b._apply_loras(_fake_state(pipe), [("styleA", 1.0)], threading.Event())
+    target = tmp_path / "styleA.safetensors"
+    st = target.stat()
+    target.write_bytes(b"retrained adapter, same name")
+    os.utime(target, ns = (st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+
+    b._apply_loras(_fake_state(pipe), [("styleA", 0.5)], threading.Event())
+
+    assert pipe.unloaded == 1
+    assert pipe.loaded == [(str(target), "styleA")]
+    assert pipe.active == (["styleA"], [0.5])
+
+
+@pytest.mark.parametrize(
+    "first, second",
+    [
+        ([("styleA", 1.0), ("styleB", 0.5)], [("styleB", 0.5), ("styleA", 0.6)]),
+        ([("styleA", 1.0), ("styleB", 0.5)], [("styleA", 0.6)]),
+        ([("styleA", 1.0)], [("styleB", 0.6)]),
+    ],
+)
+def test_diffusers_adapter_set_change_still_reloads(monkeypatch, tmp_path, first, second):
+    import threading
+
+    _real_file_specs(monkeypatch, tmp_path)
+    pipe = _FakePipe()
+    b = _backend()
+    b._apply_loras(_fake_state(pipe), first, threading.Event())
+    b._apply_loras(_fake_state(pipe), second, threading.Event())
+    assert pipe.unloaded == 1
+    assert [n for _p, n in pipe.loaded] == [i for i, _w in second]
+    assert pipe.active == ([i for i, _w in second], [w for _i, w in second])
+
+
+def test_diffusers_weight_change_after_clear_reloads(monkeypatch, tmp_path):
+    import threading
+
+    _real_file_specs(monkeypatch, tmp_path)
+    pipe = _FakePipe()
+    b = _backend()
+    b._apply_loras(_fake_state(pipe), [("styleA", 1.0)], threading.Event())
+    b._apply_loras(_fake_state(pipe), [], threading.Event())
+    b._apply_loras(_fake_state(pipe), [("styleA", 0.5)], threading.Event())
+    assert pipe.unloaded == 1
+    assert pipe.loaded == [(str(tmp_path / "styleA.safetensors"), "styleA")]
+    assert pipe.active == (["styleA"], [0.5])
+
+
+def test_diffusers_weight_change_on_a_streamed_graph_keeps_the_reload(monkeypatch, tmp_path):
+    import threading
+
+    _real_file_specs(monkeypatch, tmp_path)
+    pipe = _FakePipe()
+    b = _backend()
+    state = _fake_state(pipe)
+    b._apply_loras(state, [("styleA", 1.0)], threading.Event())
+    state.cuda_graphs = (types.SimpleNamespace(placement = types.SimpleNamespace(mode = "group")),)
+    b._apply_loras(state, [("styleA", 0.5)], threading.Event())
+    assert pipe.unloaded == 1
+    assert pipe.active == (["styleA"], [0.5])
+
+
+def test_diffusers_weight_change_falls_back_to_reload_when_set_adapters_fails(
+    monkeypatch, tmp_path
+):
+    import threading
+
+    _real_file_specs(monkeypatch, tmp_path)
+
+    class _FlakyPipe(_FakePipe):
+        fail_next = False
+
+        def set_adapters(
+            self,
+            names,
+            adapter_weights = None,
+        ):
+            if self.fail_next:
+                self.fail_next = False
+                raise RuntimeError("adapter missing")
+            super().set_adapters(names, adapter_weights)
+
+    pipe = _FlakyPipe()
+    b = _backend()
+    b._apply_loras(_fake_state(pipe), [("styleA", 1.0)], threading.Event())
+    pipe.fail_next = True
+    b._apply_loras(_fake_state(pipe), [("styleA", 0.5)], threading.Event())
+    assert pipe.unloaded == 1
+    assert pipe.active == (["styleA"], [0.5])
+    assert [(n, w) for n, _p, w in pipe._unsloth_loras] == [("styleA", 0.5)]

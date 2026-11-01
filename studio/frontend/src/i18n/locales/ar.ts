@@ -8,10 +8,13 @@ export const ar = {
   chatBackground: {
     noBackground: "بدون خلفية",
     sizing: "تحجيم الصورة",
+    sizingPosition: "تحجيم الصورة والموضع",
     fill: "ملء",
     fit: "احتواء",
     stretch: "تمديد",
     original: "الحجم الأصلي",
+    fitWidth: "ملاءمة العرض",
+    fitHeight: "ملاءمة الارتفاع",
     zoom: "تكبير",
     outline: "إطار حقل الرسالة",
     fade: "تلاشي إلى الخلفية",
@@ -30,6 +33,12 @@ export const ar = {
     visibility: "الظهور",
     blur: "تمويه الصورة",
     position: "الموضع",
+    horizontal: "الموضع الأفقي",
+    vertical: "الموضع العمودي",
+    scope: "الإظهار في",
+    scopeNewChat: "صفحة المحادثة الجديدة",
+    scopeChats: "المحادثات",
+    scopeAll: "كل الصفحات",
     positionValue: "أفقي {x}%، عمودي {y}%",
     newChat: "دردشة جديدة",
     conversation: "محادثة",
@@ -2348,6 +2357,22 @@ export const ar = {
         label: "حلوى أم خدعة",
         description:
           "سمات الهالوين وتحيات مخيفة حتى 1 نوفمبر.",
+      },
+      code: {
+        title: "الشيفرة",
+        fontDescription: "كتل الشيفرة في المحادثة ومعاينات الملفات وأمثلة API.",
+        lineNumbers: {
+          label: "أرقام الأسطر",
+          description: "ترقيم أسطر كتل الشيفرة في المحادثة.",
+        },
+        wordWrap: {
+          label: "التفاف الأسطر",
+          description: "التفاف الأسطر الطويلة في كتل الشيفرة بدل التمرير أفقيًا.",
+        },
+        ligatures: {
+          label: "الحروف المركّبة",
+          description: "دمج رموز مثل => و != في حرف واحد عندما يدعم خط الشيفرة ذلك.",
+        },
       },
       custom: {
         chatWidth: {
@@ -5239,6 +5264,18 @@ export const ar = {
     flaggedIntro: "رصد الفاحص التلقائي لدينا مشكلات منها:",
     nothingFlagged:
       "لم يرصد الفاحص التلقائي لدينا أي ملفات مثيرة للقلق، لكن يُرجى التحقق مرة أخرى.",
+    unscannedTitle: "تعذّر فحص ملفات النموذج",
+    unscannedBody: "يتضمن {model} أوزان pickle يمكنها تشغيل التعليمات البرمجية عند التحميل، ولا يتوفر فحص للبرامج الضارة لها، لذا لا يمكن تحميله. {note}",
+    unscannedIntro: "الملفات التي تعذّر فحصها:",
+    switchSourceNote: "بدّل مصدر النماذج إلى Hugging Face في الإعدادات لتحميله.",
+    reconnectNote: "اتصل بـ Hugging Face لتتمكن من قراءة نتيجة الفحص، ثم حاول مرة أخرى.",
+    managedTitle: "التعليمات البرمجية المخصصة معطلة لهذا الحساب",
+    managedNote: "إنها معطلة للحسابات المُدارة. اطلب من مالك التثبيت تفعيلها.",
+    notFoundTitle: "غير موجود على {source}",
+    notFoundBody: "لم يتم العثور على {model} على {source}، لذا تعذّر تشغيل فحوصات الأمان. تحقق من الاسم، أو عيّن رمزًا لديه صلاحية الوصول إذا كان المستودع خاصًا.",
+    notOnModelScopeBody: "{model} غير متوفر على ModelScope، لذا تعذّر تشغيل فحوصات الأمان ولا يمكن تحميله من هناك. بدّل مصدر النماذج إلى Hugging Face في الإعدادات لاستخدامه.",
+    checksFailedTitle: "تعذّر تشغيل فحوصات الأمان",
+    checksFailedBody: "تعذّرت قراءة {model} من {source}، لذا تعذّر إكمال فحوصات الأمان ولا يمكن تحميله. تحقق من اتصالك ورمزك، ثم حاول مرة أخرى. {note}",
     enableAndContinue: "التفعيل والمتابعة",
   },
   tour: {

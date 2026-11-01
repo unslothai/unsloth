@@ -519,11 +519,7 @@ def _run_security_gates(
                 {
                     "type": "loaded",
                     "success": False,
-                    "message": (
-                        f"Model '{_rc.model_name}' ships custom code flagged as "
-                        f"{_rc.max_severity} by the security scan. Review "
-                        f"and approve it to proceed."
-                    ),
+                    "message": _rc.blocked_message(),
                     "error_kind": "remote_code_blocked",
                     "remote_code": _rc.response_payload(),
                 },
