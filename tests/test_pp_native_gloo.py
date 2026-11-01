@@ -763,6 +763,41 @@ def test_layer_call_format_reads_tuple_loops():
     assert ppn._layer_call_format(Decoder(), "layers") == "tuple"
 
 
+def test_non_last_stage_compiles_as_one_graph():
+    # A non-last stage ends by raising its output from the first layer it does not own.
+    from torch._dynamo.utils import counters
+
+    class Toy(torch.nn.Module):
+        def __init__(self, ctx):
+            super().__init__()
+            self.embed = torch.nn.Embedding(10, 8)
+            self.owned = torch.nn.Linear(8, 8)
+            self.other = ppn._PPPassThrough(1, ctx, torch.nn.Linear(8, 8))
+            self.head = torch.nn.Linear(8, 10)
+
+        def forward(self, input_ids, **kwargs):
+            return self.head(self.other(self.owned(self.embed(input_ids))))
+
+    torch.manual_seed(0)
+    ctx = ppn._StageContext(0, 1, True, False, False)
+    stage = ppn._PPStageModule(Toy(ctx), ctx, torch.float32, 8)
+    x = torch.randint(0, 10, (2, 5))
+    expected = stage(x)
+    expected.sum().backward()
+    grads = [p.grad.clone() for p in stage.parameters() if p.grad is not None]
+    stage.zero_grad(set_to_none = True)
+
+    torch._dynamo.reset()
+    counters.clear()
+    out = torch.compile(stage, backend = "eager", fullgraph = True)(x)
+    out.sum().backward()
+    assert sum(counters["graph_break"].values()) == 0
+    assert torch.equal(out, expected)
+    got = [p.grad for p in stage.parameters() if p.grad is not None]
+    assert len(got) == len(grads) and all(torch.equal(a, b) for a, b in zip(got, grads))
+    torch._dynamo.reset()
+
+
 def test_pp2_entry_points_are_refused():
     results = _spawn("guards", 2)
     if "skip" in results[0]:
