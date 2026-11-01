@@ -171,6 +171,9 @@ def test_order_pages_and_flags_match_a_fresh_read():
     _clip(directory, "orphan", 1_700_000_100, meta = False)
     (directory / "not an id.mp4").write_bytes(b"x")
     (directory / "not an id.json").write_text(json.dumps(_meta()), encoding = "utf-8")
+    # Path.stem keeps a dot-led name whole: ".mp4" pairs with ".mp4.json".
+    (directory / ".mp4").write_bytes(b"x")
+    (directory / ".mp4.json").write_text(json.dumps(_meta()), encoding = "utf-8")
     (directory / "folder.mp4").mkdir()
     (directory / "folder.json").write_text(json.dumps(_meta()), encoding = "utf-8")
     with gallery_flags.exclusive(directory):
@@ -189,6 +192,7 @@ def test_order_pages_and_flags_match_a_fresh_read():
     # Entries video_path refuses keep the 0.0 they had: a bad id and a folder are not clips.
     assert by_id["not an id"]["order_at"] == 0.0
     assert by_id["folder"]["order_at"] == 0.0
+    assert by_id[".mp4"]["order_at"] == 0.0
     assert by_id["c11"]["order_at"] == os.stat(directory / "c11.mp4").st_mtime
 
 

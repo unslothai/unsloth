@@ -777,8 +777,9 @@ def _listed_mp4s(directory: Path) -> list[tuple[str, float, bool]]:
                     plain = entry.is_file(follow_symlinks = False)
                 except OSError:
                     plain = False
-                # Path.stem: a bare ".mp4" is all stem, no suffix.
-                found.append((name[:-4] or name, mtime, plain))
+                # Path.stem; a dot-led name (".mp4", and "..mp4" on 3.14) can be all stem.
+                stem = Path(name).stem if name.startswith(".") else name[:-4]
+                found.append((stem, mtime, plain))
         except OSError:
             # Path.glob read the folder in one go and listed a failed read as empty.
             return []
