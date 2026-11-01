@@ -354,9 +354,12 @@ def key_parts(
         divisible_for_scheme,
         exclude_tokens_for_scheme,
         int8_convrot_enabled,
+        streamed_weight_only_layout,
     )
 
     group, suffixes = convrot_spec_for_scheme(scheme, family)
+    # Only when set (streamed qwen-image int8), so every other build keeps its existing key.
+    extra = streamed_weight_only_layout(scheme, family)
     return {
         "policy": POLICY_VERSION,
         "family": str(family or ""),
@@ -373,6 +376,7 @@ def key_parts(
         if group and int8_convrot_enabled(family)
         else None,
         "fast_accum": _resolve_fast_accum(None) if scheme == TQ_FP8 else None,
+        **extra,
         **_toolchain(),
     }
 
@@ -1121,11 +1125,13 @@ def save_runtime_quant(
     logger: Any = None,
     cancel_check: Optional[Any] = None,
     defer: bool = False,
+    host_snapshot: bool = False,
 ) -> Any:
     """Persist a just-quantized transformer; returns the artifact path or None (logged). Never raises.
     ``base_repo`` is recorded as ``base_model_id``; ``source_base`` is where the dense weights were read (a mirror).
     ``defer`` runs every check now and returns a ``PendingWrite`` owning host tensors only; falls back to the
-    synchronous write when the build is off-host, RAM is short, another write runs, or ASYNC=0."""
+    synchronous write when the build is off-host, RAM is short, another write runs, or ASYNC=0.
+    ``host_snapshot``: copy a device build to host now and write after the load; if it cannot defer, skip it."""
     if not enabled():
         return None
     t0 = time.perf_counter()
@@ -1189,6 +1195,14 @@ def save_runtime_quant(
                     "skipped (fp8 quantized with a forced non-default accumulate mode)",
                 )
                 return None
+        wo_keys = ("weight_only_name_tokens", "weight_only_mode", "weight_only_outliers")
+        wanted_wo = {k: parts[k] for k in wo_keys if k in parts}
+        if {k: info[k] for k in wo_keys if k in info} != wanted_wo:
+            _log(logger, "info", "skipped (weight-only modulation state differs from the key)")
+            return None
+        if wanted_wo and wanted_wo["weight_only_mode"] != "wo":
+            _log(logger, "info", "skipped (diagnostic W8A8 modulation mode)")
+            return None
         if bool(info.get("convrot_fqns")) != bool(parts["convrot"]):
             _log(logger, "info", "skipped (ConvRot state differs from the key)")
             return None
@@ -1266,6 +1280,9 @@ def save_runtime_quant(
         if scheme == "fp8":
             from .diffusion_transformer_quant import FP8_GRANULARITY
             metadata["fp8_granularity"] = FP8_GRANULARITY
+        if wanted_wo:
+            metadata["weight_only_name_tokens"] = list(wanted_wo["weight_only_name_tokens"])
+            metadata["weight_only_outliers"] = int(wanted_wo["weight_only_outliers"])
         metadata.update(_rotation(transformer, info))
         header[UNSLOTH_FORMAT_KEY] = prequant_format_for(metadata)
         header[UNSLOTH_METADATA_KEY] = json.dumps(metadata, default = str)
@@ -1273,7 +1290,7 @@ def save_runtime_quant(
         job = _WriteJob(key, root / key, flat, header, parts, nbytes, t0, logger)
         flat = header = None
         if defer:
-            why = _defer_blocker(job)
+            why = _defer_blocker(job, host_snapshot = host_snapshot, cancel_check = cancel_check)
             if why is None:
                 state_dict = None
                 pending = PendingWrite(job, stack.pop_all())
@@ -1286,6 +1303,13 @@ def save_runtime_quant(
                     f"source shards, pins {job.pinned_map_bytes / 2**30:.2f} GiB of mappings)",
                 )
                 return pending
+            if host_snapshot and async_enabled():
+                _log(
+                    logger,
+                    "info",
+                    f"skipped ({why}; a resident build is never written inside the load)",
+                )
+                return None
             _log(logger, "info", f"writing {key} before the load returns ({why})")
         state_dict = None
         return job.run(cancel_check)
@@ -1377,6 +1401,19 @@ class _WriteJob:
             entry = self.fds[path] = (fd, (st.st_size, st.st_mtime_ns))
         fd, stamp = entry
         return _FileSlice(fd, file_offset + int(t.data_ptr()) - lo, t, stamp)
+
+    def snapshot_to_host(self, cancel_check: Optional[Any] = None) -> None:
+        """Copy to host so the writer never touches the device (a render may be capturing a CUDA graph)."""
+        out: dict = {}
+        for name, t in self.flat.items():
+            if cancel_check is not None:
+                cancel_check()
+            if isinstance(t, _FlatRef):
+                t = t.tensor()
+            if getattr(getattr(t, "device", None), "type", "cpu") != "cpu":
+                t = t.detach().to("cpu")
+            out[name] = t
+        self.flat = out
 
     def close(self) -> None:
         fds, self.fds = self.fds, {}
@@ -1485,22 +1522,39 @@ def _host_memory_bytes() -> tuple[Optional[int], Optional[int]]:
     return total, avail
 
 
-def _defer_blocker(job: _WriteJob) -> Optional[str]:
+def _defer_blocker(
+    job: _WriteJob,
+    host_snapshot: bool = False,
+    cancel_check: Optional[Any] = None,
+) -> Optional[str]:
     """Why ``job`` must be written now, or None: it must be wholly on the host and what it keeps alive must fit."""
     if not async_enabled():
         return f"{ENV_ASYNC}=0"
     with _lock:
         if any(not p.done() for p in _BACKGROUND):
             return "another background cache write is running"
+    off_host = 0
     for t in job.tensors():
         if isinstance(t, _FlatRef):
             t = t.tensor()
         device = getattr(t, "device", None)
         if getattr(device, "type", None) != "cpu":
-            return f"the build is on {device}, not the host"
+            if not host_snapshot:
+                return f"the build is on {device}, not the host"
+            off_host += _tensor_bytes(t)
     total, avail = _host_memory_bytes()
     if total is None:
         return "host memory unknown"
+    if off_host:
+        reserve = max(_ASYNC_RESERVE_BYTES, int(total * _ASYNC_RESERVE_FRACTION))
+        if avail < off_host + reserve:
+            return (
+                f"host RAM short for a host copy of the build: {avail / 2**30:.1f} GiB available, the copy is "
+                f"{off_host / 2**30:.1f} GiB and needs {reserve / 2**30:.1f} GiB spare"
+            )
+        job.snapshot_to_host(cancel_check)
+        job.resolve()
+        return None
     if not job.release:
         job.resolve()
     keeps = job.held_bytes + job.pinned_map_bytes

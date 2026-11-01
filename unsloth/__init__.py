@@ -1760,6 +1760,8 @@ else:
             pass
 
 
+from .tiling import tile_mlp, untile_mlp
+
 # A pip --target / PYTHONPATH layout makes dill pickle modules by value, breaking dataset fingerprints.
 try:
     from .import_fixes import fix_dill_module_by_value_pickling as _fix_dill

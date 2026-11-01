@@ -136,14 +136,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
       # kaggle 2.x is required: 1.7.4.5 cannot authenticate with KAGGLE_API_TOKEN, lacks `kernels
       # delete` (the budget control) and quota_view() (read by gate.py).
       - name: Install the Kaggle client
-        run: python -m pip install --quiet 'kaggle==2.2.4'
+        # kaggle imports six without declaring it; python-dateutil 4.0 stopped pulling it in.
+        run: python -m pip install --quiet 'kaggle==2.2.4' 'six'
 
       # budget-hours is the worst case of ONE invocation from launch.py's constants (2 sessions x ~13800s,
       # ~8 GPU-h); the harness suite recomputes it. reserve-hours 20 caps this leg at 40h spent and is
@@ -246,14 +247,15 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
       # kaggle 2.x is required: 1.7.4.5 cannot authenticate with KAGGLE_API_TOKEN, lacks `kernels
       # delete` (the budget control) and quota_view() (read by gate.py).
       - name: Install the Kaggle client
-        run: python -m pip install --quiet 'kaggle==2.2.4'
+        # kaggle imports six without declaring it; python-dateutil 4.0 stopped pulling it in.
+        run: python -m pip install --quiet 'kaggle==2.2.4' 'six'
 
       # Run the CPU-only harness suites BEFORE pushing; pytest testpaths excludes them, so nothing else
       # does. Whole directory, not one file. CPU torch must be installed FIRST, or peft pulls CUDA torch and
