@@ -8,11 +8,20 @@
 // remembers the answer; the composer, system-wide voice typing and the settings
 // page all share it.
 
-import { isTauri } from "@/lib/api-base";
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 
 export type MicrophonePermission = "granted" | "denied" | "unknown";
+
+/** Detect at call time: a cached module must not freeze the test's window stub. */
+function isTauriNow(): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    "__TAURI__" in window ||
+    "__TAURI_INTERNALS__" in window ||
+    window.location?.protocol === "tauri:"
+  );
+}
 
 export type MicrophonePermissionReason =
   | "voice-typing"
@@ -52,7 +61,7 @@ async function readBrowserPermission(): Promise<MicrophonePermission> {
 }
 
 async function focusMainWindow(): Promise<void> {
-  if (!isTauri) return;
+  if (!isTauriNow()) return;
   try {
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
     await getCurrentWindow().setFocus();
@@ -76,7 +85,7 @@ export const useMicrophonePermissionStore = create<MicrophonePermissionState>(
     load: async () => {
       if (get().loaded) return;
       loadPromise ??= (async () => {
-        const permission = isTauri
+        const permission = isTauriNow()
           ? await invoke<string>("microphone_permission_state").catch(
               () => "unknown",
             )
@@ -88,7 +97,7 @@ export const useMicrophonePermissionStore = create<MicrophonePermissionState>(
     request: async (reason = "dictation") => {
       // A browser tab has no app-level permission to store; getUserMedia is the
       // prompt and the browser owns the answer.
-      if (!isTauri) return true;
+      if (!isTauriNow()) return true;
       await get().load();
       if (get().permission === "granted") return true;
       // A saved deny is a decision, not a question. Nagging on every dictation
@@ -119,7 +128,7 @@ export const useMicrophonePermissionStore = create<MicrophonePermissionState>(
       return get().request(reason);
     },
     allow: async () => {
-      if (isTauri) {
+      if (isTauriNow()) {
         await invoke("set_microphone_permission", { state: "granted" }).catch(
           (error) => {
             console.warn("Could not store the microphone permission:", error);
@@ -130,7 +139,7 @@ export const useMicrophonePermissionStore = create<MicrophonePermissionState>(
       resolvePending(true);
     },
     deny: async () => {
-      if (isTauri) {
+      if (isTauriNow()) {
         await invoke("set_microphone_permission", { state: "denied" }).catch(
           (error) => {
             console.warn("Could not store the microphone permission:", error);
@@ -141,7 +150,7 @@ export const useMicrophonePermissionStore = create<MicrophonePermissionState>(
       resolvePending(false);
     },
     reset: async () => {
-      if (isTauri) {
+      if (isTauriNow()) {
         await invoke("reset_microphone_permission").catch((error) => {
           console.warn("Could not reset the microphone permission:", error);
         });
@@ -157,14 +166,14 @@ export async function ensureMicrophonePermission(
   reason: MicrophonePermissionReason = "dictation",
   options: { askAgain?: boolean } = {},
 ): Promise<boolean> {
-  if (!isTauri) return true;
+  if (!isTauriNow()) return true;
   const store = useMicrophonePermissionStore.getState();
   return options.askAgain ? store.askAgain(reason) : store.request(reason);
 }
 
 /** Read the current answer without opening the dialog. */
 export async function readMicrophonePermission(): Promise<MicrophonePermission> {
-  if (!isTauri) return readBrowserPermission();
+  if (!isTauriNow()) return readBrowserPermission();
   await useMicrophonePermissionStore.getState().load();
   return useMicrophonePermissionStore.getState().permission;
 }

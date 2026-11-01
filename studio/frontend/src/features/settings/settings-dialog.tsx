@@ -374,14 +374,10 @@ export function SettingsDialog() {
     window.addEventListener("mousedown", onMouseDown, true);
     window.addEventListener("mouseup", swallowHistoryButton, true);
     window.addEventListener("auxclick", swallowHistoryButton, true);
-    window.addEventListener("pointerdown", swallowHistoryButton, true);
-    window.addEventListener("pointerup", swallowHistoryButton, true);
     return () => {
       window.removeEventListener("mousedown", onMouseDown, true);
       window.removeEventListener("mouseup", swallowHistoryButton, true);
       window.removeEventListener("auxclick", swallowHistoryButton, true);
-      window.removeEventListener("pointerdown", swallowHistoryButton, true);
-      window.removeEventListener("pointerup", swallowHistoryButton, true);
     };
   }, [open, activeTab, setActiveTab]);
 

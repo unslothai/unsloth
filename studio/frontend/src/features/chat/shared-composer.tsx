@@ -65,6 +65,11 @@ import {
 } from "@/features/chat/adapters/studio-dictation-adapter";
 import { appendTranscriptText } from "@/features/chat/adapters/dictation-text";
 import { setInAppDictationActive } from "@/features/chat/adapters/dictation-activity";
+import {
+  playInAppDictationCue,
+  setInAppDictationMuted,
+} from "@/features/voice-typing/in-app-dictation";
+import { useVoiceTypingStore } from "@/features/voice-typing/voice-typing-store";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import {
   COMPOSER_INPUT_SELECTOR,
@@ -339,12 +344,28 @@ function useDictation(
   const startingRef = useRef(false);
   const finalizingRef = useRef(false);
   const activityOwner = useRef(Symbol("composer-dictation"));
+  const muteWhileRecording = useVoiceTypingStore(
+    (state) => state.muteWhileRecording,
+  );
+  const idleStopMs = useVoiceTypingStore((state) => state.idleStopMs);
+  const [speechTick, setSpeechTick] = useState(0);
 
   // Lets the global voice-typing chord stop this dictation instead of
   // starting a second, system-wide session.
   useEffect(() => {
     setInAppDictationActive(activityOwner.current, isDictating);
     return () => setInAppDictationActive(activityOwner.current, false);
+  }, [isDictating]);
+  useEffect(() => {
+    setInAppDictationMuted(isDictating && muteWhileRecording);
+    return () => {
+      if (isDictating) setInAppDictationMuted(false);
+    };
+  }, [isDictating, muteWhileRecording]);
+  useEffect(() => {
+    if (!isDictating) return;
+    playInAppDictationCue("start");
+    return () => playInAppDictationCue("stop");
   }, [isDictating]);
 
   const start = useCallback(async () => {
@@ -369,6 +390,7 @@ function useDictation(
 
     session.onSpeech((result) => {
       if (!result.isFinal) return;
+      setSpeechTick((tick) => tick + 1);
       // Not trimmed: a spoken "new paragraph" can be the whole segment.
       const transcript = result.transcript ?? "";
       if (transcript) {
@@ -407,6 +429,12 @@ function useDictation(
       setIsDictating(false);
     });
   }, []);
+
+  useEffect(() => {
+    if (!isDictating || idleStopMs <= 0) return;
+    const timer = window.setTimeout(() => stop(), idleStopMs);
+    return () => window.clearTimeout(timer);
+  }, [isDictating, idleStopMs, speechTick, stop]);
 
   useEffect(() => {
     return () => {

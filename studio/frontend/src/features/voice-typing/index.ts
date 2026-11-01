@@ -30,6 +30,10 @@ export {
   type VoiceTypingSoundTheme,
 } from "./voice-typing-sounds";
 export {
+  playInAppDictationCue,
+  setInAppDictationMuted,
+} from "./in-app-dictation";
+export {
   requestVoiceTypingModelDownload,
   warmVoiceTypingModel,
   type VoiceTypingModelState,

@@ -367,6 +367,16 @@ pub async fn voice_typing_hud_level(app: AppHandle, level: f32) {
     hud::emit_level(&app, level.clamp(0.0, 1.0));
 }
 
+/// Apply the mute preference to in-app composer dictation, which does not own
+/// the overlay or the voice-typing controller.
+#[tauri::command]
+pub async fn voice_typing_set_audio_mute(mute: bool) {
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        audio_mute::set_recording_mute(mute);
+    })
+    .await;
+}
+
 /// Build the overlay before the first press needs it.
 ///
 /// The first [`voice_typing_hud_state`] of a session creates a webview, and that
@@ -770,8 +780,11 @@ mod shortcut_poller {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
     };
+    // lint-allow: AV002 the global shortcut uses the documented WH_KEYBOARD_LL hook; no code is injected into another process.
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage,
+        CallNextHookEx, DispatchMessageW, GetMessageW,
+        // lint-allow: AV002 the documented low-level keyboard hook symbol; no process memory is touched.
+        SetWindowsHookExW, TranslateMessage,
         KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN,
         WM_SYSKEYUP,
     };
@@ -887,6 +900,7 @@ mod shortcut_poller {
 
     fn run_hook_loop() {
         unsafe {
+            // lint-allow: AV002 this is the low-level keyboard hook itself; the process is not modified.
             let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(low_level_keyboard_proc), null_mut(), 0);
             if hook.is_null() {
                 log::warn!("Voice typing low-level keyboard hook could not be installed; using poller fallback");
