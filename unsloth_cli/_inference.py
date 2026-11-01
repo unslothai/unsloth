@@ -421,28 +421,24 @@ def image_part(path) -> dict:
     """An OpenAI image_url part carrying the file as a data URL, the shape Studio's chat sends."""
     import base64
     import io
-    import mimetypes
 
     file = Path(path).expanduser()
     try:
         data = file.read_bytes()
     except OSError as exc:
         raise ValueError(f"can't read image {file}: {exc.strerror or exc}") from None
-    image_format = None
+    # Without Pillow nothing could tell a real picture from a renamed text file.
     try:
         from PIL import Image
     except ImportError:
-        Image = None
-    if Image is not None:
-        try:
-            with Image.open(io.BytesIO(data)) as picture:
-                image_format = picture.format
-                picture.verify()
-        except Exception:
-            raise ValueError(f"{file} is not an image file Unsloth can read") from None
-    mime = _IMAGE_MIME_TYPES.get(image_format) or mimetypes.guess_type(file.name)[0]
-    if not (mime or "").startswith("image/"):
-        mime = "image/png"
+        raise ValueError("reading images needs Pillow: pip install pillow") from None
+    try:
+        with Image.open(io.BytesIO(data)) as picture:
+            image_format = picture.format
+            picture.verify()
+    except Exception:
+        raise ValueError(f"{file} is not an image file Unsloth can read") from None
+    mime = _IMAGE_MIME_TYPES.get(image_format) or Image.MIME.get(image_format, "image/png")
     encoded = base64.b64encode(data).decode("ascii")
     return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}}
 

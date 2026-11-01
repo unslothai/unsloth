@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -102,6 +103,15 @@ def test_image_part_rejects_a_missing_or_non_image_file(tmp_path):
     notes.write_text("not a picture", encoding = "utf-8")
     with pytest.raises(ValueError, match = "not an image file"):
         image_part(notes)
+
+
+def test_image_part_refuses_rather_than_guesses_without_pillow(monkeypatch, tmp_path):
+    path = _png(tmp_path / "red.png")
+    # None in sys.modules makes `from PIL import Image` raise ImportError.
+    monkeypatch.setitem(sys.modules, "PIL", None)
+
+    with pytest.raises(ValueError, match = "needs Pillow"):
+        image_part(path)
 
 
 def test_user_turn_puts_images_ahead_of_the_text(tmp_path):
