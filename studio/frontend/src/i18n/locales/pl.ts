@@ -704,8 +704,11 @@ export const pl = {
     plainText: "Pole wiadomości z czystym tekstem",
     plainTextDescription:
       "Zachowuj kod, Markdown i linki jako zwykły tekst. Wyłącz, aby pokazywać sformatowany podgląd.",
-    richPaste: "Wklejanie sformatowanego tekstu",
-    richPasteDescription: "Zachowuje linki, tabele, listy oraz pogrubiony lub pochylony tekst jako Markdown przy wklejaniu ze stron i dokumentów. {shortcut} zawsze wkleja zwykły tekst.",
+    richText: "Sformatowany tekst",
+    richTextDescription: "Pełne: Markdown, taki jak pogrubienie, kursywa i kod, jest formatowany już podczas pisania. Tylko wklejanie: linki, tabele, listy i formatowanie wklejane ze stron i dokumentów stają się Markdownem. {shortcut} zawsze wkleja zwykły tekst.",
+    richTextFull: "Pełne",
+    richTextPasteOnly: "Tylko wklejanie",
+    richTextOff: "Wyłączone",
     showContext: "Użycie okna kontekstu",
     sendShortcut: "Skrót wysyłania",
     sendMultiline: "{mod} + Enter dla promptów wielowierszowych",

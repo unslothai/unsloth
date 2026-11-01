@@ -7,6 +7,7 @@ import {
   refreshSkillsCatalog,
   useSkillsCatalog,
 } from "@/features/chat";
+import { isComposerField } from "@/features/chat/rich-composer/composer-field";
 import { useT } from "@/i18n";
 import type {
   Unstable_DirectiveFormatter,
@@ -138,7 +139,7 @@ function MentionTabAccept({
     const accept = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Tab" || event.shiftKey || event.isComposing) return;
       if (
-        !(event.target instanceof HTMLTextAreaElement) ||
+        !isComposerField(event.target) ||
         !scopeRef.current?.contains(event.target)
       )
         return;
@@ -165,7 +166,7 @@ function MentionTokenReplacer(): null {
     () =>
       registerSelectItemOverride((item) => {
         const input = document.activeElement;
-        if (!(input instanceof HTMLTextAreaElement)) return false;
+        if (!isComposerField(input)) return false;
         const text = aui.composer().getState().text;
         if (input.value !== text) return false;
         const token = mentionTokenAt(text, input.selectionStart);

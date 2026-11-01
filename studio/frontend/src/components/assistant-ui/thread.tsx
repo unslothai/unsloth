@@ -94,6 +94,7 @@ import {
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
+import { LazyRichComposerInput } from "@/features/chat/rich-composer/lazy";
 import { isRewindCommand, useRewindDialogStore } from "@/features/chat";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
@@ -472,6 +473,7 @@ import {
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
   type PropsWithChildren,
+  type ReactElement,
   type ReactNode,
   type RefObject,
   Fragment,
@@ -2979,7 +2981,11 @@ const Composer: FC<{
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
   );
-  const richTextPaste = useChatPreferencesStore((s) => s.richTextPaste);
+  const composerRichText = useChatPreferencesStore((s) => s.composerRichText);
+  // Image edits take plain instructions, so Full falls back to the textarea there.
+  const fullRichText = composerRichText === "full" && !overlay;
+  // Full inserts its own pastes; the textarea converts them here.
+  const textareaRichPaste = composerRichText !== "off" && !fullRichText;
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
   const submitIntentRef = useRef<ComposerSubmitIntent>("default");
   const submitOnKey = useCallback(
@@ -3095,7 +3101,7 @@ const Composer: FC<{
       );
       if (event.defaultPrevented) return;
       const markdown =
-        richTextPaste && !plainPaste ? richPasteMarkdown(event.clipboardData) : null;
+        textareaRichPaste && !plainPaste ? richPasteMarkdown(event.clipboardData) : null;
       if (markdown !== null) {
         event.preventDefault();
         if (pastedYoutubeUrl) setYoutubeLink(pastedYoutubeUrl);
@@ -3140,7 +3146,7 @@ const Composer: FC<{
         justSentRef.current = null;
       }
     },
-    [aui, overlay, pastedTextMinChars, richTextPaste],
+    [aui, overlay, pastedTextMinChars, textareaRichPaste],
   );
 
   const composerText = useAuiState(({ composer }) => composer.text);
@@ -5650,6 +5656,42 @@ const Composer: FC<{
   // Skills off sends no read_skill, so a mention would load nothing.
   const [skillsSwitchOn] = useSkillsSwitch();
 
+  // Full renders the same input through the vendored editor; the textarea stands in while it loads.
+  const composerInput = (render?: ReactElement) => (
+    <ComposerPrimitive.Input
+      render={render}
+      id={inputId}
+      submitMode="none"
+      placeholder={
+        overlay ? "Type your edits for your image" : "Ask anything"
+      }
+      ref={inputRef}
+      data-type-to-activate="composer"
+      className="aui-composer-input unsloth-composer-input"
+      minRows={1}
+      maxRows={12}
+      onHeightChange={handleEditorHeightChange}
+      autoFocus={!disabled}
+      disabled={disabled}
+      aria-label={overlay ? "Image edit instructions" : "Message input"}
+      dir="auto"
+      {...inputProps}
+      cancelOnEscape={!(declineMounted && declineOwnsEscape)}
+      onScrollCapture={(event) =>
+        markComposerScrollEdges(event.currentTarget)
+      }
+      onInputCapture={(event) =>
+        markComposerScrollEdges(event.currentTarget)
+      }
+      // Capture, so inputProps keeps the handlers it already owns.
+      onKeyDownCapture={notePlainPasteChord}
+      onKeyUpCapture={endPlainPasteChord}
+      onBlurCapture={endPlainPasteChord}
+      addAttachmentOnPaste={false}
+      onPaste={handleFilePaste}
+    />
+  );
+
   const composerContent = (
     <>
       {!isDictating ? (
@@ -5713,37 +5755,13 @@ const Composer: FC<{
                 } as CSSProperties
               }
             >
-              <ComposerPrimitive.Input
-                id={inputId}
-                submitMode="none"
-                placeholder={
-                  overlay ? "Type your edits for your image" : "Ask anything"
-                }
-                ref={inputRef}
-                data-type-to-activate="composer"
-                className="aui-composer-input unsloth-composer-input"
-                minRows={1}
-                maxRows={12}
-                onHeightChange={handleEditorHeightChange}
-                autoFocus={!disabled}
-                disabled={disabled}
-                aria-label={overlay ? "Image edit instructions" : "Message input"}
-                dir="auto"
-                {...inputProps}
-                cancelOnEscape={!(declineMounted && declineOwnsEscape)}
-                onScrollCapture={(event) =>
-                  markComposerScrollEdges(event.currentTarget)
-                }
-                onInputCapture={(event) =>
-                  markComposerScrollEdges(event.currentTarget)
-                }
-                // Capture, so inputProps keeps the handlers it already owns.
-                onKeyDownCapture={notePlainPasteChord}
-                onKeyUpCapture={endPlainPasteChord}
-                onBlurCapture={endPlainPasteChord}
-                addAttachmentOnPaste={false}
-                onPaste={handleFilePaste}
-              />
+              {fullRichText ? (
+                <Suspense fallback={composerInput()}>
+                  {composerInput(<LazyRichComposerInput />)}
+                </Suspense>
+              ) : (
+                composerInput()
+              )}
               {(showWritingToggle || isWritingExpanded) && (
                 <TooltipIconButton
                   type="button"

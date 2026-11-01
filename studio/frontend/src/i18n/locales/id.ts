@@ -697,8 +697,11 @@ export const id = {
     plainText: "Kolom pesan teks biasa",
     plainTextDescription:
       "Pertahankan kode, Markdown, dan tautan sebagai teks literal. Nonaktifkan untuk menampilkan pratinjau berformat.",
-    richPaste: "Tempel teks berformat",
-    richPasteDescription: "Pertahankan tautan, tabel, daftar, serta teks tebal atau miring sebagai Markdown saat menempel dari halaman web dan dokumen. {shortcut} selalu menempel teks biasa.",
+    richText: "Teks berformat",
+    richTextDescription: "Penuh: Markdown seperti tebal, miring, dan kode langsung diformat saat Anda mengetik. Hanya saat menempel: tautan, tabel, daftar, dan format yang ditempel dari halaman web dan dokumen menjadi Markdown. {shortcut} selalu menempel teks biasa.",
+    richTextFull: "Penuh",
+    richTextPasteOnly: "Hanya saat menempel",
+    richTextOff: "Mati",
     showContext: "Penggunaan jendela konteks",
     sendShortcut: "Pintasan kirim",
     sendMultiline: "{mod} + Enter untuk prompt multibaris",

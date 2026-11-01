@@ -9,7 +9,8 @@
       "**/._*",
       "._*",
       "**/.DS_Store",
-      "tsconfig*.json"
+      "tsconfig*.json",
+      "src/vendor/**"
     ]
   },
   "formatter": {

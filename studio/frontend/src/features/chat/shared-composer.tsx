@@ -625,7 +625,8 @@ export function SharedComposer({
 }): ReactElement {
   const t = useT();
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
-  const richTextPaste = useChatPreferencesStore((s) => s.richTextPaste);
+  // Full styles only the main composer; here it pastes like Paste only.
+  const richTextPaste = useChatPreferencesStore((s) => s.composerRichText !== "off");
   const navigate = useNavigate();
   const handleExitCompare = useCallback(() => {
     if (onExitCompare) {
