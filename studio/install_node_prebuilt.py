@@ -115,7 +115,7 @@ class HostInfo:
 
 
 def tar_archive_ext() -> str:
-    # .tar.xz is about half the download. Import, not find_spec: lzma.py exists even when _lzma was not built.
+    # Import, not find_spec: lzma.py exists even when _lzma was not built.
     try:
         import lzma  # noqa: F401
     except ImportError:
@@ -923,9 +923,7 @@ def _record_runtime_verification_under_lock(
 
 
 def pin_to_keep(pins: dict, version: str, asset: str, install_dir: Path) -> str | None:
-    """The pin an install must match to be kept: this asset's, or the other pinned archive
-    of the same Node build when that is what the install came from, so changing archive
-    format does not download Node again."""
+    """Pin of the recorded archive when it is the same Node build in another format, so a format switch does not re-download."""
     recorded = (load_metadata(install_dir) or {}).get("asset")
     same_build = isinstance(recorded, str) and recorded.split(".tar.")[0] == asset.split(".tar.")[0]
     return pinned_sha256(pins, version, recorded if same_build else asset)
