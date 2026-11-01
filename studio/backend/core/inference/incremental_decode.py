@@ -23,19 +23,46 @@ _BYTE_PIECE = re.compile(r"<0x[0-9A-Fa-f]{2}>")
 _SPLIT_DECODE = {"skip_special_tokens": False, "clean_up_tokenization_spaces": False}
 
 
-def _decoder_is_local(config) -> bool:
+def _decoder_steps(config):
+    if isinstance(config, dict) and config.get("type") == "Sequence":
+        steps = config.get("decoders")
+        if not isinstance(steps, list):
+            return None
+        flat = []
+        for step in steps:
+            inner = _decoder_steps(step)
+            if inner is None:
+                return None
+            flat.extend(inner)
+        return flat
+    return [config]
+
+
+def _step_is_local(config, fused) -> bool:
     kind = config.get("type") if isinstance(config, dict) else None
-    if kind in ("ByteLevel", "Metaspace", "ByteFallback", "Fuse"):
+    if kind in ("ByteLevel", "Metaspace", "Fuse"):
         return True
+    if kind == "ByteFallback":
+        # After Fuse, ordinary pieces spelling "<0x41>" form one byte token.
+        return not fused
     if kind == "Replace":
         pattern = config.get("pattern") or {}
         return isinstance(pattern.get("String"), str) and len(pattern["String"]) == 1
     if kind == "Strip":
         return config.get("stop") == 0 and config.get("start") in (0, 1)
-    if kind == "Sequence":
-        steps = config.get("decoders")
-        return isinstance(steps, list) and all(_decoder_is_local(step) for step in steps)
     return False
+
+
+def _decoder_is_local(config) -> bool:
+    steps = _decoder_steps(config)
+    if not steps:
+        return False
+    fused = False
+    for step in steps:
+        if not _step_is_local(step, fused):
+            return False
+        fused = fused or step.get("type") == "Fuse"
+    return True
 
 
 def _fast_tokenizer(tokenizer):

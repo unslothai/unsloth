@@ -207,8 +207,10 @@ def test_work_per_token_stays_bounded():
         decoders.WordPiece(),
         decoders.Sequence([decoders.Fuse(), decoders.Replace("ab", "x")]),
         decoders.Sequence([decoders.Fuse(), decoders.Strip(" ", 2, 0)]),
+        decoders.Sequence([decoders.Fuse(), decoders.ByteFallback()]),
+        decoders.Sequence([decoders.Sequence([decoders.Fuse()]), decoders.ByteFallback()]),
     ],
-    ids = ["wordpiece", "multi-character-replace", "strip-two"],
+    ids = ["wordpiece", "multi-character-replace", "strip-two", "fuse-then-bytes", "nested-fuse"],
 )
 def test_an_unknown_decoder_keeps_the_full_decode(backend):
     tokenizer = _sentencepiece(backend)
