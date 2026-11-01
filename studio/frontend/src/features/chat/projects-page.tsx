@@ -63,9 +63,9 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildProjectsTourSteps } from "./tour";
 import { EditProjectDialog } from "./components/edit-project-dialog";
 import { NewProjectDialog } from "./components/new-project-dialog";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Archive03Icon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
   PencilEdit02Icon,
@@ -1043,7 +1043,7 @@ export function ProjectsPage({
                                     : void deleteChat(chat, alwaysDeleteChatFiles)
                                 }
                               >
-                                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                                <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
                                 <span>{t("common.delete")}</span>
                               </DropdownMenuItem>
                             </DropdownMenuContent>

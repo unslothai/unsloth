@@ -10,9 +10,9 @@ import {
 } from "@/components/ui/popover";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   ClipboardPasteIcon,
-  Delete02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -261,7 +261,7 @@ export function MediaGenerationPresetControl({
               onClick={() => remove().catch(() => undefined)}
               className="mt-3 flex h-8 w-full items-center justify-center gap-1.5 rounded-full text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             >
-              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-3.5" />
               Delete preset
             </button>
           ) : null}

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { AiSpeechIcon, FileSearchIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, BookmarkIcon, FileSearchIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { createPortal } from "react-dom";
 import {
   canQueueTextAttachment,
@@ -427,9 +427,7 @@ import {
 import { flushResourcesSync } from "@assistant-ui/tap";
 import {
   AttachmentIcon,
-  Bookmark02Icon,
   CodeIcon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
   Image03Icon,
@@ -6978,7 +6976,7 @@ const ComposerToolsMenu: FC<{
     savedPrompts: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
-          <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+          <HugeiconsIcon icon={BookmarkIcon} strokeWidth={2} />
           Saved prompts
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
@@ -8486,7 +8484,7 @@ const DeleteMessageButton: FC = () => {
       onClick={() => void handleDelete()}
       className="hover:!text-destructive"
     >
-      <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
     </TooltipIconButton>
   );
 };

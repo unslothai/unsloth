@@ -157,3 +157,15 @@ export const HandIcon: IconSvgElement = [
   ["path", { d: "M15 10.5V3.75C15 2.7835 14.2165 2 13.25 2C12.2835 2 11.5 2.7835 11.5 3.75V10", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "2" }],
   ["path", { d: "M11.5 10V5.75C11.5 4.7835 10.7165 4 9.75 4C8.7835 4 8 4.7835 8 5.75V14", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "3" }]
 ];
+
+// Hugeicons "trash" from core-free-icons 4.4.0; the pinned 4.1.1 does not have it.
+export const TrashIcon: IconSvgElement = [
+  ["path", { d: "M18.8516 16.3743L19.5 6H4.5L5.14839 16.3743C5.315 19.0401 5.39831 20.373 6.26426 21.1865C7.13021 22 8.46571 22 11.1367 22H12.8633C15.5343 22 16.8698 22 17.7357 21.1865C18.6017 20.373 18.685 19.0401 18.8516 16.3743Z", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "0" }],
+  ["path", { d: "M15.5 6H21M15.5 6L15.3721 4.97683C15.1595 3.2762 13.7139 2 12 2C10.2861 2 8.84047 3.2762 8.6279 4.97683L8.5 6M15.5 6H8.5M3 6H8.5", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "1" }],
+  ["path", { d: "M9.5 11V17M14.5 11V17", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "2" }],
+];
+
+// Hugeicons "bookmark-01" from core-free-icons 4.4.0; the pinned 4.1.1 has the older drawing.
+export const BookmarkIcon: IconSvgElement = [
+  ["path", { d: "M4.5 18.212V8.23515C4.5 5.53157 4.5 4.17979 5.32376 3.33989C6.14752 2.5 7.47335 2.5 10.125 2.5H13.875C16.5267 2.5 17.8525 2.5 18.6762 3.33989C19.5 4.17979 19.5 5.53158 19.5 8.23515V18.212C19.5 20.1274 19.5 21.0852 18.8987 21.4076C18.2975 21.7301 17.5234 21.1875 15.9753 20.1024L14.1245 18.805C13.0964 18.0843 12.5824 17.724 12 17.724C11.4176 17.724 10.9036 18.0843 9.87552 18.805L8.02469 20.1024C6.47657 21.1875 5.70252 21.7301 5.10126 21.4076C4.5 21.0852 4.5 20.1274 4.5 18.212Z", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "0" }],
+];
