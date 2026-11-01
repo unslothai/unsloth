@@ -20,10 +20,11 @@ for _entry in (_BACKEND_DIR, _TESTS_DIR):
         sys.path.insert(0, _entry)
 
 from core.inference.chat_template_helpers import neutralize_control_markup  # noqa: E402
+from core import tool_healing  # noqa: E402
 from core.inference.tool_call_parser import (  # noqa: E402
     StreamingMarkupStripper,
     TOOL_XML_SIGNALS,
-    _inside_minimax_value,
+    _TC_PARAM_START_RE,
     _MinimaxValueIndex,
     parse_tool_calls_from_text,
     strip_tool_markup,
@@ -35,6 +36,17 @@ from test_llama_cpp_tool_loop import (  # noqa: E402
     _run_tool_loop,
     _sse,
 )
+
+
+def _inside_minimax_value(text: str, pos: int) -> bool:
+    return tool_healing._inside_open_parameter(
+        text,
+        pos,
+        param_start_re = _TC_PARAM_START_RE,
+        param_closers = ("</parameter>", "</param>"),
+        func_closers = ("</invoke>", "</minimax:tool_call>"),
+    )
+
 
 ENABLED = {"web_search", "python"}
 SEARCH = (

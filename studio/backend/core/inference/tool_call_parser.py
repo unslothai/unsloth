@@ -41,7 +41,6 @@ TOOL_XML_SIGNALS = (
     "<|tool_calls_section_begin|>",
     "<|tool_call_begin|>",
     "<|content_invoke_tool_json|>",
-    # MiniMax-M2 / M2.1 block; llama-server leaves it in content when its parser does not run.
     "<minimax:tool_call>",
 )
 
@@ -1309,7 +1308,7 @@ def _strip_minimax_calls(text: str, *, final: bool) -> str:
     pos = 0
     for start, end, closed in _minimax_block_spans(text):
         if not (closed or final):
-            break  # keep the unclosed block buffered mid-stream
+            break
         out.append(text[pos:start])
         pos = end
     out.append(text[pos:])
@@ -4276,19 +4275,8 @@ def _parse_kimi_section_body(
     return out
 
 
-def _inside_minimax_value(text: str, pos: int) -> bool:
-    """A MiniMax tag inside an unclosed ``<parameter>`` value is argument text, not markup."""
-    return _tool_healing._inside_open_parameter(
-        text,
-        pos,
-        param_start_re = _TC_PARAM_START_RE,
-        param_closers = ("</parameter>", "</param>"),
-        func_closers = (_MINIMAX_INVOKE_CLOSE, _MINIMAX_BLOCK_CLOSE),
-    )
-
-
 class _MinimaxValueIndex:
-    """``_inside_minimax_value`` over one text in O(log n) per query: the per-tag scans were quadratic on long output."""
+    """Whether a tag sits inside an unclosed ``<parameter>`` value (argument text, not markup), O(log n) per query."""
 
     __slots__ = ("_param_starts", "_param_ends", "_param_closers", "_func_closers")
 
@@ -4386,7 +4374,6 @@ def _parse_minimax_tool_calls(
             close = content.find(_MINIMAX_INVOKE_CLOSE, im.end(), next_invoke)
             while close >= 0 and inside(close):
                 close = content.find(_MINIMAX_INVOKE_CLOSE, close + 1, next_invoke)
-            # Strict mode: an invoke without its close tag was cut off; do not heal it.
             if close < 0 and not allow_incomplete:
                 continue
             body = content[im.end() : close if close >= 0 else next_invoke]

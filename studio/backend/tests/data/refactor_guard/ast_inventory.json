@@ -1800,11 +1800,6 @@
         "kind": "def",
         "signature": "content: str, signal: int, enabled_tool_names: Optional[set]"
       },
-      "_inside_minimax_value": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "text: str, pos: int"
-      },
       "_inside_open_parameter": {
         "decorators": [],
         "kind": "def",
