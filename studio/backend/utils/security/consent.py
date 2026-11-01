@@ -182,15 +182,12 @@ def _load_remote_code_configs(
         return None
 
 
-def _unscannable_decision(
-    target: str, hf_token: Optional[str], *, declared: bool
-) -> RemoteCodeDecision:
+def _unscannable_decision(target: str, *, declared: bool, missing: bool) -> RemoteCodeDecision:
     """Fails closed either way; only a declaration read from a config says the repo has code."""
-    from utils.hf_probe import hub_repo_not_found, repo_not_found_message
+    from utils.hf_probe import repo_not_found_message
     from utils.hub_settings import active_source_label
-    from utils.paths import is_local_path
 
-    if not declared and not is_local_path(target) and hub_repo_not_found(target, hf_token):
+    if not declared and missing:
         logger.warning(
             "Blocking load of '%s': the repo was not found on %s, so it could not be scanned.",
             target,
@@ -309,18 +306,29 @@ def evaluate_remote_code_consent_for_targets(
         try:
             files = repo_remote_code_files(target, hf_token = hf_token, **scan_kwargs)
         except RemoteCodeUnscannable:
-            from utils.hf_probe import cached_snapshot_missing_from_source
+            from utils.hf_probe import hub_repo_not_found
+            from utils.hub_settings import MODELSCOPE, active_source
+            from utils.paths import is_local_path
+            from utils.utils import hf_cache_snapshot_dir_for_repo
 
-            snapshot = cached_snapshot_missing_from_source(target, hf_token)
+            declared = declares_code is True
+            on_modelscope = active_source() == MODELSCOPE
+            missing = (
+                (on_modelscope or not declared)
+                and not is_local_path(target)
+                and hub_repo_not_found(target, hf_token)
+            )
+            # Hugging Face's 404 may only mean private to this caller, so only ModelScope's counts.
+            snapshot = hf_cache_snapshot_dir_for_repo(target) if missing and on_modelscope else None
             if snapshot is None:
-                return _unscannable_decision(target, hf_token, declared = declares_code is True)
-            # The hub loads this snapshot now, so judge what it holds, not the source's 404.
+                return _unscannable_decision(target, declared = declared, missing = missing)
+            # The hub falls back to this snapshot on a 404, so judge what it holds.
             if _config_has_auto_map(str(snapshot), hf_token, **scan_kwargs) is False:
                 continue
             try:
                 files = repo_remote_code_files(str(snapshot), hf_token = hf_token, **scan_kwargs)
             except RemoteCodeUnscannable:
-                return _unscannable_decision(target, hf_token, declared = True)
+                return _unscannable_decision(target, declared = True, missing = False)
         has_remote_code = True
         # Namespace filenames by (casing-normalized) target so two repos' same-named files stay distinct.
         target_key = _fingerprint_target_key(target)

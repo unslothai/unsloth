@@ -70,17 +70,6 @@ def hub_repo_not_found(repo_id: str, token: Optional[str] = None) -> bool:
     return False
 
 
-def cached_snapshot_missing_from_source(repo_id: str, token: Optional[str] = None):
-    """The cached main snapshot the hub falls back to once ModelScope says it has no such repo.
-    Hugging Face's 404 may only mean private to this caller, so it never qualifies."""
-    from utils.hub_settings import MODELSCOPE, active_source
-    from utils.utils import hf_cache_snapshot_dir_for_repo
-
-    if active_source() != MODELSCOPE or not hub_repo_not_found(repo_id, token):
-        return None
-    return hf_cache_snapshot_dir_for_repo(repo_id)
-
-
 def repo_not_found_message(repo_id: str) -> str:
     from utils.hub_settings import MODELSCOPE, active_source
     if active_source() == MODELSCOPE:
