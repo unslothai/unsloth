@@ -13,10 +13,7 @@ function isBase64Char(c: number): boolean {
   );
 }
 
-/**
- * Same result as text.replace(/[A-Za-z0-9+/]{120,}={0,2}/g, " "), in one pass: the regex retries
- * every start inside each short word, which dominated building the search index.
- */
+/** text.replace(/[A-Za-z0-9+/]{120,}={0,2}/g, " ") in one pass; the regex retries inside every word. */
 export function stripBase64Runs(text: string): string {
   let pieces: string[] | null = null;
   let last = 0;
@@ -38,7 +35,7 @@ export function stripBase64Runs(text: string): string {
   return pieces === null ? text : pieces.join("") + text.slice(last);
 }
 
-// A lone space needs no rewrite, so only longer or non-space runs match; most text has no other.
+// A lone space needs no rewrite, so only runs that change match.
 const WHITESPACE_TO_COLLAPSE = / \s+|[^\S ]\s*/g;
 
 /** Same result as text.replace(/\s+/g, " "), without rewriting every single space. */

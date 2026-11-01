@@ -723,7 +723,6 @@ class ChatPinsMigrationRequest(BaseModel):
 
 class ChatMessagesBatchRequest(BaseModel):
     threadIds: list[str]
-    # "search" trims each message to what the chat search index reads (see _search_view_message).
     view: Literal["full", "search"] = "full"
 
 
@@ -1690,15 +1689,13 @@ def get_thread_messages(thread_id: str, current_subject: str = Depends(get_curre
     )
 
 
-# Content part types extractText in frontend use-chat-search-index.ts reads; every other part
-# (images, audio, files) contributes nothing to search. Keep the two in step.
+# Part types extractText (frontend use-chat-search-index.ts) reads; a frontend test guards drift.
 _SEARCH_PART_TYPES = frozenset(("text", "reasoning", "thinking", "tool-call", "source"))
 _PASTED_TEXT_PREFIX = "<pasted_text name="
 
 
 def _search_view_attachment_part(part: Any) -> bool:
-    """attachmentsPastedText reads only pasted-text bodies. Anything it would not skip outright,
-    malformed values included, is kept as stored so the index fails or succeeds exactly as before."""
+    """Keep what attachmentsPastedText reads; malformed parts stay so the index fails as before."""
     if not isinstance(part, dict):
         return True
     if part.get("type") != "text" or "text" not in part:
@@ -1708,8 +1705,7 @@ def _search_view_attachment_part(part: Any) -> bool:
 
 
 def _search_view_message(message: dict) -> dict:
-    """The search index's view of a message: the same text in, without metadata, media payloads
-    or document bodies, which on a long history are most of the response."""
+    """What the search index reads of a message: no metadata, media or document bodies."""
     out = {
         key: message[key]
         for key in ("id", "threadId", "parentId", "role", "createdAt")

@@ -1349,10 +1349,9 @@ export async function listChatMessages(
   return data.messages;
 }
 
-/** Batch fetch; falls back to per-thread listChatMessages on 404/405 from older servers. */
 /**
- * view "search" asks for only what the search index reads: no metadata, media or document bodies.
- * Older backends ignore it and return full messages, which index the same.
+ * Batch fetch; falls back to per-thread listChatMessages on 404/405 from older servers.
+ * view "search" trims messages to what the search index reads; older backends ignore it.
  */
 export async function batchListChatMessages(
   threadIds: string[],
