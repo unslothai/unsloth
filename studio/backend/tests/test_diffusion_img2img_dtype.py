@@ -105,3 +105,39 @@ def test_missing_vae_and_broken_probe_are_no_ops():
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
     vae.encode(torch.zeros(1, 3, 8, 8, dtype = torch.float32))
     assert vae.seen_dtype == torch.float32
+
+
+def test_broken_probe_upcasts_half_for_fp32_vae_encode():
+    # Qwen-Image Edit/Reference on low-VRAM GGUF: condition images are Half, VAE encode is Float
+    # (#16375). When the weight probe fails under offload, upcast instead of fail-open.
+    import torch
+
+    class _BrokenVae(_RecordingVae):
+        def parameters(self):
+            raise RuntimeError("meta device")
+
+    vae = _BrokenVae(dtype = torch.float32)
+    DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
+    vae.encode(torch.zeros(1, 3, 8, 8, dtype = torch.float16))
+    assert vae.seen_dtype == torch.float32
+
+
+def test_encode_prefers_encoder_weights_and_float32_when_mixed():
+    import torch
+
+    class _Encoder:
+        def parameters(self):
+            yield types.SimpleNamespace(dtype = torch.float32)
+
+    class _MixedVae(_RecordingVae):
+        def __init__(self):
+            super().__init__(dtype = torch.float16)
+            self.encoder = _Encoder()
+
+        def parameters(self):
+            yield types.SimpleNamespace(dtype = torch.float16)
+
+    vae = _MixedVae()
+    DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
+    vae.encode(torch.zeros(1, 3, 8, 8, dtype = torch.float16))
+    assert vae.seen_dtype == torch.float32

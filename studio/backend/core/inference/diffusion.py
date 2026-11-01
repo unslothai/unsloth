@@ -12815,6 +12815,59 @@ class DiffusionBackend:
         return pipe
 
     @staticmethod
+    def _pipeline_compute_dtype(pipe: Any) -> Any:
+        """Best-effort floating dtype for a GGUF pipe whose denoiser params are packed uint8 only."""
+        dtype = getattr(pipe, "dtype", None)
+        if dtype is not None and getattr(dtype, "is_floating_point", False):
+            return dtype
+        for name in ("text_encoder", "text_encoder_2", "transformer", "unet"):
+            mod = getattr(pipe, name, None)
+            if mod is None:
+                continue
+            try:
+                found = next(
+                    (p.dtype for p in mod.parameters() if p.dtype.is_floating_point),
+                    None,
+                )
+            except (AttributeError, RuntimeError, StopIteration, TypeError):
+                found = None
+            if found is not None:
+                return found
+        return None
+
+    @staticmethod
+    def _vae_running_dtype(vae: Any) -> Any:
+        """Dtype the VAE encode path will actually run in.
+
+        Prefer ``vae.encoder`` weights when present. If any floating weight is float32 (common under
+        partial offload on low-VRAM GGUF Edit/Reference), return float32 so Half condition images
+        are upcast instead of crashing with ``expected scalar type Float but found Half`` (#16375).
+        """
+        import torch
+
+        modules: list[Any] = []
+        encoder = getattr(vae, "encoder", None)
+        if encoder is not None:
+            modules.append(encoder)
+        modules.append(vae)
+        seen: list[Any] = []
+        for mod in modules:
+            try:
+                for param in mod.parameters():
+                    if param.dtype.is_floating_point:
+                        seen.append(param.dtype)
+            except (AttributeError, RuntimeError, StopIteration, TypeError):
+                continue
+            if seen:
+                break
+        if not seen:
+            dtype = getattr(vae, "dtype", None)
+            return dtype if dtype is not None and getattr(dtype, "is_floating_point", False) else None
+        if any(dtype == torch.float32 for dtype in seen):
+            return torch.float32
+        return seen[0]
+
+    @staticmethod
     def _align_vae_dtype(pipe: Any, denoiser_attr: str = "transformer") -> None:
         """A prior txt2img decode can leave the VAE upcast to fp32; re-align it to the denoiser's dtype."""
         denoiser = getattr(pipe, denoiser_attr, None)
@@ -12827,6 +12880,10 @@ class DiffusionBackend:
                 (p.dtype for p in denoiser.parameters() if p.dtype.is_floating_point),
                 None,
             )
+            # GGUF denoisers are often packed uint8 only; fall back to the pipe/TE dtype so Edit /
+            # Reference do not leave an fp32 VAE against Half condition images (#16375).
+            if target_dtype is None:
+                target_dtype = DiffusionBackend._pipeline_compute_dtype(pipe)
             if target_dtype is None:
                 return
             if next(vae.parameters()).dtype != target_dtype:
@@ -12836,8 +12893,8 @@ class DiffusionBackend:
 
     @staticmethod
     def _make_vae_encode_dtype_safe(pipe: Any) -> None:
-        """Casts encode inputs to the VAE's dtype; img2img uses the text encoder's dtype, which can
-        mismatch."""
+        """Casts encode inputs to the VAE's dtype; img2img / Qwen Edit use the TE dtype, which can
+        mismatch (#16375)."""
         vae = getattr(pipe, "vae", None)
         if vae is None or getattr(vae, "_unsloth_dtype_safe_encode", False):
             return
@@ -12848,16 +12905,21 @@ class DiffusionBackend:
 
             @functools.wraps(original)
             def _encode(x: Any, *args: Any, **kwargs: Any) -> Any:
-                try:
-                    if isinstance(x, torch.Tensor):
-                        target = next(
-                            (p.dtype for p in vae.parameters() if p.dtype.is_floating_point),
-                            None,
-                        )
+                if isinstance(x, torch.Tensor):
+                    target = None
+                    try:
+                        target = DiffusionBackend._vae_running_dtype(vae)
+                    except (AttributeError, RuntimeError, StopIteration, TypeError):
+                        target = None
+                    try:
                         if target is not None and x.dtype != target:
                             x = x.to(dtype = target)
-                except (AttributeError, RuntimeError, StopIteration, TypeError):
-                    pass
+                        elif target is None and x.dtype in (torch.float16, torch.bfloat16):
+                            # Offloaded / packed GGUF VAEs can hide floating params; Half into an
+                            # fp32 encode is the #16375 crash, so upcast rather than fail-open.
+                            x = x.to(dtype = torch.float32)
+                    except (AttributeError, RuntimeError, TypeError):
+                        pass
                 return original(x, *args, **kwargs)
 
             vae.encode = _encode
