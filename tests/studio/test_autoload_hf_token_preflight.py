@@ -90,6 +90,7 @@ export async function classify(ctx: any) {{
     hfToken,
     prepareHfTokenForUse,
     fetchGgufStagedMetadata,
+    reconcilePersistedGpuIds,
   }} = ctx;
 {slice}
   return isDiffusion;
@@ -138,6 +139,8 @@ _SCRIPT = textwrap.dedent(
         hfToken: %s,
         prepareHfTokenForUse,
         fetchGgufStagedMetadata,
+        // No default pick for Automatic: no iGPU beside a discrete card.
+        reconcilePersistedGpuIds: () => null,
       });
     } catch (e) {
       threw = String((e as Error).message);
@@ -169,3 +172,16 @@ def test_autoload_preflight_is_skipped_without_a_remembered_gpu_pick():
     assert out["sent"] == []
     assert out["threw"] is None
     assert out["isDiffusion"] is False
+
+
+def test_autoload_preflight_classifies_when_automatic_pins_a_default():
+    """Automatic pins a default pick on a mixed iGPU host, so the GGUF is classified first."""
+    script = _SCRIPT % json.dumps(_STALE_TOKEN)
+    script = script.replace("selectedGpuIds: [0]", "selectedGpuIds: null")
+    script = script.replace(
+        "reconcilePersistedGpuIds: () => null", "reconcilePersistedGpuIds: () => [0]"
+    )
+    out = _run(script, _harness())
+    assert out["sent"] == [None]
+    assert out["threw"] is None
+    assert out["isDiffusion"] is True

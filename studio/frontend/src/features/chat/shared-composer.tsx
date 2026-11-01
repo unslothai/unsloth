@@ -1725,7 +1725,12 @@ export function SharedComposer({
           : ownRemembered
             ? ownConfig.disableVision
             : DEFAULT_PER_MODEL_CONFIG.disableVision;
-        if (ownConfig.selectedGpuIds != null) {
+        // A GGUF pane needs devices for its Automatic default; any pane needs them to validate a pick.
+        if (
+          targetIsGguf ||
+          ownConfig.selectedGpuIds != null ||
+          compareLoadKnobs.selectedGpuIds != null
+        ) {
           await ensureGpuDeviceCache();
         }
         // A pane's own split is sent; the shared snapshot is not, as it is bounded by another GGUF.
@@ -1751,11 +1756,13 @@ export function SharedComposer({
                 ownConfig.selectedGpuIds,
                 ownConfig.selectedGpuIndexKind,
                 resolvedIsDiffusion === true,
+                targetIsGguf && !diffusionUnknown,
               )
             : reconcilePersistedGpuIds(
                 compareLoadKnobs.selectedGpuIds,
                 compareLoadKnobs.selectedGpuIndexKind,
                 resolvedIsDiffusion === true,
+                targetIsGguf && !diffusionUnknown,
               );
         // Own config only: inheriting the shared snapshot would be treated as a pin.
         const effectiveCustomContextLength = ownConfig.customContextLength;

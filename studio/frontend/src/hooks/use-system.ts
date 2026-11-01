@@ -27,6 +27,8 @@ export interface GpuDevice {
   unified_memory?: boolean;
   /** Host-backed part of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
+  /** ROCm: the installed PyTorch has no kernels for this GPU, so training skips it. */
+  no_torch_kernels?: boolean;
   /** Apple MLX only: Metal's recommendedMaxWorkingSetSize. Absent elsewhere and on older backends. */
   metal_working_set_gb?: number | null;
   /** Live readings from the same probe as vram_used_gb; absent where the backend has none. */

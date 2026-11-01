@@ -290,7 +290,15 @@ export function TrainModelSelector({
   requiredModelType?: ModelType;
 }) {
   const t = useT();
-  const gpu = useGpuInfo();
+  const gpuInfo = useGpuInfo();
+  // Size fit badges against the GPUs a run gets by default, as the Run preview does: no iGPU beside a discrete card.
+  const gpu = useMemo(
+    () => ({
+      available: gpuInfo.available,
+      memoryTotalGb: gpuInfo.defaultMemoryTotalGb,
+    }),
+    [gpuInfo.available, gpuInfo.defaultMemoryTotalGb],
+  );
   const {
     selectedModel,
     modelKnownCached,
