@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -72,7 +73,10 @@ def _boot(image: Path, container: Path) -> str:
     return _fingerprint(container)
 
 
-@pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason = "needs ssh-keygen")
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("ssh-keygen") is None,
+    reason = "runs the Dockerfile step under a POSIX sh with ssh-keygen",
+)
 @pytest.mark.parametrize("cleanup", [True, False], ids = ["dockerfile", "no-cleanup"])
 def test_each_container_gets_its_own_host_key(tmp_path: Path, cleanup: bool):
     image = tmp_path / "image"
@@ -81,7 +85,7 @@ def test_each_container_gets_its_own_host_key(tmp_path: Path, cleanup: bool):
     built = _fingerprint(image)
     if cleanup:
         for step in _cleanup_steps():
-            subprocess.run(["bash", "-c", step.replace("/etc/ssh", f"{image}/etc/ssh")], check = True)
+            subprocess.run(["sh", "-c", step.replace("/etc/ssh", f"{image}/etc/ssh")], check = True)
         assert not list((image / "etc/ssh").glob("ssh_host_*"))
 
     a = _boot(image, tmp_path / "a")
