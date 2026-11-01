@@ -6655,7 +6655,6 @@ html[data-chat-wallpaper-workspace-ready] [data-slot="window-titlebar"][data-wal
 [data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) [data-chat-page-root] {
   background: transparent;
 }
-/* Other pages carry dense UI, so they read over a near-solid wash whatever the image's contrast. */
 [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] {
   background: color-mix(in srgb, var(--background) max(86%, calc((1 - var(--wallpaper-safe, 0)) * 100%)), transparent);
 }
@@ -7029,10 +7028,6 @@ html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] :is([
     var(--background);
 }
 
-/* All pages under glass: each page sits on one frosted pane (tint and blur follow Glass strength, with a
-   floor so dense pages stay readable over any image). Inside it the surface tokens turn translucent, so
-   page canvases, headers, cards, fields and chips become lighter glass over the pane rather than solid
-   blocks; hover fills take the glass wash. --glass-page-* hold the solid colours, resolved on <html>. */
 html {
   --glass-page-floor: 70%;
 }
@@ -7058,17 +7053,13 @@ html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .
   --color-chat-icon-bg-hover: var(--glass-hover);
 }
 html.dark { --glass-page-floor: 60%; }
-/* The image itself is frosted on these pages rather than through a backdrop-filter on the pane: a pane
-   that is a backdrop root makes every sticky header inside re-tint it into a visible band. !important
-   beats the inline image blur, which this always exceeds. */
+/* Frost the image, not the pane: a backdrop-root pane makes sticky headers inside re-tint it into bands. */
 html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper[data-ready] .chat-wallpaper-artwork {
   filter: blur(max(var(--glass-blur), 22px)) saturate(var(--glass-saturate)) !important;
 }
-/* The top wash is for the chat header; on a frosted page it shows as a band behind page headers. */
 html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper::after {
   content: none;
 }
-/* Sticky headers frost the rows scrolling under them instead of painting a band over the pane. */
 html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] .sticky {
   background-color: transparent;
   -webkit-backdrop-filter: blur(16px);
