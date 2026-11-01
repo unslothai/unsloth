@@ -48428,7 +48428,6 @@ def _stop_external_image_runs() -> bool:
 
 
 def _decode_external_images(encoded: list) -> list:
-    """Base64-decode and fully load each provider image, in the provider's order."""
     from PIL import Image
 
     images = []
