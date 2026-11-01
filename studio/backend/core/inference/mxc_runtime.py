@@ -44,8 +44,8 @@ _ARCHITECTURES = ("x86_64", "arm64")
 HOST_PREP_STEPS = ("prepare-system-drive", "prepare-null-device")
 HOST_PREP_PROBE_SECONDS = 10.0
 DACL_RECOVERY_SECONDS = 60.0
-# Older Windows (Server 2019/2022, Windows 10) lacks the hypervisor exports wxc-exec imports, and the
-# loader reports that in a modal "System Error" dialog, not an exit code (#16169).
+# mxc_probe never uses MXC below this build, and some of those (Server 2019) cannot load wxc-exec: the
+# loader shows a modal "System Error" dialog instead of returning an exit code (#16169).
 MIN_WINDOWS_BUILD = 26100
 
 _WXC_EXEC_NAME = "wxc-exec.exe"
