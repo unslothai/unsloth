@@ -7867,7 +7867,7 @@ def dataset_map_num_proc(
 
 
 def light_map_num_proc(dataset, desired: Optional[int] = None) -> Optional[int]:
-    """``num_proc`` for a cheap row-by-row map over an eager Dataset (string formatting, role renames). An in-memory dataset (a streamed slice, ``Dataset.from_list``) has no cache files, so a pool pickles every shard out to its worker and the result back, which costs far more than such a map: 20k Alpaca rows format in 0.13 s in this process and 1.3 s over 8 workers, 207k rows in 1.3 s and 10.7 s. So those run in this process unless a count was asked for (``desired`` or UNSLOTH_DATASET_NUM_PROC). Arrow-backed datasets keep the pool and their map cache file names."""
+    """num_proc for a cheap row map: in process for an in-memory Dataset, since a pool pickles every shard both ways (20k Alpaca rows: 0.13 s here vs 1.3 s over 8 workers). An explicit count, the env hatch or cache files keep the pool."""
     asked = type(desired) is int
     if not asked and not getattr(dataset, "cache_files", None) and not _num_proc_override_is_set():
         return None

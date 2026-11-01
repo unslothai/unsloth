@@ -170,7 +170,7 @@ def test_in_process_rows_and_fingerprint_match_the_pool(make, monkeypatch):
     """Same rows, order, columns and fingerprint as the pooled map it replaces."""
     multiprocess = pytest.importorskip("multiprocess")
     if "fork" not in multiprocess.get_all_start_methods():
-        pytest.skip("needs fork to build a real worker pool")
+        pytest.skip(reason = "no fork start method, so no real worker pool to compare against")
     monkeypatch.setattr(hw, "_num_proc_override_is_set", lambda: False)
     monkeypatch.setattr(hw, "dataset_map_num_proc", lambda desired = None, **_k: desired or 2)
     monkeypatch.setattr(
