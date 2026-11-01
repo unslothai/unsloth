@@ -1067,10 +1067,13 @@ fn keep_resizable_across_first_configure(
 
 // WebKitGTK disables media streams and denies unhandled permission requests by default, which
 // breaks dictation. Allow only user-media requests; every other kind keeps the default deny.
+// It also ships with spell checking off and no dictionary loaded (wry turns neither on), so the
+// DOM spellcheck attribute behind Settings > Spell check did nothing on Linux.
 #[cfg(target_os = "linux")]
 fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use webkit2gtk::{
-        glib::Cast, PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebViewExt,
+        glib::Cast, PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebContextExt,
+        WebViewExt,
     };
 
     let window = app.get_webview_window("main").ok_or_else(|| {
@@ -1080,6 +1083,12 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
         let webview = webview.inner();
         if let Some(settings) = webview.settings() {
             settings.set_enable_media_stream(true);
+        }
+        // Process-wide in WebKit. An empty list = the locale's dictionary, else the first one
+        // installed; deferred because loading it blocks ~40 ms.
+        if let Some(context) = webview.context() {
+            context.set_spell_checking_enabled(true);
+            glib::idle_add_local_once(move || context.set_spell_checking_languages(&[]));
         }
         webview.connect_permission_request(|_webview, request| {
             match request.downcast_ref::<UserMediaPermissionRequest>() {
