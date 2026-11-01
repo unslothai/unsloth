@@ -181,12 +181,28 @@ def _case_units(rank, world, tmp):
         out["sft"] = _raised(lambda: pp_env.pp_trainer_refusals(SFTTrainer, plain_sft, lay))
     else:
         out["packing"] = out["sft"] = "no trl"
-    # A model the split refuses is refused at from_pretrained, naming the variable.
+    # A model the split refuses is refused at from_pretrained, naming the variable: a mixture-of-experts
+    # family whose router auxiliary loss pipeline parallel does not carry (Mixtral). Qwen3-MoE, whose loss it
+    # carries between stages (tests/test_pp_moe_aux_gloo.py), loads.
     from transformers import AutoConfig, AutoModelForCausalLM
 
-    config = AutoConfig.from_pretrained("trl-internal-testing/tiny-Qwen3MoeForCausalLM")
+    config = transformers.MixtralConfig(
+        vocab_size = 128,
+        hidden_size = 64,
+        intermediate_size = 96,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 16,
+        num_local_experts = 4,
+        num_experts_per_tok = 2,
+    )
     moe = tp_env.tensor_parallel_env_load(
         lambda name, load_in_4bit = True: AutoModelForCausalLM.from_config(config)
+    )
+    qwen3_moe_config = AutoConfig.from_pretrained("trl-internal-testing/tiny-Qwen3MoeForCausalLM")
+    qwen3_moe = tp_env.tensor_parallel_env_load(
+        lambda name, load_in_4bit = True: AutoModelForCausalLM.from_config(qwen3_moe_config)
     )
     os.environ.update(
         MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(_free_port()), RANK = "0", LOCAL_RANK = "0"
@@ -197,6 +213,7 @@ def _case_units(rank, world, tmp):
     tp_env._LAYOUT = tp_env.TPEnvLayout(1, 1, 2, False, 2)
     tp_env._LAYOUT._mesh = object()  # the refusal comes from the model, not the mesh
     out["moe"] = _raised(lambda: moe("m", load_in_4bit = False))
+    out["qwen3_moe"] = _raised(lambda: qwen3_moe("m", load_in_4bit = False))
     # Failing before: under pp x tp the tensor split in Trainer.__init__ replaced the parameters a prebuilt
     # optimizer held, so training stepped the old ones (no update, no error).
     from unsloth.models import _utils as unsloth_utils
@@ -751,6 +768,7 @@ def test_pp_env_layout_and_refusals():
     assert (
         "mixture-of-experts" in (res["moe"] or "") and "UNSLOTH_PP_SIZE=2: unset it" in res["moe"]
     ), res["moe"]
+    assert res["qwen3_moe"] is None, res["qwen3_moe"]
     assert res["act_dtype"] == (torch.float16, torch.float32), res["act_dtype"]
     assert res["stub_dtype"] == torch.float32, res["stub_dtype"]
 

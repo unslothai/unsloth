@@ -694,8 +694,12 @@ _MOE_EVIDENCE = {
     + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", False, "fsdp2"): (_MOE_TEST + "[lora-fsdp2]",) * 2
     + ("eager: no compiled region",),
+    # Block compile with LoRA on the experts: since the router_logits capture hooks are installed before the
+    # first block compiles (#16410), cp 2 measures 28-34 recompiles against 22-25 in one process, all per
+    # instance ParametrizedQwen3MoeTopKRouter type guards (router forward, PEFT get_base_layer): eager only, as
+    # FSDP2 x cp below.
     ("qwen3_moe", "lora+experts", False, "cp"): (_MOE_TEST + "[lora-cp2]",) * 2
-    + (_MOE_COMPILE + "[lora]",),
+    + ("eager: block compile recompiles more than one process",),
     # Block compile under FSDP2 x cp measured 28 recompiles against 26 in one process (one more
     # ParametrizedQwen3MoeTopKRouter type guard in the router forward and in PEFT's get_base_layer): eager only.
     ("qwen3_moe", "lora+experts", False, "fsdp2_cp"): (_MOE_TEST + "[lora-fsdp2_cp2]",) * 2

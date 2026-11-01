@@ -809,7 +809,10 @@ def test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch(env):
         _close(res, ref, what = (env, rank))
 
 
-@pytest.mark.parametrize("mode", ["lora", "full"])
+# LoRA on the experts is eager only under cp (the registry's qwen3_moe x lora+experts x cp row): its per instance
+# ParametrizedQwen3MoeTopKRouter type guards recompile more than one process once the router capture hooks are
+# installed before the first block compiles.
+@pytest.mark.parametrize("mode", ["full"])
 def test_moe_block_compile_under_cp_is_compile_clean(mode):
     from unsloth.utils.compile_counters import not_above
 
