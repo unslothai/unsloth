@@ -4599,7 +4599,7 @@ export const it = {
       variant: "Variante",
       epoch: "Epoca {value}",
       percentComplete: "{percent}% completato",
-      stepProgress: "Step {current} / {total}",
+      stepProgress: "Passaggio {current} / {total}",
       loss: "Loss",
       lr: "LR",
       gradNorm: "Norma grad.",
