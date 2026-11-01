@@ -2068,7 +2068,7 @@ export const sv = {
         grammarFixerLabel: "Avancerad grammatikfixare",
         grammarFixerDescription: "Fixa stavning, versaler, upprepade ord och skiljetecken på enheten",
         contractionsLabel: "Använd sammandragningar",
-        contractionsDescription: "F?rkorta fraser som \"I have\" till \"I've\". Vissa former l?ter informella, s? detta ?r avst?ngt som standard f?r standardskriven engelska.",
+        contractionsDescription: "Förkorta \"I have\" till \"I've\". Avstängt som standard.",
         macosPermissionHint: "Tillåt Unsloth i Systeminställningar → Sekretess och säkerhet → Tillgänglighet och indataövervakning så att genvägen kan höra nycklar utanför appen.",
         linuxWaylandHint: "Globala genvägar använder X11. På Wayland, använd dikteringsgenvägen i appen om systemgenvägen inte svarar.",
         llmPromptLabel: "Uppmaning efter bearbetning",

@@ -2184,7 +2184,7 @@ export const pl = {
         grammarFixerLabel: "Zaawansowane narzędzie do poprawiania gramatyki",
         grammarFixerDescription: "Napraw pisownię, wielkie litery, powtarzające się słowa i interpunkcję na urządzeniu",
         contractionsLabel: "Użyj skurczów",
-        contractionsDescription: "Skracaj zwroty takie jak \"I have\" do \"I've\". Niekt?re formy brzmi? nieformalnie, dlatego dla standardowego pisanego angielskiego jest to domy?lnie wy??czone.",
+        contractionsDescription: "Skracaj \"I have\" do \"I've\". Domyślnie wyłączone.",
         macosPermissionHint: "Zezwól Unsloth w Ustawieniach systemu → Prywatność i bezpieczeństwo → Dostępność i monitorowanie danych wejściowych, aby skrót mógł słyszeć klawisze spoza aplikacji.",
         linuxWaylandHint: "Skróty globalne korzystają z X11. W Wayland użyj skrótu do dyktowania w aplikacji, jeśli skrót systemowy nie odpowiada.",
         llmPromptLabel: "Monit po przetworzeniu",

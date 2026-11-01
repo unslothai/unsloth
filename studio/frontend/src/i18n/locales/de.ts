@@ -1971,7 +1971,7 @@ export const de = {
         grammarFixerLabel: "Erweiterter Grammatikkorrigierer",
         grammarFixerDescription: "Korrigieren Sie Rechtschreibung, Groß- und Kleinschreibung, wiederholte Wörter und Zeichensetzung auf dem Gerät",
         contractionsLabel: "Verwenden Sie Kontraktionen",
-        contractionsDescription: "K?rzen Sie Phrasen wie \"I have\" zu \"I've\". Einige Formen wirken informell, deshalb ist diese Option f?r Standard-Englisch standardm??ig aus.",
+        contractionsDescription: "\"I have\" zu \"I've\" kürzen. Standardmäßig aus.",
         macosPermissionHint: "Erlauben Sie Unsloth in den Systemeinstellungen → Datenschutz und Sicherheit → Barrierefreiheit und Eingabeüberwachung, damit die Verknüpfung Tasten außerhalb der App hören kann.",
         linuxWaylandHint: "Globale Verknüpfungen verwenden X11. Verwenden Sie auf Wayland die Diktierverknüpfung in der App, wenn die Systemverknüpfung nicht reagiert.",
         llmPromptLabel: "Aufforderung zur Nachbearbeitung",

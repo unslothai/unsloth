@@ -1985,8 +1985,7 @@ export const en = {
         grammarFixerDescription:
           "Fix spelling, capitalisation, repeated words and punctuation on device",
         contractionsLabel: "Use contractions",
-        contractionsDescription:
-          "Shorten phrases like \"I have\" to \"I've\". Some forms read informally, so this is off by default for standard written English.",
+        contractionsDescription: "Shorten \"I have\" to \"I've\". Off by default.",
         macosPermissionHint:
           "Allow Unsloth in System Settings → Privacy & Security → Accessibility and Input Monitoring so the shortcut can hear keys outside the app.",
         linuxWaylandHint:

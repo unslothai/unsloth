@@ -1966,7 +1966,7 @@ export const ptBR = {
         grammarFixerLabel: "Corretor gramatical avançado",
         grammarFixerDescription: "Corrigir ortografia, letras maiúsculas, palavras repetidas e pontuação no dispositivo",
         contractionsLabel: "Use contrações",
-        contractionsDescription: "Encurte frases como \"I have\" para \"I've\". Algumas formas soam informais, por isso fica desativado por padr?o para o ingl?s escrito padr?o.",
+        contractionsDescription: "Encurte \"I have\" para \"I've\". Desativado por padrão.",
         macosPermissionHint: "Permitir Unsloth em Configurações do sistema → Privacidade e segurança → Acessibilidade e monitoramento de entrada para que o atalho possa ouvir as teclas fora do aplicativo.",
         linuxWaylandHint: "Os atalhos globais usam o X11. No Wayland, use o atalho de ditado no aplicativo se o atalho do sistema não responder.",
         llmPromptLabel: "Prompt de pós-processamento",

@@ -2173,7 +2173,7 @@ export const cs = {
         grammarFixerLabel: "Pokročilý opravář gramatiky",
         grammarFixerDescription: "Opravte pravopis, velká písmena, opakovaná slova a interpunkci na zařízení",
         contractionsLabel: "Použijte kontrakce",
-        contractionsDescription: "Zkra?te fr?ze jako \"I have\" na \"I've\". N?kter? tvary p?sob? neform?ln?, proto je tato mo?nost pro standardn? psanou angli?tinu ve v?choz?m nastaven? vypnut?.",
+        contractionsDescription: "Zkraťte \"I have\" na \"I've\". Ve výchozím nastavení vypnuto.",
         macosPermissionHint: "Povolte Unsloth v Nastavení systému → Soukromí a zabezpečení → Usnadnění a monitorování vstupu, aby zástupce slyšel klávesy mimo aplikaci.",
         linuxWaylandHint: "Globální zkratky používají X11. Na Waylandu použijte zkratku pro diktování v aplikaci, pokud systémová zkratka nereaguje.",
         llmPromptLabel: "Výzva k následnému zpracování",

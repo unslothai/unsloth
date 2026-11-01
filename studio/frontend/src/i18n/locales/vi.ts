@@ -2174,7 +2174,7 @@ export const vi = {
         grammarFixerLabel: "Trình sửa lỗi ngữ pháp nâng cao",
         grammarFixerDescription: "Sửa lỗi chính tả, viết hoa, lặp từ và dấu câu trên thiết bị",
         contractionsLabel: "Sử dụng các cơn co thắt",
-        contractionsDescription: "R?t g?n c?c c?m nh? \"I have\" th?nh \"I've\". M?t s? d?ng nghe kh?ng trang tr?ng, n?n t?nh n?ng n?y t?t theo m?c ??nh cho ti?ng Anh vi?t chu?n.",
+        contractionsDescription: "Rút gọn \"I have\" thành \"I've\". Tắt theo mặc định.",
         macosPermissionHint: "Cho phép Unsloth trong Cài đặt hệ thống → Quyền riêng tư & Bảo mật → Giám sát khả năng truy cập và đầu vào để phím tắt có thể nghe thấy các phím bên ngoài ứng dụng.",
         linuxWaylandHint: "Phím tắt chung sử dụng X11. Trên Wayland, hãy sử dụng phím tắt đọc chính tả trong ứng dụng nếu phím tắt hệ thống không phản hồi.",
         llmPromptLabel: "Lời nhắc xử lý hậu kỳ",

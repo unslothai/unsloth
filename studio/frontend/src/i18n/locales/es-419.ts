@@ -2185,7 +2185,7 @@ export const es419 = {
         grammarFixerLabel: "Reparador de gramática avanzado",
         grammarFixerDescription: "Corregir ortografía, uso de mayúsculas, palabras repetidas y puntuación en el dispositivo",
         contractionsLabel: "Usa contracciones",
-        contractionsDescription: "Acorte frases como \"I have\" a \"I've\". Algunas formas suenan informales, por eso est? desactivado por defecto para el ingl?s escrito est?ndar.",
+        contractionsDescription: "Acorta \"I have\" a \"I've\". Desactivado por defecto.",
         macosPermissionHint: "Permita Unsloth en Configuración del sistema → Privacidad y seguridad → Accesibilidad y monitoreo de entrada para que el acceso directo pueda escuchar las teclas fuera de la aplicación.",
         linuxWaylandHint: "Los atajos globales utilizan X11. En Wayland, use el acceso directo de dictado en la aplicación si el acceso directo del sistema no responde.",
         llmPromptLabel: "Mensaje de posprocesamiento",

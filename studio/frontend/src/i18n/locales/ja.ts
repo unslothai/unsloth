@@ -1962,7 +1962,7 @@ export const ja = {
         grammarFixerLabel: "高度な文法修正ツール",
         grammarFixerDescription: "デバイス上のスペル、大文字、繰り返しの単語、句読点を修正します",
         contractionsLabel: "短縮形を使用する",
-        contractionsDescription: "?I have?????????I've??????????????????????????????????????????????",
+        contractionsDescription: "「I have」を「I've」に短縮します。既定ではオフです。",
         macosPermissionHint: "システム設定→プライバシーとセキュリティ→アクセシビリティと入力モニタリングでUnslothを許可し、ショートカットがアプリの外部のキーを聞くことができるようにします。",
         linuxWaylandHint: "グローバル ショートカットは X11 を使用します。 Wayland では、システム ショートカットが応答しない場合は、アプリ内のディクテーション ショートカットを使用します。",
         llmPromptLabel: "後処理プロンプト",

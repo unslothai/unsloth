@@ -2063,7 +2063,7 @@ export const zhTW = {
         grammarFixerLabel: "進階語法修復器",
         grammarFixerDescription: "修復設備上的拼字、大小寫、重複單字和標點符號",
         contractionsLabel: "使用縮寫",
-        contractionsDescription: "? \"I have\" ??????? \"I've\"???????????????????????????",
+        contractionsDescription: "將 \"I have\" 縮短為 \"I've\"。預設關閉。",
         macosPermissionHint: "在系統設定 → 隱私和安全性 → 輔助功能和輸入監控中允許 Unsloth，以便捷徑可以聽到應用程式外部的按鍵。",
         linuxWaylandHint: "全域快捷方式使用 X11。在 Wayland 上，如果系統捷徑沒有回應，請使用應用程式內聽寫捷徑。",
         llmPromptLabel: "後處理提示",

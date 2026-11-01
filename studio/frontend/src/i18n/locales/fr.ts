@@ -1970,7 +1970,7 @@ export const fr = {
         grammarFixerLabel: "Fixateur de grammaire avancé",
         grammarFixerDescription: "Corriger l'orthographe, les majuscules, les mots répétés et la ponctuation sur l'appareil",
         contractionsLabel: "Utiliser des contractions",
-        contractionsDescription: "Raccourcissez des phrases comme \"I have\" en \"I've\". Certaines formes sont informelles, donc cette option est d?sactiv?e par d?faut pour l'anglais ?crit standard.",
+        contractionsDescription: "Raccourcir \"I have\" en \"I've\". Désactivé par défaut.",
         macosPermissionHint: "Autorisez Unsloth dans Paramètres système → Confidentialité et sécurité → Accessibilité et surveillance des entrées afin que le raccourci puisse entendre les touches en dehors de l'application.",
         linuxWaylandHint: "Les raccourcis globaux utilisent X11. Sur Wayland, utilisez le raccourci de dictée intégré à l'application si le raccourci système ne répond pas.",
         llmPromptLabel: "Invite de post-traitement",

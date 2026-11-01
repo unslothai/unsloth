@@ -1950,7 +1950,7 @@ export const zhCN = {
         grammarFixerLabel: "高级语法修复器",
         grammarFixerDescription: "修复设备上的拼写、大小写、重复单词和标点符号",
         contractionsLabel: "使用缩写",
-        contractionsDescription: "? \"I have\" ??????? \"I've\"??????????????????????????",
+        contractionsDescription: "将 \"I have\" 缩短为 \"I've\"。默认关闭。",
         macosPermissionHint: "在系统设置 → 隐私和安全 → 辅助功能和输入监控中允许 Unsloth，以便快捷方式可以听到应用程序外部的按键。",
         linuxWaylandHint: "全局快捷方式使用 X11。在 Wayland 上，如果系统快捷方式没有响应，请使用应用程序内听写快捷方式。",
         llmPromptLabel: "后处理提示",

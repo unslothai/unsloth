@@ -2162,7 +2162,7 @@ export const tr = {
         grammarFixerLabel: "Gelişmiş dilbilgisi düzeltici",
         grammarFixerDescription: "Cihazda yazım, büyük harf kullanımı, tekrarlanan kelimeler ve noktalama işaretlerini düzeltin",
         contractionsLabel: "Kasılmaları kullanın",
-        contractionsDescription: "\"I have\" gibi ifadeleri \"I've\" olarak k?salt?n. Baz? bi?imler resmi olmayan bir ton verir; bu nedenle standart yaz?l? ?ngilizce i?in varsay?lan olarak kapal?d?r.",
+        contractionsDescription: "\"I have\" ifadesini \"I've\" olarak kısaltın. Varsayılan olarak kapalı.",
         macosPermissionHint: "Kısayolun uygulama dışındaki tuşları duyabilmesi için Sistem Ayarları → Gizlilik ve Güvenlik → Erişilebilirlik ve Giriş İzleme bölümünde Unsloth'a izin verin.",
         linuxWaylandHint: "Genel kısayollar X11'i kullanır. Wayland'de sistem kısayolu yanıt vermezse uygulama içi dikte kısayolunu kullanın.",
         llmPromptLabel: "İşlem sonrası istemi",

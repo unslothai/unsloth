@@ -1959,7 +1959,7 @@ export const ko = {
         grammarFixerLabel: "고급 문법 해결사",
         grammarFixerDescription: "기기의 철자, 대문자 사용, 반복되는 단어 및 구두점을 수정하세요.",
         contractionsLabel: "수축 사용",
-        contractionsDescription: "\"I have\" ?? ??? \"I've\"? ????. ?? ??? ????? ???? ?? ?? ?????? ????? ?? ????.",
+        contractionsDescription: "\"I have\"를 \"I've\"로 줄입니다. 기본적으로 꺼져 있습니다.",
         macosPermissionHint: "시스템 설정 → 개인 정보 보호 및 보안 → 접근성 및 입력 모니터링에서 Unsloth를 허용하면 바로가기가 앱 외부의 키를 들을 수 있습니다.",
         linuxWaylandHint: "전역 단축키는 X11을 사용합니다. Wayland에서 시스템 바로가기가 응답하지 않으면 앱 내 받아쓰기 바로가기를 사용하세요.",
         llmPromptLabel: "후처리 프롬프트",

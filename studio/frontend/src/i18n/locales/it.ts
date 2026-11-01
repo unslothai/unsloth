@@ -1838,7 +1838,7 @@ export const it = {
         grammarFixerLabel: "Correttore grammaticale avanzato",
         grammarFixerDescription: "Correggi l'ortografia, le maiuscole, le parole ripetute e la punteggiatura sul dispositivo",
         contractionsLabel: "Usa le contrazioni",
-        contractionsDescription: "Accorcia frasi come \"I have\" in \"I've\". Alcune forme suonano informali, quindi ? disattivato per impostazione predefinita per l'inglese scritto standard.",
+        contractionsDescription: "Accorcia \"I have\" in \"I've\". Disattivato per impostazione predefinita.",
         macosPermissionHint: "Consenti Unsloth in Impostazioni di sistema → Privacy e sicurezza → Accessibilità e monitoraggio input in modo che il collegamento possa sentire i tasti all'esterno dell'app.",
         linuxWaylandHint: "Le scorciatoie globali utilizzano X11. Su Wayland, utilizza il collegamento alla dettatura in-app se il collegamento di sistema non risponde.",
         llmPromptLabel: "Richiesta di post-elaborazione",

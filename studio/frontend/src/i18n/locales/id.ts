@@ -2167,7 +2167,7 @@ export const id = {
         grammarFixerLabel: "Pemecah tata bahasa tingkat lanjut",
         grammarFixerDescription: "Perbaiki ejaan, penggunaan huruf besar, pengulangan kata, dan tanda baca pada perangkat",
         contractionsLabel: "Gunakan kontraksi",
-        contractionsDescription: "Persingkat frasa seperti \"I have\" menjadi \"I've\". Beberapa bentuk terdengar tidak formal, jadi ini nonaktif secara default untuk bahasa Inggris tertulis standar.",
+        contractionsDescription: "Persingkat \"I have\" menjadi \"I've\". Nonaktif secara default.",
         macosPermissionHint: "Izinkan Unsloth di Pengaturan Sistem → Privasi & Keamanan → Aksesibilitas dan Pemantauan Input sehingga pintasan dapat mendengar tombol di luar aplikasi.",
         linuxWaylandHint: "Pintasan global menggunakan X11. Di Wayland, gunakan pintasan dikte dalam aplikasi jika pintasan sistem tidak merespons.",
         llmPromptLabel: "Perintah pasca-pemrosesan",

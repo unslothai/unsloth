@@ -2191,7 +2191,7 @@ export const nl = {
         grammarFixerLabel: "Geavanceerde grammaticafixer",
         grammarFixerDescription: "Verbeter spelling, hoofdlettergebruik, herhaalde woorden en interpunctie op het apparaat",
         contractionsLabel: "Gebruik weeën",
-        contractionsDescription: "Verkort zinnen zoals \"I have\" naar \"I've\". Sommige vormen klinken informeel, dus dit staat standaard uit voor standaard geschreven Engels.",
+        contractionsDescription: "Verkort \"I have\" naar \"I've\". Standaard uit.",
         macosPermissionHint: "Sta Unsloth toe in Systeeminstellingen → Privacy en beveiliging → Toegankelijkheid en invoercontrole, zodat de sneltoets toetsen buiten de app kan horen.",
         linuxWaylandHint: "Globale snelkoppelingen gebruiken X11. Gebruik op Wayland de in-app dicteersnelkoppeling als de systeemsnelkoppeling niet reageert.",
         llmPromptLabel: "Naverwerkingsprompt",
