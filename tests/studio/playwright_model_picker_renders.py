@@ -20,7 +20,11 @@ import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
+from playwright.sync_api import (
+    Error as PlaywrightError,
+    TimeoutError as PlaywrightTimeoutError,
+    sync_playwright,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
@@ -223,6 +227,16 @@ def wait_quiet(
     )
 
 
+def reload(page) -> None:
+    # Vite's own dependency reload can abort ours; the page still ends up loaded.
+    try:
+        page.reload(timeout = 120_000)
+    except PlaywrightError as error:
+        if "ERR_ABORTED" not in str(error):
+            raise
+        page.wait_for_load_state("load", timeout = 120_000)
+
+
 def open_on_device(page) -> None:
     page.get_by_text("Select model").first.click()
     page.get_by_text("On Device").first.click()
@@ -267,10 +281,10 @@ def main() -> int:
                         # A first load can lose a lazy section to that reload; load it again.
                         if attempt == 3:
                             raise
-                        page.reload()
+                        reload(page)
                 open_on_device(page)
                 page.wait_for_timeout(3000)
-                page.reload()
+                reload(page)
                 page.get_by_text("Select model").first.wait_for(timeout = 120_000)
                 page.wait_for_timeout(2000)
                 api.variant_probes = 0
