@@ -894,6 +894,13 @@ def _sft_default_name(model):
     return f"{name}-SFT" if name else None
 
 
+def _declares_cp_fields(config) -> bool:
+    import dataclasses
+    if not dataclasses.is_dataclass(config):
+        return True  # a plain namespace / object keeps what is set on it
+    return "context_parallel_size" in {f.name for f in dataclasses.fields(config)}
+
+
 def _inject_env_cp(config, kwargs, requested: int, trainer_name: str) -> int:
     """UNSLOTH_CP_SIZE / UNSLOTH_CP_BACKEND (also from UNSLOTH_PARALLEL) into the trainer arguments, the way
     SFTTrainer(context_parallel_size = N) is handled. Returns the context parallel size the trainer will get."""
@@ -901,6 +908,10 @@ def _inject_env_cp(config, kwargs, requested: int, trainer_name: str) -> int:
 
     size = env_cp_size()
     backend = env_cp_backend()
+    if config is not None and not _declares_cp_fields(config):
+        # Plain TrainingArguments: Unsloth's trainer wrapper rebuilds the trainer config from to_dict(), which drops
+        # attributes set here, so the values travel as trainer kwargs (routed into the new config).
+        config = None
     if size == 1:
         if backend is not None and requested > 1:
             if config is not None and "context_parallel_backend" not in kwargs:

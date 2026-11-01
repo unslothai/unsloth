@@ -1183,3 +1183,25 @@ def test_rl_cp_without_trainer_args_builds_the_default_config(clean_env):
         UnslothDPOTrainer(model = torch.nn.Linear(2, 2), train_dataset = [])
     (args,) = inits
     assert isinstance(args, UnslothDPOConfig) and args.context_parallel_size == 2
+
+
+def test_pp_env_refuses_router_aux_loss_split_over_micro_batches():
+    # Failing before: the env pipeline added coef x aux per micro-batch, a different objective from the one-GPU
+    # Trainer step (aux over the whole batch); the micro-batch count changed the loss and gradients.
+    import types
+
+    from unsloth.models import pp_env
+
+    owner = types.SimpleNamespace(
+        config = types.SimpleNamespace(output_router_logits = True), router_aux_loss_coef = 0.01
+    )
+    stage = types.SimpleNamespace(
+        ctx = types.SimpleNamespace(moe = types.SimpleNamespace(owner = owner)),
+        env_layout = None,
+        num_stages = 2,
+    )
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        pp_env._refuse_split_router_aux(stage, 2)
+    pp_env._refuse_split_router_aux(stage, 1)
+    owner.config.output_router_logits = False
+    pp_env._refuse_split_router_aux(stage, 2)

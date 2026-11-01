@@ -135,3 +135,24 @@ def test_cp_with_a_tp_env_value_tp_env_rejects_is_left_to_tp_env(clean_env, monk
     except Exception:
         pass
     assert len(inits) == 1
+
+
+def test_env_cp_survives_plain_training_arguments(clean_env):
+    # Failing before: the env cp size was set as an attribute of plain TrainingArguments, which Unsloth's trainer
+    # wrapper rebuilds from to_dict() (dropping it): the trainer silently ran without context parallelism.
+    from transformers import TrainingArguments
+
+    clean_env.setenv("UNSLOTH_CP_SIZE", "2")
+    args = TrainingArguments(output_dir = "unused", report_to = "none")
+    kwargs = {}
+    assert cp._inject_env_cp(args, kwargs, 1, "SFTTrainer") == 2
+    assert kwargs.get("context_parallel_size") == 2
+    assert "context_parallel_size" not in args.to_dict()
+
+
+def test_env_cp_sets_trl_style_configs_in_place(clean_env):
+    clean_env.setenv("UNSLOTH_CP_SIZE", "2")
+    config = _config(1)
+    kwargs = {}
+    assert cp._inject_env_cp(config, kwargs, 1, "SFTTrainer") == 2
+    assert config.context_parallel_size == 2 and "context_parallel_size" not in kwargs

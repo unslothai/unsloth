@@ -636,6 +636,27 @@ def _batch(stage, inputs):
     return input_ids, labels, extra
 
 
+def _refuse_split_router_aux(stage, n_microbatches):
+    """The pipeline adds the router load-balancing loss of each micro-batch (gradient accumulation semantics),
+    while the Trainer's step on one GPU forms it once over the whole batch: a product of means, so the micro-batch
+    sum is a different objective. Refused when the step has more than one micro-batch."""
+    moe = getattr(getattr(stage, "ctx", None), "moe", None)
+    if n_microbatches <= 1 or moe is None:
+        return
+    owner = moe.owner
+    if not getattr(owner.config, "output_router_logits", False) or not getattr(
+        owner, "router_aux_loss_coef", 0
+    ):
+        return
+    raise NotImplementedError(
+        f"Unsloth: {_env_vars(stage)} (pipeline parallel) splits each Trainer batch into {n_microbatches} "
+        "micro-batches, and the pipeline adds the router load-balancing loss per micro-batch, which is not the "
+        "loss the Trainer forms over the whole batch on one GPU. Set UNSLOTH_PP_MICROBATCHES=1 with "
+        "UNSLOTH_PP_SCHEDULE=gpipe (where this torch allows one micro-batch), or turn the auxiliary loss off "
+        f"(model.config.output_router_logits = False).{_hint()}"
+    )
+
+
 def _first_stage_batch(stage, input_ids, labels, extra, count):
     """Every stage takes the first stage's batch (and its token count). The sampler gives the stages the same rows,
     but a stochastic collator or dataset transform draws from each rank's own RNG, which the stages advance
@@ -711,6 +732,7 @@ def _pp_training_step(
     scaler = getattr(self.accelerator, "scaler", None)
     scaler = scaler if scaler is not None and scaler.is_enabled() else None
     m, pad = resolve_microbatches(stage, input_ids.shape[0])
+    _refuse_split_router_aux(stage, m)
     input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
     loss = stage.step(
         input_ids,
@@ -766,6 +788,7 @@ def _pp_prediction_step(
     count = _eval_items(self, inputs, labels)
     input_ids, labels, extra, count = _first_stage_batch(stage, input_ids, labels, extra, count)
     m, pad = resolve_microbatches(stage, input_ids.shape[0], train = False)
+    _refuse_split_router_aux(stage, m)
     input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
     loss = stage.eval_loss(input_ids, labels, num_items_in_batch = count, n_microbatches = m, **extra)
     return (loss.detach().to(self.args.device), None, None)
