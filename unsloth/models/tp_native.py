@@ -6,7 +6,8 @@
     model = FastLanguageModel.get_peft_model(model, ...)  # LoRA first: same init as 1 GPU
     apply_tensor_parallel(model, init_device_mesh("cuda", (tp,), mesh_dim_names = ("tp",))["tp"])
 
-v1: LoRA / QLoRA training forward on dense decoders, tp ranks only (no Trainer / FSDP2 / generate).
+LoRA / QLoRA or full finetuning (trainable base weights as Shard DTensors) on dense decoders; QAT with
+weight-only fake quantization whose scales stay inside a shard (models/tp_native._check_qat).
 Custom loop (torchrun --nproc_per_node tp):
 
     params = [p for p in model.parameters() if p.requires_grad]  # DTensors (keep plain ones in their own group)
@@ -36,8 +37,8 @@ reads the same batch, dp replicas read different ones:
 The HF / TRL Trainer trains a tensor parallel model (tp only, or dp x tp after shard_model above): no DDP over
 the tp ranks, batches sharded over dp only, tp-aware clipping and float16 scaler. Trainer checkpoints are per
 rank (unsloth_tp/rank*.pt: local shards of the trainable weights and optimizer state, resumed on the same
-layout) next to the 1-GPU adapter; bitsandbytes Adam / AdamW step the local shards; no evaluation;
-trainer.save_model() writes the 1-GPU adapter.
+layout) next to the 1-GPU adapter; bitsandbytes Adam / AdamW step the local shards; evaluate / predict gather over dp only;
+trainer.save_model() writes the 1-GPU adapter (full finetuning: the whole 1-GPU model, gathered to rank 0).
 
 Unmodified scripts: UNSLOTH_TP_SIZE=k torchrun ... applies all of the above from the environment
 (models/tp_env.py), with UNSLOTH_FSDP2=1 (native FSDP2) or DDP-style gradient averaging for the dp dimension.
@@ -79,6 +80,9 @@ COLWISE = "colwise"
 ROWWISE = "rowwise"
 HEAD_NORM = "replicated_with_grad_allreduce"
 ELEMENTWISE = "elementwise_replicated"  # scalar-parameter activations inside an MLP
+# A key / value projection when num_key_value_heads < tp: kept whole on every rank (Replicate DTensors, 4-bit:
+# the rows of this rank's key / value head), each rank computing the one key / value head its query heads use.
+KV_REPLICATED = "kv_replicated"
 
 # transformers TP styles (4.5x and 5.x names) -> what this module does with them.
 _STYLES = {
@@ -134,7 +138,6 @@ _HEAD_NORMS = (
     "key_layernorm",
 )
 _MLA_NAMES = ("q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj", "kv_a_layernorm")
-_MOE_CONFIG_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
 # An attention forward reading these sizes off the config would reshape to the global head count.
 _GLOBAL_HEAD_READS = re.compile(r"config\.(num_attention_heads|num_key_value_heads)\b")
 _GLOBAL_WIDTH_READS = re.compile(
@@ -164,7 +167,7 @@ class TPConfig:
 class _Proj:
     name: str
     module: nn.Module
-    style: str  # COLWISE / ROWWISE
+    style: str  # COLWISE / ROWWISE / KV_REPLICATED
     parts: tuple  # output (colwise) part sizes; one part unless fused / packed
     from_plan: bool = False
 
@@ -179,6 +182,7 @@ class _Region:
     heads: int = 0
     kv_heads: int = 0
     head_dim: int = 0
+    kv_replicated: bool = False  # num_key_value_heads < tp: k / v projections replicated
 
 
 @dataclasses.dataclass
@@ -189,6 +193,12 @@ class TPPlan:
     replicated_layers: int = (
         0  # decoder layers with no region (e.g. linear attention): run replicated
     )
+    # Mixture-of-experts blocks: run replicated (experts not sharded), outputs averaged over tp.
+    moe_blocks: list = dataclasses.field(default_factory = list)
+
+    @property
+    def replicated_moe(self):
+        return len(self.moe_blocks)
 
     def styles(self):
         """{projection path: style} (the plan in transformers form, local paths)."""
@@ -276,47 +286,68 @@ def _decoder_layers(model):
 _ATTENTION_DROPOUT_KEYS = ("attention_dropout", "attn_pdrop")
 
 
-def _refuse_dropout(model, layers):
-    """v1 has no TP-aware RNG (masks must differ per shard, match when replicated): refuse dropout."""
+def _attention_dropout(model):
     text = _text_config(model)
     for key in _ATTENTION_DROPOUT_KEYS:
         value = getattr(text, key, None)
         if isinstance(value, (int, float)) and value > 0:
-            raise ValueError(
-                f"Unsloth: tensor parallelism v1 does not support attention dropout ({key} = {value}); set it to 0."
-            )
-    for name, module in layers.named_modules():
-        if "lora_dropout" in name or not isinstance(module, nn.modules.dropout._DropoutNd):
+            return key, value
+    return None
+
+
+def _refuse_dropout(model, layers):
+    """Dropout runs on tensor parallel ranks with the masks one process draws (_TPDropoutMode); attention
+    dropout inside a fused kernel (SDPA / flash attention) draws its own mask and cannot be split per head."""
+    found = _attention_dropout(model)
+    if found is None:
+        return
+    key, value = found
+    implementation = getattr(_text_config(model), "_attn_implementation", None)
+    if implementation not in (None, "eager"):
+        raise ValueError(
+            f"Unsloth: tensor parallelism supports attention dropout ({key} = {value}) with the eager attention "
+            f"only: '{implementation}' draws the dropout mask inside a fused kernel, which cannot be split over "
+            "the tp ranks' heads. Load with attn_implementation = 'eager', or set it to 0."
+        )
+
+
+def _region_dropout_p(module, model):
+    """Whether a region can draw dropout in training (other than lora_dropout, which the projection handles)."""
+    if (
+        module.__dict__.get("_unsloth_tp_kind") == "attention"
+        and _attention_dropout(model) is not None
+    ):
+        return True
+    for name, sub in module.named_modules():
+        if "lora_dropout" in name:
             continue
-        if module.p > 0:
-            raise ValueError(
-                f"Unsloth: tensor parallelism v1 does not support dropout inside decoder layers ({name}: p = "
-                f"{module.p}); set it to 0."
-            )
+        if isinstance(sub, nn.modules.dropout._DropoutNd) and sub.p > 0:
+            return True
+        value = sub.__dict__.get("attention_dropout", sub.__dict__.get("dropout"))
+        if isinstance(value, float) and value > 0:
+            return True
+    return False
 
 
-def _refuse_moe_mla(model, layers):
+def _is_moe_block(module):
+    """A mixture-of-experts block (by structure: an `experts` child or an experts / sparse-MoE class)."""
+    for name, sub in module.named_modules():
+        leaf = name.rsplit(".", 1)[-1]
+        cls = type(sub).__name__
+        if leaf == "experts" or "Experts" in cls or "SparseMoe" in cls or "MoE" in cls:
+            return True
+    return False
+
+
+def _refuse_mla(model, layers):
     text = _text_config(model)
-    for key in _MOE_CONFIG_KEYS:
-        value = getattr(text, key, None)
-        if isinstance(value, int) and value > 0:
-            raise ValueError(
-                f"Unsloth: tensor parallelism v1 does not support mixture-of-experts models ({key} = {value}): "
-                "expert sharding is not implemented. Use native FSDP2 (UNSLOTH_FSDP2=1) instead."
-            )
     if getattr(text, "kv_lora_rank", None):
         raise ValueError(
             "Unsloth: tensor parallelism v1 does not support multi-head latent attention (MLA, kv_lora_rank "
             f"= {text.kv_lora_rank}). Use native FSDP2 (UNSLOTH_FSDP2=1) instead."
         )
     for name, module in layers.named_modules():
-        leaf = name.rsplit(".", 1)[-1]
-        cls = type(module).__name__
-        if leaf == "experts" or "Experts" in cls or "SparseMoe" in cls or "MoE" in cls:
-            raise ValueError(
-                f"Unsloth: tensor parallelism v1 does not support mixture-of-experts layers ({name}: {cls})."
-            )
-        if leaf in _MLA_NAMES:
+        if name.rsplit(".", 1)[-1] in _MLA_NAMES:
             raise ValueError(
                 f"Unsloth: tensor parallelism v1 does not support multi-head latent attention ({name})."
             )
@@ -426,22 +457,18 @@ def derive_tp_plan(
     plan = dict(plan) if plan else _hf_plan(model)
     compiled = [(k, _pattern(k), v) for k, v in plan.items()]
     layers_path, layers = _decoder_layers(model)
-    # Config / module MoE and MLA first: older transformers plans name expert styles v1 does not know.
-    _refuse_moe_mla(model, layers)
+    _refuse_mla(model, layers)
     _refuse_dropout(model, layers)
+    # MoE blocks run replicated, not sharded; an expert style inside a sharded region is refused in _classify.
     for key, _, style in compiled:
-        if style in _MOE_STYLES:
-            raise ValueError(
-                f"Unsloth: tensor parallelism v1 does not support mixture-of-experts layers ('{key}': '{style}')."
-            )
         if style in _MLA_STYLES:
             raise ValueError(
                 f"Unsloth: tensor parallelism v1 does not support multi-head latent attention ('{key}')."
             )
-        if style not in _STYLES and style not in _REPLICATED_STYLES:
+        if style not in _STYLES and style not in _REPLICATED_STYLES and style not in _MOE_STYLES:
             raise ValueError(f"Unsloth: unknown tensor parallel style '{style}' for '{key}'.")
     text = _text_config(model)
-    regions, replicated, seen = [], 0, {}
+    regions, replicated, seen, moe = [], 0, {}, []
     for index, layer in enumerate(layers):
         found = 0
         for child_name, child in layer.named_children():
@@ -450,7 +477,16 @@ def derive_tp_plan(
                 if child_name in _ATTN_NAMES
                 else ("mlp" if child_name in _MLP_NAMES else None)
             )
-            if kind is None or not _has_params(child):
+            if not _has_params(child):
+                continue
+            if kind != "attention" and _is_moe_block(child):
+                # Replicated: identical input and weights on every tp rank, so identical outputs and grads.
+                if id(child) not in seen:
+                    moe.append(child)
+                seen[id(child)] = None
+                found += kind is not None
+                continue
+            if kind is None:
                 continue
             path = f"{layers_path}.{index}.{child_name}"
             found += 1
@@ -470,7 +506,13 @@ def derive_tp_plan(
         source = (
             "transformers" if any(p.from_plan for r in regions for p in r.projs) else "structural"
         )
-    return TPPlan(tp_size = tp_size, regions = regions, source = source, replicated_layers = replicated)
+    return TPPlan(
+        tp_size = tp_size,
+        regions = regions,
+        source = source,
+        replicated_layers = replicated,
+        moe_blocks = moe,
+    )
 
 
 def _region(path, module, kind, compiled, text, tp):
@@ -513,11 +555,9 @@ def _region(path, module, kind, compiled, text, tp):
         region.heads, region.kv_heads, region.head_dim = heads, kv_heads, head_dim
         _check_divisible("num_attention_heads", heads, tp, path)
         if kv_heads < tp:
-            raise ValueError(
-                f"Unsloth: tensor parallel size {tp} is larger than num_key_value_heads = {kv_heads} "
-                f"({path}); replicating KV heads is not supported in v1. Use tp <= {kv_heads}."
-            )
-        _check_divisible("num_key_value_heads", kv_heads, tp, path)
+            _replicate_kv_heads(region, path, tp)
+        else:
+            _check_divisible("num_key_value_heads", kv_heads, tp, path)
         for name, norm in norms:
             weight = norm._parameters.get("weight")
             numel = (
@@ -536,6 +576,9 @@ def _region(path, module, kind, compiled, text, tp):
     for proj in projs:
         weight, base = _weight(proj.module)
         out_features, in_features = _logical_shape(weight, base)
+        if proj.style == KV_REPLICATED:
+            proj.parts = (out_features,)
+            continue
         if proj.style == ROWWISE:
             _check_divisible(f"{proj.name} in_features", in_features, tp, path)
             proj.parts = (out_features,)
@@ -559,6 +602,36 @@ def _region(path, module, kind, compiled, text, tp):
             what = "intermediate_size" if kind == "mlp" else f"{proj.name} out_features"
             _check_divisible(what, size, tp, path)
     return region
+
+
+def _replicate_kv_heads(region, path, tp):
+    """num_key_value_heads < tp: every rank keeps the key / value projections whole and computes the one key /
+    value head its query heads read (rank r: head r // (tp / num_key_value_heads)). Their gradients are partial
+    sums over tp (each rank backpropagates its own query heads only), reduced like any replicated factor."""
+    kv_heads = region.kv_heads
+    if kv_heads < 1 or tp % kv_heads:
+        raise ValueError(
+            f"Unsloth: tensor parallel size {tp} is larger than num_key_value_heads = {kv_heads} ({path}) and not "
+            f"a multiple of it, so the query heads of one rank would read several key / value heads. Use a tp "
+            f"size that divides or is a multiple of {kv_heads}."
+        )
+    names = {p.name for p in region.projs}
+    fused = names.intersection(_FUSED_QKV)
+    if fused:
+        raise ValueError(
+            f"Unsloth: tensor parallel size {tp} is larger than num_key_value_heads = {kv_heads} ({path}) and the "
+            f"key / value heads are fused into '{sorted(fused)[0]}'; replicating them needs separate key / value "
+            f"projections. Use tp <= {kv_heads}."
+        )
+    kv = [p for p in region.projs if p.name in _K + _V]
+    if not any(p.name in _K for p in kv) or not any(p.name in _V for p in kv):
+        raise ValueError(
+            f"Unsloth: tensor parallel size {tp} is larger than num_key_value_heads = {kv_heads} ({path}), and "
+            f"no separate key and value projections ({_K + _V}) were found to replicate."
+        )
+    for proj in kv:
+        proj.style = KV_REPLICATED
+    region.kv_replicated = True
 
 
 def _logical_shape(weight, base):
@@ -742,10 +815,23 @@ def _tp_lora_parameters(proj, bias = False):
     """get_lora_parameters(_bias) on local shards; row bias is None (the region adds it after the reduce)."""
     weight, base = _weight(proj)
     W = _local(weight)
+    if (
+        not bias
+    ):  # as kernels/utils.py get_lora_parameters (get_lora_parameters_bias does not fake quantize)
+        W = _fake_quantized(base, W)
     W_quant = getattr(W, "quant_state", None)
     b = None
-    if bias and proj.__dict__.get("_unsloth_tp_style") == COLWISE and base.bias is not None:
+    rows = proj.__dict__.get("_unsloth_tp_kv_rows")
+    if rows is not None and not _is_params4bit(W):
+        W = W.narrow(0, *rows)
+    if (
+        bias
+        and proj.__dict__.get("_unsloth_tp_style") in (COLWISE, KV_REPLICATED)
+        and base.bias is not None
+    ):
         b = _local(base.bias)
+        if rows is not None:
+            b = b.narrow(0, *rows)
     lora_A = proj._modules.get("lora_A")
     adapter = None
     if lora_A is not None and not (
@@ -759,11 +845,12 @@ def _tp_lora_parameters(proj, bias = False):
     if adapter is None:
         out = (W, W_quant, None, None, None)
     else:
+        B = _local(proj.lora_B[adapter].weight)
         out = (
             W,
             W_quant,
             _local(lora_A[adapter].weight),
-            _local(proj.lora_B[adapter].weight),
+            B if rows is None else B.narrow(0, *rows),
             proj.scaling[adapter],
         )
     return out + (b,) if bias else out
@@ -781,7 +868,14 @@ def _is_params4bit(t):
     return any(cls.__name__ == "Params4bit" for cls in type(t).__mro__)
 
 
-def _refuse_base(path, proj_module, weight, base):
+def _refuse_base(
+    path,
+    proj_module,
+    weight,
+    base,
+    style = None,
+    tp = 1,
+):
     cls = type(base).__name__
     if weight is None:
         raise ValueError(f"Unsloth: '{path}' ({cls}) has no dense weight (GPTQ / AWQ?).")
@@ -811,11 +905,7 @@ def _refuse_base(path, proj_module, weight, base):
             or getattr(module, "weight_fake_quantizer", None) is not None
             or getattr(module, "activation_fake_quantizer", None) is not None
         ):
-            # The TP projection forward and get_lora_parameters run plain matmuls on the local shards.
-            raise ValueError(
-                f"Unsloth: tensor parallelism v1 does not support QAT fake quantization ({path}: "
-                f"{type(module).__name__})."
-            )
+            _check_qat(path, module, base, style, tp)
     if (
         not _is_params4bit(weight)
         and _preloaded(weight) is None
@@ -828,11 +918,77 @@ def _refuse_base(path, proj_module, weight, base):
         raise ValueError(
             f"Unsloth: tensor parallelism v1 cannot shard {weight.dtype} weights ({path})."
         )
-    if weight.requires_grad:
+    # A trainable base weight (full finetuning) is a Shard DTensor like the LoRA B / A shards: its local
+    # gradient is already complete, and a replicated row bias gets the whole gradient on every rank.
+
+
+def _qat_split_problem(fq, style, local_in):
+    """None when weight fake quantizer `fq` gives on this rank's shard exactly the rows / columns it gives on the
+    whole weight (its scales never reduce across the sharded dimension), else why not."""
+    cls = type(fq).__name__
+    config = getattr(fq, "config", None)
+    if next(fq.parameters(), None) is not None or next(fq.buffers(), None) is not None:
+        return f"{cls} keeps learned / static quantization parameters for the whole weight"
+    if cls == "Int4WeightFakeQuantizer":
+        group = getattr(config, "group_size", None)
+        if style == COLWISE:
+            return None  # per-row fp8 scale and per-group int4 scales: rows are whole on every rank
+        if getattr(config, "activation_dtype", None) != torch.bfloat16:
+            return "its per-row float8 weight scale spans the in_features row projections shard"
+        if not isinstance(group, int) or local_in % group:
+            return f"in_features / tp = {local_in} is not a multiple of its group size {group}"
+        return None
+    if cls == "IntxFakeQuantizer":
+        if getattr(config, "range_learning", False) or not getattr(config, "is_dynamic", True):
+            return "range learning / static scales cover the whole weight"
+        granularity = getattr(config, "granularity", None)
+        kind = type(granularity).__name__
+        if kind == "PerGroup":
+            if style == COLWISE or local_in % granularity.group_size == 0:
+                return None
+            return f"in_features / tp = {local_in} is not a multiple of its group size {granularity.group_size}"
+        if kind == "PerRow" or (kind == "PerAxis" and getattr(granularity, "axis", None) == 0):
+            if style == COLWISE:
+                return None
+            return f"its per-row ({kind}) scale spans the in_features row projections shard"
+        return f"granularity {kind} reduces across the sharded dimension"
+    return f"{cls} is not a weight fake quantizer tensor parallelism knows the numerics of"
+
+
+def _check_qat(path, module, base, style, tp):
+    """QAT under tensor parallelism: dynamic weight-only fake quantization whose scales stay inside a shard
+    (int4 / int8 per-group, per-row on column projections) runs on the local shard, exactly as on one GPU;
+    anything that would need the whole weight or a whole activation row is refused."""
+    if getattr(module, "activation_fake_quantizer", None) is not None:
         raise ValueError(
-            f"Unsloth: tensor parallelism v1 shards LoRA / QLoRA training only; '{path}' has a trainable base "
-            "weight (full finetuning). Use native FSDP2 for full finetuning."
+            f"Unsloth: tensor parallelism does not support QAT fake quantization of activations ({path}: "
+            f"{type(module).__name__}): its per-token scales need the whole input row, which row parallel "
+            "projections hold 1 / tp of. Use a weight-only qat_scheme ('int4', 'int8', 'cactus')."
         )
+    fq = getattr(module, "weight_fake_quantizer", None)
+    if module is not base or fq is None or type(module).__name__ != "FakeQuantizedLinear":
+        raise ValueError(
+            f"Unsloth: tensor parallelism does not support QAT fake quantization in {type(module).__name__} "
+            f"({path}): only torchao FakeQuantizedLinear base weights with a weight fake quantizer."
+        )
+    if style is None:
+        return
+    if style == KV_REPLICATED:
+        style = COLWISE  # whole rows and whole in_features on every rank: column-like for the fake quantizer
+    weight = base._parameters.get("weight")
+    in_features = _logical_shape(weight, base)[1] if weight is not None else 0
+    problem = _qat_split_problem(fq, style, in_features // max(int(tp), 1))
+    if problem is not None:
+        raise ValueError(
+            f"Unsloth: tensor parallelism cannot shard the QAT weight fake quantization of '{path}' "
+            f"({type(fq).__name__}) exactly: {problem}."
+        )
+
+
+def _fake_quantized(base, W):
+    """The local shard through the base layer's QAT weight fake quantizer (as FakeQuantizedLinear.forward)."""
+    fq = base._modules.get("weight_fake_quantizer")
+    return W if fq is None else fq(W)
 
 
 def _active_adapter(proj):
@@ -872,10 +1028,10 @@ def _refuse_adapter(path, proj):
         raise ValueError(f"Unsloth: tensor parallelism v1 does not support LoRA variants ({path}).")
     for name in names:
         dropout = proj.lora_dropout[name] if "lora_dropout" in proj._modules else None
-        if getattr(dropout, "p", 0) > 0:
-            # Masks must match across ranks for replicated inputs and differ for sharded ones.
+        if getattr(dropout, "p", 0) > 0 and type(dropout) is not nn.Dropout:
             raise ValueError(
-                f"Unsloth: tensor parallelism v1 does not support lora_dropout > 0 ({path}); use lora_dropout = 0."
+                f"Unsloth: tensor parallelism supports nn.Dropout as lora_dropout only ({path}: "
+                f"{type(dropout).__name__})."
             )
         if proj.lora_B[name].bias is not None:
             raise ValueError(f"Unsloth: tensor parallelism v1 does not support lora_bias ({path}).")
@@ -1035,6 +1191,227 @@ class _ReduceFromTP(torch.autograd.Function):
         return grad, None
 
 
+class _MeanFromTP(torch.autograd.Function):
+    """All-reduce mean forward, identity backward: a replicated block's output made bitwise equal on every tp
+    rank (CUDA scatter / index_add kernels are not deterministic), its gradient already the same everywhere."""
+
+    @staticmethod
+    def forward(ctx, x, group, size):
+        if x.element_size() >= 4:
+            return _all_reduce(x, group) / size
+        # fp16 / bf16: sum in float32, or tp copies of a large finite value overflow to inf before the divide
+        return (_all_reduce(x.float(), group) / size).to(x.dtype)
+
+    @staticmethod
+    def backward(ctx, grad):
+        return grad, None, None
+
+
+def _moe_post_hook(module, args, output):
+    if module.__dict__.get("_unsloth_tp_gathered"):
+        return None  # tp_replica: one rank may run alone
+    group, size = module._unsloth_tp_group, module._unsloth_tp_size
+
+    def sync(y):
+        return _MeanFromTP.apply(y, group, size) if y.is_floating_point() else y
+
+    if isinstance(output, torch.Tensor):
+        return sync(output)
+    if isinstance(output, (tuple, list)) and output and isinstance(output[0], torch.Tensor):
+        return type(output)((sync(output[0]), *output[1:]))
+    raise RuntimeError(
+        f"Unsloth: tensor parallel replicated mixture-of-experts block {type(module).__name__} returned "
+        f"{type(output)}."
+    )
+
+
+class _DropoutState:
+    """One training forward of a region: where the tensor parallel layout of its activations stands."""
+
+    def __init__(self, module):
+        self.kind = module._unsloth_tp_kind
+        self.rank, self.tp = module._unsloth_tp_coord
+        self.local_heads = module.__dict__.get("_unsloth_tp_heads")
+        self.local_width = module._unsloth_tp_local_width  # row projections' local in_features
+        self.row_bias = any(_weight(p)[1].bias is not None for p in module._unsloth_tp_row_projs)
+        self.phase = 0  # 0: replicated input, 1: column sharded, 2: row partial sums
+        self.bypass = 0
+        self.path = type(module).__name__
+
+
+def _full_mask(shape, dim, rank, tp, p, like):
+    """The rank-th 1 / tp of the boolean keep mask one process draws for the whole tensor (same RNG draws)."""
+    full = list(shape)
+    full[dim] *= tp
+    with torch._C.DisableTorchFunction():
+        mask = F.dropout(torch.ones(full, dtype = like.dtype, device = like.device), p, True) != 0
+    return mask.narrow(dim, rank * shape[dim], shape[dim]).contiguous()
+
+
+class _NativeDropoutScale(torch.autograd.Function):
+    """x * mask * scale rounded once from accumulator precision, as ATen's fused native_dropout kernel: its
+    forward scale is 1 / (accscalar)(1 - p), its backward native_dropout_backward(grad, mask, 1 / (1 - p))."""
+
+    @staticmethod
+    def forward(ctx, x, mask, p):
+        acc = torch.float64 if x.dtype == torch.float64 else torch.float32
+        ctx.save_for_backward(mask)
+        ctx.scale = 1.0 / (1.0 - p)
+        scale = 1.0 / torch.tensor(1.0 - p, dtype = acc).item()
+        return torch.ops.aten.native_dropout_backward(x, mask, scale)
+
+    @staticmethod
+    def backward(ctx, grad):
+        (mask,) = ctx.saved_tensors
+        return torch.ops.aten.native_dropout_backward(grad, mask, ctx.scale), None, None
+
+
+def _apply_mask(
+    x,
+    mask,
+    p,
+    inplace = False,
+):
+    """x after dropout with this boolean keep mask, rounded as F.dropout rounds on x's device: ATen's fused
+    native_dropout on CUDA / XPU / lazy / privateuse1 (scale applied in accumulator precision), else a noise
+    tensor in x's dtype holding the rounded 1 / (1 - p) (Dropout.cpp _dropout_impl)."""
+    if x.device.type in ("cuda", "xpu", "lazy", "privateuseone") and 0 < p < 1 and x.numel() > 0:
+        y = _NativeDropoutScale.apply(x, mask, p)
+        return x.copy_(y) if inplace else y
+    noise = mask.to(x.dtype)
+    if p < 1:
+        noise.div_(1 - p)
+    return x.mul_(noise) if inplace else x * noise
+
+
+def _tp_dropout(
+    state,
+    input,
+    p = 0.5,
+    training = True,
+    inplace = False,
+):
+    if not training or p == 0 or state.bypass or state.phase == 0:
+        # Replicated activations: every rank draws the same mask as one process (same RNG, same shape).
+        return F.dropout(input, p, training, inplace)
+    if state.phase == 2:
+        if state.row_bias:
+            raise RuntimeError(
+                f"Unsloth: dropout on the row projection output inside {state.path} runs before its bias, which "
+                "tensor parallelism adds after the reduce; set that dropout to 0."
+            )
+        return F.dropout(
+            input, p, training, inplace
+        )  # linear in the partial sums: same mask everywhere
+    if state.kind == "attention" and input.dim() >= 3 and input.shape[1] == state.local_heads:
+        dim = 1  # [batch, local heads, ...]: attention probabilities
+    elif state.kind == "mlp" and input.shape[-1] == state.local_width:
+        dim = input.dim() - 1  # [..., intermediate / tp]
+    else:
+        raise RuntimeError(
+            f"Unsloth: tensor parallelism cannot tell how the dropout input {tuple(input.shape)} inside "
+            f"{state.path} is sharded; set that dropout to 0."
+        )
+    return _apply_mask(
+        input, _full_mask(input.shape, dim, state.rank, state.tp, p, input), p, inplace
+    )
+
+
+def _dropout_mode_class():
+    from torch.overrides import TorchFunctionMode
+    class _TPDropoutMode(TorchFunctionMode):
+        def __init__(self, state):
+            super().__init__()
+            self.state = state
+
+        def __torch_function__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            kwargs = kwargs or {}
+            if func is F.dropout:
+                return _tp_dropout(self.state, *args, **kwargs)
+            if func is torch.dropout:
+                return _tp_dropout(self.state, *args, **kwargs)
+            if (
+                func is F.scaled_dot_product_attention
+                and (kwargs.get("dropout_p", args[4] if len(args) > 4 else 0.0) or 0.0) > 0
+            ):
+                raise RuntimeError(
+                    f"Unsloth: {self.state.path} passes dropout_p > 0 to scaled_dot_product_attention, which "
+                    "draws the mask inside the kernel and cannot be split over the tp ranks' heads; use the eager "
+                    "attention or set the attention dropout to 0."
+                )
+            if (
+                func in _UNSPLIT_DROPOUTS
+                and (args[2] if len(args) > 2 else kwargs.get("training", True))
+                and (args[1] if len(args) > 1 else kwargs.get("p", 0.5)) > 0
+            ):
+                raise RuntimeError(
+                    f"Unsloth: tensor parallelism supports plain dropout only; {func.__name__} inside "
+                    f"{self.state.path} is not supported."
+                )
+            return func(*args, **kwargs)
+
+    return _TPDropoutMode
+
+
+_UNSPLIT_DROPOUTS = (
+    F.dropout1d,
+    F.dropout2d,
+    F.dropout3d,
+    F.alpha_dropout,
+    F.feature_alpha_dropout,
+)
+
+
+def _dropout_region_forward(module, forward):
+    """The region forward under _TPDropoutMode in training: masks that slice / match one process's masks."""
+    mode_class = _dropout_mode_class()
+
+    def forward_with_tp_dropout(*args, **kwargs):
+        if module.__dict__.get("_unsloth_tp_gathered") or not module.training:
+            # Not torch.is_grad_enabled(): a reentrant checkpoint runs its first forward under no_grad and
+            # recomputes with grad; both must draw one process's masks.
+            return forward(*args, **kwargs)
+        state = _DropoutState(module)
+        module.__dict__["_unsloth_tp_dropout"] = state
+        try:
+            with mode_class(state):
+                return forward(*args, **kwargs)
+        finally:
+            module.__dict__.pop("_unsloth_tp_dropout", None)
+
+    forward_with_tp_dropout.__wrapped__ = forward
+    return forward_with_tp_dropout
+
+
+def _lora_dropout(self, adapter, x):
+    """lora_dropout on this projection's input: replicated (column) or this rank's in_features (row)."""
+    drop = self.lora_dropout[adapter]
+    p = getattr(drop, "p", 0)
+    if not (isinstance(drop, nn.Dropout) and drop.training and p > 0):
+        return drop(x)
+    state = self.__dict__.get("_unsloth_tp_state_of")
+    state = state() if state is not None else None
+    if state is not None:
+        state.bypass += 1
+    try:
+        if self._unsloth_tp_style in (
+            COLWISE,
+            KV_REPLICATED,
+        ):  # whole (replicated) input on every rank
+            return F.dropout(x, p, True)
+        rank, tp = self._unsloth_tp_coord
+        return _apply_mask(x, _full_mask(x.shape, x.dim() - 1, rank, tp, p, x), p)
+    finally:
+        if state is not None:
+            state.bypass -= 1
+
+
 def copy_to_tp(x, group):
     return _CopyToTP.apply(x, group)
 
@@ -1093,12 +1470,29 @@ def _region_post_hook(module, args, output):
 
 
 def _tp_projection_forward(self, x, *args, **kwargs):
+    state_of = self.__dict__.get("_unsloth_tp_state_of")
+    state = state_of() if state_of is not None else None
+    if state is not None and self._unsloth_tp_style == COLWISE:
+        state.phase = max(state.phase, 1)
+    out = _tp_projection_compute(self, x)
+    if state is not None and self._unsloth_tp_style == ROWWISE:
+        state.phase = 2
+    return out
+
+
+def _tp_projection_compute(self, x):
     weight, base = _weight(self)
-    W = _local(weight)
+    W = _fake_quantized(base, _local(weight))
     bias = (
-        base.bias if self._unsloth_tp_style == COLWISE else None
+        base.bias if self._unsloth_tp_style != ROWWISE else None
     )  # row bias: once, after the reduce
     bias = None if bias is None else _local(bias)
+    rows = self.__dict__.get("_unsloth_tp_kv_rows")  # KV_REPLICATED: this rank's key / value head
+    if rows is not None:
+        if not _is_params4bit(W):  # a 4-bit weight already holds only these rows
+            W = W.narrow(0, *rows)
+        if bias is not None:
+            bias = bias.narrow(0, *rows)
     input_dtype = x.dtype
     if _is_params4bit(W):
         import bitsandbytes as bnb
@@ -1118,9 +1512,11 @@ def _tp_projection_forward(self, x, *args, **kwargs):
             continue
         A = _local(lora_A[adapter].weight)
         B = _local(self.lora_B[adapter].weight)
+        if rows is not None:
+            B = B.narrow(0, *rows)
         scaling = self.scaling[adapter]
         x_lora = x if torch.is_autocast_enabled() else x.to(A.dtype)
-        x_lora = self.lora_dropout[adapter](x_lora)
+        x_lora = _lora_dropout(self, adapter, x_lora)
         out = out + (F.linear(F.linear(x_lora, A), B) * scaling).to(out.dtype)
     return out
 
@@ -1204,6 +1600,18 @@ def _cache_in_use(past):
         return True
 
 
+def _replica_in(module):
+    """A whole replica is gathered (tp_replica: generate / for_inference): the forward runs as on one GPU. A
+    wrapper installed over forward_without_cache after apply_tensor_parallel (the GRPO hidden states forward)
+    keeps calling it, so the check lives here and not only in the forward swap of tp_replica."""
+    root = module.__dict__.get("_unsloth_tp_root")
+    if root is None:
+        return False
+    from .tp_replica import replica_active
+
+    return replica_active(root)
+
+
 def _refuse_cached_forward(module):
     """Refuse a filled KV cache (instance attribute: LoraModel calls self.model.forward directly)."""
     forward = module.forward
@@ -1217,7 +1625,7 @@ def _refuse_cached_forward(module):
         past = kwargs.get("past_key_values", kwargs.get("past_key_value"))
         if past is None and index is not None and len(args) > index:
             past = args[index]
-        if _cache_in_use(past):
+        if _cache_in_use(past) and not _replica_in(module):
             raise RuntimeError(
                 "Unsloth: cached decoding (past_key_values) is not supported on a tensor parallel model in "
                 "v1; save the adapter (save_tp_adapter) and generate on one GPU."
@@ -1237,6 +1645,30 @@ def _mark_tokenizers(chain):
             mark_world_save(tokenizer)
 
 
+def _has_lora_dropout(model):
+    return any(
+        "lora_dropout" in name and isinstance(m, nn.Dropout) and m.p > 0
+        for name, m in model.named_modules()
+    )
+
+
+def _global_rank0(group):
+    import torch.distributed as dist
+    return dist.get_global_rank(group, 0)
+
+
+def _sync_rng(group, dist_rank0):
+    import torch.distributed as dist
+
+    states = [torch.get_rng_state()]
+    if torch.cuda.is_available() and torch.cuda.is_initialized():
+        states.append(torch.cuda.get_rng_state())
+    dist.broadcast_object_list(states, src = dist_rank0, group = group)
+    torch.set_rng_state(states[0])
+    if len(states) > 1 and torch.cuda.is_available():
+        torch.cuda.set_rng_state(states[1].cpu())
+
+
 def _sync_trainable(model, group, src):
     import torch.distributed as dist
     with torch.no_grad():
@@ -1247,7 +1679,8 @@ def _sync_trainable(model, group, src):
 
 
 def _set_local_heads(module, region, tp):
-    heads, kv_heads = region.heads // tp, region.kv_heads // tp
+    heads = region.heads // tp
+    kv_heads = 1 if region.kv_replicated else region.kv_heads // tp
     # What tp_replica puts back while a whole replica is gathered.
     module.__dict__["_unsloth_tp_saved_attrs"] = {
         name: module.__dict__.get(name, _MISSING)
@@ -1256,6 +1689,7 @@ def _set_local_heads(module, region, tp):
             "num_key_value_heads",
             "num_attention_heads",
             "num_kv_heads",
+            "num_key_value_groups",
             "config",
         )
     }
@@ -1269,6 +1703,9 @@ def _set_local_heads(module, region, tp):
     ):
         if always or isinstance(module.__dict__.get(name), int):
             module.__dict__[name] = value
+    if isinstance(getattr(module, "num_key_value_groups", None), int):
+        # repeat_kv / GQA grouping: local query heads per local key / value head (changes when KV is replicated).
+        module.__dict__["num_key_value_groups"] = heads // kv_heads
     config = module.__dict__.get("config")
     if config is None:
         return
@@ -1322,7 +1759,7 @@ def apply_tensor_parallel(
         for proj in region.projs:
             path = f"{region.path}.{proj.name}"
             weight, base = _weight(proj.module)
-            _refuse_base(path, proj.module, weight, base)
+            _refuse_base(path, proj.module, weight, base, proj.style, tp)
             _refuse_adapter(path, proj.module)
             _check_preloaded(path, proj, weight, base, tp_mesh)
             if id(weight) in covered:
@@ -1356,7 +1793,17 @@ def apply_tensor_parallel(
     hooked_norms = (
         set()
     )  # a norm weight shared by several regions gets one tp sum, not one per region
+    dropout_regions = 0
     for region in tp_plan.regions:
+        # Row projections' in_features, read before sharding: a sharded Params4bit's quant_state is already local.
+        local_width = next(
+            (
+                _logical_shape(*_weight(p.module))[1] // tp
+                for p in region.projs
+                if p.style == ROWWISE
+            ),
+            None,
+        )
         for proj in region.projs:
             _shard_projection(region, proj, tp_mesh, rank, tp)
         for _, norm in region.norms:
@@ -1371,8 +1818,28 @@ def apply_tensor_parallel(
         module._unsloth_tp_input = _input_name(module)
         if region.kind == "attention":
             _set_local_heads(module, region, tp)
+        module._unsloth_tp_kind = region.kind
+        module._unsloth_tp_coord = (rank, tp)
+        module._unsloth_tp_local_width = local_width
+
+        def state_of(module = module):
+            return module.__dict__.get("_unsloth_tp_dropout")
+
+        for proj in region.projs:
+            proj.module.__dict__["_unsloth_tp_state_of"] = state_of
+            proj.module._unsloth_tp_coord = (rank, tp)
+        if _region_dropout_p(module, model):
+            dropout_regions += 1
+            module.__dict__["forward"] = _dropout_region_forward(module, module.forward)
         module.register_forward_pre_hook(_region_pre_hook, with_kwargs = True)
         module.register_forward_hook(_region_post_hook)
+    if tp > 1 and (dropout_regions or _has_lora_dropout(model)):
+        # Dropout masks are drawn from the ranks' own RNG in lockstep: start every tp rank from rank 0's state.
+        _sync_rng(group, dist_rank0 = _global_rank0(group))
+    for block in tp_plan.moe_blocks:
+        block._unsloth_tp_group = group
+        block._unsloth_tp_size = tp
+        block.register_forward_hook(_moe_post_hook)
     # Unsloth decode paths bypass the regions: mark and guard every wrapper level.
     info = {"size": tp, "rank": rank, "regions": len(tp_plan.regions), "source": tp_plan.source}
     inner = _unwrap(model)
@@ -1396,9 +1863,61 @@ def apply_tensor_parallel(
                 if tp_plan.replicated_layers
                 else ""
             )
+            + _kv_replicated_note(tp_plan)
+            + (
+                f", {tp_plan.replicated_moe} mixture-of-experts blocks replicated (experts not sharded)"
+                if tp_plan.replicated_moe
+                else ""
+            )
             + "."
         )
     return model
+
+
+def _kv_replicated_note(tp_plan):
+    regions = [r for r in tp_plan.regions if r.kv_replicated]
+    if not regions:
+        return ""
+    kv = sorted({r.kv_heads for r in regions})
+    return (
+        f", key / value heads replicated in {len(regions)} attention regions (num_key_value_heads = "
+        f"{'/'.join(map(str, kv))} < tp {tp_plan.tp_size})"
+    )
+
+
+def _shard_kv_replicated(region, proj, mesh, rank, tp):
+    """KV_REPLICATED: weight / bias / LoRA kept whole (Replicate); the forward narrows to this rank's head."""
+    module = proj.module
+    weight, base = _weight(module)
+    path = f"{region.path}.{proj.name}"
+    if _preloaded(weight) is not None or _preloaded(base.bias) is not None:
+        raise ValueError(
+            f"Unsloth: '{path}' was sliced by sharded_loading, but its key / value heads are replicated "
+            "(num_key_value_heads < tp); pass the same plan and tp mesh to both."
+        )
+    out_features = proj.parts[0]
+    kv_heads = region.kv_heads
+    if out_features != kv_heads * region.head_dim:
+        raise ValueError(
+            f"Unsloth: '{path}' has {out_features} outputs, not num_key_value_heads * head_dim = "
+            f"{kv_heads * region.head_dim}; its key / value heads cannot be replicated."
+        )
+    head = rank // (tp // kv_heads)
+    if _is_params4bit(weight):
+        # The rows of this rank's head (bitwise a slice of the 1-GPU codes); tp_replica regathers the whole.
+        _shard_params4bit(path, base, weight, COLWISE, (out_features,), head, kv_heads)
+        base.weight._unsloth_tp_layout = (KV_REPLICATED, (out_features,), rank, tp)
+    else:
+        _set_dtensor(base, "weight", weight, mesh, "replicate")
+    if base.bias is not None:
+        _set_dtensor(base, "bias", base.bias, mesh, "replicate")
+    lora_A = module._modules.get("lora_A")
+    if lora_A is not None:
+        for adapter in lora_A.keys():
+            A, B = lora_A[adapter], module.lora_B[adapter]
+            _set_dtensor(A, "weight", A.weight, mesh, "replicate")
+            _set_dtensor(B, "weight", B.weight, mesh, "replicate")
+    module.__dict__["_unsloth_tp_kv_rows"] = (head * region.head_dim, region.head_dim)
 
 
 def _shard_projection(region, proj, mesh, rank, tp):
@@ -1407,7 +1926,9 @@ def _shard_projection(region, proj, mesh, rank, tp):
     col = proj.style == COLWISE
     parts = proj.parts
     in_parts = (_logical_shape(weight, base)[1],)
-    if _preloaded(weight) is not None:
+    if proj.style == KV_REPLICATED:
+        _shard_kv_replicated(region, proj, mesh, rank, tp)
+    elif _preloaded(weight) is not None:
         _wrap_preloaded(base, "weight", weight, mesh, 0 if col else 1)
     elif _is_params4bit(weight):
         _shard_params4bit(f"{region.path}.{proj.name}", base, weight, proj.style, parts, rank, tp)
@@ -1423,7 +1944,7 @@ def _shard_projection(region, proj, mesh, rank, tp):
             rank,
             tp,
         )
-    if base.bias is not None:
+    if base.bias is not None and proj.style != KV_REPLICATED:
         if col:
             if _preloaded(base.bias) is not None:
                 _wrap_preloaded(base, "bias", base.bias, mesh, 0)
@@ -1436,7 +1957,7 @@ def _shard_projection(region, proj, mesh, rank, tp):
     if guard is not None:
         guard.remove()
     lora_A = module._modules.get("lora_A")
-    if lora_A is not None:
+    if lora_A is not None and proj.style != KV_REPLICATED:
         for adapter in lora_A.keys():
             A, B = lora_A[adapter], module.lora_B[adapter]
             if col:
@@ -2139,6 +2660,8 @@ def _materialize_sharded(model, name, kwargs, mesh, plan, device):
     shards = {}
     for region in tp_plan.regions:
         for proj in region.projs:
+            if proj.style == KV_REPLICATED:
+                continue  # read whole: every rank keeps the replicated key / value projections
             weight, base = _weight(proj.module)
             col = proj.style == COLWISE
             shards[id(weight)] = (proj, 0 if col else 1, proj.parts if col else (weight.shape[1],))
@@ -2324,6 +2847,7 @@ def load_tensor_parallel(
 _TP_DATA = "_unsloth_tp_data"
 _DDP_MESH = "_unsloth_tp_ddp_mesh"
 _DP_SYNC = "_unsloth_tp_dp_sync"
+_TP_GATHER = "_unsloth_tp_gather_mesh"
 _UNSUPPORTED_OPTIMIZERS = (
     "8bit",
     "bnb",
@@ -2420,11 +2944,6 @@ def _refuse_tp_trainer_args(args, cpu_shards = False):
         problems.append(
             "accelerate FSDP / ParallelismConfig (use shard_model over mesh['dp'] for data parallel)"
         )
-    if (
-        _strategy(getattr(args, "eval_strategy", getattr(args, "evaluation_strategy", "no")))
-        != "no"
-    ):
-        problems.append("evaluation during training (set eval_strategy = 'no')")
     for flag in ("load_best_model_at_end", "push_to_hub"):
         if getattr(args, flag, False):
             problems.append(flag)
@@ -2440,6 +2959,22 @@ def _refuse_tp_trainer_args(args, cpu_shards = False):
             + "; ".join(problems)
             + "."
             + _env_hint()
+        )
+
+
+def _refuse_full_finetuning_fsdp2(model):
+    """Full finetuning on tp x native FSDP2 trains, but save_model (also every Trainer checkpoint) cannot gather
+    the whole model there yet: refuse before training instead of at the first save."""
+    if _has_peft_config(model):
+        return
+    from .tp_replica import _fsdp2_units, tp_root
+
+    if _fsdp2_units(tp_root(model)):
+        raise RuntimeError(
+            "Unsloth: full finetuning on a tensor parallel x native FSDP2 model cannot save the whole model "
+            "yet (Trainer.save_model and Trainer checkpoints). Use tensor parallel alone, or its DDP-style data "
+            "parallel (UNSLOTH_TP_SIZE without UNSLOTH_FSDP2), or native FSDP2 alone (UNSLOTH_FSDP2=1 without "
+            "UNSLOTH_TP_SIZE)." + _env_hint()
         )
 
 
@@ -2564,17 +3099,17 @@ def tp_trainer_setup(
     cpu_shards = tp_mesh.device_type == "cpu"
     _tp_bnb_optim(trainer.args, cpu_shards)
     _refuse_tp_trainer_args(trainer.args, cpu_shards)
+    _refuse_full_finetuning_fsdp2(model)
     ddp_mesh = _ddp_mesh(model)
     dp_size, dp_rank = (dp_mesh.size(), dp_mesh.get_local_rank()) if dp_mesh is not None else (1, 0)
     trainer.accelerator.__dict__[_TP_DATA] = (dp_size, dp_rank)
+    trainer.accelerator.__dict__[_TP_GATHER] = dp_mesh
     _tp_train_sampler(trainer, dp_size, dp_rank)
     trainer.__dict__["_unsloth_tensor_parallel"] = (
         True  # the generated TRL trainers skip for_inference()
     )
     _tp_scaler(trainer, dp_size)
     trainer.__dict__["save_model"] = types.MethodType(_tp_trainer_save_model, trainer)
-    for name in ("evaluate", "predict"):
-        trainer.__dict__[name] = _refuse_tp_trainer_call(name)
     # Trainer checkpoints: per-rank local shards (instance level: before native FSDP2's class hooks, whose
     # full-state gathers do not restore the packed tp part order).
     for name, method in (
@@ -2861,15 +3396,33 @@ def _tp_load_optimizer_and_scheduler(self, checkpoint, *args, **kwargs):
     return None
 
 
-def _refuse_tp_trainer_call(name):
-    def refuse(*args, **kwargs):
-        raise RuntimeError(
-            f"Unsloth: Trainer.{name} is not supported on a tensor parallel model (its gather would count every "
-            "tp rank); run the forward in your own loop, or save the adapter and evaluate on one GPU."
-            + _env_hint()
-        )
+def _dp_gather(data, dp_mesh):
+    """accelerate's gather over the dp replicas only (the tp ranks of a replica hold identical results). dp = 1:
+    the one-process result (accelerate returns its input unchanged on one process)."""
+    if dp_mesh is None or dp_mesh.size() == 1:
+        return data
+    import torch.distributed as dist
+    from accelerate.utils import recursively_apply
 
-    return refuse
+    group, size = dp_mesh.get_group(), dp_mesh.size()
+
+    def one(t):
+        t = t.clone()[None] if t.ndim == 0 else t.contiguous()
+        out = [torch.empty_like(t) for _ in range(size)]
+        dist.all_gather(out, t, group = group)
+        return torch.cat(out, dim = 0)
+
+    return recursively_apply(one, data, error_on_other_type = True)
+
+
+def _dp_gather_object(obj, dp_mesh):
+    if dp_mesh is None or dp_mesh.size() == 1:
+        return obj
+    import torch.distributed as dist
+
+    out = [None] * dp_mesh.size()
+    dist.all_gather_object(out, obj, group = dp_mesh.get_group())
+    return [x for y in out for x in y]
 
 
 def _tp_trainer_save_model(
@@ -2877,12 +3430,22 @@ def _tp_trainer_save_model(
     output_dir = None,
     _internal_call = False,
 ):
-    """Trainer.save_model for a tensor parallel model: the 1-GPU PEFT adapter (collective, rank 0 writes)."""
+    """Trainer.save_model for a tensor parallel model: the 1-GPU PEFT adapter, or for full finetuning the whole
+    1-GPU model (collective, rank 0 writes)."""
     output_dir = output_dir if output_dir is not None else self.args.output_dir
-    save_tp_adapter(self.model, output_dir)
+    if _has_peft_config(self.model):
+        save_tp_adapter(self.model, output_dir)
+    else:
+        from .tp_replica import tp_collective
+        model = self.model
+        tp_collective(model, "save_model", lambda: model.save_pretrained(output_dir), "all")
     processing = getattr(self, "processing_class", None) or getattr(self, "tokenizer", None)
     if processing is not None and self.args.should_save:
         processing.save_pretrained(output_dir)
+
+
+def _has_peft_config(model):
+    return any(getattr(level, "peft_config", None) for level in _tp_chain(model))
 
 
 def _tp_scaler(trainer, dp):
@@ -2907,6 +3470,7 @@ def _install_tp_accelerate_hooks():
     original_prepare_model = Accelerator.prepare_model
     original_data_loader = Accelerator.prepare_data_loader
     original_clip = Accelerator.clip_grad_norm_
+    original_gather_for_metrics = Accelerator.gather_for_metrics
 
     def _tp_model(self, model):
         if self.__dict__.get(_TP_DATA) is None or not is_tensor_parallel(model):
@@ -2989,6 +3553,42 @@ def _install_tp_accelerate_hooks():
             sync["synced"] = True
         return tp_clip_grad_norm_(parameters, max_norm)
 
+    def gather_for_metrics(
+        self,
+        input_data,
+        use_gather_object = False,
+    ):
+        # Gather over dp only: the eval loader is sharded over dp, so remainder truncation is the dp world's.
+        if _TP_GATHER not in self.__dict__:
+            return original_gather_for_metrics(
+                self, input_data, use_gather_object = use_gather_object
+            )
+        from accelerate.utils import recursively_apply
+
+        dp_mesh = self.__dict__[_TP_GATHER]
+        try:
+            recursively_apply(lambda x: x, input_data, error_on_other_type = True)
+            all_tensors = True
+        except TypeError:
+            all_tensors = False
+        use_gather_object = use_gather_object or not all_tensors
+        if use_gather_object:
+            data = _dp_gather_object(input_data, dp_mesh)
+        else:
+            data = _dp_gather(input_data, dp_mesh)
+        try:
+            remainder = self.gradient_state.remainder
+            if not self.gradient_state.end_of_dataloader or remainder <= 0:
+                return data
+
+            def adjust(tensor):
+                return tensor[:remainder]
+
+            return adjust(data) if use_gather_object else recursively_apply(adjust, data)
+        except Exception:
+            return data
+
+    Accelerator.gather_for_metrics = gather_for_metrics
     Accelerator.prepare_model = prepare_model
     Accelerator.prepare_data_loader = prepare_data_loader
     Accelerator.clip_grad_norm_ = clip_grad_norm_

@@ -862,9 +862,146 @@ def prepare_streamed_encoder_(module: Any, compute_dtype: Any) -> int:
                     skip_modules_pattern = None,
                     skip_modules_classes = None,
                 )
+                sub._unsloth_mmap_streamed = True
                 continue
             _convert(sub, want)
     return streamed // _MIB
+
+
+# Small hosts drop mmapped encoder pages between prompts (FLUX.1 T5 on a 31 GB T4: ~7 GB re-read, 18-24 s/prompt).
+ENCODER_RESIDENT_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_TE_RESIDENT"
+# Host RAM still taken after the route: pinned DiT staging (~2 GB on FLUX.1) + encoder prefetch ring.
+_ENCODER_RESIDENT_RUNTIME_MIB = 2560
+
+
+def _mmap_streamed_tensors(module: Any) -> list:
+    """(owner, name, tensor) of every CPU parameter / buffer left in storage dtype by ``prepare_streamed_encoder_``."""
+    out: list = []
+    seen: set = set()
+    for sub in module.modules():
+        if not getattr(sub, "_unsloth_mmap_streamed", False):
+            continue
+        for kind, items in (
+            ("p", sub.named_parameters(recurse = False)),
+            ("b", sub.named_buffers(recurse = False)),
+        ):
+            for name, t in items:
+                if t is None or t.device.type != "cpu" or t.numel() == 0:
+                    continue
+                key = t.untyped_storage().data_ptr()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append((sub, kind, name, t))
+    return out
+
+
+def streamed_encoder_mib(module: Any) -> int:
+    total = sum(int(t.numel()) * int(t.element_size()) for *_x, t in _mmap_streamed_tensors(module))
+    return -(-total // _MIB)
+
+
+def encoder_resident_mode() -> Optional[bool]:
+    value = _env(ENCODER_RESIDENT_ENV)
+    if value in ("0", "off", "false", "no"):
+        return False
+    if value in ("1", "on", "true", "yes"):
+        return True
+    return None
+
+
+def encoder_resident_keep_mib(host_total_mib: Optional[int]) -> int:
+    return host_reserve_mib(host_total_mib) + _ENCODER_RESIDENT_RUNTIME_MIB
+
+
+def encoder_resident_share_mib(
+    streamed_mib: int,
+    *,
+    host_total_mib: Optional[int],
+    host_available_mib: Optional[int],
+    host_commit_mib: Optional[int] = None,
+    min_share_mib: int = 0,
+) -> tuple[int, str]:
+    """MiB of ``streamed_mib`` that fit under ``decide_encoder_resident``'s reserve; ``host_available_mib`` read after placement."""
+    if streamed_mib <= 0:
+        return 0, "no memory-mapped encoder weights"
+    if host_available_mib is None:
+        return 0, "host RAM unreadable"
+    keep = encoder_resident_keep_mib(host_total_mib)
+    room = int(host_available_mib) - keep
+    if host_commit_mib is not None:
+        room = min(room, int(host_commit_mib) - keep)
+    share = max(0, min(int(streamed_mib), room))
+    if share <= 0 or share < int(min_share_mib):
+        return (
+            0,
+            f"{host_available_mib} MiB available host RAM leaves {max(0, room)} MiB above the "
+            f"{keep} MiB the load keeps",
+        )
+    return (
+        share,
+        f"{share} of {streamed_mib} MiB leaves {int(host_available_mib) - share} MiB of "
+        f"{host_available_mib} MiB available host RAM (keeps {keep} MiB)",
+    )
+
+
+def decide_encoder_resident(
+    streamed_mib: int,
+    *,
+    host_total_mib: Optional[int],
+    host_available_mib: Optional[int],
+    host_commit_mib: Optional[int] = None,
+    int8_spill: bool = False,
+) -> tuple[bool, str]:
+    """``host_available_mib`` is read after placement, so it already excludes the int8 DiT."""
+    mode = encoder_resident_mode()
+    if streamed_mib <= 0:
+        return False, "no memory-mapped encoder weights"
+    if mode is False:
+        return False, f"{ENCODER_RESIDENT_ENV}=0"
+    if mode is True:
+        return True, f"{ENCODER_RESIDENT_ENV}=1"
+    if int8_spill:
+        return False, "the int8 denoiser already spills to disk"
+    if host_available_mib is None:
+        return False, "host RAM unreadable"
+    keep = encoder_resident_keep_mib(host_total_mib)
+    left = int(host_available_mib) - int(streamed_mib)
+    if left < keep:
+        return (
+            False,
+            f"{streamed_mib} MiB would leave {left} MiB of {host_available_mib} MiB available host RAM, "
+            f"under the {keep} MiB the load keeps",
+        )
+    if host_commit_mib is not None and int(host_commit_mib) - int(streamed_mib) < keep:
+        return (
+            False,
+            f"{streamed_mib} MiB would leave {int(host_commit_mib) - int(streamed_mib)} MiB of commit headroom, "
+            f"under the {keep} MiB the load keeps",
+        )
+    return (
+        True,
+        f"{streamed_mib} MiB leaves {left} MiB of {host_available_mib} MiB available host RAM",
+    )
+
+
+def materialize_streamed_encoder_(module: Any, cancel_check: Any = None) -> int:
+    """Must run before group offload records the host tensors. Returns MiB copied."""
+    import torch
+
+    copied = 0
+    with torch.no_grad():
+        for sub, kind, name, t in _mmap_streamed_tensors(module):
+            fresh = torch.empty_like(t, memory_format = torch.contiguous_format)
+            fresh.copy_(t)
+            if kind == "p":
+                getattr(sub, name).data = fresh
+            else:
+                sub._buffers[name] = fresh
+            copied += int(t.numel()) * int(t.element_size())
+            if cancel_check is not None:
+                cancel_check()
+    return -(-copied // _MIB)
 
 
 def module_dtype_ok(module: Any, compute_dtype: Any) -> bool:

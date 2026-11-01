@@ -2544,24 +2544,30 @@ def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
     return ""
 
 
-def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
+def _is_rehearsal_prefix(
+    stripped: str,
+    active_tools: list[dict],
+    *,
+    _names: Optional[list] = None,
+) -> bool:
     """Execution-class names stream rather than being held; otherwise it mirrors the safetensors loop."""
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
-    for name in _gguf_active_tool_names(active_tools):
+    for name in _gguf_active_tool_names(active_tools) if _names is None else _names:
         # Use the shared gate, which also refuses mcp__* names.
-        if not _markerless_promotable(name, None):
-            continue
-        if stripped == name or f"{name}[ARGS]".startswith(stripped):
+        if (stripped == name or f"{name}[ARGS]".startswith(stripped)) and _markerless_promotable(
+            name, None
+        ):
             return True
     return False
 
 
 def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
     """Holds a trailing bare tool name back while its [ARGS] may still arrive, including a bare-Gemma call:NAME{ prefix that the signal scan misses until its brace."""
+    names = _gguf_active_tool_names(active_tools)
     # A tail longer than every NAME[ARGS] cannot be a prefix, so the scan stops there (CJK has no spaces).
     limit = max(
-        (len(name) for name in _gguf_active_tool_names(active_tools) if isinstance(name, str)),
+        (len(name) for name in names if isinstance(name, str)),
         default = 0,
     ) + len("[ARGS]")
     i = len(text)
@@ -2570,11 +2576,11 @@ def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
         i -= 1
     tail = text[i:]
     held = (
-        len(tail) if tail and len(tail) <= limit and _is_rehearsal_prefix(tail, active_tools) else 0
+        len(tail)
+        if tail and len(tail) <= limit and _is_rehearsal_prefix(tail, active_tools, _names = names)
+        else 0
     )
-    return max(
-        held, held_bare_gemma_tail_len(text, lambda: set(_gguf_active_tool_names(active_tools)))
-    )
+    return max(held, held_bare_gemma_tail_len(text, lambda: set(names)))
 
 
 def _should_suppress_forced_no_tool_output(text: str, previous: str = "") -> bool:
@@ -4044,6 +4050,54 @@ _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
 # Windows + NVIDIA since driver 536.40: WDDM spills VRAM overflow to host RAM instead of failing, so the reserve matches llama.cpp fit margin.
 _WINDOWS_SYSMEM_FALLBACK_RESERVE_MIB = _LLAMA_FIT_TARGET_DEFAULT_MIB
 _WINDOWS_SYSMEM_FALLBACK_MAX_FRACTION = 0.125
+
+# WDDM backs GPU allocations with system commit the process never touches (#16015).
+_WINDOWS_GPU_UNTOUCHED_COMMIT_MIN_MIB = 2048
+_WINDOWS_GPU_COMMIT_HEADROOM_WARN_MIB = 4096
+
+
+def _windows_private_memory(pid: int) -> Optional[tuple[int, int]]:
+    """(PrivateUsage, PrivateWorkingSetSize) in bytes; None when unreadable (needs Windows 10 1809+).
+    psutil's uss and wset both count mmap'd GGUF pages, which would hide untouched commit."""
+    from ctypes import wintypes
+
+    class _COUNTERS_EX2(ctypes.Structure):
+        _fields_ = (
+            [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)]
+            + [
+                (name, ctypes.c_size_t)
+                for name in (
+                    "PeakWorkingSetSize",
+                    "WorkingSetSize",
+                    "QuotaPeakPagedPoolUsage",
+                    "QuotaPagedPoolUsage",
+                    "QuotaPeakNonPagedPoolUsage",
+                    "QuotaNonPagedPoolUsage",
+                    "PagefileUsage",
+                    "PeakPagefileUsage",
+                    "PrivateUsage",
+                    "PrivateWorkingSetSize",
+                )
+            ]
+            + [("SharedCommitUsage", ctypes.c_ulonglong)]
+        )
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        counters = _COUNTERS_EX2()
+        counters.cb = ctypes.sizeof(counters)
+        if not kernel32.K32GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+            return None
+        return int(counters.PrivateUsage), int(counters.PrivateWorkingSetSize)
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _vram_reserve_floor_mib(total_mib: float, *, sysmem_fallback: bool = False) -> float:
@@ -15914,6 +15968,47 @@ class LlamaCppBackend:
             f"or the machine runs short of memory, lower the context or leave it on "
             f"Auto.{kv_hint}"
         )
+
+    @staticmethod
+    def _gpu_commit_headroom_message(
+        untouched_mib: int, headroom_mib: Optional[int]
+    ) -> Optional[str]:
+        """Advisory for commit Windows reserves for GPU memory; None while there is room."""
+        if headroom_mib is None or untouched_mib < _WINDOWS_GPU_UNTOUCHED_COMMIT_MIN_MIB:
+            return None
+        if headroom_mib >= _WINDOWS_GPU_COMMIT_HEADROOM_WARN_MIB:
+            return None
+        held_gib = untouched_mib / 1024
+        return (
+            f"On Windows the GPU driver reserves system commit for the model's GPU memory: "
+            f"llama-server holds about {held_gib:.1f} GiB of commit it never uses in RAM, and "
+            f"only {headroom_mib / 1024:.1f} GiB of commit is left on this system. Studio cannot "
+            f"release it, and when the commit limit runs out other apps can fail to start or "
+            f"crash. Let Windows manage the page file size, or raise it by at least "
+            f"{math.ceil(held_gib)} GiB, under System > About > Advanced system settings > "
+            f"Performance > Advanced > Virtual memory."
+        )
+
+    @staticmethod
+    def _windows_gpu_commit_notice(pid: Optional[int], binary: Optional[str]) -> Optional[str]:
+        """Measures a loaded GPU child on Windows; never raises, since it only adds a notice."""
+        if sys.platform != "win32" or not pid:
+            return None
+        try:
+            if not LlamaCppBackend._installed_ggml_backends(binary) & {"cuda", "hip", "vulkan"}:
+                return None
+            from .diffusion_memory import _windows_commit_headroom_mib
+
+            counters = _windows_private_memory(pid)
+            if counters is None:
+                return None
+            untouched_mib = max(0, counters[0] - counters[1]) // (1024 * 1024)
+            return LlamaCppBackend._gpu_commit_headroom_message(
+                untouched_mib, _windows_commit_headroom_mib()
+            )
+        except Exception as e:  # noqa: BLE001 - a failed probe must not fail the load
+            logger.debug("GPU commit headroom check failed: %s", e)
+            return None
 
     # Skip the wait when the last kill is older than this; the driver has already reclaimed it.
     _VRAM_SETTLE_WINDOW_S: float = 15.0
@@ -32391,6 +32486,15 @@ class LlamaCppBackend:
                             else None
                         ),
                     )
+                elif not intent.cpu_fallback:
+                    _gpu_commit_notice = self._windows_gpu_commit_notice(
+                        getattr(self._process, "pid", None), binary
+                    )
+                    if _gpu_commit_notice:
+                        if self._last_load_warning:
+                            self._amend_load_warning(" " + _gpu_commit_notice)
+                        else:
+                            self._record_load_warning(_gpu_commit_notice)
                 if not self._publish_healthy():
                     # Teardown began after the 200; publishing would report a model that is gone.
                     _cleanup_cancelled_load("App shut down as the load was completing")
@@ -34657,6 +34761,7 @@ class LlamaCppBackend:
                 timeout = timeout,
                 headers = self._auth_headers,
                 trust_env = False,
+                verify = _local_ssl_context(),
             )
         except Exception as e:
             logger.debug(f"MTP decode probe failed: {e}")
@@ -34885,6 +34990,7 @@ class LlamaCppBackend:
                     headers = self._auth_headers,
                     timeout = _SLOT_SAVE_HTTP_TIMEOUT,
                     trust_env = False,
+                    verify = _local_ssl_context(),
                 )
             except Exception as e:
                 logger.debug(f"slot {slot} save failed: {e}")
@@ -34953,6 +35059,7 @@ class LlamaCppBackend:
                     headers = self._auth_headers,
                     timeout = _SLOT_SAVE_HTTP_TIMEOUT,
                     trust_env = False,
+                    verify = _local_ssl_context(),
                 )
             except Exception as e:
                 logger.debug(f"slot restore failed: {e}")
@@ -35670,7 +35777,13 @@ class LlamaCppBackend:
             # the requested -c, and video reads as unsupported on a model that
             # supports it. None when there is no child key, which is httpx's
             # default and what every other call site here relies on.
-            resp = httpx.get(url, headers = self._auth_headers, timeout = 5.0, trust_env = False)
+            resp = httpx.get(
+                url,
+                headers = self._auth_headers,
+                timeout = 5.0,
+                trust_env = False,
+                verify = _local_ssl_context(),
+            )
             if resp.status_code != 200:
                 return None
             props = resp.json()
@@ -36349,6 +36462,7 @@ class LlamaCppBackend:
                 headers = self._auth_headers,
                 timeout = 10.0,
                 trust_env = False,
+                verify = _local_ssl_context(),
             )
             if resp.status_code < 500:
                 return False
@@ -36530,6 +36644,7 @@ class LlamaCppBackend:
                 headers = self._auth_headers,
                 timeout = 2.0,
                 trust_env = False,
+                verify = _local_ssl_context(),
             )
             response.raise_for_status()
             result = response.json()
@@ -39907,7 +40022,7 @@ class LlamaCppBackend:
                 # Loop-ending turn offers no tools, so this notice must not ask for a retry; it rides the result.
                 _over_cap_final = bool(_over_cap) and (
                     tool_controller.force_final_answer
-                    or not tool_controller.active_tools()
+                    or not tool_controller.has_active_tools()
                     or (_turn_executed_real_tool and _tool_iters_done + 1 >= max_tool_iterations)
                     # Fold feedback only into a result from the SAME tool, since templates label the block with the tool name; a retry notice for skipped calls is never folded.
                     or iteration + 1 >= max_tool_iterations + _extra + _continuation_credits
@@ -40040,7 +40155,7 @@ class LlamaCppBackend:
 
                 # Clear tool status badge before next generation/final pass.
                 yield {"type": "status", "text": ""}
-                if tool_controller.force_final_answer or not tool_controller.active_tools():
+                if tool_controller.force_final_answer or not tool_controller.has_active_tools():
                     _append_budget_exhausted_nudge = False
                     break
                 # Only real tool turns use the cap, so reserved re-prompt slots never add rounds (GGUF parity).
@@ -41125,7 +41240,12 @@ class LlamaCppBackend:
         """Codec name on match, None on non-audio, raises on transport/JSON errors."""
         if not self.is_loaded:
             return None
-        with httpx.Client(timeout = 10, headers = self._auth_headers, trust_env = False) as client:
+        with httpx.Client(
+            timeout = 10,
+            headers = self._auth_headers,
+            trust_env = False,
+            verify = _local_ssl_context(),
+        ) as client:
 
             def _detok(tid: int) -> str:
                 # Non-200 means marker not in vocab; transport/JSON errors still raise.

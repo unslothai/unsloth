@@ -98,7 +98,7 @@ def _managed_root(tmp_path, monkeypatch) -> Path:
 
 def _working_vulkan_install(root: Path) -> Path:
     """What the affected host had: the mirror's Vulkan build in its versioned subdirectory."""
-    sub = root / "sd-master-982-0518b34-ud331c66-bin-win-vulkan-x64"
+    sub = root / "sd-master-982-0518b34-uaba3a1c-bin-win-vulkan-x64"
     sub.mkdir()
     for name in (_CLI, _SERVER):
         (sub / name).write_bytes(_starting_binary())
@@ -311,14 +311,14 @@ def test_the_refusal_record_survives_a_fallback_from_another_release(
         monkeypatch,
         {"rocm": _bundle(_refused_binary()), "vulkan": _bundle(_starting_binary(), "vk/")},
     )
-    monkeypatch.setattr(sdmod, "_pinned_tag", lambda: "master-982-0518b34-ud331c66")
+    monkeypatch.setattr(sdmod, "_pinned_tag", lambda: "master-982-0518b34-uaba3a1c")
     monkeypatch.setattr(backend, "_managed_tree_in_use", lambda: False)
     monkeypatch.setattr(backend, "is_managed_binary", lambda _b: True)
 
     server = backend.ensure_sd_server_binary(accelerator = "rocm")
 
     assert server is not None
-    assert sdmod.read_install_record(root).get("tag") != "master-982-0518b34-ud331c66"
+    assert sdmod.read_install_record(root).get("tag") != "master-982-0518b34-uaba3a1c"
     assert backend.accelerator_runtime_failed("rocm") is True
     assert backend.preferred_accelerator("rocm") == "vulkan"
 
