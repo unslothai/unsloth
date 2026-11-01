@@ -275,7 +275,15 @@ def test_stalled_reader_is_abandoned_after_the_idle_grace(monkeypatch):
     o = _live()
     with o._mailbox_lock:
         o._mailboxes["gone"] = orch_mod._WorkerMailbox(o._proc)
+    waits = []
+    real = o._let_readers_finish
+
+    def timed():
+        started = time.monotonic()
+        real()
+        waits.append(time.monotonic() - started)
+
+    o._let_readers_finish = timed
     assert o._shutdown_subprocess() is True
-    waited = sum(rec.sleeps)
-    assert orch_mod._SHUTDOWN_READER_IDLE_S - 0.05 <= waited < orch_mod._SHUTDOWN_READER_MAX_S
+    assert orch_mod._SHUTDOWN_READER_IDLE_S <= waits[0] < orch_mod._SHUTDOWN_READER_MAX_S, waits
     assert rec.terminated == []
