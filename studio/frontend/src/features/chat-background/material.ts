@@ -143,7 +143,6 @@ async function setNativeVibrancy(enabled: boolean): Promise<boolean> {
   return invoke<boolean>("set_native_vibrancy", { enabled });
 }
 
-/** Light and dark keep their own strength: a dark pane needs far less to read. */
 export function useGlassStrength(): number {
   const { resolved } = useTheme();
   return useMaterialStore((s) => s.strength[resolved]);
@@ -162,7 +161,6 @@ export function WindowMaterialMount() {
       strength <= 50 ? 0.2 + (0.8 * strength) / 50 : 1 + (strength - 50) / 50;
     const opacity =
       strength <= 50 ? 0.35 + (0.65 * strength) / 50 : 1 + (strength - 50) / 50;
-    // Glass off writes nothing to the page.
     if (material === "solid" || strength === 50) {
       root.style.removeProperty("--glass-strength");
       root.style.removeProperty("--glass-opacity");

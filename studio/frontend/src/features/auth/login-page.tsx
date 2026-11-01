@@ -7,7 +7,7 @@ import { useConfirmedLoginMode } from "./account-session";
 import { AuthForm } from "./components/auth-form";
 
 export function LoginPage() {
-  // A shared sign-in screen never shows the last account's own image, so wait for the server to say it is not one.
+  // No personal image until the server confirms a single account.
   const personal = useConfirmedLoginMode() === "single";
   return (
     <div

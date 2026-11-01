@@ -190,7 +190,6 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 	const [tone, setTone] = useState<ImageTone | null>(null);
 	const frameUrl = frames.current?.url;
 	useEffect(() => {
-		// Only glass reads the tone, so glass off never samples the image.
 		if (!(frameUrl && glass)) return;
 		let cancelled = false;
 		measureTone(frameUrl)

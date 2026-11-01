@@ -222,7 +222,6 @@ export function ChatBackgroundControls() {
 	const { value, error, ready, busy } = useChatBackground();
 	const input = useRef<HTMLInputElement>(null);
 	const adjustments = value ?? DEFAULT_ADJUSTMENTS;
-	// Under glass, visibility and fade are their own per-mode values, so the controls edit the ones on screen.
 	const { resolved } = useTheme();
 	const glass = useMaterialStore((s) => s.material !== "solid");
 	return (
