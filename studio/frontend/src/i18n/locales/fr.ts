@@ -8,6 +8,7 @@ export const fr = {
   chatBackground: {
     noBackground: "Aucun arrière-plan",
     sizing: "Dimensionnement de l’image",
+    sizingPosition: "Dimensionnement et position de l’image",
     fill: "Remplir",
     fit: "Ajuster",
     stretch: "Étirer",

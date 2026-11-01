@@ -5,6 +5,7 @@ export const en = {
   chatBackground: {
     noBackground: "No background",
     sizing: "Image sizing",
+    sizingPosition: "Image sizing & position",
     fill: "Fill",
     fit: "Fit",
     stretch: "Stretch",

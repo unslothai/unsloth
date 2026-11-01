@@ -8,6 +8,7 @@ export const vi = {
   chatBackground: {
     noBackground: "Không có nền",
     sizing: "Kích thước ảnh",
+    sizingPosition: "Kích thước và vị trí ảnh",
     fill: "Lấp đầy",
     fit: "Vừa khung",
     stretch: "Kéo giãn",

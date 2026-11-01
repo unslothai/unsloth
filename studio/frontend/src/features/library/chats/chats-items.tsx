@@ -35,7 +35,7 @@ import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
-import { MessageCircleIcon, StarPointedIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, Settings01Icon, StarPointedIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
   Archive03Icon,
@@ -51,7 +51,6 @@ import {
   PinOffIcon,
   PlusSignIcon,
   Refresh01Icon,
-  Settings02Icon,
   Upload01Icon,
   ViewIcon,
   ViewOffSlashIcon,
@@ -1231,7 +1230,6 @@ const TILELESS_ROW_NAME = "min-h-10";
 const CARD_TITLE =
   "block w-full rounded-md text-left font-medium text-ui-12p5 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
 
-/** The rule under the heading lines up list rows; grid cards carry their own edges, so it is off there. */
 export function GroupHeading({
   children,
   count,
@@ -1357,7 +1355,7 @@ function ProjectMenu({
           <OpenProjectFolderItem projectId={project.id} />
           <DropdownMenuSeparator className="mx-3" />
           <MenuItem
-            icon={Settings02Icon}
+            icon={Settings01Icon}
             label={t("library.chats.menu.edit")}
             onSelect={() => actions.editProject(project)}
           />
@@ -1598,7 +1596,7 @@ export function SectionMenuItems({
         </>
       )}
       <MenuItem
-        icon={Settings02Icon}
+        icon={Settings01Icon}
         label={t("shell.sections.edit")}
         onSelect={() => actions.renameSection(section)}
       />

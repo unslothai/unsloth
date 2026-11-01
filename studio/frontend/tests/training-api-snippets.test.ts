@@ -368,7 +368,6 @@ test("the Train header leads its page links with the API button, which alone ope
   const tabs = readSrc("features/settings/components/api-example-tabs.tsx");
   assert.match(tabs, /"api-keys-training-api": "training"/);
   assert.match(tabs, /<TrainingApiExamples[^>]*showHeading=\{false\}/);
-  // No Training chip in the tab row unless the Train page asked for it.
   assert.match(tabs, /current === "training"\s*\?/);
   assert.match(tabs, /useApiExampleKinds\(kind\)/);
   const monitor = readSrc("features/api-monitor/api-monitor-page.tsx");

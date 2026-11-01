@@ -37,7 +37,6 @@ export const DEFAULT_ADJUSTMENTS = {
 	visibility: 70,
 	blur: 0,
 	fade: true,
-	// Percent of --foreground in the composer's ring over the image; 0 turns it off.
 	outline: 30,
 	sizing: "cover" as ImageSizing,
 	zoom: 100,
@@ -68,7 +67,7 @@ export function sanitizeAdjustments(
 		visibility: bounded(input.visibility, 100, 70),
 		blur: bounded(input.blur, 20, 0),
 		fade: typeof input.fade === "boolean" ? input.fade : true,
-		// Booleans are the stored shape from before the outline became a strength.
+		// Booleans are the pre-slider saved shape.
 		outline:
 			typeof input.outline === "boolean"
 				? input.outline
@@ -82,7 +81,6 @@ export function sanitizeAdjustments(
 		position: parsePosition(input.position) ? input.position! : "50% 50%",
 	};
 }
-/** `[x, y]` percents of a stored "X% Y%" position, or null for anything else. */
 export function parsePosition(value: unknown): [number, number] | null {
 	if (typeof value !== "string") return null;
 	const match = /^(\d{1,3})% (\d{1,3})%$/.exec(value);

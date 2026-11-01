@@ -76,7 +76,7 @@ export const SIDEBAR_MENU_DEFAULT_VISIBLE: Record<SidebarMenuItemId, boolean> =
     darkMode: true,
     guidedTour: true,
     profile: false,
-    appearance: false,
+    appearance: true,
     resources: false,
     chat: false,
     connections: false,
@@ -495,6 +495,21 @@ export function migrateShippedSidebarNavDefault(
     : customization;
 }
 
+/** Older records adopt the Appearance menu item once; after that a hidden one stays hidden. */
+export function migrateAppearanceMenuDefault(
+  customization: AppearanceCustomization,
+  storedVersion: number,
+  migrationVersion: number,
+): AppearanceCustomization {
+  if (storedVersion >= migrationVersion) return customization;
+  return {
+    ...customization,
+    sidebarMenu: customization.sidebarMenu.map((item) =>
+      item.id === "appearance" ? { ...item, visible: true } : item,
+    ),
+  };
+}
+
 export function isDefaultCustomization(c: AppearanceCustomization): boolean {
   return JSON.stringify(c) === JSON.stringify(DEFAULT_CUSTOMIZATION);
 }
@@ -568,14 +583,18 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     }),
     {
       name: "unsloth_appearance_customization",
-      version: 8,
+      version: 9,
       storage: createJSONStorage(() => guardedLocalStorage),
       migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
-        const customization = migrateShippedSidebarNavDefault(
-          sanitizeCustomization(state.customization),
+        const customization = migrateAppearanceMenuDefault(
+          migrateShippedSidebarNavDefault(
+            sanitizeCustomization(state.customization),
+            version,
+            8,
+          ),
           version,
-          8,
+          9,
         );
         return { customization } as AppearanceCustomState;
       },

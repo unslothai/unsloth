@@ -8,6 +8,7 @@ export const tr = {
   chatBackground: {
     noBackground: "Arka plan yok",
     sizing: "Görüntü boyutlandırma",
+    sizingPosition: "Görüntü boyutu ve konumu",
     fill: "Doldur",
     fit: "Sığdır",
     stretch: "Uzat",

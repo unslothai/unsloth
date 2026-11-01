@@ -8,6 +8,7 @@ export const es419 = {
   chatBackground: {
     noBackground: "Sin fondo",
     sizing: "Tamaño de imagen",
+    sizingPosition: "Tamaño y posición de imagen",
     fill: "Rellenar",
     fit: "Ajustar",
     stretch: "Estirar",

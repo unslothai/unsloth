@@ -8,6 +8,7 @@ export const nl = {
   chatBackground: {
     noBackground: "Geen achtergrond",
     sizing: "Afbeeldingsgrootte",
+    sizingPosition: "Afbeeldingsgrootte en positie",
     fill: "Vullen",
     fit: "Passend maken",
     stretch: "Uitrekken",

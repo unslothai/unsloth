@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Cancel01Icon, Upload01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
 	Select,
 	SelectContent,
@@ -13,6 +15,8 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { useT, type TranslationKey } from "@/i18n";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { MenuTickIcon } from "@/lib/tick-icon";
 // Shared settings primitives: avoid importing the settings barrel into this feature.
 // eslint-disable-next-line no-restricted-imports
 import { SettingsSection } from "@/features/settings/components/settings-section";
@@ -82,6 +86,7 @@ export function ChatBackgroundControls() {
 	return (
 		<SettingsSection
 			title={t("chatBackground.title")}
+			badge={<Badge variant="accent">{t("shell.navigation.newBadge")}</Badge>}
 			action={
 				<div className="flex max-w-full flex-wrap items-center justify-end gap-1">
 					{value && (
@@ -239,28 +244,93 @@ export function ChatBackgroundControls() {
 							</SelectContent>
 						</Select>
 					</SettingsRow>
-					<SettingsRow label={t("chatBackground.sizing")} className="items-start">
-						<Select
-							disabled={!value || busy}
-							value={adjustments.sizing}
-							onValueChange={(sizing) =>
-								patchBackground({ sizing: sizing as ImageSizing })
-							}
-						>
-							<SelectTrigger
-								aria-label={t("chatBackground.sizing")}
-								className="w-52"
-							>
-								<SelectValue />
-							</SelectTrigger>
-							<SelectContent>
-								{IMAGE_SIZING.map((sizing) => (
-									<SelectItem key={sizing} value={sizing}>
-										{t(sizingLabels[sizing])}
-									</SelectItem>
-								))}
-							</SelectContent>
-						</Select>
+					<SettingsRow label={t("chatBackground.sizingPosition")} className="items-start">
+						<Popover>
+							<PopoverTrigger asChild={true}>
+								<Button
+									variant="picker"
+									disabled={!value || busy}
+									aria-label={t("chatBackground.sizingPosition")}
+									className="w-52 justify-between font-normal"
+								>
+									{t(sizingLabels[adjustments.sizing])}
+									<HugeiconsIcon
+										icon={ChevronDownStandardIcon}
+										strokeWidth={2}
+										className="size-4 text-muted-foreground"
+									/>
+								</Button>
+							</PopoverTrigger>
+							<PopoverContent align="end" className="w-80 gap-0 rounded-lg p-1 font-heading">
+								<div role="radiogroup" aria-label={t("chatBackground.sizing")}>
+									{IMAGE_SIZING.map((sizing) => (
+										<button
+											key={sizing}
+											type="button"
+											role="radio"
+											aria-checked={adjustments.sizing === sizing}
+											className="relative flex w-full cursor-pointer items-center rounded-md py-2 pr-9 pl-3 text-left text-sm outline-hidden hover:bg-accent focus-visible:bg-accent"
+											onClick={() => patchBackground({ sizing })}
+										>
+											{t(sizingLabels[sizing])}
+											{adjustments.sizing === sizing && (
+												<HugeiconsIcon
+													icon={MenuTickIcon}
+													strokeWidth={2}
+													className="absolute right-3 size-4"
+												/>
+											)}
+										</button>
+									))}
+								</div>
+								<div className="-mx-1 my-1 h-px bg-border" />
+								<div className="flex flex-col gap-2 px-3 pt-1 pb-2">
+									<p className="text-xs text-muted-foreground">{t("chatBackground.position")}</p>
+									<div className="flex items-center gap-5">
+										<div
+											className="grid size-18 shrink-0 grid-cols-3 rounded-lg bg-[color-mix(in_srgb,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] p-1.5"
+											role="group"
+											aria-label={t("chatBackground.position")}
+										>
+											{POSITIONS.map((position) => {
+												const [x, y] = parsePosition(position)!;
+												return (
+													<button
+														key={position}
+														type="button"
+														aria-pressed={adjustments.position === position}
+														aria-label={t("chatBackground.positionValue", { x, y })}
+														title={t("chatBackground.positionValue", { x, y })}
+														className="group flex aspect-square items-center justify-center rounded-full hover:bg-[color-mix(in_srgb,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-pressed:bg-[color-mix(in_srgb,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]"
+														onClick={() => patchBackground({ position })}
+													>
+														<span className="size-1 rounded-full bg-muted-foreground/60 group-aria-pressed:bg-foreground" />
+													</button>
+												);
+											})}
+										</div>
+										<div className="flex min-w-0 flex-1 flex-col gap-2">
+											{(["horizontal", "vertical"] as const).map((axis, index) => {
+												const current = parsePosition(adjustments.position) ?? [50, 50];
+												return (
+													<PositionField
+														key={axis}
+														axis={index === 0 ? "X" : "Y"}
+														label={t(`chatBackground.${axis}`)}
+														value={current[index]}
+														onCommit={(v) => {
+															const next = [...current];
+															next[index] = v;
+															patchBackground({ position: `${next[0]}% ${next[1]}%` });
+														}}
+													/>
+												);
+											})}
+										</div>
+									</div>
+								</div>
+							</PopoverContent>
+						</Popover>
 					</SettingsRow>
 					{SLIDERS.map(({ key, label, min, max, unit }) => (
 						<SettingsRow key={key} className="items-start" label={t(label)}>
@@ -289,64 +359,46 @@ export function ChatBackgroundControls() {
 							onCheckedChange={(fade) => patchBackground({ fade })}
 						/>
 					</SettingsRow>
-					<SettingsRow
-						label={t("chatBackground.position")}
-						className="items-start"
-					>
-						<div className="flex w-52 justify-end">
-							<div
-								className="grid w-fit grid-cols-3 gap-1"
-								role="group"
-								aria-label={t("chatBackground.position")}
-							>
-								{POSITIONS.map((position) => {
-									const [x, y] = parsePosition(position)!;
-									return (
-										<button
-											key={position}
-											type="button"
-											disabled={!value || busy}
-											aria-pressed={adjustments.position === position}
-											aria-label={t("chatBackground.positionValue", { x, y })}
-											title={t("chatBackground.positionValue", { x, y })}
-											className="flex size-6 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-pressed:border-primary aria-pressed:bg-primary/10 aria-pressed:text-primary disabled:opacity-40"
-											onClick={() => patchBackground({ position })}
-										>
-											<span className="size-1 rounded-full bg-current" />
-										</button>
-									);
-								})}
-							</div>
-						</div>
-					</SettingsRow>
-					{(["horizontal", "vertical"] as const).map((axis, index) => {
-						const label = t(`chatBackground.${axis}`);
-						const current = parsePosition(adjustments.position) ?? [50, 50];
-						return (
-							<SettingsRow key={axis} className="items-start" label={label}>
-								<div className="flex w-52 items-center gap-3">
-									<Slider
-										disabled={!value || busy}
-										aria-label={label}
-										min={0}
-										max={100}
-										step={1}
-										value={[current[index]]}
-										onValueChange={([v]) => {
-											const next = [...current];
-											next[index] = v;
-											patchBackground({ position: `${next[0]}% ${next[1]}%` });
-										}}
-									/>
-									<span className="w-12 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-										{current[index]}%
-									</span>
-								</div>
-							</SettingsRow>
-						);
-					})}
 				</>
 			)}
 		</SettingsSection>
+	);
+}
+
+/** Accepts a cleared or partial entry while typing; commits whole percents clamped to 0-100. */
+function PositionField({
+	axis,
+	label,
+	value,
+	onCommit,
+}: {
+	axis: "X" | "Y";
+	label: string;
+	value: number;
+	onCommit: (value: number) => void;
+}) {
+	const [draft, setDraft] = useState<string | null>(null);
+	return (
+		<label className="flex items-center gap-3 text-sm">
+			<span className="w-3 shrink-0">{axis}</span>
+			<span className="btn-fill flex h-8 min-w-0 flex-1 items-center rounded-full px-3 text-xs">
+				<input
+					type="number"
+					inputMode="numeric"
+					min={0}
+					max={100}
+					aria-label={label}
+					value={draft ?? String(value)}
+					onChange={(event) => {
+						setDraft(event.target.value);
+						const parsed = Number.parseInt(event.target.value, 10);
+						if (Number.isFinite(parsed)) onCommit(Math.min(100, Math.max(0, parsed)));
+					}}
+					onBlur={() => setDraft(null)}
+					className="w-full min-w-0 bg-transparent tabular-nums outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+				/>
+				<span className="text-xs text-muted-foreground">%</span>
+			</span>
+		</label>
 	);
 }
