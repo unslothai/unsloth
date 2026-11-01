@@ -5667,6 +5667,18 @@ export const cs = {
     flaggedIntro: "Náš automatický skener označil mimo jiné tyto problémy:",
     nothingFlagged:
       "Náš automatický skener neoznačil žádné znepokojivé soubory, přesto to prosím ověřte.",
+    unscannedTitle: "Soubory modelu se nepodařilo zkontrolovat",
+    unscannedBody: "{model} obsahuje váhy pickle, které mohou při načtení spustit kód, a kontrola malwaru pro ně není k dispozici, takže jej nelze načíst. {note}",
+    unscannedIntro: "Soubory, které se nepodařilo zkontrolovat:",
+    switchSourceNote: "Pro načtení přepněte zdroj modelů v Nastavení na Hugging Face.",
+    reconnectNote: "Připojte se k Hugging Face, aby bylo možné načíst výsledek kontroly, a zkuste to znovu.",
+    managedTitle: "Vlastní kód je pro tento účet vypnutý",
+    managedNote: "Pro spravované účty je vypnutý. Požádejte vlastníka instalace o jeho zapnutí.",
+    notFoundTitle: "Nenalezeno na {source}",
+    notFoundBody: "{model} nebyl na {source} nalezen, takže bezpečnostní kontroly nemohly proběhnout. Zkontrolujte název, nebo nastavte token s přístupem, pokud je repozitář soukromý.",
+    notOnModelScopeBody: "{model} není na ModelScope k dispozici, takže bezpečnostní kontroly nemohly proběhnout a odtud jej nelze načíst. Pro použití přepněte zdroj modelů v Nastavení na Hugging Face.",
+    checksFailedTitle: "Bezpečnostní kontroly nemohly proběhnout",
+    checksFailedBody: "{model} se nepodařilo načíst z {source}, takže bezpečnostní kontroly nemohly být dokončeny a nelze jej načíst. Zkontrolujte připojení a token a zkuste to znovu. {note}",
     enableAndContinue: "Povolit a pokračovat",
   },
   tour: {

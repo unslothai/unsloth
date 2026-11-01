@@ -5645,6 +5645,18 @@ export const tr = {
     flaggedIntro: "Otomatik tarayıcımız şunlar dahil sorunlar işaretledi:",
     nothingFlagged:
       "Otomatik tarayıcımız endişe verici bir dosya işaretlemedi, ancak lütfen yine de kontrol edin.",
+    unscannedTitle: "Model dosyaları taranamadı",
+    unscannedBody: "{model}, yüklenirken kod çalıştırabilen pickle ağırlıkları içeriyor ve bunlar için kötü amaçlı yazılım taraması yok, bu yüzden yüklenemiyor. {note}",
+    unscannedIntro: "Taranamayan dosyalar:",
+    switchSourceNote: "Yüklemek için Ayarlar'dan model kaynağını Hugging Face olarak değiştirin.",
+    reconnectNote: "Taramanın okunabilmesi için Hugging Face'e bağlanın ve yeniden deneyin.",
+    managedTitle: "Bu hesapta özel kod kapalı",
+    managedNote: "Yönetilen hesaplarda kapalıdır. Kurulum sahibinden etkinleştirmesini isteyin.",
+    notFoundTitle: "{source} üzerinde bulunamadı",
+    notFoundBody: "{model}, {source} üzerinde bulunamadı, bu yüzden güvenlik denetimleri çalıştırılamadı. Adı kontrol edin veya depo özelse erişimi olan bir belirteç ayarlayın.",
+    notOnModelScopeBody: "{model}, ModelScope'ta yok, bu yüzden güvenlik denetimleri çalıştırılamadı ve oradan yüklenemiyor. Kullanmak için Ayarlar'dan model kaynağını Hugging Face olarak değiştirin.",
+    checksFailedTitle: "Güvenlik denetimleri çalıştırılamadı",
+    checksFailedBody: "{model}, {source} kaynağından okunamadı, bu yüzden güvenlik denetimleri tamamlanamadı ve yüklenemiyor. Bağlantınızı ve belirtecinizi kontrol edip yeniden deneyin. {note}",
     enableAndContinue: "Etkinleştir ve devam et",
   },
   tour: {

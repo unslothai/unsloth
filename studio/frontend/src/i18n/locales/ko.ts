@@ -5236,6 +5236,18 @@ export const ko = {
     flaggedIntro: "자동 검사기가 다음을 포함한 문제를 발견했습니다:",
     nothingFlagged:
       "자동 검사기가 우려되는 파일을 발견하지 않았지만, 한 번 더 확인하세요.",
+    unscannedTitle: "모델 파일을 스캔할 수 없습니다",
+    unscannedBody: "{model}에는 로드할 때 코드를 실행할 수 있는 pickle 가중치가 있고 사용할 수 있는 악성코드 스캔 결과가 없어 로드할 수 없습니다. {note}",
+    unscannedIntro: "스캔할 수 없는 파일:",
+    switchSourceNote: "설정에서 모델 소스를 Hugging Face로 전환하면 로드할 수 있습니다.",
+    reconnectNote: "스캔 결과를 읽을 수 있도록 Hugging Face에 연결한 후 다시 시도하세요.",
+    managedTitle: "이 계정에서는 사용자 지정 코드가 꺼져 있습니다",
+    managedNote: "관리형 계정에서는 꺼져 있습니다. 설치 소유자에게 활성화를 요청하세요.",
+    notFoundTitle: "{source}에서 찾을 수 없음",
+    notFoundBody: "{source}에서 {model}을(를) 찾을 수 없어 보안 검사를 실행하지 못했습니다. 이름을 확인하거나, 비공개 저장소라면 액세스 권한이 있는 토큰을 설정하세요.",
+    notOnModelScopeBody: "{model}은(는) ModelScope에서 사용할 수 없어 보안 검사를 실행하지 못했고 그곳에서 로드할 수도 없습니다. 설정에서 모델 소스를 Hugging Face로 전환하세요.",
+    checksFailedTitle: "보안 검사를 실행할 수 없습니다",
+    checksFailedBody: "{source}에서 {model}을(를) 읽지 못해 보안 검사를 완료할 수 없었으며 로드할 수 없습니다. 연결과 토큰을 확인한 후 다시 시도하세요. {note}",
     enableAndContinue: "사용 설정 후 계속",
   },
   tour: {

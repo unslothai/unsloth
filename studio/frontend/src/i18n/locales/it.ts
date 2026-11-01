@@ -5316,6 +5316,18 @@ export const it = {
     flaggedIntro: "Il nostro scanner automatico ha segnalato problemi tra cui:",
     nothingFlagged:
       "Il nostro scanner automatico non ha segnalato file preoccupanti, ma ti consigliamo di verificare comunque.",
+    unscannedTitle: "Impossibile analizzare i file del modello",
+    unscannedBody: "{model} include pesi pickle, che possono eseguire codice al caricamento, e per essi non è disponibile alcuna scansione antimalware, quindi non può essere caricato. {note}",
+    unscannedIntro: "File che non è stato possibile analizzare:",
+    switchSourceNote: "Imposta Hugging Face come origine dei modelli nelle Impostazioni per caricarlo.",
+    reconnectNote: "Connettiti a Hugging Face per poter leggere la scansione, poi riprova.",
+    managedTitle: "Il codice personalizzato è disattivato per questo account",
+    managedNote: "È disattivato per gli account gestiti. Chiedi al proprietario dell'installazione di attivarlo.",
+    notFoundTitle: "Non trovato su {source}",
+    notFoundBody: "{model} non è stato trovato su {source}, quindi non è stato possibile eseguire i controlli di sicurezza. Controlla il nome o imposta un token con accesso se il repository è privato.",
+    notOnModelScopeBody: "{model} non è disponibile su ModelScope, quindi non è stato possibile eseguire i controlli di sicurezza e non può essere caricato da lì. Imposta Hugging Face come origine dei modelli nelle Impostazioni per usarlo.",
+    checksFailedTitle: "Impossibile eseguire i controlli di sicurezza",
+    checksFailedBody: "Impossibile leggere {model} da {source}: i controlli di sicurezza non sono stati completati e non può essere caricato. Controlla la connessione e il token, poi riprova. {note}",
     enableAndContinue: "Abilita e continua",
   },
   tour: {

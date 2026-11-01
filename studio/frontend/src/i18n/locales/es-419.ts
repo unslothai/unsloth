@@ -5737,6 +5737,18 @@ export const es419 = {
       "Nuestro analizador automático detectó problemas, entre ellos:",
     nothingFlagged:
       "Nuestro analizador automático no detectó archivos preocupantes, pero verifícalo tú también.",
+    unscannedTitle: "No se pudieron analizar los archivos del modelo",
+    unscannedBody: "{model} incluye pesos pickle, que pueden ejecutar código al cargarse, y no hay ningún análisis de malware disponible para ellos, por lo que no se puede cargar. {note}",
+    unscannedIntro: "Archivos que no se pudieron analizar:",
+    switchSourceNote: "Cambia la fuente de modelos a Hugging Face en Configuración para cargarlo.",
+    reconnectNote: "Conéctate a Hugging Face para poder leer su análisis e inténtalo de nuevo.",
+    managedTitle: "El código personalizado está desactivado en esta cuenta",
+    managedNote: "Está desactivado en las cuentas administradas. Pídele al propietario de la instalación que lo active.",
+    notFoundTitle: "No se encontró en {source}",
+    notFoundBody: "{model} no se encontró en {source}, por lo que no se pudieron ejecutar sus comprobaciones de seguridad. Revisa el nombre o configura un token con acceso si el repositorio es privado.",
+    notOnModelScopeBody: "{model} no está disponible en ModelScope, por lo que no se pudieron ejecutar sus comprobaciones de seguridad y no se puede cargar desde allí. Cambia la fuente de modelos a Hugging Face en Configuración para usarlo.",
+    checksFailedTitle: "No se pudieron ejecutar las comprobaciones de seguridad",
+    checksFailedBody: "No se pudo leer {model} desde {source}, así que sus comprobaciones de seguridad no pudieron terminar y no se puede cargar. Revisa tu conexión y tu token e inténtalo de nuevo. {note}",
     enableAndContinue: "Activar y continuar",
   },
   tour: {

@@ -5700,6 +5700,18 @@ export const pl = {
     flaggedIntro: "Nasz automatyczny skaner wykrył problemy, w tym:",
     nothingFlagged:
       "Nasz automatyczny skaner nie wykrył niepokojących plików, ale sprawdź to jeszcze raz.",
+    unscannedTitle: "Nie można przeskanować plików modelu",
+    unscannedBody: "{model} zawiera wagi pickle, które mogą uruchamiać kod podczas ładowania, a skanowanie pod kątem złośliwego oprogramowania jest dla nich niedostępne, więc nie można go załadować. {note}",
+    unscannedIntro: "Pliki, których nie można przeskanować:",
+    switchSourceNote: "Zmień źródło modeli na Hugging Face w Ustawieniach, aby go załadować.",
+    reconnectNote: "Połącz się z Hugging Face, aby można było odczytać wynik skanowania, i spróbuj ponownie.",
+    managedTitle: "Kod niestandardowy jest wyłączony dla tego konta",
+    managedNote: "Jest wyłączony dla kont zarządzanych. Poproś właściciela instalacji o jego włączenie.",
+    notFoundTitle: "Nie znaleziono w {source}",
+    notFoundBody: "Nie znaleziono {model} w {source}, więc nie można było uruchomić kontroli bezpieczeństwa. Sprawdź nazwę lub ustaw token z dostępem, jeśli repozytorium jest prywatne.",
+    notOnModelScopeBody: "{model} nie jest dostępny w ModelScope, więc nie można było uruchomić kontroli bezpieczeństwa ani załadować go z tego źródła. Zmień źródło modeli na Hugging Face w Ustawieniach, aby go użyć.",
+    checksFailedTitle: "Nie można uruchomić kontroli bezpieczeństwa",
+    checksFailedBody: "Nie można odczytać {model} z {source}, więc nie udało się ukończyć kontroli bezpieczeństwa i nie można go załadować. Sprawdź połączenie i token, a następnie spróbuj ponownie. {note}",
     enableAndContinue: "Włącz i kontynuuj",
   },
   tour: {

@@ -5321,6 +5321,18 @@ export const de = {
     flaggedIntro: "Unser automatischer Scanner hat unter anderem folgende Probleme gefunden:",
     nothingFlagged:
       "Unser automatischer Scanner hat keine bedenklichen Dateien gefunden, aber bitte prüfen Sie es selbst noch einmal.",
+    unscannedTitle: "Modelldateien konnten nicht geprüft werden",
+    unscannedBody: "{model} enthält Pickle-Gewichte, die beim Laden Code ausführen können, und für sie ist kein Malware-Scan verfügbar. Das Modell kann daher nicht geladen werden. {note}",
+    unscannedIntro: "Dateien, die nicht geprüft werden konnten:",
+    switchSourceNote: "Wechsle in den Einstellungen die Modellquelle zu Hugging Face, um es zu laden.",
+    reconnectNote: "Stelle eine Verbindung zu Hugging Face her, damit der Scan gelesen werden kann, und versuche es erneut.",
+    managedTitle: "Benutzerdefinierter Code ist für dieses Konto deaktiviert",
+    managedNote: "Er ist für verwaltete Konten deaktiviert. Bitte den Besitzer der Installation, ihn zu aktivieren.",
+    notFoundTitle: "Nicht auf {source} gefunden",
+    notFoundBody: "{model} wurde auf {source} nicht gefunden, daher konnten die Sicherheitsprüfungen nicht laufen. Prüfe den Namen oder lege ein Token mit Zugriff fest, falls das Repository privat ist.",
+    notOnModelScopeBody: "{model} ist auf ModelScope nicht verfügbar, daher konnten die Sicherheitsprüfungen nicht laufen und es kann von dort nicht geladen werden. Wechsle in den Einstellungen die Modellquelle zu Hugging Face, um es zu verwenden.",
+    checksFailedTitle: "Sicherheitsprüfungen konnten nicht laufen",
+    checksFailedBody: "{model} konnte nicht von {source} gelesen werden. Die Sicherheitsprüfungen konnten daher nicht abgeschlossen werden und es kann nicht geladen werden. Prüfe deine Verbindung und dein Token und versuche es erneut. {note}",
     enableAndContinue: "Aktivieren und fortfahren",
   },
   tour: {

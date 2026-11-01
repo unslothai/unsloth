@@ -5653,6 +5653,18 @@ export const vi = {
       "Trình quét tự động của chúng tôi đã phát hiện các vấn đề, bao gồm:",
     nothingFlagged:
       "Trình quét tự động của chúng tôi không phát hiện tệp đáng lo ngại nào, nhưng vui lòng kiểm tra lại.",
+    unscannedTitle: "Không thể quét các tệp mô hình",
+    unscannedBody: "{model} có trọng số pickle, loại tệp có thể chạy mã khi tải, và không có kết quả quét phần mềm độc hại cho chúng nên không thể tải. {note}",
+    unscannedIntro: "Các tệp không thể quét:",
+    switchSourceNote: "Hãy chuyển nguồn mô hình sang Hugging Face trong Cài đặt để tải.",
+    reconnectNote: "Hãy kết nối với Hugging Face để đọc được kết quả quét, rồi thử lại.",
+    managedTitle: "Mã tùy chỉnh đã tắt cho tài khoản này",
+    managedNote: "Tính năng này bị tắt với tài khoản được quản lý. Hãy yêu cầu chủ sở hữu bản cài đặt bật nó.",
+    notFoundTitle: "Không tìm thấy trên {source}",
+    notFoundBody: "Không tìm thấy {model} trên {source} nên không thể chạy kiểm tra bảo mật. Hãy kiểm tra tên, hoặc đặt token có quyền truy cập nếu kho lưu trữ là riêng tư.",
+    notOnModelScopeBody: "{model} không có trên ModelScope nên không thể chạy kiểm tra bảo mật và không thể tải từ đó. Hãy chuyển nguồn mô hình sang Hugging Face trong Cài đặt để sử dụng.",
+    checksFailedTitle: "Không thể chạy kiểm tra bảo mật",
+    checksFailedBody: "Không thể đọc {model} từ {source} nên không thể hoàn tất kiểm tra bảo mật và không thể tải. Hãy kiểm tra kết nối và token rồi thử lại. {note}",
     enableAndContinue: "Bật và tiếp tục",
   },
   tour: {

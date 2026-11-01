@@ -5147,6 +5147,18 @@ export const zhCN = {
     flaggedIntro: "我们的自动扫描器标记了以下问题：",
     nothingFlagged:
       "我们的自动扫描器未标记任何可疑文件，但请再次确认。",
+    unscannedTitle: "无法扫描模型文件",
+    unscannedBody: "{model} 包含 pickle 权重,这类文件在加载时可能运行代码,而且没有可用的恶意软件扫描结果,因此无法加载。{note}",
+    unscannedIntro: "无法扫描的文件:",
+    switchSourceNote: "请在设置中将模型来源切换为 Hugging Face 后加载。",
+    reconnectNote: "请连接到 Hugging Face 以读取其扫描结果,然后重试。",
+    managedTitle: "此账户已关闭自定义代码",
+    managedNote: "托管账户已关闭此功能。请联系安装所有者启用。",
+    notFoundTitle: "在 {source} 上未找到",
+    notFoundBody: "在 {source} 上未找到 {model},因此无法运行安全检查。请检查名称;如果仓库是私有的,请设置有访问权限的令牌。",
+    notOnModelScopeBody: "{model} 在 ModelScope 上不可用,因此无法运行安全检查,也无法从该来源加载。请在设置中将模型来源切换为 Hugging Face 后使用。",
+    checksFailedTitle: "无法运行安全检查",
+    checksFailedBody: "无法从 {source} 读取 {model},因此安全检查未能完成,也无法加载。请检查网络连接和令牌后重试。{note}",
     enableAndContinue: "启用并继续",
   },
   tour: {
