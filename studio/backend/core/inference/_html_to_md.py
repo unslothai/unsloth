@@ -670,8 +670,7 @@ class _TitleButtonScan:
     def starttag(
         self, tag: str, attr_dict: dict, pos: tuple[int, int], hidden: bool, aria_heading: bool
     ) -> None:
-        """``hidden`` / ``aria_heading``: ``_is_hidden_element`` / ``_is_aria_heading`` of ``attr_dict``,
-        which the renderer computes once for both of them."""
+        """``hidden`` / ``aria_heading`` are the renderer's ``_is_hidden_element`` / ``_is_aria_heading`` results."""
         namespaces = self._namespaces
         if namespaces and namespaces[-1] != "html":
             self._prepare_foreign_html_start(tag, attr_dict)
@@ -943,7 +942,7 @@ class _MarkdownRenderer(HTMLParser):
         as_heading = (
             self._heading_marks and not in_nested_link and not self._replaying
         ) or self._emit_as_heading
-        # only a header frame measures text; clean() is pure, so pages outside frames skip it
+        # clean() is pure and only a header frame reads measured
         measured = (
             self._site_links.clean(text)
             if frame is not None and self._site_links is not None
@@ -1443,8 +1442,7 @@ class _MarkdownRenderer(HTMLParser):
         hidden: bool | None = None,
         aria_heading: bool | None = None,
     ) -> bool:
-        """track tag state; run ``_close_implicit`` first so skipped tags trigger recovery.
-        ``hidden`` / ``aria_heading`` are the precomputed attribute checks, or None to compute them."""
+        """track tag state; run ``_close_implicit`` first so skipped tags trigger recovery; None checks are computed here."""
         if hidden is None:
             hidden = _is_hidden_element(attr_dict)
         if tag not in _VOID_TAGS:
@@ -1513,7 +1511,6 @@ class _MarkdownRenderer(HTMLParser):
         if self._in_link and tag == "a" and self._heading_marks:
             self._finish_link()
         open_tags = self._open_tags
-        # the innermost open element of this name, found at C speed
         if tag not in _VOID_TAGS and tag in open_tags:
             i = len(open_tags) - 1 - open_tags[::-1].index(tag)
             self._truncate_open_tags(i)
@@ -1521,7 +1518,7 @@ class _MarkdownRenderer(HTMLParser):
                 self._hidden_marks.pop()
             while self._heading_marks and self._heading_marks[-1] >= i:
                 self._heading_marks.pop()
-            # _close_header_frames' own loop test: only a frame at or above i has anything to close
+            # _close_header_frames' own loop test
             if self._header_stack and self._header_stack[-1].depth >= i:
                 self._close_header_frames(i, own_tag = tag == "header")
         if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
@@ -1616,11 +1613,9 @@ class _MarkdownRenderer(HTMLParser):
             # HTMLParser builds a fresh attrs list per tag and nothing here mutates it, so it is kept uncopied
             self._record.append((0, (tag, attrs, self.lineno, self.offset)))
         tag = tag.lower()
-        # one dict and one pair of attribute checks serve the title scan and this pass
         attr_dict = dict(attrs)
         hidden = aria_heading = None
         if self._title_scan is not None:
-            # an element without attributes is never hidden and never an ARIA heading
             hidden = bool(attr_dict) and _is_hidden_element(attr_dict)
             aria_heading = bool(attr_dict) and _is_aria_heading(attr_dict)
             self._title_scan.starttag(tag, attr_dict, self.getpos(), hidden, aria_heading)
