@@ -291,3 +291,53 @@ def test_the_backend_plans_through_the_load_target(fam, monkeypatch):
     )
     assert backend._hosted_vae_plan_files(fam, "pipeline", BASE, None, None, False) == {}
     assert json.dumps(got)
+
+
+def test_an_anonymous_token_reaches_every_hub_call_as_false(fam, monkeypatch, tmp_path):
+    # token=None makes huggingface_hub send the cached login; False is the explicit anonymous request.
+    import huggingface_hub
+
+    seen = []
+
+    class _Api:
+        def __init__(self, token = None):
+            seen.append(("plan", token))
+
+        def get_paths_info(self, repo_id, paths):
+            return [types.SimpleNamespace(path = p, size = 1) for p in paths]
+
+    def _download(repo_id, filename, **kw):
+        seen.append((filename, kw.get("token", "omitted")))
+        if filename == "vae/config.json":
+            path = tmp_path / "config.json"
+            path.write_text(json.dumps({"_class_name": "AutoencoderKL"}))
+            return str(path)
+        raise RuntimeError("stop")
+
+    class _Vae:
+        @classmethod
+        def from_pretrained(cls, base, **kw):
+            seen.append(("dense", kw.get("token", "omitted")))
+            return object()
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download)
+    monkeypatch.setattr(diffusers, "AutoencoderKL", _Vae)
+    import core.inference.diffusion_te_prequant as tp
+
+    monkeypatch.setattr(tp, "te_prequant_mirror_path", lambda *a, **k: None)
+
+    assert hv.hosted_vae_plan_files(
+        fam, BASE, kind = "pipeline", dtype = torch.bfloat16, hf_token = False
+    )
+    out = hv.hosted_vae_pipe_kwargs(
+        fam,
+        BASE,
+        kind = "pipeline",
+        dtype = torch.bfloat16,
+        hf_token = False,
+        config_source = str(tmp_path / "missing"),
+        dense_staged = False,
+    )
+    assert "vae" in out
+    assert seen == [("plan", False), (FILE, False), ("vae/config.json", False), ("dense", False)]
