@@ -363,6 +363,54 @@ def _thinking_as_reasoning_content(tokenizer, conversation):
     ]
 
 
+def _render_with_empty_call_content(tokenizer, messages, tools_kwargs):
+    # Unsloth's qwen3 reads content unguarded; kept only if unique per-call probes render, as names may appear elsewhere.
+    from core.inference.chat_template_helpers import _normalize_tool_call_arguments
+
+    def is_null_call(message):
+        return isinstance(message, dict) and message.get("tool_calls") and message.get("content") is None
+
+    def filled(markers = None):
+        turns = []
+        for message in messages:
+            if not is_null_call(message):
+                turns.append(message)
+                continue
+            calls = message["tool_calls"]
+            if markers is not None:
+                calls = []
+                for call in message["tool_calls"]:
+                    markers.append(f"unslothname{len(markers)}end")
+                    markers.append(f"unslothcall{len(markers)}end")
+                    function = {**call["function"], "name": markers[-2]}
+                    function["arguments"] = json.dumps({"probe": markers[-1]})
+                    calls.append({**call, "function": function})
+            turns.append({**message, "content": "", "tool_calls": calls})
+        return turns
+
+    null_calls = [message for message in messages if is_null_call(message)]
+    if not null_calls or not all(
+        isinstance(message["tool_calls"], list)
+        and all(isinstance(call, dict) and isinstance(call.get("function"), dict) for call in message["tool_calls"])
+        for message in null_calls
+    ):
+        return None
+    markers = []
+    probe = filled(markers)
+    for normalize in (_normalize_tool_call_arguments, lambda turns: turns):
+        try:
+            shown = tokenizer.apply_chat_template(
+                normalize(probe), tokenize = False, add_generation_prompt = False, **tools_kwargs
+            )
+            if all(marker in shown for marker in markers):
+                return tokenizer.apply_chat_template(
+                    normalize(filled()), tokenize = False, add_generation_prompt = False, **tools_kwargs
+                )
+        except Exception:
+            continue
+    return None
+
+
 def _render_messages(tokenizer, conversation, tools = None, fallback_without_tools = True):
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
@@ -383,6 +431,9 @@ def _render_messages(tokenizer, conversation, tools = None, fallback_without_too
             # allow DeepSeek V3 None content; prefer cleaned errors when loaders add None keys.
             if first_error is None:
                 first_error = error
+    text = _render_with_empty_call_content(tokenizer, _drop_none_values(conversation), tools_kwargs)
+    if text is not None:
+        return text
     if tools and fallback_without_tools:
         return _render_messages(tokenizer, conversation)
     raise first_error
