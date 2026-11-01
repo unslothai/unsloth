@@ -195,7 +195,9 @@ def test_every_rowwise_scaled_mm_call_uses_the_out_dtype_helper():
             if kw.arg == "out_dtype":
                 out[node.lineno] = ast.unparse(kw.value)
     # The probes ask for bf16 / float32 directly; every activation-dtype call goes through the helper.
-    data_calls = {line: v for line, v in out.items() if v not in ("torch.bfloat16", "torch.float32")}
+    data_calls = {
+        line: v for line, v in out.items() if v not in ("torch.bfloat16", "torch.float32")
+    }
     assert len(data_calls) >= 2, out
     assert all(v.startswith("_scaled_mm_out_dtype(") for v in data_calls.values()), out
 
@@ -237,7 +239,9 @@ def test_float32_probe_asks_scaled_mm_for_float32(monkeypatch, cutlass):
     def fake_scaled_mm(a, b, scale_a, scale_b, out_dtype, **kwargs):
         seen.append((tuple(scale_a.shape), tuple(scale_b.shape), out_dtype))
         if cutlass and out_dtype == torch.float32:
-            raise ValueError("Only bf16 and fp16 high precision output types are supported for row-wise scaling.")
+            raise ValueError(
+                "Only bf16 and fp16 high precision output types are supported for row-wise scaling."
+            )
         return torch.full((a.shape[0], b.shape[1]), 128.0, dtype = out_dtype)
 
     monkeypatch.setattr(torch, "_scaled_mm", fake_scaled_mm)
