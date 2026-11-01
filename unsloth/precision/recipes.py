@@ -513,7 +513,8 @@ _add(
 )
 
 _FP8_LORA_RUNS = (
-    "Qwen3 LoRA r=16, seq 2048, bs 2, 30 steps, Unsloth GC, vs bf16 LoRA in the same Colab VM"
+    "Qwen3 LoRA r=16, seq 2048, bs 2, 200 steps on alpaca-cleaned, eval every 50 steps on 32 held-out "
+    "rows, 2 seeds, vs bf16 LoRA in the same Colab VM"
 )
 _add(
     Recipe(
@@ -532,10 +533,12 @@ _add(
             "sm80": _NO_FP8_HW,
             "sm89": Gate(
                 "explicit",
-                evidence = "L4, transposed cache on: step 1.13x bf16 at Qwen3-0.6B (3 seeds, A/A 0.9%), "
-                "1.27-1.29x at 1.7B (A/A 0.5-1.6%); cache off (default) 1.12x at 0.6B. Last-10 loss "
-                "+0.6-0.8% vs bf16 (seed band 0.04%), step-0 LoRA grad cosine 0.978 / 0.993; peak memory "
-                "+0.65 GB (0.6B, cache off) / +1.05 / +2.6 GB (0.6B / 1.7B, cache on). " + _FP8_LORA_RUNS,
+                evidence = "L4, 16-bit master in host RAM (default): step 1.15x bf16 at Qwen3-0.6B (A/A 1.0%), "
+                "1.30x at 1.7B (A/A 0.05%); peak memory -11% / -33% vs bf16 LoRA. Eval loss (fp8 forward) "
+                "+0.53-0.64% at 0.6B, +0.39-0.55% at 1.7B (bf16 seed band 0.03%); the trained adapter on the "
+                "exact 16-bit base +0.07-0.17%. Explicit, not named: the fp8-forward eval gap passes "
+                "jobs/compare.py (rtol 5%) but not the 0.5% bar at 0.6B. Saved and merged weights bitwise equal "
+                "to the checkpoint. " + _FP8_LORA_RUNS,
             ),
             "sm90": Gate("unprobed", "H100 is not available to test on"),
             "sm100": Gate("unprobed"),
@@ -574,10 +577,11 @@ _add(
             "sm100": Gate("unprobed"),
             "sm120": Gate(
                 "explicit",
-                evidence = "RTX PRO 6000, cache off (default): 1.13x at Qwen3-0.6B (3 seeds, A/A 0.9%), "
-                "1.155x at 1.7B (A/A 0.01%), peak memory +0.62 / +1.3 GB; cache on: 1.15x / 1.24x. Last-10 "
-                "loss +0.6-0.7% vs bf16, step-0 LoRA grad cosine 0.979; dgrad error 0.037 vs 0.059 "
-                "tensorwise. " + _FP8_LORA_RUNS,
+                evidence = "RTX PRO 6000, 16-bit master in host RAM (default): step 1.16x bf16 at Qwen3-0.6B "
+                "(A/A 0.02%), 1.22x at 1.7B (A/A 0.17%); peak memory -12% / -33% vs bf16 LoRA. Eval loss "
+                "(fp8 forward) +0.48-0.56% at 0.6B, +0.32-0.54% at 1.7B (bf16 seed band 0.02%); the trained "
+                "adapter on the exact 16-bit base +0.06-0.12%. Explicit, not named: the fp8-forward eval gap "
+                "passes jobs/compare.py (rtol 5%) but not the 0.5% bar at 0.6B. " + _FP8_LORA_RUNS,
             ),
             "rocm": Gate("refused", "ROCm fp8 (fnuz) GEMMs are not wired for the frozen base"),
         },
