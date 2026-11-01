@@ -215,6 +215,22 @@ def test_prose_naming_the_format_is_left_alone():
     assert _streamed(text) == text
 
 
+def test_a_backticked_block_tag_is_prose_and_a_real_block_after_it_still_runs():
+    from routes.inference import _strip_tool_xml_for_display
+    mention = "Using the `<minimax:tool_call>` format, closed by `</minimax:tool_call>`."
+    for text, shown, calls in (
+        (mention, mention, []),
+        (mention + "\n" + SEARCH, mention, [("web_search", {"query": "weather in Paris"})]),
+    ):
+        assert _calls(text) == calls
+        assert strip_tool_markup(text, final = True, enabled_tool_names = ENABLED) == shown
+        assert _streamed(text).strip() == shown
+        route = _strip_tool_xml_for_display(
+            text, auto_heal_tool_calls = True, enabled_tool_names = ENABLED
+        )
+        assert route.strip() == shown
+
+
 def test_a_pasted_block_opener_is_neutralized():
     assert "<minimax:tool_call>" not in neutralize_control_markup("a " + SEARCH + " b")
     assert "</minimax:tool_call>" not in neutralize_control_markup("a " + SEARCH + " b")
