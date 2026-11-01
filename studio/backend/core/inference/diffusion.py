@@ -3756,6 +3756,25 @@ def _wait_or_pause_bg_compile(bg: Any, state: Any, loras: Any, cancel: Any) -> A
         return None
     pipe = getattr(state, "pipe", None)
     if bg.yields() and not _has_active_lora(loras) and not getattr(pipe, "_unsloth_loras", ()):
+        if getattr(bg, "idle", False):
+            # Freeze only a resident denoiser: its eager forward moves no weight
+            freeze = getattr(state, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE
+            waited, paused = bg.pause(cancel, budget_s = 0.0, freeze = freeze)
+            if paused:
+                logger.info(
+                    "diffusion.bg_compile: render stopped the background compile in %.3f s (%s); it resumes "
+                    "once no render runs",
+                    waited,
+                    "frozen mid-trace"
+                    if getattr(bg, "_frozen", False)
+                    else "parked at a block boundary"
+                    if getattr(bg, "_parked", False)
+                    else "stops at its next Python call"
+                    if getattr(bg, "_freeze_ok", False)
+                    else "stops at the next block boundary",
+                )
+                return bg
+            return None
         budget = bg_compile.slice_seconds(getattr(pipe, "_unsloth_eager_render_s", None))
         waited, paused = bg.pause(cancel, budget_s = budget)
         if paused:
@@ -12236,9 +12255,58 @@ class DiffusionBackend:
                 )
             if load_token is not None:
                 self._raise_if_load_cancelled(load_token)
+        if not resident:
+            self._small_host_encoders_resident(pipe, decision, info, logger, load_token)
         mark(pipe, info)
         logger.info("diffusion.small_host: %s", info["components"])
         return self._small_host_plan(pipe, plan, fam, logger)
+
+    def _small_host_encoders_resident(
+        self,
+        pipe: Any,
+        decision: Any,
+        info: dict,
+        logger: Any,
+        load_token: Any = None,
+    ) -> None:
+        """Copy routed encoders' mmapped weights into host RAM if it fits; must run after the DiT is placed."""
+        from .diffusion_small_host import (
+            decide_encoder_resident,
+            materialize_streamed_encoder_,
+            streamed_encoder_mib,
+        )
+
+        cancel = None if load_token is None else (lambda: self._raise_if_load_cancelled(load_token))
+        for name in decision.storage_dtypes:
+            if not name.startswith("text_encoder"):
+                continue
+            module = getattr(pipe, name, None)
+            if module is None:
+                continue
+            try:
+                need = streamed_encoder_mib(module)
+            except Exception:  # noqa: BLE001 - an unsizeable encoder stays memory-mapped
+                continue
+            if need <= 0:
+                continue
+            total, available = host_ram_mib()
+            ok, why = decide_encoder_resident(
+                need,
+                host_total_mib = total,
+                host_available_mib = available,
+                host_commit_mib = host_commit_mib(),
+                int8_spill = bool(getattr(decision, "int8_spill", False)),
+            )
+            logger.info(
+                "diffusion.small_host: %s weights %s in host RAM (%s)",
+                name,
+                "copied" if ok else "stay memory-mapped",
+                why,
+            )
+            if not ok:
+                continue
+            mib = materialize_streamed_encoder_(module, cancel)
+            info["components"][name] = f"anonymous host RAM, layerwise cast ({mib} MiB)"
 
     def _small_host_plan(self, pipe: Any, plan: Any, fam: Any, logger: Any) -> Any:
         """Group offload, routed encoders streamed; the denoiser keeps what fits after the runtime reserve resident."""
@@ -12998,6 +13066,12 @@ class DiffusionBackend:
     def _engage_deferred_speed(self, state: _LoadState) -> None:
         """The deferred `default` profile plus its auto static skip; a failed profile takes the skip back off."""
         object.__setattr__(state, "speed_deferred", False)
+        if getattr(getattr(state, "pipe", None), "_unsloth_unet_streamed", False):
+            logger.info(
+                "diffusion.speed: deferred profile skipped (the UNet streams leaf by leaf; its weights must stay "
+                "under the offload hooks)"
+            )
+            return
         plan = state.deferred_static_plan
         object.__setattr__(state, "deferred_static_plan", None)
         tc = (state.resolved or {}).get("transformer_cache")

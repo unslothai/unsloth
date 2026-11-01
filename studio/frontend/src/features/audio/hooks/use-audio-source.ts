@@ -7,11 +7,13 @@ import {
 } from "@/features/chat/adapters/pcm-recorder";
 import { isMissingDeviceError } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import { ensureMicrophonePermission } from "@/features/microphone";
+import { loadUploadLimitSettings } from "@/features/settings";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { isTauri } from "@/lib/api-base";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { AudioApiError, fetchAudioBlob, uploadAudioInput } from "../api";
 import {
+  AUDIO_INPUT_MAX_BYTES,
   type AudioSourceSelection,
   selectionExpired,
   sourceFileUrl,
@@ -209,11 +211,18 @@ export function useAudioSource({
     async (file: File | Blob, name?: string) => {
       const fileName =
         name ?? ("name" in file && file.name ? file.name : "Recording");
-      const problem = audioFileProblem({
-        size: file.size,
-        type: file.type,
-        name: fileName,
-      });
+      // The server's cap follows the upload setting; the floor stands in until it answers.
+      const maxBytes = await loadUploadLimitSettings().then(
+        (settings) =>
+          settings.audioInputMaxBytes === undefined
+            ? AUDIO_INPUT_MAX_BYTES
+            : settings.audioInputMaxBytes,
+        () => AUDIO_INPUT_MAX_BYTES,
+      );
+      const problem = audioFileProblem(
+        { size: file.size, type: file.type, name: fileName },
+        maxBytes,
+      );
       if (problem) {
         dispatch({ type: "fail", message: problem });
         return;
