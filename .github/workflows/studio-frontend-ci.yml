@@ -525,8 +525,6 @@ jobs:
         timeout-minutes: 5
         run: python3 tests/studio/playwright_progressive_rows.py
 
-      # Render counts, not timings: a streamed token must not re-render the reply's source badges,
-      # and a run starting or ending must not re-render the tool cards of earlier replies.
       - name: Browser check for long-chat re-renders
         working-directory: ${{ github.workspace }}
         timeout-minutes: 5

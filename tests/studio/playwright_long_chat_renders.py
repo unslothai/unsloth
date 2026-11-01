@@ -87,7 +87,6 @@ def run(page) -> dict[str, int]:
     seeded = page.evaluate(
         '() => document.querySelectorAll(\'[data-role="assistant"] a[href^="https://example"]\').length'
     )
-    # Fails the run, not the bound, when the seed carries no sources to re-render.
     assert seeded > 0, "the seeded history shows no source badges"
     page.wait_for_timeout(500)
     page.evaluate("() => { window.__renders = {}; }")
@@ -138,7 +137,6 @@ def main() -> int:
             f"source badges re-rendered {badges} times over a {CHUNKS}-chunk stream: "
             f"a streamed token is re-rendering them"
         )
-        # The live reply has no python / terminal call; earlier replies' cards must stay put.
         assert cards <= 2, (
             f"python / terminal cards re-rendered {cards} times: the run start or end is "
             f"re-rendering every card in the history"
