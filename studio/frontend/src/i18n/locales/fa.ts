@@ -1881,7 +1881,7 @@ export const fa = {
         sttGroupAvailable: "موجود است",
         sttLoadedBadge: "بارگیری شد",
         sttEject: "خارج کردن",
-        sttEjectAndLoad: "Eject & Load",
+        sttEjectAndLoad: "خروج و بارگذاری",
         sttKeepAliveLabel: "در صورت عدم استفاده، مدل را تخلیه کنید",
         sttKeepAliveDescription: "حافظه آزاد به طور خودکار پس از دیکته بیکار می ماند.",
         sttKeepAliveMinutes: "{minutes} دقیقه",
