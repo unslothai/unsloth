@@ -6772,7 +6772,7 @@ html.force-reduced-motion .spooky-still :is(.spooky-spider, .spooky-bat) {
   background: color-mix(in srgb, var(--background) max(92%, calc((1 - var(--wallpaper-safe, 0)) * 100%)), transparent);
   backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
   /* An outline over the image instead of a drop shadow, through the composer's one shadow variable. */
-  --composer-shadow: inset 0 0 0 1px var(--border);
+  --composer-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) var(--wallpaper-outline, 30%), transparent);
   box-shadow: var(--composer-shadow);
 }
 .wallpaper-preview-prose { background: var(--background); }
