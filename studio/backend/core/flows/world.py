@@ -314,7 +314,7 @@ def normalize_world(
         # One side panel at a time: Mayor mode wins over Village Rivals (normalised above).
         world["city"] = city
         world.pop("rivals", None)
-    return WorldSpec.model_validate(world).model_dump(exclude_none=True)
+    return WorldSpec.model_validate(world).model_dump(exclude_none = True)
 
 
 TIMES_OF_DAY = ("dawn", "day", "dusk", "night")
@@ -483,7 +483,7 @@ def apply_play_view(
         n for n in doc.get("nodes") or [] if n["type"] == "world.play" and not n.get("disabled")
     ]
     fed = {e["target"] for e in doc.get("edges") or [] if source and e.get("source") == source}
-    players.sort(key=lambda n: (n["id"] != source, n["id"] not in fed))
+    players.sort(key = lambda n: (n["id"] != source, n["id"] not in fed))
     for n in players:
         p = n.get("params") or {}
         if p.get("view") in ("2d", "3d"):
@@ -1111,7 +1111,7 @@ def director_schema(state: dict) -> dict:
         )
     regions = [r.get("id") for r in world.get("regions") or []]
     if regions:
-        props["region"] = string_enum(regions, allow_empty=True)
+        props["region"] = string_enum(regions, allow_empty = True)
     return strict_schema({**DIRECTOR_SCHEMA, "properties": props})
 
 
@@ -1744,7 +1744,7 @@ def resolve_world_report(
                 extra.append(v)
     if extra:
         raw["npcs"] = list(raw.get("npcs") or []) + extra
-    world = normalize_world(raw, seed=int(raw.get("seed") or doc.get("seed") or 0))
+    world = normalize_world(raw, seed = int(raw.get("seed") or doc.get("seed") or 0))
     eps = dict(world.get("entry_points") or {})
     for n in doc.get("nodes") or []:
         name = WORLD_ENTRY_TYPES.get(n["type"])
@@ -1752,7 +1752,7 @@ def resolve_world_report(
             eps[name] = n["id"]
     world["entry_points"] = eps
     world = WorldSpec.model_validate(apply_play_view(world, doc, node_outputs, source)).model_dump(
-        exclude_none=True
+        exclude_none = True
     )
     reply = next((n for n in doc.get("nodes") or [] if n["id"] == eps.get("npc_reply")), None)
     if reply is not None and (reply.get("params") or {}).get("summarise") is False:
