@@ -20,7 +20,14 @@ interface ApiProviderLogoProps {
   title?: string;
 }
 
-const DARK_INVERT_LOGOS = new Set(["openai", "openai_codex", "ollama", "liquid", "typesafe"]);
+const DARK_INVERT_LOGOS = new Set([
+  "openai",
+  "openai_codex",
+  "ollama",
+  "liquid",
+  "typesafe",
+  "nace",
+]);
 // Pale brand marks get a hairline edge on light surfaces instead of inverting.
 const LIGHT_OUTLINE_LOGOS = new Set(["openrouter"]);
 

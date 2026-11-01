@@ -30,7 +30,7 @@ test("System One connections stay decision-only after a reload", async () => {
     models: ["jev-latest"], createdAt: 1, updatedAt: 1, ...providers.connectionApiFields("systemone") };
   providers.saveExternalProviders([decider]);
   assert.ok(providers.isDecisionConnection(providers.loadExternalProviders()[0]));
-  for (const providerType of ["typesafe", "liquid"]) {
+  for (const providerType of ["typesafe", "liquid", "nace"]) {
     assert.ok(providers.isDecisionConnection({ providerType }), providerType);
   }
   for (const apiType of ["chat_completions", "responses", undefined]) {

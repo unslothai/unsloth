@@ -358,7 +358,7 @@ export function ChatProvidersSettings({
     () => new Map(registry.map((entry) => [entry.provider_type, entry])),
     [registry],
   );
-  // Decision-only connections (TypeSafe, Liquid AI) sit last, below the menu's fold.
+  // Decision-only connections (TypeSafe, Liquid AI, Nace) sit last, below the menu's fold.
   const menuRegistry = useMemo(() => {
     const visible = registry.filter(
       (entry) => !HIDDEN_PROVIDER_TYPES.has(entry.provider_type),
