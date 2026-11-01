@@ -22,10 +22,16 @@ import { MenuTickIcon } from "@/lib/tick-icon";
 import { SettingsSection } from "@/features/settings/components/settings-section";
 // eslint-disable-next-line no-restricted-imports
 import { SettingsRow } from "@/features/settings/components/settings-row";
+// eslint-disable-next-line no-restricted-imports
+import { useTheme } from "@/features/settings/stores/theme-store";
 import { ChatBackground } from "./index";
 import {
 	DEFAULT_ADJUSTMENTS,
 	EFFECTS,
+	fadeKey,
+	visibilityKey,
+	MATERIALS,
+	type WindowMaterial,
 	IMAGE_SIZING,
 	type ImageSizing,
 	POSITIONS,
@@ -45,6 +51,8 @@ import {
 	useChatBackground,
 } from "./storage";
 import { canvasBlob, decodeImage } from "./image";
+import { useGlassStrength, useMaterialStore } from "./material";
+import { MATERIAL_LABELS } from "./material-labels";
 
 const labels: Record<BackgroundEffect, TranslationKey> = {
 	None: "chatBackground.none",
@@ -66,6 +74,103 @@ const sizingLabels: Record<ImageSizing, TranslationKey> = {
 	stretch: "chatBackground.stretch",
 	original: "chatBackground.original",
 };
+function GlassStyleRow() {
+	const t = useT();
+	const { style, setMaterial } = useMaterialStore();
+	const options = MATERIALS.filter((m) => m !== "solid");
+	return (
+		<SettingsRow
+			label={t("chatBackground.materialStyle")}
+		>
+			<Select
+				value={style}
+				onValueChange={(next) => setMaterial(next as WindowMaterial)}
+			>
+				<SelectTrigger
+					aria-label={t("chatBackground.materialStyle")}
+					className="w-52"
+				>
+					<SelectValue />
+				</SelectTrigger>
+				<SelectContent>
+					{options.map((m) => (
+						<SelectItem key={m} value={m}>
+							{t(MATERIAL_LABELS[m])}
+						</SelectItem>
+					))}
+				</SelectContent>
+			</Select>
+		</SettingsRow>
+	);
+}
+export function GlassControls() {
+	const t = useT();
+	const { material, setEnabled } = useMaterialStore();
+	const on = material !== "solid";
+	return (
+		<SettingsSection
+			title={t("chatBackground.glassTheme")}
+			action={
+				<Switch
+					aria-label={t("chatBackground.glassTheme")}
+					checked={on}
+					onCheckedChange={setEnabled}
+				/>
+			}
+		>
+			{on && (
+				<>
+					<GlassStyleRow />
+					<MaterialStrengthRow />
+					<MaterialMenusRow />
+				</>
+			)}
+		</SettingsSection>
+	);
+}
+function MaterialMenusRow() {
+	const t = useT();
+	const { material, menus, setMenus } = useMaterialStore();
+	const off = material === "solid";
+	return (
+		<SettingsRow
+			label={t("chatBackground.materialMenus")}
+			description={t("chatBackground.materialMenusDescription")}
+		>
+			<Switch
+				aria-label={t("chatBackground.materialMenus")}
+				checked={menus && !off}
+				disabled={off}
+				onCheckedChange={setMenus}
+			/>
+		</SettingsRow>
+	);
+}
+function MaterialStrengthRow() {
+	const t = useT();
+	const { material, setStrength } = useMaterialStore();
+	const strength = useGlassStrength();
+	const { resolved } = useTheme();
+	const off = material === "solid";
+	return (
+		<SettingsRow label={t("chatBackground.materialStrength")}>
+			<div className="flex w-52 items-center gap-3">
+				<Slider
+					disabled={off}
+					aria-label={t("chatBackground.materialStrength")}
+					min={0}
+					max={100}
+					step={1}
+					value={[strength]}
+					onValueChange={([v]) => setStrength(v, resolved)}
+				/>
+				<span className="w-12 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+					{strength}%
+				</span>
+			</div>
+		</SettingsRow>
+	);
+}
 const SLIDERS: {
 	key: "visibility" | "blur" | "zoom" | "outline";
 	label: TranslationKey;
@@ -90,6 +195,8 @@ export function ChatBackgroundControls() {
 	const { value, error, ready, busy } = useChatBackground();
 	const input = useRef<HTMLInputElement>(null);
 	const adjustments = value ?? DEFAULT_ADJUSTMENTS;
+	const { resolved } = useTheme();
+	const glass = useMaterialStore((s) => s.material !== "solid");
 	return (
 		<SettingsSection
 			title={t("chatBackground.title")}
@@ -364,8 +471,13 @@ export function ChatBackgroundControls() {
 							</PopoverContent>
 						</Popover>
 					</SettingsRow>
-					{SLIDERS.map(({ key, label, min, max, unit }) => (
-						<SettingsRow key={key} className="items-start" label={t(label)}>
+					{SLIDERS.map(({ key: slider, label, min, max, unit }) => {
+						const key =
+							slider === "visibility"
+								? visibilityKey(glass, resolved === "dark")
+								: slider;
+						return (
+							<SettingsRow key={slider} className="items-start" label={t(label)}>
 							<div className="flex w-52 items-center gap-3">
 								<Slider
 									disabled={!value || busy}
@@ -381,14 +493,15 @@ export function ChatBackgroundControls() {
 									{unit}
 								</span>
 							</div>
-						</SettingsRow>
-					))}
+							</SettingsRow>
+						);
+					})}
 					<SettingsRow label={t("chatBackground.fade")} className="items-start">
 						<Switch
 							aria-label={t("chatBackground.fade")}
-							checked={adjustments.fade}
+							checked={adjustments[fadeKey(glass)]}
 							disabled={!value || busy}
-							onCheckedChange={(fade) => patchBackground({ fade })}
+							onCheckedChange={(fade) => patchBackground({ [fadeKey(glass)]: fade })}
 						/>
 					</SettingsRow>
 				</>

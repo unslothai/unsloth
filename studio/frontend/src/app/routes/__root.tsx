@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ChatBackground } from "@/features/chat-background";
+import {
+  ChatBackground,
+  WindowMaterialMount,
+} from "@/features/chat-background";
 import { ImageViewer } from "@/components/image-viewer";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { LazyImportFailure } from "@/components/lazy-import-boundary";
@@ -702,6 +705,7 @@ function RootLayout() {
     <>
       <PersonalizationSyncMount />
       <InterfaceZoom />
+      <WindowMaterialMount />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <LowDiskNoticeMount />}
@@ -732,7 +736,7 @@ function RootLayout() {
           data-wallpaper-route={isChatRoute ? "chat" : "page"}
           className="relative !min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
-          <ChatBackground route={isChatRoute ? "chat" : "page"} />
+          <ChatBackground route={isChatRoute ? "chat" : "page"} backdrop />
           <AppSidebar />
           <SidebarEdgeTrigger />
           <SidebarInset
