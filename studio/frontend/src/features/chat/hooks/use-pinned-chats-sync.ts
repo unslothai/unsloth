@@ -9,6 +9,7 @@ import {
   AUTH_TOKEN_KEY,
   hasAuthToken,
 } from "@/features/auth";
+import { isBackendDownForDesktopUpdate } from "@/lib/desktop-update-activity";
 import {
   PIN_JOURNAL_PREFIX,
   discardUnboundPinEdits,
@@ -28,6 +29,8 @@ export function usePinnedChatsSync(): void {
   useEffect(() => {
     let sessionMark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
     const refresh = () => {
+      // The update screen stops the backend; the poll after it drops picks the pins back up.
+      if (isBackendDownForDesktopUpdate()) return;
       if (hasAuthToken() && document.visibilityState === "visible") {
         void loadRuntime()
           .then((sync) => {
