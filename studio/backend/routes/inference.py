@@ -48550,11 +48550,20 @@ def _stop_external_image_runs() -> bool:
     return bool(runs)
 
 
+def _decode_external_images(encoded: list) -> list:
+    from PIL import Image
+
+    images = []
+    for item in encoded:
+        image = Image.open(io.BytesIO(base64.b64decode(item)))
+        image.load()
+        images.append(image)
+    return images
+
+
 async def _external_image_generation(
     body: DiffusionGenerateRequest, request: Request
 ) -> DiffusionGenerateResponse:
-    from PIL import Image
-
     from core.inference import image_gallery
     from core.inference.llama_keepwarm import (
         untrack_current_media_request,
@@ -48672,11 +48681,8 @@ async def _external_image_generation(
                     raise
                 from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
                 raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG) from None
-            images = []
-            for item in encoded:
-                image = Image.open(io.BytesIO(base64.b64decode(item)))
-                image.load()
-                images.append(image)
+            # Decode blocks for tens of ms per image: off the loop, like the save below.
+            images = await asyncio.to_thread(_decode_external_images, encoded)
         except HTTPException:
             raise
         except httpx.HTTPStatusError as exc:
