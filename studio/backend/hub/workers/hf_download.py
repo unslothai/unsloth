@@ -14,6 +14,7 @@ import signal
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Union
 
@@ -319,32 +320,74 @@ def _landed_state(repo_dir: Path, commit: str) -> frozenset:
     return frozenset(state)
 
 
-def _pinned_snapshot_download(snapshot_download, commit, **kwargs):
+def _pinned_snapshot_download(
+    snapshot_download,
+    commit,
+    *,
+    expected_files = (),
+    **kwargs,
+):
     """``snapshot_download(**kwargs)`` at ``commit``. A failure before anything of ``commit`` lands puts refs/main
     back and reruns the unpinned call, keeping its offline fallback to the older snapshot (an unpinned download
     moves the ref only after the Hub answers)."""
     from hub.utils.snapshot_reuse import repo_cache_dir
+    from huggingface_hub.utils import WeakFileLock
+
+    if not isinstance(commit, str) or not _COMMIT_SHA.fullmatch(commit):
+        return snapshot_download(**kwargs)
 
     repo_type, repo_id = kwargs.get("repo_type") or "model", kwargs["repo_id"]
     repo_dir = repo_cache_dir(repo_type, repo_id)
     ref = repo_dir / "refs" / "main"
-    previous = _read_ref(ref)
-    pin = _pinned_revision(repo_type, repo_id, commit)
+    # Workers are separate processes. Keep coordination files outside refs/, which
+    # scan_cache_dir interprets as branch names; never hold the lock during transfer.
+    lock_dir = repo_dir.parent / ".locks" / repo_dir.name
+    lock_path = lock_dir / "studio-main.lock"
+    generation_path = lock_dir / "studio-main.generation"
+    try:
+        lock_dir.mkdir(parents = True, exist_ok = True)
+        with WeakFileLock(lock_path):
+            previous = _read_ref(ref)
+            generation = _read_ref(generation_path)
+            if previous != commit:
+                generation = uuid.uuid4().hex
+                _write_ref(generation_path, generation)
+            pin = _pinned_revision(repo_type, repo_id, commit)
+            before = None if previous == commit else _landed_state(repo_dir, commit)
+    except OSError as e:
+        print(
+            f"Could not coordinate refs/main for {repo_id} ({e}); downloading unpinned.",
+            file = sys.stderr,
+        )
+        return snapshot_download(**kwargs)
     if not pin:
         return snapshot_download(**kwargs)
-    before = None if previous == commit else _landed_state(repo_dir, commit)
     try:
         path = snapshot_download(**kwargs, **pin)
+        # Legacy Hub can return an existing, incomplete snapshot after a metadata error.
+        # Reuse may have created it before this call; verify inside the rollback boundary.
+        if expected_files:
+            from hub.utils.download_manifest import Manifest, verify_against_disk
+            manifest = Manifest(repo_type, repo_id, None, "", tuple(expected_files))
+            if not verify_against_disk(manifest, Path(path)).ok:
+                raise OSError(f"Pinned snapshot of {repo_id} is incomplete")
     except BaseException as e:
-        if before is None or _landed_state(repo_dir, commit) != before:
+        if before is None:
             raise
         try:
-            # Only our own write is undone: a peer may have moved the ref since.
-            if _read_ref(ref) == commit:
-                if previous is None:
-                    ref.unlink()
-                else:
-                    _write_ref(ref, previous)
+            with WeakFileLock(lock_path):
+                # A completed peer may have reused existing files, changing no sizes.
+                # Recheck both ownership and bytes under the same lock as publication.
+                if (
+                    _read_ref(generation_path) != generation
+                    or _landed_state(repo_dir, commit) != before
+                ):
+                    raise e
+                if _read_ref(ref) == commit:
+                    if previous is None:
+                        ref.unlink()
+                    else:
+                        _write_ref(ref, previous)
         except OSError:
             raise e
         if not isinstance(e, Exception):
@@ -355,9 +398,14 @@ def _pinned_snapshot_download(snapshot_download, commit, **kwargs):
             file = sys.stderr,
         )
         return snapshot_download(**kwargs)
-    # A concurrent variant download that failed early may have put back the ref this one or a peer replaced.
-    if _read_ref(ref) in (previous, None) or previous == commit:
-        _pinned_revision(repo_type, repo_id, commit)
+    with WeakFileLock(lock_path):
+        # Repair a rollback only within this publication's generation. A later
+        # revision or completion owns its ref even when this worker started on it.
+        if _read_ref(generation_path) == generation:
+            if _read_ref(ref) in (previous, None) or previous == commit:
+                _pinned_revision(repo_type, repo_id, commit)
+            if _read_ref(ref) == commit:
+                _write_ref(generation_path, uuid.uuid4().hex)
     return path
 
 
@@ -799,6 +847,7 @@ def _download_snapshot(
     snapshot_path = _pinned_snapshot_download(
         snapshot_download,
         getattr(info, "sha", None),
+        expected_files = expected_files,
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         ignore_patterns = ignore_patterns,
@@ -950,6 +999,7 @@ def _download_gguf_variant(
     snapshot_path = _pinned_snapshot_download(
         snapshot_download,
         None if metadata_unavailable else _RESOLVED_COMMITS.get(repo_id),
+        expected_files = expected_files,
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = targets,
@@ -1053,6 +1103,7 @@ def _download_scoped_snapshot(
     snapshot_path = _pinned_snapshot_download(
         snapshot_download,
         getattr(info, "sha", None),
+        expected_files = expected_files,
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = files,
