@@ -32,6 +32,11 @@ def _normalize_dtype(dtype, is_mlx):
     return dtype
 
 
+def _writes_activation_capture():
+    # Under torchrun every rank runs the CLI; only global rank 0 writes the shared log.
+    return int(os.environ.get("RANK", "0")) == 0
+
+
 def _prepare_device_map(is_mlx):
     if is_mlx:
         return None, False
@@ -218,6 +223,20 @@ def run(args):
 
     is_mlx = _is_mlx_backend(unsloth)
 
+    # Activation capture setup (optional)
+    capture_callback = None
+    if args.capture_activations:
+        if is_mlx:
+            # activation_capture imports torch and hooks torch modules; MLX has neither.
+            raise SystemExit("--capture_activations is not supported on the MLX backend.")
+        from unsloth.activation_capture import ActivationCaptureConfig
+        _capture_cfg = ActivationCaptureConfig(
+            output_dir = args.capture_output_dir,
+            capture_interval = args.capture_interval,
+            max_channels = args.capture_max_channels,
+        )
+        # Capture object is created after the model is loaded (see below)
+
     # MLX routes get_peft_model to FastMLXModel, which ignores use_dora (plain LoRA).
     if args.use_dora and is_mlx:
         raise NotImplementedError("DoRA is not supported for MLX training yet.")
@@ -290,12 +309,25 @@ def run(args):
             use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))
             if use_modelscope:
                 from modelscope import MsDataset
-                dataset = MsDataset.load(args.dataset, split = "train")
+                dataset = MsDataset.load(args.dataset, split = args.dataset_split)
             else:
-                dataset = load_dataset(args.dataset, split = "train")
+                dataset = load_dataset(args.dataset, split = args.dataset_split)
 
-            dataset = dataset.map(formatting_prompts_func, batched = True)
+            # Skip formatting when a 'text' column is already present
+            if "text" not in dataset.column_names:
+                dataset = dataset.map(formatting_prompts_func, batched = True)
         return dataset
+
+    # Attach activation capture now that model exists
+    if args.capture_activations and _writes_activation_capture():
+        from unsloth.activation_capture import ActivationCapture, ActivationCaptureCallback
+
+        capture = ActivationCapture(model, _capture_cfg)
+        capture_callback = ActivationCaptureCallback(capture)
+        print(
+            f"🦥 Unsloth: Activation capture enabled "
+            f"(every {args.capture_interval} steps → '{args.capture_output_dir}')"
+        )
 
     dataset = load_dataset_smart(args)
     print("Data is formatted and ready!")
@@ -304,14 +336,30 @@ def run(args):
     if distributed:
         training_args.ddp_find_unused_parameters = False
 
+    _callbacks = []
+    if capture_callback is not None:
+        _callbacks.append(capture_callback)
+
     trainer = SFTTrainer(
         model = model,
         processing_class = tokenizer,
         train_dataset = dataset,
         args = training_args,
+        callbacks = _callbacks if _callbacks else None,
     )
 
-    _train_with_legacy_save_control(trainer, is_mlx)
+    try:
+        _train_with_legacy_save_control(trainer, is_mlx)
+    finally:
+        # on_train_end never runs when training raises; leave no hooks on the model.
+        if capture_callback is not None:
+            capture_callback.capture.detach()
+
+    if args.capture_activations:
+        print(
+            f"\n🦥 Activation data saved to '{args.capture_output_dir}' "
+            f"(metadata.json + activation_log.jsonl, one JSON record per captured step)."
+        )
 
     _save_or_push_model_with_mlx_ddp(model, tokenizer, args, is_mlx, trainer)
 
@@ -348,6 +396,12 @@ if __name__ == "__main__":
         type = str,
         default = "yahma/alpaca-cleaned",
         help = "Huggingface dataset to use for training",
+    )
+    model_group.add_argument(
+        "--dataset_split",
+        type = str,
+        default = "train",
+        help = "Dataset split to use (default: train)",
     )
 
     lora_group = parser.add_argument_group(
@@ -599,6 +653,34 @@ if __name__ == "__main__":
         "--chunk_size", type = int, default = 2048, help = "Size of text chunks for training"
     )
     parser.add_argument("--stride", type = int, default = 512, help = "Overlap between chunks")
+
+    viz_group = parser.add_argument_group(
+        "🧠 Activation Visualization Options",
+        "Capture hidden-state statistics during training for visualization.",
+    )
+    viz_group.add_argument(
+        "--capture_activations",
+        action = "store_true",
+        help = "Enable neuron activation capture for visualization",
+    )
+    viz_group.add_argument(
+        "--capture_output_dir",
+        type = str,
+        default = "activation_logs",
+        help = "Directory to write activation_log.jsonl + metadata.json (default: activation_logs)",
+    )
+    viz_group.add_argument(
+        "--capture_interval",
+        type = int,
+        default = 10,
+        help = "Record activations every N optimizer steps (default: 10)",
+    )
+    viz_group.add_argument(
+        "--capture_max_channels",
+        type = int,
+        default = 64,
+        help = "Number of hidden-state channels tracked per layer (default: 64)",
+    )
 
     args = parser.parse_args()
     run(args)

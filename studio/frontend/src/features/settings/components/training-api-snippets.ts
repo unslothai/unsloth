@@ -100,6 +100,7 @@ export const TRAINING_FIELD_ROUTE: Record<keyof TrainingStartRequest, "openai" |
   wandb_project: "host",
   enable_tensorboard: "host",
   tensorboard_dir: "host",
+  enable_activation_capture: "host",
   resume_from_checkpoint: "host",
   drafter: "host",
 };

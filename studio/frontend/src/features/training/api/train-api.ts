@@ -415,3 +415,56 @@ export async function streamTrainingProgress(options: {
 }
 
 export { isAbortError };
+
+// ── Activation data ──────────────────────────────────────────────────────────
+
+// Counts over every hidden channel of one layer, cumulative from the run's first capture.
+export type ActivationLayerCoverage = {
+  channels: number;
+  dead: number;
+  constant: number;
+  outliers: number;
+  top_outliers: [number, number | null][];
+};
+
+export type ActivationRecord = {
+  step: number;
+  loss?: number;
+  layers: Record<string, { mean_abs: number[]; mean: number[] }>;
+  grad_norms?: Record<string, number>;
+  lora_norms?: Record<string, number>;
+  coverage?: Record<string, ActivationLayerCoverage>;
+};
+
+export type ActivationMetadata = {
+  model_name: string;
+  num_layers: number;
+  hidden_size: number;
+  captured_channels: number[];
+  capture_interval: number;
+  capture_gradients: boolean;
+  capture_lora_norms: boolean;
+  lora_targets?: string[];
+  pinned_channels?: number[];
+  full_coverage?: boolean;
+};
+
+export type ActivationData = {
+  metadata: ActivationMetadata | null;
+  records: ActivationRecord[];
+};
+
+export async function fetchActivations(
+  jobId?: string,
+  outputDir?: string,
+  sinceStep?: number,
+): Promise<ActivationData> {
+  const params = new URLSearchParams();
+  if (jobId) params.set("job_id", jobId);
+  if (outputDir) params.set("output_dir", outputDir);
+  if (sinceStep !== undefined) params.set("since_step", String(sinceStep));
+  const query = params.toString();
+  const url = query ? `/api/train/activations?${query}` : "/api/train/activations";
+  const response = await authFetch(url);
+  return parseJson<ActivationData>(response);
+}
