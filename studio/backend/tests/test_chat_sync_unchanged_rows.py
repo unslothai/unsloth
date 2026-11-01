@@ -125,7 +125,6 @@ def _ops(seed: int, steps: int) -> list[tuple]:
             ops.append(("upsert", copy.deepcopy(message)))
             continue
         for _ in range(rng.randrange(0, 3)):
-            # A parent other than the newest message is a new branch.
             parent = rng.choice([None, *sorted(client)]) if client else None
             message = _new_message(rng, index, parent)
             index += 1
@@ -334,7 +333,6 @@ def test_resending_unchanged_thread_writes_nothing(tmp_path, monkeypatch):
     assert hashed == []
     assert writes == []
 
-    # One edited and one new message: only those two are written and re-inventoried.
     edited = copy.deepcopy(messages)
     edited[5]["content"] = [{"type": "text", "text": "edited"}]
     new = _new_message(random.Random(1), 40, messages[-1]["id"])
