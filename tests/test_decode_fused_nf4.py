@@ -380,6 +380,22 @@ def test_refusal_after_rehoming_drops_captured_graphs(monkeypatch):
         assert isinstance(model.__dict__[D._PLAN], D._Refused)
 
 
+def test_whole_step_graph_capture_keeps_the_regular_path(monkeypatch):
+    # The whole-step capture's span / keep mask are read only by the regular attention path.
+    D = _driver()
+    monkeypatch.setattr(D._decode_graphs, "static", lambda: types.SimpleNamespace(span = 256))
+
+    def build(model, X):
+        raise AssertionError("fused plan built under a whole-step capture")
+
+    monkeypatch.setattr(D, "_build", build)
+    model = types.SimpleNamespace(
+        model = types.SimpleNamespace(layers = [types.SimpleNamespace(self_attn = 0)])
+    )
+    with torch.no_grad():
+        assert D._decode_forward(model, torch.zeros(1, 1, 8), *([None] * 6)) is None
+
+
 class _Lora:
     def __init__(self):
         self.disable_adapters, self.merged = False, False
