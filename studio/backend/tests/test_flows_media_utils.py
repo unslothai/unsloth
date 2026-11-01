@@ -299,3 +299,31 @@ def test_edit_video_constant_rate_keeps_every_frame_once():
         count = sum(1 for _ in src.decode(src.streams.video[0]))
         src.close()
         assert count == expected, (speed, count)
+
+
+def test_edit_video_keeps_every_picture_of_a_millisecond_timed_webm():
+    import av
+    import numpy as np
+
+    buf = io.BytesIO()
+    out = av.open(buf, mode = "w", format = "webm")
+    v = out.add_stream("libvpx", rate = 60)
+    v.width, v.height, v.pix_fmt = 64, 48, "yuv420p"
+    for i in range(12):
+        frame = av.VideoFrame.from_ndarray(
+            np.full((48, 64, 3), 10 + i * 20, dtype = np.uint8), format = "rgb24"
+        )
+        frame.pts = i
+        for packet in v.encode(frame):
+            out.mux(packet)
+    for packet in v.encode():
+        out.mux(packet)
+    out.close()
+    for speed, picks in ((1.0, range(12)), (2.0, range(0, 12, 2))):
+        src = av.open(io.BytesIO(mu.edit_video(buf.getvalue(), speed = speed)))
+        shown = [
+            round((int(f.to_ndarray(format = "rgb24")[10, 10, 0]) - 10) / 20)
+            for f in src.decode(src.streams.video[0])
+        ]
+        src.close()
+        assert shown == list(picks), (speed, shown)

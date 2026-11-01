@@ -204,7 +204,8 @@ def edit_video(
     # base + n * speed / rate, sample and hold), so variable-frame-rate footage keeps its pacing.
     kept = emitted = decoded = 0
     step = speed / float(rate)
-    slack = 0.01 / float(rate)
+    # Half a step: millisecond-rounded timestamps (WebM) would otherwise land a frame on the wrong grid point.
+    slack = min(step, 1.0 / float(rate)) / 2
     base = held = held_t = None
     frame_s = 1.0 / float(rate)
 
