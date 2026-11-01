@@ -1761,7 +1761,6 @@ class ExportBackend:
                             if written is None and not (
                                 is_compressed or is_torchao or save_dir_was_empty
                             ):
-                                # Untracked, so upload from a clean staged second save
                                 upload_dir = stack.enter_context(
                                     _staging_dir(Path(output_path).parent)
                                 )
@@ -1928,7 +1927,6 @@ class ExportBackend:
                         # A reused folder can hold leftovers: upload only what this save wrote
                         written = reused_writes.written() if reused_writes else None
                         if save_directory and not save_dir_was_empty and written is None:
-                            # Untracked, so upload from a clean staged second save
                             upload_dir = stack.enter_context(
                                 _staging_dir(Path(save_directory).parent)
                             )
