@@ -7200,13 +7200,13 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
 /* The layer brings its own blur and tint. A host keeping its backdrop-filter would be a backdrop root,
    and the layer's refraction would then see only the host, not the page; !important beats the glass
    rules above, which are far more specific. */
-:is(.unsloth-composer-surface, [data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"]):has(> .unsloth-liquid-layer) {
+:is(.unsloth-composer-surface, [data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"]):has(> .unsloth-liquid-layer) {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
   background-color: transparent !important;
   background-image: none !important;
   isolation: isolate;
 }
-:is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"]):has(> .unsloth-liquid-layer) {
+:is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"]):has(> .unsloth-liquid-layer) {
   position: relative;
 }

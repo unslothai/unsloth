@@ -148,3 +148,10 @@ test("the lens refreshes its tint when the composer's fill changes", () => {
 	// Glass strength or style change the fill without resizing anything; the cache key must see it.
 	assert.match(lens, /opacity,\n\s*fill\.backgroundColor,\n\s*fill\.backgroundImage,\n\s*\]\.join\(\)/);
 });
+
+test("popovers, which scroll their own box, keep the CSS glass instead of a refraction layer", () => {
+	const layer = readFileSync(new URL("../src/features/chat-background/liquid-glass.tsx", import.meta.url), "utf8");
+	const hosts = /const MENUS =\s*'([^']+)'/.exec(layer)?.[1] ?? "";
+	assert.ok(hosts.includes("select-content"));
+	assert.doesNotMatch(hosts, /popover-content/);
+});

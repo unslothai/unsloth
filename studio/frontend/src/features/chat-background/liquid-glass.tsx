@@ -88,8 +88,9 @@ export function LiquidGlassLayer({
   );
 }
 
+// Not popovers: they scroll their own box, which would carry this absolute layer out of view.
 const MENUS =
-  '[data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"]';
+  '[data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"]';
 
 /** Liquid Glass layers for open menus, which Radix portals straight into <body>. */
 export function GlassMenuLayers({ active }: { active: boolean }) {
