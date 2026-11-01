@@ -52,10 +52,11 @@ export const rehypeAutoDirection: Plugin<[], Root> =
           if (TEXT_BLOCKS.has(node.tagName)) {
             node.properties.dir = "auto";
           } else if (CONTAINERS.has(node.tagName)) {
-            // Lists carry the marker padding, so they flip with their text.
+            // Lists carry the marker padding, so they flip with their text. Explicit ltr too, or an
+            // English list nested in an RTL one would inherit rtl.
             const letter = firstLetter(node);
-            if (letter && RTL_LETTER.test(letter)) {
-              node.properties.dir = "rtl";
+            if (letter) {
+              node.properties.dir = RTL_LETTER.test(letter) ? "rtl" : "ltr";
             }
           }
         }

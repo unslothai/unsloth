@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -37,7 +38,24 @@ test("lists and quotes flip only when their text starts right to left", () => {
     assert.match(rtl, new RegExp(`<${tag}[^>]* dir="rtl"`), tag);
   }
   const ltr = render("- `کد` item\n\n> quote سلام");
-  assert.doesNotMatch(ltr, /<(ul|blockquote)[^>]* dir=/);
+  assert.match(ltr, /<ul[^>]* dir="ltr"/);
+  assert.match(ltr, /<blockquote[^>]* dir="ltr"/);
+});
+
+test("an English list nested in an RTL list stays left to right", () => {
+  const html = render("- سلام\n  - English item.");
+  assert.match(html, /<ul[^>]* dir="rtl"[\s\S]*<ul[^>]* dir="ltr"/);
+});
+
+test("code is pinned LTR in the stylesheet", () => {
+  const css = readFileSync(
+    new URL("../src/index.css", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    css,
+    /\[data-streamdown="code-block"\], \[data-streamdown="inline-code"\][^{]*\{\s*direction: ltr;\s*unicode-bidi: isolate;/,
+  );
 });
 
 test("code keeps its own direction", () => {
