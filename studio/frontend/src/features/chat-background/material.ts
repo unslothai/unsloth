@@ -24,7 +24,6 @@ import {
 
 export const MATERIAL_STORAGE_KEY = "unsloth_window_material";
 
-/** Per device, not synced: the macOS material means nothing in another browser. */
 const guardedLocalStorage: StateStorage = {
   getItem: (name) => {
     try {
@@ -146,7 +145,6 @@ export function WindowMaterialMount() {
   const menus = useMaterialStore((s) => s.menus);
   const strength = useGlassStrength();
   useEffect(() => {
-    // 0-100 onto multipliers, 1x at 50, applied after the readability floors so the setting always shows.
     const root = document.documentElement;
     const blur =
       strength <= 50 ? 0.2 + (0.8 * strength) / 50 : 1 + (strength - 50) / 50;
@@ -161,7 +159,6 @@ export function WindowMaterialMount() {
     }
   }, [strength, material]);
   useEffect(() => {
-    // The menu rules also require data-glass, so a refused macOS material leaves menus solid.
     document.documentElement.toggleAttribute(
       "data-glass-menus",
       menus && material !== "solid",
