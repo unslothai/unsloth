@@ -24,11 +24,15 @@ export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
 }
 
+// Whether `n` in `unit`s prints as 1000.0 at one decimal, so it belongs to the next unit.
+const roundsToNextUnit = (n: number, unit: number): boolean =>
+  Number((n / unit).toFixed(1)) >= 1000;
+
 export function formatCompact(n: number): string {
-  if (n >= 1_000_000_000) {
+  if (n >= 1_000_000_000 || roundsToNextUnit(n, 1_000_000)) {
     return `${(n / 1_000_000_000).toFixed(1)}B`;
   }
-  if (n >= 1_000_000) {
+  if (n >= 1_000_000 || roundsToNextUnit(n, 1_000)) {
     return `${(n / 1_000_000).toFixed(1)}M`;
   }
   if (n >= 1_000) {
