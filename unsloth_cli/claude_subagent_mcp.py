@@ -119,7 +119,6 @@ def _result_text(stdout: str) -> str:
         denied = _denials(payload)
         if not denied:
             return text
-        # Headless Claude denies anything that would prompt and still exits 0.
         listed = "\n".join(
             f"- {tool}: {detail}" if detail else f"- {tool}" for tool, detail in denied
         )
