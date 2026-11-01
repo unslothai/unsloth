@@ -398,13 +398,12 @@ def _image_covers_a_corner(doc, number: int) -> bool:
 
 # PyMuPDF releases whose lines_strict table finder _no_lined_table_possible was checked against.
 _TABLE_GUARD_PYMUPDF = ("1.27.2.3", "1.28.2")
-_TABLE_SNAP = 3  # pymupdf.table.DEFAULT_SNAP_TOLERANCE, the snap_x/snap_y fallback
-_TABLE_GUARD_MAX_RECTS = 1000  # past this, grouping costs more than it can save
+_TABLE_SNAP = 3  # pymupdf.table.DEFAULT_SNAP_TOLERANCE
+_TABLE_GUARD_MAX_RECTS = 1000
 
 
 def _table_guard_enabled(pymupdf4llm) -> bool:
-    """True for the legacy pymupdf4llm path on a checked PyMuPDF without the layout
-    analyzer, where find_tables only sees vector line art."""
+    """Legacy pymupdf4llm on a checked PyMuPDF, no layout analyzer."""
     try:
         import inspect
 
@@ -424,8 +423,7 @@ def _table_guard_enabled(pymupdf4llm) -> bool:
 
 
 def _graphics_bboxes(rects: list) -> list:
-    """The clusters pymupdf.table.make_edges outlines with border lines (its clean_graphics,
-    before the has-text check); kept operation for operation so the boxes match exactly."""
+    """make_edges' clean_graphics clusters (before its has-text check), copied verbatim."""
     import fitz
 
     snap_x = snap_y = _TABLE_SNAP
@@ -464,15 +462,9 @@ def _graphics_bboxes(rects: list) -> list:
 
 
 def _no_lined_table_possible(page) -> bool:
-    """True when pymupdf4llm's find_tables(strategy="lines_strict") provably yields no table
-    it keeps (2+ rows and 2+ columns), so skipping it leaves the page's Markdown unchanged.
-
-    Such a table has cells at 2+ distinct x0 and 2+ distinct tops, so its intersections sit
-    on 3+ vertical and 3+ horizontal merged edges, each from a base edge of length >= 1.
-    lines_strict builds base edges only from the page's line art: the l/re/qu items of every
-    path that is not a large fill, plus the border of each cluster of those paths. Counting
-    each candidate line once per orientation it could take is an upper bound; below 3 in
-    either orientation, no table survives. Unrotated pages only (find_tables derotates)."""
+    """True when find_tables(strategy="lines_strict") provably keeps no 2x2+ table: that needs
+    3+ vertical and 3+ horizontal base edges (length >= 1) from l/re/qu items of non-large-fill
+    paths plus cluster borders; this counts an upper bound of each."""
     if page.rotation != 0:
         return False
     v = h = 0
@@ -487,7 +479,6 @@ def _no_lined_table_possible(page) -> bool:
     rects = []
     for path in page.get_cdrawings():
         x0, y0, x1, y1 = path["rect"]
-        # make_edges drops fill-only paths wider and taller than the snap tolerance.
         if path["type"] == "f" and x1 - x0 > _TABLE_SNAP and y1 - y0 > _TABLE_SNAP:
             continue
         rects.append(path["rect"])
@@ -527,10 +518,9 @@ def _skips_table_search(doc, number: int) -> bool:
 
 
 def _pdf_markdown_skipping_tables(pymupdf4llm, doc, indices, calls, kwargs) -> list | None:
-    """Runs the same to_markdown calls as the plain path, each split into pages that need the
-    table search and pages where it provably finds nothing (table_strategy=None). Both halves
-    share the header table the single call would build, from the same document state."""
-    # to_markdown bakes forms and annotations first; bake now so the guard sees the same page.
+    """The plain path's to_markdown calls, each split into table-search and no-search pages
+    sharing one header table."""
+    # Bake as to_markdown would, so the guard sees the same page.
     if doc.is_form_pdf or (doc.is_pdf and doc.has_annots()):
         doc.bake()
     by_page = {}
