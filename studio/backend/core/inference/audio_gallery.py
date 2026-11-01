@@ -316,18 +316,16 @@ def _clip_wavs(directory: Path) -> list[Path]:
     return [p for p in directory.glob("*.wav") if _ID_RE.match(p.stem)]
 
 
-# Path.glob matches case-insensitively on Windows only, on every supported Python.
+# Path.glob folds case on Windows only.
 _GLOB_FOLDS_CASE = os.name == "nt"
 
 
 def _clip_mtimes(directory: Path) -> list[tuple[str, float]]:
-    """(stem, mtime) of each entry _clip_wavs lists, with the mtime _mtime would read, from one
-    scandir pass instead of a Path per entry and a second stat."""
+    """(stem, mtime) for each entry _clip_wavs lists, from one scandir pass."""
     found: list[tuple[str, float]] = []
     try:
         entries = os.scandir(directory)
     except OSError:
-        # Path.glob lists an unreadable or missing folder as empty.
         return found
     with entries:
         try:
@@ -344,7 +342,7 @@ def _clip_mtimes(directory: Path) -> list[tuple[str, float]]:
                     mtime = 0.0
                 found.append((stem, mtime))
         except OSError:
-            # Path.glob read the folder in one go and listed a failed read as empty.
+            # Path.glob lists a folder whose read fails part way as empty.
             return []
     return found
 
@@ -398,8 +396,7 @@ def _parse_meta(raw: str) -> Optional[dict[str, Any]]:
     return meta
 
 
-# Sidecar text the listing read, by path, while the file keeps the identity it had then. Text, not
-# the parsed dict: every call decodes its own copy, so no caller can change what the next one gets.
+# Raw text, not dicts, so a caller mutating a record cannot change the next listing.
 _SIDECAR_CACHE_MAX = 8192
 _SIDECAR_CACHE_ITEM_MAX = 64 * 1024
 _SIDECAR_CACHE_BUDGET = 16 * 1024 * 1024
@@ -415,8 +412,7 @@ def _listed_meta(sidecar: Path) -> Optional[dict[str, Any]]:
         info = os.stat(sidecar)
     except OSError:
         return _read_meta(sidecar)
-    # A write moves mtime or ctime and os.replace the inode, so a key that agrees means the same
-    # bytes. Taken before the read: a write in between leaves a key that no longer agrees.
+    # Stat before the read: a write in between leaves a key that no longer matches.
     key = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
     name = str(sidecar)
     with _sidecar_cache_lock:
@@ -431,7 +427,6 @@ def _listed_meta(sidecar: Path) -> Optional[dict[str, Any]]:
     try:
         raw = sidecar.read_text(encoding = "utf-8")
     except (OSError, UnicodeError):
-        # Never kept: a read that may go through next time is tried again, as before.
         return None
     if len(raw) <= _SIDECAR_CACHE_ITEM_MAX:
         with _sidecar_cache_lock:
@@ -507,10 +502,9 @@ def _list_audio_entries(
         directory = gallery_dir()
     clips = _clip_mtimes(directory)
     flags = gallery_flags.read(directory)
-    # The sort's own stat is the record's mtime, so order_at is the position it was listed at.
     unpinned = float("-inf")
     keyed = [
-        # A clip with no flags entry is unpinned, undragged and active, as the lookups would say.
+        # No flags entry: unpinned, undragged, active.
         ((unpinned, mtime, stem), mtime)
         if stem not in flags
         else (

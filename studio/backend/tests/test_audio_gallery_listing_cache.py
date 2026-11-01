@@ -157,7 +157,6 @@ def test_unreadable_sidecar_is_not_kept(monkeypatch):
 def test_order_cursor_and_flags_match_a_fresh_read():
     directory = gallery.gallery_dir()
     for i in range(12):
-        # ties on mtime are broken by id, as before
         _clip(directory, f"c{i:02d}", 1_700_000_000 + (i // 3))
     _clip(directory, "orphan", 1_700_000_100, meta = False)
     (directory / "not an id.wav").write_bytes(b"x")
@@ -174,7 +173,6 @@ def test_order_cursor_and_flags_match_a_fresh_read():
             assert record["id"] == cursor[2]
     ids = [r["id"] for r, _ in gallery.list_audio_page(50)]
     assert ids[0] == "c03" and ids[1] == "c00" and "c07" not in ids and "orphan" not in ids
-    # A cursor walk returns every clip once, in listing order.
     walked, cursor = [], None
     while True:
         page = gallery.list_audio_page(4, before = cursor)
