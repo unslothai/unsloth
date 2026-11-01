@@ -116,7 +116,8 @@ def test_scalar_image_can_still_fill_repeated_markers():
 
 
 @pytest.mark.parametrize(
-    "images, text", [(0, "<image>"), (1, "<image><image>"), (2, "<image>"), (1, "No marker")]
+    "images, text",
+    [(0, "<image>"), (0, "No marker"), (1, "<image><image>"), (2, "<image>"), (1, "No marker")],
 )
 def test_mismatched_image_lists_skip_only_the_bad_row(images, text):
     rows = [

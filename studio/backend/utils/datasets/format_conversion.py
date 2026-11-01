@@ -946,7 +946,7 @@ def convert_sharegpt_with_images_to_vlm_format(
                 (msg.get("value") or msg.get("content") or "").count("<image>")
                 for msg in conversation
             )
-            if len(image_data) != marker_count:
+            if not image_data or len(image_data) != marker_count:
                 raise ValueError(
                     f"Image list has {len(image_data)} images but conversation has "
                     f"{marker_count} <image> placeholders"
