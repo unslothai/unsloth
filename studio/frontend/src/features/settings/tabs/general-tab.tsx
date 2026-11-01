@@ -125,6 +125,8 @@ const PREFS_KEYS: string[] = [
   "theme",
   "palette",
   "unsloth_appearance_customization",
+  // Glass theme (chat-background/material.ts).
+  "unsloth_window_material",
   INTERFACE_SCALE_STORAGE_KEY,
   LOCALE_STORAGE_KEY,
   SPELLCHECK_STORAGE_KEY,

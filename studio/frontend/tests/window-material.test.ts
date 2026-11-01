@@ -103,3 +103,11 @@ test("glass panes thicken over images that would wash out their text", async () 
 	assert.match(css, /var\(--glass-sidebar-fill\) min\(96%, calc\(max\(var\(--glass-tint\), var\(--glass-pane-floor\)\) \* var\(--glass-opacity, 1\)\)\)/);
 	assert.match(css, /var\(--glass-panel-fill\) min\(96%, calc\(max\(var\(--glass-tint\), var\(--glass-pane-floor\)\) \* var\(--glass-opacity, 1\)\)\)/);
 });
+
+test("resetting local preferences also resets the glass theme", () => {
+	const tab = readFileSync(new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url), "utf8");
+	const material = readFileSync(new URL("../src/features/chat-background/material.ts", import.meta.url), "utf8");
+	const key = /MATERIAL_STORAGE_KEY = "([^"]+)"/.exec(material)?.[1];
+	assert.ok(key);
+	assert.ok(tab.includes(`"${key}",`));
+});
