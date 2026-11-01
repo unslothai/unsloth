@@ -284,7 +284,7 @@ function useStackedLayout(): boolean {
     () => window.matchMedia(query).matches,
     () => false,
   );
-  return width > 960 || narrow;
+  return width > 1000 || narrow;
 }
 
 export function SettingsDialog() {
@@ -481,14 +481,14 @@ export function SettingsDialog() {
             }
           }}
           className={cn(
-            "settings-surface !max-w-[min(960px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
+            "settings-surface !max-w-[min(1000px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(1000px,calc(100vw-2rem))] p-0 overflow-hidden",
             // Soft shadow, no outline ring.
             "shadow-border rounded-3xl ring-0",
             // Same chrome-subtracted height the shared DialogContent uses at this
             // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
             // (and its overflow-hidden bottom edge) below the window. 0px on web.
             "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
-            "4xl:w-[min(1120px,calc(100vw-2rem))] 4xl:!max-w-[min(1120px,calc(100vw-2rem))] 4xl:h-[min(940px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
+            "4xl:w-[min(1160px,calc(100vw-2rem))] 4xl:!max-w-[min(1160px,calc(100vw-2rem))] 4xl:h-[min(940px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
           )}
         >
           <DialogTitle className="sr-only">
@@ -505,7 +505,7 @@ export function SettingsDialog() {
                 page fill, so both track the active palette. */}
             <aside
               className={cn(
-                "font-heading flex w-[min(calc(248px*var(--ui-space-scale,1)),50%)] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 group-data-stacked/settings:w-full group-data-stacked/settings:border-r-0 group-data-stacked/settings:border-b group-data-stacked/settings:border-sidebar-border",
+                "font-heading flex w-[min(calc(248px*var(--ui-space-scale,1)),50%)] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground px-2 py-2 dark:border-r-0 group-data-stacked/settings:w-full group-data-stacked/settings:border-r-0 group-data-stacked/settings:border-b group-data-stacked/settings:border-sidebar-border",
                 !stacked && "md:max-lg:w-[min(calc(208px*var(--ui-space-scale,1)),50%)]",
               )}
             >
@@ -672,7 +672,7 @@ export function SettingsDialog() {
                 </button>
                 <div
                   ref={mainScrollRef}
-                  className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
+                  className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-7 py-6 [scrollbar-gutter:stable]"
                 >
                   {/* Only a panel's first view waits, so the fallback is delayed and a
                       promptly arriving panel never flashes it. */}

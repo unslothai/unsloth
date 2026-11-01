@@ -6839,6 +6839,11 @@ export function AppSidebar() {
                     >
                       <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} className="size-icon" />
                       <span>{t(tab.labelKey)}</span>
+                      {settingsTabId === "appearance" && (
+                        <Badge variant="accent" className="-my-0.5 ml-auto">
+                          {t("shell.navigation.newBadge")}
+                        </Badge>
+                      )}
                     </DropdownMenuItem>
                   );
                 })}

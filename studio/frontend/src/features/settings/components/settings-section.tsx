@@ -5,6 +5,20 @@ import type { ReactNode, Ref } from "react";
 
 import { cn } from "@/lib/utils";
 
+function SectionHeading({ title, badge }: { title: string; badge?: ReactNode }) {
+  return (
+    <h2
+      className={cn(
+        "settings-heading text-base font-semibold font-heading",
+        badge && "flex items-center gap-2",
+      )}
+    >
+      {title}
+      {badge}
+    </h2>
+  );
+}
+
 export function SettingsSection({
   title,
   description,
@@ -14,8 +28,11 @@ export function SettingsSection({
   action,
   actionAlign,
   danger = false,
+  badge,
 }: {
   title: string;
+  /** Tag beside the heading text, e.g. New. */
+  badge?: ReactNode;
   /** Control shown beside the heading, e.g. Refresh. */
   action?: ReactNode;
   /** Align an action’s top edge with the heading’s visible text. */
@@ -45,9 +62,7 @@ export function SettingsSection({
                 description || actionAlign === "text" ? "items-start" : "items-center",
               )}
             >
-              <h2 className="settings-heading text-base font-semibold font-heading">
-                {title}
-              </h2>
+              <SectionHeading title={title} badge={badge} />
               {description || actionAlign === "text" ? (
                 // Top edge on the h2's cap top (text-base at leading 1.5; Hellix: 0.372em).
                 <div
@@ -63,9 +78,7 @@ export function SettingsSection({
               )}
             </div>
           ) : (
-            <h2 className="settings-heading text-base font-semibold font-heading">
-              {title}
-            </h2>
+            <SectionHeading title={title} badge={badge} />
           )}
           {description ? (
             <p className="text-xs text-muted-foreground leading-relaxed">

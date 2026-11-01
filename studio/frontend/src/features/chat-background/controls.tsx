@@ -2,6 +2,7 @@
 import { useRef } from "react";
 import { Cancel01Icon, Upload01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
 	Select,
@@ -82,6 +83,7 @@ export function ChatBackgroundControls() {
 	return (
 		<SettingsSection
 			title={t("chatBackground.title")}
+			badge={<Badge variant="accent">{t("shell.navigation.newBadge")}</Badge>}
 			action={
 				<div className="flex max-w-full flex-wrap items-center justify-end gap-1">
 					{value && (
