@@ -522,3 +522,119 @@ def test_embedding_notebooks_with_another_loss_are_reported():
     assert doc is None and any("CosineSimilarityLoss" in line for line in report["unsupported"])
     doc, _ = notebook_import.read_notebook(emb("MultipleNegativesRankingLoss"), "x.ipynb")
     assert doc is not None
+
+
+def test_lora_settings_studio_cannot_forward_are_reported():
+    def read(peft_args):
+        nb = _nb(
+            "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B')\n"
+            f"model = FastLanguageModel.get_peft_model(model, r = 16, lora_alpha = 32{peft_args})",
+            "dataset = load_dataset('mlabonne/FineTome-100k', split = 'train')",
+        )
+        doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B).ipynb")
+        assert doc is not None and report["unsupported"] == []
+        return [line for line in report["approximated"] if "LoRA" in line or "rslora" in line]
+
+    custom = read(", target_modules = ['q_proj'], lora_dropout = 0.1, use_rslora = True")
+    assert len(custom) == 3
+    assert any("target_modules" in line for line in custom)
+    assert any("dropout" in line for line in custom)
+    assert any("use_rslora" in line for line in custom)
+    # The standard notebook settings match Studio's defaults and stay quiet.
+    assert (
+        read(
+            ", target_modules = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', "
+            "'down_proj'], lora_dropout = 0, use_rslora = False"
+        )
+        == []
+    )
+
+
+_SEVEN = "['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj']"
+
+
+def _lora_lines(report):
+    return [line for line in report["approximated"] if "target_modules" in line]
+
+
+def test_lora_targets_resolve_a_module_level_constant():
+    nb = _nb(
+        f"TARGETS = {_SEVEN}\n"
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B')\n"
+        "model = FastLanguageModel.get_peft_model(model, r = 16, target_modules = TARGETS)",
+        "dataset = load_dataset('mlabonne/FineTome-100k', split = 'train')",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B).ipynb")
+    assert doc is not None and _lora_lines(report) == []
+
+
+def test_lora_targets_follow_the_latest_assignment_of_a_constant():
+    def read(*assignments):
+        nb = _nb(
+            "\n".join(assignments) + "\n"
+            "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B')\n"
+            "model = FastLanguageModel.get_peft_model(model, r = 16, target_modules = TARGETS)",
+            "dataset = load_dataset('mlabonne/FineTome-100k', split = 'train')",
+        )
+        doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B).ipynb")
+        assert doc is not None
+        return _lora_lines(report)
+
+    # The seven defaults reassigned to something else must be reported, not masked by the old list.
+    assert len(read(f"TARGETS = {_SEVEN}", "TARGETS = 'all-linear'")) == 1
+    assert len(read(f"TARGETS = {_SEVEN}", "TARGETS = ['q_proj']")) == 1
+    assert len(read(f"TARGETS = {_SEVEN}", "TARGETS = pick_targets()")) == 1
+    # And the reverse: a later default list wins over an earlier string.
+    assert read("TARGETS = 'all-linear'", f"TARGETS = {_SEVEN}") == []
+    # Augmented assignment, in-place mutation, item assignment and loops change the list too.
+    assert len(read(f"TARGETS = {_SEVEN}", "TARGETS += ['lm_head']")) == 1
+    assert len(read(f"TARGETS = {_SEVEN}", "TARGETS.append('lm_head')")) == 1
+    assert len(read(f"TARGETS = {_SEVEN}", "TARGETS[0] = 'lm_head'")) == 1
+    assert len(read(f"TARGETS = {_SEVEN}", "for TARGETS in [['q_proj']]: pass")) == 1
+    assert read(f"TARGETS: list = {_SEVEN}") == []
+
+
+def test_dataset_call_reads_the_name_it_reassigns():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B')",
+        "dataset = 'mlabonne/FineTome-100k'\ndataset = load_dataset(dataset, split = 'train')",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B).ipynb")
+    assert doc is not None, report
+
+
+def test_lora_scalars_follow_an_unresolved_reassignment():
+    def read(*assignments, peft_args):
+        nb = _nb(
+            "\n".join(assignments) + "\n"
+            "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B')\n"
+            f"model = FastLanguageModel.get_peft_model(model, r = 16{peft_args})",
+            "dataset = load_dataset('mlabonne/FineTome-100k', split = 'train')",
+        )
+        doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B).ipynb")
+        assert doc is not None
+        return [line for line in report["approximated"] if "dropout" in line or "rslora" in line]
+
+    # A computed value replaces the earlier default, so it must not read as that default.
+    assert len(read("DROP = 0", "DROP = pick_dropout()", peft_args = ", lora_dropout = DROP")) == 1
+    assert len(read("RS = False", "RS = pick_rslora()", peft_args = ", use_rslora = RS")) == 1
+    assert len(read("DROP = 0", "DROP += 0.1", peft_args = ", lora_dropout = DROP")) == 1
+    assert read("DROP = 0", peft_args = ", lora_dropout = DROP") == []
+
+
+def test_embedding_lora_targets_compare_against_embedding_defaults():
+    def read(targets):
+        nb = _nb(
+            "model = FastSentenceTransformer.from_pretrained(model_name = 'unsloth/embeddinggemma-300m')\n"
+            f"model = FastSentenceTransformer.get_peft_model(model, r = 32, target_modules = {targets})",
+            "dataset = load_dataset('a/b', split = 'train')",
+            "loss = MultipleNegativesRankingLoss(model)\n"
+            "trainer = SentenceTransformerTrainer(model = model, loss = loss)",
+        )
+        doc, report = notebook_import.read_notebook(nb, "x.ipynb")
+        assert doc is not None
+        return _lora_lines(report)
+
+    assert read("['q_proj', 'k_proj', 'v_proj', 'o_proj']") == []
+    seven = read(_SEVEN)
+    assert len(seven) == 1 and "q/k/v/o projections)" in seven[0]
