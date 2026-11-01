@@ -4680,7 +4680,9 @@ class FastLlamaModel:
         layers_pattern = None,
         finetune_last_n_layers = None,
         use_gradient_checkpointing = "unsloth",
-        random_state = 3407,
+        # None keeps the caller's RNG so LoRA→merge→LoRA stages do not all re-init lora_A from 3407 (#14327).
+        # Pass an int (e.g. 3407) for the previous deterministic default.
+        random_state = None,
         max_seq_length = 2048,  # not used anymore
         use_rslora = False,
         modules_to_save = None,
@@ -4748,7 +4750,8 @@ class FastLlamaModel:
             # checkpoint_skip_layers / UNSLOTH_GC_KEEP_LAYERS apply to full finetuning too.
             skip_checkpointing(model, checkpoint_skip_layers)
             return model
-        transformers_set_seed(random_state)
+        if random_state is not None:
+            transformers_set_seed(random_state)
 
         max_seq = getattr(model, "max_seq_length", 512)
         dtype = model.get_input_embeddings().weight.dtype

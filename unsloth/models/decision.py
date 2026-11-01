@@ -833,7 +833,8 @@ def _clef_peft_model(model, target_modules, use_gradient_checkpointing, random_s
         from peft import LoraConfig, get_peft_model
         from transformers import set_seed
 
-        set_seed(random_state)
+        if random_state is not None:
+            set_seed(random_state)
         kwargs.pop("max_seq_length", None)
         model.encoder = get_peft_model(
             backbone,
@@ -1660,7 +1661,8 @@ class FastDecisionModel:
         layers_to_transform = None,
         layers_pattern = None,
         use_gradient_checkpointing = "unsloth",
-        random_state = 3407,
+        # None keeps the caller's RNG (#14327); pass an int for a fixed LoRA init.
+        random_state = None,
         max_seq_length = None,
         use_rslora = False,
         use_dora = False,
@@ -1703,7 +1705,8 @@ class FastDecisionModel:
         from peft import LoraConfig, get_peft_model
         from transformers import set_seed
 
-        set_seed(random_state)
+        if random_state is not None:
+            set_seed(random_state)
         model.encoder = get_peft_model(
             model.encoder,
             LoraConfig(
