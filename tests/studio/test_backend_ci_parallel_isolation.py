@@ -120,6 +120,7 @@ BACKEND_ISOLATED = [
     ("tests/test_web_fetch_extraction.py", "compares parse time at two input sizes"),
     ("tests/test_tool_call_parser_strict.py", "compares parse time at two nesting depths"),
     ("tests/test_pr5624_regressions.py", "R1 parser's 1s bound exceeded under CPU contention"),
+    ("tests/test_web_tools_overlap.py", "compares an overlapped batch's duration against a serial one"),
     # Found by staging; the scan cannot find it (see below).
     (
         "tests/test_tunnel_safe_long_post.py",
