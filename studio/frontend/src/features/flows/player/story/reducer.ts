@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import {
   ExprError,
   Prng,
@@ -55,7 +54,7 @@ export interface StoryState {
   error: string | null;
   rev: number;
   seed: number;
-  // Sounds from direction lines passed while leaving a scene; stageAt cues them at the next stop.
+  // Sounds passed while leaving a scene, played at the next stop.
   cues?: string[];
 }
 
@@ -118,8 +117,7 @@ export function restAt(lines: StoryLine[], from: number): number {
 
 function settled(s: StoryState): StoryState {
   if (!s.cues) return s;
-  const rest = { ...s };
-  delete rest.cues;
+  const { cues: _, ...rest } = s;
   return rest;
 }
 
@@ -383,7 +381,12 @@ export function reduce(
         speaker: CHOICE_SPEAKER,
         text: choice.text,
       };
-      return take(m, { ...settled(s), backlog: [...s.backlog, picked] }, choice, 0);
+      return take(
+        m,
+        { ...settled(s), backlog: [...s.backlog, picked] },
+        choice,
+        0,
+      );
     }
     case "jump":
       return enter(m, settled(s), a.sceneId, 0);

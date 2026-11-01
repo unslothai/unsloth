@@ -255,7 +255,10 @@ test("cues passed while leaving a scene play at the next stop", () => {
 test("a cue whose media resolves after a save load stays silent", async () => {
   const S = await import("../src/features/flows/player/story/sound-cues.ts");
   let resolve = (_url: string) => {};
-  const lookup = () => new Promise<string>((r) => (resolve = r));
+  const lookup = () =>
+    new Promise<string>((r) => {
+      resolve = r;
+    });
   const played: string[] = [];
   let rev = 0;
   const cued = rev;
