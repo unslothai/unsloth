@@ -68,7 +68,6 @@ export const ACCOUNT_CHROME_KEYS = new Set([
   "unsloth_loaded_models_dismissed",
   "unsloth-rag-preview-width",
   "unsloth_halloween",
-  // Glass is a per-device look, like the theme.
   "unsloth_window_material",
 ]);
 export const ACCOUNT_CHROME_PREFIXES = [
