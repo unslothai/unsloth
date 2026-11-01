@@ -14050,8 +14050,10 @@ def build_conversation_recall(
     style: str = "tool",
     top_k: int | None = None,
     branch_messages: list[dict] | None = None,
+    query_messages: list[dict] | None = None,
 ) -> dict | None:
-    """Not gated on rag_scope, since compaction happens with or without document RAG; style=inline avoids forged tool_calls, which break strict templates."""
+    """Not gated on rag_scope, since compaction happens with or without document RAG; style=inline avoids forged tool_calls, which break strict templates.
+    ``query_messages`` (the client's transcript) supplies the query when the branch carries a loop's own user-role notices."""
     if not thread_id:
         return None
     try:
@@ -14062,7 +14064,8 @@ def build_conversation_recall(
         return None
 
     # The branch's last user turn: the loop conversation may end with an internal nudge.
-    query = _last_user_text(branch_messages or conversation) or _last_user_text(conversation)
+    _asked = query_messages or branch_messages or conversation
+    query = _last_user_text(_asked) or _last_user_text(conversation)
     if not query:
         return None
     # A nudge ("continue") retrieves nothing, so also query the last real instruction. Not for
@@ -14073,7 +14076,7 @@ def build_conversation_recall(
         from core.inference import instruction_pin
         thin = instruction_pin.is_thin_query(query)
         if thin:
-            _behind = branch_messages or conversation
+            _behind = _asked
             anchor = instruction_pin.last_substantive_instruction(_behind)
             if not anchor:
                 # Use is_thin_query, not a length rule: short prompts can still name something.

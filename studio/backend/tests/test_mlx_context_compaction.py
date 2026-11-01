@@ -229,6 +229,8 @@ def test_the_tool_loop_refits_every_turn_and_keeps_the_question_past_a_reprompt(
     ran = [m for m in last_fit["branch_messages"] if m["role"] == "tool"][-3:]
     assert [m["content"][:8] for m in ran] == ["result 1", "result 2", "result 3"]
     assert [m for m in last_fit["branch_messages"] if m["role"] == "user"] == [old, QUESTION]
+    # The recall query comes from the client's turns, never from a re-prompt the loop added (#16187).
+    assert [m for m in last_fit["query_messages"] if m["role"] == "user"][-1] is QUESTION
     assert len(truncated) == fits and all(event["fits"] for event in truncated)
     assert bool(truncated[0].get("checkpoint_started")) is (policy == "checkpoint")
     assert last_fit["thread_id"] == "thread-1"

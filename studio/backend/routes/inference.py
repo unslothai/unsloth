@@ -28276,8 +28276,8 @@ def _fit_external_context(
     branch: Optional[list[dict]] = None,
     tool_loop: bool = False,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
-    """``branch`` is the client's request when ``messages`` is a tool loop's conversation, so recall
-    queries the user's turn rather than a controller re-prompt the loop appended."""
+    """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
+    queries the user's turn, not a controller re-prompt, and still filters on the loop's turns."""
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
         estimate_messages_tokens_conservative,
@@ -28362,7 +28362,9 @@ def _fit_external_context(
         recall = _archive_and_recall(
             fitted,
             messages,
-            branch_messages = branch or messages,
+            # The loop's own conversation filters, or tool results this turn evicted are unrecallable.
+            branch_messages = messages,
+            query_messages = branch,
             thread_id = str(thread_id) if thread_id else None,
             style = "inline",
             recall_done = not truncation.get("fits", True),

@@ -2951,6 +2951,7 @@ class InferenceOrchestrator:
                 fitted,
                 conversation,
                 branch_messages = live_branch or conversation,
+                query_messages = request_branch,
                 thread_id = thread_id,
                 # A forged tool exchange is only safe when the request advertises the tool.
                 style = "tool" if recall_offered else "inline",
