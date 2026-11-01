@@ -9,6 +9,9 @@ import hashlib
 import json
 import os
 import re
+import stat
+import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,10 +30,12 @@ from hub.utils.state_dir import (
     marker_path,
     normalize_hub_cache,
     state_filename_is_ambiguous,
+    state_root,
     variant_filename_prefix,
     variant_key_fragments,
 )
 from utils.paths.path_utils import drop_appledouble_metadata
+from utils.scan_memo import memoized, scan_memo_active
 
 logger = get_logger(__name__)
 
@@ -45,6 +50,11 @@ _MANIFEST_MIGRATION_MAX_FILES = 10_000
 _MANIFEST_MIGRATION_MAX_BYTES = 32 * 1024 * 1024
 _MANIFEST_MIGRATION_PREFIX_BYTES = 256
 _V2_MANIFEST_PREFIX = re.compile(rb'^\s*\{\s*"version"\s*:\s*2\s*,')
+# Bump when the migration's selection rules change, so a recorded clean pass no longer applies.
+_MANIFEST_MIGRATION_ID = "ordinary-v2-to-v1:1"
+_MANIFEST_MIGRATION_MARKER = "manifest_migration.json"
+# A dir changed this recently may sit inside the mtime granularity: not recorded (git's "racy" index rule).
+_MANIFEST_MIGRATION_SETTLE_NS = 2_000_000_000
 
 # Verbatim phrase the worker emits on a degraded completion; shared so emit and match stay coupled.
 MANIFEST_DEGRADED_MARKER = "completed without a manifest so partial detection is degraded"
@@ -292,7 +302,7 @@ def _state_read_path(
     )
     for path in scoped:
         try:
-            if path.is_file() and applies(path):
+            if _state_file_may_exist(path) and path.is_file() and applies(path):
                 return path
         except OSError:
             continue
@@ -300,13 +310,39 @@ def _state_read_path(
         if path in scoped:
             continue
         try:
-            if not path.is_file():
+            if not (_state_file_may_exist(path) and path.is_file()):
                 continue
         except OSError:
             continue
         if _legacy_state_applies(path, requested, fail_closed = fail_closed) and applies(path):
             return path
     return None
+
+
+def _state_name_key(name: str) -> str:
+    # Folded wide enough for case-insensitive (Windows, macOS) and normalization-insensitive (APFS) volumes.
+    return os.path.normcase(unicodedata.normalize("NFC", name)).casefold()
+
+
+def _state_dir_name_keys(directory: Path) -> Optional[frozenset[str]]:
+    try:
+        with os.scandir(directory) as entries:
+            return frozenset(_state_name_key(entry.name) for entry in entries)
+    except (FileNotFoundError, NotADirectoryError):
+        return frozenset()
+    except OSError:
+        return None
+
+
+def _state_file_may_exist(path: Path) -> bool:
+    """False only when this scan's one listing of the state dir lacks the name; else probe as before."""
+    if not scan_memo_active():
+        return True
+    names = memoized(
+        ("hub_state_dir_names", os.fspath(path.parent)),
+        lambda: _state_dir_name_keys(path.parent),
+    )
+    return names is None or _state_name_key(path.name) in names
 
 
 def _state_paths(
@@ -318,8 +354,7 @@ def _state_paths(
     *,
     raw_hub_cache: Optional[str | Path] = None,
 ) -> tuple[Path, ...]:
-    """Canonical-first read/delete paths across the filename migration. Writers use only the default state-dir path; readers and cleanup also probe the prior repository and double-hyphen variant encodings, plus the pre-``resolve`` cache-scope digest, deduplicating when a repository, variant or cache scope never needed migration. ``raw_hub_cache`` is the caller's own spelling of ``hub_cache`` before canonicalization, and is what the extra scope digest has to come from: the canonical string resolves to itself, so deriving the fallback from it would reproduce the canonical digest and probe nothing. The scope fan-out collapses to one entry whenever the two spellings agree, which is every path that resolves to itself."""
-    # _scope_spellings, not cache_scope_names: the single-variant delete route hands over a root resolve_delete_target_root has ALREADY resolved, so the raw spelling reproduces the canonical digest and the pre-resolve scope is never probed, leaving state for the next read to resurrect. It adds the configured cache's own spelling only when it names the same directory.
+    """Not cache_scope_names: a resolved root skips the pre-resolve scope; state resurrects."""
     scopes = (
         (None,)
         if hub_cache is None
@@ -608,6 +643,7 @@ def _is_reserved_dataset_completion_payload(data: dict) -> bool:
 
 
 def _read_migration_payload(path: Path) -> Optional[dict]:
+    # OSError propagates: an unreadable file is skipped by the caller and keeps the pass unclean.
     try:
         with path.open("rb") as handle:
             prefix = handle.read(_MANIFEST_MIGRATION_PREFIX_BYTES)
@@ -619,30 +655,140 @@ def _read_migration_payload(path: Path) -> Optional[dict]:
         if len(raw) > _MANIFEST_MIGRATION_MAX_BYTES:
             return None
         data = json.loads(raw)
-    except (OSError, ValueError):
+    except ValueError:
         return None
     return data if isinstance(data, dict) else None
 
 
-def _migration_manifest_paths(parent: Path) -> Iterator[Path]:
-    yield from parent.glob("*.json")
-    for scoped in parent.glob("cache-*"):
+def _listed(directory: Path) -> list[tuple[str, str]]:
+    # Eager, and folded on Windows, as pathlib's glob is.
+    with os.scandir(directory) as entries:
+        return [
+            (entry.name, entry.name.casefold() if os.name == "nt" else entry.name)
+            for entry in entries
+        ]
+
+
+def _migration_manifest_paths(parent: Path, failed: list) -> Iterator[Path]:
+    """Like globbing ``*.json`` and ``cache-*/*.json``, but a scope that cannot be listed is appended to
+    ``failed`` instead of silently yielding nothing (``Path.glob`` swallows ``OSError``)."""
+    try:
+        top = _listed(parent)
+    except FileNotFoundError:
+        return
+    for name, folded in top:
+        if folded.endswith(".json"):
+            yield parent / name
+    for name, folded in top:
+        if not folded.startswith("cache-"):
+            continue
+        scoped = parent / name
         if scoped.is_symlink() or not scoped.is_dir():
             continue
-        yield from scoped.glob("*.json")
+        try:
+            listed = _listed(scoped)
+        except OSError as exc:
+            failed.append(scoped)
+            logger.debug("Could not list Hub manifest scope %s: %s", scoped, exc)
+            continue
+        for child, child_folded in listed:
+            if child_folded.endswith(".json"):
+                yield scoped / child
+
+
+def _migration_fingerprint(parent: Path, scopes: Optional[Iterable[str]] = None) -> Optional[dict]:
+    """Dir mtimes + active cache. Manifest writes are ``tmp + os.replace``, so any write moves its dir's
+    mtime and a new ``cache-*`` scope moves the parent's. ``None`` when anything cannot be read."""
+    try:
+        active, raw = _hub_cache_spellings(None)
+        dirs = {".": os.stat(parent).st_mtime_ns}
+        if scopes is None:
+            scopes = [
+                entry.name
+                for entry in os.scandir(parent)
+                if entry.name.startswith("cache-") and entry.is_dir(follow_symlinks = False)
+            ]
+        for name in scopes:
+            st = os.lstat(parent / name)
+            if not stat.S_ISDIR(st.st_mode):
+                return None
+            dirs[name] = st.st_mtime_ns
+    except (OSError, TypeError, ValueError):
+        return None
+    return {
+        "migration": _MANIFEST_MIGRATION_ID,
+        "manifest_version": _MANIFEST_VERSION,
+        "legacy_version": _LEGACY_MANIFEST_VERSION,
+        "active_hub_cache": active,
+        "active_hub_cache_raw": None if raw is None else str(raw),
+        "dirs": dirs,
+    }
+
+
+def _migration_marker_path() -> Optional[Path]:
+    # Beside manifests/, not inside it: writing the marker must not move the mtime it records.
+    root = state_root()
+    return None if root is None else root / _MANIFEST_MIGRATION_MARKER
+
+
+def _migration_already_clean(parent: Path) -> bool:
+    marker = _migration_marker_path()
+    if marker is None:
+        return False
+    try:
+        with marker.open("rb") as handle:
+            raw = handle.read(64 * 1024 + 1)
+        if len(raw) > 64 * 1024:
+            return False
+        recorded = json.loads(raw)
+        if not isinstance(recorded, dict) or not isinstance(recorded.get("dirs"), dict):
+            return False
+        scopes = [name for name in recorded["dirs"] if name != "."]
+    # RecursionError: deeply nested corrupt marker.
+    except (OSError, ValueError, RecursionError):
+        return False
+    current = _migration_fingerprint(parent, scopes)
+    return current is not None and current == recorded
+
+
+def _record_clean_migration(parent: Path, before: Optional[dict], started_ns: int) -> None:
+    if before is None:
+        return
+    after = _migration_fingerprint(parent)
+    if after != before:
+        return
+    if any(mtime > started_ns - _MANIFEST_MIGRATION_SETTLE_NS for mtime in after["dirs"].values()):
+        return
+    marker = _migration_marker_path()
+    if marker is not None:
+        _atomic_write_json(marker, after)
 
 
 def migrate_ordinary_v2_manifests_for_downgrade() -> int:
+    """Rewrite ordinary v2 manifests as v1 for older Studios. A clean pass is recorded and later starts
+    skip the scan until a manifest dir, the active cache or the migration id changes."""
     parent = manifests_dir()
     if parent is None:
         return 0
+    # Optimisation only: any failure here falls back to the full scan.
+    try:
+        if _migration_already_clean(parent):
+            return 0
+        started_ns = time.time_ns()
+        before = _migration_fingerprint(parent)
+    except Exception as exc:
+        logger.debug("Could not check the Hub manifest migration marker: %s", exc)
+        started_ns, before = time.time_ns(), None
 
     migrated = 0
+    clean = True
     try:
-        candidates = _migration_manifest_paths(parent)
+        unlisted: list = []
+        candidates = _migration_manifest_paths(parent, unlisted)
         for index, path in enumerate(candidates):
             if index >= _MANIFEST_MIGRATION_MAX_FILES:
                 logger.debug("Stopped Hub manifest migration at the file limit")
+                clean = False
                 break
             try:
                 if path.is_symlink() or not path.is_file():
@@ -652,6 +798,8 @@ def migrate_ordinary_v2_manifests_for_downgrade() -> int:
                     continue
                 if _is_reserved_dataset_completion_payload(data):
                     continue
+                # Any ordinary v2 record makes the pass unclean, migrated or not.
+                clean = False
 
                 repo_type = data.get("repo_type")
                 repo_id = data.get("repo_id")
@@ -704,9 +852,16 @@ def migrate_ordinary_v2_manifests_for_downgrade() -> int:
                 if _atomic_write_json(path, migrated_payload):
                     migrated += 1
             except Exception as exc:
+                clean = False
                 logger.debug("Could not migrate Hub manifest %s: %s", path, exc)
     except Exception as exc:
         logger.debug("Could not enumerate Hub manifests for migration: %s", exc)
+        return migrated
+    if clean and not unlisted:
+        try:
+            _record_clean_migration(parent, before, started_ns)
+        except Exception as exc:
+            logger.debug("Could not record the Hub manifest migration pass: %s", exc)
     return migrated
 
 

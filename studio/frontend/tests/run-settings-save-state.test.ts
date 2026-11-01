@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -30,11 +29,15 @@ test("the save status covers every Remember state and is always rendered", () =>
     "Saved for this model",
     "Unsaved changes",
     "Saved settings will be forgotten",
-    "Not saved yet",
-    "Using default settings",
-    "Not remembered for this model",
+    "Using the default settings",
   ]) {
     assert.ok(CONFIG_PAGE.includes(`"${label}"`), `missing status: ${label}`);
+  }
+  for (const label of ["Not saved yet", "Not remembered for this model"]) {
+    assert.ok(
+      !CONFIG_PAGE.includes(`"${label}"`),
+      `redundant status: ${label}`,
+    );
   }
   // Mounted on demand it would push Load down under the cursor on the click that saves.
   assert.match(CONFIG_PAGE, /\{saveStatus\}/);
@@ -52,17 +55,18 @@ test("the status compares what Save would store against the stored record", () =
   );
 });
 
-test("an unticked Load forgets only a Remember that was on", () => {
+test("a Load on Default forgets only settings that were remembered", () => {
   const persist = CONFIG_PAGE.slice(
     CONFIG_PAGE.indexOf("const persistConfig = "),
     CONFIG_PAGE.indexOf("const finishPersist = "),
   );
-  assert.match(persist, /const forgets = !remember && savedRemember;/);
+  assert.match(persist, /keep = selectedSet !== null\) =>/);
+  assert.match(persist, /const forgets = !keep && savedRemember;/);
   assert.match(
     persist,
     /: forgets\s*\?\s*deletePerModelConfig\(configId, target\.ggufVariant\)\s*:\s*true;/,
   );
-  assert.match(persist, /saved &&\s*\(remember \|\| forgets\) &&/);
+  assert.match(persist, /saved &&\s*\(keep \|\| forgets\) &&/);
 });
 
 test("a fresh editor adopts the server row when nothing changed in flight", () => {

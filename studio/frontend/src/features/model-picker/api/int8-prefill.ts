@@ -3,14 +3,17 @@
 
 import { authFetch } from "@/features/auth";
 
-/** Whether a load of this MLX model could run int8 prefill. Any failure reads as unavailable, which
- *  only hides the setting: a stored choice is kept, and the load-time check guards it. */
-export async function fetchInt8PrefillAvailable(
+export type PrefillOption = "int8" | "ane" | "fast-verify";
+
+/** Failure only hides the setting: a stored choice is kept and the load-time check guards it. */
+export async function fetchPrefillOptionAvailable(
+  option: PrefillOption,
   modelPath: string,
   hfToken: string | null,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  const response = await authFetch("/api/inference/int8-prefill-availability", {
+  const route = option === "fast-verify" ? option : `${option}-prefill`;
+  const response = await authFetch(`/api/inference/${route}-availability`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     signal,

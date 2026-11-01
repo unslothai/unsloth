@@ -23,12 +23,11 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useAui, useAuiState } from "@assistant-ui/react";
+import { BookmarkIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Bookmark02Icon,
-  Copy01Icon,
-  Delete02Icon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { useEffect, useId, useState } from "react";
@@ -44,7 +43,6 @@ import {
 } from "../utils/conversation-markdown";
 import { CHAT_MENU, CHAT_MENU_TRIGGER } from "./chat-header-menu";
 
-/** Skip the confirmation once the user said so. Per browser. */
 export const SKIP_SAVE_TEMPORARY_CONFIRM_KEY = "unsloth_chat_skip_save_temporary_confirm";
 
 function skipConfirm(): boolean {
@@ -68,14 +66,11 @@ type SaveTarget = {
   running: boolean;
   queued: boolean;
   save: () => Promise<void>;
-  /** The messages on screen as markdown: nothing of a temporary chat is stored to read back. */
   markdown: () => string;
 };
 
-/** The open temporary chat, published from inside its runtime for the header, which sits outside. */
 const useSaveTarget = create<{ target: SaveTarget | null }>(() => ({ target: null }));
 
-/** Mount inside the single-chat runtime. */
 export function TemporaryChatSaveBridge() {
   const aui = useAui();
   const incognito = useChatRuntimeStore((s) => s.incognito);
@@ -134,7 +129,6 @@ async function copyMarkdown(markdown: string): Promise<void> {
   else toast.error("Could not copy this chat.");
 }
 
-/** The header's "…" menu in a temporary chat with messages: only what works without saving it. */
 export function SaveTemporaryChatMenu({
   className,
   onDiscard,
@@ -149,7 +143,6 @@ export function SaveTemporaryChatMenu({
   const checkboxId = useId();
 
   if (!target) return null;
-  // Saving waits for a finished reply and for queued prompts, whose temporary tag would discard them.
   const canSave =
     target.hasMessages && !target.running && !target.queued && !saving;
   const label = "Save chat to history";
@@ -211,7 +204,7 @@ export function SaveTemporaryChatMenu({
                 }}
               >
                 <HugeiconsIcon
-                  icon={Bookmark02Icon}
+                  icon={BookmarkIcon}
                   strokeWidth={1.75}
                   className="size-icon"
                 />
@@ -231,7 +224,7 @@ export function SaveTemporaryChatMenu({
             <DropdownMenuSeparator className="mx-3" />
             <DropdownMenuItem variant="destructive" onSelect={onDiscard}>
               <HugeiconsIcon
-                icon={Delete02Icon}
+                icon={TrashIcon}
                 strokeWidth={1.75}
                 className="size-icon"
               />
@@ -254,7 +247,7 @@ export function SaveTemporaryChatMenu({
           <DialogHeader className="gap-3">
             <DialogTitle className="flex items-center gap-2">
               <HugeiconsIcon
-                icon={Bookmark02Icon}
+                icon={BookmarkIcon}
                 strokeWidth={2}
                 className="text-foreground/80 size-4.5 shrink-0"
               />

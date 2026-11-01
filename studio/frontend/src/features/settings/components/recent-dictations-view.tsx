@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -35,15 +36,11 @@ import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import {
-  Copy01Icon,
-  Delete02Icon,
   Search01Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronLeftIcon,
-} from "lucide-react";
-import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { MessageCircleIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
@@ -53,7 +50,6 @@ import {
 } from "../stores/voice-settings-store";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
-/** Dictations shown per page; "Show more" reveals the next page. */
 const PAGE_SIZE = 20;
 
 type PendingDelete =
@@ -91,13 +87,11 @@ export function RecentDictationsView({
     (s) => s.clearRecentDictations,
   );
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null);
-  // Only "Delete chat and dictation" removes a chat, so only that path shows
-  // the switch. Preselected from the preference, off for this one if asked.
+  // Only "Delete chat and dictation" removes a chat, so only that path shows the switch.
   const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
   const [search, setSearch] = useState("");
   const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
-  // Pagination is keyed to the search/sort inputs so changing either restarts
-  // from the first page without an effect.
+  // Keyed on the inputs so a change restarts from page one without an effect.
   const pageKey = `${sortOrder}::${search}`;
   const [page, setPage] = useState({ key: pageKey, count: PAGE_SIZE });
   const visibleCount = page.key === pageKey ? page.count : PAGE_SIZE;
@@ -154,7 +148,6 @@ export function RecentDictationsView({
     }
   }
 
-  // Delete a linked dictation together with the chat it was used in.
   async function confirmDeleteWithChat(deleteFiles: boolean) {
     if (pendingDelete?.kind !== "one") {
       return;
@@ -174,7 +167,6 @@ export function RecentDictationsView({
           item,
           useChatRuntimeStore.getState().activeThreadId ?? undefined,
           () => {
-            // The deleted chat was open; leave the user on a fresh chat.
             void navigate({
               to: "/chat",
               search: { new: crypto.randomUUID() },
@@ -208,7 +200,7 @@ export function RecentDictationsView({
           }
           className="settings-back-button inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <ChevronLeftIcon className="size-4 rtl:rotate-180" />
+          <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4 rtl:rotate-180" />
         </button>
         <h1 className="font-heading text-xl font-semibold">
           {t("settings.voice.title")}
@@ -230,7 +222,7 @@ export function RecentDictationsView({
 
       {selected ? (
         <div className="flex min-h-0 flex-col gap-4">
-          <article className="rounded-lg border border-border/60 bg-muted/20 p-4">
+          <article className="rounded-xl border border-border/60 bg-muted/20 p-4">
             <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground select-text">
               {selected.text}
             </p>
@@ -260,7 +252,7 @@ export function RecentDictationsView({
               {t("settings.voice.recents.copy")}
             </Button>
             <Button
-              variant="outline"
+              variant="destructive"
               size="sm"
               onClick={() =>
                 {
@@ -268,9 +260,9 @@ export function RecentDictationsView({
                   setPendingDelete({ kind: "one", dictation: selected });
                 }
               }
-              className="text-destructive hover:border-destructive/60 hover:text-destructive"
+              className="text-destructive hover:text-destructive"
             >
-              <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="mr-1.5 size-3.5" />
               {t("settings.voice.recents.delete")}
             </Button>
           </div>
@@ -282,7 +274,7 @@ export function RecentDictationsView({
       ) : (
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-2">
-            <InputGroup className="h-8 flex-1">
+            <InputGroup className="h-control flex-1">
               <InputGroupAddon align="inline-start">
                 <HugeiconsIcon
                   icon={Search01Icon}
@@ -303,8 +295,7 @@ export function RecentDictationsView({
               onValueChange={(value) => setSortOrder(value as SortOrder)}
             >
               <SelectTrigger
-                size="sm"
-                className="w-36 shrink-0"
+                className="w-36 shrink-0 data-[size=default]:h-control"
                 aria-label={t("settings.voice.recents.sortLabel")}
               >
                 <SelectValue />
@@ -322,12 +313,12 @@ export function RecentDictationsView({
               </SelectContent>
             </Select>
             <Button
-              variant="outline"
+              variant="destructive"
               size="sm"
               onClick={() => setPendingDelete({ kind: "all" })}
-              className="shrink-0 text-destructive hover:border-destructive/60 hover:text-destructive"
+              className="shrink-0 text-destructive hover:text-destructive"
             >
-              <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="mr-1.5 size-3.5" />
               {t("settings.voice.recents.clear")}
             </Button>
           </div>
@@ -444,7 +435,7 @@ export function RecentDictationsView({
                       className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <HugeiconsIcon
-                        icon={Delete02Icon}
+                        icon={TrashIcon}
                         strokeWidth={1.75}
                         className="size-4"
                       />
@@ -497,7 +488,6 @@ export function RecentDictationsView({
                   : t("settings.voice.recents.deleteDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {/* Only the linked case offers a chat delete, so only it can remove files. */}
           {pendingDelete?.kind === "one" && pendingDelete.dictation.chatId ? (
             <DeleteChatFilesSwitch
               id="dictation-delete-files"
@@ -509,11 +499,10 @@ export function RecentDictationsView({
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             {pendingDelete?.kind === "one" && pendingDelete.dictation.chatId ? (
               <AlertDialogAction
-                variant="outline"
-                className="text-destructive hover:border-destructive/60 hover:text-destructive"
+                variant="destructive"
+                className="text-destructive hover:text-destructive"
                 onClick={(event) => {
-                  // Close only through state so the dismissal can't race a
-                  // click on whatever ends up under the pointer.
+                  // Close only through state so dismissal cannot race a click underneath.
                   event.preventDefault();
                   void confirmDeleteWithChat(deleteFilesOnDelete);
                 }}

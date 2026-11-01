@@ -342,7 +342,7 @@ async def get_job(
         int,
         Field(
             ge = 0,
-            le = loading.MAX_WAIT_S,
+            le = loading.WAIT_S_LIMIT,
             description = (
                 "Seconds to wait for the job to finish or move on, 0 to 240. "
                 "50 stays under Codex's 60 s default tool timeout; above that, raise the client's timeout."
@@ -449,7 +449,7 @@ def _with_poll_after(kind: str, result: ToolResult, after: float) -> ToolResult:
 async def run_recipe(
     recipe: dict[str, Any], mode: Literal["validate", "preview", "full"] = "validate"
 ) -> RecipeResult:
-    """Validate a Data Recipe, or run it. "validate" checks it and returns any errors; "preview" generates a few rows; "full" generates the whole dataset and saves it. A run returns a job id at once: follow it with get_job(kind="recipe"). Recipes that define a local (stdio) MCP server can only be run from the Unsloth Studio UI."""
+    """Validate a Data Recipe, or run it. "validate" checks it and returns any errors; "preview" generates a few rows; "full" generates the whole dataset and saves it. A run returns a job id at once: follow it with get_job(kind="recipe"). Recipes that define a local (stdio) MCP server, or take a provider key from a server environment variable (api_key_env), can only be run from the Unsloth Studio UI."""
     if mode == "validate":
         payload = await route_json(
             "POST", f"{RECIPE_ROUTES}/validate", json_body = {"recipe": recipe}

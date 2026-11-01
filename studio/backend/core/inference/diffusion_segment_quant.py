@@ -1,25 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pre-quantized SAM 3 / SAM 3.1 detector weights for Mask from text: FP8, INT8 and INT8-ConvRot.
-
-The segmenter is not a diffusion transformer, but its quantization is the diffusion one, imported rather than copied
-so the two cannot drift: the torchao config (``_make_quant_config``: fp8 per-row weight scale with dynamic per-token
-activations, int8 W8A8 dynamic), the Linear filter (``make_filter_fn``: min features, bf16 and alignment rules), the
-ConvRot block-Hadamard rotation and its recorded-fqn contract (``diffusion_convrot``), the safetensors container
-(``prequant_safetensors``, torchao's flatten layout + ``unsloth_format`` / ``unsloth_metadata``) and the
-version-neutral weight fingerprint. What is SAM specific lives here: which Linears are left in bf16, which arms
-``auto`` may pick, the artifact names, and the loader that builds a ``Sam3Model`` around the quantized state dict.
-
-Exclusions come from a per-group sensitivity scan (numbers on the unsloth/sam3.1 model card): one group at a time,
-mask IoU / score / kept-count measured against bf16 over a 53-prompt set. They are baked into every artifact and
-compared at load, like the diffusion families' exclude tokens, so an artifact built under a different rule is refused
-rather than loaded.
-
-Quantized kernels are CUDA only here: on the CPU or Apple's MPS the segmenter runs bf16 / fp32 weights, and a
-quantized file that is the only one downloaded is dequantized for that device (the rotation, when present, stays
-installed, which is exact in floating point).
-"""
+"""SAM 3 pre-quantized FP8/INT8/ConvRot detector weights sharing diffusion quant code; quantized
+kernels CUDA only (CPU/MPS dequantize a lone quantized file); other exclusions refused at load"""
 
 from __future__ import annotations
 
@@ -43,7 +26,8 @@ ENV_PRECISION = "UNSLOTH_SAM3_PRECISION"
 # int8 loads the ConvRot artifact unless this is 0 (then the plain INT8 one).
 ENV_INT8_CONVROT = "UNSLOTH_SAM3_INT8_CONVROT"
 
-# What ``auto`` may pick on a CUDA card, best first; it also needs that file's GATE_PASSED. Empty: auto stays bf16.
+# What ``auto`` may pick on a CUDA card short of memory, best first (needs GATE_PASSED); empty: always bf16. With room
+# auto runs bf16: at this size the 8-bit files save ~0.5 GB but are ~2x slower per Find (activation quant cost).
 AUTO_ORDER: tuple[str, ...] = (PRECISION_INT8,)
 
 # Minimum compute capability per scheme: fp8 scaled_mm needs Ada / Hopper (sm_89+), int8 _int_mm Ampere (sm_80+).
@@ -471,12 +455,16 @@ def resolve_precision(
     dtype: Any = None,
     *,
     available: tuple[str, ...] = QUANT_PRECISIONS,
+    memory_tight: bool = False,
 ) -> tuple[str, str]:
     """``(precision, why)`` for a run on ``device``. ``available`` is the quantized arms the variant ships (and, at
-    load, has on disk). bf16 when asked for, when nothing quantized can run here, or when auto has no gated arm."""
+    load, has on disk). bf16 when asked for, when nothing quantized can run here, when auto has no gated arm, or for
+    auto on CUDA unless ``memory_tight``. An explicit fp8 / int8 is honoured either way."""
     requested = requested_precision()
     if requested == PRECISION_BF16:
         return PRECISION_BF16, f"{ENV_PRECISION}=bf16"
+    if requested == PRECISION_AUTO and not memory_tight and device.startswith("cuda"):
+        return PRECISION_BF16, "auto: bf16 fits and is faster"
     candidates = AUTO_ORDER if requested == PRECISION_AUTO else (requested,)
     reasons = []
     for precision in candidates:

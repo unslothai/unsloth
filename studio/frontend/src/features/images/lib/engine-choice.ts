@@ -14,7 +14,7 @@ export const ENGINE_OPTIONS: Array<[EngineChoice, string]> = [
 ];
 
 export const ENGINE_HINT =
-  "Which engine runs this GGUF. Auto keeps the host's choice: diffusers on a GPU, native sd.cpp on CPU. Native applies LoRAs to GGUF models and usually needs less VRAM, but has no torch.compile or quantised fast paths and is often slower on CUDA. Diffusers runs a GGUF without LoRA. Applies on the next load (Reapply).";
+  "Which engine runs this GGUF. Auto keeps the host's choice: diffusers on a GPU, native sd.cpp on CPU. Native usually needs less VRAM, but has no torch.compile or quantised fast paths and is often slower on CUDA. Applies on the next load (Reapply).";
 
 const KEY = "unsloth:images:engine-by-model";
 
@@ -75,6 +75,7 @@ interface EngineStatus {
   lora_via_native?: boolean;
   lora_after_reload?: boolean;
   supports_lora?: boolean;
+  lora_unavailable_reason?: string | null;
   resolved?: Record<string, { source: string; requested?: string | boolean | null }> | null;
 }
 
@@ -103,6 +104,13 @@ export function offersCompiledLoraReload(status: EngineStatus | null | undefined
   return Boolean(status?.loaded && status.lora_after_reload && !status.supports_lora);
 }
 
+/** The LoRA slot's text when LoRA is off and neither reload note applies, so the slot never renders blank. */
+export function loraUnavailableNote(status: EngineStatus | null | undefined): string | null {
+  if (!status?.loaded || status.supports_lora) return null;
+  if (offersNativeLoraReload(status) || offersCompiledLoraReload(status)) return null;
+  return status.lora_unavailable_reason || "LoRAs cannot be applied to this model on its current engine.";
+}
+
 interface ReloadStatus {
   loaded: boolean;
   repo_id?: string | null;
@@ -118,6 +126,13 @@ function baseRepoOf(status: ReloadStatus): { baseRepo?: string } {
   return status.base_repo ? { baseRepo: status.base_repo } : {};
 }
 
+/** The page's own GGUF target with the resident's base repo when it names none (one seeded from a status read that
+ *  left it out), so the reload keeps the companions it runs with now. ``last`` itself otherwise. */
+function withResidentBase<T extends { kind?: string | null }>(last: T, status: ReloadStatus): T {
+  if (last.kind !== "gguf" || (last as { baseRepo?: string }).baseRepo || !status.base_repo) return last;
+  return { ...last, ...baseRepoOf(status) };
+}
+
 /** The GGUF the native-reload note names: the page's own last load only while it is still the resident model (another
  *  client may have replaced it), else the checkpoint status reports. */
 export function nativeReloadTarget<T extends { repoId: string; kind?: string | null; filename?: string | null }>(
@@ -126,7 +141,7 @@ export function nativeReloadTarget<T extends { repoId: string; kind?: string | n
 ): T | { repoId: string; kind: "gguf"; filename: string; displayRepoId?: string; baseRepo?: string } | null {
   if (!status?.loaded || status.model_kind !== "gguf" || !status.repo_id || !status.gguf_filename) return null;
   if (last && last.repoId === status.repo_id && last.kind === "gguf" && last.filename === status.gguf_filename) {
-    return last;
+    return withResidentBase(last, status);
   }
   return {
     repoId: status.repo_id,
@@ -219,7 +234,7 @@ export function reapplyTarget<T extends { repoId: string; kind?: string | null; 
     last.kind === status.model_kind &&
     (last.kind === "pipeline" || last.filename === status.gguf_filename)
   ) {
-    return last;
+    return withResidentBase(last, status);
   }
   return residentReloadTarget(status);
 }

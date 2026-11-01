@@ -382,6 +382,8 @@ test("the live adapter saves identities for ordinary, approval and provider card
             ]
           : [];
       const confirmed: string[] = [];
+      const confirmedThreads: string[] = [];
+      const confirmedRuns: string[] = [];
       const context = vm.createContext({
         toolCallParts: parts,
         toolPartIdByBackendId: new Map(
@@ -389,7 +391,12 @@ test("the live adapter saves identities for ordinary, approval and provider card
         ),
         toolConfirmationIdsByBackendId: new Map(),
         toolConfirmationScopeId: "session:thread",
+        resolvedThreadId: "thread",
         sandboxSessionId: "session",
+        // The run's key when the call parks, which can differ from the one captured at send.
+        serverCancel: () => {},
+        liveThreadKey: () => "thread-live",
+        cancelId: "cancel-1",
         generationRunId,
         generationSeq: 7,
         cumulativeText: "",
@@ -404,7 +411,19 @@ test("the live adapter saves identities for ordinary, approval and provider card
           getState: () => ({
             clearToolLiveOutput() {},
             clearToolFullOutput() {},
-            setToolConfirmation: (id: string) => confirmed.push(id),
+            setToolConfirmation: (
+              id: string,
+              _approvalId: string,
+              _sessionId: string,
+              _scopeId: string,
+              threadId: string,
+              _imageDisclosure: unknown,
+              runId: string,
+            ) => {
+              confirmed.push(id);
+              confirmedThreads.push(threadId);
+              confirmedRuns.push(runId);
+            },
           }),
         },
       });
@@ -439,6 +458,11 @@ test("the live adapter saves identities for ordinary, approval and provider card
         confirmed,
         kind === "approval" ? [saved.toolCallId] : [],
       );
+      assert.deepEqual(
+        confirmedThreads,
+        kind === "approval" ? ["thread-live"] : [],
+      );
+      assert.deepEqual(confirmedRuns, kind === "approval" ? ["cancel-1"] : []);
       const carried = [{ at: 0, part: saved }];
       const replay = createGenerationToolRecovery(carried, "run", 7);
       assert.equal(replay.replayFrom, 7);

@@ -4,6 +4,7 @@
 """Malware / unsafe-file gate for model loads. The ``trust_remote_code`` consent gate covers the ``auto_map`` Python vector; this covers the other one, a malicious pickle inside a weight file, which executes during ``from_pretrained`` deserialization even with ``trust_remote_code=False``. It reads Hugging Face's OWN scan (picklescan + ClamAV) via ``model_info(securityStatus=True).security_repo_status``. METADATA-ONLY: it never downloads, opens, or unpickles the flagged files. Policy: a hard, non-approvable block whenever ``filesWithIssues`` lists a non-``safe`` level, regardless of ``scansDone`` (often false even for clean repos); unknown/future levels fail CLOSED so Hub schema drift cannot silently allow a bad verdict, and only a small allowlist of clean / not-yet-scanned levels is non-blocking, while an unavailable status falls back to local inspection for a pinned cache snapshot and otherwise fails open. Scoped to the load-path RCE vector: a root-level (or load-subdir-level) code-executing file, since inert formats (safetensors / gguf / config / text) and subdirectory pickles that no root weight-index references are not loaded and do not block, while an index-referenced shard does, wherever it lives. That blocks real malware (eicar's root ``*.pkl``/``*.dat``) without false-blocking repos like ``nvidia/Nemotron-H-8B-Base-8K`` (flagged NeMo pickles under ``nemo/`` that no index lists). No first-party exemption (scoping is by load path/format, not org), and local paths are skipped (no Hub scan) while a remote ``*.gguf``-named repo is still scanned so a repo cannot dodge the gate by suffixing its name."""
 
 import json
+import os
 import posixpath
 import re
 from dataclasses import dataclass, field
@@ -74,6 +75,43 @@ def _escapes_folder(name: str) -> bool:
     return normalized == ".." or normalized.startswith("../")
 
 
+def _confinement_roots(folder: Path) -> list:
+    # Plus a Hub snapshot's models--org--repo folder: its files link into that repo's blobs.
+    root = os.path.realpath(folder)
+    roots = [root]
+    ref = _hf_cache_snapshot_ref(root)
+    if ref is not None:
+        roots.append(os.path.realpath(ref[2].parent.parent))
+    return roots
+
+
+def _within(path: str, root: str) -> bool:
+    path, root = os.path.normcase(path), os.path.normcase(root)
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
+def _climbs_through_link(folder: Path, name: str) -> bool:
+    # POSIX follows a link before applying "..", so link/../x opens x beside the link's target.
+    # Windows (and ntpath.realpath) collapse ".." first, so both sides agree there.
+    parts = name.replace("\\", "/").split("/")
+    if ".." not in parts:
+        return False
+    head = "/".join(parts[: len(parts) - parts[::-1].index("..")])
+    try:
+        landing = os.path.realpath(os.path.join(folder, head))
+        roots = _confinement_roots(folder)
+    except (OSError, ValueError):
+        return True
+    return not any(_within(landing, root) for root in roots)
+
+
+def _escapes(folder: Path, name: str) -> bool:
+    return _escapes_folder(name) or _climbs_through_link(folder, name)
+
+
 def _in_subfolder(sub: str, name: str) -> str:
     # A rooted or drive-qualified name ignores the subfolder it is joined onto.
     spelled = name.replace("\\", "/")
@@ -104,7 +142,7 @@ def _weight_names(folder: Path) -> list:
             continue
         names.append(name)
         # A custom index named here is read like the standard ones.
-        if name.endswith(".index.json") and not _escapes_folder(name):
+        if name.endswith(".index.json") and not _escapes(folder, name):
             try:
                 payload = json.loads((folder / name).read_text(encoding = "utf-8-sig"))
             except (OSError, ValueError):
@@ -117,9 +155,10 @@ def _weight_names(folder: Path) -> list:
 
 def escaping_weight_references(folder) -> list:
     """Weight names a local model folder's index files or config.json ``transformers_weights``
-    give that point outside the folder: transformers joins each onto the folder as is. Text only,
-    so Hub cache snapshots whose files link into the blob store still pass. A Sentence Transformers
-    folder's modules.json module folders are read too, judged against the model folder."""
+    give that point outside the folder: transformers joins each onto the folder as is. Judged by
+    the text, so Hub cache snapshots whose files link into the blob store still pass, except that
+    a ``..`` is judged where the kernel sends it. A Sentence Transformers folder's modules.json
+    module folders are read too, judged against the model folder."""
     try:
         folder = Path(str(folder)).expanduser()
         if not folder.is_dir():
@@ -133,16 +172,28 @@ def escaping_weight_references(folder) -> list:
         modules = None
     for module in modules if isinstance(modules, list) else []:
         sub = module.get("path") if isinstance(module, dict) else None
-        if not isinstance(sub, str) or not sub.strip("./\\"):
+        if not isinstance(sub, str):
             continue
-        if _escapes_folder(sub):
+        # Before the self-folder skip: "..", "../.." and "/" are only dots and slashes too.
+        if _escapes(folder, sub):
             names.append(sub)
             continue
-        names.extend(_in_subfolder(sub, name) for name in _weight_names(folder / sub))
+        # Sentence Transformers opens Path(folder, sub): "\\" separates on Windows only, so judge
+        # both spellings. Only a path normalizing to "." is the model root; "..." is a real folder.
+        windows = sub.replace("\\", "/")
+        posix = "/".join(part.replace("\\", "_") for part in sub.split("/"))
+        spellings = {posixpath.normpath(p) for p in (windows, posix) if p} - {"."}
+        if any(_escapes_folder(spelled) for spelled in spellings):
+            names.append(sub)
+            continue
+        if spellings:
+            module_names = _weight_names(folder / sub)
+            for spelled in spellings:
+                names.extend(_in_subfolder(spelled, name) for name in module_names)
     # Spark-TTS / BiCodec load their transformers model from LLM/.
     if (folder / "LLM").is_dir():
         names.extend(_in_subfolder("LLM", name) for name in _weight_names(folder / "LLM"))
-    return [name for name in dict.fromkeys(names) if _escapes_folder(name)]
+    return [name for name in dict.fromkeys(names) if _escapes(folder, name)]
 
 
 def _normalize_repo_path(path: str) -> str:
@@ -262,6 +313,31 @@ def _indexed_shard_paths(
 _REQUEST_TIMEOUT = 10.0
 _RETRY_TIMEOUT = 20.0
 
+# Why a load is hard-blocked, strongest first: a finding outranks a check that could not run.
+UNSAFE_FILES = "unsafe_files"
+CRITICAL_FINDINGS = "critical_findings"
+UNSCANNED_WEIGHTS = "unscanned_weights"
+MANAGED_REFUSED = "managed_refused"
+NOT_ON_SOURCE = "not_on_source"
+UNSCANNABLE = "unscannable"
+_BLOCK_CAUSES = (
+    UNSAFE_FILES,
+    CRITICAL_FINDINGS,
+    UNSCANNED_WEIGHTS,
+    MANAGED_REFUSED,
+    NOT_ON_SOURCE,
+    UNSCANNABLE,
+)
+
+
+def strongest_block(blocks: list) -> tuple:
+    """The ``(cause, target)`` to report from every gate's block; an unnamed cause is unscannable."""
+    return min(
+        ((cause if cause in _BLOCK_CAUSES else UNSCANNABLE, target) for cause, target in blocks),
+        key = lambda block: _BLOCK_CAUSES.index(block[0]),
+        default = (None, None),
+    )
+
 
 @dataclass
 class FileSecurityDecision:
@@ -271,6 +347,7 @@ class FileSecurityDecision:
     blocked: bool
     unsafe_files: list = field(default_factory = list)
     reason: str = ""
+    block_cause: Optional[str] = None
 
     def response_payload(self) -> dict:
         """Machine-readable detail merged into the preflight payload the dialog reads."""
@@ -278,6 +355,7 @@ class FileSecurityDecision:
             "unsafe_files": self.unsafe_files,
             "security_blocked": self.blocked,
             "reason": self.reason,
+            "block_cause": self.block_cause,
         }
 
 
@@ -502,6 +580,7 @@ def _evaluate_local_snapshot(
                 model_name,
                 True,
                 reason = f"{context}; could not inspect the local cache",
+                block_cause = UNSCANNABLE,
             )
     else:
         try:
@@ -519,6 +598,7 @@ def _evaluate_local_snapshot(
                 model_name,
                 True,
                 reason = f"{context}; could not inspect the selected model snapshot",
+                block_cause = UNSCANNABLE,
             )
 
     if snapshot is None:
@@ -540,6 +620,7 @@ def _evaluate_local_snapshot(
             model_name,
             True,
             reason = f"{context}; could not read the local cache",
+            block_cause = UNSCANNABLE,
         )
 
     if not pickles:
@@ -564,6 +645,7 @@ def _evaluate_local_snapshot(
         True,
         unsafe_files = [{"path": rel, "level": "unscanned"} for rel in rel_paths],
         reason = (f"{context}; unscanned pickle weights with no safetensors alternative: {names}"),
+        block_cause = UNSCANNED_WEIGHTS,
     )
 
 
@@ -586,12 +668,33 @@ def _evaluate_unscanned_listing(
     try:
         from huggingface_hub import HfApi
         files = HfApi().list_repo_files(model_name, token = hf_token or False)
-    except Exception:
+    except Exception as exc:
+        from utils.hf_probe import is_repo_not_found, repo_not_found_message
+
+        if is_repo_not_found(exc):
+            from utils.utils import hf_cache_snapshot_dir_for_repo
+
+            # The hub falls back to this snapshot, so its weights are what a load would read.
+            snapshot = hf_cache_snapshot_dir_for_repo(model_name)
+            if snapshot is not None:
+                return _evaluate_local_snapshot(
+                    model_name, snapshot, context = context, load_subdirs = load_subdirs
+                )
+            logger.warning("Blocking load of '%s': it is not on ModelScope.", model_name)
+            return FileSecurityDecision(
+                model_name,
+                True,
+                reason = repo_not_found_message(model_name),
+                block_cause = NOT_ON_SOURCE,
+            )
         logger.warning(
             "Blocking load of '%s': %s and its files could not be listed.", model_name, context
         )
         return FileSecurityDecision(
-            model_name, True, reason = f"{context}; could not list the repository"
+            model_name,
+            True,
+            reason = f"{context}; could not list the repository",
+            block_cause = UNSCANNABLE,
         )
     by_dir: dict[str, set] = {}
     for path in files:
@@ -628,6 +731,7 @@ def _evaluate_unscanned_listing(
             f"{context}; unscanned pickle weights with no safetensors alternative: {listed}. "
             "Switch the model source to Hugging Face in Settings to load it."
         ),
+        block_cause = UNSCANNED_WEIGHTS,
     )
 
 
@@ -639,7 +743,7 @@ def evaluate_file_security(
     local_only_load: bool = False,
 ) -> FileSecurityDecision:
     """Block a load when HF's security scan flags unsafe serialized files. Call UNCONDITIONALLY before any load (independent of trust_remote_code): a malicious pickle deserializes during ``from_pretrained`` regardless. Metadata-only; when the scan is unavailable, exact cached snapshots receive a local fail-closed inspection while unresolved remote refs remain fail-open. ``load_subdirs`` names subdirs the load calls ``from_pretrained`` on (e.g. ``("LLM",)`` for Spark-TTS / BiCodec, loading ``<snapshot>/LLM``): a flagged file directly under one is root-level there and blocks, and an index inside it is honored when scoping shards. ``local_only_load`` marks an offline load and skips the Hub request."""
-    # Scan the repo the load actually fetches, not the literal alias (which 404s and fails open).
+    # Scan the repo the load actually fetches; the literal alias 404s and fails open.
     model_name, load_subdirs = load_scan_target(model_name, tuple(load_subdirs))
 
     # Local paths have no Hub scan, EXCEPT an HF-cache snapshot whose canonical path encodes a repo id + commit: scan that exact commit so an inactive-cache load can't dodge the gate.
@@ -749,4 +853,5 @@ def evaluate_file_security(
         True,
         unsafe_files = unsafe,
         reason = f"Hugging Face security scan flagged unsafe files: {names}",
+        block_cause = UNSAFE_FILES,
     )

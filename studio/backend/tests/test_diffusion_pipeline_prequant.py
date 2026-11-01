@@ -249,6 +249,22 @@ def test_the_artifact_carries_the_denoiser_share_of_the_unified_memory_verdict(m
     assert not [name for name, _s in seen["declared_files"] if name.startswith("transformer/")]
 
 
+def test_the_hosted_vae_carries_its_share_of_the_unified_memory_verdict(monkeypatch, hub):
+    """A hosted VAE that replaces the dropped vae/ shards is priced in the memory verdict."""
+    backend = _plan_backend(monkeypatch, planned = None)
+    hosted = {"vae": ("unsloth/hosted-vae", [("vae.safetensors", 675)])}
+    monkeypatch.setattr(DiffusionBackend, "_hosted_vae_plan_files", lambda *_a, **_k: hosted)
+    seen: dict = {}
+
+    def _shortfall(_self, *_a, **kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(DiffusionBackend, "declared_footprint_shortfall", _shortfall)
+    backend.download_plan(Z_IMAGE_REPO, model_kind = "pipeline")
+    assert seen["prequant_bytes"] == 675
+
+
 def test_a_gguf_pick_still_never_downloads_a_second_denoiser(monkeypatch):
     """A GGUF pick never sizes an uncached hosted checkpoint: there it is a SECOND denoiser."""
     backend = DiffusionBackend()
@@ -1408,6 +1424,9 @@ def test_a_measured_bf16_family_quantises_auto_when_the_budget_is_unmeasured(
         ("black-forest-labs/flux-3-image-klein-base", True),
         ("black-forest-labs/FLUX.2-dev", False),
         ("Qwen/Qwen-Image", False),
+        # A 5B DiT: INT8-ConvRot doubles LPIPS against the eager port, so bf16 while it fits.
+        ("OpenMOSS-Team/MOSS-Image-SFT", True),
+        ("OpenMOSS-Team/MOSS-Image-Base", True),
     ],
 )
 def test_the_bf16_rule_names_only_the_measured_families(repo, kept):

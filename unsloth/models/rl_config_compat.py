@@ -20,7 +20,8 @@ cache file can import it behind a try/except without pulling in torch.
 Three outcomes per unrecognised argument: TRL documented a rename and the new
 name exists, so the value is moved across; TRL removed the field, so it is
 dropped and reported by name with TRL's advice; anything else is dropped with
-a warning.
+a warning, except a newer-TRL field whose value is the installed TRL's behaviour
+(`SFTConfig(loss_type = "nll")` on TRL < 0.23.0), which is dropped quietly.
 
 That last case means `GRPOConfig(learnign_rate = 3e-4)` now warns instead of
 raising `TypeError`. The trade is accepted: a typo is still surfaced loudly,
@@ -36,14 +37,13 @@ __all__ = [
     "filter_config_init_kwargs",
     "TRANSFORMERS_CONFIG_RENAMES",
     "TRANSFORMERS_REMOVED_FIELD_ADVICE",
+    "TRL_ADDED_FIELDS",
     "TRL_CONFIG_RENAMES",
     "TRL_REMOVED_FIELD_ADVICE",
 ]
 
 
-# Straight renames from TRL's own deprecation warnings. Only entries where the
-# old value can be handed to the new name unchanged belong here, so anything
-# needing a different value or setting goes in the advice table below.
+# Straight renames only: anything needing a different value goes in the advice table.
 TRL_CONFIG_RENAMES = {
     # Deprecated in TRL 0.26.0 (DPO) / 0.27.0 (GRPO), removed in 0.28.0.
     "use_liger_loss": "use_liger_kernel",
@@ -54,10 +54,7 @@ TRL_CONFIG_RENAMES = {
 }
 
 
-# What TRL tells users to do instead, keyed on the retired argument name. Only
-# consulted for arguments the installed config rejects, so an entry is harmless
-# for a config that still accepts the field (`max_completion_length` is retired
-# on `DPOConfig` but current on `GRPOConfig`).
+# Only consulted for arguments the installed config rejects.
 TRL_REMOVED_FIELD_ADVICE = {
     # GRPOConfig, removed in TRL 0.28.0.
     "max_prompt_length": ("filter overlong prompts out of your dataset before training instead"),
@@ -78,9 +75,18 @@ TRL_REMOVED_FIELD_ADVICE = {
 }
 
 
-# Every trl config subclasses `transformers.TrainingArguments`, so transformers 5
-# removals land here too. From transformers' MIGRATION_GUIDE_V5.md, whose
-# `warmup_step` is a typo for `warmup_steps` (which does take a float).
+# (config, field) -> (first TRL with the field, values an older TRL already behaves as).
+TRL_ADDED_FIELDS = {
+    ("SFTConfig", "loss_type"): ("0.23.0", ("nll",)),
+}
+
+
+def _added_field(config_class, key):
+    config_name = getattr(config_class, "__name__", None)
+    return TRL_ADDED_FIELDS.get((config_name, key))
+
+
+# transformers 5 removals (MIGRATION_GUIDE_V5.md; its `warmup_step` is a typo for warmup_steps).
 TRANSFORMERS_CONFIG_RENAMES = {
     "warmup_ratio": "warmup_steps",
     "push_to_hub_token": "hub_token",
@@ -91,13 +97,9 @@ TRANSFORMERS_CONFIG_RENAMES = {
 
 # transformers 5 removals whose value cannot be carried across.
 TRANSFORMERS_REMOVED_FIELD_ADVICE = {
-    # Not a rename: `include_num_input_tokens_seen` is `str | bool` and normalises
-    # a bool to "no"/"all" in `__post_init__`, which the trainer's `setattr` path
-    # does not run, so a migrated `False` would read as truthy.
+    # Not a rename: a migrated bool False would read as truthy (normalised only in __post_init__).
     "include_tokens_per_second": ('set `include_num_input_tokens_seen = "all"` instead'),
-    # Also not a rename. `__post_init__` reads `device`, which is a cached_property,
-    # and settles `_n_gpu` with it, so assigning `use_cpu` afterwards is a no-op
-    # (measured: device stays cuda:0). Reporting it as forwarded would be a lie.
+    # Not a rename: __post_init__ already settled `device`, so use_cpu afterwards is a no-op.
     "no_cuda": "set `use_cpu = True` on the config you construct instead",
     "group_by_length": 'set `train_sampling_strategy = "group_by_length"` instead',
     "include_inputs_for_metrics": 'add "inputs" to the `include_for_metrics` list instead',
@@ -320,8 +322,7 @@ def filter_config_init_kwargs(
         notify = _default_notifier
     config_name = getattr(config_class, "__name__", str(config_class))
 
-    # Two passes so the outcome does not depend on dict ordering: take what the
-    # config accepts, then rename or drop the leftovers.
+    # Two passes so the outcome does not depend on dict ordering.
     forwarded = {key: value for key, value in kwargs.items() if key in accepted}
 
     for key, value in kwargs.items():
@@ -332,9 +333,7 @@ def filter_config_init_kwargs(
 
         if verdict == "rename":
             renamed = detail
-            # The new name is a mirrored parameter, so it is already in the dict
-            # carrying either the caller's value or the class default. Only
-            # overwrite the default: an explicitly set new name wins.
+            # The new name is mirrored, so it holds the caller's value or the default; only overwrite the default.
             existing = kwargs.get(renamed, _MISSING)
             who = rename_source(key)
             if rename_value_is_unset(config_class, renamed, value):
@@ -343,11 +342,7 @@ def filter_config_init_kwargs(
                 config_class, renamed, existing, mirrored_from = mirrored_from
             ):
                 forwarded[renamed] = value
-                # A mirrored parameter carries no record of whether it was passed,
-                # so a caller who set it to exactly this default cannot be told
-                # apart from one who left it alone. Say which value won instead of
-                # letting the other disappear. The trainer path knows for certain
-                # which names arrived, so it never reaches this.
+                # A mirrored parameter cannot tell an explicit default from unset, so report which value won.
                 ambiguous = existing is not _MISSING and mirrored_from is not None
                 notify(
                     f"Unsloth: {who} renamed `{key}` to `{renamed}`. Forwarding your "
@@ -368,10 +363,20 @@ def filter_config_init_kwargs(
                 )
             continue
 
+        added = _added_field(config_class, key) if verdict == "unknown" else None
         if verdict == "retired":
             notify(
                 f"Unsloth: `{key}` is not supported by the installed "
                 f"{removal_source(key)}'s {config_name} and will be IGNORED - {detail}."
+            )
+        elif added is not None:
+            version, noop_values = added
+            if isinstance(value, str) and value in noop_values:
+                continue
+            notify(
+                f"Unsloth: `{key}` needs TRL >= {version} for {config_name}, and "
+                f"the installed TRL is older, so `{key} = {value!r}` will be IGNORED. "
+                f"Upgrade TRL to use it."
             )
         else:
             notify(

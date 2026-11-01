@@ -27,8 +27,7 @@ from utils.paths.path_utils import (
     is_appledouble_metadata,
 )
 
-# Archives load as ImageFolder with synthetic columns that do not match the real schema, so tabular
-# formats are preferred for Tier 1 preview.
+# Archives load as ImageFolder with synthetic columns, so prefer tabular formats.
 _TABULAR_EXTS = (".parquet", ".json", ".jsonl", ".csv", ".tsv", ".arrow")
 _ARCHIVE_EXTS = (".tar", ".tar.gz", ".tgz", ".gz", ".zst", ".zip", ".txt")
 DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS
@@ -203,6 +202,56 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
     return items
 
 
+# The datasets json loader types its first batch of this many bytes; the preview types the same window.
+_JSONL_SCHEMA_BYTES = 10 << 20
+
+
+def _jsonl_head(path: Path, preview_size: int) -> tuple[list[dict], bytes] | None:
+    """First ``preview_size`` JSON Lines objects and the bytes of the loader's first batch. ``None`` if not JSON Lines."""
+    rows, keys, window, scanned = [], {}, [], 0
+    with path.open("rb") as f:
+        for line in f:
+            if line.strip():
+                try:
+                    row = json.loads(line.decode("utf-8"))
+                except ValueError:
+                    row = None
+                if not isinstance(row, dict):
+                    # Within the preview rows the loader decides; past them the window ends.
+                    if len(rows) < preview_size:
+                        return None
+                    break
+                keys.update(dict.fromkeys(row))
+                if len(rows) < preview_size:
+                    rows.append(row)
+            window.append(line)
+            scanned += len(line)
+            if len(rows) >= preview_size and scanned >= _JSONL_SCHEMA_BYTES:
+                break
+    # Columns are the union over the window, as the Arrow reader builds them (from_list reads row 0's keys).
+    return [{key: row.get(key) for key in keys} for row in rows], b"".join(window)
+
+
+def _jsonl_rows_dataset(rows: list[dict], window: bytes):
+    import io
+
+    import pyarrow as pa
+    import pyarrow.json as paj
+    from datasets import Dataset
+
+    try:
+        # The loader's reader types as training does; one block, no threads: #15681 segfaults only threaded.
+        options = paj.ReadOptions(use_threads = False, block_size = len(window))
+        table = paj.read_json(io.BytesIO(window), read_options = options)
+        return Dataset.from_list(table.slice(0, len(rows)).to_pylist())
+    except pa.ArrowException as error:
+        # A field that is a string in one row and an object in another (#15681): show the rows as written.
+        try:
+            return Dataset.from_list(rows)
+        except (TypeError, ValueError, OverflowError):
+            raise error from None
+
+
 def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
     """Stream the first ``preview_size`` rows so a large file is never fully parsed into Arrow; returns ``(Dataset, None)`` or ``None`` if empty/unsupported."""
     from itertools import islice
@@ -211,6 +260,10 @@ def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
 
     name = path.name.lower()
     if name.endswith((".json", ".jsonl")):
+        if not load_kwargs:
+            head = _jsonl_head(path, preview_size)
+            if head is not None:
+                return (_jsonl_rows_dataset(*head), None) if head[0] else None
         loader = "json"
     elif name.endswith((".csv", ".tsv")):
         loader = "csv"
@@ -236,6 +289,58 @@ def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
     return Dataset.from_list(rows, features = load_kwargs.get("features")), None
 
 
+def _parquet_preview_slice(files: list[Path], preview_size: int):
+    """Leading ``preview_size`` rows + footer row count, typed as the datasets Parquet builder types them,
+    without the full load's cache write. ``None`` (full load decides) on differing schemas, no rows, or any error."""
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        from datasets import Dataset, DatasetInfo, Features
+        from datasets.table import InMemoryTable, table_cast
+
+        schema, total_rows = None, 0
+        for path in files:
+            metadata = pq.read_metadata(path)
+            file_schema = metadata.schema.to_arrow_schema()
+            if schema is None:
+                schema = file_schema
+            elif not file_schema.equals(schema, check_metadata = True):
+                # The full load casts later files to the first one's features or raises; leave both to it.
+                return None
+            total_rows += metadata.num_rows
+        if total_rows <= 0:
+            return None
+
+        features = Features.from_arrow_schema(schema)
+        arrow_schema = features.arrow_schema
+        wanted = min(preview_size, total_rows)
+        tables, decoded_rows = [], 0
+        # Decode every page (damage past the preview rows must still fail), one row group per batch at most.
+        for path in files:
+            # A file object, so the handle is closed here (Windows would keep the file locked otherwise).
+            with open(path, "rb") as handle:
+                parquet_file = pq.ParquetFile(handle, pre_buffer = False, buffer_size = 1 << 20)
+                metadata = parquet_file.metadata
+                for index in range(metadata.num_row_groups):
+                    batch_size = max(1, min(8192, metadata.row_group(index).num_rows))
+                    for batch in parquet_file.iter_batches(
+                        batch_size = batch_size, row_groups = [index], use_threads = False
+                    ):
+                        decoded_rows += batch.num_rows
+                        if wanted > 0:
+                            table = pa.Table.from_batches([batch.slice(0, wanted)])
+                            tables.append(table_cast(table, arrow_schema))
+                            wanted -= tables[-1].num_rows
+        if decoded_rows != total_rows or wanted > 0:
+            return None
+        table = pa.concat_tables(tables).combine_chunks()
+        # The full load writes its rows under the features' own Arrow schema (list child names included).
+        table = table.cast(arrow_schema)
+        return Dataset(InMemoryTable(table), info = DatasetInfo(features = features)), total_rows
+    except Exception:
+        return None
+
+
 def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_size: int):
     # Non-streaming loads take the cached builder lock; use the EACCES-safe wrapper.
     from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
@@ -249,6 +354,10 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
         )
         parquet_files = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
         if parquet_files:
+            if train_split == "train":
+                preview = _parquet_preview_slice(parquet_files, preview_size)
+                if preview is not None:
+                    return preview
             dataset = load_dataset(
                 "parquet",
                 data_files = [str(path) for path in parquet_files],
@@ -271,6 +380,10 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
     suffix = dataset_path.suffix.lower()
     # Parquet/Arrow give a cheap exact total_rows; JSON/CSV carry none, so stream and report None.
     if suffix == ".parquet":
+        if train_split == "train":
+            preview = _parquet_preview_slice([dataset_path], preview_size)
+            if preview is not None:
+                return preview
         dataset = load_dataset("parquet", data_files = str(dataset_path), split = train_split)
         total_rows = len(dataset)
         preview_slice = dataset.select(range(min(preview_size, total_rows)))

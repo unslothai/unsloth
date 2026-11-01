@@ -115,6 +115,7 @@ function generalTab(initialToken: string) {
         { getState: () => runtime },
       ),
     },
+    "@/features/chat-background": { resetChatBackground: async () => true },
     "@/features/chat/stores/sidebar-organization-keys": {
       SIDEBAR_ORGANIZATION_STORAGE_KEY: "sidebar-order",
     },
@@ -156,6 +157,10 @@ function generalTab(initialToken: string) {
       cn: (...values: unknown[]) => values.filter(Boolean).join(" "),
     },
     "lucide-react": componentStub,
+    "@/lib/tick-icon": { Tick02Icon: {} },
+    "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
+    "@hugeicons/core-free-icons": new Proxy({}, { get: () => ({}) }),
+    "@/lib/folder-icons": new Proxy({}, { get: () => ({}) }),
     "../api/helper-precache": {
       loadHelperPrecacheSettings: never,
       updateHelperPrecacheSettings: never,

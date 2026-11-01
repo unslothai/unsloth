@@ -5391,6 +5391,135 @@ class TestGgufVisionToolRouting:
 
         asyncio.run(_run())
 
+    @pytest.mark.parametrize("outcome", ["allow", "deny", "expire"])
+    def test_gguf_decision_reaches_other_tabs_while_another_chat_holds_the_slot(
+        self, monkeypatch, outcome
+    ):
+        """Other tabs clear their prompt on the first frame after a decision, so it must not wait for the
+        model slot. The run itself does no more work until the slot is back."""
+        import routes.inference as inf_mod
+        from state.tool_approvals import TOOL_APPROVAL_EXPIRED_MESSAGE, TOOL_REJECTED_MESSAGE
+
+        async def _run():
+            async def fake_select_tools(*_args, **_kwargs):
+                return [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "python",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ]
+
+            decided = threading.Event()
+            resumed = threading.Event()
+            end = {"type": "tool_end", "tool_name": "python", "tool_call_id": "call_0"}
+
+            # The GGUF loop's own frames after each outcome: an Allow sends the approval and then the
+            # running status; a refusal or an expiry ends the card at once.
+            def _generate(**kwargs):
+                cancel_event = kwargs["cancel_event"]
+                yield {"type": "status", "text": "Waiting for approval: Python"}
+                yield {
+                    "type": "tool_start",
+                    "tool_name": "python",
+                    "tool_call_id": "call_0",
+                    "arguments": {"code": "print(1)"},
+                    "awaiting_confirmation": True,
+                    "approval_id": "approval_0",
+                }
+                while not decided.is_set() and not cancel_event.is_set():
+                    time.sleep(0.005)
+                if outcome == "allow":
+                    yield {
+                        "type": "tool_approved",
+                        "tool_name": "python",
+                        "tool_call_id": "call_0",
+                        "approval_id": "approval_0",
+                    }
+                    resumed.set()
+                    yield {"type": "status", "text": "Running Python..."}
+                    yield {**end, "result": "1"}
+                else:
+                    result = (
+                        TOOL_REJECTED_MESSAGE
+                        if outcome == "deny"
+                        else TOOL_APPROVAL_EXPIRED_MESSAGE
+                    )
+                    yield {**end, "result": result}
+                    resumed.set()
+                yield {"type": "content", "text": "next-turn-answer"}
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = True,
+                supports_reasoning = True,
+                reasoning_always_on = True,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                base_url = f"http://llama.decision-{outcome}.test",
+                effective_parallel_slots = 1,
+                count_chat_tokens = lambda *_args, **_kwargs: 10,
+                generate_chat_completion = lambda **_kwargs: "unused",
+                generate_chat_completion_with_tools = _generate,
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+            monkeypatch.setattr(inf_mod, "_select_request_tools", fake_select_tools)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "run python"}],
+                enable_tools = True,
+                stream = True,
+            )
+            response = await openai_chat_completions(
+                payload,
+                request = self._Request(ui_events = True),
+                current_subject = "test",
+            )
+            iterator = response.body_iterator
+
+            async def next_frame(needle):
+                async for chunk in iterator:
+                    if needle in chunk:
+                        return chunk
+                pytest.fail(f"{needle} never arrived")
+
+            blocker = None
+            rest = None
+            try:
+                await asyncio.wait_for(next_frame('"tool_start"'), timeout = 2)
+                # The parked run gave up its slot; another chat takes it.
+                queue = get_llama_admission_queue(f"http://llama.decision-{outcome}.test")
+                blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+                assert blocker is not None
+                decided.set()
+                first = '"tool_approved"' if outcome == "allow" else '"tool_end"'
+                await asyncio.wait_for(next_frame(first), timeout = 2)
+
+                # The run itself waits for the slot before it goes on.
+                rest = asyncio.create_task(next_frame("next-turn-answer"))
+                await asyncio.sleep(0.2)
+                assert not rest.done()
+                assert not resumed.is_set(), "the run went on while another chat held its slot"
+                blocker.release()
+                blocker = None
+                await asyncio.wait_for(rest, timeout = 2)
+            finally:
+                decided.set()
+                if blocker is not None:
+                    blocker.release()
+                if rest is not None and not rest.done():
+                    rest.cancel()
+                    await asyncio.gather(rest, return_exceptions = True)
+                await iterator.aclose()
+
+        asyncio.run(_run())
+
     def test_gguf_tool_stream_task_cancel_after_first_chunk_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
         async def _run():
@@ -7619,7 +7748,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: UnusedClient())
             monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: UnusedClient())
             _pin_loaded_backend(monkeypatch)
 
@@ -9177,7 +9305,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: CancellingAsyncClient(),
             )
             monitor_id = _monitor_entry(monitor)
@@ -9425,7 +9553,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: FakeNonStreamingClient(),
             )
             payload = ChatCompletionRequest(
@@ -9487,7 +9615,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: FakeNonStreamingClient(),
             )
             monitor_id = _monitor_entry(monitor)
@@ -9901,7 +10029,11 @@ class TestApiMonitorSafetensorsUsage:
             ):
                 if getattr(func, "__name__", "") == "resolve_local_gguf":
                     return None
-                if func in (inf_mod.get_inference_backend, inf_mod._loaded_satisfies):
+                if func in (
+                    inf_mod.get_inference_backend,
+                    inf_mod._loaded_satisfies,
+                    inf_mod._trained_run_dir,
+                ):
                     return func(*_args, **_kwargs)
                 raise asyncio.CancelledError()
 

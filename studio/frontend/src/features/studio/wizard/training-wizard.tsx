@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { PICKER_TRIGGER_CLASS } from "@/components/resource-picker/picker-focus";
+import { SectionBox, SectionField } from "@/components/section-box";
 import { SegmentedTabsList } from "@/components/segmented-tabs";
 import {
   Select,
@@ -30,86 +31,20 @@ import {
   useTrainingConfigStore,
 } from "@/features/training";
 import { useT } from "@/i18n";
+import { ChipIcon, Settings01Icon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import type { TrainingMethod } from "@/types/training";
 import {
-  AiBrain01Icon,
   Database02Icon,
-  FloppyDiskIcon,
-  Settings05Icon,
+  PencilEdit01Icon,
 } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import type { CSSProperties, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { DatasetPanel } from "../sections/dataset-section";
 import { DatasetSourceToggleAction } from "../sections/dataset-source-toggle";
 import { FieldHint } from "../sections/field-hint";
 import { ParamsSection } from "../sections/params-section";
 import { ConfigActions } from "./config-actions";
 import type { ParamMode } from "./training-param-mode";
-
-function SectionBox({
-  title,
-  description,
-  icon,
-  chipTint,
-  titleAction,
-  children,
-  dataTour,
-}: {
-  title?: string;
-  description?: string;
-  icon?: IconSvgElement;
-  chipTint?: string;
-  titleAction?: ReactNode;
-  children: ReactNode;
-  dataTour?: string;
-}) {
-  return (
-    <section
-      data-tour={dataTour}
-      className="@container/train-card elevated-card flex flex-col gap-7 bg-card p-5 pb-7"
-    >
-      {title && (
-        <div className="flex flex-col items-stretch gap-3 @md/train-card:flex-row @md/train-card:items-center @md/train-card:justify-between">
-          <div className="flex min-w-0 items-center gap-3">
-            {icon && (
-              <span
-                className="train-section-chip inline-flex size-9 shrink-0 items-center justify-center rounded-full"
-                style={
-                  chipTint
-                    ? ({ "--chip-tint": chipTint } as CSSProperties)
-                    : undefined
-                }
-              >
-                <HugeiconsIcon
-                  icon={icon}
-                  strokeWidth={1.5}
-                  className="size-[calc(18px*var(--ui-space-scale,1))]"
-                />
-              </span>
-            )}
-            <div className="min-w-0">
-              <h2 className="select-none text-ui-13p5 font-semibold leading-ui-18 tracking-[-0.012em] text-foreground">
-                {title}
-              </h2>
-              {description && (
-                <p className="text-ui-11p5 leading-ui-15 text-muted-foreground/85">
-                  {description}
-                </p>
-              )}
-            </div>
-          </div>
-          {titleAction && (
-            <div className="w-full min-w-0 @md/train-card:w-auto @md/train-card:shrink-0">
-              {titleAction}
-            </div>
-          )}
-        </div>
-      )}
-      <div className="@container/train-section min-w-0">{children}</div>
-    </section>
-  );
-}
 
 function ParamModeToggle({
   mode,
@@ -151,13 +86,12 @@ function SetupField({
   children: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-2">
-      <span className="flex items-center gap-1.5 text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
-        {label}
-        {hint ? <FieldHint text={hint} label={label} /> : null}
-      </span>
-      <div className="min-w-0">{children}</div>
-    </div>
+    <SectionField
+      label={label}
+      hint={hint ? <FieldHint text={hint} label={label} /> : null}
+    >
+      {children}
+    </SectionField>
   );
 }
 
@@ -206,7 +140,7 @@ function TrainingMethodSelect() {
         side="bottom"
         align="start"
         sideOffset={8}
-        className="rounded-[14px] ring-0"
+        className="rounded-xl ring-0"
       >
         {TRAINING_METHOD_ORDER.filter(
           (method) =>
@@ -287,7 +221,7 @@ function TrainAsSelect() {
         side="bottom"
         align="start"
         sideOffset={8}
-        className="rounded-[14px] ring-0"
+        className="rounded-xl ring-0"
       >
         {["language", "decision"].map((option) => (
           <SelectItem key={option} value={option}>
@@ -337,7 +271,7 @@ function CheckpointSelect({
         side="bottom"
         align="start"
         sideOffset={8}
-        className="rounded-[14px] ring-0"
+        className="rounded-xl ring-0"
       >
         {checkpoints.map((checkpoint) => (
           <SelectItem key={checkpoint.name} value={checkpoint.name}>
@@ -421,7 +355,7 @@ export function TrainingWizard({
       <SectionBox
         title={t("studio.wizard.modelTitle")}
         description={t("studio.wizard.modelDescription")}
-        icon={AiBrain01Icon}
+        icon={ChipIcon}
         chipTint="var(--chart-1)"
       >
         <ModelPanel />
@@ -431,7 +365,7 @@ export function TrainingWizard({
         title={t("studio.wizard.datasetTitle")}
         description={t("studio.wizard.datasetDescription")}
         icon={Database02Icon}
-        chipTint="var(--chart-4)"
+        chipTint="var(--chart-1)"
         dataTour="studio-dataset"
         titleAction={<DatasetSourceToggleAction />}
       >
@@ -441,8 +375,8 @@ export function TrainingWizard({
       <SectionBox
         title={t("studio.wizard.paramsTitle")}
         description={t("studio.wizard.paramsDescription")}
-        icon={Settings05Icon}
-        chipTint="var(--chart-5)"
+        icon={Settings01Icon}
+        chipTint="var(--chart-1)"
         dataTour="studio-params"
         titleAction={
           <ParamModeToggle mode={paramMode} onChange={onParamModeChange} />
@@ -454,8 +388,8 @@ export function TrainingWizard({
       <SectionBox
         title={t("studio.wizard.configTitle")}
         description={t("studio.wizard.configDescription")}
-        icon={FloppyDiskIcon}
-        chipTint="var(--chart-3)"
+        icon={PencilEdit01Icon}
+        chipTint="var(--chart-1)"
       >
         <ConfigActions />
       </SectionBox>

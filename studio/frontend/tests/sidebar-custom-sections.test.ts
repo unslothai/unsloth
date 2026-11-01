@@ -555,7 +555,7 @@ test("each list header's menu carries only what that list is about, as in ChatGP
   assert.match(menu, /<NonModalDropdownMenu\n\s*side="bottom"\n\s*align="start"/);
   assert.doesNotMatch(menu, /className="unsloth-plus-menu w-/);
   assert.match(menu, /icon=\{PanelLeftIcon\}/);
-  assert.match(APP_SIDEBAR, /value: "project", key: "shell\.organize\.byProject", icon: Folder01Icon/);
+  assert.match(APP_SIDEBAR, /value: "project", key: "shell\.organize\.byProject", icon: ProjectIcon/);
   assert.match(APP_SIDEBAR, /value: "list", key: "shell\.organize\.inOneList", icon: LeftToRightListBulletIcon/);
   assert.doesNotMatch(projects, /setSectionHidden|mode: "create"/);
   assert.match(recents, /\{organizeSubmenu\}[\s\S]*shell\.organize\.sortChatsBy/);
@@ -698,7 +698,7 @@ test("a custom section's menu edits it, acts on its chats, and removes it", () =
   assert.match(menu, /onSelect=\{\(\) => clearThreadsUnread\(unreadInSection\)\}/);
   assert.match(menu, /disabled=\{chats\.length === 0\}\n\s*onSelect=\{\(\) => void archiveSection\(\)\.catch\(\(\) => undefined\)\}/);
   assert.match(menu, /await archiveChatItems\(all\);/);
-  assert.match(menu, /icon=\{Settings02Icon\}[\s\S]*icon=\{Tick02Icon\}[\s\S]*icon=\{Archive03Icon\}[\s\S]*icon=\{Cancel01Icon\}/);
+  assert.match(menu, /icon=\{Settings01Icon\}[\s\S]*icon=\{Tick02Icon\}[\s\S]*icon=\{Archive03Icon\}[\s\S]*icon=\{Cancel01Icon\}/);
   assert.doesNotMatch(menu, /variant="destructive"|renderSortSubmenu/);
 });
 
@@ -722,7 +722,7 @@ test("a section drag draws itself, so the sidebar re-renders only on the drop", 
   assert.match(drag, /escaped = true;\n\s*putDown\(\);/);
   const css = await readSrcAsync("index.css");
   assert.match(css, /\[data-sidebar-section\]\[data-section-dragging\] \{\n\s*opacity: 0\.4;/);
-  assert.match(css, /\.sidebar-section-drop-line \{[\s\S]*?border-top: 1\.5px solid var\(--primary\);/);
+  assert.match(css, /\.sidebar-section-drop-line \{[\s\S]*?border-top: 1\.5px solid var\(--foreground\);/);
 });
 
 test("a carried section lands against the nearest gap, and only a real move draws a line", async () => {

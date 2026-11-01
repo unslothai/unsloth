@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import types
+from contextlib import nullcontext
 
 import pytest
 
@@ -153,6 +154,87 @@ def test_image_load_beside_a_resident_chat_model_policy_matrix(cores, policy, ne
         ["evicted"] if evicts and policy != "off" else []
     )
     assert arb._media_needs.get(arb.DIFFUSION) == (need if policy != "off" else None)
+
+
+@pytest.mark.parametrize(
+    "policy, growth, outcome",
+    [("always", 512, "join"), ("fit", None, "evict"), ("always", None, "refuse")],
+)
+def test_image_load_beside_a_chat_model_on_metal(cores, monkeypatch, policy, growth, outcome):
+    import core.inference.gpu_residency as res
+
+    monkeypatch.setattr(res, "_on_metal", lambda: True)
+    monkeypatch.setattr(res, "_mlx_chat_unallocated_mib", lambda: growth)
+    cores.fits()
+    arb.acquire_for(arb.CHAT)
+    assert arb.would_evict(arb.DIFFUSION, policy = policy, need_mib = {0: 4096}) is (outcome == "evict")
+    with pytest.raises(arb.MultiModelAlwaysRefusal) if outcome == "refuse" else nullcontext():
+        arb.acquire_for(arb.DIFFUSION, lambda: None, policy = policy, need_mib = {0: 4096})
+    gone = {"join": set(), "evict": {arb.CHAT}, "refuse": {arb.DIFFUSION}}[outcome]
+    assert {arb.CHAT, arb.DIFFUSION} - set(arb.residents()) == gone
+
+
+@pytest.mark.parametrize("metal", [True, False])
+def test_a_short_chat_load_on_metal_frees_media_but_no_kept_chat_model(cores, monkeypatch, metal):
+    import core.inference.gpu_residency as res
+    from core.inference import model_slots
+
+    monkeypatch.setattr(res, "_on_metal", lambda: metal)
+    monkeypatch.setattr(res, "_mlx_chat_unallocated_mib", lambda: 0)
+    monkeypatch.setattr(res, "can_load_alongside", lambda *a: (False, {"short_mib": {0: 1}}))
+    asked = []
+    monkeypatch.setattr(model_slots, "eviction_victims", lambda *a, **k: asked.append(a) or [])
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096})
+    arb.acquire_for(arb.CHAT, policy = "fit", need_mib = {0: 9000})
+    assert arb.DIFFUSION not in arb.residents() and bool(asked) is not metal
+    asked.clear()
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096})
+    assert asked
+
+
+@pytest.mark.parametrize("policy", ["fit", "always"])
+@pytest.mark.parametrize("priced", [True, False])
+def test_a_priced_mlx_chat_load_does_not_join_an_unpriced_image(cores, monkeypatch, policy, priced):
+    import core.inference.gpu_residency as res
+
+    monkeypatch.setattr(res, "can_load_alongside", lambda *a: (True, {}))
+    arb.acquire_for(
+        arb.DIFFUSION, lambda: None, policy = "fit" if priced else "off", need_mib = {0: 4096}
+    )
+    refused = policy == "always" and not priced
+    with pytest.raises(arb.MultiModelAlwaysRefusal) if refused else nullcontext():
+        arb.acquire_for(arb.CHAT, policy = policy, need_mib = res.ChatNeed({0: 2048}))
+    assert (arb.DIFFUSION in arb.residents()) is (priced or refused)
+
+
+@pytest.mark.parametrize("policy", ["off", "fit", "always"])
+def test_an_unpriced_chat_load_settles_beside_media_as_its_policy_says(cores, monkeypatch, policy):
+    import core.inference.gpu_residency as res
+
+    monkeypatch.setattr(res, "_on_metal", lambda: True)
+    res.settle_unpriced_chat_beside_media(policy)  # nothing resident
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096})
+    with pytest.raises(arb.MultiModelAlwaysRefusal) if policy == "always" else nullcontext():
+        res.settle_unpriced_chat_beside_media(policy)
+    assert (arb.DIFFUSION in arb.residents()) is (policy != "fit")
+    monkeypatch.setattr(res, "_on_metal", lambda: False)
+    res.settle_unpriced_chat_beside_media("fit")
+    assert (arb.DIFFUSION in arb.residents()) is (policy != "fit")
+
+
+def test_a_renderer_change_forgets_the_media_price(cores):
+    import core.inference.gpu_residency as res
+
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096})
+    assert arb._media_needs.get(arb.DIFFUSION) == {0: 4096}
+    res.forget_media_price(arb.DIFFUSION)
+    assert arb.DIFFUSION not in arb._media_needs and arb.DIFFUSION in arb.residents()
+    import threading
+
+    cancel = threading.Event()
+    cancel.set()
+    with arb._lock, pytest.raises(RuntimeError):
+        res.forget_media_price(arb.DIFFUSION, cancel)
 
 
 @pytest.mark.parametrize("managed", [False, True])
@@ -1090,3 +1172,35 @@ def test_a_respawning_chat_server_counts_as_occupied(monkeypatch):
     kept = types.SimpleNamespace(llama = types.SimpleNamespace(is_active = True, is_loaded = False))
     monkeypatch.setattr(model_slots, "slots", [kept])
     assert arb._chat_occupied() is True
+
+
+def test_a_failed_replacement_gives_the_kept_model_back_its_price(cores, monkeypatch):
+    # The new price is written as the load starts; its failure keeps the old model, which must
+    # not stay priced as the smaller model that never loaded.
+    monkeypatch.setattr(arb, "_media_need_rollback", {}, raising = False)
+    old, new = {0: 8000}, {0: 1000}
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = old)
+    arb.acquire_for(arb.DIFFUSION, lambda: {"loading": True}, policy = "fit", need_mib = new)
+    assert arb._media_needs[arb.DIFFUSION] == new
+
+    arb.restore_media_need(arb.DIFFUSION)
+    assert arb._media_needs[arb.DIFFUSION] == old
+    # Applied once: a repeated restore changes nothing.
+    arb.restore_media_need(arb.DIFFUSION)
+    assert arb._media_needs[arb.DIFFUSION] == old
+
+
+def test_a_failed_first_load_and_an_unpriced_one_restore_nothing_stale(cores, monkeypatch):
+    monkeypatch.setattr(arb, "_media_need_rollback", {}, raising = False)
+    # A first load had no price before it; its rollback is to none.
+    arb.acquire_for(arb.VIDEO, lambda: None, policy = "fit", need_mib = {0: 4096})
+    arb.restore_media_need(arb.VIDEO)
+    assert arb.VIDEO not in arb._media_needs
+
+    # A load that takes no GPU claim reprices nothing, so its failure must not reach back to an
+    # older load's rollback.
+    arb.acquire_for(arb.VIDEO, lambda: None, policy = "fit", need_mib = {0: 4096})
+    arb.acquire_for(arb.VIDEO, lambda: None, policy = "fit", need_mib = {0: 2048})
+    arb.begin_media_load(arb.VIDEO, "fit", ("org/video",), lambda: None)
+    arb.restore_media_need(arb.VIDEO)
+    assert arb._media_needs[arb.VIDEO] == {0: 2048}

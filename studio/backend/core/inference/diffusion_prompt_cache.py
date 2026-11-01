@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""In-memory, host-RAM LRU of text-encoder outputs for diffusion/video pipes.
-
-``UNSLOTH_DIFFUSION_PROMPT_CACHE=0`` disables; ``UNSLOTH_DIFFUSION_PROMPT_CACHE_MB`` (default 256, capped on
-small hosts) bounds it. Hits return fresh copies so in-place edits cannot poison later renders.
-"""
+"""Host-RAM LRU of text-encoder outputs; hits return copies so in-place edits cannot poison renders."""
 
 from __future__ import annotations
 
@@ -24,6 +20,12 @@ _DEFAULT_BUDGET_MB = 256
 _FALSE_TOKENS = ("0", "false", "no", "off")
 
 _KEY_EXCLUDED_ARGS = frozenset({"device", "generator"})
+# Cache the per-text helper so an unchanged CFG negative is reused across prompts. "0" = pair key only.
+_ENV_PER_TEXT = "UNSLOTH_DIFFUSION_PROMPT_CACHE_PER_TEXT"
+_PER_TEXT_METHODS = {
+    "Wan": "_get_t5_prompt_embeds",
+    "ZImage": "_encode_prompt",
+}
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4")
 
 
@@ -184,8 +186,7 @@ class PromptCache:
 def _store_copy(t: Any) -> Any:
     t = t.detach()
     device = t.device
-    # Not pinned: pin_memory() is a fresh cudaHostAlloc per entry (60 ms to 1.6 s for 4 MB on a busy host) to save
-    # ~0.3 ms per hit.
+    # Not pinned: pin_memory() costs a slow cudaHostAlloc per entry, to save only ~0.3 ms per hit.
     stored = t.to("cpu", copy = True)
     stored._unsloth_src_device = device
     return stored
@@ -255,6 +256,9 @@ def install(
         return False
     load_fp = _plain(identity or {})
     wrapped = _wrap_encode_prompt(pipe, cache, load_fp, lora_owner or pipe, logger)
+    per_text = _per_text_method(pipe)
+    if wrapped and per_text is not None:
+        _wrap_encode_prompt(pipe, cache, load_fp, lora_owner or pipe, logger, name = per_text)
     registered = _register_h3(pipe, cache, load_fp, logger)
     if not (wrapped or registered):
         return False
@@ -278,10 +282,26 @@ def release(pipe: Any) -> None:
         cache.clear()
 
 
+def _per_text_method(pipe: Any) -> Optional[str]:
+    if (os.environ.get(_ENV_PER_TEXT) or "").strip().lower() in _FALSE_TOKENS:
+        return None
+    cls = type(pipe).__name__
+    for prefix, name in _PER_TEXT_METHODS.items():
+        if cls.startswith(prefix) and callable(getattr(pipe, name, None)):
+            return name
+    return None
+
+
 def _wrap_encode_prompt(
-    pipe: Any, cache: PromptCache, load_fp: Any, lora_owner: Any, logger: Any
+    pipe: Any,
+    cache: PromptCache,
+    load_fp: Any,
+    lora_owner: Any,
+    logger: Any,
+    *,
+    name: str = "encode_prompt",
 ) -> bool:
-    encode = getattr(pipe, "encode_prompt", None)
+    encode = getattr(pipe, name, None)
     if not callable(encode):
         return False
     try:
@@ -303,6 +323,8 @@ def _wrap_encode_prompt(
                 "loras": _lora_state(lora_owner),
                 "args": keyed,
             }
+            if name != "encode_prompt":
+                payload["method"] = name
             # Textual-inversion embeddings change what the same text encodes to; absent = the unchanged key.
             embeddings = _embedding_state(pipe)
             if embeddings:
@@ -330,7 +352,7 @@ def _wrap_encode_prompt(
 
     cached_encode_prompt.__signature__ = signature
     cached_encode_prompt.__wrapped__ = encode
-    pipe.encode_prompt = cached_encode_prompt
+    setattr(pipe, name, cached_encode_prompt)
     return True
 
 

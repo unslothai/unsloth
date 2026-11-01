@@ -26,9 +26,10 @@ test("macOS termination checks unsaved transcripts before allowing exit", () => 
     native.indexOf("fn cleanup_child_processes"),
   );
   assert.match(predicate, /\|\| renderer.unsaved_transcript/);
+  // The terminate path may also hold on for other reasons (a window to hide), never fewer.
   assert.match(
     native,
-    /begin_or_attach_termination\(quit_requires_confirmation\(app\)\)/,
+    /begin_or_attach_termination\(\s*quit_requires_confirmation\(app\)/,
   );
   assert.match(native, /&& confirm_quit_with_unsaved_transcript\(&app\)/);
 });
@@ -171,18 +172,20 @@ test("logout checks unsaved transcripts before revoking the session or navigatin
   assert.ok(protection);
   const sidebarTree = parse(sidebar);
   const handlers: string[] = [];
+  // The menu item and the shortcut both call this one handler.
   function findLogout(node: ts.Node) {
     if (
-      ts.isArrowFunction(node) &&
+      (ts.isArrowFunction(node) || ts.isFunctionDeclaration(node)) &&
       node.modifiers?.some((item) => item.kind === ts.SyntaxKind.AsyncKeyword) &&
-      node.body.getText(sidebarTree).includes("await logout()")
+      node.body?.getText(sidebarTree).includes("await logout()")
     ) {
       handlers.push(node.getText(sidebarTree));
     }
     ts.forEachChild(node, findLogout);
   }
   findLogout(sidebarTree);
-  assert.equal(handlers.length, 2);
+  assert.equal(handlers.length, 1);
+  assert.equal((sidebar.match(/void signOut\(\)/g) ?? []).length, 2);
   const execute = (expression: string, scope: Record<string, unknown>) => {
     const { outputText } = ts.transpileModule(`return (${expression});`, {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
@@ -229,6 +232,8 @@ test("logout checks unsaved transcripts before revoking the session or navigatin
         window,
         Event,
         AUTH_SESSION_ENDING_EVENT: eventName,
+        isTauri: false,
+        isOwner: true,
         logout: async () => {
           events.push("logout");
         },

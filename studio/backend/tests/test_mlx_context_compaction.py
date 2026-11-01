@@ -87,6 +87,19 @@ def test_an_overflowing_prompt_drops_its_oldest_turns_and_reports_the_boundary(
     assert result["messages"][-1] is messages[-1]
 
 
+def test_chat_stop_reaches_the_archive_embedding_pass(archive_calls):
+    """Stop must be able to interrupt the archive's embedding before inference (#14519)."""
+    import threading
+
+    stop = threading.Event()
+    _fit(_backend(), _thread(), thread_id = "thread-1", cancel_event = stop)
+
+    cancel_check = archive_calls[-1]["cancel_check"]
+    assert cancel_check() is False
+    stop.set()
+    assert cancel_check() is True
+
+
 @pytest.mark.parametrize(
     "case", ["not_opted_in", "not_mlx", "media", "resumed_reply", "resumed_thought", "no_count"]
 )
@@ -216,6 +229,8 @@ def test_the_tool_loop_refits_every_turn_and_keeps_the_question_past_a_reprompt(
     ran = [m for m in last_fit["branch_messages"] if m["role"] == "tool"][-3:]
     assert [m["content"][:8] for m in ran] == ["result 1", "result 2", "result 3"]
     assert [m for m in last_fit["branch_messages"] if m["role"] == "user"] == [old, QUESTION]
+    # The recall query comes from the client's turns, never from a re-prompt the loop added (#16187).
+    assert [m for m in last_fit["query_messages"] if m["role"] == "user"][-1] is QUESTION
     assert len(truncated) == fits and all(event["fits"] for event in truncated)
     assert bool(truncated[0].get("checkpoint_started")) is (policy == "checkpoint")
     assert last_fit["thread_id"] == "thread-1"

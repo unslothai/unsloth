@@ -113,13 +113,19 @@ def _case_optimizer_cls(native, tmp):
             except Exception as exc:
                 err = f"{type(exc).__name__}: {str(exc)[:200]}"
             res[f"{name}.{how}"] = {"error": err, "sharded": native.is_native_fsdp2(model)}
+    # #15008: a real bitsandbytes Adam / AdamW steps local shards when this bitsandbytes can.
+    res["_bnb_local"] = bool(native._bnb_local_shards_available())
     return res
 
 
 def _case_reentry(native):
+    model = native.shard_model(_tiny_llama(), native.FSDP2Config(param_dtype = torch.float32))
+    return _case_reentry_on(native, model)
+
+
+def _case_reentry_on(native, model):
     from torch.distributed.tensor import DTensor
 
-    model = native.shard_model(_tiny_llama(), native.FSDP2Config(param_dtype = torch.float32))
     if getattr(model, "generation_config", None) is not None:
         model.generation_config.pad_token_id = None
 
@@ -143,6 +149,30 @@ def _case_reentry(native):
     return res
 
 
+def _case_reentry_no_setter(native):
+    """torch 2.6 / 2.7: FSDPModule has no set_reshard_after_forward (added in 2.8)."""
+    FSDPModule = native._fsdp_module_class()
+    removed = {}
+    for cls in FSDPModule.__mro__:
+        if "set_reshard_after_forward" in cls.__dict__:
+            removed[cls] = cls.__dict__["set_reshard_after_forward"]
+            delattr(cls, "set_reshard_after_forward")
+    try:
+        model = native.shard_model(_tiny_llama(), native.FSDP2Config(param_dtype = torch.float32))
+        units = [m for m in model.modules() if isinstance(m, FSDPModule)]
+        meshes = [u._get_fsdp_state()._fsdp_param_group for u in units]
+        before = [g.post_forward_mesh_info if g is not None else None for g in meshes]
+        res = {"has_setter": hasattr(units[0], "set_reshard_after_forward")}
+        res.update(_case_reentry_on(native, model))
+        after = [g.post_forward_mesh_info if g is not None else None for g in meshes]
+        res["mesh_restored"] = all(a is b for a, b in zip(before, after))
+        res["units"] = len(units)
+        return res
+    finally:
+        for cls, fn in removed.items():
+            setattr(cls, "set_reshard_after_forward", fn)
+
+
 def _worker_case(case, native, rank, tmp):
     if case == "stateful":
         return _case_stateful(native, tmp)
@@ -150,6 +180,8 @@ def _worker_case(case, native, rank, tmp):
         return _case_optimizer_cls(native, tmp)
     if case == "reentry":
         return _case_reentry(native)
+    if case == "reentry_no_setter":
+        return _case_reentry_no_setter(native)
     raise KeyError(case)
 
 
@@ -231,19 +263,36 @@ def test_stateful_mixed_optimizer_is_refused(tmp_path):
 
 
 def test_bnb_optimizer_cls_and_kwargs_is_refused(tmp_path):
+    """A torch class is sharded. A bitsandbytes Adam / AdamW is kept and sharded where this
+    bitsandbytes steps local shards (#15008), else refused. A class that only claims the
+    bitsandbytes module (AdamW8bitLike) cannot step local shards, so it is always refused."""
     pytest.importorskip("transformers")
     pytest.importorskip("peft")
     for rank, r in _run("optimizer_cls", tmp_path).items():
+        bnb_local = r.pop("_bnb_local")
         for key, v in r.items():
-            if key.startswith("torch."):
-                assert v["error"] == "" and v["sharded"], (rank, key, v)
+            if key.startswith("torch.") or (key.startswith("bnb.") and bnb_local):
+                assert v["error"] == "" and v["sharded"], (rank, key, v, bnb_local)
             else:
                 assert v["error"].startswith("ValueError") and "bitsandbytes" in v["error"], (
                     rank,
                     key,
                     v,
+                    bnb_local,
                 )
                 assert not v["sharded"], (rank, key, v)
+
+
+def test_unsharded_context_without_reshard_setter(tmp_path):
+    """torch 2.6 / 2.7 FSDPModule has no set_reshard_after_forward: the gather / reshard still runs
+    and every unit's post-forward mesh comes back unchanged."""
+    pytest.importorskip("transformers")
+    for rank, r in _run("reentry_no_setter", tmp_path).items():
+        assert r["has_setter"] is False and r["units"] > 1, (rank, r)
+        assert r["before"] > 0 and r["outer"] == 0, (rank, r)
+        assert r["after_generate"] == 0 and r["after_inner_raise"] == 0, (rank, r)
+        assert r["after_outer"] == r["before"] and r["depth"] == 0, (rank, r)
+        assert r["mesh_restored"], (rank, r)
 
 
 def test_unsharded_context_is_reentrant(tmp_path):

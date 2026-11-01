@@ -975,6 +975,43 @@ def test_an_amd_distro_checks_for_the_dxg_device(wsl, monkeypatch, tmp_path):
     assert probed[-1] == ["test", "-e", "/usr/lib/wsl/lib/libcuda.so"]
 
 
+@pytest.mark.parametrize(
+    "answer, fetched",
+    [
+        ("uv 0.12.19 (x86_64-unknown-linux-gnu)", True),
+        (None, True),
+        ("hang", True),
+        ("uv {pin} (x)", False),
+    ],
+)
+def test_an_existing_guest_uv_is_replaced_unless_it_is_the_pin(
+    monkeypatch, tmp_path, answer, fetched
+):
+    monkeypatch.setattr(wsl_host, "host_dir", lambda: tmp_path / "host")
+    monkeypatch.setattr(wsl_host, "distro_ready", lambda: True)
+    monkeypatch.setattr(wsl_host, "put", lambda *a, **k: None)
+    monkeypatch.setattr(wsl_host, "to_guest_path", lambda path: "/mnt/c/uv.tar.gz")
+    downloads, ran = [], []
+    monkeypatch.setattr(
+        wsl_host, "download", lambda spec, *a, **k: downloads.append(spec) or "uv.tgz"
+    )
+
+    def guest(argv, **kwargs):
+        ran.append(argv[0])
+        if argv[-1] == "--version":
+            if answer is None:
+                raise RuntimeError("missing")
+            if answer == "hang":
+                raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+            return answer.format(pin = wsl_host.UV["version"]) + "\n"
+        return ""
+
+    monkeypatch.setattr(wsl_host, "guest", guest)
+    wsl_host.ensure_distro()
+    assert downloads == ([wsl_host.UV] if fetched else [])
+    assert ("tar" in ran) is fetched
+
+
 def test_rocm_setup_script_is_idempotent_and_pinned():
     script = wsl_host.ROCM_SETUP
     assert "https://repo.radeon.com/rocm/apt/7.2.1 noble main" in script

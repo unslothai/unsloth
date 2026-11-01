@@ -182,6 +182,7 @@ class TestClearGpuCache:
         with (
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU),
             patch("utils.hardware.hardware.is_apple_silicon", return_value = True),
+            patch("torch.backends.mps.is_available", return_value = True),
             patch("torch.mps.empty_cache") as mock_empty,
         ):
             clear_gpu_cache()
@@ -513,6 +514,21 @@ class TestLogGpuMemory:
 
         captured = capfd.readouterr()
         assert "No GPU available" in captured.out
+
+
+class TestGetPackageVersions:
+    def test_reports_mlx_under_the_key_the_engines_row_reads(self):
+        from importlib.metadata import PackageNotFoundError
+
+        def fake_version(name):
+            if name != "mlx":
+                raise PackageNotFoundError(name)
+            return "0.32.4"
+
+        with patch("utils.hardware.hardware.pkg_version", side_effect = fake_version):
+            versions = _hw_module.get_package_versions()
+
+        assert versions["mlx"] == "0.32.4"
 
 
 class TestCudaDeviceOrder:

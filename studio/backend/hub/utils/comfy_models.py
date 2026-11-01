@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ComfyUI models-folder discovery and loose single-file diffusion checkpoints.
-
-Role folders hold many loose ``.safetensors`` with no ``config.json``; each denoiser is listed as its
-own row when its header says DiT. A local DiT's text encoder is taken from the layout's text-encoder
-folders when one fits (``diffusion_comfy_components.pick_comfy_text_encoders``); VAE folders are
-resolved but nothing loads from them. No torch: called on every listing.
-"""
+"""Loose ComfyUI checkpoints; no torch import (runs on every listing); VAE folders never loaded."""
 
 from __future__ import annotations
 
@@ -340,9 +334,13 @@ def loose_diffusion_checkpoints(folder: Path, *, entry_limit: Optional[int] = No
 
 def _single_file_loadable(image_fam, video_fam, filename: str) -> bool:
     """Mirrors the loaders' single-file refusals (pipeline-only, dual-expert, unnamed MiniMax-H3)."""
-    if image_fam is not None and not image_fam.pipeline_only:
-        return True
-    if video_fam is None or video_fam.is_moe:
+    if image_fam is not None:
+        return not (
+            image_fam.pipeline_only or getattr(image_fam, "native_transformer_files_only", False)
+        )
+    from core.inference.video_families import PIPELINE_ONLY_VIDEO_FAMILIES
+
+    if video_fam is None or video_fam.is_moe or video_fam.name in PIPELINE_ONLY_VIDEO_FAMILIES:
         return False
     if not getattr(video_fam, "modular_workflow", None):
         return True

@@ -17,6 +17,8 @@ from unsloth_zoo.utils import Version, _get_dtype
 from ..utils.packing import get_packed_info_from_kwargs
 from ..kernels import qk_norm_rope as _qk_norm_rope
 from ..kernels.qk_norm_rope import fast_qk_norm_rope, decode_qk_norm_rope
+from . import _decode_graphs
+from .llama import _decode_attention_core, _decode_attention_span
 from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
@@ -91,9 +93,9 @@ def Qwen3Attention_fast_forward(
 
     bsz, q_len, _ = hidden_states.size()
 
-    n_heads = self.config.num_attention_heads
+    n_heads = self.__dict__.get("_unsloth_tp_heads", self.config.num_attention_heads)
     n_groups = self.num_key_value_groups
-    n_kv_heads = self.config.num_key_value_heads
+    n_kv_heads = self.__dict__.get("_unsloth_tp_kv_heads", self.config.num_key_value_heads)
     head_dim = self.head_dim
     assert n_kv_heads * n_groups == n_heads
 
@@ -147,8 +149,7 @@ def Qwen3Attention_fast_forward(
             "softmax_scale": getattr(self, "softmax_scale", None),
         },
     )
-    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse (KV cache /
-    # padding mask) raises. None means the byte-identical default.
+    # PrefixGrouper seg table rides in **kwargs; misuse (KV cache or padding mask) raises; None is default
     _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
@@ -158,6 +159,7 @@ def Qwen3Attention_fast_forward(
         head_dim = head_dim,
         requires_grad = hidden_states.requires_grad,
         seq_info = seq_info,
+        training = self.training,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
         prefix_seg_info = _pg_seg,
@@ -202,50 +204,21 @@ def Qwen3Attention_fast_forward_inference(
 
     hidden_size = self.config.hidden_size
     attention_size = n_heads * head_dim
+    # Graph mode (a captured decode step): no host lengths, the cache slot is on the device.
+    static = _decode_graphs.static()
     seq_len = K1.shape[-2]
     kv_seq_len = seq_len + 1
 
     device = hidden_states.device
     if do_prefill:
-        self.paged_attention = torch.empty(
-            (KV_CACHE_INCREMENT + seq_len + 1, 2, bsz, n_kv_heads, head_dim),
-            dtype = dtype,
-            device = device,
+        _decode_graphs.alloc_decode_buffers(
+            self, K1, V1, bsz, n_heads, n_kv_heads, head_dim, hidden_size, dtype, device,
+            KV_CACHE_INCREMENT,
+        )  # fmt: skip
+    elif static is None and kv_seq_len >= self.paged_attention.shape[0]:
+        _decode_graphs.resize_decode_buffers(
+            self, KV_CACHE_INCREMENT, bsz, n_heads, n_kv_heads, head_dim
         )
-        self.paged_attention_K = self.paged_attention[:, 0]
-        self.paged_attention_V = self.paged_attention[:, 1]
-        self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
-        self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
-        self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = device)
-        self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device)
-        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
-
-        # Mistral Nemo 12b has weird dimensions.
-        if attention_size != hidden_size:
-            self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
-        else:
-            self.temp_O = self.temp_QA[1][:, :, :hidden_size]
-
-        self.attention = torch.empty(
-            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len + (-seq_len) % 8),
-            dtype = dtype,
-            device = device,
-        )
-        self.scalar = 1.0 / math_sqrt(self.head_dim)
-        self.half_head_dim = head_dim // 2
-    elif kv_seq_len >= self.paged_attention.shape[0]:
-        self.paged_attention.resize_(
-            (
-                self.paged_attention.shape[0] + KV_CACHE_INCREMENT,
-                2,
-                bsz,
-                n_kv_heads,
-                head_dim,
-            )
-        )
-        self.paged_attention_K = self.paged_attention[:, 0]
-        self.paged_attention_V = self.paged_attention[:, 1]
-        self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT))
 
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
@@ -294,6 +267,19 @@ def Qwen3Attention_fast_forward_inference(
         Kn *= cos
         Kn.addcmul_(RH_K, sin)
 
+    if static is not None:
+        # Captured step: the cache slot is on the device; the attention itself runs eagerly
+        # between two captured segments (static.attention), over the true length.
+        self.paged_attention_K.index_copy_(0, static.slot, Kn.permute(2, 0, 1, 3))
+        self.paged_attention_V.index_copy_(0, static.slot, Vn.permute(2, 0, 1, 3))
+        if static.span is not None:
+            A = _decode_attention_span(self, Qn, static, bsz, False)
+        else:
+            A = static.attention(
+                lambda: _decode_attention_core(self, Qn, static.kv_len, static.mask, bsz, False)[0]
+            )
+        A = A.transpose(1, 2).reshape(bsz, 1, attention_size)
+        return fast_linear_forward(self.o_proj, A, out = self.temp_O), (None, None)
     self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
     self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
     Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
@@ -372,6 +358,9 @@ def Qwen3Attention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
+_decode_graphs.register_attention(Qwen3Attention_fast_forward_inference)
+
+
 class FastQwen3Model(FastLlamaModel):
     @staticmethod
     def pre_patch():
@@ -395,8 +384,7 @@ class FastQwen3Model(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(Qwen3ForCausalLM)
 
-        # Retain the old rotary embeddings: the static KV cache (transformers 4.38.0) slowed training.
-        # See unslothai/unsloth#168 and huggingface/transformers#27931.
+        # Static KV cache (4.38.0) slowed training (#168), so the old rotary embeddings are retained.
         import transformers.models.qwen3.modeling_qwen3
 
         transformers.models.qwen3.modeling_qwen3.Qwen3RotaryEmbedding = LlamaRotaryEmbedding

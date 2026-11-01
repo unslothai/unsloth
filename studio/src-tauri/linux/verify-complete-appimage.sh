@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-# Every check below parses readelf output, which is translated.
+# readelf output is translated.
 export LC_ALL=C
 
 usage() {
@@ -40,16 +40,8 @@ require_basename() {
   fi
 }
 
-# FIRST, before the launcher-hygiene checks below. Those ask whether a bundle that
-# ships a runtime scopes it correctly; this asks whether it ships one at all, and a
-# bundle that ships none fails them too -- for a reason that reads like an env-var
-# bug. A pre-#9113 thin AppImage, which resolves webkit2gtk from the host, reported
-# "does not clear an inherited LD_LIBRARY_PATH" and sent the reader after the wrong
-# defect; the honest answer is the soname list below.
-#
-# Report every miss rather than exiting on the first: the AppRun host-preflight
-# names all four missing sonames at once, and a verifier that names one per CI run
-# turns one diagnosis into as many red runs as there are absent components.
+# Runs before the launcher-hygiene checks, which a bundle with no runtime also fails misleadingly.
+# Report every missing component, not just the first.
 missing_components=()
 required_components=()
 for component in \
@@ -79,7 +71,7 @@ if grep -aEq '^[[:space:]]*(export[[:space:]]+)?LD_LIBRARY_PATH=' "${launchers[@
   exit 1
 fi
 
-# An inherited LD_LIBRARY_PATH outranks the $ORIGIN RUNPATHs below.
+# An inherited LD_LIBRARY_PATH outranks the $ORIGIN RUNPATHs.
 if ! grep -aEq '^[[:space:]]*unset[[:space:]]+LD_LIBRARY_PATH([[:space:]]|$)' \
   "${launchers[@]}" 2>/dev/null; then
   echo "Complete AppImage does not clear an inherited LD_LIBRARY_PATH" >&2
@@ -117,17 +109,15 @@ grep -Fq 'sed "s|@APPDIR@|$unsloth_fonts_appdir|g" "$unsloth_fonts_template"' "$
   echo "Complete AppImage does not pin fontconfig to its safe emoji policy" >&2
   exit 1
 }
-# A mount path carries the AppImage's own file name, so it reaches the policy encoded.
 grep -Fq "s,&,\\&amp;,g" "${launchers[@]}" || {
   echo "Complete AppImage does not encode its mount path for the fontconfig policy" >&2
   exit 1
 }
 
-# Exercise the policy with the host Fontconfig, including version 2.13.
 if command -v fc-match >/dev/null && command -v fc-query >/dev/null &&
   fc-query "$safe_emoji_font" >/dev/null 2>&1; then
   fc_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/unsloth-appimage-fc.XXXXXX")"
-  # Encode the AppDir exactly as AppRun does, so this exercises the shipped policy.
+  # Encode the AppDir exactly as AppRun does.
   fc_appdir="$(printf '%s' "$appdir" | sed \
     -e 's,&,\&amp;,g' -e 's,<,\&lt;,g' -e 's,>,\&gt;,g' \
     -e 's,\\,\\\\,g' -e 's,&,\\&,g' -e 's,|,\\|,g')"
@@ -140,7 +130,6 @@ if command -v fc-match >/dev/null && command -v fc-query >/dev/null &&
     rm -rf -- "$fc_root"
     exit 1
   fi
-  # Emoji coverage must not cost the host's text fonts their own requests.
   text_font="$(FONTCONFIG_FILE="$fc_root/fonts.conf" XDG_CACHE_HOME="$fc_root" \
     fc-match -f '%{file}' 'sans-serif:charset=41')"
   if [[ -n "$text_font" && "$text_font" != "$safe_emoji_font" ]]; then
@@ -169,7 +158,6 @@ if ! grep -Rqs 'unset[[:space:]]\+GIO_EXTRA_MODULES' \
   exit 1
 fi
 
-# Require module search paths to stay inside the AppDir.
 for module_path in GTK_PATH GIO_MODULE_DIR; do
   value="$(grep -hs "^export ${module_path}=" "$appdir/apprun-hooks"/* 2>/dev/null |
     tail -1 | sed "s/^export ${module_path}=//; s/^\"//; s/\"$//")"
@@ -203,14 +191,12 @@ machine="$(readelf -h "$binary" | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p
   exit 1
 }
 
-# Require the media plugins that must match the bundled GStreamer core.
 gst_plugin_count="$(find "$appdir/usr/lib/gstreamer-1.0" -maxdepth 1 -type f -name '*.so' 2>/dev/null | wc -l)"
 if [[ "$gst_plugin_count" -lt 50 ]]; then
   echo "Complete AppImage bundles only $gst_plugin_count GStreamer plugins" >&2
   exit 1
 fi
 
-# Reject libraries that must remain part of the host runtime.
 for forbidden in \
   'ld-linux*.so*' 'libc.so*' 'libpthread.so*' 'libm.so*' 'libdl.so*' 'librt.so*' \
   'libresolv.so*' 'libnss_*.so*' 'libutil.so*' 'libanl.so*' \
@@ -232,7 +218,6 @@ dynamic_count=0
 runpath_failures=0
 while IFS= read -r -d '' object; do
   [[ "$(head -c 4 "$object" 2>/dev/null || true)" == $'\177ELF' ]] || continue
-  # Reject foreign-architecture objects copied from multilib hosts.
   object_machine="$(readelf -h "$object" 2>/dev/null |
     sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
   if [[ "$object_machine" != "Advanced Micro Devices X86-64" ]]; then
@@ -258,6 +243,64 @@ while IFS= read -r -d '' object; do
 done < <(find "$appdir" -type f -print0)
 ((dynamic_count > 0)) || { echo "Complete AppImage contains no dynamic ELF objects" >&2; exit 1; }
 ((runpath_failures == 0)) || exit 1
+
+# Releases before host mode ship no copy; a launcher that runs one needs all of it.
+if grep -aFq 'usr/bin/host/unsloth-studio' "${launchers[@]}"; then
+  host_copy="$appdir/usr/bin/host/unsloth-studio"
+  [[ -f "$host_copy" && -x "$host_copy" ]] || {
+    echo "Complete AppImage launcher runs a missing host-mode executable: $host_copy" >&2
+    exit 1
+  }
+  # Minimal images (fedora:44) ship no diffutils; sha256sum is coreutils. Fail closed.
+  same_bytes() {
+    if command -v cmp >/dev/null 2>&1; then
+      cmp -s "$1" "$2"
+    else
+      local left right
+      left="$(sha256sum <"$1")" && right="$(sha256sum <"$2")" &&
+        [[ -n "$left" && "$left" == "$right" ]]
+    fi
+  }
+  same_bytes "$appdir/usr/bin/unsloth-studio" "$host_copy" || {
+    echo "Complete AppImage host-mode executable differs from usr/bin/unsloth-studio" >&2
+    exit 1
+  }
+  [[ ! -e "$appdir/usr/bin/lib" ]] || {
+    echo "Complete AppImage has usr/bin/lib, which the host-mode executable reaches" >&2
+    exit 1
+  }
+  host_runpath="$(readelf -d "$host_copy" 2>/dev/null |
+    sed -n 's/.*\(RPATH\|RUNPATH\).*Library .*path: \[\(.*\)\].*/\2/p')"
+  IFS=':' read -ra host_entries <<<"$host_runpath"
+  for entry in "${host_entries[@]}"; do
+    resolved="${entry//\$ORIGIN/$appdir/usr/bin/host}"
+    [[ ! -e "$resolved" ]] || {
+      echo "Complete AppImage host-mode executable reaches bundled libraries: $entry" >&2
+      exit 1
+    }
+  done
+  grep -aFq -- '--unsloth-webkit-probe' "${launchers[@]}" || {
+    echo "Complete AppImage runs its host-mode executable without the WebKitGTK probe" >&2
+    exit 1
+  }
+  # Host mode undoes the hook exports by name; a plugin bump must not add one it misses.
+  host_env="$(sed -n '/^unsloth_host_env() {$/,/^}$/p' "${launchers[@]}")"
+  [[ -n "$host_env" ]] || {
+    echo "Complete AppImage launcher has no host-mode environment restore" >&2
+    exit 1
+  }
+  drift=0
+  while IFS= read -r name; do
+    [[ "$name" != APPDIR ]] || continue
+    grep -Eq "(^|[^A-Za-z0-9_])${name}([^A-Za-z0-9_]|\$)" <<<"$host_env" || {
+      echo "Complete AppImage hook pins $name to the bundle, and host mode does not undo it" >&2
+      ((drift += 1))
+    }
+  done < <(sed -n -E \
+    's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*\$\{?APPDIR([^A-Za-z0-9_].*)?$/\2/p' \
+    "$appdir/apprun-hooks"/* 2>/dev/null | sort -u)
+  ((drift == 0)) || exit 1
+fi
 
 
 

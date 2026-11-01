@@ -1,14 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// Keep the background settings UI in this lazy tab, outside the chat startup barrel.
+// eslint-disable-next-line no-restricted-imports
+import {
+  ChatBackgroundControls,
+  GlassControls,
+} from "@/features/chat-background/controls";
 import { useEffect, useRef } from "react";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
+import { useChatPreferencesStore } from "@/features/chat";
 import { useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import {
   ActiveColorControl,
   ChatFontRow,
   ChatWidthSelect,
+  CodeDisplaySwitch,
   SentAttachmentsSelect,
   CodeFontRow,
   CodeFontSizeRow,
@@ -22,21 +32,142 @@ import {
   UiFontRow,
   UiFontSizeRow,
 } from "../components/appearance-custom-controls";
+import { CodeDisplayPreview } from "../components/code-display-preview";
 import { ColorThemeSelect } from "../components/color-theme-select";
+import { GreetingSettingsRows } from "../components/greeting-controls";
+import { GpuRenderingSegmented } from "../components/gpu-rendering-segmented";
 import { SettingsRow } from "../components/settings-row";
 import { SidebarMenuCustomizer } from "../components/sidebar-menu-customizer";
 import { SidebarNavCustomizer } from "../components/sidebar-nav-customizer";
 import { SettingsSection } from "../components/settings-section";
 import { ThemeSegmented } from "../components/theme-segmented";
+import { gpuRenderingNotes } from "../gpu-rendering-notes";
+import { useGpuRenderingSetting } from "../hooks/use-gpu-rendering-setting";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 const FONT_CONTROL_CLASS = "flex w-76 max-w-full items-center gap-2";
 const FONT_SELECT_CLASS = "w-auto min-w-0 flex-1";
+const CODE_SWITCHES = [
+  { field: "codeLineNumbers", key: "lineNumbers" },
+  { field: "codeWordWrap", key: "wordWrap" },
+  { field: "codeLigatures", key: "ligatures" },
+] as const;
+const NOTE_CLASS =
+  "max-w-[calc(280px*var(--ui-space-scale,1))] text-right text-xs";
+
+function GpuRenderingRow() {
+  const t = useT();
+  const gpu = useGpuRenderingSetting({
+    enabled: isTauri,
+    loadError: t("settings.appearance.gpuRendering.loadError"),
+    saveError: t("settings.appearance.gpuRendering.saveError"),
+    restartError: t("settings.appearance.gpuRendering.restartError"),
+  });
+  const status = gpu.status;
+  const notes = status ? gpuRenderingNotes(status, status.setting) : [];
+  const busy = gpu.saving || gpu.restarting;
+  const below =
+    notes.length > 0 || gpu.error ? (
+      <div className="flex flex-col items-end gap-1.5">
+        {notes.map((note) => {
+          switch (note.kind) {
+            case "macNote":
+              return (
+                <span key={note.kind} className={`${NOTE_CLASS} text-muted-foreground`}>
+                  {t("settings.appearance.gpuRendering.macNote")}
+                </span>
+              );
+            case "envOverride":
+              return (
+                <span key={note.kind} className={`${NOTE_CLASS} text-muted-foreground`}>
+                  {t("settings.appearance.gpuRendering.envOverride", {
+                    name: note.name,
+                  })}
+                </span>
+              );
+            case "fallbackNote":
+              return (
+                <div key={note.kind} className="flex flex-col items-end gap-1.5">
+                  <span className={`${NOTE_CLASS} text-muted-foreground`}>
+                    {t("settings.appearance.gpuRendering.fallbackNote")}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={busy || !status}
+                    onClick={() => {
+                      if (status) void gpu.update(status.setting);
+                    }}
+                  >
+                    {t("settings.appearance.gpuRendering.tryAgain")}
+                  </Button>
+                </div>
+              );
+            case "oldWebkitWarning":
+              return (
+                <span key={note.kind} className={`${NOTE_CLASS} text-muted-foreground`}>
+                  {t("settings.appearance.gpuRendering.oldWebkitWarning", {
+                    version: note.version,
+                  })}
+                </span>
+              );
+            case "oldDriverWarning":
+              return (
+                <span key={note.kind} className={`${NOTE_CLASS} text-muted-foreground`}>
+                  {t("settings.appearance.gpuRendering.oldDriverWarning", {
+                    version: note.version,
+                  })}
+                </span>
+              );
+            case "restartPending":
+              return (
+                <div key={note.kind} className="flex items-center gap-2">
+                  <span className={`${NOTE_CLASS} text-muted-foreground`}>
+                    {t("settings.appearance.gpuRendering.restartPending")}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => void gpu.relaunch()}
+                  >
+                    {t("settings.appearance.gpuRendering.restartNow")}
+                  </Button>
+                </div>
+              );
+          }
+        })}
+        {gpu.error ? (
+          <span className={`${NOTE_CLASS} text-destructive`}>{gpu.error}</span>
+        ) : null}
+      </div>
+    ) : null;
+  return (
+    <SettingsRow
+      label={t("settings.appearance.gpuRendering.label")}
+      description={t("settings.appearance.gpuRendering.description")}
+      below={below}
+    >
+      <GpuRenderingSegmented
+        value={status?.setting ?? null}
+        onChange={(next) => void gpu.update(next)}
+        disabled={!status || !status.configurable || busy}
+      />
+    </SettingsRow>
+  );
+}
 
 export function AppearanceTab() {
   const t = useT();
   const { pinned, setPinned } = useSidebarPin();
-  // The sidebar's "Customize sidebar" entry lands mid-page, so scroll its section into view.
+  const composerAtBottom = useChatPreferencesStore(
+    (s) => s.newChatComposerAtBottom,
+  );
+  const setComposerAtBottom = useChatPreferencesStore(
+    (s) => s.setNewChatComposerAtBottom,
+  );
   const sidebarNavSectionRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
@@ -94,8 +225,9 @@ export function AppearanceTab() {
         </SettingsRow>
       </SettingsSection>
 
+      <GlassControls />
+      <ChatBackgroundControls />
       <SettingsSection title={t("settings.appearance.custom.preferencesTitle")}>
-        {/* Shared width so the font pickers line up. */}
         <SettingsRow label={t("settings.appearance.custom.uiFont.label")}>
           <div className={FONT_CONTROL_CLASS}>
             <UiFontRow className={FONT_SELECT_CLASS} />
@@ -112,12 +244,6 @@ export function AppearanceTab() {
             <ChatFontRow className={FONT_SELECT_CLASS} />
           </div>
         </SettingsRow>
-        <SettingsRow label={t("settings.appearance.custom.codeFont.label")}>
-          <div className={FONT_CONTROL_CLASS}>
-            <CodeFontRow className={FONT_SELECT_CLASS} />
-            <CodeFontSizeRow />
-          </div>
-        </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.custom.interfaceScale.label")}
           description={t(
@@ -131,6 +257,17 @@ export function AppearanceTab() {
           description={t("settings.appearance.custom.chatWidth.description")}
         >
           <ChatWidthSelect />
+        </SettingsRow>
+        <GreetingSettingsRows />
+        <SettingsRow
+          label={t("settings.chat.composerAtBottom")}
+          description={t("settings.chat.composerAtBottomDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.composerAtBottom")}
+            checked={composerAtBottom}
+            onCheckedChange={setComposerAtBottom}
+          />
         </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.custom.sentAttachments.label")}
@@ -162,22 +299,54 @@ export function AppearanceTab() {
         >
           <FontSmoothingSwitch />
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.layout.compactSidebar")}
-          description={t(
-            "settings.appearance.layout.compactSidebarDescription",
-          )}
-        >
-          <Switch checked={pinned} onCheckedChange={setPinned} />
-        </SettingsRow>
       </SettingsSection>
 
-      {/* Nav shape first, then the profile menu inside it. */}
+      <SettingsSection title={t("settings.appearance.code.title")}>
+        <SettingsRow
+          label={t("settings.appearance.custom.codeFont.label")}
+          description={t("settings.appearance.code.fontDescription")}
+        >
+          <div className={FONT_CONTROL_CLASS}>
+            <CodeFontRow className={FONT_SELECT_CLASS} />
+            <CodeFontSizeRow />
+          </div>
+        </SettingsRow>
+        <div className="pb-3">
+          <CodeDisplayPreview />
+        </div>
+        {CODE_SWITCHES.map(({ field, key }) => (
+          <SettingsRow
+            key={field}
+            label={t(`settings.appearance.code.${key}.label`)}
+            description={t(`settings.appearance.code.${key}.description`)}
+          >
+            <CodeDisplaySwitch
+              field={field}
+              label={t(`settings.appearance.code.${key}.label`)}
+            />
+          </SettingsRow>
+        ))}
+      </SettingsSection>
+
+      {isTauri ? (
+        <SettingsSection title={t("settings.appearance.gpuRendering.sectionTitle")}>
+          <GpuRenderingRow />
+        </SettingsSection>
+      ) : null}
+
       <div ref={sidebarNavSectionRef} className="scroll-mt-4">
         <SettingsSection
           title={t("settings.appearance.sidebarNav.title")}
           description={t("settings.appearance.sidebarNav.description")}
         >
+          <SettingsRow
+            label={t("settings.appearance.layout.compactSidebar")}
+            description={t(
+              "settings.appearance.layout.compactSidebarDescription",
+            )}
+          >
+            <Switch checked={pinned} onCheckedChange={setPinned} />
+          </SettingsRow>
           <div className="pt-3">
             <SidebarNavCustomizer />
           </div>

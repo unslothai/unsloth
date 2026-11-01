@@ -19,6 +19,7 @@ import {
   fetchChatAttachmentBlob,
   isTextAttachmentName,
   listChatAttachments,
+  prepareChatAttachmentDeletion,
 } from "@/features/chat";
 import {
   type UploadedDocument,
@@ -30,9 +31,9 @@ import {
 import { isTauri } from "@/lib/api-base";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   ArrowUpRight01Icon,
-  Delete02Icon,
   FileEmpty02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -42,8 +43,7 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 function formatUploadedAt(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === "") return "-";
-  // Chat attachments carry ms epoch numbers; RAG documents carry SQLite
-  // ISO-ish strings (no timezone). Unparseable strings fall through raw.
+  // Chat attachments use ms epochs; RAG documents use timezone-less SQLite strings.
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return String(value);
   return parsed.toLocaleDateString(undefined, {
@@ -76,8 +76,6 @@ function ragLocationLabel(doc: UploadedDocument): string {
   return "-";
 }
 
-/** Short uppercase file-type label from the filename extension, falling back
- *  to the content-type subtype (e.g. "image/webp" gives WEBP). */
 function fileTypeLabel(
   name: string,
   contentType?: string | null,
@@ -89,9 +87,7 @@ function fileTypeLabel(
   return subtype && subtype.length <= 10 ? subtype.toUpperCase() : null;
 }
 
-/** Lazy image thumbnail for a chat attachment; a file icon until it loads.
- *  The stored blob only downloads once the row scrolls into view, so a long
- *  history of screenshots does not fetch every image on open. */
+/** Downloads only once the row scrolls into view. */
 function ChatImageThumb({
   messageId,
   attachmentId,
@@ -161,7 +157,6 @@ function FileIconThumb() {
   );
 }
 
-/** One display row: a RAG document or a chat message attachment. */
 interface UploadedFileRow {
   key: string;
   source: "rag" | "chat";
@@ -170,14 +165,12 @@ interface UploadedFileRow {
   sizeBytes?: number | null;
   createdAt?: string | number | null;
   failed?: boolean;
-  /** Epoch ms for sorting; rows with unknown dates sort last. */
+  /** Unknown dates sort last. */
   sortTime: number;
   typeLabel: string | null;
-  /** Image rows render a thumbnail; others show a file icon. */
   thumb: ReactNode;
-  /** Chat rows link back to their thread. */
   threadId?: string | null;
-  /** Compare-chat rows navigate by pair id instead of opening one pane alone. */
+  /** Compare-chat rows navigate by pair id. */
   pairId?: string | null;
   open: () => Promise<void>;
   remove?: () => Promise<void>;
@@ -190,10 +183,8 @@ function toSortTime(value: string | number | null | undefined): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-// Safari and Firefox block window.open after an await (the user gesture is gone), so open a blank
-// tab synchronously and point it at the URL once resolved. A blocked synchronous open is surfaced
-// instead of silently losing the file after the asynchronous URL lookup. The Tauri webview has no
-// window.open at all, so it goes through the OS opener.
+// Safari and Firefox block window.open after an await, so open a blank tab synchronously.
+// The Tauri webview has no window.open and uses the OS opener.
 async function openResolvedUrl(
   resolve: () => Promise<string | null>,
 ): Promise<void> {
@@ -236,7 +227,6 @@ function ragRow(doc: UploadedDocument): UploadedFileRow {
     failed: doc.status === "failed",
     sortTime: toSortTime(doc.createdAt),
     typeLabel: fileTypeLabel(doc.filename),
-    // RAG uploads are documents (pdf, txt, md, docx, html), not images.
     thumb: <FileIconThumb />,
     open: () => openResolvedUrl(() => getDocumentFileUrl(doc.id)),
     remove: isLinkedFolderManaged(doc)
@@ -265,9 +255,7 @@ const EXT_BY_MIME: Record<string, string> = {
   "audio/flac": "flac",
 };
 
-// Name the save after the bytes the route actually returns. Uploaded documents come back as
-// with no extension at all, which the OS cannot recognise. A dot at index 0 is a dotfile (.env),
-// not an extension: treating it as one would strip the whole name and save a bare ".txt".
+// A leading dot is a dotfile (.env), not an extension.
 function extensionStart(name: string): number {
   const dot = name.lastIndexOf(".");
   return dot > 0 ? dot : -1;
@@ -304,9 +292,7 @@ function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
     ) : (
       <FileIconThumb />
     ),
-    // Bearer-gated bytes: no URL the OS can fetch, so desktop saves instead.
-    // The fetch stays inside the resolver on web, where openResolvedUrl must
-    // reach window.open while the click's user activation is still live.
+    // Bearer-gated bytes, so desktop saves instead; on web window.open must run while activation is live.
     open: async () => {
       if (isTauri) {
         const blob = await fetchChatAttachmentBlob(att.messageId, att.id);
@@ -319,21 +305,20 @@ function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
       }
       await openResolvedUrl(async () => {
         const blob = await fetchChatAttachmentBlob(att.messageId, att.id);
-        // A kept original is served as octet-stream: a tab would save it nameless.
+        // octet-stream would save nameless in a tab.
         if (blob.type === "application/octet-stream") {
           await downloadFile(blob, att.name, blob.type);
           return null;
         }
         const url = URL.createObjectURL(blob);
-        // Give the new tab time to load the blob before revoking.
         setTimeout(() => URL.revokeObjectURL(url), 60_000);
         return url;
       });
     },
     remove: async () => {
+      await prepareChatAttachmentDeletion(att.id);
       await deleteChatAttachment(att.messageId, att.id);
-      // Patch any loaded runtime copy so a later repo sync cannot write the
-      // deleted attachment back to storage.
+      // Patch any loaded runtime copy so a later sync cannot write the attachment back.
       emitChatAttachmentDeleted({
         messageId: att.messageId,
         attachmentId: att.id,
@@ -354,7 +339,6 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
-/** Inline settings page listing uploaded files from each available source. */
 export function UploadedFilesView() {
   const [ragFiles, setRagFiles] = useState<SourceLoad<UploadedDocument[]>>({
     status: "loading",
@@ -375,8 +359,7 @@ export function UploadedFilesView() {
     ...chatFiles.data.map(chatAttachmentRow),
   ].sort((a, b) => b.sortTime - a.sortTime);
 
-  // Jump to the chat thread the attachment lives in, closing the settings
-  // dialog so the thread is actually visible.
+  // Close the settings dialog so the thread is visible.
   function goToChat(row: UploadedFileRow) {
     if (!row.threadId) return;
     useSettingsDialogStore.getState().closeDialog();
@@ -493,8 +476,7 @@ export function UploadedFilesView() {
   }
 
   async function handleDelete(row: UploadedFileRow) {
-    // Offset pages and destructive mutations must not race: a deletion shifts
-    // the boundary used by an in-flight page request.
+    // Offset pages and deletions must not race: a deletion shifts the boundary of an in-flight page.
     if (loadingMore || !row.remove) return;
     try {
       await row.remove();
@@ -511,8 +493,6 @@ export function UploadedFilesView() {
               `chat-${attachment.messageId}-${attachment.id}` !== row.key,
           ),
         }));
-        // Offset pagination is relative to the current server inventory. A
-        // deletion before the next page shifts every later row back by one.
         setChatNextOffset((current) =>
           current === null ? null : Math.max(0, current - 1),
         );
@@ -528,7 +508,7 @@ export function UploadedFilesView() {
   return (
     <div className="flex flex-col gap-4">
       {ragFiles.status === "error" ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
           <span>RAG documents unavailable: {ragFiles.error}</span>
           <button
             type="button"
@@ -540,7 +520,7 @@ export function UploadedFilesView() {
         </div>
       ) : null}
       {chatFiles.status === "error" ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
           <span>Chat attachments unavailable: {chatFiles.error}</span>
           <button
             type="button"
@@ -577,8 +557,7 @@ export function UploadedFilesView() {
               className="group flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/40 px-1 py-2.5 text-sm last:border-0 sm:flex-nowrap"
             >
               {/* Clicking the file jumps to its chat; files without one
-                open directly. The theme scales rounded-md up to a near
-                circle at this size, so the thumb pins a small radius. */}
+                open directly. */}
               <button
                 type="button"
                 onClick={() =>
@@ -589,7 +568,7 @@ export function UploadedFilesView() {
                 }
                 className="group/name flex min-w-0 flex-1 basis-[calc(100%-5rem)] items-center gap-2.5 overflow-hidden text-left sm:basis-auto"
               >
-                <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-[7px] border border-border/50 bg-muted/40">
+                <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-sm border border-border/50 bg-muted/40">
                   {row.thumb}
                 </span>
                 <span className="flex min-w-0 flex-1 flex-col">
@@ -600,7 +579,7 @@ export function UploadedFilesView() {
                       {row.name}
                     </span>
                     {row.typeLabel ? (
-                      <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 py-px text-ui-9 font-medium uppercase tracking-wide text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]">
+                      <span className="shrink-0 rounded-full bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 py-px text-ui-9 font-medium uppercase tracking-wide text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]">
                         {row.typeLabel}
                       </span>
                     ) : null}
@@ -659,7 +638,7 @@ export function UploadedFilesView() {
                     className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:cursor-wait disabled:opacity-50"
                   >
                     <HugeiconsIcon
-                      icon={Delete02Icon}
+                      icon={TrashIcon}
                       strokeWidth={1.75}
                       className="size-4"
                     />
@@ -674,7 +653,7 @@ export function UploadedFilesView() {
                 type="button"
                 disabled={loadingMore}
                 onClick={() => void loadChatPage(chatNextOffset, true)}
-                className="rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-wait disabled:opacity-60"
+                className="btn-fill rounded-full px-3 py-1.5 text-sm font-medium disabled:cursor-wait disabled:opacity-60"
               >
                 {loadingMore ? "Loading..." : "Load more chat attachments"}
               </button>

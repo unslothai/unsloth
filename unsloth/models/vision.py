@@ -25,6 +25,93 @@ except:
     from transformers import AutoModelForVision2Seq
 
 
+# Keys that describe the model's rotary layout, not the scaling: a caller's override keeps them.
+_ROPE_LAYOUT_KEYS = ("rope_theta", "partial_rotary_factor", "mrope_section", "mrope_interleaved")
+
+
+def _apply_user_rope_scaling(config, rope_scaling):
+    """Put the caller's rope_scaling (e.g. YaRN) on the text config before the model is built.
+    Returns the dict applied (flat), or None for a per-layer-type layout."""
+    from .llama import _rope_scaling_as_dict, _user_rope_scaling
+
+    target = config.get_text_config() if hasattr(config, "get_text_config") else config
+    scaling = dict(_rope_scaling_as_dict(rope_scaling))
+    nested = bool(scaling) and all(isinstance(v, dict) for v in scaling.values())
+    current = getattr(target, "rope_parameters", None)
+    # transformers v5 keys rope_parameters by layer type on mixed-attention models (Gemma 3).
+    per_layer_type = (
+        isinstance(current, dict)
+        and current
+        and "rope_type" not in current
+        and all(isinstance(v, dict) for v in current.values())
+    )
+    if per_layer_type:
+        if not nested and "full_attention" in current:
+            # As transformers' Gemma 3 config does: a flat override applies to full attention only.
+            scaling = {"full_attention": scaling}
+        elif not nested or not set(scaling) <= set(current):
+            raise ValueError(
+                "Unsloth: this model keeps one RoPE setting per layer type "
+                f"({sorted(current)}); pass rope_scaling as a dict keyed by those layer types."
+            )
+        # Map legacy "type": this branch bypasses transformers' normalisation; Gemma 3 reads "rope_type".
+        scaling = {
+            k: (
+                {"rope_type": v["type"], **v}
+                if isinstance(v, dict) and "rope_type" not in v and "type" in v
+                else v
+            )
+            for k, v in scaling.items()
+        }
+        # Gemma 3's rotary init indexes rope_parameters[layer_type]["rope_theta"]: keep each base.
+        target.rope_parameters = {
+            k: (
+                {**{key: v[key] for key in _ROPE_LAYOUT_KEYS if key in v}, **scaling[k]}
+                if k in scaling
+                else dict(v)
+            )
+            for k, v in current.items()
+        }
+        return None
+    if nested:
+        raise ValueError(
+            "Unsloth: rope_scaling keyed by layer type was given, but this model has one RoPE "
+            "setting for every layer; pass a single dict such as {'rope_type': 'yarn', 'factor': 4.0}."
+        )
+    existing = _rope_scaling_as_dict(
+        getattr(target, "rope_parameters", None) or getattr(target, "rope_scaling", None) or {}
+    )
+    layout = {key: existing[key] for key in _ROPE_LAYOUT_KEYS if key in existing}
+    applied = {**layout, **_user_rope_scaling(target, scaling)}
+    target.rope_scaling = applied
+    return dict(applied)
+
+
+def _vllm_rope_scaling(
+    rope_scaling,
+    load_vllm_takes_it,
+    is_vlm = False,
+):
+    """The caller's RoPE override for load_vllm (flat dicts on text models only)."""
+    from .llama import _rope_scaling_as_dict
+
+    scaling = _rope_scaling_as_dict(rope_scaling)
+    reason = None
+    if not load_vllm_takes_it:
+        reason = "this unsloth_zoo's load_vllm has no rope_scaling argument; upgrade unsloth_zoo"
+    elif scaling and all(isinstance(v, dict) for v in scaling.values()):
+        reason = "one RoPE setting per layer type"
+    elif is_vlm:
+        # vLLM applies hf_overrides to the top-level config, not the text config a VLM reads RoPE from.
+        reason = "vLLM would apply it to the vision-language config, not its text model"
+    if reason is not None:
+        raise NotImplementedError(
+            f"Unsloth: fast_inference = True cannot pass this rope_scaling to vLLM ({reason}), "
+            "so generation would not match training. Load with fast_inference = False."
+        )
+    return dict(scaling)
+
+
 def _embeddings_or_none(model, getter):
     """Call `model.<getter>()`, or None when the model cannot answer.
 
@@ -51,8 +138,7 @@ def _multimodal_auto_classes():
     """
     import transformers
 
-    # Looked up, not referenced: which names exist varies (4.51.3 has both, 5.5.0
-    # dropped AutoModelForVision2Seq), so only the alias above is always bound.
+    # Looked up: which names exist varies (5.5.0 dropped AutoModelForVision2Seq).
     classes = [AutoModelForVision2Seq]
     # AutoModelForSpeechSeq2Seq is deliberately absent: it would move Granite Speech in
     # _is_text_seq2seq_config on transformers 4.57; from_pretrained adds its processor itself.
@@ -65,6 +151,32 @@ def _multimodal_auto_classes():
         if extra is not None and extra not in classes:
             classes.append(extra)
     return classes
+
+
+def _audio_lm_class(
+    auto_model,
+    config,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
+    """The full audio model a causal / seq2seq LM auto class builds for `config`, else None.
+    AudioFlamingo3 and MusicFlamingo register only there, yet need the processor like any audio model."""
+    import transformers
+
+    lm_classes = (
+        getattr(transformers, "AutoModelForCausalLM", None),
+        getattr(transformers, "AutoModelForSeq2SeqLM", None),
+    )
+    if auto_model is None or auto_model not in lm_classes:
+        return None
+    if _config_get(config, "audio_config", None) is None:
+        return None
+    model_class = resolve_model_class(
+        auto_model, config, trust_remote_code = trust_remote_code, **hub_kwargs
+    )
+    if model_class is None or getattr(model_class, "config_class", None) is not type(config):
+        return None
+    return model_class
 
 
 def _is_text_seq2seq_config(config):
@@ -86,6 +198,37 @@ def _is_text_seq2seq_config(config):
     if not mapped(getattr(transformers, "AutoModelForSeq2SeqLM", None)):
         return False
     return not any(mapped(auto_class) for auto_class in _multimodal_auto_classes())
+
+
+_AUDIO_AUTO_CLASS_NAMES = (
+    "AutoModelForSpeechSeq2Seq",
+    "AutoModelForCTC",
+    "AutoModelForTDT",
+    "AutoModelForAudioClassification",
+    "AutoModelForAudioFrameClassification",
+    "AutoModelForAudioXVector",
+    "AutoModelForTextToSpectrogram",
+    "AutoModelForTextToWaveform",
+)
+
+
+def _config_maps_audio_auto_class(config):
+    import transformers
+    for name in _AUDIO_AUTO_CLASS_NAMES:
+        try:
+            if type(config) in getattr(transformers, name)._model_mapping:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _is_bare_feature_extractor(processor):
+    try:
+        from transformers.feature_extraction_utils import FeatureExtractionMixin
+    except Exception:
+        return False
+    return isinstance(processor, FeatureExtractionMixin)
 
 
 def _generation_padding_side(config):
@@ -112,6 +255,12 @@ from ._utils import (
     attention_class_for_load,
     _REMOTE_CLASS_HUB_OPTIONS,
     resolve_attention_implementation,
+    requests_flex_attention,
+    _EXPLICIT_FLEX_ATTR,
+    _config_prefers_flex_attention,
+    _config_set,
+    _iter_attention_configs,
+    _text_attention_configs,
     _get_text_only_config,
     _is_family_text_decoder,
     _config_get,
@@ -134,10 +283,12 @@ from ._utils import (
 )
 from ._utils import *
 from ._utils import _ignore_block_swap_params_for_ddp
+from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._uma_safetensors import is_integrated_unified_memory_gpu
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
 from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_custom_dtype
+from ._mamba_lora import patch_mamba_fused_lora
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
@@ -201,10 +352,14 @@ try:
     from unsloth_zoo.gradient_checkpointing import non_reentrant_offload_hooks
 except ImportError:  # older unsloth_zoo
     non_reentrant_offload_hooks = None
+try:
+    from unsloth_zoo.gradient_checkpointing import activation_offloader_for
+except ImportError:  # its non_reentrant_offload_hooks takes no owner
+    activation_offloader_for = None
 import torch.utils.checkpoint as torch_checkpoint
 import transformers.modeling_utils as hf_modeling_utils
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
-from peft import PeftModelForCausalLM, PeftModelForSeq2SeqLM
+from peft import PeftModel, PeftModelForCausalLM, PeftModelForSeq2SeqLM
 from transformers import set_seed as transformers_set_seed
 from unsloth_zoo.peft_utils import (
     get_peft_regex,
@@ -213,7 +368,11 @@ from unsloth_zoo.peft_utils import (
 )
 from transformers.models.llama.modeling_llama import logger
 from transformers import __version__ as transformers_version
-from triton import __version__ as triton_version
+
+try:
+    from triton import __version__ as triton_version
+except ImportError:  # AMD Windows wheels ship no Triton
+    triton_version = None
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.hf_utils import (
     dtype_from_config,
@@ -228,6 +387,7 @@ from unsloth_zoo.utils import Version
 
 import types
 import functools
+import weakref
 import importlib.util
 import os
 import copy
@@ -237,13 +397,16 @@ import warnings
 from typing import Optional, Tuple, List, Union
 import re, inspect, sys
 import contextlib
+import threading
 
 try:
     from huggingface_hub.utils import get_token
 except:
     from huggingface_hub.utils._token import get_token
+from .._gc_passes import collect_garbage
 from ..device_type import (
     xpu_keeps_explicit_bf16,
+    xpu_vllm_refuses_bf16,
     get_device_stats,
     clean_gpu_cache,
     is_hip,
@@ -911,13 +1074,8 @@ def _patch_trainer_move_keeps_host_embeddings():
 
 
 def _pin_device_to_decoder(model):
-    # `model.device` is the device of the first parameter, and the embedding we offload is it, so
-    # the documented `inputs.to(model.device)` hands a CUDA model CPU ids. The lookup itself still
-    # works through the hooks above, but `cache_position` is built from `input_ids.device`, so
-    # `position_ids` stays on the CPU while the hidden states are already on CUDA and the rotary
-    # embedding dies on a cpu/cuda matmul. Report the first parameter still on an accelerator
-    # instead, read live so `model.to()` moves are followed and a whole-model move to the CPU
-    # falls back to the original answer.
+    # `model.device` is the offloaded embedding's (CPU), so `inputs.to(model.device)` would leave
+    # position_ids on CPU. Report the first parameter on an accelerator instead, read live.
     cls = type(model)
     if not cls.__dict__.get("_unsloth_device_skips_offload", False):
         original = getattr(cls, "device", None)
@@ -1000,9 +1158,7 @@ def _resolve_offload_embedding(
             model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
         )
     except Exception:
-        # Honouring an explicit request here is WRONG: the caller goes straight on
-        # to call get_input_embeddings() unguarded, turning an inapplicable VRAM
-        # optimisation into a failed load.
+        # Not honoured even if explicit: the caller calls get_input_embeddings() unguarded next.
         return _decline("its embeddings cannot be inspected.")
     if _embeddings_are_tied(in_embed, out_embed):
         return _decline("this model ties embed_tokens to lm_head, so offloading saves no VRAM.")
@@ -1146,8 +1302,7 @@ VLLM_SUPPORTED_VLM = [
     "mistral3",
     "qwen3_vl",
     "qwen3_vl_moe",
-    # Qwen3.5 ships as Qwen3_5ForConditionalGeneration with a vision_config, so it
-    # reaches this gate even for the text-only checkpoints.
+    # Qwen3.5 text-only checkpoints still have a vision_config, so they reach this gate
     "qwen3_5",
     "idefics3",
     # Exact-membership gate: "qwen3_5" does not match qwen3_5_moe.
@@ -1298,10 +1453,8 @@ _compile_config = CompileConfig(
 )
 _compile_config.disable = True  # Must set manually
 
-# For these model types, eager decode steps skip Unsloth's compiled regions (on by default,
-# UNSLOTH_EAGER_DECODE=0 opts out), and UNSLOTH_COMPILE_DECODE=1 opts into CUDA graphs over the
-# static cache. Off by default: each new shape costs 35-130 s to compile (A100, 2B), so mixed
-# sessions came out ~3x slower overall even though a compiled step is ~5x faster.
+# Eager decode skips compiled regions (UNSLOTH_EAGER_DECODE=0 opts out); UNSLOTH_COMPILE_DECODE=1 opts
+# into CUDA graphs. Off by default: each new shape compiles for 35-130 s.
 COMPILE_DECODE_MODELS = ("qwen3_5", "qwen3_5_moe", "gpt_oss")
 # gpt-oss decode only traces as one CUDA graph with unsloth_zoo's routed experts patch.
 _COMPILE_DECODE_NEEDS_ZOO = {"gpt_oss": "unsloth_zoo.temporary_patches.gpt_oss_routed"}
@@ -1369,8 +1522,7 @@ class _EagerDecodeSteps:
         return self.forward(*args, **kwargs)
 
     def __enter__(self):
-        # transformers reads signature(self.forward) (logits_to_keep, attention_mask,
-        # position_ids), so the stand-in has to present the real one.
+        # transformers reads signature(self.forward), so the stand-in must present the real one.
         step = self._forward
 
         @functools.wraps(self.forward)
@@ -1385,6 +1537,210 @@ class _EagerDecodeSteps:
         return False
 
 
+# One-token decode is slower on flex than SDPA, but prefill must stay on flex (its block mask skips tiles a
+# dense mask computes). The path is picked in prepare_inputs_for_generation, where the step's mask is built.
+_FLEX_GENERATE_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_GENERATE"
+_FLEX_GENERATE_LOCK = threading.Lock()
+
+
+# Kept outside the model: an RLock in __dict__ breaks deepcopy / pickle.
+class _ModelMap:
+    def __init__(self):
+        self.weak, self.strong = weakref.WeakKeyDictionary(), {}
+
+    def _where(self, model):
+        try:
+            weakref.ref(model)
+            return self.weak, model
+        except TypeError:
+            return self.strong, id(model)
+
+    def get(
+        self,
+        model,
+        default = None,
+    ):
+        table, key = self._where(model)
+        return table.get(key, default)
+
+    def set(self, model, value):
+        table, key = self._where(model)
+        table[key] = value
+
+    def pop(self, model):
+        table, key = self._where(model)
+        table.pop(key, None)
+
+
+_FLEX_GENERATE_SERIAL = _ModelMap()
+_FLEX_GENERATE_ROUTING = _ModelMap()
+_NON_FLEX_DECODE = "eager"
+
+
+def _flex_generate_configs(model):
+    if os.environ.get(_FLEX_GENERATE_ENV_VAR, "0") == "1":
+        return []
+    config = getattr(model, "config", None)
+    if config is None or not _config_prefers_flex_attention(config):
+        return []
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    if getattr(base, _EXPLICIT_FLEX_ATTR, False) or getattr(model, _EXPLICIT_FLEX_ATTR, False):
+        return []
+    return [
+        c
+        for c in _text_attention_configs(config)
+        if _config_get(c, "_attn_implementation", None) == "flex_attention"
+    ]
+
+
+def _step_query_length(model_inputs):
+    if not isinstance(model_inputs, dict):
+        return None
+    for key in ("inputs_embeds", "input_ids", "decoder_input_ids"):
+        x = model_inputs.get(key)
+        if isinstance(x, torch.Tensor) and x.dim() >= 2:
+            return int(x.shape[1])
+    return None
+
+
+class _NonFlexGenerate:
+    """Threads are serialised per model: they share one config, switched between mask build and forward."""
+
+    def __init__(self, model):
+        self.model = model
+        self.active = False
+        self.serial = None
+        self.base = model.get_base_model() if hasattr(model, "get_base_model") else model
+
+    def _set(self, decode):
+        state = self.model.__dict__
+        if state.get("_unsloth_non_flex_generate_pinned", False):
+            decode = True
+        value = _NON_FLEX_DECODE if decode else "flex_attention"
+        for c in state.get("_unsloth_non_flex_generate_configs", ()):
+            if _config_get(c, "_attn_implementation", None) != value:
+                _config_set(c, "_attn_implementation", value)
+
+    def _wrap_prepare(self, prepare):
+        scope = self
+
+        @functools.wraps(prepare)
+        def prepare_inputs_for_generation(*args, **kwargs):
+            cache_position = kwargs.get("cache_position")
+            if isinstance(cache_position, torch.Tensor) and cache_position.dim() == 1:
+                decode = cache_position.shape[0] == 1
+            else:
+                decode = scope.steps > 0
+            scope.steps += 1
+            scope._set(decode)
+            model_inputs = prepare(*args, **kwargs)
+            q_len = _step_query_length(model_inputs)
+            if q_len is not None and (q_len == 1) != decode:
+                scope._set(q_len == 1)
+                model_inputs = prepare(*args, **kwargs)
+            return model_inputs
+
+        return prepare_inputs_for_generation
+
+    def __enter__(self):
+        state = self.model.__dict__
+        with _FLEX_GENERATE_LOCK:
+            routed = _FLEX_GENERATE_ROUTING.get(self.base, 0) > 0 or bool(
+                _flex_generate_configs(self.model)
+            )
+            serial = None
+            if routed:
+                serial = _FLEX_GENERATE_SERIAL.get(self.base)
+                if serial is None:
+                    serial = threading.RLock()
+                    _FLEX_GENERATE_SERIAL.set(self.base, serial)
+        if serial is not None:
+            serial.acquire()
+            self.serial = serial
+        with _FLEX_GENERATE_LOCK:
+            depth = state.get("_unsloth_non_flex_generate", 0)
+            if depth == 0:
+                configs = _flex_generate_configs(self.model)
+                if not configs:
+                    self._release()
+                    return self
+                # Parents first: the transformers setter also writes sub-configs.
+                saved = [
+                    (c, field, _config_get(c, field, None))
+                    for c in _iter_attention_configs(self.model.config)
+                    for field in ("_attn_implementation", "attn_implementation")
+                    if _config_get(c, field, None) is not None
+                ]
+                state["_unsloth_non_flex_generate_saved"] = saved
+                state["_unsloth_non_flex_generate_configs"] = configs
+                _FLEX_GENERATE_ROUTING.set(self.base, _FLEX_GENERATE_ROUTING.get(self.base, 0) + 1)
+                self.steps = 0
+                # PeftModelForCausalLM.generate calls the base model's prepare_inputs_for_generation: wrap both.
+                targets = [self.model]
+                base = (
+                    self.model.get_base_model() if hasattr(self.model, "get_base_model") else None
+                )
+                if base is not None and base is not self.model:
+                    targets.append(base)
+                wrapped = []
+                for target in targets:
+                    prepare = getattr(target, "prepare_inputs_for_generation", None)
+                    if prepare is None:
+                        continue
+                    wrapped.append(
+                        (
+                            target,
+                            "prepare_inputs_for_generation" in target.__dict__,
+                            target.__dict__.get("prepare_inputs_for_generation"),
+                        )
+                    )
+                    target.prepare_inputs_for_generation = self._wrap_prepare(prepare)
+                if wrapped:
+                    state["_unsloth_non_flex_generate_prepare"] = wrapped
+                else:
+                    state["_unsloth_non_flex_generate_pinned"] = True
+                    self._set(True)
+            state["_unsloth_non_flex_generate"] = depth + 1
+            self.active = True
+        return self
+
+    def _release(self):
+        if self.serial is not None:
+            self.serial.release()
+            self.serial = None
+
+    def __exit__(self, *exc):
+        if not self.active:
+            return False
+        try:
+            self._restore()
+        finally:
+            self._release()
+        return False
+
+    def _restore(self):
+        state = self.model.__dict__
+        with _FLEX_GENERATE_LOCK:
+            depth = state.get("_unsloth_non_flex_generate", 1) - 1
+            state["_unsloth_non_flex_generate"] = depth
+            if depth == 0:
+                state.pop("_unsloth_non_flex_generate", None)
+                if state.pop("_unsloth_non_flex_generate_configs", None) is not None:
+                    left = _FLEX_GENERATE_ROUTING.get(self.base, 1) - 1
+                    if left > 0:
+                        _FLEX_GENERATE_ROUTING.set(self.base, left)
+                    else:
+                        _FLEX_GENERATE_ROUTING.pop(self.base)
+                state.pop("_unsloth_non_flex_generate_pinned", None)
+                for target, had, previous in state.pop("_unsloth_non_flex_generate_prepare", ()):
+                    if had:
+                        target.__dict__["prepare_inputs_for_generation"] = previous
+                    else:
+                        target.__dict__.pop("prepare_inputs_for_generation", None)
+                for c, field, value in state.pop("_unsloth_non_flex_generate_saved", ()):
+                    _config_set(c, field, value)
+
+
 def _compiles_decode(model):
     if unsloth_decode_compile is None:
         return False
@@ -1392,8 +1748,7 @@ def _compiles_decode(model):
         return False
     if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") in ("1", "partial"):
         return False
-    # Mirror transformers' own auto-compile exceptions: when it will not compile the step,
-    # leave the eager decode path exactly as it was.
+    # Mirror transformers' own auto-compile exceptions.
     quantizer = getattr(model, "hf_quantizer", None)
     if quantizer is not None and not getattr(quantizer, "is_compileable", False):
         return False
@@ -1404,8 +1759,7 @@ def _compiles_decode(model):
 
 
 def _match_compiled_call(model, compile_decode):
-    # CompileConfig equality ignores the `disable` attribute, so transformers would keep
-    # reusing the callable built for the other mode: drop it when the mode changes.
+    # CompileConfig equality ignores `disable`, so drop the cached callable when the mode changes.
     if model.__dict__.get("_unsloth_compile_decode", compile_decode) != compile_decode:
         model.__dict__.pop("_compiled_call", None)
         model.__dict__.pop("_last_compile_config", None)
@@ -1413,8 +1767,7 @@ def _match_compiled_call(model, compile_decode):
 
 
 def _decode_cache_bucket(length):
-    # A static cache of a new length recompiles the decode step; round it up to a power of
-    # two (>= 1024) so later calls with a different max_new_tokens reuse it.
+    # Round the static cache length up to a power of two (>= 1024) to reuse compiled steps.
     if type(length) is not int or length <= 0:
         return length
     return max(1024, 1 << (length - 1).bit_length())
@@ -1447,8 +1800,7 @@ class _CompileDecodeOnRepeat:
             seen = self.model._unsloth_decoded_shapes = set()
             self.model._unsloth_compiled_batches = {}
         compiled = self.model._unsloth_compiled_batches.setdefault(key[1], set())
-        # Once two batch sizes compiled at this length, Dynamo has made batch dynamic (sizes >= 2
-        # share that graph), so a new batch size costs no compile: skip its eager warm-up call.
+        # After two batch sizes compile at a length, Dynamo marks batch dynamic for sizes >= 2; skip warm-up
         self.compile = key in seen or (
             type(batch_size) is int and batch_size >= 2 and len(compiled) >= 2
         )
@@ -1479,6 +1831,18 @@ try:
     torch_compiler_set_stance = torch.compiler.set_stance
 except:
     torch_compiler_set_stance = None
+
+try:
+    from unsloth_zoo.temporary_patches.utils import unsloth_reset_inference_runs
+except ImportError:
+    # Older unsloth_zoo: each compiled module counts its own inference forwards.
+    def unsloth_reset_inference_runs():
+        for name, module in list(sys.modules.items()):
+            if (
+                name.startswith("unsloth_compiled_module_")
+                and type(getattr(module, "INFERENCE_RUNS", None)) is int
+            ):
+                module.INFERENCE_RUNS = 0
 
 
 # Image and video only: get_block_sequence_ids_for_mask blocks token types 1 and 2.
@@ -1923,13 +2287,18 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             enabled = dtype in (torch.float16, torch.bfloat16),
         )
     # Prepare LoRA
-    # state_dict = convert_lora_modules(self, dtype = dtype)
 
     # FlashAttention breaks on the forced static cache below (unfilled slots stay unmasked while decoding), so delegate after normalization but before it.
     _clear_generation_caches(self)
+    # Custom-code generate (LFM3) raises on any cache field it lists as unsupported; leave them unset.
+    # Inline, not a helper: tests exec this function's source with a hand-built namespace.
+    unsupported_fields = getattr(self, "_generation_fields_unsupported", None)
+    rejects_cache_fields = (
+        isinstance(unsupported_fields, dict) and "cache_implementation" in unsupported_fields
+    )
     if _uses_flash_attention_for_generation(self.config):
         # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL). The kwarg wins, since update runs last; skip it when the caller passed a cache.
-        if kwargs.get("past_key_values") is None:
+        if kwargs.get("past_key_values") is None and not rejects_cache_fields:
             kwargs["cache_implementation"] = "dynamic"
         try:
             with _get_inference_mode_context_manager(self), autocaster:
@@ -1970,8 +2339,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
                 cache_implementation = "static"
     if do_bfloat16_mixed_precision:
         cache_implementation = None
-    # A static cache drops the media block mask at prefill (#6028). Name the cache
-    # rather than None, which _prepare_generation_config refills from the default.
+    # A static cache drops the media block mask at prefill (#6028); None would be refilled from default.
     force_dynamic_cache = kwargs.get(
         "past_key_values"
     ) is None and _needs_bidirectional_multimodal_mask(self, kwargs)
@@ -1982,14 +2350,16 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if force_dynamic_cache:
         cache_implementation = None
         dynamic_implementation = _dynamic_cache_choice(kwargs)
+    if rejects_cache_fields:
+        cache_implementation = None
+        force_dynamic_cache = False
 
     generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
     compile_decode = (
         cache_implementation == "static"
         and not force_dynamic_cache
         and _compiles_decode(self)
-        # transformers compiles only on these devices and without disable_compile; anywhere
-        # else a bucketed cache would only cost memory.
+        # transformers compiles only on these devices; elsewhere a bucketed cache only costs memory.
         and getattr(getattr(self, "device", None), "type", None) == "cuda"
         and not kwargs.get("disable_compile", getattr(generation_config, "disable_compile", False))
         and hasattr(self, "_prepare_static_cache")
@@ -2018,7 +2388,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
     eager_scope = _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
     try:
-        with decode_scope, eager_scope, _get_inference_mode_context_manager(self), autocaster:
+        with (
+            _NonFlexGenerate(self),
+            decode_scope,
+            eager_scope,
+            _get_inference_mode_context_manager(self),
+            autocaster,
+        ):
             output = self._old_generate(*args, **kwargs)
     finally:
         _clear_generation_caches(self)
@@ -2049,6 +2425,79 @@ def _missing_torchvision_error(error = None):
             "requires the torchvision" in error_str or "no module named 'torchvision'" in error_str
         )
     return False
+
+
+_AUDIO_HEAD_SUFFIXES = (
+    "ForCTC",
+    "ForTDT",
+    "ForAudioClassification",
+    "ForSequenceClassification",
+    "ForAudioFrameClassification",
+    "ForXVector",
+)
+
+
+def _is_audio_head_model(model):
+    """A CTC / TDT / audio classification task model, whose head is usually freshly initialized."""
+    return type(model).__name__.endswith(_AUDIO_HEAD_SUFFIXES)
+
+
+def _trainable_head_modules(model):
+    """Top-level heads beside the backbone (CTC lm_head / ctc_head, audio classifier / projector) that hold
+    unquantized weights. PEFT suffix-matches modules_to_save, so a name the backbone also uses is left out."""
+    prefix = getattr(model, "base_model_prefix", None)
+    backbone = getattr(model, prefix, None) if prefix else None
+    children = [(n, c) for n, c in model.named_children() if next(c.parameters(), None) is not None]
+    if backbone is None:
+        if not _is_audio_head_model(
+            model
+        ):  # a bare encoder (WavLMModel) is its own backbone: LoRA only
+            return []
+        # WhisperForAudioClassification keeps its backbone (a PreTrainedModel) under `encoder`, not base_model_prefix.
+        from transformers import PreTrainedModel
+
+        backbone = next((c for _, c in children if isinstance(c, PreTrainedModel)), None)
+        if backbone is None:
+            return []
+    backbone_names = {n.rsplit(".", 1)[-1] for n, _ in backbone.named_modules() if n}
+    heads = []
+    for name, child in children:
+        if child is backbone or name in backbone_names:
+            continue
+        if any(type(m).__name__ in ("Linear4bit", "Linear8bitLt") for m in child.modules()):
+            continue
+        heads.append(name)
+    return heads
+
+
+def _is_speech_forward(model):
+    """forward reads audio features and no input_ids (Whisper, Canary, Moonshine, wav2vec2, AST)."""
+    try:
+        params = inspect.signature(type(model).forward).parameters
+    except (TypeError, ValueError):
+        return False
+    return "input_ids" not in params and ("input_features" in params or "input_values" in params)
+
+
+def _from_pretrained_left_padded(loader, name, **kwargs):
+    """`loader.from_pretrained(name, padding_side = "left", ...)`, retried without padding_side when the
+    processor forwards it into a sub-model's __init__ (Dia's DacModel, Higgs Audio's tokenizer model).
+    The inner tokenizer is set to left padding after loading either way."""
+    try:
+        return loader.from_pretrained(name, padding_side = "left", **kwargs)
+    except TypeError as error:
+        if "padding_side" not in str(error):
+            raise
+        return loader.from_pretrained(name, **kwargs)
+
+
+def _missing_audio_backend(error):
+    """The library an audio processor needed but could not import (Granite Speech and Fun-ASR-Nano
+    feature extractors require torchaudio), else None."""
+    if not isinstance(error, ImportError):
+        return None
+    match = re.search(r"requires the (\w+) library", str(error))
+    return match.group(1) if match else None
 
 
 # Only where class defaults are the checkpoint's settings (Step-3.7 hardcodes them remotely).
@@ -2300,8 +2749,7 @@ def _mxfp4_lora_keeps_experts_packed(
             device_map = str(getattr(torch, "get_default_device", lambda: "cpu")())
         except Exception:
             device_map = "cpu"
-    # unsloth_zoo only sees offload after this config is built, so check explicit maps here. Its guard
-    # unpacks every expert on ANY cpu / disk entry, so offloading even lm_head rules packed out.
+    # zoo sees offload only after config build, so check maps here; any cpu or disk entry unpacks experts
     if isinstance(device_map, dict) and any(
         str(value).split(":")[0] in ("cpu", "disk") for value in device_map.values()
     ):
@@ -2314,8 +2762,7 @@ def _mxfp4_lora_keeps_experts_packed(
         zoo_mxfp4 = sys.modules["unsloth_zoo.temporary_patches.mxfp4"]
     except Exception:
         return False
-    # zoo's offload flag belongs to the previous load (it clears it only once this load validates);
-    # this load's offload is judged above and below.
+    # Reset the zoo offload flag: it belongs to the previous load, and this load is judged above and below
     offloads = getattr(zoo_mxfp4, "_LOAD_OFFLOADS", None)
     if isinstance(offloads, list) and offloads:
         offloads[0] = False
@@ -2593,6 +3040,14 @@ def _target_parameters_in_layers(
     return [key for key in keys if _in_layers(key, layers_to_transform, layers_pattern)] or None
 
 
+def _mamba_ssm_importable():
+    import importlib.util
+    try:
+        return importlib.util.find_spec("mamba_ssm") is not None
+    except (ImportError, ValueError):
+        return True  # unknown: keep the dense weights the fused kernel needs
+
+
 def _architecture_skip_modules(model_types):
     """Extra modules kept out of bitsandbytes; shared by the device-map planner and the load."""
     model_types = model_types or []
@@ -2600,12 +3055,42 @@ def _architecture_skip_modules(model_types):
     # Nemotron-H uses 'mixer' (not 'mamba') for Mamba layers, whose fused kernels pass out_proj.weight straight to F.linear and fail with quantized Params4bit, so skip out_proj.
     if any(mt == "nemotron_h" for mt in model_types):
         skip.append("out_proj")
+    # Mamba's transformers 5 slow path does dt_proj.weight @ time_step, which fails on Params4bit; dt_proj is tiny.
+    if any(mt == "mamba" for mt in model_types):
+        skip.append("dt_proj")
+    # mamba_ssm's fused mamba_inner_fn reads these .weight as dense matrices; the slow path is fine with 4-bit.
+    if any(mt in ("mamba", "falcon_mamba") for mt in model_types) and _mamba_ssm_importable():
+        skip.extend(m for m in ("dt_proj", "x_proj", "out_proj") if m not in skip)
     # LongCat-Flash MLA: NF4 on q_b_proj / kv_b_proj badly hurts loss; both are small.
     if any(mt in ("longcat_flash", "longcat_flash_lsa") for mt in model_types):
         skip.extend(("q_b_proj", "kv_b_proj"))
     # Kimi-K3's attention residuals read the Linear(hidden, 1) projections' .weight as a score vector, which a packed Params4bit cannot be.
     if any(mt in ("kimi_k3", "kimi_linear") for mt in model_types):
         skip.extend(("self_attention_res_proj", "mlp_res_proj", "output_attn_res_proj"))
+    # Moonshine's LM head is proj_out (untied on moonshine-streaming): kept 16-bit like lm_head, which the fused CE loss reads as a plain weight.
+    if any(mt in ("moonshine", "moonshine_streaming") for mt in model_types):
+        skip.append("proj_out")
+    # WavLM's attention hands q/k/v/out_proj.weight to F.multi_head_attention_forward, which a packed Params4bit cannot be.
+    if any(mt == "wavlm" for mt in model_types):
+        # Qualified so a composite's decoder stays quantized: 5.x matches "attention.q_proj" as a suffix; a bare
+        # "attention" on 4.x also caught a BERT decoder's (cross)attention, so name WavLM's own layers instead.
+        skip.extend(
+            (
+                "attention.q_proj",
+                "attention.k_proj",
+                "attention.v_proj",
+                "attention.out_proj",
+            )
+        )
+        skip.extend(f"encoder.layers.{i}.attention" for i in range(48))
+    # Gemma 3n AltUp clamps prediction_coefs.weight.data in place every training step, which fails on packed
+    # uint8 weights; the same four modules unsloth/gemma-3n-*-unsloth-bnb-4bit keeps in 16-bit.
+    # transformers 5 matches a skip key as a suffix of each Linear's name, so the ModuleList children are listed too.
+    if any(mt.startswith("gemma3n") for mt in model_types):
+        skip.extend(("correction_coefs", "prediction_coefs"))
+        for name in ("altup_projections", "altup_unembed_projections"):
+            skip.append(name)
+            skip.extend(f"{name}.{i}" for i in range(8))
     return skip
 
 
@@ -3075,9 +3560,130 @@ def _offload_activation_unpack(packed):
     return x if device is None else x.to(device, non_blocking = True)
 
 
-def _offload_activation_hooks():
+# hf_modeling_utils.checkpoint is shared by every model, so the owner is resolved per call from the layer.
+_GC_CONTAINERS = (torch.nn.ModuleList, torch.nn.ModuleDict)
+_GC_OFFLOAD_ROOTS = weakref.WeakSet()
+# Weak values: a strong one would keep its own key alive.
+_GC_MODULE_PARENTS = weakref.WeakKeyDictionary()
+_GC_UNRESOLVED = weakref.WeakSet()
+_GC_OWNER_DEPTH = weakref.WeakKeyDictionary()
+
+
+def _gc_is_compiling():
+    try:
+        return torch.compiler.is_compiling()
+    except Exception:
+        return False
+
+
+def _gc_owner_pre_hook(module, args):
+    if _gc_is_compiling():
+        return
+    _GC_OWNER_DEPTH[module] = _GC_OWNER_DEPTH.get(module, 0) + 1
+
+
+def _gc_owner_post_hook(module, args, output):
+    if _gc_is_compiling():
+        return
+    depth = _GC_OWNER_DEPTH.get(module, 0)
+    if depth > 0:
+        _GC_OWNER_DEPTH[module] = depth - 1
+
+
+def _gc_track_owner(owner):
+    # Module-level hooks looked up per call: the model stays picklable and a copy tracks only itself.
+    if _gc_owner_pre_hook not in owner._forward_pre_hooks.values():
+        owner.register_forward_pre_hook(_gc_owner_pre_hook)
+        owner.register_forward_hook(_gc_owner_post_hook, always_call = True)
+
+
+def _gc_index_parents(root, track = False):
+    try:
+        from transformers.modeling_layers import GradientCheckpointingLayer
+    except ImportError:
+        GradientCheckpointingLayer = ()
+    for parent in root.modules():
+        if isinstance(parent, _GC_CONTAINERS):
+            continue
+        children = list(parent.children())
+        layered = stacked = False
+        while children:
+            child = children.pop()
+            if isinstance(child, _GC_CONTAINERS):
+                stacked = True
+                layered = layered or any(
+                    isinstance(m, GradientCheckpointingLayer) for m in child.children()
+                )
+                children.extend(child.children())
+                continue
+            if child not in _GC_MODULE_PARENTS:
+                _GC_MODULE_PARENTS[child] = weakref.ref(parent)
+        # Decoder / encoder stacks (old style: the stack carries .gradient_checkpointing) are watched from
+        # the first forward; any other owner from the forward after its first checkpoint.
+        if track and (layered or (stacked and hasattr(parent, "gradient_checkpointing"))):
+            _gc_track_owner(parent)
+
+
+def _register_gc_offload_root(model, offload = True):
+    if not offload:
+        return
+    _GC_OFFLOAD_ROOTS.add(model)
+    _GC_UNRESOLVED.clear()
+    _gc_index_parents(model, track = True)
+
+
+def _gc_checkpointed_module(function):
+    # GradientCheckpointingLayer passes partial(super().__call__, ...); older stacks a bound __call__ or closure.
+    for _ in range(8):
+        if not isinstance(function, functools.partial):
+            break
+        function = function.func
+    module = getattr(function, "__self__", None)
+    if isinstance(module, torch.nn.Module):
+        return module
+    found = []
+    for cell in getattr(function, "__closure__", None) or ():
+        try:
+            value = cell.cell_contents
+        except ValueError:
+            continue
+        if isinstance(value, torch.nn.Module):
+            found.append(value)
+    return found[0] if len(found) == 1 else None
+
+
+def _gc_checkpoint_owner(function):
+    """The module owning this checkpoint's offloader, or None for the shared one."""
+    if activation_offloader_for is None:
+        return None
+    try:
+        layer = _gc_checkpointed_module(function)
+        if layer is None:
+            return None
+        ref = _GC_MODULE_PARENTS.get(layer)
+        if ref is None and layer not in _GC_UNRESOLVED:
+            for root in list(_GC_OFFLOAD_ROOTS):
+                _gc_index_parents(root)
+            ref = _GC_MODULE_PARENTS.get(layer)
+            if ref is None:
+                _GC_UNRESOLVED.add(layer)
+        owner = None if ref is None else ref()
+        if owner is None:
+            return None
+        # An owner whose hooks never fire (bypassed) would pile up records across discarded forwards: share.
+        if _GC_OWNER_DEPTH.get(owner, 0) > 0:
+            return owner
+        _gc_track_owner(owner)
+    except TypeError:  # an unhashable / non-weakrefable module
+        pass
+    return None
+
+
+def _offload_activation_hooks(owner = None):
     # The zoo hooks copy on a side stream; the fallback queues the copy on the compute stream.
     if non_reentrant_offload_hooks is not None:
+        if owner is not None and activation_offloader_for is not None:
+            return non_reentrant_offload_hooks(owner)
         return non_reentrant_offload_hooks()
     return torch.autograd.graph.saved_tensors_hooks(
         _offload_activation_pack, _offload_activation_unpack
@@ -3132,6 +3738,7 @@ class FastBaseModel:
         **kwargs,
     ):
         user_config = kwargs.pop("config", None)
+        user_rope_scaling = kwargs.pop("rope_scaling", None)
         if auto_config is None and user_config is not None:
             auto_config = user_config
         _offload_layers = legacy_offload_layers(kwargs, kwargs.pop("offload_layers", None))
@@ -3252,17 +3859,32 @@ class FastBaseModel:
             auto_model = AutoModelForCausalLM
         is_vlm = auto_model in [AutoModelForVision2Seq, AutoModelForImageTextToText]
         is_whisper = whisper_language is not None and whisper_task is not None
-        # Audio and omni classes need a processor but are NOT image models, so they
-        # must not widen is_vlm, which arms the image-processor repair path below.
+        # Audio and omni classes need a processor but must not widen is_vlm (image-processor repair).
         needs_processor = is_vlm or auto_model in _multimodal_auto_classes()
         # FastModel routes Whisper here without auto_model (#2726); audio features need the processor.
         needs_processor = needs_processor or auto_model is AutoModelForSpeechSeq2Seq
+        needs_processor = needs_processor or (
+            not text_only
+            and _audio_lm_class(
+                auto_model,
+                auto_config,
+                trust_remote_code = trust_remote_code,
+                token = token,
+                revision = _revision,
+                local_files_only = local_files_only,
+            )
+            is not None
+        )
+        # Speech / CTC / audio-classification models (Moonshine, Parakeet, wav2vec2, AST) read audio
+        # features too; Seq2SeqLM keeps its tokenizer (SeamlessM4T's text-to-text route).
+        needs_processor = needs_processor or (
+            getattr(auto_model, "__name__", "") != "AutoModelForSeq2SeqLM"
+            and _config_maps_audio_auto_class(auto_config)
+        )
         # A repo-code VLM may register only AutoModel / AutoModelForCausalLM (DeepSeek-OCR, Nemotron-VL), so auto_model is not a VLM class though the config is a vision model. Keep is_vlm for processor selection, but treat it as a VLM on the vLLM path so a vision_config model is never silently loaded as text-only.
         is_vlm_config = (
             is_vlm
-            # An omni checkpoint hides its vision config under thinker_config, so the
-            # hasattr below misses it and fast_inference would enter the vLLM
-            # language-model path with is_vision_model=False.
+            # Omni checkpoints nest vision_config in thinker_config, so hasattr misses it: is_vision_model False
             or needs_processor
             or (not text_only and hasattr(auto_config, "vision_config"))
         )
@@ -3385,6 +4007,23 @@ class FastBaseModel:
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16 and not xpu_keeps_explicit_bf16():
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
+        if (
+            dtype == torch.bfloat16
+            and DEVICE_TYPE == "xpu"
+            and fast_inference
+            and is_vLLM_available()
+            and xpu_vllm_refuses_bf16()
+        ):
+            if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+                # This model needs bf16 or float32 (float16 gives NaN gradients): fail before loading.
+                raise RuntimeError(
+                    "Unsloth: vLLM does not accept bfloat16 on this Intel GPU, and this model cannot "
+                    "run in float16. Load it with fast_inference = False."
+                )
+            logger.warning_once(
+                "Unsloth: vLLM does not accept bfloat16 on this Intel GPU. Will change to float16."
+            )
+            dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
 
         bnb_compute_dtype = dtype
@@ -3480,6 +4119,7 @@ class FastBaseModel:
             supports_sdpa = _attn_supports_sdpa,
             dtype = attn_dtype,
         )
+        _explicit_flex = requests_flex_attention(kwargs.get("attn_implementation", None))
 
         # FP8 models: get_model_name already redirected to the BF16 sibling if the model ships FP8 weights, so just update it here for sanity.
         auto_config.model_name = model_name
@@ -3525,8 +4165,7 @@ class FastBaseModel:
                 "local_files_only": local_files_only,
             },
         )
-        # Only an explicit bnb 4-bit config the check kept keeps the caller's flags: a pre-quantized
-        # checkpoint left unarmed (vLLM reads it itself) must not reach vLLM as a bitsandbytes load.
+        # A pre-quantized checkpoint left unarmed must not reach vLLM as a bitsandbytes load.
         if not (_explicit_bnb_4bit and _checked_4bit):
             load_in_4bit, load_in_8bit = _checked_4bit, _checked_8bit
         from .modelopt_fp8 import (
@@ -3771,7 +4410,13 @@ class FastBaseModel:
 
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
-            if dtype == torch.bfloat16:
+            if do_forced_float32 and not SUPPORTS_BFLOAT16:
+                # Forced float32 loads bf16 then casts, but without bf16 the trainer keeps float32 (no autocast).
+                print(
+                    f"Unsloth: {model_type_arch} cannot train in float16 and this GPU has no bfloat16, "
+                    "so full finetuning runs in float32."
+                )
+            elif dtype == torch.bfloat16:
                 if float32_mixed_precision != True:
                     print(
                         f"Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.\n"
@@ -3838,13 +4483,26 @@ class FastBaseModel:
                         f"Unsloth: transformers cannot load this `{quant_method}` checkpoint in process."
                     )
                 quantizer_kwargs = {}
+                # Full finetuning must dequantize fp8 on load, else training casts fp8 storage without its scales.
+                _fp8_full_finetune = full_finetuning and str(quant_method).lower() == "fp8"
+                if (
+                    _fp8_full_finetune
+                    and user_quantization_config is None
+                    and quantizer is not None
+                    and "dequantize" not in inspect.signature(quantizer).parameters
+                ):
+                    raise RuntimeError(
+                        "Unsloth: full finetuning an FP8 checkpoint needs it dequantized on load, which this "
+                        "transformers version cannot do (its FineGrainedFP8Config has no `dequantize`). "
+                        "Upgrade transformers, use the BF16 version of the model, or train LoRA instead."
+                    )
                 if quant_method == "compressed-tensors" or quantizer is None:
                     pass
                 else:
-                    # Cannot dequantize, since gpt-oss-20b MXFP4 would become gpt-oss-20b-BF16.
-                    # Except LoRA with zoo's packed experts: stays MXFP4 and has a backward.
+                    # Cannot dequantize (MXFP4 would become BF16), except LoRA with zoo's packed experts.
                     if (
                         load_in_16bit
+                        or _fp8_full_finetune
                         or _mxfp4_lora_keeps_experts_packed(
                             quant_method,
                             full_finetuning,
@@ -3893,6 +4551,20 @@ class FastBaseModel:
             )
         _set_attn_impl(auto_config, config_attn_impl)
         model_config = auto_config
+        if user_rope_scaling is not None:
+            if fast_inference and is_vLLM_available():
+                import inspect as _inspect
+                from unsloth_zoo.vllm_utils import load_vllm as _load_vllm
+                _vllm_rope_scaling(
+                    user_rope_scaling,
+                    "rope_scaling" in _inspect.getfullargspec(_load_vllm).args,
+                    is_vlm = getattr(model_config, "get_text_config", lambda: model_config)()
+                    is not model_config,
+                )
+            # vLLM gets what the model got (theta, original window, layout keys filled in).
+            user_rope_scaling = (
+                _apply_user_rope_scaling(model_config, user_rope_scaling) or user_rope_scaling
+            )
 
         verify_fp8_support_if_applicable(
             model_config, fast_inference = bool(fast_inference and is_vLLM_available())
@@ -3958,6 +4630,8 @@ class FastBaseModel:
                 model = _text_trainable_core(
                     model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
                 )
+                # After extraction, so a discarded vision / audio tower on an older card does not count.
+                check_mixed_gpu_placement(model, dtype)
                 # Save the standalone decoder under its own names, not the composite prefix it was read from.
                 _drop_text_only_key_mapping(model, _text_key_mapping)
                 _inherit_gradient_checkpointing_support(model)
@@ -3969,8 +4643,8 @@ class FastBaseModel:
                     _cast_text_only_prequantized_params(model, torch_dtype)
                 # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq, decay slopes) uninitialised.
                 restore_remote_code_non_persistent_buffers(model)
-                # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
-                # Repair remote code first so the offload decision reads the real input embeddings.
+                # Before _attach_bnb_multidevice_hooks (it returns early while offload_embedding is True), and after
+                # remote code repair so the offload reads the real input embeddings.
                 apply_remote_code_shims(model)
                 offload_embedding = _resolve_offload_embedding(
                     model,
@@ -4022,7 +4696,7 @@ class FastBaseModel:
                     prepare_fsdp2_qlora(model, bnb_compute_dtype)
                 # Any dequantizing fp8 load (explicit config, pre-sm89 / CPU fallback); else a no-op.
                 _drop_fp8_dequantize_conversions(model)
-                if load_in_16bit and not load_in_4bit and not load_in_8bit:
+                if (load_in_16bit or full_finetuning) and not load_in_4bit and not load_in_8bit:
                     _dequantize_leftover_fp8_params(
                         model,
                         model_name,
@@ -4154,6 +4828,15 @@ class FastBaseModel:
                 for allowed_arg in allowed_args:
                     if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
                         load_vllm_kwargs[allowed_arg] = kwargs[allowed_arg]
+                # vLLM reads config.json itself: the RoPE override must reach it too, else rollouts
+                # run the checkpoint's RoPE while training runs the caller's.
+                if user_rope_scaling is not None:
+                    load_vllm_kwargs["rope_scaling"] = _vllm_rope_scaling(
+                        user_rope_scaling,
+                        "rope_scaling" in allowed_args,
+                        is_vlm = getattr(model_config, "get_text_config", lambda: model_config)()
+                        is not model_config,
+                    )
 
                 llm = load_vllm(**load_vllm_kwargs)
 
@@ -4207,9 +4890,7 @@ class FastBaseModel:
                 for jj, (name, module) in enumerate(model.named_modules()):
                     exec(custom_datatype)
                 cast_mixed_linear_inputs(model, torch_dtype)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
 
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
         # The loader resolves this (caller's adapter repo vs resolved base model); the fallback below covers a direct call.
@@ -4258,9 +4939,9 @@ class FastBaseModel:
                 "ForConditionalGeneration"
             ):
                 try:
-                    _tok = auto_processor.from_pretrained(
+                    _tok = _from_pretrained_left_padded(
+                        auto_processor,
                         tokenizer_name,
-                        padding_side = "left",
                         token = token,
                         language = whisper_language,
                         task = whisper_task,
@@ -4291,9 +4972,9 @@ class FastBaseModel:
                         _tok = None
                 try:
                     if _tok is None:
-                        _tok = auto_processor.from_pretrained(
+                        _tok = _from_pretrained_left_padded(
+                            auto_processor,
                             tokenizer_name,
-                            padding_side = "left",
                             token = token,
                             trust_remote_code = trust_remote_code,
                             cache_dir = kwargs.get("cache_dir"),
@@ -4364,6 +5045,19 @@ class FastBaseModel:
                 f"Unsloth: Warning - VLM processor fallback returned None for model_type={model_type_arch}",
                 file = sys.stderr,
             )
+        _audio_backend = _missing_audio_backend(_primary_err)
+        if (
+            needs_processor
+            and _audio_backend
+            and not any(hasattr(tokenizer, k) for k in ("feature_extractor", "audio_processor"))
+        ):
+            import sys
+            print(
+                f"Unsloth: Warning - the audio processor for `{tokenizer_name}` needs {_audio_backend}, "
+                f"which is not installed, so only its text tokenizer was loaded. Audio training "
+                f"needs the processor: `pip install {_audio_backend}`, then load again.",
+                file = sys.stderr,
+            )
         # Backwards compat: if the processor has no chat_template (old saves without chat_template.jinja) but the inner tokenizer does, copy it to the processor.
         if (
             hasattr(tokenizer, "tokenizer")
@@ -4420,8 +5114,11 @@ class FastBaseModel:
                     revision = _tokenizer_revision,
                 )
                 model, _fallback_tok = patch_tokenizer(model, _fallback_tok)
-                # Re-attach as a processor wrapper if the original was a processor.
-                if hasattr(tokenizer, "image_processor"):
+                # Re-attach as a processor wrapper if the original was a processor (audio ones included).
+                if any(
+                    hasattr(tokenizer, k)
+                    for k in ("image_processor", "feature_extractor", "audio_processor")
+                ):
                     tokenizer.tokenizer = _fallback_tok
                 else:
                     tokenizer = _fallback_tok
@@ -4475,6 +5172,20 @@ class FastBaseModel:
                 if not local_files_only and _is_offline_related_error(_e):
                     raise
             if tokenizer is None:
+                # Encoder-only audio checkpoints (AST, WavLM, wav2vec2 bases) ship only a feature extractor.
+                try:
+                    from transformers import AutoFeatureExtractor
+                    tokenizer = AutoFeatureExtractor.from_pretrained(
+                        tokenizer_name,
+                        token = token,
+                        trust_remote_code = trust_remote_code,
+                        cache_dir = kwargs.get("cache_dir"),
+                        local_files_only = local_files_only,
+                        revision = _tokenizer_revision,
+                    )
+                except Exception:
+                    tokenizer = None
+            if tokenizer is None:
                 del model
                 raise RuntimeError(
                     "Unsloth: Could not load the tokenizer/processor. If you are "
@@ -4483,8 +5194,7 @@ class FastBaseModel:
                     "or set HF_HUB_OFFLINE=1 to force local loading. "
                     "Otherwise please check that the model has a tokenizer."
                 ) from _last_resort_err
-        # FastModel never calls load_correct_tokenizer; heal Gemma 4 base BOS from
-        # the finalized processor / model config (unslothai/unsloth#7903).
+        # FastModel never calls load_correct_tokenizer; heal Gemma 4 base BOS here (#7903).
         from ..tokenizer_utils import _apply_post_load_tokenizer_fixes
 
         tokenizer = _apply_post_load_tokenizer_fixes(
@@ -4503,16 +5213,20 @@ class FastBaseModel:
         patch_gradient_accumulation_fix(Trainer)
 
         _padding_side = _generation_padding_side(getattr(model, "config", None))
-        tokenizer.padding_side = _padding_side
+        # A bare audio feature extractor pads waveforms, which must stay right padded (AutoProcessor's
+        # fallback to it keeps the padding_side = "left" we passed).
+        tokenizer.padding_side = "right" if _is_bare_feature_extractor(tokenizer) else _padding_side
         if hasattr(tokenizer, "tokenizer"):
             tokenizer.tokenizer.padding_side = _padding_side
         # Audio feature extractors must stay right padded: left (a text setting, forwarded by from_pretrained) shifts Whisper mels and desyncs Gemma 4 audio token counts, crashing on transformers < 5.10.
-        feature_extractor = getattr(tokenizer, "feature_extractor", None)
-        if (
-            feature_extractor is not None
-            and getattr(feature_extractor, "padding_side", None) == "left"
-        ):
-            feature_extractor.padding_side = "right"
+        # Granite Speech names its frontend audio_processor.
+        for _audio_attr in ("feature_extractor", "audio_processor"):
+            feature_extractor = getattr(tokenizer, _audio_attr, None)
+            if (
+                feature_extractor is not None
+                and getattr(feature_extractor, "padding_side", None) == "left"
+            ):
+                feature_extractor.padding_side = "right"
         m = model
         while hasattr(m, "model"):
             m.max_seq_length = max_seq_length
@@ -4554,21 +5268,20 @@ class FastBaseModel:
             tokenizer = tokenizer,
             float32_mixed_precision = float32_mixed_precision,
         )
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         # Saving restores sentencepiece assets from the repo name alone, which carries no branch. Stamped here, not per processor branch, so a fallback cannot lose it.
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        if _explicit_flex:
+            setattr(model, _EXPLICIT_FLEX_ATTR, True)
         # Last, so the host copies carry the fp32 recasts the passes above make.
         finish_block_swap_load(
             model, _block_swap_state, planned_prefetch_depth(device_map_planner_kwargs)
         )
         mark_auto_offload_for_ddp(model, _ddp_auto_swap)
 
-        # LAST, like the llama loader: patch_model_and_tokenizer below REPLACES the embedding and lm_head with fresh modules carrying the weights but not the _hf_hook, so a model split across cards would still meet the original cross-device index_select. Idempotent.
-        # Embeddings offloaded later sit on the host on purpose: a dispatch hook would pull them back.
+        # Run last: patch_model_and_tokenizer drops embedding _hf_hook; split models hit cross-device lookups
         _base = model.get_base_model() if hasattr(model, "get_base_model") else model
         if (
             not fast_inference
@@ -4633,6 +5346,9 @@ class FastBaseModel:
         offload_layers = legacy_offload_layers(kwargs, offload_layers)
         prefetch_depth = prefetch_depth_arg(kwargs)
         reject_alora(model, kwargs.get("alora_invocation_tokens"))
+        # PEFT < 0.21 drops a scalar layer 0 with layers_pattern.
+        if isinstance(layers_to_transform, int) and not isinstance(layers_to_transform, bool):
+            layers_to_transform = [layers_to_transform]
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
@@ -4647,13 +5363,28 @@ class FastBaseModel:
         if r <= 0:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
 
-        if isinstance(model, (PeftModelForCausalLM, PeftModelForSeq2SeqLM)):
+        if (
+            isinstance(model, (PeftModelForCausalLM, PeftModelForSeq2SeqLM))
+            or type(model) is PeftModel
+        ):
             raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
         if task_type == TaskType.CAUSAL_LM and _is_seq2seq_lm_config(
             getattr(model, "config", None)
         ):
             # Also multimodal encoder-decoders (T5Gemma2), which load through the VLM path.
             task_type = TaskType.SEQ_2_SEQ_LM
+        _cannot_generate = task_type == TaskType.CAUSAL_LM and not hasattr(
+            model, "prepare_inputs_for_generation"
+        )
+        if task_type in (TaskType.CAUSAL_LM, TaskType.SEQ_2_SEQ_LM) and (
+            _is_speech_forward(model) or _cannot_generate
+        ):
+            # Speech / CTC / audio classification models: the task wrappers pass input_ids = None (it reaches
+            # Whisper's decoder twice), and PeftModelForCausalLM reads prepare_inputs_for_generation in __init__.
+            task_type = None
+            if (_cannot_generate or _is_audio_head_model(model)) and modules_to_save is None:
+                # The generic PeftModel neither trains nor saves the (often freshly initialized) head.
+                modules_to_save = _trainable_head_modules(model) or None
         if _is_text_seq2seq_config(getattr(model, "config", None)):
             # No vision tower: FastLanguageModel's finetune_vision_layers=False must not filter the encoder out.
             finetune_vision_layers = True
@@ -4842,9 +5573,7 @@ class FastBaseModel:
                     "Unsloth: LoRA finetuning for Llama 3.2 aka mllama models is not supported with fast_inference!"
                 )
 
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         max_seq_length = model.max_seq_length
         # Passing loftq_config = None gives an error.
         loftq_config = validate_loftq_config(
@@ -4887,8 +5616,7 @@ class FastBaseModel:
                 _moe_module_detect,
                 moe_module_targets = _moe_module_targets,
             )
-            # A forward-less wrapper's config hides the thinker's experts; resolve on the core and
-            # name full paths, since PEFT suffix-matches and would also hit the talker's experts.
+            # Resolve on the core: wrapper config hides thinker experts; full paths stop PEFT hitting talker
             _core_name = getattr(model, "_unsloth_text_core", None)
             _core = getattr(model, _core_name, None) if isinstance(_core_name, str) else None
             if target_parameters is None and _core is not None:
@@ -5068,9 +5796,7 @@ class FastBaseModel:
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
         skip_checkpointing(model, checkpoint_skip_layers)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         patch_saving_functions(model, vision = True)
         patch_peft_fast_inference(model)
 
@@ -5099,6 +5825,8 @@ class FastBaseModel:
     ):
         reject_alora(model)
         set_deepspeed_moe_leaf_modules(model)
+        # Mamba fused kernels read x_proj / dt_proj / out_proj .weight raw, skipping adapters on them.
+        patch_mamba_fused_lora(model)
         from ..import_fixes import fix_transformers_voxtral_realtime_inplace_audio_add
 
         fix_transformers_voxtral_realtime_inplace_audio_add()
@@ -5132,12 +5860,13 @@ class FastBaseModel:
                 torch_checkpoint.checkpoint,
             )
             _offload = use_gradient_checkpointing == "unsloth"
+            _register_gc_offload_root(model, _offload)
 
             def _nonre_checkpoint(function, *args, **kwargs):
                 kwargs["use_reentrant"] = False
                 if not _offload:
                     return _orig_checkpoint(function, *args, **kwargs)
-                with _offload_activation_hooks():
+                with _offload_activation_hooks(_gc_checkpoint_owner(function)):
                     return _orig_checkpoint(function, *args, **kwargs)
 
             _nonre_checkpoint._unsloth_original = _orig_checkpoint
@@ -5247,9 +5976,7 @@ class FastBaseModel:
         # Prevent Transformers Trainer from auto-wrapping Unsloth LoRA models in DP.
         _mark_unsloth_disable_data_parallel(model, disable = not full_finetuning)
 
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         model.for_training = functools.partial(FastBaseModel.for_training, model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)
         m = model
@@ -5274,6 +6001,7 @@ class FastBaseModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_inference!"
             )
+        _tensor_parallel_for_inference(model)
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -5311,6 +6039,9 @@ class FastBaseModel:
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
+        # A count left at 1 by a 1-token generate would go eager right after the next prefill.
+        if unsloth_reset_inference_runs is not None:
+            unsloth_reset_inference_runs()
         return model
 
     @staticmethod
@@ -5319,6 +6050,7 @@ class FastBaseModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
+        _tensor_parallel_for_training(model)
         # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
         checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(

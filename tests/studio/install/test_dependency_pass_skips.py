@@ -12,6 +12,7 @@ import os
 import pathlib
 import platform
 import re
+import shutil
 import sys
 import tempfile
 import types
@@ -594,7 +595,7 @@ def test_the_remote_commit_probe_reads_ls_remote_and_fails_closed(monkeypatch) -
     )
     argv, kwargs = calls[-1]
     assert argv[:3] == ["/usr/bin/git", "ls-remote", "--"]
-    assert argv[3:] == ["https://example.invalid/t.git", "release/3.6.x"]
+    assert argv[3:] == ["https://example.invalid/t.git", "release/3.6.x", "release/3.6.x^{}"]
     assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
 
     _fake_run.answer = _Done(
@@ -618,6 +619,32 @@ def test_the_remote_commit_probe_reads_ls_remote_and_fails_closed(monkeypatch) -
     assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") is None
     monkeypatch.setattr(stack.shutil, "which", lambda _name: None)
     assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") is None
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason = "needs git")
+def test_the_remote_commit_probe_peels_a_real_annotated_tag(tmp_path) -> None:
+    """Real git omits the `^{}` row unless asked, so the tag object (not a commit) leaked through."""
+    import subprocess as _sp
+
+    env = dict(os.environ, GIT_AUTHOR_NAME = "t", GIT_AUTHOR_EMAIL = "t@t")
+    env.update(GIT_COMMITTER_NAME = "t", GIT_COMMITTER_EMAIL = "t@t")
+
+    def git(*args):
+        argv = ["git", "-C", str(tmp_path), *args]
+        return _sp.run(argv, check = True, capture_output = True, text = True, env = env).stdout.strip()
+
+    git("init", "-q")
+    git("commit", "-q", "--allow-empty", "-m", "c")
+    git("tag", "-a", "v1", "-m", "annotated")
+    commit = git("rev-parse", "HEAD")
+    assert git("rev-parse", "v1") != commit
+    assert stack._git_remote_commit(tmp_path.as_uri(), "v1") == commit
+    branch = git("symbolic-ref", "--short", "HEAD")
+    assert stack._git_remote_commit(tmp_path.as_uri(), branch) == commit
+    # A same-named branch still wins over the tag, as pip and uv resolve it.
+    git("commit", "-q", "--allow-empty", "-m", "d")
+    git("branch", "v1")
+    assert stack._git_remote_commit(tmp_path.as_uri(), "v1") == git("rev-parse", "HEAD")
 
 
 @pytest.mark.parametrize("name", ["UV_CONSTRAINT", "PIP_CONSTRAINT", "PIP_NO_DEPS", "UV_NO_DEPS"])
@@ -823,8 +850,11 @@ def test_a_venv_that_already_has_pip_does_not_reinstall_it(monkeypatch) -> None:
     monkeypatch.setattr(
         stack.subprocess, "run", lambda cmd, **_k: types.SimpleNamespace(returncode = 0)
     )
-    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "24.2")
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "26.2.2")
     assert stack._venv_pip_is_usable() is True
+    # Below the trust floor's pip on 3.10+, so the bootstrap runs.
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "24.2")
+    assert stack._venv_pip_is_usable() is (sys.version_info < (3, 10))
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "22.0.4")
     assert stack._venv_pip_is_usable() is False
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: None)
@@ -841,7 +871,7 @@ def test_a_fresh_uv_venv_still_bootstraps(monkeypatch) -> None:
 
 def test_a_pip_that_cannot_run_is_bootstrapped_again(monkeypatch) -> None:
     """Metadata survives a pip whose __main__.py is gone; `python -m pip` does not."""
-    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "24.2")
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "26.2.2")
     seen: list[list[str]] = []
 
     def broken(cmd, **_k):
@@ -991,12 +1021,12 @@ def test_the_pip_fallback_never_names_one_project_twice() -> None:
             "--upgrade-package",
             "mlx-vlm",
             "mlx==0.32.3",
-            "mlx-vlm>=0.4.4,<=0.7.9",
+            "mlx-vlm>=0.4.4,<=0.7.11",
         )
     )
     assert "--upgrade" in cmd and "--upgrade-package" not in cmd
     assert cmd.count("mlx") == 0 and cmd.count("mlx-vlm") == 0
-    assert "mlx==0.32.3" in cmd and "mlx-vlm>=0.4.4,<=0.7.9" in cmd
+    assert "mlx==0.32.3" in cmd and "mlx-vlm>=0.4.4,<=0.7.11" in cmd
 
 
 def test_a_package_named_only_by_the_flag_is_still_passed() -> None:

@@ -100,13 +100,16 @@ def test_detect_family_from_repo_id():
     assert kontext.cfg_kwarg == "guidance_scale"
     assert detect_family("unsloth/FLUX.1-dev-GGUF").name == "flux.1"
     assert detect_family("unsloth/Qwen-Image-2512-GGUF").name == "qwen-image"
+    # Krea 2 (diffusers >= 0.39): single-stream DiT; no-GPU hosts run its GGUFs on sd.cpp with Qwen3-VL-4B.
     krea2 = detect_family("krea/Krea-2-Turbo")
     assert krea2.name == "krea-2"
     assert krea2.pipeline_class == "Krea2Pipeline"
     assert krea2.transformer_class == "Krea2Transformer2DModel"
     assert krea2.cfg_kwarg == "guidance_scale"
     assert krea2.fp16_incompatible is True
-    assert krea2.sd_cpp_text_encoders == ()
+    assert krea2.sd_cpp_text_encoders == (
+        ("unsloth/Qwen3-VL-4B-Instruct-GGUF", "Qwen3-VL-4B-Instruct-Q8_0.gguf", "llm"),
+    )
     assert detect_family("meta-llama/Llama-3-8B") is None
 
 
@@ -200,7 +203,7 @@ def _all_cached(monkeypatch):
 
 def test_gated_mirror_table_round_trips():
     """Both directions, exact case: canonical_base must hand back a real repo id."""
-    assert len(_MIRROR_PAIRS) == 32
+    assert len(_MIRROR_PAIRS) == 34
     for upstream, mirror in _MIRROR_PAIRS:
         assert mirror_repo(upstream) == mirror
         assert canonical_base(mirror) == upstream
@@ -220,7 +223,7 @@ def test_only_the_genuinely_gated_half_reads_as_gated():
     is mirrored, and which the Hub serves anonymously.
     """
     assert len(_GATED_MIRROR_PAIRS) == 14
-    assert len(_UNGATED_MIRROR_PAIRS) == 18
+    assert len(_UNGATED_MIRROR_PAIRS) == 20
     for upstream, _mirror in _GATED_MIRROR_PAIRS:
         assert upstream_is_gated(upstream), upstream
         assert upstream_is_gated(upstream.upper()), upstream
@@ -1128,6 +1131,7 @@ def test_speed_auto_compile_reports_that_a_reload_brings_lora_back(
     backend = DiffusionBackend()
     status = _load_into(backend, tmp_path, **load)
     assert (status["supports_lora"], status["lora_after_reload"]) == (True, False)
+    assert status["lora_unavailable_reason"] is None
     for p in ("one", "two", "three"):
         backend.generate(prompt = p)
     status = backend.status()
@@ -1140,13 +1144,60 @@ def test_speed_auto_compile_reports_that_a_reload_brings_lora_back(
     status = _load_into(backend, tmp_path, **load)
     assert (status["supports_lora"], status["lora_after_reload"]) == (True, False)
 
-    # An explicit compiled tier compiles at load: a reload would not help, so no hint.
+    # An explicit compiled tier compiles at load: a reload would not help, so no hint, only the reason.
     backend.unload()
     status = _load_into(backend, tmp_path, speed_mode = "default", **load)
     assert "compiled" in status["speed_optims"]
     assert (status["supports_lora"], status["lora_after_reload"]) == (False, False)
+    assert "Speed" in DiffusionStatusResponse(**status).lora_unavailable_reason
     backend.unload()
     assert backend.status()["lora_after_reload"] is False
+
+
+def test_a_gguf_on_diffusers_applies_loras_unfused(fake_runtime, tmp_path, monkeypatch):
+    backend = _loaded_backend(tmp_path)
+    status = backend.status()
+    assert (status["model_kind"], status["transformer_quant"]) == ("gguf", None)
+    assert status["supports_lora"] is True and status["lora_unavailable_reason"] is None
+    applied: list = []
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_lora_set",
+        lambda self, specs, **kw: (("style", "/loras/style.safetensors", 0.7),),
+    )
+    monkeypatch.setattr(
+        _FakePipe,
+        "load_lora_weights",
+        lambda self, path, adapter_name = None: applied.append((path, adapter_name)),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        _FakePipe,
+        "set_adapters",
+        lambda self, names, adapter_weights = None: applied.append((names, adapter_weights)),
+        raising = False,
+    )
+    monkeypatch.setattr(_FakePipe, "unload_lora_weights", lambda self: None, raising = False)
+    backend.generate(prompt = "a fox", loras = [("style", 0.7)])
+    assert applied == [("/loras/style.safetensors", "style"), (["style"], [0.7])]
+    assert getattr(backend._state.pipe, "_unsloth_loras_baked", False) is False
+    backend.unload()
+
+
+def test_a_load_that_cannot_carry_adapters_reports_why(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion as dmod
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    _load_into(backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image")
+    monkeypatch.setattr(dmod, "_small_host_int8", lambda pipe: True)
+    status = backend.status()
+    assert status["supports_lora"] is False
+    assert "small-host route" in status["lora_unavailable_reason"]
+    with pytest.raises(ValueError) as raised:
+        backend.generate(prompt = "a fox", loras = [("adapter", 1.0)])
+    assert str(raised.value) == status["lora_unavailable_reason"]
+    backend.unload()
 
 
 def test_deferred_speed_stays_off_when_only_an_explicit_tier_may_compile(
@@ -1201,6 +1252,35 @@ def test_deferred_speed_skips_when_lora_requested(fake_runtime, tmp_path, monkey
     assert engaged == []
     backend.generate(prompt = "four")
     assert len(engaged) == 1
+
+
+def test_detailer_passes_neither_count_nor_engage_deferred_speed(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_bg_compile as bg
+
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    engaged: list = []
+
+    def fake_engage(self, state):
+        engaged.append(state.generation_count)
+        state.speed_deferred = False
+
+    monkeypatch.setattr(DiffusionBackend, "_engage_deferred_speed", fake_engage)
+
+    backend = _loaded_backend(
+        tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
+    )
+    backend.generate(prompt = "one")
+    backend.generate(prompt = "two")
+    with bg.auxiliary_pass():
+        for _ in range(3):
+            backend.generate(prompt = "face")
+    assert engaged == [], "a Detailer crop engaged the compile mid-pass"
+    assert backend._state.generation_count == 2
+    backend.generate(prompt = "three")
+    assert engaged == [2]
 
 
 def test_deferred_speed_skips_while_adapter_attached(fake_runtime, tmp_path, monkeypatch):
@@ -2233,7 +2313,7 @@ def test_validate_accepts_custom_local_components(fake_runtime, tmp_path):
 
 
 def test_resolve_local_single_file(tmp_path):
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion_local_files import resolve_local_single_file
 
     d = tmp_path / "solo"
     d.mkdir()
@@ -4687,6 +4767,52 @@ def _run_te_load(monkeypatch, on_load, **run_kwargs):
     return backend
 
 
+def _forced_offline_load(monkeypatch, *, caller_offline):
+    from core.inference import diffusion as dmod
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    _stub_te_run_load(
+        monkeypatch, base = "Qwen/Qwen-Image-2.1", base_bytes = 0, cache = {}, file_bytes = {}
+    )
+    monkeypatch.setattr(dmod, "_pick_cached_while_hub_unreachable", lambda *a, **k: True)
+    prefetched, loaded = [], []
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_prefetch_files",
+        lambda self, *a, **k: prefetched.append(k["local_files_only"]),
+    )
+
+    def load(self, **kw):
+        loaded.append(kw["local_files_only"])
+        if kw["local_files_only"]:
+            raise LocalEntryNotFoundError("transformer shard not in the cache")
+
+    monkeypatch.setattr(DiffusionBackend, "load_pipeline", load)
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(repo_id = "Qwen/Qwen-Image-2.1", base_repo = None)
+    backend._load_token = 7
+    backend._run_load(
+        _load_token = 7,
+        repo_id = "Qwen/Qwen-Image-2.1",
+        model_kind = "pipeline",
+        local_files_only = caller_offline,
+    )
+    return backend, prefetched, loaded
+
+
+def test_a_partly_cached_load_forced_offline_retries_online(monkeypatch):
+    # Manifest cached, a shard missing (interrupted download), Hub down moments ago: the online load still runs.
+    backend, prefetched, loaded = _forced_offline_load(monkeypatch, caller_offline = False)
+    assert prefetched == [True, False] and loaded == [True, False]
+    assert backend.load_progress()["phase"] != "error"
+
+
+def test_a_caller_offline_load_is_not_retried_online(monkeypatch):
+    backend, prefetched, loaded = _forced_offline_load(monkeypatch, caller_offline = True)
+    assert prefetched == [True] and loaded == [True]
+    assert backend.load_progress()["phase"] == "error"
+
+
 def test_run_load_reports_the_pre_cast_encoder_download_as_downloading(monkeypatch):
     # GGUF + base cached; a cached fp8 sibling in the encoder repo must not stand in for the int8 file.
     cache = {"unsloth/Qwen-Image-2.1-GGUF": 700, "Qwen/Qwen-Image-2.1": 300, _TE_REPO: 950}
@@ -5512,7 +5638,8 @@ def test_dense_quant_replan_no_retry_when_capacity_truly_short(
         replan_calls.append(True)
         return types.SimpleNamespace(
             offload_policy = "model",
-            estimates = {"resident_required_mib": 150_000, "safe_device_budget_mib": 40_000},
+            # above the capacity margin, 0.85 * (183,359 - 4,096 capped reserve) = 152,373
+            estimates = {"resident_required_mib": 160_000, "safe_device_budget_mib": 40_000},
             device_memory = types.SimpleNamespace(
                 total_mib = 183_359, memory_kind = "discrete_vram", free_mib = 60_000
             ),
@@ -5559,7 +5686,7 @@ def _decline_dense_quant(backend, monkeypatch, tmp_path):
             return dataclasses.replace(real, offload_policy = "model")
         return types.SimpleNamespace(
             offload_policy = "model",
-            estimates = {"resident_required_mib": 150_000, "safe_device_budget_mib": 40_000},
+            estimates = {"resident_required_mib": 160_000, "safe_device_budget_mib": 40_000},
             device_memory = types.SimpleNamespace(
                 total_mib = 183_359, memory_kind = "discrete_vram", free_mib = 60_000
             ),
@@ -10265,6 +10392,9 @@ def test_download_plan_drops_a_repo_the_fallback_root_holds_whole(monkeypatch, t
         },
     )
     monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: base)
+    # The speech-pick revision HEAD is not part of this rule; unstubbed it fails to connect, and that failure would
+    # (correctly) stand for the whole endpoint and skip the stubbed listings below.
+    monkeypatch.setattr("core.inference.diffusion_compat._hub_revision", lambda *a, **k: None)
     _no_dense_prefetch(monkeypatch)
     _all_cached(monkeypatch)
     for name, size in _FLUX_BASE_SIBLINGS_BY_NAME.items():
@@ -11106,7 +11236,7 @@ def test_generate_upscale_refuses_when_the_vae_tiling_does_not_engage(
 def test_quadratic_attention_follows_the_engaged_backend(monkeypatch):
     from core.inference import diffusion as dmod
 
-    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target, *_: True)
     assert dmod._quadratic_attention(object()) is True
     assert dmod._quadratic_attention(object(), None) is True
     assert dmod._quadratic_attention(object(), "native") is True
@@ -11120,7 +11250,7 @@ def test_generate_upscale_with_an_engaged_backend_on_a_math_only_device_runs_til
     from core.inference import diffusion as dmod
 
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
-    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target, *_: True)
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
     with pytest.raises(ValueError, match = "2048x2048"):
@@ -11707,6 +11837,12 @@ def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatc
     )
     monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda source, **kw: False)
     monkeypatch.setattr(ops, "select_nvfp4_backend", lambda device = None: "flashinfer")
+    from core.inference import diffusion_nvfp4_gate as gate
+    from core.inference.diffusion_nvfp4_install import FLASHINFER_VERSION
+
+    # The gate covers only the flashinfer its record was measured on; pin the version Studio installs so the
+    # answer does not depend on this host's flashinfer (CI runners have none).
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: FLASHINFER_VERSION)
 
     target = SimpleNamespace(device = "cuda", dtype = None)
     assert (
@@ -11716,6 +11852,17 @@ def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatc
     assert (
         dmod._uncached_prequant_repo(fam, target, "auto", base_repo = base, prequant_path = None)
         == "unsloth/FLUX.1-schnell-NVFP4"
+    )
+
+    # An unreadable version is not covered: the plan and the load both drop the nvfp4 rung, so nothing fetches it.
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: None)
+    assert (
+        dmod._planned_quant_scheme(fam, target, "auto", base_repo = base, prequant_path = None)
+        != "nvfp4"
+    )
+    assert (
+        dmod._uncached_prequant_repo(fam, target, "auto", base_repo = base, prequant_path = None)
+        != "unsloth/FLUX.1-schnell-NVFP4"
     )
 
 
@@ -14304,3 +14451,88 @@ def test_untrusted_hub_single_file_header_is_checked_before_the_flux2_gguf_probe
             monkeypatch, tmp_path, lambda p: p.write_bytes(b"GGUF" + b"\x00" * 64), card_tag = None
         )
     assert probed == []
+
+
+def test_generate_holds_cudnn_benchmark_off_for_an_opted_out_family(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """cudnn.benchmark is process-wide: a family that opts out holds it off around its own render (decode included),
+    whatever a co-resident or earlier load left it at."""
+    from core.inference import diffusion as dmod
+
+    backend = _loaded_backend(tmp_path)
+    assert backend._state.family.cudnn_benchmark is False  # z-image
+    object.__setattr__(backend._state, "device", "cuda")
+    events = []
+
+    @contextlib.contextmanager
+    def scope(family, device):
+        events.append(("enter", family.name, device))
+        yield
+        events.append(("exit",))
+
+    monkeypatch.setattr(dmod, "family_render_cudnn_scope", scope)
+    pipe_cls = type(backend._state.pipe)
+    stock_call = pipe_cls.__call__
+
+    def call(self, *args, **kwargs):
+        events.append(("pipe",))
+        return stock_call(self, *args, **kwargs)
+
+    monkeypatch.setattr(pipe_cls, "__call__", call)
+    backend.generate(prompt = "a sloth", steps = 4)
+    assert events == [("enter", "z-image", "cuda"), ("pipe",), ("exit",)]
+
+
+def test_family_render_cudnn_scope_overrides_an_inherited_benchmark():
+    torch = pytest.importorskip("torch")
+    if not hasattr(torch, "backends") or not hasattr(torch.backends, "cudnn"):
+        pytest.skip("torch without cudnn backend flags")
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_speed import family_render_cudnn_scope
+
+    cudnn = torch.backends.cudnn
+    before = cudnn.benchmark
+    try:
+        cudnn.benchmark = True  # left on by another load in this process
+        with family_render_cudnn_scope(
+            detect_family("black-forest-labs/FLUX.2-klein-base-4B"), "cuda:0"
+        ):
+            assert cudnn.benchmark is False
+        assert cudnn.benchmark is True
+        with family_render_cudnn_scope(detect_family("krea/Krea-2-Turbo"), "cuda"):
+            assert cudnn.benchmark is True  # a family that keeps the benchmark is left alone
+        with family_render_cudnn_scope(
+            detect_family("black-forest-labs/FLUX.2-klein-base-4B"), "cpu"
+        ):
+            assert cudnn.benchmark is True
+    finally:
+        cudnn.benchmark = before
+
+
+def test_a_lora_change_drops_the_cfg_parallel_replica(monkeypatch):
+    # set_adapters / load / unload change the denoiser's weights: a CFG-parallel replica built before must be rebuilt.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_lora_set",
+        staticmethod(
+            lambda specs, **k: tuple((i, f"/adapters/{i}.safetensors", w) for (i, w) in specs)
+        ),
+    )
+    dropped: list = []
+    monkeypatch.setattr(
+        dmod, "invalidate_cfg_replica", lambda pipe, reason, logger = None: dropped.append(pipe)
+    )
+    ev = threading.Event()
+    pipe = _BakePipe()
+    pipe._unsloth_loras = (("sloth", "/adapters/sloth.safetensors", 0.8),)
+    pipe._unsloth_loras_baked = True
+    backend._apply_loras(_quant_lora_state(pipe), [("sloth", 0.8)], ev)
+    assert dropped == []  # same set: the weights did not change
+    backend._apply_loras(_quant_lora_state(pipe), [("sloth", 1.4)], ev)
+    assert dropped == [pipe]
+    backend._apply_loras(_quant_lora_state(pipe), [], ev)
+    assert dropped == [pipe, pipe]

@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 
 import { loadLlamaBackendStatus } from "@/features/settings/api/llama-backend";
 
-/** The llama.cpp backend the install runs on; null until known or when the status call fails. */
+/** null until known or when the status call fails. */
 export function useLlamaCppBackend(): string | null {
   const [backend, setBackend] = useState<string | null>(null);
   useEffect(() => {

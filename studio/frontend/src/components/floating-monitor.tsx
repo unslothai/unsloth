@@ -24,7 +24,6 @@ import {
 } from "@/lib/floating-panel-order";
 import { cn } from "@/lib/utils";
 import { useRouterState } from "@tanstack/react-router";
-import { CpuIcon, GripVerticalIcon, XIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
@@ -41,6 +40,9 @@ import {
   getFloatingMonitorLayout,
 } from "./floating-monitor-layout";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import { Cancel01Icon, DragDropVerticalIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
@@ -109,8 +111,7 @@ function DetailBar({
 }
 
 function formatGiB(value: number): string {
-  // RAM/VRAM come from the backend in binary units (bytes / 1024**3), matching
-  // nvidia-smi and PyTorch, so label the readout GiB rather than GB.
+  // Backend reports binary units (bytes / 1024**3), so label GiB.
   const digits = value >= 10 ? 1 : 2;
   return `${value.toFixed(digits)} GiB`;
 }
@@ -122,7 +123,6 @@ interface FloatingMonitorPanelProps {
   onRenderedWidth: (width: number) => void;
   suppressed: boolean;
   systemInfo: ReturnType<typeof useSystemInfo>;
-  /** The live `--ui-space-scale`; the resize handle's clearance follows it. */
   uiSpaceScale: number;
 }
 function FloatingMonitorPanel({
@@ -173,8 +173,6 @@ function FloatingMonitorPanel({
   const zIndex = useFloatingPanelZIndex("resource-monitor");
   const raisePanel = useFloatingPanelOrderStore((state) => state.raise);
 
-  // Opening the monitor puts it in front of the API monitor panel; touching
-  // either afterwards brings that one forward instead.
   useEffect(() => {
     raisePanel("resource-monitor");
   }, [raisePanel]);
@@ -244,10 +242,7 @@ function FloatingMonitorPanel({
   return (
     <div
       ref={setConstraintsElement}
-      // The panel stays mounted while suppressed: the settings sheet is a
-      // temporary overlay, and unmounting would throw away the position and the
-      // browser-owned resize dimensions the user set. `invisible` keeps the box
-      // (and the observers watching it) while taking it off the screen.
+      // Stays mounted while suppressed so the user's position and resize dimensions survive.
       aria-hidden={suppressed || undefined}
       className={cn(
         "pointer-events-none fixed inset-y-4 left-4",
@@ -269,7 +264,7 @@ function FloatingMonitorPanel({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className={cn(
-          "settings-surface bg-background pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-default select-none flex-col overflow-hidden rounded-xl border border-border/70 p-3 shadow-border ring-0",
+          "settings-surface bg-background pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-default select-none flex-col overflow-hidden rounded-2xl border border-border/70 p-3 shadow-border ring-0",
           layout ? "top-0 left-0 resize" : "right-0 bottom-0",
         )}
         data-testid="floating-monitor"
@@ -298,7 +293,7 @@ function FloatingMonitorPanel({
       >
         <div className="mb-2 flex items-center justify-between gap-2 border-b border-border/60 pb-2">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-xs font-semibold text-foreground">
-            <CpuIcon className="size-3.5 shrink-0 text-primary" />
+            <HugeiconsIcon icon={ChipIcon} strokeWidth={2} className="size-3.5 shrink-0 text-primary" />
             <span className="truncate">
               {t("settings.resources.liveMonitor.title")}
             </span>
@@ -327,9 +322,9 @@ function FloatingMonitorPanel({
               onLostPointerCapture={finishDrag}
               onDoubleClick={resetPosition}
               onKeyDown={(event) => void nudge(event)}
-              className="touch-none cursor-grab rounded-md px-1 text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
+              className="touch-none cursor-grab rounded-full px-1 text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
             >
-              <GripVerticalIcon className="size-3.5" />
+              <HugeiconsIcon icon={DragDropVerticalIcon} strokeWidth={1.75} className="size-3.5" />
             </div>
 
             <Button
@@ -340,7 +335,7 @@ function FloatingMonitorPanel({
               title={t("common.close")}
               aria-label={t("common.close")}
             >
-              <XIcon className="size-3" />
+              <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
             </Button>
           </div>
         </div>
@@ -552,17 +547,12 @@ export function FloatingMonitor() {
   const settingsPanelOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isMobile = useIsMobile();
-  // The panel's own rendered width: it is user-resizable from 248 to 560 px, so the
-  // docked offset has to come from the same value the panel paints at.
   const { width: committedSettingsWidth } = useChatSettingsWidth();
   const { pinned } = useSidebarPin();
   const { width: committedSidebarWidth } = useSidebarWidth();
   const isChatRoute = pathname === "/chat";
 
-  // Dragging the panel's edge paints `--chat-settings-width` straight onto the
-  // <aside> and commits to the store only on pointer up, so the store trails the
-  // panel by a whole drag. The monitor has to clear what is on screen, so it
-  // follows the painted width and falls back to the committed one.
+  // Dragging paints `--chat-settings-width` and commits only on pointer up; follow the painted width.
   const [paintedSettingsWidth, setPaintedSettingsWidth] = useState(0);
   useEffect(() => {
     if (!(isOpen && isChatRoute && settingsPanelOpen)) {
@@ -585,12 +575,9 @@ export function FloatingMonitor() {
     return () => observer.disconnect();
   }, [isOpen, isChatRoute, settingsPanelOpen, isMobile]);
 
-  // Same lag as the settings panel: the sidebar paints per frame and commits
-  // on release, so a docked monitor could sit under a grown sidebar.
+  // The sidebar paints per frame and commits on release, so track painted width for docking.
   const [paintedSidebarWidth, setPaintedSidebarWidth] = useState(0);
-  // Unpinning still holds the collapsed icon rail as a column on the web shell;
-  // `collapseToZero` is desktop-app only, and that rail is the one unpinned
-  // state that takes the monitor's room.
+  // The web shell's collapsed icon rail still holds a column when unpinned.
   const [sidebarHoldsRail, setSidebarHoldsRail] = useState(false);
   useEffect(() => {
     const sidebar = isOpen ? document.querySelector('[data-slot="sidebar"]') : null;
@@ -613,9 +600,7 @@ export function FloatingMonitor() {
     return () => observer.disconnect();
   }, [isOpen, isMobile]);
 
-  // `useIsMobile` only notifies when the 768 px breakpoint is crossed, and the
-  // two width stores stop notifying at their maxima, so the capacity decision
-  // needs its own subscription or a plain resize never re-evaluates it.
+  // useIsMobile and the width stores do not notify on every resize, so subscribe directly.
   const viewportWidth = useSyncExternalStore(
     (onChange) => {
       window.addEventListener("resize", onChange);
@@ -629,13 +614,9 @@ export function FloatingMonitor() {
     paintedSettingsWidth > 0 ? paintedSettingsWidth : committedSettingsWidth;
   const pinnedSidebarWidth =
     paintedSidebarWidth > 0 ? paintedSidebarWidth : committedSidebarWidth;
-  // A pinned sidebar holds its column; an unpinned one overlays the content, but
-  // the web shell still paints its collapsed icon rail as a column, so reserve
-  // that measured rail while it really is one.
   const unpinnedSidebarWidth = sidebarHoldsRail ? paintedSidebarWidth : 0;
   const sidebarWidth = pinned ? pinnedSidebarWidth : unpinnedSidebarWidth;
-  // The panel is natively resizable, so what it renders is what docking has to
-  // reserve. Before the first measure the constant is the floor.
+  // The panel is resizable, so dock using its measured width; the constant is the floor.
   const [monitorWidth, setMonitorWidth] = useState(FLOATING_MONITOR_WIDTH);
   const { visible, suppressed, dockedBesideRunSettings } =
     getFloatingMonitorLayout({
@@ -653,9 +634,7 @@ export function FloatingMonitor() {
   const [panelKey, setPanelKey] = useState(0);
   const wasOpenRef = useRef(isOpen);
 
-  // Each visible panel owns native inline resize state. Advance the key on
-  // close so reopening during the exit animation still mounts fresh geometry.
-  // Docking and the mobile yield are not closes, so they do not advance it.
+  // Advance the key on close so reopening mid-exit mounts fresh native resize geometry.
   useEffect(() => {
     if (wasOpenRef.current && !isOpen) {
       setPanelKey((current) => current + 1);
@@ -668,9 +647,7 @@ export function FloatingMonitor() {
       {(visible || suppressed) && (
         <FloatingMonitorPanel
           key={panelKey}
-          // The mobile sheet covers the panel rather than closing it, so the
-          // panel is kept mounted and invisible: the position and the size the
-          // user set survive the sheet being opened and closed.
+          // The mobile sheet covers, not closes, the panel, so position and size survive.
           suppressed={suppressed}
           dockedBesideRunSettings={dockedBesideRunSettings}
           settingsWidth={settingsWidth}

@@ -904,18 +904,33 @@ def test_exclude_tokens_for_scheme():
     assert exclude_tokens_for_scheme(TQ_MXFP8) == ()
 
 
-def test_exclude_tokens_for_scheme_family():
-    # Qwen-Image never pads its text stream, so short prompts hit M < 16 in torch._int_mm.
+def test_exclude_tokens_for_scheme_family(monkeypatch):
     from core.inference.diffusion_transformer_quant import (
+        INT8_TEXT_STREAM_ENV,
         _INT8_EXCLUDE_NAME_TOKENS,
         _QWENIMAGE_INT8_EXCLUDES,
         exclude_tokens_for_scheme,
     )
 
+    monkeypatch.delenv(INT8_TEXT_STREAM_ENV, raising = False)
     for fam in ("qwen-image", "qwen-image-edit"):
         assert (
-            exclude_tokens_for_scheme(TQ_INT8, fam)
+            exclude_tokens_for_scheme(TQ_INT8, fam, baked = True)
             == _INT8_EXCLUDE_NAME_TOKENS + _QWENIMAGE_INT8_EXCLUDES
+        )
+    assert (
+        exclude_tokens_for_scheme(TQ_INT8, "qwen-image-edit")
+        == _INT8_EXCLUDE_NAME_TOKENS + _QWENIMAGE_INT8_EXCLUDES
+    )
+    assert (
+        exclude_tokens_for_scheme(TQ_INT8, "qwen-image")
+        == _INT8_EXCLUDE_NAME_TOKENS + _QWENIMAGE_INT8_EXCLUDES
+    )
+    from core.inference.diffusion_transformer_quant import int8_text_stream_scope
+
+    with int8_text_stream_scope(True):
+        assert exclude_tokens_for_scheme(TQ_INT8, "qwen-image") == _INT8_EXCLUDE_NAME_TOKENS + (
+            "txt_in",
         )
     for token in ("txt_in", "add_q_proj", "to_add_out", "txt_mlp"):
         assert token in _QWENIMAGE_INT8_EXCLUDES
@@ -1160,12 +1175,30 @@ def test_pad_and_exclude_sets_never_overlap():
             ), f"{family}: {pad_token!r} is both padded and excluded"
 
 
-def test_only_minimax_h3_pads_today():
-    """Only MiniMax-H3 pads: other published int8 checkpoints bake the exclusion set into metadata."""
-    from core.inference.diffusion_transformer_quant import TQ_INT8, pad_tokens_for_scheme
+def test_only_minimax_h3_pads_today(monkeypatch):
+    """Only MiniMax-H3 pads its own tokens: other published int8 checkpoints bake the exclusion set into metadata.
+    A streamed qwen-image build pads exactly the text stream it quantises on top of its artifacts; resident builds and
+    the kill switch pad nothing new."""
+    from core.inference.diffusion_transformer_quant import (
+        INT8_TEXT_STREAM_ENV,
+        TQ_INT8,
+        pad_tokens_for_scheme,
+        runtime_quant_tokens_for_scheme,
+    )
 
+    from core.inference.diffusion_transformer_quant import int8_text_stream_scope
+
+    monkeypatch.delenv(INT8_TEXT_STREAM_ENV, raising = False)
     for family in ("qwen-image", "qwen-image-edit", "hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
         assert pad_tokens_for_scheme(TQ_INT8, family) == ()
+    with int8_text_stream_scope(True):
+        assert pad_tokens_for_scheme(TQ_INT8, "qwen-image") == runtime_quant_tokens_for_scheme(
+            TQ_INT8, "qwen-image"
+        )
+        assert pad_tokens_for_scheme(TQ_INT8, "qwen-image")
+        monkeypatch.setenv(INT8_TEXT_STREAM_ENV, "0")
+        assert pad_tokens_for_scheme(TQ_INT8, "qwen-image") == ()
+    monkeypatch.delenv(INT8_TEXT_STREAM_ENV)
     assert pad_tokens_for_scheme(TQ_INT8, "z-image") == ()
     assert pad_tokens_for_scheme(TQ_INT8, None) == ()
 
@@ -1283,6 +1316,8 @@ def test_the_guard_list_does_not_double_up_with_the_pad_or_exclude_lists():
 def test_quantize_transformer_guards_after_padding(monkeypatch):
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4})
+    # The ordering under test, not the family's measured nvfp4 deny (HunyuanVideo-1.5 failed the gate).
+    monkeypatch.setattr(tq, "_FAMILY_SCHEME_DENY", {})
     order = []
     tqz = types.ModuleType("torchao.quantization")
     tqz.quantize_ = lambda module, config, filter_fn = None: order.append("quantize_")
@@ -1526,10 +1561,14 @@ def test_the_shipped_prefer_table_keeps_the_ladder_as_it_was(monkeypatch):
         "qwen-image-2.1",
         "wan2.2-t2v-a14b",
     }
-    ungated = {name for name, row in tq._FAMILY_AUTO_PREFER.items() if not row.gated}
-    assert ungated == {"wan2.2-t2v-a14b"}
-    for name in ungated:
-        assert tq._FAMILY_AUTO_PREFER[name].backend
+    # An nvfp4-bearing auto head needs a passing gate record, the image rule; none ships ungated.
+    ungated = {
+        name
+        for name, row in tq._FAMILY_AUTO_PREFER.items()
+        if not row.gated and TQ_NVFP4 in row.schemes
+    }
+    assert ungated == set()
+    assert tq._FAMILY_AUTO_PREFER["wan2.2-t2v-a14b"].backend == "flashinfer"
     families = (
         None,
         "hunyuanvideo-1.5",
@@ -1649,9 +1688,34 @@ def test_the_floor_and_the_consumer_rule_still_outrank_the_backend(monkeypatch):
     )
 
 
-def test_the_a14b_row_leads_with_nvfp4_only_where_flashinfer_serves_it(monkeypatch):
+def _gate_lifted(monkeypatch, passed = True):
+    """A passing gate record on every backend (or none): what a measured A14B record would read as."""
+    monkeypatch.setattr(tq, "_nvfp4_gate_passed", lambda family, base_repo: passed)
+    monkeypatch.setattr(tq, "_nvfp4_gate_backend_ok", lambda family, base_repo, device: passed)
+
+
+def test_the_a14b_row_does_not_lead_with_nvfp4_without_a_gate_record(monkeypatch):
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    base = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
+    _stub_nvfp4_backend(monkeypatch, "flashinfer")
+    assert (
+        select_transformer_quant_scheme(
+            _target(), "auto", family = "wan2.2-t2v-a14b", base_repo = base, **_HAS_PREQUANT
+        )
+        == TQ_INT8
+    )
+    assert tq.auto_scheme_candidates(
+        _target(), "wan2.2-t2v-a14b", base_repo = base, **_HAS_PREQUANT
+    ) == (TQ_INT8, TQ_FP8, TQ_MXFP8)
+
+
+def test_the_a14b_row_leads_with_nvfp4_only_where_a_gate_record_and_flashinfer_serve_it(
+    monkeypatch,
+):
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _gate_lifted(monkeypatch)
     base = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
 
     _stub_nvfp4_backend(monkeypatch, "flashinfer")

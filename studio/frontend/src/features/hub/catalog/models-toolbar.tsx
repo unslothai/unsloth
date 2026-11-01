@@ -13,16 +13,16 @@ import {
 import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
 import { useHubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  ArrowUpDownIcon,
-  CancelCircleIcon,
-  Delete02Icon,
-  FolderSearchIcon,
+  Cancel01Icon,
   Search01Icon,
   SlidersHorizontalIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderSearchIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { SortIcon } from "@/lib/sort-icon";
 import { memo, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import type {
@@ -50,8 +50,7 @@ import {
 import type { InventorySort } from "./models-table";
 import { RecentSearches } from "./recent-searches";
 
-// Widened so the format dropdown can carry the "Fine-tune ready" pseudo-option,
-// which opens the curated channel instead of becoming the active format filter.
+// Includes the "Fine-tune ready" pseudo-option, which opens a channel rather than filtering.
 type FormatMenuValue = ModelFormatFilter | "finetune";
 
 const SORT_OPTIONS: ReadonlyArray<{
@@ -146,8 +145,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onFitOnDeviceOnlyChange: (value: boolean) => void;
   onManageLocalFolders: () => void;
   onFreeUpSpace: () => void;
-  /** Opens the curated "Fine-tune ready" channel (discover only). Exposed as a
-   *  format-dropdown option rather than a standalone feed section. */
+  /** Opens the curated "Fine-tune ready" channel (discover only). */
   onOpenFineTune: () => void;
   npuAvailable?: boolean;
 }) {
@@ -163,7 +161,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
     query.trim() === "" &&
     recentSearches.length > 0;
 
-  // Anchored to the toolbar bottom so wrapped filter rows stay clickable.
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const searchWrapRef = useRef<HTMLDivElement | null>(null);
   const [recentPanelTop, setRecentPanelTop] = useState<number | undefined>();
@@ -189,7 +186,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   }, [showRecentSearches]);
 
   const isDataset = resourceType === "datasets";
-  // The NPU catalog is short and has no Hub metadata to filter or sort by.
   const npuList = formatFilter === "npu" && !isDataset;
   const hasTrailing = Boolean(query) || (isDiscover && isLoading);
   const formatOptions = useMemo<HubOption<FormatMenuValue>[]>(() => {
@@ -242,8 +238,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         ),
       });
     }
-    // "Fine-tune ready" is a curated channel (bnb-4bit checkpoints), not a
-    // format: it opens the channel rather than setting the filter (onValueChange).
     if (tab === "discover") {
       options.push({
         value: "finetune",
@@ -358,8 +352,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
         />
         <Input
-          // `type="search"` plus these flags stop password managers and noisy
-          // text assistance from acting on this field.
+          // Stops password managers and text assistance from acting on this field.
           type="search"
           name="hub-search"
           autoComplete="off"
@@ -402,14 +395,13 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           <button
             type="button"
             aria-label="Clear search"
-            // Keep focus on the input so clearing reveals recent searches
-            // rather than dismissing the field.
+            // Keep focus on the input so clearing reveals recent searches.
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => onQueryChange("")}
             className="absolute right-2.5 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground"
           >
             <HugeiconsIcon
-              icon={CancelCircleIcon}
+              icon={Cancel01Icon}
               strokeWidth={1.75}
               className="size-[calc(18px*var(--ui-space-scale,1))]"
             />
@@ -496,7 +488,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                 )}
               >
                 <HugeiconsIcon
-                  icon={Delete02Icon}
+                  icon={TrashIcon}
                   strokeWidth={1.75}
                   className="size-[calc(18px*var(--ui-space-scale,1))]"
                 />
@@ -540,7 +532,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             triggerContent={
               <span className="flex items-center gap-1">
                 <HugeiconsIcon
-                  icon={ArrowUpDownIcon}
+                  icon={SortIcon}
                   strokeWidth={1.75}
                   className="size-3.5 shrink-0"
                 />
@@ -567,7 +559,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             triggerContent={
               <span className="flex items-center gap-1">
                 <HugeiconsIcon
-                  icon={ArrowUpDownIcon}
+                  icon={SortIcon}
                   strokeWidth={1.75}
                   className="size-3.5 shrink-0"
                 />

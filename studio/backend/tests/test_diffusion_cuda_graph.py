@@ -88,7 +88,8 @@ class _FakeGraph:
 
 
 class _FakeStream:
-    def __init__(self):
+    def __init__(self, device = None):
+        self.device = device
         self.waited: list = []
 
     def wait_stream(self, other):
@@ -105,6 +106,7 @@ def _build_stub_torch():
         "empty_cache": 0,
         "inference_mode": [],
         "graph_error": None,
+        "capture_streams": [],
     }
     torch._records = records
 
@@ -135,8 +137,15 @@ def _build_stub_torch():
         return _FakeGraph()
 
     @contextlib.contextmanager
-    def _graph(graph, pool = None):
+    def _graph(
+        graph,
+        pool = None,
+        stream = None,
+        capture_error_mode = "global",
+    ):
         records["graphs"].append((graph, pool))
+        records["capture_mode"] = capture_error_mode
+        records["capture_streams"].append(stream)
         yield
 
     @contextlib.contextmanager
@@ -198,9 +207,11 @@ def _clean_module_globals():
     """The shared pool and the live-wrapper set are process-wide, so no test may inherit them."""
     cg._POOL_BOX[0] = None
     cg._LIVE_WRAPPERS.clear()
+    cg._CAPTURE_STREAMS.clear()
     yield
     cg._POOL_BOX[0] = None
     cg._LIVE_WRAPPERS.clear()
+    cg._CAPTURE_STREAMS.clear()
 
 
 def _t(shape = (1, 4), **kwargs):
@@ -286,6 +297,21 @@ def test_capture_then_replay_uses_one_graph_and_copies_statics(stub_torch):
     assert module.calls == cg.WARMUP_ITERS + 1
     assert stub_torch._records["synchronize"] == 1
     assert stub_torch._records["inference_mode"] == [False]
+
+
+def test_each_card_records_on_its_own_capture_stream(stub_torch):
+    """torch's default capture stream lives on the first card that captured; each card needs its own."""
+    first = _armed()
+    first(_t(device_index = 0), timestep = _t((1,), device_index = 0), return_dict = False)
+    second = _armed()
+    second(_t(device_index = 1), timestep = _t((1,), device_index = 1), return_dict = False)
+    third = _armed()
+    third(_t(device_index = 1), timestep = _t((1,), device_index = 1), return_dict = False)
+    streams = stub_torch._records["capture_streams"]
+    assert [s.device for s in streams] == [0, 1, 1]
+    assert (
+        streams[1] is streams[2]
+    ), "one stream per card: pool blocks are reused only from the recording stream"
 
 
 def test_new_shape_adds_a_second_graph(stub_torch):
@@ -1248,6 +1274,62 @@ def test_a_new_prompt_length_after_the_first_render_records_nothing(stub_torch, 
     assert handle.stats["length_eager"] == 3
 
 
+def _planned_len_handle(stub_torch, monkeypatch):
+    import contextlib
+
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    handle = _armed(_len_dit("QwenImage21Transformer2DModel"))
+    orig = handle.orig
+    handle.plan = lambda mod, args, kwargs: (orig, {"hidden_states": args[0], **kwargs})
+    monkeypatch.setattr(_FakeTensor, "is_inference", lambda self: False, raising = False)
+    monkeypatch.setattr(
+        stub_torch, "inference_mode", lambda *a, **k: contextlib.nullcontext(), raising = False
+    )
+    monkeypatch.setattr(cg, "_graph_without_flush", stub_torch.cuda.graph)
+    return handle
+
+
+def test_a_planned_negative_of_another_length_records_on_the_first_render(stub_torch, monkeypatch):
+    """The negative is still warming when the positive's replay seals the scope; it must still record."""
+    handle = _planned_len_handle(stub_torch, monkeypatch)
+    for _ in range(2):
+        _render(handle, 3, steps = 4)
+        cg.seal_lengths((handle,))
+    assert handle.length_sealed is True
+    assert handle.stats["captures"] == 2 and handle.stats["shape_warmups"] == 1
+    assert handle.stats["length_eager"] == 0
+    assert handle.stats["replays"] == 2 * 4 * 2 - 1
+    _render(handle, 15, steps = 2, negative_len = 3)
+    assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 2
+
+
+def test_a_warmup_from_before_a_reset_does_not_reopen_the_sealed_scope(stub_torch, monkeypatch):
+    handle = _planned_len_handle(stub_torch, monkeypatch)
+    _step(handle, 3)
+    _step(handle, 7)
+    assert handle.stats["captures"] == 1 and handle.stats["shape_warmups"] == 1
+    handle.reset()
+    for i in range(3):
+        _step(handle, 3, value = float(i))
+    cg.seal_lengths((handle,))
+    assert handle.length_sealed is True
+    captures = handle.stats["captures"]
+    for i in range(3):
+        _step(handle, 7, value = float(i))
+    assert handle.stats["captures"] == captures
+    assert handle.stats["length_eager"] == 3
+
+
+def test_a_warmup_from_an_earlier_render_does_not_reopen_the_sealed_scope(stub_torch, monkeypatch):
+    handle = _planned_len_handle(stub_torch, monkeypatch)
+    _step(handle, 3)
+    _step(handle, 7)
+    cg.seal_lengths((handle,))
+    assert handle.length_sealed is True
+    _render(handle, 3, steps = 2)
+    assert handle.stats["captures"] == 1 and handle.stats["length_eager"] == 2
+
+
 def test_the_ungraphed_step_returns_what_the_step_itself_returns(stub_torch, monkeypatch):
     monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
     handle = _armed(_len_dit("ZImageTransformer2DModel"))
@@ -1655,3 +1737,64 @@ def test_capture_warmups_wait_for_held_replica_work(stub_torch):
     assert handle.stats["captures"] == 1
     assert seen == [0] * (cg.WARMUP_ITERS + 1)
     assert cg._OUTSIDE_JOBS == 0 and cg._CAPTURE_DEPTH == 0
+
+
+def test_engagement_reports_captures_replays_and_per_card_segments():
+    """Status shows whether the graph layers are ENGAGED, not only that nothing recompiled."""
+    import types as _types
+
+    seg = _types.SimpleNamespace(stats = {"segment_captures": 2, "segment_replays": 30})
+    whole = _types.SimpleNamespace(
+        cache = {1: None},
+        stats = {"captures": 1, "replays": 7, "eager_calls": 2, "invalidations": 0},
+        placement = None,
+        poisoned = False,
+        capture_error = None,
+    )
+    blocks = _types.SimpleNamespace(
+        cache = {},
+        stats = {"captures": 3, "replays": 9},
+        placement = None,
+        poisoned = False,
+        capture_error = None,
+        segments = [seg],
+    )
+    out = cg.engagement((whole, blocks))
+    assert out["graphs"] == 1 and out["captures"] == 4 and out["replays"] == 16
+    assert out["eager_calls"] == 2 and out["segment_captures"] == 2 and out["segment_replays"] == 30
+    assert set(out) >= {"dynamo_frames", "graph_breaks"}
+    assert cg.engagement(())["captures"] == 0
+
+
+def test_engagement_counts_the_per_block_graphs_a_whole_step_graph_fell_back_to():
+    import types as _types
+
+    seg = _types.SimpleNamespace(stats = {"segment_captures": 1, "segment_replays": 12})
+    blocks = _types.SimpleNamespace(
+        cache = {1: None, 2: None},
+        stats = {"captures": 5, "replays": 40},
+        placement = None,
+        poisoned = False,
+        capture_error = None,
+        segments = [seg],
+    )
+    step = _types.SimpleNamespace(
+        cache = {},
+        stats = {"captures": 1, "replays": 2, "eager_calls": 3, "fallbacks": 1},
+        placement = None,
+        poisoned = True,
+        capture_error = None,
+        fallback_handle = blocks,
+    )
+    out = cg.engagement((step,))
+    assert out["graphs"] == 2 and out["captures"] == 6 and out["replays"] == 42
+    assert out["fallbacks"] == 1 and out["segment_captures"] == 1 and out["segment_replays"] == 12
+
+
+def test_status_response_models_keep_graph_engagement():
+    from models.inference import DiffusionStatusResponse, VideoStatusResponse
+    counters = {"graphs": 1, "captures": 1, "replays": 7, "eager_calls": 0}
+    for model in (DiffusionStatusResponse, VideoStatusResponse):
+        dumped = model.model_validate({"graph_engagement": counters}).model_dump()
+        assert dumped["graph_engagement"] == counters
+        assert model.model_validate({}).model_dump()["graph_engagement"] is None

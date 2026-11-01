@@ -10,8 +10,14 @@ import types
 
 import pytest
 import torch
+from torch.torch_version import TorchVersion  # noqa: E402
+
 
 from core.inference import video_minimax_h3_vae as H
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 CUDA = torch.cuda.is_available() and not getattr(torch.version, "hip", None)
 needs_cuda = pytest.mark.skipif(
@@ -275,7 +281,8 @@ def test_the_decoder_residual_stream_stays_float32_under_the_decode_autocast(mon
     with torch.no_grad(), torch.autocast("cuda", dtype = torch.float16):
         got, want = vae.decoder(z), ref.decoder(z)
     assert not getattr(vae.decoder, "_unsloth_fast_failed", False)
-    assert seen == [torch.float32, torch.float32]
+    # the stock forward aligns register_tokens with proj_in's autocast output, then the float32 anchors promote
+    assert seen == [torch.float16, torch.float32]
     assert got.dtype == want.dtype
     torch.testing.assert_close(got.float(), want.float(), rtol = 2e-3, atol = 2e-3)
 
@@ -351,6 +358,46 @@ def test_fused_decoder_matches_the_stock_decoder(device):
     ), "the fused path fell back to stock"
     assert got.shape == ref.shape
     torch.testing.assert_close(got, ref, rtol = 1e-4, atol = 1e-4)
+
+
+def _mixed_precision_vae(tmp_path, device):
+    """The tiny VAE through diffusers' own bfloat16 load: ``_keep_in_fp32_modules`` pins the norms and the
+    ``scale1`` / ``scale2`` anchors to float32 while the decoder GEMMs load in bfloat16, as Studio's H3 load does."""
+    _tiny_vae().save_pretrained(tmp_path / "vae")
+    vae = type(_tiny_vae()).from_pretrained(tmp_path / "vae", torch_dtype = torch.bfloat16)
+    return vae.to(device).eval()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_fused_decoder_follows_the_mixed_precision_load(tmp_path, device):
+    vae = _mixed_precision_vae(tmp_path, device)
+    block = vae.decoder.transformer_blocks[0]
+    if (
+        block.scale1.dtype is not torch.float32
+        or block.attn.to_q.weight.dtype is not torch.bfloat16
+    ):
+        pytest.skip("this diffusers loads the H3 VAE without the float32 anchors")
+    fast = copy.deepcopy(vae)
+    assert H._install_decoder(fast)
+    seen = []
+    stack = H._fast_block_stack
+
+    def spy(decoder, hidden_states, *args):
+        out = stack(decoder, hidden_states, *args)
+        seen.append(out.dtype)
+        return out
+
+    z = torch.randn(1, 8, 3, 4, 5, device = device, dtype = torch.bfloat16)
+    with torch.no_grad(), pytest.MonkeyPatch.context() as mp:
+        mp.setattr(H, "_fast_block_stack", spy)
+        ref = vae.decoder(z)
+        got = fast.decoder(z)
+    assert not getattr(
+        fast.decoder, "_unsloth_fast_failed", False
+    ), "the fused decoder fell back to stock on the bfloat16 / float32 mixed load"
+    assert seen == [torch.float32], "the residual stream must stay float32 like the stock blocks"
+    assert got.dtype == ref.dtype and got.shape == ref.shape
+    torch.testing.assert_close(got.float(), ref.float(), rtol = 2e-2, atol = 2e-2)
 
 
 def test_tile_batching_matches_the_stock_tile_loop(monkeypatch):
@@ -717,8 +764,8 @@ def test_the_fast_path_is_for_the_h3_vae_class_only(monkeypatch):
     class AutoencoderKLMiniMaxH3:
         pass
 
-    if getattr(torch.version, "hip", None):
-        pytest.skip("ROCm build")
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     assert not H.cuda_fast_path_available(AutoencoderKLWan())
     assert H.cuda_fast_path_available(AutoencoderKLMiniMaxH3())
 
@@ -741,6 +788,7 @@ def test_the_fast_path_asks_the_windows_triton_toolchain(monkeypatch, platform, 
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setattr(H, "_kernels", lambda: object())
     monkeypatch.setattr(H, "_triton_version_ok", lambda: True)
     monkeypatch.setattr(H.sys, "platform", platform)
@@ -1079,6 +1127,7 @@ def test_the_fast_path_needs_a_verified_triton(monkeypatch, version, ok):
     assert H._triton_version_ok(version) is ok
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setattr(H, "_kernels", lambda: object())
     monkeypatch.setattr(H, "_triton_jit_toolchain_ok", lambda: True)
     monkeypatch.setattr(H, "_triton_version_ok", lambda: ok)
@@ -1264,3 +1313,91 @@ def test_the_h3_load_reserves_the_fused_decoder_before_the_speed_optims():
     for kw in ("speed_mode", "workflow"):
         got = {k.arg: ast.dump(k.value) for k in reserve.keywords}[kw]
         assert got == {k.arg: ast.dump(k.value) for k in apply_vae.keywords}[kw]
+
+
+def _rotated_bf16_linear(
+    k = 1024,
+    n = 512,
+    device = "cpu",
+):
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(k, n).to(device = device, dtype = torch.bfloat16)
+    ref = copy.deepcopy(lin)
+    holder = torch.nn.Module()
+    holder.transformer_blocks = torch.nn.ModuleList([torch.nn.ModuleDict({"l": lin})])
+    assert H._install_int8_decoder(types.SimpleNamespace(decoder = holder), keep_blocks = ()) > 0
+    assert lin._unsloth_rot.shape[0] == H.H3_VAE_INT8_ROT_GROUP
+    return lin, ref
+
+
+def test_the_fused_int8_path_hands_the_rotation_group_and_operands_to_the_dit_kernels(monkeypatch):
+    from core.inference import diffusion_convrot_quant as cq
+    from core.inference import diffusion_int8_gemm as gemm
+
+    lin, _ = _rotated_bf16_linear()
+    seen = {}
+
+    def act_quant(x2d, group, v2):
+        seen["quant"] = (tuple(x2d.shape), group, v2)
+        return torch.zeros(x2d.shape, dtype = torch.int8), torch.ones(x2d.shape[0])
+
+    def op(xq, wq, xs, ws, bias):
+        seen["gemm"] = (wq is lin._unsloth_wq, ws.dtype, bias is lin.bias, tuple(xs.shape))
+        return torch.full((xq.shape[0], wq.shape[0]), 2.0, dtype = torch.bfloat16)
+
+    monkeypatch.setattr(cq, "convrot_act_quant", act_quant)
+    monkeypatch.setattr(gemm, "_op", lambda: op)
+    monkeypatch.setitem(H._FUSED_DEVICES, None, True)
+    x = torch.randn(2, 20, 1024, dtype = torch.bfloat16)
+    wq, ws = lin._unsloth_int8
+    out = H._fused_int8_linear(lin, x.reshape(-1, 1024), wq, ws, torch.bfloat16, 256)
+    assert out is not None and out.shape == (40, 512) and bool((out == 2).all())
+    assert seen["quant"] == ((40, 1024), 256, True)
+    assert seen["gemm"] == (True, torch.float32, True, (40,))
+
+
+@pytest.mark.parametrize("case", ["fp16_out", "fp16_in", "not_probed", "fp32_bias", "ragged_k"])
+def test_the_fused_int8_path_declines_what_the_dit_kernels_do_not_cover(monkeypatch, case):
+    lin, _ = _rotated_bf16_linear()
+    wq, ws = lin._unsloth_int8
+    x2 = torch.randn(40, 1024, dtype = torch.bfloat16)
+    out_dtype = torch.bfloat16
+    monkeypatch.setitem(H._FUSED_DEVICES, None, case != "not_probed")
+    if case == "fp16_out":
+        out_dtype = torch.float16
+    elif case == "fp16_in":
+        x2 = x2.half()
+    elif case == "fp32_bias":
+        lin.bias = torch.nn.Parameter(lin.bias.float())
+    elif case == "ragged_k":
+        x2 = x2[:, :1000]
+    assert H._fused_int8_linear(lin, x2, wq, ws, out_dtype, 256) is None
+
+
+def test_the_fused_int8_kill_switch_keeps_the_unfused_path(monkeypatch):
+    monkeypatch.setenv(H.H3_VAE_INT8_FUSED_ENV, "0")
+    monkeypatch.delitem(H._FUSED_DEVICES, 7, raising = False)
+    assert H._fused_int8_ready(7) is False
+    assert 7 not in H._FUSED_DEVICES  # the switch is read per call, never cached
+
+
+@needs_cuda
+def test_the_fused_int8_path_matches_the_unfused_int8_path_on_cuda(monkeypatch):
+    from core.inference import diffusion_int8_gemm as gemm
+
+    lin, ref = _rotated_bf16_linear(k = 2048, n = 1024, device = "cuda")
+    x = torch.randn(4, 1024, 2048, device = "cuda", dtype = torch.bfloat16)
+    x[..., :8] *= 30  # outlier channels: what the rotation is for
+    with torch.no_grad():
+        dense = ref(x).float()
+        monkeypatch.setenv(H.H3_VAE_INT8_FUSED_ENV, "0")
+        unfused = lin(x).float()
+        monkeypatch.delenv(H.H3_VAE_INT8_FUSED_ENV)
+        if not H._fused_int8_ready(torch.cuda.current_device()):
+            pytest.skip("the DiT's ConvRot act quant / fused GEMM is not armed on this card")
+        calls = gemm.call_count()
+        fused = lin(x).float()
+    assert gemm.call_count() > calls, "the fused-dequant GEMM did not run"
+    rel = lambda a, b: float((a - b).norm() / b.norm())  # noqa: E731
+    assert rel(unfused, dense) < 0.02 and rel(fused, dense) < 0.02
+    assert rel(fused, unfused) < 0.01

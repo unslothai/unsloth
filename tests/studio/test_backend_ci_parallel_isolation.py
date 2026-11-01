@@ -81,11 +81,17 @@ def _collects(command: str, path: str) -> bool:
     def under(prefix, candidate):
         return candidate == prefix or candidate.startswith(prefix + "/")
 
+    def rooted(root, candidate):
+        # A glob root (tests/test_fsdp2_*.py) is expanded by bash before pytest sees it.
+        if any(char in root for char in "*?["):
+            return fnmatch.fnmatch(candidate, root)
+        return under(root, candidate)
+
     if any(under(ignore, path) for ignore in ignores):
         return False
     if any(_ignore_glob_hits(pattern, path) for pattern in globs):
         return False
-    return any(under(root, path) for root in roots)
+    return any(rooted(root, path) for root in roots)
 
 
 def _ignore_glob_hits(pattern: str, path: str) -> bool:
@@ -114,6 +120,10 @@ BACKEND_ISOLATED = [
     ("tests/test_web_fetch_extraction.py", "compares parse time at two input sizes"),
     ("tests/test_tool_call_parser_strict.py", "compares parse time at two nesting depths"),
     ("tests/test_pr5624_regressions.py", "R1 parser's 1s bound exceeded under CPU contention"),
+    (
+        "tests/test_web_tools_overlap.py",
+        "compares an overlapped batch's duration against a serial one",
+    ),
     # Found by staging; the scan cannot find it (see below).
     (
         "tests/test_tunnel_safe_long_post.py",
@@ -318,15 +328,15 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     """Pin the parser: a scan that matched nothing would pass both tests above."""
     commands = _pytest_commands()
     parallel = [command for command in commands if " -n " in f" {command} "]
-    assert len(parallel) == 7, (
-        f"expected seven parallel pytest runs, three shards of the backend matrix and four "
+    assert len(parallel) == 11, (
+        f"expected eleven parallel pytest runs, three shards of the backend matrix and eight "
         f"of repo-cpu-tests, got {parallel}. If a job stopped running in parallel, or a "
         f"shard was added or removed, say so here rather than letting this scan quietly "
         f"cover fewer runs."
     )
     root = [command for command in parallel if _over_the_repo_tests(command)]
-    assert len(root) == 4, (
-        f"expected the four repo-root shards, got {root}. The isolation checks above apply "
+    assert len(root) == 8, (
+        f"expected the eight repo-root shards, got {root}. The isolation checks above apply "
         f"to those, and a scan that matched none of them would pass on nothing."
     )
     backend = [command for command in parallel if _over_the_backend(command)]

@@ -455,7 +455,7 @@ def test_stop_while_preparing_decisions_ends_the_run(base, studio_home):
     events = _train(
         _config(base, _dataset(studio_home, rows)),
         False,
-        lambda event: event.get("message") == "Preparing decisions...",
+        lambda event: event.get("message") == "Preparing decision rows...",
     )
 
     assert _of(events, "complete")[-1]["status_message"] == "Training cancelled"

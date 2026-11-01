@@ -434,16 +434,7 @@ def hidden_chat_status_response():
 
 
 def hidden_generate_progress_response(response_model):
-    """The generate-progress shape, idle, with nothing of the resident.
-
-    A generate-progress route declares ``active``/``fraction``/..., and a returned
-    ``Response`` bypasses that model, so answering ``hidden_resident_response()``
-    there hands a poller an object with no ``active`` at all. ``progress["active"]``
-    then raises ``KeyError`` instead of reading "nothing is running", which is what
-    the caller is entitled to learn either way. The model's own defaults ARE idle,
-    so they reveal exactly as little as the loaded/yours pair and stay in step with
-    the declared shape on their own.
-    """
+    """Idle model defaults as JSON, not a bare Response; they reveal nothing resident."""
     return JSONResponse(
         content = {**response_model().model_dump(mode = "json"), "loaded": True, "yours": False}
     )
@@ -595,13 +586,6 @@ def _hub_public_answer(
 def _public_key(repo_id: str, repo_type: str) -> tuple[str, str, str]:
     # A repo public on one Hub may be private, or someone else's, on another.
     return (hf_constants.ENDPOINT.rstrip("/"), repo_type, repo_id.lower())
-
-
-def _public_verdict(repo_id: str, repo_type: str) -> bool | None:
-    key = _public_key(repo_id, repo_type)
-    with _public_lock:
-        cached = _public_repos.get(key)
-    return cached[1] if cached is not None and cached[0] > time.monotonic() else None
 
 
 def _source_speaks_for_the_cache() -> bool:
@@ -899,6 +883,53 @@ def _cached_repo(path: Path) -> tuple[str, str] | None:
     return None
 
 
+def _is_own_shared_blob(path: Path, cached: tuple[str, str], resolved: Path) -> bool:
+    """Hub >= 1.32 stores Xet files once per cache: snapshot -> repo blob -> <cache>/blobs/<hash[:2]>/<hash>."""
+    hop, last_in_repo = path, None
+    for _ in range(8):
+        if not hop.is_symlink():
+            break
+        hop = Path(os.path.normpath(hop.parent.resolve() / os.readlink(hop)))
+        if _cached_repo(hop) != cached:
+            break
+        last_in_repo = hop
+    if last_in_repo is None or hop != resolved or not resolved.is_file() or hop.is_symlink():
+        return False
+    repo_blobs = last_in_repo.parent
+    repo_dir = repo_blobs.parent
+    return (
+        repo_blobs.name == "blobs"
+        and repo_dir.name == f"models--{cached[0].replace('/', '--')}"
+        and resolved.parent.parent == repo_dir.parent / "blobs"
+        and re.fullmatch(r"[0-9a-f]{64}", resolved.name) is not None
+        and resolved.parent.name == resolved.name[:2]
+    )
+
+
+def cached_model_repo(reference: str) -> str | None:
+    """Recover a resident's Hub identity only from a verified model-cache path."""
+    from utils.hf_cache_settings import known_hf_hub_caches
+    from utils.paths.path_utils import is_network_or_device_path
+
+    if not reference or is_network_or_device_path(reference):
+        return None
+    try:
+        path = Path(reference).expanduser()
+        cached = _cached_repo(path)
+        if cached is None or cached[1] != "model":
+            return None
+        resolved = path.resolve()
+        if _cached_repo(resolved) != cached and not _is_own_shared_blob(path, cached, resolved):
+            return None
+        if Path(normalize_path(reference)).expanduser().resolve() != resolved:
+            return None
+        if any(resolved.is_relative_to(root.resolve()) for root in known_hf_hub_caches()):
+            return cached[0]
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return None
+
+
 def model_visible(
     reference: str,
     *,
@@ -943,9 +974,10 @@ def _model_visible(reference: str, grants, repo_type: str, offline: bool) -> boo
             if cached is not None:
                 # Snapshots point at their own repo's blobs; cross-repo links are refused.
                 actual = _cached_repo(resolved)
-                return actual == cached and repo_visible(
-                    cached[0], cached[1], grants = grants, **access_options
+                own = actual == cached or (
+                    cached[1] == "model" and _is_own_shared_blob(path, cached, resolved)
                 )
+                return own and repo_visible(cached[0], cached[1], grants = grants, **access_options)
         except (OSError, RuntimeError, ValueError):
             return False
         return False

@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Faster MiniMax-H3 video VAE encode and decode: Triton-fused GroupNorm/SiLU/pad, RMSNorm/rope/SwiGLU and
-tile batching around Diffusers' own matmuls and convolutions.
-
-Levers: fused_encoder, fp16_encoder, fused_decoder, tile_batch, fp16_accum, int8_decoder (opt-in,
-``UNSLOTH_H3_VAE_INT8=1``). ``UNSLOTH_H3_VAE_FAST=0`` disables all. NVIDIA CUDA with Triton only; else stock.
-"""
+"""Faster MiniMax-H3 video VAE encode/decode: Triton GroupNorm/SiLU/pad, RMSNorm/rope/SwiGLU fusions
+and tile batching around Diffusers' own matmuls/convs; UNSLOTH_H3_VAE_FAST=0 disables all;
+int8_decoder is opt-in via UNSLOTH_H3_VAE_INT8=1; CUDA+Triton only, else stock."""
 
 from __future__ import annotations
 
@@ -16,10 +13,12 @@ import types
 from contextlib import nullcontext
 from functools import lru_cache
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 H3_VAE_FAST_ENV = "UNSLOTH_H3_VAE_FAST"
 H3_VAE_INT8_ENV = "UNSLOTH_H3_VAE_INT8"
 H3_VAE_TILE_BATCH_ENV = "UNSLOTH_H3_VAE_TILE_BATCH"
+H3_VAE_INT8_FUSED_ENV = "UNSLOTH_H3_VAE_INT8_FUSED"
 FP16_ACCUM_DISABLE_ENV = "UNSLOTH_DISABLE_FP16_ACCUM"
 
 LEVER_FUSED_ENCODER = "fused_encoder"
@@ -443,8 +442,7 @@ def _guarded(fast: Any, stock: Any, label: str) -> Any:
     return forward
 
 
-# Activations travel as (tensor, pending_bias): the next fused pass adds the conv bias, avoiding PyTorch's
-# separate strided bias pass. A 1x1 conv folds its input's pending bias through its weight exactly.
+# Activations travel as (tensor, pending_bias): the next fused pass adds the conv bias.
 
 
 def _bias_view(bias: Any) -> Any:
@@ -843,13 +841,25 @@ def _swiglu(x: Any) -> Any:
     return out
 
 
+def _residual_dtype(hidden_states: Any, blocks: Any) -> Any:
+    """Stock ``h + out * scale`` promotes to float32 ``scale1`` / ``scale2`` under diffusers' mixed load."""
+    import torch
+
+    dtype = hidden_states.dtype
+    for name in ("scale1", "scale2"):
+        scale = getattr(blocks[0], name, None)
+        if isinstance(scale, torch.Tensor):
+            dtype = torch.promote_types(dtype, scale.dtype)
+    return dtype
+
+
 def _fast_block_stack(decoder: Any, hidden_states: Any, cos: Any, sin: Any, gemm_dtype: Any) -> Any:
     """The transformer blocks; the kernels store normed activations in ``gemm_dtype``."""
     import torch.nn.functional as F
 
     blocks = decoder.transformer_blocks
     batch, seq, dim = hidden_states.shape
-    h = hidden_states.contiguous()
+    h = hidden_states.to(_residual_dtype(hidden_states, blocks)).contiguous()
     normed = _add_rmsnorm(h, None, None, blocks[0].norm1, gemm_dtype)
     cos2 = cos.reshape(-1, cos.shape[-1])
     sin2 = sin.reshape(-1, sin.shape[-1])
@@ -873,8 +883,16 @@ def _fast_block_stack(decoder: Any, hidden_states: Any, cos: Any, sin: Any, gemm
         if i + 1 < len(blocks):
             normed = _add_rmsnorm(h, out, block.scale2, blocks[i + 1].norm1, gemm_dtype)
         else:
-            h.addcmul_(out, block.scale2)
+            # not addcmul: stock rounds the product separately
+            h.add_(out * block.scale2)
     return h
+
+
+def _weight_dtype(module: Any, default: Any) -> Any:
+    """``default`` for an int8 Linear (weight dropped) or a missing weight."""
+    weight = getattr(module, "weight", None)
+    dtype = getattr(weight, "dtype", None)
+    return dtype if dtype is not None and dtype.is_floating_point else default
 
 
 def _fast_decoder_forward(self: Any, hidden_states: Any) -> Any:
@@ -893,7 +911,7 @@ def _fast_decoder_body(self: Any, hidden_states: Any) -> Any:
     )
     hidden_states = self.proj_in(hidden_states)
     num_patches = hidden_states.shape[1]
-    register_tokens = self.register_tokens.expand(batch_size, -1, -1)
+    register_tokens = self.register_tokens.expand(batch_size, -1, -1).to(hidden_states.dtype)
     cls_token = torch.zeros_like(hidden_states[:, :1, :])
     hidden_states = torch.cat([hidden_states, register_tokens, cls_token], dim = 1)
     grids = [
@@ -910,12 +928,15 @@ def _fast_decoder_body(self: Any, hidden_states: Any) -> Any:
     q_dtype = (
         torch.get_autocast_dtype("cuda")
         if torch.is_autocast_enabled("cuda")
-        else hidden_states.dtype
+        else _weight_dtype(self.transformer_blocks[0].attn.to_q, hidden_states.dtype)
     )
     cos = cos.to(q_dtype).contiguous()
     sin = sin.to(q_dtype).contiguous()
     hidden_states = _fast_block_stack(self, hidden_states, cos, sin, q_dtype)
-    hidden_states = self.norm_out(hidden_states)
+    # stock casts float32-pinned norm_out to proj_out's dtype
+    hidden_states = self.norm_out(hidden_states).to(
+        _weight_dtype(self.proj_out, hidden_states.dtype)
+    )
     hidden_states = self.proj_out(hidden_states)
     hidden_states = hidden_states[:, :num_patches, :]
     p, pt = self.patch_size, self.patch_size_t
@@ -965,7 +986,9 @@ def _tile_batch_size(z: Any) -> int:
     if env.isdigit() and int(env) > 0:
         return int(env)
     try:
-        free, _ = torch.cuda.mem_get_info(z.device)
+        from .diffusion_memory import user_budget_reserve_bytes
+        free, total = torch.cuda.mem_get_info(z.device)
+        free = max(0, int(free) - user_budget_reserve_bytes(z.device, total))
     except Exception:  # noqa: BLE001
         return 1
     return int(
@@ -1031,6 +1054,58 @@ def _install_tile_batch(vae: Any) -> bool:
     return True
 
 
+_FUSED_DEVICES: dict = {}
+
+
+def _fused_int8_ready(index: Optional[int]) -> bool:
+    """Probe once per card, never inside a forward."""
+    if index is None or _env(H3_VAE_INT8_FUSED_ENV) in _FALSE:
+        return False
+    if index not in _FUSED_DEVICES:
+        ok = False
+        try:
+            from . import diffusion_int8_gemm as gemm
+            from .diffusion_convrot_quant import rotquant_device_config
+            ok = (
+                gemm.int8_gemm_mode() != "off"
+                and gemm._op() is not None
+                and gemm.device_config(index) is not None
+                and rotquant_device_config(index) is not None
+            )
+        except Exception:  # noqa: BLE001 - the unfused path stays
+            ok = False
+        _FUSED_DEVICES[index] = ok
+    return _FUSED_DEVICES[index]
+
+
+def _fused_int8_linear(
+    linear: Any, x2: Any, wq: Any, ws: Any, out_dtype: Any, group: int
+) -> Optional[Any]:
+    """ConvRot rotation + int8 act quant, then int8 GEMM with fused dequant. None when unsupported."""
+    import torch
+
+    bias = linear.bias
+    if (
+        _env(H3_VAE_INT8_FUSED_ENV) in _FALSE
+        or out_dtype != torch.bfloat16
+        or x2.dtype != torch.bfloat16
+        or not _FUSED_DEVICES.get(x2.device.index)
+        or (bias is not None and bias.dtype != torch.bfloat16)
+        or x2.shape[1] % 64
+        or wq.shape[0] % 16
+    ):
+        return None
+    from . import diffusion_int8_gemm as gemm
+    from .diffusion_convrot_quant import convrot_act_quant
+
+    q = convrot_act_quant(x2, group, True)
+    op = gemm._op()
+    if q is None or op is None:
+        return None
+    xq, xs = q
+    return op(xq, wq, xs.reshape(-1), ws, bias)
+
+
 def _int8_linear(linear: Any, x: Any) -> Any:
     """W8A8: per-token int8 activations, per-output-channel int8 weights, int32 accumulate via ``torch._int_mm``."""
     import torch
@@ -1042,6 +1117,18 @@ def _int8_linear(linear: Any, x: Any) -> Any:
     wq, ws = linear._unsloth_int8
     out_dtype = torch.get_autocast_dtype("cuda") if torch.is_autocast_enabled("cuda") else x.dtype
     rot = getattr(linear, "_unsloth_rot", None)
+    if (
+        rot is not None
+        and x.is_cuda
+        and x.shape[-1] >= rot.shape[0]
+        and x.numel() >= 17 * x.shape[-1]
+    ):
+        x2 = x.reshape(-1, x.shape[-1])
+        out = _fused_int8_linear(
+            linear, x2 if x2.is_contiguous() else x2.contiguous(), wq, ws, out_dtype, rot.shape[0]
+        )
+        if out is not None:
+            return out.view(*x.shape[:-1], out.shape[-1])
     if rot is not None:
         # ConvRot: weight stored as W @ H.T, so x @ H keeps the product while spreading outlier channels
         g = rot.shape[0]
@@ -1131,6 +1218,15 @@ def _install_int8_decoder(vae: Any, *, keep_blocks: Optional[tuple] = None) -> i
                 wq, ws = _quantize_int8_weight(w, hadamard if rotate else None)
                 staged.append((linear, wq, ws, rotate))
         cls = _int8_linear_class()
+    if hadamard is not None:
+        try:
+            if torch.cuda.is_available():
+                # weights' card, plus the current one for host-offloaded weights
+                if hadamard.is_cuda:
+                    _fused_int8_ready(hadamard.device.index)
+                _fused_int8_ready(torch.cuda.current_device())
+        except Exception:  # noqa: BLE001 - the unfused path stays
+            pass
     freed = 0
     for linear, wq, ws, rotate in staged:
         if rotate:
@@ -1248,7 +1344,7 @@ def cuda_fast_path_available(vae: Any = None) -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+    if not torch.cuda.is_available() or is_rocm_torch(torch):
         return False
     if vae is not None:
         try:

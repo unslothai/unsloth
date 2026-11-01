@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import importlib.util
 import logging
@@ -82,6 +83,8 @@ from core.inference.llama_cpp import (
     hf_gguf_load_in_flight,
 )
 from core.inference.openai_auto_download import _DISK_RESERVE_BYTES
+
+from ._fake_llama_server import fake_llama_server
 
 
 REPO = "unsloth/gemma-test-GGUF"
@@ -669,16 +672,23 @@ class TestLoadReusesCachedCopy:
         backend._begin_load_warnings()
         assert backend.last_load_warning == "Q4_K_M was loaded instead."
 
-    def test_low_disk_fallback_load_records_the_served_variant(self, hf_cache, tmp_path):
+    def test_low_disk_fallback_load_records_the_served_variant(
+        self, hf_cache, tmp_path, monkeypatch
+    ):
         backend = LlamaCppBackend()
         served = tmp_path / "gemma-test-Q4_K_M.gguf"
         served.write_bytes(b"GGUF" + b"\0" * 4096)
-        backend._find_llama_server_binary = lambda *_a, **_k: "/usr/bin/true"
+        fake_server = fake_llama_server(tmp_path / "bin")
+        backend._find_llama_server_binary = lambda *_a, **_k: fake_server
         backend._remote_non_chat_gguf_refusal = lambda **_k: None
         backend._non_chat_gguf_refusal_for_path = lambda *_a, **_k: None
         backend._non_chat_gguf_refusal = lambda *_a, **_k: None
         backend._kill_process = lambda *_a, **_k: None
         backend._wait_for_health = lambda timeout = 600.0, interval = 0.5, cancelled = None: True
+        # Apple's unified-memory planner adds a notice for this header-only GGUF.
+        monkeypatch.setattr(
+            LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
+        )
 
         def _start(cmd, env, **_kwargs):
             backend._process = Mock(pid = 424242, returncode = None)
@@ -1177,6 +1187,7 @@ class TestLoadHubDownloadExclusion:
             "parallel_slots",
             "is_mlx",
             "is_npu",
+            "speaks",
             "mlx_kv_quant",
             "mlx_kv_quant_requested",
             "mlx_kv_bits",
@@ -1187,6 +1198,12 @@ class TestLoadHubDownloadExclusion:
             "mlx_int8_prefill",
             "mlx_int8_prefill_requested",
             "mlx_int8_prefill_reason",
+            "mlx_ane_prefill",
+            "mlx_ane_prefill_requested",
+            "mlx_ane_prefill_reason",
+            "mlx_fast_verify",
+            "mlx_fast_verify_requested",
+            "mlx_fast_verify_reason",
             "mlx_offload",
             "mlx_context_budget",
             "spec_draft_model",
@@ -1465,7 +1482,16 @@ class TestLoadHubDownloadExclusion:
         llama_source = (
             Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
         ).read_text(encoding = "utf-8")
-        assert "@_with_gguf_load_marker\n    def load_model(" in llama_source
+        # Any position in the stack (#14546 put @holds_inference under it); the marker must wrap load_model.
+        loads = [
+            node
+            for cls in ast.parse(llama_source).body
+            if isinstance(cls, ast.ClassDef) and cls.name == "LlamaCppBackend"
+            for node in cls.body
+            if isinstance(node, ast.FunctionDef) and node.name == "load_model"
+        ]
+        assert len(loads) == 1
+        assert "_with_gguf_load_marker" in [ast.unparse(d) for d in loads[0].decorator_list]
 
     def _capture_hub_guard_require_mmproj(
         self,

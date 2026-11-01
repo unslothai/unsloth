@@ -228,3 +228,80 @@ def test_macos_managed_profile_filters_network_mach_sysctl_and_shm(tmp_path):
     # The account's own sockets (multiprocessing) still work.
     assert f'(allow network-outbound (remote unix-socket (subpath "{writable}")))' in lines
     assert f'(allow network-bind (local unix-socket (subpath "{writable}")))' in lines
+
+
+@pytest.mark.skipif(os.sep != "/", reason = "POSIX paths")
+def test_registered_folders_on_removable_mounts_stay_silent(monkeypatch):
+    """A model folder registered on a /run/media drive, or an HF cache there, is not a new prompt."""
+    models = "/run/media/alice/SSD/models"
+    hf_home = "/run/media/alice/SSD/hf"
+    monkeypatch.setattr(
+        path_gate,
+        "_silent_roots",
+        lambda: (("/run", models, hf_home), (hf_home,)),
+    )
+    monkeypatch.setattr(path_gate, "_resolved_fs_text", lambda text: text)
+    assert path_gate._path_needs_approval(f"{models}/x.gguf") is False
+    assert path_gate._path_needs_approval(f"{hf_home}/hub/models--a--b/blob") is False
+    assert path_gate._path_needs_approval(f"{hf_home}/hub/new.bin", writing = True) is False
+    # The rest of the drive, a write into a read-only model folder, a credential in the HF home,
+    # and the other user-storage mounts still ask; `/run` itself never covers them.
+    assert path_gate._path_needs_approval("/run/media/alice/SSD/notes.txt") is True
+    assert path_gate._path_needs_approval("/run/media/alice/SSD/models-old/x") is True
+    assert path_gate._path_needs_approval(f"{models}/x.gguf", writing = True) is True
+    assert path_gate._path_needs_approval(f"{hf_home}/token") is True
+    assert path_gate._path_needs_approval("/run/host/etc/hostname") is True
+    assert path_gate._path_needs_approval("/run/user/1000/bus") is True
+    assert path_gate._path_needs_approval("/dev/sda") is True
+    # A link inside the registered folder pointing at the rest of the drive or at /run/user still asks.
+    links = {
+        f"{models}/link": "/run/media/alice/SSD/private/notes.txt",
+        f"{models}/bus": "/run/user/1000/bus",
+        f"{models}/same": f"{models}/x.gguf",
+    }
+    monkeypatch.setattr(path_gate, "_resolved_fs_text", lambda text: links.get(text, text))
+    assert path_gate._path_needs_approval(f"{models}/link") is True
+    assert path_gate._path_needs_approval(f"{models}/bus") is True
+    assert path_gate._path_needs_approval(f"{models}/same") is False
+    # A link that hides another account's subtree behind an innocent name still asks.
+    links[f"{models}/public"] = f"{models}/Accounts/bob/Projects/a.txt"
+    assert path_gate._path_needs_approval(f"{models}/public") is True
+    # A model folder registered through a symlink onto the drive stays silent, as it was before.
+    monkeypatch.setattr(path_gate, "_silent_roots", lambda: (("/run", "/models"), ()))
+    links.clear()
+    links["/models"] = models
+    links["/models/x.gguf"] = f"{models}/x.gguf"
+    links["/models/link"] = "/run/media/alice/SSD/private/notes.txt"
+    assert path_gate._path_needs_approval("/models/x.gguf") is False
+    assert path_gate._path_needs_approval("/models/link") is True
+
+
+@pytest.mark.skipif(os.sep != "/", reason = "POSIX paths")
+def test_std_stream_writes_stay_silent_when_they_resolve_into_dev_fd(monkeypatch):
+    """macOS resolves /dev/stdout to /dev/fd/1; a `2> /dev/stderr` redirect must not become a prompt."""
+    monkeypatch.setattr(
+        path_gate,
+        "_silent_roots",
+        lambda: (
+            ("/dev/stdout", "/dev/stderr", "/run", "/var/run", "/models"),
+            ("/dev/stdout", "/dev/stderr"),
+        ),
+    )
+    links = {
+        "/dev/stdout": "/dev/fd/1",
+        "/dev/stderr": "/dev/fd/2",
+        "/models": "/run/media/alice/SSD/models",
+        "/models/bus": "/run/user/1000/bus",
+        "/var/run": "/run",
+        "/var/run/user/1000/bus": "/run/user/1000/bus",
+        "/var/run/media/alice/SSD/notes.txt": "/run/media/alice/SSD/notes.txt",
+    }
+    monkeypatch.setattr(path_gate, "_resolved_fs_text", lambda text: links.get(text, text))
+    assert path_gate._path_needs_approval("/dev/stdout", writing = True) is False
+    assert path_gate._path_needs_approval("/dev/stderr", writing = True) is False
+    assert path_gate._path_needs_approval("/dev/stdout") is False
+    # A link under a symlinked root that leaves that root's own target still asks.
+    assert path_gate._path_needs_approval("/models/bus") is True
+    # Nor does a root that links to a broad directory hand out the runtime subtrees under it.
+    assert path_gate._path_needs_approval("/var/run/user/1000/bus") is True
+    assert path_gate._path_needs_approval("/var/run/media/alice/SSD/notes.txt") is True

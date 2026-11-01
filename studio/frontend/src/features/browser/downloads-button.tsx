@@ -15,16 +15,16 @@ import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Alert02Icon,
   CheckmarkCircle02Icon,
-  Copy01Icon,
-  Delete02Icon,
   Download01Icon,
-  Folder01Icon,
   MoreHorizontalIcon,
   ArrowUpRight01Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { type FinishedDownload, mountDownloadsButton, useDownloadActivity } from "./download-activity";
@@ -70,7 +70,7 @@ function useMissing(downloads: DownloadItem[], enabled: boolean) {
 function KindTile({ name, contentType, muted }: { name: string; contentType: string; muted?: boolean }) {
   const kind = attachmentFileKind(name, contentType);
   return (
-    <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[color-mix(in_oklab,var(--foreground)_6%,transparent)]">
+    <span className="flex size-10 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_oklab,var(--foreground)_6%,transparent)]">
       <HugeiconsIcon
         icon={ATTACHMENT_KIND_ICONS[kind]}
         strokeWidth={1.75}
@@ -109,7 +109,7 @@ function DownloadRow({
     onDone();
   };
   return (
-    <li className="group/row flex items-center gap-3 rounded-2xl px-2 py-1.5 hover:bg-[color-mix(in_oklab,var(--foreground)_4%,transparent)]">
+    <li className="group/row flex items-center gap-3 rounded-md px-2 py-1.5 hover:bg-[color-mix(in_oklab,var(--foreground)_4%,transparent)]">
       <button
         type="button"
         onClick={run(open)}
@@ -143,7 +143,7 @@ function DownloadRow({
             <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-4.5" />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="browser-menu min-w-48 rounded-[20px] p-1.5">
+        <DropdownMenuContent align="end" className="browser-menu min-w-48 rounded-lg p-1">
           <DropdownMenuItem disabled={!open} onSelect={run(open)}>
             <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className="size-4" />
             {t("browser.downloads.open")}
@@ -165,7 +165,7 @@ function DownloadRow({
             </DropdownMenuItem>
           ) : null}
           <DropdownMenuItem onSelect={() => useBrowserHistoryStore.getState().removeDownload(item.id)}>
-            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
+            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-4" />
             {t("browser.pages.removeFromHistory")}
           </DropdownMenuItem>
         </DropdownMenuContent>
@@ -258,7 +258,7 @@ function FinishedNotice({ finished, onDone }: { finished: FinishedDownload; onDo
             <button
               type="button"
               onClick={run(reveal)}
-              className="h-8 cursor-pointer rounded-full bg-[color-mix(in_oklab,var(--foreground)_8%,transparent)] px-3.5 text-ui-13 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_12%,transparent)]"
+              className="cursor-pointer rounded-full bg-[color-mix(in_oklab,var(--foreground)_8%,transparent)] px-3 py-2 text-ui-13 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_12%,transparent)]"
             >
               {t(revealLabelKey())}
             </button>
@@ -267,7 +267,7 @@ function FinishedNotice({ finished, onDone }: { finished: FinishedDownload; onDo
             <button
               type="button"
               onClick={run(open)}
-              className="h-8 cursor-pointer rounded-full bg-foreground px-3.5 text-ui-13 text-background transition-opacity hover:opacity-85"
+              className="cursor-pointer rounded-full bg-action px-3 py-2 text-ui-13 text-background transition-opacity hover:opacity-85"
             >
               {t("browser.downloads.open")}
             </button>
@@ -404,7 +404,7 @@ export function DownloadsButton({
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         className={cn(
-          "browser-menu gap-2 rounded-[22px] p-2",
+          "browser-menu gap-2 rounded-xl p-2",
           mode === "finished" ? "w-80 p-3" : "w-96 max-h-[min(32rem,var(--radix-popover-content-available-height))]",
         )}
       >

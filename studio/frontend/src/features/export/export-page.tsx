@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
-import { SectionCard } from "@/components/section-card";
+import { SectionBox } from "@/components/section-box";
+import { SegmentedControl } from "@/components/segmented-control";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,10 +34,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Tooltip,
   TooltipContent,
@@ -46,21 +45,24 @@ import { usePlatformStore } from "@/config/env";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { hfApiToken, useHfTokenStore, useHubModelSearch } from "@/features/hub";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { useNpuStatus } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import type { LocalModelInfo } from "@/features/training";
 import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
 import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
+import { FullInstallDialog } from "@/features/settings";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { cn } from "@/lib/utils";
 import {
   AlertCircleIcon,
-  FolderSearchIcon,
   InformationCircleIcon,
   Key01Icon,
   PackageIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderSearchIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -75,6 +77,10 @@ import {
 } from "./api/export-api";
 import { adapterCompatibilityTip, type AdapterFormat } from "./constants";
 import { ExportRunPanel } from "./components/export-run-panel";
+import {
+  ExportSummaryCard,
+  type ExportSummaryRow,
+} from "./components/export-summary-card";
 import { ImageLoraExportCard } from "./components/image-lora-export-card";
 import { MethodPicker } from "./components/method-picker";
 import { Q4nxConvertCard } from "./components/q4nx-convert-card";
@@ -110,6 +116,7 @@ import {
   reapRequest,
   reapSummaryLabel,
 } from "./lib/reap";
+import { exportRemoteCodeConsent } from "./lib/remote-code-consent";
 import { saveDirectoryField } from "./lib/save-directory";
 import { exportUnsupportedText } from "./lib/unsupported-text";
 import {
@@ -117,6 +124,7 @@ import {
   useExportRuntimeStore,
 } from "./stores/export-runtime-store";
 import { exportTourSteps } from "./tour";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 
 const SEARCH_INPUT_REASONS = new Set([
   "input-change",
@@ -124,10 +132,17 @@ const SEARCH_INPUT_REASONS = new Set([
   "input-clear",
 ]);
 
-// GGUF LoRA output float types (Q8_0 default). Q8_0 falls back to F16 per tensor for dims not divisible by 32; no "auto".
+// Q8_0 falls back to F16 per tensor for dims not divisible by 32; no "auto".
 const LORA_GGUF_OUTTYPES = ["q8_0", "f16", "bf16", "f32"] as const;
 
 type SourceTab = "local" | "checkpoint" | "hf";
+const SOURCE_TAB_OPTIONS = [
+  { value: "local", label: "Local" },
+  { value: "checkpoint", label: "Fine-tuned" },
+  { value: "hf", label: "Hugging Face" },
+] as const satisfies readonly { value: SourceTab; label: string }[];
+const FIELD_LABEL =
+  "flex items-center gap-1.5 text-xs font-medium text-muted-foreground";
 type SourceMode = "checkpoint" | "model";
 
 function safePathSegment(
@@ -157,11 +172,10 @@ function buildRelativeSaveDirectory(
         : sourceBaseModelName;
     return `${safePathSegment(rawName)}-GGUF`;
   }
-  // Merged / LoRA: a checkpoint keeps the "<run>/<checkpoint>" layout under outputs.
   if (sourceMode === "checkpoint" && selectedModelIdx && checkpoint) {
     return `${selectedModelIdx}/${checkpoint}`;
   }
-  // Local / HF source (no checkpoint): name from the model id to avoid "model/null".
+  // Name from the model id to avoid "model/null".
   const rawName =
     sourceMode === "checkpoint"
       ? (checkpoint ?? selectedModelIdx ?? sourceBaseModelName)
@@ -173,7 +187,7 @@ function siblingGgufDirectory(sourcePath: string): string | null {
   const trimmed = sourcePath.trim().replace(/[\\/]+$/, "");
   if (!trimmed) return null;
   const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
-  // Lowercase `_gguf` matches the backend's intermediate dir; `_GGUF` would relocate+delete it.
+  // Lowercase `_gguf` matches the backend's intermediate dir; `_GGUF` would relocate and delete it.
   if (slash < 0) return `${trimmed}_gguf`;
   const parent =
     slash === 0 || (slash === 2 && /^[A-Za-z]:/.test(trimmed))
@@ -227,8 +241,7 @@ export function ExportPage() {
   const debouncedModelQuery = useDebouncedValue(modelInput);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
 
-  // Seed the method + quants from a live run so navigating away and back (which remounts this
-  // page) keeps the selection. The run lives in the global store; only this form state is local.
+  // Seed from the live run so a remount keeps the selection.
   const [exportMethod, setExportMethod] = useState<ExportMethod | null>(() => {
     const s = useExportRuntimeStore.getState();
     return isExportPanelActive(s) && s.summary ? s.summary.method : null;
@@ -239,14 +252,15 @@ export function ExportPage() {
       ? s.summary.quantLevels
       : [];
   });
-  // GGUF importance matrix (required for the IQ quants) and merged-export precision.
   const [useImatrix, setUseImatrix] = useState(false);
   const [npuQ4nx, setNpuQ4nx] = useState(false);
   const [reapSettings, setReapSettings] = useState<ReapSettings>(
     DEFAULT_REAP_SETTINGS,
   );
-  const [customImatrix, setCustomImatrix] = useState({ sourceKey: "", path: "" });
-  // Merged precision: one or more MERGED_FORMATS values exported in one run; seeded like exportMethod.
+  const [customImatrix, setCustomImatrix] = useState({
+    sourceKey: "",
+    path: "",
+  });
   const [selectedFormats, setSelectedFormats] = useState<string[]>(() => {
     const s = useExportRuntimeStore.getState();
     return isExportPanelActive(s) &&
@@ -255,37 +269,36 @@ export function ExportPage() {
       ? s.summary.mergedFormats
       : ["16-bit"];
   });
-  // LoRA-only export: optionally also emit a GGUF LoRA adapter, and its output float type.
   const [loraAsGguf, setLoraAsGguf] = useState(false);
   const [adapterFormat, setAdapterFormat] = useState<AdapterFormat>("mlx");
   const [loraGgufOuttype, setLoraGgufOuttype] = useState<string>("q8_0");
-  // GGUF method: export the full model as GGUF quants, or (for an adapter checkpoint) a GGUF LoRA.
   const [ggufTarget, setGgufTarget] = useState<"model" | "lora">("model");
 
   const hardware = useHardwareInfo();
   // On Mac, GGUF LoRA adapters ship through the LoRA method's toggle, not the GGUF method.
   const isMacHost = usePlatformStore((s) => s.deviceType) === "mac";
   const torchaoUnavailable = !hardware.torchaoExportSupported;
-  // Real CUDA (not ROCm); gates the NVIDIA-only compressed-tensors formats.
   const hasNvidia = hardware.cuda != null && hardware.rocm == null;
-  // Only gray out on an authoritative unsupported response; the backend supplies the reason.
+  // Only gray out on an authoritative unsupported response.
   const exportUnsupported =
     hardware.loaded && hardware.exportSupported === false;
-  const canUpgrade = useFullInstallUpgrade() !== null;
+  const fullInstall = useFullInstallUpgrade();
+  const canUpgrade = fullInstall !== null;
+  const [fullInstallOpen, setFullInstallOpen] = useState(false);
   const exportUnsupportedMessage = exportUnsupportedText(
     hardware.exportUnsupportedReason,
     hardware.exportUnsupportedMessage,
     canUpgrade,
   );
+  // Only where the full install brings export: without a GPU it trains on CPU and still cannot export.
+  const offerFullInstall = canUpgrade && hardware.exportUnsupportedReason === "no_torch";
   const availableFormats = useMemo<MergedFormatOption[]>(
     () =>
       MERGED_FORMATS.filter((f) => {
-        // compressed-tensors (llm-compressor) is the NVIDIA path; shown only on an NVIDIA GPU.
         if (f.backend === "compressed") return hasNvidia;
-        // Portable torchao is the fallback for hosts without the NVIDIA compressed path. Hidden on
-        // NVIDIA (use compressed-tensors), macOS/MLX (rejected) and where torchao cannot load.
-        if (f.backend === "torchao") return !hasNvidia && !isMacHost && !torchaoUnavailable;
-        // Plain 16-bit is available everywhere.
+        // torchao is hidden on NVIDIA, macOS/MLX and where torchao cannot load.
+        if (f.backend === "torchao")
+          return !hasNvidia && !isMacHost && !torchaoUnavailable;
         return true;
       }),
     [hasNvidia, isMacHost, torchaoUnavailable],
@@ -295,7 +308,7 @@ export function ExportPage() {
       prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value],
     );
   }, []);
-  // Drop picks the gate removed, only once hardware is loaded: before that hasNvidia reads false.
+  // Wait for hardware to load: before that hasNvidia reads false.
   useEffect(() => {
     if (!hardware.loaded) return;
     const allowed = new Set(availableFormats.map((f) => f.value));
@@ -304,7 +317,7 @@ export function ExportPage() {
       return next.length === prev.length ? prev : next;
     });
   }, [availableFormats, hardware.loaded]);
-  // IQ quants are imatrix-only: force imatrix on when one is selected, else llama.cpp rejects it.
+  // IQ quants are imatrix-only; llama.cpp rejects them without one.
   const requiresImatrix = quantLevels.some(
     (q) => QUANT_OPTIONS.find((o) => o.value === q)?.imatrix,
   );
@@ -313,14 +326,15 @@ export function ExportPage() {
     Q4NX_SOURCE_QUANTS.includes(q),
   );
 
-  // Whether the inline export panel is expanded. The panel also shows itself whenever a run is
-  // active/terminal (see `panelActive`), so it survives navigation even though this flag resets.
+  // The panel also shows whenever a run is active or terminal (see `panelActive`).
   const [panelOpen, setPanelOpen] = useState(false);
 
   const [destination, setDestination] = useState<"local" | "hub">("local");
   // The converter writes beside the GGUFs, so a Hub-only export has nowhere to put it.
+  const [npuStatus] = useNpuStatus();
+  const hasNpu = !!npuStatus?.supported;
   const effectiveNpuQ4nx =
-    npuQ4nx && q4nxSourceSelected && destination === "local";
+    hasNpu && npuQ4nx && q4nxSourceSelected && destination === "local";
   const [customSaveDirectory, setCustomSaveDirectory] = useState<string | null>(
     null,
   );
@@ -328,7 +342,6 @@ export function ExportPage() {
   const [modelName, setModelName] = useState("");
   const [privateRepo, setPrivateRepo] = useState(false);
 
-  // Export run state lives in the global runtime store so it keeps streaming in the background.
   const runExport = useExportRuntimeStore((s) => s.runExport);
   const resetExportRun = useExportRuntimeStore((s) => s.reset);
   const isExporting = useExportRuntimeStore((s) => s.isExporting);
@@ -371,11 +384,12 @@ export function ExportPage() {
 
   // Apply the ?run= deep link once its run appears in the checkpoint list: select the run and
   // default to GGUF. The main checkpoint is auto-selected below, after the model-change effect.
-  const { run: preselectRun, imageLora: preselectImageLora } = useSearch({ from: "/export" });
+  const { run: preselectRun, imageLora: preselectImageLora } = useSearch({
+    from: "/export",
+  });
   const appliedRunRef = useRef<string | null>(null);
   useEffect(() => {
     if (!preselectRun) {
-      // Deep link cleared (e.g. navigated to /export via the sidebar): stop preselecting that run.
       appliedRunRef.current = null;
       return;
     }
@@ -416,11 +430,7 @@ export function ExportPage() {
 
   const reloadReadySent = useRef(false);
   useEffect(() => {
-    if (
-      loadingCheckpoints ||
-      isLoadingLocalModels ||
-      reloadReadySent.current
-    ) {
+    if (loadingCheckpoints || isLoadingLocalModels || reloadReadySent.current) {
       return;
     }
     reloadReadySent.current = true;
@@ -443,8 +453,7 @@ export function ExportPage() {
   const baseModelName = selectedModelData?.base_model ?? "—";
   const isAdapter = !!selectedModelData?.peft_type;
   const isQuantized = !!selectedModelData?.is_quantized;
-  // isAdapter / isQuantized come from the checkpoint's metadata and are stale in "model" source
-  // mode, so treat both as false outside checkpoint mode to avoid wrongly gating the methods.
+  // Checkpoint metadata is stale in "model" source mode, so ignore it there.
   const effectiveIsAdapter = sourceMode === "checkpoint" && isAdapter;
   const effectiveIsQuantized = sourceMode === "checkpoint" && isQuantized;
   const loraRank = selectedModelData?.lora_rank ?? null;
@@ -454,8 +463,7 @@ export function ExportPage() {
   const sourceBaseModelName =
     sourceMode === "model" ? (selectedSourceModel ?? "—") : baseModelName;
 
-  // For a full fine-tune checkpoint the weights live in the checkpoint dir itself (its base_model
-  // may be unsizeable), so size that dir; LoRA adapters merge into the base model.
+  // Full fine-tune weights live in the checkpoint dir; LoRA adapters merge into the base.
   const sizeTargetModel = useMemo(() => {
     if (sourceMode === "checkpoint" && !isAdapter) {
       const cp = checkpointsForModel.find((c) => c.display_name === checkpoint);
@@ -472,7 +480,6 @@ export function ExportPage() {
     sourceBaseModelName,
   ]);
 
-  // Real (MoE-aware) fp16 size, used to scale the GGUF quant estimates.
   const { fp16Bytes } = useExportSizeEstimate(
     sizeTargetModel,
     debouncedHfToken,
@@ -489,7 +496,6 @@ export function ExportPage() {
   } = useHubModelSearch(debouncedModelQuery, {
     accessToken: hfApiToken(debouncedHfToken),
     excludeGguf: true,
-    // Curated unsloth listing by default; a typed query searches the whole Hub (unsloth first).
     ownerScope: debouncedModelQuery.trim() ? "all" : "unsloth",
   });
   const { error: tokenValidationError, isChecking: isCheckingToken } =
@@ -612,7 +618,9 @@ export function ExportPage() {
       ? selectedSourceModel || null
       : null);
   const moeProbeToken = debouncedHfToken?.trim() || "";
-  const moeProbeKey = moeProbeTarget ? `${moeProbeTarget}|${moeProbeToken}` : "";
+  const moeProbeKey = moeProbeTarget
+    ? `${moeProbeTarget}|${moeProbeToken}`
+    : "";
   const [moeState, setMoeState] = useState<{
     key: string;
     info: MoeInfo | null;
@@ -677,21 +685,18 @@ export function ExportPage() {
     setCheckpoint(null);
   }, [selectedModelIdx]);
 
-  // Default to the newest checkpoint when none is chosen. Declared after the reset effect above
-  // so it runs last; covers both a ?run= deep link and a plain finetune.
+  // Declared after the reset effect so it runs last.
   useEffect(() => {
     if (sourceMode !== "checkpoint") return;
     if (checkpoint != null || checkpointsForModel.length === 0) return;
     setCheckpoint(checkpointsForModel[0].display_name);
   }, [sourceMode, selectedModelIdx, checkpoint, checkpointsForModel]);
 
-  // Auto-reset export method if incompatible with the selected model type
   useEffect(() => {
     // Only LoRA needs a real adapter; Merged and GGUF work for non-PEFT base models too.
     if (!effectiveIsAdapter && exportMethod === "lora") {
       setExportMethod(null);
     }
-    // Quantized non-PEFT models can't export to any format
     if (!effectiveIsAdapter && effectiveIsQuantized && exportMethod !== null) {
       setExportMethod(null);
     }
@@ -724,7 +729,6 @@ export function ExportPage() {
     } else if (next === "hf" || next === "local") {
       setSourceMode("model");
       setModelSource(next);
-      // Don't force GGUF: Local / HF sources can export Merged too; a stale LoRA pick auto-resets.
     } else {
       return;
     }
@@ -759,7 +763,7 @@ export function ExportPage() {
   const estimatedSize = getEstimatedSize(exportMethod, quantLevels, fp16Bytes);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
-  // Derived, not reset in an effect: an imatrix is calibrated for one model, so another source must not inherit it.
+  // Derived, not reset in an effect: an imatrix is calibrated for one model only.
   const imatrixSourceKey = JSON.stringify([
     sourceTab,
     sourceMode === "checkpoint" ? selectedModelIdx : null,
@@ -789,7 +793,7 @@ export function ExportPage() {
         return siblingGgufDirectory(localModel.path) ?? relative;
       }
     }
-    // Mac PEFT / GGUF adapters get their own folder: one folder holds one adapter format.
+    // One folder holds one adapter format.
     if (
       isMacHost &&
       exportMethod === "lora" &&
@@ -879,6 +883,35 @@ export function ExportPage() {
     !reapBlocked
   );
 
+  const exportMethodTitle =
+    EXPORT_METHODS.find((m) => m.value === exportMethod)?.title ?? "—";
+  const summaryRows: ExportSummaryRow[] =
+    sourceMode === "checkpoint"
+      ? [
+          {
+            label: "Training run",
+            value: selectedModelIdx
+              ? selectedModelIdx.replace(/_(\d{10,})$/, "")
+              : "—",
+          },
+          { label: "Checkpoint", value: checkpoint ?? "—" },
+          { label: "Base model", value: baseModelName },
+          {
+            label: "Training",
+            value: selectedModelData ? trainingMethodLabel : "—",
+          },
+          ...(isAdapter && loraRank != null
+            ? [{ label: "LoRA rank", value: String(loraRank), mono: true }]
+            : []),
+          { label: "Method", value: exportMethodTitle },
+          { label: "Est. size", value: estimatedSize ?? "—" },
+        ]
+      : [
+          { label: "Model", value: selectedSourceModel ?? "—" },
+          { label: "Method", value: exportMethodTitle },
+          { label: "Est. size", value: estimatedSize ?? "—" },
+        ];
+
   const applyHfSourceModel = useCallback((value: string) => {
     const next = value.trim();
     setModelInput(next);
@@ -943,12 +976,10 @@ export function ExportPage() {
   );
 
   // ---- Export handlers ----
-  // Assemble the run params and hand off to the global runtime store, which drives the run.
   const handleStart = useCallback(async () => {
     const source =
       sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
     if (!source || !exportMethod) return;
-    // No supported accelerator (or PyTorch/MLX missing): the backend would reject anyway; don't submit.
     if (exportUnsupported) return;
     if (diffusionDisabledMethods.includes(exportMethod)) return;
     // REAP is on but the new source's MoE probe has not answered (or failed): never send it unpruned.
@@ -957,7 +988,6 @@ export function ExportPage() {
     if (exportMethod === "gguf" && !ggufAsLora && quantLevels.length === 0)
       return;
     if (exportMethod === "merged" && selectedFormats.length === 0) return;
-    // A Hub merged push writes each format to the repo root; several would collide (mirrors canExport).
     if (hubMultiFormat) return;
     if (isDecision && (exportMethod !== "gguf" || decisionIneligible)) {
       return;
@@ -984,9 +1014,9 @@ export function ExportPage() {
         ? `${hfUsername.trim()}/${modelName.trim()}`
         : undefined;
     const token = pushToHub && actionHfToken ? actionHfToken : undefined;
-    // The GGUF method with the LoRA target reuses the LoRA-adapter export path.
     const effectiveMethod: ExportMethod = ggufAsLora ? "lora" : exportMethod;
-    const emitLoraGguf = ggufAsLora || (effectiveMethod === "lora" && loraAsGguf);
+    const emitLoraGguf =
+      ggufAsLora || (effectiveMethod === "lora" && loraAsGguf);
     const methodLabel = isDecision
       ? t("exportDecision.methodLabel")
       : ggufAsLora
@@ -995,30 +1025,30 @@ export function ExportPage() {
           exportMethod);
     const adapterExport = sourceMode === "checkpoint" && isAdapter;
 
-    // Consent gate for an HF source's custom (auto_map) code, before handing off to runExport.
-    // A local checkpoint/model the user exported is trusted by default.
-    let trustRemoteCode = modelSource !== "hf";
+    // Consent gate for custom (auto_map) code, before handing off to runExport.
+    const consent = exportRemoteCodeConsent({
+      sourceMode,
+      modelSource,
+      source,
+      checkpointPath,
+    });
+    let trustRemoteCode = consent.trustByDefault;
     let approvedRemoteCodeFingerprint: string | null = null;
-    if (sourceMode !== "checkpoint") {
-      const remoteCodeOk = await confirmRemoteCodeIfNeeded({
-        modelName: source,
-        hfToken: actionHfToken || null,
-        // An HF source can need trust_remote_code via its YAML default with no auto_map to review;
-        // signal it so a YAML-only model does not export with it false.
-        requiresTrustRemoteCode: modelSource === "hf",
-        onApprove: (fingerprint) => {
-          trustRemoteCode = true;
-          approvedRemoteCodeFingerprint = fingerprint;
-        },
-      });
-      if (!remoteCodeOk) return;
-    }
+    const remoteCodeOk = await confirmRemoteCodeIfNeeded({
+      modelName: consent.scanTarget,
+      hfToken: actionHfToken || null,
+      requiresTrustRemoteCode: consent.requiresTrustRemoteCode,
+      onApprove: (fingerprint) => {
+        trustRemoteCode = true;
+        approvedRemoteCodeFingerprint = fingerprint;
+      },
+    });
+    if (!remoteCodeOk) return;
 
     let installMissingDependencies = false;
     if (effectiveMethod === "merged") {
-      const llmCompressor = await confirmLlmCompressorInstallIfNeeded(
-        selectedFormats,
-      );
+      const llmCompressor =
+        await confirmLlmCompressorInstallIfNeeded(selectedFormats);
       if (!llmCompressor.ok) return;
       installMissingDependencies = llmCompressor.installMissingDependencies;
     }
@@ -1110,7 +1140,6 @@ export function ExportPage() {
     t,
   ]);
 
-  // Open the inline panel into a fresh config state, clearing any previous terminal run.
   const handleOpenPanel = useCallback(() => {
     if (!isExporting) {
       resetExportRun();
@@ -1118,7 +1147,6 @@ export function ExportPage() {
     setPanelOpen(true);
   }, [isExporting, resetExportRun]);
 
-  // Collapse the panel. Only reachable from config / terminal states, so resetting is safe.
   const handleClosePanel = useCallback(() => {
     resetExportRun();
     setPanelOpen(false);
@@ -1126,7 +1154,6 @@ export function ExportPage() {
 
   const showPanel = panelOpen || panelActive;
 
-  // Bring the panel into view when it opens and offer a scroll-down affordance (like Chat).
   const panelEndRef = useRef<HTMLDivElement>(null);
   const [panelEndVisible, setPanelEndVisible] = useState(true);
 
@@ -1141,7 +1168,6 @@ export function ExportPage() {
   useEffect(() => {
     const el = panelEndRef.current;
     if (!showPanel || !el) return;
-    // The scroll-down button is also gated on showPanel, so the observer self-corrects on open.
     const obs = new IntersectionObserver(
       ([entry]) => setPanelEndVisible(entry.isIntersecting),
       { rootMargin: "0px 0px -40px 0px" },
@@ -1151,1117 +1177,1118 @@ export function ExportPage() {
   }, [showPanel]);
 
   return (
-    <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="mx-auto max-w-7xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] px-5 py-8 max-sm:px-4 sm:px-9">
+    <div data-wallpaper-page-canvas="" className="flex min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] flex-col bg-background">
+      <main className="mx-auto flex w-full max-w-[calc(1180px*var(--ui-space-scale,1))] 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-7 px-5 pb-20 pt-8 max-sm:px-4 sm:px-9">
         <GuidedTour {...tour.tourProps} />
 
-        <div className="mb-8 flex flex-col gap-0.5">
+        <header className="font-heading flex flex-col gap-0.5">
           <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
-            Export Model
+            Export
           </h1>
           <p className="text-sm text-muted-foreground">
             Export fine-tuned or base models for deployment
           </p>
-        </div>
+        </header>
 
-        <SectionCard
-          icon={<HugeiconsIcon icon={PackageIcon} className="size-5" />}
-          title="Export Configuration"
-          description="Select source, method, and quantization"
-          accent="emerald"
-          featured={true}
-          className="ring-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
-        >
-          {/* Loading / error states */}
-          {loadingCheckpoints && (
-            <div className="flex items-center gap-2 py-6 justify-center text-sm text-muted-foreground">
-              <Spinner className="size-4" />
-              Loading checkpoints…
-            </div>
-          )}
+        {loadingCheckpoints && (
+          <div className="flex items-center gap-3 rounded-2xl border border-border/60 p-8 text-sm text-muted-foreground">
+            <Spinner className="size-4 shrink-0" />
+            Loading checkpoints…
+          </div>
+        )}
 
-          {checkpointError && (
-            <div className="flex items-center gap-2 py-6 justify-center text-sm text-destructive">
-              <HugeiconsIcon icon={AlertCircleIcon} className="size-4" />
-              {checkpointError}
-            </div>
-          )}
+        {checkpointError && (
+          <div className="flex items-center gap-3 rounded-2xl border border-border/60 p-8 text-sm text-destructive">
+            <HugeiconsIcon icon={AlertCircleIcon} className="size-4 shrink-0" />
+            {checkpointError}
+          </div>
+        )}
 
-          {!loadingCheckpoints && !checkpointError && (
-            <>
-              {/* Top row: Dropdowns + metadata | Guide */}
-              <div className="grid grid-cols-1 gap-6 md:grid-cols-2 md:gap-8">
-                <div className="flex flex-col gap-3">
-                  <div className="flex flex-col gap-2">
-                    <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                      Source
-                      <Tooltip>
-                        <TooltipTrigger asChild={true}>
-                          <button
-                            type="button"
-                            className="text-foreground/70 hover:text-foreground"
-                          >
-                            <HugeiconsIcon
-                              icon={InformationCircleIcon}
-                              className="size-3"
-                            />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          Choose a local model, fine-tuned checkpoint, or
-                          Hugging Face model to export.
-                        </TooltipContent>
-                      </Tooltip>
-                    </label>
-                    <Tabs
+        {(loadingCheckpoints || !!checkpointError) && (
+          <>
+            <ImageLoraExportCard preselect={preselectImageLora} />
+            {hasNpu && <Q4nxConvertCard />}
+          </>
+        )}
+
+        {!loadingCheckpoints && !checkpointError && (
+          <div className="@container/export-configure">
+            <div className="grid grid-cols-1 gap-8 @4xl/export-configure:grid-cols-[minmax(0,1fr)_320px] @5xl/export-configure:gap-10">
+              <div className="flex min-w-0 flex-col gap-6">
+                <SectionBox
+                  title="Source"
+                  description="A local model, a fine-tuned checkpoint, or a Hugging Face model"
+                  icon={ChipIcon}
+                  chipTint="var(--chart-1)"
+                  titleAction={
+                    <SegmentedControl
                       value={sourceTab}
+                      options={SOURCE_TAB_OPTIONS}
                       onValueChange={handleSourceTabChange}
-                      className="w-full"
-                    >
-                      <TabsList
-                        unstyled={true}
-                        className="hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full items-center rounded-full"
-                      >
-                        <TabsTrigger
-                          value="local"
-                          indicatorClassName="hub-tab-toggle-pill rounded-full"
-                          className="h-9 rounded-full border-0 px-3 text-ui-12p5 text-muted-foreground hover:text-foreground data-active:text-foreground data-[state=active]:text-foreground"
+                      ariaLabel="Export source"
+                      size="compact"
+                      className="@md/train-card:w-[calc(300px*var(--ui-space-scale,1))]"
+                    />
+                  }
+                >
+                  <div className="flex flex-col gap-4">
+                    {sourceMode === "checkpoint" ? (
+                      <div className="grid grid-cols-1 gap-4 overflow-visible @md/train-section:grid-cols-2">
+                        <div
+                          data-tour="export-training-run"
+                          className="flex min-w-0 flex-col gap-2"
                         >
-                          Local Model
-                        </TabsTrigger>
-                        <TabsTrigger
-                          value="checkpoint"
-                          indicatorClassName="hub-tab-toggle-pill rounded-full"
-                          className="h-9 rounded-full border-0 px-3 text-ui-12p5 text-muted-foreground hover:text-foreground data-active:text-foreground data-[state=active]:text-foreground"
-                        >
-                          Fine-tuned
-                        </TabsTrigger>
-                        <TabsTrigger
-                          value="hf"
-                          indicatorClassName="hub-tab-toggle-pill rounded-full"
-                          className="h-9 rounded-full border-0 px-3 text-ui-12p5 text-muted-foreground hover:text-foreground data-active:text-foreground data-[state=active]:text-foreground"
-                        >
-                          Hugging Face
-                        </TabsTrigger>
-                      </TabsList>
-                    </Tabs>
-                  </div>
-
-                  {sourceMode === "checkpoint" ? (
-                    <div className="flex flex-col gap-2 overflow-visible">
-                      <div
-                        data-tour="export-training-run"
-                        className="flex flex-col gap-2"
-                      >
-                        <label className="text-xs font-medium text-muted-foreground">
-                          Training Run
-                        </label>
-                        <Select
-                          value={selectedModelIdx ?? ""}
-                          onValueChange={setSelectedModelIdx}
-                        >
-                          <SelectTrigger className="w-full">
-                            <SelectValue
-                              placeholder={
-                                models.length === 0
-                                  ? "No training runs found"
-                                  : "Select a training run…"
-                              }
-                            />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {models.map((m) => {
-                              const tsMatch = m.name.match(/_(\d{10,})$/);
-                              const displayName = tsMatch
-                                ? m.name.slice(0, tsMatch.index)
-                                : m.name;
-                              const timeStr = tsMatch
-                                ? new Date(
-                                    Number(tsMatch[1]) * 1000,
-                                  ).toLocaleString(undefined, {
-                                    dateStyle: "medium",
-                                    timeStyle: "short",
-                                  })
-                                : null;
-                              return (
-                                <SelectItem key={m.name} value={m.name}>
-                                  <span className="flex items-center gap-2">
-                                    {displayName}
-                                    <span className="text-muted-foreground text-xs">
-                                      {m.checkpoints.length} checkpoint
-                                      {m.checkpoints.length !== 1 ? "s" : ""}
-                                    </span>
-                                    {timeStr && (
+                          <label className={FIELD_LABEL}>Training run</label>
+                          <Select
+                            value={selectedModelIdx ?? ""}
+                            onValueChange={setSelectedModelIdx}
+                          >
+                            <SelectTrigger className="w-full">
+                              <SelectValue
+                                placeholder={
+                                  models.length === 0
+                                    ? "No training runs found"
+                                    : "Select a training run…"
+                                }
+                              />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {models.map((m) => {
+                                const tsMatch = m.name.match(/_(\d{10,})$/);
+                                const displayName = tsMatch
+                                  ? m.name.slice(0, tsMatch.index)
+                                  : m.name;
+                                const timeStr = tsMatch
+                                  ? new Date(
+                                      Number(tsMatch[1]) * 1000,
+                                    ).toLocaleString(undefined, {
+                                      dateStyle: "medium",
+                                      timeStyle: "short",
+                                    })
+                                  : null;
+                                return (
+                                  <SelectItem key={m.name} value={m.name}>
+                                    <span className="flex items-center gap-2">
+                                      {displayName}
                                       <span className="text-muted-foreground text-xs">
-                                        · {timeStr}
+                                        {m.checkpoints.length} checkpoint
+                                        {m.checkpoints.length !== 1 ? "s" : ""}
+                                      </span>
+                                      {timeStr && (
+                                        <span className="text-muted-foreground text-xs">
+                                          · {timeStr}
+                                        </span>
+                                      )}
+                                    </span>
+                                  </SelectItem>
+                                );
+                              })}
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <div
+                          data-tour="export-checkpoint"
+                          className="flex min-w-0 flex-col gap-2"
+                        >
+                          <label className={FIELD_LABEL}>
+                            Checkpoint
+                            <Tooltip>
+                              <TooltipTrigger asChild={true}>
+                                <button
+                                  type="button"
+                                  className="text-foreground/70 hover:text-foreground"
+                                >
+                                  <HugeiconsIcon
+                                    icon={InformationCircleIcon}
+                                    className="size-3"
+                                  />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                Choose a saved checkpoint to export. Lower loss
+                                generally means better quality.{" "}
+                                <a
+                                  href="https://unsloth.ai/docs/basics/inference-and-deployment"
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-primary underline"
+                                >
+                                  Read more
+                                </a>
+                              </TooltipContent>
+                            </Tooltip>
+                          </label>
+                          <Select
+                            value={checkpoint ?? ""}
+                            onValueChange={setCheckpoint}
+                            disabled={!selectedModelIdx}
+                          >
+                            <SelectTrigger className="w-full">
+                              <SelectValue
+                                placeholder={
+                                  selectedModelIdx
+                                    ? checkpointsForModel.length === 0
+                                      ? "No checkpoints found"
+                                      : "Select a checkpoint…"
+                                    : "Select a training run first"
+                                }
+                              />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {checkpointsForModel.map((cp) => (
+                                <SelectItem
+                                  key={cp.path}
+                                  value={cp.display_name}
+                                >
+                                  <span className="flex items-center gap-2">
+                                    {cp.display_name}
+                                    {cp.loss != null && (
+                                      <span className="text-muted-foreground text-xs">
+                                        loss: {cp.loss.toFixed(4)}
                                       </span>
                                     )}
                                   </span>
                                 </SelectItem>
-                              );
-                            })}
-                          </SelectContent>
-                        </Select>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
                       </div>
-
-                      <div
-                        data-tour="export-checkpoint"
-                        className="flex flex-col gap-2"
-                      >
-                        <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                          Checkpoint
-                          <Tooltip>
-                            <TooltipTrigger asChild={true}>
-                              <button
-                                type="button"
-                                className="text-foreground/70 hover:text-foreground"
-                              >
-                                <HugeiconsIcon
-                                  icon={InformationCircleIcon}
-                                  className="size-3"
+                    ) : (
+                      <div className="flex flex-col gap-4 overflow-visible">
+                        {modelSource === "hf" ? (
+                          <>
+                            <div className="flex flex-col gap-2">
+                              <label className={FIELD_LABEL}>
+                                Hugging Face model
+                              </label>
+                              <div ref={hfComboboxAnchorRef}>
+                                <Combobox
+                                  items={hfResultIds}
+                                  filteredItems={hfResultIds}
+                                  filter={null}
+                                  value={
+                                    modelInput || selectedSourceModel || null
+                                  }
+                                  onValueChange={handleHfSourceModelSelect}
+                                  onInputValueChange={handleHfSourceInputChange}
+                                  itemToStringValue={(id) => id}
+                                  autoHighlight={true}
+                                >
+                                  <ComboboxInput
+                                    placeholder="Search models..."
+                                    className="w-full"
+                                    onBlur={() =>
+                                      applyHfSourceModel(
+                                        hfModelInputRef.current,
+                                      )
+                                    }
+                                    onKeyDown={(event) => {
+                                      if (event.key !== "Enter") return;
+                                      event.preventDefault();
+                                      applyHfSourceModel(
+                                        hfModelInputRef.current,
+                                      );
+                                    }}
+                                  >
+                                    <InputGroupAddon>
+                                      <HugeiconsIcon
+                                        icon={Search01Icon}
+                                        className="size-4"
+                                      />
+                                    </InputGroupAddon>
+                                  </ComboboxInput>
+                                  <ComboboxContent anchor={hfComboboxAnchorRef}>
+                                    {isLoadingHfModels ? (
+                                      <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
+                                        <Spinner className="size-4" />{" "}
+                                        Searching…
+                                      </div>
+                                    ) : (
+                                      <ComboboxEmpty>
+                                        No models found
+                                      </ComboboxEmpty>
+                                    )}
+                                    <ComboboxList>
+                                      {(id: string) => (
+                                        <ComboboxItem
+                                          key={id}
+                                          value={id}
+                                          className="gap-2"
+                                        >
+                                          <span className="block min-w-0 flex-1 truncate">
+                                            {id}
+                                          </span>
+                                        </ComboboxItem>
+                                      )}
+                                    </ComboboxList>
+                                  </ComboboxContent>
+                                </Combobox>
+                              </div>
+                              {(tokenValidationError ?? hfSearchError) && (
+                                <p className="text-xs text-destructive">
+                                  {tokenValidationError ?? hfSearchError}
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex flex-col gap-2">
+                              <label className={FIELD_LABEL}>
+                                Hugging Face token (optional)
+                              </label>
+                              <InputGroup>
+                                <InputGroupAddon>
+                                  <HugeiconsIcon
+                                    icon={Key01Icon}
+                                    className="size-4"
+                                  />
+                                </InputGroupAddon>
+                                <InputGroupInput
+                                  type="password"
+                                  autoComplete="new-password"
+                                  name="hf-token-export-source"
+                                  placeholder="hf_..."
+                                  value={hfToken}
+                                  onChange={(e) => setHfToken(e.target.value)}
                                 />
-                              </button>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              Choose a saved checkpoint to export. Lower loss
-                              generally means better quality.{" "}
-                              <a
-                                href="https://unsloth.ai/docs/basics/inference-and-deployment"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-primary underline"
-                              >
-                                Read more
-                              </a>
-                            </TooltipContent>
-                          </Tooltip>
-                        </label>
-                        <Select
-                          value={checkpoint ?? ""}
-                          onValueChange={setCheckpoint}
-                          disabled={!selectedModelIdx}
-                        >
-                          <SelectTrigger className="w-full">
-                            <SelectValue
-                              placeholder={
-                                selectedModelIdx
-                                  ? checkpointsForModel.length === 0
-                                    ? "No checkpoints found"
-                                    : "Select a checkpoint…"
-                                  : "Select a training run first"
-                              }
-                            />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {checkpointsForModel.map((cp) => (
-                              <SelectItem key={cp.path} value={cp.display_name}>
-                                <span className="flex items-center gap-2">
-                                  {cp.display_name}
-                                  {cp.loss != null && (
-                                    <span className="text-muted-foreground text-xs">
-                                      loss: {cp.loss.toFixed(4)}
-                                    </span>
-                                  )}
-                                </span>
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col gap-2 overflow-visible">
-                      {modelSource === "hf" ? (
-                        <>
+                              </InputGroup>
+                              {isCheckingToken && (
+                                <p className="text-xs text-muted-foreground">
+                                  Checking token…
+                                </p>
+                              )}
+                            </div>
+                          </>
+                        ) : (
                           <div className="flex flex-col gap-2">
-                            <label className="text-xs font-medium text-muted-foreground">
-                              Hugging Face Model
+                            <label className={FIELD_LABEL}>
+                              Local model path
                             </label>
-                            <div ref={hfComboboxAnchorRef}>
+                            <div ref={localComboboxAnchorRef}>
                               <Combobox
-                                items={hfResultIds}
-                                filteredItems={hfResultIds}
+                                items={localResultIds}
+                                filteredItems={localFilteredIds}
                                 filter={null}
-                                value={
-                                  modelInput || selectedSourceModel || null
+                                value={localModelInput || null}
+                                onValueChange={(id) => {
+                                  const next = id ?? "";
+                                  localModelInputRef.current = next;
+                                  setLocalModelInput(next);
+                                  setSelectedSourceModel(next || null);
+                                }}
+                                onInputValueChange={
+                                  handleLocalSourceInputChange
                                 }
-                                onValueChange={handleHfSourceModelSelect}
-                                onInputValueChange={handleHfSourceInputChange}
                                 itemToStringValue={(id) => id}
                                 autoHighlight={true}
                               >
                                 <ComboboxInput
-                                  placeholder="Search models..."
+                                  placeholder={
+                                    isLoadingLocalModels
+                                      ? "Scanning local and cached models..."
+                                      : "./models/my-model"
+                                  }
                                   className="w-full"
                                   onBlur={() =>
-                                    applyHfSourceModel(hfModelInputRef.current)
+                                    applyLocalSourceModel(
+                                      localModelInputRef.current,
+                                    )
                                   }
                                   onKeyDown={(event) => {
                                     if (event.key !== "Enter") return;
                                     event.preventDefault();
-                                    applyHfSourceModel(hfModelInputRef.current);
+                                    applyLocalSourceModel(
+                                      localModelInputRef.current,
+                                    );
                                   }}
                                 >
                                   <InputGroupAddon>
                                     <HugeiconsIcon
-                                      icon={Search01Icon}
+                                      icon={FolderSearchIcon}
                                       className="size-4"
                                     />
                                   </InputGroupAddon>
                                 </ComboboxInput>
-                                <ComboboxContent anchor={hfComboboxAnchorRef}>
-                                  {isLoadingHfModels ? (
-                                    <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                                      <Spinner className="size-4" /> Searching…
+                                <ComboboxContent
+                                  anchor={localComboboxAnchorRef}
+                                >
+                                  {isLoadingLocalModels ? (
+                                    <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
+                                      <Spinner className="size-4" /> Scanning...
+                                    </div>
+                                  ) : localModelsError ? (
+                                    <div className="px-3 py-2 text-xs text-red-500">
+                                      {localModelsError}
                                     </div>
                                   ) : (
                                     <ComboboxEmpty>
-                                      No models found
+                                      No local models found
                                     </ComboboxEmpty>
                                   )}
                                   <ComboboxList>
-                                    {(id: string) => (
-                                      <ComboboxItem
-                                        key={id}
-                                        value={id}
-                                        className="gap-2"
-                                      >
-                                        <span className="block min-w-0 flex-1 truncate">
-                                          {id}
-                                        </span>
-                                      </ComboboxItem>
-                                    )}
+                                    {(id: string) => {
+                                      const model = localMetaById.get(id);
+                                      const source =
+                                        model?.source === "hf_cache"
+                                          ? "HF cache"
+                                          : model?.source === "custom"
+                                            ? "Custom Folders"
+                                            : "Local dir";
+                                      return (
+                                        <ComboboxItem
+                                          key={id}
+                                          value={id}
+                                          className="gap-2"
+                                        >
+                                          <span className="block min-w-0 flex-1 truncate">
+                                            {model?.display_name ?? id}
+                                          </span>
+                                          <span className="ml-auto shrink-0 text-ui-10 text-muted-foreground">
+                                            {source}
+                                          </span>
+                                        </ComboboxItem>
+                                      );
+                                    }}
                                   </ComboboxList>
                                 </ComboboxContent>
                               </Combobox>
                             </div>
-                            {(tokenValidationError ?? hfSearchError) && (
-                              <p className="text-xs text-destructive">
-                                {tokenValidationError ?? hfSearchError}
+                            {isLoadingLocalModels ? (
+                              <p className="text-ui-10 text-muted-foreground">
+                                Scanning local models...
+                              </p>
+                            ) : localModelsError ? (
+                              <p className="text-ui-10 text-red-500">
+                                {localModelsError}
+                              </p>
+                            ) : (
+                              <p className="text-ui-10 text-muted-foreground">
+                                {exportableLocalModels.length > 0
+                                  ? `${exportableLocalModels.length} local/cached models found`
+                                  : "No local models found. Enter path manually."}
                               </p>
                             )}
                           </div>
-                          {/* No persistent "trust remote code" toggle: custom code is
-                              consented per model via the load-time review dialog. */}
-                          <div className="flex flex-col gap-1.5">
-                            <label className="text-xs font-medium text-muted-foreground">
-                              Hugging Face Token (Optional)
-                            </label>
-                            <InputGroup>
-                              <InputGroupAddon>
-                                <HugeiconsIcon
-                                  icon={Key01Icon}
-                                  className="size-4"
-                                />
-                              </InputGroupAddon>
-                              <InputGroupInput
-                                type="password"
-                                autoComplete="new-password"
-                                name="hf-token-export-source"
-                                placeholder="hf_..."
-                                value={hfToken}
-                                onChange={(e) => setHfToken(e.target.value)}
-                              />
-                            </InputGroup>
-                            {isCheckingToken && (
-                              <p className="text-xs text-muted-foreground">
-                                Checking token…
-                              </p>
-                            )}
-                          </div>
-                        </>
-                      ) : (
-                        <div className="flex flex-col gap-2">
-                          <label className="text-xs font-medium text-muted-foreground">
-                            Local Model Path
-                          </label>
-                          <div ref={localComboboxAnchorRef}>
-                            <Combobox
-                              items={localResultIds}
-                              filteredItems={localFilteredIds}
-                              filter={null}
-                              value={localModelInput || null}
-                              onValueChange={(id) => {
-                                const next = id ?? "";
-                                localModelInputRef.current = next;
-                                setLocalModelInput(next);
-                                setSelectedSourceModel(next || null);
-                              }}
-                              onInputValueChange={handleLocalSourceInputChange}
-                              itemToStringValue={(id) => id}
-                              autoHighlight={true}
-                            >
-                              <ComboboxInput
-                                placeholder={
-                                  isLoadingLocalModels
-                                    ? "Scanning local and cached models..."
-                                    : "./models/my-model"
-                                }
-                                className="w-full"
-                                onBlur={() =>
-                                  applyLocalSourceModel(
-                                    localModelInputRef.current,
-                                  )
-                                }
-                                onKeyDown={(event) => {
-                                  if (event.key !== "Enter") return;
-                                  event.preventDefault();
-                                  applyLocalSourceModel(
-                                    localModelInputRef.current,
-                                  );
-                                }}
+                        )}
+
+                        <div className="rounded-lg bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3">
+                          <p className="text-ui-11 text-muted-foreground">
+                            Direct model exports currently support GGUF only.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </SectionBox>
+
+                <SectionBox
+                  title="Export method"
+                  description="How the model is packaged for deployment"
+                  icon={PackageIcon}
+                  chipTint="var(--chart-1)"
+                >
+                  <div className="flex flex-col gap-6">
+                    {exportUnsupported && (
+                      <Alert variant="destructive">
+                        <HugeiconsIcon
+                          icon={AlertCircleIcon}
+                          className="size-4"
+                        />
+                        <AlertTitle>Export unavailable</AlertTitle>
+                        <AlertDescription>
+                          {exportUnsupportedMessage}
+                          {offerFullInstall && (
+                            <div className="mt-2">
+                              <Button
+                                size="xs"
+                                onClick={() => setFullInstallOpen(true)}
                               >
-                                <InputGroupAddon>
-                                  <HugeiconsIcon
-                                    icon={FolderSearchIcon}
-                                    className="size-4"
-                                  />
-                                </InputGroupAddon>
-                              </ComboboxInput>
-                              <ComboboxContent anchor={localComboboxAnchorRef}>
-                                {isLoadingLocalModels ? (
-                                  <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
-                                    <Spinner className="size-4" /> Scanning...
-                                  </div>
-                                ) : localModelsError ? (
-                                  <div className="px-3 py-2 text-xs text-red-500">
-                                    {localModelsError}
-                                  </div>
-                                ) : (
-                                  <ComboboxEmpty>
-                                    No local models found
-                                  </ComboboxEmpty>
-                                )}
-                                <ComboboxList>
-                                  {(id: string) => {
-                                    const model = localMetaById.get(id);
-                                    const source =
-                                      model?.source === "hf_cache"
-                                        ? "HF cache"
-                                        : model?.source === "custom"
-                                          ? "Custom Folders"
-                                          : "Local dir";
-                                    return (
-                                      <ComboboxItem
-                                        key={id}
-                                        value={id}
-                                        className="gap-2"
-                                      >
-                                        <span className="block min-w-0 flex-1 truncate">
-                                          {model?.display_name ?? id}
-                                        </span>
-                                        <span className="ml-auto shrink-0 text-ui-10 text-muted-foreground">
-                                          {source}
-                                        </span>
-                                      </ComboboxItem>
-                                    );
-                                  }}
-                                </ComboboxList>
-                              </ComboboxContent>
-                            </Combobox>
+                                Install Training
+                              </Button>
+                            </div>
+                          )}
+                        </AlertDescription>
+                      </Alert>
+                    )}
+                    {fullInstall && (
+                      <FullInstallDialog
+                        open={fullInstallOpen}
+                        onOpenChange={setFullInstallOpen}
+                        onConfirm={() => void fullInstall.repairInstall()}
+                      />
+                    )}
+
+                    <MethodPicker
+                      value={exportMethod}
+                      onChange={handleMethodChange}
+                      disabledMethods={
+                        exportUnsupported
+                          ? ["merged", "lora", "gguf"]
+                          : isDecision
+                            ? ["merged", "lora"]
+                            : !effectiveIsAdapter && effectiveIsQuantized
+                              ? ["merged", "lora", "gguf"]
+                              : [
+                                  ...(effectiveIsAdapter
+                                    ? []
+                                    : (["lora"] as const)),
+                                  ...diffusionDisabledMethods,
+                                ]
+                      }
+                      disabledReason={
+                        exportUnsupported
+                          ? exportUnsupportedMessage
+                          : isDecision
+                            ? t("exportDecision.ggufOnly")
+                            : !effectiveIsAdapter && effectiveIsQuantized
+                              ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
+                              : [
+                                  effectiveIsAdapter
+                                    ? null
+                                    : "LoRA-only export needs a LoRA adapter checkpoint",
+                                  diffusionDisabledMethods.length > 0
+                                    ? diffusionLmInfo?.reason
+                                    : null,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" ") || undefined
+                      }
+                    />
+
+                    {exportMethod === "merged" && !exportUnsupported && (
+                      <div className="space-y-3">
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div className="text-sm font-medium">Precision</div>
+                            {availableFormats.length > 1 && (
+                              <span className="text-ui-11 text-muted-foreground/70">
+                                Select one or more
+                              </span>
+                            )}
                           </div>
-                          {isLoadingLocalModels ? (
-                            <p className="text-ui-10 text-muted-foreground">
-                              Scanning local models...
-                            </p>
-                          ) : localModelsError ? (
-                            <p className="text-ui-10 text-red-500">
-                              {localModelsError}
-                            </p>
-                          ) : (
-                            <p className="text-ui-10 text-muted-foreground">
-                              {exportableLocalModels.length > 0
-                                ? `${exportableLocalModels.length} local/cached models found`
-                                : "No local models found. Enter path manually."}
-                            </p>
+                          <div className="flex flex-wrap gap-2">
+                            {availableFormats
+                              .filter((f) => f.common)
+                              .map((f) => {
+                                const active = selectedFormats.includes(
+                                  f.value,
+                                );
+                                return (
+                                  <Button
+                                    key={f.value}
+                                    type="button"
+                                    variant={active ? "dark" : "outline"}
+                                    size="sm"
+                                    onClick={() => toggleFormat(f.value)}
+                                    title={f.hint}
+                                  >
+                                    {f.label}
+                                    {f.needsCalibration ? " *" : ""}
+                                  </Button>
+                                );
+                              })}
+
+                            {availableFormats.some((f) => !f.common) && (
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild={true}>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                  >
+                                    More formats
+                                    {selectedFormats.some((v) =>
+                                      availableFormats.find(
+                                        (f) => f.value === v && !f.common,
+                                      ),
+                                    )
+                                      ? " ✓"
+                                      : "…"}
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent
+                                  align="start"
+                                  className="w-64"
+                                >
+                                  <DropdownMenuLabel>
+                                    Additional formats
+                                  </DropdownMenuLabel>
+                                  <DropdownMenuSeparator />
+                                  {availableFormats
+                                    .filter((f) => !f.common)
+                                    .map((f) => (
+                                      <DropdownMenuCheckboxItem
+                                        key={f.value}
+                                        checked={selectedFormats.includes(
+                                          f.value,
+                                        )}
+                                        onCheckedChange={() =>
+                                          toggleFormat(f.value)
+                                        }
+                                        onSelect={(e) => e.preventDefault()}
+                                      >
+                                        <span className="flex flex-col">
+                                          <span>
+                                            {f.label}
+                                            {f.needsCalibration ? " *" : ""}
+                                          </span>
+                                          <span className="text-ui-10 text-muted-foreground">
+                                            {f.hint}
+                                          </span>
+                                        </span>
+                                      </DropdownMenuCheckboxItem>
+                                    ))}
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            )}
+                          </div>
+
+                          {availableFormats.length > 1 &&
+                            selectedFormats.length > 0 && (
+                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                                <span className="text-ui-11 text-muted-foreground">
+                                  {selectedFormats.length} selected:{" "}
+                                  {selectedFormats
+                                    .map(
+                                      (v) =>
+                                        MERGED_FORMATS.find(
+                                          (f) => f.value === v,
+                                        )?.label ?? v,
+                                    )
+                                    .join(", ")}
+                                </span>
+                                {selectedFormats.length > 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setSelectedFormats(["16-bit"])
+                                    }
+                                    className="text-ui-11 text-muted-foreground/70 hover:text-foreground transition-colors"
+                                  >
+                                    Reset to 16-bit
+                                  </button>
+                                )}
+                              </div>
+                            )}
+
+                          {hubMultiFormat && (
+                            <div className="text-ui-11 text-amber-600 dark:text-amber-500">
+                              Hub export supports one format at a time (each
+                              writes to the repository root). Select a single
+                              format, or export locally to produce several at
+                              once.
+                            </div>
+                          )}
+
+                          {selectedFormats.some(
+                            (v) =>
+                              MERGED_FORMATS.find((f) => f.value === v)
+                                ?.needsCalibration,
+                          ) && (
+                            <div className="text-ui-11 text-muted-foreground">
+                              * calibrates on data (uses a small calibration
+                              set).
+                            </div>
+                          )}
+
+                          {!hasNvidia && !torchaoUnavailable && (
+                            <div className="text-ui-11 text-muted-foreground">
+                              No NVIDIA GPU detected: compressed-tensors formats
+                              are hidden. 16-bit and portable FP8/INT8 (torchao)
+                              still work here and load in vLLM.
+                            </div>
+                          )}
+
+                          {torchaoUnavailable && (
+                            <div className="text-ui-11 text-muted-foreground">
+                              Portable FP8/INT8 (torchao) export needs torchao
+                              0.15 or newer, which is not installed here. Update
+                              Unsloth, or use 16-bit or GGUF.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {exportMethod === "lora" &&
+                      effectiveIsAdapter &&
+                      !exportUnsupported && (
+                        <div className="space-y-3">
+                          <div className="space-y-2">
+                            <div className="text-sm font-medium">
+                              Adapter format
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                type="button"
+                                variant={loraAsGguf ? "outline" : "dark"}
+                                size="sm"
+                                onClick={() => setLoraAsGguf(false)}
+                                title="Adapter weights as safetensors."
+                              >
+                                Adapter (safetensors)
+                              </Button>
+                              <Button
+                                type="button"
+                                variant={loraAsGguf ? "dark" : "outline"}
+                                size="sm"
+                                onClick={() => setLoraAsGguf(true)}
+                                disabled={diffusionDisabledMethods.includes(
+                                  "gguf",
+                                )}
+                                title={
+                                  diffusionDisabledMethods.includes("gguf")
+                                    ? (diffusionLmInfo?.reason ?? undefined)
+                                    : "llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
+                                }
+                              >
+                                GGUF adapter
+                              </Button>
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {loraAsGguf
+                                ? isMacHost
+                                  ? "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`); the adapter files are written in PEFT format. Not available for adapters with per-module alpha values, rsLoRA with per-module ranks, DoRA, replaced embeddings or modules_to_save, or expert-parameter targets."
+                                  : "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`). The base model stays separate."
+                                : isMacHost
+                                  ? "Adapter weights only; pick the on-disk format below."
+                                  : "Standard PEFT adapter files. Pair with the base model at inference."}
+                            </div>
+                          </div>
+
+                          {!loraAsGguf && isMacHost && (
+                            <div
+                              className="space-y-2"
+                              data-testid="adapter-format-picker"
+                            >
+                              <div className="text-sm font-medium">
+                                Safetensors format
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <Button
+                                  type="button"
+                                  variant={
+                                    adapterFormat === "mlx" ? "dark" : "outline"
+                                  }
+                                  size="sm"
+                                  onClick={() => setAdapterFormat("mlx")}
+                                  title="Native mlx-lm adapter (adapters.safetensors)."
+                                >
+                                  MLX
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant={
+                                    adapterFormat === "peft"
+                                      ? "dark"
+                                      : "outline"
+                                  }
+                                  size="sm"
+                                  onClick={() => setAdapterFormat("peft")}
+                                  title="Standard Hugging Face PEFT adapter (adapter_model.safetensors)."
+                                >
+                                  PEFT
+                                </Button>
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                {adapterCompatibilityTip(
+                                  adapterFormat,
+                                  selectedModelData?.adapter_features,
+                                )}{" "}
+                                Training checkpoints always remain MLX; this
+                                choice only affects the exported copy.
+                              </div>
+                            </div>
+                          )}
+
+                          {loraAsGguf && (
+                            <div className="space-y-1.5">
+                              <div className="text-sm font-medium">
+                                Output type
+                              </div>
+                              <Select
+                                value={loraGgufOuttype}
+                                onValueChange={(v) => setLoraGgufOuttype(v)}
+                              >
+                                <SelectTrigger className="w-full sm:w-56">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {LORA_GGUF_OUTTYPES.map((t) => (
+                                    <SelectItem key={t} value={t}>
+                                      {t.toUpperCase()}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
                           )}
                         </div>
                       )}
 
-                      <div className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3">
-                        <p className="text-ui-11 text-muted-foreground">
-                          Direct model exports currently support GGUF only.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {sourceMode === "checkpoint" && (
-                    <div className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3 flex flex-col gap-2">
-                      <span className="text-ui-11 font-medium text-muted-foreground uppercase tracking-wider">
-                        Training Info
-                      </span>
-                      <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-xs sm:grid-cols-2">
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">
-                            Base Model
-                          </span>
-                          <span className="font-medium">{baseModelName}</span>
+                    {exportMethod === "gguf" &&
+                      !exportUnsupported &&
+                      decisionInfo && (
+                        <div className="space-y-3">
+                          {decisionIneligible ? (
+                            <Alert variant="destructive">
+                              <HugeiconsIcon
+                                icon={AlertCircleIcon}
+                                className="size-4"
+                              />
+                              <AlertTitle>
+                                {t("exportDecision.notEligibleTitle")}
+                              </AlertTitle>
+                              <AlertDescription>
+                                {decisionInfo.reason}
+                              </AlertDescription>
+                            </Alert>
+                          ) : (
+                            <>
+                              <div className="space-y-1">
+                                <div className="text-sm font-medium">
+                                  {t("exportDecision.title")}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {t("exportDecision.description", {
+                                    layout:
+                                      decisionInfo.layout === "clef"
+                                        ? "Clef"
+                                        : "Laya",
+                                  })}
+                                </div>
+                                {decisionInfo.adapter_only && (
+                                  <div className="text-xs text-muted-foreground">
+                                    {t("exportDecision.adapterNote")}
+                                  </div>
+                                )}
+                              </div>
+                              <QuantPicker
+                                value={quantLevels}
+                                onChange={setQuantLevels}
+                                options={decisionQuantOptions}
+                              />
+                              {decisionExistingQuants.length > 0 && (
+                                <div className="text-xs text-muted-foreground">
+                                  {t("exportDecision.existing", {
+                                    quantizations:
+                                      decisionExistingQuants.join(", "),
+                                  })}
+                                </div>
+                              )}
+                            </>
+                          )}
                         </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Method</span>
-                          <span className="font-medium">
-                            {trainingMethodLabel}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">
-                            Checkpoints
-                          </span>
-                          <span className="font-medium">
-                            {checkpointsForModel.length}
-                          </span>
-                        </div>
-                        {isAdapter && (
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">
-                              LoRA Rank
-                            </span>
-                            <span className="font-medium">{loraRank}</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
+                      )}
 
-                <div className="flex flex-col gap-2.5">
-                  <span className="text-xs font-medium text-muted-foreground">
-                    Quick Guide
-                  </span>
-                  <ol className="flex flex-col gap-3">
-                    {exportGuideSteps.map((step, i) => (
-                      <li
-                        key={step}
-                        className="flex items-start gap-2 text-xs text-muted-foreground"
-                      >
-                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] text-ui-10 font-semibold">
-                          {i + 1}
-                        </span>
-                        {step}
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              </div>
-
-              {exportUnsupported && (
-                <Alert variant="destructive">
-                  <HugeiconsIcon icon={AlertCircleIcon} className="size-4" />
-                  <AlertTitle>Export unavailable</AlertTitle>
-                  <AlertDescription>
-                    {exportUnsupportedMessage}
-                  </AlertDescription>
-                </Alert>
-              )}
-
-              <MethodPicker
-                value={exportMethod}
-                onChange={handleMethodChange}
-                disabledMethods={
-                  exportUnsupported
-                    ? ["merged", "lora", "gguf"]
-                    : isDecision
-                      ? ["merged", "lora"]
-                      : !effectiveIsAdapter && effectiveIsQuantized
-                        ? ["merged", "lora", "gguf"]
-                        : [
-                            ...(effectiveIsAdapter ? [] : (["lora"] as const)),
-                            ...diffusionDisabledMethods,
-                          ]
-                }
-                disabledReason={
-                  exportUnsupported
-                    ? exportUnsupportedMessage
-                    : isDecision
-                      ? t("exportDecision.ggufOnly")
-                      : !effectiveIsAdapter && effectiveIsQuantized
-                        ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
-                        : [
-                            effectiveIsAdapter
-                              ? null
-                              : "LoRA-only export needs a LoRA adapter checkpoint",
-                            diffusionDisabledMethods.length > 0
-                              ? diffusionLmInfo?.reason
-                              : null,
-                          ]
-                            .filter(Boolean)
-                            .join(" ") || undefined
-                }
-              />
-
-              {exportMethod === "merged" && !exportUnsupported && (
-                <div className="space-y-3">
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="text-sm font-medium">Precision</div>
-                      <span className="text-ui-11 text-muted-foreground/70">
-                        — select one or more
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {availableFormats
-                        .filter((f) => f.common)
-                        .map((f) => {
-                          const active = selectedFormats.includes(f.value);
-                          return (
-                            <Button
-                              key={f.value}
-                              type="button"
-                              variant={active ? "default" : "outline"}
-                              size="sm"
-                              onClick={() => toggleFormat(f.value)}
-                              title={f.hint}
-                            >
-                              {f.label}
-                              {f.needsCalibration ? " *" : ""}
-                            </Button>
-                          );
-                        })}
-
-                      {availableFormats.some((f) => !f.common) && (
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild={true}>
-                            <Button type="button" variant="outline" size="sm">
-                              More formats
-                              {selectedFormats.some((v) =>
-                                availableFormats.find(
-                                  (f) => f.value === v && !f.common,
-                                ),
-                              )
-                                ? " ✓"
-                                : "…"}
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="start" className="w-64">
-                            <DropdownMenuLabel>
-                              Additional formats
-                            </DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            {availableFormats
-                              .filter((f) => !f.common)
-                              .map((f) => (
-                                <DropdownMenuCheckboxItem
-                                  key={f.value}
-                                  checked={selectedFormats.includes(f.value)}
-                                  onCheckedChange={() => toggleFormat(f.value)}
-                                  onSelect={(e) => e.preventDefault()}
+                    {exportMethod === "gguf" &&
+                      !exportUnsupported &&
+                      !decisionInfo && (
+                        <div className="space-y-3">
+                          {effectiveIsAdapter && !isMacHost && (
+                            <div className="space-y-2">
+                              <div className="text-sm font-medium">
+                                Export target
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <Button
+                                  type="button"
+                                  variant={
+                                    ggufTarget === "model" ? "dark" : "outline"
+                                  }
+                                  size="sm"
+                                  onClick={() => setGgufTarget("model")}
+                                  title="Merge the adapter into the base model, then quantize the full model to GGUF."
                                 >
-                                  <span className="flex flex-col">
-                                    <span>
-                                      {f.label}
-                                      {f.needsCalibration ? " *" : ""}
-                                    </span>
-                                    <span className="text-ui-10 text-muted-foreground">
-                                      {f.hint}
-                                    </span>
-                                  </span>
-                                </DropdownMenuCheckboxItem>
-                              ))}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                                  Full model
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant={
+                                    ggufTarget === "lora" ? "dark" : "outline"
+                                  }
+                                  size="sm"
+                                  onClick={() => setGgufTarget("lora")}
+                                  title="Export just the adapter as a GGUF LoRA (llama.cpp `--lora`); the base model stays separate."
+                                >
+                                  LoRA adapter
+                                </Button>
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                {ggufTarget === "lora"
+                                  ? "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`). The base model stays separate."
+                                  : "Merges the adapter into the base model, then quantizes the full model to GGUF."}
+                              </div>
+                            </div>
+                          )}
+
+                          {ggufAsLora ? (
+                            <div className="space-y-1.5">
+                              <div className="text-sm font-medium">
+                                Output type
+                              </div>
+                              <Select
+                                value={loraGgufOuttype}
+                                onValueChange={(v) => setLoraGgufOuttype(v)}
+                              >
+                                <SelectTrigger className="w-full sm:w-56">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {LORA_GGUF_OUTTYPES.map((t) => (
+                                    <SelectItem key={t} value={t}>
+                                      {t.toUpperCase()}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          ) : (
+                            <>
+                              <QuantPicker
+                                value={quantLevels}
+                                onChange={setQuantLevels}
+                                sizes={quantSizeLabels}
+                              />
+                              <div className="flex items-start justify-between gap-3 rounded-lg border p-3">
+                                <div className="space-y-0.5">
+                                  <div className="text-sm font-medium">
+                                    Importance matrix (imatrix)
+                                  </div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {requiresImatrix
+                                      ? "Required for the selected IQ low-bit quant."
+                                      : "Improves quant quality and unlocks the IQ low-bit quants."}
+                                  </div>
+                                </div>
+                                <Switch
+                                  className="mt-[var(--ui-title-cap-inset)]"
+                                  aria-label="Importance matrix (imatrix)"
+                                  checked={effectiveImatrix}
+                                  onCheckedChange={setUseImatrix}
+                                  disabled={requiresImatrix}
+                                />
+                              </div>
+                              {effectiveImatrix && (
+                                <div className="space-y-1.5">
+                                  <label
+                                    htmlFor="export-imatrix-path"
+                                    className="text-sm font-medium"
+                                  >
+                                    Local imatrix file (optional)
+                                  </label>
+                                  <InputGroup>
+                                    <InputGroupInput
+                                      id="export-imatrix-path"
+                                      aria-describedby="export-imatrix-path-help"
+                                      placeholder="/path/to/imatrix.gguf"
+                                      value={imatrixPath}
+                                      onChange={(e) =>
+                                        setCustomImatrix({
+                                          sourceKey: imatrixSourceKey,
+                                          path: e.target.value,
+                                        })
+                                      }
+                                    />
+                                  </InputGroup>
+                                  <p
+                                    id="export-imatrix-path-help"
+                                    className="text-xs text-muted-foreground"
+                                  >
+                                    Absolute path to a .dat or .gguf imatrix
+                                    file on the machine running Unsloth. Leave
+                                    blank to auto-download the upstream Unsloth
+                                    imatrix for the base model, if one exists.
+                                  </p>
+                                </div>
+                              )}
+                              {hasNpu && (
+                                <div className="flex items-start justify-between gap-3 rounded-lg border p-3">
+                                  <div className="space-y-0.5">
+                                    <div className="text-sm font-medium">
+                                      Also convert to Q4NX (AMD NPU)
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                      {destination !== "local"
+                                        ? "Local destination only."
+                                        : q4nxSourceSelected
+                                          ? "Adds a Q4NX copy next to the GGUFs. Only supported on AMD NPUs."
+                                          : "Needs Q4_0, Q4_1 or Q4_K_M."}
+                                    </div>
+                                  </div>
+                                  <Switch
+                                    className="mt-[var(--ui-title-cap-inset)]"
+                                    aria-label="Also convert to Q4NX (AMD NPU)"
+                                    checked={effectiveNpuQ4nx}
+                                    onCheckedChange={setNpuQ4nx}
+                                    disabled={
+                                      !q4nxSourceSelected ||
+                                      destination !== "local"
+                                    }
+                                  />
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
                       )}
-                    </div>
-
-                    {selectedFormats.length > 0 && (
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                        <span className="text-ui-11 text-muted-foreground">
-                          {selectedFormats.length} selected:{" "}
-                          {selectedFormats
-                            .map(
-                              (v) =>
-                                MERGED_FORMATS.find((f) => f.value === v)
-                                  ?.label ?? v,
-                            )
-                            .join(", ")}
-                        </span>
-                        {selectedFormats.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => setSelectedFormats(["16-bit"])}
-                            className="text-ui-11 text-muted-foreground/70 hover:text-foreground transition-colors"
-                          >
-                            Reset to 16-bit
-                          </button>
-                        )}
-                      </div>
+                    {showReap && moeInfo && (
+                      <ReapCard
+                        moe={moeInfo}
+                        settings={reapSettings}
+                        onChange={setReapSettings}
+                        disabled={isExporting}
+                      />
                     )}
-
-                    {hubMultiFormat && (
-                      <div className="text-ui-11 text-amber-600 dark:text-amber-500">
-                        Hub export supports one format at a time (each writes to
-                        the repository root). Select a single format, or export
-                        locally to produce several at once.
-                      </div>
-                    )}
-
-                    {selectedFormats.some(
-                      (v) =>
-                        MERGED_FORMATS.find((f) => f.value === v)
-                          ?.needsCalibration,
-                    ) && (
-                      <div className="text-ui-11 text-muted-foreground">
-                        * calibrates on data (uses a small calibration set).
-                      </div>
-                    )}
-
-                    {!hasNvidia && !torchaoUnavailable && (
-                      <div className="text-ui-11 text-muted-foreground">
-                        No NVIDIA GPU detected: compressed-tensors formats are
-                        hidden. 16-bit and portable FP8/INT8 (torchao) still
-                        work here and load in vLLM.
-                      </div>
-                    )}
-
-                    {torchaoUnavailable && (
-                      <div className="text-ui-11 text-muted-foreground">
-                        Portable FP8/INT8 (torchao) export needs torchao 0.15 or
-                        newer, which is not installed here. Update Unsloth, or use
-                        16-bit or GGUF.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {exportMethod === "lora" &&
-                effectiveIsAdapter &&
-                !exportUnsupported && (
-                  <div className="space-y-3">
-                    <div className="space-y-2">
-                      <div className="text-sm font-medium">Adapter format</div>
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          type="button"
-                          variant={loraAsGguf ? "outline" : "default"}
-                          size="sm"
-                          onClick={() => setLoraAsGguf(false)}
-                          title="Adapter weights as safetensors."
-                        >
-                          Adapter (safetensors)
-                        </Button>
-                        <Button
-                          type="button"
-                          variant={loraAsGguf ? "default" : "outline"}
-                          size="sm"
-                          onClick={() => setLoraAsGguf(true)}
-                          disabled={diffusionDisabledMethods.includes("gguf")}
-                          title={
-                            diffusionDisabledMethods.includes("gguf")
-                              ? (diffusionLmInfo?.reason ?? undefined)
-                              : "llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
-                          }
-                        >
-                          GGUF adapter
-                        </Button>
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {loraAsGguf
-                          ? isMacHost
-                            ? "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`); the adapter files are written in PEFT format. Not available for adapters with per-module alpha values, rsLoRA with per-module ranks, DoRA, replaced embeddings or modules_to_save, or expert-parameter targets."
-                            : "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`). The base model stays separate."
-                          : isMacHost
-                            ? "Adapter weights only; pick the on-disk format below."
-                            : "Standard PEFT adapter files. Pair with the base model at inference."}
-                      </div>
-                    </div>
-
-                    {!loraAsGguf && isMacHost && (
+                    {reapFailed && (
                       <div
-                        className="space-y-2"
-                        data-testid="adapter-format-picker"
+                        role="alert"
+                        className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs"
                       >
-                        <div className="text-sm font-medium">
-                          Safetensors format
-                        </div>
-                        <div className="flex flex-wrap gap-2">
+                        <p>
+                          Expert pruning (REAP) is on, but checking whether this
+                          model can be pruned failed. Retry, or turn pruning off
+                          to export the full model.
+                        </p>
+                        <div className="mt-2 flex gap-2">
                           <Button
                             type="button"
-                            variant={
-                              adapterFormat === "mlx" ? "default" : "outline"
-                            }
+                            variant="outline"
                             size="sm"
-                            onClick={() => setAdapterFormat("mlx")}
-                            title="Native mlx-lm adapter (adapters.safetensors)."
+                            onClick={() => setMoeRetry((n) => n + 1)}
                           >
-                            MLX
+                            Retry
                           </Button>
                           <Button
                             type="button"
-                            variant={
-                              adapterFormat === "peft" ? "default" : "outline"
-                            }
+                            variant="ghost"
                             size="sm"
-                            onClick={() => setAdapterFormat("peft")}
-                            title="Standard Hugging Face PEFT adapter (adapter_model.safetensors)."
+                            onClick={() =>
+                              setReapSettings((s) => ({ ...s, enabled: false }))
+                            }
                           >
-                            PEFT
+                            Turn off expert pruning
                           </Button>
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {adapterCompatibilityTip(
-                            adapterFormat,
-                            selectedModelData?.adapter_features,
-                          )}{" "}
-                          Training checkpoints always remain MLX; this choice
-                          only affects the exported copy.
                         </div>
                       </div>
                     )}
-
-                    {loraAsGguf && (
-                      <div className="space-y-1.5">
-                        <div className="text-sm font-medium">Output type</div>
-                        <Select
-                          value={loraGgufOuttype}
-                          onValueChange={(v) => setLoraGgufOuttype(v)}
-                        >
-                          <SelectTrigger className="w-full sm:w-56">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {LORA_GGUF_OUTTYPES.map((t) => (
-                              <SelectItem key={t} value={t}>
-                                {t.toUpperCase()}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                    {reapBlocked && (
+                      <div
+                        role="alert"
+                        className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs"
+                      >
+                        <p>
+                          Expert pruning (REAP) is on, but this model cannot be
+                          pruned: it is not a routed MoE, or its weights or
+                          setup are not supported. Turn pruning off to export
+                          it.
+                        </p>
+                        <div className="mt-2 flex gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() =>
+                              setReapSettings((s) => ({ ...s, enabled: false }))
+                            }
+                          >
+                            Turn off expert pruning
+                          </Button>
+                        </div>
                       </div>
                     )}
                   </div>
+                </SectionBox>
+
+                {showPanel && (
+                  <ExportRunPanel
+                    exportMethod={exportMethod}
+                    quantLevels={quantLevels}
+                    checkpoint={selectedExportSource}
+                    baseModelName={sourceBaseModelName}
+                    isAdapter={sourceMode === "checkpoint" && isAdapter}
+                    destination={destination}
+                    onDestinationChange={setDestination}
+                    saveDirectory={saveDirectory}
+                    saveDirectoryInput={saveDirectoryInput}
+                    defaultSaveDirectory={defaultSaveDirectory}
+                    saveDirectoryOverridden={!!customSaveDirectory}
+                    onSaveDirectoryChange={setCustomSaveDirectory}
+                    hfUsername={hfUsername}
+                    onHfUsernameChange={setHfUsername}
+                    modelName={modelName}
+                    onModelNameChange={setModelName}
+                    hfToken={hfToken}
+                    onHfTokenChange={setHfToken}
+                    privateRepo={privateRepo}
+                    onPrivateRepoChange={setPrivateRepo}
+                    onStart={handleStart}
+                    onClose={handleClosePanel}
+                    decisionNote={
+                      decisionInfo
+                        ? t("exportDecision.outputNote", {
+                            path: decisionInfo.output_dir,
+                          })
+                        : undefined
+                    }
+                    reapLabel={reapLabel}
+                  />
                 )}
-
-              {exportMethod === "gguf" && !exportUnsupported && decisionInfo && (
-                <div className="space-y-3">
-                  {decisionIneligible ? (
-                    <Alert variant="destructive">
-                      <HugeiconsIcon icon={AlertCircleIcon} className="size-4" />
-                      <AlertTitle>{t("exportDecision.notEligibleTitle")}</AlertTitle>
-                      <AlertDescription>{decisionInfo.reason}</AlertDescription>
-                    </Alert>
-                  ) : (
-                    <>
-                      <div className="space-y-1">
-                        <div className="text-sm font-medium">
-                          {t("exportDecision.title")}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {t("exportDecision.description", {
-                            layout: decisionInfo.layout === "clef" ? "Clef" : "Laya",
-                          })}
-                        </div>
-                        {decisionInfo.adapter_only && (
-                          <div className="text-xs text-muted-foreground">
-                            {t("exportDecision.adapterNote")}
-                          </div>
-                        )}
-                      </div>
-                      <QuantPicker
-                        value={quantLevels}
-                        onChange={setQuantLevels}
-                        options={decisionQuantOptions}
-                      />
-                      {decisionExistingQuants.length > 0 && (
-                        <div className="text-xs text-muted-foreground">
-                          {t("exportDecision.existing", {
-                            quantizations: decisionExistingQuants.join(", "),
-                          })}
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              )}
-
-              {exportMethod === "gguf" && !exportUnsupported && !decisionInfo && (
-                <div className="space-y-3">
-                  {effectiveIsAdapter && !isMacHost && (
-                    <div className="space-y-2">
-                      <div className="text-sm font-medium">Export target</div>
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          type="button"
-                          variant={
-                            ggufTarget === "model" ? "default" : "outline"
-                          }
-                          size="sm"
-                          onClick={() => setGgufTarget("model")}
-                          title="Merge the adapter into the base model, then quantize the full model to GGUF."
-                        >
-                          Full model
-                        </Button>
-                        <Button
-                          type="button"
-                          variant={
-                            ggufTarget === "lora" ? "default" : "outline"
-                          }
-                          size="sm"
-                          onClick={() => setGgufTarget("lora")}
-                          title="Export just the adapter as a GGUF LoRA (llama.cpp `--lora`); the base model stays separate."
-                        >
-                          LoRA adapter
-                        </Button>
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {ggufTarget === "lora"
-                          ? "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`). The base model stays separate."
-                          : "Merges the adapter into the base model, then quantizes the full model to GGUF."}
-                      </div>
-                    </div>
-                  )}
-
-                  {ggufAsLora ? (
-                    <div className="space-y-1.5">
-                      <div className="text-sm font-medium">Output type</div>
-                      <Select
-                        value={loraGgufOuttype}
-                        onValueChange={(v) => setLoraGgufOuttype(v)}
-                      >
-                        <SelectTrigger className="w-full sm:w-56">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {LORA_GGUF_OUTTYPES.map((t) => (
-                            <SelectItem key={t} value={t}>
-                              {t.toUpperCase()}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  ) : (
-                    <>
-                      <QuantPicker
-                        value={quantLevels}
-                        onChange={setQuantLevels}
-                        sizes={quantSizeLabels}
-                      />
-                      <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
-                        <div className="space-y-0.5">
-                          <div className="text-sm font-medium">
-                            Importance matrix (imatrix)
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            {requiresImatrix
-                              ? "Required for the selected IQ low-bit quant."
-                              : "Improves quant quality and unlocks the IQ low-bit quants."}
-                          </div>
-                        </div>
-                        <Switch
-                          aria-label="Importance matrix (imatrix)"
-                          checked={effectiveImatrix}
-                          onCheckedChange={setUseImatrix}
-                          disabled={requiresImatrix}
-                        />
-                      </div>
-                      {effectiveImatrix && (
-                        <div className="space-y-1.5">
-                          <label
-                            htmlFor="export-imatrix-path"
-                            className="text-sm font-medium"
-                          >
-                            Local imatrix file (optional)
-                          </label>
-                          <InputGroup>
-                            <InputGroupInput
-                              id="export-imatrix-path"
-                              aria-describedby="export-imatrix-path-help"
-                              placeholder="/path/to/imatrix.gguf"
-                              value={imatrixPath}
-                              onChange={(e) =>
-                                setCustomImatrix({
-                                  sourceKey: imatrixSourceKey,
-                                  path: e.target.value,
-                                })
-                              }
-                            />
-                          </InputGroup>
-                          <p
-                            id="export-imatrix-path-help"
-                            className="text-xs text-muted-foreground"
-                          >
-                            Absolute path to a .dat or .gguf imatrix file on the
-                            machine running Unsloth. Leave blank to
-                            auto-download the upstream Unsloth imatrix for the
-                            base model, if one exists.
-                          </p>
-                        </div>
-                      )}
-                      <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
-                        <div className="space-y-0.5">
-                          <div className="text-sm font-medium">
-                            Also convert to Q4NX (AMD NPU)
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            {destination !== "local"
-                              ? "Saves locally only: pick a local destination."
-                              : q4nxSourceSelected
-                                ? "Converts the Q4 GGUF into a FastFlowLM folder for Ryzen AI NPUs (XDNA 2), next to the GGUFs."
-                                : "Needs Q4_0, Q4_1 or Q4_K_M in the selection."}
-                          </div>
-                        </div>
-                        <Switch
-                          aria-label="Also convert to Q4NX (AMD NPU)"
-                          checked={effectiveNpuQ4nx}
-                          onCheckedChange={setNpuQ4nx}
-                          disabled={!q4nxSourceSelected || destination !== "local"}
-                        />
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-              {showReap && moeInfo && (
-                <ReapCard
-                  moe={moeInfo}
-                  settings={reapSettings}
-                  onChange={setReapSettings}
-                  disabled={isExporting}
-                />
-              )}
-              {reapFailed && (
-                <div
-                  role="alert"
-                  className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs"
-                >
-                  <p>
-                    Expert pruning (REAP) is on, but checking whether this model
-                    can be pruned failed. Retry, or turn pruning off to export
-                    the full model.
-                  </p>
-                  <div className="mt-2 flex gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setMoeRetry((n) => n + 1)}
-                    >
-                      Retry
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() =>
-                        setReapSettings((s) => ({ ...s, enabled: false }))
-                      }
-                    >
-                      Turn off expert pruning
-                    </Button>
-                  </div>
-                </div>
-              )}
-              {reapBlocked && (
-                <div
-                  role="alert"
-                  className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs"
-                >
-                  <p>
-                    Expert pruning (REAP) is on, but this model cannot be
-                    pruned: it is not a routed MoE, or its weights or setup are
-                    not supported. Turn pruning off to export it.
-                  </p>
-                  <div className="mt-2 flex gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        setReapSettings((s) => ({ ...s, enabled: false }))
-                      }
-                    >
-                      Turn off expert pruning
-                    </Button>
-                  </div>
-                </div>
-              )}
-              {estimatedSize && (
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <HugeiconsIcon
-                    icon={InformationCircleIcon}
-                    className="size-3.5"
+                {showPanel && (
+                  <div
+                    ref={panelEndRef}
+                    aria-hidden="true"
+                    className="h-px w-full"
                   />
-                  <span>Est. size: {estimatedSize}</span>
-                </div>
-              )}
-
-              <Separator />
-              {showPanel && (
-                <ExportRunPanel
-                  exportMethod={exportMethod}
-                  quantLevels={quantLevels}
-                  checkpoint={selectedExportSource}
-                  baseModelName={sourceBaseModelName}
-                  isAdapter={sourceMode === "checkpoint" && isAdapter}
-                  destination={destination}
-                  onDestinationChange={setDestination}
-                  saveDirectory={saveDirectory}
-                  saveDirectoryInput={saveDirectoryInput}
-                  defaultSaveDirectory={defaultSaveDirectory}
-                  saveDirectoryOverridden={!!customSaveDirectory}
-                  onSaveDirectoryChange={setCustomSaveDirectory}
-                  hfUsername={hfUsername}
-                  onHfUsernameChange={setHfUsername}
-                  modelName={modelName}
-                  onModelNameChange={setModelName}
-                  hfToken={hfToken}
-                  onHfTokenChange={setHfToken}
-                  privateRepo={privateRepo}
-                  onPrivateRepoChange={setPrivateRepo}
-                  onStart={handleStart}
-                  onClose={handleClosePanel}
-                  decisionNote={
-                    decisionInfo
-                      ? t("exportDecision.outputNote", {
-                          path: decisionInfo.output_dir,
-                        })
-                      : undefined
-                  }
-                  reapLabel={reapLabel}
-                />
-              )}
-              {showPanel && (
-                <div
-                  ref={panelEndRef}
-                  aria-hidden="true"
-                  className="h-px w-full"
-                />
-              )}
-              {showPanel && !panelEndVisible && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    panelEndRef.current?.scrollIntoView({
-                      behavior: "smooth",
-                      block: "end",
-                    })
-                  }
-                  aria-label="Scroll to export output"
-                  className="fixed bottom-6 right-6 z-30 flex size-10 items-center justify-center rounded-full border border-border/60 bg-background/90 text-foreground shadow-md backdrop-blur transition-colors hover:bg-muted"
-                >
-                  <HugeiconsIcon
-                    icon={ChevronDownStandardIcon}
-                    className="size-5"
-                  />
-                </button>
-              )}
-              {!showPanel && (
-                <div className="flex items-center justify-end">
-                  <Button
-                    data-tour="export-cta"
-                    disabled={!canExport}
-                    onClick={handleOpenPanel}
+                )}
+                {showPanel && !panelEndVisible && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      panelEndRef.current?.scrollIntoView({
+                        behavior: "smooth",
+                        block: "end",
+                      })
+                    }
+                    aria-label="Scroll to export output"
+                    className="fixed bottom-6 right-6 z-30 flex size-10 items-center justify-center rounded-full bg-background/90 text-foreground shadow-md backdrop-blur transition-colors hover:bg-muted"
                   >
-                    Export Model
-                  </Button>
-                </div>
-              )}
-            </>
-          )}
-        </SectionCard>
-        <ImageLoraExportCard preselect={preselectImageLora} />
-        <Q4nxConvertCard />
+                    <HugeiconsIcon
+                      icon={ChevronDownStandardIcon}
+                      className="size-5"
+                    />
+                  </button>
+                )}
+                <ImageLoraExportCard preselect={preselectImageLora} />
+                {hasNpu && <Q4nxConvertCard />}
+              </div>
+              <div className="@4xl/export-configure:sticky @4xl/export-configure:top-6 @4xl/export-configure:self-start">
+                <ExportSummaryCard
+                  ready={canExport}
+                  rows={summaryRows}
+                  steps={exportGuideSteps}
+                  cta={
+                    showPanel ? undefined : (
+                      <Button
+                        size="lg"
+                        data-tour="export-cta"
+                        disabled={!canExport}
+                        onClick={handleOpenPanel}
+                        className={cn(
+                          "w-full justify-center rounded-full text-ui-13p5 font-semibold tracking-tight",
+                          "bg-action text-background shadow-sm hover:opacity-90",
+                          "disabled:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] disabled:text-muted-foreground disabled:shadow-none dark:disabled:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
+                        )}
+                      >
+                        Export Model
+                      </Button>
+                    )
+                  }
+                />
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

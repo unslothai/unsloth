@@ -6,6 +6,7 @@
 import functools
 import re
 from pathlib import Path
+from tests.studio._en_catalog import en_string
 from tests.studio._js_source import (
     attribute_expressions,
     binding_joining,
@@ -267,13 +268,15 @@ def test_media_galleries_save_natively_with_feedback():
     assert "if (src && !isTauri)" in download
     assert "blob.type !== `image/${format}`" in reencode
     assert "isDownloadCancelled(error)" in download
-    assert "if (isTauri)" in download
-    assert 'toast.success("Image saved", { description: filename });' in download
+    assert "const savedFileName = await downloadFile(" in download
+    assert "if (savedFileName !== undefined)" in download
+    assert 'toast.success("Image saved", { description: savedFileName });' in download
     assert 'document.createElement("a")' not in download
 
-    assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
-    assert "if (isTauri)" in video_download
-    assert 'toast.success("Video saved"' in video_download
+    assert "return downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
+    assert "const savedFileName = await downloadVideo(" in video_download
+    assert "if (savedFileName !== undefined)" in video_download
+    assert 'toast.success("Video saved", { description: savedFileName });' in video_download
     assert "function saveLink(" not in video_page
 
 
@@ -285,8 +288,9 @@ def test_audio_clips_and_stems_save_natively():
 
     # desktop re-reads blob URLs because the page CSP blocks fetch()
     assert 'isTauri && url.startsWith("blob:")' in save_audio
-    assert "await downloadBlobStreaming(blob, filename);" in save_audio
-    assert "await downloadUrl(url, filename);" in save_audio
+    assert "await downloadBlobStreaming(blob, filename)" in save_audio
+    assert "savedFileName = await downloadUrl(url, filename);" in save_audio
+    assert 'toast.success("Audio saved", { description: savedFileName });' in save_audio
     assert "if (isDownloadCancelled(error)) return;" in save_audio
     # tests/audio-stem-mixer-state.test.ts forbids raw anchors in features/audio
     for page in ("hooks/use-audio-gallery.tsx", "pages/separate-page.tsx"):
@@ -319,7 +323,7 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     projects = _ui_source(FRONTEND / "features/chat/projects-page.tsx")
     assert "async function downloadBlob(" in prompt_storage
     download_blob = prompt_storage.split("async function downloadBlob(", 1)[1].split("\n}\n", 1)[0]
-    assert "return downloadFile(" in download_blob
+    assert "await downloadFile(" in download_blob
     assert "catch (error)" not in download_blob
     assert "isDownloadCancelled(error)" in prompt_storage
 
@@ -393,7 +397,7 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
     assert "downloadUrlStreaming(src, exportFilename(video, format))" in video_page
     assert '"save_native_file_from_url"' in helper
     assert "isDownloadCancelled(err)" in video_page
-    assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
+    assert "return downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
     assert "URL.createObjectURL(blob)" not in video_page
 
     # media-src, not just connect-src: the signed link is played by an element.
@@ -443,7 +447,7 @@ def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
         'types.includes("files")',
         'type.includes("uri-list")',
         '"read_native_clipboard_files"',
-        "globalThis.atob(file.base64)",
+        "decodeBase64Bytes(file.base64)",
         "new File([bytes], file.name",
         "MAX_CLIPBOARD_BYTES",
         'import("@tauri-apps/plugin-clipboard-manager")',
@@ -638,7 +642,7 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "dark:border-white" not in decoration
     assert "dark:border-t-white" not in decoration
     # Pinned, it is the sidebar's full-height edge: dark has no sidebar border-r to continue it.
-    assert re.search(r'pinned &&\s*"rounded-tl-\[12px\] border-l"', decoration)
+    assert re.search(r'pinned &&\s*"rounded-tl-md border-l"', decoration)
     assert re.search(
         r'className="absolute top-\[12px\] '
         r"h-\[calc\(100dvh-var\(--studio-custom-titlebar-height\)-12px\)\] "
@@ -693,6 +697,24 @@ def _new_chat_button_class_tokens(chat_page: str) -> list[str]:
     return match.group(1).split()
 
 
+def _aria_label_count(source: str, label: str) -> int:
+    """aria-labels reading `label`, written literally or as a t("key") call en.ts maps to it."""
+    count = source.count(f'aria-label="{label}"')
+    for call in re.finditer(r"""aria-label=\{t\(\s*["']([\w.]+)["']\s*\)\}""", source):
+        try:
+            count += en_string(call.group(1)) == label
+        except (KeyError, ValueError):
+            continue
+    return count
+
+
+def test_aria_labels_are_counted_literally_and_through_the_catalog():
+    both = 'aria-label="Go back" aria-label={t("desktopShell.goBack")} aria-label={t("desktopShell.goForward")}'
+    assert _aria_label_count(both, "Go back") == 2
+    assert _aria_label_count(both, "Go forward") == 1
+    assert _aria_label_count('aria-label={t("no.such.key")}', "Go back") == 0
+
+
 def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
     titlebar = _ui_source(TITLEBAR)
     chat_page = _ui_source(CHAT_PAGE)
@@ -701,8 +723,8 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     )[0]
 
     assert "{expanded && (" not in navigation
-    assert navigation.count('aria-label="Go back"') == 1
-    assert navigation.count('aria-label="Go forward"') == 1
+    assert _aria_label_count(navigation, "Go back") == 1
+    assert _aria_label_count(navigation, "Go forward") == 1
 
     assert "inline-flex size-[30px] shrink-0" in navigation
 
@@ -1020,6 +1042,37 @@ RAIL_WIDTH_SCALED = (
     "@[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))]"
 )
 HEADER_COLUMNS = "grid-cols-[minmax(0,var(--media-rail-width,408px))_minmax(13rem,1fr)]"
+# Images and Video reserve a UI-scaled minimum (index.css `.media-header-layout`); Audio keeps 13rem.
+MEDIA_MIN = "var(--media-header-min-width)"
+IMAGE_RAIL_WIDTH = RAIL_WIDTH.replace("13rem", MEDIA_MIN)
+IMAGE_RAIL_WIDTH_SCALED = RAIL_WIDTH_SCALED.replace("13rem", MEDIA_MIN)
+IMAGE_HEADER_COLUMNS = HEADER_COLUMNS.replace("13rem", MEDIA_MIN)
+MEDIA_HEADER_ACTIONS = FRONTEND / "components/media-header-actions.tsx"
+# Since #15919 the preview column is pill | links, the links' column never narrower than the links.
+MEDIA_HEADER_ROW = "grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]"
+
+
+def _media_header_actions(header: str) -> str:
+    """The children a page hands MediaHeaderActions, which places them in the row's third column."""
+    opened = header.split("<MediaHeaderActions", 1)
+    assert (
+        len(opened) == 2
+    ), "the media header no longer renders its links through MediaHeaderActions"
+    children = opened[1].split("</MediaHeaderActions>", 1)
+    assert len(children) == 2, "MediaHeaderActions is no longer closed inside the header"
+    return children[0]
+
+
+def _assert_media_header_row(header: str) -> str:
+    """Create / Train centred in column 2, the links in column 3; returns the links."""
+    assert MEDIA_HEADER_ROW in header
+    assert "data-media-header-centre" in header
+    assert "pointer-events-auto col-start-2 justify-self-center pt-" in header
+    actions = _ui_source(MEDIA_HEADER_ACTIONS)
+    # The slot is click-through like the band; only the links' own group takes clicks.
+    assert "pointer-events-none col-start-3 row-start-1" in actions
+    assert '"pointer-events-auto flex shrink-0 items-center' in actions
+    return _media_header_actions(header)
 
 
 def _ui_source(path) -> str:
@@ -1471,26 +1524,28 @@ def _escapes_the_model(tag: str) -> str | None:
 
 def _touch_spinner_reach(block: str, spacing: float) -> tuple[str, float] | None:
     """The spinner must clear the title too, not just the actions, or the touch gutter is too narrow."""
-    gate = next(
-        (
-            found
-            for found in re.finditer(r"\{\s*([A-Za-z_$][\w$]*)\s*\?\s*\(", block)
-            if re.match(r"\s*<span", block[found.end() :])
-        ),
-        None,
-    )
-    if not gate:
+
+    def branch_end(gate: re.Match) -> int | None:
+        depth = 0
+        for index in range(gate.end() - 1, len(block)):
+            if block[index] == "(":
+                depth += 1
+            elif block[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    return index
         return None
-    depth, end = 0, None
-    for index in range(gate.end() - 1, len(block)):
-        if block[index] == "(":
-            depth += 1
-        elif block[index] == ")":
-            depth -= 1
-            if depth == 0:
-                end = index
-                break
-    if end is None:
+
+    # The span gate that renders the spinner: the row also has span gates for its screen-reader labels.
+    gate, end = None, None
+    for found in re.finditer(r"\{\s*([A-Za-z_$][\w$]*)\s*\?\s*\(", block):
+        if not re.match(r"\s*<span", block[found.end() :]):
+            continue
+        found_end = branch_end(found)
+        if found_end is not None and "<Spinner" in block[found.end() : found_end]:
+            gate, end = found, found_end
+            break
+    if gate is None:
         return None
     rendered = block[gate.end() : end]
     # An inline style or transform on the positioning span changes the reach without `right`.
@@ -1974,9 +2029,11 @@ def test_image_page_structural_panes_share_the_container_breakpoint():
 
     assert "@container" in shell
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in section
-    # Clamped so the canvas keeps the 13rem its header column reserves.
-    assert RAIL_WIDTH in section
-    assert RAIL_WIDTH_SCALED in IMAGES_PAGE.read_text(encoding = "utf-8"), "the rail stopped scaling"
+    # Clamped so the canvas keeps the minimum its header column reserves.
+    assert IMAGE_RAIL_WIDTH in section
+    assert IMAGE_RAIL_WIDTH_SCALED in IMAGES_PAGE.read_text(
+        encoding = "utf-8"
+    ), "the rail stopped scaling"
     assert "md:flex-row" not in section
     # pb-6 is only correct while the -action fade dissolves the last control into the footer.
     assert "panel-scroll-fade-action" in section
@@ -1998,16 +2055,12 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert "relative" in header_opening
     assert "z-40" in header_opening
     assert "@[50rem]:border-r" in header
-    assert (
-        'className="!h-[34px] max-w-full gap-1 overflow-hidden pl-3 pr-1 '
-        '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
-    )
-    assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
-    assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
-    assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
-    assert "col-start-2 justify-self-end pt-" in header
-    assert "@[50rem]:justify-self-center" in header
-    assert "col-start-3" in header and "<LibraryPageLink" in header
+    # The media model picker shares Chat's control height (scaled in index.css), see _MEDIA_PICKER_CLASS.
+    assert _MEDIA_PICKER_CLASS in header
+    # No label override: the trigger reads exactly like Chat's.
+    assert "triggerLabelClassName" not in header
+    links = _assert_media_header_row(header)
+    assert "<LibraryPageLink" in links
     assert "absolute" not in header.split("<PillTabs", 1)[0]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
@@ -2018,7 +2071,7 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert 'mode === "speak"' in layout
     assert '"panel-scroll-fade-action"' in layout
     assert '"panel-scroll-fade"' in layout
-    assert "relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4" in layout
+    assert "relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3" in layout
     assert "btn-float-action" not in layout
     assert "absolute inset-x-0 bottom-0" not in layout
     assert layout.count("p-6 px-10 @[50rem]:pt-[60px]") == 2
@@ -2048,7 +2101,7 @@ def test_image_train_rail_matches_create_and_header():
     step = r"(?:0|[1-9]\d*)(?:\.(?:25|5|75))?"
     rail = re.search(
         r"(?<=[\s\"])pl-10 max-sm:pl-5 @\[50rem\]:w-\[min\(var\(--media-rail-width,408px\),"
-        rf"calc\(100%-13rem\+--spacing\(({step})\)\)\)\](?=[\s\"])",
+        rf"calc\(100%-var\(--media-header-min-width,13rem\)\+--spacing\(({step})\)\)\)\](?=[\s\"])",
         layout,
     )
     assert rail, "the Train rail no longer uses the Create rail's width variable and clamp"
@@ -2082,11 +2135,25 @@ def test_image_train_rail_matches_create_and_header():
 
 def test_compact_media_link_keeps_accessible_name_and_truncation():
     source = _ui_source(MEDIA_PAGE_LINK)
-    button = source.split("<button", 1)[1].split("</button>", 1)[0]
+    # Two variants since #15520: the header icon button (`iconOnly`) and the labelled link.
+    buttons = [part.split("</button>", 1)[0] for part in source.split("<button")[1:]]
+    assert len(buttons) == 2, "expected the icon button and the labelled link"
+    for button in buttons:
+        assert "aria-label={label}" in button
 
-    assert "aria-label={label}" in button
-    assert 'cn("min-w-0 truncate", labelClassName)' in button
-    assert "arrowClassName" in button
+    labelled = [button for button in buttons if "labelClassName" in button]
+    assert len(labelled) == 1
+    assert 'cn("min-w-0 truncate", labelClassName)' in labelled[0]
+    assert "arrowClassName" in labelled[0]
+
+    # The icon button's own label (`iconArrow`, the sibling media page) truncates and only
+    # shows on a wide header, which the header used to pass in as labelClassName.
+    icon_button = next(button for button in buttons if button is not labelled[0])
+    icon_label = icon_button.split("{iconArrow && (", 1)[1]
+    assert "min-w-0 truncate" in icon_label
+    assert "hidden" in icon_label and "@[50rem]:inline" in icon_label
+    sibling = source.split("export function SiblingMediaPageLink", 1)[1]
+    assert "iconArrow={true}" in sibling
 
 
 def test_media_page_link_tooltip_drops_below_titlebar_controls():
@@ -2123,6 +2190,11 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
 
         band = band.split(band_end, 1)[0]
         groups = re.findall(r'"([^"]*pointer-events-auto[^"]*)"', band)
+        if "<MediaHeaderActions" in band:
+            # The links' clickable group is drawn by the component, inside its click-through slot.
+            groups += re.findall(
+                r'"([^"]*pointer-events-auto[^"]*)"', _ui_source(MEDIA_HEADER_ACTIONS)
+            )
         assert len(groups) >= min_groups, (page.name, groups)
 
 
@@ -2136,22 +2208,20 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     )
 
     assert "const { isMobile, pinned } = useSidebar();" in source
-    assert HEADER_COLUMNS in opening
+    assert IMAGE_HEADER_COLUMNS in opening
     assert "@[50rem]:border-r" in header
     assert "isMobile" in header and "pl-12" in header
     assert "!pinned && isTauri" in header
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in header
-    assert (
-        'className="!h-[34px] max-w-full gap-1 overflow-hidden pl-3 pr-1 '
-        '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
-    )
-    assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
-    assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
-    assert "@[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0" in header
-    assert "col-start-2" in header
-    assert "col-start-3" in header
-    assert 'labelClassName="hidden @[50rem]:inline"' in header
-    assert 'arrowClassName="hidden @[50rem]:block"' in header
+    # The media model picker shares Chat's control height (scaled in index.css), see _MEDIA_PICKER_CLASS.
+    assert _MEDIA_PICKER_CLASS in header
+    # No label override: the trigger reads exactly like Chat's.
+    assert "triggerLabelClassName" not in header
+    links = _assert_media_header_row(header)
+    # Header icon buttons since #15520; the sibling link hides its name on a narrow header
+    # itself (checked in test_compact_media_link_keeps_accessible_name_and_truncation).
+    assert '<LibraryPageLink tab="images" iconOnly={true} />' in links
+    assert '<SiblingMediaPageLink to="/video" />' in links
     assert "absolute" not in header.split("<PillTabs", 1)[0]
 
 
@@ -2170,6 +2240,12 @@ def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
 
 # `_ui_source` hides whether a length still scales, so the scaling is asserted here, per
 # variant (`h-[...]` and `hover:h-[...]` differ).
+# Images, Audio and Video line their model picker up with Chat: same left inset, same control height.
+_MEDIA_PICKER_CLASS = (
+    'className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 '
+    '!h-[var(--studio-chat-control-height,34px)]"'
+)
+
 _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (NAVBAR, "", "h", "48px", 2),
     (IMAGES_PAGE, "", "h", "48px", 1),
@@ -2192,13 +2268,13 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     # The 34px pill controls in the media headers, in all three spellings the pages use. The
     # band around them scales and so does their own text, so a control left fixed is the one
     # thing in that row that does not move, and it crowds out its label.
-    (IMAGES_PAGE, "!", "h", "34px", 2),
+    (IMAGES_PAGE, "!", "h", "34px", 1),
     (IMAGES_PAGE, "", "h", "34px", 1),
     (IMAGES_PAGE, "[&>button]:", "h", "34px", 1),
-    (AUDIO_PAGE, "!", "h", "34px", 1),
+    (AUDIO_PAGE, "!", "h", "34px", 0),
     (AUDIO_PAGE, "", "h", "34px", 1),
     (AUDIO_PAGE, "[&>button]:", "h", "34px", 1),
-    (VIDEO_PAGE, "!", "h", "34px", 2),
+    (VIDEO_PAGE, "!", "h", "34px", 1),
     (CHAT_PAGE, "!", "size", "30px", 1),
     (CHAT_PAGE, "", "size", "30px", 2),
     (CHAT_HEADER_MENU, "", "size", "30px", 2),
@@ -2314,6 +2390,17 @@ def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
         assert not re.search(
             _CLASS_STARTS + re.escape(f"{variant}{utility}-[{length}]") + _CLASS_ENDS, source
         ), f"{path.name} has a bare {named}, which stays put while its text grows"
+
+
+def test_the_media_pickers_take_chats_scaled_control_height():
+    """The picker height moved from a scaled 34px literal to Chat's control-height token; the token
+    itself must still scale, or the pill stays put while its text grows."""
+    css = (FRONTEND / "index.css").read_text(encoding = "utf-8")
+    assert re.search(
+        r"--studio-chat-control-height:\s*calc\(\d+px \* var\(--ui-space-scale, 1\)\);", css
+    )
+    for page in (IMAGES_PAGE, AUDIO_PAGE, VIDEO_PAGE):
+        assert _MEDIA_PICKER_CLASS in page.read_text(encoding = "utf-8"), page
 
 
 def test_the_media_rail_fallback_is_the_width_hook_fallback():

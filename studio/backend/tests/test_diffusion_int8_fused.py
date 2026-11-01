@@ -73,6 +73,9 @@ def _require_int8tensor(module):
 @pytest.fixture(autouse = True)
 def _clean_env(monkeypatch):
     monkeypatch.delenv(fused.INT8_FUSED_ENV, raising = False)
+    # pins the stock rotation; rotq_h16 dispatch: test_diffusion_convrot_unlisted.py
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_ROTQUANT_UNLISTED", "0")
+    monkeypatch.setattr(fused, "_RQ_DEVICES", frozenset())
     yield
 
 
@@ -110,6 +113,46 @@ def test_int_mm_prefers_the_released_home(monkeypatch):
     monkeypatch.setattr(fused, "_INTMM_MODULE", None, raising = False)
     weight = types.SimpleNamespace(qdata = torch.ones(3, 2, dtype = torch.int8))
     assert fused._int_mm(torch.ones(4, 2, dtype = torch.int8), weight) == "old"
+
+
+def _intmm_graph_breaks(monkeypatch, prepare) -> int:
+    """Graph breaks dynamo counts in ``_int_mm`` after ``prepare`` ran with no int8 GEMM home cached yet."""
+    import sys
+    import types
+
+    home = types.ModuleType("torchao.kernel.intmm")
+    home.safe_int_mm = lambda a, b: a.float() @ b.float()
+    monkeypatch.setitem(sys.modules, "torchao.kernel.intmm", home)
+    monkeypatch.setattr(fused, "_INTMM_MODULE", None, raising = False)
+    prepare()
+    weight = types.SimpleNamespace(qdata = torch.ones(3, 2, dtype = torch.int8))
+
+    def fn(a):
+        return fused._int_mm(a, weight) * 2
+
+    torch._dynamo.reset()
+    try:
+        explained = torch._dynamo.explain(fn)(torch.ones(4, 2, dtype = torch.int8))
+    finally:
+        torch._dynamo.reset()
+    return explained.graph_break_count
+
+
+def test_int_mm_no_graph_break_after_offloaded_install(monkeypatch):
+    """An offloaded denoiser: install returns before _finalize, yet the fused attention processors still run
+    int8_linear on every int8 Linear. The GEMM home must already be cached, or each ``_int_mm`` under compile
+    imports it (``importlib.import_module`` is a dynamo graph break per Linear)."""
+    model = torch.nn.Linear(2, 3)
+    monkeypatch.setattr(fused, "int8_fused_disabled", lambda: False)
+    assert _intmm_graph_breaks(monkeypatch, lambda: fused.install(model, offload_active = True)) == 0
+
+
+def test_int_mm_no_graph_break_after_finalize_early_return(monkeypatch):
+    """_finalize on weights that are on no CUDA card (group offload, CPU) returns early; the GEMM home it resolves
+    must be cached before that return."""
+    model = torch.nn.Linear(2, 3)
+    assert fused.resident_cuda_device(model) is None
+    assert _intmm_graph_breaks(monkeypatch, lambda: fused._finalize(model)) == 0
 
 
 @pytest.mark.parametrize(

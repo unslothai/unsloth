@@ -24,7 +24,10 @@ _MODEL_LOAD_PREQUANTIZED_4BIT = "prequantized_4bit"
 _MODEL_LOAD_RUNTIME_4BIT = "runtime_4bit"
 _PREQUANTIZED_MODE_RE = re.compile(r"prequantized_(?:1[0-6]|[1-9])(?:_(?:1[0-6]|[1-9])){0,7}bit")
 _REASON_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+# unsloth/Qwen3.5-* shards are named ``model.safetensors-00001-of-00001.safetensors`` (#15405).
 _MODEL_WEIGHT_RE = re.compile(
+    r"(?:"
+    r"model\.safetensors-\d+-of-\d+(?:\.safetensors)?|"
     r"(?:"
     r"model(?:-\d+-of-\d+)?|"
     r"pytorch_model(?:-\d+-of-\d+)?|"
@@ -32,7 +35,8 @@ _MODEL_WEIGHT_RE = re.compile(
     r"consolidated(?:[._-]\d+)?|"
     r"mlx_model(?:-\d+-of-\d+)?|"
     r"weights"
-    r")\.(?:safetensors|bin|pt|pth|ckpt|npz)$",
+    r")\.(?:safetensors|bin|pt|pth|ckpt|npz)"
+    r")$",
     re.IGNORECASE,
 )
 _DATASET_DATA_SUFFIXES = (
@@ -108,23 +112,7 @@ def effective_training_load_in_4bit(
 
 
 def exact_resume_requires_current_4bit(config: dict[str, Any]) -> bool:
-    """Would activating the latest-transformers sidecar strand this stored run?
-
-    ``effective_training_load_in_4bit`` raises ``ExactResumeResourcesUnavailable`` for a
-    4-bit run with exact-resource provenance the moment ``latest_tier_active_for`` turns
-    true, and that sidecar is a persistent overlay: once installed the checkpoint never
-    resumes in the load mode it was attested with. Callers offering the install ahead of
-    a resume ask this first, rather than trade a working resume for an upgrade the run
-    does not need.
-
-    Takes the run's STORED config (``config_json``), so it recomputes the requirement
-    from the provenance marker: ``require_exact_resume_resources`` and
-    ``require_exact_model_resource`` are stripped before persistence and exist only on
-    the live worker config ``/train/start`` assembles.
-
-    Never raises. A provenance already refusing a resume returns False: nothing the
-    install does makes that checkpoint any less resumable.
-    """
+    """Would activating the latest-transformers sidecar strand this stored run? Never raises; a provenance already refusing resume returns False."""
     if not bool(config.get("load_in_4bit")):
         return False
     try:
@@ -133,9 +121,7 @@ def exact_resume_requires_current_4bit(config: dict[str, Any]) -> bool:
         return False
     except Exception:
         return False
-    # The same disjunction effective_training_load_in_4bit tests: routes/training.py fills
-    # require_exact_model_resource from exact_resume_resource_requirements and
-    # require_exact_resume_resources from resource_provenance_is_complete.
+    # Same disjunction effective_training_load_in_4bit tests.
     return bool(requires_exact_model or resource_provenance_is_complete(config))
 
 
@@ -423,8 +409,7 @@ def _hf_dataset_source_ref(path_value: str) -> Optional[tuple[str, str, str]]:
 
     try:
         parsed = urlsplit(path_value)
-        # The shared helper, not a third private parse: a blank or scheme-less
-        # value yielded an empty netloc here and matched no URL at all.
+        # Use the shared helper, not a third parse: a blank or scheme-less value gave an empty netloc.
         from utils.hf_endpoint import get_hf_endpoint
         endpoint = urlsplit(get_hf_endpoint())
     except ValueError:
@@ -533,14 +518,7 @@ def attest_loaded_dataset(repo_id: Any, *datasets: Any) -> tuple[Optional[str], 
 
 
 def _object_value(value: Any, key: str) -> Any:
-    """Read ``key`` off a loaded model object, whatever shape it is.
-
-    Attribute access has to come first: ``mlx.nn.Module`` subclasses ``dict``, so a
-    mapping-first lookup answers ``None`` for every attribute an MLX model carries and
-    the whole MLX attestation path below goes blind. The mapping lookup stays as the
-    fallback for the plain dicts that also flow through here (``quantization_config``,
-    ``_unsloth_quantization_policy``), whose keys are never attributes.
-    """
+    """Attributes first: mlx.nn.Module subclasses dict, so a mapping-first lookup would return None."""
     try:
         found = getattr(value, key, None)
     except Exception:
@@ -895,12 +873,7 @@ def validate_exact_resource_pins(config: dict[str, Any]) -> tuple[str, str]:
 
 
 def _provenance_awaiting_attestation(marker: dict[str, Any], config: dict[str, Any]) -> bool:
-    """Training stopped before the worker attested loaded hub resources.
-
-    Stop-and-save can finish while provenance is still the initial ``pending`` marker
-    written at run start. Those runs have a valid checkpoint but no attested revision
-    pins yet; resume should behave like a legacy run without exact resource requirements.
-    """
+    """A pending marker means no revisions are attested yet, so resume treats the run like a legacy one."""
     if marker.get("status") != "pending":
         return False
     if marker.get("model_status") is not None or marker.get("dataset_status") is not None:
@@ -956,13 +929,7 @@ def resource_provenance_allows_resume(config: dict[str, Any]) -> bool:
 
 
 def resource_provenance_resume_blocker(config: dict[str, Any]) -> Optional[str]:
-    """Why this provenance refuses a resume, or None when it allows one.
-
-    ``exact_resume_resource_requirements`` already raises with a precise, user-facing
-    explanation ("the exact model snapshot for this run is no longer available", and so
-    on). Discarding it left the start route reporting a generic checkpoint complaint for
-    a run whose checkpoint is perfectly intact, which points at the wrong thing entirely.
-    """
+    """Surfaces the precise refusal, not a generic checkpoint error, since the checkpoint is intact."""
     marker = config.get(RESOURCE_PROVENANCE_KEY)
     if marker is None:
         return None

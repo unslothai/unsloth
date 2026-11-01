@@ -189,8 +189,8 @@ const ROWS: Row[] = [
       "and reads normally.",
   },
   {
-    name: "version 13 (genuinely future)",
-    raw: { version: 13, customContextLength: 32768 },
+    name: "version 15 (genuinely future)",
+    raw: { version: 15, customContextLength: 32768 },
     normalizedPin: null,
     rawPin: 32768,
     isDefault: true,
@@ -339,8 +339,9 @@ test("both pin shapes are stamped version 1, so neither is distinguishable by ve
   );
   assert.equal(
     stage({ version: 13, customContextLength: 32768 }).remembered,
-    false,
+    true,
   );
+  assert.equal(stage({ version: 15, customContextLength: 32768 }).remembered, false);
 });
 
 
@@ -372,6 +373,23 @@ test("MLX offload keeps off or a fraction in (0, 1], and only a set one stamps v
   assert.equal(stampedVersion({ mlxExpertOffload: "off" }), 12);
   const config = stage({ version: 12, mlxPleOffload: 0.75, mlxExpertOffload: "off" }).config;
   assert.deepEqual([config.mlxPleOffload, config.mlxExpertOffload], [0.75, "off"]);
+});
+
+test("Neural Engine prefill defaults off, and only an enabled one stamps v13", () => {
+  assert.equal(normalizePerModelConfig({ version: 12 }).mlxAnePrefill, false);
+  assert.equal(normalizePerModelConfig({ mlxAnePrefill: "true" }).mlxAnePrefill, false);
+  assert.equal(isDefaultConfig({ ...DEFAULT_PER_MODEL_CONFIG, mlxAnePrefill: true }), false);
+  assert.equal(stampedVersion({ mlxAnePrefill: false, mlxPleOffload: 0.25 }), 12);
+  assert.equal(stampedVersion({ mlxAnePrefill: true, mlxPleOffload: 0.25 }), 13);
+  assert.equal(stage({ mlxAnePrefill: true }).config.mlxAnePrefill, true);
+});
+
+test("Fast Verify defaults off, and only an enabled one stamps v14", () => {
+  assert.equal(normalizePerModelConfig({ version: 13 }).mlxFastVerify, false);
+  assert.equal(isDefaultConfig({ ...DEFAULT_PER_MODEL_CONFIG, mlxFastVerify: true }), false);
+  assert.equal(stampedVersion({ mlxFastVerify: false, mlxAnePrefill: true }), 13);
+  assert.equal(stampedVersion({ mlxFastVerify: true }), 14);
+  assert.equal(stage({ mlxFastVerify: true }).config.mlxFastVerify, true);
 });
 
 

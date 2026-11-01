@@ -2,17 +2,17 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useRef, useState, type SyntheticEvent } from "react";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Add01Icon,
-  Search01Icon,
-  Copy01Icon,
   CubeIcon,
-  Delete02Icon,
   Key01Icon,
   MoreHorizontalIcon,
+  PlusSignIcon,
+  Search01Icon,
   UserBlock01Icon,
   UserCheck01Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -25,7 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useIsAccountOwner } from "@/features/auth";
-import { UserAvatar } from "@/features/profile";
+import { UserAvatar, useUserProfileStore } from "@/features/profile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -57,14 +57,18 @@ import {
   regenerateSetupCode,
   setAccountActive,
   setAccountModelAllowlist,
+  setOwnerLoginAlias,
   type AccountSetupCode,
   type StudioAccount,
 } from "../api/accounts";
 import { ManagedProviderUrlsSection } from "../components/managed-provider-urls-section";
+import {
+  ChangePasswordDialog,
+  useOwnPasswordPending,
+} from "../components/change-password-dialog";
 
 export function AccountsTab() {
   const owner = useIsAccountOwner();
-  // managed accounts cannot request or render account administration.
   return owner ? <OwnerAccountsTab /> : null;
 }
 
@@ -87,12 +91,22 @@ function OwnerAccountsTab() {
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [aliasDraft, setAliasDraft] = useState("");
+  const [ownerPasswordOpen, setOwnerPasswordOpen] = useState(false);
+  const [ownerPasswordPending, ownerPasswordSet] = useOwnPasswordPending();
+  // The owner's row matches the sidebar footer, which reads this store before the server copy syncs.
+  const ownDisplayName = useUserProfileStore((s) => s.displayName).trim();
+  const ownAvatar = useUserProfileStore((s) => s.avatarDataUrl);
 
   useEffect(() => {
     let canceled = false;
     void fetchAccounts()
       .then((result) => {
-        if (!canceled) setAccounts(result);
+        if (canceled) return;
+        setAccounts(result);
+        setAliasDraft(
+          result.find((account) => account.role === "owner")?.login_alias ?? "",
+        );
       })
       .catch((reason: unknown) => {
         if (!canceled)
@@ -146,30 +160,38 @@ function OwnerAccountsTab() {
     });
   }
 
+  function saveSignInName() {
+    if (busy) return;
+    void perform(async () => {
+      setAliasDraft((await setOwnerLoginAlias(aliasDraft)) ?? "");
+    });
+  }
+
   const confirming = resetting ?? retiring;
   const editorOpen = creating || setup !== null;
   const filteredAccounts = accounts.filter((account) =>
-    account.username
-      .toLocaleLowerCase(locale)
-      .includes(query.trim().toLocaleLowerCase(locale)),
+    [account.username, shownName(account)].some((name) =>
+      name
+        .toLocaleLowerCase(locale)
+        .includes(query.trim().toLocaleLowerCase(locale)),
+    ),
   );
   const dateFormatter = new Intl.DateTimeFormat(locale, {
     year: "numeric",
     month: "short",
     day: "numeric",
   });
+  function shownName(account: StudioAccount) {
+    return (account.role === "owner" && ownDisplayName) || account.display_name || account.username;
+  }
   function createdDate(account: StudioAccount) {
-    // `new Date(null)` is the epoch, not an invalid date, so a NaN check alone
-    // renders "Jan 1, 1970" for the null created_at an upgraded install can
-    // return (nullable column, backfill skips rows that already have an id).
+    // `new Date(null)` is the epoch, so check null created_at (possible after upgrade) explicitly.
     const raw = account.created_at;
     const date = typeof raw === "string" && raw ? new Date(raw) : new Date(Number.NaN);
     return Number.isNaN(date.getTime()) ? "—" : dateFormatter.format(date);
   }
   function closeEditor() {
-    // Deliberately NOT gated on `busy`: `perform` stays busy through the refresh
-    // that follows the mutation, which would pin a displayed one-time code on
-    // screen with no exit (Done disabled, Escape swallowed, no close button).
+    // Not gated on `busy`, which lasts through the refresh and would trap a one-time code on screen.
     setCreating(false);
     setSetup(null);
     setUsername("");
@@ -185,7 +207,7 @@ function OwnerAccountsTab() {
         >
           {t("settings.accounts.title")}
         </h1>
-        <p className="max-w-lg text-xs text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {t("settings.accounts.description")}
         </p>
       </header>
@@ -202,7 +224,7 @@ function OwnerAccountsTab() {
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t("settings.accounts.search")}
             aria-label={t("settings.accounts.search")}
-            className="pl-9"
+            className="h-control pl-9"
           />
         </div>
         <Button
@@ -218,7 +240,7 @@ function OwnerAccountsTab() {
           }}
         >
           <HugeiconsIcon
-            icon={Add01Icon}
+            icon={PlusSignIcon}
             className="size-3.5"
             aria-hidden="true"
           />
@@ -261,7 +283,7 @@ function OwnerAccountsTab() {
           <table className="w-full table-fixed border-separate border-spacing-x-0 border-spacing-y-1 text-left text-xs">
             <thead className="text-muted-foreground">
               <tr className="[&>th]:bg-muted/40">
-                <th scope="col" className="rounded-l-xl py-2 pl-5 pr-3 font-normal">
+                <th scope="col" className="rounded-l-full py-2 pl-5 pr-3 font-normal">
                   {t("settings.accounts.username")}
                 </th>
                 <th
@@ -273,7 +295,7 @@ function OwnerAccountsTab() {
                 <th scope="col" className="w-24 py-2 font-normal">
                   {t("settings.accounts.status")}
                 </th>
-                <th scope="col" className="w-12 rounded-r-xl py-2">
+                <th scope="col" className="w-12 rounded-r-full py-2">
                   <span className="sr-only">
                     {t("settings.accounts.actions")}
                   </span>
@@ -287,22 +309,32 @@ function OwnerAccountsTab() {
                   className="[&>td]:transition-colors hover:[&>td]:bg-muted/40 focus-within:[&>td]:bg-muted/40"
                   data-testid={`account-${account.username}`}
                 >
-                  <td className="rounded-l-xl py-3 pl-3 pr-3">
+                  <td className="rounded-l-md py-3 pl-3 pr-3">
                     <div className="flex items-center gap-2.5">
                       <UserAvatar
-                        name={account.username}
-                        imageUrl={null}
+                        name={shownName(account)}
+                        imageUrl={(account.role === "owner" && ownAvatar) || account.avatar_url || null}
                         size="sm"
                         className="size-8"
                       />
                       <div className="min-w-0 space-y-0.5">
                         <p className="break-all text-sm font-medium">
-                          {account.username}
+                          {shownName(account)}
                         </p>
                         <p className="text-xs text-muted-foreground">
                           {account.role === "owner"
                             ? t("settings.accounts.owner")
                             : t("settings.accounts.privateAccount")}
+                        </p>
+                        <p className="break-all text-xs text-muted-foreground">
+                          {account.role === "owner" && account.login_alias
+                            ? t("settings.accounts.signsInAsOwner", {
+                                alias: account.login_alias,
+                                username: account.username,
+                              })
+                            : t("settings.accounts.signsInAs", {
+                                username: account.username,
+                              })}
                         </p>
                         {account.role !== "owner" &&
                           account.model_allowlist?.length ? (
@@ -344,7 +376,45 @@ function OwnerAccountsTab() {
                         : t("settings.accounts.inactive")}
                     </span>
                   </td>
-                  <td className="rounded-r-xl py-3 pr-3 text-right">
+                  <td className="rounded-r-md py-3 pr-3 text-right">
+                    {account.role === "owner" && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            className="max-sm:size-9"
+                            disabled={busy}
+                            aria-label={t("settings.accounts.actionsFor", {
+                              username: shownName(account),
+                            })}
+                          >
+                            <HugeiconsIcon
+                              icon={MoreHorizontalIcon}
+                              className="size-4"
+                              aria-hidden="true"
+                            />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent
+                          align="end"
+                          className="w-max max-w-[calc(100vw-2rem)]"
+                        >
+                          <DropdownMenuItem onSelect={() => setOwnerPasswordOpen(true)}>
+                            <HugeiconsIcon
+                              icon={Key01Icon}
+                              className="size-4"
+                              aria-hidden="true"
+                            />
+                            {t(
+                              ownerPasswordPending
+                                ? "settings.general.passwordDialog.setSubmit"
+                                : "settings.general.passwordDialog.trigger",
+                            )}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
                     {account.role !== "owner" && (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -440,7 +510,7 @@ function OwnerAccountsTab() {
                             }}
                           >
                             <HugeiconsIcon
-                              icon={Delete02Icon}
+                              icon={TrashIcon}
                               className="size-4"
                               aria-hidden="true"
                             />
@@ -474,7 +544,41 @@ function OwnerAccountsTab() {
           )}
       </section>
 
+      <section className="flex flex-col gap-2">
+        <Label htmlFor="owner-sign-in-name" className="text-sm font-medium">
+          {t("settings.accounts.signInName")}
+        </Label>
+        <p className="max-w-lg text-xs text-muted-foreground">
+          {t("settings.accounts.signInNameDescription")}
+        </p>
+        <div className="flex items-center gap-3">
+          <Input
+            id="owner-sign-in-name"
+            value={aliasDraft}
+            onChange={(event) => setAliasDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") saveSignInName();
+            }}
+            placeholder="unsloth"
+            autoCapitalize="none"
+            autoComplete="off"
+            spellCheck={false}
+            className="min-w-0 flex-1"
+          />
+          <Button variant="outline" size="sm" disabled={busy} onClick={saveSignInName}>
+            {t("settings.accounts.signInNameSave")}
+          </Button>
+        </div>
+      </section>
+
       <ManagedProviderUrlsSection />
+
+      <ChangePasswordDialog
+        initial={ownerPasswordPending}
+        open={ownerPasswordOpen}
+        onOpenChange={setOwnerPasswordOpen}
+        onDone={ownerPasswordSet}
+      />
 
       <Dialog
         open={editorOpen}
@@ -511,7 +615,7 @@ function OwnerAccountsTab() {
           {setup ? (
             <>
               <code
-                className="block select-all break-all rounded-lg border border-border/60 bg-muted/30 px-4 py-3 font-mono text-sm leading-relaxed"
+                className="block select-all break-all rounded-full border border-border/60 bg-muted/30 px-4 py-3 font-mono text-sm leading-relaxed"
                 data-testid="account-setup-code"
               >
                 {setup.setup_code}
@@ -584,6 +688,7 @@ function OwnerAccountsTab() {
                   variant="dark"
                   disabled={busy || !username.trim()}
                 >
+                  {!busy && <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />}
                   {busy && <Spinner label={t("common.loading")} />}
                   {t("settings.accounts.create")}
                 </Button>

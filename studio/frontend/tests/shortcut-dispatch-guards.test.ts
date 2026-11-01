@@ -205,7 +205,7 @@ test("route shortcuts stay idle while Settings is open", async () => {
   }
   assert.equal(
     enabledById.get("switchToTrain"),
-    "routeShortcutEnabled && !chatOnlyMeasured",
+    "routeShortcutEnabled && !trainBlocked",
   );
   assert.equal(
     enabledById.get("switchToVideo"),
@@ -464,7 +464,7 @@ test("selection and clipboard chords stop at a covered sidebar", async () => {
 
 // resolveNavRowState leaves pending rows enabled, so chords must match their rows.
 test("the workspace chords wait on the same verdict their rows do", async () => {
-  assert.match(SRC__ROOT, /enabled: routeShortcutEnabled && !chatOnlyMeasured,/);
+  assert.match(SRC__ROOT, /enabled: routeShortcutEnabled && !trainBlocked,/);
   assert.match(SRC__ROOT, /enabled: routeShortcutEnabled && !videoDisabled,/);
   const rowState = await readSrcAsync("components/nav-row-state.ts");
   assert.match(
@@ -479,7 +479,6 @@ test("the remaining chat-page chords stop at a covered surface", async () => {
     "cycleReasoningEffort",
     "increaseReasoningEffort",
     "decreaseReasoningEffort",
-    "toggleFastMode",
   ]) {
     const at = CHAT_PAGE.indexOf(`"${id}",`);
     assert.notEqual(at, -1, `${id} is gone`);

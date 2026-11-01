@@ -1,99 +1,30 @@
 # CodeQL code scanning (advanced setup; replaces the repository's default setup).
 #
 # Coverage matches default setup: the same four languages, the default query suite and the
-# remote threat model. Every push to main and the weekly schedule analyse all four, which keeps
-# main's baseline current for each language. GitHub warns against path filters on push for
-# CodeQL, since each analysis is compared with the previous commit's, so push has none.
-#
-# What changes is pull requests: a PR analyses only the languages whose files it touches. A
-# language the PR does not touch cannot gain or lose an alert, and its analysis on main stays
-# the reference. Anything the changes job cannot classify (the file list fails to load, more
-# than 3000 files, or this workflow itself changes) analyses all four.
+# remote threat model. It runs weekly and on manual dispatch only, not on pull requests or
+# pushes to main. On pull requests it queued twice per push (a language picker, then up to four
+# analyses) behind the shared runner queue, and on main every merge built and cached a new
+# overlay-base database. A weekly analysis of main keeps the alerts current at a fraction of the
+# runner slots; dispatch it by hand to check a change sooner.
 name: CodeQL
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   schedule:
     - cron: "17 4 * * 1"
   workflow_dispatch:
 
-# One group per ref, main included. On main a running analysis always finishes
-# (cancel-in-progress is PR-only), and a merge burst coalesces to the tip: GitHub keeps at most
-# one pending run per group and replaces it with the newest push. That is deliberate here, unlike
-# the test workflows: each analysis scans the whole tree, so the tip's analysis covers every
-# commit it supersedes, and alerts are compared with the last analysis of the branch, not the
-# previous commit. What per-commit analysis cost instead: on main each run saves a new
-# overlay-base database to the Actions cache (about 1.3 GB per commit across python and
-# javascript), and at 100+ commits a day that churn was evicting every other cache in the repo.
+# One group per ref. A dispatch while the weekly run is going waits for it rather than
+# cancelling it: each analysis scans the whole tree, so the later run covers the same commits.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  changes:
-    name: Languages to analyse
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      languages: ${{ steps.pick.outputs.languages }}
-    steps:
-      - name: Pick languages
-        id: pick
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT: ${{ github.event_name }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -uo pipefail
-          all='["actions","javascript-typescript","python","rust"]'
-          if [ "$EVENT" != "pull_request" ]; then
-            echo "languages=$all" >> "$GITHUB_OUTPUT"
-            echo "$EVENT: analysing all languages"
-            exit 0
-          fi
-          # The files API returns at most 3000 files; at that size, or on any error, analyse all.
-          if ! files=$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)'); then
-            echo "languages=$all" >> "$GITHUB_OUTPUT"
-            echo "could not list the PR's files: analysing all languages"
-            exit 0
-          fi
-          # grep reads a here-string, not a pipe: with pipefail, grep -q closing a pipe early
-          # makes the writer's SIGPIPE turn a match into a miss on long file lists.
-          count=$(grep -c . <<< "$files" || true)
-          if [ "$count" -ge 3000 ] || grep -qxE '\.github/workflows/codeql\.ya?ml|\.github/codeql/.*' <<< "$files"; then
-            echo "languages=$all" >> "$GITHUB_OUTPUT"
-            echo "$count files or a CodeQL config change: analysing all languages"
-            exit 0
-          fi
-          langs=()
-          has() { grep -qiE "$1" <<< "$files"; }
-          has '^\.github/(workflows|actions)/|(^|/)action\.ya?ml$' && langs+=(actions)
-          has '\.(js|jsx|mjs|cjs|ts|tsx|mts|cts|vue|html?|svelte)$|(^|/)(package(-lock)?\.json|tsconfig[^/]*\.json|jsconfig\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$' && langs+=(javascript-typescript)
-          has '\.pyi?$' && langs+=(python)
-          has '\.rs$|(^|/)Cargo\.(toml|lock)$' && langs+=(rust)
-          if [ "${#langs[@]}" -eq 0 ]; then
-            json='[]'
-          else
-            json=$(printf '"%s",' "${langs[@]}")
-            json="[${json%,}]"
-          fi
-          echo "languages=$json" >> "$GITHUB_OUTPUT"
-          echo "$count changed files: analysing $json"
-
   analyze:
     name: Analyze (${{ matrix.language }})
-    needs: changes
-    if: needs.changes.outputs.languages != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -104,16 +35,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: ${{ fromJSON(needs.changes.outputs.languages) }}
+        language: [actions, javascript-typescript, python, rust]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
         with:
           languages: ${{ matrix.language }}
           build-mode: none
-      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
         with:
           category: "/language:${{ matrix.language }}"
 
@@ -127,16 +58,16 @@ jobs:
   # match by the prefix up to the CodeQL version and take the newest entry, so every older
   # generation under the same prefix answers nothing and only holds budget.
   #
-  # cache-janitor.yml applies the same keep-1 rule, but it runs on a schedule and queued for
-  # hours behind merge bursts while each analysed push added about 1.3 GB, which is what pushed
-  # the repo to its 50 GiB ceiling and made GitHub evict everything else. Pruning here bounds the
-  # family at write time; the janitor stays as the backstop. A separate job so actions: write is
+  # cache-janitor.yml applies the same keep-1 rule on its own schedule. When CodeQL analysed
+  # every push to main, each one added about 1.3 GB and the janitor fell behind, which is what
+  # pushed the repo to its 50 GiB ceiling. Pruning here bounds the family at write time; the
+  # janitor stays as the backstop. A separate job so actions: write is
   # granted to this one shell step and never to the CodeQL action.
   prune-overlay-bases:
     name: Prune superseded CodeQL overlay bases
     needs: analyze
-    # Not on pull requests: PR analyses restore an overlay base but never save one.
-    if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.analyze.result != 'skipped' }}
+    # Only main saves overlay bases; a dispatch on another branch has nothing to prune.
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.analyze.result != 'skipped' }}
     # A rarely requested hosted label, so this API-only job starts in minutes while the
     # ubuntu-latest queue is hours deep. It needs only gh and coreutils, both on the image.
     runs-on: ubuntu-24.04-arm

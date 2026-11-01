@@ -11,23 +11,21 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useChatFavoritesStore } from "@/features/library/chats/favorites-store";
 import { useT } from "@/i18n";
-import { StarPointedIcon } from "@/lib/hugeicons-derived";
+import { Settings01Icon, StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
-  Delete02Icon,
   Download01Icon,
-  FolderExportIcon,
   LayerIcon,
   PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
-  Settings02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderExportIcon } from "@/lib/folder-icons";
 import { type IconSvgElement, HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import { useFileProjectInSection } from "../hooks/use-file-project-in-section";
@@ -57,10 +55,6 @@ function Item({
   );
 }
 
-/**
- * The Library's project menu, for the project's home and the Projects page. With onNewChat it
- * opens with it and the folder, as in the Library; the home puts the folder under Export.
- */
 export function ProjectMenuItems({
   project,
   chatCount,
@@ -113,7 +107,7 @@ export function ProjectMenuItems({
           <DropdownMenuSeparator />
         </>
       )}
-      <Item icon={Settings02Icon} onSelect={onEdit}>
+      <Item icon={Settings01Icon} onSelect={onEdit}>
         {t("library.chats.menu.edit")}
       </Item>
       <Item icon={pinned ? PinOffIcon : PinIcon} onSelect={() => togglePin(project.id)}>
@@ -128,7 +122,6 @@ export function ProjectMenuItems({
         <span>{t(favorite ? "library.menu.removeFromFavorites" : "library.menu.addToFavorites")}</span>
       </DropdownMenuItem>
       <DropdownMenuSeparator />
-      {/* Sections only: projects never nest. */}
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
           <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
@@ -183,7 +176,7 @@ export function ProjectMenuItems({
       </Item>
       {!opening && <OpenProjectFolderItem projectId={project.id} />}
       <DropdownMenuSeparator />
-      <Item icon={Delete02Icon} destructive onSelect={onDelete}>
+      <Item icon={TrashIcon} destructive onSelect={onDelete}>
         {t("library.chats.menu.deleteProject")}
       </Item>
     </>

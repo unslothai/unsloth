@@ -139,7 +139,7 @@ test("Expand thinking ends in a chevron: right while bounded, up once expanded",
   );
   assert.match(
     tail,
-    /\{expanded \? "Collapse thinking" : "Expand thinking"\}\s*<ChevronDownIcon[\s\S]*?expanded \? "-rotate-180" : "-rotate-90"/,
+    /\{expanded \? "Collapse thinking" : "Expand thinking"\}\s*<HugeiconsIcon\s+icon=\{ChevronDownStandardIcon\}[\s\S]*?expanded \? "-rotate-180" : "-rotate-90"/,
   );
 });
 

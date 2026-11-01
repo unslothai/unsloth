@@ -15,11 +15,7 @@ def get_personalization() -> dict:
 
 
 def drop_unknown_palette(stored: dict, palettes: frozenset[str]) -> dict:
-    """Drop a stored palette this build does not know, so it reads as unset.
-
-    A theme picked on a newer build, or one since removed, would otherwise fail
-    validation and take the whole personalization response down with it.
-    """
+    """A palette from a newer build would fail validation and break the whole personalization response."""
     appearance = stored.get("appearance")
     if not isinstance(appearance, dict) or appearance.get("palette", "standard") in palettes:
         return stored

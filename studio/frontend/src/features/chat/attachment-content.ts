@@ -40,8 +40,6 @@ export { TEXT_ATTACHMENT_ACCEPT };
 export type AttachmentText = {
   label: AttachmentTextLabel | null;
   text: string;
-  // True when the file was only read up to the preview cap, so the dialog can say so even if
-  // the extracted text ends up short.
   truncated: boolean;
 };
 
@@ -61,11 +59,8 @@ const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
 const MAX_ATTACHMENT_WRAPPER_LENGTH = 4096;
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-// mammoth picks the parts it parses out of the relationships, not the filenames, so a target
-// may be called anything and still be parsed as XML, while an .xml part nothing points at
-// is never opened. The bound therefore follows docx-reader.js: the two package parts it
-// always reads plus the five resolved out of those relationships, each with mammoth's own
-// "word/<name>.xml" fallback. Image targets stay lazy and are never read by extractRawText.
+// mammoth picks parts from the relationships, not filenames, so the bound follows docx-reader.js:
+// two package parts plus the five resolved targets, each with its "word/<name>.xml" fallback.
 const DOCX_CONTENT_TYPES_PART = "[Content_Types].xml";
 const DOCX_PACKAGE_RELATIONSHIPS = "_rels/.rels";
 const DOCX_RELATIONSHIP_NAMESPACE =
@@ -78,17 +73,13 @@ const DOCX_RELATED_PART_NAMES = [
   "numbering",
   "styles",
 ];
-// readXmlFileWithBody opens the relationships of every part it reads a body from, so these
-// three carry a .rels part of their own.
+// readXmlFileWithBody opens each body part's relationships, so these carry their own .rels.
 const DOCX_BODY_PART_NAMES = new Set(["comments", "endnotes", "footnotes"]);
 const DOCX_MAIN_DOCUMENT_FALLBACK = "word/document.xml";
-// A <Relationship> tag with the element prefix mammoth's namespace mapping accepts, skipping
-// any ">" that sits inside an attribute value.
+// Matches the prefixes mammoth's namespace mapping accepts, skipping ">" inside attributes.
 const DOCX_RELATIONSHIP_TAG_RE =
   /<(?:[^\s/>"'=]+:)?Relationship(?=[\s/>])(?:"[^"]*"|'[^']*'|[^"'>])*>/g;
-// Attribute names are matched by consuming whole name="value" pairs, so a value containing
-// Target= cannot be mistaken for an attribute. mammoth reads child.attributes.Target,
-// which a prefixed r:Target never populates, so prefixed names are not accepted.
+// Whole name="value" pairs, so a value containing Target= is not an attribute; mammoth ignores r:Target.
 const XML_ATTRIBUTE_RE = /([^\s/>"'=]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
 /** Non-element markup: a `<Relationship>` inside a comment, CDATA section or processing
  *  instruction is text to mammoth's parser, and each ends at its first delimiter. */
@@ -102,11 +93,8 @@ const XML_NAMED_ENTITIES: Record<string, string> = {
   quot: '"',
   apos: "'",
 };
-/** Ceiling on everything a DOCX unpacks to, and why mammoth never sees the file the user
- *  chose. jszip takes each part's size from the central directory and inflates it in full
- *  before anything can reject it, so an entry declaring 1 KB that expands to 1 GB exhausts
- *  the webview. fflate allocates at the declared size and stops, so mammoth is handed a
- *  repack of fflate's output. */
+/** jszip inflates each part fully before anything can reject it (zip bombs), so mammoth gets a
+ *  repack of fflate's declared-size output. */
 const MAX_DOCX_UNPACKED_BYTES = 2 * MAX_OPEN_DOCUMENT_ARCHIVE_BYTES;
 const MAX_DOCX_ENTRIES = 100_000;
 const AUDIO_EXTENSION_MIMES: Record<string, string> = {
@@ -416,16 +404,12 @@ const CODE_ATTACHMENT_LANGUAGES: Record<string, string> = {
   zig: "zig",
   zsh: "shellscript",
 };
-// Long attachments still render inside a dialog, so the preview stops well before a single
-// <pre> stalls the webview.
+// Cap so a single huge <pre> does not stall the webview.
 const MAX_PREVIEW_TEXT_LENGTH = 200_000;
-// Text and HTML have no upload size limit, so a preview reads a bounded slice. Five bytes
-// per character keeps the slice past the character cap for any UTF-8 input, so truncation
-// is still detected.
+// 5 bytes per char keeps the slice past the char cap for any UTF-8, so truncation is detected.
 const MAX_PREVIEW_TEXT_BYTES = MAX_PREVIEW_TEXT_LENGTH * 5;
 
-/** Own-property lookup: an extension or entity named "constructor" would otherwise resolve to
- *  a member of Object.prototype. */
+/** Own-property lookup, so "constructor" does not resolve to Object.prototype. */
 function lookUp(
   table: Record<string, string>,
   key: string,
@@ -443,8 +427,7 @@ export function isAudioAttachment(
   );
 }
 
-// The audio part keeps only the coarse format the backend needs, so the content type wins,
-// then the extension for uploads the browser typed as empty, then the part format.
+// Prefer content type, then extension for empty browser types, then the part format.
 export function attachmentAudioSrc(
   audio: { data: string; format: string },
   contentType: string | undefined,
@@ -502,10 +485,7 @@ export function isRtfAttachment(
   );
 }
 
-// CompositeAttachmentAdapter selects the first matching accept string. Text comes before the
-// document-specific adapters, so previews must apply the same MIME-or-extension match
-// before looking at PDF/DOCX/HTML names.
-/** Whether the text adapter claims the file; it runs before the document ones. */
+// CompositeAttachmentAdapter takes the first matching accept, and text comes before documents.
 export function isTextAttachment(
   name: string,
   contentType: string | undefined,
@@ -524,10 +504,8 @@ export function isTextAttachment(
   });
 }
 
-// unpdf and mammoth decode the whole file on the main thread, so both refuse a document past
-// the OpenDocument ceiling, and refuse before the read. The adapters call this from add()
-// too: the composer clears text and attachments before awaiting send(), so a throw there
-// loses the typed message along with the file.
+// Refuse oversized documents before reading (decoded on the main thread), also from add(): the
+// composer clears the message before awaiting send().
 export function getDocumentAttachmentSizeError(
   file: File,
   label: "PDF" | "DOCX" | "XLSX" | "PPTX",
@@ -555,8 +533,7 @@ function joinDocxPath(basePath: string, target: string): string {
   return joined.startsWith("/") ? joined.slice(1) : joined;
 }
 
-// XML attribute values are entity-decoded by the parser mammoth uses, so a target only
-// matches the archive once decoded.
+// mammoth's parser entity-decodes attributes, so targets match the archive only once decoded.
 function decodeXmlEntities(value: string): string {
   return value.replace(XML_ENTITY_RE, (match, decimal, hex, name) => {
     const code = decimal
@@ -571,10 +548,8 @@ function decodeXmlEntities(value: string): string {
   });
 }
 
-// The relationship parts are XML, but only their targets are needed, so they are scanned
-// rather than parsed: DOMParser is not available under test, and a malformed rels file is
-// mammoth's to report. The scan accepts every attribute form mammoth's parser resolves, so
-// a crafted rels file cannot hide a target from the bound below.
+// Scanned, not parsed (no DOMParser under test); accepts every attribute form mammoth resolves so
+// a crafted rels file cannot hide a target.
 function readDocxXmlTargets(
   rels: Uint8Array | undefined,
   basePath: string,
@@ -616,17 +591,13 @@ function docxRelationshipsPath(path: string): string {
 
 type DocxArchive = {
   entries: Unzipped;
-  /** Every name the central directory declares, unpacked entries included, so a target resolves
-   *  the way findPartPath resolves it. */
+  /** All central-directory names, so targets resolve the way findPartPath resolves them. */
   names: Set<string>;
   oversized: Set<string>;
 };
 
-/** Inflates the archive under fflate's declared-size allocation. An entry past the XML ceiling
- *  is left out rather than refused: mammoth opens the package parts and whatever the
- *  relationships point at, so a large unreferenced part must still preview.
- *  `assertDocxPartSizes` refuses the ones mammoth would have parsed. `keepLarge` keeps them
- *  (still marked oversized) for the viewer, which needs large images as well as text. */
+/** Entries past the XML ceiling are left out rather than refused (unreferenced parts must still
+ *  preview); `assertDocxPartSizes` refuses the ones mammoth parses. */
 const DOCX_IMAGE_PART = /\.(png|jpe?g|gif|bmp|tiff?|emf|wmf|svg|webp)$/i;
 
 function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => boolean; used: Set<string> } {
@@ -753,8 +724,7 @@ function assertDocxPartSizes(filename: string, archive: DocxArchive): string {
   return mainDocument;
 }
 
-/** The archive mammoth is given: fflate's own output, so a part that lies about its size
- *  arrives truncated rather than inflated in full. */
+/** fflate's own output, so a part lying about its size arrives truncated, not inflated. */
 export function repackDocxAttachmentArchive(
   filename: string,
   bytes: Uint8Array,
@@ -762,6 +732,41 @@ export function repackDocxAttachmentArchive(
   const archive = unpackDocxEntries(filename, bytes);
   assertDocxPartSizes(filename, archive);
   return zipSync(archive.entries, { level: 0 });
+}
+
+type DocxPartSelect = (keep: (name: string, size: number) => boolean) => Record<string, Uint8Array>;
+
+function archiveParts(archive: Uint8Array): DocxPartSelect {
+  return (keep) => unzipSync(archive, { filter: (entry) => keep(entry.name, entry.originalSize) });
+}
+
+function rezipDocx(archive: Uint8Array, rewritten: Record<string, Uint8Array> | null): Uint8Array {
+  return rewritten ? zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 }) : archive;
+}
+
+// fflate takes the 4 bytes 20 before the end record as a zip64 locator; its own output puts the last offset or name there.
+const ZIP64_LOCATOR = "PK\u0006\u0007";
+const ZIP64_LOCATOR_OFFSET_FLOOR = 0x06000000;
+
+/** The entries when `unzipSync(zipSync(entries))` returns them unchanged, else null. */
+function repackedDocxParts(entries: Unzipped): Record<string, Uint8Array> | null {
+  if (Object.getPrototypeOf(entries) !== Object.prototype) return null;
+  const names = Object.keys(entries);
+  if (names.length >= 65535) return null;
+  let offset = 0;
+  for (const name of names) {
+    const encoded = strToU8(name);
+    offset += 30 + encoded.length + entries[name].length;
+    if (
+      encoded.length > 65535 ||
+      strFromU8(encoded) !== name ||
+      name.includes(ZIP64_LOCATOR) ||
+      offset >= ZIP64_LOCATOR_OFFSET_FLOOR
+    ) {
+      return null;
+    }
+  }
+  return entries;
 }
 
 const WORDPROCESSINGML_NAMESPACES = new Set([
@@ -884,8 +889,12 @@ function docxMathText(element: Element, w: string): string {
 
 /** Each equation becomes a plain run where it sits; extractRawText drops OMML. */
 export function linearizeDocxMath(archive: Uint8Array): Uint8Array {
+  return rezipDocx(archive, linearizeDocxMathParts(archiveParts(archive)));
+}
+
+function linearizeDocxMathParts(select: DocxPartSelect): Record<string, Uint8Array> | null {
   const rewritten: Record<string, Uint8Array> = {};
-  const parts = unzipSync(archive, { filter: (entry) => entry.name.endsWith(".xml") });
+  const parts = select((name) => name.endsWith(".xml"));
   for (const [name, bytes] of Object.entries(parts)) {
     const xml = strFromU8(bytes);
     if (!xml.includes("oMath")) continue;
@@ -919,16 +928,19 @@ export function linearizeDocxMath(archive: Uint8Array): Uint8Array {
     visit(doc);
     if (found) rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
   }
-  if (!Object.keys(rewritten).length) return archive;
-  return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
+  return Object.keys(rewritten).length ? rewritten : null;
 }
 
 const W14_NAMESPACE = "http://schemas.microsoft.com/office/word/2010/wordml";
 const DOCX_BREAK_OR_CHECKBOX_RE = /<(?:[\w.-]+:)?(?:br|cr|checkbox|checkBox)[\s/>]/;
 
 export function writeDocxBreaksAndCheckboxes(archive: Uint8Array): Uint8Array {
+  return rezipDocx(archive, writeDocxBreakAndCheckboxParts(archiveParts(archive)));
+}
+
+function writeDocxBreakAndCheckboxParts(select: DocxPartSelect): Record<string, Uint8Array> | null {
   const rewritten: Record<string, Uint8Array> = {};
-  const parts = unzipSync(archive, { filter: (entry) => entry.name.endsWith(".xml") });
+  const parts = select((name) => name.endsWith(".xml"));
   for (const [name, bytes] of Object.entries(parts)) {
     const xml = strFromU8(bytes);
     if (!DOCX_BREAK_OR_CHECKBOX_RE.test(xml)) continue;
@@ -974,15 +986,18 @@ export function writeDocxBreaksAndCheckboxes(archive: Uint8Array): Uint8Array {
     for (const br of breaks) br.parentNode?.replaceChild(text("\n"), br);
     if (boxes.length || breaks.length) rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
   }
-  if (!Object.keys(rewritten).length) return archive;
-  return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
+  return Object.keys(rewritten).length ? rewritten : null;
 }
 
 const DOCX_TABLE_RE = /<(?:[\w.-]+:)?tbl[\s>]/;
 
 export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
+  return rezipDocx(archive, writeDocxTableRowParts(archiveParts(archive)));
+}
+
+function writeDocxTableRowParts(select: DocxPartSelect): Record<string, Uint8Array> | null {
   const rewritten: Record<string, Uint8Array> = {};
-  const parts = unzipSync(archive, { filter: (entry) => entry.name.endsWith(".xml") });
+  const parts = select((name) => name.endsWith(".xml"));
   for (const [name, bytes] of Object.entries(parts)) {
     const xml = strFromU8(bytes);
     if (!DOCX_TABLE_RE.test(xml)) continue;
@@ -1057,8 +1072,7 @@ export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
     }
     rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
   }
-  if (!Object.keys(rewritten).length) return archive;
-  return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
+  return Object.keys(rewritten).length ? rewritten : null;
 }
 
 function listNumber(n: number, format: string | undefined): string {
@@ -1089,14 +1103,22 @@ function wordValue(node: Element | undefined, name: string): string | undefined 
 // Labels are an extra: a numbering part this cannot read leaves the text as Mammoth reads it.
 export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
   try {
-    return injectDocxListNumbers(archive);
+    return rezipDocx(archive, injectDocxListNumbers(archiveParts(archive)));
   } catch {
     return archive;
   }
 }
 
-function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
-  const parts = unzipSync(archive, { filter: (entry) => /\.(?:xml|rels)$/.test(entry.name) });
+function writeDocxListNumberParts(select: DocxPartSelect): Record<string, Uint8Array> | null {
+  try {
+    return injectDocxListNumbers(select);
+  } catch {
+    return null;
+  }
+}
+
+function injectDocxListNumbers(select: DocxPartSelect): Record<string, Uint8Array> | null {
+  const parts = select((name) => /\.(?:xml|rels)$/.test(name));
   const resolve = (targets: string[] | undefined, fallback: string) =>
     targets?.find((path) => Object.hasOwn(parts, path)) ?? fallback;
   const main = resolve(readDocxXmlTargets(parts[DOCX_PACKAGE_RELATIONSHIPS], "").get(DOCX_MAIN_DOCUMENT_TYPE), DOCX_MAIN_DOCUMENT_FALLBACK);
@@ -1112,7 +1134,7 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   const related = (name: string) => parse(resolve(targets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`), `word/${name}.xml`));
   const numbering = related("numbering");
   const body = numbering && parse(main);
-  if (!numbering || !body) return archive;
+  if (!numbering || !body) return null;
 
   const byId = (parent: Element, ns: string, name: string, id: string) =>
     new Map(childElements(parent, ns, name).map((node) => [node.getAttributeNS(ns, id) ?? "", node]));
@@ -1279,15 +1301,15 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   for (const p of paragraphs) {
     const pPr = childElements(p, w, "pPr")[0];
     label(p, pPr);
-    if (budget < 0) return archive;
+    if (budget < 0) return null;
     // w15:restartNumberingAfterBreak
     if (pPr && restartable.size && childElements(pPr, w, "sectPr").length) {
       for (const id of restartable) counters.delete(id);
       restartable.clear();
     }
   }
-  if (!found) return archive;
-  return zipSync({ ...unzipSync(archive), [main]: strToU8(new XMLSerializer().serializeToString(doc)) }, { level: 0 });
+  if (!found) return null;
+  return { [main]: strToU8(new XMLSerializer().serializeToString(doc)) };
 }
 
 const DOCX_NOTE_REFERENCE_RE =
@@ -1322,13 +1344,22 @@ export function markDocxNotes(archive: Uint8Array): {
   archive: Uint8Array;
   label: (text: string) => string;
 } {
+  const { rewritten, label } = markDocxNoteParts(archiveParts(archive));
+  if (!rewritten) return { archive, label };
+  const entries: Record<string, Uint8Array> = unzipSync(archive);
+  for (const [name, bytes] of Object.entries(rewritten)) entries[name] = bytes;
+  return { archive: zipSync(entries, { level: 0 }), label };
+}
+
+function markDocxNoteParts(select: DocxPartSelect): {
+  rewritten: Record<string, Uint8Array> | null;
+  label: (text: string) => string;
+} {
   const names = new Set<string>();
   const read = (name: string) =>
-    unzipSync(archive, {
-      filter: (entry) => {
-        names.add(entry.name);
-        return entry.name === name;
-      },
+    select((entry) => {
+      names.add(entry);
+      return entry === name;
     })[name];
   const targetsOf = (path: string) =>
     readDocxXmlTargets(
@@ -1378,7 +1409,7 @@ export function markDocxNotes(archive: Uint8Array): {
     }
   }
   if (!kinds.footnote.bodies.size && !kinds.endnote.bodies.size) {
-    return { archive, label: (text) => text };
+    return { rewritten: null, label: (text) => text };
   }
 
   const refs: { kind: keyof typeof kinds; id: string }[] = [];
@@ -1442,10 +1473,8 @@ export function markDocxNotes(archive: Uint8Array): {
     }
     return body + sections.join("\n\n");
   };
-  if (!refs.length) return { archive, label };
-  const entries = unzipSync(archive);
-  entries[main] = strToU8(markedXml);
-  return { archive: zipSync(entries, { level: 0 }), label };
+  if (!refs.length) return { rewritten: null, label };
+  return { rewritten: { [main]: strToU8(markedXml) }, label };
 }
 
 const XML_TOKEN_RE =
@@ -1591,9 +1620,7 @@ function addKeptDocxImages(bytes: Uint8Array, archive: DocxArchive, mainDocument
   Object.assign(archive.entries, images);
 }
 
-/** The bytes of a view, as an ArrayBuffer, without copying when it owns one. jszip reads the
- *  whole buffer and looks for the end-of-directory record at its tail, so a view that does
- *  not span its buffer would arrive as a corrupt archive. */
+/** jszip looks for the end-of-directory at the buffer's tail, so a partial view reads as corrupt. */
 function toArrayBuffer(view: Uint8Array): ArrayBuffer {
   const spansBuffer =
     view.byteOffset === 0 && view.byteLength === view.buffer.byteLength;
@@ -1612,9 +1639,7 @@ function isDocxSizeError(error: unknown): boolean {
   );
 }
 
-/** The verdict add() needs before the attachment exists. The composer clears its text and
- *  attachments before it awaits send(), so a DOCX that only fails there discards the typed
- *  message along with the file. */
+/** Before the attachment exists: the composer clears the message before awaiting send(). */
 export async function getDocxAttachmentError(
   file: File,
 ): Promise<string | null> {
@@ -1680,8 +1705,7 @@ function pdfFormFieldLines(
     if (!fieldName || !value.trim() || unchecked || hidden || password) {
       continue;
     }
-    // The tooltip (/TU) is the human label behind codes like f1_01[0]; a radio
-    // widget's tooltip names one option, not the group's selected value.
+    // A radio widget's /TU tooltip names one option, not the group's selected value.
     const tooltip = radioButton ? "" : alternativeText;
     const label = tooltip?.replace(/\s+/g, " ").trim() || fieldName;
     fields.set(fieldName, `${label}: ${value}`);
@@ -1807,17 +1831,41 @@ export async function extractOfficeAttachmentText(
 
 export async function extractDocxAttachmentText(file: File): Promise<string> {
   assertDocumentAttachmentSize(file, "DOCX");
-  const [{ mammoth, writeDocxSymbols }, buffer] = await Promise.all([
+  const [{ mammoth, writeDocxSymbolParts, writeDocxSymbols }, buffer] = await Promise.all([
     import("./docx-reader"),
     file.arrayBuffer(),
   ]);
-  const repacked = repackDocxAttachmentArchive(
-    file.name,
-    new Uint8Array(buffer),
-  );
-  const marked = markDocxNotes(linearizeDocxMath(writeDocxSymbols(repacked, MAX_OPEN_DOCUMENT_XML_BYTES)));
+  const unpacked = unpackDocxEntries(file.name, new Uint8Array(buffer));
+  assertDocxPartSizes(file.name, unpacked);
+  let parts: Record<string, Uint8Array> | null = repackedDocxParts(unpacked.entries);
+  if (!parts) {
+    const repacked = zipSync(unpacked.entries, { level: 0 });
+    const marked = markDocxNotes(linearizeDocxMath(writeDocxSymbols(repacked, MAX_OPEN_DOCUMENT_XML_BYTES)));
+    const { value } = await mammoth.extractRawText({
+      arrayBuffer: toArrayBuffer(writeDocxTableRows(writeDocxBreaksAndCheckboxes(writeDocxListNumbers(marked.archive)))),
+    });
+    return marked.label(value);
+  }
+  // Each rewrite reads the parts the one before it left, as it would from the rezipped archive.
+  const select: DocxPartSelect = (keep) => {
+    const picked: Record<string, Uint8Array> = {};
+    for (const [name, bytes] of Object.entries(parts!)) {
+      if (keep(name, bytes.length)) picked[name] = bytes;
+    }
+    return picked;
+  };
+  const apply = (rewritten: Record<string, Uint8Array> | null) => {
+    if (rewritten) parts = { ...parts, ...rewritten };
+  };
+  apply(writeDocxSymbolParts(select, MAX_OPEN_DOCUMENT_XML_BYTES));
+  apply(linearizeDocxMathParts(select));
+  const marked = markDocxNoteParts(select);
+  apply(marked.rewritten);
+  apply(writeDocxListNumberParts(select));
+  apply(writeDocxBreakAndCheckboxParts(select));
+  apply(writeDocxTableRowParts(select));
   const { value } = await mammoth.extractRawText({
-    arrayBuffer: toArrayBuffer(writeDocxTableRows(writeDocxBreaksAndCheckboxes(writeDocxListNumbers(marked.archive)))),
+    arrayBuffer: toArrayBuffer(zipSync(parts, { level: 0 })),
   });
   return marked.label(value);
 }
@@ -1957,6 +2005,9 @@ function collectHtmlBlockText(
   const tag = element.tagName.toLowerCase();
   if (tag === "br") {
     return "\n";
+  }
+  if (tag === "input" && /^(checkbox|radio)$/i.test(element.getAttribute("type") ?? "")) {
+    return element.hasAttribute("checked") ? " ☒ " : " ☐ ";
   }
 
   if (tag === "pre" && preformatted) {
@@ -2121,9 +2172,7 @@ export async function readAttachmentText(
   return { label: null, ...(await readBoundedText(file)) };
 }
 
-// Formats that state their own encoding somewhere other than the first bytes: a
-// gettext header sits below the translator comments, and a mail or vCard
-// declaration below whatever came before it in the archive.
+// Formats that declare their encoding beyond the first bytes (gettext, mail, vCard).
 const DECLARES_ITS_CHARSET_RE = /\.(?:po|pot|eml|mbox|vcf)$/i;
 
 async function readBoundedText(
@@ -2131,18 +2180,13 @@ async function readBoundedText(
 ): Promise<{ text: string; truncated: boolean }> {
   const truncated = file.size > MAX_PREVIEW_TEXT_BYTES;
   const slice = truncated ? file.slice(0, MAX_PREVIEW_TEXT_BYTES) : file;
-  // Strict decoding belongs to the files the text adapter owns, where refusing is better than
-  // sending mojibake to the model. A preview of someone else's file may not be stricter than the
-  // adapter that accepted it: .html goes to the HTML adapter, which sends a windows-1252 page
-  // happily, and reading the preview through the strict path meant opening one threw where it used
-  // to render.
+  // Strict decoding only for files the text adapter owns; a preview may not be stricter than the
+  // adapter that accepted the file.
   if (!isTextAttachmentName(file.name)) {
     return { text: await slice.text(), truncated };
   }
   const bytes = new Uint8Array(await slice.arrayBuffer());
-  // The declaration can sit past the preview slice, and looking for it inside
-  // the slice reported an error for a file the attachment itself decodes. Only
-  // the formats that can carry one that far in pay for the second read.
+  // The declaration can sit past the preview slice, so only these formats pay for a full read.
   const whole =
     truncated && DECLARES_ITS_CHARSET_RE.test(file.name)
       ? new Uint8Array(await file.arrayBuffer())
