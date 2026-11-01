@@ -318,6 +318,13 @@ def test_eligibility_reasons():
     assert "trainable" in FL.eligible_base(torch.nn.Linear(64, 64).bfloat16())
     assert "dtype" in FL.eligible_base(torch.nn.Linear(64, 64).requires_grad_(False))
     assert FL.eligible_base(torch.nn.Linear(64, 64).bfloat16().requires_grad_(False)) is None
+    sub = torch.nn.Linear(64, 64).bfloat16().requires_grad_(False)
+
+    class _Sub(torch.Tensor):
+        pass
+
+    sub.weight = torch.nn.Parameter(sub.weight.detach().as_subclass(_Sub), requires_grad = False)
+    assert "_Sub" in FL.eligible_base(sub)
 
 
 # ---- torch.compile ---------------------------------------------------------------------------------------

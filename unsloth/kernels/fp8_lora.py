@@ -343,6 +343,9 @@ def eligible_base(module) -> Optional[str]:
     if type(module) is not torch.nn.Linear:
         return f"{type(module).__name__} is not a plain nn.Linear"
     weight = module.weight
+    if type(weight) not in (torch.Tensor, torch.nn.Parameter):
+        # DTensor (FSDP2 / TP shards), tensor subclasses: the cached fp8 copy would be a local shard.
+        return f"weight is a {type(weight).__name__}"
     if weight.dtype not in (torch.bfloat16, torch.float16):
         return f"weight dtype {weight.dtype}"
     if weight.requires_grad:
