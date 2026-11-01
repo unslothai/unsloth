@@ -1132,6 +1132,11 @@ def query_from(
     moe, _ = _moe(model)
     router_aux_loss = _aux_loss_on(model, args, _trainer_kind(trainer_cls))
     packing = bool(getattr(args, "packing", False) or getattr(args, "padding_free", False))
+    backend = cp_backend if cp_backend is not None else getattr(layout, "cp_backend", None)
+    if packing and backend == "ring" and _trainer_kind(trainer_cls) == "sft":
+        # Unsloth's SFTTrainer turns packing off for ring with a notice (trainer.py), inside the __init__ this
+        # check runs before: the released behaviour, not a refusal.
+        packing = False
     kernels = _kernels(model)
     return Query(
         trainer = _trainer_kind(trainer_cls),
@@ -1141,7 +1146,7 @@ def query_from(
         windowed = windowed,
         mode = mode,
         packing = packing,
-        cp_backend = cp_backend if cp_backend is not None else getattr(layout, "cp_backend", None),
+        cp_backend = backend,
         torch = _torch_version(),
         sm = _sm(),
         dp = getattr(layout, "dp", 1),

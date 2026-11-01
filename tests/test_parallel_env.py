@@ -1438,3 +1438,21 @@ def test_cp_x_tp_never_turns_padding_free_on_automatically(clean_env, monkeypatc
     config = SimpleNamespace(packing = True, padding_free = None, max_length = 64)
     _auto_packing(monkeypatch, config, _Packable(4))
     assert config.packing is True
+
+
+def test_sft_ring_packing_reaches_the_released_fallback():
+    # Failing before: the pre-init capability check refused ring x packing for SFT before the SFT wrapper could
+    # turn packing off with its notice (the released behaviour), for explicit ring and for auto choosing ring.
+    from types import SimpleNamespace
+
+    from unsloth import parallel_capabilities as caps
+
+    class SFTTrainer:
+        pass
+
+    layout = SimpleNamespace(dp = 1, tp = 1, pp = 1, cp = 2, fsdp2 = False, cp_backend = None, schedule = None)
+    args = SimpleNamespace(packing = True, padding_free = None)
+    caps.check_layout(layout, SFTTrainer, None, args, cp_backend = "ring")
+    # Other trainers have no such fallback: still refused before anything runs.
+    with pytest.raises(NotImplementedError, match = "ring context parallel with packed rows"):
+        caps.check_layout(layout, None, None, args, cp_backend = "ring")
