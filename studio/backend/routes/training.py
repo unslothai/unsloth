@@ -4349,8 +4349,7 @@ async def upload_diffusion_dataset(
 
 
 async def _run_holding_import_lock(_lock: "threading.Lock", fn, *args):
-    """Runs ``fn(*args, _lock, cancelled)`` on a worker thread that releases the acquired ``_lock`` itself,
-    so a cancelled request never frees the lock under a running import."""
+    """Runs ``fn(*args, _lock, cancelled)`` on a worker that releases ``_lock``, so a cancel never frees it mid-import."""
     cancelled = threading.Event()
     guard = threading.Lock()
     started = False
@@ -4372,8 +4371,7 @@ async def _run_holding_import_lock(_lock: "threading.Lock", fn, *args):
             if not started:
                 _lock.release()
                 raise
-        # Hold the request (and with it the training interlock and the open uploads) until the
-        # worker stops; it checks ``cancelled`` at its next chunk read, so the wait is bounded.
+        # Keep the request (interlock, open uploads) alive until the worker stops at its next chunk read.
         while not worker.done():
             try:
                 await asyncio.shield(worker)

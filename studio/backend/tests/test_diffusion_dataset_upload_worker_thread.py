@@ -61,7 +61,7 @@ def test_other_requests_are_served_while_an_upload_works(app, ds_root, monkeypat
     real_summary = training._diffusion_dataset_summary
 
     def slow_summary(folder):
-        time.sleep(0.4)  # stands in for a large folder's caption reads
+        time.sleep(0.4)
         return real_summary(folder)
 
     monkeypatch.setattr(training, "_diffusion_dataset_summary", slow_summary)
@@ -164,7 +164,6 @@ def test_cancel_during_staging_rolls_back(ds_root):
     with pytest.raises(asyncio.CancelledError):
         training._store_diffusion_dataset_upload(folder, "newset", files, True, lock, cancelled)
     assert not lock.locked()
-    # create_only made the folder, so the cancel removes it.
     assert not folder.exists()
 
 
