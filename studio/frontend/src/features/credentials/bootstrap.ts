@@ -21,3 +21,32 @@ export function bootstrapPersistedCredentials(): Promise<void> {
     isCurrent,
   });
 }
+
+let startupBootstrap: { sessionEpoch: number; run: Promise<void> } | null =
+  null;
+let startupBootstrapRequested = false;
+
+/** Starts the gate's first run with the entry, so it overlaps the route checks. Once per page. */
+export function startStartupCredentialBootstrap(): void {
+  if (startupBootstrapRequested) return;
+  startupBootstrapRequested = true;
+  if (!hasAuthToken()) return;
+  startupBootstrap = {
+    sessionEpoch: getAuthSessionEpoch(),
+    run: bootstrapPersistedCredentials(),
+  };
+}
+
+/** The run the entry started, once, while it still belongs to this session. */
+export function takeStartupCredentialBootstrap(): Promise<void> | null {
+  const startup = startupBootstrap;
+  startupBootstrap = null;
+  if (
+    startup &&
+    hasAuthToken() &&
+    getAuthSessionEpoch() === startup.sessionEpoch
+  ) {
+    return startup.run;
+  }
+  return null;
+}

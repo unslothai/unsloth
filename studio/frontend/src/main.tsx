@@ -20,7 +20,12 @@ import {
 } from "./components/assistant-ui/reasoning-row-containment";
 import { fetchDeviceType } from "./config/env";
 import { refreshSession } from "./features/auth/api";
-import { getPostAuthRoute, hasAuthToken } from "./features/auth/session";
+import {
+  getPostAuthRoute,
+  hasAuthToken,
+  hasSettledAuthSession,
+} from "./features/auth/session";
+import { startStartupCredentialBootstrap } from "./features/credentials/bootstrap";
 import { loadChatPage, prefetchChatPage } from "./features/chat/load-chat-page";
 import {
   applyInterfaceScaleBeforeFirstPaint,
@@ -130,3 +135,14 @@ if (typeof localeInitialization !== "string" || isTauri || chatPageAtStart) {
 }
 
 fetchDeviceType().catch(() => undefined);
+
+// The workspace gate waits on this run; starting it here overlaps the route checks.
+// Desktop signs in again once its backend is up, so its gate starts its own run.
+if (
+  !isTauri &&
+  hasSettledAuthSession() &&
+  startPath !== "/login" &&
+  startPath !== "/change-password"
+) {
+  startStartupCredentialBootstrap();
+}
