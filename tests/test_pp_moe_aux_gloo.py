@@ -114,7 +114,9 @@ def build(
     target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj", "mlp.gate.weight"]
     if not any(name.endswith("mlp.experts.gate_up_proj") for name, _ in model.named_parameters()):
         # transformers 4.x keeps the experts as a ModuleList of Linears (no fused gate_up_proj parameter).
-        target_modules = r".*\.(q_proj|k_proj|v_proj|o_proj|experts\.\d+\.(gate_proj|up_proj|down_proj))$"
+        target_modules = (
+            r".*\.(q_proj|k_proj|v_proj|o_proj|experts\.\d+\.(gate_proj|up_proj|down_proj))$"
+        )
         target_parameters = ["mlp.gate.weight"]
     config = LoraConfig(
         r = 4,
