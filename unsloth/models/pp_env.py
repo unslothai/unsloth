@@ -597,6 +597,12 @@ def pp_trainer_refusals(
         return
     if getattr(args, "label_smoothing_factor", 0) or 0:
         problems.append("label_smoothing_factor (the pipeline computes the plain causal LM loss)")
+    loss_type = getattr(args, "loss_type", None)
+    if isinstance(loss_type, str) and loss_type.lower() != "nll" and "SFT" in type(args).__name__:
+        # TRL's SFTTrainer.compute_loss applies DFT (and later variants); the pipeline schedule never calls it.
+        problems.append(
+            f'SFTConfig(loss_type = "{loss_type}") (the pipeline computes the plain causal LM loss; use "nll")'
+        )
     if getattr(args, "deepspeed", None):
         problems.append("DeepSpeed")
     if getattr(args, "fsdp", None) or getattr(args, "parallelism_config", None) is not None:

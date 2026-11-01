@@ -1282,3 +1282,19 @@ def test_pp_checkpoint_load_releases_the_replica_first(monkeypatch):
     trainer = __import__("types").SimpleNamespace(model = object())
     pp_env._pp_load_from_checkpoint(trainer, "ckpt")
     assert order == ["release", "load"]
+
+
+def test_pp_env_refuses_sft_loss_types_the_pipeline_skips():
+    # Failing before: SFTConfig(loss_type = "dft") was accepted, and the pipeline step (plain causal LM loss)
+    # silently trained with NLL instead of DFT.
+    import types
+
+    import trl
+    from unsloth.models import pp_env
+
+    layout = types.SimpleNamespace(env_vars = "UNSLOTH_PP_SIZE=2")
+    dft = trl.SFTConfig(output_dir = "unused", report_to = "none", loss_type = "dft")
+    with pytest.raises(NotImplementedError, match = "loss_type"):
+        pp_env.pp_trainer_refusals(trl.SFTTrainer, dft, layout)
+    nll = trl.SFTConfig(output_dir = "unused", report_to = "none")
+    pp_env.pp_trainer_refusals(trl.SFTTrainer, nll, layout)
