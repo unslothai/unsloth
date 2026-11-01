@@ -21221,9 +21221,8 @@ def _drain_process_output(
             proc.wait(timeout = 5)
         except subprocess.TimeoutExpired:
             pass
-    # A grandchild that inherited stdout can hold the pipe open past the leader's exit: like bwrap's
-    # PID namespace, stop the group once the reader has sat idle on the pipe for a short grace.
-    # A busy reader is only draining, and a redirected background job must then survive.
+    # A grandchild holding the inherited stdout outlives the leader: stop the group once the reader has
+    # sat idle for the grace, so a slow drain never kills a redirected background job.
     background_stopped = False
     if not timed_out:
         exited_at = time.monotonic()
