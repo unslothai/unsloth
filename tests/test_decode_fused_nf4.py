@@ -504,3 +504,34 @@ def test_signature_follows_saved_norm_weights():
     q_on = D._signature(plan((wrapper.weight, k, 1e-6, 1e-6)))
     wrapper.enable_adapters(False)
     assert D._signature(plan((wrapper.weight, k, 1e-6, 1e-6))) != q_on
+
+
+def test_qk_norm_alone_keys_the_signature():
+    # Only q_norm is a saved module (ln1 / ln2 / final norm plain): toggling its adapter must change the key.
+    peft_other = pytest.importorskip("peft.utils.other")
+    D = _driver()
+
+    class Norm(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(8))
+            self.variance_epsilon = 1e-6
+
+    qn = peft_other.ModulesToSaveWrapper(Norm(), "default")
+    plain = torch.ones(8)
+    t = torch.zeros(4)
+    site = types.SimpleNamespace(packed = t, absmax = t, absmax2 = t, lora = None, bounds = [4], bias = None)
+
+    def plan():
+        entry = types.SimpleNamespace(
+            ln1 = plain, ln2 = plain, sites = {"o": site}, qk_norm = (qn.weight, torch.ones(8), 1e-6, 1e-6),
+        )
+        return types.SimpleNamespace(
+            device = t.device, dtype = torch.bfloat16, hidden = 8, intermediate = 16, eps = 1e-5,
+            final_norm = plain, layers = [entry],
+        )
+
+    qn.enable_adapters(True)
+    on = D._signature(plan())
+    qn.enable_adapters(False)
+    assert D._signature(plan()) != on
