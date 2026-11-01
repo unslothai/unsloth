@@ -319,6 +319,58 @@ def test_release_drops_graphs_and_buffers(monkeypatch):
 
 
 @cuda
+def test_ineligible_generation_frees_graphs_and_recovers(monkeypatch):
+    """Compare mode: a generation the graphs cannot serve (here a DoRA adapter, faked) frees the
+    captured steps, and the next eligible generation is graphed again instead of eager for good."""
+    model, tok = _load(MODELS[0], False, lora = True)
+    enc = tok(PROMPTS[:1], return_tensors = "pt").to("cuda")
+    causal = _causal(model)
+    eager = _generate(model, tok, enc, False, monkeypatch)
+    # _plain returns no cache, so generate() keeps the captured steps (a returned one releases them).
+    monkeypatch.setattr(G, "ENABLED", True)
+    _plain(model, tok, enc)
+    assert G.stats(causal)["graphs"] >= 1
+    plain = kernel_utils._has_active_dora_adapter
+    monkeypatch.setattr(kernel_utils, "_has_active_dora_adapter", lambda proj: True)
+    replays = G.stats(causal)["replays"]
+    _plain(model, tok, enc)
+    stats = G.stats(causal)
+    assert stats["graphs"] == 0 and stats["replays"] == replays, stats
+    assert stats["disabled"] is None, stats
+    monkeypatch.setattr(kernel_utils, "_has_active_dora_adapter", plain)
+    graph = _generate(model, tok, enc, True, monkeypatch)
+    assert G.stats(causal)["replays"] > replays
+    assert torch.equal(graph[1], eager[1])
+
+
+@cuda
+def test_failed_capture_joins_the_side_stream(monkeypatch):
+    """A capture that fails in its warmup still makes the caller's stream wait for the side stream
+    before the eager fallback runs."""
+    model, tok = _load(MODELS[0], False)
+    enc = tok(PROMPTS[:1], return_tensors = "pt").to("cuda")
+    joins = []
+    wait = torch.cuda.Stream.wait_stream
+
+    def spy(self, other):
+        joins.append((self, other))
+        return wait(self, other)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("injected warmup failure")
+
+    monkeypatch.setattr(torch.cuda.Stream, "wait_stream", spy)
+    monkeypatch.setattr(G, "_run_step", fail)
+    eager = _generate(model, tok, enc, False, monkeypatch)
+    graph = _generate(model, tok, enc, True, monkeypatch)
+    side = G._state(_causal(model)).stream
+    assert side is not None and any(
+        other is side and self is not side for self, other in joins
+    ), joins
+    assert torch.equal(eager[1], graph[1])
+
+
+@cuda
 def test_steps_counter_present():
     # The adapter-change check keys on this counter (bumped by every optimizer step).
     assert isinstance(kernel_utils._OPTIMIZER_STEPS, int)

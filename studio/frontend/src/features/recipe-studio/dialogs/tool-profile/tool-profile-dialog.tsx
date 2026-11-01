@@ -12,8 +12,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toastError } from "@/shared/toast";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -158,7 +158,7 @@ function McpServerCard({
             variant="ghost"
             onClick={() => onRemoveProvider(index)}
           >
-            <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+            <HugeiconsIcon icon={TrashIcon} className="size-4" />
           </Button>
         </div>
 
@@ -243,7 +243,7 @@ function McpServerCard({
                       variant="ghost"
                       onClick={() => onRemoveProviderArg(index, argIndex)}
                     >
-                      <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                      <HugeiconsIcon icon={TrashIcon} className="size-4" />
                     </Button>
                   </div>
                 ))}
@@ -294,7 +294,7 @@ function McpServerCard({
                       variant="ghost"
                       onClick={() => onRemoveProviderEnv(index, envIndex)}
                     >
-                      <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                      <HugeiconsIcon icon={TrashIcon} className="size-4" />
                     </Button>
                   </div>
                 ))}

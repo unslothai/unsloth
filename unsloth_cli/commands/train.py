@@ -394,6 +394,7 @@ def train(
         hf_token = hf_token,
         is_dataset_image = is_dataset_image,
         is_dataset_audio = is_dataset_audio,
+        trust_remote_code = cfg.training.trust_remote_code,
         use_gradient_checkpointing = cfg.training.gradient_checkpointing,
     ):
         typer.echo("Model load failed", err = True)

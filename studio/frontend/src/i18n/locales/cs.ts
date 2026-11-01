@@ -8,10 +8,13 @@ export const cs = {
   chatBackground: {
     noBackground: "Bez pozadí",
     sizing: "Velikost obrázku",
+    sizingPosition: "Velikost a pozice obrázku",
     fill: "Vyplnit",
     fit: "Přizpůsobit",
     stretch: "Roztáhnout",
     original: "Původní velikost",
+    fitWidth: "Přizpůsobit šířce",
+    fitHeight: "Přizpůsobit výšce",
     zoom: "Přiblížení",
     outline: "Obrys pole zprávy",
     fade: "Prolnout do pozadí",
@@ -28,11 +31,18 @@ export const cs = {
     halftone: "Polotón",
     scanlines: "Skenovací řádky",
     visibility: "Viditelnost",
+    conversationVisibility: "Viditelnost v konverzacích",
     blur: "Rozmazání obrázku",
     position: "Pozice",
+    horizontal: "Vodorovná pozice",
+    vertical: "Svislá pozice",
+    scope: "Zobrazit na",
+    scopeNewChat: "Stránka nového chatu",
+    scopeChats: "Chaty",
+    scopeAll: "Všechny stránky",
     positionValue: "Vodorovně {x} %, svisle {y} %",
-    newChat: "Nový chat",
-    conversation: "Konverzace",
+    newChat: "Náhled nového chatu",
+    conversation: "Náhled konverzace",
     prompt: "Co chcete prozkoumat?",
     response: "Konverzace zůstává na pozadí čitelná.",
     storageError: "Pozadí se nepodařilo uložit. Zkontrolujte dostupné úložiště prohlížeče.",
@@ -40,6 +50,26 @@ export const cs = {
     dimensionsError: "Vyberte obrázek menší než 40 megapixelů.",
     decodeError: "Obrázek se nepodařilo dekódovat. Zkuste jiný soubor.",
     effectError: "Efekt se nepodařilo vykreslit. Zvolte Žádný nebo jiný obrázek.",
+    material: "Sklo",
+    materialSolid: "Vypnuto",
+    materialTransparent: "Průhledné",
+    materialFrosted: "Matné",
+    materialBlurred: "Rozmazané",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "Systémové sklo macOS",
+    materialMacosNote: "Používá průsvitný materiál oken macOS, takže je vidět vaše plocha.",
+    materialNativeFailed: "Tato verze Unsloth Desktop nemůže použít materiál macOS. Pro zapnutí aplikaci aktualizujte.",
+    glassTheme: "Skleněný motiv",
+    materialStyle: "Styl",
+    materialMenus: "Skleněné nabídky",
+    materialMenusDescription: "Rozbalovací seznamy, nabídky a výběry také používají sklo.",
+    materialStrength: "Síla skla",
+    lens: "Skleněná čočka",
+    lensDescription: "Ohýbá obraz pod polem pro psaní jako skutečné sklo.",
+    lensOff: "Vypnuto",
+    lensMagnify: "Zvětšit",
+    lensShrink: "Zmenšit",
   },
   linkMenu: {
     openInBrowser: "Otevřít v prohlížeči Unsloth",
@@ -814,36 +844,6 @@ export const cs = {
     compactUnsupported:
       "Komprimace vyžaduje model GGUF nebo MLX s podporou nástrojů",
   },
-  halloween: {
-    navLabel: "Koledu, nebo něco provedu…",
-    title: "Koledu, nebo něco provedu?!",
-    description:
-      "Pro Unsloth jsme uvařili pár strašidelných překvapení. Vydrží až do konce října.",
-    chooseTheme: "Vyberte si strašidelný motiv",
-    spookyGreetings: "Strašidelné pozdravy",
-    spookyGreetingsDescription: "Lenochod vítá nové chaty s trochou strachu.",
-    decorations: "Pavouci a netopýři",
-    decorationsDescription: "Pavučiny a sem tam nějaký pavouk nebo netopýr.",
-    surprise: "Koledu, nebo něco provedu!",
-    surpriseDescription: "Nechte lenochoda, ať vám motiv vybere sám.",
-    themesTitle: "Strašidelné motivy",
-    back: "Zpět",
-    footer: "Unsloth se vrátí do normálu o půlnoci 1. listopadu.",
-    removeNow: "Odebrat hned",
-    hideFromSidebar: "Skrýt z postranního panelu",
-    greeting: {
-      pumpkins: "Dýně jsou vyřezané. Co dál?",
-      brewing: "Jdeme vařit lektvary",
-      trickOrTreat: "Koledu, nebo něco provedu?",
-      manor: "Vítejte na sídle",
-      manorName: "Vítejte na sídle, {name}",
-      happyHalloween: "Veselý Halloween",
-      happyHalloweenName: "Veselý Halloween, {name}",
-      spirits: "Duchové naslouchají…",
-      mysteries: "Jaká tajemství dnes v noci odhalíme?",
-      conjure: "Co pro vás mám vyčarovat?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Je fajn vás vidět",
     goodToSeeYouName: "Je fajn vás vidět, {name}",
@@ -1073,7 +1073,7 @@ export const cs = {
       deleteProjects: "Smazat projekty",
       deleteProjectsTitle: "Smazat projekty",
       deleteProjectsDescription:
-        "Smazat projekty (počet: {count})? Jejich chaty budou trvale smazány.",
+        "Projekty ({count}) a všechny jejich chaty budou trvale smazány. Tuto akci nelze vrátit zpět.",
       deleteProjectsFilesDescription:
         "Složka pracovního prostoru každého projektu bude odstraněna z disku.",
       countSelected: "Vybráno: {count}",
@@ -1085,7 +1085,7 @@ export const cs = {
       deleteChats: "Smazat chaty",
       deleteTitle: "Smazat chaty",
       deleteDescription:
-        "Smazat chaty (počet: {count})? Tuto akci nelze vrátit zpět.",
+        "Chaty ({count}) a jejich zprávy budou trvale smazány. Tuto akci nelze vrátit zpět.",
       deleteFilesDescription:
         "Vlastní složka sandboxu každého chatu bude odstraněna z disku. Soubory, které chaty zapsaly do projektu, zůstanou v pracovním prostoru daného projektu.",
       deleteFilesLabel: "Smazat soubory a složku sandboxu",
@@ -1133,7 +1133,7 @@ export const cs = {
     dialog: {
       deleteChat: {
         title: "Smazat chat",
-        description: "Opravdu chcete smazat chat „{name}“?",
+        description: "Chat „{name}“ a jeho zprávy budou trvale smazány. Tuto akci nelze vrátit zpět.",
       },
       deleteRun: {
         title: "Smazat běh trénování",
@@ -2364,10 +2364,14 @@ export const cs = {
         label: "Typ instalace",
         description:
           "Pouze chat (GGUF). Úplná instalace přidává trénování, export, video, modely safetensors a další funkce generování obrázků.",
+        descriptionCpu:
+          "Pouze chat (GGUF). Nebyla nalezena podporovaná GPU, takže úplná instalace přidává trénování na CPU.",
         action: "Upgradovat na úplnou instalaci",
         confirmTitle: "Upgradovat na úplnou instalaci?",
         confirmDescription:
           "Tato instalace Pouze chat spouští modely GGUF. Úplná instalace přidává PyTorch pro GPU tohoto počítače, což umožňuje trénování, export, video, modely safetensors a další funkce generování obrázků. Stáhne několik gigabajtů (potřeba je alespoň 5 GB místa na disku) a restartuje server. Chaty, modely a nastavení zůstanou zachovány. Může to trvat několik minut.",
+        confirmDescriptionCpu:
+          "Tato instalace Pouze chat spouští modely GGUF. V tomto počítači nebyla nalezena podporovaná GPU, takže úplná instalace přidává PyTorch pro CPU, což umožňuje trénování na CPU. Trénování na CPU je mnohem pomalejší než na GPU. Je potřeba alespoň 5 GB místa na disku a server se restartuje. Chaty, modely a nastavení zůstanou zachovány. Může to trvat několik minut.",
         confirmAction: "Upgradovat",
         keywords:
           "úplná instalace upgrade typ instalace pouze chat gguf přidat trénování trénovat doladění fine-tune pytorch torch export video generování obrázků safetensors full install training",
@@ -2412,6 +2416,13 @@ export const cs = {
       avatarShapeRounded: "Zaoblený",
       greetingSloth: "Pozdrav",
       greetingSlothDescription: "Zobrazovat pozdrav v nových chatech.",
+      greetingDefault: "Výchozí",
+      greetingCustom: "Vlastní",
+      greetingImage: "Obrázek",
+      greetingText: "Text pozdravu",
+      greetingTextDescription: "Ponechte prázdné a použijí se vestavěné pozdravy.",
+      greetingFileError: "Vyberte PNG, JPEG, WebP nebo GIF menší než 10 MB.",
+      greetingImageError: "Tento obrázek nelze použít. Zkuste menší.",
       chooseSloth: "Nebo vyberte lenochoda",
       noPicture: "Žádný profilový obrázek",
       noneLabel: "Žádný",
@@ -2535,21 +2546,29 @@ export const cs = {
         description:
           "Barvy používané v celém Unsloth, ve světlém i tmavém režimu.",
         standard: "Standardní",
-        classic: "Klasický",
-        minimal: "Minimalistický",
         moreThemes: "Další motivy",
-        halloween: "Halloween",
       },
-      trickOrTreat: {
-        label: "Koledu, nebo něco provedu",
-        description:
-          "Halloweenské motivy a strašidelné pozdravy, do 1. listopadu.",
+      code: {
+        title: "Kód",
+        fontDescription: "Bloky kódu v chatu, náhledy souborů a příklady API.",
+        lineNumbers: {
+          label: "Čísla řádků",
+          description: "Číslovat řádky bloků kódu v chatu.",
+        },
+        wordWrap: {
+          label: "Zalamování řádků",
+          description: "Zalamovat dlouhé řádky v blocích kódu místo vodorovného posouvání.",
+        },
+        ligatures: {
+          label: "Ligatury písma",
+          description: "Spojovat symboly jako => a != do jednoho znaku, pokud to písmo kódu podporuje.",
+        },
       },
       custom: {
         chatWidth: {
           label: "Šířka chatu",
           description: "Šířka zpráv a pole zprávy.",
-          standard: "Standardní",
+          standard: "Výchozí",
           wide: "Široká",
           full: "Plná šířka",
         },
@@ -3476,10 +3495,10 @@ export const cs = {
         moveFailed: "Chaty se nepodařilo přesunout",
         deleteChatsTitle: "Smazat chaty ({count})",
         deleteChatsWarning:
-          "Smazat vybrané chaty ({count})? Tuto akci nelze vrátit zpět.",
+          "Chaty ({count}) a jejich zprávy budou trvale smazány. Tuto akci nelze vrátit zpět.",
         deleteArchivedTitle: "Smazat archivované chaty ({count})",
         deleteArchivedWarning:
-          "Smazat vybrané archivované chaty ({count})? Tuto akci nelze vrátit zpět.",
+          "Archivované chaty ({count}) a jejich zprávy budou trvale smazány. Tuto akci nelze vrátit zpět.",
         deleting: "Mazání...",
       },
       title: "Data",
@@ -3901,6 +3920,8 @@ export const cs = {
   },
   studio: {
     routeTitle: "Trénování",
+    cpuTrainingNotice:
+      "Nebyla nalezena žádná GPU, takže trénování běží na CPU. Je mnohem pomalejší než trénování na GPU a podporuje pouze textové modely (LoRA nebo úplné doladění).",
     wizard: {
       modelTitle: "Model",
       modelDescription: "Vyberte model a metodu trénování",
@@ -5051,7 +5072,7 @@ export const cs = {
       dialog: {
         renameChat: "Přejmenovat chat",
         deleteChatDescription:
-          "Tento chat bude trvale smazán. Tuto akci nelze vrátit zpět.",
+          "Chat a jeho zprávy budou trvale smazány. Tuto akci nelze vrátit zpět.",
         deleteProjectDescription:
           "Projekt a jeho chaty ({count}) budou trvale smazány. Tuto akci nelze vrátit zpět.",
         deleteFilesMany:
@@ -5548,7 +5569,7 @@ export const cs = {
     chatName: "Název chatu",
     deleteChat: "Smazat chat",
     deleteChatDescription:
-      "Opravdu chcete smazat chat {name}? Jeho zprávy budou trvale smazány.",
+      "Chat „{name}“ a jeho zprávy budou trvale smazány. Tuto akci nelze vrátit zpět.",
     importChats: "Importovat chaty",
     importDestination: "Vyberte, kam importovat {name}:",
     selectDestination: "Vybrat cíl",
@@ -5556,7 +5577,7 @@ export const cs = {
     import: "Importovat",
     deleteProject: "Smazat projekt",
     deleteProjectDescription:
-      "Opravdu chcete smazat projekt {name}? Jeho chaty budou trvale smazány.",
+      "Projekt „{name}“ a všechny jeho chaty budou trvale smazány. Tuto akci nelze vrátit zpět.",
     deleteProjectFiles:
       "Složka pracovního prostoru projektu bude odstraněna z disku.",
     deleteAll: "Smazat vše",
@@ -5642,6 +5663,18 @@ export const cs = {
     flaggedIntro: "Náš automatický skener označil mimo jiné tyto problémy:",
     nothingFlagged:
       "Náš automatický skener neoznačil žádné znepokojivé soubory, přesto to prosím ověřte.",
+    unscannedTitle: "Soubory modelu se nepodařilo zkontrolovat",
+    unscannedBody: "{model} obsahuje váhy pickle, které mohou při načtení spustit kód, a kontrola malwaru pro ně není k dispozici, takže jej nelze načíst. {note}",
+    unscannedIntro: "Soubory, které se nepodařilo zkontrolovat:",
+    switchSourceNote: "Pro načtení přepněte zdroj modelů v Nastavení na Hugging Face.",
+    reconnectNote: "Připojte se k Hugging Face, aby bylo možné načíst výsledek kontroly, a zkuste to znovu.",
+    managedTitle: "Vlastní kód je pro tento účet vypnutý",
+    managedNote: "Pro spravované účty je vypnutý. Požádejte vlastníka instalace o jeho zapnutí.",
+    notFoundTitle: "Nenalezeno na {source}",
+    notFoundBody: "{model} nebyl na {source} nalezen, takže bezpečnostní kontroly nemohly proběhnout. Zkontrolujte název, nebo nastavte token s přístupem, pokud je repozitář soukromý.",
+    notOnModelScopeBody: "{model} není na ModelScope k dispozici, takže bezpečnostní kontroly nemohly proběhnout a odtud jej nelze načíst. Pro použití přepněte zdroj modelů v Nastavení na Hugging Face.",
+    checksFailedTitle: "Bezpečnostní kontroly nemohly proběhnout",
+    checksFailedBody: "{model} se nepodařilo načíst z {source}, takže bezpečnostní kontroly nemohly být dokončeny a nelze jej načíst. Zkontrolujte připojení a token a zkuste to znovu. {note}",
     enableAndContinue: "Povolit a pokračovat",
   },
   tour: {

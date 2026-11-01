@@ -31,9 +31,9 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { FileGlyph } from "@/lib/file-icon";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   DashedLineCircleIcon as CircleDashedIcon,
-  Delete02Icon,
   Telescope02Icon,
   LinkSquare02Icon,
   Edit03Icon,
@@ -667,7 +667,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                         }}
                         aria-label={`Remove step ${index + 1}`}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
+                        <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} />
                       </Button>
                     </div>
                     <Textarea

@@ -40,6 +40,7 @@ mod native_clipboard;
 mod native_file_dialogs;
 mod native_intents;
 mod native_path_policy;
+mod native_vibrancy;
 mod preflight;
 mod process;
 mod process_identity;
@@ -1067,10 +1068,13 @@ fn keep_resizable_across_first_configure(
 
 // WebKitGTK disables media streams and denies unhandled permission requests by default, which
 // breaks dictation. Allow only user-media requests; every other kind keeps the default deny.
+// It also ships with spell checking off and no dictionary loaded (wry turns neither on), so the
+// DOM spellcheck attribute behind Settings > Spell check did nothing on Linux.
 #[cfg(target_os = "linux")]
 fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use webkit2gtk::{
-        glib::Cast, PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebViewExt,
+        glib::Cast, PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebContextExt,
+        WebViewExt,
     };
 
     let window = app.get_webview_window("main").ok_or_else(|| {
@@ -1080,6 +1084,14 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
         let webview = webview.inner();
         if let Some(settings) = webview.settings() {
             settings.set_enable_media_stream(true);
+        }
+        // Process-wide in WebKit. An empty list = the locale's dictionary, else the first one
+        // installed; deferred because loading it blocks ~40 ms. Not on a bundled AppImage: its
+        // libenchant would load the host's ABI-incompatible provider plugins.
+        let bundled = crate::appimage_webkit::bundled_runtime(|name| std::env::var_os(name));
+        if let Some(context) = webview.context().filter(|_| !bundled) {
+            context.set_spell_checking_enabled(true);
+            glib::idle_add_local_once(move || context.set_spell_checking_languages(&[]));
         }
         webview.connect_permission_request(|_webview, request| {
             match request.downcast_ref::<UserMediaPermissionRequest>() {
@@ -2591,6 +2603,7 @@ fn main() {
             mark_in_app_relaunch,
             gpu_rendering::get_gpu_rendering,
             gpu_rendering::set_gpu_rendering,
+            native_vibrancy::set_native_vibrancy,
             relaunch_to_apply_gpu_rendering,
             renderer_ready,
             clear_in_app_relaunch,

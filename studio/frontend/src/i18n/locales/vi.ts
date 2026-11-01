@@ -8,10 +8,13 @@ export const vi = {
   chatBackground: {
     noBackground: "Không có nền",
     sizing: "Kích thước ảnh",
+    sizingPosition: "Kích thước và vị trí ảnh",
     fill: "Lấp đầy",
     fit: "Vừa khung",
     stretch: "Kéo giãn",
     original: "Kích thước gốc",
+    fitWidth: "Vừa chiều rộng",
+    fitHeight: "Vừa chiều cao",
     zoom: "Thu phóng",
     outline: "Viền ô soạn tin",
     fade: "Mờ dần vào nền",
@@ -28,11 +31,18 @@ export const vi = {
     halftone: "Bán sắc",
     scanlines: "Đường quét",
     visibility: "Độ hiển thị",
+    conversationVisibility: "Độ hiển thị trong cuộc trò chuyện",
     blur: "Độ mờ ảnh",
     position: "Vị trí",
+    horizontal: "Vị trí ngang",
+    vertical: "Vị trí dọc",
+    scope: "Hiển thị trên",
+    scopeNewChat: "Trang trò chuyện mới",
+    scopeChats: "Trò chuyện",
+    scopeAll: "Mọi trang",
     positionValue: "Ngang {x}%, dọc {y}%",
-    newChat: "Cuộc trò chuyện mới",
-    conversation: "Cuộc trò chuyện",
+    newChat: "Xem trước cuộc trò chuyện mới",
+    conversation: "Xem trước hội thoại",
     prompt: "Bạn muốn khám phá điều gì?",
     response: "Nội dung trò chuyện vẫn rõ ràng trên nền.",
     storageError: "Không thể lưu nền. Kiểm tra dung lượng lưu trữ của trình duyệt.",
@@ -40,6 +50,26 @@ export const vi = {
     dimensionsError: "Chọn ảnh nhỏ hơn 40 megapixel.",
     decodeError: "Không thể giải mã ảnh này. Hãy thử tệp khác.",
     effectError: "Không thể hiển thị hiệu ứng. Chọn Không hoặc chọn ảnh khác.",
+    material: "Kính",
+    materialSolid: "Tắt",
+    materialTransparent: "Trong suốt",
+    materialFrosted: "Kính mờ",
+    materialBlurred: "Làm mờ",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "Kính hệ thống macOS",
+    materialMacosNote: "Dùng chất liệu cửa sổ trong mờ của macOS nên màn hình nền sẽ hiện qua.",
+    materialNativeFailed: "Phiên bản Unsloth Desktop này không thể dùng chất liệu macOS. Hãy cập nhật ứng dụng để bật.",
+    glassTheme: "Giao diện kính",
+    materialStyle: "Kiểu",
+    materialMenus: "Menu kính",
+    materialMenusDescription: "Danh sách thả xuống, menu và bộ chọn cũng dùng kính.",
+    materialStrength: "Độ mạnh của kính",
+    lens: "Thấu kính kính",
+    lensDescription: "Bẻ cong hình ảnh bên dưới khung soạn thảo như kính thật.",
+    lensOff: "Tắt",
+    lensMagnify: "Phóng to",
+    lensShrink: "Thu nhỏ",
   },
   linkMenu: {
     openInBrowser: "Mở trong trình duyệt Unsloth",
@@ -814,38 +844,6 @@ export const vi = {
     compactUnsupported:
       "Cần mô hình GGUF hoặc MLX có hỗ trợ công cụ để thu gọn",
   },
-  halloween: {
-    navLabel: "Cho kẹo hay bị ghẹo…",
-    title: "Cho kẹo hay bị ghẹo?!",
-    description:
-      "Chúng tôi đã ủ sẵn vài trò hù dọa cho Unsloth, có mặt đến hết tháng Mười.",
-    chooseTheme: "Chọn một chủ đề rùng rợn",
-    spookyGreetings: "Lời chào ma quái",
-    spookyGreetingsDescription:
-      "Chú lười chào các cuộc trò chuyện mới bằng một màn hù dọa.",
-    decorations: "Nhện và dơi",
-    decorationsDescription:
-      "Mạng nhện, thỉnh thoảng thêm một con nhện hoặc dơi.",
-    surprise: "Cho kẹo hay bị ghẹo!",
-    surpriseDescription: "Để chú lười chọn chủ đề giúp bạn.",
-    themesTitle: "Chủ đề rùng rợn",
-    back: "Quay lại",
-    footer: "Unsloth sẽ trở lại bình thường vào nửa đêm ngày 1 tháng 11.",
-    removeNow: "Gỡ bỏ ngay",
-    hideFromSidebar: "Ẩn khỏi thanh bên",
-    greeting: {
-      pumpkins: "Bí ngô đã khắc xong. Tiếp theo là gì?",
-      brewing: "Bắt đầu nấu thuốc thôi",
-      trickOrTreat: "Cho kẹo hay bị ghẹo?",
-      manor: "Chào mừng đến lâu đài",
-      manorName: "Chào mừng đến lâu đài, {name}",
-      happyHalloween: "Halloween vui vẻ",
-      happyHalloweenName: "Halloween vui vẻ, {name}",
-      spirits: "Các linh hồn đang lắng nghe…",
-      mysteries: "Đêm nay chúng ta sẽ khám phá bí ẩn nào?",
-      conjure: "Tôi có thể phù phép ra gì cho bạn?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Rất vui được gặp bạn",
     goodToSeeYouName: "Rất vui được gặp bạn, {name}",
@@ -1073,7 +1071,7 @@ export const vi = {
       deleteProjects: "Xóa dự án",
       deleteProjectsTitle: "Xóa dự án",
       deleteProjectsDescription:
-        "Xóa {count} dự án? Các cuộc trò chuyện trong đó sẽ bị xóa vĩnh viễn.",
+        "{count} dự án và tất cả cuộc trò chuyện của chúng sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
       deleteProjectsFilesDescription:
         "Thư mục không gian làm việc của từng dự án sẽ bị xóa khỏi ổ đĩa.",
       countSelected: "Đã chọn {count}",
@@ -1085,7 +1083,7 @@ export const vi = {
       deleteChats: "Xóa cuộc trò chuyện",
       deleteTitle: "Xóa cuộc trò chuyện",
       deleteDescription:
-        "Xóa {count} cuộc trò chuyện? Không thể hoàn tác thao tác này.",
+        "{count} cuộc trò chuyện và các tin nhắn của chúng sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
       deleteFilesDescription:
         "Thư mục sandbox riêng của từng cuộc trò chuyện sẽ bị xóa khỏi ổ đĩa. Các tệp chúng đã ghi bên trong một dự án vẫn nằm trong không gian làm việc của dự án đó.",
       deleteFilesLabel: "Xóa tệp và thư mục sandbox",
@@ -1134,7 +1132,7 @@ export const vi = {
       deleteChat: {
         title: "Xóa cuộc trò chuyện",
         description:
-          "Bạn có chắc chắn muốn xóa cuộc trò chuyện “{name}” này không?",
+          "Cuộc trò chuyện “{name}” và các tin nhắn của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
       },
       deleteRun: {
         title: "Xóa lượt huấn luyện",
@@ -2353,10 +2351,14 @@ export const vi = {
         label: "Loại cài đặt",
         description:
           "Chỉ trò chuyện (GGUF). Bản cài đặt đầy đủ bổ sung huấn luyện, xuất, video, mô hình safetensors và các tính năng tạo ảnh bổ sung.",
+        descriptionCpu:
+          "Chỉ trò chuyện (GGUF). Không tìm thấy GPU được hỗ trợ, nên bản cài đặt đầy đủ bổ sung huấn luyện trên CPU.",
         action: "Nâng cấp lên bản cài đặt đầy đủ",
         confirmTitle: "Nâng cấp lên bản cài đặt đầy đủ?",
         confirmDescription:
           "Bản cài đặt Chỉ trò chuyện này chạy các mô hình GGUF. Bản cài đặt đầy đủ bổ sung PyTorch cho GPU của máy này, cho phép huấn luyện, xuất, video, mô hình safetensors và các tính năng tạo ảnh bổ sung. Quá trình này tải xuống vài gigabyte (cần ít nhất 5 GB dung lượng ổ đĩa) và khởi động lại máy chủ. Cuộc trò chuyện, mô hình và cài đặt được giữ nguyên. Quá trình này có thể mất vài phút.",
+        confirmDescriptionCpu:
+          "Bản cài đặt Chỉ trò chuyện này chạy các mô hình GGUF. Không tìm thấy GPU được hỗ trợ trên máy này, nên bản cài đặt đầy đủ bổ sung PyTorch cho CPU, cho phép huấn luyện trên CPU. Huấn luyện trên CPU chậm hơn nhiều so với trên GPU. Quá trình này cần ít nhất 5 GB dung lượng ổ đĩa và khởi động lại máy chủ. Cuộc trò chuyện, mô hình và cài đặt được giữ nguyên. Quá trình này có thể mất vài phút.",
         confirmAction: "Nâng cấp",
         keywords:
           "cài đặt đầy đủ nâng cấp loại cài đặt chỉ trò chuyện huấn luyện tinh chỉnh xuất tạo ảnh full install upgrade install type chat only gguf add training train fine-tune pytorch torch export video image generation safetensors",
@@ -2401,6 +2403,13 @@ export const vi = {
       avatarShapeRounded: "Bo góc",
       greetingSloth: "Lời chào",
       greetingSlothDescription: "Hiển thị lời chào trong cuộc trò chuyện mới.",
+      greetingDefault: "Mặc định",
+      greetingCustom: "Tùy chỉnh",
+      greetingImage: "Hình ảnh",
+      greetingText: "Nội dung lời chào",
+      greetingTextDescription: "Để trống để dùng lời chào có sẵn.",
+      greetingFileError: "Chọn ảnh PNG, JPEG, WebP hoặc GIF dưới 10 MB.",
+      greetingImageError: "Không thể dùng hình ảnh này. Hãy thử ảnh nhỏ hơn.",
       chooseSloth: "Hoặc chọn một chú lười",
       noPicture: "Không có ảnh hồ sơ",
       noneLabel: "Không có",
@@ -2524,21 +2533,29 @@ export const vi = {
         description:
           "Màu sắc dùng trong toàn bộ Unsloth, ở chế độ sáng và tối.",
         standard: "Tiêu chuẩn",
-        classic: "Cổ điển",
-        minimal: "Tối giản",
         moreThemes: "Thêm chủ đề",
-        halloween: "Halloween",
       },
-      trickOrTreat: {
-        label: "Cho kẹo hay bị ghẹo",
-        description:
-          "Chủ đề Halloween và lời chào rùng rợn, đến hết ngày 1 tháng 11.",
+      code: {
+        title: "Mã",
+        fontDescription: "Khối mã trong trò chuyện, bản xem trước tệp và ví dụ API.",
+        lineNumbers: {
+          label: "Số dòng",
+          description: "Đánh số dòng cho khối mã trong trò chuyện.",
+        },
+        wordWrap: {
+          label: "Ngắt dòng",
+          description: "Ngắt các dòng dài trong khối mã thay vì cuộn ngang.",
+        },
+        ligatures: {
+          label: "Chữ ghép",
+          description: "Ghép các ký hiệu như => và != thành một ký tự khi phông chữ mã hỗ trợ.",
+        },
       },
       custom: {
         chatWidth: {
           label: "Độ rộng khung trò chuyện",
           description: "Độ rộng của tin nhắn và khung soạn thảo.",
-          standard: "Tiêu chuẩn",
+          standard: "Mặc định",
           wide: "Rộng",
           full: "Toàn chiều rộng",
         },
@@ -3461,10 +3478,10 @@ export const vi = {
         moveFailed: "Không thể di chuyển cuộc trò chuyện",
         deleteChatsTitle: "Xóa cuộc trò chuyện ({count})",
         deleteChatsWarning:
-          "Xóa các cuộc trò chuyện đã chọn ({count})? Không thể hoàn tác thao tác này.",
+          "{count} cuộc trò chuyện và các tin nhắn của chúng sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
         deleteArchivedTitle: "Xóa {count} cuộc trò chuyện đã lưu trữ",
         deleteArchivedWarning:
-          "Xóa các cuộc trò chuyện đã lưu trữ được chọn ({count})? Không thể hoàn tác thao tác này.",
+          "{count} cuộc trò chuyện đã lưu trữ và các tin nhắn của chúng sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
         deleting: "Đang xóa...",
       },
       title: "Dữ liệu",
@@ -3885,6 +3902,8 @@ export const vi = {
   },
   studio: {
     routeTitle: "Huấn luyện",
+    cpuTrainingNotice:
+      "Không tìm thấy GPU, nên quá trình huấn luyện chạy trên CPU. Việc này chậm hơn nhiều so với huấn luyện trên GPU và chỉ hỗ trợ mô hình văn bản (LoRA hoặc tinh chỉnh toàn bộ).",
     wizard: {
       modelTitle: "Mô hình",
       modelDescription: "Chọn mô hình và phương pháp huấn luyện",
@@ -5032,9 +5051,9 @@ export const vi = {
       dialog: {
         renameChat: "Đổi tên cuộc trò chuyện",
         deleteChatDescription:
-          "Cuộc trò chuyện này sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
+          "Cuộc trò chuyện và các tin nhắn của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
         deleteProjectDescription:
-          "Dự án và các cuộc trò chuyện của dự án ({count}) sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
+          "Dự án và các cuộc trò chuyện của nó ({count}) sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
         deleteFilesMany:
           "Đồng thời xóa các tệp và thư mục sandbox mà những cuộc trò chuyện này đã tạo.",
         deleteProjectFilesLabel: "Xóa thư mục không gian làm việc của dự án",
@@ -5532,7 +5551,7 @@ export const vi = {
     chatName: "Tên cuộc trò chuyện",
     deleteChat: "Xóa cuộc trò chuyện",
     deleteChatDescription:
-      "Bạn có chắc muốn xóa {name}? Các tin nhắn trong đó sẽ bị xóa vĩnh viễn.",
+      "Cuộc trò chuyện “{name}” và các tin nhắn của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
     importChats: "Nhập cuộc trò chuyện",
     importDestination: "Chọn nơi để nhập {name}:",
     selectDestination: "Chọn đích đến",
@@ -5540,7 +5559,7 @@ export const vi = {
     import: "Nhập",
     deleteProject: "Xóa dự án",
     deleteProjectDescription:
-      "Bạn có chắc muốn xóa {name}? Các cuộc trò chuyện trong đó sẽ bị xóa vĩnh viễn.",
+      "Dự án “{name}” và tất cả cuộc trò chuyện của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
     deleteProjectFiles:
       "Thư mục không gian làm việc của dự án sẽ bị xóa khỏi ổ đĩa.",
     deleteAll: "Xóa tất cả",
@@ -5628,6 +5647,18 @@ export const vi = {
       "Trình quét tự động của chúng tôi đã phát hiện các vấn đề, bao gồm:",
     nothingFlagged:
       "Trình quét tự động của chúng tôi không phát hiện tệp đáng lo ngại nào, nhưng vui lòng kiểm tra lại.",
+    unscannedTitle: "Không thể quét các tệp mô hình",
+    unscannedBody: "{model} có trọng số pickle, loại tệp có thể chạy mã khi tải, và không có kết quả quét phần mềm độc hại cho chúng nên không thể tải. {note}",
+    unscannedIntro: "Các tệp không thể quét:",
+    switchSourceNote: "Hãy chuyển nguồn mô hình sang Hugging Face trong Cài đặt để tải.",
+    reconnectNote: "Hãy kết nối với Hugging Face để đọc được kết quả quét, rồi thử lại.",
+    managedTitle: "Mã tùy chỉnh đã tắt cho tài khoản này",
+    managedNote: "Tính năng này bị tắt với tài khoản được quản lý. Hãy yêu cầu chủ sở hữu bản cài đặt bật nó.",
+    notFoundTitle: "Không tìm thấy trên {source}",
+    notFoundBody: "Không tìm thấy {model} trên {source} nên không thể chạy kiểm tra bảo mật. Hãy kiểm tra tên, hoặc đặt token có quyền truy cập nếu kho lưu trữ là riêng tư.",
+    notOnModelScopeBody: "{model} không có trên ModelScope nên không thể chạy kiểm tra bảo mật và không thể tải từ đó. Hãy chuyển nguồn mô hình sang Hugging Face trong Cài đặt để sử dụng.",
+    checksFailedTitle: "Không thể chạy kiểm tra bảo mật",
+    checksFailedBody: "Không thể đọc {model} từ {source} nên không thể hoàn tất kiểm tra bảo mật và không thể tải. Hãy kiểm tra kết nối và token rồi thử lại. {note}",
     enableAndContinue: "Bật và tiếp tục",
   },
   tour: {

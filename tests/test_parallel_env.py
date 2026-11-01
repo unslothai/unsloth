@@ -854,10 +854,23 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
         NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"
     ):
         caps.check(_q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **moe_q))
-    with pytest.raises(
-        NotImplementedError, match = r"x pp' lacks parity, engagement, compile evidence; pipeline"
-    ):
-        caps.check(_q(pp = 2, **moe_q))
+    # Pipeline parallel carries the Qwen3-MoE router auxiliary loss (tests/test_pp_moe_aux_gloo.py): gpipe /
+    # 1f1b, one stage per rank, aux on or off; other families, full finetuning and checkpointing stay refused.
+    for aux in (True, False):
+        for schedule in ("gpipe", "1f1b"):
+            pp_q = _q(pp = 2, pp_schedule = schedule, router_aux_loss = aux, **moe_q)
+            assert caps.cell_status(pp_q)[0] == "supported", (aux, schedule)
+            caps.check(pp_q)
+    with pytest.raises(NotImplementedError, match = r"x pp' lacks .*Qwen3-MoE only"):
+        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "family": "gpt_oss"}))
+    with pytest.raises(NotImplementedError, match = r"^Unsloth: pp x schedule"):
+        caps.check(_q(pp = 2, pp_schedule = "interleaved", **moe_q))
+    with pytest.raises(NotImplementedError, match = r"^Unsloth: pp x mode"):
+        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "mode": "full"}))
+    with pytest.raises(NotImplementedError, match = r"no numeric parity"):
+        caps.check(_q(pp = 2, pp_schedule = "gpipe", memory = "gc", **moe_q))
+    with pytest.raises(NotImplementedError, match = r"no numeric parity"):
+        caps.check(_q(pp = 2, dp = 2, pp_schedule = "gpipe", **moe_q))
     # Tensor parallel MoE runs (main's tp_native support): reported, not refused.
     assert caps.cell_status(_q(tp = 2, **moe_q))[0] == "unverified"
     caps.check(_q(tp = 2, **moe_q))

@@ -8,6 +8,7 @@ import test from "node:test";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 import { sanitizeCustomization } from "../src/features/settings/stores/appearance-custom-store.ts";
+import * as greeting from "../src/features/profile/greeting.ts";
 
 type Slot = {
   value?: unknown;
@@ -26,6 +27,11 @@ type Profile = {
   avatarDataUrl: string | null;
   avatarShape: "circle" | "rounded";
   showGreetingSloth: boolean;
+  greetingStyle?: string;
+  greetingIcon?: string;
+  greetingIconDataUrl?: string | null;
+  greetingText?: string;
+  greetingImageDataUrl?: string | null;
 };
 
 type SavedPayload = {
@@ -160,7 +166,7 @@ function remotePersonalization(language: string) {
       nickname: "",
       avatarDataUrl: null,
       avatarShape: "circle" as const,
-      showGreetingSloth: true,
+      ...greeting.DEFAULT_GREETING,
     },
     appearance: {
       theme: "system",
@@ -182,7 +188,9 @@ function setup(
     remote?: ReturnType<typeof remotePersonalization> & {
       chatWidthSaved?: boolean;
       sentAttachmentsSaved?: boolean;
+      greetingCustomSaved?: boolean;
     };
+    localProfile?: Partial<Profile>;
     // Holds the personalization GET open until it resolves.
     remoteGate?: Promise<void>;
   } = {},
@@ -208,7 +216,8 @@ function setup(
     nickname: "",
     avatarDataUrl: null,
     avatarShape: "circle",
-    showGreetingSloth: true,
+    ...greeting.DEFAULT_GREETING,
+    ...options.localProfile,
   };
   let preference = "auto";
   let releaseLocale!: () => void;
@@ -238,6 +247,7 @@ function setup(
         await options.remoteGate;
         return options.remote ?? remotePersonalization("de");
       },
+      migrateAppearanceMenuDefault: (value: unknown) => value,
       migrateShippedSidebarNavDefault: (value: unknown) => value,
       sanitizeCustomization,
       savePersonalization: (data: SavedPayload) => {
@@ -272,6 +282,7 @@ function setup(
       },
       useLocalePreference: () => preference,
     },
+    "../greeting": greeting,
     "../stores/user-profile-store": {
       PROFILE_TEXT_MAX_LENGTH: 200,
       useUserProfileStore: profileStore,
@@ -285,6 +296,7 @@ function setup(
     runTimers,
     saves,
     customization: () => customization,
+    profile: () => profile,
     // What a settings control does: a new customization object in the store.
     edit(next: Record<string, unknown>) {
       customization = sanitizeCustomization({ ...customization, ...next });
@@ -358,7 +370,7 @@ function widthRemote(chatWidthSaved?: boolean, chatWidth?: string) {
   const remote = remotePersonalization("auto");
   return {
     ...remote,
-    version: 5,
+    version: 6,
     chatWidthSaved,
     appearance: {
       ...remote.appearance,
@@ -429,7 +441,7 @@ function attachmentsRemote(saved: boolean | undefined, customization: Record<str
   const remote = remotePersonalization("auto");
   return {
     ...remote,
-    version: 5,
+    version: 6,
     chatWidthSaved: true,
     sentAttachmentsSaved: saved,
     appearance: {
@@ -493,7 +505,7 @@ test("an edit made while the personalization request is in flight is not overwri
     localCustomization: { uiFontSize: 12 },
     remote: {
       ...remote,
-      version: 5,
+      version: 6,
       appearance: { ...remote.appearance, customization: { uiFontSize: 20 } },
     },
     remoteGate: new Promise<void>((resolve) => {
@@ -523,7 +535,7 @@ test("without an edit in flight the saved server customization still wins", asyn
     localCustomization: { uiFontSize: 12 },
     remote: {
       ...remote,
-      version: 5,
+      version: 6,
       appearance: { ...remote.appearance, customization: { uiFontSize: 20 } },
     },
   });
@@ -532,5 +544,54 @@ test("without an edit in flight the saved server customization still wins", asyn
   app.render();
 
   assert.equal(app.customization().uiFontSize, 20);
+  app.host.unmount();
+});
+
+const ICON = "data:image/png;base64,AAAA";
+
+test("a server record from before the custom greeting keeps and re-pushes the local one", async () => {
+  const app = setup("stalled", {
+    localProfile: { greetingIcon: "custom", greetingIconDataUrl: ICON, greetingText: "Hi" },
+    remote: remotePersonalization("auto"),
+  });
+  app.render();
+  await settle();
+  app.render();
+
+  assert.equal(app.profile().greetingIcon, "custom");
+  assert.equal(app.profile().greetingIconDataUrl, ICON);
+  assert.equal(app.profile().greetingText, "Hi");
+  app.runTimers();
+  await settle();
+  assert.equal(app.saves.length, 1);
+  assert.equal(app.saves[0]?.profile.greetingIconDataUrl, ICON);
+  app.host.unmount();
+});
+
+test("a saved server greeting wins over the local one", async () => {
+  const remote = remotePersonalization("auto");
+  const app = setup("stalled", {
+    localProfile: { greetingText: "Local" },
+    remote: {
+      ...remote,
+      version: 6,
+      greetingCustomSaved: true,
+      profile: {
+        ...remote.profile,
+        greetingStyle: "image",
+        greetingImageDataUrl: ICON,
+      },
+    },
+  });
+  app.render();
+  await settle();
+  app.render();
+
+  assert.equal(app.profile().greetingStyle, "image");
+  assert.equal(app.profile().greetingImageDataUrl, ICON);
+  assert.equal(app.profile().greetingText, "");
+  app.runTimers();
+  await settle();
+  assert.equal(app.saves.length, 0);
   app.host.unmount();
 });

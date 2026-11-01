@@ -116,6 +116,7 @@ function harness(rows: Array<typeof KB> = [KB]) {
       react,
       "react/jsx-runtime": stubJsxRuntime(),
       "@hugeicons/core-free-icons": {},
+      "@/lib/hugeicons-derived": {},
       "@/lib/folder-icons": {},
       "@/lib/chevron-icons": {},
       "@hugeicons/react": {},

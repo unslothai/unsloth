@@ -35,13 +35,12 @@ import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
-import { MessageCircleIcon, StarPointedIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, Settings01Icon, StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
   Archive03Icon,
   ArchiveRestoreIcon,
   Cancel01Icon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
   LayerIcon,
@@ -51,7 +50,6 @@ import {
   PinOffIcon,
   PlusSignIcon,
   Refresh01Icon,
-  Settings02Icon,
   Upload01Icon,
   ViewIcon,
   ViewOffSlashIcon,
@@ -548,7 +546,7 @@ function ChatMenu({
             />
           )}
           <MenuItem
-            icon={Delete02Icon}
+            icon={TrashIcon}
             label={t("common.delete")}
             destructive
             onSelect={() => actions.remove([chat])}
@@ -1235,14 +1233,21 @@ export function GroupHeading({
   children,
   count,
   countLabel,
+  divider = true,
 }: {
   children: ReactNode;
   count: number;
   countLabel?: string;
+  divider?: boolean;
 }) {
   const t = useT();
   return (
-    <h3 className="mb-2 mt-3 flex items-baseline gap-2 border-b border-border pb-2 pl-4 font-sans text-ui-12">
+    <h3
+      className={cn(
+        "mb-2 mt-3 flex items-baseline gap-2 pb-2 pl-4 font-sans text-ui-12",
+        divider && "border-b border-border",
+      )}
+    >
       <span className="font-medium text-muted-foreground">{children}</span>
       <span className="text-ui-11 text-muted-foreground/70">
         {countLabel ?? chatCount(count, t)}
@@ -1349,7 +1354,7 @@ function ProjectMenu({
           <OpenProjectFolderItem projectId={project.id} />
           <DropdownMenuSeparator className="mx-3" />
           <MenuItem
-            icon={Settings02Icon}
+            icon={Settings01Icon}
             label={t("library.chats.menu.edit")}
             onSelect={() => actions.editProject(project)}
           />
@@ -1384,7 +1389,7 @@ function ProjectMenu({
           />
           <DropdownMenuSeparator className="mx-3" />
           <MenuItem
-            icon={Delete02Icon}
+            icon={TrashIcon}
             label={t("library.chats.menu.deleteProject")}
             destructive
             onSelect={() => actions.deleteProject(project)}
@@ -1590,7 +1595,7 @@ export function SectionMenuItems({
         </>
       )}
       <MenuItem
-        icon={Settings02Icon}
+        icon={Settings01Icon}
         label={t("shell.sections.edit")}
         onSelect={() => actions.renameSection(section)}
       />
@@ -1612,7 +1617,7 @@ export function SectionMenuItems({
       />
       <DropdownMenuSeparator className="mx-3" />
       <MenuItem
-        icon={Delete02Icon}
+        icon={TrashIcon}
         label={t("shell.sections.remove")}
         destructive
         onSelect={() => actions.removeSection(section)}

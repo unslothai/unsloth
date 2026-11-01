@@ -242,12 +242,12 @@ RULES = (
     ),
     Rule(
         "MoE x pp / cp",
-        "the MoE router auxiliary loss (output_router_logits) under pipeline / context parallel",
-        lambda q: q.moe and q.router_aux_loss and (q.pp > 1 or q.cp > 1),
-        "the load balancing loss is a product of whole-batch means; per stage / per shard pieces would be "
-        "summed wrong (the aux-loss injection design has not landed). TRL's SFTTrainer turns it on from the "
-        "architecture's router_aux_loss_coef by default",
-        "router_aux_loss_coef = 0.0 in the trainer config (and output_router_logits = False), or drop pp / cp",
+        "the MoE router auxiliary loss (output_router_logits) under context parallel",
+        lambda q: q.moe and q.router_aux_loss and q.cp > 1,
+        "the load balancing loss is a product of whole-batch means; per shard pieces would be summed wrong "
+        "(pipeline parallel carries the router statistics between stages, context parallel does not yet). "
+        "TRL's SFTTrainer turns it on from the architecture's router_aux_loss_coef by default",
+        "router_aux_loss_coef = 0.0 in the trainer config (and output_router_logits = False), or drop cp",
     ),
     Rule(
         "fsdp2 / tp x optimizer",
@@ -661,7 +661,17 @@ _MOE_MODES = {
     "fsdp2": {"dp": (2, 4, 8), "fsdp2": (True,), "cp": _ONE, "tp": _ONE, "pp": _ONE},
     "cp": {"dp": (1, 2, 4), "fsdp2": (False,), "cp": (2, 4, 8), "tp": _ONE, "pp": _ONE},
     "fsdp2_cp": {"dp": (1, 2, 4), "fsdp2": (True,), "cp": (2, 4, 8), "tp": _ONE, "pp": _ONE},
-    "pp": {"pp": (2, 4, 8)},
+    # Pipeline parallel carries the router auxiliary loss on a pp-only mesh, one stage per rank (gpipe / 1f1b),
+    # and refuses it under reentrant checkpointing (models/pp_native.py).
+    "pp": {
+        "dp": _ONE,
+        "fsdp2": (False,),
+        "cp": _ONE,
+        "tp": _ONE,
+        "pp": (2, 4, 8),
+        "pp_schedule": ("gpipe", "1f1b"),
+        "memory": ("none",),
+    },
     "tp": {"tp": (2, 4, 8)},
 }
 _MOE_COMMON = {
@@ -677,6 +687,7 @@ _MOE_COMMON = {
 _MOE_TEST = _GLOO + "test_moe_under_data_and_context_parallel_matches_one_process"
 _MOE_AUX_TEST = _GLOO + "test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch"
 _MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
+_MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accumulation"
 # (family, precision, aux, mode) -> (parity, engagement, compile) for the rows a test proves.
 _MOE_EVIDENCE = {
     ("qwen3_moe", "lora+experts", False, "ddp"): (_MOE_TEST + "[lora-ddp]",) * 2
@@ -697,16 +708,27 @@ _MOE_EVIDENCE = {
     + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", True, "fsdp2"): (_MOE_AUX_TEST,) * 2
     + ("eager: no compiled region",),
+    # pp2 vs gradient accumulation over the same micro-batches in one process (losses, aux, every gradient).
+    ("qwen3_moe", "lora+experts", True, "pp"): (
+        _MOE_PP + "[lora_coef1_gpipe_mask|lora_coef0.01_1f1b_nomask]",
+    )
+    * 2
+    + ("eager: no compiled region",),
+    ("qwen3_moe", "lora+experts", False, "pp"): (_MOE_PP + "[lora_aux_off_1f1b_mask]",) * 2
+    + ("eager: no compiled region",),
 }
 
 
 def _moe_note(family, precision, aux, mode):
     if mode == "tp":
         return "tensor parallel MoE runs (models/tp_native.py, its own gloo tests); no registry parity row yet"
-    if aux and mode in ("cp", "pp"):
+    if aux and mode == "cp":
         return "refused by the MoE x pp / cp rule (aux-loss injection first)"
     if mode == "pp":
-        return "pipeline parallel refuses MoE (stage receive-buffer liveness test first)"
+        if family != "qwen3_moe":
+            return "pipeline parallel carries the router auxiliary loss for Qwen3-MoE only (refused at the split)"
+        if precision == "full":
+            return "refused by the pp x mode rule (pipeline parallel trains LoRA adapters)"
     if precision == "qlora":
         # Measured on one G4 (2 NCCL ranks sharing the card): qwen3_moe QLoRA under DDP equals one process over the
         # same micro-batches (bitsandbytes 4-bit expert path engaged); cp / FSDP2 x QLoRA have not run.

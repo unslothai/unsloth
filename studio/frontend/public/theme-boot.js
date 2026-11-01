@@ -19,15 +19,22 @@ try {
   root.style.colorScheme = dark ? "dark" : "light";
   // Keep in sync with COLOR_THEME_IDS ("standard" sets no attribute).
   var palettes = [
-    "classic", "minimal", "blueberry", "butterfly-pea", "cherry",
+    "blueberry", "butterfly-pea", "cherry",
     "cinnamon", "cotton-candy", "dragon-fruit", "earl-grey", "espresso",
     "honey", "licorice", "macaron", "matcha", "mint", "neon-cyberpunk",
     "oat-milk", "peach", "pina-paraiso", "plum", "tangerine", "taro",
-    "wasabi", "yuzu", "pumpkin", "bloody-valentine", "alien", "the-thing",
-    "gothic", "black-cat", "trick-or-treat", "ghost-ship", "midnight-haunt", "hexberry", "candycorn",
+    "wasabi", "yuzu", "trick-or-treat",
   ];
   if (palettes.indexOf(palette) !== -1) {
     root.setAttribute("data-palette", palette);
+  }
+} catch (e) {}
+
+// macOS defaults the UI font to the system font (index.css html.client-mac); set before
+// first paint so Inter never flashes. Follows the browser OS, not the possibly remote server.
+try {
+  if (/Macintosh/.test(navigator.userAgent)) {
+    document.documentElement.classList.add("client-mac");
   }
 } catch (e) {}
 
