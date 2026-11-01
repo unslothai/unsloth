@@ -964,6 +964,23 @@ test("Hires CFG keeps the negative prompt on a CFG cell whose base guidance leav
   assert.equal(gridNegativePrompt(off, { ...sr, negativePrompt: "blurry", hiresEngagesNegative: true }), "blurry");
 });
 
+test("Detailer CFG keeps the negative prompt on a CFG cell whose base guidance leaves it off, as Generate does", () => {
+  const detailer = { guidance: 7 } as never;
+  const g = plan([{ axisId: "guidance", text: "1, 7" }]);
+  const seeds = { base: 1, keepRandom: false, seedFieldEmpty: false };
+  const ctx = sdxl({ detailerEngagesNegative: true });
+  // Cell 0 runs base CFG 1; the Detailer pass (CFG 7) still inherits the main negative prompt.
+  assert.equal(buildCellRequest(g, 0, base({ detailer }), ctx, seeds).negative_prompt, "blurry");
+  assert.equal(buildCellRequest(g, 1, base({ detailer }), ctx, seeds).negative_prompt, "blurry");
+  assert.equal(buildCellRequest(g, 0, base(), sdxl(), seeds).negative_prompt, undefined);
+  const sr = sdxl({ prompt: "a fox", negativePrompt: "red eyes", guidance: 1 });
+  assert.ok(planCompare([{ axisId: "prompt_sr", text: "red, blue" }], { ...sr, detailerEngagesNegative: true }).ok);
+  const off = plan([{ axisId: "steps", text: "10, 20" }], { ...sr, negativePrompt: "blurry" });
+  assert.equal(gridNegativePrompt(off, { ...sr, negativePrompt: "blurry", detailerEngagesNegative: true }), "blurry");
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /detailerEngagesNegative: detailerEngagesNegative\(detailerOn, detailerReady, detailerOptions, negativeMinGuidance\),/);
+});
+
 test("grid metadata records the Hires fix every cell ran, in A1111 names, and drops it when cells differ", () => {
   const steps = plan([{ axisId: "steps", text: "10, 20" }]);
   const form = { steps: 25, guidance: 6, width: 1024, height: 1024, model: "m" };
