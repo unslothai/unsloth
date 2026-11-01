@@ -217,7 +217,7 @@ _CANCELLED_ROWS_GRACE = 5.0
 # Old fixed post-cancel sleep, now added to the exit wait so a slow cancel keeps its full budget.
 _SHUTDOWN_CANCEL_GRACE_S = 0.5
 _SHUTDOWN_JOIN_SLICE_S = 0.05
-# Old fixed sleeps on a switch (0.3 + 0.5): now only a live stream waits, to read its own tail.
+# Old fixed sleeps on a switch (0.3 + 0.5): now only a live stream waits, after worker exit, to read its tail.
 _SHUTDOWN_READER_GRACE_S = 0.8
 
 # Transformers TTS only; generous since _ensure_subprocess_alive already catches dead workers.
@@ -862,7 +862,6 @@ class InferenceOrchestrator:
 
         self._teardown_going_out()
         self._cancel_generation()
-        cancelled_at = time.monotonic()
         self._drain_unread_replies()
 
         # The worker reads commands in order, so shutdown runs once the cancelled reply ends.
@@ -904,7 +903,7 @@ class InferenceOrchestrator:
             )
             return False
 
-        self._let_readers_finish(cancelled_at + _SHUTDOWN_READER_GRACE_S)
+        self._let_readers_finish(time.monotonic() + _SHUTDOWN_READER_GRACE_S)
         # Without this flag every model switch replayed a healthy worker's stderr at ERROR.
         self._worker_stopped_deliberately = True
         self._proc = None
