@@ -94,7 +94,11 @@ def _opaque_under_compile(name, fake):
     return decorator
 
 
-_EAGER_COUNTED_LOWP_GEMMS = ("fp8_block_matmul_triton", "fp8_block_small_m_linear", "fp8_block_matmul_torchao")
+_EAGER_COUNTED_LOWP_GEMMS = (
+    "fp8_block_matmul_triton",
+    "fp8_block_small_m_linear",
+    "fp8_block_matmul_torchao",
+)
 
 
 try:
