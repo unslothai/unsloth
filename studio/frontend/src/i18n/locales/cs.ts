@@ -8,10 +8,13 @@ export const cs = {
   chatBackground: {
     noBackground: "Bez pozadí",
     sizing: "Velikost obrázku",
+    sizingPosition: "Velikost a pozice obrázku",
     fill: "Vyplnit",
     fit: "Přizpůsobit",
     stretch: "Roztáhnout",
     original: "Původní velikost",
+    fitWidth: "Přizpůsobit šířce",
+    fitHeight: "Přizpůsobit výšce",
     zoom: "Přiblížení",
     outline: "Obrys pole zprávy",
     fade: "Prolnout do pozadí",
@@ -30,6 +33,12 @@ export const cs = {
     visibility: "Viditelnost",
     blur: "Rozmazání obrázku",
     position: "Pozice",
+    horizontal: "Vodorovná pozice",
+    vertical: "Svislá pozice",
+    scope: "Zobrazit na",
+    scopeNewChat: "Stránka nového chatu",
+    scopeChats: "Chaty",
+    scopeAll: "Všechny stránky",
     positionValue: "Vodorovně {x} %, svisle {y} %",
     newChat: "Nový chat",
     conversation: "Konverzace",
@@ -2544,6 +2553,22 @@ export const cs = {
         label: "Koledu, nebo něco provedu",
         description:
           "Halloweenské motivy a strašidelné pozdravy, do 1. listopadu.",
+      },
+      code: {
+        title: "Kód",
+        fontDescription: "Bloky kódu v chatu, náhledy souborů a příklady API.",
+        lineNumbers: {
+          label: "Čísla řádků",
+          description: "Číslovat řádky bloků kódu v chatu.",
+        },
+        wordWrap: {
+          label: "Zalamování řádků",
+          description: "Zalamovat dlouhé řádky v blocích kódu místo vodorovného posouvání.",
+        },
+        ligatures: {
+          label: "Ligatury písma",
+          description: "Spojovat symboly jako => a != do jednoho znaku, pokud to písmo kódu podporuje.",
+        },
       },
       custom: {
         chatWidth: {

@@ -616,10 +616,7 @@ def _scan_hf_cache(
             if variant_states is not None
             else None
         )
-        partial = hf_cache_scan.is_snapshot_partial(
-            "model", model_id, repo_dir, variant_state = variant_state
-        )
-        partial = partial or hf_cache_scan.is_gguf_repo_partial(
+        partial = hf_cache_scan.repo_listing_partial(
             model_id, repo_dir, variant_state = variant_state
         )
 
@@ -981,7 +978,10 @@ def collect_local_models(
         except OSError:
             continue
     try:
-        from hub.utils import download_manifest
+        from hub.utils import download_manifest, partial_verdict_cache
+
+        # Taken before the index reads the Hub state, so a write in between misses next time.
+        partial_verdict_cache.scan_token()
         variant_states = download_manifest.build_variant_state_index(
             state_repositories,
             active_hub_cache = hf_cache_dir,
@@ -5624,7 +5624,10 @@ async def list_checkpoints(
     outputs_dir = account_access.private_directory(outputs_dir, "outputs")
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
-        raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir, include_decision = True)
+        # Reads every checkpoint's trainer_state.json: keep it off the event loop.
+        raw_models = await asyncio.to_thread(
+            scan_checkpoints, outputs_dir = resolved_outputs_dir, include_decision = True
+        )
 
         models = [
             ModelCheckpoints(

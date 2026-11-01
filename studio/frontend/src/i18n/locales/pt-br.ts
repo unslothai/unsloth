@@ -8,10 +8,13 @@ export const ptBR = {
   chatBackground: {
     noBackground: "Sem fundo",
     sizing: "Dimensionamento da imagem",
+    sizingPosition: "Dimensionamento e posição da imagem",
     fill: "Preencher",
     fit: "Ajustar",
     stretch: "Esticar",
     original: "Tamanho original",
+    fitWidth: "Ajustar à largura",
+    fitHeight: "Ajustar à altura",
     zoom: "Zoom",
     outline: "Contorno do campo de mensagem",
     fade: "Esmaecer para o fundo",
@@ -30,6 +33,12 @@ export const ptBR = {
     visibility: "Visibilidade",
     blur: "Desfoque da imagem",
     position: "Posição",
+    horizontal: "Posição horizontal",
+    vertical: "Posição vertical",
+    scope: "Mostrar em",
+    scopeNewChat: "Página de novo chat",
+    scopeChats: "Chats",
+    scopeAll: "Todas as páginas",
     positionValue: "Horizontal {x}%, vertical {y}%",
     newChat: "Novo chat",
     conversation: "Conversa",
@@ -2346,6 +2355,22 @@ export const ptBR = {
         label: "Doces ou travessuras",
         description:
           "Temas de Halloween e saudações assustadoras, até 1º de novembro.",
+      },
+      code: {
+        title: "Código",
+        fontDescription: "Blocos de código no chat, prévias de arquivos e exemplos da API.",
+        lineNumbers: {
+          label: "Números de linha",
+          description: "Numerar as linhas dos blocos de código no chat.",
+        },
+        wordWrap: {
+          label: "Quebra de linha",
+          description: "Quebrar linhas longas nos blocos de código em vez de rolar para o lado.",
+        },
+        ligatures: {
+          label: "Ligaduras da fonte",
+          description: "Unir símbolos como => e != em um único glifo quando a fonte de código oferece suporte.",
+        },
       },
       custom: {
         chatWidth: {

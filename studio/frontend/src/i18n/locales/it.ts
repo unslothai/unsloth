@@ -5,10 +5,13 @@ export const it = {
   chatBackground: {
     noBackground: "Nessuno sfondo",
     sizing: "Dimensionamento immagine",
+    sizingPosition: "Dimensionamento e posizione immagine",
     fill: "Riempi",
     fit: "Adatta",
     stretch: "Allunga",
     original: "Dimensioni originali",
+    fitWidth: "Adatta alla larghezza",
+    fitHeight: "Adatta all’altezza",
     zoom: "Zoom",
     outline: "Bordo del campo messaggio",
     fade: "Sfuma verso lo sfondo",
@@ -27,6 +30,12 @@ export const it = {
     visibility: "Visibilità",
     blur: "Sfocatura immagine",
     position: "Posizione",
+    horizontal: "Posizione orizzontale",
+    vertical: "Posizione verticale",
+    scope: "Mostra in",
+    scopeNewChat: "Pagina nuova chat",
+    scopeChats: "Chat",
+    scopeAll: "Tutte le pagine",
     positionValue: "Orizzontale {x}%, verticale {y}%",
     newChat: "Nuova chat",
     conversation: "Conversazione",
@@ -2228,6 +2237,22 @@ export const it = {
         label: "Dolcetto o scherzetto",
         description:
           "Temi di Halloween e saluti spaventosi, fino al 1° novembre.",
+      },
+      code: {
+        title: "Codice",
+        fontDescription: "Blocchi di codice nella chat, anteprime dei file ed esempi API.",
+        lineNumbers: {
+          label: "Numeri di riga",
+          description: "Numera le righe dei blocchi di codice nella chat.",
+        },
+        wordWrap: {
+          label: "A capo automatico",
+          description: "Manda a capo le righe lunghe nei blocchi di codice invece di scorrere in orizzontale.",
+        },
+        ligatures: {
+          label: "Legature del carattere",
+          description: "Unisce simboli come => e != in un solo glifo se il carattere del codice lo supporta.",
+        },
       },
       custom: {
         chatWidth: {

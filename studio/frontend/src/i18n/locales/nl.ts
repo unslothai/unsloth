@@ -8,10 +8,13 @@ export const nl = {
   chatBackground: {
     noBackground: "Geen achtergrond",
     sizing: "Afbeeldingsgrootte",
+    sizingPosition: "Afbeeldingsgrootte en positie",
     fill: "Vullen",
     fit: "Passend maken",
     stretch: "Uitrekken",
     original: "Oorspronkelijke grootte",
+    fitWidth: "Passend in breedte",
+    fitHeight: "Passend in hoogte",
     zoom: "Zoom",
     outline: "Rand om berichtveld",
     fade: "Vervagen naar achtergrond",
@@ -30,6 +33,12 @@ export const nl = {
     visibility: "Zichtbaarheid",
     blur: "Afbeelding vervagen",
     position: "Positie",
+    horizontal: "Horizontale positie",
+    vertical: "Verticale positie",
+    scope: "Tonen op",
+    scopeNewChat: "Pagina nieuwe chat",
+    scopeChats: "Chats",
+    scopeAll: "Alle pagina’s",
     positionValue: "Horizontaal {x}%, verticaal {y}%",
     newChat: "Nieuwe chat",
     conversation: "Gesprek",
@@ -2566,6 +2575,22 @@ export const nl = {
         label: "Snoep of je leven",
         description:
           "Halloweenthema's en griezelige begroetingen, tot 1 november.",
+      },
+      code: {
+        title: "Code",
+        fontDescription: "Codeblokken in de chat, bestandsvoorbeelden en API-voorbeelden.",
+        lineNumbers: {
+          label: "Regelnummers",
+          description: "Nummer de regels van codeblokken in de chat.",
+        },
+        wordWrap: {
+          label: "Regelterugloop",
+          description: "Lange regels in codeblokken laten teruglopen in plaats van horizontaal te scrollen.",
+        },
+        ligatures: {
+          label: "Ligaturen",
+          description: "Voeg tekens zoals => en != samen tot één glyph als het codelettertype dat ondersteunt.",
+        },
       },
       custom: {
         chatWidth: {

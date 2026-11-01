@@ -8,10 +8,13 @@ export const vi = {
   chatBackground: {
     noBackground: "Không có nền",
     sizing: "Kích thước ảnh",
+    sizingPosition: "Kích thước và vị trí ảnh",
     fill: "Lấp đầy",
     fit: "Vừa khung",
     stretch: "Kéo giãn",
     original: "Kích thước gốc",
+    fitWidth: "Vừa chiều rộng",
+    fitHeight: "Vừa chiều cao",
     zoom: "Thu phóng",
     outline: "Viền ô soạn tin",
     fade: "Mờ dần vào nền",
@@ -30,6 +33,12 @@ export const vi = {
     visibility: "Độ hiển thị",
     blur: "Độ mờ ảnh",
     position: "Vị trí",
+    horizontal: "Vị trí ngang",
+    vertical: "Vị trí dọc",
+    scope: "Hiển thị trên",
+    scopeNewChat: "Trang trò chuyện mới",
+    scopeChats: "Trò chuyện",
+    scopeAll: "Mọi trang",
     positionValue: "Ngang {x}%, dọc {y}%",
     newChat: "Cuộc trò chuyện mới",
     conversation: "Cuộc trò chuyện",
@@ -2533,6 +2542,22 @@ export const vi = {
         label: "Cho kẹo hay bị ghẹo",
         description:
           "Chủ đề Halloween và lời chào rùng rợn, đến hết ngày 1 tháng 11.",
+      },
+      code: {
+        title: "Mã",
+        fontDescription: "Khối mã trong trò chuyện, bản xem trước tệp và ví dụ API.",
+        lineNumbers: {
+          label: "Số dòng",
+          description: "Đánh số dòng cho khối mã trong trò chuyện.",
+        },
+        wordWrap: {
+          label: "Ngắt dòng",
+          description: "Ngắt các dòng dài trong khối mã thay vì cuộn ngang.",
+        },
+        ligatures: {
+          label: "Chữ ghép",
+          description: "Ghép các ký hiệu như => và != thành một ký tự khi phông chữ mã hỗ trợ.",
+        },
       },
       custom: {
         chatWidth: {

@@ -11010,6 +11010,7 @@ class VideoBackend:
         denoiser_streamed: Optional[str] = None
         denoiser_single_host_copy = False
         te_streamed: Optional[str] = None
+        block_pinner = None
         residency = None
         # Token fence before placement, or a superseded worker loads 66.3 GB onto another load's GPU.
         if _load_token is not None and _load_token != self._load_token:
@@ -11495,6 +11496,13 @@ class VideoBackend:
                     )
                 except Exception as exc:  # noqa: BLE001 -- stock moves
                     logger.warning("video.h3_pinned_swap: %s: %s", vae_name, exc)
+        if te_streamed == "stream_lazy":
+            # Last host copy, so available RAM is final.
+            from .video_minimax_h3_te import h3_te_resident_enabled, keep_h3_te_resident
+            if h3_te_resident_enabled():
+                if block_pinner is not None:
+                    block_pinner.join()
+                keep_h3_te_resident(getattr(pipe, "text_encoder", None), logger = logger)
         resolved = build_resolved_record(
             {
                 "family_override": _family_override_resolved(family_override, fam),
@@ -11787,6 +11795,7 @@ class VideoBackend:
         flow_shift: Optional[float] = None,
         audio_flow_shift: Optional[float] = None,
         video_id: Optional[str] = None,
+        decoded_reference_audios: Optional[Any] = None,
         expected_state: Optional[object] = None,
         live_preview: Optional[bool] = None,
         before_commit: Optional[Callable[[], None]] = None,
@@ -11828,6 +11837,7 @@ class VideoBackend:
                 reference_image_size,
                 canvas_w,
                 canvas_h,
+                decoded_audios = decoded_reference_audios,
             )
             shift, audio_shift = self._resolve_flow_shifts(
                 state.family, state.engine, flow_shift, audio_flow_shift
@@ -13151,6 +13161,8 @@ class VideoBackend:
         reference_image_size: Optional[str],
         width: int,
         height: int,
+        *,
+        decoded_audios: Optional[Any] = None,
     ) -> Any:
         """Sizing is settled here so both engines' min(1, ...) scales are no-ops; native refuses max."""
         from .video_minimax_h3 import (
@@ -13223,13 +13235,16 @@ class VideoBackend:
                         "silent earlier video. Reorder the videos so ones with soundtracks "
                         "come first, or add a replacement soundtrack to each earlier video."
                     )
-        decoded_audios = tuple(
-            decode_h3_reference_audio(_decode_b64_media(item)) for item in audios
-        )
+        # The route's readability check may have decoded these exact inputs already.
+        reused_audios = decoded_audios.for_inputs(audios) if decoded_audios is not None else None
+        if reused_audios is None:
+            reused_audios = tuple(
+                decode_h3_reference_audio(_decode_b64_media(item)) for item in audios
+            )
         return MiniMaxH3References(
             images = fitted_images,
             videos = tuple(decoded_videos),
-            audios = decoded_audios,
+            audios = reused_audios,
         )
 
     def _h3_native_server_render(

@@ -8,10 +8,13 @@ export const hi = {
   chatBackground: {
     noBackground: "कोई पृष्ठभूमि नहीं",
     sizing: "छवि का आकार",
+    sizingPosition: "छवि का आकार और स्थिति",
     fill: "भरें",
     fit: "फ़िट करें",
     stretch: "खींचें",
     original: "मूल आकार",
+    fitWidth: "चौड़ाई में फ़िट करें",
+    fitHeight: "ऊँचाई में फ़िट करें",
     zoom: "ज़ूम",
     outline: "संदेश बॉक्स की रूपरेखा",
     fade: "पृष्ठभूमि में फ़ेड करें",
@@ -30,6 +33,12 @@ export const hi = {
     visibility: "दृश्यता",
     blur: "छवि का धुंधलापन",
     position: "स्थिति",
+    horizontal: "क्षैतिज स्थिति",
+    vertical: "लंबवत स्थिति",
+    scope: "यहाँ दिखाएँ",
+    scopeNewChat: "नई चैट का पेज",
+    scopeChats: "चैट",
+    scopeAll: "सभी पेज",
     positionValue: "क्षैतिज {x}%, लंबवत {y}%",
     newChat: "नई चैट",
     conversation: "बातचीत",
@@ -2336,6 +2345,22 @@ export const hi = {
         label: "ट्रिक या ट्रीट",
         description:
           "1 नवंबर तक हैलोवीन थीम और डरावने अभिवादन।",
+      },
+      code: {
+        title: "कोड",
+        fontDescription: "चैट में कोड ब्लॉक, फ़ाइल प्रीव्यू और API उदाहरण।",
+        lineNumbers: {
+          label: "लाइन नंबर",
+          description: "चैट में कोड ब्लॉक की लाइनों पर नंबर दिखाएँ।",
+        },
+        wordWrap: {
+          label: "वर्ड रैप",
+          description: "लंबी लाइनों को बगल में स्क्रॉल करने के बजाय कोड ब्लॉक में लपेटें।",
+        },
+        ligatures: {
+          label: "फ़ॉन्ट लिगेचर",
+          description: "कोड फ़ॉन्ट समर्थन करे तो => और != जैसे चिह्नों को एक ग्लिफ़ में जोड़ें।",
+        },
       },
       custom: {
         chatWidth: {

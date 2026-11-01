@@ -8,10 +8,13 @@ export const fa = {
   chatBackground: {
     noBackground: "بدون پس‌زمینه",
     sizing: "اندازه‌بندی تصویر",
+    sizingPosition: "اندازه و موقعیت تصویر",
     fill: "پر کردن",
     fit: "جا دادن",
     stretch: "کشیدن",
     original: "اندازهٔ اصلی",
+    fitWidth: "هم‌اندازه با عرض",
+    fitHeight: "هم‌اندازه با ارتفاع",
     zoom: "بزرگ‌نمایی",
     outline: "کادر بخش نوشتن پیام",
     fade: "محو شدن در پس‌زمینه",
@@ -30,6 +33,12 @@ export const fa = {
     visibility: "میزان نمایش",
     blur: "تاری تصویر",
     position: "موقعیت",
+    horizontal: "موقعیت افقی",
+    vertical: "موقعیت عمودی",
+    scope: "نمایش در",
+    scopeNewChat: "صفحهٔ گفتگوی جدید",
+    scopeChats: "گفتگوها",
+    scopeAll: "همهٔ صفحه‌ها",
     positionValue: "افقی {x}٪، عمودی {y}٪",
     newChat: "گفتگوی جدید",
     conversation: "گفتگو",
@@ -2516,6 +2525,22 @@ export const fa = {
       trickOrTreat: {
         label: "حقه یا خوراکی",
         description: "پوسته‌های هالووین و خوشامدگویی‌های ترسناک، تا 1 نوامبر.",
+      },
+      code: {
+        title: "کد",
+        fontDescription: "بلوک‌های کد در گفتگو، پیش‌نمایش فایل‌ها و نمونه‌های API.",
+        lineNumbers: {
+          label: "شمارهٔ خط",
+          description: "خط‌های بلوک‌های کد در گفتگو شماره‌گذاری شوند.",
+        },
+        wordWrap: {
+          label: "شکستن خط",
+          description: "خط‌های بلند در بلوک‌های کد به‌جای پیمایش افقی شکسته شوند.",
+        },
+        ligatures: {
+          label: "پیوندهای قلم",
+          description: "نمادهایی مانند => و != در صورت پشتیبانی قلم کد به یک نویسه تبدیل شوند.",
+        },
       },
       custom: {
         chatWidth: {

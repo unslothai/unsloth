@@ -8,10 +8,13 @@ export const de = {
   chatBackground: {
     noBackground: "Kein Hintergrund",
     sizing: "Bildskalierung",
+    sizingPosition: "Bildskalierung und Position",
     fill: "Ausfüllen",
     fit: "Einpassen",
     stretch: "Strecken",
     original: "Originalgröße",
+    fitWidth: "An Breite anpassen",
+    fitHeight: "An Höhe anpassen",
     zoom: "Zoom",
     outline: "Umrandung des Eingabefelds",
     fade: "Zum Hintergrund ausblenden",
@@ -30,6 +33,12 @@ export const de = {
     visibility: "Sichtbarkeit",
     blur: "Bildunschärfe",
     position: "Position",
+    horizontal: "Horizontale Position",
+    vertical: "Vertikale Position",
+    scope: "Anzeigen auf",
+    scopeNewChat: "Seite „Neuer Chat“",
+    scopeChats: "Chats",
+    scopeAll: "Allen Seiten",
     positionValue: "Horizontal {x} %, vertikal {y} %",
     newChat: "Neuer Chat",
     conversation: "Unterhaltung",
@@ -2360,6 +2369,22 @@ export const de = {
         label: "Süßes oder Saures",
         description:
           "Halloween-Designs und gruselige Begrüßungen, bis zum 1. November.",
+      },
+      code: {
+        title: "Code",
+        fontDescription: "Codeblöcke im Chat, Dateivorschauen und API-Beispiele.",
+        lineNumbers: {
+          label: "Zeilennummern",
+          description: "Zeilen von Codeblöcken im Chat nummerieren.",
+        },
+        wordWrap: {
+          label: "Zeilenumbruch",
+          description: "Lange Zeilen in Codeblöcken umbrechen statt seitlich zu scrollen.",
+        },
+        ligatures: {
+          label: "Schrift-Ligaturen",
+          description: "Zeichen wie => und != zu einer Glyphe verbinden, wenn die Codeschrift das unterstützt.",
+        },
       },
       custom: {
         chatWidth: {
