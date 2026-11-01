@@ -47,6 +47,8 @@ export interface NpcMind {
   optionSince?: number;
   planAt?: number;
   replan?: boolean;
+  /** Bumped on every replan request, so a plan answer clears only the requests it saw. */
+  replanSeq?: number;
   since?: number;
   rel?: Record<string, PairMemory>;
 }
@@ -131,8 +133,10 @@ export function remember(
     mind.options &&
     kind === "observation" &&
     added.some((r) => r.importance >= NOTABLE)
-  )
+  ) {
     life.replan = true;
+    life.replanSeq = (mind.replanSeq ?? 0) + 1;
+  }
   let memory = [...mind.memory, ...added];
   if (memory.length > MAX_MEMORIES) {
     const drop = new Set(

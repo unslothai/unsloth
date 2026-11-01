@@ -1008,6 +1008,7 @@ export function WorldPlayer({
         s.clock,
         here,
       );
+      const askedSeq = s.npc[npcId]?.replanSeq ?? 0;
       try {
         const res = await api.invoke(
           flowId,
@@ -1041,7 +1042,12 @@ export function WorldPlayer({
                   ...m,
                   plan: blocks,
                   planDay: day,
-                  ...Life.lifePlanned(m, res.outputs.plan, st.clock),
+                  ...Life.lifePlanned(
+                    m,
+                    res.outputs.plan,
+                    st.clock,
+                    askedSeq,
+                  ),
                 },
                 text
                   ? [
@@ -1068,7 +1074,7 @@ export function WorldPlayer({
               ...m,
               plan: [],
               planDay: day,
-              ...Life.lifePlanned(m, null, st.clock),
+              ...Life.lifePlanned(m, null, st.clock, askedSeq),
             })),
           );
         throw e;
