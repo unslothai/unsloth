@@ -59,13 +59,14 @@ def spawned(monkeypatch):
 
     def fake_run(cmd, **kwargs):
         calls.run.append(list(cmd))
-        return types.SimpleNamespace(stdout = "C:\\converted\n")
+        # Non-zero: no FileManager1 on the bus, so native Linux falls back to xdg-open.
+        return types.SimpleNamespace(stdout = "C:\\converted\n", returncode = 1)
 
     def fake_popen(cmd, **kwargs):
         if calls.popen_error is not None:
             raise calls.popen_error
         calls.popen.append(cmd if isinstance(cmd, str) else list(cmd))
-        return types.SimpleNamespace()
+        return types.SimpleNamespace(wait = lambda timeout = None: 0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -178,7 +179,7 @@ def test_wsl_falls_back_to_xdg_open_when_wslpath_fails(monkeypatch, spawned, tmp
 
 def test_native_linux_opens_a_directory_directly(native_linux, spawned, tmp_path):
     path_utils.reveal_in_file_manager(tmp_path)
-    assert spawned.run == []
+    assert [cmd[0] for cmd in spawned.run] == ["gdbus", "dbus-send"]
     assert spawned.popen == [["xdg-open", str(tmp_path)]]
 
 
