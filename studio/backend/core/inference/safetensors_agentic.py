@@ -1678,7 +1678,7 @@ def run_safetensors_tool_loop(
         # The turn that ends the loop offers no tools again, so do not ask for a retry there.
         over_cap_final = bool(over_cap) and (
             tool_controller.force_final_answer
-            or (not unrestricted_tools and not tool_controller.active_tools())
+            or (not unrestricted_tools and not tool_controller.has_active_tools())
             or (_turn_executed_real_tool and _executed_tool_iters + 1 >= max_tool_iterations)
         )
         if over_cap:
@@ -1724,7 +1724,7 @@ def run_safetensors_tool_loop(
         if tool_controller.force_final_answer:
             final_attempt_done = True
             continue
-        if not unrestricted_tools and not tool_controller.active_tools():
+        if not unrestricted_tools and not tool_controller.has_active_tools():
             final_attempt_done = True
             continue
         # Only real tool turns count against the cap, so a no-op correction turn is free (GGUF parity).

@@ -1035,3 +1035,14 @@ def test_active_tools_are_private_copies_of_every_nested_schema_node():
     assert repr(controller.active_tools()) == repr([source])
     assert source["function"]["parameters"]["properties"]["mode"]["enum"] == ["a", "b"]
     assert source["function"]["parameters"]["properties"]["pairs"]["items"]["enum"] == (1, [2])
+
+
+def test_has_active_tools_matches_active_tools_without_copying():
+    controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
+    assert controller.has_active_tools() is bool(controller.active_tools()) is True
+    assert ToolLoopController(tools = []).has_active_tools() is False
+    controller._completed_one_shot_tools.update({"web_search", "python"})
+    assert controller.has_active_tools() is bool(controller.active_tools()) is False
+    controller._completed_one_shot_tools.clear()
+    controller._force_final_answer = True
+    assert controller.has_active_tools() is bool(controller.active_tools()) is False

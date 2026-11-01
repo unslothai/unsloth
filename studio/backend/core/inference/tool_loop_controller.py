@@ -1199,11 +1199,7 @@ _SCHEMA_ATOMS = (str, int, float, bool, type(None))
 
 
 def _copy_schema(value: Any) -> Any:
-    """A private copy of a JSON tool schema, as copy.deepcopy makes it but without its per-node dispatch and memo.
-
-    Plain dicts and lists are rebuilt in order and plain scalars shared (they are immutable); anything else (a
-    Mapping subclass, a tuple, a custom object) goes through copy.deepcopy, so no caller can reach this ledger's
-    copy through what active_tools() returns."""
+    """copy.deepcopy for JSON schemas minus its memo: no alias or cycle tracking; non-plain nodes still deepcopy."""
     kind = type(value)
     if kind is dict:
         return {
@@ -1263,6 +1259,13 @@ class ToolLoopController:
     def force_final_answer(self) -> bool:
         """True once a terminal no-op should transition to a no-tools pass."""
         return self._force_final_answer
+
+    def has_active_tools(self) -> bool:
+        """bool(active_tools()) without copying a schema."""
+        return not self._force_final_answer and any(
+            _tool_name_from_schema(tool) not in self._completed_one_shot_tools
+            for tool in self._tools
+        )
 
     def active_tools(self) -> list[dict[str, Any]]:
         """Return tools still worth advertising to the next model call."""
