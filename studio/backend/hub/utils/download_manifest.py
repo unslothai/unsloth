@@ -327,11 +327,7 @@ def _state_dir_name_keys(directory: Path) -> Optional[frozenset[str]]:
 
 
 def _state_file_may_exist(path: Path) -> bool:
-    """False only when this inventory scan's one listing of the state dir lacks the name.
-
-    An inventory scan probes up to a dozen candidate state files per repo, nearly all absent;
-    listing each state dir once per scan turns those stats into set lookups. Outside a scan, or
-    when the dir cannot be listed, every candidate is probed as before."""
+    """False only when this scan's one listing of the state dir lacks the name; else probe as before."""
     if not scan_memo_active():
         return True
     names = memoized(

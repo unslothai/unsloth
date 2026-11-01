@@ -1457,7 +1457,7 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
-    # Pure in the name and the family table, and every inventory request asks again for each row.
+    # Pure in name + table; every inventory request asks again per row.
     memo = _detect_family_memo()
     try:
         return memo[repo_id]

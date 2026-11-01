@@ -57,7 +57,6 @@ def state_root(*, create: bool = False) -> Optional[Path]:
 
 def _subdir(name: str, *, create: bool = False) -> Optional[Path]:
     if not create:
-        # An inventory scan builds a dozen state paths per repo; the root resolves once per scan.
         return memoized(("hub_state_subdir", name), lambda: _subdir_uncached(name))
     return _subdir_uncached(name, create = True)
 

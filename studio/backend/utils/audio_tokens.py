@@ -179,8 +179,7 @@ def detect_local_tts_audio_type(directory) -> Optional[str]:
     return None
 
 
-# Every inventory request probes each model's tokenizer_config (tens of MB across a large cache), so
-# the verdict is kept per file version; a rewrite changes mtime/ctime/size/inode, which misses.
+# Kept per file version: a rewrite moves mtime/ctime/size/inode and misses.
 _TOKENIZER_AUDIO_TYPE_CACHE: "OrderedDict[tuple, Optional[str]]" = OrderedDict()
 _TOKENIZER_AUDIO_TYPE_CACHE_MAX = 4096
 _TOKENIZER_AUDIO_TYPE_LOCK = threading.Lock()
