@@ -1134,6 +1134,7 @@
       "_MISTRAL_V11_NAME_RE": "'\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*' flags=32",
       "_ONE_STRING_ARG_CALL_RE": "'\\\\A\\\\s*\\\\{\\\\s*\"name\"\\\\s*:\\\\s*\"([\\\\w.\\\\-]+)\"\\\\s*,\\\\s*\"(?:arguments|parameters)\"\\\\s*:\\\\s*\\\\{\\\\s*\"([A-Za-z_][\\\\w\\\\-]*)\"\\\\s*:\\\\s*\"(.*)\"\\\\s*\\\\}\\\\s*\\\\}\\\\s*\\\\Z' flags=48",
       "_OPEN_CALL_WS_RE": "'\\\\s*' flags=32",
+      "_OPEN_FUNCTION_OPENER_RE": "'<function(?:=[\\\\w\\\\.\\\\-]+|\\\\s+name=\"[\\\\w\\\\.\\\\-]+\")>' flags=32",
       "_OUTER_ENVELOPE_CLOSED_PATS[0]": "'<tool_call>(?:(?!<tool_call>).)*</tool_call>' flags=48",
       "_OUTER_ENVELOPE_CLOSED_PATS[1]": "'<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>(?:(?!<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>).)*</function>' flags=48",
       "_OUTER_ENVELOPE_CLOSED_PATS[2]": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
@@ -1196,6 +1197,7 @@
       "re.compile('<function(?:=([\\\\w\\\\.\\\\-]+)|\\\\s+name=\"([\\\\w\\\\.\\\\-]+)\")>\\\\s*')": 1,
       "re.compile('<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>(?:(?!<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>).)*</function>', re.DOTALL)": 1,
       "re.compile('<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>.*$', re.DOTALL)": 1,
+      "re.compile('<function(?:=[\\\\w\\\\.\\\\-]+|\\\\s+name=\"[\\\\w\\\\.\\\\-]+\")>')": 1,
       "re.compile('<function\\\\s+name=\"')": 1,
       "re.compile('<tool_call>(?:(?!<tool_call>).)*</tool_call>', re.DOTALL)": 1,
       "re.compile('<tool_call>.*$', re.DOTALL)": 1,
@@ -1415,6 +1417,12 @@
       "_GEMMA_BARE_TC_RE": {
         "kind": "assign"
       },
+      "_GEMMA_BODY_SCAN_MIN": {
+        "kind": "assign"
+      },
+      "_GEMMA_BODY_SCAN_SLOTS": {
+        "kind": "assign"
+      },
       "_GEMMA_JSON_NUMBER_RE": {
         "kind": "assign"
       },
@@ -1556,6 +1564,12 @@
       "_ONE_STRING_ARG_CALL_RE": {
         "kind": "assign"
       },
+      "_OPEN_BODY_TRIGGERS": {
+        "kind": "assign"
+      },
+      "_OPEN_BODY_TRIGGER_MAX_LEN": {
+        "kind": "assign"
+      },
       "_OPEN_CALL_OPENER": {
         "kind": "assign"
       },
@@ -1566,6 +1580,9 @@
         "kind": "assign"
       },
       "_OPEN_CALL_WS_RE": {
+        "kind": "assign"
+      },
+      "_OPEN_FUNCTION_OPENER_RE": {
         "kind": "assign"
       },
       "_OUTER_ENVELOPE_CLOSED_PATS": {
@@ -1698,6 +1715,12 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, brace_pos: int"
+      },
+      "_gemma_body_scan_next": {
+        "kind": "assign"
+      },
+      "_gemma_body_scans": {
+        "kind": "assign"
       },
       "_gemma_call_is_anchored": {
         "decorators": [],

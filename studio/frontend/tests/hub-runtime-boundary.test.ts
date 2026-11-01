@@ -374,6 +374,6 @@ test("the shared model row menu no longer offers Hub model settings", () => {
     "utf8",
   );
 
-  assert.doesNotMatch(rowMenu, /ModelRowMenuSettings|Settings02Icon/);
+  assert.doesNotMatch(rowMenu, /ModelRowMenuSettings|Settings01Icon/);
   assert.doesNotMatch(rowMenu, />\s*Settings\s*</);
 });
