@@ -1771,8 +1771,7 @@ function useSoleDownloadedQuants(
   if (readerRef.current === null) {
     readerRef.current = createSoleQuantReader<SoleDownloadedQuant>({
       workers: SOLE_QUANT_WORKERS,
-      // Disk only: the Hub is asked when the row is expanded, so a stalled Hub cannot leave the
-      // collapsed list without its quants.
+      // Disk only: the Hub is asked when the row is expanded.
       read: (target) => readSoleQuant(target, hfTokenRef.current),
       commit: (target, quant) => {
         if (!mountedRef.current) return;
@@ -6516,8 +6515,6 @@ export function HubModelPicker({
     );
   };
 
-  // The expander is the only place Hub state (an update, a pending companion) is read. Every
-  // collapsed row answers from disk, so this mounts on request and never gates the row.
   const renderGgufExpandRow = (
     c: (typeof visibleCachedGguf)[number],
     loadedQuants: readonly string[],
@@ -6589,8 +6586,6 @@ export function HubModelPicker({
     const isPartial = c.partial === true;
     const isDownloaded = variant.downloaded === true && !isPartial;
     const loadedQuants = loadedQuantsFor(c.repo_id);
-    // A sole quant still has an expander: it is the only place Hub state (an update, a pending
-    // companion) is read, so the collapsed row never has to ask.
     const expanderOpen = shouldMountVariantExpander({
       expanded: isGgufExpanded(c.repo_id),
       autoExpand: expandQuantizations && !reopenedGguf.has(c.repo_id),
@@ -6643,15 +6638,46 @@ export function HubModelPicker({
               alignMeta="device"
               optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
               onClick={() => onSelect(c.repo_id, selectMeta)}
+              onArrowDownIntoChildren={
+                expanderOpen
+                  ? () => focusFirstChildOption(optionKey)
+                  : undefined
+              }
               vramStatus={null}
               className={downloadedRowButtonClassName}
             />
           </div>
-          <span className={ROW_ACTIONS_PINNED_CLASS}>
+          <span className={ROW_ACTIONS_CLASS}>
+            {onConfigure && (
+              <ModelLoadSettingsAction
+                ariaLabel={`Inference settings for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
+                onConfigure={() => onConfigure(c.repo_id, selectMeta)}
+              />
+            )}
             <ModelRowMenu
               ariaLabel={`More options for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
               cachePath={{ repoId: c.repo_id, variant: variant.quant }}
-              items={ejectMenuItems(c.repo_id)}
+              // The expander holds what only the Hub knows (an update, a pending companion), so it
+              // opens on request and a collapsed row never asks.
+              items={[
+                ...(ejectMenuItems(c.repo_id) ?? []),
+                {
+                  key: "quantizations",
+                  label: expanderOpen ? "Hide quantizations" : "Show quantizations",
+                  icon: (
+                    <HugeiconsIcon
+                      icon={
+                        expanderOpen
+                          ? ChevronDownStandardIcon
+                          : ChevronRightStandardIcon
+                      }
+                      strokeWidth={1.75}
+                      className="size-icon"
+                    />
+                  ),
+                  onSelect: () => toggleGgufExpanded(c.repo_id, expanderOpen),
+                },
+              ]}
               pin={{
                 pinned: isPinned,
                 pinLabel: "Pin",
@@ -6699,22 +6725,6 @@ export function HubModelPicker({
                 },
               }}
             />
-            <button
-              type="button"
-              tabIndex={-1}
-              aria-hidden="true"
-              onClick={() => toggleGgufExpanded(c.repo_id, expanderOpen)}
-              className="flex h-6 w-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center text-muted-foreground/80 hover:text-foreground"
-            >
-              <HugeiconsIcon
-                icon={
-                  expanderOpen
-                    ? ChevronDownStandardIcon
-                    : ChevronRightStandardIcon
-                }
-                className="size-3"
-              />
-            </button>
           </span>
         </div>
         {renderGgufExpandRow(c, loadedQuants, expanderOpen)}

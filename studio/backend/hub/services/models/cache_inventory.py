@@ -82,10 +82,7 @@ _cached_inventory_flights: dict[
     tuple[asyncio.AbstractEventLoop, tuple[str, int]], asyncio.Task[list[dict]]
 ] = {}
 
-# The walk runs on its own pool. `asyncio.to_thread` uses the loop's default executor, so one cold
-# walk over a large cache queued every other to_thread caller behind it — the starvation #14038
-# fixed for the variant listings. Two workers cover the two inventories; the flight table above
-# already coalesces concurrent callers of the same one.
+# Own pool: on the default executor a cold walk queued every asyncio.to_thread caller (#14038).
 _CACHED_INVENTORY_POOL = ThreadPoolExecutor(
     max_workers = 2, thread_name_prefix = "cached-inventory-scan"
 )

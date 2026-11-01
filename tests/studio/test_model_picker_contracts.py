@@ -3205,6 +3205,18 @@ def test_a_multi_quant_parent_row_still_has_no_gear():
     )
 
 
+def test_a_sole_quant_row_keeps_its_gear_and_reaches_the_expander_from_its_menu():
+    """Playwright drivers open run settings from a sole-quant row's gear, and Enter on the row
+    loads, so the expander (Hub-only state: updates, pending companions) opens from the menu."""
+    pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
+    start = pickers.index("const renderSoleQuantGgufRow")
+    sole = pickers[start : pickers.index("const renderDownloadedGgufRow", start)]
+    assert "<ModelLoadSettingsAction" in sole and "Inference settings for" in sole
+    assert 'key: "quantizations"' in sole
+    assert "onSelect: () => toggleGgufExpanded(c.repo_id, expanderOpen)" in sole
+    assert "{renderGgufExpandRow(c, loadedQuants, expanderOpen)}" in sole
+
+
 def test_run_settings_page_keeps_its_identifying_controls():
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert 'aria-label="Back to model list"' in page

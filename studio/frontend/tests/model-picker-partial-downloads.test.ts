@@ -436,15 +436,9 @@ test("a partial pick carries no load identity", () => {
 
 test("configure carries the same rule, because Run replays its metadata", () => {
   // onRun spreads this meta back into a select, so a stray loadId would reach the load path.
-  // The sole-quant row has no gear: its settings live in the expander, whose own meta is built
-  // per variant, so the row's selectMeta never reaches a configure call.
-  const sole = PICKERS.slice(PICKERS.indexOf("const renderSoleQuantGgufRow"));
-  const soleRow = sole.slice(0, sole.indexOf("const renderDownloadedGgufRow"));
-  assert.ok(soleRow.length > 0, "the sole-quant row was renamed");
   assert.equal(
-    soleRow.includes("ModelLoadSettingsAction"),
-    false,
-    "the sole-quant row grew a gear that spreads its selectMeta into a load",
+    PICKERS.split("onConfigure(c.repo_id, selectMeta)").length - 1,
+    1,
   );
   const selector = read(
     "../src/features/model-picker/components/model-selector.tsx",
