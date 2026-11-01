@@ -12238,7 +12238,10 @@ READ_SKILL_TOOL = {
                 },
                 "resource": {
                     "type": "string",
-                    "description": "Relative resource path. Defaults to SKILL.md.",
+                    "description": (
+                        "Relative path of a file inside the skill's folder, "
+                        "never a chat attachment. Defaults to SKILL.md."
+                    ),
                 },
                 "offset": {
                     "type": "integer",
