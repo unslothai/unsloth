@@ -149,3 +149,16 @@ test("glass off writes no strength or tone to the page", () => {
 	assert.match(background, /if \(!\(frameUrl && glass\)\) return;\n\s*let cancelled = false;\n\s*measureTone\(frameUrl\)/);
 	assert.match(background, /if \(!\(appWallpaper && tone && glass\)\) return;/);
 });
+
+test("the glass preference survives an account switch, and sign-in waits for the server before a personal image", async () => {
+	const { ACCOUNT_CHROME_KEYS } = await import("../src/lib/account-transition.ts");
+	const material = readFileSync(new URL("../src/features/chat-background/material.ts", import.meta.url), "utf8");
+	const key = /MATERIAL_STORAGE_KEY = "([^"]+)"/.exec(material)?.[1];
+	assert.ok(key && ACCOUNT_CHROME_KEYS.has(key));
+	for (const page of ["login-page.tsx", "change-password-page.tsx"]) {
+		const source = readFileSync(new URL(`../src/features/auth/${page}`, import.meta.url), "utf8");
+		assert.match(source, /const personal = useConfirmedLoginMode\(\) === "single";/);
+	}
+	const client = readFileSync(new URL("../src/features/auth/login-client.ts", import.meta.url), "utf8");
+	assert.match(client, /getConfirmedLoginMode = \(\): LoginMode \| null =>\n\s*statusKnown \? loginMode : null;/);
+});

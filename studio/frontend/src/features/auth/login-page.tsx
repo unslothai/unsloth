@@ -3,12 +3,12 @@
 
 import { Card } from "@/components/ui/card";
 import { ChatBackground } from "@/features/chat-background";
-import { useLoginMode } from "./account-session";
+import { useConfirmedLoginMode } from "./account-session";
 import { AuthForm } from "./components/auth-form";
 
 export function LoginPage() {
-  // A shared sign-in screen never shows the last account's own image.
-  const personal = useLoginMode() !== "multi";
+  // A shared sign-in screen never shows the last account's own image, so wait for the server to say it is not one.
+  const personal = useConfirmedLoginMode() === "single";
   return (
     <div
       data-auth-wallpaper=""
