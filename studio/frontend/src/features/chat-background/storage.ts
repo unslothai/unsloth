@@ -22,6 +22,32 @@ let revision = 0;
 let committed: ChatBackgroundValue | null = null;
 let writes: Promise<unknown> = Promise.resolve();
 let hydration: Promise<void> | undefined;
+/** What the server last confirmed for this browser's copy; `dirty` = a local edit it has not seen. */
+export type BackgroundSyncState = {
+	updatedAt: number | null;
+	sha256: string | null;
+	dirty: boolean;
+};
+const CLEAN_SYNC: BackgroundSyncState = {
+	updatedAt: null,
+	sha256: null,
+	dirty: false,
+};
+let onLocalChange: (() => void) | null = null;
+export function setBackgroundChangeListener(listener: (() => void) | null) {
+	onLocalChange = listener;
+}
+export async function readBackgroundSync(): Promise<BackgroundSyncState> {
+	const row = await currentDatabase().table("backgrounds").get("sync");
+	return { ...CLEAN_SYNC, ...(row?.state ?? {}) };
+}
+export async function writeBackgroundSync(
+	patch: Partial<BackgroundSyncState>,
+): Promise<void> {
+	const db = currentDatabase();
+	const state = { ...(await readBackgroundSync()), ...patch };
+	await db.table("backgrounds").put({ id: "sync", state });
+}
 function currentDatabase() {
 	const name = accountDatabaseName("unsloth-chat-background");
 	if (!database || account !== name) {
@@ -76,20 +102,30 @@ export function setBackgroundError(error: BackgroundError) {
 async function persist(
 	value: ChatBackgroundValue | null,
 	optimistic: boolean,
+	fromServer?: Partial<BackgroundSyncState>,
 ): Promise<boolean> {
 	const db = currentDatabase();
 	const ticket = ++revision;
 	if (optimistic) useBackgroundStore.setState({ value, error: null });
 	const write = writes.then(async () => {
+		const sameImage = Boolean(value && committed && value.blob === committed.blob);
 		if (value) await db.table("backgrounds").put({ id: "current", value });
 		else await db.table("backgrounds").delete("current");
 		if (db === database) committed = value;
+		await writeBackgroundSync(
+			fromServer
+				? { ...fromServer, dirty: false }
+				: sameImage
+					? { dirty: true }
+					: { dirty: true, sha256: null },
+		);
 	});
 	writes = write.catch(() => undefined);
 	try {
 		await write;
 		if (ticket === revision)
 			useBackgroundStore.setState({ value, error: null, ready: true });
+		if (!fromServer) onLocalChange?.();
 		return true;
 	} catch {
 		if (ticket === revision)
@@ -100,6 +136,13 @@ async function persist(
 			});
 		return false;
 	}
+}
+/** Adopts the account's copy without marking it as a local edit to send back. */
+export function applyServerBackground(
+	value: ChatBackgroundValue | null,
+	sync: Pick<BackgroundSyncState, "updatedAt" | "sha256">,
+): Promise<boolean> {
+	return persist(value, false, sync);
 }
 export function patchBackground(patch: Partial<BackgroundAdjustments>) {
 	const value = useBackgroundStore.getState().value;
