@@ -3,32 +3,13 @@
 
 """Per-repo partial verdict of the local model listing, kept across requests.
 
-The listing judges every cached repo partial or not on every request: Hub state candidates,
-``.incomplete`` blobs, broken links and the quant / shard sets of the newest snapshot. All of it
-reads the repo dir and the Studio Hub state only, and every writer of those (huggingface_hub, the
-Studio download worker, a delete) creates, renames or unlinks a directory entry, which changes the
-containing directory's mtime. So a verdict is kept with a signature of exactly those directories:
-
-* the repo dir, ``snapshots/``, ``blobs/``, ``refs/`` and every directory inside each snapshot
-  (a new snapshot, a repointed link, an ``.incomplete`` appearing, completing by rename or being
-  removed, a blob deleted);
-* every file under ``refs/`` (``refs/main`` is rewritten in place);
-* every regular file inside a snapshot and every link target outside ``blobs/`` (both can be
-  rewritten in place; blobs are content-addressed and only ever renamed into place);
-* for a blob that links into huggingface_hub's shared store (``<hub>/blobs/<xx>/<xet hash>``),
-  the store file and its directory, since another repo's delete can sweep it;
-* one token per scan over the whole Hub state tree (each manifest and cancel marker, plus the
-  state root and the configured cache), so any state write misses every repo.
-
-A repeat request stats those directories instead of walking the files. Nothing is stored when a
-stat fails with anything but "absent", when a timestamp is too recent to trust (a change in the
-same clock tick, or within FAT's 2 s mtime, would not move it), when the signature moved while the
-verdict was computed, or when an invalidation ran meanwhile. A snapshot holding a linked
-directory is not cached. Only Linux local filesystems known to move a directory's mtime on every
-entry change are cached (ext4, xfs, btrfs, zfs, tmpfs, ...): FAT / exFAT drivers, network and FUSE
-mounts (object-store mounts keep no directory mtimes; NFS caches them), macOS and Windows keep
-judging every repo on every request. Entries expire after a few minutes, so a verdict computed
-through a transient error the checks swallowed is not kept for long.
+Every writer of what the verdict reads (huggingface_hub, the Studio download worker, a delete)
+creates, renames or unlinks a directory entry, so a verdict is kept with stats of: the repo dir,
+``snapshots/``, ``blobs/``, ``refs/`` and every snapshot subdir; every file under ``refs/`` and in a
+snapshot, and link targets outside ``blobs/`` (rewritable in place); shared-store blobs and their dir;
+and a per-scan token over the whole Hub state tree. Nothing is stored on a non-ENOENT stat error, a
+too-recent timestamp, a signature moved during compute, an invalidation meanwhile, or a linked
+directory. Linux local filesystems that move directory mtimes only; entries expire after a minute.
 """
 
 from __future__ import annotations

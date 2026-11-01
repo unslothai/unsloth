@@ -1809,7 +1809,7 @@ def repo_listing_partial(
     *,
     variant_state = None,
 ) -> bool:
-    """The local listing's row verdict: ``is_snapshot_partial`` or ``is_gguf_repo_partial`` on the repo's own cache dir, reused across requests while the repo dir and the Hub state are unchanged (see :mod:`hub.utils.partial_verdict_cache`)."""
+    """``is_snapshot_partial`` or ``is_gguf_repo_partial``, reused while the repo and Hub state are unchanged."""
 
     def compute() -> bool:
         return is_snapshot_partial(
