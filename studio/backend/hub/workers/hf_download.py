@@ -494,6 +494,7 @@ def _pinned_snapshot_download(
     commit,
     *,
     expected_files = (),
+    verify = None,
     on_publish = None,
     **kwargs,
 ):
@@ -501,6 +502,7 @@ def _pinned_snapshot_download(
 
     No provisional refs and no unpinned retries: Hub's legacy cache fallback must
     neither expose partial bytes nor turn a failed update into an older success.
+    ``verify`` runs before success is recorded, outside the publication lock.
     ``on_publish`` runs only for the winning verified attempt, under the lock.
     Resolve metadata fallbacks before enrollment; never let the Hub write main.
     """
@@ -510,7 +512,7 @@ def _pinned_snapshot_download(
     repo_dir = repo_cache_dir(repo_type, repo_id)
     if commit is None:
         # An offline repeat can use the already-published immutable snapshot.
-        # GGUF resumes prefer their manifest's attested commit at the caller.
+        # Resumes prefer their manifest's attested commit at the caller.
         commit = _read_ref(repo_dir / "refs" / "main")
     pin = _pinned_revision(repo_type, repo_id, commit)
     if not pin:
@@ -537,6 +539,8 @@ def _pinned_snapshot_download(
                 manifest = Manifest(repo_type, repo_id, None, "", tuple(expected_files))
                 if not verify_against_disk(manifest, Path(path)).ok:
                     raise OSError(f"Pinned snapshot of {repo_id} is incomplete")
+            if verify is not None:
+                verify(path)
         except BaseException:
             _update_main_ref(repo_dir, sequence = sequence)
             raise
@@ -951,7 +955,8 @@ def _download_snapshot(
     from hub.utils.download_registry import prepare_cache_for_transport
     from hub.utils import download_manifest
 
-    # One metadata fetch powers both the ignore-pattern decision and the manifest's expected_files; a failure is non-fatal and falls back to the legacy ignore set, losing verification only.
+    # One metadata fetch powers the plan and manifest. Offline retries retain
+    # the saved expectations and attested revision when available.
     try:
         info = _model_info_with_retry(repo_id, hf_token)
     except Exception as e:
@@ -962,6 +967,7 @@ def _download_snapshot(
         )
         info = None
 
+    commit = getattr(info, "sha", None)
     download_manifest.clear_cancel_marker("model", repo_id, None)
     if info is not None:
         ignore_patterns, expected_files = _snapshot_download_plan(info)
@@ -976,7 +982,10 @@ def _download_snapshot(
         )
     else:
         ignore_patterns = list(SNAPSHOT_IGNORE_PATTERNS)
-        expected_files = []
+        manifest = download_manifest.read_manifest("model", repo_id, None)
+        expected_files = list(manifest.expected_files) if manifest is not None else []
+        if manifest is not None and manifest.metadata_derived:
+            commit = download_manifest.normalized_commit_hash(manifest.commit_hash)
 
     purged = prepare_cache_for_transport("model", repo_id, mode)
     if purged:
@@ -989,31 +998,35 @@ def _download_snapshot(
         "model", repo_id, getattr(info, "sha", None), expected_files, hf_token
     )
     _preflight_disk_space("model", repo_id, to_download)
-    snapshot_path = _pinned_snapshot_download(
+
+    def verify(snapshot_path: str) -> None:
+        if info is None:
+            _recover_manifest_after_download(
+                "model",
+                repo_id,
+                snapshot_path,
+                mode,
+                fetch_info = lambda: _model_info_with_retry(repo_id, hf_token),
+                expected_files_from_info = lambda recovered: _snapshot_download_plan(recovered)[1],
+            )
+        _verify_completed_download(
+            "model",
+            repo_id,
+            None,
+            snapshot_path,
+            metadata_unavailable = info is None,
+        )
+
+    _pinned_snapshot_download(
         snapshot_download,
-        getattr(info, "sha", None),
+        commit,
         expected_files = expected_files,
+        verify = verify,
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         ignore_patterns = ignore_patterns,
         max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
-    )
-    if info is None:
-        _recover_manifest_after_download(
-            "model",
-            repo_id,
-            snapshot_path,
-            mode,
-            fetch_info = lambda: _model_info_with_retry(repo_id, hf_token),
-            expected_files_from_info = lambda recovered: _snapshot_download_plan(recovered)[1],
-        )
-    _verify_completed_download(
-        "model",
-        repo_id,
-        None,
-        snapshot_path,
-        metadata_unavailable = info is None,
     )
 
 
@@ -1210,6 +1223,7 @@ def _download_scoped_snapshot(
         )
         info = None
 
+    commit = getattr(info, "sha", None)
     expected_files: list[ExpectedFile] = []
     blob_hashes: frozenset[str] = frozenset()
     if info is not None:
@@ -1242,6 +1256,12 @@ def _download_scoped_snapshot(
             mode,
             **_model_manifest_attestation(getattr(info, "sha", None)),
         )
+    else:
+        manifest = download_manifest.read_manifest("model", repo_id, scope)
+        if manifest is not None:
+            expected_files = list(manifest.expected_files)
+            if manifest.metadata_derived:
+                commit = download_manifest.normalized_commit_hash(manifest.commit_hash)
 
     download_manifest.clear_cancel_marker("model", repo_id, scope)
     purged = prepare_cache_for_transport(
@@ -1262,34 +1282,39 @@ def _download_scoped_snapshot(
         "model", repo_id, getattr(info, "sha", None), expected_files, hf_token
     )
     _preflight_disk_space("model", repo_id, to_download)
-    snapshot_path = _pinned_snapshot_download(
+
+    def verify(snapshot_path: str) -> None:
+        if info is None:
+            # The saved manifest may not cover every currently requested file.
+            # Check the request too before recording a successful publication.
+            root = Path(snapshot_path)
+            absent = tuple(f for f in files if not (root / f).exists())
+            if absent:
+                print(
+                    f"Could not reach Hugging Face for {repo_id} [{scope}] and the copy on disk "
+                    f"is incomplete ({len(absent)} file(s) missing): {_format_path_list(absent)}. "
+                    "Reconnect (or set a valid HF token) and resume the download.",
+                    file = sys.stderr,
+                )
+                sys.exit(1)
+        _verify_completed_download(
+            "model",
+            repo_id,
+            scope,
+            snapshot_path,
+            metadata_unavailable = info is None,
+        )
+
+    _pinned_snapshot_download(
         snapshot_download,
-        getattr(info, "sha", None),
+        commit,
         expected_files = expected_files,
+        verify = verify,
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = files,
         max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
-    )
-    if info is None:
-        # With no metadata there is no manifest, and snapshot_download RETURNS AN EXISTING SNAPSHOT FOLDER when repo_info also fails, flipping the job to complete with no weights.
-        root = Path(snapshot_path)
-        absent = tuple(f for f in files if not (root / f).exists())
-        if absent:
-            print(
-                f"Could not reach Hugging Face for {repo_id} [{scope}] and the copy on disk "
-                f"is incomplete ({len(absent)} file(s) missing): {_format_path_list(absent)}. "
-                "Reconnect (or set a valid HF token) and resume the download.",
-                file = sys.stderr,
-            )
-            sys.exit(1)
-    _verify_completed_download(
-        "model",
-        repo_id,
-        scope,
-        snapshot_path,
-        metadata_unavailable = info is None,
     )
 
 
