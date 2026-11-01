@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, FileSearchIcon } from "@/lib/hugeicons-derived";
 import { createPortal } from "react-dom";
 import {
   canQueueTextAttachment,
@@ -68,6 +68,7 @@ import { attachWheelHoverSuppression } from "@/components/assistant-ui/thread-wh
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
 import {
   THREAD_GUTTER_CHANGE_EVENT,
+  syncThreadGutter,
   watchThreadGutter,
 } from "@/components/assistant-ui/thread-gutter";
 import { observeThreadWidthSteps } from "@/components/assistant-ui/thread-width-steps";
@@ -327,13 +328,13 @@ import {
   snapshotQueuedChatRunSettings,
   adoptLegacyDraft,
   latestDraft,
+  latestPasteDraft,
   publishDraft,
   subscribeDraft,
   composerDraftKey,
   composerPasteDraftKey,
   createPastedTextFile,
   pastedTextOf,
-  readPasteDraft,
   writePasteDraft,
   markThreadIncognito,
   markChatThreadDeleted,
@@ -432,12 +433,9 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FileSearchIcon,
-  FolderAttachmentIcon,
-  Folder01Icon,
-  FolderAddIcon,
   Image03Icon,
   McpServerIcon,
+  Refresh01Icon,
   Scroll01Icon,
   Telescope02Icon,
   UndoIcon,
@@ -449,9 +447,11 @@ import {
   PlusSignIcon,
   Cancel01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon, FolderAttachmentIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -2064,6 +2064,9 @@ export const Thread: FC<{
   useEffect(() => {
     startGrammarPrewarm();
   }, []);
+  const composerAtBottom = useChatPreferencesStore(
+    (s) => s.newChatComposerAtBottom,
+  );
   // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
   // prevent the streaming-mutation race that snaps the viewport back to the
   // bottom while the user scrolls up (see the hook for the full explanation).
@@ -2127,7 +2130,8 @@ export const Thread: FC<{
     return attachWheelHoverSuppression(viewportEl);
   }, [viewportEl]);
 
-  useEffect(() => {
+  // Layout effect: shift a remounted viewport before its first paint.
+  useLayoutEffect(() => {
     if (!viewportEl) return;
     return watchThreadGutter(viewportEl);
   }, [viewportEl]);
@@ -2395,7 +2399,11 @@ export const Thread: FC<{
           />
 
           {!hideComposer && (
-            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <AuiIf
+              condition={({ thread }) =>
+                hideWelcome || !thread.isEmpty || composerAtBottom
+              }
+            >
               <ThreadComposerDock
                 disabled={isComposerAttachPending}
                 threadId={threadId}
@@ -2560,10 +2568,6 @@ const ThreadComposerDock: FC<{
       );
     },
   );
-  const showModelDisclaimer = useChatPreferencesStore(
-    (s) => s.showModelDisclaimer,
-  );
-
   const dockRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = dockRef.current;
@@ -2594,6 +2598,8 @@ const ThreadComposerDock: FC<{
     const resizeObserver = new ResizeObserver(() => apply());
     let observedFooter: Element | null = null;
     const apply = () => {
+      // May fire before the gutter's observer, which would leave the composer a scrollbar off-centre.
+      syncThreadGutter(viewport);
       // The footer is the real column box: WebKit's both-edges gutter reserves 2x the scrollbar on the right, clientWidth 1x.
       const footer = childWithClass(viewport, "aui-thread-viewport-footer");
       if (footer && footer !== observedFooter) {
@@ -2656,11 +2662,6 @@ const ThreadComposerDock: FC<{
             menuSide="top"
           />
         </div>
-        {showModelDisclaimer && (
-          <p className="composer-footer-note">
-            LLMs can make mistakes. Double-check responses.
-          </p>
-        )}
       </div>
     </div>
   );
@@ -2671,9 +2672,6 @@ const ThreadScrollToBottom: FC = () => {
   // unmounting would trip the hook's MutationObserver as a content change.
   const isAtBottom = useIsThreadAtBottom();
   const scrollToBottom = useScrollThreadToBottom();
-  const enabled = useChatPreferencesStore(
-    (state) => state.showScrollToBottomButton,
-  );
   return (
     <TooltipIconButton
       tooltip="Scroll to bottom"
@@ -2681,7 +2679,7 @@ const ThreadScrollToBottom: FC = () => {
       onClick={() => scrollToBottom("auto")}
       className={cn(
         "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-0 size-[calc(28px*var(--ui-space-scale,1))] bg-background shadow-[0_0_0_0.5px_rgb(0_0_0/0.15)] hover:bg-accent dark:shadow-[0_0_0_0.5px_rgb(255_255_255/0.2)] dark:bg-muted dark:hover:bg-accent",
-        (isAtBottom || !enabled) && "invisible pointer-events-none",
+        isAtBottom && "invisible pointer-events-none",
       )}
     >
       <ArrowDownIcon
@@ -2755,6 +2753,10 @@ const ThreadWelcome: FC<{
   const displayName = useUserProfileStore((s) => s.displayName);
   const nickname = useUserProfileStore((s) => s.nickname);
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
+  // At the bottom, Thread docks the composer and the greeting centres in the space above it.
+  const composerAtBottom = useChatPreferencesStore(
+    (s) => s.newChatComposerAtBottom,
+  );
   const spooky = useSpookyGreetings();
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
   const t = useT();
@@ -2774,31 +2776,43 @@ const ThreadWelcome: FC<{
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       {/* With a files panel showing (chat with files, or project sources), center the whole block. */}
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh] has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]">
+      <div
+        className={cn(
+          "aui-thread-welcome-center flex w-full grow flex-col items-center",
+          composerAtBottom
+            ? "justify-center pb-[calc(160px*var(--ui-space-scale,1))]"
+            : "justify-start pt-[27.5dvh] has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]",
+        )}
+      >
         {/* No padding, so the composer here is as wide as once it docks. */}
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9">
-          <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[calc(15px*var(--ui-space-scale,1))]">
-            {showGreetingSloth && !incognito && (
-              <MascotImg
-                src={currentEmojiSrc}
-                className={cn(
-                  "unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]",
-                  welcome.enlarge && "scale-[1.15]",
-                )}
-              />
-            )}
-            <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
-              {incognito
-                ? t("welcome.temporaryChat")
-                : t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}
-            </h1>
-          </div>
+          {/* The setting hides the whole greeting; the incognito title is a status, so it stays. */}
+          {(showGreetingSloth || incognito) && (
+            <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[calc(15px*var(--ui-space-scale,1))]">
+              {!incognito && (
+                <MascotImg
+                  src={currentEmojiSrc}
+                  className={cn(
+                    "unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]",
+                    welcome.enlarge && "scale-[1.15]",
+                  )}
+                />
+              )}
+              <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
+                {incognito
+                  ? t("welcome.temporaryChat")
+                  : t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}
+              </h1>
+            </div>
+          )}
           {incognito && (
             <p className="aui-thread-welcome-message-inner fade-in -mt-2 animate-in text-center font-heading font-normal text-muted-foreground text-sm duration-200">
               {t("welcome.temporaryChatDescription")}
             </p>
           )}
-          {!hideComposer && <ComposerAnimated threadId={threadId} />}
+          {!hideComposer && !composerAtBottom && (
+            <ComposerAnimated threadId={threadId} />
+          )}
         </div>
       </div>
     </div>
@@ -3919,7 +3933,7 @@ const Composer: FC<{
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const draftScope = incognito ? INCOGNITO_DRAFT_SCOPE : referenceThreadId;
   const draftKey = composerDraftKey();
-  // Text that came from Compare or another tab, so saving it back can't overwrite a newer write.
+  // Text that came from Compare, so saving it back can't overwrite a newer write.
   const remoteDraftRef = useRef<string | null>(null);
   const [draftSource] = useState(() => Symbol("chat composer"));
   // Whose pastes are on screen: a temporary chat's never cross into the saved draft, nor back.
@@ -3957,7 +3971,7 @@ const Composer: FC<{
     }
     composer.setText(draft);
   }, [draftScope, draftKey, aui]);
-  // Compare's composer or another tab, so whichever is on screen shows the latest draft.
+  // Compare's composer, so whichever is on screen shows the latest draft.
   useEffect(() => {
     if (draftScope === INCOGNITO_DRAFT_SCOPE) return;
     return subscribeDraft(draftSource, (text) => {
@@ -4014,7 +4028,7 @@ const Composer: FC<{
         const text = pastedTextOf((attachment as { file?: File }).file);
         return text === undefined ? [] : [text];
       });
-    const missing = readPasteDraft(pasteDraftKey).filter((text) => {
+    const missing = latestPasteDraft().filter((text) => {
       const at = shown.indexOf(text);
       if (at === -1) return true;
       shown.splice(at, 1);
@@ -7074,7 +7088,7 @@ const ComposerToolsMenu: FC<{
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
-          <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+          <HugeiconsIcon icon={ProjectIcon} strokeWidth={2} />
           Projects
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(232px*var(--ui-space-scale,1))]">
@@ -7089,7 +7103,7 @@ const ComposerToolsMenu: FC<{
                 key={project.id}
                 onSelect={() => openProject(project.id)}
               >
-                <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                <HugeiconsIcon icon={ProjectIcon} strokeWidth={2} />
                 <span className="truncate">{project.name}</span>
               </DropdownMenuItem>
             ))
@@ -7596,7 +7610,7 @@ const MessageError: FC = () => {
               type="button"
               className="btn-fill aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors "
             >
-              <RefreshGlyph strokeWidth={1.75} className="size-3.5" />
+              <HugeiconsIcon icon={Refresh01Icon} strokeWidth={1.75} className="size-3.5" />
               Retry
             </button>
           </ActionBarPrimitive.Reload>
@@ -8891,7 +8905,9 @@ const UserMessage: FC = () => {
 
       <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
         {hasContent ? (
-          <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
+          <div
+            dir="auto"
+            className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
             <MessagePrimitive.Parts />
           </div>
         ) : null}

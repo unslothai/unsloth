@@ -55,6 +55,18 @@
 }
 
 @layer components {
+	.media-header-layout {
+		/* Header column, settings rail and resize handle share this boundary. */
+		--media-header-min-width: calc(14rem * var(--ui-space-scale, 1) + var(--studio-chat-header-right-inset, var(--studio-window-control-inset, 0px)));
+	}
+
+	/* Stacked layout: the model selector keeps at least half the header row. */
+	@container (width < 50rem) {
+		.media-header-layout > * {
+			--media-header-min-width: min(calc(14rem * var(--ui-space-scale, 1) + var(--studio-chat-header-right-inset, var(--studio-window-control-inset, 0px))), 50%);
+		}
+	}
+
 	/* The custom Windows/Linux titlebar stays above modal backdrops so native
 	   window actions remain usable. Repeat the standard backdrop over the surface
 	   and page navigation. Window controls paint above it, keeping their glyphs
@@ -293,9 +305,8 @@
 	--bypass: #c99d00;
 	/* Full access in permission menus: ChatGPT's orange, a touch yellower. */
 	--full-access: #eb6702;
-	/* 2:1 on the page, so control outlines and dividers stay visible. */
-	--border-base: #b6b6b6;
-	--input-base: #b6b6b6;
+	--border-base: oklch(0.9208 0 0);
+	--input-base: oklch(0.9208 0 0);
 	--ring: #262626;
 	/* Derived from the live border/foreground so every palette and mode gets the right shade.
 	   Focus/hover uses soft; selected uses the deeper one. */
@@ -315,7 +326,7 @@
 	--sidebar-accent-base: #ececec;
 	--sidebar-accent-foreground-base: #262626;
 	--tabs-line-indicator-base: #ececec;
-	--sidebar-border-base: #b6b6b6;
+	--sidebar-border-base: #f2f2f2;
 	--sidebar-ring: #262626;
 	--destructive-foreground: oklch(1 0 0);
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
@@ -565,8 +576,8 @@
 	--accent-base: #ececec;
 	--accent-foreground-base: #1a1c1f;
 	--bypass: #9a7b1e;
-	--border-base: #b6b7b7;
-	--input-base: #b6b7b7;
+	--border-base: #e6e6e6;
+	--input-base: #e6e6e6;
 	--ring: #1a1c1f;
 	--chart-1: #339cff;
 	--chart-2: #8fa3b8;
@@ -579,7 +590,7 @@
 	--sidebar-primary-foreground: #ffffff;
 	--sidebar-accent-base: #ececec;
 	--sidebar-accent-foreground-base: #1a1c1f;
-	--sidebar-border-base: #b6b6b6;
+	--sidebar-border-base: #f2f2f2;
 	--sidebar-ring: #1a1c1f;
 
 	--nav-fg-base: #2d2f31;
@@ -632,8 +643,8 @@
 	--accent-base: #ebebeb;
 	--accent-foreground-base: #171717;
 	--bypass: #6f6f6f;
-	--border-base: #b6b6b6;
-	--input-base: #b6b6b6;
+	--border-base: #e2e2e2;
+	--input-base: #e2e2e2;
 	--ring: #171717;
 	--chart-1: #171717;
 	--chart-2: #4d4d4d;
@@ -646,7 +657,7 @@
 	--sidebar-primary-foreground: #ffffff;
 	--sidebar-accent-base: #ebebeb;
 	--sidebar-accent-foreground-base: #171717;
-	--sidebar-border-base: #b6b6b6;
+	--sidebar-border-base: #e8e8e8;
 	--sidebar-ring: #171717;
 
 	--nav-fg-base: #333333;
@@ -2992,6 +3003,19 @@ html[data-chat-font] .aui-root {
 		background-color: var(--panel-input-surface-hover);
 	}
 
+	/* Images and Video: a lighter border in the Standard, Classic and Minimal light themes. */
+	html:not(.dark):is(:not([data-palette]), [data-palette="classic"], [data-palette="minimal"]) .diffusion-surface {
+		--border-base: #e9e9e9;
+		--input-base: #e9e9e9;
+		--border: var(--border-base);
+		--input: var(--input-base);
+	}
+	/* The :root derivation is already substituted, so a scoped base must redo it for the slider. */
+	html[data-contrast-adjust]:not(.dark):is(:not([data-palette]), [data-palette="classic"], [data-palette="minimal"]) .diffusion-surface {
+		--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
+		--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
+	}
+
 	.panel-scroll-fade.is-scrolled {
 		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
 		mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
@@ -3130,17 +3154,6 @@ html[data-chat-font] .aui-root {
 	.panel-select-trigger:focus-visible {
 		outline: none;
 		box-shadow: 0 0 0 1px var(--ring-soft) !important;
-	}
-
-	/* Green track when on, slider-gray thumb in both states. */
-	.panel-switch[data-state="checked"] {
-		background-color: var(--primary) !important;
-	}
-	.panel-switch [data-slot="switch-thumb"] {
-		background-color: var(--panel-slider-fg) !important;
-	}
-	.panel-switch[data-state="checked"] [data-slot="switch-thumb"] {
-		background-color: #ffffff !important;
 	}
 
 	.tooltip-compact {
@@ -4374,7 +4387,7 @@ html[data-chat-font] .aui-root {
 			[data-slot="context-menu-item"],
 			[data-slot="context-menu-sub-trigger"]
 		)
-		svg:not(.unsloth-tick) {
+		svg:not(.unsloth-tick):not(.permission-mode-icon) {
 		width: var(--ui-icon-size) !important;
 		height: var(--ui-icon-size) !important;
 	}
@@ -4592,7 +4605,7 @@ html[data-chat-font] .aui-root {
 	[data-streamdown="unordered-list"] {
 		list-style-type: disc;
 		list-style-position: outside;
-		padding-left: calc(1.25rem * var(--ui-space-scale, 1));
+		padding-inline-start: calc(1.25rem * var(--ui-space-scale, 1));
 		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
@@ -4600,7 +4613,7 @@ html[data-chat-font] .aui-root {
 	[data-streamdown="ordered-list"] {
 		list-style-type: decimal;
 		list-style-position: outside;
-		padding-left: 1.6em;
+		padding-inline-start: 1.6em;
 		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
@@ -4609,15 +4622,21 @@ html[data-chat-font] .aui-root {
 			:has(> li:nth-child(10)),
 			[start]:not([start="1"], [start="2"], [start="3"], [start="4"], [start="5"], [start="6"], [start="7"], [start="8"], [start="9"])
 		) {
-		padding-left: 2.2em;
+		padding-inline-start: 2.2em;
 	}
 
 	[data-streamdown="ordered-list"]:has(> li:nth-child(100)) {
-		padding-left: 2.8em;
+		padding-inline-start: 2.8em;
 	}
 
 	[data-streamdown="list-item"] {
 		display: list-item;
+	}
+
+	/* Code stays LTR inside a reply or list that rehype-auto-direction made RTL. */
+	:is([data-streamdown="code-block"], [data-streamdown="inline-code"], .aui-reasoning-code-fragment) {
+		direction: ltr;
+		unicode-bidi: isolate;
 	}
 
 	.aui-reasoning-code-fragment {
@@ -4936,6 +4955,11 @@ html[data-chat-font] .aui-root {
 		max-width: calc(100% + 1.25rem * var(--ui-space-scale, 1));
 	}
 
+	.aui-thread-root [dir="rtl"] > [data-streamdown="list-item"] > [data-streamdown="code-block"] {
+		margin-left: 0;
+		margin-right: calc(-1.25rem * var(--ui-space-scale, 1));
+	}
+
 	.dark .aui-thread-root [data-streamdown="code-block"] {
 		/* Streamdown `pre` sets its own dark bg; keep one surface on the outer shell. */
 		--shiki-dark-bg: transparent;
@@ -5051,13 +5075,19 @@ html[data-chat-font] .aui-root {
 	box-shadow: var(--composer-shadow) !important;
 }
 
-/* Icon centred on the first text line, so multi-line toasts keep it level with the title.
-   Title and description line heights are 1.5 and 1.4. */
+/* Icon centred on the first text line; past one line (data-multiline, set in sonner.tsx) its top
+   drops 0.08em to the title's cap height. Title and description line heights are 1.5 and 1.4. */
 [data-sonner-toast][data-styled='true'] [data-icon] {
 	margin: calc((1.5em - var(--ui-icon-size)) / 2) 0 0 !important;
 }
 [data-sonner-toast][data-styled='true']:not(:has([data-title])) [data-icon] {
 	margin-top: calc((1.4em - var(--ui-icon-size)) / 2) !important;
+}
+[data-sonner-toast][data-styled='true'][data-multiline] [data-icon] {
+	margin-top: calc((1.5em - var(--ui-icon-size)) / 2 + 0.08em) !important;
+}
+[data-sonner-toast][data-styled='true'][data-multiline]:not(:has([data-title])) [data-icon] {
+	margin-top: calc((1.4em - var(--ui-icon-size)) / 2 + 0.08em) !important;
 }
 
 [data-sonner-toast][data-styled='true'] [data-content] {
@@ -6698,3 +6728,96 @@ html.force-reduced-motion .spooky-still :is(.spooky-spider, .spooky-bat) {
 	to { opacity: 0.85; }
 }
 
+
+.chat-wallpaper { position: absolute; inset: 0; overflow: hidden; pointer-events: none; --wallpaper-safe: 0; }
+.chat-wallpaper-frame { position: absolute; inset: 0; opacity: var(--wallpaper-visibility); }
+.chat-wallpaper-image {
+  position: absolute; inset: 0 0 auto; height: min(72%, 760px);
+  overflow: hidden;
+  mask-image: linear-gradient(#000, transparent);
+}
+.chat-wallpaper-artwork { position: absolute; inset: 0; background-repeat: no-repeat; }
+.chat-wallpaper-image[data-fade="false"] { height: 100%; mask-image: none; }
+.chat-wallpaper-frame[data-entering] { animation: wallpaper-enter 180ms ease-out both; }
+.chat-wallpaper-frame[data-departing] { animation: wallpaper-leave 180ms ease-out both; }
+@keyframes wallpaper-enter { from { opacity: 0; } to { opacity: var(--wallpaper-visibility); } }
+@keyframes wallpaper-leave { from { opacity: var(--wallpaper-visibility); } to { opacity: 0; } }
+.chat-wallpaper[data-reduced] .chat-wallpaper-frame { animation: none; }
+.chat-wallpaper[data-reduced] .chat-wallpaper-frame[data-departing] { display: none; }
+/* Conversations dim the crop; compare dims even an empty pane so both match. */
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]):not(:has(.aui-thread-welcome-center)) > .chat-wallpaper,
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]):has([data-tour="chat-compare-view"]) > .chat-wallpaper,
+.wallpaper-preview[data-wallpaper-conversation] > .chat-wallpaper { opacity: .4; }
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) :is(.aui-thread-viewport, [data-wallpaper-reading-surface]) {
+  background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * 100%), transparent);
+}
+/* No second wash on the welcome view: it crushes mid-tones into a dark horizon. */
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .aui-thread-viewport:has(.aui-thread-welcome-center) {
+  background: transparent;
+}
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-welcome-greeting {
+  position: relative;
+  isolation: isolate;
+}
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-welcome-greeting::before {
+  content: "";
+  position: absolute;
+  inset: -48px -40px;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(ellipse, color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * 70%), transparent) 0%, transparent 72%);
+}
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
+.wallpaper-preview-composer {
+  background: color-mix(in srgb, var(--background) max(92%, calc((1 - var(--wallpaper-safe, 0)) * 100%)), transparent);
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  /* An outline over the image instead of a drop shadow, through the composer's one shadow variable. */
+  --composer-shadow: inset 0 0 0 1px var(--border);
+  box-shadow: var(--composer-shadow);
+}
+.wallpaper-preview-prose { background: var(--background); }
+
+.chat-wallpaper::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 150px;
+  background: linear-gradient(color-mix(in srgb, var(--background) 48%, transparent), transparent);
+}
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) [data-side-panel-inset]:not(.chat-header-fade),
+html[data-chat-wallpaper-ready] [data-slot="window-titlebar"] {
+  background: transparent;
+  backdrop-filter: none;
+}
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .chat-header-fade,
+html[data-chat-wallpaper-ready] [data-slot="window-titlebar-decoration"] {
+  visibility: hidden;
+}
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) [data-wallpaper-chrome-controls],
+html[data-chat-wallpaper-ready] [data-slot="window-titlebar"] [data-wallpaper-chrome-controls] {
+  background: transparent;
+  backdrop-filter: none;
+  text-shadow: 0 1px 8px var(--background);
+}
+/* The pinned sidebar stays solid, including its segment of the native titlebar. */
+html[data-chat-wallpaper-workspace-ready] [data-slot="window-titlebar"][data-wallpaper-sidebar-pinned] > [data-wallpaper-chrome-controls]:first-child {
+  background: var(--sidebar);
+}
+/* One viewport-sized crop, so opening the sidebar does not reframe the image. */
+[data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"],
+[data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) [data-chat-page-root] {
+  background: transparent;
+}
+[data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] {
+  background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * 100%), transparent);
+}
+@supports not (backdrop-filter: blur(1px)) {
+  :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
+  .wallpaper-preview-composer { background: var(--background); }
+}
+
+/* Clear only route canvases; cards, menus and reading surfaces retain their fills. */
+[data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) :is(.hub-page, .hub-page .hub-canvas, [data-wallpaper-page-canvas]) { background: transparent; }
+
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .unsloth-composer-surface,
+.wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer { --composer-shadow: none; }

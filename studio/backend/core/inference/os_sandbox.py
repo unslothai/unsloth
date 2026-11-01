@@ -15,6 +15,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from dataclasses import dataclass, field
@@ -35,6 +36,40 @@ PROFILE_VERSION = "unsloth-sandbox-v1"
 SESSION_PACKAGES_RELPATH = ".unsloth-packages"
 
 
+def _pip_prefix_dirs() -> "tuple[tuple[str, ...], str]":
+    if sys.version_info >= (3, 10):
+        scheme = sysconfig.get_preferred_scheme("prefix")
+        # pip's own remap: the framework scheme's purelib is absolute, never under a --prefix.
+        if scheme == "osx_framework_library":
+            scheme = "posix_prefix"
+    else:
+        scheme = "nt" if os.name == "nt" else "posix_prefix"
+    # A bare separator base turns nt's "{base}/Lib" into a UNC path that relpath rejects.
+    base = os.path.join(os.path.abspath(os.sep), "prefix")
+    paths = sysconfig.get_paths(scheme, vars = {"base": base, "platbase": base})
+    # Only these: nt's stdlib/include sit on the install drive, where relpath raises.
+    purelib, platlib, scripts = (
+        os.path.relpath(paths[key], base) for key in ("purelib", "platlib", "scripts")
+    )
+    return tuple(dict.fromkeys((purelib, platlib))), scripts
+
+
+_PIP_PREFIX_LIB_DIRS, _PIP_PREFIX_SCRIPTS_DIR = _pip_prefix_dirs()
+
+
+def session_package_paths(packages: str) -> list[str]:
+    # The bare folder keeps packages from chats that installed with pip --target importable.
+    return [*(os.path.join(packages, path) for path in _PIP_PREFIX_LIB_DIRS), packages]
+
+
+def session_script_dirs(packages: str) -> list[str]:
+    # Debian's posix_local scheme puts scripts in local/bin; the bare folder serves pip --target chats.
+    legacy = "Scripts" if os.name == "nt" else "bin"
+    return list(
+        dict.fromkeys(os.path.join(packages, path) for path in (_PIP_PREFIX_SCRIPTS_DIR, legacy))
+    )
+
+
 def with_session_packages(env: dict, workdir: str) -> dict:
     """Reuse existing session packages without letting their binaries shadow PATH."""
     packages = os.path.join(workdir, SESSION_PACKAGES_RELPATH)
@@ -43,11 +78,9 @@ def with_session_packages(env: dict, workdir: str) -> dict:
     updated = dict(env)
     # Block a planted usercustomize.py; in safe mode the trusted sitecustomize shim stays first on PYTHONPATH.
     updated["PYTHONNOUSERSITE"] = "1"
-    # pip --target puts console scripts in Scripts on Windows and bin elsewhere.
-    scripts = "Scripts" if os.name == "nt" else "bin"
     for key, value in (
-        ("PYTHONPATH", packages),
-        ("PATH", os.path.join(packages, scripts)),
+        ("PYTHONPATH", os.pathsep.join(session_package_paths(packages))),
+        ("PATH", os.pathsep.join(session_script_dirs(packages))),
     ):
         updated[key] = os.pathsep.join(part for part in (updated.get(key, ""), value) if part)
     return updated
