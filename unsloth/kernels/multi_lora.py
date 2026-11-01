@@ -744,14 +744,14 @@ class MultiLoraExpertParam(nn.Module):
 
     def grouped_stacks(self, reversed_io: bool, dtype: torch.dtype) -> tuple:
         """Every adapter's factors as (E*(U+1), in, R) and (E*(U+1), R, out), group e*(U+1) + u, R the largest rank
-        rounded up to 8 (zero padding is exact), scale folded into the second; group e*(U+1) + U is zero."""
+        rounded up to 8 (zero padding is exact), without scaling; group e*(U+1) + U is zero."""
         R = -(-max(self.ranks) // 8) * 8
         firsts, seconds = [], []
         for u in range(self.num_adapters):
-            first, second, scale, _ = self.grouped_mm_factors(u, reversed_io)
+            first, second, _, _ = self.grouped_mm_factors(u, reversed_io)
             r = first.shape[-1]
             firsts.append(F.pad(first.to(dtype), (0, R - r)))
-            seconds.append(F.pad(second.to(dtype) * scale, (0, 0, 0, R - r)))
+            seconds.append(F.pad(second.to(dtype), (0, 0, 0, R - r)))
         firsts.append(torch.zeros_like(firsts[0]))
         seconds.append(torch.zeros_like(seconds[0]))
         return torch.stack(firsts, 1).flatten(0, 1), torch.stack(seconds, 1).flatten(0, 1)
@@ -1157,7 +1157,7 @@ class MultiLoraExperts(nn.Module):
         return f"the grouped probe differs by {err:.3g}"
 
     def _project(
-        self, moe_utils, name: str, x, offs_expert, offs_pair, counts, plan, dtype
+        self, moe_utils, name: str, x, offs_expert, offs_pair, counts, plan, dtype, pair_slots
     ) -> torch.Tensor:
         """Frozen base over E expert groups through Zoo's base GEMM (its weight provider, recompute and selective
         dequant, as the single-job forward), plus every adapter's LoRA over the E * (U + 1) pair groups."""
@@ -1179,9 +1179,19 @@ class MultiLoraExperts(nn.Module):
             x, offs_expert, provider, recompute, plan if recompute else None
         )
         if name in self.adapters:
-            first, second = self.adapters[name].grouped_stacks(self.reversed_io, dtype)
+            adapter = self.adapters[name]
+            first, second = adapter.grouped_stacks(self.reversed_io, dtype)
             h = moe_utils._grouped_mm_with_backward_fix(x, first, offs_pair).contiguous()
-            y = y + moe_utils._grouped_mm_with_backward_fix(h, second, offs_pair)
+            delta = moe_utils._grouped_mm_with_backward_fix(h, second, offs_pair)
+            # As Zoo's stash path, scale after the second GEMM: folding into a half
+            # factor can overflow even when the final projection is finite. Keep
+            # scales in at least fp32 so a large finite alpha does not itself overflow.
+            scales = torch.tensor(
+                [*adapter.scales, 0.0],
+                device = x.device,
+                dtype = torch.float64 if dtype == torch.float64 else torch.float32,
+            )
+            y = y + (delta * scales[pair_slots].unsqueeze(-1)).to(dtype)
         return y
 
     def _grouped(
@@ -1213,6 +1223,7 @@ class MultiLoraExperts(nn.Module):
         slot = torch.where(adapter_ids < 0, U, adapter_ids).to(index.device).unsqueeze(1)
         key = (torch.where(valid, index, 0) * Ug + torch.where(valid, slot, U)).reshape(-1)
         order = torch.argsort(key, stable = True)
+        pair_slots = key[order] % Ug
         # Fixed-size counts: bincount's output size depends on the data, so it syncs on CUDA and breaks a compiled graph.
         counts = torch.zeros(E * Ug, dtype = torch.int32, device = key.device)
         counts.scatter_add_(0, key, torch.ones_like(key, dtype = torch.int32))
@@ -1236,7 +1247,15 @@ class MultiLoraExperts(nn.Module):
             )
             x = x[rows]
             h = self._project(
-                moe_utils, "gate_up_proj", x, offs_expert, offs_pair, counts, plan, dtype
+                moe_utils,
+                "gate_up_proj",
+                x,
+                offs_expert,
+                offs_pair,
+                counts,
+                plan,
+                dtype,
+                pair_slots,
             )
             gate, up = h.chunk(2, dim = -1)
             inter = base.act_fn(gate) * up
@@ -1253,7 +1272,15 @@ class MultiLoraExperts(nn.Module):
                 inter = moe_utils._MoEGateGradIdentity.apply(inter, weights)
                 weights = weights.detach()
             y = self._project(
-                moe_utils, "down_proj", inter, offs_expert, offs_pair, counts, plan, dtype
+                moe_utils,
+                "down_proj",
+                inter,
+                offs_expert,
+                offs_pair,
+                counts,
+                plan,
+                dtype,
+                pair_slots,
             )
             out = moe_utils.weighted_unpermute(
                 y, order, weights, T, k, out_dtype = hidden_states.dtype
