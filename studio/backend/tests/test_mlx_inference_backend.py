@@ -65,6 +65,8 @@ def _stub_inference_scopes(module):
         ane_prefill = None,
         on_error = None,
         _modules = None,
+        # Newer zoo keywords (fast_verify), unnamed so Studio's signature probe still reads this stub as an older zoo.
+        **_newer,
     ):
         # The call-shape replay below passes placeholders; anything but a tuple serves every scope.
         traits = set(call) if isinstance(call, tuple) else None
@@ -128,7 +130,12 @@ def _fusion_modules(model, modules):
 
 
 # Plain-function helpers zoo's generate.py imports; the neutral scope cannot stand in for them.
-PLAIN_HELPERS = {"_fusion_modules": _fusion_modules}
+PLAIN_HELPERS = {
+    "_fusion_modules": _fusion_modules,
+    # Private names zoo's speculative.py imports (unsloth_zoo #2330); only their presence matters here.
+    "_SparseDrafter": type("_SparseDrafter", (), {}),
+    "_VERIFY_GDN_MAX_ROWS": 16,
+}
 
 
 def _fused_drafter_ops(model, *_args, **_kwargs):
@@ -138,7 +145,10 @@ def _fused_drafter_ops(model, *_args, **_kwargs):
 
 
 # Plain calls whose zoo body cannot run here, so the stub returns their do-nothing answer instead.
-NEUTRAL_PLAIN_HELPERS = {"fused_drafter_ops": _fused_drafter_ops}
+NEUTRAL_PLAIN_HELPERS = {
+    "fused_drafter_ops": _fused_drafter_ops,
+    "fused_drafter_layers": _fused_drafter_ops,
+}
 
 
 def _neutral_zoo_helper(name):
