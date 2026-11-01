@@ -99,7 +99,7 @@ function useTurnBookmark(
   return { bookmarked, toggle: () => toggleBookmarkedTurn(threadId, openerId) };
 }
 
-// gated so the default (off) mounts no thread subscriptions per message
+// gated so a disabled rail mounts no thread subscriptions per message
 export const BookmarkTurnButton: FC = () => {
   const enabled = useChatPreferencesStore((state) => state.showTurnNavigation);
   return enabled ? <BookmarkTurnButtonInner /> : null;
@@ -693,7 +693,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
             onBlur={hidePreview}
             className="group flex h-[var(--rail-row,8px)] w-full shrink-0 cursor-pointer items-center justify-start rounded-sm pl-1.5 outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
-            {/* scaled, not resized: hover and the in-view tint move constantly, so only transform and colour animate */}
+            {/* transform and colour only: hover and the in-view tint change every frame */}
             <span
               className={cn(
                 "h-[var(--rail-line,2px)] w-6 origin-left scale-x-[0.333] rounded-full transition-[transform,background-color] duration-150 ease-out group-data-[dist=0]:scale-x-100 group-data-[dist=1]:scale-x-[0.667] group-data-[dist=2]:scale-x-[0.417] motion-reduce:transition-none",
