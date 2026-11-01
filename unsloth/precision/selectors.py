@@ -84,6 +84,10 @@ def find_routers(model) -> Dict[str, str]:
     n_cfg = num_experts_of(config) if config is not None else None
     found = {}
     for parent_name, parent in model.named_modules():
+        # Inside an expert or shared expert (`experts.3`, `shared_expert`): its projections can be as wide as
+        # the expert count (Qwen3-Next: 512 experts, moe_intermediate_size 512) but never route.
+        if any("expert" in part.lower() for part in parent_name.split(".")):
+            continue
         experts = [
             (n, c)
             for n, c in parent.named_children()
@@ -99,11 +103,12 @@ def find_routers(model) -> Dict[str, str]:
             out = _out_features(child)
             if out is None or out not in widths:
                 continue
+            # No experts container beside it: only a router name counts; `gate_proj` is excluded here
+            # because a dense MLP's gate_proj can be as wide as the expert count.
             if not counts and child_name.lower() not in (
                 "gate",
                 "router",
                 "wg",
-                "gate_proj",
                 "router_proj",
                 "score",
             ):

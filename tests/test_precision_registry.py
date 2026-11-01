@@ -284,6 +284,34 @@ def test_routers_found_by_structure():
     assert P.find_routers(_tiny_qwen3()) == {}
 
 
+def _tiny_moe_expert_width_collision():
+    # Qwen3-Next-80B-A3B has num_experts == moe_intermediate_size == shared_expert_intermediate_size == 512:
+    # an expert / shared expert / dense MLP gate_proj is as wide as the router but is not one.
+    from transformers import Qwen2MoeConfig, Qwen2MoeForCausalLM
+
+    torch.manual_seed(0)
+    config = Qwen2MoeConfig(
+        vocab_size = 256,
+        hidden_size = 128,
+        intermediate_size = 16,
+        moe_intermediate_size = 16,
+        shared_expert_intermediate_size = 16,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        num_experts = 16,
+        num_experts_per_tok = 2,
+        decoder_sparse_step = 1,
+        mlp_only_layers = [0],
+    )
+    return Qwen2MoeForCausalLM(config)
+
+
+def test_routers_ignore_mlps_as_wide_as_the_expert_count():
+    m = _tiny_moe_expert_width_collision()
+    assert set(P.find_routers(m)) == {"model.layers.1.mlp.gate"}
+
+
 def test_hp_layers_policy():
     m = _tiny_qwen3(layers = 8, tie = True)
     keep = P.high_precision_layers(m, P.get_recipe("nvfp4").hp_layers)
@@ -316,7 +344,7 @@ def test_float8_filter_skips_structural_router():
 
 
 @needs_torchao
-@pytest.mark.parametrize("build", [_tiny_qwen3, _tiny_qwen3_moe])
+@pytest.mark.parametrize("build", [_tiny_qwen3, _tiny_qwen3_moe, _tiny_moe_expert_width_collision])
 def test_float8_filter_unchanged_on_standard_models(build, monkeypatch):
     m = build()
     for size_filter in (True, False):
