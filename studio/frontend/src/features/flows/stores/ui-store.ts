@@ -17,6 +17,20 @@ export interface QuickAddState {
   };
 }
 
+/** What the Recipe Studio editor opened over a recipe group edits: a column, a recipe-level block, a new
+ *  block from Recipe Studio's catalog, or the processors. */
+export interface RecipeEditorTarget {
+  groupId: string;
+  nodeId?: string;
+  configName?: string;
+  seed?: boolean;
+  add?: { kind: string; type: string };
+  processors?: boolean;
+  runSettings?: boolean;
+  /** Recipe Studio's GitHub crawler form, for a GitHub-seeded recipe */
+  easy?: boolean;
+}
+
 export type SaveState = "saved" | "dirty" | "saving" | "error" | "conflict";
 
 export interface PendingRun {
@@ -36,6 +50,8 @@ export interface UiState {
   snapToGrid: boolean;
   saveState: SaveState;
   pendingRun: PendingRun | null;
+  recipeEditor: RecipeEditorTarget | null;
+  setRecipeEditor: (target: RecipeEditorTarget | null) => void;
   setSelection: (nodes: string[], edges: string[]) => void;
   openInspector: (nodeId: string | null) => void;
   setQuickAdd: (quickAdd: QuickAddState | null) => void;
@@ -61,6 +77,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   snapToGrid: false,
   saveState: "saved",
   pendingRun: null,
+  recipeEditor: null,
+  setRecipeEditor: (recipeEditor) => set({ recipeEditor }),
   setSelection: (nodes, edges) => {
     const s = get();
     if (sameList(s.selectedNodes, nodes) && sameList(s.selectedEdges, edges))
@@ -94,5 +112,6 @@ export const useUiStore = create<UiState>((set, get) => ({
       quickAdd: null,
       saveState: "saved",
       pendingRun: null,
+      recipeEditor: null,
     }),
 }));

@@ -48,6 +48,11 @@ import { FlowEdgeView } from "./flow-edge";
 import { FlowNodeView } from "./flow-node";
 import { GroupFrame, NoteFrame } from "./frame-nodes";
 import { NODE_DRAG_MIME, addNodeConnected, tryConnect } from "./node-factory";
+import {
+  disconnectColumns,
+  recipeConnectionError,
+} from "../recipe/recipe-actions";
+import { COLUMN_TYPE } from "../recipe/recipe-columns";
 import { SelectedNodeToolbar } from "./node-toolbar";
 
 const NODE_TYPES = {
@@ -285,6 +290,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       connection.targetHandle,
     );
     if (!check.ok) return false;
+    if (recipeConnectionError(doc, connection.source, connection.target))
+      return false;
     if (
       check.kind === "data" &&
       wouldCreateCycle(
@@ -350,16 +357,23 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       nodes: rfNodes,
       edges: rfEdges,
     }: { nodes: RfNode[]; edges: RfEdge[] }) => {
+      const references = new Set(disconnectColumns(rfEdges.map((e) => e.id)));
       const ids = {
         nodes: [] as string[],
-        edges: rfEdges.map((e) => e.id),
+        edges: rfEdges.map((e) => e.id).filter((id) => !references.has(id)),
         groups: [] as string[],
         notes: [] as string[],
       };
+      const graph = useDocStore.getState().graph;
       for (const node of rfNodes) {
-        if (node.id.startsWith(GROUP_PREFIX))
-          ids.groups.push(node.id.slice(GROUP_PREFIX.length));
-        else if (node.id.startsWith(NOTE_PREFIX))
+        if (node.id.startsWith(GROUP_PREFIX)) {
+          const groupId = node.id.slice(GROUP_PREFIX.length);
+          ids.groups.push(groupId);
+          // A recipe's columns mean nothing outside it: they go with the frame.
+          if (graph.groups[groupId]?.kind === "recipe")
+            for (const id of graph.nodeOrder)
+              if (graph.nodes[id].group === groupId) ids.nodes.push(id);
+        } else if (node.id.startsWith(NOTE_PREFIX))
           ids.notes.push(node.id.slice(NOTE_PREFIX.length));
         else ids.nodes.push(node.id);
       }
@@ -431,7 +445,12 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   );
 
   const onNodeDoubleClick = useCallback((_: ReactMouseEvent, node: RfNode) => {
-    if (node.type === "flowNode") useUiStore.getState().openInspector(node.id);
+    if (node.type !== "flowNode") return;
+    const ui = useUiStore.getState();
+    ui.openInspector(node.id);
+    const flowNode = useDocStore.getState().graph.nodes[node.id];
+    if (flowNode?.type === COLUMN_TYPE && flowNode.group)
+      ui.setRecipeEditor({ groupId: flowNode.group, nodeId: node.id });
   }, []);
 
   return (

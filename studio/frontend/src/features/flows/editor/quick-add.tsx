@@ -20,8 +20,9 @@ export function QuickAdd() {
 
   const options = useMemo((): { spec: NodeSpec; port?: string }[] => {
     if (!catalog || !quickAdd) return [];
-    if (!quickAdd.from) return catalog.nodes.map((spec) => ({ spec }));
-    const matches = compatibleSpecs(catalog.nodes, quickAdd.from);
+    const addable = catalog.nodes.filter((spec) => !spec.design);
+    if (!quickAdd.from) return addable.map((spec) => ({ spec }));
+    const matches = compatibleSpecs(addable, quickAdd.from);
     const exactType = quickAdd.from.port?.type;
     return matches.sort((a, b) => {
       const score = (m: { spec: NodeSpec; port: string }) => {

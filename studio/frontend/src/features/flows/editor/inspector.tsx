@@ -8,6 +8,13 @@ import { useCatalogStore } from "../stores/catalog-store";
 import { cloneFragment, useDocStore } from "../stores/doc-store";
 import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
+import { commitRecipe } from "../recipe/recipe-actions";
+import {
+  COLUMN_TYPE,
+  GENERATE_TYPE,
+  columnName,
+} from "../recipe/recipe-columns";
+import { ColumnPanel, RecipePanel } from "../recipe/recipe-panels";
 import type { NodeSpec, ParamSpec } from "../types";
 import {
   Cancel01Icon,
@@ -109,6 +116,17 @@ function InspectorImpl() {
   const setParam = useCallback(
     (paramId: string, value: unknown) => {
       if (!nodeId) return;
+      const current = useDocStore.getState().graph.nodes[nodeId];
+      if (current?.type === COLUMN_TYPE && current.group) {
+        // Raw column JSON: redraw the reference wires it implies.
+        commitRecipe(
+          current.group,
+          [{ ...current, params: { ...current.params, [paramId]: value } }],
+          null,
+          `param:${nodeId}:${paramId}`,
+        );
+        return;
+      }
       useDocStore
         .getState()
         .updateParams(
@@ -121,6 +139,7 @@ function InspectorImpl() {
   );
 
   if (!nodeId || !node || !spec) return null;
+  const isColumn = node.type === COLUMN_TYPE;
 
   return (
     <aside
@@ -140,7 +159,13 @@ function InspectorImpl() {
         />
         <div className="min-w-0 flex-1">
           <input
-            value={node.label ?? ""}
+            value={isColumn ? columnName(node) : (node.label ?? "")}
+            readOnly={isColumn}
+            title={
+              isColumn
+                ? "Rename a column in its editor; references follow"
+                : undefined
+            }
             placeholder={spec.title}
             onChange={(e) =>
               useDocStore
@@ -163,37 +188,41 @@ function InspectorImpl() {
         </button>
       </header>
       <div className="flex flex-wrap gap-1.5 border-white/10 border-b px-4 py-2">
-        <button
-          type="button"
-          onClick={() => void runToNode(node.id)}
-          className="flex items-center gap-1 rounded-md bg-sky-600/80 px-2 py-1 text-[12px] hover:bg-sky-500"
-          title="Run only what this node needs"
-        >
-          <HugeiconsIcon icon={PlayIcon} size={12} /> Run to here
-        </button>
-        <button
-          type="button"
-          onClick={() => void rerollNode(node.id)}
-          className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-[12px] hover:bg-white/5"
-          title="Run this node again, ignoring the cache (new seed when it has one)"
-        >
-          <HugeiconsIcon icon={DiceIcon} size={12} /> Re-roll
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            const doc = useDocStore.getState();
-            const fragment = cloneFragment(doc.graph, [node.id], [40, 40]);
-            doc.insertFragment(fragment);
-            useUiStore.getState().setSelection(
-              fragment.nodes.map((n) => n.id),
-              [],
-            );
-          }}
-          className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-[12px] hover:bg-white/5"
-        >
-          <HugeiconsIcon icon={Copy01Icon} size={12} /> Duplicate
-        </button>
+        {!spec.design && (
+          <>
+            <button
+              type="button"
+              onClick={() => void runToNode(node.id)}
+              className="flex items-center gap-1 rounded-md bg-sky-600/80 px-2 py-1 text-[12px] hover:bg-sky-500"
+              title="Run only what this node needs"
+            >
+              <HugeiconsIcon icon={PlayIcon} size={12} /> Run to here
+            </button>
+            <button
+              type="button"
+              onClick={() => void rerollNode(node.id)}
+              className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-[12px] hover:bg-white/5"
+              title="Run this node again, ignoring the cache (new seed when it has one)"
+            >
+              <HugeiconsIcon icon={DiceIcon} size={12} /> Re-roll
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const doc = useDocStore.getState();
+                const fragment = cloneFragment(doc.graph, [node.id], [40, 40]);
+                doc.insertFragment(fragment);
+                useUiStore.getState().setSelection(
+                  fragment.nodes.map((n) => n.id),
+                  [],
+                );
+              }}
+              className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-[12px] hover:bg-white/5"
+            >
+              <HugeiconsIcon icon={Copy01Icon} size={12} /> Duplicate
+            </button>
+          </>
+        )}
         <button
           type="button"
           onClick={() =>
@@ -229,6 +258,7 @@ function InspectorImpl() {
         </button>
       </div>
       <div className="flex-1 overflow-y-auto">
+        {isColumn && <ColumnPanel node={node} />}
         <section className="flex flex-col gap-3 px-4 py-3">
           {spec.params.length === 0 && (
             <p className="text-[12px] text-zinc-500">
@@ -267,6 +297,7 @@ function InspectorImpl() {
             </details>
           )}
         </section>
+        {node.type === GENERATE_TYPE && <RecipePanel node={node} />}
         {spec.type.startsWith("trigger.") && (
           <TriggerPanel nodeId={node.id} kind={spec.type} />
         )}
