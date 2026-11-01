@@ -1416,3 +1416,25 @@ def test_tp_checkpoint_layout_records_the_cp_width(clean_env, monkeypatch):
         layouts[cp] = tp_native._tp_layout(trainer)
     assert layouts[1] != layouts[2] and layouts[2]["cp"] == 2
     assert "cp" not in layouts[1]  # tp-only checkpoints keep their old keys
+
+
+def test_cp_x_tp_never_turns_padding_free_on_automatically(clean_env, monkeypatch):
+    # Failing before: under tp=2,cp=2 the auto padding-free choice set padding_free = True with packing = False,
+    # and the capability check then refused the run as packed, with no setting left for the user to change.
+    from types import SimpleNamespace
+
+    import unsloth.trainer as trainer_module
+
+    clean_env.setenv("UNSLOTH_TP_SIZE", "2")
+    clean_env.setenv("UNSLOTH_CP_SIZE", "2")
+    monkeypatch.setattr(trainer_module, "_auto_padding_choice", lambda *a, **k: (True, "test"))
+    monkeypatch.setattr(
+        trainer_module, "configure_padding_free", lambda c: setattr(c, "padding_free", True)
+    )
+    config = SimpleNamespace(packing = False, padding_free = None, max_length = 64)
+    _auto_packing(monkeypatch, config, _Packable(4))
+    assert config.padding_free is not True and config.packing is False
+    # An explicit request stays, so the capability check refuses it with the alternative.
+    config = SimpleNamespace(packing = True, padding_free = None, max_length = 64)
+    _auto_packing(monkeypatch, config, _Packable(4))
+    assert config.packing is True

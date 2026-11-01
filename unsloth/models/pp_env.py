@@ -679,17 +679,32 @@ def _first_stage_batch(stage, input_ids, labels, extra, count):
     """Every stage takes the first stage's batch (and its token count). The sampler gives the stages the same rows,
     but a stochastic collator or dataset transform draws from each rank's own RNG, which the stages advance
     differently (dropout over different layers), so the stage embedding the tokens and the stage scoring the labels
-    could otherwise see different batches."""
+    could otherwise see different batches. Tensor parallel peers inside a stage are synced first: their reductions
+    combine one example's activations."""
     import torch.distributed as dist
 
     if getattr(stage, "num_stages", 1) <= 1 or not dist.is_available() or not dist.is_initialized():
         return input_ids, labels, extra, count
-    src = stage._global_ranks[0]
+    tp_mesh = getattr(stage, "tp_mesh", None)
+    if tp_mesh is not None and tp_mesh.size() > 1:
+        group = tp_mesh.get_group()
+        src = dist.get_process_group_ranks(group)[0]
+        input_ids, labels, extra, count = _broadcast_batch(
+            stage, src, group, input_ids, labels, extra, count
+        )
+    return _broadcast_batch(
+        stage, stage._global_ranks[0], stage.group, input_ids, labels, extra, count
+    )
+
+
+def _broadcast_batch(stage, src, group, input_ids, labels, extra, count):
+    import torch.distributed as dist
+
     payload = [None]
     if dist.get_rank() == src:
         tensors = {"input_ids": input_ids, "labels": labels, **extra}
         payload = [({k: v.detach().cpu() for k, v in tensors.items()}, count)]
-    dist.broadcast_object_list(payload, src = src, group = stage.group, device = _comm_device(stage))
+    dist.broadcast_object_list(payload, src = src, group = group, device = _comm_device(stage))
     tensors, count = payload[0]
     device = input_ids.device
     tensors = {k: v.to(device) for k, v in tensors.items()}

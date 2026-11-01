@@ -925,3 +925,26 @@ def test_pp_env_fp16_scaler_unscales_once():
         assert (
             res["max_rel"] > 0.9
         ), res  # unscaled twice: the update is 1 / 1024 of it (the bug this pins)
+
+
+@needs_pipelining
+def test_pp_env_tensor_peers_train_on_one_batch():
+    # Failing before: only the pipeline group took the first stage's batch, so under pp=2,tp=2 a stochastic
+    # collator left tensor parallel peers [0, 1] / [2, 3] reducing activations of different examples.
+    results = _spawn(
+        "env",
+        4,
+        {"UNSLOTH_PP_SIZE": "2", "UNSLOTH_TP_SIZE": "2"},
+        bs = 2,
+        noisy = True,
+        evaluate = False,
+        post = False,
+    )
+    assert results[0]["seen"] != results[1]["seen"]  # the tensor peers' collators did diverge
+    first = [r for r in results if r["stage"] == 0]
+    last = [
+        r for r in results if r["stage"] == 1
+    ]  # the scoring stage records the ids it trained on
+    sums = [sum(r["stage_ids"]) for r in last]
+    assert len(last) == 2 and all(r["stage_ids"] for r in last), sums
+    assert sums == [sum(first[0]["seen"])] * 2, (sums, [sum(r["seen"]) for r in first])

@@ -219,6 +219,16 @@ def _pipeline_parallel_env_requested() -> bool:
         return False
 
 
+def _cp_x_tp_env_requested() -> bool:
+    """UNSLOTH_CP_SIZE and UNSLOTH_TP_SIZE above 1 (UNSLOTH_PARALLEL writes both): packed rows are refused there."""
+    try:
+        cp = int(os.environ.get("UNSLOTH_CP_SIZE", "1").strip() or 1)
+        tp = int(os.environ.get("UNSLOTH_TP_SIZE", "1").strip() or 1)
+    except ValueError:
+        return False
+    return cp > 1 and tp > 1
+
+
 def _should_auto_padding_free(config) -> bool:
     if config is None or _AUTO_PADDING_FREE_ENV_DISABLED or getattr(config, "packing", False):
         return False
@@ -1934,10 +1944,18 @@ def _patch_sft_trainer_auto_packing(trl_module):
         ) == "1" or _wants_eval_logits(original_init, args, kwargs)
         # UNSLOTH_PP_SIZE: packed rows are not carried between pipeline stages yet (models/pp_env.py).
         is_pipeline_parallel_env = _pipeline_parallel_env_requested()
+        # cp x tp refuses packed rows: never turn them on automatically there. An explicit packing /
+        # padding_free = True stays, so the capability check refuses it with the alternative.
+        auto_off_cp_tp = (
+            _cp_x_tp_env_requested()
+            and not getattr(config_arg, "packing", False)
+            and getattr(config_arg, "padding_free", None) is not True
+        )
         blocked = (
             (data_collator is not None)
             or is_ring_context_parallel
             or is_pipeline_parallel_env
+            or auto_off_cp_tp
             or (is_processor and not processor_text_only)
             or is_auto_processor_vlm
             or is_vision_dataset
