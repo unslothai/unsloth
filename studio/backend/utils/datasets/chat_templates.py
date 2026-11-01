@@ -676,25 +676,17 @@ def apply_chat_template_to_dataset(
         def _format_alpaca(examples):
             texts = []
             instructions = examples["instruction"]
-            outputs = examples["output"]
-            systems = examples.get("system")
-            if systems is None:
-                systems = [None] * len(instructions)
-            # Build the missing-input fallback once per batch, not once per row.
-            inputs = examples["input"] if "input" in examples else [""] * len(instructions)
-            for i in range(len(instructions)):
-                fields = {
-                    "instruction": instructions[i],
-                    "input": inputs[i],
-                    "output": outputs[i]
-                }
-                fields = {key: cell_text(value) for key, value in fields.items()}
-                system = systems[i]
+            n = len(instructions)
+            inputs = examples["input"] if "input" in examples else [""] * n
+            systems = examples.get("system") or [None] * n
+            for instruction, input_, output, system in zip(
+                instructions, inputs, examples["output"], systems
+            ):
                 if not (isinstance(system, str) and system.strip()):
                     system = preamble
 
                 text = system + "\n\n" + alpaca_body.format(
-                    fields["instruction"], fields["input"], fields["output"]
+                    cell_text(instruction), cell_text(input_), cell_text(output)
                 )
                 if not text.endswith(eos_token):
                     text += eos_token
