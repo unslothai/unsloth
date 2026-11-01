@@ -10,7 +10,7 @@ test("the turn rail sits in the left gutter and its dashes grow rightwards", () 
   const source = readSrc("components/assistant-ui/turn-navigation.tsx");
   assert.match(source, /aui-turn-navigator-gutter @container\/turn-gutter absolute top-0 left-0/);
   assert.match(source, /w-6 origin-left scale-x-\[0\.333\]/);
-  assert.match(source, /left: `calc\(\$\{preview\.left\}px \+ 0\.5rem\)`/);
+  assert.match(source, /left: `calc\(\$\{preview\.left\}px \+ 2px\)`/);
   assert.match(source, /opacity-0[^"]*hover:opacity-100 focus-within:opacity-100 @min-\[2\.25rem\]\/turn-gutter:opacity-100/);
 });
 

@@ -739,11 +739,11 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
         }}
         className="aui-turn-navigator-gutter @container/turn-gutter absolute top-0 left-0 h-0"
       >
-        <div className="absolute top-0 left-[-0.5rem] flex w-9 -translate-y-1/2 flex-col items-start opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100 @min-[2.25rem]/turn-gutter:opacity-100">
+        <div className="absolute top-0 left-[-0.875rem] flex w-9 -translate-y-1/2 flex-col items-start opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100 @min-[2.25rem]/turn-gutter:opacity-100">
           <nav
             aria-label={t("turns.navigator")}
             style={{
-              height: `min(calc(var(--rail-row, 8px) * ${openerIds.length} + 8px), 40dvh)`,
+              height: `min(calc(var(--rail-row, 8px) * ${openerIds.length} + 8px), calc(100dvh - 18rem))`,
             }}
             ref={railRef}
             onKeyDown={onRailKeyDown}
@@ -764,7 +764,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
             preview
               ? {
                   top: preview.top,
-                  left: `calc(${preview.left}px + 0.5rem)`,
+                  left: `calc(${preview.left}px + 2px)`,
                   maxWidth: `calc(100vw - ${preview.left}px - 1.5rem)`,
                   transform: `translateY(${preview.edge === "start" ? "-1rem" : preview.edge === "end" ? "calc(-100% + 1rem)" : "-50%"})`,
                 }
@@ -773,12 +773,12 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
           onPointerEnter={cancelHide}
           onPointerLeave={hidePreview}
           className={cn(
-            "aui-turn-preview dropdown-surface pointer-events-auto fixed z-50 flex w-80 select-none flex-col gap-1 rounded-xl bg-popover py-3 pr-2.5 pl-3.5 text-popover-foreground text-ui-13 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]",
+            "aui-turn-preview dropdown-surface pointer-events-auto fixed z-50 flex w-80 select-none flex-col gap-1 rounded-xl bg-popover p-3 text-popover-foreground text-ui-13 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]",
             !previewOpen && "invisible",
           )}
         >
           <div className="flex items-center gap-2">
-            <p className="min-w-0 flex-1 truncate font-medium text-ui-14">
+            <p className="min-w-0 flex-1 truncate font-medium text-ui-13 leading-5">
               {preview?.prompt || " "}
             </p>
             {threadId && !incognito && (
@@ -804,7 +804,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
           {/* collapsed by class, not `hidden`: display toggles restyle the document via :has() */}
           <p
             className={cn(
-              "line-clamp-3 pr-1.5 text-muted-foreground text-ui-13p5 leading-relaxed",
+              "line-clamp-3 pr-1.5 text-muted-foreground text-ui-13 leading-5",
               !previewReply && "invisible -mt-1 h-0",
             )}
           >

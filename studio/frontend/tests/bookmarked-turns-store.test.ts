@@ -104,7 +104,7 @@ test("the turn card stays inside a phone-width viewport", async () => {
   );
   assert.match(
     nav,
-    /left: `calc\(\$\{preview\.left\}px \+ 0\.5rem\)`,[\s\S]{0,160}maxWidth: `calc\(100vw - \$\{preview\.left\}px - 1\.5rem\)`/,
+    /left: `calc\(\$\{preview\.left\}px \+ 2px\)`,[\s\S]{0,160}maxWidth: `calc\(100vw - \$\{preview\.left\}px - 1\.5rem\)`/,
   );
 });
 
