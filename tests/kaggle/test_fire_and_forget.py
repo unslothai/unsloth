@@ -1170,9 +1170,7 @@ def test_every_kaggle_client_install_also_installs_six():
             assert re.search(r"'six(?:[=<>!~][^']*)?'", line), f"{path.name}: {line}"
 
 
-def test_a_client_that_cannot_import_is_not_reported_as_a_bad_token(
-    tmp_path, monkeypatch, capsys
-):
+def test_a_client_that_cannot_import_is_not_reported_as_a_bad_token(tmp_path, monkeypatch, capsys):
     """An ImportError means the token was never tried; blaming it sends the
     reader to rotate a secret that is fine while the install stays broken."""
 
