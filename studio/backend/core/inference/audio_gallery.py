@@ -330,18 +330,22 @@ def _clip_mtimes(directory: Path) -> list[tuple[str, float]]:
         # Path.glob lists an unreadable or missing folder as empty.
         return found
     with entries:
-        for entry in entries:
-            name = entry.name
-            if not (name.lower() if _GLOB_FOLDS_CASE else name).endswith(".wav"):
-                continue
-            stem = name[:-4]
-            if not _ID_RE.match(stem):
-                continue
-            try:
-                mtime = entry.stat().st_mtime
-            except OSError:
-                mtime = 0.0
-            found.append((stem, mtime))
+        try:
+            for entry in entries:
+                name = entry.name
+                if not (name.lower() if _GLOB_FOLDS_CASE else name).endswith(".wav"):
+                    continue
+                stem = name[:-4]
+                if not _ID_RE.match(stem):
+                    continue
+                try:
+                    mtime = entry.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+                found.append((stem, mtime))
+        except OSError:
+            # Path.glob read the folder in one go and listed a failed read as empty.
+            return []
     return found
 
 

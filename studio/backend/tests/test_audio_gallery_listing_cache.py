@@ -177,6 +177,37 @@ def test_missing_folder_lists_nothing(monkeypatch, tmp_path):
     assert gallery.list_audio() == []
 
 
+def test_a_read_error_mid_scan_lists_nothing(monkeypatch):
+    directory = gallery.gallery_dir()
+    for i in range(3):
+        _clip(directory, f"c{i}", 1_700_000_000 + i)
+    real = os.scandir
+
+    class Failing:
+        def __init__(self, it):
+            self._it = it
+            self._seen = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._it.close()
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            self._seen += 1
+            if self._seen > 1:
+                raise OSError(5, "Input/output error")
+            return next(self._it)
+
+    monkeypatch.setattr(gallery.os, "scandir", lambda path: Failing(real(path)))
+    # Path.glob listed a folder whose read failed part way as empty, never a 500.
+    assert gallery.list_audio() == []
+
+
 def test_cache_stays_within_its_budget(monkeypatch):
     directory = gallery.gallery_dir()
     monkeypatch.setattr(gallery, "_SIDECAR_CACHE_MAX", 3)
