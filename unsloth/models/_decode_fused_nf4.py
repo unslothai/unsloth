@@ -10,8 +10,13 @@ import os
 import torch
 
 from . import _decode_graphs
-from ..kernels import nf4_decode_fused as F
 from ..kernels import utils as KU
+
+try:
+    from ..kernels import nf4_decode_fused as F
+except Exception:
+    # torch < 2.6 has no torch.library.triton_op (kernels/nf4.py): keep the regular decode path.
+    F = None
 
 __all__ = ["requested", "decode_forward", "rehome_site", "release", "STATS"]
 
@@ -82,6 +87,14 @@ def _norm_eps(norm):
     return getattr(norm, "eps", None) if eps is None else eps
 
 
+def _scale_key(v):
+    # PEFT hotswap fill_()s a tensor scale in place: key on its version counter (no sync), and hold
+    # the tensor so its id cannot be reused. Inference tensors have no version counter.
+    if not isinstance(v, torch.Tensor):
+        return v
+    return (id(v), None if v.is_inference() else v._version, v)
+
+
 def _adapter_key(module):
     # What the regular path reads per call from a PEFT layer: enabled, merged, active adapters, scale.
     active = getattr(module, "active_adapters", None)
@@ -91,9 +104,7 @@ def _adapter_key(module):
         active = tuple(active)
     scaling = getattr(module, "scaling", None)
     if isinstance(scaling, dict) and isinstance(active, tuple):
-        scaling = tuple(
-            id(v) if isinstance(v, torch.Tensor) else v for v in (scaling.get(a) for a in active)
-        )
+        scaling = tuple(_scale_key(v) for v in (scaling.get(a) for a in active))
     else:
         scaling = None
     return (
@@ -334,6 +345,8 @@ def _site(
 
 
 def _build(model, X):
+    if F is None:
+        return "fused NF4 kernels unavailable (torch < 2.6)"
     config = model.config
     model_type = getattr(config, "model_type", None)
     if model_type not in _FAMILIES:
