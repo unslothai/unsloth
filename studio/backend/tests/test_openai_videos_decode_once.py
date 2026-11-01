@@ -220,3 +220,40 @@ def test_a_queued_job_keeps_no_decoded_pixels(client, backend):
         assert entry.reference is not None
     finally:
         backend.gate.set()
+
+
+def test_a_model_switch_drops_the_decodes_and_the_render_decodes_again(
+    client, backend, monkeypatch
+):
+    import types
+
+    from core.inference import media_auto_switch
+
+    async def _fake_switch(
+        model,
+        *,
+        before_switch = None,
+        **_kwargs,
+    ):
+        if before_switch is not None:
+            before_switch(types.SimpleNamespace(model_path = "unknown/model", gguf_filename = None))
+
+    monkeypatch.setattr(media_auto_switch, "maybe_auto_switch_media_model", _fake_switch)
+    calls = []
+    real = backend.begin_generate
+
+    def _capture(**kwargs):
+        calls.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(backend, "begin_generate", _capture)
+    png = _reference_image_bytes("PNG")
+    resp = _create(
+        client, {"prompt": "a fox", "model": "x"}, {"input_reference": ("f.png", png, "image/png")}
+    )
+    assert resp.status_code == 200, resp.json()
+    _wait_terminal(client, resp.json()["id"])
+    (kwargs,) = calls
+    # Nothing decoded is held through a switch's load; the engine decodes as base did.
+    assert "decoded_reference_images" not in kwargs
+    assert kwargs["input_reference"] is not None

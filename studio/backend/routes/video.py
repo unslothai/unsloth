@@ -2290,6 +2290,8 @@ async def _start_openai_video(
         from core.inference.media_model_index import expected_partition
         from core.inference.video import _detect_load_family
 
+        # A model switch is about to load: do not hold the decoded images through it.
+        inputs.decoded_images = None
         fam = _detect_load_family(pick.model_path, pick.gguf_filename, None)
         if fam is None:
             return
