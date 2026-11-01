@@ -668,8 +668,7 @@ def enable_fp8_lora(
     except Exception:
         is_hp = lambda module, fqn: False
     converted, skipped = [], {}
-    # A Parameter shared by two modules (tied weights) keeps its 16-bit copy on the GPU: the other reader is
-    # not an fp8 base.
+    # How many modules hold each Parameter (tied weights).
     uses = {}
     for _, p in model.named_parameters(remove_duplicate = False):
         uses[id(p)] = uses.get(id(p), 0) + 1
@@ -689,6 +688,10 @@ def enable_fp8_lora(
                 why = f"weight on {device}"
             elif torch.cuda.get_device_capability(device) < (8, 9):
                 why = "compute capability below 8.9"
+        if why is None and uses.get(id(base.weight), 0) > 1:
+            # A Parameter shared by two modules (tied weights): a merge through one reader would leave the other's
+            # fp8 copy stale (same storage and version), so it stays a 16-bit base.
+            why = "weight shared with another module"
         if why is not None:
             skipped[name] = why
             continue
@@ -697,9 +700,7 @@ def enable_fp8_lora(
         reads_raw = any(getattr(module, "use_dora", {}).values()) or _mamba_raw_weight_leaf(
             model, name
         )
-        state = kernels.attach_fp8_lora_base(
-            base, offload = offload and uses.get(id(base.weight), 0) == 1 and not reads_raw
-        )
+        state = kernels.attach_fp8_lora_base(base, offload = offload and not reads_raw)
         offloaded += int(state.offloaded)
         _restore_master_before_merge(module)
         converted.append(name)
