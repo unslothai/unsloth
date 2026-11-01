@@ -2783,7 +2783,12 @@ const ThreadWelcome: FC<{
           "aui-thread-welcome-center flex w-full grow flex-col items-center",
           composerAtBottom
             ? "justify-center pb-[calc(160px*var(--ui-space-scale,1))]"
-            : "justify-start pt-[27.5dvh] has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]",
+            : "justify-start has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]",
+          // Without the greeting, its row and gap become padding, so the composer stays where it was.
+          !composerAtBottom &&
+            (showGreetingSloth || incognito
+              ? "pt-[27.5dvh]"
+              : "pt-[calc(27.5dvh_+_44px*var(--ui-space-scale,1)_+_2.25rem)]"),
         )}
       >
         {/* No padding, so the composer here is as wide as once it docks. */}
