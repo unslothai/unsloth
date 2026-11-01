@@ -4754,6 +4754,9 @@ class PersonalizationCustomization(BaseModel):
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"
     fontSmoothing: bool = True
+    codeLineNumbers: bool = False
+    codeWordWrap: bool = False
+    codeLigatures: bool = True
     sidebarMenu: list[PersonalizationSidebarMenuItem] = Field(
         default_factory = _default_sidebar_menu,
         max_length = MAX_SIDEBAR_MENU_INPUT_ITEMS,

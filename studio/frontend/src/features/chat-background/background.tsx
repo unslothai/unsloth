@@ -9,9 +9,17 @@ import {
 import { useChatBackground, setBackgroundError } from "./storage";
 import { acquireRender } from "./render";
 import { safeArtworkOpacity, type RGB } from "./contrast";
-import type { ChatBackgroundValue } from "./model";
+import type { ChatBackgroundValue, ImageSizing } from "./model";
 
 type Frame = { url: string; value: ChatBackgroundValue };
+const BACKGROUND_SIZE: Record<ImageSizing, string> = {
+	cover: "cover",
+	contain: "contain",
+	width: "100% auto",
+	height: "auto 100%",
+	stretch: "100% 100%",
+	original: "auto",
+};
 // The window titlebar sits outside the wallpaper's subtree, so a ready wallpaper marks the root
 // rather than having CSS ask html:has(), which re-matches on every DOM change.
 const ROOT_READY = "data-chat-wallpaper-ready";
@@ -107,6 +115,16 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 			parent.style.removeProperty("--wallpaper-safe");
 		};
 	}, [skin.safe, enabled, active]);
+	const outline = value?.outline;
+	useEffect(() => {
+		// The composer is a sibling subtree of the wallpaper, so the ring strength goes on the shared parent.
+		const parent = host.current?.parentElement;
+		if (!parent || !active || outline === undefined) return;
+		parent.style.setProperty("--wallpaper-outline", `${outline}%`);
+		return () => {
+			parent.style.removeProperty("--wallpaper-outline");
+		};
+	}, [outline, active]);
 	const adoptFrame = useEffectEvent((url: string) => {
 		urls.current.add(url);
 		clearTimeout(timer.current);
@@ -198,7 +216,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 			className="chat-wallpaper"
 			data-ready={Boolean(frames.current) || undefined}
 			data-reduced={skin.reduced || undefined}
-			data-outline={value.outline}
+			data-outline={value.outline > 0}
 			style={{ "--wallpaper-safe": skin.safe } as CSSProperties}
 		>
 			{[frames.previous, frames.current].map((frame, i) => {
@@ -224,12 +242,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 								style={{
 									backgroundImage: `url("${frame.url}")`,
 									backgroundPosition: adjustment.position,
-									backgroundSize:
-										adjustment.sizing === "original"
-											? "auto"
-											: adjustment.sizing === "stretch"
-												? "100% 100%"
-												: adjustment.sizing,
+									backgroundSize: BACKGROUND_SIZE[adjustment.sizing],
 									transform: `scale(${adjustment.zoom / 100})`,
 									transformOrigin: adjustment.position,
 									filter: adjustment.blur

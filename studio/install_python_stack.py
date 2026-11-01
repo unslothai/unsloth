@@ -11396,7 +11396,8 @@ def _git_remote_commit(
     env.setdefault("GIT_ASKPASS", "echo")
     try:
         probe = subprocess.run(
-            [exe, "ls-remote", "--", url, revision],
+            # A pattern-filtered ls-remote omits the peeled line unless it is asked for.
+            [exe, "ls-remote", "--", url, revision, f"{revision}^{{}}"],
             capture_output = True,
             text = True,
             encoding = "utf-8",
@@ -11415,8 +11416,8 @@ def _git_remote_commit(
         if ref and _COMMIT_REVISION_RE.fullmatch(sha):
             rows[ref] = sha.lower()
     for ref in (
-        f"refs/tags/{revision}^{{}}",
         f"refs/heads/{revision}",
+        f"refs/tags/{revision}^{{}}",
         f"refs/tags/{revision}",
         revision,
     ):

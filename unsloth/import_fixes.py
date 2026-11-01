@@ -7148,11 +7148,21 @@ def fix_triton_compiled_kernel_missing_attrs():
     )
 
 
+def _set_torch_config(config_module, name, value):
+    # torch >= 2.12 keeps config assignments per thread; checkpoint recomputes compile on autograd's device thread.
+    try:
+        from unsloth_zoo.torch_config import set_torch_config
+    except Exception:
+        setattr(config_module, name, value)
+        return
+    set_torch_config(config_module, name, value)
+
+
 def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass):
     # Warm FX / AOTAutograd caches would return barrier-free kernels: a no-op pass's uuid keys them.
     if custom_graph_pass is None:
         # torch < 2.6 keys no custom pass: skip the FX graph cache rather than reuse racy kernels.
-        inductor_config.fx_graph_cache = False
+        _set_torch_config(inductor_config, "fx_graph_cache", False)
         return
     marker = "unsloth-inductor-readback-barrier-v1"
 
@@ -7167,14 +7177,16 @@ def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass)
 
     existing = getattr(inductor_config, "post_grad_custom_post_pass", None)
     if existing is None:
-        inductor_config.post_grad_custom_post_pass = ReadbackBarrierCacheKey()
+        _set_torch_config(inductor_config, "post_grad_custom_post_pass", ReadbackBarrierCacheKey())
         return
     # A pre-set pass keys the cache by its uuid alone; raw callables / uuid-less passes bypass it.
     if isinstance(existing, (list, tuple)):
         if any(getattr(p, "_unsloth_readback_barrier", False) for p in existing):
             return
-        inductor_config.post_grad_custom_post_pass = type(existing)(
-            [*existing, ReadbackBarrierCacheKey()]
+        _set_torch_config(
+            inductor_config,
+            "post_grad_custom_post_pass",
+            type(existing)([*existing, ReadbackBarrierCacheKey()]),
         )
         return
     if getattr(existing, "_unsloth_readback_barrier", False):
@@ -7203,7 +7215,9 @@ def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass)
             inner_uuid = self.inner.uuid()
             return None if inner_uuid is None else (marker, inner_uuid)
 
-    inductor_config.post_grad_custom_post_pass = ReadbackBarrierKeyedPass(existing)
+    _set_torch_config(
+        inductor_config, "post_grad_custom_post_pass", ReadbackBarrierKeyedPass(existing)
+    )
 
 
 def fix_inductor_reduction_readback_race():
@@ -7289,6 +7303,10 @@ def fix_dynamo_config_thread_visibility():
         from contextvars import ContextVar
     except Exception:
         return
+    try:
+        from torch.utils._config_module import _UNSET_SENTINEL as _unset
+    except Exception:
+        _unset = None
 
     try:
         probe = getattr(_dynamo_config, "_config", {}).get("recompile_limit", None)
@@ -7381,6 +7399,9 @@ def fix_dynamo_config_thread_visibility():
                 entry = self.__dict__["_config"].get(name, None)
                 if entry is not None and entry.alias is None:
                     entry.default = value
+                    # A process-wide value (set_torch_config, TORCHINDUCTOR_* env) shadows default: replace it too.
+                    if _unset is not None and entry.env_value_default is not _unset:
+                        entry.env_value_default = value
             except Exception:
                 pass
 

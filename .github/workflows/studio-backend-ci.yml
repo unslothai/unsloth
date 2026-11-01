@@ -243,6 +243,7 @@ jobs:
             --ignore=tests/test_profile_stats.py \
             --ignore=tests/test_media_auto_switch.py \
             --ignore=tests/test_pr5624_regressions.py \
+            --ignore=tests/test_web_tools_overlap.py \
             -k 'not llama_cpp_load_progress_live'
 
       - name: Backend tests that cannot share a worker
@@ -264,7 +265,8 @@ jobs:
             tests/test_anthropic_messages.py \
             tests/test_profile_stats.py \
             tests/test_media_auto_switch.py \
-            tests/test_pr5624_regressions.py
+            tests/test_pr5624_regressions.py \
+            tests/test_web_tools_overlap.py
 
       - name: Decision model training tests
         # Their worker imports unsloth, so unsloth_zoo is installed here, after the suite above ran
