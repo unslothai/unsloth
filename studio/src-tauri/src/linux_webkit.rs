@@ -57,9 +57,8 @@ const FORCE_DMABUF_REASON: &str = "DMA-BUF renderer requested by the environment
 // 2.54.0 and 2.54.1 die with Error 71 under explicit sync (WebKit bug 280210); the fix (bug 324551)
 // first shipped in 2.54.2. Other hosts can still crash at launch, so this path is supervised.
 const NVIDIA_WAYLAND_GPU_MIN_VERSION: (u32, u32, u32) = (2, 54, 2);
-// With compositing off, WebKitGTK 2.54 on NVIDIA leaves an X11 window blank or flickering
-// (#16028, #16318); 2.52 and older draw it. Turning the DMA-BUF renderer off instead keeps the
-// window drawn, with acceleration still off, so the 580 driver's fence leak stays out of reach.
+// Compositing off leaves an NVIDIA X11 window blank or flickering on 2.54+ (#16318);
+// DISABLE_DMABUF keeps it drawn, still unaccelerated, clear of the 580 driver's fence leak.
 const NVIDIA_X11_BLANK_WITHOUT_COMPOSITING: (u32, u32, u32) = (2, 54, 0);
 
 /// The user's "GPU rendering" choice plus whether an earlier launch fell back on this host.
@@ -271,7 +270,6 @@ fn rendering_plan(
     // #13875 has that shape and crashes with Error 71 under it, while DISABLE_DMABUF works.
     let setting = env(DISABLE_COMPOSITING_SETTING);
     let requested = |wanted: bool| setting.as_deref().and_then(compositing_setting) == Some(wanted);
-    // Every NVIDIA X11 path without compositing goes through this.
     let nvidia_x11_compositing_off = || {
         if webkit_version >= NVIDIA_X11_BLANK_WITHOUT_COMPOSITING {
             RenderingWorkaround::DisableDmabuf
@@ -890,7 +888,6 @@ mod tests {
 
     #[test]
     fn nvidia_x11_without_compositing_disables_dmabuf_from_webkit_2_54() {
-        // Compositing off leaves the window blank or flickering on 2.54 (#16318); older keeps SHM.
         let appimage_x11: &[(&str, &str)] =
             &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
         let forced: &[(&str, &str)] = &[(X11_DISPLAY, ":0"), (DISABLE_COMPOSITING_SETTING, "1")];
@@ -938,7 +935,6 @@ mod tests {
                 expected,
                 "forced {version:?}"
             );
-            // A fixed driver keeps compositing on, whatever the WebKitGTK.
             assert_eq!(
                 plan(X11_HOST, 615, GpuRendering::Auto),
                 RenderingWorkaround::ForceSharedMemoryOnNvidia
