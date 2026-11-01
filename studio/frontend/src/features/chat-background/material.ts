@@ -146,7 +146,6 @@ export function WindowMaterialMount() {
   const menus = useMaterialStore((s) => s.menus);
   const strength = useGlassStrength();
   useEffect(() => {
-    // 0-100 onto multipliers, 1x at 50, applied after the readability floors so the setting always shows.
     const root = document.documentElement;
     const blur =
       strength <= 50 ? 0.2 + (0.8 * strength) / 50 : 1 + (strength - 50) / 50;

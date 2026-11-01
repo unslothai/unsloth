@@ -201,7 +201,6 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 		};
 	}, [frameUrl, glass]);
 	useEffect(() => {
-		// Glass panes over the app's own wallpaper (menus included, which portal to <body>) stay readable.
 		if (!(appWallpaper && tone && glass)) return;
 		const root = document.documentElement;
 		const { floor, shade } = glassReadability(tone, !skin.light);
