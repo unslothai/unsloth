@@ -153,3 +153,31 @@ def test_any_implicit_closer_is_the_union_of_closer_sets():
     assert h2m._ANY_IMPLICIT_CLOSER == union
     # inline elements never close anything, so they skip the recovery scan
     assert not {"span", "a", "img", "b", "svg"} & h2m._ANY_IMPLICIT_CLOSER
+
+
+class _NoSliceList(list):
+    reads = 0
+
+    def __getitem__(self, key):
+        assert not isinstance(key, slice), "the open-tag lookup must not copy the stack"
+        _NoSliceList.reads += 1
+        return super().__getitem__(key)
+
+
+def test_innermost_index_matches_reverse_scan_without_copying():
+    stack = _NoSliceList(["html", "body", "div", "p", "div", "span"])
+    for tag in ("span", "div", "p", "html", "table"):
+        expected = max((i for i, name in enumerate(stack) if name == tag), default = -1)
+        assert h2m._innermost_index(stack, tag) == expected
+    assert h2m._innermost_index(_NoSliceList(), "div") == -1
+    # closing the innermost element reads one slot however deep the stack is
+    deep = _NoSliceList(["div"] * 50_000)
+    _NoSliceList.reads = 0
+    assert h2m._innermost_index(deep, "div") == 49_999
+    assert _NoSliceList.reads == 1
+
+
+def test_deeply_nested_page_still_renders():
+    depth = 5_000
+    page = "<div><span>" * depth + "deep text" + "</span></div>" * depth
+    assert html_to_markdown(page, main_content = True) == "deep text"

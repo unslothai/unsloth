@@ -157,6 +157,18 @@ _IMPLICIT_CLOSERS: dict = {
 _ANY_IMPLICIT_CLOSER = frozenset().union(*_IMPLICIT_CLOSERS.values())
 
 
+def _innermost_index(stack: list, tag: str) -> int:
+    """Index of the last ``tag`` in ``stack``, else -1; never copies, so deep nesting stays linear."""
+    i = len(stack) - 1
+    if i >= 0 and stack[i] == tag:
+        return i
+    if tag not in stack:
+        return -1
+    while stack[i] != tag:
+        i -= 1
+    return i
+
+
 # A nested container makes an inner item a descendant, so recovery must stop there.
 _CLOSE_BARRIERS: dict = {
     "li": frozenset({"ul", "ol", "menu"}),
@@ -704,9 +716,9 @@ class _TitleButtonScan:
                 self._button_frame = frame
 
     def endtag(self, tag: str) -> None:
-        open_tags = self._open
-        if tag in open_tags:
-            self._pop_to(len(open_tags) - 1 - open_tags[::-1].index(tag))
+        i = _innermost_index(self._open, tag)
+        if i >= 0:
+            self._pop_to(i)
 
     def data(self, data: str) -> None:
         if self._muted or not data.strip():
@@ -1510,9 +1522,8 @@ class _MarkdownRenderer(HTMLParser):
         # Flush the heading here while the tee still recognises it; it emits only after its mark pops
         if self._in_link and tag == "a" and self._heading_marks:
             self._finish_link()
-        open_tags = self._open_tags
-        if tag not in _VOID_TAGS and tag in open_tags:
-            i = len(open_tags) - 1 - open_tags[::-1].index(tag)
+        i = -1 if tag in _VOID_TAGS else _innermost_index(self._open_tags, tag)
+        if i >= 0:
             self._truncate_open_tags(i)
             while self._hidden_marks and self._hidden_marks[-1] >= i:
                 self._hidden_marks.pop()
