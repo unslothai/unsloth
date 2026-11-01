@@ -5,7 +5,6 @@ import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { ROOT_READY, ROOT_WORKSPACE_READY, markRoot } from "./background";
 import { ComposerGlassLenses } from "./lens";
 
-/** A ready .chat-wallpaper, so the glass rules apply exactly as over an image. */
 const BACKDROP_SAFE = "0.55";
 
 export function GlassBackdrop() {

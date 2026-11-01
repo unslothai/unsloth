@@ -7,7 +7,6 @@ import { useConfirmedLoginMode } from "./account-session";
 import { AuthForm } from "./components/auth-form";
 
 export function ChangePasswordPage() {
-  // No personal image until the server confirms a single account.
   const personal = useConfirmedLoginMode() === "single";
   return (
     <div
