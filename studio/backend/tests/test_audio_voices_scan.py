@@ -45,9 +45,9 @@ def test_skips_corrupt_partial_and_lone_entries_and_keeps_order():
     no_epoch = _voice(3)
     _voice(4, body = '{"name": "x", "duration_s"')  # partially written
     _voice(5, body = "[]")
-    _voice(6, body = json.dumps({"name": "x"}))  # missing required keys
-    _voice(7, epoch = 9.0, wav = False)  # sidecar without its WAV
-    (audio_voices.voices_dir() / f"{uuid.uuid4().hex}.wav").write_bytes(b"RIFF")  # lone WAV
+    _voice(6, body = json.dumps({"name": "x"}))
+    _voice(7, epoch = 9.0, wav = False)
+    (audio_voices.voices_dir() / f"{uuid.uuid4().hex}.wav").write_bytes(b"RIFF")
     (audio_voices.voices_dir() / "not-an-id.json").write_text("{}", "utf-8")
     (audio_voices.voices_dir() / f"{uuid.UUID(int = 99).hex}.json").write_bytes(b"\xff\xfe")
 
