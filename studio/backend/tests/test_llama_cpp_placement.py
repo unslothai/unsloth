@@ -5274,6 +5274,59 @@ def test_the_header_scan_sums_shards(tmp_path):
     assert LlamaCppBackend()._gguf_tensor_scan(str(tmp_path / "m-00001-of-00002.gguf")) is None
 
 
+def test_a_resident_table_that_crowds_out_the_pinned_experts_is_read_lazily_for_the_cache(
+    tmp_path, _moe_cache_host
+):
+    """Qwen3.8-Flash-Next on a 94 GB host: RAM holds the lookup table resident or the
+    experts pinned, not both. The cache beats the --fit split by far, so the table is
+    read lazily (no --lazy-mode off) and the experts stay pinned for the cache."""
+    lazy = {"per_layer_token_embd.weight": 8 * _GIB}
+    # 32 GiB with 20 GiB of experts on the 20,000 MiB card: pinning the experts needs
+    # 20 + 8 (prompt cache) beside the 8 GiB table, more than 34 GiB of RAM.
+    shape = dict(lazy = lazy, arch = "qwen4exp", size_gib = 32, expert_gib = 20)
+    backend, cmd = _cache_launch(tmp_path, ram_gib = 34, **shape)
+
+    assert _has_moe_cache(cmd), cmd
+    assert cmd.count("--moe-cache-mib") == 1
+    assert _load_mode(cmd) == "none", cmd
+    assert "--lazy-mode" not in cmd and backend._lazy_mode_flags == [], cmd
+    assert backend._moe_cache_flags == _MOE_CACHE
+
+    # With the RAM for both, the table stays resident beside the pinned cache.
+    backend, cmd = _cache_launch(tmp_path, ram_gib = 256, **shape)
+    assert _has_moe_cache(cmd) and _load_mode(cmd) == "none", cmd
+
+    # Too little RAM even with the table lazy: no cache, and the table decision stands.
+    backend, cmd = _cache_launch(tmp_path, ram_gib = 26, **shape)
+    assert not _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "cell, kwargs, env",
+    [
+        ("setting", dict(load_mode = "mmap"), {}),
+        ("extra_args", dict(extra_args = ["--load-mode", "mmap"]), {}),
+        ("env", {}, {"LLAMA_ARG_LOAD_MODE": "mmap"}),
+    ],
+    ids = lambda v: v if isinstance(v, str) else "",
+)
+def test_a_user_mmap_keeps_the_resident_table_when_the_cache_stays_off(
+    tmp_path, _moe_cache_host, monkeypatch, cell, kwargs, env
+):
+    """The lazy table is only worth it for the cache: a user's mmap keeps the cache off
+    (it needs a pinned load), so --lazy-mode off and the resident table must stay."""
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    lazy = {"per_layer_token_embd.weight": 8 * _GIB}
+    shape = dict(lazy = lazy, arch = "qwen4exp", size_gib = 32, expert_gib = 20)
+    backend, cmd = _cache_launch(tmp_path, ram_gib = 34, **shape, **kwargs)
+
+    assert not _has_moe_cache(cmd), (cell, cmd)
+    assert backend._moe_cache_flags == []
+    assert cmd[cmd.index("--lazy-mode") + 1] == "off", (cell, cmd)
+    assert backend._lazy_mode_flags == ["--lazy-mode", "off"]
+
+
 def test_the_launch_discounts_the_lazy_table(tmp_path, _moe_cache_host):
     """The same predicate through the launch: a 20 GiB MoE whose 12 GiB n-gram table
     is lazy fits 8 GiB of VRAM plus 12 GiB of RAM only without the table."""
