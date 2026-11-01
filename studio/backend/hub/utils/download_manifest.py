@@ -661,8 +661,7 @@ def _read_migration_payload(path: Path) -> Optional[dict]:
 
 
 def _listed(directory: Path) -> list[tuple[str, str]]:
-    # Eager like pathlib's glob, so writes made while migrating cannot disturb the listing; names folded
-    # on Windows, where glob matches case-insensitively.
+    # Eager, and folded on Windows, as pathlib's glob is.
     with os.scandir(directory) as entries:
         return [
             (entry.name, entry.name.casefold() if os.name == "nt" else entry.name)
