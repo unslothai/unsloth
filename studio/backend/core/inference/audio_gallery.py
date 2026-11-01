@@ -13,7 +13,9 @@ import json
 import os
 import re
 import shutil
+import threading
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional
@@ -255,11 +257,14 @@ def _record(
     meta: dict[str, Any],
     flags: Optional[dict[str, dict[str, Any]]] = None,
     directory: Optional[Path] = None,
+    mtime: Optional[float] = None,
 ) -> dict[str, Any]:
     if directory is None:
         directory = gallery_dir()
     if flags is None:
         flags = gallery_flags.read(directory)
+    if mtime is None:
+        mtime = _mtime(directory / f"{audio_id}.wav")
     return {
         **meta,
         "workflow": _workflow(meta),
@@ -267,9 +272,7 @@ def _record(
         "url": f"/api/inference/audio/gallery/{audio_id}/file",
         **gallery_flags.flags_for(flags, audio_id),
         # The listing's own sort key, so a client re-sort agrees with it.
-        "order_at": gallery_flags.order_rank(
-            flags, audio_id, _mtime(directory / f"{audio_id}.wav")
-        ),
+        "order_at": gallery_flags.order_rank(flags, audio_id, mtime),
     }
 
 
@@ -313,6 +316,35 @@ def _clip_wavs(directory: Path) -> list[Path]:
     return [p for p in directory.glob("*.wav") if _ID_RE.match(p.stem)]
 
 
+# Path.glob matches case-insensitively on Windows only, on every supported Python.
+_GLOB_FOLDS_CASE = os.name == "nt"
+
+
+def _clip_mtimes(directory: Path) -> list[tuple[str, float]]:
+    """(stem, mtime) of each entry _clip_wavs lists, with the mtime _mtime would read, from one
+    scandir pass instead of a Path per entry and a second stat."""
+    found: list[tuple[str, float]] = []
+    try:
+        entries = os.scandir(directory)
+    except OSError:
+        # Path.glob lists an unreadable or missing folder as empty.
+        return found
+    with entries:
+        for entry in entries:
+            name = entry.name
+            if not (name.lower() if _GLOB_FOLDS_CASE else name).endswith(".wav"):
+                continue
+            stem = name[:-4]
+            if not _ID_RE.match(stem):
+                continue
+            try:
+                mtime = entry.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            found.append((stem, mtime))
+    return found
+
+
 def _sources_in_use(directory: Path, leaving: set[str]) -> set[str]:
     """Hidden Edit sources that a clip staying in the gallery still plays as its Original."""
     try:
@@ -348,6 +380,10 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
         raw = sidecar.read_text(encoding = "utf-8")
     except (OSError, UnicodeError):
         return None
+    return _parse_meta(raw)
+
+
+def _parse_meta(raw: str) -> Optional[dict[str, Any]]:
     try:
         meta = json.loads(raw)
     except (ValueError, TypeError):
@@ -356,6 +392,56 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
     if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED_META):
         return None
     return meta
+
+
+# Sidecar text the listing read, by path, while the file keeps the identity it had then. Text, not
+# the parsed dict: every call decodes its own copy, so no caller can change what the next one gets.
+_SIDECAR_CACHE_MAX = 8192
+_SIDECAR_CACHE_ITEM_MAX = 64 * 1024
+_SIDECAR_CACHE_BUDGET = 16 * 1024 * 1024
+_sidecar_cache: OrderedDict[str, tuple[tuple, str]] = OrderedDict()
+_sidecar_cache_chars = 0
+_sidecar_cache_lock = threading.Lock()
+
+
+def _listed_meta(sidecar: Path) -> Optional[dict[str, Any]]:
+    """``_read_meta(sidecar)``, reading the file again only once it changed."""
+    global _sidecar_cache_chars
+    try:
+        info = os.stat(sidecar)
+    except OSError:
+        return _read_meta(sidecar)
+    # A write moves mtime or ctime and os.replace the inode, so a key that agrees means the same
+    # bytes. Taken before the read: a write in between leaves a key that no longer agrees.
+    key = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    name = str(sidecar)
+    with _sidecar_cache_lock:
+        hit = _sidecar_cache.get(name)
+        if hit is not None and hit[0] == key:
+            _sidecar_cache.move_to_end(name)
+            raw = hit[1]
+        else:
+            raw = None
+    if raw is not None:
+        return _parse_meta(raw)
+    try:
+        raw = sidecar.read_text(encoding = "utf-8")
+    except (OSError, UnicodeError):
+        # Never kept: a read that may go through next time is tried again, as before.
+        return None
+    if len(raw) <= _SIDECAR_CACHE_ITEM_MAX:
+        with _sidecar_cache_lock:
+            old = _sidecar_cache.pop(name, None)
+            if old is not None:
+                _sidecar_cache_chars -= len(old[1])
+            _sidecar_cache[name] = (key, raw)
+            _sidecar_cache_chars += len(raw)
+            while (
+                len(_sidecar_cache) > _SIDECAR_CACHE_MAX
+                or _sidecar_cache_chars > _SIDECAR_CACHE_BUDGET
+            ):
+                _sidecar_cache_chars -= len(_sidecar_cache.popitem(last = False)[1][1])
+    return _parse_meta(raw)
 
 
 def owned_audio_path(audio_id: str, directory: Optional[Path] = None) -> Optional[Path]:
@@ -415,23 +501,36 @@ def _list_audio_entries(
 ) -> list[tuple[dict[str, Any], GalleryCursor]]:
     if directory is None:
         directory = gallery_dir()
-    try:
-        paths = _clip_wavs(directory)
-    except OSError:
-        return []
+    clips = _clip_mtimes(directory)
     flags = gallery_flags.read(directory)
-    paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
-    keyed_paths = [(_sort_key(flags, path), path) for path in paths]
-    keyed_paths.sort(key = lambda item: item[0], reverse = True)
+    # The sort's own stat is the record's mtime, so order_at is the position it was listed at.
+    unpinned = float("-inf")
+    keyed = [
+        # A clip with no flags entry is unpinned, undragged and active, as the lookups would say.
+        ((unpinned, mtime, stem), mtime)
+        if stem not in flags
+        else (
+            (
+                gallery_flags.pin_rank(flags, stem),
+                gallery_flags.order_rank(flags, stem, mtime),
+                stem,
+            ),
+            mtime,
+        )
+        for stem, mtime in clips
+        if (stem in flags and gallery_flags.is_archived(flags, stem)) == archived
+    ]
+    keyed.sort(key = lambda item: item[0], reverse = True)
     want = None if limit is None else offset + limit
     entries = []
-    for cursor, path in keyed_paths:
+    for cursor, mtime in keyed:
+        stem = cursor[2]
         if before is not None and cursor >= before:
             continue
-        meta = _read_meta(_sidecar_path(path.stem, directory))
+        meta = _listed_meta(_sidecar_path(stem, directory))
         if meta is None:
             continue
-        record = _record(path.stem, meta, flags, directory)
+        record = _record(stem, meta, flags, directory, mtime)
         if valid is not None and not valid(record):
             continue
         entries.append((record, cursor))
