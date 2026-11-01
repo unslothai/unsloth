@@ -3518,6 +3518,27 @@ def _raise_if_chat_message_thread_conflicts(
         )
 
 
+def _stored_chat_message_values(
+    conn: sqlite3.Connection, thread_id: str, message_ids: list
+) -> dict:
+    """Stored upsert columns of this thread's messages, keyed by id, in upsert parameter order."""
+    unique_ids = list(dict.fromkeys(message_ids))
+    stored: dict = {}
+    for start in range(0, len(unique_ids), _SQLITE_IN_CHUNK_SIZE):
+        chunk = unique_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
+        placeholders = ",".join("?" for _ in chunk)
+        for row in conn.execute(
+            f"""
+            SELECT id, parent_id, role, content_json, attachments_json, metadata_json, created_at
+            FROM chat_messages
+            WHERE thread_id = ? AND id IN ({placeholders})
+            """,
+            (thread_id, *chunk),
+        ):
+            stored[row[0]] = tuple(row)[1:]
+    return stored
+
+
 def _bump_chat_thread_updated_at(
     conn: sqlite3.Connection, thread_id: str, message_created_at: int
 ) -> None:
@@ -4409,6 +4430,25 @@ def sync_chat_messages(
             )
             for m in reconciled_messages
         ]
+        # The client resends the whole thread per run start/end: skip rows stored unchanged (O(thread) rewrite + media hashing).
+        current_rows = _stored_chat_message_values(
+            conn, thread_id, [m["id"] for m in reconciled_messages]
+        )
+        changed_rows = []
+        for m, content_json, attachments_json in serialized_messages:
+            values = (
+                m.get("parentId"),
+                m["role"],
+                content_json,
+                attachments_json,
+                json.dumps(m.get("metadata")) if m.get("metadata") is not None else None,
+                int(m["createdAt"]),
+            )
+            if current_rows.get(m["id"]) == values:
+                continue
+            # Later duplicates compare against what this batch wrote, as the upsert would.
+            current_rows[m["id"]] = values
+            changed_rows.append((m["id"], values))
         conn.executemany(
             """
             INSERT INTO chat_messages
@@ -4423,24 +4463,13 @@ def sync_chat_messages(
                 created_at = excluded.created_at
             WHERE excluded.thread_id = chat_messages.thread_id
             """,
-            [
-                (
-                    m["id"],
-                    thread_id,
-                    m.get("parentId"),
-                    m["role"],
-                    content_json,
-                    attachments_json,
-                    json.dumps(m.get("metadata")) if m.get("metadata") is not None else None,
-                    int(m["createdAt"]),
-                )
-                for m, content_json, attachments_json in serialized_messages
-            ],
+            [(message_id, thread_id, *values) for message_id, values in changed_rows],
         )
-        for m, content_json, attachments_json in serialized_messages:
+        # A clean inventory already matches every unchanged row.
+        for message_id, (_, _, content_json, attachments_json, _, _) in changed_rows:
             _replace_chat_attachment_inventory(
                 conn,
-                m["id"],
+                message_id,
                 attachments_json,
                 content_json,
             )

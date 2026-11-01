@@ -1033,6 +1033,15 @@ def _flex_call_needs_backward(query, key, value):
         return False
 
 
+def _flex_decoding_unavailable():
+    """True when unsloth_zoo found flex_decoding cannot compile against the installed Triton."""
+    try:
+        from unsloth_zoo.flex_attention.utils import FLEX_DECODING_UNAVAILABLE
+    except Exception:
+        return False
+    return FLEX_DECODING_UNAVAILABLE is True
+
+
 def _flex_main_kernel_forced(kwargs):
     """True when the caller's kernel_options force the main flex kernel over flex_decoding."""
     requested = kwargs.get("kernel_options") or {}
@@ -1161,6 +1170,8 @@ def _wrap_flex_attention_forward(flex_attention_forward):
 
     tuned_bwd_device_ok = _flex_tuned_bwd_device_ok()
     small_smem_device_ok = _flex_small_smem_device_ok()
+    # A failed flex_decoding compile makes Dynamo run flex eagerly for the rest of the process (full score matrix).
+    decoding_unavailable = _flex_decoding_unavailable()
 
     @functools.wraps(flex_attention_forward)
     def unsloth_flex_attention_forward(module, query, key, value, *args, **kwargs):
@@ -1177,6 +1188,18 @@ def _wrap_flex_attention_forward(flex_attention_forward):
                 kwargs["attention_mask"] = _causal_block_mask(query, key)
         elif _FLEX_MASKLESS_SDPA_ENABLED:
             _count_flex_reroute("flex")
+        requested = kwargs.get("kernel_options") or {}
+        if not isinstance(requested, dict):
+            requested = dict(requested)
+            kwargs["kernel_options"] = requested
+        requested_backend = requested.get("BACKEND")
+        # Where flex_decoding cannot compile, the main kernel replaces it unless the caller pinned a kernel itself
+        # (a BACKEND other than AUTO, or FORCE_USE_FLEX_ATTENTION=False).
+        decode_replaced = (
+            decoding_unavailable
+            and requested_backend in (None, "AUTO")
+            and requested.get("FORCE_USE_FLEX_ATTENTION") is not False
+        )
         try:
             # Some vision callers reuse the interface with a non-4D query.
             kernel_options = (
@@ -1199,6 +1222,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             and (
                 _flex_call_needs_backward(query, key, value)
                 or _flex_main_kernel_forced(kwargs)
+                or decode_replaced
                 or query.shape[2] >= 128
             )
             and _flex_tuned_bwd_fits(
@@ -1217,15 +1241,20 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             kernel_options = _flex_tuned_bwd_kernel_options(query.shape[-1], tuned_bwd_device_ok)
         # Inductor picks flex_decoding for a static query length below 128. Its logsumexp gets a
         # padded batch stride (comprehensive_padding) that the backward template ignores, so every
-        # batch row after the first reads a shifted LSE and the gradients blow up.
-        if _flex_call_needs_backward(query, key, value) and "BACKEND" not in (
-            kwargs.get("kernel_options") or {}
+        # batch row after the first reads a shifted LSE and the gradients blow up. Where flex_decoding cannot compile,
+        # no-grad queries take the main kernel too. BACKEND="AUTO" is dropped: torch 2.10+ rejects it with the legacy knob.
+        if requested_backend in (None, "AUTO") and (
+            decoding_unavailable or _flex_call_needs_backward(query, key, value)
         ):
             kernel_options = kernel_options or {}
             kernel_options["FORCE_USE_FLEX_ATTENTION"] = True
+            if (
+                requested_backend == "AUTO"
+                and requested.get("FORCE_USE_FLEX_ATTENTION") is not False
+            ):
+                requested = {k: v for k, v in requested.items() if k != "BACKEND"}
         if kernel_options is not None:
             # A caller that already asked for something keeps it: only fill the gaps.
-            requested = kwargs.get("kernel_options") or {}
             kernel_options.update(requested)
             kwargs["kernel_options"] = kernel_options
         return flex_attention_forward(module, query, key, value, *args, **kwargs)
@@ -6374,6 +6403,11 @@ def patch_gradient_accumulation_fix(Trainer):
                 if not keep_fused:
                     from .llama import _decline_fused_lora_for_fsdp
                     _decline_fused_lora_for_fsdp(getattr(self, "model", None), reason)
+            try:
+                from ..tiling import revalidate_for_trainer
+                revalidate_for_trainer(self)
+            except Exception as e:
+                logger.warning_once(f"Unsloth: tiled MLP revalidation skipped ({e})")
             _replan_auto_offload_safely(self)
             _size_auto_checkpoint_skip_for_trainer(self)
             _block_swap_for_trainer_backend(self)
@@ -6402,6 +6436,11 @@ def patch_gradient_accumulation_fix(Trainer):
             model = _original_call_model_init(self, *args, **kwargs)
             _refuse_tensor_parallel_for_trainer(model)
             _tensor_subclass_weights_for_ddp(self, model)
+            try:
+                from ..tiling import revalidate_for_trainer
+                revalidate_for_trainer(self, model)
+            except Exception as e:
+                logger.warning_once(f"Unsloth: tiled MLP revalidation skipped ({e})")
             return model
 
         _unsloth_call_model_init._unsloth_marks_ddp_ignores = True
@@ -8380,13 +8419,23 @@ def save_lora_adapter(model, save_directory, *args, **kwargs):
     """`save_pretrained` over the adapter, cast to the embedding dtype. PEFT's own selection decides what an adapter contains, so it is handed the whole state dict and only the adapter tensors are cast: filtering down to `.lora_A.`/`.lora_B.` first, as the Zoo helper does, makes PEFT raise `KeyError` looking up `modules_to_save.<adapter>.weight`, and a DoRA run loses its `lora_magnitude_vector` the same way. Both are reachable without vLLM, since `get_peft_model` adds `embed_tokens` and `lm_head` to `modules_to_save` once new tokens are trained. Non-adapter entries pass through by reference."""
     from .compressed_tensors_int4 import adapter_only_state_dict
 
-    dtype = model.get_input_embeddings().weight.dtype
-    with adapter_only_state_dict():
-        kwargs["state_dict"] = {
-            key: (value.to(dtype) if "lora_" in key else value)
-            for key, value in model.state_dict().items()
-        }
-    return model.save_pretrained(save_directory, *args, **kwargs)
+    def write():
+        dtype = model.get_input_embeddings().weight.dtype
+        with adapter_only_state_dict():
+            kwargs["state_dict"] = {
+                key: (value.to(dtype) if "lora_" in key else value)
+                for key, value in model.state_dict().items()
+            }
+        return model.save_pretrained(save_directory, *args, **kwargs)
+
+    if _is_unsloth_tensor_parallel(model):
+        # A state_dict built here would hold the sharded DTensors (safetensors cannot read their storage) and
+        # bypass the tensor parallel save: build it on rank 0 from the gathered adapter instead.
+        from .tp_replica import collective_applies, tp_collective
+        if collective_applies(model):
+            return tp_collective(model, "save_lora", write, "adapters")
+        return model.save_pretrained(save_directory, *args, **kwargs)
+    return write()
 
 
 def patch_peft_fast_inference(model):

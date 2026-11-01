@@ -8,7 +8,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+import time
 import structlog
+from collections import OrderedDict
 from loggers import get_logger
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -138,18 +141,63 @@ def _lookup_base_model(checkpoint_dir: Path, history: _History) -> Optional[str]
     return None
 
 
+# trainer_state.json reaches MBs on long runs. Files changed within the settle window are not
+# cached: a coarse filesystem clock can give a same-size rewrite identical timestamps.
+_LOSS_CACHE: "OrderedDict[str, tuple[tuple, Optional[float]]]" = OrderedDict()
+_LOSS_CACHE_MAX = 4096
+_LOSS_CACHE_SETTLE_NS = 2_000_000_000
+_LOSS_CACHE_LOCK = threading.Lock()
+
+
+def _stat_key(st: os.stat_result) -> tuple:
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _cached_loss(cache_id: str, key: tuple):
+    with _LOSS_CACHE_LOCK:
+        hit = _LOSS_CACHE.get(cache_id)
+        if hit is None or hit[0] != key:
+            return False, None
+        _LOSS_CACHE.move_to_end(cache_id)
+        return True, hit[1]
+
+
+def _store_loss(cache_id: str, key: tuple, loss) -> None:
+    if not (loss is None or type(loss) in (int, float)):
+        return
+    if time.time_ns() - max(key[3], key[4]) <= _LOSS_CACHE_SETTLE_NS:
+        return
+    with _LOSS_CACHE_LOCK:
+        _LOSS_CACHE[cache_id] = (key, loss)
+        _LOSS_CACHE.move_to_end(cache_id)
+        while len(_LOSS_CACHE) > _LOSS_CACHE_MAX:
+            _LOSS_CACHE.popitem(last = False)
+
+
 def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
     """Read the latest training loss from trainer_state.json's log_history, or None."""
     trainer_state = checkpoint_path / "trainer_state.json"
     if not own_entry(trainer_state):
         return None
+    cache_id = str(trainer_state)
     try:
         with open(trainer_state, encoding = "utf-8-sig") as f:
+            key = _stat_key(os.fstat(f.fileno()))
+            hit, loss = _cached_loss(cache_id, key)
+            if hit:
+                return loss
             state = json.load(f)
-        # Not just the last entry: eval metrics follow the loss on an evaluating step.
-        for entry in reversed(state.get("log_history") or []):
-            if isinstance(entry, dict) and "loss" in entry:
-                return entry["loss"]
+            loss = None
+            # Not just the last entry: on a step that also evaluates, the Trainer logs the
+            # eval metrics after the training loss and before it saves the checkpoint.
+            for entry in reversed(state.get("log_history") or []):
+                if isinstance(entry, dict) and "loss" in entry:
+                    loss = entry["loss"]
+                    break
+            # A write during the read changes the stat, so that read is not cached.
+            if _stat_key(os.fstat(f.fileno())) == key:
+                _store_loss(cache_id, key, loss)
+            return loss
     except Exception as e:
         logger.debug(f"Could not read loss from {trainer_state}: {e}")
     return None
@@ -400,8 +448,9 @@ def _hub_model_config(repo_id: str, hf_token: HfTokenArg) -> Optional[dict]:
 
 
 def is_unquantized_full_finetune(checkpoint_path: str, hf_token: HfTokenArg = None) -> bool:
-    """Whether a local or Hub checkpoint is an unquantized full model; False when unsure, so the
-    caller keeps the 4-bit load."""
+    """Whether a local or Hub checkpoint is an unquantized full model.
+
+    False when unsure, so the caller keeps the 4-bit load that used to fit."""
     try:
         is_local = Path(checkpoint_path).exists()
     except OSError:

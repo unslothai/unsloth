@@ -684,9 +684,14 @@ def test_stray_end_tags_in_a_skipped_menu_stay_linear(build):
 
     timings = []
     for count in (1000, 8000):
-        start = time.perf_counter()
-        html_to_markdown(build(count), main_content = True)
-        timings.append(time.perf_counter() - start)
+        html = build(count)
+        runs = []
+        # Best of five: one descheduled call on a shared runner must not read as growth.
+        for _ in range(5):
+            start = time.perf_counter()
+            html_to_markdown(html, main_content = True)
+            runs.append(time.perf_counter() - start)
+        timings.append(min(runs))
     # eight times the input should remain well below quadratic growth
     assert timings[1] < timings[0] * 24, timings
 

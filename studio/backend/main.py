@@ -1486,7 +1486,6 @@ if _DOCS_ASSETS_DIR.is_dir():
 # Cap request bodies on protected POSTs; upload routes get explicit multipart headroom.
 import json as _json_for_413  # noqa: E402
 from utils.upload_limits import (  # noqa: E402
-    AUDIO_INPUT_MAX_BYTES,
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     LIBRARY_UPLOAD_MAX_BYTES,
@@ -1494,6 +1493,7 @@ from utils.upload_limits import (  # noqa: E402
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
+    audio_input_max_bytes,
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
 )
@@ -1587,7 +1587,9 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     if path.rstrip("/") == _LIBRARY_UPLOAD_PATH:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _AUDIO_INPUT_UPLOAD_PATHS:
-        return AUDIO_INPUT_MAX_BYTES
+        # None means no cap, as the route treats it.
+        cap = audio_input_max_bytes()
+        return sys.maxsize if cap is None else cap
     if _SANDBOX_UPLOAD_RE.match(path):
         return upload_request_limit_bytes(SANDBOX_UPLOAD_MAX_BYTES)
     if _RAG_DOCUMENT_UPLOAD_RE.match(path):

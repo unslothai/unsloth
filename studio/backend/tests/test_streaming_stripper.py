@@ -238,30 +238,43 @@ def test_incremental_matches_reference_on_structured_fuzz():
             ), f"diverged at {size} for {text!r}"
 
 
-def test_prose_containing_the_word_call_is_still_amortized():
-    """The word call is also English, so a sentinel hit must be confirmed against its arm."""
-    import time
+def test_prose_containing_the_word_call_is_still_amortized(monkeypatch):
+    """The word call is also English, so a sentinel hit must be confirmed against its arm.
 
-    def elapsed(fn, tokens):
+    Counts the characters handed to the sentinel scan and the full strip instead of timing: a
+    one-shot wall-clock ratio over a few milliseconds failed on a loaded runner with linear code."""
+    work = []
+    real_scan = tool_call_parser._first_sentinel
+    real_full = StreamingMarkupStripper._full_strip
+
+    def scan(text, start, *args, **kwargs):
+        work.append(len(text) - max(start, 0))
+        return real_scan(text, start, *args, **kwargs)
+
+    def full(self, text):
+        work.append(len(text))
+        return real_full(self, text)
+
+    monkeypatch.setattr(tool_call_parser, "_first_sentinel", scan)
+    monkeypatch.setattr(StreamingMarkupStripper, "_full_strip", full)
+
+    def cost(count):
+        work.clear()
+        stripper = StreamingMarkupStripper(ENABLED)
         text = ""
-        start = time.perf_counter()
-        for token in tokens:
-            text += token
-            fn(text)
-        return time.perf_counter() - start
+        for _ in range(count):
+            text += "I will call it. "
+            assert stripper.strip(text) == text
+        return sum(work), len(text)
 
-    short = ["I will call it. " for _ in range(300)]
-    long = ["I will call it. " for _ in range(1200)]
+    short, _ = cost(300)
+    long, length = cost(1200)
 
-    def incremental(tokens):
-        return elapsed(StreamingMarkupStripper(ENABLED).strip, tokens)
-
-    reference_growth = elapsed(_reference_strip, long) / max(elapsed(_reference_strip, short), 1e-9)
-    incremental_growth = incremental(long) / max(incremental(short), 1e-9)
-
-    assert incremental_growth < reference_growth / 2, (
-        f"incremental cost grew {incremental_growth:.1f}x vs the reference's "
-        f"{reference_growth:.1f}x on prose containing the word 'call'"
+    # 4x the tokens: about 4x the work when amortized, 16x (600 characters per buffer character)
+    # when every unconfirmed call sends the whole buffer through the full strip.
+    assert long < short * 8 and long <= 8 * length, (
+        f"work grew {long / max(short, 1):.1f}x for 4x the tokens ({short} -> {long} characters "
+        f"over a {length}-character buffer) on prose containing the word 'call'"
     )
 
 

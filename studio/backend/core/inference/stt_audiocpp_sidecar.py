@@ -75,6 +75,12 @@ logger = get_logger(__name__)
 _TRANSCRIBE_TIMEOUT_SECONDS = 600.0
 _DETAILS_PATH = "/v1/audio/transcriptions/details"
 
+
+def _transcribe_timeout(duration: Optional[float]) -> float:
+    """600 s, or twice the audio's length for anything past 5 minutes."""
+    return max(_TRANSCRIBE_TIMEOUT_SECONDS, 2.0 * (duration or 0))
+
+
 # Fixed chunking keeps the runtime off its Silero VAD, which Studio does not ship.
 QWEN3_ALIGNER = CompanionModel(
     f"{AUDIO_CPP_REPO}/Qwen3-ForcedAligner-0.6B-GGUF",
@@ -1039,6 +1045,7 @@ class AudioCppSttSidecar:
                     sent,
                     cancel_event,
                     dict(_TIMESTAMP_OPTIONS) if aligned else {},
+                    timeout = _transcribe_timeout(duration),
                 )
                 if cancel_event is not None and cancel_event.is_set():
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -1077,6 +1084,8 @@ class AudioCppSttSidecar:
         lang: Optional[str],
         cancel_event: Optional[threading.Event],
         options: dict,
+        *,
+        timeout: float = _TRANSCRIBE_TIMEOUT_SECONDS,
     ) -> dict:
         server = self._server
         if server is None:
@@ -1091,7 +1100,7 @@ class AudioCppSttSidecar:
             return server.post_json(
                 _DETAILS_PATH,
                 request,
-                timeout = _TRANSCRIBE_TIMEOUT_SECONDS,
+                timeout = timeout,
                 cancel_event = cancel_event,
             )[1]
 

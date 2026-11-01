@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional
 
 from utils.paths import outputs_root, resolve_output_dir
+from utils.scan_memo import memoized
 
 
 def _is_foreign_absolute_path(path_value: str) -> bool:
@@ -33,7 +34,11 @@ def _is_under_outputs(path: Path) -> bool:
 def has_resume_state(path_value: Optional[str]) -> bool:
     if not path_value:
         return False
-    return get_resume_checkpoint_path(path_value) is not None
+    # can_resume_run and the blocked reason both ask per listing row.
+    return memoized(
+        ("has_resume_state", path_value),
+        lambda: get_resume_checkpoint_path(path_value) is not None,
+    )
 
 
 def _checkpoint_step(path: Path) -> int:
@@ -165,7 +170,8 @@ def is_resume_checkpoint_valid(
     backend: Optional[str] = None,
 ) -> bool:
     step = _checkpoint_state(path) if path.is_dir() else None
-    step_valid = step is not None and (expected_step is None or step == expected_step)
+    if step is None or (expected_step is not None and step != expected_step):
+        return False
     if backend == "mlx":
         valid_bundle = _valid_state_file(path / "adapters.safetensors") and _valid_state_file(
             path / "optimizer_state.safetensors"
@@ -181,7 +187,7 @@ def is_resume_checkpoint_valid(
             valid_bundle = _valid_state_file(path / "adapters.safetensors") and _valid_state_file(
                 path / "optimizer_state.safetensors"
             )
-    return step_valid and valid_bundle
+    return valid_bundle
 
 
 def artifacts_present(path_value: Optional[str]) -> bool:
@@ -272,6 +278,7 @@ def _resource_resume_cache_key(config: dict) -> Optional[str]:
         "actual_model_repo_id": config.get("actual_model_repo_id"),
         "model_snapshot_path": config.get("model_snapshot_path"),
         "load_in_4bit": config.get("load_in_4bit"),
+        "resume_model_load_mode": config.get("resume_model_load_mode"),
         "hf_dataset": config.get("hf_dataset"),
         "dataset_snapshot_path": config.get("dataset_snapshot_path"),
     }
@@ -284,6 +291,16 @@ def _resource_resume_cache_key(config: dict) -> Optional[str]:
         )
     except (TypeError, ValueError):
         return None
+
+
+def resource_resume_blocker(config: dict) -> Optional[str]:
+    """resource_provenance_resume_blocker, answered once per scan_memo scope for runs with the same inputs."""
+    from core.training.provenance import resource_provenance_resume_blocker
+
+    key = _resource_resume_cache_key(config)
+    if key is None:
+        return resource_provenance_resume_blocker(config)
+    return memoized(("resume_blocker", key), lambda: resource_provenance_resume_blocker(config))
 
 
 def can_resume_run(run: dict, *, resource_cache: Optional[dict[str, bool]] = None) -> bool:
