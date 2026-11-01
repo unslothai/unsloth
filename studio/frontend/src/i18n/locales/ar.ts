@@ -6,6 +6,7 @@ import type { en } from "./en.ts";
 
 export const ar = {
   chatBackground: {
+    previewNote: "معاينة لإعداداتك الحالية.",
     noBackground: "بدون خلفية",
     sizing: "تحجيم الصورة",
     sizingPosition: "تحجيم الصورة والموضع",
@@ -2227,7 +2228,6 @@ export const ar = {
       greetingDefault: "افتراضي",
       greetingCustom: "مخصص",
       greetingImage: "صورة",
-      greetingUploadHint: "PNG أو JPEG أو WebP أو GIF، حتى 10 ميغابايت.",
       greetingText: "نص التحية",
       greetingTextDescription: "اتركه فارغًا لاستخدام التحيات المدمجة.",
       greetingFileError: "اختر صورة PNG أو JPEG أو WebP أو GIF أصغر من 10 ميغابايت.",

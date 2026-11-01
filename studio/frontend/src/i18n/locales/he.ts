@@ -6,6 +6,7 @@ import type { en } from "./en";
 
 export const he = {
   chatBackground: {
+    previewNote: "תצוגה מקדימה של ההגדרות הנוכחיות שלך.",
     noBackground: "ללא רקע",
     sizing: "התאמת גודל תמונה",
     sizingPosition: "גודל ומיקום התמונה",
@@ -2271,7 +2272,6 @@ export const he = {
       greetingDefault: "ברירת מחדל",
       greetingCustom: "מותאם אישית",
       greetingImage: "תמונה",
-      greetingUploadHint: "PNG, JPEG, WebP או GIF, עד 10 MB.",
       greetingText: "טקסט הברכה",
       greetingTextDescription: "השאירו ריק כדי להשתמש בברכות המובנות.",
       greetingFileError: "בחרו קובץ PNG, JPEG, WebP או GIF קטן מ-10 MB.",

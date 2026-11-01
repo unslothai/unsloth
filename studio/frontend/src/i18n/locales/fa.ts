@@ -6,6 +6,7 @@ import type { en } from "./en.ts";
 
 export const fa = {
   chatBackground: {
+    previewNote: "پیش‌نمایش تنظیمات فعلی شما.",
     noBackground: "بدون پس‌زمینه",
     sizing: "اندازه‌بندی تصویر",
     sizingPosition: "اندازه و موقعیت تصویر",
@@ -2397,7 +2398,6 @@ export const fa = {
       greetingDefault: "پیش‌فرض",
       greetingCustom: "سفارشی",
       greetingImage: "تصویر",
-      greetingUploadHint: "PNG، JPEG، WebP یا GIF، حداکثر ۱۰ مگابایت.",
       greetingText: "متن خوشامدگویی",
       greetingTextDescription: "برای استفاده از خوشامدگویی‌های داخلی، خالی بگذارید.",
       greetingFileError: "یک تصویر PNG، JPEG، WebP یا GIF کمتر از ۱۰ مگابایت انتخاب کنید.",

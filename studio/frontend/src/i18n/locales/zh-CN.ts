@@ -6,6 +6,7 @@ import type { en } from "./en.ts";
 
 export const zhCN = {
   chatBackground: {
+    previewNote: "当前设置的预览。",
     noBackground: "无背景",
     sizing: "图片缩放方式",
     sizingPosition: "图片缩放与位置",
@@ -2189,7 +2190,6 @@ export const zhCN = {
       greetingDefault: "默认",
       greetingCustom: "自定义",
       greetingImage: "图片",
-      greetingUploadHint: "PNG、JPEG、WebP 或 GIF，最大 10 MB。",
       greetingText: "问候语文字",
       greetingTextDescription: "留空则使用内置问候语。",
       greetingFileError: "请选择小于 10 MB 的 PNG、JPEG、WebP 或 GIF 图片。",

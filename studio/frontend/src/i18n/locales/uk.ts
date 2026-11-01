@@ -6,6 +6,7 @@ import type { en } from "./en.ts";
 
 export const uk = {
   chatBackground: {
+    previewNote: "Попередній перегляд поточних налаштувань.",
     noBackground: "Без тла",
     sizing: "Масштабування зображення",
     sizingPosition: "Масштаб і позиція зображення",
@@ -2431,7 +2432,6 @@ export const uk = {
       greetingDefault: "За замовчуванням",
       greetingCustom: "Власне",
       greetingImage: "Зображення",
-      greetingUploadHint: "PNG, JPEG, WebP або GIF, до 10 МБ.",
       greetingText: "Текст привітання",
       greetingTextDescription: "Залиште порожнім, щоб використовувати вбудовані привітання.",
       greetingFileError: "Виберіть PNG, JPEG, WebP або GIF розміром до 10 МБ.",

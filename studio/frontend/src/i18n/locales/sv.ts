@@ -3,6 +3,7 @@
 
 export const sv = {
   chatBackground: {
+    previewNote: "Förhandsvisning av dina nuvarande inställningar.",
     noBackground: "Ingen bakgrund",
     sizing: "Bildstorlek",
     sizingPosition: "Bildstorlek och position",
@@ -2343,7 +2344,6 @@ export const sv = {
       greetingDefault: "Standard",
       greetingCustom: "Egen",
       greetingImage: "Bild",
-      greetingUploadHint: "PNG, JPEG, WebP eller GIF, högst 10 MB.",
       greetingText: "Hälsningstext",
       greetingTextDescription: "Lämna tomt för att använda de inbyggda hälsningarna.",
       greetingFileError: "Välj en PNG, JPEG, WebP eller GIF under 10 MB.",

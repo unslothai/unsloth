@@ -6,6 +6,7 @@ import type { en } from "./en.ts";
 
 export const ko = {
   chatBackground: {
+    previewNote: "현재 설정의 미리보기입니다.",
     noBackground: "배경 없음",
     sizing: "이미지 크기 조정",
     sizingPosition: "이미지 크기 및 위치",
@@ -2220,7 +2221,6 @@ export const ko = {
       greetingDefault: "기본값",
       greetingCustom: "사용자 지정",
       greetingImage: "이미지",
-      greetingUploadHint: "PNG, JPEG, WebP 또는 GIF, 최대 10MB.",
       greetingText: "인사말 텍스트",
       greetingTextDescription: "비워 두면 기본 제공 인사말을 사용합니다.",
       greetingFileError: "10MB 미만의 PNG, JPEG, WebP 또는 GIF를 선택하세요.",

@@ -6,6 +6,7 @@ import type { en } from "./en.ts";
 
 export const th = {
   chatBackground: {
+    previewNote: "ตัวอย่างการตั้งค่าปัจจุบันของคุณ",
     noBackground: "ไม่มีพื้นหลัง",
     sizing: "การปรับขนาดภาพ",
     sizingPosition: "ขนาดและตำแหน่งภาพ",
@@ -2303,7 +2304,6 @@ export const th = {
       greetingDefault: "ค่าเริ่มต้น",
       greetingCustom: "กำหนดเอง",
       greetingImage: "รูปภาพ",
-      greetingUploadHint: "PNG, JPEG, WebP หรือ GIF ขนาดไม่เกิน 10 MB",
       greetingText: "ข้อความทักทาย",
       greetingTextDescription: "เว้นว่างไว้เพื่อใช้คำทักทายในตัว",
       greetingFileError: "เลือกไฟล์ PNG, JPEG, WebP หรือ GIF ที่มีขนาดไม่เกิน 10 MB",

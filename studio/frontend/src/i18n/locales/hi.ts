@@ -6,6 +6,7 @@ import type { en } from "./en.ts";
 
 export const hi = {
   chatBackground: {
+    previewNote: "आपकी मौजूदा सेटिंग्स का पूर्वावलोकन।",
     noBackground: "कोई पृष्ठभूमि नहीं",
     sizing: "छवि का आकार",
     sizingPosition: "छवि का आकार और स्थिति",
@@ -2233,7 +2234,6 @@ export const hi = {
       greetingDefault: "डिफ़ॉल्ट",
       greetingCustom: "कस्टम",
       greetingImage: "चित्र",
-      greetingUploadHint: "PNG, JPEG, WebP या GIF, 10 MB तक।",
       greetingText: "अभिवादन टेक्स्ट",
       greetingTextDescription: "बिल्ट-इन अभिवादन इस्तेमाल करने के लिए खाली छोड़ें।",
       greetingFileError: "10 MB से छोटी PNG, JPEG, WebP या GIF फ़ाइल चुनें।",

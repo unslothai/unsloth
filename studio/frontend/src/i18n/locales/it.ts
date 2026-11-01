@@ -3,6 +3,7 @@
 
 export const it = {
   chatBackground: {
+    previewNote: "Anteprima delle impostazioni attuali.",
     noBackground: "Nessuno sfondo",
     sizing: "Dimensionamento immagine",
     sizingPosition: "Dimensionamento e posizione immagine",
@@ -2114,7 +2115,6 @@ export const it = {
       greetingDefault: "Predefinito",
       greetingCustom: "Personalizzato",
       greetingImage: "Immagine",
-      greetingUploadHint: "PNG, JPEG, WebP o GIF, fino a 10 MB.",
       greetingText: "Testo del saluto",
       greetingTextDescription: "Lascia vuoto per usare i saluti predefiniti.",
       greetingFileError: "Scegli un PNG, JPEG, WebP o GIF inferiore a 10 MB.",

@@ -189,8 +189,11 @@ export function ChatBackgroundControls() {
 					{t(errors[error])}
 				</p>
 			)}
+			<p className={`${error ? "" : "mt-3 "}text-xs text-muted-foreground`}>
+				{t("chatBackground.previewNote")}
+			</p>
 			<div
-				className={`${error ? "" : "mt-3 "}grid grid-cols-1 gap-3 sm:grid-cols-2`}
+				className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2"
 				data-wallpaper-previews=""
 			>
 				{[false, true].map((conversation) => (

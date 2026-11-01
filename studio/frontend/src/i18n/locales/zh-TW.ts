@@ -6,6 +6,7 @@ import type { en } from "./en.ts";
 
 export const zhTW = {
   chatBackground: {
+    previewNote: "目前設定的預覽。",
     noBackground: "無背景",
     sizing: "圖片縮放方式",
     sizingPosition: "圖片縮放與位置",
@@ -2290,7 +2291,6 @@ export const zhTW = {
       greetingDefault: "預設",
       greetingCustom: "自訂",
       greetingImage: "圖片",
-      greetingUploadHint: "PNG、JPEG、WebP 或 GIF，最大 10 MB。",
       greetingText: "問候語文字",
       greetingTextDescription: "留空則使用內建問候語。",
       greetingFileError: "請選擇小於 10 MB 的 PNG、JPEG、WebP 或 GIF 圖片。",

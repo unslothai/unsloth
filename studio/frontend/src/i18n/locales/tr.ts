@@ -6,6 +6,7 @@ import type { en } from "./en.ts";
 
 export const tr = {
   chatBackground: {
+    previewNote: "Mevcut ayarlarınızın önizlemesi.",
     noBackground: "Arka plan yok",
     sizing: "Görüntü boyutlandırma",
     sizingPosition: "Görüntü boyutu ve konumu",
@@ -2401,7 +2402,6 @@ export const tr = {
       greetingDefault: "Varsayılan",
       greetingCustom: "Özel",
       greetingImage: "Görsel",
-      greetingUploadHint: "PNG, JPEG, WebP veya GIF, en fazla 10 MB.",
       greetingText: "Karşılama metni",
       greetingTextDescription: "Yerleşik karşılamaları kullanmak için boş bırakın.",
       greetingFileError: "10 MB'den küçük bir PNG, JPEG, WebP veya GIF seçin.",

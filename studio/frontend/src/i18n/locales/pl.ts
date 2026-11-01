@@ -6,6 +6,7 @@ import type { en } from "./en.ts";
 
 export const pl = {
   chatBackground: {
+    previewNote: "Podgląd bieżących ustawień.",
     noBackground: "Brak tła",
     sizing: "Skalowanie obrazu",
     sizingPosition: "Skalowanie i pozycja obrazu",
@@ -2438,7 +2439,6 @@ export const pl = {
       greetingDefault: "Domyślne",
       greetingCustom: "Własne",
       greetingImage: "Obraz",
-      greetingUploadHint: "PNG, JPEG, WebP lub GIF, do 10 MB.",
       greetingText: "Tekst powitania",
       greetingTextDescription: "Pozostaw puste, aby używać wbudowanych powitań.",
       greetingFileError: "Wybierz plik PNG, JPEG, WebP lub GIF mniejszy niż 10 MB.",

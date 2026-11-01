@@ -3,6 +3,7 @@
 
 export const en = {
   chatBackground: {
+    previewNote: "Previews of your current settings.",
     noBackground: "No background",
     sizing: "Image sizing",
     sizingPosition: "Image sizing & position",
@@ -2231,7 +2232,6 @@ export const en = {
       greetingDefault: "Default",
       greetingCustom: "Custom",
       greetingImage: "Image",
-      greetingUploadHint: "PNG, JPEG, WebP or GIF, up to 10 MB.",
       greetingText: "Greeting text",
       greetingTextDescription: "Leave blank to use the built-in greetings.",
       greetingFileError: "Choose a PNG, JPEG, WebP or GIF under 10 MB.",

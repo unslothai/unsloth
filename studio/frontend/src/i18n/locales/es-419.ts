@@ -6,6 +6,7 @@ import type { en } from "./en.ts";
 
 export const es419 = {
   chatBackground: {
+    previewNote: "Vista previa de tu configuración actual.",
     noBackground: "Sin fondo",
     sizing: "Tamaño de imagen",
     sizingPosition: "Tamaño y posición de imagen",
@@ -2443,7 +2444,6 @@ export const es419 = {
       greetingDefault: "Predeterminado",
       greetingCustom: "Personalizado",
       greetingImage: "Imagen",
-      greetingUploadHint: "PNG, JPEG, WebP o GIF, hasta 10 MB.",
       greetingText: "Texto del saludo",
       greetingTextDescription: "Déjalo vacío para usar los saludos integrados.",
       greetingFileError: "Elige un PNG, JPEG, WebP o GIF de menos de 10 MB.",

@@ -6,6 +6,7 @@ import type { en } from "./en.ts";
 
 export const nl = {
   chatBackground: {
+    previewNote: "Voorbeeld van je huidige instellingen.",
     noBackground: "Geen achtergrond",
     sizing: "Afbeeldingsgrootte",
     sizingPosition: "Afbeeldingsgrootte en positie",
@@ -2446,7 +2447,6 @@ export const nl = {
       greetingDefault: "Standaard",
       greetingCustom: "Aangepast",
       greetingImage: "Afbeelding",
-      greetingUploadHint: "PNG, JPEG, WebP of GIF, tot 10 MB.",
       greetingText: "Begroetingstekst",
       greetingTextDescription: "Laat leeg om de ingebouwde begroetingen te gebruiken.",
       greetingFileError: "Kies een PNG, JPEG, WebP of GIF kleiner dan 10 MB.",

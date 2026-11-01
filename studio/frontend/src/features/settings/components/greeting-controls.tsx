@@ -202,21 +202,15 @@ function UploadControls({
             : t(preview ? "chatBackground.replace" : "chatBackground.upload")}
         </Button>
       </div>
-      <p
-        role={error ? "alert" : undefined}
-        className={cn(
-          "text-xs",
-          error ? "text-destructive" : "text-muted-foreground",
-        )}
-      >
-        {t(
-          error === "file"
-            ? "settings.profile.greetingFileError"
-            : error === "image"
-              ? "settings.profile.greetingImageError"
-              : "settings.profile.greetingUploadHint",
-        )}
-      </p>
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {t(
+            error === "file"
+              ? "settings.profile.greetingFileError"
+              : "settings.profile.greetingImageError",
+          )}
+        </p>
+      )}
     </div>
   );
 }

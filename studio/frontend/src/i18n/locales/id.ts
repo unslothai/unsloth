@@ -6,6 +6,7 @@ import type { en } from "./en.ts";
 
 export const id = {
   chatBackground: {
+    previewNote: "Pratinjau pengaturan Anda saat ini.",
     noBackground: "Tanpa latar belakang",
     sizing: "Ukuran gambar",
     sizingPosition: "Ukuran dan posisi gambar",
@@ -2407,7 +2408,6 @@ export const id = {
       greetingDefault: "Bawaan",
       greetingCustom: "Kustom",
       greetingImage: "Gambar",
-      greetingUploadHint: "PNG, JPEG, WebP, atau GIF, hingga 10 MB.",
       greetingText: "Teks sapaan",
       greetingTextDescription: "Kosongkan untuk memakai sapaan bawaan.",
       greetingFileError: "Pilih PNG, JPEG, WebP, atau GIF di bawah 10 MB.",

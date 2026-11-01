@@ -7,6 +7,7 @@ import type { en } from "./en.ts";
 
 export const ja = {
   chatBackground: {
+    previewNote: "現在の設定のプレビューです。",
     noBackground: "背景なし",
     sizing: "画像のサイズ調整",
     sizingPosition: "画像のサイズと位置",
@@ -2197,7 +2198,6 @@ export const ja = {
       greetingDefault: "デフォルト",
       greetingCustom: "カスタム",
       greetingImage: "画像",
-      greetingUploadHint: "PNG、JPEG、WebP、GIF（10 MB まで）。",
       greetingText: "あいさつのテキスト",
       greetingTextDescription: "空欄にすると、組み込みのあいさつを使います。",
       greetingFileError: "10 MB 未満の PNG、JPEG、WebP、GIF を選んでください。",

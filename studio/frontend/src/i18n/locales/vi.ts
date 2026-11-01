@@ -6,6 +6,7 @@ import type { en } from "./en.ts";
 
 export const vi = {
   chatBackground: {
+    previewNote: "Bản xem trước cài đặt hiện tại của bạn.",
     noBackground: "Không có nền",
     sizing: "Kích thước ảnh",
     sizingPosition: "Kích thước và vị trí ảnh",
@@ -2413,7 +2414,6 @@ export const vi = {
       greetingDefault: "Mặc định",
       greetingCustom: "Tùy chỉnh",
       greetingImage: "Hình ảnh",
-      greetingUploadHint: "PNG, JPEG, WebP hoặc GIF, tối đa 10 MB.",
       greetingText: "Nội dung lời chào",
       greetingTextDescription: "Để trống để dùng lời chào có sẵn.",
       greetingFileError: "Chọn ảnh PNG, JPEG, WebP hoặc GIF dưới 10 MB.",

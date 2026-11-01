@@ -6,6 +6,7 @@ import type { en } from "./en.ts";
 
 export const ptBR = {
   chatBackground: {
+    previewNote: "Prévia das suas configurações atuais.",
     noBackground: "Sem fundo",
     sizing: "Dimensionamento da imagem",
     sizingPosition: "Dimensionamento e posição da imagem",
@@ -2230,7 +2231,6 @@ export const ptBR = {
       greetingDefault: "Padrão",
       greetingCustom: "Personalizado",
       greetingImage: "Imagem",
-      greetingUploadHint: "PNG, JPEG, WebP ou GIF, até 10 MB.",
       greetingText: "Texto da saudação",
       greetingTextDescription: "Deixe vazio para usar as saudações integradas.",
       greetingFileError: "Escolha um PNG, JPEG, WebP ou GIF com menos de 10 MB.",

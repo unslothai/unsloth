@@ -6,6 +6,7 @@ import type { en } from "./en.ts";
 
 export const cs = {
   chatBackground: {
+    previewNote: "Náhledy vašeho aktuálního nastavení.",
     noBackground: "Bez pozadí",
     sizing: "Velikost obrázku",
     sizingPosition: "Velikost a pozice obrázku",
@@ -2424,7 +2425,6 @@ export const cs = {
       greetingDefault: "Výchozí",
       greetingCustom: "Vlastní",
       greetingImage: "Obrázek",
-      greetingUploadHint: "PNG, JPEG, WebP nebo GIF, nejvýše 10 MB.",
       greetingText: "Text pozdravu",
       greetingTextDescription: "Ponechte prázdné a použijí se vestavěné pozdravy.",
       greetingFileError: "Vyberte PNG, JPEG, WebP nebo GIF menší než 10 MB.",
