@@ -3540,14 +3540,7 @@ def _stored_chat_message_values(
             """,
             (thread_id, *chunk),
         ):
-            stored[row["id"]] = (
-                row["parent_id"],
-                row["role"],
-                row["content_json"],
-                row["attachments_json"],
-                row["metadata_json"],
-                row["created_at"],
-            )
+            stored[row[0]] = tuple(row)[1:]
     return stored
 
 
@@ -4443,9 +4436,7 @@ def sync_chat_messages(
             )
             for m in reconciled_messages
         ]
-        # The client resends the whole thread on every run start/end, so rows already stored with
-        # identical values are skipped: rewriting them and rebuilding their attachment inventory
-        # (JSON parse + SHA-256 of inline media) changes nothing but costs O(thread) per save.
+        # The client resends the whole thread per run start/end: skip rows stored unchanged (O(thread) rewrite + media hashing).
         current_rows = _stored_chat_message_values(
             conn, thread_id, [m["id"] for m in reconciled_messages]
         )
@@ -4480,7 +4471,7 @@ def sync_chat_messages(
             """,
             [(message_id, thread_id, *values) for message_id, values in changed_rows],
         )
-        # A clean inventory already matches every unchanged row, so only written rows are rebuilt.
+        # A clean inventory already matches every unchanged row.
         for message_id, (_, _, content_json, attachments_json, _, _) in changed_rows:
             _replace_chat_attachment_inventory(
                 conn,
