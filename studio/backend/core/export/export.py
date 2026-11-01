@@ -628,13 +628,9 @@ _SAME_TICK_NS = 3_000_000_000
 
 
 class _ReusedFolderWrites:
-    """Tells the files one save writes into a reused folder from its leftovers, so that folder
-    can be uploaded as is instead of saving the whole model a second time into a staging dir.
-
-    Read only: every file's (size, mtime, inode, ctime) is noted before the save, and a file that
-    is new or whose note changed was written. Nothing in the user's folder is touched, so a killed
-    or cancelled export leaves no trace. ``written()`` is None when the save's files cannot be
-    told apart, and the caller stages a clean second save as before."""
+    """Files one save wrote into a reused folder, told apart from leftovers by a read-only
+    (size, mtime, inode, ctime) snapshot, so a killed export leaves the folder untouched.
+    ``written()`` is None when they cannot be told apart: the caller stages a second save."""
 
     def __init__(self, directory):
         self._root = Path(directory)
@@ -697,8 +693,7 @@ class _ReusedFolderWrites:
             if shards is None or shards in _UNSHARDED_WEIGHTS:
                 logger.info(f"Reused folder keeps {name}, staging a second save")
                 return None
-            # Kept, yet it lists exactly what this save wrote: the save's own (skipped) index.
-            # One naming files the save did not write describes a previous export's weights.
+            # Listing only shards this save wrote = its own skipped index; else a previous export's.
             if shards and shards <= written:
                 written.add(name)
         return sorted(written)
@@ -1471,9 +1466,7 @@ class ExportBackend:
             logger.warning(f"Could not update reap_report.json in {folder}: {exc}")
 
     def _export_dir_overlaps_checkpoint(self, save_directory) -> bool:
-        """An export into (or around) the checkpoint or a local base model finds some of its
-        files already there, so what the save wrote is not the whole export; that case keeps the
-        staged second save."""
+        """Export dir inside / around the checkpoint or a local base: some files pre-exist."""
         config = getattr(self.current_model, "config", None)
         # An MLX model also names the folder its sidecars are copied from.
         sources = (
