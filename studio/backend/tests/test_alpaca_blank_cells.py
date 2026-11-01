@@ -183,3 +183,18 @@ def test_alpaca_input_column_is_read_per_row_across_batches():
         assert text.endswith(
             f"### Instruction:\ni{n}\n\n### Input:\n{expected_input}\n\n### Response:\no{n}</s>"
         )
+
+
+def test_alpaca_system_column_formats_from_a_numpy_formatted_dataset():
+    dataset = Dataset.from_dict(
+        {
+            "instruction": ["a", "b"],
+            "output": ["1", "2"],
+            "system": ["Be brief.", ""],
+        }
+    ).with_format("numpy")
+
+    texts = _format(dataset)
+
+    assert texts[0].startswith("Be brief.\n\n### Instruction:\na\n")
+    assert texts[1].endswith("### Instruction:\nb\n\n### Input:\n\n\n### Response:\n2</s>")

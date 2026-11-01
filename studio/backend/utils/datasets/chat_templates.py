@@ -678,7 +678,9 @@ def apply_chat_template_to_dataset(
             instructions = examples["instruction"]
             n = len(instructions)
             inputs = examples["input"] if "input" in examples else [""] * n
-            systems = examples.get("system") or [None] * n
+            systems = examples.get("system")
+            if systems is None:
+                systems = [None] * n
             for instruction, input_, output, system in zip(
                 instructions, inputs, examples["output"], systems
             ):
