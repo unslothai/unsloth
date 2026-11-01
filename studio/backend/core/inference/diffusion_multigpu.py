@@ -2345,6 +2345,26 @@ def _call_signature(args: tuple, kwargs: dict) -> tuple:
     )
 
 
+def _shared_states(pairs: list) -> tuple:
+    found: dict = {}
+    for pair in pairs:
+        for sub in pair:
+            for value in sub.__dict__.values():
+                if type(value).__name__ in _SHARED_STATE_TYPES:
+                    found.setdefault(id(value), value)
+    return tuple(found.values())
+
+
+def _shared_state_key(states: tuple) -> tuple:
+    key = []
+    for state in states:
+        try:
+            key.append(state.compile_key())
+        except Exception:  # noqa: BLE001 - an unreadable state is never warm
+            key.append(object())
+    return tuple(key)
+
+
 def _note_warm(seen: set, sig: tuple) -> None:
     if len(seen) >= 256:
         seen.clear()
@@ -2441,6 +2461,9 @@ class CfgParallelRouter:
         self.probe_index: dict = {}
         self.probed_this_render = False
         self.pairs: list = []
+        # Shared per-step state objects (``_SHARED_STATE_TYPES``) of both sides: their compile guards join every
+        # warm-call signature.
+        self.shared_states: tuple = ()
         # A call new to either side may compile (FX tracing is process-wide up to torch 2.13): it never overlaps the other side.
         self.warm_primary: set = set()
         self.warm_replica: set = set()
@@ -2476,6 +2499,7 @@ class CfgParallelRouter:
         self.kv_mirrors.clear()
         self.kv_declined.clear()
         self.pairs = []
+        self.shared_states = ()
         self.warm_primary.clear()
         self.warm_replica.clear()
         self.prefetched.clear()
@@ -2518,12 +2542,17 @@ class CfgParallelRouter:
         self.exclusion_refused = False
         return False
 
+    def _signature(self, args: tuple, kwargs: dict) -> tuple:
+        """``_call_signature`` plus the model-side state compiled forwards guard on: a step that flips the NVFP4
+        protect schedule recompiles both branches under arguments already seen, so it must count as new."""
+        return (*_call_signature(args, kwargs), _shared_state_key(self.shared_states))
+
     def _primary(self, *args: Any, **kwargs: Any) -> Any:
         inner = self.inner
         return (inner if inner is not None else self.orig_forward)(*args, **kwargs)
 
     def _primary_noting(self, sig: Optional[tuple], args: tuple, kwargs: dict) -> Any:
-        sig = _call_signature(args, kwargs) if sig is None else sig
+        sig = self._signature(args, kwargs) if sig is None else sig
         job = self._pair_job
         if sig not in self.warm_primary and job is not None:
             job["event"].wait()  # may compile: not while the replica runs
@@ -2562,7 +2591,7 @@ class CfgParallelRouter:
                 # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
                 # it would wait for it on the source stream and serialise the two branches.
                 self._prefetch(args, kwargs)
-                sig = _call_signature(args, kwargs)
+                sig = self._signature(args, kwargs)
                 self._launch_prediction(latent, sig)
         prefill = self.branch % 2 == 1 and _is_prefill(kwargs)
         if (
@@ -2642,7 +2671,7 @@ class CfgParallelRouter:
             return None
         self.prefetched.clear()
         hook_state = _mirror_hook_state(self.pairs)
-        sig = _call_signature(args, kwargs)
+        sig = self._signature(args, kwargs)
         try:
             r_args = self._to_replica(args)
             r_kwargs = self._to_replica(kwargs)
@@ -2736,7 +2765,7 @@ class CfgParallelRouter:
             return
         if (
             sig not in self.warm_primary
-            or _call_signature(p_args, p_kwargs) not in self.warm_replica
+            or self._signature(p_args, p_kwargs) not in self.warm_replica
         ):
             return  # a side may compile: the odd branch runs unpredicted, after the primary one
         try:
@@ -2871,6 +2900,7 @@ class CfgParallelRouter:
                 self.replica = self.replica_factory()
             self.probed_this_render = True
             self.pairs = list(zip(module.modules(), self.replica.modules()))
+            self.shared_states = _shared_states(self.pairs)
             self.worker = _ReplicaWorker(self.secondary)
             weakref.finalize(self, self.worker.close)
             self.stats["replica_build_s"] = round(time.perf_counter() - t0, 3)
@@ -2996,7 +3026,7 @@ class CfgParallelRouter:
         # since then would reach the replica stale. Copy this call's inputs now (ordered after the primary branch).
         self.prefetched.clear()
         _mirror_hook_state(self.pairs)
-        sig = _call_signature(args, kwargs)
+        sig = self._signature(args, kwargs)
         r_args = self._to_replica(args)
         r_kwargs = self._to_replica(kwargs)
         replica = self.replica
