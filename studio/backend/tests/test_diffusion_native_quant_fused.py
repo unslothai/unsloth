@@ -367,6 +367,9 @@ def test_factory_creates_every_state_key_before_the_first_trace(monkeypatch):
     # torch <= 2.6 dynamo guards on len(_FUSED_STATE): a key added after the first call recompiles.
     import core.inference.diffusion_speed as sp
 
+    import core.inference.rocm_bf16 as rb
+
     monkeypatch.setattr(sp, "torch_compile_runtime_available", lambda: True)
+    monkeypatch.setattr(rb, "is_rocm_torch", lambda _torch: False)
     assert nq._fused_w8a8() is not None
     assert {"fn", "into", "row_major", "calls", "failed"} <= set(nq._FUSED_STATE)
