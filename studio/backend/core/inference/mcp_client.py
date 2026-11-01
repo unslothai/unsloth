@@ -861,9 +861,8 @@ def _is_protocol_error(exc: BaseException) -> bool:
     return False
 
 
-# HTTP 404 for an unknown Mcp-Session-Id (server restarted or reaped the session): the request never ran.
-# "Session terminated" = client SDK stand-in (mcp 1.x code 32600, 2.x -32600); mcp 2.x relays the
-# server's own body instead: Python SDK -32600 / TypeScript SDK -32001 "Session not found".
+# HTTP 404 for an unknown Mcp-Session-Id, so the request never ran: the client SDK's "Session terminated"
+# stand-in, or the server body mcp 2.x relays (Python SDK -32600 / TypeScript SDK -32001 "Session not found").
 _SESSION_GONE_MESSAGES = ("Session terminated", "Session not found")
 _SESSION_GONE_CODES = (32600, -32600, -32001)
 
