@@ -31,6 +31,7 @@ export const th = {
     halftone: "ฮาล์ฟโทน",
     scanlines: "เส้นสแกน",
     visibility: "การมองเห็น",
+    conversationVisibility: "การมองเห็นในบทสนทนา",
     blur: "ความเบลอของภาพ",
     position: "ตำแหน่ง",
     horizontal: "ตำแหน่งแนวนอน",

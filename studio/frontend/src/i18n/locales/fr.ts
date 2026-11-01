@@ -31,6 +31,7 @@ export const fr = {
     halftone: "Demi-teinte",
     scanlines: "Lignes de balayage",
     visibility: "Visibilité",
+    conversationVisibility: "Visibilité dans les conversations",
     blur: "Flou de l’image",
     position: "Position",
     horizontal: "Position horizontale",

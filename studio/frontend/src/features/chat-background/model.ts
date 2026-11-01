@@ -35,6 +35,8 @@ export const POSITIONS = [
 export const DEFAULT_ADJUSTMENTS = {
 	effect: "None" as BackgroundEffect,
 	visibility: 70,
+	// 0 keeps the readable wash over open conversations; 100 shows the image almost as on a new chat.
+	conversation: 0,
 	blur: 0,
 	fade: true,
 	outline: 30,
@@ -65,6 +67,7 @@ export function sanitizeAdjustments(
 			? input.effect!
 			: "None",
 		visibility: bounded(input.visibility, 100, 70),
+		conversation: bounded(input.conversation, 100, 0),
 		blur: bounded(input.blur, 20, 0),
 		fade: typeof input.fade === "boolean" ? input.fade : true,
 		// Booleans are the pre-slider saved shape.

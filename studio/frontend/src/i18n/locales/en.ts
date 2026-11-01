@@ -28,6 +28,7 @@ export const en = {
     halftone: "Halftone",
     scanlines: "Scanlines",
     visibility: "Visibility",
+    conversationVisibility: "Visibility in conversations",
     blur: "Image blur",
     position: "Position",
     horizontal: "Horizontal position",

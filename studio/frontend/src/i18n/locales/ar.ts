@@ -31,6 +31,7 @@ export const ar = {
     halftone: "نصف نغمة",
     scanlines: "خطوط المسح",
     visibility: "الظهور",
+    conversationVisibility: "الظهور في المحادثات",
     blur: "تمويه الصورة",
     position: "الموضع",
     horizontal: "الموضع الأفقي",

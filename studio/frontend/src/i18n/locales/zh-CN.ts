@@ -31,6 +31,7 @@ export const zhCN = {
     halftone: "半色调",
     scanlines: "扫描线",
     visibility: "可见度",
+    conversationVisibility: "对话中的可见度",
     blur: "图片模糊",
     position: "位置",
     horizontal: "水平位置",

@@ -32,6 +32,7 @@ export const ja = {
     halftone: "ハーフトーン",
     scanlines: "走査線",
     visibility: "表示強度",
+    conversationVisibility: "会話中の表示の強さ",
     blur: "画像のぼかし",
     position: "位置",
     horizontal: "水平位置",

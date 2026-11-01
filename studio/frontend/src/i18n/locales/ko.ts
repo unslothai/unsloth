@@ -31,6 +31,7 @@ export const ko = {
     halftone: "하프톤",
     scanlines: "주사선",
     visibility: "표시 강도",
+    conversationVisibility: "대화 중 표시 정도",
     blur: "이미지 흐림",
     position: "위치",
     horizontal: "가로 위치",

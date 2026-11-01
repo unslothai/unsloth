@@ -28,6 +28,7 @@ export const sv = {
     halftone: "Raster",
     scanlines: "Skanningslinjer",
     visibility: "Synlighet",
+    conversationVisibility: "Synlighet i konversationer",
     blur: "Bildoskärpa",
     position: "Position",
     horizontal: "Horisontell position",

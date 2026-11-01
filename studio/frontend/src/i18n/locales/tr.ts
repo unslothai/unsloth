@@ -31,6 +31,7 @@ export const tr = {
     halftone: "Yarım ton",
     scanlines: "Tarama çizgileri",
     visibility: "Görünürlük",
+    conversationVisibility: "Sohbetlerde görünürlük",
     blur: "Görüntü bulanıklığı",
     position: "Konum",
     horizontal: "Yatay konum",

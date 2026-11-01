@@ -31,6 +31,7 @@ export const es = {
     halftone: "Semitono",
     scanlines: "Líneas de barrido",
     visibility: "Visibilidad",
+    conversationVisibility: "Visibilidad en conversaciones",
     blur: "Desenfoque de imagen",
     position: "Posición",
     horizontal: "Posición horizontal",

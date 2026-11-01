@@ -31,6 +31,7 @@ export const ru = {
     halftone: "Полутон",
     scanlines: "Строки развёртки",
     visibility: "Видимость",
+    conversationVisibility: "Видимость в беседах",
     blur: "Размытие изображения",
     position: "Положение",
     horizontal: "Положение по горизонтали",

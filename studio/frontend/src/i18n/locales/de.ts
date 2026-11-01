@@ -31,6 +31,7 @@ export const de = {
     halftone: "Halbton",
     scanlines: "Scanlinien",
     visibility: "Sichtbarkeit",
+    conversationVisibility: "Sichtbarkeit in Unterhaltungen",
     blur: "Bildunschärfe",
     position: "Position",
     horizontal: "Horizontale Position",
