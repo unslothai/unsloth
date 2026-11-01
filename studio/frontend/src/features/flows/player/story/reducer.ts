@@ -562,12 +562,13 @@ export function stageAt(m: StoryManifest, s: StoryState): StageView {
   const before = castAfter(scene, lines, prev);
   const now = castAfter(scene, lines, upto);
   const sounds = [...carried];
+  const here = s.status === "reading" || s.status === "choosing";
   const shown = new Map<string, StoryTransition | null>();
   const hidden = new Map<string, StoryTransition | null>();
   for (let i = prev + 1; i <= upto && i < lines.length; i++) {
     const st = lines[i].stage;
-    // An ending's own direction lines are already in carried.
-    if (st?.sound && s.status !== "ended") sounds.push(st.sound);
+    // Past a scene (ended, generating, error) its sounds are already carried.
+    if (st?.sound && here) sounds.push(st.sound);
     if (st?.show) shown.set(st.show, st.with ?? null);
     if (st?.hide) hidden.set(st.hide, st.with ?? null);
   }

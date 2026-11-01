@@ -274,3 +274,21 @@ test("a cue whose media resolves after a save load stays silent", async () => {
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(played, []);
 });
+
+test("a carried cue plays once while the next scene generates", () => {
+  const m: Manifest = {
+    ...staged,
+    mode: "infinite",
+    entry_points: { next_scene: "next" },
+    scenes: [
+      {
+        id: "a",
+        lines: [{ text: "", stage: { sound: "door" } }],
+        choices: [{ text: "", goto: "unwritten" }],
+      },
+    ],
+  };
+  const s = R.initialState(m, 1);
+  assert.equal(s.status, "generating");
+  assert.deepEqual(R.stageAt(m, s).sounds, ["door"]);
+});
