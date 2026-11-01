@@ -86,8 +86,9 @@ def test_scaled_mm_counted_and_fp16_never_written_by_the_fp8_gemm(monkeypatch):
         y = state.matmul(torch.randn(32, 256).half(), W)
         state.dgrad(torch.randn(32, 384).half(), W)
     assert counts["_scaled_mm"] == 2
-    # survey8 risk: fp16 output of an fp8 GEMM overflows; the GEMM writes bf16 and the result is cast.
-    assert seen == [torch.bfloat16, torch.bfloat16]
+    # survey8 risk: fp16 output of an fp8 GEMM overflows; the GEMM writes float32 (bf16 rounding can still
+    # overflow the cast back) and the result is cast.
+    assert seen == [torch.float32, torch.float32]
     assert y.dtype == torch.float16 and torch.isfinite(y).all()
 
 
@@ -98,6 +99,16 @@ def test_large_fp16_values_stay_finite():
     y = FL.Fp8LoRABaseState(W).matmul(x, W)
     assert torch.isfinite(y).all()
     assert abs(y.float().mean().item() - 57600.0) / 57600.0 < 0.07
+
+
+def test_fp16_results_at_the_fp16_limit_stay_finite():
+    # Failing before: the GEMM wrote bf16, which rounds 65504 to 65536, an inf after the cast back to fp16.
+    W = torch.full((32, 64), 0.5, dtype = torch.float16)
+    x = torch.full((16, 64), 2047.0, dtype = torch.float16)  # each output 65504, the fp16 maximum
+    state = FL.Fp8LoRABaseState(W)
+    assert torch.isfinite(state.matmul(x, W)).all()
+    dy = torch.full((16, 32), 4094.0, dtype = torch.float16)  # each dgrad output 65504
+    assert torch.isfinite(state.dgrad(dy, W)).all()
 
 
 def test_nan_propagates_for_the_grad_scaler():
@@ -1104,3 +1115,48 @@ def test_column_major_weights_are_not_eligible():
     linear = torch.nn.Linear(64, 128, bias = False).bfloat16().requires_grad_(False)
     linear.weight = torch.nn.Parameter(torch.randn(64, 128).bfloat16().t(), requires_grad = False)
     assert "contiguous" in FL.eligible_base(linear)
+
+
+@pytest.mark.parametrize("variant", ["bdlora", "velora"])
+def test_a_variant_adapter_restores_the_master_before_placement(
+    offload_on_cpu, monkeypatch, variant
+):
+    # Failing before: only DoRA brought the host master back, so BD-LoRA's block-diagonal A and VeLoRA's
+    # BufferDict, both built by their variant init on base_layer.weight's device, stayed on the host.
+    import peft
+    from peft import LoraConfig
+    from peft.tuners.lora import LoraLayer
+
+    if variant == "bdlora":
+        if not hasattr(peft, "BdLoraConfig"):
+            pytest.skip("this PEFT has no BD-LoRA")
+        config = LoraConfig(
+            r = 4,
+            target_modules = ["q_proj"],
+            use_bdlora = peft.BdLoraConfig(nblocks = 2, target_modules_bd_a = ["q_proj"]),
+        )
+    else:
+        if not hasattr(peft, "VeloraConfig"):
+            pytest.skip("this PEFT has no VeLoRA")
+        config = LoraConfig(
+            r = 4,
+            target_modules = ["q_proj"],
+            velora_config = peft.VeloraConfig(num_groups = 2, init_type = "random"),
+        )
+    model = _tiny_qwen3_peft()
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    f8t.enable_fp8_lora(model, allow_cpu = True)
+    seen = []
+    real = LoraLayer._move_adapter_to_device_of_base_layer
+
+    def spy(self, adapter_name, *args, **kwargs):
+        if adapter_name == variant:
+            seen.append(self.base_layer.__dict__["_unsloth_fp8_lora"].offloaded)
+        return real(self, adapter_name, *args, **kwargs)
+
+    monkeypatch.setattr(LoraLayer, "_move_adapter_to_device_of_base_layer", spy)
+    try:
+        model.add_adapter(variant, config)
+    except (TypeError, ValueError) as exc:
+        pytest.skip(f"this PEFT cannot build {variant} here: {exc}")
+    assert seen and not any(seen)

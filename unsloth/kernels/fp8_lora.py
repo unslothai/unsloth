@@ -310,8 +310,23 @@ def fp8_transpose(w8: torch.Tensor, use_triton: Optional[bool] = None) -> torch.
 
 
 def _out_dtype(dtype):
-    # The fp8 GEMM never writes float16 (outputs past 65504 overflow there); bf16 out, the caller casts back.
-    return torch.float32 if dtype == torch.float32 else torch.bfloat16
+    # The fp8 GEMM never writes float16 (outputs past 65504 overflow there), nor bf16 for it: bf16 rounds a
+    # finite fp16 result such as 65504 up to 65536, an inf after the cast back. float32 out, the caller casts.
+    return torch.bfloat16 if dtype == torch.bfloat16 else torch.float32
+
+
+# Devices whose rowwise _scaled_mm refused float32 out (older cuBLAS / CUTLASS paths take bf16 only).
+_ROWWISE_BF16_ONLY = set()
+
+
+def _rowwise_scaled_mm(a, b, scale_a, scale_b, dtype, fast_accum):
+    out_dtype = _out_dtype(dtype)
+    if out_dtype == torch.float32 and a.device not in _ROWWISE_BF16_ONLY:
+        try:
+            return _scaled_mm(a, b, scale_a, scale_b, out_dtype, fast_accum)
+        except RuntimeError:
+            _ROWWISE_BF16_ONLY.add(a.device)
+    return _scaled_mm(a, b, scale_a, scale_b, torch.bfloat16, fast_accum)
 
 
 def _scaled_mm(a, b, scale_a, scale_b, out_dtype, fast_accum):
@@ -368,11 +383,10 @@ def fp8_lora_fwd(x: torch.Tensor, w8: torch.Tensor, w_inv: torch.Tensor) -> torc
     FP8_LORA_STATS["fwd"] += 1
     if w_inv.dim() == 2:
         x8, x_inv = quantize_rowwise(x, E4M3)
-        out_dtype = torch.bfloat16
+        out = _rowwise_scaled_mm(x8, w8.t(), x_inv, w_inv, x.dtype, _FWD_FAST_ACCUM)
     else:
         x8, x_inv = quantize_tensorwise(x, E4M3)
-        out_dtype = _out_dtype(x.dtype)
-    out = _scaled_mm(x8, w8.t(), x_inv, w_inv, out_dtype, _FWD_FAST_ACCUM)
+        out = _scaled_mm(x8, w8.t(), x_inv, w_inv, _out_dtype(x.dtype), _FWD_FAST_ACCUM)
     return out if out.dtype == x.dtype else out.to(x.dtype)
 
 
@@ -392,13 +406,12 @@ def fp8_lora_dgrad(
     if w_inv.dim() == 2:
         # Rowwise gradients are e4m3 (torchao's rowwise recipe; per-token scales need no e5m2 range).
         dy8, dy_inv = quantize_rowwise(dy, E4M3)
-        out_dtype = torch.bfloat16
+        out = _rowwise_scaled_mm(dy8, w8t.t(), dy_inv, w_inv, dy.dtype, _DGRAD_FAST_ACCUM)
     else:
         dy8, dy_inv = quantize_tensorwise(
             dy, E5M2 if _DGRAD_DTYPE in (None, "auto") else _DGRAD_DTYPE
         )
-        out_dtype = _out_dtype(dy.dtype)
-    out = _scaled_mm(dy8, w8t.t(), dy_inv, w_inv, out_dtype, _DGRAD_FAST_ACCUM)
+        out = _scaled_mm(dy8, w8t.t(), dy_inv, w_inv, _out_dtype(dy.dtype), _DGRAD_FAST_ACCUM)
     return out if out.dtype == dy.dtype else out.to(dy.dtype)
 
 

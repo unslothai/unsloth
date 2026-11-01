@@ -555,17 +555,23 @@ def _merge_with_master(
     return out
 
 
+def _has_variant(lora_module, adapter_name = None) -> bool:
+    """A PEFT LoRA variant (DoRA, BD-LoRA, VeLoRA, ...): DoRA reads the base weight in its forward, and variant
+    init (after the adapter is placed) allocates its own tensors on base_layer.weight's device."""
+    dora = getattr(lora_module, "use_dora", {}) or {}
+    variants = getattr(lora_module, "lora_variant", {}) or {}
+    if adapter_name is not None:
+        return bool(dora.get(adapter_name, False)) or adapter_name in variants
+    return any(dora.values()) or bool(variants)
+
+
 def _move_adapter_with_master(self, adapter_name, *args, **kwargs):
     """PEFT puts a new adapter on base_layer.weight's device, which is the host for an offloaded master: place it
-    on the fp8 compute device. DoRA reads the base weight in its forward, so a DoRA adapter brings the master
-    back to that device first (PEFT then places it and its magnitude vector there)."""
+    on the fp8 compute device. A variant adapter (DoRA, BD-LoRA, VeLoRA) brings the master back to that device
+    first, so PEFT places it and whatever its variant init builds there."""
     base = getattr(self, "base_layer", None)
     state = base.__dict__.get("_unsloth_fp8_lora") if base is not None else None
-    if (
-        state is not None
-        and state.offloaded
-        and getattr(self, "use_dora", {}).get(adapter_name, False)
-    ):
+    if state is not None and state.offloaded and _has_variant(self, adapter_name):
         _load_fp8_lora_kernels().restore_fp8_lora_master(base)
     out = type(self)._move_adapter_to_device_of_base_layer(self, adapter_name, *args, **kwargs)
     if state is None:
@@ -713,11 +719,10 @@ def enable_fp8_lora(
         if why is not None:
             skipped[name] = why
             continue
-        # DoRA's forward reads the base weight itself (its column norm), and some parents read a child's weight
-        # directly (fused Mamba / Falcon-H1 kernels, WavLM attention): those keep the master on the device.
-        reads_raw = any(getattr(module, "use_dora", {}).values()) or _mamba_raw_weight_leaf(
-            model, name
-        )
+        # LoRA variants (DoRA's column norm, BD-LoRA / VeLoRA tensors built by base weight device) and parents
+        # that read a child's weight directly (fused Mamba / Falcon-H1 kernels, WavLM attention) keep the master
+        # on the device.
+        reads_raw = _has_variant(module) or _mamba_raw_weight_leaf(model, name)
         state = kernels.attach_fp8_lora_base(base, offload = offload and not reads_raw)
         offloaded += int(state.offloaded)
         _restore_master_before_merge(module)
