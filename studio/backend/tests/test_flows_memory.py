@@ -361,3 +361,24 @@ def test_plan_caps_valid_entries_not_raw_ones():
     later = {"start": "10:00", "minutes": 30, "activity": "read", "place": "park"}
     plan = nodes.clean_plan({"plan": [bad, bad, good, later]}, ["park"], 2)
     assert [e["activity"] for e in plan] == ["walk", "read"]
+
+
+def test_recall_embeds_a_large_stream_within_the_request_limit():
+    class Limited(Ctx):
+        async def call(
+            self,
+            method,
+            path,
+            json = None,
+            **kw,
+        ):
+            if len(json["input"]) > 2048:
+                self.calls.append(path)
+                raise FlowNodeError("'input' may hold at most 2048 items.", status = 400)
+            return await super().call(method, path, json = json, **kw)
+
+    s = stream_of(*((f"ran hills day {i}", 5, 0.0) for i in range(2048)))
+    ctx = Limited("memory.retrieve", {"memory": s, "query": "knee", "now": 3.0}, top_k = 1)
+    out = run(nodes.retrieve(ctx))
+    assert all(isinstance(r.get("embedding"), list) for r in out["memory"]["records"])
+    assert not any(level == "warning" for level, _ in ctx.logs)
