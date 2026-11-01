@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import html
 import itertools
+import operator
 import re
 import secrets
 import unicodedata
@@ -158,15 +159,14 @@ _ANY_IMPLICIT_CLOSER = frozenset().union(*_IMPLICIT_CLOSERS.values())
 
 
 def _innermost_index(stack: list, tag: str) -> int:
-    """Index of the last ``tag`` in ``stack``, else -1; never copies, so deep nesting stays linear."""
-    i = len(stack) - 1
-    if i >= 0 and stack[i] == tag:
-        return i
-    if tag not in stack:
+    """Index of the last ``tag`` in ``stack``, else -1; searches backward from the top without copying."""
+    last = len(stack) - 1
+    if last >= 0 and stack[last] == tag:
+        return last
+    try:
+        return last - operator.indexOf(reversed(stack), tag)
+    except ValueError:
         return -1
-    while stack[i] != tag:
-        i -= 1
-    return i
 
 
 # A nested container makes an inner item a descendant, so recovery must stop there.

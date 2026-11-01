@@ -181,3 +181,6 @@ def test_deeply_nested_page_still_renders():
     depth = 5_000
     page = "<div><span>" * depth + "deep text" + "</span></div>" * depth
     assert html_to_markdown(page, main_content = True) == "deep text"
+    # each </section> closes one slot below the top of a deep stack
+    misnested = "<div>" * depth + "<section><span>t</section>" * 3 + "</div>" * depth
+    assert html_to_markdown(misnested, main_content = True) == "t\n\nt\n\nt"
