@@ -77,6 +77,8 @@ _SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
 # refresh within one or two turns to detect server restarts.
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
+# a native Gemini page holds up to 1000 models, so 20 pages is far past any real catalog.
+_GEMINI_MAX_MODEL_PAGES = 20
 _served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
@@ -7325,9 +7327,41 @@ class ExternalProviderClient:
         )
         response.raise_for_status()
         data = response.json()
+        if self.provider_type == "gemini":
+            data = await self._with_later_gemini_pages(data, response.request.url.params, timeout)
         # Ollama returns data: null when no models are installed.
         raw = data.get("data") if isinstance(data, dict) else None
         return data, [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
+
+    async def _with_later_gemini_pages(
+        self, data: Any, params: httpx.QueryParams, timeout: Any
+    ) -> Any:
+        """Follow native Gemini's nextPageToken so models past the first page are listed."""
+        if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+            return data
+        models = list(data["models"])
+        seen: set[str] = set()
+        token = data.get("nextPageToken")
+        # a proxy that echoes the same token, or never stops paging, must not loop forever.
+        while isinstance(token, str) and token and token not in seen:
+            if len(seen) >= _GEMINI_MAX_MODEL_PAGES - 1:
+                logger.warning("Gemini model list still paging after %d pages", len(seen) + 1)
+                break
+            seen.add(token)
+            response = await _client().get(
+                f"{self.base_url}/models",
+                params = params.set("pageToken", token),
+                headers = self._auth_headers(),
+                timeout = timeout,
+            )
+            response.raise_for_status()
+            page = response.json()
+            if not isinstance(page, dict):
+                break
+            if isinstance(page.get("models"), list):
+                models.extend(page["models"])
+            token = page.get("nextPageToken")
+        return {**data, "models": models}
 
     async def _read_served_window(self, model: str) -> Optional[int]:
         _, entries = await self._models_payload(_SERVED_WINDOW_TIMEOUT_S)
