@@ -384,7 +384,6 @@ def test_speech_arch_names_the_audio_page(tmp_path):
 
 
 def test_a_parakeet_cpp_gguf_is_refused_without_blaming_llama_cpp(tmp_path):
-    # Was "update llama.cpp" for mudler/parakeet.cpp GGUFs opened as chat (#16273).
     _, message = _refusal(tmp_path, arch = "parakeet", name = "parakeet-tdt-0.6b-q8_0.gguf")
     assert message is not None
     assert "parakeet" in message.lower()
