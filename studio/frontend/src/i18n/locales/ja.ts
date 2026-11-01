@@ -998,7 +998,7 @@ export const ja = {
       deleteProjects: "プロジェクトを削除",
       deleteProjectsTitle: "プロジェクトを削除",
       deleteProjectsDescription:
-        "{count} 件のプロジェクトを削除しますか。含まれるチャットは完全に削除されます。",
+        "{count} 件のプロジェクトとそのすべてのチャットは完全に削除されます。この操作は取り消せません。",
       deleteProjectsFilesDescription:
         "各プロジェクトのワークスペースフォルダーがディスクから削除されます。",
       countSelected: "{count} 件選択中",
@@ -1009,7 +1009,7 @@ export const ja = {
       markRead: "既読にする",
       deleteChats: "チャットを削除",
       deleteTitle: "チャットを削除",
-      deleteDescription: "{count} 件のチャットを削除しますか。元に戻せません。",
+      deleteDescription: "{count} 件のチャットとそのメッセージは完全に削除されます。この操作は取り消せません。",
       deleteFilesDescription:
         "各チャット専用のサンドボックスフォルダーがディスクから削除されます。プロジェクト内で作成したファイルは、そのプロジェクトのワークスペースに残ります。",
       deleteFilesLabel: "ファイルとサンドボックスフォルダーを削除",
@@ -1057,7 +1057,7 @@ export const ja = {
     dialog: {
       deleteChat: {
         title: "チャットの削除",
-        description: "チャット「{name}」を削除してもよろしいですか？",
+        description: "チャット「{name}」とそのメッセージは完全に削除されます。この操作は取り消せません。",
       },
       deleteRun: {
         title: "トレーニング実行の削除",
@@ -2152,10 +2152,14 @@ export const ja = {
         label: "インストールの種類",
         description:
           "チャット専用 (GGUF)。フルインストールでは、トレーニング、エクスポート、動画、safetensors モデル、その他の画像生成機能が追加されます。",
+        descriptionCpu:
+          "チャット専用 (GGUF)。対応 GPU が見つからないため、フルインストールでは CPU でのトレーニングが追加されます。",
         action: "フルインストールにアップグレード",
         confirmTitle: "フルインストールにアップグレードしますか？",
         confirmDescription:
           "このチャット専用インストールは GGUF モデルを実行します。フルインストールでは、このマシンの GPU 向けの PyTorch が追加され、トレーニング、エクスポート、動画、safetensors モデル、その他の画像生成機能が使えるようになります。数 GB（5 GB 以上のディスク容量）をダウンロードしてサーバーを再起動します。チャット、モデル、設定は保持されます。数分かかる場合があります。",
+        confirmDescriptionCpu:
+          "このチャット専用インストールは GGUF モデルを実行します。このマシンには対応 GPU が見つからないため、フルインストールでは CPU 向けの PyTorch が追加され、CPU でのトレーニングが使えるようになります。CPU でのトレーニングは GPU よりも大幅に遅くなります。5 GB 以上のディスク容量が必要で、サーバーを再起動します。チャット、モデル、設定は保持されます。数分かかる場合があります。",
         confirmAction: "アップグレード",
         keywords:
           "full install upgrade インストールの種類 フルインストール アップグレード チャット専用 chat only gguf add training トレーニング 学習 train fine-tune pytorch torch エクスポート 動画 画像生成 safetensors",
@@ -3207,9 +3211,9 @@ export const ja = {
         movedChatsToRecents: "最近のチャットに移動したチャット：{count} 件",
         moveFailed: "チャットを移動できませんでした",
         deleteChatsTitle: "チャットを削除（{count} 件）",
-        deleteChatsWarning: "選択した {count} 件のチャットを削除しますか？この操作は取り消せません。",
+        deleteChatsWarning: "{count} 件のチャットとそのメッセージは完全に削除されます。この操作は取り消せません。",
         deleteArchivedTitle: "アーカイブ済みチャットを {count} 件削除",
-        deleteArchivedWarning: "選択した {count} 件のアーカイブ済みチャットを削除しますか？この操作は取り消せません。",
+        deleteArchivedWarning: "アーカイブ済みの {count} 件のチャットとそのメッセージは完全に削除されます。この操作は取り消せません。",
         deleting: "削除中...",
       },
       title: "データ",
@@ -3597,6 +3601,8 @@ export const ja = {
     imageTraining: "画像トレーニング",
     goToImageTraining: "画像 LoRA をトレーニング",
     routeTitle: "トレーニング",
+    cpuTrainingNotice:
+      "GPU が見つからないため、トレーニングは CPU で実行されます。GPU でのトレーニングよりも大幅に遅く、テキストモデル (LoRA またはフルファインチューニング) のみに対応しています。",
     wizard: {
       modelTitle: "モデル",
       modelDescription: "モデルとトレーニング方法を選択",
@@ -4667,7 +4673,7 @@ export const ja = {
       },
       dialog: {
         renameChat: "チャットの名前を変更",
-        deleteChatDescription: "このチャットは完全に削除されます。この操作は取り消せません。",
+        deleteChatDescription: "チャットとそのメッセージは完全に削除されます。この操作は取り消せません。",
         deleteProjectDescription: "プロジェクトとそのチャット（{count} 件）は完全に削除されます。この操作は取り消せません。",
         deleteFilesMany: "これらのチャットが作成したファイルとサンドボックスフォルダも削除します。",
         deleteProjectFilesLabel: "プロジェクトの作業フォルダを削除",
@@ -5124,14 +5130,14 @@ export const ja = {
     renameChat: "チャット名を変更",
     chatName: "チャット名",
     deleteChat: "チャットを削除",
-    deleteChatDescription: "{name} を削除してもよろしいですか？メッセージは完全に削除されます。",
+    deleteChatDescription: "チャット「{name}」とそのメッセージは完全に削除されます。この操作は取り消せません。",
     importChats: "チャットをインポート",
     importDestination: "{name} のインポート先を選択してください:",
     selectDestination: "インポート先を選択",
     recents: "最近の項目",
     import: "インポート",
     deleteProject: "プロジェクトを削除",
-    deleteProjectDescription: "{name} を削除してもよろしいですか？チャットは完全に削除されます。",
+    deleteProjectDescription: "プロジェクト「{name}」とそのすべてのチャットは完全に削除されます。この操作は取り消せません。",
     deleteProjectFiles: "プロジェクトの作業フォルダーはディスクから削除されます。",
     deleteAll: "すべて削除",
     projectFallback: "プロジェクト",

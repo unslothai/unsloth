@@ -200,8 +200,53 @@ def test_wrapper_no_grad_prefill_gets_tiles_decode_does_not(monkeypatch):
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
     wrapped(_Causal(), *_qkv(128, grad = False), object())
     assert seen.get("fwd_BLOCK_M") == 64
+    assert "FORCE_USE_FLEX_ATTENTION" not in seen  # q_len >= 128 is the main kernel already
     wrapped(_Causal(), *_qkv(8, grad = False), object())
     assert seen == {}  # flex_decoding keeps its own config
+
+
+def _gqa_qkv(
+    q_len,
+    q_heads,
+    kv_heads,
+    head_dim = 256,
+):
+    import torch
+    q = torch.randn(1, q_heads, q_len, head_dim)
+    return [q, torch.randn(1, kv_heads, q_len, head_dim), torch.randn(1, kv_heads, q_len, head_dim)]
+
+
+@pytest.mark.parametrize(
+    "q_len,q_heads,kv_heads,tiled",
+    [
+        (1, 4, 1, False),  # Gemma 3 1B decode step: 16 rows, flex_decoding fits
+        (16, 4, 1, False),  # 64 rows still fit
+        (17, 4, 1, True),  # 68 rows -> a 128-row tile: 114688 B
+        (28, 4, 1, True),  # Gemma 3 1B / 270M chat prompt
+        (28, 8, 4, False),  # Gemma 3 4B: 2 query heads per kv head, 56 rows
+        (40, 8, 4, True),
+        (127, 2, 2, True),
+        (28, 6, 2, False),  # not a power of two: transformers repeats K / V, 28 rows
+    ],
+)
+def test_wrapper_short_prompt_whose_decode_tile_does_not_fit_gets_tiles(
+    monkeypatch, q_len, q_heads, kv_heads, tiled
+):
+    # A failed compile here pinned flex_attention to the eager fallback for the whole process.
+    wrapped, seen = _wrapped(monkeypatch)
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
+    wrapped(_Causal(), *_gqa_qkv(q_len, q_heads, kv_heads), object())
+    if tiled:
+        assert {
+            k: seen.get(k) for k in u._FLEX_SMALL_SMEM_KERNEL_OPTIONS
+        } == u._FLEX_SMALL_SMEM_KERNEL_OPTIONS
+        # On the main kernel: flex_decoding with these tiles is wrong on torch 2.10, fails on 2.11.
+        assert seen.get("FORCE_USE_FLEX_ATTENTION") is True
+    else:
+        assert seen == {}
+    wrapped, seen = _wrapped(monkeypatch, small_ok = False)
+    wrapped(_Causal(), *_gqa_qkv(q_len, q_heads, kv_heads), object())
+    assert seen == {}  # other cards keep the defaults
 
 
 def test_wrapper_untouched_off_class_and_outside_range(monkeypatch):
@@ -275,3 +320,40 @@ def test_wrapper_training_calls_add_no_sequence_guard(monkeypatch):
         return len(graphs)
 
     assert graphs_for(True) == graphs_for(False)
+
+
+def test_wrapper_forced_short_prompt_drops_auto_backend(monkeypatch):
+    # torch 2.10+ rejects BACKEND with FORCE_USE_FLEX_ATTENTION and 2.9 has no BACKEND: AUTO is dropped.
+    wrapped, seen = _wrapped(monkeypatch)
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
+    wrapped(_Causal(), *_gqa_qkv(28, 4, 1), object(), kernel_options = {"BACKEND": "AUTO"})
+    assert seen["FORCE_USE_FLEX_ATTENTION"] is True
+    assert "BACKEND" not in seen
+    assert seen["fwd_BLOCK_M"] == 64
+
+
+def test_wrapper_forced_short_prompt_triton_backend_keeps_tiles(monkeypatch):
+    wrapped, seen = _wrapped(monkeypatch)
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
+    wrapped(_Causal(), *_gqa_qkv(28, 4, 1), object(), kernel_options = {"BACKEND": "TRITON"})
+    assert "FORCE_USE_FLEX_ATTENTION" not in seen
+    assert seen["BACKEND"] == "TRITON"
+    assert seen["fwd_BLOCK_M"] == 64
+
+
+@pytest.mark.parametrize("backend", ["TRITON_DECODE", "FLASH"])
+def test_wrapper_forced_short_prompt_keeps_explicit_backend_untouched(monkeypatch, backend):
+    # Our 64-row main-kernel tiles would make flex_decoding compute only 64 of 112 rows on 2.10.
+    wrapped, seen = _wrapped(monkeypatch)
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
+    wrapped(_Causal(), *_gqa_qkv(28, 4, 1), object(), kernel_options = {"BACKEND": backend})
+    assert seen == {"BACKEND": backend}
+
+
+def test_wrapper_forced_short_prompt_keeps_caller_force_off_untouched(monkeypatch):
+    # The caller's FORCE off sends 112 rows to flex_decoding, which our main-kernel tiles do not cover.
+    wrapped, seen = _wrapped(monkeypatch)
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
+    requested = {"FORCE_USE_FLEX_ATTENTION": False}
+    wrapped(_Causal(), *_gqa_qkv(28, 4, 1), object(), kernel_options = dict(requested))
+    assert seen == requested

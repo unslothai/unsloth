@@ -1096,7 +1096,7 @@ export const tr = {
       deleteProjects: "Projeleri sil",
       deleteProjectsTitle: "Projeleri sil",
       deleteProjectsDescription:
-        "{count} proje silinsin mi? Projelerin sohbetleri kalıcı olarak silinir.",
+        "{count} proje ve tüm sohbetleri kalıcı olarak silinecek. Bu işlem geri alınamaz.",
       deleteProjectsFilesDescription:
         "Her projenin çalışma alanı klasörü diskten kaldırılır.",
       countSelected: "{count} seçildi",
@@ -1107,7 +1107,7 @@ export const tr = {
       markRead: "Okundu olarak işaretle",
       deleteChats: "Sohbetleri sil",
       deleteTitle: "Sohbetleri sil",
-      deleteDescription: "{count} sohbet silinsin mi? Bu işlem geri alınamaz.",
+      deleteDescription: "{count} sohbet ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
       deleteFilesDescription:
         "Her sohbetin kendi korumalı alan klasörü diskten kaldırılır. Sohbetlerin bir proje içinde yazdığı dosyalar o projenin çalışma alanında kalır.",
       deleteFilesLabel: "Dosyaları ve korumalı alan klasörünü sil",
@@ -1156,7 +1156,7 @@ export const tr = {
     dialog: {
       deleteChat: {
         title: "Sohbeti sil",
-        description: "“{name}” sohbetini silmek istediğinizden emin misiniz?",
+        description: "“{name}” sohbeti ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
       },
       deleteRun: {
         title: "Eğitim çalıştırmasını sil",
@@ -2370,10 +2370,14 @@ export const tr = {
         label: "Kurulum türü",
         description:
           "Yalnızca sohbet (GGUF). Tam kurulum; eğitim, dışa aktarma, video, safetensors modelleri ve ek görüntü üretme özellikleri ekler.",
+        descriptionCpu:
+          "Yalnızca sohbet (GGUF). Desteklenen bir GPU bulunamadı, bu nedenle tam kurulum CPU üzerinde eğitim ekler.",
         action: "Tam kuruluma yükselt",
         confirmTitle: "Tam kuruluma yükseltilsin mi?",
         confirmDescription:
           "Bu Yalnızca sohbet kurulumu GGUF modellerini çalıştırır. Tam kurulum, bu makinenin GPU'su için PyTorch ekler; bu da eğitimi, dışa aktarmayı, videoyu, safetensors modellerini ve ek görüntü üretme özelliklerini etkinleştirir. Birkaç gigabayt indirir (en az 5 GB disk alanı) ve sunucuyu yeniden başlatır. Sohbetler, modeller ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
+        confirmDescriptionCpu:
+          "Bu Yalnızca sohbet kurulumu GGUF modellerini çalıştırır. Bu makinede desteklenen bir GPU bulunamadı, bu nedenle tam kurulum CPU için PyTorch ekler; bu da CPU üzerinde eğitimi etkinleştirir. CPU üzerinde eğitim, GPU'ya göre çok daha yavaştır. En az 5 GB disk alanı gerektirir ve sunucuyu yeniden başlatır. Sohbetler, modeller ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
         confirmAction: "Yükselt",
         keywords:
           "tam kurulum yükselt kurulum türü yalnızca sohbet gguf eğitim eğit ince ayar pytorch torch dışa aktar video görüntü üretme safetensors full install upgrade chat only training fine-tune export image generation",
@@ -3500,10 +3504,10 @@ export const tr = {
         moveFailed: "Sohbetler taşınamadı",
         deleteChatsTitle: "Sohbetleri sil ({count})",
         deleteChatsWarning:
-          "Seçilen sohbetler ({count}) silinsin mi? Bu işlem geri alınamaz.",
+          "{count} sohbet ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
         deleteArchivedTitle: "Arşivlenen {count} sohbeti sil",
         deleteArchivedWarning:
-          "Seçilen arşivlenmiş sohbetler ({count}) silinsin mi? Bu işlem geri alınamaz.",
+          "Arşivlenmiş {count} sohbet ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
         deleting: "Siliniyor...",
       },
       title: "Veriler",
@@ -3924,6 +3928,8 @@ export const tr = {
   },
   studio: {
     routeTitle: "Eğitim",
+    cpuTrainingNotice:
+      "GPU bulunamadı, bu nedenle eğitim CPU üzerinde çalışır. GPU eğitiminden çok daha yavaştır ve yalnızca metin modellerini destekler (LoRA veya tam ince ayar).",
     wizard: {
       modelTitle: "Model",
       modelDescription: "Model ve eğitim yöntemini seçin",
@@ -5075,7 +5081,7 @@ export const tr = {
       dialog: {
         renameChat: "Sohbeti yeniden adlandır",
         deleteChatDescription:
-          "Bu sohbet kalıcı olarak silinecek. Bu işlem geri alınamaz.",
+          "Sohbet ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
         deleteProjectDescription:
           "Proje ve sohbetleri ({count}) kalıcı olarak silinecek. Bu işlem geri alınamaz.",
         deleteFilesMany:
@@ -5570,7 +5576,7 @@ export const tr = {
     chatName: "Sohbet adı",
     deleteChat: "Sohbeti sil",
     deleteChatDescription:
-      "{name} sohbetini silmek istediğinizden emin misiniz? Mesajları kalıcı olarak silinecek.",
+      "“{name}” sohbeti ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
     importChats: "Sohbetleri içe aktar",
     importDestination: "{name} öğesinin içe aktarılacağı yeri seçin:",
     selectDestination: "Hedef seçin",
@@ -5578,7 +5584,7 @@ export const tr = {
     import: "İçe aktar",
     deleteProject: "Projeyi sil",
     deleteProjectDescription:
-      "{name} projesini silmek istediğinizden emin misiniz? Sohbetleri kalıcı olarak silinecek.",
+      "“{name}” projesi ve tüm sohbetleri kalıcı olarak silinecek. Bu işlem geri alınamaz.",
     deleteProjectFiles: "Proje çalışma alanı klasörü diskten kaldırılacak.",
     deleteAll: "Tümünü sil",
     projectFallback: "proje",

@@ -1001,7 +1001,7 @@ export const ptBR = {
       deleteProjects: "Excluir projetos",
       deleteProjectsTitle: "Excluir projetos",
       deleteProjectsDescription:
-        "Excluir {count} projetos? As conversas deles são excluídas permanentemente.",
+        "{count} projetos e todos os seus chats serão excluídos permanentemente. Essa ação não pode ser desfeita.",
       deleteProjectsFilesDescription:
         "A pasta do espaço de trabalho de cada projeto é removida do disco.",
       countSelected: "{count} selecionadas",
@@ -1012,7 +1012,7 @@ export const ptBR = {
       markRead: "Marcar como lida",
       deleteChats: "Excluir conversas",
       deleteTitle: "Excluir conversas",
-      deleteDescription: "Excluir {count} conversas? Esta ação não pode ser desfeita.",
+      deleteDescription: "{count} chats e suas mensagens serão excluídos permanentemente. Essa ação não pode ser desfeita.",
       deleteFilesDescription:
         "A pasta de sandbox de cada conversa é removida do disco. Os arquivos escritos dentro de um projeto permanecem no espaço de trabalho desse projeto.",
       deleteFilesLabel: "Excluir arquivos e pasta de sandbox",
@@ -1060,7 +1060,7 @@ export const ptBR = {
     dialog: {
       deleteChat: {
         title: "Excluir chat",
-        description: 'Tem certeza de que deseja excluir este chat "{name}"?',
+        description: 'O chat "{name}" e suas mensagens serão excluídos permanentemente. Essa ação não pode ser desfeita.',
       },
       deleteRun: {
         title: "Excluir execução de treino",
@@ -2183,10 +2183,14 @@ export const ptBR = {
         label: "Tipo de instalação",
         description:
           "Somente chat (GGUF). A instalação completa adiciona treinamento, exportação, vídeo, modelos safetensors e mais recursos de geração de imagens.",
+        descriptionCpu:
+          "Somente chat (GGUF). Nenhuma GPU compatível foi encontrada, então a instalação completa adiciona treinamento na CPU.",
         action: "Atualizar para a instalação completa",
         confirmTitle: "Atualizar para a instalação completa?",
         confirmDescription:
           "Esta instalação somente chat executa modelos GGUF. A instalação completa adiciona o PyTorch para a GPU desta máquina, o que habilita treinamento, exportação, vídeo, modelos safetensors e mais recursos de geração de imagens. Ela baixa vários gigabytes (pelo menos 5 GB de espaço em disco) e reinicia o servidor. As conversas, os modelos e as configurações são mantidos. Isso pode levar alguns minutos.",
+        confirmDescriptionCpu:
+          "Esta instalação somente chat executa modelos GGUF. Nenhuma GPU compatível foi encontrada nesta máquina, então a instalação completa adiciona o PyTorch para a CPU, o que habilita o treinamento na CPU. Treinar na CPU é muito mais lento do que na GPU. Ela precisa de pelo menos 5 GB de espaço em disco e reinicia o servidor. As conversas, os modelos e as configurações são mantidos. Isso pode levar alguns minutos.",
         confirmAction: "Atualizar",
         keywords:
           "full install upgrade tipo de instalação instalação completa atualizar somente chat chat only gguf add training treinamento treinar train fine-tune pytorch torch exportação vídeo geração de imagens safetensors",
@@ -3247,9 +3251,9 @@ export const ptBR = {
         movedChatsToRecents: "Chats movidos para Recentes: {count}",
         moveFailed: "Não foi possível mover os chats",
         deleteChatsTitle: "Excluir chats ({count})",
-        deleteChatsWarning: "Excluir os chats selecionados ({count})? Isso não pode ser desfeito.",
+        deleteChatsWarning: "{count} chats e suas mensagens serão excluídos permanentemente. Essa ação não pode ser desfeita.",
         deleteArchivedTitle: "Excluir {count} chats arquivados",
-        deleteArchivedWarning: "Excluir os chats arquivados selecionados ({count})? Isso não pode ser desfeito.",
+        deleteArchivedWarning: "{count} chats arquivados e suas mensagens serão excluídos permanentemente. Essa ação não pode ser desfeita.",
         deleting: "Excluindo...",
       },
       title: "Dados",
@@ -3648,6 +3652,8 @@ export const ptBR = {
     imageTraining: "Treino de imagem",
     goToImageTraining: "Treinar LoRAs de imagem",
     routeTitle: "Treinar",
+    cpuTrainingNotice:
+      "Nenhuma GPU foi encontrada, então o treinamento roda na CPU. Ele é muito mais lento do que na GPU e só suporta modelos de texto (LoRA ou ajuste fino completo).",
     wizard: {
       modelTitle: "Modelo",
       modelDescription: "Escolha um modelo e um método de treinamento",
@@ -4747,8 +4753,8 @@ export const ptBR = {
       },
       dialog: {
         renameChat: "Renomear chat",
-        deleteChatDescription: "Este chat será excluído permanentemente. Isso não pode ser desfeito.",
-        deleteProjectDescription: "O projeto e seus chats ({count}) serão excluídos permanentemente. Isso não pode ser desfeito.",
+        deleteChatDescription: "O chat e suas mensagens serão excluídos permanentemente. Essa ação não pode ser desfeita.",
+        deleteProjectDescription: "O projeto e seus chats ({count}) serão excluídos permanentemente. Essa ação não pode ser desfeita.",
         deleteFilesMany: "Remover também os arquivos e pastas de sandbox criados por esses chats.",
         deleteProjectFilesLabel: "Excluir a pasta de trabalho do projeto",
         deleteProjectFiles: "A pasta de trabalho do projeto será removida do disco.",
@@ -5204,14 +5210,14 @@ export const ptBR = {
     renameChat: "Renomear chat",
     chatName: "Nome do chat",
     deleteChat: "Excluir chat",
-    deleteChatDescription: "Tem certeza de que deseja excluir {name}? As mensagens serão excluídas permanentemente.",
+    deleteChatDescription: 'O chat "{name}" e suas mensagens serão excluídos permanentemente. Essa ação não pode ser desfeita.',
     importChats: "Importar chats",
     importDestination: "Escolha onde importar {name}:",
     selectDestination: "Selecionar destino",
     recents: "Recentes",
     import: "Importar",
     deleteProject: "Excluir projeto",
-    deleteProjectDescription: "Tem certeza de que deseja excluir {name}? Os chats serão excluídos permanentemente.",
+    deleteProjectDescription: 'O projeto "{name}" e todos os seus chats serão excluídos permanentemente. Essa ação não pode ser desfeita.',
     deleteProjectFiles: "A pasta de trabalho do projeto será removida do disco.",
     deleteAll: "Excluir tudo",
     projectFallback: "projeto",
