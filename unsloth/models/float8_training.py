@@ -532,22 +532,24 @@ def _load_fp8_lora_kernels():
         return module
 
 
-def _restore_master_before_merge(lora_module, base, kernels):
+def _merge_with_master(self, *args, _unsloth_method = "merge", **kwargs):
+    # Resolved from self (not captured), so a deepcopy of the model merges its own layers.
+    base = getattr(self, "base_layer", None)
+    if base is not None:
+        _load_fp8_lora_kernels().restore_fp8_lora_master(base)
+    return getattr(type(self), _unsloth_method)(self, *args, **kwargs)
+
+
+def _restore_master_before_merge(lora_module):
     """PEFT merge / unmerge add to base.weight.data on the LoRA device: bring a host master back first."""
+    import functools
     import types
 
     for method in ("merge", "unmerge"):
-        original = getattr(lora_module, method, None)
-        if original is None or getattr(original, "_unsloth_fp8_restore", False):
+        if method in lora_module.__dict__ or not callable(getattr(type(lora_module), method, None)):
             continue
-
-        def wrapped(self, *args, _original = original, **kwargs):
-            kernels.restore_fp8_lora_master(base)
-            return _original(*args, **kwargs)
-
-        bound = types.MethodType(wrapped, lora_module)
-        bound.__func__._unsloth_fp8_restore = True
-        object.__setattr__(lora_module, method, bound)
+        fn = functools.partial(_merge_with_master, _unsloth_method = method)
+        object.__setattr__(lora_module, method, types.MethodType(fn, lora_module))
 
 
 def enable_fp8_lora(model, recipe = None, allow_cpu = False):
@@ -589,7 +591,7 @@ def enable_fp8_lora(model, recipe = None, allow_cpu = False):
             continue
         state = kernels.attach_fp8_lora_base(base, offload = offload and uses.get(id(base.weight), 0) == 1)
         offloaded += int(state.offloaded)
-        _restore_master_before_merge(module, base, kernels)
+        _restore_master_before_merge(module)
         converted.append(name)
     if offloaded and torch.cuda.is_available():
         # Return the freed 16-bit blocks to the driver (they are 2 bytes per converted weight).

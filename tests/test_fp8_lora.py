@@ -712,3 +712,24 @@ def test_square_tile_transpose_kernel_byte_exact_under_the_triton_interpreter():
 
     src = inspect.getsource(FL.fp8_transpose)
     assert "_TRANSPOSE_BLOCK), triton.cdiv(C, _TRANSPOSE_BLOCK)" in src
+
+
+def test_merge_of_a_deepcopy_merges_the_copy_only(offload_on_cpu):
+    import copy
+
+    model = _tiny_qwen3_peft()
+    plain = copy.deepcopy(model)
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    f8t.enable_fp8_lora(model, allow_cpu = True)
+    twin = copy.deepcopy(model)
+    name = "base_model.model.model.layers.0.mlp.down_proj"
+    layer, twin_layer = dict(model.named_modules())[name], dict(twin.named_modules())[name]
+    before = layer.base_layer.weight.detach().clone()
+    twin_layer.merge()
+    # The copy merged into its own base; the original layer is untouched and still unmerged.
+    assert twin_layer.merged and not layer.merged
+    assert torch.equal(layer.base_layer.weight, before)
+    assert layer.base_layer.__dict__["_unsloth_fp8_lora"].offloaded
+    plain_layer = dict(plain.named_modules())[name]
+    plain_layer.merge()
+    assert torch.equal(twin_layer.base_layer.weight, plain_layer.base_layer.weight)
