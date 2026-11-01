@@ -228,3 +228,67 @@ test("a cue before the last line plays once, not again when the choices open", (
   assert.equal(choosing.status, "choosing");
   assert.deepEqual(R.stageAt(m, choosing).sounds, []);
 });
+
+test("cues passed while leaving a scene play at the next stop", () => {
+  const arrived = step(R.initialState(staged, 1), 4);
+  assert.equal(R.currentLine(staged, arrived)?.text, "Bye.");
+  assert.deepEqual(R.stageAt(staged, arrived).sounds, ["door"]);
+  assert.deepEqual(R.stageAt(staged, step(arrived)).sounds, []);
+  const m: Manifest = {
+    ...staged,
+    scenes: [
+      {
+        id: "a",
+        lines: [{ text: "Hello." }, { text: "", stage: { sound: "door" } }],
+        choices: [],
+        ending: { title: "Out", kind: "neutral" },
+      },
+    ],
+  };
+  const ended = R.reduce(m, R.initialState(m, 1), { type: "advance" });
+  assert.equal(ended.status, "ended");
+  assert.deepEqual(R.stageAt(m, ended).sounds, ["door"]);
+  const loaded = R.reduce(staged, ended, { type: "load", state: arrived });
+  assert.deepEqual(R.stageAt(staged, loaded).sounds, []);
+});
+
+test("a cue whose media resolves after a save load stays silent", async () => {
+  const S = await import("../src/features/flows/player/story/sound-cues.ts");
+  let resolve = (_url: string) => {};
+  const lookup = () =>
+    new Promise<string>((r) => {
+      resolve = r;
+    });
+  const played: string[] = [];
+  let rev = 0;
+  const cued = rev;
+  S.playCues(
+    ["door"],
+    staged.sounds,
+    lookup,
+    () => rev === cued,
+    async (url) => played.push(url),
+  );
+  rev = 1;
+  resolve("old-scene-door");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(played, []);
+});
+
+test("a carried cue plays once while the next scene generates", () => {
+  const m: Manifest = {
+    ...staged,
+    mode: "infinite",
+    entry_points: { next_scene: "next" },
+    scenes: [
+      {
+        id: "a",
+        lines: [{ text: "", stage: { sound: "door" } }],
+        choices: [{ text: "", goto: "unwritten" }],
+      },
+    ],
+  };
+  const s = R.initialState(m, 1);
+  assert.equal(s.status, "generating");
+  assert.deepEqual(R.stageAt(m, s).sounds, ["door"]);
+});
