@@ -664,6 +664,9 @@ def eligible_base(module) -> Optional[str]:
     ):
         # Native FSDP2 sharded loading leaves a rank-local chunk here until the gather.
         return f"weight is a {tuple(weight.shape)} shard of {module.out_features} x {module.in_features}"
+    if not weight.is_contiguous():
+        # The fused LoRA path reads a column-major weight as its own transpose (the input-gradient request).
+        return "weight is not contiguous"
     if weight.dtype not in (torch.bfloat16, torch.float16):
         return f"weight dtype {weight.dtype}"
     if weight.requires_grad:

@@ -1096,3 +1096,11 @@ def test_get_peft_model_converts_after_block_swap():
     assert get_src.index("enable_fp8_lora(model)", swap) > swap
     patch_src = inspect.getsource(FastLlamaModel.patch_peft_model)
     assert "if not _defer_fp8_lora:" in patch_src
+
+
+def test_column_major_weights_are_not_eligible():
+    # Failing before: a [128, 64] weight stored as a transposed [64, 128] passed, and matmul_lora's
+    # transpose check sent its forward to the input-gradient GEMM (shape error, or a wrong product when square).
+    linear = torch.nn.Linear(64, 128, bias = False).bfloat16().requires_grad_(False)
+    linear.weight = torch.nn.Parameter(torch.randn(64, 128).bfloat16().t(), requires_grad = False)
+    assert "contiguous" in FL.eligible_base(linear)
