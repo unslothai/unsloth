@@ -394,7 +394,7 @@ test("settings stacks its rail where the scaled dialog is too narrow for it", ()
   const dialog = readSrc("features/settings/settings-dialog.tsx");
   assert.match(dialog, /const width = 608 \* useUiSpaceScale\(\);/);
   assert.match(dialog, /`\(width < \$\{width \+ 32\}px\)`/);
-  assert.match(dialog, /return width > 960 \|\| narrow;/);
+  assert.match(dialog, /return width > 1000 \|\| narrow;/);
   assert.match(dialog, /data-stacked=\{stacked \|\| undefined\}/);
   const shell = dialog.match(/max-sm:[^\s"]+/g) ?? [];
   assert.deepEqual(shell.sort(), [

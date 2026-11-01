@@ -165,6 +165,8 @@ export function buildTrainingStartPayload(
   config: TrainingConfigState,
   hfToken: string | null,
   system: SystemInfoResponse | null = null,
+  // The platform store's isCpuTrainingHost(): settled with the health verdict, unlike /api/system.
+  cpuTrainingHost = false,
 ): TrainingStartRequest {
   const isDecision = config.modelType === "decision";
   // Laya trains in 16-bit (LoRA or full); Clef and an LLM decision model also take QLoRA.
@@ -314,18 +316,19 @@ export function buildTrainingStartPayload(
       ? config.tensorboardDir.trim() || null
       : null,
     // Spread only when sent: a run without a drafter posts exactly the fields it did before.
-    ...(sendsDrafter(config, system)
+    ...(sendsDrafter(config, system, cpuTrainingHost)
       ? { drafter: drafterRequestFrom(config) }
       : {}),
   };
 }
 
-/** On, a run type with a drafter phase, not MLX, and not a model the backend said cannot train one.
+/** On, a run type with a drafter phase, not MLX or the CPU backend, and not a model the backend said cannot train one.
  * A capability check still pending (or for a previous model) sends it: the backend re-checks the
  * model before the drafter phase and reports a warning instead of dropping the request silently. */
 export function sendsDrafter(
   config: TrainingConfigState,
   system: SystemInfoResponse | null = null,
+  cpuTrainingHost = false,
 ): boolean {
   const capability = config.drafterCapability;
   const refused =
@@ -337,6 +340,8 @@ export function sendsDrafter(
     config.drafterEnabled &&
     drafterEligible(config) &&
     system?.device_backend !== "mlx" &&
+    !cpuTrainingHost &&
+    system?.device_backend !== "cpu" &&
     !refused
   );
 }
