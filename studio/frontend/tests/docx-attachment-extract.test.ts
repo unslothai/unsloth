@@ -158,7 +158,6 @@ test("extractDocxAttachmentText reads the same text as the per-rewrite archive c
   await withDocxGlobals(async () => {
     for (const level of [0, 6] as const) {
       const text = await assertSameAsChained("all.docx", zipSync(everyRewrite(), { level }));
-      // Each rewrite engaged: symbol in math, list label, table tab, break, checkboxes, notes.
       for (const piece of ["αx", "1. item", "\t", "a b[1]", "☒", "legacy\n✓", "end[i]", "Footnotes\n[1]", "Endnotes\n[i]"]) {
         assert.ok(text.includes(piece), `${piece} in ${JSON.stringify(text)}`);
       }

@@ -734,7 +734,6 @@ export function repackDocxAttachmentArchive(
   return zipSync(archive.entries, { level: 0 });
 }
 
-/** The parts a rewrite reads, picked the way an `unzipSync` filter picks them. */
 type DocxPartSelect = (keep: (name: string, size: number) => boolean) => Record<string, Uint8Array>;
 
 function archiveParts(archive: Uint8Array): DocxPartSelect {
@@ -750,9 +749,7 @@ function rezipDocx(archive: Uint8Array, rewritten: Record<string, Uint8Array> | 
 const ZIP64_LOCATOR = "PK\u0006\u0007";
 const ZIP64_LOCATOR_OFFSET_FLOOR = 0x06000000;
 
-/** The entries themselves when `unzipSync(zipSync(entries))` would return them unchanged, else
- *  null: a `__proto__` part, a count past fflate's 16-bit field, names UTF-8 re-encoding alters,
- *  or bytes a reader could take for a zip64 locator. */
+/** The entries when `unzipSync(zipSync(entries))` returns them unchanged, else null. */
 function repackedDocxParts(entries: Unzipped): Record<string, Uint8Array> | null {
   if (Object.getPrototypeOf(entries) !== Object.prototype) return null;
   const names = Object.keys(entries);
@@ -1843,7 +1840,6 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
   assertDocxPartSizes(file.name, unpacked);
   let parts: Record<string, Uint8Array> | null = repackedDocxParts(unpacked.entries);
   if (!parts) {
-    // A zip round trip would change these entries, so each rewrite reads its own as before.
     const repacked = zipSync(unpacked.entries, { level: 0 });
     const marked = markDocxNotes(linearizeDocxMath(writeDocxSymbols(repacked, MAX_OPEN_DOCUMENT_XML_BYTES)));
     const { value } = await mammoth.extractRawText({

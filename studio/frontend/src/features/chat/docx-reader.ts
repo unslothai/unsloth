@@ -39,7 +39,6 @@ export function writeDocxSymbols(archive: Uint8Array, maxPartBytes: number): Uin
   return rewritten ? zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 }) : archive;
 }
 
-/** The rewritten parts alone, or null; `select` picks parts as an `unzipSync` filter would. */
 export function writeDocxSymbolParts(
   select: (keep: (name: string, size: number) => boolean) => Record<string, Uint8Array>,
   maxPartBytes: number,
