@@ -40,6 +40,7 @@ on:
       - 'tests/studio/playwright_link_definition_probe.py'
       - 'tests/studio/playwright_user_message_time.py'
       - 'tests/studio/playwright_progressive_rows.py'
+      - 'tests/studio/playwright_long_chat_renders.py'
       - 'tests/studio/playwright_model_picker_renders.py'
       - 'tests/studio/playwright_recipe_drag_renders.py'
       - 'tests/studio/playwright_gallery_strip_renders.py'
@@ -88,6 +89,7 @@ on:
       - 'tests/studio/playwright_link_definition_probe.py'
       - 'tests/studio/playwright_user_message_time.py'
       - 'tests/studio/playwright_progressive_rows.py'
+      - 'tests/studio/playwright_long_chat_renders.py'
       - 'tests/studio/playwright_model_picker_renders.py'
       - 'tests/studio/playwright_recipe_drag_renders.py'
       - 'tests/studio/playwright_gallery_strip_renders.py'
@@ -528,6 +530,11 @@ jobs:
         working-directory: ${{ github.workspace }}
         timeout-minutes: 5
         run: python3 tests/studio/playwright_progressive_rows.py
+
+      - name: Browser check for long-chat re-renders
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        run: python3 tests/studio/playwright_long_chat_renders.py
 
       # Render counts, not timings: a search keystroke or a quant probe answer in the model
       # picker's On Device tab must not re-render every row, and the rows must still navigate.
