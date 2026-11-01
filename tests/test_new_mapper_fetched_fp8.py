@@ -14,6 +14,7 @@ _WANTED = {
     "__get_model_name",
     "_resolve_with_mappers",
     "_get_new_mapper",
+    "_new_mapper_tables",
     "_prefer_legacy_lowercase_cache",
     "get_model_name",
 }
@@ -145,6 +146,7 @@ def _load_resolver(installed_source):
         "FLOAT_TO_FP8_ROW_MAPPER": mapper_ns["FLOAT_TO_FP8_ROW_MAPPER"],
         "build_mappers": build_mappers,
         "_MAPPER_HELPERS": _loader_utils_globals()["_MAPPER_HELPERS"],
+        "_LOAD_PROBE_MEMO": _loader_utils_globals()["_LOAD_PROBE_MEMO"],
         "SUPPORTS_FOURBIT": True,
         "transformers_version": Version("4.57.6"),
         "Version": Version,
