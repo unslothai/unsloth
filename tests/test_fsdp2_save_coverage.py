@@ -174,6 +174,40 @@ def test_qat_torchao_export_converts_where_one_gpu_would(monkeypatch):
     assert seen == [{"offload_to_cpu": "gpu"}, dict(offload_to_cpu = True, offload_4bit = True)]
 
 
+def test_host_staged_qat_convert_counts_the_converted_copy(monkeypatch):
+    """Converted on the host, the originals stay alive (the kept module tree) beside their int8
+    copies: 10 GiB gathered needs ~15 GiB, so 13 GiB available is refused before the gather."""
+    gib = 1024**3
+    gathers = []
+
+    @contextlib.contextmanager
+    def gathered(model, **kwargs):
+        gathers.append(kwargs)
+        yield True
+
+    monkeypatch.delenv("UNSLOTH_FSDP2_EXPORT_SKIP_RAM_CHECK", raising = False)
+    monkeypatch.setattr(fsdp2_save, "_dist", lambda: None)
+    monkeypatch.setattr(fsdp2_save, "mesh_writer_rank", lambda model: 0)
+    monkeypatch.setattr(fsdp2_save, "_gathered_host_bytes", lambda *a, **k: 10 * gib)
+    monkeypatch.setattr(fsdp2_save, "_host_available_bytes", lambda: 13 * gib)
+    monkeypatch.setattr(fsdp2_save, "fsdp2_gathered", gathered)
+    model = torch.nn.Linear(4, 4)
+    options = fsdp2_save.gather_on_accelerator_if_it_fits(model)
+    assert options["offload_to_cpu"] is True
+    with pytest.raises(RuntimeError, match = "converted copy"):
+        fsdp2_save.fsdp2_export_on_writer(
+            model, lambda: "exported", "save_pretrained_torchao", **options
+        )
+    assert gathers == []
+    # Exports that do not convert in place still need only the gathered weights.
+    assert (
+        fsdp2_save.fsdp2_export_on_writer(
+            model, lambda: "exported", "save_pretrained_gguf", offload_to_cpu = True
+        )
+        == "exported"
+    )
+
+
 def test_rank0_export_passes_through_without_fsdp2(monkeypatch):
     monkeypatch.setattr(fsdp2_save, "fsdp2_units", lambda model: [])
     export = unsloth_save._fsdp2_export_on_rank0("save_pretrained_gguf")(lambda self, x: ("ran", x))
