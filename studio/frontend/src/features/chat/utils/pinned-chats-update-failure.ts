@@ -19,7 +19,6 @@ function unreachable(error: unknown, down: boolean): boolean {
   );
 }
 
-/** Called by the pins API for every failed request, with the flag as it was at issue. */
 export function notePinRequestFailure(error: unknown, downWhenIssued: boolean): void {
   const down = downWhenIssued || isBackendDownForDesktopUpdate();
   if (typeof error === "object" && error !== null && unreachable(error, down)) {

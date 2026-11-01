@@ -122,7 +122,6 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
   const scheduled = new Map<string, Promise<void>>();
   // A response arrived, but removing its journal entry may still need retrying.
   const acknowledged = new Set<string>();
-  // The cause handed to intents blocked behind the failed one.
   let lastFailure: { operationId: string; error: unknown } | undefined;
 
   function publish() {
