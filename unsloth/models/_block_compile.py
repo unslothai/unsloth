@@ -10,6 +10,7 @@ import inspect
 import os
 import sys
 import types
+import weakref
 
 import torch
 
@@ -48,6 +49,68 @@ class _CloneGrad(torch.autograd.Function):
 def _clone_outputs(out):
     import torch.utils._pytree as pytree
     return pytree.tree_map(lambda x: x.clone() if torch.is_tensor(x) else x, out)
+
+
+def _param_grads_out_of_pool(layer):
+    """A first .grad from a replayed backward is graph pool memory the next replay overwrites: copy it."""
+    if layer.__dict__.get("_unsloth_block_grad_hooks", False):
+        return
+    layer.__dict__["_unsloth_block_grad_hooks"] = True
+
+    def hook_for(param):
+        ref = weakref.ref(param)
+
+        def hook(grad):
+            p = ref()
+            if p is None or p.grad is not None:
+                return None
+            return grad.clone()
+
+        return hook
+
+    for param in layer.parameters():
+        if param.requires_grad:
+            param.register_hook(hook_for(param))
+
+
+def _in_nonreentrant_checkpoint():
+    """Non-reentrant checkpoint frees recomputed inputs mid graph recording, which cudagraph trees refuse."""
+    try:
+        hooks = torch._C._autograd._top_saved_tensors_default_hooks(False)
+    except Exception:
+        return False
+    return bool(hooks) and getattr(hooks[0], "__module__", None) == "torch.utils.checkpoint"
+
+
+def _ddp_optimizer_mode():
+    # optimize_ddp also takes "python_reducer" / "no_optimization" strings: only "ddp_optimizer"
+    # (or True) makes dynamo split graphs (convert_frame.py checks == "ddp_optimizer").
+    getter = getattr(torch._dynamo.utils, "get_optimize_ddp_mode", None) or getattr(
+        torch._dynamo.config, "_get_optimize_ddp_mode", None
+    )
+    if getter is not None:
+        return getter() == "ddp_optimizer"
+    return getattr(torch._dynamo.config, "optimize_ddp", False) is True
+
+
+try:
+    from torch.nn.parallel import DistributedDataParallel as _DDP
+except Exception:
+    _DDP = None
+
+
+def _no_ddp_graph_split():
+    """Inside DDP.forward dynamo hands a block's graph to DDPOptimizer, which splits it at gradient
+    bucket boundaries. A checkpoint recompute runs from backward, outside DDP.forward, so a block
+    graph compiled there is not split and saves a different number of tensors than the forward
+    (CheckpointError under DDP's non-reentrant checkpointing, DeepSeek-OCR). Each block is its own
+    region already, so its gradients still reach DDP's buckets block by block."""
+    try:
+        if _DDP is None or _DDP._get_active_ddp_module() is None or not _ddp_optimizer_mode():
+            return contextlib.nullcontext()
+    except Exception:
+        return contextlib.nullcontext()
+    return torch._dynamo.config.patch(optimize_ddp = False)
 
 
 def _isolate_supported():
@@ -629,6 +692,11 @@ def _precheck_band(layer, seq_len, args, kwargs):
 
 # Mode of the block being traced (_SPLIT: flex_attention outside); dynamo guards on it.
 _IN_BLOCK = [0]
+# True only inside Unsloth's own compiled block (fullgraph=False, a graph break is legal), not when the
+# block is inlined into a user's torch.compile, which may be fullgraph=True. Read by unsloth_zoo.
+_IN_COMPILED_REGION = [False]
+_PACKED_MODULE = "unsloth.utils.hf_packed_attention"
+_NO_PACKED = [False]
 _OFF, _FULL, _SPLIT = 0, 1, 2
 _DEMOTION = (_FULL, _SPLIT, _OFF)
 _FIRST_MODE = _SPLIT if os.environ.get("UNSLOTH_BLOCK_FLEX", "inside") == "outside" else _FULL
@@ -760,6 +828,13 @@ def _wrap(
     original = cls.forward
     # Host-read packed lengths / PrefixGrouper segments stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
+    try:
+        takes_kwargs = any(
+            p.kind is inspect.Parameter.VAR_KEYWORD
+            for p in inspect.signature(original).parameters.values()
+        )
+    except (TypeError, ValueError):
+        takes_kwargs = False
     isolate = {}
     if _ISOLATE_RECOMPILES:
         isolate = dict(isolate_recompiles = True, recompile_limit = _region_recompile_limit(kinds))
@@ -779,7 +854,7 @@ def _wrap(
     # a failure is also the starting mode for later layers of the same kind.
     state = {"reported": set(), "start": {}}
     # Under Unsloth checkpointing each block call is a new cudagraph generation: the next replay
-    # overwrites this block's outputs and input gradient, so both are cloned out of the pool.
+    # overwrites this block's outputs and gradients, so they are cloned out of the pool.
     graphs = bool(compile_options.get("triton.cudagraphs"))
     if graphs:
         plain = torch.compile(
@@ -796,17 +871,31 @@ def _wrap(
         previous = inline_flag[0]
         inline_flag[0] = True
         _IN_BLOCK[0] = mode
+        _IN_COMPILED_REGION[0] = True
+        packed_module = sys.modules.get(_PACKED_MODULE)
+        packed = getattr(packed_module, "IN_COMPILED_BLOCK", _NO_PACKED)
+        packed_previous = packed[0]
+        packed[0] = True
         try:
+            if (
+                takes_kwargs
+                and packed_module is not None
+                and kwargs.get("packed_seq_lengths") is not None
+            ):
+                varlen = packed_module.block_varlen_kwargs(self, hidden_states, kwargs)
+                if varlen is not None:
+                    kwargs = {**kwargs, packed_module.BLOCK_VARLEN_KWARG: varlen}
             # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
-            with capture_scratch():
+            with capture_scratch(), _no_ddp_graph_split():
                 if graphs and not graphs_off[0]:
                     shape = tuple(hidden_states.shape)
                     if shape not in graph_shapes:
                         graph_shapes.add(shape)
                         graphs_off[0] = len(graph_shapes) > _CUDAGRAPH_MAX_SHAPES
-                if graphs and graphs_off[0]:
+                if graphs and (graphs_off[0] or _in_nonreentrant_checkpoint()):
                     return plain(self, hidden_states, *args, **kwargs)
                 if graphs:
+                    _param_grads_out_of_pool(self)
                     if hidden_states.requires_grad and torch.is_grad_enabled():
                         hidden_states = _CloneGrad.apply(hidden_states)
                     return _clone_outputs(compiled(self, hidden_states, *args, **kwargs))
@@ -814,6 +903,8 @@ def _wrap(
         finally:
             inline_flag[0] = previous
             _IN_BLOCK[0] = _OFF
+            _IN_COMPILED_REGION[0] = False
+            packed[0] = packed_previous
 
     def _inline(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]

@@ -42,6 +42,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 from utils.paths.path_utils import drop_appledouble_metadata
+from hub.services import training_downloads
 
 # Spawn (not fork): a fresh interpreter so parent CUDA/torch state never leaks into the trainer.
 _CTX = mp.get_context("spawn")
@@ -51,11 +52,7 @@ _TERMINAL = ("complete", "error")
 
 
 def _finite_or_none(value: Any) -> Optional[float]:
-    """Coerce a numeric progress field to a finite float, or None. A divergent run (or a
-    grad clip that returns inf) can push loss / grad_norm to NaN or +/-Infinity, and those
-    are invalid in strict JSON -- FastAPI's encoder would emit the JS-only NaN/Infinity
-    tokens that break a strict client parse. Nulling them here (the single service ingestion
-    point both trainers feed) keeps every status snapshot and persisted record JSON-safe."""
+    """NaN and Infinity are invalid in strict JSON, so non-finite values become None here."""
     if value is None:
         return None
     try:
@@ -65,27 +62,62 @@ def _finite_or_none(value: Any) -> Optional[float]:
     return f if math.isfinite(f) else None
 
 
-def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
-    # Fresh spawned interpreter: re-apply the process-wide network injections, inside the secret
-    # scrub and before the trainer imports diffusers.
+class _DownloadPhaseQueue:
+    """Publish the real child phase before its status message reaches the parent."""
+
+    def __init__(self, queue, phase):
+        self.queue = queue
+        self.phase = phase
+
+    def put(self, event):
+        kind = event.get("type")
+        if kind == "model_load_started" or kind in (
+            "model_load_completed",
+            "preparing",
+            "progress",
+            "complete",
+            "error",
+        ):
+            flag, lock = self.phase
+            with lock:
+                if kind == "model_load_started":
+                    flag.set()
+                else:
+                    flag.clear()
+        self.queue.put(event)
+
+
+def _run_diffusion_child(
+    *,
+    event_queue: Any,
+    stop_queue: Any,
+    config: dict,
+    download_phase = None,
+) -> None:
+    # Fresh spawned interpreter: re-apply network injections inside the secret scrub and before the trainer imports diffusers.
     from utils.native_tls import activate_native_tls
     from utils.happy_eyeballs import activate_happy_eyeballs
 
     activate_native_tls()
     activate_happy_eyeballs()
 
-    # Imported lazily so this module (and the route layer) stays torch-free at import.
-    from .diffusion_lora_trainer import run_diffusion_training_process
-
-    # This child never runs LogConfig.setup_logging, so it installs the Hub default here; the diffusers
-    # half is done inside the trainer entrypoints.
+    # Restore only Unsloth's own quiet default before Hub caches it at import.
     try:
-        from loggers.config import quiet_third_party_progress_bars
+        from loggers.config import keep_progress_bars_countable, quiet_third_party_progress_bars
         quiet_third_party_progress_bars()
-    except Exception:  # noqa: BLE001 - never let log tidying stop a training run
+        keep_progress_bars_countable()
+    except Exception:  # noqa: BLE001 -- progress setup must never stop training
         pass
 
-    run_diffusion_training_process(event_queue = event_queue, stop_queue = stop_queue, config = config)
+    from .diffusion_lora_trainer import run_diffusion_training_process
+
+    run_diffusion_training_process(
+        event_queue = _DownloadPhaseQueue(event_queue, download_phase)
+        if download_phase
+        else event_queue,
+        stop_queue = stop_queue,
+        config = config,
+    )
 
 
 def _default_target(
@@ -94,10 +126,9 @@ def _default_target(
     stop_queue: Any,
     config: dict,
     unsloth_stderr_mirror_path: Optional[str] = None,
+    download_phase = None,
 ) -> None:
-    # First thing in the child (before torch): self-bind to parent death and scrub the native path
-    # secret, like the other workers. Token policy first of all, ahead of the account branch
-    # below, which returns: both children need it applied.
+    # First in the child, before torch: bind to parent death and scrub the native path secret; token policy precedes the returning account branch.
     if unsloth_stderr_mirror_path:
         # Before the token setup below, so its failure is captured too.
         try:
@@ -106,8 +137,7 @@ def _default_target(
         except Exception:
             pass
     if not config.get("allow_ambient", True):
-        # Before any huggingface_hub import, as the LLM worker does: a child env is seeded from
-        # the parent's, so not setting a token is not denying one.
+        # Before any huggingface_hub import: the child env inherits the parent's token.
         import os
 
         from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg, is_anonymous
@@ -130,6 +160,7 @@ def _default_target(
             event_queue = event_queue,
             stop_queue = stop_queue,
             config = config,
+            **({"download_phase": download_phase} if download_phase is not None else {}),
         )
         return
     from utils.native_path_leases import run_without_native_path_secret
@@ -139,6 +170,7 @@ def _default_target(
         event_queue = event_queue,
         stop_queue = stop_queue,
         config = config,
+        **({"download_phase": download_phase} if download_phase is not None else {}),
     )
 
 
@@ -185,16 +217,7 @@ def _resume_fields(
     source_checkpoint: Optional[str] = None,
     source_created_at: Optional[float] = None,
 ) -> dict[str, Any]:
-    """``can_resume`` / ``checkpoint_step`` / ``resume_blocked_reason`` for a run, read from the
-    checkpoints that are actually on disk.
-
-    Derived, not trusted: a persisted record is a snapshot of the moment the run ended, but the user
-    can delete the output folder afterwards. ``started_at`` fences off bundles an EARLIER run of the
-    same adapter name left in the same folder, and ``ended_at`` fences off the ones a LATER run put
-    there after this one finished. ``write_error`` is the run's own report that a checkpoint write
-    failed; that is sticky and blocks resume (mirroring the MLX trainer's ``resume_blocked``),
-    because whatever older state is on disk predates the adapter that was published. Never raises.
-    """
+    """Derived from disk; write_error is sticky and blocks resume; started_at and ended_at fence off bundles from other runs. Never raises."""
     try:
         from core.training.diffusion_checkpoint import describe_resume_state
         state = describe_resume_state(
@@ -227,11 +250,7 @@ def _resume_fields(
 
 
 def _refresh_resume_state(rec: dict) -> dict:
-    """Re-derive a persisted record's resume fields from the checkpoints on disk, in place.
-
-    Also backfills ``output_dir`` from the stored config for a record written before that field
-    existed: the UI replays that path as ``resume_from_checkpoint``, so reporting ``can_resume``
-    without it would enable an action the client then refuses on its own."""
+    """Backfills output_dir for old records, else can_resume would enable a resume the client refuses."""
     config = rec.get("config")
     output_dir = rec.get("output_dir") or (
         config.get("output_dir") if isinstance(config, dict) else None
@@ -244,18 +263,14 @@ def _refresh_resume_state(rec: dict) -> dict:
             status = rec.get("status"),
             started_at = rec.get("started_at"),
             ended_at = rec.get("ended_at"),
-            # A run that died during model loading never got a "resumed" event to seed total_steps, and zero
-            # here sends the calculation back to the manifest's OLDER target, so a 600-step checkpoint read as
-            # 600/500 and Resume was disabled.
+            # Without total_steps, the manifest's older target would block Resume.
             total_steps = _resolved_total_steps(rec, config if isinstance(config, dict) else {}),
             write_error = rec.get("checkpoint_write_error"),
-            # What this run itself resumed from, so a resumed run that died before its first save can still
-            # offer the bundle it was validated against.
+            # Source bundle this run resumed from, so a run that died before its first save can still offer it.
             source_checkpoint = (
                 config.get("resume_from_checkpoint") if isinstance(config, dict) else None
             ),
-            # And WHICH bundle that was, so a slot another run has since rewritten is not offered back as this
-            # run's own lineage.
+            # Identity of that source bundle; a slot another run has rewritten is not offered as lineage.
             source_created_at = rec.get("resumed_source_created_at"),
         )
     )
@@ -278,14 +293,12 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
             rec = json.loads(p.read_text(encoding = "utf-8"))
         except Exception:  # noqa: BLE001 -- a corrupt record never breaks the listing
             continue
-        # Skip a wrong-shape record so one bad file cannot blow up the route's
-        # DiffusionTrainingRunSummary(**r) or the whole panel.
+        # Skip wrong-shape records: one bad file must not break DiffusionTrainingRunSummary(**r) or panel.
         if not isinstance(rec, dict):
             continue
         if not (isinstance(rec.get("job_id"), str) and isinstance(rec.get("status"), str)):
             continue
-        # Resume state comes from the checkpoints on disk NOW, before the config is dropped. Per record,
-        # because one hand-edited nonnumeric total_steps otherwise took the whole endpoint down.
+        # Resume state read from disk first; per record, since one nonnumeric total_steps broke the endpoint.
         try:
             _refresh_resume_state(rec)
             _restate_live_job(rec)
@@ -300,7 +313,7 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
 
 def get_diffusion_run(job_id: str) -> Optional[dict]:
     """The full persisted record for one run (summary + config + metric logs)."""
-    # Keyed by uuid4 hex; reject anything else so a crafted id can't traverse out of the dir.
+    # Reject non-uuid4-hex ids so a crafted id cannot traverse out of the dir.
     if not re.fullmatch(r"[0-9a-f]{32}", str(job_id or "")):
         return None
     p = _runs_dir() / f"{job_id}.json"
@@ -319,12 +332,7 @@ def get_diffusion_run(job_id: str) -> Optional[dict]:
 
 
 def _restate_live_job(rec: dict) -> dict:
-    """Undo the interim record's pessimism for the job that is still running, in place.
-
-    An interim record is written as interrupted because that is the outcome if Unsloth never
-    comes back. While the process IS still here and still on that job, the honest answer is
-    running -- and reporting it as errored would offer a Resume for a directory the live run is
-    writing into."""
+    """A live job reports running, not the interim interrupted state, so Resume is not offered."""
     global _service
     service = _service
     if service is None:
@@ -362,6 +370,8 @@ def _idle_state() -> dict[str, Any]:
         "audio_loss": None,
         "num_images": None,
         "in_model_load": False,
+        "preparation": None,
+        "download_progress": None,
         "output_dir": None,
         "lora_path": None,
         # The optional second (EMA-averaged) adapter, when ema_decay was enabled.
@@ -371,14 +381,12 @@ def _idle_state() -> dict[str, Any]:
         "base_model": None,
         "samples_per_second": None,
         "peak_memory_gb": None,
-        # Where the newest checkpoint-<N> bundle is, the step it holds, why one could not be written (the
-        # Resume action's disabled tooltip), and the step a resumed run picked up from.
+        # Newest checkpoint-<N> path and step; why it failed to save (Resume tooltip); resumed-from step.
         "checkpoint_path": None,
         "checkpoint_step": None,
         "resume_blocked_reason": None,
         "resumed_from_step": None,
-        # A pathname is not an identity: another run can write over the same checkpoint-<N> slot, and the
-        # fallback would offer that replacement back under this run's lineage.
+        # A path is not identity: another run can overwrite checkpoint-<N>, so the fallback lineage is wrong.
         "resumed_source_created_at": None,
         "started_at": None,
         "updated_at": None,
@@ -452,14 +460,7 @@ def _append_metric(
     video_loss: Any = None,
     audio_loss: Any = None,
 ) -> None:
-    """Append one (step, loss, lr, grad_norm, video_loss, audio_loss) point to the bounded
-    history arrays on ``state``.
-
-    Only records finite, positive-step points (mirrors the LLM trainer, which logs history
-    only for step > 0 with a real loss). When the arrays hit ``_METRIC_CAP`` they are
-    decimated in place (keep every other point) so appends stay bounded without losing the
-    curve's shape. Everything but loss may be None (kept as None so those series can be sparse
-    while staying index-aligned with ``steps``)."""
+    """Only finite, positive-step points are kept; at the cap, every other point is dropped."""
     try:
         istep = int(step)
     except (TypeError, ValueError):
@@ -485,20 +486,12 @@ def _append_metric(
         steps = state["metric_steps"]
     steps.append(istep)
     for key in _METRIC_SERIES:
-        # setdefault, not [key]: a run resumed from a record written before a series existed carries a state
-        # dict without it, and a short tail on the new series beats a KeyError that drops the whole update.
+        # setdefault: older records may lack newer series.
         state.setdefault(key, []).append(values[key])
 
 
 def _resolved_total_steps(state: dict[str, Any], cfg: dict[str, Any]) -> int:
-    """The step target this run was actually going to reach.
-
-    ``train_steps`` is only meaningful when the run was NOT configured by epochs: the request
-    model defaults it to 500 and ``num_epochs`` overrides it, so falling back to it in epoch
-    mode invents a target the run never had -- a 600-step checkpoint of a run resolved to 1000
-    then reads as 600/500 and the resume is refused. Zero is honest there, and the checkpoint
-    manifest's own target (written with the resolved count) answers instead.
-    """
+    """In epoch mode train_steps is a stale request default, so return 0 and let the manifest answer."""
     live = int(state.get("total_steps") or 0)
     if live:
         return live
@@ -529,25 +522,22 @@ class DiffusionTrainingService:
         # Set by reserve() while a start is in flight (before the route frees GPU models) so the load guards
         # refuse a concurrent load. Cleared by unreserve().
         self._reserved = False
-        # Dataset mutations in flight. A start refuses while any is open and a mutation refuses once a
-        # start is reserved, both under _lock, so neither slips through the other's window.
+        # Two-sided under _lock: starts and dataset mutations exclude each other.
         self._dataset_mutations = 0
-        # The trainer reports a no-save stop on its completion event, but a child killed or OOMed after
-        # the request never emits one, and the unexpected-exit path then re-offered Resume from the
-        # discarded checkpoint.
+        # A child killed after a no-save stop never reports it; remember it here.
         self._discard_requested = False
-        # Bundle paths THIS job reported writing, so a discard the child could not carry out removes exactly
-        # those and nothing that predated the run.
+        # Bundle paths this job wrote; a discard the child cannot finish removes only those, not older ones.
         self._own_checkpoints: list[str] = []
-        # The child emits a discarded completion only after its own clear_own_checkpoints, which hands a
-        # displaced slot back, so the parent's pathname-only cleanup would delete another run's bundle.
+        # The child already cleaned up; a parent pathname cleanup could delete another run's bundle.
         self._child_cleared_own = False
         # Set by a checkpoint_saved event, cleared once the pump has written the record.
         self._persist_interim = False
         # Only the first stop reaches the child, so only the first may set the parent's disposition.
         self._stop_signalled = False
-        # GPU load admissions in flight (a load between its training guard and its arbiter registration).
-        # Same two-sided rule as the dataset mutations.
+        self._download_key: Optional[str] = None
+        self._download_repo: Optional[str] = None
+        self._download_phase = None
+        # GPU load admissions in flight; same two-sided rule as dataset mutations.
         self._gpu_admissions = 0
         self._proc: Any = None
         self._stop_queue: Any = None
@@ -588,15 +578,12 @@ class DiffusionTrainingService:
                     "then start the run."
                 )
             if self._gpu_admissions:
-                # A load past its training guard is about to take the GPU, and reserving now would free residents
-                # it has not registered yet; refusing is safe, since admission is held only across registration.
+                # Refuse: reserving now would free residents this load has not registered.
                 raise RuntimeError(
                     "A model is being loaded onto the GPU right now. Wait for that to finish, "
                     "then start the run."
                 )
-            # Under the SAME lock as the LLM trainer, not just at the route's earlier check: several
-            # network-bound preflights separate the two, and the LLM route holds gpu_load_admission() across
-            # its spawn, so one of the two always raises.
+            # Checked under the same lock as the LLM trainer so one of the two always raises.
             if _llm_training_active():
                 raise RuntimeError(
                     "An LLM training job is already running. "
@@ -613,16 +600,8 @@ class DiffusionTrainingService:
 
     @contextlib.contextmanager
     def dataset_mutation(self):
-        """Hold the dataset interlock for one mutation, refusing if a run owns the dataset.
-
-        The route layer used to check ``is_active()`` and only then hand the filesystem work to a
-        thread, so a ``/diffusion/start`` could reserve inside that gap: the caption or the image
-        then changed underneath a preflight or a live trainer, which is what the immutability rule
-        exists to prevent. Registering the mutation under the same lock ``reserve()`` uses closes
-        it from both sides -- this raises once a start is committed, and ``reserve()`` raises while
-        a mutation is open, so neither waits on the other (a start must never block on a
-        minutes-long dataset import).
-        """
+        """Registers under reserve()'s lock, closing the gap between an is_active() check and the
+        mutation."""
         with self._lock:
             if self._reserved or (self._proc is not None and self._proc.is_alive()):
                 raise TrainingActiveError(
@@ -638,19 +617,7 @@ class DiffusionTrainingService:
 
     @contextlib.contextmanager
     def gpu_load_admission(self):
-        """Hold the GPU-admission interlock across a load's guard -> arbiter -> registration.
-
-        The load guards read ``is_active()`` and only THEN acquire the arbiter and register the
-        load, so a start reserving inside that gap freed residents the load had not registered yet
-        and the trainer came up beside a brand-new pipeline. Registering the admission under the
-        same lock ``reserve()`` uses closes it from both sides, exactly like ``dataset_mutation``:
-        this raises once a start is reserved or running, and ``reserve()`` raises while an admission
-        is open, so neither waits on the other.
-
-        The span is deliberately short: ``begin_load`` returns as soon as the load is registered,
-        and from that point ``_free_gpu_for_diffusion_training`` preempts the in-flight load, so
-        holding this for the whole load would block starts for minutes to no purpose.
-        """
+        """Held only until the load registers, because a start preempts an in-flight load from then on."""
         with self._lock:
             if self._reserved or (self._proc is not None and self._proc.is_alive()):
                 raise TrainingActiveError(
@@ -673,15 +640,13 @@ class DiffusionTrainingService:
         Raises ValueError for an unusable config (before any spawn) and RuntimeError if a
         job is already running. Returns the new job id."""
         validate_job_paths(config)
-        # Validate before spawning, and keep the normalised config: it carries the resolved family the
-        # recipe overrides are keyed on, which the raw request dict need not name.
+        # Validate before spawning; keep the normalised config, whose resolved family keys recipe overrides.
         from .diffusion_lora_trainer import _config_from_dict
         from .diffusion_train_common import train_recipe_overrides
 
         normalized_cfg = _config_from_dict(config).normalized()
 
-        # Join a finished job's pump OUTSIDE the lock: its final state writes take this lock, so joining
-        # under it would stall the start and let the stale pump overwrite the new state.
+        # Join outside the lock: the pump's final writes take it.
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
                 raise RuntimeError("A diffusion training job is already running.")
@@ -710,6 +675,9 @@ class DiffusionTrainingService:
             }
             # Test targets take only the three job kwargs.
             if self._target is _default_target:
+                self._download_phase = (self._ctx.Event(), self._ctx.Lock())
+                self._download_phase[0].set()
+                child_kwargs["download_phase"] = self._download_phase
                 self._open_worker_stderr_capture()
                 if self._stderr_capture is not None:
                     from utils.native_path_leases import STDERR_MIRROR_KWARG
@@ -719,11 +687,23 @@ class DiffusionTrainingService:
                 kwargs = child_kwargs,
                 daemon = True,
             )
+            from .diffusion_train_common import training_fetch_repo
+
+            self._download_repo = (
+                training_fetch_repo(normalized_cfg)
+                or config.get("base_model")
+                or config.get("model_name")
+            )
+            self._download_key = training_downloads.claim(self, job_id, self._download_repo)
             # Keep the lease secret out of the child's env, as other orchestrators do.
             from utils.native_path_leases import native_path_secret_removed_for_child_start
 
-            with native_path_secret_removed_for_child_start():
-                self._proc.start()
+            try:
+                with native_path_secret_removed_for_child_start():
+                    self._proc.start()
+            except BaseException:
+                training_downloads.settle(self._download_key)
+                raise
             try:
                 from utils.process_lifetime import adopt_pid
                 adopt_pid(self._proc.pid)
@@ -736,17 +716,15 @@ class DiffusionTrainingService:
                 active = True,
                 job_id = job_id,
                 status = "running",
+                in_model_load = True,
                 message = "Starting diffusion LoRA training...",
                 base_model = config.get("base_model") or config.get("model_name"),
                 started_at = now,
                 updated_at = now,
             )
-            # AFTER the reset above: the route has already pinned a source bundle, so recording its identity
-            # here means a resume that dies during the model load still has its timestamp to check against.
+            # After the reset: records the source identity for a resume that dies during load.
             self._seed_source_identity(config)
-            # Record the config with the fields this family's loop REPLACES set to what it will actually run:
-            # the trainer applies the same table in the child, so without this Previous runs described a
-            # recipe no step ever used.
+            # Record the recipe the family loop actually runs.
             self._config = {
                 k: v for k, v in dict(config).items() if k not in {"hf_token", "_job_account"}
             }
@@ -762,18 +740,72 @@ class DiffusionTrainingService:
 
     @_invalidates_gpu_memory("diffusion training stop")
     @job_control
-    def stop(self, save: bool = True) -> bool:
+    def stop(
+        self,
+        save: bool = True,
+        *,
+        job_id: Optional[str] = None,
+        download_only: bool = False,
+        download_generation: Optional[int] = None,
+    ) -> bool:
         """Request a clean stop: the trainer finishes the current step, then either saves
         a partial adapter (``save=True``, the default) or discards the run (``save=False``,
         matching the LLM trainer's cancel). Returns True if a stop was signalled, False if
         nothing was running."""
-        with self._lock:
+        with (
+            self._lock,
+            self._download_phase[1] if self._download_phase else contextlib.nullcontext(),
+        ):
+            # Check under the signalling lock: never cancel a different run or its training.
+            if job_id is not None and self._state.get("job_id") != job_id:
+                return False
+            if download_generation is not None:
+                from hub.utils.download_registry import get_models_registry
+                if (
+                    not self._download_key
+                    or get_models_registry().current_generation(self._download_key)
+                    != download_generation
+                ):
+                    return False
+            if download_only and (
+                job_id is None
+                or not self._state.get("in_model_load")
+                or self._state.get("preparation") is not None
+                or self._state.get("status") != "running"
+                or (self._download_phase is not None and not self._download_phase[0].is_set())
+            ):
+                return False
             if self._proc is None or not self._proc.is_alive() or self._stop_queue is None:
                 return False
+            loading = self._state.get("in_model_load") and self._state.get("preparation") is None
+            if self._download_phase is not None:
+                loading = loading and self._download_phase[0].is_set()
+            if loading and hasattr(self._proc, "terminate"):
+                # Native Xet ignores the cooperative queue; no optimizer runs yet, so terminate the worker.
+                self._proc.terminate()
+                self._proc.join(timeout = 2.0)
+                if self._proc.is_alive() and hasattr(self._proc, "kill"):
+                    self._proc.kill()
+                    self._proc.join(timeout = 2.0)
+                if self._proc.is_alive():
+                    raise RuntimeError(
+                        "The training download worker has not stopped yet. Try stopping it again."
+                    )
+                self._stop_signalled = True
+                self._discard_requested = not save
+                self._state.update(
+                    active = False,
+                    status = "stopped",
+                    in_model_load = False,
+                    preparation = None,
+                    download_progress = None,
+                    message = "Stopped while loading model files; training had not started.",
+                    updated_at = time.time(),
+                )
+                training_downloads.settle(self._download_key, "cancelled")
+                return True
             if self._stop_signalled:
-                # The child consumes the FIRST signal, so honouring a later stop-without-saving set a parent
-                # discard the child never carried out: the run was marked discarded and its checkpoints deleted
-                # while the adapter and catalog entry stayed on disk.
+                # Child consumes only the FIRST signal; a later stop-without-saving must not set a parent discard, which would delete checkpoints the child kept.
                 return True
             try:
                 # Bare True = older wire format; the dict form carries the no-save cancel flag.
@@ -896,10 +928,23 @@ class DiffusionTrainingService:
                             self._state.update(
                                 active = False,
                                 status = "error",
+                                # A worker killed mid-load / mid-preparation sends no terminal event to clear these.
+                                in_model_load = False,
+                                preparation = None,
+                                download_progress = None,
                                 message = self._unexpected_exit_message(proc),
                                 updated_at = time.time(),
                             )
                         discarding = self._discard_requested
+                        training_downloads.settle(
+                            self._download_key,
+                            "cancelled"
+                            if self._state.get("status") == "stopped"
+                            else "error"
+                            if self._state.get("status") == "error"
+                            else "idle",
+                            self._state.get("message"),
+                        )
                     if discarding:
                         self._apply_discard_intent()
                     _ = drained
@@ -935,18 +980,7 @@ class DiffusionTrainingService:
             self._state["resumed_source_created_at"] = manifest.get("created_at")
 
     def _apply_discard_intent(self, *, delete: bool = True) -> None:
-        """Carry out a stop-without-saving the child could not report itself.
-
-        The trainer does this on its own completion path; a child that OOMs, is killed, or dies on
-        the current step never gets there. Blocking the resume is the visible half; the bundles are
-        the other one, and they hold optimizer and scheduler state, are sizeable, and have no delete
-        path in the UI once the run is marked discarded.
-
-        ``delete`` False is the case where the child DID get there. Its cleanup restores any bundle
-        this run wrote over, so the paths remembered here no longer name this run's bundles, and
-        deleting them then destroys the predecessor that was just handed back. The state half still
-        applies either way.
-        """
+        """Keep bundles when the child already ran cleanup: its restore put back a predecessor's bundle."""
         if account_is_retired():
             delete = False
         with self._lock:
@@ -976,15 +1010,7 @@ class DiffusionTrainingService:
             pass
 
     def _persist_run_record(self, *, interim: bool = False) -> None:
-        """Best-effort JSON record of the finished run (summary + scrubbed config + the
-        bounded metric logs) into the studio runs directory. Never fatal: history is a
-        convenience, not part of the training contract.
-
-        ``interim`` writes the same record for a run that is still going, which is what makes a
-        checkpoint survive Unsloth itself dying: the bundle is on disk but only a terminal event
-        used to write the JSON that Previous runs and its Resume action are built from. The
-        status recorded is the one that is true if nothing else ever happens -- the run was
-        interrupted -- and the terminal write replaces it in place."""
+        """Best-effort and never fatal. Interim mode records the run as interrupted so a checkpoint survives if Unsloth itself dies."""
         if account_is_retired():
             return
         try:
@@ -1024,8 +1050,7 @@ class DiffusionTrainingService:
                 "ema_path": s.get("ema_path"),
                 "catalog_path": s.get("catalog_path"),
                 "saved": bool(s.get("lora_path")),
-                # output_dir is what a Resume replays, so it is recorded on the run; can_resume / checkpoint_step
-                # are re-derived from disk, so deleting the checkpoints takes the action away.
+                # output_dir is recorded for Resume; can_resume and checkpoint_step re-derive from disk each time.
                 "output_dir": str(adapter) if adapter else None,
                 "resumed_from_job_id": cfg.get("resumed_from_job_id") or None,
                 "resumed_from_step": s.get("resumed_from_step"),
@@ -1035,11 +1060,7 @@ class DiffusionTrainingService:
                     str(adapter) if adapter else None,
                     status = s.get("status"),
                     started_at = s.get("started_at"),
-                    # total_steps is seeded by the "resumed" event and a run that dies during model loading never gets
-                    # one; zero there sent the resume calculation back to the manifest's older target, reporting
-                    # "nothing left to train" for a run whose point was a raised target.
-                    # NOT in epoch mode: num_epochs overrides train_steps, which keeps its Pydantic default of 500, so a
-                    # run resolved to 1000 reported a 600-step checkpoint as 600/500 and refused the resume.
+                    # Use the resolved total; epoch mode leaves train_steps at the default 500.
                     total_steps = _resolved_total_steps(s, cfg),
                     write_error = s.get("resume_blocked_reason"),
                     source_checkpoint = cfg.get("resume_from_checkpoint"),
@@ -1066,30 +1087,58 @@ class DiffusionTrainingService:
         ev: dict[str, Any],
         proc: Any = None,
     ) -> None:
-        """Fold one trainer event into the status snapshot. Pure state update -- unit
-        tested by feeding events directly. ``proc`` (when given) fences a stale pump:
-        an event from a superseded job's process must not touch the current job's
+        """Events from a superseded job's process are ignored, so a stale pump cannot touch current
         state."""
         etype = ev.get("type")
         with self._lock:
             if proc is not None and self._proc is not proc:
                 return
+            if self._stop_signalled and self._state.get("status") == "stopped":
+                return
             s = self._state
             s["updated_at"] = time.time()
             if etype == "model_load_started":
-                s.update(in_model_load = True, status = "running", message = "Loading base model...")
+                s.update(
+                    in_model_load = True,
+                    preparation = None,
+                    download_progress = None,
+                    status = "running",
+                    message = "Loading base model...",
+                )
                 if ev.get("num_images") is not None:
                     s["num_images"] = ev.get("num_images")
+            elif etype == "model_download_progress":
+                if s.get("in_model_load") and s.get("preparation") is None:
+                    progress = ev.get("download_progress")
+                    progress = progress if isinstance(progress, dict) else {}
+                    done = _finite_or_none(progress.get("bytes_done"))
+                    total = _finite_or_none(progress.get("bytes_total"))
+                    s["download_progress"] = (
+                        {
+                            "bytes_done": int(min(done, total)),
+                            "bytes_total": int(total),
+                            "label": str(progress.get("label", "Model files"))[:200],
+                            "scope": "active_files",
+                        }
+                        if done is not None and done >= 0 and total is not None and total > 0
+                        else None
+                    )
             elif etype == "model_load_completed":
-                s.update(in_model_load = False, message = "Training...")
+                s.update(
+                    in_model_load = False,
+                    preparation = None,
+                    download_progress = None,
+                    message = "Training...",
+                )
             elif etype == "preparing":
-                # A long precompute phase (e.g. the VAE latent cache) before the first step; surfaced so the UI
-                # shows progress instead of a silent stall.
+                # Long precompute such as the VAE latent cache, surfaced so the UI does not look stalled.
                 done, total = ev.get("done"), ev.get("total")
                 stage = str(ev.get("stage", "prepare")).replace("_", " ")
                 s.update(
                     status = "running",
                     in_model_load = True,
+                    preparation = {"stage": ev.get("stage"), "done": done, "total": total},
+                    download_progress = None,
                     message = (
                         f"Preparing ({stage} {done}/{total})..."
                         if done is not None and total is not None
@@ -1106,8 +1155,7 @@ class DiffusionTrainingService:
                     resumed_source_created_at = ev.get("source_created_at"),
                     message = f"Resuming from step {ev.get('step')}...",
                 )
-                # Seed the LIVE counters from the same event: until the first post-resume progress they read 0/0, so
-                # a resume of step 400 of 500 showed "0/0" and an OOM recorded a failed run at step 0 of 0.
+                # Seed live counters from the resume event, else they read 0/0 until the first post-resume progress.
                 if ev.get("step") is not None:
                     s["step"] = int(ev["step"])
                 if ev.get("total_steps") is not None:
@@ -1123,15 +1171,12 @@ class DiffusionTrainingService:
                 written = ev.get("checkpoint_path")
                 if written and written not in self._own_checkpoints:
                     self._own_checkpoints.append(str(written))
-                # Only a terminal event writes the run JSON, so being killed after a periodic save left a resumable
-                # checkpoint Previous runs had no entry for.
+                # Persist now: only terminal events write the run JSON.
                 self._persist_interim = True
             elif etype == "checkpoint_failed":
-                # Sticky: an older bundle on disk predates the work this run did, so resuming from it would
-                # silently lose steps. Mirrors the MLX resume_blocked flag.
+                # Sticky: resuming from an older bundle would silently lose steps.
                 s["resume_blocked_reason"] = str(ev.get("message", "checkpoint write failed"))
-                # Persisted because, in memory only, an exit after this left the last record advertising the stale
-                # older checkpoint as resumable.
+                # Persisted: in memory only, an exit left the record advertising an older checkpoint as resumable.
                 self._persist_interim = True
             elif etype == "progress":
                 # Null any non-finite float so the JSON stays strict-parseable; a missing key keeps the last value.
@@ -1145,8 +1190,7 @@ class DiffusionTrainingService:
                 grad_norm = (
                     _finite_or_none(ev["grad_norm"]) if "grad_norm" in ev else s["grad_norm"]
                 )
-                # Folded like the rest rather than dropped: on MiniMax-H3 the combined loss can hold steady while
-                # one modality degrades, and these are the only signal that says so.
+                # Per-modality losses can reveal degradation the combined loss hides (H3).
                 video_loss = (
                     _finite_or_none(ev["video_loss"]) if "video_loss" in ev else s["video_loss"]
                 )
@@ -1156,6 +1200,9 @@ class DiffusionTrainingService:
                 s.update(
                     status = "running",
                     step = ev.get("step", s["step"]),
+                    preparation = None,
+                    download_progress = None,
+                    in_model_load = False,
                     total_steps = ev.get("total_steps", s["total_steps"]),
                     loss = loss,
                     avg_loss = avg_loss,
@@ -1188,12 +1235,13 @@ class DiffusionTrainingService:
                     s.get("output_dir") or self._config.get("output_dir"),
                 )
             elif etype == "complete":
-                # Reset in_model_load: a stop during model load emits complete with no preceding
-                # model_load_completed, leaving a stale indicator.
+                # Reset in_model_load: a stop during load skips model_load_completed and would leave it stale.
                 s.update(
                     active = False,
                     in_model_load = False,
                     status = "stopped" if ev.get("stopped") else "completed",
+                    preparation = None,
+                    download_progress = None,
                     output_dir = ev.get("output_dir"),
                     lora_path = ev.get("lora_path"),
                     ema_path = ev.get("ema_path"),
@@ -1215,9 +1263,7 @@ class DiffusionTrainingService:
                 if ev.get("resumed_from_step") is not None:
                     s["resumed_from_step"] = ev.get("resumed_from_step")
                 if ev.get("discarded"):
-                    # A discarded run's own periodic checkpoints must not keep offering to continue it.
-                    # The child ran its own cleanup before emitting this, so the parent must not repeat it by pathname:
-                    # a slot this run overwrote has been handed back to another run's bundle.
+                    # The child already cleaned up; never repeat by pathname, since a slot this run overwrote now holds a bundle from another run.
                     self._child_cleared_own = True
                     s["resume_blocked_reason"] = (
                         "This run was stopped without saving, so it was discarded."
@@ -1229,7 +1275,33 @@ class DiffusionTrainingService:
                     active = False,
                     in_model_load = False,
                     status = "error",
+                    preparation = None,
+                    download_progress = None,
                     message = str(ev.get("message", "error")),
+                )
+            if etype == "model_load_started":
+                try:
+                    self._download_key = training_downloads.claim(
+                        self,
+                        s.get("job_id"),
+                        ev.get("fetch_repo")
+                        or self._download_repo
+                        or s.get("base_model")
+                        or self._config.get("base_model"),
+                    )
+                except RuntimeError as exc:
+                    s.update(status = "error", message = str(exc), in_model_load = False)
+                    if self._proc is not None and hasattr(self._proc, "terminate"):
+                        self._proc.terminate()
+            elif etype in ("preparing", "model_load_completed", "progress", "complete", "error"):
+                training_downloads.settle(
+                    self._download_key,
+                    "error"
+                    if etype == "error"
+                    else "cancelled"
+                    if s.get("status") == "stopped"
+                    else "idle",
+                    s.get("message") if etype == "error" else None,
                 )
 
 

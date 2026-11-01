@@ -253,6 +253,46 @@ def test_outer_compile_owns_the_block(monkeypatch, fullgraph, suppress):
     assert inner
 
 
+@pytest.mark.parametrize("fullgraph", [True, False], ids = ["fullgraph", "default"])
+def test_compiled_region_flag_only_in_own_block(monkeypatch, fullgraph):
+    """_IN_COMPILED_REGION marks Unsloth's own block compile (a graph break is legal there), not the block
+    traced inside a user's compile, which also sets _IN_BLOCK (unsloth_zoo's sparse flex reads it)."""
+    M = _load()
+    real_compile = torch.compile
+
+    class ToyDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states):
+            # Flags read where the zoo reads them: inside the traced layer.
+            in_block = float(M._IN_BLOCK[0] != M._OFF)
+            region = float(M._IN_COMPILED_REGION[0])
+            return self.proj(hidden_states) + in_block + 10 * region
+
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda fn, **kwargs: real_compile(fn, backend = "eager", fullgraph = False, dynamic = None),
+    )
+    original = ToyDecoderLayer.forward
+    M._wrap(ToyDecoderLayer, {})
+    monkeypatch.setattr(torch, "compile", real_compile)
+    torch.manual_seed(0)
+    layer = ToyDecoderLayer().train()
+    x = torch.randn(2, 4, 8)
+    stock = original(layer, x).detach()
+
+    torch._dynamo.reset()
+    torch.testing.assert_close(layer(x).detach(), stock + 11)  # Unsloth's block: both flags
+    torch._dynamo.reset()
+    outer = torch.compile(layer, backend = "eager", fullgraph = fullgraph)
+    torch.testing.assert_close(outer(x).detach(), stock + 1)  # user's compile: _IN_BLOCK only
+    torch._dynamo.reset()
+    assert M._IN_BLOCK[0] == M._OFF and M._IN_COMPILED_REGION[0] is False
+
+
 def _install_blocks(M, model, monkeypatch):
     """patch_block_compile on CPU with an eager inner compile, restored at teardown."""
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
@@ -542,6 +582,42 @@ def test_unsloth_host_metadata_calls_keep_the_stock_forward(monkeypatch, key):
     with torch.no_grad():
         layer(x, **{key: None})
     assert calls  # no host metadata: compiled
+
+
+def test_compiled_block_flags_packed_attention(monkeypatch):
+    """hf_packed_attention runs packed rows outside the graph only while a block's compiled call
+    runs: set there, restored after, never on the stock forward."""
+    M = _load()
+    packed_mod = types.ModuleType(M._PACKED_MODULE)
+    packed_mod.IN_COMPILED_BLOCK = [False]
+    monkeypatch.setitem(sys.modules, M._PACKED_MODULE, packed_mod)
+    seen = []
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            seen.append(packed_mod.IN_COMPILED_BLOCK[0])
+            return fn(*args, **kw)
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    layer = cls()
+    x = torch.randn(1, 4, 8)
+    with torch.no_grad():
+        layer(x)
+    assert seen and all(seen)
+    assert packed_mod.IN_COMPILED_BLOCK == [False]
+    seen.clear()
+    layer.eval()(x)  # stock forward
+    assert seen == [] and packed_mod.IN_COMPILED_BLOCK == [False]
+    # Without the module (never imported) the block still runs.
+    monkeypatch.delitem(sys.modules, M._PACKED_MODULE)
+    layer.train()
+    with torch.no_grad():
+        layer(x)
+    assert M._NO_PACKED == [False]
 
 
 def test_gemma4_band_fast_path_in_blocks(monkeypatch):

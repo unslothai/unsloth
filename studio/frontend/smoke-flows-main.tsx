@@ -357,6 +357,21 @@ setFlowsTransport(async (url, init) => {
   const path = u.pathname.replace(/^\/api\/flows/, "");
   const method = (init?.method ?? "GET").toUpperCase();
   if (path === "/nodes") return json(catalog);
+  if (path === "/dataset-rows") {
+    const { offset = 0, limit = 20 } = (await bodyOf(init)) as {
+      offset?: number;
+      limit?: number;
+    };
+    const topics = ["churn", "cashflow", "inventory", "payroll", "returns"];
+    const rows = Array.from({ length: 20 }, (_, i) => ({
+      domain: ["SaaS", "Finance", "Retail", "HR"][i % 4],
+      topic: topics[i % topics.length],
+      sql_prompt: `Write a SQL query that reports monthly ${topics[i % topics.length]} for the last year, grouped by region, and explain which months stand out (${i + 1}).`,
+      sql: `-- SCHEMA\nCREATE TABLE ${topics[i % topics.length]} (\n  id INT PRIMARY KEY,\n  region TEXT,\n  month DATE,\n  amount DECIMAL(10,2)\n);\n\n-- QUERY\nSELECT region, month, SUM(amount)\nFROM ${topics[i % topics.length]}\nGROUP BY region, month\nORDER BY month;`,
+      score: Math.round((0.55 + ((i * 7) % 10) / 22) * 100) / 100,
+    }));
+    return json({ rows: rows.slice(offset, offset + limit), total: rows.length, offset, view_rows: 1000 });
+  }
   if (path === "" && method === "GET")
     return json({
       flows: [...flows.values()]

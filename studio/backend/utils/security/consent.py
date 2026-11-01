@@ -81,19 +81,13 @@ def _config_has_auto_map(
     *,
     load_subdirs = (),
 ) -> Optional[bool]:
-    """Whether any config (model/tokenizer/processor) declares an ``auto_map`` the load would execute. Reads raw JSON with ``hf_token``; returns None when a config is unreadable (transient/auth) so the caller treats it as "unknown" and scans, False when the repo genuinely ships none.
-
-    GGUF-inertness is the LOADER's property, decided upstream by the caller's ``is_gguf`` check, not here. Every path that reaches this helper (export, training, non-GGUF inference) loads via ``from_pretrained``, which imports ``auto_map`` even for a ``.gguf``-only repo, so a GGUF-classified repo id MUST still be scanned. Only a direct ``.gguf`` FILE reference is inert, a genuine single-file llama.cpp load.
-    """
-    # A direct .gguf FILE loads via llama.cpp (auto_map inert); a bare repo id ending in .gguf can still ship safetensors + auto_map, so it falls through to the scan.
+    """A repo id ending in .gguf can still ship auto_map, so only a direct .gguf file is skipped; returns None when a config is unreadable, so the caller scans."""
     if _is_direct_gguf_file_ref(model_name):
         return False
     configs = _load_remote_code_configs(model_name, hf_token, load_subdirs = load_subdirs)
     if configs is None:
         return None
-    # Every nesting level, not just the top: a composite model declares auto_map on a
-    # sub-config, and the loader resolves it from there, so a top-level-only read
-    # returned "ships no remote code" for a repo whose code the load would run.
+    # Check every nesting level: composite models declare auto_map on a sub-config.
     if not any(
         config_declares_auto_map(cfg or {}) or _config_declares_model_file(cfg) for cfg in configs
     ):
@@ -220,10 +214,7 @@ def evaluate_remote_code_consent_for_targets(
     subject: Optional[str] = None,
     load_subdirs_by_target = None,
 ) -> RemoteCodeDecision:
-    """Decide whether a ``trust_remote_code=True`` load may proceed, over every repo whose code the load would execute. A LoRA load runs adapter AND base code, so all targets are scanned as ONE unit and pinned by ONE fingerprint over the union of their ``.py``: one approval covers every repo, and a base-only fingerprint cannot leave an adapter's own ``auto_map`` unreviewed. On ``blocked``, the caller surfaces ``response_payload()`` and retries with ``approved_fingerprint`` if the user accepts.
-
-    When ``subject`` is given, a prior approval by that user can skip the DIALOG (never the scan): the stored fingerprint seeds the authoritative content check below, so an unchanged repo auto-approves while any change re-prompts. A genuine approval is recorded for next time.
-    """
+    """Scans every target as one unit under one fingerprint, so adapter code is never unreviewed; a prior approval skips the dialog, never the scan."""
     targets = [t for t in dict.fromkeys(targets) if t]
     primary = targets[0] if targets else ""
 

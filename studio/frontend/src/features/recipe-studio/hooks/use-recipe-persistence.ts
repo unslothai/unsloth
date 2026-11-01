@@ -48,7 +48,7 @@ type UseRecipePersistenceResult = {
   importOpen: boolean;
   setImportOpen: (open: boolean) => void;
   currentSignature: string;
-  persistRecipe: () => Promise<void>;
+  persistRecipe: () => Promise<boolean>;
   copyRecipe: () => Promise<void>;
   importRecipe: (value: string) => string | null;
 };
@@ -179,9 +179,8 @@ function sanitizeSeedForShare(payload: unknown): unknown {
   return root;
 }
 
-// Delete queued upload directories once a save stops referencing them, so a
-// reload before autosave can never leave the saved recipe pointing at
-// already-deleted files. Skips any uid the just-saved payload still uses.
+// Delete queued upload dirs only once a save no longer references them, so a reload before
+// autosave never leaves the saved recipe pointing at deleted files.
 function drainQueuedUploadCleanups(
   savedPayload: RecipePayloadResult["payload"],
 ): void {
@@ -231,7 +230,7 @@ export function useRecipePersistence({
   const [workflowName, setWorkflowName] = useState("Unnamed");
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [savedSignature, setSavedSignature] = useState("");
-  // Autosave does not retry the exact content that just failed (e.g. a 409 from another window).
+  // Do not retry the exact content that just failed (e.g. a 409 from another window).
   const [failedSignature, setFailedSignature] = useState<string | null>(null);
   const [saveLoading, setSaveLoading] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -282,9 +281,9 @@ export function useRecipePersistence({
     resetRecipe,
   ]);
 
-  const persistRecipe = useCallback(async (): Promise<void> => {
+  const persistRecipe = useCallback(async (): Promise<boolean> => {
     if (saveLoading) {
-      return;
+      return false;
     }
     const nextName = normalizeNonEmptyName(workflowName, "Unnamed");
     if (nextName !== workflowName) {
@@ -302,6 +301,7 @@ export function useRecipePersistence({
       setFailedSignature(null);
       setSavedSignature(buildSignature(nextName, currentPayload));
       drainQueuedUploadCleanups(currentPayload);
+      return true;
     } catch (error) {
       console.error("Save recipe failed:", error);
       setFailedSignature(buildSignature(nextName, currentPayload));
@@ -309,6 +309,7 @@ export function useRecipePersistence({
         "Save failed",
         error instanceof Error ? error.message : "Could not save recipe.",
       );
+      return false;
     } finally {
       setSaveLoading(false);
     }
@@ -324,11 +325,8 @@ export function useRecipePersistence({
     return () => window.clearTimeout(timeoutId);
   }, [currentSignature, failedSignature, isDirty, persistRecipe, saveLoading]);
 
-  // Drain queued cleanups even when autosave is skipped: a net-zero edit (add then remove an
-  // unstructured seed before the 800ms debounce) keeps isDirty false, so the autosave effect never
-  // drains and the queued uid leaks its upload dir. Not-dirty means currentPayload equals the saved
-  // recipe, and drain skips the uid it still references, so only dirs no saved recipe points at are
-  // deleted (keeps the save-first invariant).
+  // Drain even when not dirty: a net-zero edit inside the debounce would otherwise leak the upload
+  // dir. Drain skips uids the saved recipe still references.
   useEffect(() => {
     if (!initialRecipeReady || isDirty || saveLoading) {
       return;

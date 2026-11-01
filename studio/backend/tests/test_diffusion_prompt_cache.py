@@ -546,8 +546,88 @@ def test_wan_per_text_cache_kill_switch(monkeypatch):
     assert pipe.t5_calls == ["a cat", "blurry", "a dog", "blurry"]
 
 
-def test_per_text_cache_is_wan_only():
+def test_per_text_cache_only_for_known_pipelines():
     pipe = _EncodePipe()
     pipe._get_t5_prompt_embeds = lambda **kw: None
+    pipe._encode_prompt = lambda **kw: None
     assert prompt_cache._per_text_method(pipe) is None
     assert prompt_cache._per_text_method(WanStubPipeline()) == "_get_t5_prompt_embeds"
+    assert prompt_cache._per_text_method(ZImageStubPipeline()) == "_encode_prompt"
+
+
+class ZImageStubPipeline:
+    """diffusers ZImagePipeline's shape: encode_prompt encodes the prompt and, under CFG, the negative in ONE call,
+    each through _encode_prompt, which templates the caller's prompt list in place."""
+
+    def __init__(self):
+        self.calls = []
+        self._execution_device = torch.device("cpu")
+        self.text_encoder = torch.nn.Linear(2, 2)
+
+    def _encode_prompt(
+        self,
+        prompt,
+        device = None,
+        prompt_embeds = None,
+        max_sequence_length = 512,
+    ):
+        if prompt_embeds is not None:
+            return prompt_embeds
+        if isinstance(prompt, str):
+            prompt = [prompt]
+        self.calls.append(list(prompt))
+        out = [torch.full((len(p) + 1, 2), float(sum(map(ord, p)))) for p in prompt]
+        for i, p in enumerate(prompt):
+            prompt[i] = f"<user>{p}"
+        return out
+
+    def encode_prompt(
+        self,
+        prompt,
+        device = None,
+        do_classifier_free_guidance = True,
+        negative_prompt = None,
+        prompt_embeds = None,
+        negative_prompt_embeds = None,
+        max_sequence_length = 512,
+    ):
+        prompt = [prompt] if isinstance(prompt, str) else prompt
+        pos = self._encode_prompt(
+            prompt = prompt, device = device, max_sequence_length = max_sequence_length
+        )
+        neg = []
+        if do_classifier_free_guidance:
+            negative = [negative_prompt or "" for _ in prompt]
+            neg = self._encode_prompt(
+                prompt = negative, device = device, max_sequence_length = max_sequence_length
+            )
+        return pos, neg
+
+
+def _flat(x):
+    if isinstance(x, (list, tuple)):
+        return [t for v in x for t in _flat(v)]
+    return [x] if x is not None else []
+
+
+def test_cfg_negative_is_encoded_once_across_new_prompts():
+    """Under CFG only the new prompt is encoded; the unchanged negative is reused. Results match uncached."""
+    pipe = ZImageStubPipeline()
+    assert prompt_cache.install(pipe)
+    want = ZImageStubPipeline()
+    for text in ("a cat", "a dog", "a boat", "a dog"):
+        got = pipe.encode_prompt(text, negative_prompt = "blurry")
+        ref = want.encode_prompt(text, negative_prompt = "blurry")
+        a, b = _flat(got), _flat(ref)
+        assert len(a) == len(b) and all(torch.equal(x, y) for x, y in zip(a, b))
+    texts = [c[0] if isinstance(c, list) else c for c in pipe.calls]
+    assert texts == ["a cat", "blurry", "a dog", "a boat"]
+
+
+def test_cfg_negative_per_text_kill_switch(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_PROMPT_CACHE_PER_TEXT", "0")
+    pipe = ZImageStubPipeline()
+    assert prompt_cache.install(pipe)
+    for text in ("a cat", "a dog"):
+        pipe.encode_prompt(text, negative_prompt = "blurry")
+    assert [c[0] for c in pipe.calls] == ["a cat", "blurry", "a dog", "blurry"]

@@ -360,7 +360,6 @@ function rankDatasetRelevance(
 ): DatasetRelevance {
   if (isPretrainingDataset(dataset)) return "incompatible";
 
-  // Keep OCR / vision-text corpora out of non-vision defaults.
   if (modelType !== "vision") {
     if (
       dataset.plainTags.some((t) => OCR_PLAIN_TAGS.has(t.toLowerCase())) ||
@@ -394,7 +393,6 @@ function isOcrOrVisionTextDataset(dataset: HfDatasetResult): boolean {
 }
 
 function toCuratedDatasetResult(id: string): HfDatasetResult {
-  // Curated defaults are id-only; this fills the shared result shape without extra HF requests.
   return {
     id,
     downloads: 0,

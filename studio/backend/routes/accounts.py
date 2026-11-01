@@ -63,8 +63,7 @@ def retire_account_roots(account: AccountContext):
     account_access.retire_resident_shares(account.account_id)
     from core.inference.external_provider import retire_account_clients
 
-    # Its provider clients hold a cookie jar and idle sockets, and the cache they sit in is
-    # keyed by account, so nothing else would ever drop them.
+    # Cache is keyed by account, so nothing else would drop these clients.
     retire_account_clients(account.account_id)
     from core.inference.mcp_client import close_mcp_sessions, invalidate_tool_cache
     from core.training.account_jobs import retire_account_jobs

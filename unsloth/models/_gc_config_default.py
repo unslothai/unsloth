@@ -4,8 +4,8 @@
 """Honour ``use_gradient_checkpointing = False`` when the trainer config only carries TRL's default.
 
 TRL configs default ``gradient_checkpointing = True``, so ``Trainer.train()`` would re-enable it (~25-30% slower).
-Unsloth configs record whether it was passed to ``__init__`` as ``_unsloth_gradient_checkpointing_explicit``,
-not compared to a default (which varies by TRL release); full rebuilds (``dataclasses.replace``,
+Unsloth configs record whether it was passed to ``__init__`` (or assigned on the config afterwards, e.g.
+``args.gradient_checkpointing = True``) as ``_unsloth_gradient_checkpointing_explicit``, not compared to a default (which varies by TRL release); full rebuilds (``dataclasses.replace``,
 ``Config(**args.to_dict())``) count as explicit, keeping the old behaviour.
 
 Rules, at trainer construction:
@@ -58,6 +58,17 @@ def track_explicit_gradient_checkpointing(config_class):
 
     setattr(__init__, _WRAPPED_FLAG, True)
     config_class.__init__ = __init__
+
+    # An assignment after construction (args.gradient_checkpointing = True) is a user choice too.
+    # Inside __init__ the flag is not set yet, so the dataclass's own field assignments do not count.
+    original_setattr = config_class.__setattr__
+
+    def __setattr__(self, name, value):
+        original_setattr(self, name, value)
+        if name == "gradient_checkpointing" and EXPLICIT_FLAG in self.__dict__:
+            self.__dict__[EXPLICIT_FLAG] = True
+
+    config_class.__setattr__ = __setattr__
     return True
 
 

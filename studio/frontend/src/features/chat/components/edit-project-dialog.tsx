@@ -75,7 +75,6 @@ export function EditProjectDialog({
   onOpenChange,
   onDelete,
 }: {
-  /** The project being edited, or null while the dialog is closed. */
   project: ProjectRecord | null;
   onOpenChange: (open: boolean) => void;
   onDelete: (project: ProjectRecord) => void;

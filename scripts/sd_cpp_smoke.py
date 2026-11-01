@@ -46,7 +46,6 @@ from core.inference.sd_cpp_args import (  # noqa: E402
 )
 from core.inference.sd_cpp_engine import SdCppEngine, find_sd_cpp_binary  # noqa: E402
 
-# memory mode -> sd.cpp offload policy, matching the diffusers planner
 _MODE_TO_POLICY = {
     MEMORY_MODE_FAST: OFFLOAD_NONE,
     MEMORY_MODE_BALANCED: OFFLOAD_GROUP,
@@ -60,7 +59,6 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--binary", default = None, help = "sd-cli path (else env / finder)")
     p.add_argument("--family", default = "z-image")
     p.add_argument("--diffusion-model", default = None)
-    # img2img + upscale inputs
     p.add_argument("--init-img", default = None)
     p.add_argument("--strength", type = float, default = 0.6)
     p.add_argument("--upscale-model", default = None)

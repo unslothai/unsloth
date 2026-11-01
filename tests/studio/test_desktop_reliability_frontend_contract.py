@@ -2084,11 +2084,25 @@ def test_image_train_rail_matches_create_and_header():
 
 def test_compact_media_link_keeps_accessible_name_and_truncation():
     source = _ui_source(MEDIA_PAGE_LINK)
-    button = source.split("<button", 1)[1].split("</button>", 1)[0]
+    # Two variants since #15520: the header icon button (`iconOnly`) and the labelled link.
+    buttons = [part.split("</button>", 1)[0] for part in source.split("<button")[1:]]
+    assert len(buttons) == 2, "expected the icon button and the labelled link"
+    for button in buttons:
+        assert "aria-label={label}" in button
 
-    assert "aria-label={label}" in button
-    assert 'cn("min-w-0 truncate", labelClassName)' in button
-    assert "arrowClassName" in button
+    labelled = [button for button in buttons if "labelClassName" in button]
+    assert len(labelled) == 1
+    assert 'cn("min-w-0 truncate", labelClassName)' in labelled[0]
+    assert "arrowClassName" in labelled[0]
+
+    # The icon button's own label (`iconArrow`, the sibling media page) truncates and only
+    # shows on a wide header, which the header used to pass in as labelClassName.
+    icon_button = next(button for button in buttons if button is not labelled[0])
+    icon_label = icon_button.split("{iconArrow && (", 1)[1]
+    assert "min-w-0 truncate" in icon_label
+    assert "hidden" in icon_label and "@[50rem]:inline" in icon_label
+    sibling = source.split("export function SiblingMediaPageLink", 1)[1]
+    assert "iconArrow={true}" in sibling
 
 
 def test_media_page_link_tooltip_drops_below_titlebar_controls():
@@ -2152,8 +2166,10 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     assert "@[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0" in header
     assert "col-start-2" in header
     assert "col-start-3" in header
-    assert 'labelClassName="hidden @[50rem]:inline"' in header
-    assert 'arrowClassName="hidden @[50rem]:block"' in header
+    # Header icon buttons since #15520; the sibling link hides its name on a narrow header
+    # itself (checked in test_compact_media_link_keeps_accessible_name_and_truncation).
+    assert '<LibraryPageLink tab="images" iconOnly={true} />' in header
+    assert '<SiblingMediaPageLink to="/video" />' in header
     assert "absolute" not in header.split("<PillTabs", 1)[0]
 
 

@@ -10,6 +10,7 @@ import {
   newId,
   useDocStore,
 } from "../stores/doc-store";
+import { removeNodes } from "../recipe/recipe-actions";
 import { useUiStore } from "../stores/ui-store";
 import type { FlowEdge, FlowNode } from "../types";
 import { addFileNodes } from "./file-drop";
@@ -161,7 +162,7 @@ export function useEditorShortcuts(active: boolean): void {
       } else if (mod && key === "x") {
         if (copySelection()) {
           event.preventDefault();
-          doc.removeElements({ nodes: useUiStore.getState().selectedNodes });
+          removeNodes(useUiStore.getState().selectedNodes);
           useUiStore.getState().setSelection([], []);
         }
       } else if (mod && key === "v") {

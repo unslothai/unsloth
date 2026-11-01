@@ -190,6 +190,14 @@ def _read_adapter(path):
     return load_file(os.path.join(path, "adapter_model.safetensors"))
 
 
+def _enable_reentrant_gc(model):
+    """Reentrant checkpointing only back-propagates into a segment whose input requires grad; with the
+    embeddings frozen (LoRA) that needs enable_input_require_grads, which transformers 4.x
+    gradient_checkpointing_enable does not do for a PEFT model (5.x does)."""
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
+    model.enable_input_require_grads()
+
+
 def _case_parity(
     rank,
     world,
@@ -211,13 +219,13 @@ def _case_parity(
     ref = build(repo, tie = tie, **extra)
     ids, labels = batch(ref)
     if gc:
-        ref.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
+        _enable_reentrant_gc(ref)
     ref_res = _reference(ref, ids, labels, steps)
     if rank == 0:
         ref.save_pretrained(os.path.join(tmp, "ref"))
     model = build(repo, tie = tie, **extra)
     if gc:
-        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
+        _enable_reentrant_gc(model)
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))
     originals = {
         "embed": weakref.ref(model.get_input_embeddings()),

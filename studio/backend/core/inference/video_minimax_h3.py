@@ -13,12 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-# Must stay equal to the minimax-h3 family's `gguf_repo`. They are the same one-click pick, and main's
-# test_curated_gguf_repos_are_unsloth_mirrors only checks the family field, so a divergence here would let that test
-# pass while the actual download still came from a community repack.
-# tests/test_video_backend.py::test_the_h3_native_repo_matches_the_family_gguf_repo pins the pair. The mirror carries
-# the Qwen3-VL encoder quants as well as the denoisers, so this repo alone satisfies h3_native_hub_files' first two
-# entries.
+# Must equal the minimax-h3 family gguf_repo, or the family test passes while downloads come from a community repack (pinned in test_video_backend.py).
 H3_GGUF_REPO = "unsloth/MiniMax-H3-GGUF"
 # The VAEs live beside the denoisers, so the native pick is one repo we control end to end. It was the Comfy-Org repack
 # once; a video load never reads from that repack any more, cached or not.
@@ -31,37 +26,22 @@ H3_AUDIO_VAE = "vae/official/minimax_h3_audio_vae_fp32.safetensors"
 H3_QWEN_Q2 = "qwen3vl_32b_minimax_h3-Q2_K_M.gguf"
 H3_QWEN_Q4 = "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
 
-# Measured with the merged Diffusers T2VA workflow and component-level CPU offload. The base is the largest component
-# plus runtime overhead; activation memory scales with spatiotemporal volume across the tested 960x544 and 1344x768,
-# 124-345 frame matrix. The guard covers allocator variation around the measured success and OOM boundaries.
+# Measured (Diffusers T2VA, component CPU offload, 960x544..1344x768, 124-345 frames); base is largest component plus overhead; margin = allocator variance.
 H3_DIFFUSERS_VRAM_BASE_GB = 68.5
 H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME = 0.08
 
-# The terms H3_DIFFUSERS_VRAM_BASE_GB is built from, so a load that shrinks one of the big components can rebuild the
-# floor from what it holds instead of the released sizes. With everything under enable_auto_cpu_offload the base is
-# the LARGEST SINGLE RESIDENT COMPONENT plus runtime overhead, not the sum: at any instant one component is on the
-# device and the rest are parked on the host. That is why seeding a 20 GB pre-quantized denoiser moved this number by
-# nothing -- the 66.7 GB conditioner was already the larger of the two. ONE case breaks the max, and it is the case a
-# pre-quantized denoiser creates: a torchao module does not survive being moved mid-block, so
-# _load_h3_modular_pipeline PINS it to the device and takes it out of the offload rotation, after which the floor
-# becomes additive (denoiser + whichever offloaded component is largest). Measured at 960x544x124 with the int8
-# denoiser pinned: bf16 conditioner 94.62 GB, int8 conditioner 55.20 GB, so 2.6 covers the pinned overhead on the
-# conservative side of both. Note what the first figure says about the shipped constant: a pinned denoiser and a dense
-# conditioner need ~95 GB, and the flat 68.5 under-states that by 26 GB.
+# Floor is largest resident component, but a pinned torchao denoiser (cannot move mid-block) makes it additive; 2.6 GB covers that overhead.
 H3_DIFFUSERS_VRAM_OVERHEAD_GB = 1.8
 H3_DIFFUSERS_VRAM_PINNED_OVERHEAD_GB = 2.6
 H3_TEXT_ENCODER_BF16_GB = 66.7
 H3_TRANSFORMER_BF16_GB = 66.3
-# Video + audio VAE, from the family's bf16_components_gb. Only a floor for the offloaded term: it stops a very small
-# conditioner from claiming a base no component rotation could actually fit in.
+# Video + audio VAE (bf16_components_gb), a floor so a tiny conditioner can't claim an unfit base.
 H3_VAE_RESIDENT_GB = 11.1
 # Streamed denoiser's device footprint (running + prefetched group + top-level modules); below the VAE term.
 H3_TRANSFORMER_STREAMED_GB = 3.0
 
 
-# Resident decimal GB of each hosted pre-quantized denoiser, from the artifact sizes in unsloth/MiniMax-H3-FP8
-# (MiniMax-H3-INT8.pt 18.86 GiB, MiniMax-H3-FP8.pt 18.87 GiB). Both are the PRUNED (curve-form adaLN) partition, which
-# is why they are so far under half the 66.3 GB dense denoiser rather than at it.
+# Resident GB of each hosted prequant denoiser; PRUNED (curve-form adaLN), so well under half of 66.3.
 H3_TRANSFORMER_PREQUANT_GB: dict[str, float] = {"int8": 20.3, "fp8": 20.3}
 
 
@@ -77,14 +57,7 @@ def h3_diffusers_vram_base_gb(
     transformer_gb: Optional[float] = None,
     transformer_pinned: bool = False,
 ) -> float:
-    """The resident-weights floor for an H3 Diffusers load.
-
-    Every argument defaults to today's behaviour -- the RELEASED bfloat16 sizes and no pinning --
-    so the no-argument call reproduces ``H3_DIFFUSERS_VRAM_BASE_GB`` exactly and nothing that does
-    not pass a size changes.
-
-    ``transformer_pinned`` is the ENGAGED fact, not the request: only a denoiser that
-    ``pin_prequantized_module`` actually pinned is resident alongside the offload rotation."""
+    """H3 Diffusers resident-weights VRAM floor; transformer_pinned is the engaged pin, not the request."""
     text_encoder = H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
     transformer = H3_TRANSFORMER_BF16_GB if transformer_gb is None else float(transformer_gb)
     if transformer_pinned:
@@ -104,12 +77,7 @@ def estimate_h3_diffusers_vram_gb(
     transformer_streamed: bool = False,
     text_encoder_streamed: bool = False,
 ) -> float:
-    """Measured available-VRAM floor for an H3 Diffusers generation.
-
-    ``text_encoder_gb`` / ``transformer_gb`` are the RESIDENT sizes this load actually holds and
-    ``transformer_pinned`` whether the denoiser was taken out of the offload rotation; all unset
-    keeps the released-bfloat16 floor this shipped with.
-    ``transformer_streamed``: no two large components are ever resident together."""
+    """Measured VRAM floor for H3 Diffusers; unset sizes keep released bf16 floor; streamed transformer means no two large components are ever resident together."""
     volume_mpixel_frames = width * height * num_frames / 1_000_000
     if text_encoder_streamed:
         from .video_minimax_h3_te import H3_TE_STREAMED_GB
@@ -144,14 +112,10 @@ def estimate_h3_diffusers_vram_gb(
     return base + (H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames)
 
 
-# The VRAM at which the offload tier changes, and the host floor of the tier above it. Both are the shipped values,
-# unchanged: that tier is only reachable on a >= 132 GB device, where the component sizes below are not what stands
-# between a load and a generation, and there is no measurement here to justify moving it.
+# Shipped values kept: offload tier at 132 GB VRAM; no measurement here justifies moving it.
 H3_DIFFUSERS_HOST_RAM_TIER_VRAM_GB = 132.0
 H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB = 85.0
-# The offload tier parks every component on the host, so its floor is their SUM (unlike the VRAM floor, which is the
-# largest resident one). Derived, not newly measured: it is the shipped 150.0 minus the released component sum, so the
-# released configuration still asks for exactly 150.0 and only a load holding smaller components asks for less.
+# Offload tier parks everything on host, so floor is the SUM; shipped 150.0 minus released sum.
 H3_DIFFUSERS_HOST_RAM_HEADROOM_GB = 5.9
 
 
@@ -229,23 +193,7 @@ def estimate_h3_diffusers_host_ram_gb(
     transformer_streamed: bool = False,
     text_encoder_streamed: bool = False,
 ) -> float:
-    """Host-RAM floor for the offload tier selected at the available VRAM.
-
-    ``text_encoder_gb`` / ``transformer_gb`` are the RESIDENT sizes this load actually holds, as
-    for the VRAM floor; unset keeps the released bfloat16 sizes, so the no-argument call is the
-    number this shipped with.
-
-    Sizing this from the released pair while the VRAM floor is sized from the engaged one refuses
-    the exact configuration the hosted quantized components exist for: an 80 GB device holding the
-    int8 conditioner and the int8 denoiser clears the VRAM check at 55 GB and is then told it needs
-    150 GB of system RAM for 47.5 GB of weights.
-
-    A pinned denoiser is still counted here. It lives on the device during the generation, but it
-    was built on the host to get there, and keeping it in the sum errs toward refusing a load that
-    would have fitted rather than admitting one that will not.
-    ``transformer_streamed``: the streamed denoiser keeps a pageable source beside its pinned copy and counts twice
-    (80.2 GB measured peak). A slab-arena pin holds one copy and passes False."""
-    # A streamed load keeps its staging copy even when free VRAM later climbs past the tier.
+    """Host-RAM floor for offload tier from resident sizes; streamed denoiser counts twice, pinned still counts; a slab-arena pin passes False."""
     if available_vram_gb >= H3_DIFFUSERS_HOST_RAM_TIER_VRAM_GB and not transformer_streamed:
         return H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB
     text_encoder = H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
@@ -301,13 +249,7 @@ def h3_host_ram_shortfall(
     return None
 
 
-# Extra picker tiers for the H3 Diffusers row, published on /api/system and unioned with the catalog's (widen only).
-# Picker units: total VRAM GiB, available RAM GiB. Each follows the kill switch of the behaviour it relies on:
-#   - VRAM (UNSLOTH_H3_TE_STREAM): the generate guard's floor for the page's default request, so the selected row
-#     renders it; 960x544 still renders on 12 GB when chosen. Without it, the catalog's 30.
-#   - RAM (UNSLOTH_DIFFUSION_PIN_ARENA): the single-copy host floor (64.5 GB, or the measured
-#     H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB with the conditioner streamed).
-#     Without it, the catalog's 80.
+# Extra picker tiers gated by kill switches: VRAM by UNSLOTH_H3_TE_STREAM (else catalog 30), RAM by UNSLOTH_DIFFUSION_PIN_ARENA (else catalog 80).
 H3_DIFFUSERS_FIT_TIERS_ENV = "UNSLOTH_H3_DIFFUSERS_WIDE_TIERS"
 H3_DIFFUSERS_CATALOG_TIER_GPU_GIB = 30.0
 H3_DIFFUSERS_CATALOG_TIER_RAM_GIB = 80.0
@@ -345,10 +287,7 @@ def _h3_streamed_host_floor_gib(
 
 
 def h3_diffusers_fit_tiers() -> list[dict]:
-    """The extra picker tiers this backend admits for the H3 Diffusers row, or [] when
-    ``UNSLOTH_H3_DIFFUSERS_WIDE_TIERS=0`` turns them off, or when neither widening behaviour is
-    active (the picker then keeps the catalog's own tiers, i.e. today's routing). Torch-free: read
-    on the polled /api/system route."""
+    """Extra H3 Diffusers picker tiers; [] when UNSLOTH_H3_DIFFUSERS_WIDE_TIERS=0; must stay torch-free since /api/system polls it."""
     import os
 
     flag = os.environ.get(H3_DIFFUSERS_FIT_TIERS_ENV, "1").strip().lower()
@@ -372,8 +311,7 @@ def h3_diffusers_fit_tiers() -> list[dict]:
     return [{"gpu_gb": gpu_gib, "system_ram_gb": ram_gib, "requires_quantised_streaming": True}]
 
 
-# torch.autocast casts the weight and bias of these module types to the autocast dtype on entry. Norms sit on
-# autocast's float32 promote list and bare parameters are read directly, so both must keep their source precision.
+# autocast casts these modules' weights; norms and bare params must keep source precision.
 _AUTOCAST_WEIGHT_MODULE_NAMES = ("Linear", "Conv1d", "Conv2d", "Conv3d")
 
 
@@ -389,31 +327,10 @@ def _module_bytes(module: Any) -> int:
 
 
 def trim_h3_video_vae(vae: Any, *, workflow: str) -> dict[str, int]:
-    """Drop what the H3 video VAE cannot use and pre-cast what autocast casts anyway.
-
-    Two thirds of an H3 render's peak is not activations. Measured at 640x384 across 124 frames, a
-    20.25 GB int8 denoiser peaks at 36.96 GB, and the gap is almost all weights: the video VAE alone
-    is 10.42 GB because diffusers pins it to float32, and a further 4.91 GB is autocast's own
-    float16 copy of those weights.
-
-    ``MiniMaxH3VideoDecodeStep`` wraps ``vae.decode`` in ``torch.autocast(float16)``. Autocast casts
-    every Linear and Conv weight it meets and caches the copy for the lifetime of the region, so the
-    float32 original and its float16 twin are both resident through the whole decode. Storing those
-    weights as float16 up front makes the cast a no-op and removes both:
-    ``x.to(float16).to(float16)`` is ``x.to(float16)``, so the arithmetic is unchanged rather than
-    merely close. The audio VAE decode is NOT under autocast, so it is left alone.
-
-    The encoder half goes only for a workflow that never encodes: ``t2va`` starts from noise, so
-    ``vae.encoder`` and ``vae.quant_conv`` are dead weight, while a future image-conditioned
-    workflow needs them.
-
-    Returns a byte report for the caller to log. Never raises: a diffusers release that renames
-    these attributes should cost the saving, not the render.
-    """
+    """Pre-cast VAE weights to float16 so autocast keeps no float32 twin; drop encoder for t2va only; never raises, so renames cost the saving, not the render."""
     import torch
 
-    # Every lookup below is a getattr with a default, so a None vae and a vae whose attributes moved both fall through
-    # to a zero report without a separate guard.
+    # Lookups are getattr with defaults, so a None vae or moved attributes both report zero.
     report = {"encoder_freed": 0, "decoder_freed": 0}
 
     if workflow == "t2va":
@@ -459,10 +376,7 @@ H3_ANCHOR_LAST = "last"
 
 
 def h3_canvas_for_aspect(aspect_width: float, aspect_height: float) -> tuple[int, int]:
-    """Resolve MiniMax-H3's canvas for an aspect ratio.
-
-    Raises ValueError outside the trained 1:4 to 4:1 range.
-    """
+    """Canvas for an aspect ratio; ValueError outside the trained 1:4 to 4:1 range."""
     if aspect_width <= 0 or aspect_height <= 0:
         raise ValueError(
             f"The source image has no usable aspect ratio ({aspect_width}x{aspect_height})."
@@ -515,9 +429,7 @@ H3_MAX_REFERENCES = 12
 # A reference video's trained window, in seconds.
 H3_REF_VIDEO_MIN_SECONDS = 2.0
 H3_REF_VIDEO_MAX_SECONDS = 15.0
-# How far a trim may reach past the video track before it is refused. A container reports its longest track, so a file
-# whose audio outruns its video reads as longer than it can show, and a client picking an interval from that duration
-# asks for slightly more video than exists. Within this margin the last frame is held instead.
+# Containers report the longest track, so allow this slack and hold the last frame.
 H3_REF_TRIM_COVERAGE_SLACK_SECONDS = 0.5
 H3_FPS = 24
 
@@ -557,13 +469,7 @@ def h3_transformer_task(filename: str) -> str:
 
 
 def h3_denoiser_component(task: Optional[str]) -> str:
-    """The pipeline component / base-repo subfolder holding ``task``'s denoiser partition.
-
-    One repo, two partitions: the keyframe workflows (fl2va, and text-only through it) denoise
-    against ``transformer``, the reference workflow against ``transformer_ref``. Diffusers names
-    the components that way too, so this single answer serves the seed target, the offload pin and
-    the config subfolder alike -- and seeding ``transformer`` for a reference load would leave the
-    denoise step with no denoiser and pull the dense 66.28 GB partition anyway."""
+    """Denoiser subfolder for a task: transformer_ref for references, else transformer; a wrong one pulls the dense 66.28 GB partition."""
     return (
         "transformer_ref" if (task or "").strip().lower() == H3_TASK_REFERENCES else "transformer"
     )
@@ -640,8 +546,7 @@ def decode_h3_reference_video(
         )
     expected_frames = int(round(duration * H3_FPS))
     if trim is not None and len(frames) < expected_frames:
-        # Hold the last frame across a shortfall the slack allows, as the trim decoders do at their own endpoint; a
-        # larger gap means the range really was not there.
+        # Hold the last frame across a shortfall within the slack; a larger gap is a real error.
         if len(frames) + math.ceil(H3_REF_TRIM_COVERAGE_SLACK_SECONDS * H3_FPS) < expected_frames:
             raise ValueError("That reference video did not cover the selected range.")
         frames.extend([frames[-1]] * (expected_frames - len(frames)))
@@ -826,9 +731,7 @@ def _decode_h3_video_trim_by_ordinal(
         source_fps = float(stream.average_rate or stream.guessed_rate or H3_FPS)
         if source_fps <= 0:
             source_fps = float(H3_FPS)
-        # The frame on screen at t is the last one starting at or before it, so the start floors where the exclusive end
-        # ceils. Ceiling both skips the frame straddling a fractional start, drifting this fallback ahead of the
-        # timestamp path.
+        # Start floors, exclusive end ceils: ceiling both skips the frame straddling a fractional start.
         start_source_frame = math.floor(trim[0] * source_fps + 1e-6)
         end_source_frame = math.ceil(trim[1] * source_fps - 1e-6)
         target_count = int(round((trim[1] - trim[0]) * H3_FPS))
@@ -894,11 +797,7 @@ def _decode_audio_stream(
     timeline_start_seconds: Optional[float] = None,
     untrimmed_duration_seconds: Optional[float] = None,
 ) -> tuple[Optional[Any], Optional[int]]:
-    """Decode the first audio stream as float32 samples at its native rate.
-
-    Decode incrementally to enforce H3's 15-second limit. For untrimmed video, cap embedded audio
-    to the video timeline.
-    """
+    """Decode first audio stream as float32 samples at native rate, incrementally to enforce H3's 15-second limit; untrimmed video caps audio at timeline."""
     import av
 
     trim = validate_h3_reference_trim(trim_start_seconds, trim_end_seconds)
@@ -957,8 +856,7 @@ def _decode_audio_stream(
         take_end = min(block_end, end_sample) if end_sample is not None else block_end
         if take_start < take_end:
             chunks.append(block[take_start - block_start : take_end - block_start])
-        # A track running past its video is clamped, not refused: encoder padding overshoots routinely, and longer
-        # tracks decoded fine before trimming existed. Stopping here also skips a tail no engine receives.
+        # Clamp, not refuse: encoder padding overshoots routinely.
         return end_sample is not None and block_end >= end_sample
 
     stopped = False
@@ -1037,9 +935,7 @@ def _decode_audio_trim_by_timestamp(
         for resampled in resampler.resample(None):
             if _take(resampled):
                 break
-    # Nothing copied means no soundtrack here, whether the track ended before the interval or starts after it. Silence
-    # instead would be a fabricated track, and would hide the gap from stage_h3_references' positional pairing. A track
-    # that merely runs out partway did copy something, so it keeps its silent tail rather than failing.
+    # No copied samples means no soundtrack; silence would hide the gap from positional pairing.
     if not copied_any:
         return None, None
     return output, sample_rate
@@ -1063,9 +959,8 @@ def write_h3_reference_wav(path: Path, waveform: Any, sample_rate: int) -> None:
 
 @dataclass(frozen = True)
 class MiniMaxH3References:
-    """Decoded references in model order: images, videos, then standalone audio."""
+    """Decoded references in model order: canvas-sized images in <Picture i> order, then videos, then standalone audio."""
 
-    # Canvas-sized reference images, in <Picture i> order.
     images: tuple = ()
     # (frames, waveform, sample_rate) per <Video k>; waveform is None when silent.
     videos: tuple = ()
@@ -1093,10 +988,7 @@ class MiniMaxH3StagedReferences:
 def stage_h3_references(
     references: MiniMaxH3References, scratch: Path
 ) -> MiniMaxH3StagedReferences:
-    """Stage references in sd-cli's positional file layout.
-
-    Video soundtracks must form a prefix because sd-cli pairs them by index.
-    """
+    """Video soundtracks must form a prefix, as sd-cli pairs audio to video by index position."""
     images: list[str] = []
     for index, image in enumerate(references.images):
         path = scratch / f"ref-image-{index:02d}.png"
@@ -1140,11 +1032,7 @@ def stage_h3_references(
 
 
 def h3_diffusers_references(references: MiniMaxH3References) -> list:
-    """``MiniMaxH3References`` as the Diffusers blocks' reference dataclasses, same order.
-
-    Every rate travels with its media: the frames are already on the model's 24 fps and each
-    waveform carries the rate it was decoded at, so nothing is re-guessed downstream.
-    """
+    """Convert to Diffusers reference dataclasses in order; each rate travels with its own media."""
     import torch
     from diffusers.modular_pipelines.minimax_h3 import (
         MiniMaxH3AudioReference,
@@ -1181,11 +1069,7 @@ def h3_conditioning_mode(
     has_last: bool = False,
     has_references: bool = False,
 ) -> str:
-    """The task name for one request's conditioning, as MiniMax-H3 and sd.cpp name them.
-
-    Recorded on the gallery clip so a restored recipe says which workflow produced it, and
-    used in messages, so the five spellings live in one place.
-    """
+    """Task name for a request's conditioning, as MiniMax-H3 and sd.cpp spell it; stored on the clip."""
     if has_references:
         return H3_TASK_REFERENCES
     if has_first and has_last:
@@ -1206,11 +1090,7 @@ def h3_text_encoder_filename(transformer_filename: str) -> str:
 
 
 def validate_h3_transformer_filename(filename: str) -> None:
-    """Accept either released denoiser partition, and nothing else from the same repo.
-
-    FL2VA serves text-to-video and first/last-frame video; Ref2VA serves omni-reference video.
-    Which one is picked IS the task, so both are valid picks -- but the Qwen3-VL encoder and the
-    VAEs share the repo and are companions, never denoisers."""
+    """Only the fl2va and ref2va denoisers are valid; the encoder and VAEs are companions, not denoisers."""
     name = Path(filename).name.lower()
     partitions = ("minimax_h3_fl2va", "minimax_h3_ref2va")
     if not name.startswith(partitions) or not name.endswith(".gguf"):
@@ -1221,29 +1101,33 @@ def validate_h3_transformer_filename(filename: str) -> None:
         )
 
 
-def h3_download_error(repo_id: str, filename: str, exc: Exception) -> Exception:
-    """Turn a Hub download failure on an H3 component into something a user can act on.
-
-    The Hub says "Repository Not Found ... make sure you are authenticated" for a repo that is
-    private or gated as well as for one that genuinely does not exist. For H3 that message is
-    actively misleading in both directions: the mirror is real, and the user's own token is
-    usually fine. Name the repo, say which of the four components it was, and say what to do.
-
-    Returns the exception to raise (never raises), so the caller keeps ``raise ... from exc`` and
-    the original traceback survives. Anything that is not a recognised access error is passed back
-    unchanged rather than reworded, so a timeout or a disk-full still reads as itself.
-    """
-    from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
-
-    if not isinstance(exc, (RepositoryNotFoundError, GatedRepoError)):
-        return exc
-
-    role = {
+def _h3_role(filename: str) -> str:
+    return {
         H3_VIDEO_VAE: "video VAE",
         H3_AUDIO_VAE: "audio VAE",
         H3_QWEN_Q2: "text encoder",
         H3_QWEN_Q4: "text encoder",
     }.get(filename, "denoiser")
+
+
+def h3_offline_miss_error(repo_id: str, filename: str) -> RuntimeError:
+    """A cache-only load (offline, or an auto-switch) missing an H3 file, e.g. VAEs cached before the vae/official/ move."""
+    return RuntimeError(
+        f"MiniMax-H3 needs its {_h3_role(filename)} ({filename}) from {repo_id}, and it is not in the local "
+        "Hugging Face cache. This load may only use cached files (offline, or a load Studio started on its own), "
+        "so it could not download it. Load MiniMax-H3 once while online (or reconnect) so Studio can fetch it; "
+        "after that it loads offline."
+    )
+
+
+def h3_download_error(repo_id: str, filename: str, exc: Exception) -> Exception:
+    """Returns (never raises) an H3 access error naming repo and component, since private/gated look like not-found; other errors pass through unchanged."""
+    from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
+
+    if not isinstance(exc, (RepositoryNotFoundError, GatedRepoError)):
+        return exc
+
+    role = _h3_role(filename)
     gated = isinstance(exc, GatedRepoError)
     detail = (
         "accept its licence on the Hub, then set a token in Settings"
@@ -1271,8 +1155,7 @@ def h3_component_metadata_repo(repo_id: str) -> str:
     return repo_id
 
 
-# Resident peak is the four files plus ~1 GiB (sd.cpp frees the text encoder before the denoiser's compute buffer);
-# the estimate still adds that buffer on top of every file, plus a margin.
+# Resident peak is the four files + ~1 GiB; the estimate adds the compute buffer anyway.
 H3_NATIVE_RESIDENT_ENV = "UNSLOTH_H3_NATIVE_RESIDENT"
 # Unsloth sd.cpp fork: quantized matmuls with >= this many rows run BF16 cuBLAS instead of int8 MMQ. Unset/0 = MMQ.
 H3_QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
@@ -1793,11 +1676,7 @@ class MiniMaxH3NativeRuntime:
     engine: Any
     files: Any
     offload_flags: tuple[str, ...]
-    # (size, mtime_ns) of the sd-cli this runtime was built on, taken at load, right after ensure_h3_sd_cpp_binary
-    # vetted it for H3 support and accelerator. Every generation compares against THIS, not against whatever the path
-    # holds when it starts: an install that lands between the load and a generation replaces the binary in place, and
-    # two reads taken after it agree with each other while agreeing with nothing that was ever checked. None means the
-    # identity could not be taken, which reads as "cannot vouch" rather than "unchanged".
+    # sd-cli identity taken at load; every generation compares against it since an install can replace the binary in place; None means cannot vouch.
     binary_identity: Optional[tuple[int, int]] = None
     # The card the load resolved, kept for failure records: re-resolving at failure time can read None.
     selected_card: Optional[str] = None
@@ -1821,8 +1700,7 @@ H3_NATIVE_SERVER_ENV = "UNSLOTH_H3_NATIVE_SERVER"
 H3_NATIVE_SERVER_IDLE_ENV = "UNSLOTH_H3_NATIVE_SERVER_IDLE_S"
 # Covers watching a clip and editing the next prompt; an absent user gets the memory back within 3 minutes.
 H3_NATIVE_SERVER_IDLE_DEFAULT_S = 180.0
-# Free VRAM and available host RAM must each keep max(4 GiB, 15%) for an idle server to stay; same reserve as
-# diffusion_memory's _PIN_RESERVE_*.
+# Idle server stays only while VRAM and RAM keep max(4 GiB, 15%); same as _PIN_RESERVE_*.
 H3_NATIVE_SERVER_RESERVE_MIN_BYTES = 4 << 30
 H3_NATIVE_SERVER_RESERVE_FRACTION = 0.15
 
@@ -2082,10 +1960,7 @@ class H3NativeServerSlot:
         return None
 
     def release(self, reason: str) -> bool:
-        """Stop the server for another consumer; a busy one stops at ``end_render``. True when there was one.
-
-        Never waits on a server start (minutes under the lock, and the caller may hold the GPU arbiter): the release is
-        left pending for that render instead."""
+        """Never waits on a server start under the lock (minutes; caller may hold the GPU arbiter); busy server defers stop to end_render; True if one was stopped."""
         if not self._lock.acquire(timeout = 0.5):
             self._release_pending = reason
             return True
@@ -2177,11 +2052,7 @@ class H3NativeServerSlot:
 
 
 def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
-    """Convert an sd.cpp WebM into a gallery-compatible H.264/AAC MP4.
-
-    The native backend is available in Unsloth's no-torch runtime, so keep this
-    export entirely in PyAV rather than routing decoded frames through Diffusers.
-    """
+    """Convert sd.cpp WebM to H.264/AAC MP4 entirely in PyAV, not Diffusers, so the no-torch native runtime can export the clip."""
     import av
 
     tmp = tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False)
@@ -2244,3 +2115,52 @@ def inspect_video(path: Path) -> tuple[int, int, int, bool]:
         if frames <= 0:
             frames = sum(1 for _ in container.decode(video = 0))
     return width, height, frames, has_audio
+
+
+def _full_scale_constant(samples: Any) -> Optional[float]:
+    """The one value every sample of ``samples`` holds when it is a full-scale (+-1) DC level, else None."""
+    import numpy as np
+
+    if samples.size == 0:
+        return None
+    lo, hi = samples.min(), samples.max()
+    if lo != hi:
+        return None
+    level = float(lo)
+    if np.issubdtype(samples.dtype, np.integer):
+        level /= float(np.iinfo(samples.dtype).max)
+    return level if abs(level) >= 0.999 else None
+
+
+def h3_native_clip_is_nan_render(path: Path) -> bool:
+    """True when a clip is an sd.cpp NaN render: every frame one flat 0 or 255 AND a constant full-scale PCM soundtrack.
+
+    ggml's clamp maps NaN to 0 on CUDA and to the max on CPU. A flat frame alone is not enough (lossy encode flattens
+    near-black clips). A clip without audio, or one that cannot be read, is never flagged."""
+    import av
+
+    with av.open(str(path)) as container:
+        if not container.streams.audio:
+            return False
+        level = None
+        for frame in container.decode(audio = 0):
+            value = _full_scale_constant(frame.to_ndarray())
+            if value is None or (level is not None and value != level):
+                return False
+            level = value
+        if level is None:
+            return False
+    seen = False
+    with av.open(str(path)) as container:
+        if not container.streams.video:
+            return False
+        for frame in container.decode(video = 0):
+            pixels = frame.to_ndarray(format = "rgb24")
+            if pixels.size == 0:
+                return False
+            lo, hi = int(pixels.min()), int(pixels.max())
+            # Black must be exact: a near-black scene decodes to 1-2. A white JPEG can come back at 253-255.
+            if not (hi == 0 or lo >= 250):
+                return False
+            seen = True
+    return seen

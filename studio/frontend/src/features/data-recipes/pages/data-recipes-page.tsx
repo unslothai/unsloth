@@ -37,6 +37,7 @@ import {
   Database02Icon,
   Delete02Icon,
   DocumentAttachmentIcon,
+  FlowConnectionIcon,
   FunctionIcon,
   GithubIcon,
   Plant01Icon,
@@ -54,6 +55,7 @@ import {
   useRecipes,
 } from "../data/recipes-db";
 import { LEARNING_RECIPES } from "../learning-recipes";
+import { openRecipeInFlows } from "../data/open-in-flows";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildDataRecipesTourSteps } from "../tour";
 
@@ -496,16 +498,6 @@ export function DataRecipesPage(): ReactElement {
                 </EmptyDescription>
               </EmptyHeader>
               <EmptyContent className="max-w-6xl 4xl:max-w-none items-stretch">
-                {/*<Button*/}
-                {/*  type="button"*/}
-                {/*  variant="secondary"*/}
-                {/*  className="mx-auto"*/}
-                {/*  onClick={() => setLearningDialogOpen(true)}*/}
-                {/*  disabled={isBusy}*/}
-                {/*>*/}
-                {/*  <HugeiconsIcon icon={CookBookIcon} className="size-4" />*/}
-                {/*  Start Tutorial*/}
-                {/*</Button>*/}
                 <LearningRecipeCards
                   onSelect={(template) => {
                     openLearningRecipe(template).catch(() => undefined);
@@ -547,6 +539,20 @@ export function DataRecipesPage(): ReactElement {
                       </p>
                     </div>
                   </button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      openRecipeInFlows(recipe.id, navigate).catch(
+                        () => undefined,
+                      );
+                    }}
+                    title="Edit this recipe column by column in Flows. It stays here too."
+                  >
+                    <HugeiconsIcon icon={FlowConnectionIcon} className="size-4" />
+                    Open in Flows
+                  </Button>
                   <Button
                     type="button"
                     variant="ghost"

@@ -236,7 +236,7 @@ test("routes live in one place; variant and notices", () => {
   assert.equal(upsamplerVariantFor("flux.3-klein-base"), "base");
   assert.equal(upsamplerVariantFor("flux.3-klein"), "distilled");
   assert.equal(upsamplerVariantFor(null), "distilled");
-  assert.ok(enhancementNotice("unavailable"));
+  assert.equal(enhancementNotice("unavailable"), null);
   assert.ok(enhancementNotice("failed"));
   assert.equal(enhancementNotice("applied"), null);
   assert.equal(enhancementNotice("off"), null);
@@ -264,8 +264,7 @@ test("a preview caption goes stale when the prompt, the variant or a reference i
   );
 });
 
-test("an unavailable outcome does not claim the weights are missing, and overrides offer no download", () => {
-  assert.match(enhancementNotice("unavailable")!.description, /llama\.cpp is unavailable/);
+test("overrides offer no download", () => {
   const status = parsePromptUpsamplerStatus({ supported: true, downloaded: true, mmproj_downloaded: false, override: true });
   assert.equal(status.override, true);
   assert.equal(upsamplerNeedsDownload(status), false);

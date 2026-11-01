@@ -289,3 +289,13 @@ export function numericChartX(chart: Pick<ChartValue, "type" | "x">): boolean {
     chart.x.every((x) => typeof x === "number" && Number.isFinite(x))
   );
 }
+
+/** A judge column's {score, reasoning} as "key: value" lines instead of raw JSON. */
+export function readable(value: unknown, depth = 0): string {
+  if (value === null || typeof value !== "object") return String(value);
+  if (depth > 1) return JSON.stringify(value);
+  if (Array.isArray(value)) return value.map((v) => readable(v, depth + 1)).join(", ");
+  return Object.entries(value)
+    .map(([key, v]) => `${key}: ${readable(v, depth + 1)}`)
+    .join(depth ? ", " : "\n");
+}

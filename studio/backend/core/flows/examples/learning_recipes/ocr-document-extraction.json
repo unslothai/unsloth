@@ -1,0 +1,148 @@
+{
+  "recipe": {
+    "model_providers": [
+      {
+        "name": "provider_1",
+        "endpoint": "https://openrouter.ai/api/v1",
+        "provider_type": "openai",
+        "extra_headers": {},
+        "extra_body": {}
+      }
+    ],
+    "mcp_providers": [],
+    "model_configs": [
+      {
+        "alias": "provider_column",
+        "model": "google/gemini-2.0-flash-001",
+        "provider": "provider_1",
+        "inference_parameters": {
+          "temperature": 0.2,
+          "max_tokens": 4096
+        }
+      }
+    ],
+    "seed_config": {
+      "source": {
+        "seed_type": "hf",
+        "path": "datasets/ylecun/mnist/mnist/**/*.parquet"
+      },
+      "sampling_strategy": "ordered",
+      "selection_strategy": null
+    },
+    "tool_configs": [],
+    "columns": [
+      {
+        "column_type": "llm-text",
+        "name": "ocr_text",
+        "drop": false,
+        "model_alias": "provider_column",
+        "prompt": "Transcribe all text from this document image.",
+        "multi_modal_context": [
+          {
+            "modality": "image",
+            "column_name": "image"
+          }
+        ]
+      }
+    ],
+    "processors": []
+  },
+  "run": {
+    "rows": 5,
+    "preview": true,
+    "output_formats": ["jsonl"]
+  },
+  "ui": {
+    "nodes": [
+      {
+        "id": "note_1",
+        "x": -180,
+        "y": 43,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_1",
+        "markdown": "This recipe uses **Gemini 2.0 Flash** via OpenRouter to transcribe document images into clean text.\n\nThe Seed block is prefilled with `ylecun/mnist` so you can run immediately. You can swap to any Hugging Face dataset that includes an `image` column.\n\nOutput: `ocr_text` column with the raw transcribed text per image.",
+        "note_color": "#DCFCE7",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_2",
+        "x": 283,
+        "y": -333,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_2",
+        "markdown": "##### Setup\n\nAdd your OpenRouter API key to the **Model Provider** block — same as every other recipe.\n\nGemini 2.0 Flash is well-suited for OCR: fast, cheap, and strong on tables, receipts, forms, and multi-column layouts.\n\nWant a purpose-built OCR model? Swap the endpoint to a local vLLM server running `lightonai/LightOnOCR-2-1B` for maximum throughput.",
+        "note_color": "#DCFCE7",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_3",
+        "x": 303,
+        "y": 299,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_3",
+        "markdown": "##### Seed: HF dataset with image column\n\nThis template starts with `ylecun/mnist` so first run works without seed setup.\n\nTo use your own data: open Seed → keep **HF dataset** selected → choose a dataset that contains an `image` column → click **Load**.\n\nThen open the LLM Text block and set **Image Context** to the `image` column so each row image is sent with the prompt.\n\nTip: datasets with embedded image columns are more reliable than URL-only image fields.",
+        "note_color": "#DCFCE7",
+        "note_opacity": "35"
+      },
+      {
+        "id": "seed",
+        "x": 295,
+        "y": 108,
+        "width": 400
+      },
+      {
+        "id": "provider_1",
+        "x": 960,
+        "y": -465,
+        "width": 400
+      },
+      {
+        "id": "provider_column",
+        "x": 959,
+        "y": -180,
+        "width": 400
+      },
+      {
+        "id": "ocr_text",
+        "x": 960,
+        "y": 108,
+        "width": 400
+      }
+    ],
+    "edges": [
+      {
+        "from": "seed",
+        "to": "ocr_text",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "provider_1",
+        "to": "provider_column",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "semantic-in-top"
+      },
+      {
+        "from": "provider_column",
+        "to": "ocr_text",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in-top"
+      }
+    ],
+    "layout_direction": "LR",
+    "seed_source_type": "hf",
+    "seed_columns": [],
+    "seed_drop_columns": [],
+    "seed_preview_rows": [],
+    "local_file_name": "",
+    "unstructured_file_name": "",
+    "unstructured_chunk_size": "900",
+    "unstructured_chunk_overlap": "150"
+  }
+}
