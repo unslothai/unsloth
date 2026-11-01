@@ -735,10 +735,8 @@ def _hub_push_token(hf_token: HfTokenArg) -> HfTokenArg:
 
 
 def _mlx_kept_sidecars(model, folder, written) -> Optional[List[str]]:
-    """unsloth_zoo's MLX merged save copies the source model's sidecars (generation_config.json,
-    remote code, ...) only into a folder that lacks them, and writes a fallback card only when
-    README.md is missing. A kept sidecar is part of this save when it matches what a fresh save
-    would copy; anything else kept that a fresh save would write means staging a second save."""
+    """unsloth_zoo's MLX save copies source sidecars and its fallback README only when missing:
+    a kept sidecar counts as written if it equals a fresh copy; any other kept one -> None."""
     try:
         kept = {
             path.name
