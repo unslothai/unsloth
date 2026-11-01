@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import threading
 import uuid
 from collections.abc import Callable
@@ -191,6 +192,15 @@ def video_path(video_id: str, directory: Optional[Path] = None) -> Optional[Path
     if directory is None:
         directory = gallery_dir()
     path = directory / f"{video_id}.mp4"
+    try:
+        mode = path.lstat().st_mode
+    except OSError:
+        return None
+    # A plain file named by a safe id cannot lead out of the folder; a symlink takes the full check.
+    if stat.S_ISREG(mode):
+        return path
+    if not stat.S_ISLNK(mode):
+        return None
     try:
         path.resolve().relative_to(directory.resolve())
     except ValueError:
