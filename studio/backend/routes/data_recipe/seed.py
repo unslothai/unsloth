@@ -8,6 +8,7 @@ from __future__ import annotations
 from core.training.account_jobs import account_path, managed_account
 import base64
 import binascii
+import functools
 import json
 import os
 import re
@@ -302,9 +303,29 @@ def _class_end(pattern: str, start: int) -> int:
     return closing if closing > start else -1
 
 
+def _posix_tail(path: str) -> list[str]:
+    """PurePosixPath(path).parts without the root: split on "/", empty and "." parts dropped."""
+    return [part for part in path.split("/") if part and part != "."]
+
+
+def _name_parts(path: str) -> tuple[str, str]:
+    """Path(path).suffix and .stem, split by hand for plain relative ASCII paths, which every pathlib flavour and
+    version reads alike; anything else (drives, backslashes, a name starting or ending in a dot) goes through
+    Path."""
+    if path.isascii() and not path.startswith("/") and "\\" not in path and ":" not in path:
+        name = path[path.rfind("/") + 1 :]
+        dot = name.rfind(".")
+        if name[:1] not in ("", ".") and dot < len(name) - 1:
+            return (name[dot:], name[:dot]) if dot > 0 else ("", name)
+    parsed = Path(path)
+    return parsed.suffix, parsed.stem
+
+
 def _marked_parts(path: str, prefix: str, which: str) -> list[str]:
-    parsed = PurePosixPath(path)
-    parts = parsed.parts if which == "parts" else parsed.parent.parts
+    # The root ("/" or "//") is never marked, so the tail alone decides; the parent drops the name.
+    parts = _posix_tail(path)
+    if which != "parts":
+        parts = parts[:-1]
     return [part for part in parts if part.startswith(prefix) and set(part) != {"."}]
 
 
@@ -338,7 +359,7 @@ def _loader_path_facts(path: str) -> tuple[int, int, str]:
     return (
         len(_marked_parts(path, ".", "parts")),
         len(_marked_parts(path, "__", "parent_parts")),
-        PurePosixPath(path).name,
+        (_posix_tail(path) or [""])[-1],
     )
 
 
@@ -366,7 +387,13 @@ def _common_parent(paths: list[str]) -> str:
 
 def _label_in_name(name: str, label: str) -> bool:
     """Match the label in place, not by tokens, so sample-10BT survives; digits count as separators: train1 is train, training is not."""
-    return re.search(rf"(?:^|{_SEP}){re.escape(label)}(?:$|{_SEP})", name) is not None
+    return _label_matcher(label).search(name) is not None
+
+
+@functools.lru_cache(maxsize = 256)
+def _label_matcher(label: str) -> re.Pattern[str]:
+    """Compiled once per label: a Hub listing asks about every file, folder and label."""
+    return re.compile(rf"(?:^|{_SEP}){re.escape(label)}(?:$|{_SEP})")
 
 
 def _split_folder(lowered_path: str, labels: tuple[str, ...]) -> bool:
@@ -401,7 +428,7 @@ def _split_rank(path: str, split_lower: str) -> int:
     if _split_folder(lowered, labels):
         return 0
     # Only the final extension comes off: questions.train.parquet keeps its split.
-    stem = Path(lowered).stem
+    stem = _name_parts(lowered)[1]
     if any(_label_in_name(stem, label) for label in labels):
         return 1
     return 2
@@ -418,7 +445,7 @@ def _in_subset(data_files: list[str], subset: str | None, split_lower: str) -> l
     ]
     if in_folder:
         return in_folder
-    named = [f for f in data_files if _label_in_name(Path(f.lower()).stem, subset_lower)]
+    named = [f for f in data_files if _label_in_name(_name_parts(f.lower())[1], subset_lower)]
     if any(_split_rank(f, split_lower) <= 1 for f in named):
         return named
     if any(_split_rank(f, split_lower) <= 1 for f in data_files):
@@ -527,7 +554,7 @@ def _builder_exts(suffix: str) -> tuple[str, ...]:
 
 def _of_suffix(paths: list[str], suffix: str) -> list[str]:
     group = _builder_exts(suffix)
-    return [p for p in paths if Path(p).suffix.lower() in group]
+    return [p for p in paths if _name_parts(p)[0].lower() in group]
 
 
 def _extension_glob(paths: list[str], suffix: str, repo_files: list[str]) -> str:
