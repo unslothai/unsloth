@@ -184,7 +184,6 @@ def test_generator_strip_matches_on_every_prefix():
                     was_on = gated._gate_on
                     assert gated.strip(prefix) == full.strip(prefix), (text, len(prefix))
                     engaged += was_on and gated._gate_on
-    # The gate must answer many tokens here, or this proves nothing.
     assert engaged > 3000, engaged
 
 
@@ -221,7 +220,6 @@ def test_span_guard_matches_the_full_strip_across_turns():
                         text,
                         len(prefix),
                     )
-    # Auto-Heal off returns the text untouched on both.
     assert _ReasoningSpanGuard().strip("a <tool_call>b", auto_heal_tool_calls = False) == (
         "a <tool_call>b"
     )

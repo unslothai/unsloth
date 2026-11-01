@@ -6634,8 +6634,7 @@ _DISPLAY_HOLD_OPENER_RE = _re.compile(
     r'<tool_call>(?:\s*<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>)?'
     r'|<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>'
 )
-# Literals in B that can end the hold: every sentinel but the orphan ``</param`` arm (anchored at the end, so the
-# match at O, which runs to the end, consumes it first), plus think segmentation and GLM argument tags.
+# Every sentinel but ``</param`` (its end-anchored arm loses to the match at O), plus think and GLM argument tags.
 _DISPLAY_HOLD_TRIGGERS = tuple(
     dict.fromkeys(
         tuple(s for s in _DISPLAY_STRIP_SENTINELS if s != "</param")
@@ -6759,7 +6758,6 @@ class _StreamingDisplayStrip:
                 return
             self._hold_dead = True
             return
-        # Fail closed: the strip just run must agree with the reasoning in the docstring.
         if out != prefix:
             self._hold_dead = True
             return
