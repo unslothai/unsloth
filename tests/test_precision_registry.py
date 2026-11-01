@@ -671,7 +671,9 @@ def test_float8_filter_keeps_a_wrapped_router_and_its_inner_linear_in_high_preci
         def __init__(self):
             super().__init__()
             self.wg = Gate()
-            self.experts = torch.nn.ModuleList(torch.nn.Linear(64, 64, bias = False) for _ in range(16))
+            self.experts = torch.nn.ModuleList(
+                torch.nn.Linear(64, 64, bias = False) for _ in range(16)
+            )
 
     class Block(torch.nn.Module):
         def __init__(self):
@@ -710,7 +712,10 @@ def test_gemm_counters_are_per_thread():
             go.wait(5)
         seen[tag] = c.get("unsloth::fp8_block_small_m_linear", 0)
 
-    threads = [threading.Thread(target = worker, args = ("busy", 1)), threading.Thread(target = worker, args = ("idle", 0))]
+    threads = [
+        threading.Thread(target = worker, args = ("busy", 1)),
+        threading.Thread(target = worker, args = ("idle", 0)),
+    ]
     for t in threads:
         t.start()
     import time
