@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Deferred speed profile warm-up: the 2nd image starts the compile pool, fills Triton's key and does the
-engagement's first-use imports on a side thread, so the 3rd image does not pay them inside its render. CPU only."""
+"""Deferred speed profile warm-up runs on a side thread off the render. CPU only."""
 
 from __future__ import annotations
 
@@ -59,7 +58,6 @@ def recorder(monkeypatch, fresh):
 def test_prewarm_runs_off_the_calling_thread_and_never_blocks_it(recorder):
     calls, release = recorder
     assert bg.start_deferred_prewarm(LOG) is True
-    # The key step is still blocked, yet the caller (the 2nd image's render) already has control back.
     assert not release.is_set()
     assert ("key", "unsloth-deferred-prewarm") not in calls
     release.set()
@@ -221,7 +219,6 @@ def test_second_image_starts_the_side_warm_up():
     tree = ast.parse(DIFFUSION.read_text(encoding = "utf-8"))
     names = [n for n, _ in _bg_calls(_function(tree, "DiffusionBackend", "generate"))]
     assert "start_deferred_prewarm" in names
-    # The pool warm-up now runs only inside the side thread (or inline behind the kill switch).
     assert "warm_compile_pool" not in names
 
 

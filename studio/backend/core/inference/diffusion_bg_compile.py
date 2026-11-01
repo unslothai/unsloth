@@ -122,8 +122,7 @@ def _triton_key_fn() -> Optional[Callable[[], Any]]:
 
 
 def warm_triton_key(logger: Any = None) -> bool:
-    """Fill Triton's per-process ``triton_key()`` cache (a hash of its sources and libtriton, 1-1.5 s), which the
-    first Triton JIT call in a process pays even on a warm disk cache."""
+    """Fill Triton's per-process ``triton_key()`` cache (1-1.5 s, paid by the first JIT even on a warm disk cache)."""
     fn = _triton_key_fn()
     if fn is None:
         return False
@@ -140,8 +139,7 @@ def warm_triton_key(logger: Any = None) -> bool:
 
 
 def warm_engage_imports(logger: Any = None) -> int:
-    """First-use work of the profile's engagement that changes no model: the patch helpers' import (unsloth_zoo) and
-    the fused VAE kernel definitions. Returns how many steps ran."""
+    """Model-free first-use work of the engagement; returns how many steps ran."""
     import importlib
 
     done = 0
@@ -161,9 +159,7 @@ def warm_engage_imports(logger: Any = None) -> int:
 
 
 def start_deferred_prewarm(logger: Any = None) -> bool:
-    """2nd image of a deferred session: start the compile pool, fill the Triton key and do the engagement's first-use
-    imports on a side thread, so none of it lands inside a render. ``PREWARM_ENV=0`` warms the pool inline as
-    before."""
+    """Run the warm-ups on a side thread so none of it lands inside a render; ``PREWARM_ENV=0`` warms the pool inline."""
     global _PREWARM_THREAD
     if not prewarm_enabled():
         return warm_compile_pool(logger)
