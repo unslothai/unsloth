@@ -2576,6 +2576,22 @@ export const nl = {
         description:
           "Halloweenthema's en griezelige begroetingen, tot 1 november.",
       },
+      code: {
+        title: "Code",
+        fontDescription: "Codeblokken in de chat, bestandsvoorbeelden en API-voorbeelden.",
+        lineNumbers: {
+          label: "Regelnummers",
+          description: "Nummer de regels van codeblokken in de chat.",
+        },
+        wordWrap: {
+          label: "Regelterugloop",
+          description: "Lange regels in codeblokken laten teruglopen in plaats van horizontaal te scrollen.",
+        },
+        ligatures: {
+          label: "Ligaturen",
+          description: "Voeg tekens zoals => en != samen tot één glyph als het codelettertype dat ondersteunt.",
+        },
+      },
       custom: {
         chatWidth: {
           label: "Chatbreedte",

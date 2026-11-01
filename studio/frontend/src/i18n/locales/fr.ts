@@ -2368,6 +2368,22 @@ export const fr = {
         description:
           "Thèmes d’Halloween et salutations effrayantes, jusqu’au 1er novembre.",
       },
+      code: {
+        title: "Code",
+        fontDescription: "Blocs de code dans le chat, aperçus de fichiers et exemples d’API.",
+        lineNumbers: {
+          label: "Numéros de ligne",
+          description: "Numéroter les lignes des blocs de code dans le chat.",
+        },
+        wordWrap: {
+          label: "Retour à la ligne",
+          description: "Renvoyer à la ligne les lignes longues des blocs de code au lieu de défiler horizontalement.",
+        },
+        ligatures: {
+          label: "Ligatures de police",
+          description: "Fusionner des symboles comme => et != en un seul glyphe quand la police de code le permet.",
+        },
+      },
       custom: {
         chatWidth: {
           label: "Largeur du chat",

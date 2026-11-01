@@ -2543,6 +2543,22 @@ export const vi = {
         description:
           "Chủ đề Halloween và lời chào rùng rợn, đến hết ngày 1 tháng 11.",
       },
+      code: {
+        title: "Mã",
+        fontDescription: "Khối mã trong trò chuyện, bản xem trước tệp và ví dụ API.",
+        lineNumbers: {
+          label: "Số dòng",
+          description: "Đánh số dòng cho khối mã trong trò chuyện.",
+        },
+        wordWrap: {
+          label: "Ngắt dòng",
+          description: "Ngắt các dòng dài trong khối mã thay vì cuộn ngang.",
+        },
+        ligatures: {
+          label: "Chữ ghép",
+          description: "Ghép các ký hiệu như => và != thành một ký tự khi phông chữ mã hỗ trợ.",
+        },
+      },
       custom: {
         chatWidth: {
           label: "Độ rộng khung trò chuyện",

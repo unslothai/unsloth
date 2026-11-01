@@ -2325,6 +2325,22 @@ export const zhCN = {
         description:
           "万圣节主题和惊悚问候，持续到 11 月 1 日。",
       },
+      code: {
+        title: "代码",
+        fontDescription: "聊天中的代码块、文件预览和 API 示例。",
+        lineNumbers: {
+          label: "行号",
+          description: "为聊天中的代码块显示行号。",
+        },
+        wordWrap: {
+          label: "自动换行",
+          description: "代码块中的长行自动换行，而不是横向滚动。",
+        },
+        ligatures: {
+          label: "字体连字",
+          description: "代码字体支持时，将 => 和 != 等符号合成一个字形。",
+        },
+      },
       custom: {
         chatWidth: {
           label: "聊天宽度",

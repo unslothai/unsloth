@@ -234,6 +234,9 @@ export type AppearanceCustomization = {
   reduceMotion: ReduceMotionSetting;
   /** true = the app default (antialiased). */
   fontSmoothing: boolean;
+  codeLineNumbers: boolean;
+  codeWordWrap: boolean;
+  codeLigatures: boolean;
   sidebarMenu: SidebarMenuItemPref[];
   sidebarNav: SidebarNavItemPref[];
   /** Rows still following their automatic rule; only Projects has one. */
@@ -261,6 +264,9 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   pointerCursors: false,
   reduceMotion: "system",
   fontSmoothing: true,
+  codeLineNumbers: false,
+  codeWordWrap: false,
+  codeLigatures: true,
   sidebarMenu: SIDEBAR_MENU_ITEM_IDS.map((id) => ({
     id,
     visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id],
@@ -465,6 +471,9 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
         ? source.reduceMotion
         : "system",
     fontSmoothing: source.fontSmoothing !== false,
+    codeLineNumbers: source.codeLineNumbers === true,
+    codeWordWrap: source.codeWordWrap === true,
+    codeLigatures: source.codeLigatures !== false,
     sidebarMenu: sanitizeSidebarMenu(source.sidebarMenu),
     sidebarNav,
     sidebarNavAuto: sanitizeSidebarNavAuto(source.sidebarNavAuto, sidebarNav),
@@ -1020,6 +1029,14 @@ export function applyCustomizationToDocument(
   // "off" overrides OS reduced motion; index.css media rules skip html.force-motion.
   el.classList.toggle("force-motion", c.reduceMotion === "off");
   el.classList.toggle("no-font-smoothing", !c.fontSmoothing);
+  for (const [name, on] of [
+    ["data-code-line-numbers", c.codeLineNumbers],
+    ["data-code-wrap", c.codeWordWrap],
+    ["data-code-no-ligatures", !c.codeLigatures],
+  ] as const) {
+    if (on) el.setAttribute(name, "");
+    else el.removeAttribute(name);
+  }
 }
 
 /** For imperative motion (confetti, view transitions) CSS/MotionConfig cannot reach. */

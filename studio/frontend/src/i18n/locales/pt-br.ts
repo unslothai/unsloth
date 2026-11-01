@@ -2356,6 +2356,22 @@ export const ptBR = {
         description:
           "Temas de Halloween e saudações assustadoras, até 1º de novembro.",
       },
+      code: {
+        title: "Código",
+        fontDescription: "Blocos de código no chat, prévias de arquivos e exemplos da API.",
+        lineNumbers: {
+          label: "Números de linha",
+          description: "Numerar as linhas dos blocos de código no chat.",
+        },
+        wordWrap: {
+          label: "Quebra de linha",
+          description: "Quebrar linhas longas nos blocos de código em vez de rolar para o lado.",
+        },
+        ligatures: {
+          label: "Ligaduras da fonte",
+          description: "Unir símbolos como => e != em um único glifo quando a fonte de código oferece suporte.",
+        },
+      },
       custom: {
         chatWidth: {
           label: "Largura do chat",

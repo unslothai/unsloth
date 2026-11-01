@@ -2355,6 +2355,22 @@ export const en = {
         description:
           "Halloween themes and spooky greetings, until November 1.",
       },
+      code: {
+        title: "Code",
+        fontDescription: "Code blocks in chat, file previews and API examples.",
+        lineNumbers: {
+          label: "Line numbers",
+          description: "Number the lines of code blocks in chat.",
+        },
+        wordWrap: {
+          label: "Word wrap",
+          description: "Wrap long lines in code blocks instead of scrolling sideways.",
+        },
+        ligatures: {
+          label: "Font ligatures",
+          description: "Join symbols such as => and != into one glyph when the code font supports it.",
+        },
+      },
       custom: {
         chatWidth: {
           label: "Chat width",

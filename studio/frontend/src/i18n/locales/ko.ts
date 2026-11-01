@@ -2333,6 +2333,22 @@ export const ko = {
         description:
           "11월 1일까지 핼러윈 테마와 으스스한 인사말을 즐겨 보세요.",
       },
+      code: {
+        title: "코드",
+        fontDescription: "채팅의 코드 블록, 파일 미리보기, API 예시.",
+        lineNumbers: {
+          label: "줄 번호",
+          description: "채팅 코드 블록의 줄에 번호를 붙입니다.",
+        },
+        wordWrap: {
+          label: "자동 줄바꿈",
+          description: "코드 블록의 긴 줄을 가로로 스크롤하지 않고 줄바꿈합니다.",
+        },
+        ligatures: {
+          label: "글꼴 합자",
+          description: "코드 글꼴이 지원하면 => 및 != 같은 기호를 하나의 글리프로 합칩니다.",
+        },
+      },
       custom: {
         chatWidth: {
           label: "채팅 너비",

@@ -2530,6 +2530,22 @@ export const tr = {
         description:
           "1 Kasım'a kadar Cadılar Bayramı temaları ve ürkütücü selamlamalar.",
       },
+      code: {
+        title: "Kod",
+        fontDescription: "Sohbetteki kod blokları, dosya önizlemeleri ve API örnekleri.",
+        lineNumbers: {
+          label: "Satır numaraları",
+          description: "Sohbetteki kod bloklarının satırlarını numaralandırır.",
+        },
+        wordWrap: {
+          label: "Satır kaydırma",
+          description: "Kod bloklarındaki uzun satırları yana kaydırmak yerine alt satıra geçirir.",
+        },
+        ligatures: {
+          label: "Yazı tipi bitişik harfleri",
+          description: "Kod yazı tipi destekliyorsa => ve != gibi simgeleri tek bir karakterde birleştirir.",
+        },
+      },
       custom: {
         chatWidth: {
           label: "Sohbet genişliği",

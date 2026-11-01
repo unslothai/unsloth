@@ -2322,6 +2322,22 @@ export const ja = {
         description:
           "11月1日まで、ハロウィンのテーマと怖いあいさつを楽しめます。",
       },
+      code: {
+        title: "コード",
+        fontDescription: "チャット内のコードブロック、ファイルのプレビュー、API の例。",
+        lineNumbers: {
+          label: "行番号",
+          description: "チャット内のコードブロックに行番号を表示します。",
+        },
+        wordWrap: {
+          label: "折り返し",
+          description: "コードブロックの長い行を横スクロールせずに折り返します。",
+        },
+        ligatures: {
+          label: "合字",
+          description: "コードフォントが対応していれば、=> や != などの記号を 1 つの字形で表示します。",
+        },
+      },
       custom: {
         chatWidth: {
           label: "チャットの幅",

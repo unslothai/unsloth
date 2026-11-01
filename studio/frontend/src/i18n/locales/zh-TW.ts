@@ -2417,6 +2417,22 @@ export const zhTW = {
         label: "不給糖就搗蛋",
         description: "萬聖節主題與詭異問候語，持續到 11 月 1 日。",
       },
+      code: {
+        title: "程式碼",
+        fontDescription: "聊天中的程式碼區塊、檔案預覽和 API 範例。",
+        lineNumbers: {
+          label: "行號",
+          description: "為聊天中的程式碼區塊顯示行號。",
+        },
+        wordWrap: {
+          label: "自動換行",
+          description: "程式碼區塊中的長行自動換行，而不是水平捲動。",
+        },
+        ligatures: {
+          label: "字型連字",
+          description: "程式碼字型支援時，將 => 和 != 等符號合成一個字形。",
+        },
+      },
       custom: {
         chatWidth: {
           label: "聊天寬度",
