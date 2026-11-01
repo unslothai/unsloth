@@ -18,7 +18,9 @@ import pytest
 import torch
 import transformers
 
-_PKG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unsloth", "precision")
+_PKG = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unsloth", "precision"
+)
 
 
 def _load_precision():
@@ -57,7 +59,12 @@ def _cls(name):
     return c
 
 
-def _build(model_cls, config_cls, meta = True, **kwargs):
+def _build(
+    model_cls,
+    config_cls,
+    meta = True,
+    **kwargs,
+):
     config = _cls(config_cls)(**kwargs)
     if meta:
         with torch.device("meta"):
@@ -66,8 +73,14 @@ def _build(model_cls, config_cls, meta = True, **kwargs):
     return _cls(model_cls)(config)
 
 
-def _causal(arch, n = 3, **kw):
-    return lambda: _build(f"{arch}ForCausalLM", f"{arch}Config", **{**TXT, "num_hidden_layers": n, **kw})
+def _causal(
+    arch,
+    n = 3,
+    **kw,
+):
+    return lambda: _build(
+        f"{arch}ForCausalLM", f"{arch}Config", **{**TXT, "num_hidden_layers": n, **kw}
+    )
 
 
 def _siglip(n = 5):
@@ -674,7 +687,10 @@ def test_selectors_on_family(family):
     assert P.decoder_layers(model) == (path, n), family
 
     # hp_filter(first_n = 1, last_n = 1): exactly the first and last language blocks.
-    is_hp = P.hp_filter(model, P.HPLayerPolicy(output_head = False, embeddings = False, routers = False, first_n = 1, last_n = 1))
+    is_hp = P.hp_filter(
+        model,
+        P.HPLayerPolicy(output_head = False, embeddings = False, routers = False, first_n = 1, last_n = 1),
+    )
     assert set(is_hp.keep) == {f"{path}.0", f"{path}.{n - 1}"}, (family, is_hp.keep)
     for i in range(n):
         for sub, _ in lists[path][i].named_modules():
@@ -693,7 +709,9 @@ def test_selectors_on_family(family):
     emb = P.find_embeddings(model)
     inp = model.get_input_embeddings()
     assert any(names[k] is inp for k in emb), family
-    assert not any(isinstance(names[k], torch.nn.Linear) and names[k] is not inp for k in emb), family
+    assert not any(
+        isinstance(names[k], torch.nn.Linear) and names[k] is not inp for k in emb
+    ), family
 
     # Routers: exactly the router modules, never an expert, shared expert or dense MLP.
     expected_routers = {
