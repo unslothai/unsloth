@@ -31,7 +31,6 @@ export function SettingsSection({
   badge,
 }: {
   title: string;
-  /** Tag beside the heading text, e.g. New. */
   badge?: ReactNode;
   /** Control shown beside the heading, e.g. Refresh. */
   action?: ReactNode;
