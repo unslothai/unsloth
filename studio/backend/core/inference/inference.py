@@ -809,6 +809,25 @@ def _tokenize_prompt(
     return tokenizer(prompt, return_tensors = "pt", add_special_tokens = add_special_tokens)
 
 
+_MAPPED_TEMPLATE_LOCK = threading.Lock()
+
+
+def _mapped_template_tokenizer(model_info, tokenizer, template_name):
+    """get_chat_template for the mapped template, run once per loaded tokenizer.
+
+    It re-patches (or, for vocab-remapping templates like Gemma's, rebuilds) the tokenizer on every
+    call, which costs up to seconds per message and yields the same tokenizer each time. Keyed on
+    the tokenizer object and template; a reload builds a new model_info, so the entry goes with it.
+    A failed call is not stored, so the next message retries as before."""
+    with _MAPPED_TEMPLATE_LOCK:
+        cached = model_info.get("_mapped_template_tokenizer")
+        if cached is not None and cached[0] is tokenizer and cached[1] == template_name:
+            return cached[2]
+        remapped = get_chat_template(tokenizer, chat_template = template_name)
+        model_info["_mapped_template_tokenizer"] = (tokenizer, template_name, remapped)
+        return remapped
+
+
 _MISSING = object()
 
 
@@ -1894,10 +1913,7 @@ class InferenceBackend:
                     f"Applying chat template '{template_name}' for {self.active_model_name}"
                 )
 
-                tokenizer = get_chat_template(
-                    tokenizer,
-                    chat_template = template_name,
-                )
+                tokenizer = _mapped_template_tokenizer(model_info, tokenizer, template_name)
                 # The mapper installs the template only at generate time: UNION into the load-time cache.
                 # Take marker strings from the mapped template but resolve ids on the original tokenizer.
                 try:
