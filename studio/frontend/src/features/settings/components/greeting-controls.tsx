@@ -38,7 +38,6 @@ const MODES: { mode: GreetingMode; label: TranslationKey }[] = [
   { mode: "image", label: "settings.profile.greetingImage" },
   { mode: "off", label: "settings.profile.noneLabel" },
 ];
-// "Off" keeps writing showGreetingSloth, so the old switch's value maps straight onto a mode.
 const MODE_PATCH = {
   default: {
     showGreetingSloth: true,
@@ -216,7 +215,6 @@ function UploadControls({
   );
 }
 
-// The controls for the chosen mode, shown under the picker in the same row.
 function GreetingModeOptions({ mode }: { mode: GreetingMode }) {
   const t = useT();
   const setGreeting = useUserProfileStore((s) => s.setGreeting);
@@ -333,8 +331,6 @@ function GreetingTiles({ mode }: { mode: GreetingMode }) {
   );
 }
 
-// Every greeting option lives in this one row: tiles beside the title that preview each mode,
-// then the chosen mode's upload or text underneath.
 export function GreetingSettingsRows() {
   const t = useT();
   const mode = useGreetingMode();
