@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ChatBackground } from "@/features/chat-background";
+import {
+  ChatBackground,
+  WindowMaterialMount,
+} from "@/features/chat-background";
 import { ImageViewer } from "@/components/image-viewer";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { LazyImportFailure } from "@/components/lazy-import-boundary";
@@ -356,8 +359,10 @@ function waitsOutUnknownVerdict(pathname: string): boolean {
   );
 }
 
-function isChatOnlyAllowed(pathname: string): boolean {
+function isChatOnlyAllowed(pathname: string, trainAvailable: boolean): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
+  if (trainAvailable && (pathname === "/studio" || pathname.startsWith("/studio/")))
+    return true;
   if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/"))
     return true;
   // Images runs on CPU/MPS via sd.cpp; chat-only is about training/export.
@@ -371,11 +376,11 @@ function isChatOnlyAllowed(pathname: string): boolean {
 export const Route = createRootRoute({
   beforeLoad: async ({ location }) => {
     await fetchDeviceType();
-    const { isChatOnly, capabilitiesUnknown } = usePlatformStore.getState();
+    const { isChatOnly, isTrainUnavailable, capabilitiesUnknown } = usePlatformStore.getState();
     const unmeasured = capabilitiesUnknown();
     if (
       isChatOnly() &&
-      !isChatOnlyAllowed(location.pathname) &&
+      !isChatOnlyAllowed(location.pathname, !isTrainUnavailable()) &&
       !(unmeasured && waitsOutUnknownVerdict(location.pathname))
     ) {
       throw redirect({ to: "/chat" });
@@ -408,12 +413,16 @@ function RootLayout() {
   const chatOnlyMeasured = usePlatformStore(
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
+  const trainBlocked = usePlatformStore(
+    (s) => s.isTrainUnavailable() && !s.capabilitiesUnknown(),
+  );
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   // Video is the other row the sidebar grays out, on the two verdicts its pipelines cannot run on
   // at all. Same hint the row reads, so the two cannot disagree about which hosts they are.
   const videoCpuOptIn = usePlatformStore((s) => s.videoCpuOptIn);
+  const cpuTraining = usePlatformStore((s) => s.cpuTraining);
   const videoDisabled =
-    videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn) !== undefined;
+    videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining) !== undefined;
   // Exact match: a prefix would treat /chatty as chat, hiding its not-found UI.
   const isChatRoute = pathname === "/chat";
   const { pinned, setPinned, togglePinned } = useSidebarPin();
@@ -636,7 +645,7 @@ function RootLayout() {
     "go-projects": goAction(routeShortcutEnabled, goTo("/projects")),
     "go-library": goAction(routeShortcutEnabled, goTo("/library")),
     "go-hub": goAction(routeShortcutEnabled, goTo("/hub")),
-    "go-train": goAction(routeShortcutEnabled && !chatOnlyMeasured, goTo("/studio")),
+    "go-train": goAction(routeShortcutEnabled && !trainBlocked, goTo("/studio")),
     "go-recipes": goAction(routeShortcutEnabled, goTo("/data-recipes")),
     "go-images": goAction(routeShortcutEnabled, goTo("/images")),
     "go-video": goAction(routeShortcutEnabled && !videoDisabled, goTo("/video")),
@@ -659,7 +668,7 @@ function RootLayout() {
   });
   // Train's chord waits for a measured verdict, or it would bounce off /studio to /chat.
   useShortcut("switchToTrain", goTo("/studio"), {
-    enabled: routeShortcutEnabled && !chatOnlyMeasured,
+    enabled: routeShortcutEnabled && !trainBlocked,
   });
   useShortcut("switchToRecipes", goTo("/data-recipes"), {
     enabled: routeShortcutEnabled,
@@ -695,6 +704,7 @@ function RootLayout() {
     <>
       <PersonalizationSyncMount />
       <InterfaceZoom />
+      <WindowMaterialMount />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <LowDiskNoticeMount />}
@@ -724,7 +734,7 @@ function RootLayout() {
           data-wallpaper-route={isChatRoute ? "chat" : "page"}
           className="relative !min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
-          <ChatBackground route={isChatRoute ? "chat" : "page"} />
+          <ChatBackground route={isChatRoute ? "chat" : "page"} backdrop />
           <AppSidebar />
           <SidebarEdgeTrigger />
           <SidebarInset

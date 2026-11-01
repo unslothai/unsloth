@@ -3,7 +3,10 @@
 
 // Keep the background settings UI in this lazy tab, outside the chat startup barrel.
 // eslint-disable-next-line no-restricted-imports
-import { ChatBackgroundControls } from "@/features/chat-background/controls";
+import {
+  ChatBackgroundControls,
+  GlassControls,
+} from "@/features/chat-background/controls";
 import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -226,6 +229,7 @@ export function AppearanceTab() {
         </SettingsRow>
       </SettingsSection>
 
+      <GlassControls />
       <ChatBackgroundControls />
       <SettingsSection title={t("settings.appearance.custom.preferencesTitle")}>
         <SettingsRow label={t("settings.appearance.custom.uiFont.label")}>

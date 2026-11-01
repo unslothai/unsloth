@@ -31,6 +31,7 @@ export const ru = {
     halftone: "Полутон",
     scanlines: "Строки развёртки",
     visibility: "Видимость",
+    conversationVisibility: "Видимость в беседах",
     blur: "Размытие изображения",
     position: "Положение",
     horizontal: "Положение по горизонтали",
@@ -49,6 +50,26 @@ export const ru = {
     dimensionsError: "Выберите изображение меньше 40 мегапикселей.",
     decodeError: "Не удалось прочитать изображение. Попробуйте другой файл.",
     effectError: "Не удалось применить эффект. Выберите Нет или другое изображение.",
+    material: "Стекло",
+    materialSolid: "Выкл.",
+    materialTransparent: "Прозрачное",
+    materialFrosted: "Матовое",
+    materialBlurred: "Размытое",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "Системное стекло macOS",
+    materialMacosNote: "Использует полупрозрачный материал окон macOS, поэтому сквозь него виден рабочий стол.",
+    materialNativeFailed: "Эта версия Unsloth Desktop не может использовать материал macOS. Обновите приложение, чтобы включить его.",
+    glassTheme: "Стеклянная тема",
+    materialStyle: "Стиль",
+    materialMenus: "Стеклянные меню",
+    materialMenusDescription: "Раскрывающиеся списки, меню и средства выбора тоже используют стекло.",
+    materialStrength: "Сила стекла",
+    lens: "Стеклянная линза",
+    lensDescription: "Искривляет изображение под полем ввода, как настоящее стекло.",
+    lensOff: "Выкл.",
+    lensMagnify: "Увеличить",
+    lensShrink: "Уменьшить",
   },
 
   linkMenu: {
@@ -949,7 +970,7 @@ export const ru = {
       deleteProjects: "Удалить проекты",
       deleteProjectsTitle: "Удалить проекты",
       deleteProjectsDescription:
-        "Удалить проекты ({count})? Их чаты будут удалены безвозвратно.",
+        "Проекты ({count}) и все их чаты будут удалены навсегда. Это действие нельзя отменить.",
       deleteProjectsFilesDescription:
         "Рабочая папка каждого проекта удаляется с диска.",
       countSelected: "Выбрано: {count}",
@@ -960,7 +981,7 @@ export const ru = {
       markRead: "Отметить как прочитанное",
       deleteChats: "Удалить чаты",
       deleteTitle: "Удалить чаты",
-      deleteDescription: "Удалить чаты ({count})? Это действие необратимо.",
+      deleteDescription: "Чаты ({count}) и их сообщения будут удалены навсегда. Это действие нельзя отменить.",
       deleteFilesDescription:
         "Собственная папка песочницы каждого чата удаляется с диска. Файлы, созданные внутри проекта, остаются в рабочей папке этого проекта.",
       deleteFilesLabel: "Удалить файлы и папку песочницы",
@@ -1008,7 +1029,7 @@ export const ru = {
     dialog: {
       deleteChat: {
         title: "Удалить чат",
-        description: 'Вы уверены, что хотите удалить чат «{name}»?',
+        description: "Чат «{name}» и его сообщения будут удалены навсегда. Это действие нельзя отменить.",
       },
       deleteRun: {
         title: "Удалить запуск обучения",
@@ -2125,10 +2146,14 @@ export const ru = {
         label: "Тип установки",
         description:
           "Только чат (GGUF). Полная установка добавляет обучение, экспорт, видео, модели safetensors и дополнительные функции генерации изображений.",
+        descriptionCpu:
+          "Только чат (GGUF). Поддерживаемый графический процессор не найден, поэтому полная установка добавляет обучение на CPU.",
         action: "Перейти на полную установку",
         confirmTitle: "Перейти на полную установку?",
         confirmDescription:
           "Эта установка «Только чат» запускает модели GGUF. Полная установка добавляет PyTorch для графического процессора этого компьютера, что включает обучение, экспорт, видео, модели safetensors и дополнительные функции генерации изображений. Она скачивает несколько гигабайт (не менее 5 ГБ на диске) и перезапускает сервер. Чаты, модели и настройки сохраняются. Это может занять несколько минут.",
+        confirmDescriptionCpu:
+          "Эта установка «Только чат» запускает модели GGUF. На этом компьютере не найден поддерживаемый графический процессор, поэтому полная установка добавляет PyTorch для CPU, что включает обучение на CPU. Обучение на CPU намного медленнее, чем на графическом процессоре. Для неё нужно не менее 5 ГБ на диске, и она перезапускает сервер. Чаты, модели и настройки сохраняются. Это может занять несколько минут.",
         confirmAction: "Перейти",
         keywords:
           "full install upgrade тип установки полная установка обновить только чат chat only gguf add training обучение обучить train fine-tune pytorch torch экспорт видео генерация изображений safetensors",
@@ -2309,8 +2334,6 @@ export const ru = {
         label: "Тема",
         description: "Цвета, используемые в Unsloth в светлой и тёмной теме.",
         standard: "Стандартная",
-        classic: "Классическая",
-        minimal: "Минималистичная",
         moreThemes: "Другие темы",
       },
       code: {
@@ -3188,9 +3211,9 @@ export const ru = {
         movedChatsToRecents: "Перемещено чатов в недавние: {count}",
         moveFailed: "Не удалось переместить чаты",
         deleteChatsTitle: "Удалить чаты ({count})",
-        deleteChatsWarning: "Удалить выбранные чаты ({count})? Это действие нельзя отменить.",
+        deleteChatsWarning: "Чаты ({count}) и их сообщения будут удалены навсегда. Это действие нельзя отменить.",
         deleteArchivedTitle: "Удалить архивные чаты ({count})",
-        deleteArchivedWarning: "Удалить выбранные архивные чаты ({count})? Это действие нельзя отменить.",
+        deleteArchivedWarning: "Архивные чаты ({count}) и их сообщения будут удалены навсегда. Это действие нельзя отменить.",
         deleting: "Удаление...",
       },
       title: "Данные",
@@ -3591,6 +3614,8 @@ export const ru = {
     imageTraining: "Обучение изображений",
     goToImageTraining: "Обучить LoRA для изображений",
     routeTitle: "Обучение",
+    cpuTrainingNotice:
+      "Графический процессор не найден, поэтому обучение выполняется на CPU. Оно намного медленнее, чем на графическом процессоре, и поддерживает только текстовые модели (LoRA или полное дообучение).",
     wizard: {
       modelTitle: "Модель",
       modelDescription: "Выберите модель и метод обучения",
@@ -4690,8 +4715,8 @@ export const ru = {
       },
       dialog: {
         renameChat: "Переименовать чат",
-        deleteChatDescription: "Этот чат будет удалён без возможности восстановления.",
-        deleteProjectDescription: "Проект и его чаты ({count}) будут удалены без возможности восстановления.",
+        deleteChatDescription: "Чат и его сообщения будут удалены навсегда. Это действие нельзя отменить.",
+        deleteProjectDescription: "Проект и его чаты ({count}) будут удалены навсегда. Это действие нельзя отменить.",
         deleteFilesMany: "Также удалить файлы и папки песочницы, созданные этими чатами.",
         deleteProjectFilesLabel: "Удалить рабочую папку проекта",
         deleteProjectFiles: "Рабочая папка проекта будет удалена с диска.",
@@ -5147,14 +5172,14 @@ export const ru = {
     renameChat: "Переименовать чат",
     chatName: "Название чата",
     deleteChat: "Удалить чат",
-    deleteChatDescription: "Удалить {name}? Его сообщения будут удалены безвозвратно.",
+    deleteChatDescription: "Чат «{name}» и его сообщения будут удалены навсегда. Это действие нельзя отменить.",
     importChats: "Импорт чатов",
     importDestination: "Выберите, куда импортировать {name}:",
     selectDestination: "Выберите место",
     recents: "Недавние",
     import: "Импортировать",
     deleteProject: "Удалить проект",
-    deleteProjectDescription: "Удалить {name}? Его чаты будут удалены безвозвратно.",
+    deleteProjectDescription: "Проект «{name}» и все его чаты будут удалены навсегда. Это действие нельзя отменить.",
     deleteProjectFiles: "Рабочая папка проекта будет удалена с диска.",
     deleteAll: "Удалить всё",
     projectFallback: "проект",

@@ -1832,7 +1832,7 @@
       "_mask_blocked_bodies": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, enabled_tool_names, *, think: bool=False"
+        "signature": "text: str, enabled_tool_names, *, think: bool=False, mentions: bool=False"
       },
       "_merge_spans": {
         "decorators": [],
@@ -2233,7 +2233,9 @@
       "_TOOL_OPEN_XML_TAIL_PATS[1]": "'<\\\\|tool_call>.*$' flags=48",
       "_TOOL_OPEN_XML_TAIL_PATS[2]": "'<function=[\\\\w-]+>.*$' flags=48",
       "_WRAP_OPEN_RE": "'<tool_call>\\\\s*$' flags=32",
-      "_WRAP_CLOSE_RE": "'\\\\s*</tool_call>' flags=32"
+      "_WRAP_CLOSE_RE": "'\\\\s*</tool_call>' flags=32",
+      "_TAG_MENTION_RE": "'(?<!`)(``?)[ \\\\t]*(<(?!/?think(?:ing)?>)[^<>`\\\\n]+>[\\\\w.\\\\-]*|\\\\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\\\\][\\\\w.\\\\-]*)[ \\\\t]*\\\\1' flags=32",
+      "_TOOL_TAG_HINT_RE": "'</?(?:tool|function|param|arg_)|<[|\uff5c]|\\\\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\\\\]' flags=32"
     },
     "regexes": {
       "re.compile('(?:<tool_call>|<\\\\|content_invoke_tool_json\\\\|>)\\\\s*\\\\{')": 1,
@@ -2268,7 +2270,9 @@
       "re.compile('^[ \\\\t]*(?:>[ \\\\t]*)*(?:(?P<bt>```+)[^`\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=bt)`*[ \\\\t\\\\r]*$|\\\\Z)|(?P<tl>~~~+)[^\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=tl)~*[ \\\\t\\\\r]*$|\\\\Z))|``(?:[^`]|`(?!`))*?``|`[^`\\\\n]*`', re.DOTALL | re.MULTILINE)": 1,
       "re.match('\\\\s*\\\\[/TOOL_CALLS\\\\]', content[end:])": 1,
       "re.compile('<tool_call>\\\\s*$')": 1,
-      "re.compile('\\\\s*</tool_call>')": 1
+      "re.compile('\\\\s*</tool_call>')": 1,
+      "re.compile('(?<!`)(``?)[ \\\\t]*(<(?!/?think(?:ing)?>)[^<>`\\\\n]+>[\\\\w.\\\\-]*|\\\\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\\\\][\\\\w.\\\\-]*)[ \\\\t]*\\\\1')": 1,
+      "re.compile('</?(?:tool|function|param|arg_)|<[|\uff5c]|\\\\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\\\\]')": 1
     },
     "symbols": {
       "EXECUTION_CLASS_TOOL_NAMES": {
@@ -2620,6 +2624,25 @@
       },
       "_OPEN_PARAMETER_SCAN_LIMIT": {
         "kind": "assign"
+      },
+      "_TAG_MENTION_RE": {
+        "kind": "assign"
+      },
+      "_TOOL_TAG_HINT_RE": {
+        "kind": "assign"
+      },
+      "_TOOL_TAG_PREFIXES": {
+        "kind": "assign"
+      },
+      "in_tag_mention": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "spans, pos: int"
+      },
+      "tag_mention_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
       }
     }
   }

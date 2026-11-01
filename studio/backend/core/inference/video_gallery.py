@@ -11,6 +11,7 @@ import re
 import stat
 import threading
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
@@ -167,21 +168,22 @@ def _record(
     flags: Optional[dict[str, dict[str, Any]]] = None,
     *,
     directory: Optional[Path] = None,
+    mtime: Optional[float] = None,
 ) -> dict[str, Any]:
     if directory is None:
         directory = gallery_dir()
     # flags are library state, not recipe: they come from the .flags.json store, never the sidecar
     if flags is None:
         flags = gallery_flags.read(directory)
+    if mtime is None:
+        mtime = _mtime(path) if (path := video_path(video_id, directory)) else 0.0
     return {
         **meta,
         "id": video_id,
         "url": f"/api/inference/video/gallery/{video_id}/file",
         **gallery_flags.flags_for(flags, video_id),
         # The server's own sort key, so a client re-sort agrees with it (created_at can differ).
-        "order_at": gallery_flags.order_rank(
-            flags, video_id, _mtime(path) if (path := video_path(video_id, directory)) else 0.0
-        ),
+        "order_at": gallery_flags.order_rank(flags, video_id, mtime),
     }
 
 
@@ -675,6 +677,10 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
         raw = sidecar.read_text(encoding = "utf-8")
     except (OSError, UnicodeError):
         return None
+    return _parse_meta(raw)
+
+
+def _parse_meta(raw: str) -> Optional[dict[str, Any]]:
     try:
         meta = json.loads(raw)
     except (ValueError, TypeError):
@@ -683,6 +689,52 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
     if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED_META):
         return None
     return meta
+
+
+# Raw text, not the dict: each call decodes its own copy, so callers cannot mutate later listings.
+_SIDECAR_CACHE_MAX = 8192
+_SIDECAR_CACHE_ITEM_MAX = 64 * 1024
+_SIDECAR_CACHE_BUDGET = 16 * 1024 * 1024
+_sidecar_cache: OrderedDict[str, tuple[tuple, str]] = OrderedDict()
+_sidecar_cache_chars = 0
+_sidecar_cache_lock = threading.Lock()
+
+
+def _listed_meta(sidecar: Path) -> Optional[dict[str, Any]]:
+    global _sidecar_cache_chars
+    try:
+        info = os.stat(sidecar)
+    except OSError:
+        return _read_meta(sidecar)
+    # Stat before the read: a write in between leaves a key that no longer matches.
+    key = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    name = str(sidecar)
+    with _sidecar_cache_lock:
+        hit = _sidecar_cache.get(name)
+        if hit is not None and hit[0] == key:
+            _sidecar_cache.move_to_end(name)
+            raw = hit[1]
+        else:
+            raw = None
+    if raw is not None:
+        return _parse_meta(raw)
+    try:
+        raw = sidecar.read_text(encoding = "utf-8")
+    except (OSError, UnicodeError):
+        return None
+    if len(raw) <= _SIDECAR_CACHE_ITEM_MAX:
+        with _sidecar_cache_lock:
+            old = _sidecar_cache.pop(name, None)
+            if old is not None:
+                _sidecar_cache_chars -= len(old[1])
+            _sidecar_cache[name] = (key, raw)
+            _sidecar_cache_chars += len(raw)
+            while (
+                len(_sidecar_cache) > _SIDECAR_CACHE_MAX
+                or _sidecar_cache_chars > _SIDECAR_CACHE_BUDGET
+            ):
+                _sidecar_cache_chars -= len(_sidecar_cache.popitem(last = False)[1][1])
+    return _parse_meta(raw)
 
 
 def get_record(video_id: str) -> Optional[dict[str, Any]]:
@@ -709,6 +761,37 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
+_GLOB_FOLDS_CASE = os.name == "nt"
+
+
+def _listed_mp4s(directory: Path, keep: Callable[[str], bool]) -> list[tuple[str, float, bool]]:
+    """(stem, mtime, canonical regular file) per kept ``directory.glob("*.mp4")`` entry, in order."""
+    found: list[tuple[str, float, bool]] = []
+    with os.scandir(directory) as entries:
+        try:
+            for entry in entries:
+                name = entry.name
+                if not (name.lower() if _GLOB_FOLDS_CASE else name).endswith(".mp4"):
+                    continue
+                # Path.stem: a dot-led name (".mp4", "..mp4" on 3.14) can be all stem.
+                stem = Path(name).stem if name.startswith(".") else name[:-4]
+                if not keep(stem):
+                    continue
+                try:
+                    mtime = entry.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+                try:
+                    plain = name.endswith(".mp4") and entry.is_file(follow_symlinks = False)
+                except OSError:
+                    plain = False
+                found.append((stem, mtime, plain))
+        except OSError:
+            # Path.glob listed a failed read as empty.
+            return []
+    return found
+
+
 def list_videos(
     limit: Optional[int] = None,
     offset: int = 0,
@@ -719,27 +802,35 @@ def list_videos(
     """Pinned then newest-first; archived selects one shelf, does not widen it; valid filters run before slicing so has_more counts accepted clips"""
     try:
         directory = gallery_dir()
-        paths = list(directory.glob("*.mp4"))
+        flags = gallery_flags.read(directory)
+        # Shelf split and pin sort use stems only, before any stat or sidecar read.
+        clips = _listed_mp4s(
+            directory, lambda stem: gallery_flags.is_archived(flags, stem) == archived
+        )
     except OSError:
         return []
-    flags = gallery_flags.read(directory)
-    # Shelf split and pin sort use stems only, before any sidecar read, keeping the early break.
-    paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
-    paths.sort(
-        key = lambda p: (
-            gallery_flags.pin_rank(flags, p.stem),
-            gallery_flags.order_rank(flags, p.stem, _mtime(p)),
+    clips.sort(
+        key = lambda c: (
+            gallery_flags.pin_rank(flags, c[0]),
+            gallery_flags.order_rank(flags, c[0], c[1]),
         ),
         reverse = True,
     )
     # Page over READABLE records, else orphans skew the window and has_more.
     want = None if limit is None else offset + limit
     records = []
-    for path in paths:
-        meta = _read_meta(_sidecar_path(path.stem, directory))
+    for stem, mtime, plain in clips:
+        meta = _listed_meta(_sidecar_path(stem, directory))
         if meta is None:
             continue
-        record = _record(path.stem, meta, flags, directory = directory)
+        # A regular file under a safe id is what video_path accepts: reuse the sort's mtime.
+        record = _record(
+            stem,
+            meta,
+            flags,
+            directory = directory,
+            mtime = mtime if plain and _ID_RE.match(stem) else None,
+        )
         if valid is not None and not valid(record):
             continue
         records.append(record)
