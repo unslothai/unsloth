@@ -21,6 +21,7 @@ import {
   SentAttachmentsSelect,
   CodeFontRow,
   CodeFontSizeRow,
+  ComposerOutlineSliderRow,
   ContrastSliderRow,
   FontSmoothingSwitch,
   HeadingFontRow,
@@ -280,6 +281,9 @@ export function AppearanceTab() {
             checked={composerAtBottom}
             onCheckedChange={setComposerAtBottom}
           />
+        </SettingsRow>
+        <SettingsRow label={t("chatBackground.outline")}>
+          <ComposerOutlineSliderRow />
         </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.custom.sentAttachments.label")}

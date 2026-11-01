@@ -67,7 +67,7 @@ const sizingLabels: Record<ImageSizing, TranslationKey> = {
 	original: "chatBackground.original",
 };
 const SLIDERS: {
-	key: "visibility" | "blur" | "zoom" | "outline";
+	key: "visibility" | "blur" | "zoom";
 	label: TranslationKey;
 	min: number;
 	max: number;
@@ -76,7 +76,6 @@ const SLIDERS: {
 	{ key: "visibility", label: "chatBackground.visibility", min: 0, max: 100, unit: "%" },
 	{ key: "blur", label: "chatBackground.blur", min: 0, max: 20, unit: "px" },
 	{ key: "zoom", label: "chatBackground.zoom", min: 100, max: 300, unit: "%" },
-	{ key: "outline", label: "chatBackground.outline", min: 0, max: 100, unit: "%" },
 ];
 const errors = {
 	storage: "chatBackground.storageError",
