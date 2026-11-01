@@ -714,6 +714,38 @@ def test_pool_bytes_count_only_the_target_card(monkeypatch):
     assert bg.pool_bytes(0) == 100 and bg.pool_bytes() == 1000
 
 
+def test_live_segment_outputs_in_a_graph_pool_are_not_subtracted_twice(monkeypatch):
+    # 600 MiB reserved: a 500 MiB segment pool fully held by retained outputs plus 100 MiB idle default cache.
+    mib = 1 << 20
+    shared = bg._Shared(0)
+    monkeypatch.setattr(bg, "_LIVE", {shared})
+    monkeypatch.setattr(torch.cuda, "graph_pool_handle", lambda: (7, 1))
+    shared.graph_pool()
+    shared.pool_bytes = 500 * mib
+    snapshot = [
+        {
+            "device": 0,
+            "segment_pool_id": (7, 1),
+            "total_size": 500 * mib,
+            "allocated_size": 500 * mib,
+        },
+        {"device": 0, "segment_pool_id": (0, 0), "total_size": 100 * mib, "allocated_size": 0},
+    ]
+    monkeypatch.setattr(torch.cuda, "memory_snapshot", lambda *a, **k: snapshot)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a, **k: 600 * mib)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a, **k: 500 * mib)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 0)
+    assert dm.cuda_reusable_cache_bytes(0) == 100 * mib
+    # Half the outputs freed: their 250 MiB stays graph-private.
+    snapshot[0]["allocated_size"] = 250 * mib
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a, **k: 250 * mib)
+    assert dm.cuda_reusable_cache_bytes(0) == 100 * mib
+    # No snapshot: the whole recorded reservation stays uncredited.
+    monkeypatch.setattr(torch.cuda, "memory_snapshot", lambda *a, **k: 1 / 0)
+    assert dm.cuda_reusable_cache_bytes(0) == 0
+
+
 def test_block_graph_pools_are_not_credited_as_reclaimable(monkeypatch):
     target = types.SimpleNamespace(device = "cuda", backend = "cuda")
     snap = dm.DeviceMemory("cuda", "cuda", "dedicated", 1000, 8000)

@@ -1240,8 +1240,8 @@ def _metal_working_set_mib() -> tuple[Optional[int], int]:
 
 def _graph_held_cache_bytes(device: Optional[int] = None) -> int:
     """Bytes inside ``memory_reserved() - memory_allocated()`` that ordinary allocations cannot reuse: the CUDA graph
-    pools (per-block pools whole, the whole-step graphs' shared pool's unallocated part). ``device`` None counts every
-    block pool and reads the whole-step pool on the current card."""
+    pools' unallocated parts (block / segment pools and the whole-step graphs' shared pool). ``device`` None counts
+    every block pool and reads the whole-step pool on the current card."""
     held = 0
     try:
         from .diffusion_block_graph import pool_bytes as _block_graph_pool_bytes

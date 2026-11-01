@@ -250,15 +250,36 @@ _LIVE: "weakref.WeakSet" = weakref.WeakSet()
 
 
 def pool_bytes(device: Optional[int] = None) -> int:
-    """Device bytes held in every live block-graph pool (on CUDA ``device`` when given): reserved by the allocator yet
-    never free for other work, so the memory guard must not credit them back as reclaimable."""
+    """Free bytes inside every live block-graph pool (on CUDA ``device`` when given): reserved by the allocator yet
+    reusable only by those graphs, so the memory guard must not credit them back as reclaimable. Segment outputs
+    kept in a pool are already in ``memory_allocated``; only the recorded reservation is used when the allocator
+    snapshot cannot be read."""
     total = 0
+    tracked = 0
+    pools: set = set()
     for shared in tuple(_LIVE):
         index = getattr(shared, "device_index", None)
         if device is not None and index is not None and index != device:
             continue
-        total += int(getattr(shared, "pool_bytes", 0) or 0)
-    return total
+        recorded = int(getattr(shared, "pool_bytes", 0) or 0)
+        handles = getattr(shared, "pools", None)
+        if recorded > 0 and handles:
+            tracked += recorded
+            pools.update(tuple(h) for h in handles)
+        else:
+            total += recorded
+    if not pools:
+        return total
+    try:
+        free = 0
+        for seg in _torch().cuda.memory_snapshot():
+            if device is not None and seg.get("device", device) != device:
+                continue
+            if tuple(seg.get("segment_pool_id") or ()) in pools:
+                free += int(seg.get("total_size", 0)) - int(seg.get("allocated_size", 0))
+        return total + max(0, free)
+    except Exception:  # noqa: BLE001 - over-counting only makes the guard stricter
+        return total + tracked
 
 
 class _Shared:
@@ -278,6 +299,7 @@ class _Shared:
         self.static_out: dict = {}
         self.static_refs: dict = {}  # slot -> recordings reading its buffers
         self.warmed: set = set()
+        self.pools: list = []  # every pool recorded into, incl. one retired by a failed capture
         self.pool_bytes = 0
         self.static_bytes = 0
         self.strict_device = False
@@ -293,6 +315,7 @@ class _Shared:
         if self.pool is None:
             torch = _torch()
             self.pool = torch.cuda.graph_pool_handle()
+            self.pools.append(self.pool)
         return self.pool
 
     def statics_for(self, slot: tuple, live: list) -> list:
@@ -337,6 +360,7 @@ class _Shared:
         self.static_refs.clear()
         self.warmed.clear()
         self.pool = None
+        self.pools = []
         self.pool_bytes = 0
         self.static_bytes = 0
 
