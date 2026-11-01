@@ -37,9 +37,8 @@ from unsloth_zoo.logging_utils import PatchRLStatistics
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
 
 try:
-    # One package-version read per patch pass instead of one per generated trainer.
     from unsloth_zoo.compiler import _compile_versions_scope
-except ImportError:  # unsloth_zoo without the scope: read versions per trainer as before.
+except ImportError:  # unsloth_zoo predates the scope
 
     def _compile_versions_scope(function):
         return function

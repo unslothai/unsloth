@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""patch_trl_rl_trainers reads package versions once per pass (unsloth_zoo's
-_compile_versions_scope), and still imports against an unsloth_zoo without it."""
+"""patch_trl_rl_trainers reads package versions once per pass, and imports against an older unsloth_zoo."""
 
 from __future__ import annotations
 
@@ -89,7 +88,6 @@ def test_one_version_read_set_per_patch_pass(monkeypatch):
     generated = []
 
     def fake_generate(trainer_file):
-        # create_new_function stamps every generated trainer with these versions.
         generated.append((trainer_file, zc._get_compile_versions()))
 
     monkeypatch.setattr(zc, "importlib_version", counted)
@@ -97,10 +95,8 @@ def test_one_version_read_set_per_patch_pass(monkeypatch):
     monkeypatch.setattr(_rl, "_import_trl_experimental_trainers", lambda: {})
     _rl.patch_trl_rl_trainers()
     assert len(generated) > 1
-    # One read per package for the whole pass, not one set per generated trainer.
     assert len(reads) == len(zc._resolve_compile_versions()), reads
     assert len({versions for _, versions in generated}) == 1
-    # Outside the pass versions are read fresh again.
     reads.clear()
     zc._get_compile_versions()
     assert reads
