@@ -135,7 +135,8 @@
     "parse_tool_calls_from_text": "08550eb10ff903b00d5bd961042546e5f80ecd42de97d3df522817e54bce37b6",
     "strip_outside_think": "56c95819bc8be33099a79ab72f88189e8e8e0cc43e0d6b1649456bcbf175a495",
     "strip_tool_call_markup": "92caecd45bad22ea9d173e7207823107a201acb974a25a8d204981829242896b",
-    "strip_tool_patterns": "33623be71b543be7c4ebeb37c226b7a6ace3711c136d559e1340bd74bbdb97c4"
+    "strip_tool_patterns": "33623be71b543be7c4ebeb37c226b7a6ace3711c136d559e1340bd74bbdb97c4",
+    "tag_mention_spans": "a7905e66be81f404eb67a404d2233a141bc136f9539a51cadc93f9c73cb2adf7"
   },
   "corpus": "8785e9bc1cbf9dccb636cc8ba5397e47ab3cbd717a20b1a26cc96476e60d08e8"
 }
