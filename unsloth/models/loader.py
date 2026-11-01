@@ -2557,6 +2557,13 @@ class FastModel(FastBaseModel):
 
         # Text-diffusion slow-path dispatch, factored so the normal route and the legacy-config fallback share one call site.
         def _dispatch_diffusion():
+            if fp8_lora is not None:
+                # FastDiffusionModel.get_peft_model never converts LoRA bases: refuse rather than train in 16-bit.
+                raise NotImplementedError(
+                    f"Unsloth: float8_training = {fp8_lora!r} (fp8 LoRA) is not supported for text-diffusion "
+                    "models yet. Instead: drop float8_training for LoRA, or float8_training with "
+                    "full_finetuning = True."
+                )
             model, tokenizer = FastDiffusionModel.from_pretrained(
                 model_name = model_name,
                 max_seq_length = max_seq_length,

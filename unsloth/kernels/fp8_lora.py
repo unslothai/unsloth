@@ -536,7 +536,10 @@ class Fp8LoRABaseState:
         if not self.offloaded:
             return False
         weight = module.weight
-        weight.data = weight.data.to(self.device)
+        # A merge under inference_mode would otherwise make the master an inference tensor, which the next
+        # training forward cannot save for backward.
+        with torch.inference_mode(False), torch.no_grad():
+            weight.data = weight.data.to(self.device, copy = True)
         self.offloaded = False
         # Same values, so the fp8 copy is still valid.
         self._key = self._weight_key(weight)

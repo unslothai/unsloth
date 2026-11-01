@@ -1220,3 +1220,40 @@ def test_vllm_server_merge_of_a_host_master_lands_on_the_adapter_device():
     lora_B.to_empty(device = "cpu")
     module.lora_A["default"], module.lora_B["default"] = lora_A, lora_B
     assert _unsloth_vllm_merged_weight(module, weight).device.type == "cpu"
+
+
+def test_a_merge_under_inference_mode_leaves_a_trainable_master(offload_on_cpu, monkeypatch):
+    # Failing before: restore() copied the host master to the device inside inference_mode, so the master became
+    # an inference tensor and the next training forward raised "Inference tensors cannot be saved for backward".
+    # The compute device is the CPU here, so the host -> device copy is forced to allocate as a real one would.
+    real_to = torch.Tensor.to
+
+    def allocating_to(self, *args, **kwargs):
+        if torch.is_inference_mode_enabled():
+            kwargs["copy"] = True
+        return real_to(self, *args, **kwargs)
+
+    model = _tiny_qwen3_peft()
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    f8t.enable_fp8_lora(model, allow_cpu = True)
+    monkeypatch.setattr(torch.Tensor, "to", allocating_to)
+    with torch.inference_mode():
+        model.merge_adapter()
+        model.unmerge_adapter()
+    monkeypatch.setattr(torch.Tensor, "to", real_to)
+    ids = torch.randint(0, 256, (2, 16))
+    model(input_ids = ids, labels = ids).loss.backward()
+    assert any(p.grad is not None for n, p in model.named_parameters() if "lora_" in n)
+
+
+def test_text_diffusion_refuses_fp8_lora_instead_of_dropping_it():
+    # Failing before: the diffusion route returned before mark_fp8_lora, and FastDiffusionModel.get_peft_model never
+    # converts, so float8_training = "fp8_lora" trained the bases in 16-bit with no notice.
+    import inspect
+
+    from unsloth.models.loader import FastModel
+
+    src = inspect.getsource(FastModel.from_pretrained)
+    body = src[src.index("def _dispatch_diffusion():") :]
+    body = body[: body.index("FastDiffusionModel.from_pretrained(")]
+    assert "if fp8_lora is not None:" in body and "NotImplementedError" in body
