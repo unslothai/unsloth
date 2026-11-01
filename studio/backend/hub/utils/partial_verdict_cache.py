@@ -27,8 +27,7 @@ from utils.scan_memo import memoized, scan_memo_active
 _MAX_ENTRIES = 4096
 # A change inside this window of the signature can share its timestamp (coarse clocks, FAT 2 s).
 _RACY_NS = 3_000_000_000
-# The checks swallow most OSErrors, so a transient one (EMFILE, EIO) can store a wrong verdict the signature
-# cannot see; recompute after a minute so it does not outlive the error for long.
+# Bounds a wrong verdict from a transient OSError (EMFILE, EIO) the checks swallow.
 _MAX_AGE_NS = 60_000_000_000
 _ABSENT_ERRNOS = frozenset({2, 20})  # ENOENT, ENOTDIR
 # Local filesystems whose directory mtime moves on every create, rename and unlink in it.
@@ -182,8 +181,7 @@ def _scan_token_uncached() -> Optional[tuple]:
     if token is None:
         return None
     stats = [stat for _path, stat in token[3]]
-    # Too fresh to vouch for, or on a filesystem whose directory mtimes cannot be trusted:
-    # this scan neither stores nor serves.
+    # Too fresh, or untrusted directory mtimes: this scan neither stores nor serves.
     if _newest(stats) > start_ns - _RACY_NS or not _trusted_devices(_devices(stats)):
         return None
     with _lock:
@@ -244,9 +242,7 @@ def _walk_repo(repo_dir: str) -> Optional[tuple[tuple, tuple]]:
                         if blob is None or blob.path in linked_blobs:
                             continue
                         if blob.is_symlink():
-                            # huggingface_hub's shared store: blobs/<etag> links to <hub>/blobs/<xx>/<xet hash>, a file
-                            # that can be swept or replaced from another repo, so it is tracked like an outside target.
-                            # Resolved from where blobs/ really is, as the kernel does for a relative link.
+                            # Shared store (<hub>/blobs/<xx>/<xet hash>), sweepable from another repo; resolved from the real blobs/.
                             linked_blobs.add(blob.path)
                             try:
                                 shared = os.readlink(blob.path)
