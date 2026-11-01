@@ -3328,6 +3328,12 @@ def _unsloth_vllm_merged_weight(module, weight):
             delta = delta.to(device).reshape(weight.shape)
             merged = delta if merged is None else merged + delta.to(merged.device)
     if merged is None:
+        # No active delta (another adapter selected, adapters disabled): a host master still goes out on the
+        # fp8 compute device.
+        base = getattr(module, "base_layer", None)
+        state = base.__dict__.get("_unsloth_fp8_lora") if base is not None else None
+        if state is not None and weight.device != state.device:
+            return weight.data.to(state.device)
         return weight.data
     return (weight.to(merged.device).float() + merged).to(weight.dtype)
 

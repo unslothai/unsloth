@@ -1343,6 +1343,7 @@ class FastLanguageModel(FastLlamaModel):
 
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
         fp8_lora = None
+        fp8_request = kwargs.get("float8_training", None)
         if kwargs.get("float8_training", None) not in (None, False) and not full_finetuning:
             # LoRA: fp8 forward + input gradient on the frozen 16-bit base (kernels/fp8_lora.py).
             fp8_lora = resolve_fp8_lora(
@@ -1929,9 +1930,10 @@ class FastLanguageModel(FastLlamaModel):
                 unsloth_tiled_mlp = unsloth_tiled_mlp,
                 text_only = text_only,
                 *args,
+                # FastModel owns the request from here: it marks the model, or refuses (text-diffusion) first.
+                **({"float8_training": fp8_request} if fp8_lora is not None else {}),
                 **kwargs,
             )
-            delegated = mark_fp8_lora(delegated, fp8_lora)
             return _mark_requested_float32(delegated, user_float32), tokenizer
 
         use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(

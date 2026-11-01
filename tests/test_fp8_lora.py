@@ -1257,3 +1257,31 @@ def test_text_diffusion_refuses_fp8_lora_instead_of_dropping_it():
     body = src[src.index("def _dispatch_diffusion():") :]
     body = body[: body.index("FastDiffusionModel.from_pretrained(")]
     assert "if fp8_lora is not None:" in body and "NotImplementedError" in body
+
+
+def test_vllm_server_sync_of_a_host_master_without_an_active_delta_lands_on_the_device():
+    # Failing before: with another adapter selected (or adapters disabled) the merge returned the host master
+    # itself, a CPU tensor, which the vLLM server's NCCL broadcast refuses. Meta stands in for CUDA.
+    from types import SimpleNamespace
+
+    from unsloth.models.rl_replacements import _unsloth_vllm_merged_weight
+
+    base = torch.nn.Linear(64, 32, bias = False).bfloat16().requires_grad_(False)
+    base.__dict__["_unsloth_fp8_lora"] = SimpleNamespace(device = torch.device("meta"))
+    module = SimpleNamespace(
+        base_layer = base, active_adapters = ["other"], lora_A = {}, lora_B = {}, scaling = {}
+    )
+    assert _unsloth_vllm_merged_weight(module, base.weight).device.type == "meta"
+    del base.__dict__["_unsloth_fp8_lora"]
+    assert _unsloth_vllm_merged_weight(module, base.weight).device.type == "cpu"
+
+
+def test_fast_language_model_forwards_fp8_lora_to_fastmodel():
+    # Failing before: FastLanguageModel popped float8_training and delegated without it, so FastModel's
+    # text-diffusion refusal never ran and the delegated model trained its bases in 16-bit.
+    import inspect
+
+    from unsloth.models.loader import FastLanguageModel
+
+    src = inspect.getsource(FastLanguageModel.from_pretrained)
+    assert '**({"float8_training": fp8_request} if fp8_lora is not None else {})' in src
