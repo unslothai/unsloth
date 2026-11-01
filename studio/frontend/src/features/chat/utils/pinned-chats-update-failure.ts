@@ -6,6 +6,7 @@ import {
   isSilencedDesktopUpdateFailure,
 } from "../../../lib/desktop-update-activity.ts";
 import { PinnedChatsBlockedError } from "./pinned-chats-sync.ts";
+import { isAbortOrTimeout } from "./settings-retry.ts";
 
 // Judged when the request fails: the queue reports after a recovery read, by when the flag may be gone.
 const failedUnderUpdate = new WeakSet<object>();
@@ -14,9 +15,7 @@ function unreachable(error: unknown, down: boolean): boolean {
   return (
     isSilencedDesktopUpdateFailure(error, down) ||
     // The pins API aborts at 10s.
-    (down &&
-      error instanceof Error &&
-      (error.name === "AbortError" || error.name === "TimeoutError"))
+    (down && isAbortOrTimeout(error))
   );
 }
 

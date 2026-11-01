@@ -16,6 +16,13 @@ export class ChatSettingsRequestError extends Error {
   }
 }
 
+export function isAbortOrTimeout(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" || error.name === "TimeoutError")
+  );
+}
+
 /** A body that broke off mid-read (TypeError) is a transport failure; invalid JSON (SyntaxError) is not. */
 export function asBodyTransportFailure(error: unknown): unknown {
   if (!(error instanceof TypeError)) return error;
