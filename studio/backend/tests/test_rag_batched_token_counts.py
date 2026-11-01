@@ -18,8 +18,7 @@ from storage import rag_db
 
 import sqlite3
 
-# Same gate as the rag_conn fixture: an interpreter whose sqlite3 cannot load extensions (the
-# macos-15 runner's) never has RAG, so the end-to-end ingestion tests skip there.
+# Same gate as the rag_conn fixture (the macos-15 runner's sqlite3 cannot load extensions).
 needs_sqlite_vec = pytest.mark.skipif(
     not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"),
     reason = "sqlite-vec cannot be loaded by this Python's sqlite3",
@@ -117,7 +116,6 @@ def test_batched_count_matches_single_counts_and_memo(monkeypatch):
     assert count.many(texts) == [len(_Tok._ids(t)) for t in texts]
     encodes = tok.encodes
     batches = tok.batches
-    # Memoized: a repeat costs no tokenizer call, batched or single.
     assert count.many(["a b c", "d e"]) == [5, 2]
     assert count("f g h i j") == 5
     assert (tok.encodes, tok.batches) == (encodes, batches)
@@ -215,7 +213,6 @@ def test_ingestion_stores_the_same_rows_batched_or_not(
     serial_calls = tok.encodes + tok.batches
     assert batched == serial
     assert len(batched[0]) > 100 and len(batched[1]) == len(batched[2]) == len(batched[0])
-    # Work count: one batched tokenize per split level and stage, not one per piece.
     assert batched_calls * 10 < serial_calls
     assert batched_calls < 40
 
