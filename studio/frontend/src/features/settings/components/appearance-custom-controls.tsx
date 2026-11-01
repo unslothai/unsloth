@@ -118,10 +118,18 @@ export function ActiveColorControl({
 }
 
 /* ------------------------------ Typography ------------------------------ */
+// Mirrors html.client-mac (theme-boot.js), which swaps the sans default to the system font.
+const SYSTEM_SANS_NAME = "SF Pro";
+const DEFAULT_SANS_NAME =
+  typeof document !== "undefined" &&
+  document.documentElement.classList.contains("client-mac")
+    ? SYSTEM_SANS_NAME
+    : "Inter Variable";
+
 const DEFAULT_FONT_NAMES = {
-  ui: "Inter Variable",
+  ui: DEFAULT_SANS_NAME,
   heading: "Hellix",
-  chat: "Inter Variable",
+  chat: DEFAULT_SANS_NAME,
   code: "JetBrains Mono",
 } as const;
 
@@ -214,6 +222,13 @@ function detectFontsByMeasurement(candidates: string[]): string[] {
       return ctx.measureText(sample).width !== width;
     }),
   );
+}
+
+// The system font has no addressable family name, so preview it through the token.
+function previewFamily(font: string): string {
+  return font === SYSTEM_SANS_NAME
+    ? "var(--font-sans-default)"
+    : `"${font}", var(--font-sans)`;
 }
 
 let deviceFontsCache: string[] | null = null;
@@ -321,7 +336,7 @@ function FontSelect({
         >
           <span
             className="min-w-0 truncate"
-            style={{ fontFamily: `"${value ?? defaultFont}", var(--font-sans)` }}
+            style={{ fontFamily: previewFamily(value ?? defaultFont) }}
           >
             {value ?? defaultLabel}
           </span>
@@ -350,7 +365,7 @@ function FontSelect({
               data-checked={value === null}
               className="cursor-pointer rounded-md"
             >
-              <span style={{ fontFamily: `"${defaultFont}", var(--font-sans)` }}>
+              <span style={{ fontFamily: previewFamily(defaultFont) }}>
                 {defaultLabel}
               </span>
             </CommandItem>
