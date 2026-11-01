@@ -831,6 +831,10 @@ async def _start_queued(entry: _Queued) -> bool:
         group = _batch_for(entry)
         if len(group) > 1 and await arun_as(entry.account, _trains_alone(entry.request)):
             group = [entry]
+        # A cancel that landed while the model probe ran has already returned "cancelled": never start it.
+        group = [member for member in group if member.status == "queued"]
+        if entry.status != "queued":
+            return True
         if len(group) > 1:
             outcome = await _start_batch(group)
             if outcome is not None:
