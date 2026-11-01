@@ -19878,6 +19878,31 @@ class _WindowsToolJob:
             return False
         return bool(self._kernel32.TerminateJobObject(self._handle, 1))
 
+    def active_processes(self) -> "int | None":
+        """JOBOBJECT_BASIC_ACCOUNTING_INFORMATION.ActiveProcesses; None when the query fails."""
+        if not self._handle:
+            return None
+        import ctypes
+
+        class _Accounting(ctypes.Structure):
+            _fields_ = [("times", ctypes.c_int64 * 4)] + [
+                (name, ctypes.c_uint32)
+                for name in (
+                    "TotalPageFaultCount",
+                    "TotalProcesses",
+                    "ActiveProcesses",
+                    "TotalTerminatedProcesses",
+                )
+            ]
+
+        info = _Accounting()
+        # 1 = JobObjectBasicAccountingInformation
+        if not self._kernel32.QueryInformationJobObject(
+            self._handle, 1, ctypes.byref(info), ctypes.sizeof(info), None
+        ):
+            return None
+        return info.ActiveProcesses
+
     def close(self) -> None:
         handle, self._handle = self._handle, None
         if handle:
@@ -19908,6 +19933,14 @@ def _windows_job_capture(proc) -> "_WindowsToolJob | None":
         kernel32.AssignProcessToJobObject.restype = BOOL
         kernel32.TerminateJobObject.argtypes = [H, UINT]
         kernel32.TerminateJobObject.restype = BOOL
+        kernel32.QueryInformationJobObject.argtypes = [
+            H,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+        ]
+        kernel32.QueryInformationJobObject.restype = BOOL
         kernel32.CloseHandle.argtypes = [H]
         kernel32.CloseHandle.restype = BOOL
 
@@ -20004,11 +20037,14 @@ def _killpg_captured(pgid) -> None:
 
 
 def _captured_group_alive(pgid) -> bool:
-    """Windows jobs count as alive (terminating an empty job is harmless)."""
+    """False when no member provably remains; a pid-only Windows capture cannot tell, nor kill one."""
     if pgid is None:
         return False
     if isinstance(pgid, tuple):
-        return True
+        if pgid[0] != "windows-job":
+            return False
+        active = pgid[1].active_processes()
+        return active is None or active > 0
     try:
         os.killpg(pgid, 0)
     except (ProcessLookupError, PermissionError, OSError):
@@ -21114,6 +21150,8 @@ def _missing_path_hint(output: str, workdir: str | None = None) -> str:
 # Kept past the spill's head so a trailing traceback still reaches `_missing_path_hint`; also the drain's read size.
 _DRAIN_TAIL_CHARS = 64 * 1024
 _DRAIN_EOF_GRACE_S = 1.5
+# A holder that never lets the reader go quiet is still stopped this long after the leader exits.
+_DRAIN_BUSY_CAP_S = 10.0
 _BACKGROUND_STOPPED_NOTE = (
     "[Background processes still writing to this output were stopped when the command exited. "
     "To keep one running, redirect its output to a file, e.g. `nohup cmd > out.log 2>&1 &`.]\n"
@@ -21132,13 +21170,14 @@ def _drain_process_output(
     chunks: list[str] = []
     tail: "deque[str]" = deque()
     kept = joined = tail_chars = omitted_chars = omitted_lines = 0
+    last_read = time.monotonic()
 
     # Captured before waiting so a pipe-holding grandchild can be killed after the leader is reaped.
     if pgid is None:
         pgid = _capture_process_group(proc)
 
     def _reader() -> None:
-        nonlocal kept, joined, tail_chars, omitted_chars, omitted_lines
+        nonlocal kept, joined, tail_chars, omitted_chars, omitted_lines, last_read
         try:
             # Sized reads: a newline-free stream would otherwise arrive as one unbounded "line".
             for line in iter(lambda: proc.stdout.readline(_DRAIN_TAIL_CHARS), ""):
@@ -21163,6 +21202,7 @@ def _drain_process_output(
                         output_callback(line)
                     except Exception:  # noqa: BLE001 - observer must never kill the tool
                         logger.debug("tool output_callback raised", exc_info = True)
+                last_read = time.monotonic()
         except (ValueError, OSError):
             pass  # pipe closed during kill
 
@@ -21182,24 +21222,29 @@ def _drain_process_output(
         except subprocess.TimeoutExpired:
             pass
     # A grandchild that inherited stdout can hold the pipe open past the leader's exit: like bwrap's
-    # PID namespace, end it after a short grace. An empty group means the reader is only draining.
+    # PID namespace, stop the group once the reader has sat idle on the pipe for a short grace.
+    # A busy reader is only draining, and a redirected background job must then survive.
     background_stopped = False
     if not timed_out:
+        exited_at = time.monotonic()
         deadline = None if timeout is None else started_at + timeout
-        grace_end = time.monotonic() + _DRAIN_EOF_GRACE_S
-        if deadline is not None:
-            grace_end = min(grace_end, deadline)
         # Poll cancel_event in slices: the cancel watcher is gone once the leader exits.
         while reader.is_alive():
             if cancel_event is not None and cancel_event.is_set():
                 _killpg_captured(pgid)
                 break
             now = time.monotonic()
-            if now >= grace_end and _captured_group_alive(pgid):
+            past_deadline = deadline is not None and now >= deadline
+            give_up = (
+                now - max(exited_at, last_read) >= _DRAIN_EOF_GRACE_S
+                or now - exited_at >= _DRAIN_BUSY_CAP_S
+                or past_deadline
+            )
+            if give_up and _captured_group_alive(pgid):
                 _killpg_captured(pgid)
                 background_stopped = True
                 break
-            if deadline is not None and now >= deadline:
+            if past_deadline:
                 timed_out = True
                 _killpg_captured(pgid)
                 break

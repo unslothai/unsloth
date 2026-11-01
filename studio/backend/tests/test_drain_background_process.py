@@ -20,9 +20,10 @@ from core.inference.tools import (
     _bash_exec,
     _capture_process_group,
     _drain_process_output,
+    _killpg_captured,
 )
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
 
 
 def _spawn(script):
@@ -35,6 +36,22 @@ def _spawn(script):
         encoding = "utf-8",
         errors = "replace",
         start_new_session = True,
+    )
+    return proc, _capture_process_group(proc)
+
+
+def _spawn_py(code):
+    # Windows has no sessions: _capture_process_group puts the leader in a job object instead.
+    extra = {} if sys.platform == "win32" else {"start_new_session": True}
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        stdin = subprocess.DEVNULL,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        **extra,
     )
     return proc, _capture_process_group(proc)
 
@@ -72,6 +89,7 @@ def _cleanup(pgid):
         pass
 
 
+@posix_only
 def test_backgrounded_process_does_not_stall_finite_drain():
     proc, pgid = _spawn("sleep 30 & echo started")
     try:
@@ -88,6 +106,7 @@ def test_backgrounded_process_does_not_stall_finite_drain():
         _cleanup(pgid)
 
 
+@posix_only
 def test_backgrounded_process_does_not_stall_unlimited_drain():
     proc, pgid = _spawn("sleep 30 & echo started")
     result = {}
@@ -111,6 +130,7 @@ def test_backgrounded_process_does_not_stall_unlimited_drain():
         _cleanup(pgid)
 
 
+@posix_only
 @pytest.mark.parametrize("timeout", [10, None])
 def test_short_lived_background_output_is_still_captured(timeout):
     proc, pgid = _spawn("( sleep 0.3; echo late ) & echo early")
@@ -125,17 +145,66 @@ def test_short_lived_background_output_is_still_captured(timeout):
 @pytest.mark.parametrize("timeout", [10, None])
 def test_slow_consumer_is_not_reported_as_a_stopped_background_process(timeout):
     # The grace expires while the reader is still busy; with the group empty, nothing was stopped.
-    proc, pgid = _spawn("echo one; echo two; echo three")
+    proc, pgid = _spawn_py("print('one'); print('two'); print('three')")
     try:
         output, timed_out, _ = _drain_process_output(
             proc, timeout, lambda _line: time.sleep(0.8), pgid = pgid
         )
         assert not timed_out
-        assert output == "one\ntwo\nthree\n"
+        assert output.splitlines() == ["one", "two", "three"]
+    finally:
+        _killpg_captured(pgid)
+
+
+@posix_only
+def test_slow_consumer_leaves_a_redirected_background_job_running():
+    proc, pgid = _spawn("sleep 30 >/dev/null 2>&1 & echo $!; echo one; echo two; echo three")
+    try:
+        output, timed_out, _ = _drain_process_output(
+            proc, 20, lambda _line: time.sleep(0.8), pgid = pgid
+        )
+        assert not timed_out
+        assert "nohup" not in output
+        bg_pid = int(output.splitlines()[0])
+        os.kill(bg_pid, 0)
     finally:
         _cleanup(pgid)
 
 
+@posix_only
+def test_background_job_that_never_goes_quiet_is_still_stopped():
+    proc, pgid = _spawn("( while :; do echo tick; sleep 0.1; done ) & echo started")
+    try:
+        started = time.monotonic()
+        output, timed_out, _ = _drain_process_output(proc, None, None, pgid = pgid)
+        assert time.monotonic() - started < 15
+        assert not timed_out
+        assert "started\n" in output
+        assert "nohup" in output
+        _assert_group_gone(pgid)
+    finally:
+        _cleanup(pgid)
+
+
+def test_child_holding_stdout_is_stopped_on_every_platform():
+    code = (
+        "import subprocess, sys\n"
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "print('started', flush=True)\n"
+    )
+    proc, pgid = _spawn_py(code)
+    try:
+        started = time.monotonic()
+        output, timed_out, _ = _drain_process_output(proc, 20, None, pgid = pgid)
+        assert time.monotonic() - started < 8
+        assert not timed_out
+        assert output.startswith("started")
+        assert "nohup" in output
+    finally:
+        _killpg_captured(pgid)
+
+
+@posix_only
 def test_bash_exec_reports_the_command_not_a_timeout():
     started = time.monotonic()
     result = _bash_exec("sleep 30 & echo started", timeout = 10, disable_sandbox = True)
