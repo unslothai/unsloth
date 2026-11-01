@@ -650,3 +650,52 @@ def test_run_flow_runs_a_called_flows_python_only_with_that_flows_approval(clien
         by_key["nodes"]["call"]["status"] == "failed"
         and "API key" in by_key["nodes"]["call"]["error"]
     )
+
+
+@pytest.mark.parametrize("stop_after", [None, 0.2])
+def test_a_trickling_body_cannot_outlast_the_deadline_or_stop(monkeypatch, stop_after):
+    import threading
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from core.inference import tools as web
+
+    class Trickle(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            try:
+                for _ in range(100):
+                    self.wfile.write(b"x")
+                    self.wfile.flush()
+                    time.sleep(0.1)
+            except OSError:
+                pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Trickle)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    real = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    class Local:
+        def open(self, request, timeout):
+            return real.open(f"http://127.0.0.1:{server.server_port}/", timeout = timeout)
+
+    monkeypatch.setattr(
+        web, "_validate_and_resolve_host", lambda host, port: (True, "", ["127.0.0.1"])
+    )
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *a: Local())
+    stop = threading.Event()
+    if stop_after is not None:
+        threading.Timer(stop_after, stop.set).start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(FlowNodeError, match = "Stopped" if stop_after else "longer than"):
+            automation.guarded_request("GET", "http://example.com/", {}, None, 1, stop)
+        assert time.monotonic() - started < (0.8 if stop_after else 1.6)
+    finally:
+        server.shutdown()
+        server.server_close()
