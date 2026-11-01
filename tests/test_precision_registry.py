@@ -604,3 +604,29 @@ def test_counter_counts_the_real_nvfp4_qat_linear_op():
     with P.count_lowp_gemms() as c:
         op(x, w, None, False, False, False, False, None)
     assert c["unsloth::nvfp4_qat_linear"] == 1
+
+
+def test_counter_hears_eager_fp8_triton_launchers_and_not_the_fp16_gemv():
+    # Failing before: eager fp8 block launchers run Triton without dispatching their op (counted 0), and
+    # fp8_block_gemv, which upcasts the weight before its dot, was counted as a low-precision GEMM.
+    from unsloth.precision import engage
+
+    assert "unsloth::fp8_block_gemv" not in engage.LOWP_GEMM_CUSTOM_OPS
+    with P.count_lowp_gemms() as c:
+        engage.note_lowp_gemm("unsloth::fp8_block_small_m_linear")
+    assert c["unsloth::fp8_block_small_m_linear"] == 1
+    engage.note_lowp_gemm("unsloth::fp8_block_small_m_linear")  # no counter open: a no-op
+    assert c["unsloth::fp8_block_small_m_linear"] == 1 and not engage._ACTIVE
+
+    fp8 = pytest.importorskip("unsloth.kernels.fp8")
+    names = fp8._EAGER_COUNTED_LOWP_GEMMS
+    assert "fp8_block_gemv" not in names
+    for name in ("fp8_block_matmul_triton", "fp8_block_small_m_linear", "fp8_block_matmul_torchao"):
+        assert name in names and f"unsloth::{name}" in engage.LOWP_GEMM_CUSTOM_OPS
+
+
+def test_mxfp8_qat_registry_admits_only_bfloat16_like_its_backend():
+    # Failing before: the qat:mxfp8 row allowed fp32 while _prepare_model_for_qat quantizes bf16 layers only.
+    assert P.check_recipe("qat:mxfp8", gpu = "sm100", input_dtype = torch.bfloat16, mode = "full")
+    with pytest.raises(ValueError):
+        P.check_recipe("qat:mxfp8", gpu = "sm100", input_dtype = torch.float32, mode = "full")

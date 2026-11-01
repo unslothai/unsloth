@@ -76,13 +76,13 @@ LOWP_GEMM_OPS = ("_scaled_mm", "_scaled_mm_v2", "_scaled_grouped_mm", "_scaled_g
 
 # Opaque custom ops that run a low-precision GEMM inside: dispatch sees only the outer op, so each call counts
 # once at its boundary. Matched by qualified name, so a namespace that never loaded (no fbgemm) costs nothing.
-# Dequantize-then-matmul ops (mxfp4_bounded_dense_matmul, fp8 weight dequant) are not low-precision GEMMs.
+# Dequantize-then-matmul ops (mxfp4_bounded_dense_matmul, fp8 weight dequant, fp8_block_gemv, which upcasts
+# the weight before its dot) are not low-precision GEMMs.
 LOWP_GEMM_CUSTOM_OPS = (
     "unsloth::nvfp4_qat_linear",
     "unsloth::fp8_block_matmul_triton",
     "unsloth::fp8_block_matmul_torchao",
     "unsloth::fp8_block_small_m_linear",
-    "unsloth::fp8_block_gemv",
     "unsloth_zoo::mxfp4_ogs_moe",
     "fbgemm::f8f8bf16",
     "fbgemm::f8f8bf16_tensorwise",
@@ -90,6 +90,15 @@ LOWP_GEMM_CUSTOM_OPS = (
     "fbgemm::f8f8bf16_blockwise",
     "fbgemm::f8f8bf16_cublas",
 )
+
+
+# Counters open right now; eager launchers that bypass dispatch (Triton fp8 kernels) report through note_lowp_gemm.
+_ACTIVE = []
+
+
+def note_lowp_gemm(name):
+    for counts in _ACTIVE:
+        counts[name] = counts.get(name, 0) + 1
 
 
 @contextlib.contextmanager
@@ -125,5 +134,9 @@ def count_lowp_gemms():
                 counts[key] += 1
             return func(*args, **(kwargs or {}))
 
-    with _Counter():
-        yield counts
+    _ACTIVE.append(counts)
+    try:
+        with _Counter():
+            yield counts
+    finally:
+        _ACTIVE.remove(counts)
