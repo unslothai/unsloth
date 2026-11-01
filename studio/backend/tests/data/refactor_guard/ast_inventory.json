@@ -2158,7 +2158,8 @@
       "_TOOL_CLOSED_PATS[6]": "'\\\\[/TOOL_CALLS\\\\]' flags=32",
       "_TOOL_OPEN_XML_TAIL_PATS[0]": "'<tool_call>.*$' flags=48",
       "_TOOL_OPEN_XML_TAIL_PATS[1]": "'<\\\\|tool_call>.*$' flags=48",
-      "_TOOL_OPEN_XML_TAIL_PATS[2]": "'<function=[\\\\w-]+>.*$' flags=48"
+      "_TOOL_OPEN_XML_TAIL_PATS[2]": "'<function=[\\\\w-]+>.*$' flags=48",
+      "_TOOL_TAG_HINT_RE": "'</?(?:tool|function|param|arg_)|<[|｜]|\\\\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\\\\]' flags=32"
     },
     "regexes": {
       "re.compile('(?:<tool_call>|<\\\\|content_invoke_tool_json\\\\|>)\\\\s*\\\\{')": 1,
@@ -2166,6 +2167,7 @@
       "re.compile('(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?:\\\\{.*)?$', re.DOTALL)": 1,
       "re.compile('(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?=\\\\{)')": 1,
       "re.compile('(?<!`)(``?)[ \\\\t]*(<(?!/?think(?:ing)?>)[^<>`\\\\n]+>[\\\\w.\\\\-]*|\\\\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\\\\][\\\\w.\\\\-]*)[ \\\\t]*\\\\1')": 1,
+      "re.compile('</?(?:tool|function|param|arg_)|<[|｜]|\\\\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\\\\]')": 1,
       "re.compile('</think>|\\\\[/THINK\\\\]')": 1,
       "re.compile('</tool_call>|<\\\\|end_message\\\\|>')": 1,
       "re.compile('<\\\\|tool_call>.*$', re.DOTALL)": 1,
@@ -2309,6 +2311,12 @@
         "kind": "assign"
       },
       "_TOOL_OPEN_XML_TAIL_PATS": {
+        "kind": "assign"
+      },
+      "_TOOL_TAG_HINT_RE": {
+        "kind": "assign"
+      },
+      "_TOOL_TAG_PREFIXES": {
         "kind": "assign"
       },
       "_balanced_brace_end": {

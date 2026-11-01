@@ -366,6 +366,8 @@
       "_TOOL_CLOSED_BLOCK_PATS",
       "_TOOL_CLOSED_PATS",
       "_TOOL_OPEN_XML_TAIL_PATS",
+      "_TOOL_TAG_HINT_RE",
+      "_TOOL_TAG_PREFIXES",
       "_balanced_brace_end",
       "_balanced_bracket_end",
       "_balanced_json_span",

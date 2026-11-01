@@ -6636,7 +6636,6 @@ _PENDING_MENTION_RE = _re.compile(
     r"(?:<(?!/?think(?:ing)?>)[^<>`\n]*(?:>[\w.\-]*)?|\[/?[A-Z_]*(?:\][\w.\-]*)?)"
     r"[ \t]*)(`*)\Z"
 )
-# Tags are short; a longer tail is not held (it shows as it did before).
 _PENDING_MENTION_MAX_CHARS = 256
 
 
@@ -6644,9 +6643,16 @@ def _pending_mention_cut(text: str) -> int:
     """Where to cut a cumulative stream so a still-open backticked tool tag is held back, else -1. The cut keeps
     the backticks, so for a tag the strip would remove anyway the held display equals the full strip."""
     lo = max(0, len(text) - _PENDING_MENTION_MAX_CHARS)
-    if text.find("`", lo) < 0:
+    # The tag holds no backtick, so its opening run is the last one before any trailing closers.
+    end = len(text)
+    while end > lo and text[end - 1] == "`":
+        end -= 1
+    i = text.rfind("`", lo, end)
+    if i < 0:
         return -1
-    m = _PENDING_MENTION_RE.search(text, lo)
+    while i > lo and text[i - 1] == "`":
+        i -= 1
+    m = _PENDING_MENTION_RE.match(text, i)
     if m is None or len(m.group(3)) >= len(m.group(1)):
         return -1
     tag = m.group(2).rstrip(" \t")
@@ -6798,7 +6804,6 @@ class _ReasoningSpanGuard:
         """``hold=False`` is the end-of-turn strip: a backticked tag still open there is final text."""
         wrap = self._wrap_for(text, wrapped_so_far)
         if wrap is None:
-            # Each event carries the turn so far, consumed as deltas: hold a still-open backticked tag.
             return _strip_tool_xml_for_display(
                 _hold_pending_mention(text, auto_heal_tool_calls and hold),
                 auto_heal_tool_calls = auto_heal_tool_calls,
@@ -32014,7 +32019,6 @@ async def produce_openai_chat_completions(
                         enabled_tool_names = _gguf_display_tool_names,
                     )
                     reasoning_extractor = _new_chat_reasoning_extractor()
-                    # This turn's raw text, for the end-of-turn release of a held backticked tag.
                     _gguf_turn_raw = ""
                     _stream_usage = None
                     _stream_timings = None
@@ -32234,7 +32238,6 @@ async def produce_openai_chat_completions(
                             api_monitor.append_reply(monitor_id, visible_delta)
                             yield _gguf_chat_delta_line(ChoiceDelta(content = visible_delta))
 
-                    # Normal end or a stop: a tag still held never got its closing backticks.
                     for chunk in _release_held_mention() + _flush_reasoning_extractor():
                         yield chunk
 
@@ -33913,7 +33916,6 @@ async def produce_openai_chat_completions(
                 )
                 reasoning_extractor = _new_sf_reasoning_extractor()
                 approval_flush_pending = False
-                # This turn's raw text, for the end-of-turn release of a held backticked tag.
                 _sf_turn_raw = ""
 
                 def _sf_release_held_mention():
@@ -34090,7 +34092,6 @@ async def produce_openai_chat_completions(
                         api_monitor.append_reply(monitor_id, visible_delta)
                         yield _chat_content_chunk(completion_id, created, model_name, visible_delta)
 
-                # Normal end or a stop: a tag still held never got its closing backticks.
                 for _c in _sf_release_held_mention() + _sf_flush_reasoning():
                     yield _c
                 # Request-scoped holder so concurrent streams cannot read each other's stats.
@@ -44109,7 +44110,6 @@ class _AnthropicToolEventRules:
         self._tool_blocks_emitted = 0
         self._drop_until_tool_end = False
         self._span_guard = _ReasoningSpanGuard(think_provenance)
-        # This turn's raw text, for the end-of-turn release of a held backticked tag.
         self._turn_raw = ""
         # Last drop-branch keepalive, seeded to stream start so a chatty tool busy past the
         # stall window still gets one though its events are dropped.
@@ -44538,7 +44538,6 @@ def _anthropic_tool_response_from_events(
     _span_guard = _ReasoningSpanGuard(think_provenance)
     # Key presence means genuine reasoning; the value may be None if only the count was recorded.
     _block_wrap: dict = {}
-    # This turn's last content event, for the end-of-turn release of a held backticked tag.
     turn_event = None
 
     def _add_text(clean: str) -> None:
@@ -44556,7 +44555,6 @@ def _anthropic_tool_response_from_events(
                     _block_wrap[len(content_blocks) - 1] = _span_guard.claimed_wrap
 
     def _release_held_mention() -> None:
-        # A backticked tag still held when its turn ends never closed: keep what the full strip keeps.
         nonlocal turn_event
         last, turn_event = turn_event, None
         if last is None or _pending_mention_cut(last["text"]) < 0:

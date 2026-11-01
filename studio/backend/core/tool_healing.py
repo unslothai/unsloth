@@ -230,16 +230,32 @@ _CODE_SPAN_RE = re.compile(
     re.DOTALL | re.MULTILINE,
 )
 
-# A single tool tag (and at most a name) alone in an inline code span (`<tool_call>`, `[TOOL_CALLS]name`): a model
-# naming the format, never a call, since no body can follow inside the span. Every match is decided
-# by text already present (no lookahead past the closing run), so append-only growth never revokes
-# one. Runs of three or more are fences (``` + tag + ``` is a fence close, an envelope marker and a
-# fence open), and reasoning tags are left alone: they decide the think segmentation, not a call.
+# A single tool tag (and at most a name) alone in an inline code span (`<tool_call>`, `[TOOL_CALLS]name`) names the
+# format: no call body fits inside. No lookahead past the closing run, so append-only growth never revokes a match.
+# Runs of three or more are fences; reasoning tags decide the think segmentation, not a call.
 _TAG_MENTION_RE = re.compile(
     r"(?<!`)(``?)[ \t]*("
     r"<(?!/?think(?:ing)?>)[^<>`\n]+>[\w.\-]*"
     r"|\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\][\w.\-]*"
     r")[ \t]*\1"
+)
+# Any tag still pairs its backticks above, but only tool-call families are returned: masking `<div>` changes no strip
+# output. A match never crosses a newline, so pairing restarts per line and only lines holding a tool tag are scanned.
+_TOOL_TAG_PREFIXES = (
+    "<tool",
+    "</tool",
+    "<function",
+    "</function",
+    "<param",
+    "</param",
+    "<arg_",
+    "</arg_",
+    "<|",
+    "<｜",
+    "[",
+)
+_TOOL_TAG_HINT_RE = re.compile(
+    r"</?(?:tool|function|param|arg_)|<[|｜]|\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\]"
 )
 
 
@@ -247,7 +263,21 @@ def tag_mention_spans(text: str) -> list[tuple[int, int]]:
     """Ordered spans of the tag inside each lone-tag inline code span (backticks excluded)."""
     if "`" not in text:
         return []
-    return [m.span(2) for m in _TAG_MENTION_RE.finditer(text)]
+    spans = []
+    line_end = 0
+    for hint in _TOOL_TAG_HINT_RE.finditer(text):
+        if hint.start() < line_end:
+            continue
+        line_start = text.rfind("\n", 0, hint.start()) + 1
+        line_end = text.find("\n", hint.end())
+        if line_end < 0:
+            line_end = len(text)
+        spans.extend(
+            m.span(2)
+            for m in _TAG_MENTION_RE.finditer(text, line_start, line_end)
+            if m.group(2).startswith(_TOOL_TAG_PREFIXES)
+        )
+    return spans
 
 
 def in_tag_mention(spans, pos: int) -> bool:
