@@ -90,6 +90,36 @@ def _unit_mesh(unit):
         return None
 
 
+def _root_mesh(mesh):
+    get = getattr(mesh, "_get_root_mesh", None)
+    if get is not None:
+        return get()
+    from torch.distributed.device_mesh import _mesh_resources
+
+    return _mesh_resources.get_root_mesh(mesh)
+
+
+def _composed_writer_rank(meshes):
+    """Lowest rank of the slice of the meshes' common root that they span together (a tp x FSDP2 model:
+    the whole (dp, tp) grid, not the rank's own tp row). None when they do not slice one named root."""
+    try:
+        root = _root_mesh(meshes[0])
+        if any(_root_mesh(m) is not root for m in meshes[1:]):
+            return None
+        names = set()
+        for m in meshes:
+            names.update(m.mesh_dim_names or ())
+        if not names or not names <= set(root.mesh_dim_names or ()):
+            return None
+        coordinate = root.get_coordinate()
+        index = tuple(
+            slice(None) if name in names else c for name, c in zip(root.mesh_dim_names, coordinate)
+        )
+        return int(root.mesh[index].min())
+    except Exception:
+        return None
+
+
 def mesh_writer_rank(model):
     """Lowest global rank of the model's FSDP2 mesh: a sub-mesh without rank 0 never gathers there."""
     dist = _dist()
@@ -99,7 +129,15 @@ def mesh_writer_rank(model):
     mesh = None
     if isinstance(model, torch.nn.Module):
         if DTensor is not None:
-            mesh = next((p.device_mesh for p in model.parameters() if isinstance(p, DTensor)), None)
+            meshes = []
+            for p in model.parameters():
+                if isinstance(p, DTensor) and p.device_mesh not in meshes:
+                    meshes.append(p.device_mesh)
+            if len(meshes) > 1:
+                writer = _composed_writer_rank(meshes)
+                if writer is not None:
+                    return writer
+            mesh = meshes[0] if meshes else None
         if mesh is None:
             # Unsharded parameters (eval forward, no reshard) carry no mesh; the units still do.
             mesh = next(filter(None, map(_unit_mesh, fsdp2_units(model))), None)
