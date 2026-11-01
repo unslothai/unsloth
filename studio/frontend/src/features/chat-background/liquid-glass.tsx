@@ -106,8 +106,7 @@ export function GlassMenuLayers({ active }: { active: boolean }) {
     const isMenu = (node: Node) =>
       node instanceof Element &&
       (node.matches(MENUS) || node.querySelector(MENUS) !== null);
-    // Whole subtree, since a dialog can portal its selects into its own container rather than <body>;
-    // rescans only when a menu itself comes or goes, so streaming text costs a cheap check.
+    // Subtree: a dialog can portal its selects into its own container. Rescan only when a menu comes or goes.
     const observer = new MutationObserver((records) => {
       if (
         records.some(
