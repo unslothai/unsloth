@@ -132,7 +132,6 @@ export const ChipIcon: IconSvgElement = [
   ["path", { d: "M12 16C13.8856 16 14.8284 16 15.4142 15.4142C16 14.8284 16 13.8856 16 12C16 10.1144 16 9.17157 15.4142 8.58579C14.8284 8 13.8856 8 12 8C10.1144 8 9.17157 8 8.58579 8.58579C8 9.17157 8 10.1144 8 12C8 13.8856 8 14.8284 8.58579 15.4142C9.17157 16 10.1144 16 12 16Z", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "2" }],
 ];
 
-// Two rails with a knob at opposite ends, as browsers mark "View site information".
 export const SiteInfoIcon: IconSvgElement = [
   ["path", { d: "M10 8H20M4 16H14", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "0" }],
   ["circle", { cx: "7", cy: "8", r: "2.5", stroke: "currentColor", strokeWidth: "1.5", key: "1" }],

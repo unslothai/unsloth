@@ -14,7 +14,7 @@ import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 const BAR_COUNT = 48;
-// Bar heights in px (scaled by --ui-space-scale); the peak stays inside the 40px pill.
+// The peak stays inside the 40px pill.
 const MIN_HEIGHT = 4;
 const MAX_HEIGHT = 26;
 const PUSH_INTERVAL_MS = 120;
