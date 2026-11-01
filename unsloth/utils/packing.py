@@ -1776,7 +1776,7 @@ def _inference_mode() -> bool:
 
 def _built_in_inference_mode():
     """Cache entry tag. None marks a grad-off traced build: dynamo cannot read inference_mode, so
-    _cache_hit checks that entry's tensors once it is read outside a trace."""
+    _cache_hit checks its tensors eagerly or rebuilds it in a grad-enabled trace."""
     if _is_compiling():
         return None if not torch.is_grad_enabled() else False
     return torch.is_inference_mode_enabled()
@@ -1795,7 +1795,10 @@ def _cache_hit(entry) -> bool:
     # Inference tensors may serve inference mode only; normal tensors serve both.
     inference = entry["inference"]
     if inference is None:
-        if _is_compiling() or torch.is_inference_mode_enabled():
+        if _is_compiling():
+            # Tracing cannot inspect the tensors: rebuild uncertain entries before autograd use.
+            return not torch.is_grad_enabled()
+        if torch.is_inference_mode_enabled():
             return True
         return not _holds_inference_tensor(entry.get("result", entry.get("mask")))
     return not inference or _inference_mode()

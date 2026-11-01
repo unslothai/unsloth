@@ -376,6 +376,52 @@ def test_compiled_inference_mode_metadata_is_not_served_to_a_training_step(grad_
     assert (train_mask is built_mask) == (grad_mode == "no_grad")
 
 
+@pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+@pytest.mark.parametrize("grad_mode", ["inference_mode", "no_grad"])
+@pytest.mark.parametrize("kind", ["metadata", "window_mask"])
+def test_compiled_training_rejects_inference_mode_cache(backend, grad_mode, kind):
+    """No eager cache read between the compiled producer and compiled training consumer."""
+    from unsloth.utils import attention_dispatch
+
+    cpu = torch.device("cpu")
+    seq = torch.tensor([3, 5], dtype = torch.int32)
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
+
+    def build(seq):
+        if kind == "metadata":
+            return packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, cpu)[1]
+        return attention_dispatch._windowed_causal_mask(8, 8, 2, cpu)
+
+    def train(x, seq):
+        saved = build(seq)
+        # Multiply by the original int/bool tensor: casting would hide the inference-tensor bug.
+        return (x * saved).sum(), saved
+
+    torch._dynamo.reset()
+    try:
+        compiled_build = torch.compile(build, backend = backend, fullgraph = True, dynamic = True)
+        compiled_train = torch.compile(train, backend = backend, fullgraph = True, dynamic = True)
+        with torch._dynamo.config.patch(capture_scalar_outputs = True):
+            with getattr(torch, grad_mode)():
+                built = compiled_build(seq)
+            assert torch.is_inference(built) == (grad_mode == "inference_mode")
+            expected = built.clone()
+            if kind == "metadata":
+                assert expected.tolist() == [0, 3, 8]
+            for _ in range(3):
+                x = torch.ones(built.shape, requires_grad = True)
+                loss, saved = compiled_train(x, seq)
+                loss.backward()
+                assert not torch.is_inference(saved)
+                torch.testing.assert_close(saved, expected)
+                torch.testing.assert_close(x.grad, expected.float())
+            # The safe entry now serves later eager reads too.
+            assert build(seq) is saved
+    finally:
+        attention_dispatch._WINDOW_MASK_CACHE.clear()
+        torch._dynamo.reset()
+
+
 def test_xformers_mask_lru_keeps_inference_masks_out_of_training(monkeypatch):
     class _Mask:
         @classmethod
