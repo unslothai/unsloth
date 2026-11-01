@@ -286,3 +286,36 @@ def test_auto_backend_reads_a_model_id_config_with_the_loader_options(clean_env,
     except Exception:
         pass
     assert seen and seen[0][0] == "org/model" and seen[0][1] is config
+
+
+def test_config_field_kwargs_override_the_config_in_the_pre_init_check(clean_env, monkeypatch):
+    # Failing before: SFTTrainer(..., args = config, router_aux_loss_coef = 0.0) was checked against the config's
+    # own value, refusing a layout the trainer would run (the wrapper moves the kwarg into the config).
+    import trl
+
+    seen = []
+    monkeypatch.setattr(cp, "_check_cp_runtime", lambda *a, **k: None)
+    monkeypatch.setattr(cp, "_resolve_auto_backend", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cp,
+        "_refuse_model_parallel_cp",
+        lambda size, model, cls, config, **k: seen.append(config.router_aux_loss_coef),
+    )
+
+    class Trainer:
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            **kwargs,
+        ):
+            pass
+
+    monkeypatch.setattr(trl, "SFTTrainer", Trainer)
+    cp.patch_sft_trainer()
+    config = _config(2, router_aux_loss_coef = None)
+    try:
+        trl.SFTTrainer(model = torch.nn.Linear(2, 2), args = config, router_aux_loss_coef = 0.0)
+    except Exception:
+        pass
+    assert seen == [0.0]

@@ -903,6 +903,34 @@ def _declares_cp_fields(config) -> bool:
     return "context_parallel_size" in {f.name for f in dataclasses.fields(config)}
 
 
+class _ConfigOverlay:
+    """The trainer config as the trainer will see it: constructor kwargs that name config fields
+    (SFTTrainer(..., router_aux_loss_coef = 0.0)) win, as Unsloth's trainer wrapper moves them into the config."""
+
+    def __init__(self, base, overrides):
+        self.__dict__["_base"] = base
+        self.__dict__["_overrides"] = overrides
+
+    @property
+    def __class__(self):
+        return type(self.__dict__["_base"])
+
+    def __getattr__(self, name):
+        overrides = self.__dict__["_overrides"]
+        return overrides[name] if name in overrides else getattr(self.__dict__["_base"], name)
+
+
+def _effective_config(config, kwargs):
+    if config is None:
+        return None
+    overrides = {
+        k: v
+        for k, v in kwargs.items()
+        if k not in ("model", "args", "peft_config") and hasattr(config, k)
+    }
+    return _ConfigOverlay(config, overrides) if overrides else config
+
+
 def _positional_config_to_keyword(
     init,
     self,
@@ -1274,7 +1302,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 requested,
                 _trainer_model_argument((self,) + args, kwargs),
                 type(self),
-                config,
+                _effective_config(config, kwargs),
                 peft_config = kwargs.get("peft_config"),
                 backend = kwargs.get("context_parallel_backend"),
             )
@@ -1949,7 +1977,7 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
                 requested,
                 _trainer_model_argument((self,) + args, kwargs),
                 type(self),
-                config,
+                _effective_config(config, kwargs),
                 peft_config = kwargs.get("peft_config"),
                 backend = kwargs.get("context_parallel_backend"),
             )
