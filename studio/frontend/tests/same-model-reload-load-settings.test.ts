@@ -165,7 +165,7 @@ test("a same-model MLX reload keeps a value this tab staged but advances the bas
 
 test("a same-model MLX reload moves a clean Fast Verify both ways, and a poll leaves a staged one alone", () => {
   useChatRuntimeStore.setState({ activeGgufVariant: null });
-  hydrate(mlxStatus(), MLX);
+  hydrate(mlxStatus({}), MLX);
   const pair = ({ mlxFastVerify: on, loadedMlxFastVerifyRequested: loaded } = useChatRuntimeStore.getState()) => [on, loaded];
   reload(mlxStatus({ mlx_fast_verify_requested: true }), MLX);
   assert.deepEqual(pair(), [true, true]);
