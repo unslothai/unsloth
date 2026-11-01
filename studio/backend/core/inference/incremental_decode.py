@@ -1,28 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``tokenizer.decode(ids)`` for a reply that grows one id at a time, without re-decoding every id.
-
-Streaming paths that snapshot the reply by re-decoding all of its ids pay for the whole reply on
-every token, which at 8k tokens costs milliseconds per token. This returns the same string per
-step by decoding only the ids after the last point where decoding is known to split.
-
-A split before id ``j`` is taken only where ``decode(ids[:k]) == decode(ids[:j]) + tail`` holds
-for every continuation, with ``tail`` read off ``decode(ids[j-1:k])`` past the text of
-``ids[j-1]`` alone. That holds for Hugging Face fast tokenizers whose decoder is built from
-ByteLevel, Metaspace or per-token Replace / ByteFallback / Fuse / Strip(start <= 1) steps, when
-both ids at the split are ordinary vocabulary pieces that decode alone to whole characters:
-
-- neither is an added token, so special-token skipping and the added-token chunking of
-  ``tokenizers`` stay inside the decoded window;
-- neither is a ``<0xNN>`` byte piece, so no ByteFallback run crosses the split;
-- each decodes alone without U+FFFD, so the UTF-8 decode restarts at the split;
-- the left one decodes to a non-empty string, so a leading-space strip cannot reach the right;
-- with ``clean_up_tokenization_spaces`` possibly on, the left one ends in a character no cleanup
-  pattern contains, so no cleanup replacement spans the split.
-
-Any other tokenizer, or a decode method overridden anywhere, decodes every id as before.
-"""
+"""``tokenizer.decode(ids)`` for a reply growing one id at a time, decoding only the ids after the
+last point where decoding is known to split (HF fast tokenizers with ByteLevel, Metaspace or
+per-token Replace / ByteFallback / Fuse / Strip(start <= 1) decoders). A split needs both ids to be
+non-added, non-``<0xNN>`` pieces that decode alone to non-empty text without U+FFFD, and, when
+cleanup may run, the left one to end in a character no cleanup pattern contains. Anything else,
+or an overridden decode, decodes every id as before."""
 
 from __future__ import annotations
 
@@ -45,7 +29,6 @@ def _decoder_is_local(config) -> bool:
         return True
     if kind == "Replace":
         pattern = config.get("pattern") or {}
-        # One character cannot match across two pieces, even after Fuse.
         return isinstance(pattern.get("String"), str) and len(pattern["String"]) == 1
     if kind == "Strip":
         return config.get("stop") == 0 and config.get("start") in (0, 1)
@@ -56,7 +39,6 @@ def _decoder_is_local(config) -> bool:
 
 
 def _fast_tokenizer(tokenizer):
-    """The Hugging Face fast tokenizer that ``tokenizer.decode`` runs, when nothing overrides its decode path."""
     try:
         from transformers import PreTrainedTokenizerFast
         from transformers.tokenization_utils_base import PreTrainedTokenizerBase
@@ -83,8 +65,6 @@ def _fast_tokenizer(tokenizer):
 
 
 class _SplitProfile:
-    """Per-id answers to "may decoding split here", cached for one tokenizer."""
-
     def __init__(self, tokenizer, added_ids, size):
         self._tokenizer = tokenizer
         self._added = added_ids
@@ -104,9 +84,7 @@ class _SplitProfile:
                         text = self._tokenizer.decode([token_id], **_SPLIT_DECODE)
                         whole = isinstance(text, str) and bool(text) and "\ufffd" not in text
                     if whole:
-                        # The piece also as a later id of its run: Metaspace drops every
-                        # replacement char of a run's first id only, so a piece ending in one
-                        # ends in "a" alone but in " " mid-reply, where " ." cleanup can span.
+                        # Metaspace strips "▁" from a run's first id only: "a▁" is "a" alone, "a " mid-reply.
                         pair = self._tokenizer.decode([token_id, token_id], **_SPLIT_DECODE)
                         later = pair[len(text) :] if pair.startswith(text) else ""
                         whole = bool(later) and "\ufffd" not in later
@@ -152,7 +130,6 @@ def split_profile(tokenizer):
     profile = _SplitProfile(inner, added, size) if local else None
     try:
         with _PROFILES_LOCK:
-            # False marks a tokenizer already found not to split.
             _PROFILES[inner] = profile if profile is not None else _NoSplit(size)
     except TypeError:
         pass
@@ -168,11 +145,8 @@ class _NoSplit:
 
 
 class IncrementalDecode:
-    """``tokenizer.decode(ids, **decode_kwargs)`` of the ids fed so far, as ``text``.
-
-    ``fallback(ids)`` replaces that decode for tokenizers that do not split; it must equal it
-    wherever they do. Calling the instance with a list that grew by one id feeds that id, so it
-    can stand in for a ``decode(ids)`` callable over an append-only list."""
+    """``tokenizer.decode(ids, **decode_kwargs)`` of the ids fed so far. ``fallback(ids)`` replaces
+    that decode where the tokenizer does not split and must equal it where it does."""
 
     def __init__(
         self,
@@ -188,7 +162,6 @@ class IncrementalDecode:
         cleanup = self._kwargs.get("clean_up_tokenization_spaces")
         if cleanup is None and self._profile is not None:
             cleanup = getattr(self._profile._tokenizer, "clean_up_tokenization_spaces", True)
-        # Unknown counts as on: the barrier test is only stricter.
         self._cleanup = cleanup is not False
         self.reset()
 

@@ -2281,12 +2281,10 @@ def _require_row_detokenizer(streamed):
 
 
 class _ReplyText:
-    """A reply re-decoded from its ids after each sampled id, without re-decoding every id.
-
-    Fed one id per step through ``feed``, or called with the caller's append-only id list, so it
-    stands in for a ``decode(ids)`` callable. With a native ``decoder``, a runtime may stop on an
-    allowlisted control (<|end_message|>): the trailing stop id stays only when it closes an open
-    envelope, judged with the prefill, since a restored <think> lives in the prompt."""
+    """A reply's decode, fed one id at a time or called as ``decode(ids)`` on an append-only list.
+    With a native ``decoder`` a runtime may stop on an allowlisted control (<|end_message|>): the
+    trailing stop id stays only when it closes an open envelope, judged with the prefill, since a
+    restored <think> lives in the prompt."""
 
     def __init__(
         self,
@@ -2329,7 +2327,6 @@ class _ReplyText:
         if len(ids) == self._count + 1:
             return self.feed(ids[-1])
         if len(ids) != self._count:
-            # Not a list that grew by one id: replay it whole.
             self._reset()
             for token_id in ids:
                 self.feed(token_id)
@@ -7015,7 +7012,6 @@ class MLXInferenceBackend:
             else None
         )
         token_ids = []
-        # The decode of token_ids per step, without re-decoding every id each step.
         if preserve_native_channels:
             reply_text = None
         elif native_token_decoder is not None:

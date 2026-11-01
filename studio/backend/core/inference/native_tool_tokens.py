@@ -277,7 +277,6 @@ class NativeToolTokenDecoder:
         )
 
     def incremental(self) -> "_IncrementalNativeDecode":
-        """``decode`` of a reply fed one id at a time, without re-decoding the ids before it."""
         return _IncrementalNativeDecode(self)
 
     def suppresses(self, token_id) -> bool:
@@ -292,8 +291,7 @@ class NativeToolTokenDecoder:
 
 
 class _IncrementalNativeDecode:
-    """``NativeToolTokenDecoder.decode`` of the ids fed so far. Suppressed ids are dropped one by
-    one as ``decode`` filters them, so only the kept ids reach the incremental decode."""
+    """``NativeToolTokenDecoder.decode`` of the ids fed so far; suppressed ids are dropped as fed."""
 
     def __init__(self, decoder: NativeToolTokenDecoder):
         from core.inference.incremental_decode import IncrementalDecode
