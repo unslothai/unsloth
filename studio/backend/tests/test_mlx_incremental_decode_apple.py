@@ -22,7 +22,7 @@ _TINY = "mlx-community/SmolLM-135M-Instruct-4bit"
 _GREEDY = dict(temperature = 0.0, top_p = 1.0, top_k = 0, min_p = 0.0, max_new_tokens = 300)
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture
 def backend():
     pytest.importorskip("mlx_lm")
     pytest.importorskip("unsloth_zoo.mlx.loader")
