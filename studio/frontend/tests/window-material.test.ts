@@ -174,3 +174,8 @@ test("the glass preference survives an account switch, and sign-in waits for the
 	const client = readFileSync(new URL("../src/features/auth/login-client.ts", import.meta.url), "utf8");
 	assert.match(client, /getConfirmedLoginMode = \(\): LoginMode \| null =>\n\s*statusKnown \? loginMode : null;/);
 });
+
+test("menus portalled into a dialog's own container still get a refraction layer", () => {
+	const layer = readFileSync(new URL("../src/features/chat-background/liquid-glass.tsx", import.meta.url), "utf8");
+	assert.match(layer, /observer\.observe\(document\.body, \{ childList: true, subtree: true \}\)/);
+});
