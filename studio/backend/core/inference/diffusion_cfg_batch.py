@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Batches CFG branches into one forward for stateless denoisers only; a second call differing from
-the batched inputs reruns that branch plain; not always bit-exact; UNSLOTH_DIFFUSION_CFG_BATCH=0
-keeps one branch per call; UNSLOTH_DIFFUSION_CFG_BATCH_COMPILED=0 keeps a compiled resident Wan plain"""
+"""Batches CFG branches into one forward for stateless denoisers only (offloaded: whenever the doubled call fits;
+resident: where a per-shape timing trial measured a win); a second call differing from the batched inputs reruns
+that branch plain; not always bit-exact; UNSLOTH_DIFFUSION_CFG_BATCH=0 keeps one branch per call, =timed times
+offloaded loads too; UNSLOTH_DIFFUSION_CFG_BATCH_COMPILED=0 keeps a compiled resident denoiser plain"""
 
 from __future__ import annotations
 
@@ -16,24 +17,63 @@ from typing import Any, Optional
 CFG_BATCH_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH"
 COMPILED_RESIDENT_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH_COMPILED"
 
-# Forward keeps no state between calls, both branches share every per-step input but the text conditioning. Z-Image is
-# absent on purpose: its pipeline already batches the branches (a list of latents, one call per step).
+# The CFG policy of every denoiser class Studio loads (test_diffusion_cfg_batch_policy pins it to diffusion_families
+# and video_families): exactly one of the three tables below.
+#
+# Batched by this router: the forward keeps no state between calls and both branches share every per-step input but
+# the text conditioning (diffusers 0.42.1 pipelines: same latent object, cond then uncond call). FLUX.3 batches only
+# when both prompts land in the same 80-token window (its transformer attends the padding, so a padded branch would
+# not be the same computation); a shorter negative keeps that shape plain.
 STATELESS_CLASSES = frozenset(
     {
         "Flux2Transformer2DModel",
+        "Flux3Transformer2DModel",
         "FluxTransformer2DModel",
+        "HunyuanImageTransformer2DModel",
+        "HunyuanVideo15Transformer3DModel",
+        "Krea2Transformer2DModel",
         "QwenImageTransformer2DModel",
         "WanTransformer3DModel",
     }
 )
 
+# The pipeline already runs both branches in one call (nothing for the router to pair).
+PIPELINE_BATCHED: dict[str, str] = {
+    "ZImageTransformer2DModel": "the pipeline batches the branches (a list of latents, one call per step)",
+    "HiDreamImageTransformer2DModel": "the pipeline batches the branches (torch.cat([latents] * 2))",
+    "LTX2VideoTransformer3DModel": "the pipeline batches the branches (torch.cat([latents] * 2))",
+    "UNet2DConditionModel": "the pipeline batches the branches (torch.cat([latents] * 2))",
+}
+
+# Two calls per step that are not the same computation on a doubled batch.
+NOT_BATCHABLE: dict[str, str] = {
+    "QwenImage21Transformer2DModel": "each branch passes its own prefix KV cache object",
+    "Ideogram4Transformer2DModel": "the negative branch runs a separate unconditional transformer on image-only tokens",
+    "MOSSImageTransformer": "the negative branch skips block 22 (uncond_skip_layers): per-branch compute",
+    "Cosmos3OmniTransformer": "each branch packs its own variable-length token sequence",
+    "MiniMaxH3Transformer3DModel": "one denoiser call per step (no guidance pair to batch)",
+    # Measured (Colab L4, 1024x1024, 8 steps): 1.817 vs 1.454 s/step eager, 1.312 vs 1.078 compiled. A single call
+    # packs each prompt at its own caption length with no mask; the doubled call pads both to the longer one and runs
+    # masked attention.
+    "Lumina2Transformer2DModel": "measured slower batched: the doubled call pads both captions and runs masked "
+    "attention (L4 +25% eager, +22% compiled)",
+}
+
 # Arguments that are one entry per sample (a doubled call needs both branches' entries); compared, not concatenated.
 _PER_SAMPLE_LISTS = ("img_shapes",)
 # (embeddings, mask) pairs a branch pads to its own prompt length: padded to the longer one with masked zeros.
-_PADDED_TEXT = (("encoder_hidden_states", "encoder_hidden_states_mask"),)
+_PADDED_TEXT = (
+    ("encoder_hidden_states", "encoder_hidden_states_mask"),
+    ("encoder_hidden_states", "encoder_attention_mask"),
+)
 
-# Compiled + resident, batched with no trial: measured 1-2% win on an L4, below the trial's 8% bar.
+# Compiled + resident, batched with no trial (measured: Wan 1-2% on an L4). A batch-2 graph per compiled block is
+# compiled once, in the shape's warm-up render; later prompts of that shape compile nothing.
 COMPILED_RESIDENT_CLASSES = frozenset({"WanTransformer3DModel"})
+
+# Measured slower batched than two calls: (class, card-name substring, "eager" | "compiled") -> measurement. Only
+# these keep two calls under the default; =force still batches them.
+MEASURED_SLOWER: dict[tuple[str, str, str], str] = {}
 
 _MEASURED_FRACTION = 0.92
 _BATCHED_SAMPLES = 2
@@ -45,14 +85,40 @@ _OFF_TRANSIENT = "transient"
 
 
 def cfg_batch_mode() -> str:
-    """``off`` / ``auto`` (default: a listed class, resident or offloaded) / ``force``. Independent of the multi-GPU
-    switches: a single card is the usual case."""
+    """``off`` / ``auto`` (default: a listed class; offloaded, batched whenever the doubled call fits; resident, after the
+    per-shape timing trial) / ``timed`` (the trial for offloaded loads too) / ``force`` (no trial, any class).
+    Independent of the multi-GPU switches: a single card is the usual case."""
     raw = (os.environ.get(CFG_BATCH_ENV) or "").strip().lower()
     if raw in ("0", "off", "false", "no", "disable", "disabled"):
         return "off"
-    if raw == "force":
-        return "force"
+    if raw in ("force", "timed"):
+        return raw
     return "auto"
+
+
+def cfg_policy(denoiser: Any) -> tuple[str, Optional[str]]:
+    """(``batch`` | ``pipeline`` | ``never`` | ``unlisted``, reason) for ``denoiser``'s class."""
+    name = type(denoiser).__name__
+    if name in PIPELINE_BATCHED:
+        return "pipeline", PIPELINE_BATCHED[name]
+    if name in NOT_BATCHABLE:
+        return "never", NOT_BATCHABLE[name]
+    if name in STATELESS_CLASSES and type(denoiser).__module__.startswith("diffusers."):
+        return "batch", None
+    return (
+        "unlisted",
+        f"{name} is not on the stateless-forward list ({CFG_BATCH_ENV}=force opts it in)",
+    )
+
+
+def measured_slower(denoiser: Any, card: Optional[str], compiled: bool) -> Optional[str]:
+    """The measurement that keeps this class on this card plain under the default, else None."""
+    name = type(denoiser).__name__
+    kind = "compiled" if compiled else "eager"
+    for (cls, card_part, k), why in MEASURED_SLOWER.items():
+        if cls == name and k == kind and card and card_part.lower() in card.lower():
+            return why
+    return None
 
 
 def compiled_resident_batch(denoiser: Any) -> bool:
@@ -227,10 +293,9 @@ def cfg_batch_decline(
         return f"per-call activation scaling ({scaled})"
     if mode == "force":
         return None
-    if type(denoiser).__name__ not in STATELESS_CLASSES or not type(denoiser).__module__.startswith(
-        "diffusers."
-    ):
-        return f"{type(denoiser).__name__} is not on the stateless-forward list ({CFG_BATCH_ENV}=force opts it in)"
+    policy, why = cfg_policy(denoiser)
+    if policy != "batch":
+        return why
     if offload_policy == "model":
         # diffusers rebuilds model-offload hooks between renders, evicting the router: later renders would differ.
         return "model offload re-hooks the denoiser every render"
@@ -477,6 +542,7 @@ class CfgBatchRouter:
             lambda: False
         )
         self.orig_forward = module.forward
+        self._mirror_signature()
         self.had_override = "forward" in module.__dict__
         self.prev_override = module.__dict__.get("forward")
         self.reason = reason
@@ -548,6 +614,8 @@ class CfgBatchRouter:
             )
         if self.render_checked:
             self.renders += 1
+        if self._displaced():
+            self._retake_slot()
         if self.pending_disable is not None:
             self.disable(self.pending_disable)
         self.pair_t0 = None
@@ -589,6 +657,38 @@ class CfgBatchRouter:
         module = self.module_ref()
         return module is None or module.__dict__.get("forward") is not self
 
+    def _mirror_signature(self) -> None:
+        """FLUX.3's modular denoise step passes only the kwargs named in ``transformer.forward``'s signature
+        (``img_ids``): a bare ``**kwargs`` signature here would drop them."""
+        import inspect
+        try:
+            self.__signature__ = inspect.signature(self.orig_forward)
+        except (TypeError, ValueError):
+            pass
+
+    def _retake_slot(self) -> bool:
+        """Back in the forward slot after a diffusers hook removal wrote the class forward over it. A streamed
+        (``use_stream``) group offload drops its lazy-prefetch hook from the root after the first forward and restores
+        ``module.forward`` to the bound class forward, which bypassed the router for the rest of the load. Only that
+        exact slot is retaken (a CUDA graph or another layer that took the slot is left alone)."""
+        module = self.module_ref()
+        if module is None:
+            return False
+        slot = module.__dict__.get("forward")
+        if slot is self or getattr(slot, "__self__", None) is not module:
+            return False
+        if getattr(slot, "__func__", None) is not getattr(type(module), "forward", None):
+            return False
+        self.orig_forward = slot
+        self._mirror_signature()
+        module.__dict__["forward"] = self
+        self.stats["retaken"] = self.stats.get("retaken", 0) + 1
+        if self.logger is not None:
+            self.logger.info(
+                "diffusion.cfg_batch: back in the forward slot (a removed offload hook restored the class forward)"
+            )
+        return True
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         if self._is_compiling():
             return self.orig_forward(*args, **kwargs)
@@ -609,9 +709,17 @@ class CfgBatchRouter:
             if self.render_compiled is not None:
                 if not self.offloaded and not self.compiled_resident:
                     self.render_off = f"{self.render_compiled} and resident"
+                rejudge = self._untimed_mode() and (self.offloaded or self.compiled_resident)
                 for shape in self.shapes.values():
                     if shape.judged and not shape.compiled_at_trial and shape.off is None:
-                        self._shape_off(shape, "the denoiser was compiled after this shape's trial")
+                        if rejudge:
+                            # compiled after an eager render (the deferred profile): this render is the shape's
+                            # compile warm-up, so its batch-2 graph is compiled here, once
+                            shape.judged = False
+                        else:
+                            self._shape_off(
+                                shape, "the denoiser was compiled after this shape's trial"
+                            )
             self.render_checked = True
         if self.render_off is not None:
             return self._plain(args, kwargs)
@@ -654,7 +762,7 @@ class CfgBatchRouter:
             out = self._plain(args, kwargs)
             if self.paired is not None:
                 return out
-            if self.compiled_resident:
+            if self._untimed_mode():
                 if not shape.judged and self.disabled is None:
                     self._untimed(shape, latent)
                 return out
@@ -691,21 +799,44 @@ class CfgBatchRouter:
         self.disable("more than two denoiser calls per step")
         return self._plain(args, kwargs)
 
+    def _untimed_mode(self) -> bool:
+        """No timing trial: an offloaded denoiser batches whenever the doubled call fits (it saves one weight upload
+        per step), and so does a compiled resident one (a trial would compile the batch-2 graph anyway). A resident
+        eager load keeps the trial: measured speed-neutral on L4 / T4, so it batches only where it wins. ``timed``
+        puts offloaded loads back on the trial; ``force`` skips it everywhere."""
+        mode = cfg_batch_mode()
+        if mode == "force":
+            return True
+        if mode == "timed":
+            return self.compiled_resident
+        return self.compiled_resident or self.offloaded
+
     def _plain_steps(self) -> int:
         """Plain steps per render: step 1 records the template; the timed path also prices step 2."""
-        return 1 if self.compiled_resident else _PLAIN_STEPS
+        return 1 if self._untimed_mode() else _PLAIN_STEPS
 
     def _untimed(self, shape: _Shape, latent: Any) -> None:
-        """No trial: it would compile the batch 2 graph anyway and the win is inside its noise."""
-        if not _cuda_latent(latent) and cfg_batch_mode() != "force":
+        """No trial: batched from step 2 under the memory gate. A resident denoiser off CUDA has no memory gate (and
+        was never measured there), so it stays plain unless forced."""
+        forced = cfg_batch_mode() == "force"
+        if not _cuda_latent(latent) and not self.offloaded and not forced:
             self._shape_off(
                 shape,
-                f"compiled resident batching is measured on CUDA only ({CFG_BATCH_ENV}=force batches anyway)",
+                f"resident batching is measured on CUDA only ({CFG_BATCH_ENV}=force batches anyway)",
             )
+            return
+        module = self.module_ref()
+        slower = (
+            None
+            if forced or module is None or not _cuda_latent(latent)
+            else measured_slower(module, _card_name(latent), self.render_compiled is not None)
+        )
+        if slower is not None:
+            self._shape_off(shape, f"measured slower batched on this card ({slower})")
             return
         shape.verdict = _BATCH
         # reached under compile: a render that had no room re-judges the shape at its end (end_render)
-        shape.compiled_at_trial = True
+        shape.compiled_at_trial = self.render_compiled is not None
         if self._memory_ok(latent, shape):
             self._judge(shape)
         else:
@@ -736,7 +867,10 @@ class CfgBatchRouter:
 
     def _plain(self, args: tuple, kwargs: dict) -> Any:
         self.stats["plain_calls"] += 1
-        return self.orig_forward(*args, **kwargs)
+        out = self.orig_forward(*args, **kwargs)
+        if self.offloaded and self.stats["plain_calls"] <= 2 and self._displaced():
+            self._retake_slot()
+        return out
 
     def _sync(self, latent: Any) -> bool:
         if getattr(latent.device, "type", None) != "cuda":
@@ -1085,13 +1219,17 @@ def _pad_text(first: dict, second: dict) -> None:
     """Pad the shorter prompt's embeddings (and its mask) with masked zeros so both branches stack (Qwen-Image pads
     each prompt to its own length; the masked keys leave every image token's attention unchanged)."""
     torch = _torch()
+    masks: dict = {}
     for emb_key, mask_key in _PADDED_TEXT:
+        masks.setdefault(emb_key, []).append(mask_key)
+    for emb_key, mask_keys in masks.items():
         a, b = first.get(emb_key), second.get(emb_key)
         if not (isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor)) or a.dim() < 3:
             continue
         if a.shape[1] == b.shape[1]:
             continue
-        if mask_key not in first and mask_key not in second:
+        mask_key = next((k for k in mask_keys if k in first or k in second), None)
+        if mask_key is None:
             raise _NotBatchable(f"{emb_key}: prompt lengths differ and the model takes no mask")
         length = max(a.shape[1], b.shape[1])
         given = [

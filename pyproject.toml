@@ -168,9 +168,11 @@ studio = [
     "av>=12.3.0",
     # No win_arm64 wheel or sdist; RAG treats a missing sqlite_vec as unavailable.
     "sqlite-vec==0.1.9 ; sys_platform != 'win32' or platform_machine != 'ARM64'",
-    # Mirrors studio.txt: pymupdf publishes a win_arm64 wheel from 1.28 only.
+    # Mirrors studio.txt: HNSW for gigantic RAG scopes, wheels for every target incl. win_arm64.
+    "usearch==2.26.6",
+    # Mirrors studio.txt: pymupdf publishes a win_arm64 wheel only for 1.28.2.
     "pymupdf==1.27.2.3 ; sys_platform != 'win32' or platform_machine != 'ARM64'",
-    "pymupdf>=1.28.2 ; sys_platform == 'win32' and platform_machine == 'ARM64'",
+    "pymupdf==1.28.2 ; sys_platform == 'win32' and platform_machine == 'ARM64'",
     "pymupdf4llm==0.3.4",
     "python-docx==1.2.0",
     "markdown-it-py>=3.0",
@@ -189,7 +191,7 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.10.10",
+    "unsloth_zoo>=2026.10.11",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -237,7 +239,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.10.10",
+    "unsloth_zoo>=2026.10.11",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -876,7 +878,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.10.10",
+    "unsloth_zoo>=2026.10.11",
     "packaging",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
     "datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0",
