@@ -172,6 +172,32 @@ def _ddp_scenario(rank, scenario, usable):
     }
 
 
+def _fsdp2_grad_bytes_scenario(rank, scenario, usable):
+    """The planner's gradient byte count after one FSDP2 backward, against the rank's own shards."""
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+
+    mesh = init_device_mesh("cpu", (torch.distributed.get_world_size(),))
+    T, ns = _load()
+    model = T._model(layers = 2)
+    for layer in model.model.layers:
+        fully_shard(layer, mesh = mesh)
+    fully_shard(model, mesh = mesh)
+    ids = torch.randint(0, 128, (2, 16), generator = torch.Generator().manual_seed(rank))
+    model(input_ids = ids, labels = ids).loss.backward()
+    _spoof_cuda(ns, usable, {"allocated": 0})
+    layers = list(model.model.layers)
+    planner = ns["_AutoCheckpointSkip"](model, layers, layers[-1])
+    planner.fresh_grads = [p for p in model.parameters() if p.grad is not None]
+    grads = [p.grad for p in planner.fresh_grads]
+    return {
+        "utils": T.UTILS,
+        "planner": planner._fresh_grad_bytes(torch.device("cpu")),
+        "local": sum(g.to_local().numel() * g.element_size() for g in grads),
+        "global": sum(g.numel() * g.element_size() for g in grads),
+    }
+
+
 def _join_scenario(rank, scenario, usable):
     """DDP.join(): rank 0 runs out of inputs before rank 1's planning forward."""
     from torch.nn.parallel import DistributedDataParallel as DDP
@@ -230,7 +256,11 @@ def _worker(rank, world, port, kind, scenario, usable, queue):
             world_size = world,
             timeout = datetime.timedelta(seconds = 30),
         )
-        run = {"fake": _fake_scenario, "join": _join_scenario}.get(kind, _ddp_scenario)
+        run = {
+            "fake": _fake_scenario,
+            "join": _join_scenario,
+            "fsdp2_grad_bytes": _fsdp2_grad_bytes_scenario,
+        }.get(kind, _ddp_scenario)
         queue.put((rank, run(rank, scenario, usable[rank]), None))
     except Exception:
         import traceback
@@ -370,6 +400,16 @@ def test_fsdp2_training_unchanged_and_ranks_agree(accumulation):
     for rank in (0, 1):
         assert reference[rank]["checkpointed"] == [True] * 4
         _assert_same_training(auto[rank], reference[rank])
+
+
+@pytest.mark.skipif(not _fsdp2_runs_on_cpu(), reason = "this torch has no CPU FSDP2 path")
+def test_fsdp2_gradient_bytes_are_rank_local():
+    # The planner subtracts gradient bytes from this rank's allocator peak, so it must count the
+    # rank's shards, not the DTensor's global size (2x on two ranks).
+    for rank, r in _launch("fsdp2_grad_bytes", None, [8 * GIB, 8 * GIB]).items():
+        print("FSDP2_GRAD_BYTES", rank, r)
+        assert r["global"] > r["local"] > 0, r
+        assert r["planner"] == r["local"], r
 
 
 def test_ddp_join_with_uneven_inputs_keeps_every_layer_checkpointed():
