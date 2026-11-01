@@ -166,6 +166,7 @@ export class WriteAhead {
   private jobs = new Map<string, Job>();
   private queue: string[] = [];
   private current: Job | null = null;
+  private live = new Set<AbortController>();
   private busy = 0;
   private closed = false;
   readonly stats = { started: 0, hits: 0, misses: 0, dropped: 0 };
@@ -207,6 +208,7 @@ export class WriteAhead {
     signal?: AbortSignal,
   ): Promise<StoryScene> {
     this.busy++;
+    let ctl: AbortController | undefined;
     try {
       const job = this.jobs.get(key);
       if (job?.scene) {
@@ -226,9 +228,16 @@ export class WriteAhead {
       this.stats.misses++;
       this.jobs.delete(key);
       this.preempt();
-      return await this.write(req, signal ?? new AbortController().signal);
+      ctl = new AbortController();
+      const live = ctl;
+      if (signal?.aborted) live.abort();
+      else
+        signal?.addEventListener("abort", () => live.abort(), { once: true });
+      this.live.add(live);
+      return await this.write(req, live.signal);
     } finally {
-      this.busy--;
+      // reset() already released the hold of a live miss it cancelled.
+      if (!ctl || this.live.delete(ctl)) this.busy--;
     }
   }
 
@@ -245,6 +254,9 @@ export class WriteAhead {
 
   reset(): void {
     for (const job of this.jobs.values()) job.ctl?.abort();
+    for (const ctl of this.live) ctl.abort();
+    this.busy -= this.live.size;
+    this.live.clear();
     this.jobs.clear();
     this.queue = [];
     this.current = null;
