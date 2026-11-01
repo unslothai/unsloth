@@ -362,6 +362,7 @@ def invalidate(model):
     global BUFFER_EPOCH
     for state in _states(model):
         state.clear()
+        state.disabled = None
     BUFFER_EPOCH += 1
 
 
@@ -376,6 +377,9 @@ def release(model):
             found = True
             state.clear()
             state.statics.clear()
+            # The reason graphs were given up on (a capture OOM, parameters on another device) was
+            # decided against buffers and a pool this call just dropped: the next decode re-checks.
+            state.disabled = None
         if "_unsloth_graph_buffers" in d:
             found = True
             del d["_unsloth_graph_buffers"]
