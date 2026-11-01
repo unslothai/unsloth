@@ -155,6 +155,27 @@ def test_denied_shell_command_unblocks_the_parent(monkeypatch, tmp_path):
     assert not marker.exists()
 
 
+def test_denied_read_outside_the_project_unblocks_the_parent(monkeypatch, tmp_path):
+    marker = tmp_path / "local-agent-failed"
+    _child_returning(
+        monkeypatch,
+        tmp_path,
+        {
+            "is_error": False,
+            "result": "could not read it",
+            "permission_denials": [
+                {"tool_name": "Read", "tool_input": {"file_path": "/etc/hostname"}},
+                {"tool_name": "Grep", "tool_input": {"pattern": "root", "path": "/etc"}},
+            ],
+        },
+    )
+    text = bridge._with_fallback(bridge.run_local_agent, str(marker))("read", threading.Event())
+    assert marker.exists()
+    assert "- Read: /etc/hostname" in text
+    assert "- Grep: root" in text
+    assert "unblocked" in text
+
+
 def test_denied_non_shell_tool_is_reported_without_unblocking(monkeypatch, tmp_path):
     marker = tmp_path / "local-agent-failed"
     marker.touch()

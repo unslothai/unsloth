@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from unsloth_cli.commands.start import (
     _CLAUDE_ENV_UNSET,
+    _CLAUDE_ROUTE_GATE_MATCHER,
     _CLAUDE_SUBAGENT_AUTO_ROUTE_ENV,
     _CLAUDE_SUBAGENT_FALLBACK_ENV,
     _CLAUDE_SUBAGENT_SETTINGS_ENV,
@@ -83,7 +84,7 @@ def _result_payload(stdout: str) -> dict:
 
 
 class _DeniedResult(str):
-    shell_denied = False
+    unblock_parent = False
 
 
 def _denials(payload: dict) -> list[tuple[str, str]]:
@@ -99,7 +100,7 @@ def _denials(payload: dict) -> list[tuple[str, str]]:
         detail = next(
             (
                 tool_input[key]
-                for key in ("command", "file_path", "path", "pattern")
+                for key in ("command", "file_path", "pattern", "path")
                 if isinstance(tool_input.get(key), str)
             ),
             "",
@@ -118,7 +119,7 @@ def _result_text(stdout: str) -> str:
         denied = _denials(payload)
         if not denied:
             return text
-        # Headless Claude denies anything that would prompt and still exits 0, so the parent must hear what never ran.
+        # Headless Claude denies anything that would prompt and still exits 0.
         listed = "\n".join(
             f"- {tool}: {detail}" if detail else f"- {tool}" for tool, detail in denied
         )
@@ -126,7 +127,9 @@ def _result_text(stdout: str) -> str:
             f"{text}\n\nThe local agent was not allowed to run these tool calls, so they did "
             f"not happen:\n{listed}\nRun them yourself."
         )
-        text.shell_denied = any(tool in ("Bash", "PowerShell") for tool, _ in denied)
+        # Only tools the --auto-route gate blocks in the parent; it can run a denied Edit or Write itself.
+        gated = _CLAUDE_ROUTE_GATE_MATCHER.split("|")
+        text.unblock_parent = any(tool in gated for tool, _ in denied)
         return text
     raise RuntimeError("The local Claude agent returned no readable result.")
 
@@ -524,7 +527,7 @@ def _with_fallback(run_agent: Callable[..., str], marker: str) -> Callable[..., 
                 "next successful unsloth_agent call. "
                 "Do this step yourself."
             ) from exc
-        if getattr(text, "shell_denied", False):
+        if getattr(text, "unblock_parent", False):
             Path(marker).touch()
             return (
                 f"{text}\n\nYour own Read, Grep, Glob, Bash, PowerShell, Monitor, NotebookRead "
