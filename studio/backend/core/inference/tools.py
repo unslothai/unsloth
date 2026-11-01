@@ -20003,6 +20003,19 @@ def _killpg_captured(pgid) -> None:
         pass
 
 
+def _captured_group_alive(pgid) -> bool:
+    """Windows jobs count as alive (terminating an empty job is harmless)."""
+    if pgid is None:
+        return False
+    if isinstance(pgid, tuple):
+        return True
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    return True
+
+
 def _cancel_watcher(
     proc,
     cancel_event,
@@ -21155,6 +21168,7 @@ def _drain_process_output(
 
     reader = threading.Thread(target = _reader, daemon = True)
     reader.start()
+    started_at = time.monotonic()
     timed_out = False
     try:
         proc.wait(timeout = timeout)
@@ -21167,22 +21181,29 @@ def _drain_process_output(
             proc.wait(timeout = 5)
         except subprocess.TimeoutExpired:
             pass
-    # A grandchild that inherited stdout can hold the pipe open past the main process's exit.
-    # Like bwrap's PID namespace, end it with the call after a short EOF grace instead of waiting it out.
+    # A grandchild that inherited stdout can hold the pipe open past the leader's exit: like bwrap's
+    # PID namespace, end it after a short grace. An empty group means the reader is only draining.
     background_stopped = False
     if not timed_out:
+        deadline = None if timeout is None else started_at + timeout
         grace_end = time.monotonic() + _DRAIN_EOF_GRACE_S
+        if deadline is not None:
+            grace_end = min(grace_end, deadline)
         # Poll cancel_event in slices: the cancel watcher is gone once the leader exits.
         while reader.is_alive():
             if cancel_event is not None and cancel_event.is_set():
                 _killpg_captured(pgid)
                 break
-            remaining = grace_end - time.monotonic()
-            if remaining <= 0:
+            now = time.monotonic()
+            if now >= grace_end and _captured_group_alive(pgid):
                 _killpg_captured(pgid)
                 background_stopped = True
                 break
-            reader.join(timeout = min(0.25, remaining))
+            if deadline is not None and now >= deadline:
+                timed_out = True
+                _killpg_captured(pgid)
+                break
+            reader.join(timeout = 0.25)
     reader.join(timeout = 5)
     output = "".join(chunks) + "".join(tail)
     if background_stopped:

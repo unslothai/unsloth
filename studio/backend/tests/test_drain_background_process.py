@@ -122,6 +122,20 @@ def test_short_lived_background_output_is_still_captured(timeout):
         _cleanup(pgid)
 
 
+@pytest.mark.parametrize("timeout", [10, None])
+def test_slow_consumer_is_not_reported_as_a_stopped_background_process(timeout):
+    # The grace expires while the reader is still busy; with the group empty, nothing was stopped.
+    proc, pgid = _spawn("echo one; echo two; echo three")
+    try:
+        output, timed_out, _ = _drain_process_output(
+            proc, timeout, lambda _line: time.sleep(0.8), pgid = pgid
+        )
+        assert not timed_out
+        assert output == "one\ntwo\nthree\n"
+    finally:
+        _cleanup(pgid)
+
+
 def test_bash_exec_reports_the_command_not_a_timeout():
     started = time.monotonic()
     result = _bash_exec("sleep 30 & echo started", timeout = 10, disable_sandbox = True)
