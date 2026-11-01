@@ -7699,7 +7699,8 @@ function Get-XpuTritonState {
     # Get-RocmTritonPairing, so a ~riton_windows-* backup is not counted. XpuSpec is torch's own triton
     # requirement; XpuDist the installed version of that dist ('?' for a record without Version); XpuOk that the
     # version satisfies XpuSpec (packaging, else pip's vendored copy, else an exact == match; a missing or
-    # versionless record fails) and that the imported triton reports that version. Known is false when the metadata
+    # versionless record fails), that the imported triton reports that version, and that a registered backend has
+    # an importable driver and a compiler supporting XPU. Known is false when the metadata
     # probe failed; the fields it printed before failing are still returned. No double quotes:
     # Invoke-BoundedPythonProbe wraps $Code in them.
     $code = "import importlib, importlib.metadata as m, importlib.util as u, re; " +
@@ -7718,12 +7719,16 @@ function Get-XpuTritonState {
     $dist = if ($probe.Output -match '(?m)^XPUDIST=(\S+)\s*$') { $Matches[1] } else { "" }
     $ok = [bool]($probe.Ok -and $probe.Output -match '(?m)^XPUOK=1\s*$')
     if ($ok) {
-        # Metadata is not the payload: generic triton files under the XPU dist's record report another version. Its
-        # own probe, so a triton that crashes on import still leaves the metadata above readable.
+        # Generic triton can report the same version as the Intel fork. Verify the discovered compiler/driver
+        # payload as well; a leftover Intel directory without registration is not enough. Do not activate a driver:
+        # the payload can be verified without a working device. Keep metadata readable if a backend fails to import.
         $base = ($dist -split '\+')[0] -replace '[^0-9A-Za-z._-]', ''
         $rt = Invoke-BoundedPythonProbe -PythonExe "python" -Code ("import importlib; t = importlib.import_module('triton'); " +
+            "from triton.backends import backends; from triton.backends.compiler import GPUTarget; " +
+            "target = GPUTarget('xpu', {}, 32); " +
+            "xpu = any(b.compiler.supports_target(target) and callable(b.driver) for b in backends.values()); " +
             "v = (getattr(t, '__version__', '') or '').split('+')[0]; " +
-            "print('XPURT=' + str(int(v == '$base')))")
+            "print('XPURT=' + str(int(v == '$base' and xpu)))")
         $ok = [bool]($rt.Ok -and $rt.Output -match '(?m)^XPURT=1\s*$')
     }
     return @{ TritonWin = $win; XpuSpec = $spec; XpuDist = $dist; XpuOk = $ok; Known = [bool]$probe.Ok }

@@ -288,11 +288,39 @@ try {
     New-Item -ItemType Directory -Path $tl -Force | Out-Null
     Set-Content -LiteralPath (Join-Path (Join-Path $site "triton") "__init__.py") -Value "__version__ = '3.5.0'`ndef jit(f):`n    return f" -Encoding ascii
     Set-Content -LiteralPath (Join-Path $tl "__init__.py") -Value "def program_id(axis):`n    return 0" -Encoding ascii
-    # The XPU payload carries the Intel backend; generic triton / triton-windows files do not.
+    # Model Triton's entry-point discovery, not just the presence of an Intel directory.
     $intel = Join-Path (Join-Path (Join-Path $site "triton") "backends") "intel"
     New-Item -ItemType Directory -Path $intel -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path (Split-Path $intel) "__init__.py") -Value "" -Encoding ascii
+    Set-Content -LiteralPath (Join-Path (Split-Path $intel) "__init__.py") -Value @'
+from importlib import import_module
+from importlib.metadata import entry_points
+from types import SimpleNamespace
+backends = {
+    ep.name: SimpleNamespace(compiler=import_module(ep.value + '.compiler').XPUBackend,
+                             driver=import_module(ep.value + '.driver').XPUDriver)
+    for ep in entry_points().select(group='triton.backends')
+}
+'@ -Encoding ascii
+    Set-Content -LiteralPath (Join-Path (Split-Path $intel) "compiler.py") -Value @'
+from collections import namedtuple
+GPUTarget = namedtuple('GPUTarget', 'backend arch warp_size')
+'@ -Encoding ascii
     Set-Content -LiteralPath (Join-Path $intel "__init__.py") -Value "" -Encoding ascii
+    Set-Content -LiteralPath (Join-Path $intel "compiler.py") -Value @'
+class XPUBackend:
+    @staticmethod
+    def supports_target(target):
+        return target.backend == 'xpu'
+'@ -Encoding ascii
+    Set-Content -LiteralPath (Join-Path $intel "driver.py") -Value @'
+class XPUDriver:
+    @staticmethod
+    def is_active():
+        raise AssertionError('payload verification must not require a device')
+'@ -Encoding ascii
+    $entryPoints = Join-Path (Join-Path $site "pytorch_triton_xpu-3.5.0.dist-info") "entry_points.txt"
+    $intelEntryPoint = "[triton.backends]`nintel = triton.backends.intel"
+    Set-Content -LiteralPath $entryPoints -Value $intelEntryPoint -Encoding ascii
     $script:RealProbeDir = $site
     $s = Try-Scenario "runtime probe, payload present" { Get-TritonRuntimeState }
     Check "runtime probe: the fixture triton imports" ($s -and $s.Healthy)
@@ -370,12 +398,43 @@ try {
     $s = Try-Scenario "swap probe, the XPU dist torch requires" { Get-XpuTritonState }
     Check "swap probe: the XPU triton torch requires is XpuOk" ($s -and $s.Known -and $s.XpuOk)
 
-    # A backends/intel directory proves nothing (a generic overwrite leaves the old one behind): it does not decide.
+    # Matching versions still fail when the registered backend payload is missing.
     $intelGone = Join-Path (Join-Path (Join-Path $site "triton") "backends") "intel_gone"
     Rename-Item -LiteralPath $intel -NewName "intel_gone"
     $s = Try-Scenario "swap probe, no Intel directory" { Get-XpuTritonState }
-    Check "swap probe: XpuOk does not depend on a triton/backends/intel directory" ($s -and $s.Known -and $s.XpuOk)
+    Check "swap probe: matching versions without an importable Intel backend are not XpuOk" ($s -and $s.Known -and -not $s.XpuOk)
+    $r = Try-Scenario "fast path, missing Intel backend" {
+        $SkipPythonDeps = $true; $_xpuIsReachable = $true; $script:IsIntelXpu = $true; $installedTorchTag = "xpu"
+        Invoke-Expression $fastPath
+        $SkipPythonDeps
+    }
+    Check "fast path: a missing Intel backend forces the dependency pass" ($r -eq $false)
+    $r = Try-Scenario "swap, missing Intel backend" {
+        $script:Calls = @(); $script:InstallExits = @(); $script:InstallLeaves = @()
+        $stackExit = 0; $XpuIndexUrl = "https://download.pytorch.org/whl/xpu"; $VenvDir = $venvRoot; $_tritonSpec = $generic
+        Invoke-Expression $swap
+        @{ Calls = $script:Calls }
+    }
+    Check "swap: a missing Intel backend requests an XPU wheel repair" ($r -and $r.Calls.Count -gt 0 -and $r.Calls[0] -like "download *")
+    # Registration and target support decide; a fixed directory or registry key does not.
+    Set-Content -LiteralPath $entryPoints -Value "[triton.backends]`nxpu_plugin = triton.backends.intel_gone" -Encoding ascii
+    $s = Try-Scenario "swap probe, relocated Intel backend" { Get-XpuTritonState }
+    Check "swap probe: an XPU compiler registered under another name is accepted without an active device" ($s -and $s.Known -and $s.XpuOk)
     Rename-Item -LiteralPath $intelGone -NewName "intel"
+    Set-Content -LiteralPath $entryPoints -Value "[triton.backends]" -Encoding ascii
+    $s = Try-Scenario "swap probe, unregistered Intel directory" { Get-XpuTritonState }
+    Check "swap probe: an Intel directory without backend registration is not XpuOk" ($s -and $s.Known -and -not $s.XpuOk)
+    Set-Content -LiteralPath $entryPoints -Value $intelEntryPoint -Encoding ascii
+    Rename-Item -LiteralPath (Join-Path $intel "driver.py") -NewName "driver_gone.py"
+    $s = Try-Scenario "swap probe, missing Intel driver module" { Get-XpuTritonState }
+    Check "swap probe: an Intel backend with an unimportable driver is not XpuOk" ($s -and $s.Known -and -not $s.XpuOk)
+    Rename-Item -LiteralPath (Join-Path $intel "driver_gone.py") -NewName "driver.py"
+    $compilerPath = Join-Path $intel "compiler.py"
+    $compilerCode = Get-Content -LiteralPath $compilerPath -Raw
+    Set-Content -LiteralPath $compilerPath -Value ($compilerCode.Replace("== 'xpu'", "== 'cuda'")) -Encoding ascii
+    $s = Try-Scenario "swap probe, non-XPU compiler" { Get-XpuTritonState }
+    Check "swap probe: a registered backend that does not support XPU is not XpuOk" ($s -and $s.Known -and -not $s.XpuOk)
+    Set-Content -LiteralPath $compilerPath -Value $compilerCode -Encoding ascii
     $tinit = Join-Path (Join-Path $site "triton") "__init__.py"
     Set-Content -LiteralPath $tinit -Value "__version__ = '3.4.0'`ndef jit(f):`n    return f" -Encoding ascii
     $s = Try-Scenario "swap probe, runtime version" { Get-XpuTritonState }
