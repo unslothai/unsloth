@@ -190,6 +190,12 @@ triton = [
     "triton-windows>=3.8.0.post28 ; (sys_platform == 'win32') and platform_machine == 'ARM64'",
 ]
 
+exllama = [
+    # Oldest release exercised end to end (conversion + training); 1.6.x is
+    # exercised for loading + training. Converter options come from its own parser.
+    "exllamav3>=0.0.43",
+]
+
 huggingfacenotorch = [
     "unsloth_zoo>=2026.10.11",
     "wheel>=0.42.0",
