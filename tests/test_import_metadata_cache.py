@@ -427,7 +427,9 @@ def _has_accelerator():
 
 def test_import_unsloth_scans_distributions_at_most_once():
     if _scan_callers_at_import() < 2:
-        pytest.skip("installed transformers / TRL do not both scan at import")
+        pytest.skip(
+            reason = "transformers < 5 / TRL < 1 do not call packages_distributions() at import"
+        )
     env = dict(os.environ, PYTHONWARNINGS = "ignore", UNSLOTH_DISABLE_AUTO_UPDATES = "1")
     # tests/conftest.py sets this for in-process tests; a GPU-less child still imports through the CPU path.
     if not _has_accelerator():
