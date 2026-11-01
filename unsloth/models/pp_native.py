@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pipeline parallel, one stage per rank; LoRA first; order pp outermost then dp then tp, split
-before parallelizing; save_adapter is collective, rank 0 writes; param names unchanged."""
+"""Pipeline parallel, one or more stages per rank (every torch schedule, pp_schedules.py); LoRA first; order
+pp outermost then dp then tp, split before parallelizing; save_adapter is collective, rank 0 writes; param
+names unchanged."""
 
 from __future__ import annotations
 
@@ -21,6 +22,20 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from .pp_schedules import (
+    SCHEDULE_NAMES,
+    allow_split_backward,
+    compiled_blocks,
+    non_reentrant_checkpointing_only,
+    split_backward_keeps_function_nodes,
+    single_backward_kernels,
+    resolve_stages_per_rank,
+    schedule_spec,
+    stage_indices,
+    torch_schedule_class,
+    validate_schedule,
+)
+
 __all__ = [
     "PPConfig",
     "PipelineParallel",
@@ -34,7 +49,7 @@ __all__ = [
 ]
 
 _PP_FLAG = "_unsloth_pp"
-_SCHEDULES = ("gpipe", "1f1b")
+_SCHEDULES = SCHEDULE_NAMES
 _MOE_CONFIG_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
 # Layers reading another layer's state, or extra per-layer inputs: a stage boundary would cut them.
 _CROSS_LAYER_CONFIG_KEYS = (
@@ -45,6 +60,11 @@ _CROSS_LAYER_CONFIG_KEYS = (
 )
 _ATTENTION_LAYER_TYPES = {"full_attention", "sliding_attention", "chunked_attention", "attention"}
 _STEP_KWARGS = ("attention_mask", "position_ids")
+_MULTI_STAGE_DP = (
+    "Unsloth: native FSDP2 data parallel over a pipeline with several stages per rank is not supported "
+    "(each FSDP2 root must be one stage's module); use one stage per rank (schedule = 'gpipe' / '1f1b') "
+    "with a dp mesh, or no dp mesh."
+)
 _SIMPLE = (bool, int, float, str, type(None))
 
 
@@ -60,6 +80,9 @@ class PPConfig:
     sync_trainable: bool = True
     # (micro-batch size, sequence length) shapes whose stage / schedule stay built.
     max_cached_shapes: int = 4
+    # Stages per rank for multi-stage schedules (interleaved1f1b, loopedbfs, ...); None = the schedule's
+    # default (1 for gpipe / 1f1b, 2 otherwise). The decoder is cut into pp x stages_per_rank stages.
+    stages_per_rank: Optional[int] = None
 
 
 class _StageOutput(BaseException):
@@ -218,6 +241,8 @@ def check_pp_dp_composition(model, dp_mesh):
         raise ValueError(
             "Unsloth: this pipeline stage is already sharded over a data parallel mesh."
         )
+    if stage.stages_per_rank > 1:
+        raise ValueError(_MULTI_STAGE_DP)
     if dp_mesh is None:
         raise ValueError(
             "Unsloth: native FSDP2 over a pipeline parallel model needs FSDP2Config(mesh = mesh['dp']), the "
@@ -731,6 +756,14 @@ class _StageContext:
         self.tuple_format = tuple_format
         self.active = False
         self.stage_input = None
+        # The step's token count, given to every stage forward from here rather than as a schedule kwarg:
+        # a non-tensor kwarg reaches torch's split backward (zero bubble) as a stage input on torch < 2.13.
+        self.num_items_in_batch = None
+
+    def configure(self, start, end, is_first, is_last):
+        """The stage about to run (several stages of one rank share this context, one runs at a time)."""
+        self.start, self.end = start, end
+        self.is_first, self.is_last = is_first, is_last
 
     def pass_through(self, index, args, kwargs):
         if not self.active:
@@ -748,17 +781,44 @@ class _StageContext:
 
 
 class _PPStageModule(nn.Module):
-    """What PipelineStage runs: the whole model's forward on this stage's slice."""
+    """What PipelineStage runs: the whole model's forward on this stage's slice.
 
-    def __init__(self, model, ctx, dtype, hidden_size):
+    With several stages per rank, `stage` = (start, end, is_first, is_last, swaps): the context is set to this
+    stage and, for the duration of the forward, `swaps` [(container, key, stand-in)] replace this rank's
+    modules that belong to its other stages (their layers by pass-throughs, the embedding by its stub)."""
+
+    def __init__(
+        self,
+        model,
+        ctx,
+        dtype,
+        hidden_size,
+        stage = None,
+    ):
         super().__init__()
         self.model = model
         self.__dict__["_pp_ctx"] = ctx
         self.__dict__["_pp_dtype"] = dtype
         self.__dict__["_pp_hidden"] = hidden_size
         self.__dict__["_pp_warned"] = False
+        self.__dict__["_pp_stage"] = stage
 
     def forward(self, x, **kwargs):
+        stage = self._pp_stage
+        if stage is None:
+            return self._stage_forward(x, **kwargs)
+        start, end, is_first, is_last, swaps = stage
+        self._pp_ctx.configure(start, end, is_first, is_last)
+        originals = [(container, key, container._modules[key]) for container, key, _ in swaps]
+        for container, key, stand_in in swaps:
+            container._modules[key] = stand_in
+        try:
+            return self._stage_forward(x, **kwargs)
+        finally:
+            for container, key, original in originals:
+                container._modules[key] = original
+
+    def _stage_forward(self, x, **kwargs):
         ctx = self._pp_ctx
         if ctx.is_first:
             input_ids = x
@@ -769,6 +829,8 @@ class _PPStageModule(nn.Module):
         try:
             # Pass-through layers return hidden states only: no per-layer attentions / hidden states.
             kwargs.update(output_attentions = False, output_hidden_states = False)
+            if ctx.num_items_in_batch is not None:
+                kwargs["num_items_in_batch"] = ctx.num_items_in_batch
             out = self.model(input_ids = input_ids, use_cache = False, **kwargs)
         except _StageOutput as stop:
             hidden = stop.hidden
@@ -841,21 +903,48 @@ def _check_torch_pipelining():
             )
 
 
-def _check_schedule(model, schedule):
-    if schedule not in _SCHEDULES:
-        raise ValueError(
-            f"Unsloth: pipeline schedule must be one of {_SCHEDULES}, got {schedule!r}."
-        )
+def _check_schedule(model, spec, props):
+    """Refusals for the schedule `spec` whose compute order has `props` (pp_schedules.validate_schedule)."""
     if (
-        schedule == "1f1b"
+        props["interleaved"]
         and _gradient_checkpointing_on(model)
         and _zoo_slot_lease_present() is False
     ):
         raise ValueError(
-            "Unsloth: the 1F1B pipeline schedule interleaves forwards and backwards, which this "
+            f"Unsloth: the {spec.name} pipeline schedule interleaves forwards and backwards, which this "
             "unsloth_zoo's smart gradient checkpointing does not support (offloaded activations of a pending "
-            "micro-batch would be overwritten). Use schedule = 'gpipe', or update unsloth_zoo (host slot "
-            "leases, unsloth-zoo PR #2071)."
+            "micro-batch would be overwritten). Use schedule = 'gpipe' (or 'loopedbfs'), or update unsloth_zoo "
+            "(host slot leases, unsloth-zoo PR #2071)."
+        )
+    fused = single_backward_kernels(model) if props["split_backward"] else []
+    if fused:
+        raise ValueError(
+            f"Unsloth: the {spec.name} pipeline schedule splits each backward into an input and a weight pass, "
+            f"which runs the backward of Unsloth's fused LoRA kernels ({', '.join(fused)}) twice; they can run it "
+            "once. Use schedule = 'interleaved1f1b' (or 'loopedbfs'), or load the model without the fused LoRA "
+            "path."
+        )
+    if props["split_backward"] and not split_backward_keeps_function_nodes():
+        compiled = compiled_blocks(model)
+        if compiled:
+            shown = ", ".join(compiled[:3]) + (
+                f" and {len(compiled) - 3} more" if len(compiled) > 3 else ""
+            )
+            raise ValueError(
+                f"Unsloth: the {spec.name} pipeline schedule splits each backward into an input and a weight "
+                f"pass, which torch {torch.__version__} cannot run over torch.compile'd blocks ({shown}): its "
+                "weight pass reads _input_metadata of the compiled (AOTAutograd) backward nodes after their graph "
+                "root is released, which needs torch >= 2.13. Use schedule = 'interleaved1f1b' (or 'loopedbfs', "
+                "a non zero-bubble schedule), disable the compiled blocks (UNSLOTH_BLOCK_COMPILE=0, UNSLOTH_COMPILE_DISABLE=1, no "
+                "module.compile()), or upgrade torch. The model was not modified."
+            )
+    if props["split_backward"] and non_reentrant_checkpointing_only(model) is False:
+        raise ValueError(
+            f"Unsloth: the {spec.name} pipeline schedule splits each backward into an input and a weight pass "
+            "(torch.autograd.grad), which reentrant gradient checkpointing (transformers' default, Unsloth "
+            "smart checkpointing) cannot run. Turn gradient checkpointing off, use torch's non-reentrant "
+            "checkpointing (gradient_checkpointing_kwargs = {'use_reentrant': False}), or use "
+            "schedule = 'interleaved1f1b'."
         )
 
 
@@ -873,19 +962,41 @@ class PipelineParallel:
     """This rank's pipeline stage of a model split by apply_pipeline_parallel."""
 
     def __init__(
-        self, model, mesh, parts, bounds, n_microbatches, schedule, config, tuple_format, dtype
+        self,
+        model,
+        mesh,
+        parts,
+        bounds,
+        n_microbatches,
+        schedule,
+        config,
+        tuple_format,
+        dtype,
+        stages_per_rank = 1,
     ):
         import torch.distributed as dist
 
         self.model = model
         self.mesh = mesh
         self.group = mesh.get_group()
-        self.num_stages = mesh.size()
-        self.stage_index = mesh.get_local_rank()
-        self.bounds = bounds
-        self.start, self.end = bounds[self.stage_index]
+        self.num_stages = mesh.size()  # pp ranks
+        self.stage_index = (
+            mesh.get_local_rank()
+        )  # this rank's pp index (its stage with one stage per rank)
+        self.bounds = bounds  # [start, end) decoder layers of every stage (pp x stages_per_rank)
+        self.spec = schedule_spec(schedule)
+        self.stages_per_rank = int(stages_per_rank)
+        self.total_stages = self.num_stages * self.stages_per_rank
+        if len(bounds) != self.total_stages:
+            raise ValueError(
+                f"Unsloth: {len(bounds)} layer ranges for {self.total_stages} pipeline stages."
+            )
+        self.local_stages = stage_indices(
+            self.spec, self.stage_index, self.num_stages, self.stages_per_rank
+        )
+        self.start, self.end = bounds[self.local_stages[0]]
         self.n_microbatches = n_microbatches
-        self.schedule = schedule
+        self.schedule = self.spec.name
         self.config = config
         self.parts = parts
         self._foreign_prefixes = ()  # set by apply_pipeline_parallel
@@ -894,7 +1005,15 @@ class PipelineParallel:
         hidden = getattr(_text_config(model), "hidden_size", None) or parts.embed.weight.shape[-1]
         self.hidden_size = int(hidden)
         self.module = _PPStageModule(model, self.ctx, dtype, self.hidden_size)
+        self.stage_modules = [self.module]  # one per local stage (set by apply_pipeline_parallel)
         self._global_ranks = [dist.get_global_rank(self.group, i) for i in range(self.num_stages)]
+        last_owner = next(
+            r
+            for r in range(self.num_stages)
+            if self.total_stages - 1
+            in stage_indices(self.spec, r, self.num_stages, self.stages_per_rank)
+        )
+        self._last_global_rank = self._global_ranks[last_owner]
         self._shapes = collections.OrderedDict()
         self._scaler = None
         self._step_scaler = (
@@ -962,6 +1081,8 @@ class PipelineParallel:
         one post_backward in perform_reduce_grad), as torchtitan's stage submodule does."""
         from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 
+        if self.stages_per_rank > 1:
+            raise ValueError(_MULTI_STAGE_DP)
         policy = MixedPrecisionPolicy(
             param_dtype = None,
             reduce_dtype = getattr(mp_policy, "reduce_dtype", None),
@@ -973,11 +1094,13 @@ class PipelineParallel:
 
     @property
     def is_first(self):
-        return self.stage_index == 0
+        """This rank holds the first stage (the input embedding)."""
+        return 0 in self.local_stages
 
     @property
     def is_last(self):
-        return self.stage_index == self.num_stages - 1
+        """This rank holds the last stage (final norm, lm_head and the loss)."""
+        return self.total_stages - 1 in self.local_stages
 
     @property
     def device(self):
@@ -991,6 +1114,14 @@ class PipelineParallel:
         return [p for p in self.module.parameters() if p.requires_grad]
 
     def __repr__(self):
+        if self.stages_per_rank > 1:
+            ranges = ", ".join(
+                f"{k}: [{self.bounds[k][0]}, {self.bounds[k][1]})" for k in self.local_stages
+            )
+            return (
+                f"PipelineParallel(rank {self.stage_index} / {self.num_stages}, stages {{{ranges}}} of "
+                f"{self.total_stages}, {self.schedule}, n_microbatches = {self.n_microbatches})"
+            )
         return (
             f"PipelineParallel(stage {self.stage_index} / {self.num_stages}, layers [{self.start}, "
             f"{self.end}), {self.schedule}, n_microbatches = {self.n_microbatches})"
@@ -1006,43 +1137,49 @@ class PipelineParallel:
         return output if self._scaler is None else self._scaler.scale(output)
 
     def _schedule_for(self, mb, seq):
-        from torch.distributed.pipelining import PipelineStage, Schedule1F1B, ScheduleGPipe
+        from torch.distributed.pipelining import PipelineStage
 
         key = (mb, seq)
         if key in self._shapes:
             self._shapes.move_to_end(key)
             return self._shapes[key]
         device = self.device
-        if self.is_first:
-            example_in = torch.empty((mb, seq), dtype = torch.long, device = "meta")
-        else:
-            # requires_grad is part of the static metadata: received hidden states need their grad.
-            example_in = torch.empty(
-                (mb, seq, self.hidden_size),
-                dtype = self.activation_dtype,
-                device = "meta",
-                requires_grad = True,
+        hidden = (mb, seq, self.hidden_size)
+        stages = []
+        for index, module in zip(self.local_stages, self.stage_modules):
+            if index == 0:
+                example_in = torch.empty((mb, seq), dtype = torch.long, device = "meta")
+            else:
+                # requires_grad is part of the static metadata: received hidden states need their grad.
+                example_in = torch.empty(
+                    hidden, dtype = self.activation_dtype, device = "meta", requires_grad = True
+                )
+            if index == self.total_stages - 1:
+                example_out = torch.empty(
+                    (), dtype = torch.float32, device = "meta", requires_grad = True
+                )
+            else:
+                example_out = torch.empty(
+                    hidden, dtype = self.activation_dtype, device = "meta", requires_grad = True
+                )
+            stages.append(
+                PipelineStage(
+                    module,
+                    index,
+                    self.total_stages,
+                    device,
+                    input_args = example_in,
+                    output_args = example_out,
+                    group = self.group,
+                )
             )
-        if self.is_last:
-            example_out = torch.empty((), dtype = torch.float32, device = "meta", requires_grad = True)
-        else:
-            example_out = torch.empty(
-                (mb, seq, self.hidden_size),
-                dtype = self.activation_dtype,
-                device = "meta",
-                requires_grad = True,
-            )
-        stage = PipelineStage(
-            self.module,
-            self.stage_index,
-            self.num_stages,
-            device,
-            input_args = example_in,
-            output_args = example_out,
-            group = self.group,
+        cls = torch_schedule_class(self.spec)
+        schedule = cls(
+            stages if self.spec.multi else stages[0],
+            self.n_microbatches,
+            loss_fn = self._loss_fn,
+            scale_grads = False,
         )
-        cls = ScheduleGPipe if self.schedule == "gpipe" else Schedule1F1B
-        schedule = cls(stage, self.n_microbatches, loss_fn = self._loss_fn, scale_grads = False)
         self._shapes[key] = schedule
         while len(self._shapes) > max(1, int(self.config.max_cached_shapes)):
             self._shapes.popitem(last = False)
@@ -1118,7 +1255,7 @@ class PipelineParallel:
                 value = value.to(device)
             step_kwargs[key] = value
         step_kwargs["labels"] = labels.to(device)
-        step_kwargs["num_items_in_batch"] = num_items_in_batch
+        self.ctx.num_items_in_batch = num_items_in_batch
         if scaler is not None and scaler.is_enabled():
             scaler.scale(
                 torch.zeros((), device = device)
@@ -1133,6 +1270,7 @@ class PipelineParallel:
             schedule.step(*args, target = target, return_outputs = False, **step_kwargs)
         finally:
             self._scaler = None
+            self.ctx.num_items_in_batch = None
         if self.dp_mesh is not None:
             self._average_replicated_grads()
         if self.is_last:
@@ -1145,7 +1283,7 @@ class PipelineParallel:
         else:
             total = torch.zeros(1, dtype = torch.float32, device = device)
         if self.num_stages > 1:
-            dist.broadcast(total, src = self._global_ranks[-1], group = self.group)
+            dist.broadcast(total, src = self._last_global_rank, group = self.group)
         if dp_group is not None:
             dist.all_reduce(total, group = dp_group)  # each replica's sum / global tokens
         return total[0]
@@ -1354,9 +1492,10 @@ class PipelineParallel:
                 }
         if self.num_stages == 1:
             return local if not self.composed or dist.get_rank() == 0 else None
-        gathered = [None] * self.num_stages if self.is_first else None
+        first = self.stage_index == 0
+        gathered = [None] * self.num_stages if first else None
         dist.gather_object(local, gathered, dst = self._global_ranks[0], group = self.group)
-        if not self.is_first or (self.composed and dist.get_rank() != 0):
+        if not first or (self.composed and dist.get_rank() != 0):
             return None  # one pp group (the one holding global rank 0) writes
         merged = {adapter: {} for adapter in local}
         for part in gathered:
@@ -1396,12 +1535,64 @@ class PipelineParallel:
             dist.barrier(group = self.group)
 
 
-def _sync_trainable(model, group, src):
+def _local_stage_modules(pp_stage, parts, owned):
+    """One _PPStageModule per local stage of a multi-stage rank. Every one runs the same model; while stage k
+    runs, this rank's layers of its other stages are swapped for pass-throughs and, unless k is the first
+    stage, the embedding for its stub (so it is not looked up for nothing)."""
+    layers = parts.layers
+    stand_ins = {i: _PPPassThrough(i, pp_stage.ctx, layers[i]) for i in owned}
+    embed_owner = _owner(parts.decoder, parts.embed) if pp_stage.is_first else None
+    embed_stub = _PPEmbeddingStub(parts.embed) if pp_stage.is_first else None
+    modules = []
+    for k in pp_stage.local_stages:
+        start, end = pp_stage.bounds[k]
+        swaps = [(layers, str(i), stand_ins[i]) for i in owned if not (start <= i < end)]
+        if k != 0 and embed_owner is not None:
+            swaps.append((embed_owner[0], embed_owner[1], embed_stub))
+        stage = (start, end, k == 0, k == pp_stage.total_stages - 1, swaps)
+        modules.append(
+            _PPStageModule(
+                pp_stage.model,
+                pp_stage.ctx,
+                pp_stage.activation_dtype,
+                pp_stage.hidden_size,
+                stage = stage,
+            )
+        )
+    return modules
+
+
+def _sync_trainable(
+    model,
+    group,
+    src,
+    owners = None,
+):
+    """Broadcast every trainable parameter from `src`. With `owners` ({id: pp ranks that loaded it}, from a
+    pipeline_sharded_loading model) a parameter listed there is synced only among its owners (from pp rank 0 if
+    it is one, else the lowest): a non-owner's copy may be built from a zero placeholder, and the split drops it
+    anyway. A single owner keeps its own copy."""
     import torch.distributed as dist
+
+    me = dist.get_rank(group) if owners is not None else None
     with torch.no_grad():
         for param in model.parameters():
-            if param.requires_grad:
+            if not param.requires_grad:
+                continue
+            held = owners.get(id(param)) if owners is not None else None
+            if held is None:
                 dist.broadcast(param.data, src = src, group = group)
+                continue
+            if len(held) < 2:
+                continue
+            root = 0 if 0 in held else min(held)
+            # Non-owners receive into scratch: their copy may be a zero-stride placeholder.
+            buf = (
+                param.data
+                if me in held
+                else torch.empty(param.shape, dtype = param.dtype, device = param.device)
+            )
+            dist.broadcast(buf, src = dist.get_global_rank(group, root), group = group)
 
 
 def _default_mesh(model):
@@ -1434,7 +1625,9 @@ def apply_pipeline_parallel(
         return existing
     _check_torch_pipelining()
     config = config or PPConfig()
-    schedule = str(schedule).lower().replace("-", "").replace("_", "")
+    spec = schedule_spec(schedule)
+    schedule = spec.name
+    stages_per_rank = resolve_stages_per_rank(spec, config.stages_per_rank)
     if pp_mesh is None:
         pp_mesh = _default_mesh(model)
     if pp_mesh.ndim != 1:
@@ -1466,23 +1659,60 @@ def apply_pipeline_parallel(
         )
     parts = _find_parts(model)
     _refuse_unsupported(model, parts)
-    _check_schedule(model, schedule)
-    tuple_format = _layer_call_format(parts.decoder, parts.layers_name) == "tuple"
-    bounds = derive_pp_split(model, pp, config)
-    _refuse_shared_across_stages(parts, bounds)
-    dtype = config.activation_dtype or parts.embed.weight.dtype
+    total_stages = pp * stages_per_rank
     rank = pp_mesh.get_local_rank()
-    if config.sync_trainable and pp > 1:
-        _sync_trainable(model, pp_mesh.get_group(), dist.get_global_rank(pp_mesh.get_group(), 0))
+    if stages_per_rank > 1:
+        root = _root_mesh(pp_mesh)
+        names = tuple(getattr(root, "mesh_dim_names", None) or ()) if root is not None else ()
+        if "dp" in names:
+            raise ValueError(_MULTI_STAGE_DP)
+    # The torch schedule's own checks, on placeholder stages: before anything is cut.
+    props = validate_schedule(spec, pp_mesh.get_group(), pp, stages_per_rank, n_microbatches, rank)
+    _check_schedule(model, spec, props)
+    tuple_format = _layer_call_format(parts.decoder, parts.layers_name) == "tuple"
+    bounds = derive_pp_split(model, total_stages, config)
+    _refuse_shared_across_stages(parts, bounds)
+    from .pp_load import check_preloaded_split, loaded_by, release_preload_guards
 
-    pp_stage = PipelineParallel(
-        model, pp_mesh, parts, bounds, n_microbatches, schedule, config, tuple_format, dtype
+    # pipeline_sharded_loading read only this rank's stages: the split must be the one it loaded.
+    preloaded = check_preloaded_split(
+        model,
+        pp_mesh,
+        schedule,
+        stages_per_rank,
+        bounds,
+        stage_indices(spec, rank, pp, stages_per_rank),
+        parts,
     )
-    start, end = bounds[rank]
-    is_first, is_last = rank == 0, rank == pp - 1
+    dtype = config.activation_dtype or parts.embed.weight.dtype
+    if config.sync_trainable and pp > 1:
+        owners = None
+        if preloaded is not None:
+            owners = loaded_by(parts, spec, pp, stages_per_rank, bounds)
+        _sync_trainable(
+            model, pp_mesh.get_group(), dist.get_global_rank(pp_mesh.get_group(), 0), owners
+        )
+
+    donated_off = props["split_backward"] and allow_split_backward()
+    pp_stage = PipelineParallel(
+        model,
+        pp_mesh,
+        parts,
+        bounds,
+        n_microbatches,
+        schedule,
+        config,
+        tuple_format,
+        dtype,
+        stages_per_rank = stages_per_rank,
+    )
+    local = pp_stage.local_stages
+    owned = sorted({i for k in local for i in range(*bounds[k])})
+    start, end = bounds[local[0]]
+    is_first, is_last = pp_stage.is_first, pp_stage.is_last
     layers = parts.layers
     for i in range(len(layers)):
-        if not (start <= i < end):
+        if i not in owned:
             layers[i] = _PPPassThrough(i, pp_stage.ctx, layers[i])
     embed, lm_head = parts.embed, parts.lm_head
     if not is_first:
@@ -1509,6 +1739,11 @@ def apply_pipeline_parallel(
     )
     # The stage object must not pin a dropped embedding / lm_head (vocabulary-sized) alive.
     parts = pp_stage.parts = dataclasses.replace(parts, embed = embed, lm_head = lm_head)
+    if stages_per_rank > 1:
+        pp_stage.stage_modules = _local_stage_modules(pp_stage, parts, owned)
+        pp_stage.module = pp_stage.stage_modules[0]
+    if preloaded is not None:
+        release_preload_guards(preloaded)  # the placeholder layers / embedding / head are gone now
     info = {
         "size": pp,
         "rank": rank,
@@ -1516,6 +1751,8 @@ def apply_pipeline_parallel(
         "bounds": bounds,
         "source": parts.source,
         "schedule": schedule,
+        "stages_per_rank": stages_per_rank,
+        "local_stages": tuple(local),
     }
     inner = parts.inner
     for level in _model_chain(model):
@@ -1531,9 +1768,16 @@ def apply_pipeline_parallel(
         torch.cuda.empty_cache()
     if (dist.get_rank() if dist.is_initialized() else rank) == 0:
         print(
-            f"Unsloth: pipeline parallel over {pp} stages ({schedule}, {n_microbatches} micro-batches, "
-            f"{parts.source} parts): decoder layers per stage {[e - s for s, e in bounds]}"
+            f"Unsloth: pipeline parallel over {pp} ranks x {stages_per_rank} stages ({schedule}, "
+            f"{n_microbatches} micro-batches, {parts.source} parts): decoder layers per stage "
+            f"{[e - s for s, e in bounds]}"
             + (", tied embeddings kept on the first and last stage" if parts.tied else "")
+            + (
+                "; compiled backward graphs built without donated buffers (zero bubble runs autograd.grad "
+                "with retain_graph)"
+                if donated_off
+                else ""
+            )
             + "."
         )
     return pp_stage
