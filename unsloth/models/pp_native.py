@@ -1054,9 +1054,14 @@ class _PPStageModule(nn.Module):
                 ctx.router_logits, carry, kwargs.get("attention_mask"), hidden.device
             )
             if stats is None:  # auxiliary loss off: nothing to carry (a zero placeholder)
-                stats = torch.zeros(
-                    2 * moe.num_experts + 1, dtype = torch.float32, device = hidden.device
-                )
+                if carry:
+                    # Still tied to the received carry: torch 2.10 / 2.11 pipelining needs a gradient for every
+                    # received input (a zero one here).
+                    stats = carry[0].to(hidden.device) * 0
+                else:
+                    stats = torch.zeros(
+                        2 * moe.num_experts + 1, dtype = torch.float32, device = hidden.device
+                    )
             return hidden, stats
         finally:
             ctx.active = False
@@ -1080,6 +1085,9 @@ class _PPStageModule(nn.Module):
                 aux = _load_balancing_from_statistics(stats, moe.num_experts)
                 ctx.aux_losses.append(aux.detach())
                 loss = loss + moe.owner.router_aux_loss_coef * aux.to(loss.device)
+            elif carry:
+                # Auxiliary loss off: a zero term keeps the received carry in the graph (see the stage return).
+                loss = loss + 0 * carry[0].sum().to(loss.device)
         return loss
 
 
