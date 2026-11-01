@@ -170,8 +170,7 @@ def handle_api(recipe: dict):
 
 
 def run(page, expected_nodes: int) -> dict[str, int]:
-    # A cold dev server compiles the app on first sight and may reload it once while it
-    # re-optimizes dependencies, so a first load that does not settle is retried.
+    # A cold dev server may reload once while it re-optimizes dependencies.
     for attempt in range(3):
         try:
             page.goto(f"{BASE}/data-recipes/big", wait_until = "domcontentloaded", timeout = 120_000)
@@ -224,7 +223,6 @@ def run(page, expected_nodes: int) -> dict[str, int]:
         '(id) => document.querySelector(`.react-flow__node[data-id="${id}"]`)?.style.transform',
         box["id"],
     )
-    # Fails the run, not the bound, when the drag never moved the node.
     assert moved and moved != box["transform"], f"the drag did not move node {box['id']}"
     return counts
 
@@ -261,7 +259,6 @@ def main() -> int:
         nodes = sum(counts.get(name, 0) for name in NODE_COMPONENTS)
         info(json.dumps({"node renders": nodes, "nodes": expected_nodes, "steps": STEPS}))
         assert not errors, errors
-        # The dragged node may render once per step; the other nodes must stay put.
         assert nodes <= 2 * STEPS + expected_nodes // 4, (
             f"nodes rendered {nodes} times over a {STEPS}-step drag of one node in a "
             f"{expected_nodes}-node graph: a drag step is re-rendering every node"
