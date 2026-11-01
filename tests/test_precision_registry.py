@@ -640,7 +640,9 @@ def test_nested_counters_close_by_identity_and_delegated_gemms_count_once():
     with P.count_lowp_gemms() as outer:
         with P.count_lowp_gemms() as inner:
             pass
-        assert any(a is outer for a in engage._ACTIVE) and not any(a is inner for a in engage._ACTIVE)
+        assert any(a is outer for a in engage._ACTIVE) and not any(
+            a is inner for a in engage._ACTIVE
+        )
         entered = engage.note_lowp_gemm("unsloth::fp8_block_matmul_torchao")
         try:  # the delegated Triton launch inside the torchao one
             engage.release_lowp_gemm(engage.note_lowp_gemm("unsloth::fp8_block_matmul_triton"))
@@ -650,4 +652,3 @@ def test_nested_counters_close_by_identity_and_delegated_gemms_count_once():
     assert outer["unsloth::fp8_block_matmul_torchao"] == 1
     assert outer.get("unsloth::fp8_block_matmul_triton", 0) == 0
     assert inner.get("unsloth::fp8_block_matmul_torchao", 0) == 0
-
