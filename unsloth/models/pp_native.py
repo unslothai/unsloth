@@ -1661,6 +1661,7 @@ class PipelineParallel:
             return
         cls = type(scaler)
         unscale = cls.unscale_.__get__(scaler)
+        check_inf = cls._check_inf_per_device.__get__(scaler)
         update = cls.update.__get__(scaler)
         pipeline = weakref.ref(self)
 
@@ -1670,11 +1671,20 @@ class PipelineParallel:
             if pp is not None and scaler.is_enabled():
                 pp._agree_found_inf(scaler, optimizer)
 
+        def _check_inf_per_device(optimizer):
+            # A fused optimizer (_step_supports_amp_scaling) never unscales: GradScaler.step reads found_inf
+            # here instead and hands it to the fused kernel, so agree it over every stage on this path too.
+            check_inf(optimizer)
+            pp = pipeline()
+            if pp is not None and scaler.is_enabled():
+                pp._agree_found_inf(scaler, optimizer)
+            return scaler._per_optimizer_states[id(optimizer)]["found_inf_per_device"]
+
         def update_(new_scale = None):
             try:
                 return update(new_scale)
             finally:
-                for name in ("unscale_", "update", "_unsloth_pp_agree"):
+                for name in ("unscale_", "_check_inf_per_device", "update", "_unsloth_pp_agree"):
                     scaler.__dict__.pop(name, None)
                 pp = pipeline()
                 if pp is not None and pp._step_scaler is scaler:
@@ -1683,6 +1693,7 @@ class PipelineParallel:
                     )
 
         scaler.unscale_ = unscale_
+        scaler._check_inf_per_device = _check_inf_per_device
         scaler.update = update_
         scaler._unsloth_pp_agree = pipeline
 

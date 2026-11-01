@@ -22,7 +22,14 @@ import torch  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_pp_native_gloo import LLAMA, _free_port, _torch_pipelining_error, batch, build, ppn  # noqa: E402
 
-RECIPES = ("pp_unscale", "scaler_unscale", "scaler_step_only")
+# The fused recipes step without unscale_: GradScaler.step reads found_inf through _check_inf_per_device.
+RECIPES = (
+    "pp_unscale",
+    "scaler_unscale",
+    "scaler_step_only",
+    "fused_sgd_step_only",
+    "fused_adamw_step_only",
+)
 
 
 def _one_step(rank, world, recipe, inf_rank):
@@ -33,7 +40,10 @@ def _one_step(rank, world, recipe, inf_rank):
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))
     pp = ppn.apply_pipeline_parallel(model, mesh["pp"], n_microbatches = 2)
     scaler = torch.amp.GradScaler("cpu", init_scale = 1024.0)
-    opt = torch.optim.SGD(pp.parameters(), lr = 1.0)
+    if recipe == "fused_adamw_step_only":
+        opt = torch.optim.AdamW(pp.parameters(), lr = 1.0, fused = True)
+    else:
+        opt = torch.optim.SGD(pp.parameters(), lr = 1.0, fused = recipe == "fused_sgd_step_only")
     pp.step(ids, labels, scaler = scaler)
     if rank == inf_rank:
         pp.parameters()[0].grad.view(-1)[0] = float("inf")
