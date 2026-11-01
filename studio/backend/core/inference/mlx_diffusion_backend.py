@@ -41,7 +41,7 @@ from core.inference.diffusion_families import (
     supported_family_names,
 )
 from core.inference import mlx_diffusion_convert as convert
-from core.inference.mlx_diffusion_routing import mlx_capabilities
+from core.inference.mlx_diffusion_routing import mlx_capabilities, request_blocker
 from core.inference.diffusion_batched import SEED_MASK
 from loggers import get_logger
 from utils.account_context import account_thread, current_account_id
@@ -1330,7 +1330,13 @@ class MlxDiffusionBackend:
         allow_oversized: bool = False,
         # Interface parity with the other engines; status advertises no Hires fix here, so a request is refused.
         hires: Any = None,
+        sampler: Optional[str] = None,
+        schedule_type: Optional[str] = None,
     ) -> dict[str, Any]:
+        """Generate MLX images and reject sampler choices the runtime cannot apply."""
+        blocker = request_blocker({"sampler": sampler, "schedule_type": schedule_type})
+        if blocker:
+            raise ValueError(f"{blocker.capitalize()} is not supported on the MLX engine.")
         if hires is not None:
             raise ValueError("Hires fix is not available on the MLX engine.")
         if (
