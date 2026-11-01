@@ -64,13 +64,30 @@ test("each mode resolves to what the welcome screen draws", () => {
   );
 });
 
-test("a style whose upload is missing falls back instead of drawing nothing", () => {
-  assert.equal(
-    resolveGreeting({ ...DEFAULT_GREETING, greetingStyle: "image" }).kind,
-    "text",
-  );
+test("an image greeting without an upload falls back to the default", () => {
   assert.deepEqual(
-    resolveGreeting({ ...DEFAULT_GREETING, greetingIcon: "custom" }),
+    resolveGreeting({
+      ...DEFAULT_GREETING,
+      greetingStyle: "image",
+      greetingIcon: "custom",
+      greetingText: "Hi",
+    }),
+    { kind: "text", icon: { kind: "sloth" }, text: null },
+  );
+});
+
+test("custom without an icon is text only; custom words only show in custom", () => {
+  assert.deepEqual(
+    resolveGreeting({
+      ...DEFAULT_GREETING,
+      greetingIcon: "custom",
+      greetingText: "Hi",
+    }),
+    { kind: "text", icon: { kind: "none" }, text: "Hi" },
+  );
+  // Default keeps the built-in lines even when words were typed under Custom earlier.
+  assert.deepEqual(
+    resolveGreeting({ ...DEFAULT_GREETING, greetingText: "Hi" }),
     { kind: "text", icon: { kind: "sloth" }, text: null },
   );
 });

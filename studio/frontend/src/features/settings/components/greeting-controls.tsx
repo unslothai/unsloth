@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { MascotImg } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
 import {
   GREETING_ICON_LIMITS,
   GREETING_IMAGE_LIMITS,
@@ -19,46 +16,47 @@ import {
   validGreetingUpload,
 } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { MenuTickIcon } from "@/lib/tick-icon";
-import { Upload01Icon } from "@hugeicons/core-free-icons";
+import { cn } from "@/lib/utils";
+import {
+  Cancel01Icon,
+  Image01Icon,
+  SmileIcon,
+  Upload01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { SettingsRow } from "./settings-row";
 
 type UploadField = "greetingIconDataUrl" | "greetingImageDataUrl";
 type UploadError = "file" | "image";
-type GreetingMode = "unsloth" | "customIcon" | "textOnly" | "image" | "off";
+type GreetingMode = "default" | "custom" | "image" | "off";
 
 const PROFILE_STORAGE_KEY = "unsloth_user_profile";
 const ACCEPT = GREETING_IMAGE_TYPES.join(",");
 const MODES: { mode: GreetingMode; label: TranslationKey }[] = [
-  { mode: "unsloth", label: "settings.profile.greetingUnsloth" },
-  { mode: "customIcon", label: "settings.profile.greetingCustomIcon" },
-  { mode: "textOnly", label: "settings.profile.greetingTextOnly" },
+  { mode: "default", label: "settings.profile.greetingDefault" },
+  { mode: "custom", label: "settings.profile.greetingCustom" },
   { mode: "image", label: "settings.profile.greetingImage" },
   { mode: "off", label: "settings.profile.greetingOff" },
 ];
 // "Off" keeps writing showGreetingSloth, so the old switch's value maps straight onto a mode.
 const MODE_PATCH = {
-  unsloth: {
+  default: {
     showGreetingSloth: true,
     greetingStyle: "text",
     greetingIcon: "sloth",
   },
-  customIcon: {
+  custom: {
     showGreetingSloth: true,
     greetingStyle: "text",
     greetingIcon: "custom",
   },
-  textOnly: {
-    showGreetingSloth: true,
-    greetingStyle: "text",
-    greetingIcon: "none",
-  },
   image: { showGreetingSloth: true, greetingStyle: "image" },
   off: { showGreetingSloth: false },
 } as const;
+const SLOTH_PREVIEW = "Sloth emojis/large sloth wave.png";
+// A type specimen, not a word, so the tiles need no translation.
+const SAMPLE_TEXT = "Aa";
 
 // A full localStorage quota drops the write silently; check it landed before claiming success.
 function persistedValue(field: UploadField): unknown {
@@ -82,10 +80,7 @@ function useGreetingMode(): GreetingMode {
   if (style === "image") {
     return "image";
   }
-  if (icon === "custom") {
-    return "customIcon";
-  }
-  return icon === "none" ? "textOnly" : "unsloth";
+  return icon === "custom" ? "custom" : "default";
 }
 
 function useGreetingUpload() {
@@ -133,180 +128,256 @@ function useGreetingUpload() {
       setBusy(false);
     }
   };
-  return { upload, error, setError, busy };
+  return { upload, error, busy };
 }
 
-// Every greeting option lives in this one row: the mode list, then the upload or text for that mode.
-export function GreetingSettingsRows() {
+function UploadControls({
+  field,
+  preview,
+  removable,
+}: {
+  field: UploadField;
+  preview: string | null;
+  removable: boolean;
+}) {
   const t = useT();
-  const mode = useGreetingMode();
   const setGreeting = useUserProfileStore((s) => s.setGreeting);
+  const { upload, error, busy } = useGreetingUpload();
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <div className="flex flex-col items-end gap-1.5">
+      <div className="flex items-center gap-2">
+        <input
+          ref={input}
+          className="sr-only"
+          tabIndex={-1}
+          aria-label={`${t("settings.profile.greetingSloth")}: ${t("chatBackground.upload")}`}
+          type="file"
+          accept={ACCEPT}
+          disabled={busy}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            upload(field, file);
+          }}
+        />
+        {preview && (
+          <img
+            src={preview}
+            alt=""
+            className="h-8 max-w-24 shrink-0 object-contain"
+            data-greeting-preview=""
+          />
+        )}
+        {removable && preview && (
+          <Button
+            className="text-foreground"
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            onClick={() => setGreeting({ [field]: null })}
+          >
+            <HugeiconsIcon
+              icon={Cancel01Icon}
+              strokeWidth={1.75}
+              className="size-4"
+              aria-hidden="true"
+            />
+            {t("settings.profile.removePhoto")}
+          </Button>
+        )}
+        <Button
+          className="text-foreground"
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={() => input.current?.click()}
+        >
+          <HugeiconsIcon
+            icon={Upload01Icon}
+            strokeWidth={1.75}
+            className="size-4"
+            aria-hidden="true"
+          />
+          {busy
+            ? t("common.loading")
+            : t(preview ? "chatBackground.replace" : "chatBackground.upload")}
+        </Button>
+      </div>
+      <p
+        role={error ? "alert" : undefined}
+        className={cn(
+          "text-xs",
+          error ? "text-destructive" : "text-muted-foreground",
+        )}
+      >
+        {t(
+          error === "file"
+            ? "settings.profile.greetingFileError"
+            : error === "image"
+              ? "settings.profile.greetingImageError"
+              : "settings.profile.greetingUploadHint",
+        )}
+      </p>
+    </div>
+  );
+}
+
+// The controls for the chosen mode, shown under the picker in the same row.
+function GreetingModeOptions({ mode }: { mode: GreetingMode }) {
+  const t = useT();
+  const setGreeting = useUserProfileStore((s) => s.setGreeting);
+  const icon = useUserProfileStore((s) => s.greetingIcon);
   const text = useUserProfileStore((s) => s.greetingText);
   const iconDataUrl = useUserProfileStore((s) => s.greetingIconDataUrl);
   const imageDataUrl = useUserProfileStore((s) => s.greetingImageDataUrl);
-  const { upload, error, setError, busy } = useGreetingUpload();
-  const input = useRef<HTMLInputElement>(null);
-  const uploadField: UploadField | null =
-    mode === "customIcon"
-      ? "greetingIconDataUrl"
-      : mode === "image"
-        ? "greetingImageDataUrl"
-        : null;
-  const preview =
-    mode === "customIcon"
-      ? iconDataUrl
-      : mode === "image"
-        ? imageDataUrl
-        : null;
-  const showsText =
-    mode === "unsloth" || mode === "customIcon" || mode === "textOnly";
-  const label = MODES.find((m) => m.mode === mode)?.label ?? MODES[0].label;
+  if (mode === "default") {
+    return (
+      <div className="flex items-center justify-end gap-3">
+        <span className="text-xs text-muted-foreground">
+          {t("settings.profile.greetingSlothIcon")}
+        </span>
+        <Switch
+          aria-label={t("settings.profile.greetingSlothIcon")}
+          checked={icon !== "none"}
+          onCheckedChange={(on) =>
+            setGreeting({ greetingIcon: on ? "sloth" : "none" })
+          }
+        />
+      </div>
+    );
+  }
+  if (mode === "custom") {
+    return (
+      <div className="flex flex-col gap-3">
+        <UploadControls
+          field="greetingIconDataUrl"
+          preview={iconDataUrl}
+          removable={true}
+        />
+        <Input
+          aria-label={t("settings.profile.greetingText")}
+          value={text}
+          maxLength={GREETING_TEXT_MAX_LENGTH}
+          placeholder={t("welcome.onYourMind")}
+          onChange={(event) =>
+            setGreeting({ greetingText: event.target.value })
+          }
+        />
+        <p className="text-right text-xs text-muted-foreground">
+          {t("settings.profile.greetingTextDescription")}
+        </p>
+      </div>
+    );
+  }
+  if (mode === "image") {
+    return (
+      <UploadControls
+        field="greetingImageDataUrl"
+        preview={imageDataUrl}
+        removable={false}
+      />
+    );
+  }
+  return null;
+}
+
+function GreetingTiles({ mode }: { mode: GreetingMode }) {
+  const t = useT();
+  const setGreeting = useUserProfileStore((s) => s.setGreeting);
+  const icon = useUserProfileStore((s) => s.greetingIcon);
+  const iconDataUrl = useUserProfileStore((s) => s.greetingIconDataUrl);
+  const imageDataUrl = useUserProfileStore((s) => s.greetingImageDataUrl);
+  const art: Record<GreetingMode, ReactNode> = {
+    default: (
+      <span className="flex items-center gap-1.5 text-sm font-medium">
+        {icon !== "none" && (
+          <MascotImg src={SLOTH_PREVIEW} className="size-5" />
+        )}
+        {SAMPLE_TEXT}
+      </span>
+    ),
+    custom: (
+      <span className="flex items-center gap-1.5 text-sm font-medium">
+        {iconDataUrl ? (
+          <img src={iconDataUrl} alt="" className="size-5 object-contain" />
+        ) : (
+          <HugeiconsIcon
+            icon={SmileIcon}
+            strokeWidth={1.75}
+            className="size-5"
+          />
+        )}
+        {SAMPLE_TEXT}
+      </span>
+    ),
+    image: imageDataUrl ? (
+      <img
+        src={imageDataUrl}
+        alt=""
+        className="max-h-8 max-w-[80%] object-contain"
+      />
+    ) : (
+      <HugeiconsIcon icon={Image01Icon} strokeWidth={1.75} className="size-5" />
+    ),
+    off: null,
+  };
+  return (
+    <div
+      role="radiogroup"
+      aria-label={t("settings.profile.greetingSloth")}
+      className="grid w-full grid-cols-4 gap-2"
+    >
+      {MODES.map((m) => (
+        <button
+          key={m.mode}
+          type="button"
+          role="radio"
+          aria-checked={mode === m.mode}
+          onClick={() => setGreeting(MODE_PATCH[m.mode])}
+          className="group flex cursor-pointer flex-col items-center gap-1.5"
+        >
+          <span
+            className={cn(
+              "flex h-14 w-full items-center justify-center rounded-lg border bg-background text-foreground transition-colors",
+              mode === m.mode
+                ? "border-primary ring-1 ring-primary"
+                : "border-border group-hover:border-[color-mix(in_srgb,var(--foreground)_calc(30%*var(--contrast-wash-gain,1)),transparent)]",
+              m.mode === "off" && "border-dashed",
+            )}
+          >
+            {art[m.mode]}
+          </span>
+          <span
+            className={cn(
+              "text-xs",
+              mode === m.mode ? "text-foreground" : "text-muted-foreground",
+            )}
+          >
+            {t(m.label)}
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Every greeting option lives in this one row: tiles that preview each mode, then its controls.
+export function GreetingSettingsRows() {
+  const t = useT();
+  const mode = useGreetingMode();
   return (
     <SettingsRow
       label={t("settings.profile.greetingSloth")}
       description={t("settings.profile.greetingSlothDescription")}
-    >
-      {/* Outside the popover so a pick still lands if the file dialog closes it. */}
-      <input
-        ref={input}
-        className="sr-only"
-        tabIndex={-1}
-        aria-label={`${t("settings.profile.greetingSloth")}: ${t("chatBackground.upload")}`}
-        type="file"
-        accept={ACCEPT}
-        disabled={busy || !uploadField}
-        onChange={(event) => {
-          const file = event.target.files?.[0];
-          event.target.value = "";
-          if (uploadField) {
-            upload(uploadField, file);
-          }
-        }}
-      />
-      <Popover onOpenChange={(open) => open || setError(null)}>
-        <PopoverTrigger asChild={true}>
-          <Button
-            variant="picker"
-            id="profile-greeting-sloth"
-            aria-label={t("settings.profile.greetingSloth")}
-            className="w-40 justify-between font-normal"
-          >
-            {t(label)}
-            <HugeiconsIcon
-              icon={ChevronDownStandardIcon}
-              strokeWidth={2}
-              className="size-4 text-muted-foreground"
-            />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent
-          align="end"
-          className="w-72 gap-0 rounded-lg p-1 font-heading"
-          data-greeting-menu=""
-        >
-          <div
-            role="radiogroup"
-            aria-label={t("settings.profile.greetingSloth")}
-          >
-            {MODES.map((m) => (
-              <button
-                key={m.mode}
-                type="button"
-                role="radio"
-                aria-checked={mode === m.mode}
-                className="relative flex w-full cursor-pointer items-center rounded-md py-2 pr-9 pl-3 text-left text-sm outline-hidden hover:bg-accent focus-visible:bg-accent"
-                onClick={() => {
-                  setError(null);
-                  setGreeting(MODE_PATCH[m.mode]);
-                }}
-              >
-                {t(m.label)}
-                {mode === m.mode && (
-                  <HugeiconsIcon
-                    icon={MenuTickIcon}
-                    strokeWidth={2}
-                    className="absolute right-3 size-4"
-                  />
-                )}
-              </button>
-            ))}
-          </div>
-          {(uploadField || showsText) && (
-            <>
-              <div className="-mx-1 my-1 h-px bg-border" />
-              <div className="flex flex-col gap-2 px-3 pt-1 pb-2">
-                {uploadField && (
-                  <div className="flex items-center gap-2">
-                    {preview && (
-                      <img
-                        src={preview}
-                        alt=""
-                        className="h-8 max-w-24 shrink-0 object-contain"
-                        data-greeting-preview=""
-                      />
-                    )}
-                    <Button
-                      className="text-foreground"
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={busy}
-                      onClick={() => input.current?.click()}
-                    >
-                      <HugeiconsIcon
-                        icon={Upload01Icon}
-                        strokeWidth={1.75}
-                        className="size-4"
-                        aria-hidden="true"
-                      />
-                      {busy
-                        ? t("common.loading")
-                        : t(
-                            preview
-                              ? "chatBackground.replace"
-                              : "chatBackground.upload",
-                          )}
-                    </Button>
-                  </div>
-                )}
-                {uploadField && (
-                  <p className="text-xs text-muted-foreground">
-                    {t("settings.profile.greetingUploadHint")}
-                  </p>
-                )}
-                {error && (
-                  <p role="alert" className="text-xs text-destructive">
-                    {t(
-                      error === "file"
-                        ? "settings.profile.greetingFileError"
-                        : "settings.profile.greetingImageError",
-                    )}
-                  </p>
-                )}
-                {showsText && (
-                  <>
-                    <p className="text-xs text-muted-foreground">
-                      {t("settings.profile.greetingText")}
-                    </p>
-                    <Input
-                      aria-label={t("settings.profile.greetingText")}
-                      value={text}
-                      maxLength={GREETING_TEXT_MAX_LENGTH}
-                      placeholder={t("welcome.onYourMind")}
-                      onChange={(event) =>
-                        setGreeting({ greetingText: event.target.value })
-                      }
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      {t("settings.profile.greetingTextDescription")}
-                    </p>
-                  </>
-                )}
-              </div>
-            </>
-          )}
-        </PopoverContent>
-      </Popover>
-    </SettingsRow>
+      below={
+        <div className="flex w-full max-w-[calc(26rem*var(--ui-space-scale,1))] flex-col gap-3">
+          <GreetingTiles mode={mode} />
+          <GreetingModeOptions mode={mode} />
+        </div>
+      }
+    />
   );
 }

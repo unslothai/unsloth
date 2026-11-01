@@ -97,7 +97,8 @@ export type ResolvedGreeting =
       text: string | null;
     };
 
-// A style whose upload is missing falls back to the default rather than an empty greeting.
+// Default is the sloth (or no icon) with the built-in lines; Custom is the user's icon (or none)
+// with their words. A missing image falls back to Default rather than an empty greeting.
 export function resolveGreeting(settings: GreetingSettings): ResolvedGreeting {
   const s = sanitizeGreeting(settings);
   if (!s.showGreetingSloth) {
@@ -106,16 +107,19 @@ export function resolveGreeting(settings: GreetingSettings): ResolvedGreeting {
   if (s.greetingStyle === "image" && s.greetingImageDataUrl) {
     return { kind: "image", src: s.greetingImageDataUrl };
   }
-  const text = s.greetingText.trim() || null;
-  if (s.greetingIcon === "none") {
-    return { kind: "text", icon: { kind: "none" }, text };
+  if (s.greetingStyle === "text" && s.greetingIcon === "custom") {
+    const text = s.greetingText.trim() || null;
+    return s.greetingIconDataUrl
+      ? {
+          kind: "text",
+          icon: { kind: "custom", src: s.greetingIconDataUrl },
+          text,
+        }
+      : { kind: "text", icon: { kind: "none" }, text };
   }
-  if (s.greetingIcon === "custom" && s.greetingIconDataUrl) {
-    return {
-      kind: "text",
-      icon: { kind: "custom", src: s.greetingIconDataUrl },
-      text,
-    };
-  }
-  return { kind: "text", icon: { kind: "sloth" }, text };
+  return {
+    kind: "text",
+    icon: { kind: s.greetingIcon === "none" ? "none" : "sloth" },
+    text: null,
+  };
 }
