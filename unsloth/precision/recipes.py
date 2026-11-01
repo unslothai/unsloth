@@ -136,9 +136,9 @@ _HP_FP8 = HPLayerPolicy(output_head = True, embeddings = True, routers = True)
 
 # GPU classes: sm75 (T4), sm80 (A100), sm89 (L4 / RTX 40), sm90 (H100), sm100 (B200 / GB200),
 # sm120 (RTX PRO 6000 / RTX 50), rocm. Evidence strings name the probe that set the gate.
-_PROBE_G4 = "outputs/precision_probe (Colab G4 sm120, torch 2.13.0, torchao 0.18.0)"
-_PROBE_L4 = "outputs/precision_probe (Colab L4 sm89, torch 2.13.0, torchao 0.18.0)"
-_PROBE_B200 = "plans/survey8_low_precision.md probes 1 / 2 (B200, torch 2.13, torchao 0.18)"
+_PROBE_G4 = "probed on an RTX PRO 6000 (sm120), torch 2.13.0, torchao 0.18.0"
+_PROBE_L4 = "probed on an L4 (sm89), torch 2.13.0, torchao 0.18.0"
+_PROBE_B200 = "probed on a B200 (sm100), torch 2.13, torchao 0.18"
 
 RECIPES = {}
 

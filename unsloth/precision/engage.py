@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Engagement: proof that a requested low-precision path really ran.
-
-`record` stores how many modules a recipe converted on the model (`model._unsloth_precision_engaged`).
-`require` turns "converted nothing" into an error under UNSLOTH_STRICT_ENGAGE=1 (certification runs), and is a
-no-op otherwise, so callers keep their own warning. `count_lowp_gemms` counts the scaled GEMM ops that
-actually dispatched inside a block of code."""
+"""Engagement: proof that a requested low-precision path really ran (strict mode: UNSLOTH_STRICT_ENGAGE=1)."""
 
 from __future__ import annotations
 
@@ -21,6 +16,7 @@ __all__ = [
     "engaged",
     "require",
     "LOWP_GEMM_OPS",
+    "LOWP_GEMM_CUSTOM_OPS",
     "count_lowp_gemms",
 ]
 
@@ -78,21 +74,45 @@ def require(
 # aten ops that run a low-precision GEMM (names resolved lazily: absent ops are skipped).
 LOWP_GEMM_OPS = ("_scaled_mm", "_scaled_mm_v2", "_scaled_grouped_mm", "_scaled_grouped_mm_v2")
 
+# Opaque custom ops that run a low-precision GEMM inside: dispatch sees only the outer op, so each call counts
+# once at its boundary. Matched by qualified name, so a namespace that never loaded (no fbgemm) costs nothing.
+# Dequantize-then-matmul ops (mxfp4_bounded_dense_matmul, fp8 weight dequant) are not low-precision GEMMs.
+LOWP_GEMM_CUSTOM_OPS = (
+    "unsloth::nvfp4_qat_linear",
+    "unsloth::fp8_block_matmul_triton",
+    "unsloth::fp8_block_matmul_torchao",
+    "unsloth::fp8_block_small_m_linear",
+    "unsloth::fp8_block_gemv",
+    "unsloth_zoo::mxfp4_ogs_moe",
+    "fbgemm::f8f8bf16",
+    "fbgemm::f8f8bf16_tensorwise",
+    "fbgemm::f8f8bf16_rowwise",
+    "fbgemm::f8f8bf16_blockwise",
+    "fbgemm::f8f8bf16_cublas",
+)
+
 
 @contextlib.contextmanager
 def count_lowp_gemms():
-    """Count low-precision GEMM dispatches: `with count_lowp_gemms() as c: ...; c['_scaled_mm']`."""
+    """Count low-precision GEMM dispatches: `with count_lowp_gemms() as c: ...; c['_scaled_mm']`, and
+    `c['unsloth::nvfp4_qat_linear']` for opaque custom ops (LOWP_GEMM_CUSTOM_OPS)."""
     import torch
     from torch.utils._python_dispatch import TorchDispatchMode
 
-    targets = {}
+    names = {}
     for name in LOWP_GEMM_OPS:
-        op = getattr(torch.ops.aten, name, None)
-        if op is not None:
-            targets[name] = op
-    counts = {name: 0 for name in targets}
+        if getattr(torch.ops.aten, name, None) is not None:
+            names[f"aten::{name}"] = name
+    for name in LOWP_GEMM_CUSTOM_OPS:
+        names[name] = name
+    counts = {key: 0 for key in names.values()}
 
     class _Counter(TorchDispatchMode):
+        # Skip Dynamo tracing (a plain mode breaks fullgraph); older torch ignores this hook.
+        @classmethod
+        def ignore_compile_internals(cls):
+            return True
+
         def __torch_dispatch__(
             self,
             func,
@@ -100,10 +120,9 @@ def count_lowp_gemms():
             args = (),
             kwargs = None,
         ):
-            packet = getattr(func, "overloadpacket", None)
-            for name, op in targets.items():
-                if packet is op:
-                    counts[name] += 1
+            key = names.get(getattr(getattr(func, "_schema", None), "name", None))
+            if key is not None:
+                counts[key] += 1
             return func(*args, **(kwargs or {}))
 
     with _Counter():

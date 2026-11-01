@@ -229,6 +229,17 @@ def test_refusal_happens_before_any_load():
         )
 
 
+def test_gate_evidence_names_no_local_paths():
+    # Evidence is printed in refusals; a scratch path (outputs/, plans/) means nothing to a user.
+    for name, r in P.RECIPES.items():
+        for gpu, gate in r.gates.items():
+            assert not any(p in gate.evidence for p in ("outputs/", "plans/", ".md")), (
+                name,
+                gpu,
+                gate.evidence,
+            )
+
+
 def test_check_recipe_gate_table():
     with pytest.raises(P.PrecisionRefused, match = "fp8 tensor cores"):
         P.check_recipe("fp8_tensorwise", gpu = "sm75")
@@ -284,6 +295,34 @@ def test_routers_found_by_structure():
     assert P.find_routers(_tiny_qwen3()) == {}
 
 
+def _tiny_moe_expert_width_collision():
+    # Qwen3-Next-80B-A3B has num_experts == moe_intermediate_size == shared_expert_intermediate_size == 512:
+    # an expert / shared expert / dense MLP gate_proj is as wide as the router but is not one.
+    from transformers import Qwen2MoeConfig, Qwen2MoeForCausalLM
+
+    torch.manual_seed(0)
+    config = Qwen2MoeConfig(
+        vocab_size = 256,
+        hidden_size = 128,
+        intermediate_size = 16,
+        moe_intermediate_size = 16,
+        shared_expert_intermediate_size = 16,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        num_experts = 16,
+        num_experts_per_tok = 2,
+        decoder_sparse_step = 1,
+        mlp_only_layers = [0],
+    )
+    return Qwen2MoeForCausalLM(config)
+
+
+def test_routers_ignore_mlps_as_wide_as_the_expert_count():
+    m = _tiny_moe_expert_width_collision()
+    assert set(P.find_routers(m)) == {"model.layers.1.mlp.gate"}
+
+
 def test_hp_layers_policy():
     m = _tiny_qwen3(layers = 8, tie = True)
     keep = P.high_precision_layers(m, P.get_recipe("nvfp4").hp_layers)
@@ -316,7 +355,7 @@ def test_float8_filter_skips_structural_router():
 
 
 @needs_torchao
-@pytest.mark.parametrize("build", [_tiny_qwen3, _tiny_qwen3_moe])
+@pytest.mark.parametrize("build", [_tiny_qwen3, _tiny_qwen3_moe, _tiny_moe_expert_width_collision])
 def test_float8_filter_unchanged_on_standard_models(build, monkeypatch):
     m = build()
     for size_filter in (True, False):
@@ -387,3 +426,181 @@ def test_require_and_counter(monkeypatch):
     except (RuntimeError, NotImplementedError):
         pytest.skip("no CPU _scaled_mm in this torch")
     assert c["_scaled_mm"] == 1
+
+
+def test_counter_runs_fullgraph_compiled_calls():
+    # Failing before: a plain TorchDispatchMode makes Dynamo refuse fullgraph frames ("non-infra torch dispatch
+    # mode present"), so the engagement check crashed around compiled models.
+    a = torch.ones(16, 16).to(torch.float8_e4m3fn)
+    b = torch.ones(16, 16).to(torch.float8_e4m3fn).t()
+    one = torch.ones((), dtype = torch.float32)
+
+    def f(a, b):
+        return torch._scaled_mm(a, b, scale_a = one, scale_b = one, out_dtype = torch.bfloat16)
+
+    try:
+        expected = f(a, b)
+    except (RuntimeError, NotImplementedError):
+        pytest.skip("no CPU _scaled_mm in this torch")
+    torch._dynamo.reset()
+    compiled = torch.compile(f, backend = "aot_eager", fullgraph = True)
+    compiled(a, b)
+    with P.count_lowp_gemms() as c:
+        out = compiled(a, b)
+    assert torch.equal(out, expected)
+    assert c["_scaled_mm"] == 1
+
+
+def test_decoder_layers_is_the_block_stack_not_an_experts_list():
+    # Failing before: the longest ModuleList won, so a model with more experts than layers returned
+    # model.layers.0.mlp.experts and first_n / last_n kept experts in high precision instead of blocks.
+    from transformers import Qwen2MoeConfig, Qwen2MoeForCausalLM
+
+    config = Qwen2MoeConfig(
+        vocab_size = 256,
+        hidden_size = 64,
+        intermediate_size = 128,
+        moe_intermediate_size = 32,
+        shared_expert_intermediate_size = 64,
+        num_hidden_layers = 4,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        num_experts = 12,
+        num_experts_per_tok = 2,
+    )
+    with torch.device("meta"):
+        m = Qwen2MoeForCausalLM(config)
+    assert P.decoder_layers(m) == ("model.layers", 4)
+    is_hp = P.hp_filter(m, P.HPLayerPolicy(first_n = 1, last_n = 1))
+    assert is_hp(None, "model.layers.0.self_attn.q_proj")
+    assert is_hp(None, "model.layers.3.mlp.experts.5.up_proj")
+    assert not is_hp(None, "model.layers.1.self_attn.q_proj")
+    assert not is_hp(None, "model.layers.1.mlp.experts.0.up_proj")
+
+
+def test_decoder_layers_is_the_language_decoder_not_a_longer_encoder():
+    # Failing before: the longest outer list won anywhere, so a vision tower or speech encoder deeper than
+    # the language decoder got the first / last block protection.
+    from transformers import (
+        CLIPVisionConfig,
+        LlamaConfig,
+        LlavaConfig,
+        LlavaForConditionalGeneration,
+        WhisperConfig,
+        WhisperForConditionalGeneration,
+    )
+
+    text = LlamaConfig(
+        vocab_size = 256,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+    )
+    vision = CLIPVisionConfig(
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 4,
+        num_attention_heads = 4,
+        image_size = 32,
+        patch_size = 16,
+    )
+    with torch.device("meta"):
+        llava = LlavaForConditionalGeneration(LlavaConfig(vision_config = vision, text_config = text))
+    name, n = P.decoder_layers(llava)
+    assert n == 2 and "vision" not in name and name.endswith("layers"), (name, n)
+    is_hp = P.hp_filter(llava, P.HPLayerPolicy(first_n = 1, last_n = 1))
+    assert is_hp(None, f"{name}.0.self_attn.q_proj") and is_hp(None, f"{name}.1.mlp.down_proj")
+
+    whisper = WhisperConfig(
+        vocab_size = 256,
+        d_model = 32,
+        encoder_layers = 4,
+        decoder_layers = 2,
+        encoder_attention_heads = 4,
+        decoder_attention_heads = 4,
+        encoder_ffn_dim = 64,
+        decoder_ffn_dim = 64,
+        pad_token_id = 0,
+        bos_token_id = 1,
+        eos_token_id = 2,
+        decoder_start_token_id = 1,
+    )
+    with torch.device("meta"):
+        w = WhisperForConditionalGeneration(whisper)
+    assert P.decoder_layers(w) == ("model.decoder.layers", 2)
+
+
+def test_decoder_layers_accepts_a_hybrid_stack_of_mixed_block_classes():
+    # Failing before: a stack had to be one block class, so Jamba (Mamba + attention blocks) returned
+    # (None, 0) and first_n / last_n protected nothing.
+    from transformers import JambaConfig, JambaForCausalLM
+
+    config = JambaConfig(
+        vocab_size = 256,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 4,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        num_experts = 1,
+        attn_layer_period = 2,
+        attn_layer_offset = 1,
+        mamba_d_state = 8,
+        mamba_d_conv = 4,
+        mamba_expand = 2,
+        use_mamba_kernels = False,
+    )
+    with torch.device("meta"):
+        m = JambaForCausalLM(config)
+    assert len({type(b) for b in m.model.layers}) == 2
+    assert P.decoder_layers(m) == ("model.layers", 4)
+    is_hp = P.hp_filter(m, P.HPLayerPolicy(first_n = 1, last_n = 1))
+    assert is_hp(None, "model.layers.0.mamba.in_proj") and is_hp(
+        None, "model.layers.3.self_attn.q_proj"
+    )
+    assert not is_hp(None, "model.layers.1.self_attn.q_proj")
+
+
+def test_counter_counts_opaque_custom_ops_once_at_their_boundary(monkeypatch):
+    # Failing before: only torch.ops.aten targets were resolved, so a low-precision GEMM inside an opaque
+    # custom op (unsloth::nvfp4_qat_linear, fbgemm::f8f8bf16_rowwise) counted zero.
+    from unsloth.precision import engage
+
+    a = torch.ones(16, 16).to(torch.float8_e4m3fn)
+    b = torch.ones(16, 16).to(torch.float8_e4m3fn).t()
+    one = torch.ones((), dtype = torch.float32)
+    try:
+        torch._scaled_mm(a, b, scale_a = one, scale_b = one, out_dtype = torch.bfloat16)
+    except (RuntimeError, NotImplementedError):
+        pytest.skip("no CPU _scaled_mm in this torch")
+
+    name = "unsloth_precision_test::opaque_fp8_mm"
+    if not hasattr(torch.ops.unsloth_precision_test, "opaque_fp8_mm"):
+
+        @torch.library.custom_op(name, mutates_args = ())
+        def _opaque(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+            one = torch.ones((), dtype = torch.float32)
+            return torch._scaled_mm(a, b, scale_a = one, scale_b = one, out_dtype = torch.bfloat16)
+
+    monkeypatch.setattr(engage, "LOWP_GEMM_CUSTOM_OPS", engage.LOWP_GEMM_CUSTOM_OPS + (name,))
+    with P.count_lowp_gemms() as c:
+        torch.ops.unsloth_precision_test.opaque_fp8_mm(a, b)
+    assert c[name] == 1 and c["_scaled_mm"] == 0  # the boundary, not the hidden inner call
+    assert "fbgemm::f8f8bf16_rowwise" in c  # absent namespace: listed, never resolved
+
+
+@needs_torchao
+def test_counter_counts_the_real_nvfp4_qat_linear_op():
+    from unsloth.models._utils import _nvfp4_qat_linear_op
+
+    try:
+        op = _nvfp4_qat_linear_op()
+    except Exception as e:
+        pytest.skip(f"torchao NVFP4 internals unavailable: {e!r}")
+    x = torch.empty(16, 64, device = "meta", dtype = torch.bfloat16)
+    w = torch.empty(32, 64, device = "meta", dtype = torch.bfloat16)
+    with P.count_lowp_gemms() as c:
+        op(x, w, None, False, False, False, False, None)
+    assert c["unsloth::nvfp4_qat_linear"] == 1
