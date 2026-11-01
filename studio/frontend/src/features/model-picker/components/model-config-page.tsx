@@ -53,6 +53,8 @@ import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
+  gpuLayersPatch,
+  moeCpuOffloadApplies,
   normalizeSpeculativeType,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
@@ -931,7 +933,8 @@ function GpuMemorySettings({
   const gpuLayersMax = layerCount != null ? layerCount + 1 : 256;
   const nCpuMoe = config.nCpuMoe ?? 0;
   const moeLayersMax = moeLayerCount ?? 0;
-  const showMoeSlider = isManual && !autoLayers && moeLayersMax > 0;
+  const showMoeSlider =
+    isManual && moeCpuOffloadApplies(gpuLayers) && moeLayersMax > 0;
   const selectedGpuIds = config.selectedGpuIds ?? null;
   const gpuContext = pinnableGpuContext(gpuDevices, isDiffusion);
   const pinnableDevices = gpuContext.devices ?? [];
@@ -1072,9 +1075,7 @@ function GpuMemorySettings({
             value={Math.max(GPU_LAYERS_AUTO, Math.min(gpuLayers, gpuLayersMax))}
             min={GPU_LAYERS_AUTO}
             max={gpuLayersMax}
-            onChange={(v) =>
-              update(v < 0 ? { gpuLayers: v, tensorSplit: null } : { gpuLayers: v })
-            }
+            onChange={(v) => update(gpuLayersPatch(v))}
             format={(v) => (v < 0 ? "Auto" : undefined)}
             info={
               <>
@@ -3696,6 +3697,10 @@ export function ModelConfigPage({
     }
     if (committedMoeLayers != null) {
       pendingPatch.nCpuMoe = committedMoeLayers;
+    }
+    if (committedGpuLayers != null && !moeCpuOffloadApplies(committedGpuLayers)) {
+      // As on the slider: 0 GPU layers hides the MoE slider, so drop the count it can't show.
+      Object.assign(pendingPatch, gpuLayersPatch(committedGpuLayers));
     }
     const hasPending =
       committedContext != null ||
