@@ -329,7 +329,9 @@
 	--sidebar-border-base: #f2f2f2;
 	--sidebar-ring: #262626;
 	--destructive-foreground: oklch(1 0 0);
-	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
+	/* Inter everywhere but macOS, where html.client-mac (theme-boot.js) swaps in the system font. */
+	--font-sans-default: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
+	--font-sans: var(--font-sans-default);
 	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
@@ -447,6 +449,11 @@
 	--icon-btn-inset: calc((2rem * var(--ui-space-scale, 1) - var(--icon-size)) / 2);
 }
 
+/* SF Pro can't be bundled; Inter stays as the fallback. */
+html.client-mac {
+	--font-sans-default: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Inter Variable", ui-sans-serif, sans-serif;
+}
+
 .dark {
 	/* A faint shadow needs more alpha to read on a dark page. */
 	--popup-shadow: 0 16px 40px -12px rgb(0 0 0 / 0.7);
@@ -503,7 +510,6 @@
 	--sidebar-border-base: #3a3a3a;
 	--sidebar-ring: #dfdfdf;
 	--destructive-foreground: oklch(1 0 0);
-	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
 	--shadow-color: hsl(0 0% 0%);
@@ -2159,9 +2165,9 @@ html[data-chat-font] .aui-root {
 		height: var(--icon-size);
 	}
 
-	/* Pins Inter across themes; parent `font-heading` resolves to Geist in dark. */
+	/* Pins the default sans across themes; parent `font-heading` resolves to Geist in dark. */
 	.nav-badge {
-		font-family: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+		font-family: var(--font-sans-default);
 	}
 
 	.sidebar-nav-btn {

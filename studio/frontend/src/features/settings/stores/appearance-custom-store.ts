@@ -620,8 +620,8 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
 );
 
 /* ------------------------------ DOM applier ------------------------------ */
-const DEFAULT_SANS_STACK =
-  '"Inter Variable", ui-sans-serif, sans-serif, system-ui';
+// Platform default from index.css: Inter, or the system font on macOS.
+const DEFAULT_SANS_STACK = "var(--font-sans-default)";
 const DEFAULT_HEADING_STACK =
   '"Hellix", "Space Grotesk Variable", var(--font-sans)';
 const DEFAULT_MONO_STACK = "JetBrains Mono, monospace";
