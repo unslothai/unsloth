@@ -100,3 +100,30 @@ def test_custom_template_reading_sharegpt_keys_keeps_working():
     mapped = get_chat_template(_tokenizer(), (template, "eos_token"), mapping = SHAREGPT)
 
     assert _render(mapped, sharegpt, False) == "<s>User: Hi\nBot: Hello!</s>\nUser: Bye\n"
+
+
+@pytest.mark.parametrize("name", ["llama-3.1", "chatml"])
+def test_mapping_that_keeps_the_role_key_still_renames_role_values(name):
+    # {"role": "human"} reuses the standard key, so only the role values need mapping.
+    mapping = {"role": "role", "content": "content", "user": "human", "assistant": "gpt"}
+    renamed = [{"role": SHAREGPT_ROLES[role], "content": text} for role, text in CONVERSATION]
+    role_content = [{"role": role, "content": text} for role, text in CONVERSATION]
+
+    expected = _render(get_chat_template(_tokenizer(), name), role_content, True)
+    mapped = get_chat_template(_tokenizer(), name, mapping = mapping)
+
+    assert _render(mapped, renamed, True) == expected
+    assert _render(mapped, role_content, True) == expected
+
+
+@pytest.mark.parametrize("name", ["llama-3.1", "chatml"])
+def test_mapping_that_only_renames_the_content_key(name):
+    mapping = {"role": "role", "content": "text", "user": "user", "assistant": "assistant"}
+    renamed = [{"role": role, "text": text} for role, text in CONVERSATION]
+    role_content = [{"role": role, "content": text} for role, text in CONVERSATION]
+
+    expected = _render(get_chat_template(_tokenizer(), name), role_content, True)
+    mapped = get_chat_template(_tokenizer(), name, mapping = mapping)
+
+    assert _render(mapped, renamed, True) == expected
+    assert _render(mapped, role_content, True) == expected
