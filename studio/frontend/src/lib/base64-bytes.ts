@@ -3,11 +3,7 @@
 
 type FromBase64 = (base64: string) => Uint8Array<ArrayBuffer>;
 
-// Decodes the base64 Tauri hands back for native attachments. The atob +
-// charCodeAt loop costs ~60 ms per 20 MiB on the UI thread; the native
-// Uint8Array.fromBase64 (Chromium 140+, Safari 18.2+) does the same work in
-// a fraction of that. Anything fromBase64 rejects goes through atob so callers
-// still see atob's InvalidCharacterError.
+// Inputs fromBase64 rejects go through atob so callers keep its InvalidCharacterError.
 export function decodeBase64Bytes(base64: string): Uint8Array<ArrayBuffer> {
   const fromBase64 = (Uint8Array as unknown as { fromBase64?: FromBase64 })
     .fromBase64;
@@ -15,7 +11,7 @@ export function decodeBase64Bytes(base64: string): Uint8Array<ArrayBuffer> {
     try {
       return fromBase64.call(Uint8Array, base64);
     } catch {
-      // Fall through to atob for its error.
+      // Fall through to atob.
     }
   }
   const binary = globalThis.atob(base64);
