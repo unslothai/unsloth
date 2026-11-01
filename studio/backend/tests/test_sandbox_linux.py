@@ -603,7 +603,9 @@ def test_the_workdir_is_the_only_writable_bind(prepared, tmp_path):
     assert _pairs(prepared.argv, "--bind") == [(workdir, workdir)]
 
 
-def test_the_model_cache_shares_its_data_subdirectories_and_nothing_else(bwrap, tmp_path, monkeypatch):
+def test_the_model_cache_shares_its_data_subdirectories_and_nothing_else(
+    bwrap, tmp_path, monkeypatch
+):
     cache = tmp_path / "hostcache"
     for name in ("hub", "datasets", "modules", "xet", "assets"):
         (cache / name).mkdir(parents = True)
@@ -1286,7 +1288,9 @@ def test_the_plan_pre_exec_still_runs_before_the_scope():
     assert ran == ["plan"]
 
 
-def test_a_standalone_interpreter_in_the_workdir_is_re_bound_read_only(bwrap, tmp_path, monkeypatch):
+def test_a_standalone_interpreter_in_the_workdir_is_re_bound_read_only(
+    bwrap, tmp_path, monkeypatch
+):
     workdir = tmp_path / "session"
     workdir.mkdir()
     executable = workdir / "python"
@@ -1604,7 +1608,9 @@ def test_a_runtime_prefix_contributes_its_certificate_store(tmp_path, monkeypatc
     assert str(prefix / "ssl") in paths
 
 
-def test_a_workdir_reached_through_a_symlink_is_bound_at_the_spelling_the_caller_used(bwrap, tmp_path):
+def test_a_workdir_reached_through_a_symlink_is_bound_at_the_spelling_the_caller_used(
+    bwrap, tmp_path
+):
     real = tmp_path / "real"
     real.mkdir()
     link = tmp_path / "link"
@@ -1720,7 +1726,8 @@ def test_a_clean_cache_component_is_still_shared(tmp_path, monkeypatch):
     assert sandbox_linux._model_cache_binds(str(tmp_path / "session"))["hub"] == str(host / "hub")
 
 
-def test_a_hazardous_cache_drops_the_component_rather_than_failing_the_launch(bwrap, tmp_path, monkeypatch
+def test_a_hazardous_cache_drops_the_component_rather_than_failing_the_launch(
+    bwrap, tmp_path, monkeypatch
 ):
     host = tmp_path / "hostcache"
     (host / "hub").mkdir(parents = True)
@@ -1906,7 +1913,8 @@ def test_an_editable_root_at_the_filesystem_root_is_refused(tmp_path, monkeypatc
         os_sandbox.editable_source_roots.cache_clear()
 
 
-def test_a_runtime_under_a_symlinked_workdir_is_read_only_through_both_spellings(bwrap, tmp_path, monkeypatch
+def test_a_runtime_under_a_symlinked_workdir_is_read_only_through_both_spellings(
+    bwrap, tmp_path, monkeypatch
 ):
     real = tmp_path / "real"
     venv = real / "venv"
@@ -1937,7 +1945,9 @@ def test_a_runtime_under_a_symlinked_workdir_is_read_only_through_both_spellings
         launch.cleanup()
 
 
-def test_a_runtime_is_protected_when_sys_prefix_carries_the_workdir_alias(bwrap, tmp_path, monkeypatch):
+def test_a_runtime_is_protected_when_sys_prefix_carries_the_workdir_alias(
+    bwrap, tmp_path, monkeypatch
+):
     real = tmp_path / "real"
     (real / "venv" / "lib").mkdir(parents = True)
     (real / "venv" / "bin").mkdir()
@@ -3162,10 +3172,16 @@ def test_every_real_prepare_call_skips_without_bubblewrap():
             isinstance(c, ast.Call)
             and isinstance(c.func, ast.Attribute)
             and (
-                (c.func.attr == "skip" and isinstance(c.func.value, ast.Name) and c.func.value.id == "pytest")
+                (
+                    c.func.attr == "skip"
+                    and isinstance(c.func.value, ast.Name)
+                    and c.func.value.id == "pytest"
+                )
                 or (
                     c.func.attr in ("setattr", "setenv")
-                    and any(isinstance(a, ast.Constant) and a.value in ("which", "PATH") for a in c.args)
+                    and any(
+                        isinstance(a, ast.Constant) and a.value in ("which", "PATH") for a in c.args
+                    )
                 )
             )
             for c in ast.walk(node)
