@@ -3160,7 +3160,7 @@ def _parse_gemma_tool_calls(
 _balanced_brace_end = _tool_healing._balanced_brace_end
 
 
-# Streaming rescans the same growing body every token; a few saved scans let it resume at the old end.
+# Streaming rescans one growing body per token: saved walks resume at their old end.
 _GEMMA_BODY_SCAN_SLOTS = 8
 _GEMMA_BODY_SCAN_MIN = 256
 _gemma_body_scans: list = [None] * _GEMMA_BODY_SCAN_SLOTS
@@ -3179,7 +3179,6 @@ def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:
     prev_raw = ""
     i = brace_pos
     hit = -1
-    # A saved scan of a prefix of ``text`` holds the walk's exact state at its end.
     for k, entry in enumerate(tuple(_gemma_body_scans)):
         if (
             entry is not None
