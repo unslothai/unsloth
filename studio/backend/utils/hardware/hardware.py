@@ -2334,8 +2334,11 @@ def _clear_mps_cache() -> None:
     """Return torch's MPS reservations to the shared pool: Apple Silicon also runs torch MPS, whose caching allocator keeps freed buffers reserved, and those bytes read as used system memory, so the next load budgets against a pool that looks smaller than it is."""
     try:
         import torch
+
         empty_cache = getattr(getattr(torch, "mps", None), "empty_cache", None)
-        if callable(empty_cache):
+        mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+        # Without a usable Metal device (a macOS VM's paravirtual GPU) empty_cache segfaults rather than raising.
+        if callable(empty_cache) and mps_backend is not None and mps_backend.is_available():
             empty_cache()
     except Exception as e:
         logger.debug("Failed to clear MPS cache: %s", e)

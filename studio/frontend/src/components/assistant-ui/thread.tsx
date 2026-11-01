@@ -8905,7 +8905,9 @@ const UserMessage: FC = () => {
 
       <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
         {hasContent ? (
-          <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
+          <div
+            dir="auto"
+            className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
             <MessagePrimitive.Parts />
           </div>
         ) : null}
