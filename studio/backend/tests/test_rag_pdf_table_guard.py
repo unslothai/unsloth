@@ -180,7 +180,6 @@ def _kept_tables(page) -> int:
 
 
 def test_guard_is_sound_on_random_line_art():
-    # The guard may only say "no table" where find_tables keeps none.
     rng = random.Random(1234)
     doc = pymupdf.open()
     for _ in range(80):
