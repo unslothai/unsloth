@@ -5079,19 +5079,21 @@ class _VisionBatchSession:
         plan = backend._plan_vlm_request(request, decodes_ids = self._decodes_ids)
         row = _VisionBatchRow(handle = handle, plan = plan)
         alone = self._alone(handle) if self._retires_rows else None
+        # A clip's row resumes nothing: token ids do not vary with the clip.
         state = (
             backend._vlm_batch_row_cache(self._adapter_state, plan.images, alone = alone)
-            if self._resumes_rows
+            if self._resumes_rows and not plan.videos
             else None
         )
         if state is None and backend._kv_quant_bits() is not None:
             # mlx-vlm's own batch cache would be float.
             raise RowRefused("this row cannot carry the load's quantized KV cache")
-        if state is None and plan.images:
+        if state is None and (plan.images or plan.videos):
             backend._release_vlm_snapshots()
         elif state is None:
             backend._release_held_vlm_snapshots()
         resume = {} if state is None else {"prompt_cache_state": state}
+        clips = _batch_clips(self._held, [plan], backend._processor)[0] if plan.videos else {}
         admitted_at = time.perf_counter()
         try:
             row_number = self.stream.add(
@@ -5101,6 +5103,7 @@ class _VisionBatchSession:
                     max_tokens = plan.max_tokens,
                     sampling = SamplingParams(**plan.sampling),
                     logits_processors = plan.processors and _failing_alone(row, plan.processors),
+                    **clips,
                     **resume,
                 )
             )
@@ -8392,8 +8395,9 @@ class MLXInferenceBackend:
         # The one-at-a-time decode refuses these clips by name.
         if not self._is_vlm or not self._reads_vision_input() or not _mlx_vlm_decodes_video():
             return "a reply carries a video clip this load does not read"
-        if self._speculative_draft is not None:
-            return "a speculative batch does not decode a video clip"
+        if self._speculative_draft is not None and self._kv_quant_bits() is not None:
+            # A clip's row resumes no cache, and only a resumed row carries the quantization.
+            return "a quantized speculative batch does not decode a video clip"
         try:
             from unsloth_zoo.mlx import generate as engine
         except ImportError:

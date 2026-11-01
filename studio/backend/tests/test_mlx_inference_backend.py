@@ -8807,6 +8807,7 @@ def test_a_vision_row_times_its_prefill_wherever_the_batch_runs_it(monkeypatch, 
         sampling = {},
         processors = None,
         think_prefix = "",
+        videos = None,
         stream = _vlm_row(backend),
         streamed = None,
     )
@@ -8926,6 +8927,7 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
         sampling = {},
         processors = None,
         think_prefix = "",
+        videos = None,
         stream = _vlm_row(backend),
         streamed = None,
     )
@@ -9132,20 +9134,24 @@ def test_a_quantized_vision_load_batches_only_as_resident_rows(monkeypatch):
     assert backend.resident_unavailable_reason({}) == "old mlx-vlm"
 
 
-@pytest.mark.parametrize("gap", (None, "speculative", "old zoo", "no decoder", "no vision"))
+@pytest.mark.parametrize(
+    "gap", (None, "drafted", "drafted and quantized", "old zoo", "no decoder", "no vision")
+)
 def test_a_video_reply_batches_only_as_a_fixed_command_of_a_load_that_reads_it(monkeypatch, gap):
     from core.inference import mlx_inference
 
     engine, backend = _batch_engine(monkeypatch), _vlm_backend(monkeypatch, markers = None)
-    backend._speculative_draft = gap == "speculative" or None
+    backend._speculative_draft = gap in ("drafted", "drafted and quantized") or None
+    backend._kv_quant = {"kv_bits": 8 if gap == "drafted and quantized" else None}
     backend._reads_vision, available = gap != "no vision", lambda request: None
     backend._vlm_batch_unavailable_reason = backend._vlm_resident_unavailable_reason = available
+    monkeypatch.setattr(mlx_inference, "_speculative_quantized_row_gap", lambda: None)
     monkeypatch.setattr(mlx_inference, "_mlx_vlm_decodes_video", lambda: gap != "no decoder")
     fields = SimpleNamespace(__dataclass_fields__ = ("image", "videos")[: 1 + (gap != "old zoo")])
     monkeypatch.setattr(engine, "GenerationRequest", fields, raising = False)
     clip, sent = {"videos": [_CLIP_B64]}, {"videos_base64": [_CLIP_B64]}
     for row in (clip, sent):
-        assert (backend.batch_unavailable_reason([{}, row]) is None) == (gap is None)
+        assert (backend.batch_unavailable_reason([{}, row]) is None) == (gap in (None, "drafted"))
     assert backend.resident_unavailable_reason(sent) == "a reply carries a video clip"
     assert backend.resident_unavailable_reason({}) is None
 
@@ -11053,6 +11059,46 @@ def test_a_quantized_speculative_load_batches_unless_its_caches_are_turboquant(m
     backend._kv_quant, backend._kv_context_budget = {"kv_bits": None}, 1
     gaps["row"] = "no rows"
     assert backend._kv_policy_batch_reason(resident = True) == "no rows"
+
+
+def test_a_drafted_batch_row_decodes_its_own_clip_and_resumes_no_cache(monkeypatch):
+    from contextlib import ExitStack
+
+    from core.inference import mlx_inference
+
+    engine = _batch_engine(monkeypatch)
+    monkeypatch.setattr(engine, "GenerationRequest", lambda **k: k, raising = False)
+    monkeypatch.setattr(engine, "SamplingParams", lambda **k: k, raising = False)
+    monkeypatch.setattr(engine, "BatchRowRefused", ValueError, raising = False)
+    clips = {"videos": ["clip.mp4"], "fps": 2.0}
+    monkeypatch.setattr(mlx_inference, "_batch_clips", lambda stack, plans, _p: [clips])
+    added, released = [], []
+    plan = SimpleNamespace(
+        videos = ("a",),
+        images = None,
+        prompt = "p",
+        max_tokens = 4,
+        sampling = {},
+        processors = None,
+        think_prefix = "",
+    )
+    session = mlx_inference._VisionBatchSession.__new__(mlx_inference._VisionBatchSession)
+    session.backend = SimpleNamespace(
+        _plan_vlm_request = lambda *_a, **_k: plan,
+        _vlm_batch_row_cache = lambda *_a, **_k: pytest.fail("a clip's row resumes no cache"),
+        _kv_quant_bits = lambda: None,
+        _release_vlm_snapshots = lambda: released.append(True),
+        _vlm_batch_prompt = lambda prompt: {"prompt": prompt},
+        _processor = None,
+        _model = None,
+    )
+    session.stream = SimpleNamespace(add = lambda request: added.append(request) or 0)
+    session._adapter_state, session._decodes_ids, session._resumes_rows = None, False, True
+    session._retires_rows, session._speculative, session._held = False, object(), ExitStack()
+    session._rows, session._by_row = {}, {}
+    session.admit({}, 0)
+    assert added[0]["videos"] == ["clip.mp4"] and added[0]["fps"] == 2.0
+    assert "prompt_cache_state" not in added[0] and released == [True]
 
 
 def test_a_speculative_load_drafts_a_video_reply_on_its_expanded_prompt(monkeypatch):
