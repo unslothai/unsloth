@@ -47708,41 +47708,67 @@ async def load_diffusion_model(
 
 
 def _require_resolved_image_base_access(request, fam, kind: str, engine_name) -> None:
-    """A managed account must clear the base the engine will resolve (card tag or family default), the same
-    ``require_model_access`` that /images/generate runs on the resident's ``base_repo``. Without it a cached gated
-    base loads and every generate then 404s."""
-    if fam is None or kind == "pipeline" or not account_access.managed_account():
+    """A managed account must clear the base the predicted engine will publish as ``base_repo``, the same
+    ``require_model_access`` that /images/generate runs on it. Without it a cached gated base loads and every
+    generate then 404s. Refuses only when every base that engine could publish is refused (#16178)."""
+    if fam is None or kind == "pipeline" or engine_name is None or not account_access.managed_account():
         return
-    from core.inference.diffusion_families import resolve_base_repo
-    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+    from core.inference.diffusion import _resolve_base_repo
+    from core.inference.diffusion_families import named_variant_base, resolve_base_repo
+    from core.inference.sd_cpp_engine import ENGINE_MLX, ENGINE_SD_CPP
+
+    explicit = bool((request.base_repo or "").strip())
+
+    def _diffusers_base():
+        return _resolve_base_repo(
+            request.model_path, request.base_repo, fam, request.hf_token, request.gguf_filename
+        )
 
     if engine_name == ENGINE_SD_CPP:
-        # sd.cpp reports the explicit base or the family default as its status base_repo.
-        base = resolve_base_repo(fam, request.base_repo)
+        candidates = [resolve_base_repo(fam, request.base_repo)]
+        from core.inference.sd_cpp_backend import _SAMPLE_SIGMAS_FAMILIES
+
+        if not explicit and fam.name in _SAMPLE_SIGMAS_FAMILIES:
+            # With a sampling grid sd.cpp publishes the card's or the named variant's base instead.
+            candidates += [
+                _diffusers_base(),
+                named_variant_base(fam, request.model_path, request.gguf_filename),
+            ]
+    elif engine_name == ENGINE_MLX and not explicit:
+        from core.inference.mlx_diffusion_backend import resolve_variant_base
+
+        candidates = [
+            resolve_variant_base(
+                request.model_path,
+                fam,
+                request.hf_token,
+                request.gguf_filename,
+                fallback = resolve_base_repo(fam, None),
+            )
+        ]
     else:
-        from core.inference.diffusion import _resolve_base_repo
-        base = _resolve_base_repo(
-            request.model_path,
-            request.base_repo,
-            fam,
-            request.hf_token,
-            request.gguf_filename,
-        )
-    if not base or base == request.model_path:
+        candidates = [_diffusers_base()]
+    candidates = [b for b in dict.fromkeys(candidates) if b and b != request.model_path]
+    refused = None
+    for base in candidates:
+        try:
+            account_access.require_model_access(base)
+            return
+        except HTTPException as exc:
+            refused = refused or (base, exc)
+    if refused is None:
         return
-    try:
-        account_access.require_model_access(base)
-    except HTTPException as exc:
-        if exc.status_code != 404:
-            raise
-        raise HTTPException(
-            status_code = 403,
-            detail = (
-                f"This image model loads its base components from {base}, which this account "
-                "cannot access. Download that repository with your own Hugging Face token first, "
-                "or pick a model whose base you can access."
-            ),
-        ) from exc
+    base, exc = refused
+    if exc.status_code != 404:
+        raise exc
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            f"This image model loads its base components from {base}, which this account "
+            "cannot access. Download that repository with your own Hugging Face token first, "
+            "or pick a model whose base you can access."
+        ),
+    ) from exc
 
 
 async def load_diffusion_model_gated(

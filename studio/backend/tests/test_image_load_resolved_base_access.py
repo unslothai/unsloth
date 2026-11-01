@@ -120,3 +120,73 @@ def test_the_installation_owner_is_not_asked_for_a_grant(client, monkeypatch):
     )
     resp = client.post("/api/inference/images/load", json = KREA_GGUF)
     assert resp.status_code == 200, resp.text
+
+
+def _req(**kw):
+    import types
+
+    return types.SimpleNamespace(
+        model_path = kw.get("model_path", "org/some-GGUF"),
+        base_repo = kw.get("base_repo"),
+        hf_token = None,
+        gguf_filename = kw.get("gguf_filename", "m-Q4_K_M.gguf"),
+    )
+
+
+@pytest.fixture
+def allowed(monkeypatch):
+    from fastapi import HTTPException
+
+    ok: set[str] = set()
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+
+    def _check(repo):
+        if repo not in ok:
+            raise HTTPException(status_code = 404, detail = "Not found")
+
+    monkeypatch.setattr(account_access, "require_model_access", _check)
+    return ok
+
+
+def _family(name):
+    from core.inference.diffusion_families import _FAMILIES
+
+    return next(f for f in _FAMILIES if f.name == name)
+
+
+def test_an_unknown_engine_is_not_checked_against_a_guessed_base(allowed, monkeypatch):
+    from routes import inference as routes
+
+    monkeypatch.setattr(
+        diffusion_module, "_resolve_base_repo", lambda *a, **k: pytest.fail("no engine, no guess")
+    )
+    routes._require_resolved_image_base_access(_req(), _family("krea-2"), "gguf", None)
+
+
+def test_mlx_checks_the_base_its_own_resolver_publishes(allowed, monkeypatch):
+    from fastapi import HTTPException
+    from routes import inference as routes
+    import core.inference.mlx_diffusion_backend as mlx
+
+    fam = _family("z-image")
+    monkeypatch.setattr(mlx, "resolve_variant_base", lambda *a, **k: "Tongyi-MAI/Z-Image")
+    allowed.add("Tongyi-MAI/Z-Image")
+    routes._require_resolved_image_base_access(_req(), fam, "gguf", "mlx")
+    allowed.clear()
+    with pytest.raises(HTTPException) as exc:
+        routes._require_resolved_image_base_access(_req(), fam, "gguf", "mlx")
+    assert exc.value.status_code == 403 and "Tongyi-MAI/Z-Image" in exc.value.detail
+
+
+def test_sd_cpp_grid_family_passes_when_any_base_it_could_publish_is_allowed(allowed, monkeypatch):
+    from fastapi import HTTPException
+    from routes import inference as routes
+
+    fam = _family("qwen-image-2.1")
+    monkeypatch.setattr(diffusion_module, "_resolve_base_repo", lambda *a, **k: "Qwen/Qwen-Image-2.1-Turbo")
+    allowed.add("Qwen/Qwen-Image-2.1-Turbo")
+    routes._require_resolved_image_base_access(_req(), fam, "gguf", "sd_cpp")
+    allowed.clear()
+    with pytest.raises(HTTPException) as exc:
+        routes._require_resolved_image_base_access(_req(), fam, "gguf", "sd_cpp")
+    assert exc.value.status_code == 403
