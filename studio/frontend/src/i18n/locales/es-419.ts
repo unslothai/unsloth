@@ -849,37 +849,6 @@ export const es419 = {
     compactUnsupported:
       "La compactación requiere un modelo GGUF o MLX compatible con herramientas",
   },
-  halloween: {
-    navLabel: "Truco o trato…",
-    title: "¡¿Truco o trato?!",
-    description:
-      "Preparamos algunos sustos para Unsloth, disponibles el resto de octubre.",
-    chooseTheme: "Elige un tema terrorífico",
-    spookyGreetings: "Saludos terroríficos",
-    spookyGreetingsDescription:
-      "El perezoso recibe los chats nuevos con un susto.",
-    decorations: "Arañas y murciélagos",
-    decorationsDescription: "Telarañas, y alguna que otra araña o murciélago.",
-    surprise: "¡Truco o trato!",
-    surpriseDescription: "Deja que el perezoso elija un tema por ti.",
-    themesTitle: "Temas terroríficos",
-    back: "Atrás",
-    footer: "Unsloth vuelve a la normalidad a medianoche del 1 de noviembre.",
-    removeNow: "Quitar ahora",
-    hideFromSidebar: "Ocultar de la barra lateral",
-    greeting: {
-      pumpkins: "Las calabazas ya están talladas. ¿Qué sigue?",
-      brewing: "¡A preparar la poción!",
-      trickOrTreat: "¿Truco o trato?",
-      manor: "Te damos la bienvenida a la mansión",
-      manorName: "Te damos la bienvenida a la mansión, {name}",
-      happyHalloween: "¡Feliz Halloween!",
-      happyHalloweenName: "¡Feliz Halloween, {name}!",
-      spirits: "Los espíritus están escuchando…",
-      mysteries: "¿Qué misterios descubriremos esta noche?",
-      conjure: "¿Qué puedo conjurar para ti?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Me alegra verte",
     goodToSeeYouName: "Me alegra verte, {name}",
@@ -2589,12 +2558,6 @@ export const es419 = {
         description: "Colores que se usan en Unsloth, en modo claro y oscuro.",
         standard: "Estándar",
         moreThemes: "Más temas",
-        halloween: "Halloween",
-      },
-      trickOrTreat: {
-        label: "Dulce o truco",
-        description:
-          "Temas de Halloween y saludos terroríficos, hasta el 1 de noviembre.",
       },
       code: {
         title: "Código",

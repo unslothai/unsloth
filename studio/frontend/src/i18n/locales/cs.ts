@@ -844,36 +844,6 @@ export const cs = {
     compactUnsupported:
       "Komprimace vyžaduje model GGUF nebo MLX s podporou nástrojů",
   },
-  halloween: {
-    navLabel: "Koledu, nebo něco provedu…",
-    title: "Koledu, nebo něco provedu?!",
-    description:
-      "Pro Unsloth jsme uvařili pár strašidelných překvapení. Vydrží až do konce října.",
-    chooseTheme: "Vyberte si strašidelný motiv",
-    spookyGreetings: "Strašidelné pozdravy",
-    spookyGreetingsDescription: "Lenochod vítá nové chaty s trochou strachu.",
-    decorations: "Pavouci a netopýři",
-    decorationsDescription: "Pavučiny a sem tam nějaký pavouk nebo netopýr.",
-    surprise: "Koledu, nebo něco provedu!",
-    surpriseDescription: "Nechte lenochoda, ať vám motiv vybere sám.",
-    themesTitle: "Strašidelné motivy",
-    back: "Zpět",
-    footer: "Unsloth se vrátí do normálu o půlnoci 1. listopadu.",
-    removeNow: "Odebrat hned",
-    hideFromSidebar: "Skrýt z postranního panelu",
-    greeting: {
-      pumpkins: "Dýně jsou vyřezané. Co dál?",
-      brewing: "Jdeme vařit lektvary",
-      trickOrTreat: "Koledu, nebo něco provedu?",
-      manor: "Vítejte na sídle",
-      manorName: "Vítejte na sídle, {name}",
-      happyHalloween: "Veselý Halloween",
-      happyHalloweenName: "Veselý Halloween, {name}",
-      spirits: "Duchové naslouchají…",
-      mysteries: "Jaká tajemství dnes v noci odhalíme?",
-      conjure: "Co pro vás mám vyčarovat?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Je fajn vás vidět",
     goodToSeeYouName: "Je fajn vás vidět, {name}",
@@ -2570,12 +2540,6 @@ export const cs = {
           "Barvy používané v celém Unsloth, ve světlém i tmavém režimu.",
         standard: "Standardní",
         moreThemes: "Další motivy",
-        halloween: "Halloween",
-      },
-      trickOrTreat: {
-        label: "Koledu, nebo něco provedu",
-        description:
-          "Halloweenské motivy a strašidelné pozdravy, do 1. listopadu.",
       },
       code: {
         title: "Kód",

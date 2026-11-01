@@ -844,38 +844,6 @@ export const vi = {
     compactUnsupported:
       "Cần mô hình GGUF hoặc MLX có hỗ trợ công cụ để thu gọn",
   },
-  halloween: {
-    navLabel: "Cho kẹo hay bị ghẹo…",
-    title: "Cho kẹo hay bị ghẹo?!",
-    description:
-      "Chúng tôi đã ủ sẵn vài trò hù dọa cho Unsloth, có mặt đến hết tháng Mười.",
-    chooseTheme: "Chọn một chủ đề rùng rợn",
-    spookyGreetings: "Lời chào ma quái",
-    spookyGreetingsDescription:
-      "Chú lười chào các cuộc trò chuyện mới bằng một màn hù dọa.",
-    decorations: "Nhện và dơi",
-    decorationsDescription:
-      "Mạng nhện, thỉnh thoảng thêm một con nhện hoặc dơi.",
-    surprise: "Cho kẹo hay bị ghẹo!",
-    surpriseDescription: "Để chú lười chọn chủ đề giúp bạn.",
-    themesTitle: "Chủ đề rùng rợn",
-    back: "Quay lại",
-    footer: "Unsloth sẽ trở lại bình thường vào nửa đêm ngày 1 tháng 11.",
-    removeNow: "Gỡ bỏ ngay",
-    hideFromSidebar: "Ẩn khỏi thanh bên",
-    greeting: {
-      pumpkins: "Bí ngô đã khắc xong. Tiếp theo là gì?",
-      brewing: "Bắt đầu nấu thuốc thôi",
-      trickOrTreat: "Cho kẹo hay bị ghẹo?",
-      manor: "Chào mừng đến lâu đài",
-      manorName: "Chào mừng đến lâu đài, {name}",
-      happyHalloween: "Halloween vui vẻ",
-      happyHalloweenName: "Halloween vui vẻ, {name}",
-      spirits: "Các linh hồn đang lắng nghe…",
-      mysteries: "Đêm nay chúng ta sẽ khám phá bí ẩn nào?",
-      conjure: "Tôi có thể phù phép ra gì cho bạn?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Rất vui được gặp bạn",
     goodToSeeYouName: "Rất vui được gặp bạn, {name}",
@@ -2559,12 +2527,6 @@ export const vi = {
           "Màu sắc dùng trong toàn bộ Unsloth, ở chế độ sáng và tối.",
         standard: "Tiêu chuẩn",
         moreThemes: "Thêm chủ đề",
-        halloween: "Halloween",
-      },
-      trickOrTreat: {
-        label: "Cho kẹo hay bị ghẹo",
-        description:
-          "Chủ đề Halloween và lời chào rùng rợn, đến hết ngày 1 tháng 11.",
       },
       code: {
         title: "Mã",

@@ -838,37 +838,6 @@ export const tr = {
     compactUnsupported:
       "Sıkıştırma için araç desteği olan bir GGUF veya MLX modeli gerekir",
   },
-  halloween: {
-    navLabel: "Şaka mı şeker mi…",
-    title: "Şaka mı şeker mi?!",
-    description:
-      "Unsloth için birkaç ürpertici sürpriz hazırladık; Ekim sonuna kadar burada.",
-    chooseTheme: "Ürkütücü bir tema seçin",
-    spookyGreetings: "Ürkütücü karşılamalar",
-    spookyGreetingsDescription:
-      "Tembel hayvan yeni sohbetleri bir korkuyla karşılar.",
-    decorations: "Örümcekler ve yarasalar",
-    decorationsDescription: "Ağlar ve arada bir örümcek ya da yarasa.",
-    surprise: "Şaka mı şeker mi!",
-    surpriseDescription: "Temayı tembel hayvan sizin için seçsin.",
-    themesTitle: "Ürkütücü temalar",
-    back: "Geri",
-    footer: "Unsloth, 1 Kasım gece yarısı normale döner.",
-    removeNow: "Şimdi kaldır",
-    hideFromSidebar: "Kenar çubuğundan gizle",
-    greeting: {
-      pumpkins: "Balkabakları oyuldu. Sırada ne var?",
-      brewing: "Hadi kazanı kaynatalım",
-      trickOrTreat: "Şaka mı şeker mi?",
-      manor: "Malikaneye hoş geldiniz",
-      manorName: "Malikaneye hoş geldiniz, {name}",
-      happyHalloween: "Cadılar Bayramınız kutlu olsun",
-      happyHalloweenName: "Cadılar Bayramınız kutlu olsun, {name}",
-      spirits: "Ruhlar dinliyor…",
-      mysteries: "Bu gece hangi gizemleri çözeceğiz?",
-      conjure: "Sizin için ne büyüleyebilirim?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Sizi görmek güzel",
     goodToSeeYouName: "Sizi görmek güzel, {name}",
@@ -2546,12 +2515,6 @@ export const tr = {
         description: "Unsloth genelinde açık ve koyu modda kullanılan renkler.",
         standard: "Standart",
         moreThemes: "Diğer temalar",
-        halloween: "Cadılar Bayramı",
-      },
-      trickOrTreat: {
-        label: "Şeker mi şaka mı",
-        description:
-          "1 Kasım'a kadar Cadılar Bayramı temaları ve ürkütücü selamlamalar.",
       },
       code: {
         title: "Kod",

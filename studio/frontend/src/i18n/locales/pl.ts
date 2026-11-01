@@ -850,36 +850,6 @@ export const pl = {
     compactUnsupported:
       "Kompaktowanie wymaga modelu GGUF lub MLX z obsługą narzędzi",
   },
-  halloween: {
-    navLabel: "Cukierek albo psikus…",
-    title: "Cukierek albo psikus?!",
-    description:
-      "Przygotowaliśmy dla Unsloth kilka strachów, dostępnych do końca października.",
-    chooseTheme: "Wybierz straszny motyw",
-    spookyGreetings: "Upiorne powitania",
-    spookyGreetingsDescription: "Leniwiec wita nowe czaty dreszczykiem.",
-    decorations: "Pająki i nietoperze",
-    decorationsDescription: "Pajęczyny, a czasem pająk lub nietoperz.",
-    surprise: "Cukierek albo psikus!",
-    surpriseDescription: "Pozwól leniwcowi wybrać motyw za Ciebie.",
-    themesTitle: "Straszne motywy",
-    back: "Wstecz",
-    footer: "Unsloth wróci do normy o północy 1 listopada.",
-    removeNow: "Usuń teraz",
-    hideFromSidebar: "Ukryj na pasku bocznym",
-    greeting: {
-      pumpkins: "Dynie wydrążone. Co dalej?",
-      brewing: "Czas zacząć warzyć miksturę",
-      trickOrTreat: "Cukierek albo psikus?",
-      manor: "Witaj w posiadłości",
-      manorName: "Witaj w posiadłości, {name}",
-      happyHalloween: "Wesołego Halloween",
-      happyHalloweenName: "Wesołego Halloween, {name}",
-      spirits: "Duchy słuchają…",
-      mysteries: "Jakie tajemnice odkryjemy dziś w nocy?",
-      conjure: "Co mogę dla Ciebie wyczarować?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Miło Cię widzieć",
     goodToSeeYouName: "Miło Cię widzieć, {name}",
@@ -2585,11 +2555,6 @@ export const pl = {
           "Kolory używane w całym Unsloth, w trybie jasnym i ciemnym.",
         standard: "Standardowy",
         moreThemes: "Więcej motywów",
-        halloween: "Halloween",
-      },
-      trickOrTreat: {
-        label: "Cukierek albo psikus",
-        description: "Motywy Halloween i upiorne powitania, do 1 listopada.",
       },
       code: {
         title: "Kod",

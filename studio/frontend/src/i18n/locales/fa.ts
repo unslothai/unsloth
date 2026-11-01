@@ -840,37 +840,6 @@ export const fa = {
     compactUnsupported:
       "فشرده‌سازی به یک مدل GGUF یا MLX با پشتیبانی از ابزار نیاز دارد",
   },
-  halloween: {
-    navLabel: "حقه یا خوراکی…",
-    title: "حقه یا خوراکی؟!",
-    description:
-      "چند ترفند ترسناک برای Unsloth آماده کرده‌ایم که تا پایان ماه اکتبر اینجاست.",
-    chooseTheme: "یک پوستهٔ ترسناک انتخاب کنید",
-    spookyGreetings: "خوشامدهای ترسناک",
-    spookyGreetingsDescription:
-      "تنبل گفتگوهای جدید را با یک ترس کوچک خوشامد می‌گوید.",
-    decorations: "عنکبوت‌ها و خفاش‌ها",
-    decorationsDescription: "تار عنکبوت، به‌علاوهٔ گاه‌گاهی یک عنکبوت یا خفاش.",
-    surprise: "حقه یا خوراکی!",
-    surpriseDescription: "بگذارید تنبل برایتان یک پوسته انتخاب کند.",
-    themesTitle: "پوسته‌های ترسناک",
-    back: "بازگشت",
-    footer: "Unsloth در نیمه‌شب 1 نوامبر به حالت عادی برمی‌گردد.",
-    removeNow: "حذف همین حالا",
-    hideFromSidebar: "پنهان کردن از نوار کناری",
-    greeting: {
-      pumpkins: "کدوها تراشیده شده‌اند. قدم بعدی چیست؟",
-      brewing: "بیایید معجون را هم بزنیم",
-      trickOrTreat: "حقه یا خوراکی؟",
-      manor: "به عمارت خوش آمدید",
-      manorName: "به عمارت خوش آمدید، {name}",
-      happyHalloween: "هالووین مبارک",
-      happyHalloweenName: "هالووین مبارک، {name}",
-      spirits: "ارواح گوش می‌دهند…",
-      mysteries: "امشب چه رازهایی را کشف کنیم؟",
-      conjure: "چه چیزی برایتان احضار کنم؟",
-    },
-  },
   welcome: {
     goodToSeeYou: "از دیدنتان خوشحالیم",
     goodToSeeYouName: "از دیدنتان خوشحالیم، {name}",
@@ -2543,11 +2512,6 @@ export const fa = {
           "رنگ‌هایی که در سراسر Unsloth، در حالت روشن و تیره، استفاده می‌شوند.",
         standard: "استاندارد",
         moreThemes: "پوسته‌های بیشتر",
-        halloween: "هالووین",
-      },
-      trickOrTreat: {
-        label: "حقه یا خوراکی",
-        description: "پوسته‌های هالووین و خوشامدگویی‌های ترسناک، تا 1 نوامبر.",
       },
       code: {
         title: "کد",
