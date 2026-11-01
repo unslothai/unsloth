@@ -130,7 +130,6 @@ def test_streamed_merge_buffers_a_bounded_amount(tmp_path: Path, worker, monkeyp
         return original(self, table, row_group_size = row_group_size)
 
     monkeypatch.setattr(pq.ParquetWriter, "write_table", counting)
-    # Past the byte budget a shard is written straight away instead of waiting for a full row group.
     monkeypatch.setattr(worker, "_MERGE_BUFFER_BYTES", 1)
     worker._merge_batches_to_single_parquet(base)
 

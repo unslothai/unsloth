@@ -350,7 +350,7 @@ def _stream_merge_batches(parquet_dir: Path, parquet_files: list[Path], staged_f
     import pyarrow
     import pyarrow.parquet as pyarrow_parquet
 
-    # The folder read skips "."/"_" names and reads everything else (subfolders too); the glob does not skip them.
+    # The folder read skips "."/"_" names and reads everything else, subfolders included; the glob does not.
     if any(path.name.startswith((".", "_")) for path in parquet_files):
         return False
     listed = {path.name for path in parquet_files}
@@ -382,7 +382,7 @@ def _stream_merge_batches(parquet_dir: Path, parquet_files: list[Path], staged_f
     pending: list[Any] = []
     pending_rows = pending_bytes = 0
     writing = None
-    # One row group is written in the background while the next is read: neither waits on the other.
+    # Write in the background while the next row group is read.
     with (
         pyarrow_parquet.ParquetWriter(staged_file, target_schema) as writer,
         ThreadPoolExecutor(max_workers = 1) as write_pool,
@@ -406,7 +406,6 @@ def _stream_merge_batches(parquet_dir: Path, parquet_files: list[Path], staged_f
             pending = [rest] if rest.num_rows else []
             pending_rows, pending_bytes = rest.num_rows, rest.nbytes if rest.num_rows else 0
 
-        # Per-file threads only when the pool would idle.
         use_threads = len(parquet_files) < _MERGE_READ_AHEAD
 
         def read(path: Path) -> Any:
