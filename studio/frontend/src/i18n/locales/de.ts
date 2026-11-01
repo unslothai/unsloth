@@ -8,10 +8,13 @@ export const de = {
   chatBackground: {
     noBackground: "Kein Hintergrund",
     sizing: "Bildskalierung",
+    sizingPosition: "Bildskalierung und Position",
     fill: "Ausfüllen",
     fit: "Einpassen",
     stretch: "Strecken",
     original: "Originalgröße",
+    fitWidth: "An Breite anpassen",
+    fitHeight: "An Höhe anpassen",
     zoom: "Zoom",
     outline: "Umrandung des Eingabefelds",
     fade: "Zum Hintergrund ausblenden",
@@ -30,6 +33,12 @@ export const de = {
     visibility: "Sichtbarkeit",
     blur: "Bildunschärfe",
     position: "Position",
+    horizontal: "Horizontale Position",
+    vertical: "Vertikale Position",
+    scope: "Anzeigen auf",
+    scopeNewChat: "Seite „Neuer Chat“",
+    scopeChats: "Chats",
+    scopeAll: "Allen Seiten",
     positionValue: "Horizontal {x} %, vertikal {y} %",
     newChat: "Neuer Chat",
     conversation: "Unterhaltung",
@@ -2360,6 +2369,22 @@ export const de = {
         label: "Süßes oder Saures",
         description:
           "Halloween-Designs und gruselige Begrüßungen, bis zum 1. November.",
+      },
+      code: {
+        title: "Code",
+        fontDescription: "Codeblöcke im Chat, Dateivorschauen und API-Beispiele.",
+        lineNumbers: {
+          label: "Zeilennummern",
+          description: "Zeilen von Codeblöcken im Chat nummerieren.",
+        },
+        wordWrap: {
+          label: "Zeilenumbruch",
+          description: "Lange Zeilen in Codeblöcken umbrechen statt seitlich zu scrollen.",
+        },
+        ligatures: {
+          label: "Schrift-Ligaturen",
+          description: "Zeichen wie => und != zu einer Glyphe verbinden, wenn die Codeschrift das unterstützt.",
+        },
       },
       custom: {
         chatWidth: {
@@ -5296,6 +5321,18 @@ export const de = {
     flaggedIntro: "Unser automatischer Scanner hat unter anderem folgende Probleme gefunden:",
     nothingFlagged:
       "Unser automatischer Scanner hat keine bedenklichen Dateien gefunden, aber bitte prüfen Sie es selbst noch einmal.",
+    unscannedTitle: "Modelldateien konnten nicht geprüft werden",
+    unscannedBody: "{model} enthält Pickle-Gewichte, die beim Laden Code ausführen können, und für sie ist kein Malware-Scan verfügbar. Das Modell kann daher nicht geladen werden. {note}",
+    unscannedIntro: "Dateien, die nicht geprüft werden konnten:",
+    switchSourceNote: "Wechsle in den Einstellungen die Modellquelle zu Hugging Face, um es zu laden.",
+    reconnectNote: "Stelle eine Verbindung zu Hugging Face her, damit der Scan gelesen werden kann, und versuche es erneut.",
+    managedTitle: "Benutzerdefinierter Code ist für dieses Konto deaktiviert",
+    managedNote: "Er ist für verwaltete Konten deaktiviert. Bitte den Besitzer der Installation, ihn zu aktivieren.",
+    notFoundTitle: "Nicht auf {source} gefunden",
+    notFoundBody: "{model} wurde auf {source} nicht gefunden, daher konnten die Sicherheitsprüfungen nicht laufen. Prüfe den Namen oder lege ein Token mit Zugriff fest, falls das Repository privat ist.",
+    notOnModelScopeBody: "{model} ist auf ModelScope nicht verfügbar, daher konnten die Sicherheitsprüfungen nicht laufen und es kann von dort nicht geladen werden. Wechsle in den Einstellungen die Modellquelle zu Hugging Face, um es zu verwenden.",
+    checksFailedTitle: "Sicherheitsprüfungen konnten nicht laufen",
+    checksFailedBody: "{model} konnte nicht von {source} gelesen werden. Die Sicherheitsprüfungen konnten daher nicht abgeschlossen werden und es kann nicht geladen werden. Prüfe deine Verbindung und dein Token und versuche es erneut. {note}",
     enableAndContinue: "Aktivieren und fortfahren",
   },
   tour: {

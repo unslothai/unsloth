@@ -2,11 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { isBackendDownForDesktopUpdate } from "@/lib/desktop-update-activity";
 import {
   getChatSettings,
   saveChatSettingsPatchIfCurrent,
 } from "./chat-settings-api";
-import { ChatSettingsRequestError } from "../utils/settings-retry";
+import {
+  ChatSettingsRequestError,
+  asBodyTransportFailure,
+} from "../utils/settings-retry";
+import { notePinRequestFailure } from "../utils/pinned-chats-update-failure";
 import {
   type PinOperation,
   PinnedChatsValidationError,
@@ -26,8 +31,12 @@ export function createChatPinsApi(sessionSignal: AbortSignal) {
     sessionSignal.addEventListener("abort", abort);
     if (sessionSignal.aborted) abort();
     const timer = setTimeout(abort, 10_000);
+    const downWhenIssued = isBackendDownForDesktopUpdate();
     try {
       return await run(controller.signal);
+    } catch (error) {
+      notePinRequestFailure(error, downWhenIssued);
+      throw error;
     } finally {
       clearTimeout(timer);
       sessionSignal.removeEventListener("abort", abort);
@@ -51,7 +60,7 @@ export function createChatPinsApi(sessionSignal: AbortSignal) {
       });
       const data: unknown = await response.json().catch((error: unknown) => {
         // A 200 whose body was cut off is a transport failure to retry, not an invalid answer.
-        if (signal.aborted || response.ok) throw error;
+        if (signal.aborted || response.ok) throw asBodyTransportFailure(error);
         return null;
       });
       if (!response.ok) {
