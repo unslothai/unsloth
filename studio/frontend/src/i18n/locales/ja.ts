@@ -978,7 +978,7 @@ export const ja = {
       deleteProjects: "プロジェクトを削除",
       deleteProjectsTitle: "プロジェクトを削除",
       deleteProjectsDescription:
-        "{count} 件のプロジェクトを削除しますか。含まれるチャットは完全に削除されます。",
+        "{count} 件のプロジェクトとそのすべてのチャットは完全に削除されます。この操作は取り消せません。",
       deleteProjectsFilesDescription:
         "各プロジェクトのワークスペースフォルダーがディスクから削除されます。",
       countSelected: "{count} 件選択中",
@@ -5113,7 +5113,7 @@ export const ja = {
     recents: "最近の項目",
     import: "インポート",
     deleteProject: "プロジェクトを削除",
-    deleteProjectDescription: "{name} を削除してもよろしいですか？チャットは完全に削除されます。",
+    deleteProjectDescription: "プロジェクト「{name}」とそのすべてのチャットは完全に削除されます。この操作は取り消せません。",
     deleteProjectFiles: "プロジェクトの作業フォルダーはディスクから削除されます。",
     deleteAll: "すべて削除",
     projectFallback: "プロジェクト",

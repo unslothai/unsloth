@@ -981,7 +981,7 @@ export const hi = {
       deleteProjects: "प्रोजेक्ट हटाएँ",
       deleteProjectsTitle: "प्रोजेक्ट हटाएँ",
       deleteProjectsDescription:
-        "{count} प्रोजेक्ट हटाएँ? उनकी चैट स्थायी रूप से हट जाएँगी।",
+        "{count} प्रोजेक्ट और उनकी सभी चैट स्थायी रूप से मिटा दी जाएँगी। इसे पूर्ववत नहीं किया जा सकता।",
       deleteProjectsFilesDescription:
         "हर प्रोजेक्ट का कार्यक्षेत्र फ़ोल्डर डिस्क से हटा दिया जाता है।",
       countSelected: "{count} चुने गए",
@@ -4711,7 +4711,7 @@ export const hi = {
       dialog: {
         renameChat: "चैट का नाम बदलें",
         deleteChatDescription: "चैट और उसके संदेश स्थायी रूप से मिटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।",
-        deleteProjectDescription: "प्रोजेक्ट और उसकी चैट ({count}) हमेशा के लिए हटा दी जाएँगी। इसे पूर्ववत नहीं किया जा सकता।",
+        deleteProjectDescription: "प्रोजेक्ट और उसकी चैट ({count}) स्थायी रूप से मिटा दी जाएँगी। इसे पूर्ववत नहीं किया जा सकता।",
         deleteFilesMany: "इन चैट द्वारा बनाई गई फ़ाइलें और सैंडबॉक्स फ़ोल्डर भी हटाएँ।",
         deleteProjectFilesLabel: "प्रोजेक्ट का वर्कस्पेस फ़ोल्डर हटाएँ",
         deleteProjectFiles: "प्रोजेक्ट का वर्कस्पेस फ़ोल्डर डिस्क से हटा दिया जाएगा।",
@@ -5174,7 +5174,7 @@ export const hi = {
     recents: "हाल के",
     import: "इंपोर्ट करें",
     deleteProject: "प्रोजेक्ट हटाएँ",
-    deleteProjectDescription: "क्या आप वाकई {name} को हटाना चाहते हैं? इसकी चैट स्थायी रूप से हट जाएँगी।",
+    deleteProjectDescription: 'प्रोजेक्ट "{name}" और उसकी सभी चैट स्थायी रूप से मिटा दी जाएँगी। इसे पूर्ववत नहीं किया जा सकता।',
     deleteProjectFiles: "प्रोजेक्ट का वर्कस्पेस फ़ोल्डर डिस्क से हटा दिया जाएगा।",
     deleteAll: "सब हटाएँ",
     projectFallback: "प्रोजेक्ट",

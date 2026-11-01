@@ -1093,7 +1093,7 @@ export const nl = {
       deleteProjects: "Projecten verwijderen",
       deleteProjectsTitle: "Projecten verwijderen",
       deleteProjectsDescription:
-        "{count} projecten verwijderen? Hun chats worden definitief verwijderd.",
+        "Hiermee worden {count} projecten en al hun chats definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
       deleteProjectsFilesDescription:
         "De werkruimtemap van elk project wordt van de schijf verwijderd.",
       countSelected: "{count} geselecteerd",
@@ -5113,7 +5113,7 @@ export const nl = {
         deleteChatDescription:
           "Hiermee worden de chat en de berichten ervan definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
         deleteProjectDescription:
-          "Het project en de bijbehorende chats ({count}) worden definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
+          "Hiermee worden het project en de chats ervan ({count}) definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
         deleteFilesMany:
           "Ook de bestanden en sandboxmappen verwijderen die deze chats hebben gemaakt.",
         deleteProjectFilesLabel: "Werkruimtemap van project verwijderen",
@@ -5620,7 +5620,7 @@ export const nl = {
     import: "Importeren",
     deleteProject: "Project verwijderen",
     deleteProjectDescription:
-      "Weet je zeker dat je {name} wilt verwijderen? De chats ervan worden definitief verwijderd.",
+      'Hiermee worden het project "{name}" en al zijn chats definitief verwijderd. Dit kan niet ongedaan worden gemaakt.',
     deleteProjectFiles:
       "De werkruimtemap van het project wordt van de schijf verwijderd.",
     deleteAll: "Alles verwijderen",

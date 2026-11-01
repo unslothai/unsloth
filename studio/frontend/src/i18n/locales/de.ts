@@ -982,7 +982,7 @@ export const de = {
       deleteProjects: "Projekte löschen",
       deleteProjectsTitle: "Projekte löschen",
       deleteProjectsDescription:
-        "{count} Projekte löschen? Ihre Chats werden dauerhaft gelöscht.",
+        "Dadurch werden {count} Projekte und alle ihre Chats endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
       deleteProjectsFilesDescription:
         "Der Arbeitsbereich-Ordner jedes Projekts wird von der Festplatte entfernt.",
       countSelected: "{count} ausgewählt",
@@ -4775,7 +4775,7 @@ export const de = {
       dialog: {
         renameChat: "Chat umbenennen",
         deleteChatDescription: "Dadurch werden der Chat und seine Nachrichten endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
-        deleteProjectDescription: "Das Projekt und seine Chats ({count}) werden endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
+        deleteProjectDescription: "Dadurch werden das Projekt und seine Chats ({count}) endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
         deleteFilesMany: "Auch die Dateien und Sandbox-Ordner entfernen, die diese Chats erstellt haben.",
         deleteProjectFilesLabel: "Projekt-Arbeitsordner löschen",
         deleteProjectFiles: "Der Arbeitsordner des Projekts wird von der Festplatte entfernt.",
@@ -5238,7 +5238,7 @@ export const de = {
     recents: "Neueste",
     import: "Importieren",
     deleteProject: "Projekt löschen",
-    deleteProjectDescription: "Möchtest du {name} wirklich löschen? Die Chats werden dauerhaft gelöscht.",
+    deleteProjectDescription: "Dadurch werden das Projekt „{name}“ und alle seine Chats endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
     deleteProjectFiles: "Der Arbeitsordner des Projekts wird von der Festplatte entfernt.",
     deleteAll: "Alles löschen",
     projectFallback: "Projekt",

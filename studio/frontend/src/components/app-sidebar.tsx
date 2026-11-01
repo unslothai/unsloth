@@ -6937,7 +6937,7 @@ export function AppSidebar() {
             {confirmingDelete?.kind === "run"
               ? t("shell.dialog.deleteRun.title")
               : confirmingDelete?.kind === "project"
-                ? "Delete project"
+                ? t("projectsPage.deleteProject")
                 : confirmingDelete?.kind === "chats"
                   ? t("shell.selection.deleteTitle")
                   : confirmingDelete?.kind === "projects"
@@ -6962,13 +6962,9 @@ export function AppSidebar() {
                 count: confirmingDelete.projects.length,
               })
             ) : confirmingDelete?.kind === "project" ? (
-              <>
-                Delete{" "}
-                <span className="font-medium text-foreground">
-                  &quot;{confirmingDelete.project.name}&quot;
-                </span>
-                ? Its chats will be permanently deleted.
-              </>
+              t("projectsPage.deleteProjectDescription", {
+                name: confirmingDelete.project.name,
+              })
             ) : null}
           </DialogDescription>
         </DialogHeader>

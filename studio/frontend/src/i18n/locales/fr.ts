@@ -982,7 +982,7 @@ export const fr = {
       deleteProjects: "Supprimer les projets",
       deleteProjectsTitle: "Supprimer les projets",
       deleteProjectsDescription:
-        "Supprimer {count} projets ? Leurs discussions seront supprimées définitivement.",
+        "{count} projets et tous leurs chats seront définitivement supprimés. Cette action est irréversible.",
       deleteProjectsFilesDescription:
         "Le dossier de travail de chaque projet est retiré du disque.",
       countSelected: "{count} sélectionnés",
@@ -4785,7 +4785,7 @@ export const fr = {
       dialog: {
         renameChat: "Renommer la discussion",
         deleteChatDescription: "Le chat et ses messages seront définitivement supprimés. Cette action est irréversible.",
-        deleteProjectDescription: "Le projet et ses discussions ({count}) seront définitivement supprimés. Cette action est irréversible.",
+        deleteProjectDescription: "Le projet et ses chats ({count}) seront définitivement supprimés. Cette action est irréversible.",
         deleteFilesMany: "Supprimer aussi les fichiers et dossiers sandbox créés par ces discussions.",
         deleteProjectFilesLabel: "Supprimer le dossier de travail du projet",
         deleteProjectFiles: "Le dossier de travail du projet sera supprimé du disque.",
@@ -5248,7 +5248,7 @@ export const fr = {
     recents: "Récents",
     import: "Importer",
     deleteProject: "Supprimer le projet",
-    deleteProjectDescription: "Voulez-vous vraiment supprimer {name} ? Ses chats seront définitivement supprimés.",
+    deleteProjectDescription: 'Le projet "{name}" et tous ses chats seront définitivement supprimés. Cette action est irréversible.',
     deleteProjectFiles: "Le dossier de travail du projet sera supprimé du disque.",
     deleteAll: "Tout supprimer",
     projectFallback: "projet",

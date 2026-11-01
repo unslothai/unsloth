@@ -981,7 +981,7 @@ export const ptBR = {
       deleteProjects: "Excluir projetos",
       deleteProjectsTitle: "Excluir projetos",
       deleteProjectsDescription:
-        "Excluir {count} projetos? As conversas deles são excluídas permanentemente.",
+        "{count} projetos e todos os seus chats serão excluídos permanentemente. Essa ação não pode ser desfeita.",
       deleteProjectsFilesDescription:
         "A pasta do espaço de trabalho de cada projeto é removida do disco.",
       countSelected: "{count} selecionadas",
@@ -4730,7 +4730,7 @@ export const ptBR = {
       dialog: {
         renameChat: "Renomear chat",
         deleteChatDescription: "O chat e suas mensagens serão excluídos permanentemente. Essa ação não pode ser desfeita.",
-        deleteProjectDescription: "O projeto e seus chats ({count}) serão excluídos permanentemente. Isso não pode ser desfeito.",
+        deleteProjectDescription: "O projeto e seus chats ({count}) serão excluídos permanentemente. Essa ação não pode ser desfeita.",
         deleteFilesMany: "Remover também os arquivos e pastas de sandbox criados por esses chats.",
         deleteProjectFilesLabel: "Excluir a pasta de trabalho do projeto",
         deleteProjectFiles: "A pasta de trabalho do projeto será removida do disco.",
@@ -5193,7 +5193,7 @@ export const ptBR = {
     recents: "Recentes",
     import: "Importar",
     deleteProject: "Excluir projeto",
-    deleteProjectDescription: "Tem certeza de que deseja excluir {name}? Os chats serão excluídos permanentemente.",
+    deleteProjectDescription: 'O projeto "{name}" e todos os seus chats serão excluídos permanentemente. Essa ação não pode ser desfeita.',
     deleteProjectFiles: "A pasta de trabalho do projeto será removida do disco.",
     deleteAll: "Excluir tudo",
     projectFallback: "projeto",

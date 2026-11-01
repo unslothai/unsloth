@@ -1082,7 +1082,7 @@ export const vi = {
       deleteProjects: "Xóa dự án",
       deleteProjectsTitle: "Xóa dự án",
       deleteProjectsDescription:
-        "Xóa {count} dự án? Các cuộc trò chuyện trong đó sẽ bị xóa vĩnh viễn.",
+        "{count} dự án và tất cả cuộc trò chuyện của chúng sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
       deleteProjectsFilesDescription:
         "Thư mục không gian làm việc của từng dự án sẽ bị xóa khỏi ổ đĩa.",
       countSelected: "Đã chọn {count}",
@@ -5059,7 +5059,7 @@ export const vi = {
         deleteChatDescription:
           "Cuộc trò chuyện và các tin nhắn của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
         deleteProjectDescription:
-          "Dự án và các cuộc trò chuyện của dự án ({count}) sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
+          "Dự án và các cuộc trò chuyện của nó ({count}) sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
         deleteFilesMany:
           "Đồng thời xóa các tệp và thư mục sandbox mà những cuộc trò chuyện này đã tạo.",
         deleteProjectFilesLabel: "Xóa thư mục không gian làm việc của dự án",
@@ -5565,7 +5565,7 @@ export const vi = {
     import: "Nhập",
     deleteProject: "Xóa dự án",
     deleteProjectDescription:
-      "Bạn có chắc muốn xóa {name}? Các cuộc trò chuyện trong đó sẽ bị xóa vĩnh viễn.",
+      "Dự án “{name}” và tất cả cuộc trò chuyện của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
     deleteProjectFiles:
       "Thư mục không gian làm việc của dự án sẽ bị xóa khỏi ổ đĩa.",
     deleteAll: "Xóa tất cả",

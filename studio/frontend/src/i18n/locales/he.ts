@@ -1013,7 +1013,7 @@ export const he = {
       deleteProjects: "מחק פרויקטים",
       deleteProjectsTitle: "מחיקת פרויקטים",
       deleteProjectsDescription:
-        "למחוק {count} פרויקטים? הצ'אטים שלהם יימחקו לצמיתות.",
+        "{count} פרויקטים וכל הצ'אטים שלהם יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
       deleteProjectsFilesDescription:
         "תיקיית סביבת העבודה של כל פרויקט תוסר מהדיסק.",
       countSelected: "{count} נבחרו",
@@ -4784,7 +4784,7 @@ export const he = {
         deleteChatDescription:
           "הצ'אט וההודעות שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleteProjectDescription:
-          "הפרויקט והצ'אטים שלו ({count}) יימחקו לצמיתות. פעולה זו אינה ניתנת לביטול.",
+          "הפרויקט והצ'אטים שלו ({count}) יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleteFilesMany: "הסר גם את הקבצים ותיקיות ארגז החול שצ'אטים אלה יצרו.",
         deleteProjectFilesLabel: "מחק את תיקיית סביבת העבודה של הפרויקט",
         deleteProjectFiles: "תיקיית סביבת העבודה של הפרויקט תוסר מהדיסק.",
@@ -5260,7 +5260,7 @@ export const he = {
     recents: "אחרונים",
     import: "ייבוא",
     deleteProject: "מחיקת פרויקט",
-    deleteProjectDescription: "למחוק את {name}? הצ'אטים שלו יימחקו לצמיתות.",
+    deleteProjectDescription: "הפרויקט \"{name}\" וכל הצ'אטים שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
     deleteProjectFiles: "תיקיית העבודה של הפרויקט תוסר מהדיסק.",
     deleteAll: "מחיקת הכול",
     projectFallback: "פרויקט",

@@ -849,7 +849,7 @@ export const it = {
       deleteProjects: "Elimina i progetti",
       deleteProjectsTitle: "Elimina i progetti",
       deleteProjectsDescription:
-        "Eliminare {count} progetti? Le loro chat vengono eliminate definitivamente.",
+        "{count} progetti e tutte le relative chat verranno eliminati definitivamente. Questa azione non può essere annullata.",
       deleteProjectsFilesDescription:
         "La cartella dello spazio di lavoro di ogni progetto viene rimossa dal disco.",
       countSelected: "{count} selezionate",
@@ -4770,7 +4770,7 @@ export const it = {
       dialog: {
         renameChat: "Rinomina chat",
         deleteChatDescription: "La chat e i suoi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
-        deleteProjectDescription: "Il progetto e le sue chat ({count}) verranno eliminati definitivamente. L’operazione non può essere annullata.",
+        deleteProjectDescription: "Il progetto e le sue chat ({count}) verranno eliminati definitivamente. Questa azione non può essere annullata.",
         deleteFilesMany: "Rimuovi anche i file e le cartelle sandbox create da queste chat.",
         deleteProjectFilesLabel: "Elimina la cartella di lavoro del progetto",
         deleteProjectFiles: "La cartella di lavoro del progetto verrà rimossa dal disco.",
@@ -5233,7 +5233,7 @@ export const it = {
     recents: "Recenti",
     import: "Importa",
     deleteProject: "Elimina progetto",
-    deleteProjectDescription: "Vuoi davvero eliminare {name}? Le sue chat verranno eliminate definitivamente.",
+    deleteProjectDescription: "Il progetto «{name}» e tutte le sue chat verranno eliminati definitivamente. Questa azione non può essere annullata.",
     deleteProjectFiles: "La cartella di lavoro del progetto verrà rimossa dal disco.",
     deleteAll: "Elimina tutto",
     projectFallback: "progetto",

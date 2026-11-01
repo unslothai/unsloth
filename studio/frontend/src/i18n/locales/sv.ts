@@ -1032,7 +1032,7 @@ export const sv = {
       deleteProjects: "Ta bort projekt",
       deleteProjectsTitle: "Ta bort projekt",
       deleteProjectsDescription:
-        "Ta bort {count} projekt? Deras chattar tas bort permanent.",
+        "{count} projekt och alla deras chattar raderas permanent. Det går inte att ångra.",
       deleteProjectsFilesDescription:
         "Varje projekts arbetsytemapp tas bort från disken.",
       countSelected: "{count} markerade",
@@ -4921,7 +4921,7 @@ export const sv = {
         deleteChatDescription:
           "Chatten och dess meddelanden raderas permanent. Det går inte att ångra.",
         deleteProjectDescription:
-          "Projektet och dess chattar ({count}) tas bort permanent. Det går inte att ångra.",
+          "Projektet och dess chattar ({count}) raderas permanent. Det går inte att ångra.",
         deleteFilesMany:
           "Ta även bort filerna och sandlådemapparna som de här chattarna skapade.",
         deleteProjectFilesLabel: "Ta bort projektets arbetsytemapp",
@@ -5407,7 +5407,7 @@ export const sv = {
     recents: "Senaste",
     import: "Importera",
     deleteProject: "Ta bort projekt",
-    deleteProjectDescription: "Vill du verkligen ta bort {name}? Dess chattar tas bort permanent.",
+    deleteProjectDescription: 'Projektet "{name}" och alla dess chattar raderas permanent. Det går inte att ångra.',
     deleteProjectFiles: "Projektets arbetsmapp tas bort från disken.",
     deleteAll: "Ta bort allt",
     projectFallback: "projekt",

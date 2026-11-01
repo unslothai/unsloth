@@ -980,7 +980,7 @@ export const ru = {
       deleteProjects: "Удалить проекты",
       deleteProjectsTitle: "Удалить проекты",
       deleteProjectsDescription:
-        "Удалить проекты ({count})? Их чаты будут удалены безвозвратно.",
+        "Проекты ({count}) и все их чаты будут удалены навсегда. Это действие нельзя отменить.",
       deleteProjectsFilesDescription:
         "Рабочая папка каждого проекта удаляется с диска.",
       countSelected: "Выбрано: {count}",
@@ -4728,7 +4728,7 @@ export const ru = {
       dialog: {
         renameChat: "Переименовать чат",
         deleteChatDescription: "Чат и его сообщения будут удалены навсегда. Это действие нельзя отменить.",
-        deleteProjectDescription: "Проект и его чаты ({count}) будут удалены без возможности восстановления.",
+        deleteProjectDescription: "Проект и его чаты ({count}) будут удалены навсегда. Это действие нельзя отменить.",
         deleteFilesMany: "Также удалить файлы и папки песочницы, созданные этими чатами.",
         deleteProjectFilesLabel: "Удалить рабочую папку проекта",
         deleteProjectFiles: "Рабочая папка проекта будет удалена с диска.",
@@ -5191,7 +5191,7 @@ export const ru = {
     recents: "Недавние",
     import: "Импортировать",
     deleteProject: "Удалить проект",
-    deleteProjectDescription: "Удалить {name}? Его чаты будут удалены безвозвратно.",
+    deleteProjectDescription: "Проект «{name}» и все его чаты будут удалены навсегда. Это действие нельзя отменить.",
     deleteProjectFiles: "Рабочая папка проекта будет удалена с диска.",
     deleteAll: "Удалить всё",
     projectFallback: "проект",

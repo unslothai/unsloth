@@ -976,7 +976,7 @@ export const ko = {
       deleteProjects: "프로젝트 삭제",
       deleteProjectsTitle: "프로젝트 삭제",
       deleteProjectsDescription:
-        "프로젝트 {count}개를 삭제할까요? 포함된 채팅이 영구히 삭제됩니다.",
+        "프로젝트 {count}개와 모든 채팅이 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
       deleteProjectsFilesDescription:
         "각 프로젝트의 작업 공간 폴더가 디스크에서 삭제됩니다.",
       countSelected: "{count}개 선택됨",
@@ -4690,7 +4690,7 @@ export const ko = {
       dialog: {
         renameChat: "채팅 이름 변경",
         deleteChatDescription: "채팅과 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
-        deleteProjectDescription: "프로젝트와 채팅({count}개)이 영구적으로 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
+        deleteProjectDescription: "프로젝트와 채팅({count}개)이 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
         deleteFilesMany: "이 채팅들이 만든 파일과 샌드박스 폴더도 삭제합니다.",
         deleteProjectFilesLabel: "프로젝트 작업 폴더 삭제",
         deleteProjectFiles: "프로젝트 작업 폴더가 디스크에서 삭제됩니다.",
@@ -5153,7 +5153,7 @@ export const ko = {
     recents: "최근 항목",
     import: "가져오기",
     deleteProject: "프로젝트 삭제",
-    deleteProjectDescription: "{name}을(를) 삭제하시겠습니까? 채팅이 영구적으로 삭제됩니다.",
+    deleteProjectDescription: '프로젝트 "{name}" 및 모든 채팅이 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.',
     deleteProjectFiles: "프로젝트 작업 폴더가 디스크에서 제거됩니다.",
     deleteAll: "모두 삭제",
     projectFallback: "프로젝트",

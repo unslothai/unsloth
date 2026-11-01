@@ -1076,7 +1076,7 @@ export const tr = {
       deleteProjects: "Projeleri sil",
       deleteProjectsTitle: "Projeleri sil",
       deleteProjectsDescription:
-        "{count} proje silinsin mi? Projelerin sohbetleri kalıcı olarak silinir.",
+        "{count} proje ve tüm sohbetleri kalıcı olarak silinecek. Bu işlem geri alınamaz.",
       deleteProjectsFilesDescription:
         "Her projenin çalışma alanı klasörü diskten kaldırılır.",
       countSelected: "{count} seçildi",
@@ -5560,7 +5560,7 @@ export const tr = {
     import: "İçe aktar",
     deleteProject: "Projeyi sil",
     deleteProjectDescription:
-      "{name} projesini silmek istediğinizden emin misiniz? Sohbetleri kalıcı olarak silinecek.",
+      "“{name}” projesi ve tüm sohbetleri kalıcı olarak silinecek. Bu işlem geri alınamaz.",
     deleteProjectFiles: "Proje çalışma alanı klasörü diskten kaldırılacak.",
     deleteAll: "Tümünü sil",
     projectFallback: "proje",

@@ -1086,7 +1086,7 @@ export const pl = {
       deleteProjects: "Usuń projekty",
       deleteProjectsTitle: "Usuń projekty",
       deleteProjectsDescription:
-        "Usunąć wybrane projekty ({count})? Ich czaty zostaną trwale usunięte.",
+        "Projekty ({count}) i wszystkie ich czaty zostaną trwale usunięte. Tej operacji nie można cofnąć.",
       deleteProjectsFilesDescription:
         "Folder obszaru roboczego każdego projektu zostanie usunięty z dysku.",
       countSelected: "Zaznaczone: {count}",
@@ -5613,7 +5613,7 @@ export const pl = {
     import: "Importuj",
     deleteProject: "Usuń projekt",
     deleteProjectDescription:
-      "Czy na pewno chcesz usunąć: {name}? Jego czaty zostaną trwale usunięte.",
+      "Projekt „{name}” i wszystkie jego czaty zostaną trwale usunięte. Tej operacji nie można cofnąć.",
     deleteProjectFiles:
       "Folder obszaru roboczego projektu zostanie usunięty z dysku.",
     deleteAll: "Usuń wszystko",

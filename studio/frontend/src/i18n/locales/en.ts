@@ -986,7 +986,7 @@ export const en = {
       deleteProjects: "Delete projects",
       deleteProjectsTitle: "Delete projects",
       deleteProjectsDescription:
-        "Delete {count} projects? Their chats are permanently deleted.",
+        "This permanently deletes {count} projects and all of their chats. This cannot be undone.",
       deleteProjectsFilesDescription:
         "Each project workspace folder is removed from disk.",
       countSelected: "{count} selected",
@@ -4720,7 +4720,7 @@ export const en = {
       dialog: {
         renameChat: "Rename chat",
         deleteChatDescription: "This permanently deletes the chat and its messages. This cannot be undone.",
-        deleteProjectDescription: "The project and its chats ({count}) will be permanently deleted. This cannot be undone.",
+        deleteProjectDescription: "This permanently deletes the project and its chats ({count}). This cannot be undone.",
         deleteFilesMany: "Also remove the files and sandbox folders these chats created.",
         deleteProjectFilesLabel: "Delete project workspace folder",
         deleteProjectFiles: "The project workspace folder will be removed from disk.",
@@ -5199,7 +5199,7 @@ export const en = {
     recents: "Recents",
     import: "Import",
     deleteProject: "Delete project",
-    deleteProjectDescription: "Are you sure you want to delete {name}? Its chats will be permanently deleted.",
+    deleteProjectDescription: 'This permanently deletes the project "{name}" and all of its chats. This cannot be undone.',
     deleteProjectFiles: "The project workspace folder will be removed from disk.",
     deleteAll: "Delete all",
     projectFallback: "project",

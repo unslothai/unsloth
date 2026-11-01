@@ -981,7 +981,7 @@ export const es = {
       deleteProjects: "Eliminar proyectos",
       deleteProjectsTitle: "Eliminar proyectos",
       deleteProjectsDescription:
-        "¿Eliminar {count} proyectos? Sus chats se eliminan de forma permanente.",
+        "Se eliminarán permanentemente {count} proyectos y todos sus chats. Esta acción no se puede deshacer.",
       deleteProjectsFilesDescription:
         "La carpeta del espacio de trabajo de cada proyecto se elimina del disco.",
       countSelected: "{count} seleccionados",
@@ -4774,7 +4774,7 @@ export const es = {
       dialog: {
         renameChat: "Renombrar chat",
         deleteChatDescription: "Se eliminarán permanentemente el chat y sus mensajes. Esta acción no se puede deshacer.",
-        deleteProjectDescription: "El proyecto y sus chats ({count}) se eliminarán de forma permanente. Esta acción no se puede deshacer.",
+        deleteProjectDescription: "Se eliminarán permanentemente el proyecto y sus chats ({count}). Esta acción no se puede deshacer.",
         deleteFilesMany: "Eliminar también los archivos y carpetas de sandbox que crearon estos chats.",
         deleteProjectFilesLabel: "Eliminar la carpeta de trabajo del proyecto",
         deleteProjectFiles: "La carpeta de trabajo del proyecto se eliminará del disco.",
@@ -5237,7 +5237,7 @@ export const es = {
     recents: "Recientes",
     import: "Importar",
     deleteProject: "Eliminar proyecto",
-    deleteProjectDescription: "¿Seguro que quieres eliminar {name}? Sus chats se eliminarán de forma permanente.",
+    deleteProjectDescription: 'Se eliminarán permanentemente el proyecto "{name}" y todos sus chats. Esta acción no se puede deshacer.',
     deleteProjectFiles: "La carpeta de trabajo del proyecto se eliminará del disco.",
     deleteAll: "Eliminar todo",
     projectFallback: "proyecto",

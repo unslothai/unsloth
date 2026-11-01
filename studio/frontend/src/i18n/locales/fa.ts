@@ -1074,7 +1074,7 @@ export const fa = {
       deleteProjects: "حذف پروژه‌ها",
       deleteProjectsTitle: "حذف پروژه‌ها",
       deleteProjectsDescription:
-        "{count} پروژه حذف شود؟ گفتگوهای آن‌ها برای همیشه حذف می‌شوند.",
+        "{count} پروژه و همه گفتگوهای آن‌ها برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
       deleteProjectsFilesDescription:
         "پوشهٔ فضای کار هر پروژه از دیسک حذف می‌شود.",
       countSelected: "{count} مورد انتخاب شده",
@@ -5033,7 +5033,7 @@ export const fa = {
         deleteChatDescription:
           "این گفتگو و پیام‌های آن برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
         deleteProjectDescription:
-          "پروژه و گفتگوهای آن ({count}) برای همیشه حذف خواهند شد. این کار قابل بازگشت نیست.",
+          "پروژه و گفتگوهای آن ({count}) برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
         deleteFilesMany:
           "فایل‌ها و پوشه‌های سندباکسی که این گفتگوها ایجاد کرده‌اند نیز حذف شوند.",
         deleteProjectFilesLabel: "حذف پوشهٔ فضای کار پروژه",
@@ -5532,7 +5532,7 @@ export const fa = {
     import: "وارد کردن",
     deleteProject: "حذف پروژه",
     deleteProjectDescription:
-      "آیا مطمئن هستید که می‌خواهید {name} را حذف کنید؟ گفتگوهای آن برای همیشه حذف خواهند شد.",
+      "پروژه «{name}» و همه گفتگوهای آن برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
     deleteProjectFiles: "پوشهٔ فضای کار پروژه از دیسک حذف خواهد شد.",
     deleteAll: "حذف همه",
     projectFallback: "پروژه",

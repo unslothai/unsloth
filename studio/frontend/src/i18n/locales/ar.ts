@@ -977,7 +977,7 @@ export const ar = {
       deleteProjects: "حذف المشاريع",
       deleteProjectsTitle: "حذف المشاريع",
       deleteProjectsDescription:
-        "هل تريد حذف {count} مشاريع؟ ستُحذف محادثاتها نهائيًا.",
+        "سيتم حذف المشاريع ({count}) وجميع محادثاتها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
       deleteProjectsFilesDescription:
         "يُحذف مجلد مساحة عمل كل مشروع من القرص.",
       countSelected: "{count} محددة",
@@ -4700,7 +4700,7 @@ export const ar = {
       dialog: {
         renameChat: "إعادة تسمية المحادثة",
         deleteChatDescription: "سيتم حذف المحادثة ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
-        deleteProjectDescription: "سيتم حذف المشروع ومحادثاته ({count}) نهائيًا. لا يمكن التراجع عن ذلك.",
+        deleteProjectDescription: "سيتم حذف المشروع ومحادثاته ({count}) نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
         deleteFilesMany: "احذف أيضًا الملفات ومجلدات بيئة الاختبار التي أنشأتها هذه المحادثات.",
         deleteProjectFilesLabel: "حذف مجلد مساحة عمل المشروع",
         deleteProjectFiles: "ستتم إزالة مجلد مساحة عمل المشروع من القرص.",
@@ -5163,7 +5163,7 @@ export const ar = {
     recents: "الأحدث",
     import: "استيراد",
     deleteProject: "حذف المشروع",
-    deleteProjectDescription: "هل تريد بالتأكيد حذف {name}؟ ستُحذف محادثاته نهائيًا.",
+    deleteProjectDescription: "سيتم حذف المشروع «{name}» وجميع محادثاته نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
     deleteProjectFiles: "ستتم إزالة مجلد عمل المشروع من القرص.",
     deleteAll: "حذف الكل",
     projectFallback: "مشروع",

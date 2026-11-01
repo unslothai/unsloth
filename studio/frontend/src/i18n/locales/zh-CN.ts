@@ -974,7 +974,7 @@ export const zhCN = {
       deleteProjects: "删除项目",
       deleteProjectsTitle: "删除项目",
       deleteProjectsDescription:
-        "删除 {count} 个项目？其中的对话将被永久删除。",
+        "{count} 个项目及其所有聊天将被永久删除。此操作无法撤销。",
       deleteProjectsFilesDescription:
         "每个项目的工作区文件夹会从磁盘中删除。",
       countSelected: "已选择 {count} 个",
@@ -4601,7 +4601,7 @@ export const zhCN = {
       dialog: {
         renameChat: "重命名聊天",
         deleteChatDescription: "该聊天及其消息将被永久删除。此操作无法撤销。",
-        deleteProjectDescription: "该项目及其聊天（{count} 个）将被永久删除，且无法撤销。",
+        deleteProjectDescription: "该项目及其聊天（{count} 个）将被永久删除。此操作无法撤销。",
         deleteFilesMany: "同时删除这些聊天创建的文件和沙盒文件夹。",
         deleteProjectFilesLabel: "删除项目工作文件夹",
         deleteProjectFiles: "项目工作文件夹将从磁盘中删除。",
@@ -5064,7 +5064,7 @@ export const zhCN = {
     recents: "最近",
     import: "导入",
     deleteProject: "删除项目",
-    deleteProjectDescription: "确定要删除 {name} 吗？其聊天将被永久删除。",
+    deleteProjectDescription: "项目“{name}”及其所有聊天将被永久删除。此操作无法撤销。",
     deleteProjectFiles: "项目工作文件夹将从磁盘中删除。",
     deleteAll: "全部删除",
     projectFallback: "项目",

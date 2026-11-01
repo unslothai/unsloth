@@ -1024,7 +1024,7 @@ export const zhTW = {
       deleteProjects: "刪除專案",
       deleteProjectsTitle: "刪除專案",
       deleteProjectsDescription:
-        "要刪除 {count} 個專案嗎？其中的聊天將被永久刪除。",
+        "{count} 個專案及其所有聊天將被永久刪除。此動作無法復原。",
       deleteProjectsFilesDescription:
         "每個專案的工作區資料夾都會從磁碟中移除。",
       countSelected: "已選取 {count} 個",
@@ -4776,7 +4776,7 @@ export const zhTW = {
         renameChat: "重新命名聊天",
         deleteChatDescription: "此聊天及其訊息將被永久刪除。此動作無法復原。",
         deleteProjectDescription:
-          "此專案及其聊天（{count}）將被永久刪除。此動作無法復原。",
+          "此專案及其聊天（{count} 個）將被永久刪除。此動作無法復原。",
         deleteFilesMany: "同時移除這些聊天建立的檔案和沙箱資料夾。",
         deleteProjectFilesLabel: "刪除專案工作區資料夾",
         deleteProjectFiles: "專案工作區資料夾將從磁碟中移除。",
@@ -5251,7 +5251,7 @@ export const zhTW = {
     recents: "最近項目",
     import: "匯入",
     deleteProject: "刪除專案",
-    deleteProjectDescription: "確定要刪除 {name} 嗎？其中的聊天將被永久刪除。",
+    deleteProjectDescription: "專案「{name}」及其所有聊天將被永久刪除。此動作無法復原。",
     deleteProjectFiles: "專案工作區資料夾將從磁碟中移除。",
     deleteAll: "全部刪除",
     projectFallback: "專案",

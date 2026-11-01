@@ -1080,7 +1080,7 @@ export const id = {
       deleteProjects: "Hapus proyek",
       deleteProjectsTitle: "Hapus proyek",
       deleteProjectsDescription:
-        "Hapus {count} proyek? Chat di dalamnya akan dihapus secara permanen.",
+        "{count} proyek dan semua chat di dalamnya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
       deleteProjectsFilesDescription:
         "Folder ruang kerja setiap proyek akan dihapus dari disk.",
       countSelected: "{count} dipilih",
@@ -5063,7 +5063,7 @@ export const id = {
         deleteChatDescription:
           "Chat dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleteProjectDescription:
-          "Proyek beserta chat-nya ({count}) akan dihapus secara permanen. Tindakan ini tidak dapat diurungkan.",
+          "Proyek dan chat di dalamnya ({count}) akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleteFilesMany:
           "Hapus juga file dan folder sandbox yang dibuat oleh chat ini.",
         deleteProjectFilesLabel: "Hapus folder ruang kerja proyek",
@@ -5565,7 +5565,7 @@ export const id = {
     import: "Impor",
     deleteProject: "Hapus proyek",
     deleteProjectDescription:
-      "Yakin ingin menghapus {name}? Chat di dalamnya akan dihapus secara permanen.",
+      'Proyek "{name}" dan semua chat di dalamnya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.',
     deleteProjectFiles: "Folder ruang kerja proyek akan dihapus dari disk.",
     deleteAll: "Hapus semua",
     projectFallback: "proyek",

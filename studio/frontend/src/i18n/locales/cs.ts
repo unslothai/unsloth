@@ -1082,7 +1082,7 @@ export const cs = {
       deleteProjects: "Smazat projekty",
       deleteProjectsTitle: "Smazat projekty",
       deleteProjectsDescription:
-        "Smazat projekty (počet: {count})? Jejich chaty budou trvale smazány.",
+        "Projekty ({count}) a všechny jejich chaty budou trvale smazány. Tuto akci nelze vrátit zpět.",
       deleteProjectsFilesDescription:
         "Složka pracovního prostoru každého projektu bude odstraněna z disku.",
       countSelected: "Vybráno: {count}",
@@ -5581,7 +5581,7 @@ export const cs = {
     import: "Importovat",
     deleteProject: "Smazat projekt",
     deleteProjectDescription:
-      "Opravdu chcete smazat projekt {name}? Jeho chaty budou trvale smazány.",
+      "Projekt „{name}“ a všechny jeho chaty budou trvale smazány. Tuto akci nelze vrátit zpět.",
     deleteProjectFiles:
       "Složka pracovního prostoru projektu bude odstraněna z disku.",
     deleteAll: "Smazat vše",
