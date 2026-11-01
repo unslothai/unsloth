@@ -591,6 +591,10 @@ def test_ods_reads_typed_values_without_text(tmp_path):
     assert _text(path) == "Sheet: S\n1200 | 2026-03-31 | TRUE | zebramarker | 7.00"
 
 
+# Excel's Accounting format: "_(" and "_)" pad with spaces, and the fourth section is for text.
+ACCOUNTING = r'_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)'
+
+
 # Dates, times and durations match what openpyxl reads back from the same cells.
 @pytest.mark.parametrize(
     "serial, number_format, expected",
@@ -617,6 +621,11 @@ def test_ods_reads_typed_values_without_text(tmp_path):
         (1500000, '#,##0,,"M"', "2M"),
         (1234.5, "General", "1234.5"),
         (5, "[>100]0;0.0", "5"),
+        (1234.5, ACCOUNTING, " $1,234.50 "),
+        (-1234.5, ACCOUNTING, " $(1,234.50)"),
+        (0, ACCOUNTING, " $- "),
+        (-2.5, "0.00;@", "-2.50"),
+        (1234.5, "@", "1234.5"),
         pytest.param(1234.5, "0" * 5000, "1234.5", id = "oversized-format-left-as-stored"),
     ],
 )
