@@ -6976,6 +6976,11 @@ html[data-glass^="liquid"][data-glass-menus] [data-slot="dialog-content"] {
   background-image: var(--glass-sheen);
   box-shadow: var(--glass-rim);
 }
+/* These panes clear the surface token, so ink drawn in the page colour (dark buttons' labels) takes the opaque one back. */
+html[data-glass][data-glass-menus] :is([data-slot="dialog-content"], [data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) [class*="text-background"] {
+  --background: var(--glass-page-bg);
+  --color-background: var(--glass-page-bg);
+}
 /* !important: Sonner injects its base rules at runtime. */
 html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] {
   --accent: var(--glass-hover);
