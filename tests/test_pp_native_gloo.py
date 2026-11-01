@@ -56,6 +56,7 @@ GEMMA2 = "trl-internal-testing/tiny-Gemma2ForCausalLM"
 GEMMA3 = "hf-internal-testing/tiny-random-Gemma3ForCausalLM"
 MISTRAL = "hf-internal-testing/tiny-random-MistralForCausalLM"
 QWEN3_MOE = "trl-internal-testing/tiny-Qwen3MoeForCausalLM"
+OLMOE = "hf-internal-testing/tiny-random-OlmoeForCausalLM"
 DEEPSEEK_V3 = "trl-internal-testing/tiny-DeepseekV3ForCausalLM"
 
 ARCHS = {"llama": LLAMA, "qwen3": QWEN3, "gemma2": GEMMA2, "gemma3": GEMMA3, "mistral": MISTRAL}
@@ -339,7 +340,8 @@ def _case_refusals(rank, world, tmp):
         except (ValueError, RuntimeError) as exc:
             out[key] = str(exc)
 
-    catch("moe", lambda: ppn.apply_pipeline_parallel(build(QWEN3_MOE, layers = 2), mesh))
+    # Qwen3-MoE carries its router auxiliary loss between stages (test_pp_moe_aux_gloo.py); OLMoE is unproven.
+    catch("moe", lambda: ppn.apply_pipeline_parallel(build(OLMOE, layers = 2), mesh))
     catch("mla", lambda: ppn.apply_pipeline_parallel(build(DEEPSEEK_V3, layers = 2), mesh))
 
     def tied_trainable():
