@@ -9,7 +9,7 @@ import {
 import { useChatBackground, setBackgroundError } from "./storage";
 import { acquireRender } from "./render";
 import { safeArtworkOpacity, type RGB } from "./contrast";
-import { type ChatBackgroundValue, effectiveFade } from "./model";
+import { type ChatBackgroundValue, fadeKey, visibilityKey } from "./model";
 import { useMaterialStore } from "./material";
 import { type ImageTone, glassReadability, measureTone } from "./tone";
 
@@ -189,7 +189,8 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 	const [tone, setTone] = useState<ImageTone | null>(null);
 	const frameUrl = frames.current?.url;
 	useEffect(() => {
-		if (!frameUrl) return;
+		// Only glass reads the tone, so glass off never samples the image.
+		if (!(frameUrl && glass)) return;
 		let cancelled = false;
 		measureTone(frameUrl)
 			.then((next) => {
@@ -199,10 +200,10 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 		return () => {
 			cancelled = true;
 		};
-	}, [frameUrl]);
+	}, [frameUrl, glass]);
 	useEffect(() => {
 		// Glass panes over the app's own wallpaper (menus included, which portal to <body>) stay readable.
-		if (!appWallpaper || !tone) return;
+		if (!(appWallpaper && tone && glass)) return;
 		const root = document.documentElement;
 		const { floor, shade } = glassReadability(tone, !skin.light);
 		root.style.setProperty("--glass-read-floor", `${Math.round(floor * 100)}%`);
@@ -211,7 +212,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 			root.style.removeProperty("--glass-read-floor");
 			root.style.removeProperty("--glass-shade");
 		};
-	}, [appWallpaper, tone, skin.light]);
+	}, [appWallpaper, tone, skin.light, glass]);
 	useEffect(() => {
 		// Only the app's own wallpaper drives the titlebar; a settings preview never marks the root.
 		const parent = host.current?.parentElement;
@@ -253,15 +254,13 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 						style={
 							{
 								"--wallpaper-visibility":
-									(skin.light
-										? adjustment.visibility
-										: adjustment.darkVisibility) / 100,
+									adjustment[visibilityKey(glass, !skin.light)] / 100,
 							} as CSSProperties
 						}
 					>
 						<div
 							className="chat-wallpaper-image"
-							data-fade={effectiveFade(adjustment.fade, glass)}
+							data-fade={adjustment[fadeKey(glass)]}
 						>
 							<div
 								className="chat-wallpaper-artwork"
