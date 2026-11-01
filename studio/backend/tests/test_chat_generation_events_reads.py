@@ -247,3 +247,13 @@ def test_concurrent_followers_never_miss_a_commit(running_run, monkeypatch):
     assert not stalls
     assert all(not thread.is_alive() for thread in threads)
     assert seen == {i: [str(n) for n in range(total)] for i in range(6)}
+
+
+def test_run_frame_without_json1_encodes_the_parsed_run(running_run, monkeypatch):
+    monkeypatch.setattr(runs_db, "_SPLICE_OK_SQL", "json_valid_missing({0})")
+    state, run_json = runs_db.get_run_frame("run-1")
+    assert run_json == json.dumps(
+        runs_db.get_run("run-1"), ensure_ascii = False, separators = (",", ":")
+    )
+    assert state == runs_db.get_run_state("run-1")
+    assert runs_db._SPLICE_OK_SQL == "0"
