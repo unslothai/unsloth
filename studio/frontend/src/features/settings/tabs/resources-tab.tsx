@@ -27,7 +27,7 @@ import {
   deviceSharedMemorySplitGb,
   gpuMemoryTotalsGb,
   gpuVramUsedIsPerDevice,
-  resolveGpuVramUsedGb,
+  resolveGpuVramUsage,
 } from "@/hooks/gpu-vram";
 import {
   aggregateGpuMemoryTotalGb,
@@ -389,12 +389,14 @@ export function ResourcesTab() {
         ? (modelsDiskUsed / modelsDisk.total_gb) * 100
         : 0;
     const display = gpuMemoryDisplay(displayedGpu);
-    const usageDevices = display.usageDevices;
+    // null usage is unknown; 0 would fabricate a total. The host figure can still be known.
+    // A shared-memory iGPU with no reading drops out so the cards that report still sum.
+    const vramUsage = resolveGpuVramUsage(display.usageGpu);
+    const usageDevices = vramUsage.devices;
     const gpuMemoryTotals = gpuMemoryTotalsGb(usageDevices);
     const vramTotal = gpuMemoryTotals.total;
-    // null usage is unknown; 0 would fabricate a total. The host figure can still be known.
     const perDeviceKnown = gpuVramUsedIsPerDevice(usageDevices);
-    const vramUsed = resolveGpuVramUsedGb(display.usageGpu);
+    const vramUsed = vramUsage.usedGb;
     const vramUsageKnown = vramUsed !== null;
     const vramFree = perDeviceKnown
       ? usageDevices.reduce(
