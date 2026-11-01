@@ -11,12 +11,15 @@
 
 """FP8 LoRA on a frozen 16-bit base: the base GEMMs (forward y = x W^T and input gradient dx = dy W) run in
 fp8 through torch._scaled_mm, the LoRA branch stays in the activation dtype (Megatron-Bridge TEFusedLoRALinear
-split). The base weight is frozen, so it is quantized once (tensorwise e4m3) and cached in both orientations
-(cuBLAS fp8 GEMMs are TN only, so dgrad needs a K-major copy); the 16-bit weight stays the source of truth for
-merge / save. A weight changed in place (merge, unmerge, load) is requantized on its next eager use.
+split). The base weight is frozen, so it is quantized once (tensorwise e4m3) and cached; the 16-bit weight stays
+the source of truth for merge / save. A weight changed in place (merge, unmerge, load) is requantized on its
+next eager use. cuBLAS fp8 GEMMs are TN only, so dgrad needs a K-major copy: transposed per backward inside the
+opaque op (UNSLOTH_FP8_LORA_CACHE_T=1 caches it instead, +1 byte per weight, about 1% faster).
 
-Activations: tensorwise e4m3; output gradients: tensorwise e5m2 (UNSLOTH_FP8_LORA_DGRAD=e4m3 / 0 = 16-bit
-dgrad). The fp8 GEMM writes bfloat16 for float16 activations (then casts), never float16 directly.
+Scales (UNSLOTH_FP8_LORA_SCALING): tensor = activations e4m3 / output gradients e5m2, one scale per tensor;
+row = one e4m3 scale per token for both. auto picks row on compute capability 12.x and tensor elsewhere (L4's
+rowwise _scaled_mm is slower than bf16). UNSLOTH_FP8_LORA_DGRAD=0 keeps the input gradient in 16 bit. The fp8
+GEMM writes bfloat16 for float16 activations (then casts), never float16 directly.
 
 Only torch and (optionally) triton are imported here, so the module loads standalone."""
 
@@ -55,29 +58,46 @@ def reset_fp8_lora_stats():
 
 
 # tensor: one scale per activation / gradient tensor (torchao tensorwise); row: one per token (row), the weight
-# keeping its tensorwise scale broadcast over the output columns.
-_SCALING = "row" if os.environ.get("UNSLOTH_FP8_LORA_SCALING", "tensor").strip().lower() in (
-    "row",
-    "rowwise",
-) else "tensor"
+# keeping its tensorwise scale broadcast over the output columns. auto (default): row on compute capability 12.x
+# (RTX PRO 6000: 1.24x vs tensorwise 1.17x at Qwen3-1.7B), tensor elsewhere (L4: rowwise _scaled_mm is slower
+# than bf16, tensorwise 1.29x).
+_SCALING = os.environ.get("UNSLOTH_FP8_LORA_SCALING", "auto").strip().lower()
+_SCALING = {"rowwise": "row", "tensorwise": "tensor"}.get(_SCALING, _SCALING)
+if _SCALING not in ("auto", "row", "tensor"):
+    _SCALING = "auto"
+
+
+def scaling_for_class(gpu_class) -> str:
+    """'row' or 'tensor' for a precision-registry GPU class ('sm89', 'sm120', ...); the env var wins."""
+    if _SCALING != "auto":
+        return _SCALING
+    return "row" if gpu_class == "sm120" else "tensor"
+
+
+def _scaling_for(device):
+    gpu_class = None
+    try:
+        if device.type == "cuda" and torch.version.hip is None:
+            gpu_class = "sm120" if torch.cuda.get_device_capability(device)[0] >= 12 else "other"
+    except Exception:
+        pass
+    return scaling_for_class(gpu_class)
 
 
 def _env_dgrad():
+    # None = 16-bit dgrad; "auto" = e5m2 for tensorwise gradients (torchao), e4m3 for rowwise.
     value = os.environ.get("UNSLOTH_FP8_LORA_DGRAD", "auto").strip().lower()
     if value in ("0", "false", "off", "no", "bf16", "16bit"):
         return None
-    if value == "e4m3":
-        return E4M3
-    if value == "e5m2":
-        return E5M2
-    # torchao's conventions: tensorwise gradients e5m2, rowwise e4m3.
-    return E4M3 if _SCALING == "row" else E5M2
+    return {"e4m3": E4M3, "e5m2": E5M2}.get(value, "auto")
 
 
 _DGRAD_DTYPE = _env_dgrad()
 _FWD_FAST_ACCUM = os.environ.get("UNSLOTH_FP8_LORA_FWD_FAST_ACCUM", "1") != "0"
 _DGRAD_FAST_ACCUM = os.environ.get("UNSLOTH_FP8_LORA_DGRAD_FAST_ACCUM", "0") == "1"
-_CACHE_T = os.environ.get("UNSLOTH_FP8_LORA_CACHE_T", "1") != "0"
+# 1 keeps a transposed fp8 copy for dgrad (+1 byte / weight); default 0 transposes per backward inside the
+# opaque op: measured about 1% slower on L4 and RTX PRO 6000, 0.4 / 1.3 GB less at Qwen3-0.6B / 1.7B.
+_CACHE_T = os.environ.get("UNSLOTH_FP8_LORA_CACHE_T", "0") == "1"
 # Fewer rows than this (decode) use the 16-bit weight: an fp8 GEMM there is launch bound and less exact.
 _MIN_ROWS = int(os.environ.get("UNSLOTH_FP8_LORA_MIN_ROWS", "16"))
 
@@ -300,20 +320,25 @@ def fp8_lora_fwd(x: torch.Tensor, w8: torch.Tensor, w_inv: torch.Tensor) -> torc
     return out if out.dtype == x.dtype else out.to(x.dtype)
 
 
-def _dgrad_fake(dy, w8t, w_inv):
-    return dy.new_empty((dy.shape[0], w8t.shape[0]))
+def _dgrad_fake(dy, w8, w_inv, w_is_t):
+    return dy.new_empty((dy.shape[0], w8.shape[0] if w_is_t else w8.shape[1]))
 
 
 @_opaque_under_compile("fp8_lora_dgrad", _dgrad_fake)
-def fp8_lora_dgrad(dy: torch.Tensor, w8t: torch.Tensor, w_inv: torch.Tensor) -> torch.Tensor:
-    """dy [M, N] (16-bit) @ dequant(w8t [K, N]).T -> dx [M, K] in dy.dtype."""
+def fp8_lora_dgrad(
+    dy: torch.Tensor, w8: torch.Tensor, w_inv: torch.Tensor, w_is_t: bool
+) -> torch.Tensor:
+    """dy [M, N] (16-bit) @ dequant(W [N, K]) -> dx [M, K] in dy.dtype. w8 is the cached K-major copy [K, N]
+    (w_is_t) or the forward copy [N, K], transposed here: inside the op it is an eager aten copy, never an
+    Inductor-generated fp8 transpose (those write corrupt bytes for some tile configs on sm89)."""
     FP8_LORA_STATS["dgrad"] += 1
+    w8t = w8 if w_is_t else w8.t().contiguous()
     if w_inv.dim() == 2:
         # Rowwise gradients are e4m3 (torchao's rowwise recipe; per-token scales need no e5m2 range).
         dy8, dy_inv = quantize_rowwise(dy, E4M3)
         out_dtype = torch.bfloat16
     else:
-        dy8, dy_inv = quantize_tensorwise(dy, _DGRAD_DTYPE or E5M2)
+        dy8, dy_inv = quantize_tensorwise(dy, E5M2 if _DGRAD_DTYPE in (None, "auto") else _DGRAD_DTYPE)
         out_dtype = _out_dtype(dy.dtype)
     out = _scaled_mm(dy8, w8t.t(), dy_inv, w_inv, out_dtype, _DGRAD_FAST_ACCUM)
     return out if out.dtype == dy.dtype else out.to(dy.dtype)
@@ -340,6 +365,7 @@ class Fp8LoRABaseState:
     def __init__(self, weight: torch.Tensor):
         self.dtype = weight.dtype
         self.w8 = self.w8t = self.w_inv = self.w_inv_fwd = self.w_inv_dgrad = None
+        self.scaling = "tensor"
         self._key = None
         self.quantizations = 0
         self.refresh(weight)
@@ -360,7 +386,8 @@ class Fp8LoRABaseState:
             w = weight.detach()
             self.w8, self.w_inv = quantize_tensorwise(w, E4M3)
             self.w8t = self.w8.t().contiguous() if _CACHE_T else None
-            if _SCALING == "row":
+            self.scaling = _scaling_for(w.device)
+            if self.scaling == "row":
                 # _scaled_mm's rowwise form takes [M, 1] x [1, N] scales: the weight's one scale per column.
                 self.w_inv_fwd = self.w_inv.reshape(1, 1).expand(1, w.shape[0]).contiguous()
                 self.w_inv_dgrad = self.w_inv.reshape(1, 1).expand(1, w.shape[1]).contiguous()
@@ -372,8 +399,9 @@ class Fp8LoRABaseState:
         FP8_LORA_STATS["quantize"] += 1
         return self
 
-    def _w8t(self):
-        return self.w8t if self.w8t is not None else self.w8.t().contiguous()
+    def _dgrad_weight(self):
+        """(fp8 weight, is it the K-major copy) for fp8_lora_dgrad."""
+        return (self.w8t, True) if self.w8t is not None else (self.w8, False)
 
     # ---- kernels.utils packed-state protocol ------------------------------------------------------------
     def dequantize(self, W = None, dtype = None):
@@ -410,7 +438,8 @@ class Fp8LoRABaseState:
                 raise RuntimeError("Unsloth: 16-bit dgrad needs the base weight")
             result = torch.matmul(dY2, W.to(dY2.dtype))
         else:
-            result = fp8_lora_dgrad(dY2, self._w8t(), self.w_inv_dgrad)
+            w8, w_is_t = self._dgrad_weight()
+            result = fp8_lora_dgrad(dY2, w8, self.w_inv_dgrad, w_is_t)
         return result.view(*shape[:-1], result.shape[-1])
 
 
@@ -423,7 +452,11 @@ class _Fp8FrozenLinear(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, weight, w8, w8t, w_inv_fwd, w_inv_dgrad):
-        ctx.save_for_backward(weight, w8t, w_inv_fwd if w_inv_dgrad is None else w_inv_dgrad)
+        # w8t None: the backward transposes w8 inside the dgrad op.
+        ctx.w_is_t = w8t is not None
+        ctx.save_for_backward(
+            weight, w8t if w8t is not None else w8, w_inv_fwd if w_inv_dgrad is None else w_inv_dgrad
+        )
         shape = x.shape
         x2 = x.reshape(-1, shape[-1])
         y = fp8_lora_fwd(x2, w8, w_inv_fwd)
@@ -438,7 +471,7 @@ class _Fp8FrozenLinear(torch.autograd.Function):
             FP8_LORA_STATS["dgrad_16bit"] += 1
             dx = torch.matmul(dy2, weight.to(dy2.dtype))
         else:
-            dx = fp8_lora_dgrad(dy2, w8t, w_inv)
+            dx = fp8_lora_dgrad(dy2, w8t, w_inv, ctx.w_is_t)
         return dx.view(*shape[:-1], dx.shape[-1]), None, None, None, None, None
 
 
@@ -451,7 +484,7 @@ def _fp8_base_forward(self, x):
     state.refresh(weight)
     # Tensorwise: one scale serves both GEMMs (Dynamo rejects the same tensor passed twice to apply).
     dgrad_scale = None if state.w_inv_dgrad is state.w_inv_fwd else state.w_inv_dgrad
-    y = _Fp8FrozenLinear.apply(x, weight, state.w8, state._w8t(), state.w_inv_fwd, dgrad_scale)
+    y = _Fp8FrozenLinear.apply(x, weight, state.w8, state.w8t, state.w_inv_fwd, dgrad_scale)
     if self.bias is not None:
         y = y + self.bias.to(y.dtype)
     return y

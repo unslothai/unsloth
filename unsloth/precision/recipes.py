@@ -512,6 +512,10 @@ _add(
     )
 )
 
+_FP8_LORA_RUNS = (
+    "Qwen3 LoRA r=16, seq 2048, bs 2, 30 steps, Unsloth GC, vs bf16 LoRA in the same VM "
+    "(outputs/fp8_lora, scripts/fp8_lora/gpu_job.py)"
+)
 _add(
     Recipe(
         name = "fp8_lora_tensorwise",
@@ -529,24 +533,55 @@ _add(
             "sm80": _NO_FP8_HW,
             "sm89": Gate(
                 "explicit",
-                evidence = "frozen-weight fwd + dgrad compiled 1.38-1.50x bf16 at 4096-wide shapes; the "
-                "sm89 NaN is in the weight gradient, which a frozen base never computes (" + _PROBE_L4 + ")",
+                evidence = "L4: step 1.13x bf16 at Qwen3-0.6B (3 seeds, A/A 0.9%), 1.27-1.29x at 1.7B (A/A "
+                "0.5-1.6%); last-10 loss +0.7% vs bf16 (seed band 0.04%); peak memory +0.65 / +1.3 GB "
+                "without the transposed cache. " + _FP8_LORA_RUNS,
             ),
             "sm90": Gate("unprobed", "H100 is not available to test on"),
             "sm100": Gate("unprobed"),
             "sm120": Gate(
                 "explicit",
-                evidence = "frozen-weight fwd + dgrad compiled 1.42-1.43x bf16 at 4096-wide shapes ("
-                + _PROBE_G4
-                + ")",
+                evidence = "RTX PRO 6000: 1.08-1.10x at Qwen3-0.6B, 1.17x at 1.7B; rowwise "
+                "(fp8_lora_rowwise) is faster there. " + _FP8_LORA_RUNS,
             ),
             "rocm": Gate("refused", "ROCm fp8 (fnuz) GEMMs are not wired for the frozen base"),
         },
         notes = "base GEMMs fp8, LoRA branch 16-bit (Megatron-Bridge TEFusedLoRALinear split); weight "
-        "quantized once, cached in both orientations; the fp8 GEMM writes bf16 for fp16 activations",
+        "quantized once; the fp8 GEMM writes bf16 for fp16 activations",
     )
 )
-
+_add(
+    Recipe(
+        name = "fp8_lora_rowwise",
+        kind = "frozen_base",
+        modes = ("lora",),
+        fwd = GemmPolicy(_op(E4M3, "row"), _op(E4M3, "tensor")),
+        dgrad = GemmPolicy(_op(E4M3, "row"), _op(E4M3, "tensor")),
+        hp_layers = _HP_FP8,
+        input_dtypes = ("bf16", "fp16"),
+        grad_scaler = "per_dtype",
+        compile = "opaque",
+        backend = "unsloth.kernels.fp8_lora (UNSLOTH_FP8_LORA_SCALING=row; the default on sm120)",
+        gates = {
+            "sm75": _NO_FP8_HW,
+            "sm80": _NO_FP8_HW,
+            "sm89": Gate(
+                "explicit",
+                evidence = "L4: rowwise _scaled_mm 0.55-0.90x bf16 at op level, no faster than bf16 LoRA "
+                "end to end; use fp8_lora_tensorwise there. " + _FP8_LORA_RUNS,
+            ),
+            "sm90": Gate("unprobed", "H100 is not available to test on"),
+            "sm100": Gate("unprobed"),
+            "sm120": Gate(
+                "explicit",
+                evidence = "RTX PRO 6000: 1.15x at Qwen3-0.6B, 1.24x at 1.7B (A/A < 3.5%); op level "
+                "1.52-1.73x; dgrad error 0.037 vs 0.059 tensorwise. " + _FP8_LORA_RUNS,
+            ),
+            "rocm": Gate("refused", "ROCm fp8 (fnuz) GEMMs are not wired for the frozen base"),
+        },
+        notes = "per-token activation / gradient scales, the weight's tensorwise scale broadcast per column",
+    )
+)
 
 def get_recipe(name: str) -> Recipe:
     try:

@@ -462,7 +462,8 @@ def resolve_fp8_lora(
             "Unsloth: float8_training with LoRA needs an NVIDIA GPU with compute capability 8.9+ "
             "(L4, RTX 40 / 50, RTX PRO 6000, H100, B200); no CUDA device is visible."
         )
-    gate = _check_precision_recipe(FP8_LORA_RECIPE, gpu = gpu, input_dtype = dtype, mode = "lora")
+    recipe = fp8_lora_recipe_for(gpu)
+    gate = _check_precision_recipe(recipe, gpu = gpu, input_dtype = dtype, mode = "lora")
     if not explicit and gate.status != "named":
         raise refused(
             f"Unsloth: float8_training = {float8_training!r} with LoRA has not been measured faster than "
@@ -471,7 +472,14 @@ def resolve_fp8_lora(
         )
     if gate.status == "unprobed":
         print(f"Unsloth: fp8 LoRA has not been tested on {gpu}; running it as requested.")
-    return FP8_LORA_RECIPE
+    return recipe
+
+
+def fp8_lora_recipe_for(gpu):
+    """The frozen-base recipe the kernels run on this GPU class: per-token scales on sm120, tensorwise
+    elsewhere (UNSLOTH_FP8_LORA_SCALING overrides; kernels/fp8_lora.scaling_for_class is the one rule)."""
+    scaling = _load_fp8_lora_kernels().scaling_for_class(gpu)
+    return "fp8_lora_rowwise" if scaling == "row" else FP8_LORA_RECIPE
 
 
 def mark_fp8_lora(model, recipe):

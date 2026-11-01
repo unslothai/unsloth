@@ -112,7 +112,8 @@ def test_decode_rows_use_the_16bit_weight():
 
 
 # ---- cache -----------------------------------------------------------------------------------------------
-def test_quantized_once_and_requantized_after_an_in_place_change():
+def test_quantized_once_and_requantized_after_an_in_place_change(monkeypatch):
+    monkeypatch.setattr(FL, "_CACHE_T", True)
     W = _weight()
     state = FL.Fp8LoRABaseState(W)
     x = torch.randn(32, 256).bfloat16()
@@ -378,10 +379,12 @@ def test_resolve_refusals_and_names():
     with pytest.raises(ValueError, match = "full finetuning recipe"):
         f8t.resolve_fp8_lora("rowwise", gpu = "sm89")
     assert f8t.resolve_fp8_lora("fp8_lora", gpu = "sm89", dtype = torch.bfloat16) == R
-    assert f8t.resolve_fp8_lora("fp8_lora", gpu = "sm120", dtype = torch.float16) == R
+    # sm120 runs per-token scales (faster there); sm89 tensorwise (rowwise _scaled_mm is slow on L4).
+    assert f8t.resolve_fp8_lora("fp8_lora", gpu = "sm120", dtype = torch.float16) == "fp8_lora_rowwise"
+    assert FL.scaling_for_class("sm120") == "row" and FL.scaling_for_class("sm89") == "tensor"
     assert f8t.resolve_fp8_lora(False) is None and f8t.resolve_fp8_lora(None) is None
     gate = P.get_recipe(R).gate("sm89").status
-    if gate != "named":
+    if gate != "named":  # explicit until the gates in the registry evidence are met
         # By name (True) only where it was measured faster.
         with pytest.raises(P.PrecisionRefused, match = "not been measured faster"):
             f8t.resolve_fp8_lora(True, gpu = "sm89")
@@ -464,3 +467,53 @@ def test_loaded_adapter_is_converted_when_marked(monkeypatch):
     f8t.mark_fp8_lora(model, f8t.FP8_LORA_RECIPE)
     assert calls == [f8t.FP8_LORA_RECIPE]
     assert P.engaged(model)[f8t.FP8_LORA_RECIPE]["modules"] == 14
+
+
+def test_default_no_transposed_cache_matches_cached(monkeypatch):
+    W = _weight()
+    dy = torch.randn(32, 384).bfloat16()
+    lean = FL.Fp8LoRABaseState(W)
+    assert lean.w8t is None  # default: one fp8 copy (+1 byte / weight), transposed inside the dgrad op
+    monkeypatch.setattr(FL, "_CACHE_T", True)
+    cached = FL.Fp8LoRABaseState(W)
+    assert cached.w8t is not None
+    torch.testing.assert_close(lean.dgrad(dy, W), cached.dgrad(dy, W), rtol = 0, atol = 0)
+
+
+def test_compiled_graph_has_no_fp8_transpose_outside_the_ops():
+    # sm89 Inductor writes corrupt bytes into 2D-tiled fp8 transposes (scripts/fp8_lora/l4_wgrad_bisect2.py):
+    # every fp8 tensor op must stay inside the opaque fwd / dgrad ops, never in the traced graph.
+    torch._dynamo.reset()
+    base = torch.nn.Linear(256, 384, bias = False, dtype = torch.bfloat16).requires_grad_(False)
+    FL.attach_fp8_lora_base(base)
+    proj = _Proj(256, 384)
+    FL.attach_fp8_lora_base(proj.base_layer)
+    graphs = []
+
+    def backend(gm, example_inputs):
+        from torch._functorch.aot_autograd import aot_module_simplified
+
+        def capture(g, _):
+            graphs.append(g)
+            return g
+
+        return aot_module_simplified(gm, example_inputs, fw_compiler = capture, bw_compiler = capture)
+
+    def step(x):
+        y = base(x)
+        W, W_quant, A, B, S = FLK.get_lora_parameters(proj)
+        return FLK.LoRA_W.apply(y[..., :256].contiguous(), W, W_quant, A, B, S).float().sum()
+
+    x = torch.randn(2, 16, 256).bfloat16().requires_grad_(True)
+    torch.compile(step, backend = backend, fullgraph = True)(x).backward()
+    assert len(graphs) >= 2  # forward and backward
+    fp8 = (torch.float8_e4m3fn, torch.float8_e5m2)
+    targets = []
+    for g in graphs:
+        for node in g.graph.nodes:
+            val = node.meta.get("val")
+            if node.op == "call_function" and isinstance(val, torch.Tensor) and val.dtype in fp8:
+                targets.append(str(node.target))
+    assert targets == [], targets
+    names = {str(n.target) for g in graphs for n in g.graph.nodes if n.op == "call_function"}
+    assert any("fp8_lora_fwd" in t for t in names) and any("fp8_lora_dgrad" in t for t in names), names
