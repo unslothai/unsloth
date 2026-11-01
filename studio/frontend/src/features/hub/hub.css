@@ -12,6 +12,7 @@
   --status-warning: #eab308;
   --status-danger: #ef4444;
   --status-success: #11b686;
+  --status-asset: #9270c4;
   /* Fixed ink for --status-success: --primary-foreground follows a custom accent and would
    lose contrast. */
   --status-success-foreground: #0d0d0d;
@@ -26,6 +27,7 @@
   --status-warning: #fbbf24;
   --status-danger: #ef4444;
   --status-success: #11b686;
+  --status-asset: #b69be8;
   --status-success-foreground: #0d0d0d;
 }
 
@@ -38,6 +40,7 @@
   --color-status-warning: var(--status-warning);
   --color-status-danger: var(--status-danger);
   --color-status-success: var(--status-success);
+  --color-status-asset: var(--status-asset);
   --color-status-success-foreground: var(--status-success-foreground);
 }
 

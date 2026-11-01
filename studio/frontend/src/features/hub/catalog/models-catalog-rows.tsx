@@ -312,11 +312,13 @@ function StatusDot({
   tone,
   label,
 }: {
-  tone: "warning" | "danger" | "success" | "downloading";
+  tone: "warning" | "danger" | "success" | "downloading" | "asset";
   label: string;
 }) {
   const toneClass =
-    tone === "warning"
+    tone === "asset"
+      ? "bg-status-asset"
+      : tone === "warning"
       ? "bg-status-warning"
       : tone === "danger"
         ? "bg-status-danger"
@@ -365,6 +367,7 @@ export function buildRowStatusTooltip({
   isGguf,
   isAdapter,
   isAvailableOnDevice,
+  isSharedAsset,
   partialRepoId,
   downloading = false,
   unsupported,
@@ -374,6 +377,7 @@ export function buildRowStatusTooltip({
   isGguf?: boolean;
   isAdapter?: boolean;
   isAvailableOnDevice?: boolean;
+  isSharedAsset?: boolean;
   partialRepoId?: string;
   downloading?: boolean;
   unsupported?: boolean;
@@ -409,6 +413,12 @@ export function buildRowStatusTooltip({
       <TooltipLegendRow key="partial" toneClass="bg-status-warning">
         Partial download of <span className="font-medium">{partialRepoId}</span>
         . Open it to finish the download.
+      </TooltipLegendRow>,
+    );
+  } else if (isSharedAsset) {
+    lines.push(
+      <TooltipLegendRow key="asset" toneClass="bg-status-asset">
+        Shared assets. Supporting files used by compatible image models.
       </TooltipLegendRow>,
     );
   } else if (isAvailableOnDevice) {
@@ -647,6 +657,7 @@ export const InventoryRow = memo(function InventoryRow({
     isGguf: showFormatDot && row.isGguf,
     isAdapter: showFormatDot && row.modelFormat === "adapter",
     isAvailableOnDevice: !row.partial,
+    isSharedAsset: row.companionPrefetch,
     partialRepoId,
     downloading,
     unsupported,
@@ -698,7 +709,9 @@ export const InventoryRow = memo(function InventoryRow({
       )}
       {partialRepoId ? (
         <PartialStatusDot downloading={downloading} />
-      ) : row.companionPrefetch ? null : (
+      ) : row.companionPrefetch ? (
+        <StatusDot tone="asset" label="Shared assets" />
+      ) : (
         <StatusDot tone="success" label="On device" />
       )}
       {unsupported && (
@@ -708,9 +721,13 @@ export const InventoryRow = memo(function InventoryRow({
   );
 
   const compactMarkers =
-    partialRepoId || unsupported ? (
+    partialRepoId || row.companionPrefetch || unsupported ? (
       <span className="flex shrink-0 items-center gap-1">
-        {partialRepoId && <PartialStatusDot downloading={downloading} />}
+        {partialRepoId ? (
+          <PartialStatusDot downloading={downloading} />
+        ) : row.companionPrefetch ? (
+          <StatusDot tone="asset" label="Shared assets" />
+        ) : null}
         {unsupported && (
           <StatusDot tone="danger" label="May not be supported yet" />
         )}
