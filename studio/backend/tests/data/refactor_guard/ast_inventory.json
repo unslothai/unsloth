@@ -2219,7 +2219,6 @@
       "_CODE_SPAN_RE": "'^[ \\\\t]*(?:>[ \\\\t]*)*(?:(?P<bt>```+)[^`\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=bt)`*[ \\\\t\\\\r]*$|\\\\Z)|(?P<tl>~~~+)[^\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=tl)~*[ \\\\t\\\\r]*$|\\\\Z))|``(?:[^`]|`(?!`))*?``|`[^`\\\\n]*`' flags=56",
       "_GEMMA_NEXT_KEY_RE": "'\\\\s*[A-Za-z_][\\\\w.\\\\-]*\\\\s*:' flags=32",
       "_JSON_STRING_BODY_RE": "'[^\"\\\\\\\\]*(?:\\\\\\\\.[^\"\\\\\\\\]*)*' flags=48",
-      "_MINIMAX_BLOCK_SPAN_RE": "'<minimax:tool_call>.*?(?:</minimax:tool_call>|\\\\Z)' flags=48",
       "_MISTRAL_ARRAY_RE": "'\\\\[TOOL_CALLS\\\\]\\\\s*(?=\\\\[)' flags=32",
       "_MISTRAL_BRACKET_RE": "'\\\\[TOOL_CALLS\\\\]\\\\s*([\\\\w-]+)(?:\\\\[CALL_ID\\\\][\\\\w-]+)?(?:\\\\[ARGS\\\\])?\\\\s*(?=\\\\{)' flags=32",
       "_REHEARSAL_CLOSED_STRIP_RE": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
@@ -2277,7 +2276,6 @@
       "re.compile('<function=([\\\\w-]+)>\\\\s*')": 1,
       "re.compile('<function=[\\\\w-]+>.*$', re.DOTALL)": 1,
       "re.compile('<function=[\\\\w.-]+>.*?</function>', re.DOTALL)": 1,
-      "re.compile('<minimax:tool_call>.*?(?:</minimax:tool_call>|\\\\Z)', re.DOTALL)": 1,
       "re.compile('<parameter=([\\\\w-]+)>[^\\\\S\\\\n]*')": 1,
       "re.compile('<think>.*?(?:</think>|$)|\\\\[THINK\\\\].*?(?:\\\\[/THINK\\\\]|$)', re.DOTALL)": 1,
       "re.compile('<think>|\\\\[THINK\\\\]')": 1,
@@ -2332,9 +2330,6 @@
         "kind": "assign"
       },
       "_MCP_TOOL_PREFIX": {
-        "kind": "assign"
-      },
-      "_MINIMAX_BLOCK_SPAN_RE": {
         "kind": "assign"
       },
       "_MISTRAL_ARRAY_RE": {

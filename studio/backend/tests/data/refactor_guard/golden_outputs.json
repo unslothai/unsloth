@@ -128,7 +128,7 @@
     "_strip_gemma_native_spans": "a4a8aa07826cfdd78f2442d0cb6d470aed514f19283d667fe6a90ac3163def8c",
     "_strip_markup_segment": "201529e1c4626c05447fb101f64c231de39c203649257b17acf5720ee18d8908",
     "_think_spans_outside_tool_markup": "89a7f8754421c28dd5c9559ac9d66825ebcb65178f97252e7d0f157a37e67fa2",
-    "_tool_call_markup_spans": "678f1232036ef82947809f6eb33e7a37c6d2ff232ed255b72d19d432ecf20e64",
+    "_tool_call_markup_spans": "2a9dc6bd620967703ac6a0d06a8b1ed3c739c8bf8ed589d3fdd6d05c06738f0a",
     "_trim_param_value": "34ea9c8573b5b932beafe71e494e1f6ddc929c451ee449b538050cbe4ce69fce",
     "apply_tool_strip_patterns": "7ac43d3f11dea1236269819f4eff57eb0b3cc0ee7e1479f9a85170a59998eb9c",
     "marker_coverage": "ded35d1b20c71a2af0b7d6f06982a0029b73044ae5f2220b75901c580545ad16",

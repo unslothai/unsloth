@@ -78,8 +78,6 @@ _TOOL_OPEN_XML_TAIL_PATS = [
     re.compile(r"<\|tool_call>.*$", re.DOTALL),
     re.compile(r"<function=[\w-]+>.*$", re.DOTALL),
 ]
-# MiniMax-M2 calls are parsed in tool_call_parser; listed here only so their arguments keep a literal think tag.
-_MINIMAX_BLOCK_SPAN_RE = re.compile(r"<minimax:tool_call>.*?(?:</minimax:tool_call>|\Z)", re.DOTALL)
 _TOOL_ALL_PATS = (
     _TOOL_CLOSED_PATS
     + _TOOL_OPEN_XML_TAIL_PATS
@@ -1166,7 +1164,9 @@ def _tool_call_markup_spans(text: str) -> list[tuple[int, int]]:
         spans.extend(m.span() for m in pat.finditer(text, 0, scan_end))
     spans.extend((start, end) for start, end, _kind, _m in _iter_bracket_spans(text))
     if "<minimax:tool_call>" in text:
-        spans.extend(m.span() for m in _MINIMAX_BLOCK_SPAN_RE.finditer(text))
+        # Parameter-aware block bounds, so a quoted closer cannot end the span; lazy, as that module imports this one.
+        from core.inference.tool_call_parser import _minimax_block_spans
+        spans.extend((start, end) for start, end, _closed in _minimax_block_spans(text))
     # An unclosed opener is a real incomplete call only outside closed/bracket spans.
     for pat in _TOOL_OPEN_XML_TAIL_PATS:
         for m in pat.finditer(text):
