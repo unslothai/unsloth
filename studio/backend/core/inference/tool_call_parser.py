@@ -1434,8 +1434,7 @@ _OPEN_FUNCTION_OPENER_RE = re.compile(r'<function(?:=[\w\.\-]+|\s+name="[\w\.\-]
 
 def _promotable_gemma_call_pos(text: str, start: int, enabled_tool_names) -> int:
     """The sentinel find is exact, not a heuristic: sweeping call-free prose per chunk was quadratic."""
-    # Every match starts with the literal, so trying the regex only where it lands finds the same matches as
-    # ``finditer`` without sweeping the rest of the buffer per chunk (``<tool_call`` alone holds one).
+    # Every match starts with the literal: same matches as ``finditer``, without sweeping the buffer per chunk.
     m = _search_from_literal(_GEMMA_BARE_TC_RE, _GEMMA_BARE_SENTINEL, text, start)
     while m is not None:
         if _markerless_promotable(m.group(1), enabled_tool_names):
@@ -1635,12 +1634,9 @@ class StreamingMarkupStripper:
         return True
 
     def _gate_try_arm(self, text: str, seg_start: int, out: str, seg_out: str):
-        """Arm when ``text[seg_start:]`` is ``P + O + B``: P without ``<``, ``[``, ``{``, ``call\\s*:``; O one of
-        ``<tool_call>``, ``<function=NAME>``, ``<tool_call>\\s*<function=NAME>``; B without a trigger or ``call\\s*:``.
-        Then the arms that can reach past O (``<tool_call>.*$``, ``<function=..>.*$``, the function-XML scan, GLM)
-        all run to the end unless a trigger closes them, the masking walk stops at O, and every other arm needs a
-        ``<`` or ``[`` in P, so the segment strips to P (``seg_final``) or itself, and so do the cut decisions,
-        until a trigger arrives. A JSON body keeps the original trigger set; any other body adds ``</function``."""
+        """Arm on ``text[seg_start:]`` = ``P + O + B``: P without ``<``, ``[``, ``{``, ``call\\s*:``; O ``<tool_call>``
+        and/or ``<function=NAME>``; B without a trigger or ``call\\s*:``. Arms reaching past O run to the end, the rest
+        need ``<`` or ``[`` in P, so the segment strips to P (``seg_final``) or itself until a trigger arrives."""
         key = (self._floor, self._first)
         if self._gate_dead == key:
             return

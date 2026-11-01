@@ -6650,15 +6650,10 @@ _DISPLAY_HOLD_MENTION_TAG_RE = _re.compile(r"<[^<>`\n]*>?[\w.\-]*[ \t]*")
 class _StreamingDisplayStrip:
     """``_strip_tool_xml_for_display`` for a cumulative buffer that grows one token at a time.
 
-    The full strip rescans the whole buffer per call, quadratic over a turn on the event loop. No arm can edit
-    text holding none of ``_DISPLAY_STRIP_SENTINELS`` and no ``call:``, so such a buffer is returned as is and the
-    scan resumes where it stopped. After a sentinel the full strip runs, except while the buffer is
-    ``P + O + B``: P (everything before the first sentinel) holds no ``<``, ``[``, ``{`` or ``call:``, O is
-    ``<tool_call>`` or ``<function=NAME>`` (optionally wrapped), and B holds no ``_DISPLAY_HOLD_TRIGGERS`` and no
-    ``call:``. There the regex match at O runs to the end (no closer), the function-XML scan and GLM drop the
-    unclosed call at the end, the masking walk stops at O, think splitting needs a tag, and every other arm needs
-    a ``<`` or ``[`` before O, so the strip is P for every such B. The hold arms only when the full strip just
-    returned exactly P, and only text appended since the last call is scanned for triggers.
+    No arm edits text holding no ``_DISPLAY_STRIP_SENTINELS`` and no ``call:``, so such a buffer is returned as is.
+    After a sentinel it holds at P while the buffer is ``P + O + B`` (P free of ``<``, ``[``, ``{``, ``call:``; O an
+    opener in ``_DISPLAY_HOLD_OPENER_RE``; B free of ``_DISPLAY_HOLD_TRIGGERS`` and ``call:``): every arm either runs
+    from O to the end or needs a ``<`` or ``[`` before O. Arms only once the full strip returned exactly P.
     """
 
     __slots__ = (
@@ -6821,7 +6816,6 @@ class _ReasoningSpanGuard:
         self._consumed = 0
         self._turn_wrap = None
         self._claimed = False
-        # Each event carries the whole turn so far: strip it incrementally, not from scratch per event.
         self._display = None
         self._display_key = None
 
