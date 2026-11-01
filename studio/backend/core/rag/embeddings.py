@@ -730,42 +730,11 @@ def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
     counts: dict[str, int] = {}
     counted_by: list = [None]
 
-    def _count(t: str) -> int:
-        with _compute_lock:
-            tok = _get(model_name).tokenizer
-            owner = counted_by[0]
-            if owner is None or owner() is not tok:
-                counts.clear()
-                try:
-                    counted_by[0] = weakref.ref(tok)
-                except TypeError:
-                    counted_by[0] = None
-            memo = counted_by[0] is not None and type(t) is str
-            known = counts.get(t) if memo else None
-            if known is not None:
-                # Leave the environment a tokenize would.
-                if os.environ.get("TOKENIZERS_PARALLELISM") != "false":
-                    os.environ["TOKENIZERS_PARALLELISM"] = "false"
-                return known
-            os.environ["TOKENIZERS_PARALLELISM"] = "true"
-            try:
-                n = len(tok.encode(t, add_special_tokens = False))
-            finally:
-                os.environ["TOKENIZERS_PARALLELISM"] = "false"
-            if memo:
-                if len(counts) >= _ST_COUNT_CACHE_SIZE:
-                    counts.pop(next(iter(counts)))
-                counts[t] = n
-            return n
-
     def _count_many(texts) -> list[int]:
-        """``_count`` over many texts: one lock, tokenizer lookup and environment swap per batch, and one
-        batched encode for the misses, which the fast tokenizer spreads over its thread pool."""
         texts = list(texts)
         out = [0] * len(texts)
+        # The lock is released between batches so a query encode never waits out a whole document.
         for start in range(0, len(texts), _ST_COUNT_BATCH):
-            stop = min(start + _ST_COUNT_BATCH, len(texts))
-            # Released between batches, so a query encode never waits out a whole document.
             with _compute_lock:
                 tok = _get(model_name).tokenizer
                 owner = counted_by[0]
@@ -776,10 +745,9 @@ def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
                     except TypeError:
                         counted_by[0] = None
                 memoize = counted_by[0] is not None
-                # Each distinct memoizable miss is encoded once; other texts (str subclasses) as given.
                 misses: dict[str, list[int]] = {}
                 loose: list[int] = []
-                for i in range(start, stop):
+                for i in range(start, min(start + _ST_COUNT_BATCH, len(texts))):
                     t = texts[i]
                     memo = memoize and type(t) is str
                     known = counts.get(t) if memo else None
@@ -790,6 +758,7 @@ def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
                     else:
                         loose.append(i)
                 if not misses and not loose:
+                    # Leave the environment a tokenize would.
                     if os.environ.get("TOKENIZERS_PARALLELISM") != "false":
                         os.environ["TOKENIZERS_PARALLELISM"] = "false"
                     continue
@@ -809,17 +778,18 @@ def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
                     out[i] = n
         return out
 
+    def _count(t: str) -> int:
+        return _count_many((t,))[0]
+
     _count.many = _count_many
     return _count
 
 
-# Bounds how long one batched count holds _compute_lock.
 _ST_COUNT_BATCH = 256
 
 
 def _encoded_lengths(tok, texts: list) -> list[int]:
-    """``len(tok.encode(t, add_special_tokens=False))`` for each text. A fast tokenizer takes the list in one
-    call, the same encode path ``encode`` wraps, so the counts match one-at-a-time calls exactly."""
+    """``len(tok.encode(t, add_special_tokens=False))`` per text; a fast tokenizer's batch call is the path encode wraps."""
     if len(texts) > 1 and getattr(tok, "is_fast", False) is True:
         ids = tok(
             texts,
@@ -1530,11 +1500,11 @@ def token_counter(model_name: str | None = None) -> Callable[[str], int]:
     state = (backend, backend.token_counter(model_name = model_name))
     counter_lock = threading.Lock()
 
-    def _count(text: str) -> int:
+    def _served(use):
         nonlocal state
         served_backend, served_count = state
         try:
-            return served_count(text)
+            return use(served_count)
         except RuntimeError:
             if not (
                 _is_llama_backend(served_backend) and getattr(served_backend, "_closed", False)
@@ -1551,31 +1521,14 @@ def token_counter(model_name: str | None = None) -> Callable[[str], int]:
                     replacement.token_counter(model_name = model_name),
                 )
             retry = state[1]
-        return retry(text)
+        return use(retry)
+
+    def _count(text: str) -> int:
+        return _served(lambda count: count(text))
 
     def _count_many(texts) -> list[int]:
-        """Batched ``_count``; a backend without a batch form is asked one text at a time."""
-        nonlocal state
         texts = list(texts)
-        served_backend, served_count = state
-        try:
-            return _many(served_count, texts)
-        except RuntimeError:
-            if not (
-                _is_llama_backend(served_backend) and getattr(served_backend, "_closed", False)
-            ):
-                raise
-        with counter_lock:
-            if state[0] is served_backend:
-                replacement = _get_backend(model_name)
-                if replacement is served_backend:
-                    raise RuntimeError("llama-server embedding backend was unloaded")
-                state = (
-                    replacement,
-                    replacement.token_counter(model_name = model_name),
-                )
-            retry = state[1]
-        return _many(retry, texts)
+        return _served(lambda count: _many(count, texts))
 
     # Only a batching backend (sentence-transformers) changes how chunking asks for counts.
     if getattr(state[1], "many", None) is not None:

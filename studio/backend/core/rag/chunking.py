@@ -68,7 +68,6 @@ def _split(
 
 
 def _count_all(count: TokenCounter, texts: list[str]) -> list[int] | None:
-    """Counts for ``texts`` from the counter's ``many`` batch form, or None when it has none."""
     many = getattr(count, "many", None)
     if many is None:
         return None
@@ -85,10 +84,8 @@ def _split_all(
     max_tokens: int,
     count: TokenCounter,
 ) -> list[list[_Piece]]:
-    """``_split`` for many texts at once, level by level: every part cut at the same depth is counted
-    in one batch. Counts are pure, so the pieces equal ``_split``'s for each text."""
+    """``_split`` per text, with every part cut at the same depth counted in one batch."""
     out: list[list[_Piece] | None] = [None] * len(texts)
-    # Parts cut with seps[i], keyed by i: (text index, parts).
     levels: dict[int, list[tuple[int, list[str]]]] = {}
     sliced: list[tuple[int, list[str]]] = []
     for idx, (text, token_count) in enumerate(zip(texts, token_counts)):
@@ -175,8 +172,7 @@ def _merge(
 def chunk_pages(
     pages: list[Page], *, max_tokens: int, overlap: int, count: TokenCounter
 ) -> list[Chunk]:
-    """Split each page into overlapping chunks, tracking per-page char offsets. A counter with a
-    ``many`` batch form is asked once per stage for the whole document; the chunks are the same."""
+    """Split each page into overlapping chunks, tracking per-page char offsets."""
     page_counts = _count_all(count, [page.text for page in pages])
     batched = page_counts is not None
     split = (
@@ -185,7 +181,6 @@ def chunk_pages(
         else None
     )
     out: list[Chunk] = []
-    # Batched: (out index, text) whose overlap-free count is still owed.
     owed: list[tuple[int, str]] = []
     for page_index, page in enumerate(pages):
         pieces = split[page_index] if batched else _split(page.text, SEPARATORS, max_tokens, count)
