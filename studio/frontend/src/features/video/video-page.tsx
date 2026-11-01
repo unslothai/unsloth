@@ -792,8 +792,7 @@ function ReferenceVideoTrimStatus({
   );
 }
 
-/** What a strip card calls back into the page with. Read through a box at event time, so a card
- * re-renders only when its own clip, poster or state changes, not on every page render. */
+/** Page callbacks a card reads at event time, so new page closures never re-render it. */
 interface VideoStripTileActions {
   tileProps: ReturnType<typeof useStripReorder>["tileProps"];
   select: (id: string) => void;
@@ -806,7 +805,6 @@ interface VideoStripTileActions {
   toggleFavorite: (key: string) => void;
 }
 
-/** Holds the page's latest card actions; set after each commit, read from card event handlers. */
 class VideoStripTileActionsBox {
   private actions: VideoStripTileActions | null = null;
   set(actions: VideoStripTileActions) {

@@ -1596,8 +1596,7 @@ function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
   return text ? t("library.viewer.openImageNamed", { prompt: text }) : t("library.viewer.openImage");
 }
 
-/** What a strip tile calls back into the page with. Read through a ref at event time, so a tile
- * re-renders only when its own image, thumbnail or state changes, not on every page render. */
+/** Page callbacks a tile reads at event time, so new page closures never re-render it. */
 interface StripTileActions {
   tileProps: ReturnType<typeof useStripReorder>["tileProps"];
   select: (id: string) => void;
@@ -1611,7 +1610,6 @@ interface StripTileActions {
   editImage: (image: GalleryImage) => void;
 }
 
-/** Holds the page's latest tile actions; set after each commit, read from tile event handlers. */
 class StripTileActionsBox {
   private actions: StripTileActions | null = null;
   set(actions: StripTileActions) {
