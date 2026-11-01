@@ -9923,8 +9923,21 @@ def _prepare_model_for_qat(
     _reinstall_input_require_grads(require_grads_owners)
     _reregister_unowned_require_grads_hooks(model, all_embeddings, unowned_require_grads)
     _patch_microscaling_qat_forwards(model)
+    _record_qat_engagement(model, torchao_config)
 
     return model
+
+
+def _record_qat_engagement(model, torchao_config):
+    """Store how many layers QAT fake-quantizes on the model (unsloth.precision.engaged); under
+    UNSLOTH_STRICT_ENGAGE=1 a scheme that wrapped nothing raises instead of training unquantized."""
+    from ..precision import record, require
+
+    scheme = getattr(torchao_config, "qat_scheme", None)
+    name = "qat:" + (scheme if isinstance(scheme, str) else "custom")
+    count = sum(1 for m in model.modules() if "FakeQuantized" in type(m).__name__)
+    record(model, name, count)
+    require(name, count, "no Linear / Embedding layer matched the scheme's filters")
 
 
 def patch_hf_quantizer():

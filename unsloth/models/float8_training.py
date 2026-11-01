@@ -8,6 +8,40 @@ from __future__ import annotations
 
 import torch
 
+
+def _load_precision():
+    """unsloth.precision; also when this file is loaded on its own (gloo test workers import it by path
+    without the unsloth package), from the sibling directory."""
+    try:
+        from .. import precision
+        return precision
+    except ImportError:
+        import importlib.util
+        import os
+        import sys
+
+        name = "_unsloth_precision_standalone"
+        if name in sys.modules:
+            return sys.modules[name]
+        root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "precision")
+        spec = importlib.util.spec_from_file_location(
+            name, os.path.join(root, "__init__.py"), submodule_search_locations = [root]
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+
+
+_precision = _load_precision()
+_PRECISION_NAMES = _precision.FLOAT8_TRAINING_NAMES
+_check_precision_recipe = _precision.check_recipe
+_find_routers = _precision.find_routers
+_precision_measured_faster = _precision.measured_faster
+_precision_named_recipes = _precision.named_recipes
+_record_engagement = _precision.record
+_require_engagement = _precision.require
+
 __all__ = [
     "FLOAT8_TRAINING_RECIPES",
     "resolve_float8_training",
@@ -15,21 +49,25 @@ __all__ = [
     "convert_model_to_float8_training",
 ]
 
-FLOAT8_TRAINING_RECIPES = ("tensorwise",)
+# Names and gates come from the precision registry (unsloth/precision/recipes.py).
+FLOAT8_TRAINING_RECIPES = _precision_named_recipes("float8_training")
 
 # Named recipes run only where they were timed faster than bfloat16 at equal loss (Qwen3-1.7B / 4B full
 # finetuning). tensorwise: RTX PRO 6000 (12.0) 15% faster; L4 (8.9) NaN gradients with gradient
 # checkpointing. rowwise: 3% slower on the RTX PRO 6000 and 2% slower on the L4, so it is not offered by
 # name. Any other GPU needs an explicit torchao Float8LinearConfig.
-_MEASURED_FASTER = {"tensorwise": ((12, 0), (12, 1))}
+_MEASURED_FASTER = _precision_measured_faster("float8_training")
 
 # Never fp8: output heads (Unsloth's fused CE reads lm_head.weight directly), MoE routers (tiny, precision sensitive).
 _SKIP_NAME_PARTS = ("lm_head", "embed_out", "output_projection", "router")
 _SKIP_LEAF_NAMES = ("gate", "router", "score", "classifier")
 
 
-def resolve_float8_training(float8_training):
-    """`float8_training` kwarg -> recipe name or a torchao Float8LinearConfig; None when off."""
+def resolve_float8_training(float8_training, dtype = None):
+    """`float8_training` kwarg -> recipe name or a torchao Float8LinearConfig; None when off. A format the
+    precision registry knows but Unsloth cannot train (MXFP6, or one not built yet) raises with its reason,
+    before the model is loaded; `dtype` (the load dtype, None = auto) refuses float16 for formats whose
+    quantizer rejects it."""
     if float8_training is None or float8_training is False:
         return None
     if float8_training is True:
@@ -41,6 +79,16 @@ def resolve_float8_training(float8_training):
                 "Unsloth: float8_training = 'rowwise' trained slower than bfloat16 on every GPU it was "
                 "timed on (L4, RTX PRO 6000). Use float8_training = True (tensorwise), or pass "
                 "torchao.float8.Float8LinearConfig.from_recipe_name('rowwise') to force it."
+            )
+        if recipe not in FLOAT8_TRAINING_RECIPES and recipe in _PRECISION_NAMES:
+            # Raises PrecisionRefused (a ValueError) with the format's own reason.
+            _check_precision_recipe(
+                _PRECISION_NAMES[recipe], gpu = _precision.current_gpu_class(), input_dtype = dtype
+            )
+            raise ValueError(
+                f"Unsloth: float8_training = '{float8_training}' has not been measured faster than bfloat16 "
+                "on any GPU, so it is not offered by name. Pass "
+                f"torchao.float8.Float8LinearConfig.from_recipe_name({recipe!r}) to force it."
             )
         if recipe not in FLOAT8_TRAINING_RECIPES:
             raise ValueError(
@@ -80,6 +128,12 @@ def float8_training_filter(
     except Exception:
         pass
     size_recipe = _recipe_scaling(recipe)
+    # Routers found by shape beside an experts container (a router named `wg` or in remote code), on top of the
+    # name rules below.
+    try:
+        routers = frozenset(_find_routers(model))
+    except Exception:
+        routers = frozenset()
 
     def module_filter_fn(module, fqn):
         # Exact type: bitsandbytes / QAT / fp8 / PEFT linears subclass nn.Linear and must stay as they are.
@@ -87,7 +141,7 @@ def float8_training_filter(
             return False
         if id(module) in out_heads or any(p in fqn for p in _SKIP_NAME_PARTS):
             return False
-        if fqn.rsplit(".", 1)[-1] in _SKIP_LEAF_NAMES:
+        if fqn.rsplit(".", 1)[-1] in _SKIP_LEAF_NAMES or fqn in routers:
             return False
         weight = module.weight
         if not weight.is_floating_point() or weight.element_size() < 2 or not weight.requires_grad:
@@ -327,6 +381,12 @@ def convert_model_to_float8_training(
     converted = [name for name, m in model.named_modules() if isinstance(m, Float8Linear)]
     if dispatch_hooks:
         _reattach_dispatch_hooks(model, converted, dispatch_hooks)
+    name = recipe if isinstance(recipe, str) else "Float8LinearConfig(" + _recipe_scaling(recipe) + ")"
+    _record_engagement(model, "float8_training:" + name, len(converted))
+    # UNSLOTH_STRICT_ENGAGE=1 raises here instead of training in the original precision.
+    _require_engagement(
+        "float8_training", len(converted), "no eligible Linear layer: dims divisible by 16 and large enough"
+    )
     if not converted:
         import warnings
         warnings.warn(
