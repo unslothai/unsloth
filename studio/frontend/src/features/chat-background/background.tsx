@@ -16,6 +16,7 @@ import {
 	visibilityKey,
 } from "./model";
 import { useMaterialStore } from "./material";
+import { ComposerGlassLenses } from "./lens";
 import { type ImageTone, glassReadability, measureTone } from "./tone";
 
 type Frame = { url: string; value: ChatBackgroundValue };
@@ -327,6 +328,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 					</div>
 				);
 			})}
+			<ComposerGlassLenses wallpaper={appWallpaper} />
 		</div>
 	);
 }

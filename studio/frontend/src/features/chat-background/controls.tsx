@@ -30,6 +30,8 @@ import {
 	EFFECTS,
 	fadeKey,
 	visibilityKey,
+	LENS_MODES,
+	type LensMode,
 	MATERIALS,
 	type WindowMaterial,
 	IMAGE_SIZING,
@@ -51,7 +53,11 @@ import {
 	useChatBackground,
 } from "./storage";
 import { canvasBlob, decodeImage } from "./image";
-import { useGlassStrength, useMaterialStore } from "./material";
+import {
+	nativeMaterialAvailable,
+	useGlassStrength,
+	useMaterialStore,
+} from "./material";
 import { MATERIAL_LABELS } from "./material-labels";
 
 const labels: Record<BackgroundEffect, TranslationKey> = {
@@ -76,14 +82,24 @@ const sizingLabels: Record<ImageSizing, TranslationKey> = {
 };
 function GlassStyleRow() {
 	const t = useT();
-	const { style, setMaterial } = useMaterialStore();
-	const options = MATERIALS.filter((m) => m !== "solid");
+	const { style, nativeFailed, setMaterial } = useMaterialStore();
+	const native = nativeMaterialAvailable();
+	const options = MATERIALS.filter(
+		(m) => m !== "solid" && (m !== "macos" || native),
+	);
+	const shown = options.includes(style) ? style : "liquid";
+	const note = nativeFailed
+		? "chatBackground.materialNativeFailed"
+		: shown === "macos"
+			? "chatBackground.materialMacosNote"
+			: null;
 	return (
 		<SettingsRow
 			label={t("chatBackground.materialStyle")}
+			description={note ? t(note) : undefined}
 		>
 			<Select
-				value={style}
+				value={shown}
 				onValueChange={(next) => setMaterial(next as WindowMaterial)}
 			>
 				<SelectTrigger
@@ -122,6 +138,7 @@ export function GlassControls() {
 				<>
 					<GlassStyleRow />
 					<MaterialStrengthRow />
+					<LensRow />
 					<MaterialMenusRow />
 				</>
 			)}
@@ -131,7 +148,8 @@ export function GlassControls() {
 function MaterialMenusRow() {
 	const t = useT();
 	const { material, menus, setMenus } = useMaterialStore();
-	const off = material === "solid";
+	const off =
+		material === "solid" || (material === "macos" && !nativeMaterialAvailable());
 	return (
 		<SettingsRow
 			label={t("chatBackground.materialMenus")}
@@ -151,7 +169,8 @@ function MaterialStrengthRow() {
 	const { material, setStrength } = useMaterialStore();
 	const strength = useGlassStrength();
 	const { resolved } = useTheme();
-	const off = material === "solid";
+	const off =
+		material === "solid" || (material === "macos" && !nativeMaterialAvailable());
 	return (
 		<SettingsRow label={t("chatBackground.materialStrength")}>
 			<div className="flex w-52 items-center gap-3">
@@ -168,6 +187,40 @@ function MaterialStrengthRow() {
 					{strength}%
 				</span>
 			</div>
+		</SettingsRow>
+	);
+}
+const lensLabels: Record<LensMode, TranslationKey> = {
+	off: "chatBackground.lensOff",
+	magnify: "chatBackground.lensMagnify",
+	shrink: "chatBackground.lensShrink",
+};
+function LensRow() {
+	const t = useT();
+	const { material, lens, setLens } = useMaterialStore();
+	const off =
+		material === "solid" || (material === "macos" && !nativeMaterialAvailable());
+	return (
+		<SettingsRow
+			label={t("chatBackground.lens")}
+			description={t("chatBackground.lensDescription")}
+		>
+			<Select
+				disabled={off}
+				value={lens}
+				onValueChange={(next) => setLens(next as LensMode)}
+			>
+				<SelectTrigger aria-label={t("chatBackground.lens")} className="w-52">
+					<SelectValue />
+				</SelectTrigger>
+				<SelectContent>
+					{LENS_MODES.map((mode) => (
+						<SelectItem key={mode} value={mode}>
+							{t(lensLabels[mode])}
+						</SelectItem>
+					))}
+				</SelectContent>
+			</Select>
 		</SettingsRow>
 	);
 }

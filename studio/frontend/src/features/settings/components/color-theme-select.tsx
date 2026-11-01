@@ -14,6 +14,7 @@ import {
 import {
   MATERIAL_LABELS,
   MATERIALS,
+  nativeMaterialAvailable,
   useMaterialStore,
 } from "@/features/chat-background";
 import { useT } from "@/i18n";
@@ -73,8 +74,10 @@ function GlassThemeSub() {
   const t = useT();
   const material = useMaterialStore((s) => s.material);
   const setMaterial = useMaterialStore((s) => s.setMaterial);
-  const options = MATERIALS;
-  const shown = material;
+  const options = MATERIALS.filter(
+    (m) => m !== "macos" || nativeMaterialAvailable(),
+  );
+  const shown = options.includes(material) ? material : "solid";
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger className="gap-2.5">
