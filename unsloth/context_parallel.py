@@ -903,7 +903,13 @@ def _declares_cp_fields(config) -> bool:
     return "context_parallel_size" in {f.name for f in dataclasses.fields(config)}
 
 
-def _positional_config_to_keyword(init, self, args, kwargs):
+def _positional_config_to_keyword(
+    init,
+    self,
+    args,
+    kwargs,
+    require_args = True,
+):
     """(args, kwargs) with a positional trainer config passed as `args = ...` instead (every positional bound
     to its name), so Unsloth's trainer wrapper rebuilds it with the cp values set as kwargs. Unchanged when the
     signature cannot bind them."""
@@ -919,7 +925,7 @@ def _positional_config_to_keyword(init, self, args, kwargs):
         for n, p in params.items()
     ):
         return args, kwargs
-    if "args" not in bound.arguments:
+    if require_args and "args" not in bound.arguments:
         return args, kwargs
     out = {}
     for i, (name, value) in enumerate(bound.arguments.items()):
@@ -987,14 +993,10 @@ def _resolve_auto_backend(
         # A model id is loaded inside the trainer's __init__, after this commits the backend: read its heads
         # from the config now, so 'auto' picks ring when they cannot be split over cp.
         try:
-            from transformers import AutoConfig
-
-            init_kwargs = getattr(config, "model_init_kwargs", None) or {}
-            model_config = AutoConfig.from_pretrained(
-                model,
-                trust_remote_code = bool(init_kwargs.get("trust_remote_code", False)),
-            )
-            model = types.SimpleNamespace(config = model_config)
+            # The trainer's own loader options (subfolder, revision, token, cache_dir, trust_remote_code).
+            from .trainer import _resolve_string_model_config
+            model_config = _resolve_string_model_config(model, config)
+            model = types.SimpleNamespace(config = model_config) if model_config is not None else None
         except Exception:
             model = None
     layout = _composed_layout(size)
@@ -1911,6 +1913,16 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
 
     @functools.wraps(original_init)
     def patched_init(self, *args, **kwargs):
+        if "args" not in kwargs and len(args) > 1:
+            from .parallel_env import env_cp_size
+            if env_cp_size() > 1 or _cp_requested(kwargs):
+                # DPOTrainer(model, ref_model, ...): bind the positionals to their names, so a missing or None
+                # `args` gets the default config below and the cp values never reach the constructor as kwargs.
+                args, kwargs = _positional_config_to_keyword(
+                    original_init, self, args, kwargs, require_args = False
+                )
+                if kwargs.get("args", 0) is None:
+                    kwargs.pop("args")
         config = kwargs.get("args")
         if config is None:
             config = next((x for x in args if hasattr(x, "context_parallel_size")), None)

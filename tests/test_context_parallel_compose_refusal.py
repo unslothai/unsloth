@@ -216,3 +216,73 @@ def test_a_backend_kwarg_overrides_the_config_in_the_pre_init_check(clean_env, m
     )
     cp._refuse_model_parallel_cp(2, torch.nn.Linear(2, 2), None, _config(2), backend = "ulysses")
     assert seen == ["ulysses"]
+
+
+def test_env_cp_dpo_with_a_positional_reference_model_gets_a_config(clean_env, monkeypatch):
+    # Failing before: DPOTrainer(model, ref_model, ...) skipped the default config (two positionals), so the env
+    # cp values reached the constructor as kwargs, which TRL rejects.
+    clean_env.setenv("UNSLOTH_CP_SIZE", "2")
+    monkeypatch.setattr(cp, "_check_cp_runtime", lambda *a, **k: None)
+    monkeypatch.setattr(cp, "_resolve_auto_backend", lambda *a, **k: None)
+    monkeypatch.setattr(cp, "_refuse_model_parallel_cp", lambda *a, **k: None)
+    import dataclasses
+    import sys
+
+    @dataclasses.dataclass
+    class DPOConfig:
+        context_parallel_size: int = 1
+        context_parallel_backend: str = "auto"
+
+    module = types.ModuleType("fake_dpo_module")
+    module.DPOConfig = DPOConfig
+    monkeypatch.setitem(sys.modules, "fake_dpo_module", module)
+    calls = []
+
+    def signature(
+        self,
+        model = None,
+        ref_model = None,
+        args = None,
+        train_dataset = None,
+        **kwargs,
+    ):
+        pass
+
+    @functools.wraps(signature)
+    def init(self, *args, **kwargs):
+        calls.append((args, kwargs))
+
+    Trainer = type("DPOTrainer", (), {"__init__": init, "__module__": "fake_dpo_module"})
+    cp.patch_rl_trainer(Trainer, "dpo_trainer")
+    model, ref = torch.nn.Linear(2, 2), torch.nn.Linear(2, 2)
+    try:
+        Trainer(model, ref, train_dataset = [])
+    except Exception:
+        pass
+    assert calls
+    got_args, got_kwargs = calls[0]
+    assert got_kwargs.get("ref_model") is ref and "context_parallel_size" not in got_kwargs
+    assert (
+        isinstance(got_kwargs.get("args"), DPOConfig)
+        and got_kwargs["args"].context_parallel_size == 2
+    )
+
+
+def test_auto_backend_reads_a_model_id_config_with_the_loader_options(clean_env, monkeypatch):
+    # Failing before: only trust_remote_code was forwarded, so a checkpoint under a subfolder was not found and
+    # 'auto' committed to ulysses with unknown heads.
+    import unsloth.trainer as trainer_mod
+
+    seen = []
+    monkeypatch.setattr(
+        trainer_mod,
+        "_resolve_string_model_config",
+        lambda name, config: seen.append((name, config)) or None,
+    )
+    config = _config(2, model_init_kwargs = {"subfolder": "weights"})
+    config.context_parallel_backend = "auto"
+    try:
+        cp._resolve_auto_backend(config, {}, 2, "org/model")
+    except Exception:
+        pass
+    assert seen and seen[0][0] == "org/model" and seen[0][1] is config
