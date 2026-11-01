@@ -13,6 +13,7 @@
 """Train-mode forwards for DeepSeek-V3-derived remote MoE ports, keyed on structure never repo name;
 no-op for the native transformers models."""
 
+import contextlib
 import functools
 import os
 import threading
@@ -133,17 +134,50 @@ def is_remote_deepseek_moe(module) -> bool:
     )
 
 
+_ROUTER_SCORE_FUNCTIONS = frozenset(
+    (
+        torch.sigmoid,
+        torch.Tensor.sigmoid,
+        torch.special.expit,
+        torch.softmax,
+        torch.Tensor.softmax,
+        torch.nn.functional.softmax,
+    )
+)
+
+
+class _CopyRouterScores(torch.overrides.TorchFunctionMode):
+    """Kimi-Linear adds its score bias in place to the sigmoid / softmax output that op's backward
+    saved: hand the gate a copy instead. Only the scores are copied and no saved-tensor hooks are
+    pushed, so gradient checkpointing and activation offload still own the gate's saved tensors."""
+
+    def __torch_function__(
+        self,
+        func,
+        types,
+        args = (),
+        kwargs = None,
+    ):
+        out = func(*args, **(kwargs or {}))
+        if func in _ROUTER_SCORE_FUNCTIONS and isinstance(out, torch.Tensor) and out.requires_grad:
+            out = out.clone()
+        return out
+
+
 def _gate_forward_without_training_assert(original):
     @functools.wraps(original)
     def forward(self, hidden_states):
-        if not self.training:
-            return original(self, hidden_states)
-        # Gate has no children: flipping `training` only bypasses the assert.
-        self.training = False
-        try:
-            return original(self, hidden_states)
-        finally:
-            self.training = True
+        # The block shim calls the gate with training already off, so this covers both paths.
+        copies = _CopyRouterScores() if torch.is_grad_enabled() else contextlib.nullcontext()
+        with copies:
+            if not self.training:
+                return original(self, hidden_states)
+            # Gate has no children: flipping `training` only bypasses the assert.
+            self.training = False
+            try:
+                return original(self, hidden_states)
+            finally:
+                self.training = True
 
     forward._unsloth_remote_moe_shim = True
     return forward
@@ -169,11 +203,22 @@ def _moe_train_dispatch(block, x, topk_idx, topk_weight):
     flat_idx = topk_idx.reshape(-1)
     order = torch.argsort(flat_idx, stable = True)
     sorted_tokens = x[order // top_k]
-    counts = torch.bincount(flat_idx, minlength = len(experts)).tolist()
+    token_counts = torch.bincount(flat_idx, minlength = len(experts))
+    counts = token_counts.tolist()
+    # Under context parallelism each rank routes a different shard, so an expert unused here may be
+    # used on a peer: run it on no tokens to give it a zero gradient instead of None, or DDP stalls.
+    from ..context_parallel import get_cp_manager, record_expert_tokens
+
+    every_expert = get_cp_manager() is not None
+    if every_expert:
+        # So the optimizer step can drop the zero gradients of experts no rank routed to.
+        record_expert_tokens(block, token_counts)
     outputs = []
     start = 0
     for expert_index, count in enumerate(counts):
         if count == 0:
+            if every_expert:
+                outputs.append(experts[expert_index](sorted_tokens[:0]))
             continue
         expert = experts[expert_index]
         outputs.append(expert(sorted_tokens[start : start + count]))
@@ -256,7 +301,8 @@ def prepare_remote_moe_for_training(model, verbose = True):
             shimmed_classes.add(cls)
             _rebind_accelerate_hook(module)
             continue
-        if is_remote_deepseek_gate(module) and cls in shimmable_gates:
+        # Renamed ports (Kimi-Linear's KimiMoEGate) are matched through their inference-only block.
+        if cls in shimmable_gates and _is_remote_code(cls):
             cls.forward = _gate_forward_without_training_assert(cls.forward)
             patched.append(cls.__name__)
             shimmed_classes.add(cls)

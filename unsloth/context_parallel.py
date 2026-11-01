@@ -110,6 +110,69 @@ def context_parallel_options(config) -> tuple:
     return size, backend, rotate_method
 
 
+# Their Ulysses forwards (utils/ulysses_deepseek.py) build their own sliding / compressed masks, so
+# only these layer types and the window are exempt; chunked attention and softcap still refuse.
+_ULYSSES_OWN_MASK_LAYER_TYPES = {
+    "deepseek_v32": ("deepseek_sparse_attention",),
+    "deepseek_v4": (
+        "sliding_attention",
+        "compressed_sparse_attention",
+        "heavily_compressed_attention",
+    ),
+}
+# Hugging Face attention that passes sliding_window per call; Ulysses hands it to the dispatcher.
+# Llama-style fast forwards ignore the window, so the refusal stays for every other model.
+_ULYSSES_SLIDING_MODEL_TYPES = ("gemma4_text",)
+
+
+def ulysses_packing_blocker(model) -> Optional[str]:
+    """Class name of the first module whose Ulysses forward refuses packed batches (Kimi delta,
+    MiniMax Lightning, DeepSeek V3.2 / V4 attention), else None. SFT keeps padding-free off for them."""
+    from .utils.ulysses_deepseek import DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+    from .utils.ulysses_hybrid import is_ulysses_kimi_delta, is_ulysses_lightning
+
+    if not isinstance(model, torch.nn.Module):
+        return None
+    for module in model.modules():
+        if (
+            type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+            or is_ulysses_kimi_delta(module)
+            or is_ulysses_lightning(module)
+        ):
+            return type(module).__name__
+    return None
+
+
+def _ddp_ignore_indexer(model, attn_name: str, attention) -> None:
+    # The DSA indexer only picks keys (a discrete top-k), so its weights never get a gradient. CP
+    # turns DDP's find_unused_parameters off, so trainable indexer weights (LoRA on V3.2 wq_b, V4
+    # q_b_proj) would stall the gradient reduction: DDP leaves them out instead.
+    names = [
+        f"{attn_name}.{sub}.{p}"
+        for sub, module in attention.named_modules()
+        if sub.rsplit(".", 1)[-1] == "indexer"
+        for p, _ in module.named_parameters()
+    ]
+    if names:
+        ignored = set(getattr(model, "_ddp_params_and_buffers_to_ignore", ()))
+        model._ddp_params_and_buffers_to_ignore = sorted(ignored.union(names))
+
+
+def _keep_layer_out_of_block_compile(model, attn_name: str) -> None:
+    # The DeepSeek Ulysses forward runs eager inside the decoder layer's compiled region (a graph
+    # break), so dynamo compiles the rest of the layer as one resume function shared by every layer
+    # of the class. When a later layer fails to compile it (fp32 MoE: torch._grouped_mm on fake
+    # tensors), dynamo skips that code for all layers, and an earlier checkpointed layer that ran it
+    # compiled recomputes it eagerly: CheckpointError (62 vs 61 saved tensors, V3.2 fp32 CP = 2).
+    # A raised failure re-runs the layer after its first half already saved tensors, failing alike.
+    parent = attn_name.rpartition(".")[0]
+    if not parent:
+        return
+    from .models._block_compile import _OFF
+
+    model.get_submodule(parent).__dict__["_unsloth_block_mode"] = _OFF
+
+
 def _unsupported_attention(config, backend = "ring") -> Optional[str]:
     # Ring and Llama's forward ignore mask, window and softcap, so both backends refuse them.
     allowed = {"full_attention", "linear_attention"} if backend == "ulysses" else {"full_attention"}
@@ -120,7 +183,13 @@ def _unsupported_attention(config, backend = "ring") -> Optional[str]:
     for c in configs:
         if c is None:
             continue
+        model_type = getattr(c, "model_type", None)
+        own_mask = _ULYSSES_OWN_MASK_LAYER_TYPES.get(model_type) if backend == "ulysses" else None
+        windowed = backend == "ulysses" and model_type in _ULYSSES_SLIDING_MODEL_TYPES
+        exempt = own_mask or (("sliding_attention",) if windowed else ())
         layer_types = getattr(c, "layer_types", None)
+        if exempt and layer_types:
+            layer_types = [t for t in layer_types if t not in exempt]
         if layer_types and any(t not in allowed for t in layer_types):
             kinds = sorted({t for t in layer_types if t not in allowed})
             hint = (
@@ -131,15 +200,48 @@ def _unsupported_attention(config, backend = "ring") -> Optional[str]:
             return f"{', '.join(kinds)} layers{hint}"
         # Any positive window, even with use_sliding_window off: Unsloth's masks read it directly.
         sliding_window = getattr(c, "sliding_window", None)
-        if (isinstance(sliding_window, int) and sliding_window > 0) or getattr(
-            c, "use_sliding_window", None
-        ) is True:
+        if not (own_mask or windowed) and (
+            (isinstance(sliding_window, int) and sliding_window > 0)
+            or getattr(c, "use_sliding_window", None) is True
+        ):
             return "sliding window attention"
         if getattr(c, "attention_chunk_size", None):
             return "chunked attention"
         if getattr(c, "attn_logit_softcapping", None):
             return "attention logit softcapping"
     return None
+
+
+def _fast_forward_drops_window(model) -> bool:
+    """The Gemma 4 window exemption holds only for Hugging Face attention, which passes the window
+    to the Ulysses dispatcher; a module running Llama's fast forward would drop it."""
+    from .models.llama import LlamaAttention_fast_forward, runs_fast_forward
+
+    config = getattr(model, "config", None)
+    configs = (config, getattr(config, "text_config", None))
+    if not any(getattr(c, "model_type", None) in _ULYSSES_SLIDING_MODEL_TYPES for c in configs):
+        return False
+    return any(
+        name.endswith("self_attn") and runs_fast_forward(module, LlamaAttention_fast_forward)
+        for name, module in model.named_modules()
+    )
+
+
+def _attention_head_counts(config) -> set:
+    """(attention heads, key / value heads) pairs to check against the Ulysses split.
+
+    Heterogeneous configs (Gemma 4 on transformers >= 5.15) refuse global reads of per-layer
+    attributes, so read each layer's config; Gemma 4's global layers carry their own KV head count.
+    """
+    layers = getattr(config, "per_layer_config", None) or [config]
+    counts = set()
+    for layer in layers:
+        heads = layer.num_attention_heads
+        counts.add((heads, getattr(layer, "num_key_value_heads", None) or heads))
+        global_kv_heads = getattr(layer, "num_global_key_value_heads", None)
+        if global_kv_heads:
+            counts.add((heads, global_kv_heads))
+    return counts
 
 
 def _unregister_cp_sharding_rules() -> None:
@@ -154,12 +256,16 @@ def _unregister_cp_sharding_rules() -> None:
 
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
+from .utils.ulysses_deepseek import (
+    DEEPSEEK_ULYSSES_ATTENTION_CLASSES,
+    wrap_deepseek_attention_forward,
+)
 from .utils.ulysses_hybrid import (
-    GATED_DELTA_ATTENTION_CLASSES,
-    check_gated_delta_heads,
+    ULYSSES_ATTENTION_CLASSES,
+    check_ulysses_mixer_heads,
     install_hf_attention_wrapper,
-    is_ulysses_gated_delta,
-    wrap_gated_delta_forward,
+    is_ulysses_mixer,
+    wrap_ulysses_mixer_forward,
 )
 
 # A module global, not a ContextVar: CUDA runs backward (and checkpoint recompute) on another thread.
@@ -215,11 +321,101 @@ def _hybrid_config_blocker(model) -> Optional[str]:
     if getattr(text_config, "output_router_logits", False):
         # The load balancing loss is a product of per-sequence means, not a sum over shards.
         return "the MoE router auxiliary loss (output_router_logits)"
-    if any(isinstance(getattr(m, "experts", None), torch.nn.ModuleList) for m in model.modules()):
+    if any(
+        isinstance(getattr(m, "experts", None), torch.nn.ModuleList) and not _runs_every_expert(m)
+        for m in model.modules()
+    ):
         # Per-expert modules run only for experts the local shard routes to, so with DDP's
         # find_unused_parameters off an expert unused on one rank stalls the gradient reduction.
         return "sparse MoE layers with per-expert modules (transformers 4.x Qwen3-Next)"
     return None
+
+
+_ULYSSES_CLASSES = ULYSSES_ATTENTION_CLASSES + DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+
+
+def _runs_every_expert(block) -> bool:
+    # Unsloth's train-mode remote MoE (Kimi-Linear) gives unrouted experts zero gradients under CP;
+    # expert parallel blocks (ep_size > 1) keep the remote forward, so they do not.
+    if (getattr(block, "ep_size", 1) or 1) > 1:
+        return False
+    return getattr(getattr(type(block), "forward", None), "_unsloth_remote_moe_shim", False)
+
+
+def record_expert_tokens(block, token_counts) -> None:
+    # Per-expert routed token counts since the last optimizer step (no host sync). Only forwards
+    # that build a graph count: checkpoint recomputes count twice, which only matters as > 0.
+    if not torch.is_grad_enabled():
+        return
+    seen = block.__dict__.get("_unsloth_cp_expert_tokens")
+    block.__dict__["_unsloth_cp_expert_tokens"] = (
+        token_counts.detach().clone() if seen is None else seen.add_(token_counts)
+    )
+
+
+def drop_idle_expert_grads(blocks, group = None) -> int:
+    """Set .grad = None on experts (incl. their LoRA adapters) that no rank routed a token to since
+    the last optimizer step. Under CP they ran on no tokens so DDP sees a gradient, but the
+    single-process run leaves them None, so AdamW must not decay them or advance their state.
+    One all-reduce and one host sync for all layers. Returns the number of experts dropped."""
+    if not blocks:
+        return 0
+    counts = []
+    for block in blocks:
+        seen = block.__dict__.pop("_unsloth_cp_expert_tokens", None)
+        if seen is None:
+            device = next(block.experts.parameters()).device
+            seen = torch.zeros(len(block.experts), dtype = torch.long, device = device)
+        counts.append(seen.to(torch.long))
+    device = counts[0].device
+    total = torch.cat([c.to(device) for c in counts])
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(total, group = group)
+    idle = total.eq(0).tolist()
+    dropped = 0
+    offset = 0
+    for block in blocks:
+        for expert_index, expert in enumerate(block.experts):
+            if idle[offset + expert_index]:
+                for param in expert.parameters():
+                    param.grad = None
+                dropped += 1
+        offset += len(block.experts)
+    return dropped
+
+
+def install_idle_expert_grad_hook(
+    optimizer,
+    model,
+    group = None,
+) -> bool:
+    """Once per optimizer: a step pre-hook running drop_idle_expert_grads over model's every-expert
+    MoE blocks. It runs after backward (DDP reduction) and all gradient accumulation micro-steps."""
+    while not isinstance(optimizer, torch.optim.Optimizer) or (
+        # accelerate's AcceleratedOptimizer subclasses Optimizer but steps the one it wraps.
+        isinstance(getattr(optimizer, "optimizer", None), torch.optim.Optimizer)
+    ):
+        optimizer = getattr(optimizer, "optimizer", None)
+        if optimizer is None:
+            return False
+    if optimizer.__dict__.get("_unsloth_idle_expert_hook") is not None:
+        return True
+    if not isinstance(model, torch.nn.Module):
+        return False
+    blocks = [
+        m
+        for m in model.modules()
+        if isinstance(getattr(m, "experts", None), torch.nn.ModuleList) and _runs_every_expert(m)
+    ]
+    if not blocks:
+        return False
+    blocks = [weakref.ref(b) for b in blocks]
+
+    def hook(_optimizer, _args, _kwargs):
+        drop_idle_expert_grads([b for b in (ref() for ref in blocks) if b is not None], group)
+
+    optimizer.__dict__["_unsloth_idle_expert_hook"] = optimizer.register_step_pre_hook(hook)
+    return True
 
 
 def _supports_context_parallel(model, backend = "ring") -> bool:
@@ -231,9 +427,10 @@ def _supports_context_parallel(model, backend = "ring") -> bool:
     mixers = _stateful_mixers(model)
     return (
         backend == "ulysses"
-        and bool(mixers)
-        and all(is_ulysses_gated_delta(m) for m, _ in mixers)
-        and all(type(m).__name__ in GATED_DELTA_ATTENTION_CLASSES for m in modules)
+        and bool(modules)
+        and all(is_ulysses_mixer(m) for m, _ in mixers)
+        # Kimi-Linear and MiniMax name their linear attention layers self_attn too.
+        and all(type(m).__name__ in _ULYSSES_CLASSES for m in modules if not is_ulysses_mixer(m))
         and _hybrid_config_blocker(model) is None
     )
 
@@ -248,14 +445,14 @@ def _check_stateful_mixers(model, backend, size) -> None:
             f"Unsloth: ring context parallelism cannot split the sequential scans of {kinds}; "
             "use context_parallel_backend = 'ulysses'."
         )
-    unsupported = sorted({type(m).__name__ for m, _ in mixers if not is_ulysses_gated_delta(m)})
+    unsupported = sorted({type(m).__name__ for m, _ in mixers if not is_ulysses_mixer(m)})
     if unsupported:
         raise NotImplementedError(
-            "Unsloth: Ulysses context parallelism supports Gated DeltaNet linear attention only, "
-            f"not {unsupported}."
+            "Unsloth: Ulysses context parallelism supports Gated DeltaNet, Kimi delta and "
+            f"Lightning linear attention only, not {unsupported}."
         )
     for module, _ in mixers:
-        check_gated_delta_heads(module, size)
+        check_ulysses_mixer_heads(module, size)
 
 
 def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):
@@ -298,12 +495,19 @@ class ContextParallelManager:
     def attach_attention_hooks(self, model: torch.nn.Module) -> None:
         if self.backend == "ulysses":
             for module, _ in _stateful_mixers(model):
-                if is_ulysses_gated_delta(module):
-                    wrap_gated_delta_forward(module, get_cp_manager)
+                if is_ulysses_mixer(module):
+                    wrap_ulysses_mixer_forward(module, get_cp_manager)
             for name, module in model.named_modules():
                 if (
                     name.endswith("self_attn")
-                    and type(module).__name__ in GATED_DELTA_ATTENTION_CLASSES
+                    and type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+                ):
+                    wrap_deepseek_attention_forward(module, get_cp_manager)
+                    _ddp_ignore_indexer(model, name, module)
+                    _keep_layer_out_of_block_compile(model, name)
+                elif (
+                    name.endswith("self_attn")
+                    and type(module).__name__ in ULYSSES_ATTENTION_CLASSES
                 ):
                     install_hf_attention_wrapper(
                         module, module.config._attn_implementation, get_cp_manager
@@ -739,6 +943,18 @@ def _check_cp_runtime(self, size: int, backend: str) -> None:
         )
 
 
+def _runs_hf_ulysses_attention(model, backend) -> bool:
+    # Attention the RL hooks do not shard: Hugging Face forwards wrapped for Ulysses, not Llama-style.
+    from .models.llama import LlamaAttention_fast_forward, runs_fast_forward
+    if backend != "ulysses" or not isinstance(model, torch.nn.Module):
+        return False
+    return any(
+        type(m).__name__ in _ULYSSES_CLASSES
+        and not runs_fast_forward(m, LlamaAttention_fast_forward)
+        for m in model.modules()
+    )
+
+
 def _check_cp_model(
     model,
     size: int,
@@ -747,6 +963,8 @@ def _check_cp_model(
 ) -> None:
     model_config = getattr(model, "config", None)
     unsupported = _unsupported_attention(model_config, backend)
+    if unsupported is None and backend == "ulysses" and _fast_forward_drops_window(model):
+        unsupported = "sliding window attention through Llama's fast forward"
     if unsupported is not None:
         raise NotImplementedError(
             f"Unsloth: {backend} context parallelism does not support {unsupported}."
@@ -754,25 +972,26 @@ def _check_cp_model(
     if backend == "ulysses":
         # Every rank raises here, before any collective.
         text_config = getattr(model_config, "text_config", None) or model_config
-        ulysses_head_plan(
-            text_config.num_attention_heads,
-            getattr(text_config, "num_key_value_heads", None) or text_config.num_attention_heads,
-            size,
-        )
-    if _stateful_mixers(model) and not allow_hybrids:
+        for heads, kv_heads in _attention_head_counts(text_config):
+            ulysses_head_plan(heads, kv_heads, size)
+    # MiniMax-M2 and DeepSeek have no stateful mixer but run on the same Ulysses path.
+    hf_ulysses = _runs_hf_ulysses_attention(model, backend)
+    if (_stateful_mixers(model) or hf_ulysses) and not allow_hybrids:
         raise NotImplementedError(
-            "Unsloth: DPO / GRPO context parallelism does not support Gated DeltaNet hybrids yet."
+            "Unsloth: DPO / GRPO context parallelism supports Llama-style attention only, not "
+            "linear attention hybrids or Ulysses-only attention yet."
         )
     _check_stateful_mixers(model, backend, size)
-    blocker = _hybrid_config_blocker(model) if _stateful_mixers(model) else None
+    blocker = _hybrid_config_blocker(model) if _stateful_mixers(model) or hf_ulysses else None
     if blocker is not None:
         raise NotImplementedError(
-            f"Unsloth: context parallelism on Gated DeltaNet hybrids does not support {blocker}."
+            f"Unsloth: Ulysses context parallelism does not support {blocker}."
         )
     if not _supports_context_parallel(model, backend):
         raise NotImplementedError(
             "Unsloth: context parallelism currently supports Llama-style attention "
-            "(Llama, Qwen2, Gemma), and Qwen3-Next / Qwen3.5 Gated DeltaNet hybrids with Ulysses."
+            "(Llama, Qwen2, Gemma), and with Ulysses Qwen3-Next / Qwen3.5, Kimi-Linear, "
+            "MiniMax (M1 hybrids, M2), DeepSeek (V2 / V3 MLA, V3.2, V4) and Gemma 4 text."
         )
 
 
@@ -1078,6 +1297,9 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             # Without gradient checkpointing the model would build a cache for the sharded scans.
             if hasattr(inputs, "setdefault"):
                 inputs.setdefault("use_cache", False)
+            install_idle_expert_grad_hook(
+                getattr(self, "optimizer", None), getattr(self, "model", None)
+            )
         # Forward and backward both inside, so gradient checkpointing recomputes with ring attention.
         with manager.apply(inputs) if manager else contextlib.nullcontext():
             return original_training_step(self, model, inputs, *args, **kwargs)
@@ -1571,6 +1793,8 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
                 return original(self, *args, **kwargs)
             for decoder in _decoders(self.model):
                 decoder._unsloth_cp_rl_stack.clear()
+            if name == "training_step":
+                install_idle_expert_grad_hook(getattr(self, "optimizer", None), self.model)
             # Backward, and checkpoint recompute in it, run Ulysses attention too, so the scope spans them.
             with _manager_scope(manager if activate_at_step else None):
                 return original(self, *args, **kwargs)

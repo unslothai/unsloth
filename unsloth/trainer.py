@@ -1910,6 +1910,16 @@ def _patch_sft_trainer_auto_packing(trl_module):
         is_ring_context_parallel = (getattr(config_arg, "context_parallel_size", 1) or 1) > 1 and (
             getattr(config_arg, "context_parallel_backend", None) or "ring"
         ) == "ring"
+        # Kimi delta, Lightning and DeepSeek V3.2 / V4 Ulysses forwards refuse packed batches: an automatic
+        # padding-free choice would fail the first CP step.
+        ulysses_packing_blocker = None
+        if (
+            (getattr(config_arg, "context_parallel_size", 1) or 1) > 1
+            and getattr(config_arg, "context_parallel_backend", None) == "ulysses"
+            and not _packing_gate_deferred
+        ):
+            from .context_parallel import ulysses_packing_blocker as _ulysses_packing_blocker
+            ulysses_packing_blocker = _ulysses_packing_blocker(model)
         boundary_blocker = packing_boundary_blocker(model, model_types)
         # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
         eval_logits_wanted = os.environ.get(
@@ -1918,6 +1928,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
         blocked = (
             (data_collator is not None)
             or is_ring_context_parallel
+            or ulysses_packing_blocker is not None
             or (is_processor and not processor_text_only)
             or is_auto_processor_vlm
             or is_vision_dataset
@@ -1948,9 +1959,11 @@ def _patch_sft_trainer_auto_packing(trl_module):
             if hasattr(config_arg, "padding_free"):
                 setattr(config_arg, "padding_free", False)
         # TRL resolves eval_packing on its own; packed eval batches would hit ring attention's varlen refusal.
-        if (is_ring_context_parallel or boundary_blocker is not None) and getattr(
-            config_arg, "eval_packing", None
-        ):
+        if (
+            is_ring_context_parallel
+            or ulysses_packing_blocker is not None
+            or boundary_blocker is not None
+        ) and getattr(config_arg, "eval_packing", None):
             setattr(config_arg, "eval_packing", False)
 
         if blocked and requested_pack:
@@ -1969,6 +1982,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
             elif is_ring_context_parallel:
                 reason = "ring context parallelism"
+            elif ulysses_packing_blocker is not None:
+                reason = (
+                    f"Ulysses context parallelism: {ulysses_packing_blocker} refuses packed batches"
+                )
             elif boundary_blocker is not None:
                 reason = f"{boundary_blocker} mixes tokens across packed documents"
             elif forward_rejects_packing:
