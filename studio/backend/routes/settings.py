@@ -2961,6 +2961,40 @@ def update_openai_auto_switch_override(
     return ModelOverridesResponse(overrides = get_model_overrides(), removed_keys = removed_keys)
 
 
+class ModelGgufPreferencePayload(BaseModel):
+    """One model's default API quant; None restores the normal quant selection."""
+
+    model_id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
+    gguf_variant: Optional[str] = Field(default = None, max_length = MAX_GGUF_VARIANT_KEY_LEN)
+
+
+class ModelGgufPreferenceResponse(BaseModel):
+    gguf_variant: Optional[str] = None
+
+
+@_account_settings_router.get("/model-gguf-preference", response_model = ModelGgufPreferenceResponse)
+def get_model_gguf_preference_route(
+    model_id: str, current_subject: str = Depends(get_current_subject)
+) -> ModelGgufPreferenceResponse:
+    """Read the acting account's preferred API quant for the given model identity."""
+    from utils.model_gguf_preferences import get_model_gguf_preference
+    return ModelGgufPreferenceResponse(gguf_variant = get_model_gguf_preference(model_id))
+
+
+@_account_settings_router.put("/model-gguf-preference", response_model = ModelGgufPreferenceResponse)
+def update_model_gguf_preference_route(
+    payload: ModelGgufPreferencePayload, current_subject: str = Depends(get_current_subject)
+) -> ModelGgufPreferenceResponse:
+    """Save or clear one API default without touching launch settings or other models."""
+    from utils.model_gguf_preferences import set_model_gguf_preference
+
+    try:
+        variant = set_model_gguf_preference(payload.model_id, payload.gguf_variant)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return ModelGgufPreferenceResponse(gguf_variant = variant)
+
+
 class ModelSamplingDefaultsPayload(BaseModel):
     """One model's saved sampling defaults. A null or missing field follows the model's recommendation;
     all of them null forgets the model."""
