@@ -251,6 +251,57 @@ def test_a_read_error_mid_scan_lists_nothing(monkeypatch):
     assert gallery.list_videos() == []
 
 
+def test_only_the_requested_shelf_is_statted(monkeypatch):
+    directory = gallery.gallery_dir()
+    for i in range(4):
+        _clip(directory, f"c{i}", 1_700_000_000 + i)
+    gallery_flags.set_flags_locked(directory, "c0", pinned = None, archived = True)
+    real = os.scandir
+    statted = []
+
+    class Entry:
+        def __init__(self, entry):
+            self._entry = entry
+            self.name = entry.name
+
+        def stat(self):
+            statted.append(self.name)
+            return self._entry.stat()
+
+        def is_file(self, **kwargs):
+            return self._entry.is_file(**kwargs)
+
+    class Scan:
+        def __init__(self, it):
+            self._it = it
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._it.close()
+
+        def __iter__(self):
+            return (Entry(e) for e in self._it)
+
+    monkeypatch.setattr(gallery.os, "scandir", lambda path: Scan(real(path)))
+    assert [r["id"] for r in gallery.list_videos(archived = True)] == ["c0"]
+    assert statted == ["c0.mp4"]
+
+
+def test_an_uppercase_name_keeps_the_full_check(monkeypatch):
+    directory = gallery.gallery_dir()
+    _clip(directory, "c1", 1_700_000_000)
+    (directory / "c1.mp4").rename(directory / "C2.MP4")
+    (directory / "c1.json").rename(directory / "C2.json")
+    monkeypatch.setattr(gallery, "_GLOB_FOLDS_CASE", True)
+    # Listed as on Windows; order_at is what video_path("C2") gives on this filesystem.
+    expected = os.stat(directory / "C2.mp4").st_mtime if (directory / "C2.mp4").is_file() else 0.0
+    [record] = gallery.list_videos()
+    assert record["id"] == "C2"
+    assert record["order_at"] == gallery_flags.order_rank({}, "C2", expected)
+
+
 def test_cache_stays_within_its_budget(monkeypatch):
     directory = gallery.gallery_dir()
     monkeypatch.setattr(gallery, "_SIDECAR_CACHE_MAX", 3)

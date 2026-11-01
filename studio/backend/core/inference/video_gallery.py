@@ -755,8 +755,8 @@ def _mtime(path: Path) -> float:
 _GLOB_FOLDS_CASE = os.name == "nt"
 
 
-def _listed_mp4s(directory: Path) -> list[tuple[str, float, bool]]:
-    """(stem, mtime, is regular file) per ``directory.glob("*.mp4")`` entry, in glob order."""
+def _listed_mp4s(directory: Path, keep: Callable[[str], bool]) -> list[tuple[str, float, bool]]:
+    """(stem, mtime, canonical regular file) per kept ``directory.glob("*.mp4")`` entry, in order."""
     found: list[tuple[str, float, bool]] = []
     with os.scandir(directory) as entries:
         try:
@@ -764,16 +764,18 @@ def _listed_mp4s(directory: Path) -> list[tuple[str, float, bool]]:
                 name = entry.name
                 if not (name.lower() if _GLOB_FOLDS_CASE else name).endswith(".mp4"):
                     continue
+                # Path.stem: a dot-led name (".mp4", "..mp4" on 3.14) can be all stem.
+                stem = Path(name).stem if name.startswith(".") else name[:-4]
+                if not keep(stem):
+                    continue
                 try:
                     mtime = entry.stat().st_mtime
                 except OSError:
                     mtime = 0.0
                 try:
-                    plain = entry.is_file(follow_symlinks = False)
+                    plain = name.endswith(".mp4") and entry.is_file(follow_symlinks = False)
                 except OSError:
                     plain = False
-                # Path.stem: a dot-led name (".mp4", "..mp4" on 3.14) can be all stem.
-                stem = Path(name).stem if name.startswith(".") else name[:-4]
                 found.append((stem, mtime, plain))
         except OSError:
             # Path.glob listed a failed read as empty.
@@ -791,12 +793,13 @@ def list_videos(
     """Pinned then newest-first; archived selects one shelf, does not widen it; valid filters run before slicing so has_more counts accepted clips"""
     try:
         directory = gallery_dir()
-        clips = _listed_mp4s(directory)
+        flags = gallery_flags.read(directory)
+        # Shelf split and pin sort use stems only, before any stat or sidecar read.
+        clips = _listed_mp4s(
+            directory, lambda stem: gallery_flags.is_archived(flags, stem) == archived
+        )
     except OSError:
         return []
-    flags = gallery_flags.read(directory)
-    # Shelf split and pin sort use stems only, before any sidecar read, keeping the early break.
-    clips = [c for c in clips if gallery_flags.is_archived(flags, c[0]) == archived]
     clips.sort(
         key = lambda c: (
             gallery_flags.pin_rank(flags, c[0]),
