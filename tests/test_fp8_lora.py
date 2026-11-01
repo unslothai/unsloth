@@ -453,3 +453,14 @@ def test_rowwise_lora_kernels_and_peft_path(rowwise):
     x = torch.randn(2, 8, 256).bfloat16().requires_grad_(True)
     base(x).float().sum().backward()
     assert x.grad is not None and torch.isfinite(x.grad).all()
+
+
+def test_loaded_adapter_is_converted_when_marked(monkeypatch):
+    # An adapter repo loads as a PeftModel and skips get_peft_model: mark_fp8_lora converts it directly.
+    model = _tiny_qwen3_peft()
+    calls = []
+    real = f8t.enable_fp8_lora
+    monkeypatch.setattr(f8t, "enable_fp8_lora", lambda m, r = None, **k: calls.append(r) or real(m, r, allow_cpu = True))
+    f8t.mark_fp8_lora(model, f8t.FP8_LORA_RECIPE)
+    assert calls == [f8t.FP8_LORA_RECIPE]
+    assert P.engaged(model)[f8t.FP8_LORA_RECIPE]["modules"] == 14

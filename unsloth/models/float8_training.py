@@ -475,12 +475,15 @@ def resolve_fp8_lora(
 
 
 def mark_fp8_lora(model, recipe):
-    """Remember the request on the loaded model; get_peft_model converts the LoRA bases."""
+    """Remember the request on the loaded model; get_peft_model converts the LoRA bases. A model that is
+    already a PeftModel (an adapter repo was loaded, so get_peft_model is skipped) is converted now."""
     if recipe is not None and model is not None:
         try:
             model._unsloth_fp8_lora_recipe = recipe
         except Exception:
             pass
+        if getattr(model, "peft_config", None):
+            enable_fp8_lora(model, recipe)
     return model
 
 
