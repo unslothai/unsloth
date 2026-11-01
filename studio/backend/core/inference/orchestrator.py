@@ -973,6 +973,26 @@ class InferenceOrchestrator:
                 idle_deadline = now + _SHUTDOWN_READER_IDLE_S
 
     @staticmethod
+    def _free_vram_mib() -> Optional[dict[int, int]]:
+        """Free MiB per visible device from fresh live telemetry, or None when unreadable."""
+        from utils.hardware import get_visible_gpu_utilization
+        try:
+            from utils.hardware import gpu_query
+
+            result: dict[int, int] = {}
+            # Consecutive samples are compared: a cached one would read as settled.
+            with gpu_query.fresh_reads():
+                devices = get_visible_gpu_utilization().get("devices", [])
+            for device in devices:
+                index = int(device["index"])
+                total = float(device["vram_total_gb"])
+                used = float(device["vram_used_gb"])
+                result[index] = max(int((total - used) * 1024), 0)
+            return result or None
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+
+    @staticmethod
     def _wait_for_worker_vram_settle(
         since_kill: float,
         *,
@@ -980,10 +1000,9 @@ class InferenceOrchestrator:
         max_wait: float = 2.0,
         interval: float = 0.25,
         tolerance_mib: int = 256,
+        before_kill_free_mib: Optional[dict[int, int]] = None,
     ) -> bool:
         """Poll cross-platform live telemetry until dead-worker VRAM stabilises."""
-        from utils.hardware import get_visible_gpu_utilization
-
         if since_kill <= 0:
             return not expected_free_gb
         deadline = time.monotonic() + max(max_wait, 0.0)
@@ -991,21 +1010,14 @@ class InferenceOrchestrator:
         def _probe() -> Optional[dict[int, int]]:
             if time.monotonic() >= deadline:
                 return None
-            try:
-                from utils.hardware import gpu_query
+            return InferenceOrchestrator._free_vram_mib()
 
-                result: dict[int, int] = {}
-                # Consecutive samples are compared: a cached one would read as settled.
-                with gpu_query.fresh_reads():
-                    devices = get_visible_gpu_utilization().get("devices", [])
-                for device in devices:
-                    index = int(device["index"])
-                    total = float(device["vram_total_gb"])
-                    used = float(device["vram_used_gb"])
-                    result[index] = max(int((total - used) * 1024), 0)
-                return result or None
-            except (KeyError, TypeError, ValueError, OverflowError):
-                return None
+        def _released(after: dict[int, int], before: dict[int, int]) -> bool:
+            return any(
+                after[index] - before[index]
+                >= max(tolerance_mib, int(max(after[index], before[index]) * 0.02))
+                for index in after
+            )
 
         previous = _probe()
         if not previous:
@@ -1022,7 +1034,16 @@ class InferenceOrchestrator:
 
         if _threshold_reached(previous):
             return True
-        observed_reclaim = False
+        # A release that landed before the first poll is still a release: without the pre-kill
+        # sample it read as stable-but-unreleased and the wait ran to its deadline.
+        observed_reclaim = bool(
+            before_kill_free_mib
+            and before_kill_free_mib.keys() == previous.keys()
+            and _released(previous, before_kill_free_mib)
+        )
+        # A release seen only against the pre-kill sample may be partial: ask for two stable polls.
+        stable_needed = 2 if observed_reclaim else 1
+        stable_run = 0
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -1031,12 +1052,9 @@ class InferenceOrchestrator:
             current = _probe()
             if not current or current.keys() != previous.keys():
                 return not expected_free_gb
-            if any(
-                current[index] - previous[index]
-                >= max(tolerance_mib, int(max(current[index], previous[index]) * 0.02))
-                for index in current
-            ):
+            if _released(current, previous):
                 observed_reclaim = True
+                stable_needed = 1
             if _threshold_reached(current):
                 return True
             stable = all(
@@ -1044,8 +1062,9 @@ class InferenceOrchestrator:
                 < max(tolerance_mib, int(max(current[index], previous[index]) * 0.02))
                 for index in current
             )
+            stable_run = stable_run + 1 if stable else 0
             # Stable low samples can precede delayed driver reclaim; trust stability only after a release.
-            if stable and observed_reclaim and not expected_mib:
+            if stable and observed_reclaim and not expected_mib and stable_run >= stable_needed:
                 return True
             previous = current
         return not expected_free_gb
@@ -2204,9 +2223,21 @@ class InferenceOrchestrator:
             # Always spawn fresh: unsloth patches torch internals, breaking getsource on reuse.
             had_worker_handle = self._proc is not None
             worker_shutdown_at = 0.0
+            before_kill_free_mib = None
             if self._ensure_subprocess_alive():
                 # _shutdown_subprocess cancels too and waits on worker exit, not a fixed sleep.
                 self._cancel_generation()
+                if post_handoff_expected_free_gb is None and not (
+                    len(resolved_gpu_ids or ()) == 1
+                    and isinstance(gpu_selection, dict)
+                    and gpu_selection.get("required_gb") is not None
+                ):
+                    # No free-VRAM target for the settle wait below: sample the live worker's
+                    # footprint so a release already finished by the first poll is recognised.
+                    try:
+                        before_kill_free_mib = self._free_vram_mib()
+                    except Exception:  # noqa: BLE001 - an unreadable sample keeps the plain settle wait
+                        before_kill_free_mib = None
                 if self._shutdown_subprocess() is False:
                     # Worker survived kill (wedged CUDA syscall); do not spawn a second over its GPU memory.
                     raise RuntimeError(
@@ -2232,6 +2263,7 @@ class InferenceOrchestrator:
                 settled = self._wait_for_worker_vram_settle(
                     worker_shutdown_at or time.monotonic(),
                     expected_free_gb = expected_free_gb,
+                    before_kill_free_mib = before_kill_free_mib,
                 )
                 if expected_free_gb is not None and not settled:
                     raise RuntimeError(
