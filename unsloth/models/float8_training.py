@@ -545,7 +545,45 @@ def _merge_with_master(
     base = getattr(self, "base_layer", None)
     if base is not None:
         _load_fp8_lora_kernels().restore_fp8_lora_master(base)
-    return getattr(type(self), _unsloth_method)(self, *args, **kwargs)
+    out = getattr(type(self), _unsloth_method)(self, *args, **kwargs)
+    state = base.__dict__.get("_unsloth_fp8_lora") if base is not None else None
+    if state is not None:
+        # PEFT adds the delta into weight.data in place (same storage and version): requantize now, so the
+        # next forward (compiled ones too) uses the merged weight.
+        state._key = None
+        state.refresh(base.weight)
+    return out
+
+
+def _move_adapter_with_master(self, adapter_name, *args, **kwargs):
+    """PEFT puts a new adapter on base_layer.weight's device, which is the host for an offloaded master: place it
+    on the fp8 compute device. DoRA reads the base weight in its forward, so a DoRA adapter brings the master
+    back to that device."""
+    out = type(self)._move_adapter_to_device_of_base_layer(self, adapter_name, *args, **kwargs)
+    base = getattr(self, "base_layer", None)
+    state = base.__dict__.get("_unsloth_fp8_lora") if base is not None else None
+    if state is None or not state.offloaded:
+        return out
+    if getattr(self, "use_dora", {}).get(adapter_name, False):
+        _load_fp8_lora_kernels().restore_fp8_lora_master(base)
+        return out
+    for name in tuple(getattr(self, "adapter_layer_names", ())) + tuple(
+        getattr(self, "other_param_names", ())
+    ):
+        layer = getattr(self, name, None)
+        if (
+            isinstance(layer, (torch.nn.ModuleDict, torch.nn.ParameterDict))
+            and adapter_name in layer
+        ):
+            layer[adapter_name] = (
+                layer[adapter_name].to(state.device)
+                if isinstance(layer, torch.nn.ModuleDict)
+                else torch.nn.Parameter(
+                    layer[adapter_name].data.to(state.device),
+                    requires_grad = layer[adapter_name].requires_grad,
+                )
+            )
+    return out
 
 
 def _restore_master_before_merge(lora_module):
@@ -558,6 +596,11 @@ def _restore_master_before_merge(lora_module):
             continue
         fn = functools.partial(_merge_with_master, _unsloth_method = method)
         object.__setattr__(lora_module, method, types.MethodType(fn, lora_module))
+    move = "_move_adapter_to_device_of_base_layer"
+    if move not in lora_module.__dict__ and callable(getattr(type(lora_module), move, None)):
+        object.__setattr__(
+            lora_module, move, types.MethodType(_move_adapter_with_master, lora_module)
+        )
 
 
 def enable_fp8_lora(
@@ -601,8 +644,10 @@ def enable_fp8_lora(
         if why is not None:
             skipped[name] = why
             continue
+        # DoRA's forward reads the base weight itself (its column norm), so it keeps the master on the device.
+        dora = any(getattr(module, "use_dora", {}).values())
         state = kernels.attach_fp8_lora_base(
-            base, offload = offload and uses.get(id(base.weight), 0) == 1
+            base, offload = offload and uses.get(id(base.weight), 0) == 1 and not dora
         )
         offloaded += int(state.offloaded)
         _restore_master_before_merge(module)

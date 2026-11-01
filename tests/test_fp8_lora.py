@@ -794,3 +794,81 @@ def test_compiled_fp8_lora_ops_are_counted():
     assert counts["unsloth::fp8_lora_fwd"] == 1 and counts["unsloth::fp8_lora_dgrad"] == 1, dict(
         counts
     )
+
+
+def test_merge_requantizes_the_fp8_copy(offload_on_cpu):
+    # Failing before: PEFT merges in place (same storage and version), so the fp8 cache kept the unmerged weight
+    # while PEFT stopped adding the adapter: the merged model dropped the adapter.
+    import copy
+
+    model = _tiny_qwen3_peft()
+    ref = copy.deepcopy(model)
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    f8t.enable_fp8_lora(model, allow_cpu = True)
+    ids = torch.randint(0, 256, (2, 32))
+    with torch.no_grad():
+        before = model(input_ids = ids).logits.float()
+        model.merge_adapter()
+        ref.merge_adapter()
+        merged = model(input_ids = ids).logits.float()
+        want = ref(input_ids = ids).logits.float()
+    # fp8 of the merged weight (this test's random adapter is large): about 0.1; the adapter dropped: above 1.
+    assert _rel(merged, want) < 0.3 and _rel(merged, before) < 0.3
+
+
+def test_dora_layers_keep_the_master_on_the_device(offload_on_cpu):
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+    from peft import LoraConfig, get_peft_model
+
+    torch.manual_seed(0)
+    config = Qwen3Config(
+        vocab_size = 256,
+        hidden_size = 128,
+        intermediate_size = 256,
+        num_hidden_layers = 1,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 32,
+    )
+    model = get_peft_model(
+        Qwen3ForCausalLM(config).to(torch.bfloat16),
+        LoraConfig(r = 8, target_modules = ["q_proj", "v_proj"], use_dora = True),
+    )
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    assert len(f8t.enable_fp8_lora(model, allow_cpu = True)) == 2
+    states = [
+        m.base_layer.__dict__["_unsloth_fp8_lora"] for m in model.modules() if hasattr(m, "lora_A")
+    ]
+    assert states and not any(s.offloaded for s in states)
+
+
+def test_an_added_adapter_lands_on_the_compute_device(offload_on_cpu, monkeypatch):
+    # Failing before: PEFT placed a new adapter on base_layer.weight's device, the host for an offloaded master.
+    from peft import LoraConfig
+
+    model = _tiny_qwen3_peft()
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    f8t.enable_fp8_lora(model, allow_cpu = True)
+    layers = [m for m in model.modules() if hasattr(m, "lora_A")]
+    compute = torch.device("meta")  # stands in for cuda; the master stays on the CPU host
+    for m in layers:
+        m.base_layer.__dict__["_unsloth_fp8_lora"].device = compute
+    moved = []
+    real_to = torch.nn.Module.to
+
+    def spy(self, *args, **kwargs):
+        if args and args[0] == compute:
+            moved.append(self)
+            return self
+        return real_to(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.nn.Module, "to", spy)
+    model.add_adapter("second", LoraConfig(r = 4, target_modules = ["q_proj"]))
+    added = [m for m in layers if "second" in m.lora_A]
+    assert added and all(any(x is m.lora_A["second"] for x in moved) for m in added)
+    monkeypatch.setattr(torch.nn.Module, "to", real_to)
+    for m in layers:
+        m.base_layer.__dict__["_unsloth_fp8_lora"].device = torch.device("cpu")
+    model.add_adapter("third", LoraConfig(r = 4, target_modules = ["v_proj"], use_dora = True))
+    dora = [m for m in layers if "third" in m.lora_A]
+    assert dora and not any(m.base_layer.__dict__["_unsloth_fp8_lora"].offloaded for m in dora)
