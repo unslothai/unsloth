@@ -33,6 +33,13 @@ from utils.current_date_prompt_settings import (
 )
 
 router = APIRouter()
+
+
+def _encode_json(value: Any) -> str:
+    """The SSE frame encoding; chat_generation_runs_db stores event payloads with the same options."""
+    return json.dumps(value, ensure_ascii = False, separators = (",", ":"))
+
+
 _EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(
     max_workers = 32,
     thread_name_prefix = "chat-generation-events",
@@ -453,6 +460,7 @@ async def chat_generation_events(
                 run_id,
                 cursor,
                 15,
+                True,
             )
             # Only non-chunk events carry the run, spliced in as already encoded text.
             run_json = None
@@ -465,16 +473,16 @@ async def chat_generation_events(
                 return
             for event in events:
                 cursor = int(event["seq"])
-                data = {
-                    "seq": cursor,
-                    "type": event["type"],
-                    "payload": event["payload"],
-                    "createdAt": event["createdAt"],
-                }
-                encoded = json.dumps(data, ensure_ascii = False, separators = (",", ":"))
-                if event["type"] != "chunk":
-                    encoded = f'{encoded[:-1]},"run":{run_json}}}'
-                yield f"id: {cursor}\nevent: {event['type']}\ndata: {encoded}\n\n"
+                event_type = event["type"]
+                # Spliced, not re-encoded: the stored payload is already this encoder's output, so the
+                # bytes match json.dumps of the parsed event dict with the same key order.
+                encoded = (
+                    f'{{"seq":{cursor},"type":{_encode_json(event_type)},'
+                    f'"payload":{event["payloadJson"]},"createdAt":{int(event["createdAt"])}'
+                )
+                if event_type != "chunk":
+                    encoded += f',"run":{run_json}'
+                yield f"id: {cursor}\nevent: {event_type}\ndata: {encoded}}}\n\n"
             if snapshot["status"] in db.TERMINAL_STATUSES and cursor >= int(
                 snapshot["lastEventSeq"]
             ):

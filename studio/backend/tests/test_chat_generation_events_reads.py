@@ -64,7 +64,9 @@ def test_chunk_only_batches_do_not_parse_the_request(running_run, monkeypatch):
     runs_db.finish_run("run-1", worker_token = running_run, status = "completed", finish_reason = "stop")
     original_list = runs_db.list_events
     monkeypatch.setattr(
-        runs_db, "list_events", lambda run_id, after = 0, limit = 1000: original_list(run_id, after, 1)
+        runs_db,
+        "list_events",
+        lambda run_id, after = 0, limit = 1000, **kwargs: original_list(run_id, after, 1, **kwargs),
     )
     full_reads = []
     original_get = runs_db.get_run
