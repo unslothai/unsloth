@@ -5,11 +5,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
-import threading
 
 import httpx
 import pytest
-from PIL import Image
+from PIL import Image, ImageFile
 
 import routes.inference as inference_routes
 from .test_diffusion_routes import (  # noqa: F401 -- client is a fixture
@@ -41,23 +40,23 @@ def _generate(client, n):
 def test_decode_runs_off_the_event_loop_and_keeps_provider_order(client, monkeypatch):
     sizes = [(64, 32), (16, 48), (40, 40)]
     _serve(monkeypatch, [_png(s, (i * 60, 10, 10)) for i, s in enumerate(sizes)])
-    seen = []
-    decode = inference_routes._decode_external_images
+    on_loop = []
+    load = ImageFile.ImageFile.load
 
-    def recording(encoded):
+    def recording(self):
         try:
             asyncio.get_running_loop()
-            seen.append("loop")
+            on_loop.append(True)
         except RuntimeError:
-            seen.append(threading.current_thread() is not threading.main_thread())
-        return decode(encoded)
+            on_loop.append(False)
+        return load(self)
 
-    monkeypatch.setattr(inference_routes, "_decode_external_images", recording)
+    monkeypatch.setattr(ImageFile.ImageFile, "load", recording)
     resp = _generate(client, len(sizes))
     assert resp.status_code == 200, resp.text
     assert [(i["width"], i["height"]) for i in resp.json()["images"]] == sizes
     assert [i["batch_index"] for i in resp.json()["images"]] == [0, 1, 2]
-    assert seen == [True]
+    assert on_loop[: len(sizes)] == [False] * len(sizes)
 
 
 def test_decode_helper_loads_every_image_in_order():

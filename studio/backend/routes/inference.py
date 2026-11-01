@@ -48559,7 +48559,7 @@ async def _external_image_generation(
                     raise
                 from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
                 raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG) from None
-            # Decoding a batch of large PNGs takes 100s of ms: off the event loop, like the save below.
+            # Decode blocks for tens of ms per image: off the loop, like the save below.
             images = await asyncio.to_thread(_decode_external_images, encoded)
         except HTTPException:
             raise
