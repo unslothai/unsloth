@@ -871,14 +871,15 @@ def test_a_json_rpc_error_from_the_probe_keeps_the_session(monkeypatch, clients)
 
 
 class RestartedServer(RecordingClient):
-    """The mcp SDK maps a 404 for an unknown Mcp-Session-Id to this synthetic error."""
+    """Answers like a server that no longer knows the Mcp-Session-Id (HTTP 404)."""
 
     terminated = False
+    gone = (32600, "Session terminated")
 
     async def list_tools_mcp(self):
         if self.terminated:
             self.probes += 1
-            raise _protocol_error(32600, "Session terminated")
+            raise _protocol_error(*self.gone)
         return await super().list_tools_mcp()
 
     async def call_tool(
@@ -888,12 +889,20 @@ class RestartedServer(RecordingClient):
         raise_on_error: bool = True,
     ):
         if self.terminated:
-            raise _protocol_error(32600, "Session terminated")
+            raise _protocol_error(*self.gone)
         return await super().call_tool(name, args, raise_on_error)
 
 
-@pytest.fixture
-def restarted(monkeypatch, clients):
+@pytest.fixture(
+    params = [
+        (32600, "Session terminated"),  # mcp 1.x client stand-in
+        (-32600, "Session terminated"),  # mcp 2.x client stand-in
+        (-32600, "Session not found"),  # Python SDK server body, relayed by mcp 2.x
+        (-32001, "Session not found"),  # TypeScript SDK server body, relayed by mcp 2.x
+    ]
+)
+def restarted(request, monkeypatch, clients):
+    monkeypatch.setattr(RestartedServer, "gone", request.param)
     monkeypatch.setattr(
         mcp_client,
         "_client",
@@ -925,7 +934,7 @@ def test_a_terminated_session_is_replayed_only_once(monkeypatch, restarted):
     _call(HTTP_URL, scope = SCOPE)
     monkeypatch.setattr(RestartedServer, "terminated", True)
     out = _call(HTTP_URL, scope = SCOPE)
-    assert "Session terminated" in out, out
+    assert RestartedServer.gone[1] in out, out
     assert len(restarted) == 2, f"reconnected {len(restarted) - 1} times"
     assert mcp_client._mcp_sessions == {}
 
