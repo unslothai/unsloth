@@ -1110,16 +1110,32 @@ def _release_tuple(ver) -> tuple[int, int, int] | None:
     return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)) if m else None
 
 
+def _remote_code_saving_version(cfg: dict) -> str | None:
+    """Top-level ``transformers_version``, else the newest one on a nested sub-config."""
+    ver = cfg.get("transformers_version")
+    if isinstance(ver, str):
+        return ver
+    # LFM3-Audio-2B saves it only on its nested sub-configs (``lfm``, ``depthformer``).
+    nested = [
+        sub.get("transformers_version")
+        for sub in cfg.values()
+        if isinstance(sub, dict) and _release_tuple(sub.get("transformers_version"))
+    ]
+    return max(nested, key = _release_tuple, default = None)
+
+
 def _remote_code_min_version(cfg: dict | None) -> tuple[int, int, int] | None:
     """Saving transformers 5.x version of a custom-code (``auto_map`` AutoConfig) config, else None."""
-    if not isinstance(cfg, dict) or not _config_saved_by_transformers_5(cfg):
+    if not isinstance(cfg, dict):
         return None
     auto_map = cfg.get("auto_map")
     if not isinstance(auto_map, dict) or "AutoConfig" not in auto_map:
         return None
-    v = _release_tuple(cfg.get("transformers_version"))
+    v = _release_tuple(_remote_code_saving_version(cfg))
+    if v is None or v[0] < 5:
+        return None
     # Patch releases keep remote-code APIs: 5.5.4 still fits the 5.5.0 default.
-    return (v[0], v[1], 0) if v else None
+    return (v[0], v[1], 0)
 
 
 def _remote_code_tier(cfg: dict | None) -> str | None:
@@ -1159,7 +1175,7 @@ def _route_remote_code(
         "Transformers tier %s selected for %s (custom code saved by transformers %s)",
         tier,
         model_name,
-        cfg.get("transformers_version"),
+        _remote_code_saving_version(cfg),
     )
     return tier
 
