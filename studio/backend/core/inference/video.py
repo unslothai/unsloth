@@ -11800,6 +11800,7 @@ class VideoBackend:
         audio_flow_shift: Optional[float] = None,
         video_id: Optional[str] = None,
         decoded_reference_audios: Optional[Any] = None,
+        decoded_reference_images: Optional[Any] = None,
         expected_state: Optional[object] = None,
         live_preview: Optional[bool] = None,
         before_commit: Optional[Callable[[], None]] = None,
@@ -11828,8 +11829,20 @@ class VideoBackend:
                     resolved_reference_images = [input_reference]
                 else:
                     resolved_first_frame = input_reference
+            # The route's readability decodes, one input slot each, in the order decoded below.
+            image_kwargs = (
+                {"decoded_images": decoded_reference_images.pool()}
+                if decoded_reference_images is not None
+                else {}
+            )
             first_pil, last_pil, canvas_w, canvas_h, conditioning = self._resolve_keyframes(
-                state.family, state.h3_task, resolved_first_frame, last_frame, width, height
+                state.family,
+                state.h3_task,
+                resolved_first_frame,
+                last_frame,
+                width,
+                height,
+                **image_kwargs,
             )
             references = self._resolve_references(
                 state.family,
@@ -11842,6 +11855,7 @@ class VideoBackend:
                 canvas_w,
                 canvas_h,
                 decoded_audios = decoded_reference_audios,
+                **image_kwargs,
             )
             shift, audio_shift = self._resolve_flow_shifts(
                 state.family, state.engine, flow_shift, audio_flow_shift
@@ -13064,6 +13078,8 @@ class VideoBackend:
         last_frame: Optional[str],
         width: Optional[int],
         height: Optional[int],
+        *,
+        decoded_images: Optional[list] = None,
     ) -> tuple[Any, Any, int, int, str]:
         """Decode keyframes onto one shared canvas; omitting both dimensions matches the source aspect."""
         validate_video_keyframe_conditioning(
@@ -13074,13 +13090,17 @@ class VideoBackend:
         )
         if fam.name == "ltx-2.5":
             return VideoBackend._resolve_ltx25_first_frame(
-                fam, first_frame, last_frame, width, height
+                fam, first_frame, last_frame, width, height, decoded_images = decoded_images
             )
         first = last = None
         if first_frame or last_frame:
-            from .diffusion import decode_b64_image
-            first = decode_b64_image(first_frame, mode = "RGB") if first_frame else None
-            last = decode_b64_image(last_frame, mode = "RGB") if last_frame else None
+            from .video_minimax_h3 import take_decoded_image
+
+            limits = dict(max_side = 4096, max_pixels = None)  # decode_b64_image's defaults
+            first = (
+                take_decoded_image(decoded_images, first_frame, **limits) if first_frame else None
+            )
+            last = take_decoded_image(decoded_images, last_frame, **limits) if last_frame else None
         # i2v pipelines centre-crop onto the nearest-aspect preset, as the reference workflow does.
         i2v_pipeline = video_family_uses_i2v_pipeline(fam)
         if first is not None:
@@ -13116,6 +13136,8 @@ class VideoBackend:
         last_frame: Optional[str],
         width: Optional[int],
         height: Optional[int],
+        *,
+        decoded_images: Optional[list] = None,
     ) -> tuple[Any, Any, int, int, str]:
         """LTX-2.5 image-to-video: a first frame only, on a "match source" canvas when no size is given."""
         from .video_ltx25 import ltx25_canvas_for_aspect, prepare_ltx25_first_frame
@@ -13126,8 +13148,8 @@ class VideoBackend:
             )
         first = None
         if first_frame:
-            from .diffusion import decode_b64_image
-            first = decode_b64_image(first_frame, mode = "RGB")
+            from .video_minimax_h3 import take_decoded_image
+            first = take_decoded_image(decoded_images, first_frame, max_side = 4096, max_pixels = None)
         if (width is None or height is None) and first is not None:
             width, height = ltx25_canvas_for_aspect(*first.size)
         else:
@@ -13167,6 +13189,7 @@ class VideoBackend:
         height: int,
         *,
         decoded_audios: Optional[Any] = None,
+        decoded_images: Optional[list] = None,
     ) -> Any:
         """Sizing is settled here so both engines' min(1, ...) scales are no-ops; native refuses max."""
         from .video_minimax_h3 import (
@@ -13190,13 +13213,13 @@ class VideoBackend:
             return MiniMaxH3References()
         policy = (reference_image_size or H3_REF_SIZE_MATCH).strip().lower()
 
-        from .diffusion import decode_b64_image
+        from .video_minimax_h3 import take_decoded_image
 
         fitted_images = tuple(
             fit_h3_reference_image(
-                decode_b64_image(
+                take_decoded_image(
+                    decoded_images,
                     item,
-                    mode = "RGB",
                     max_side = H3_REF_IMAGE_SOURCE_MAX_SIDE,
                     max_pixels = H3_REF_IMAGE_SOURCE_MAX_PIXELS,
                 ),
