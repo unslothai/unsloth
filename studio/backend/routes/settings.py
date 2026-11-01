@@ -4560,6 +4560,11 @@ def _is_bundled_avatar_url(value: str) -> bool:
     return path[path.index(marker) :].lower().endswith(".png")
 
 
+_GREETING_DATA_URL_PATTERN = r"^data:image/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$"
+MAX_GREETING_ICON_DATA_URL_LENGTH = 96 * 1024
+MAX_GREETING_IMAGE_DATA_URL_LENGTH = MAX_AVATAR_DATA_URL_BYTES
+
+
 class PersonalizationProfile(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
@@ -4568,6 +4573,25 @@ class PersonalizationProfile(BaseModel):
     avatarDataUrl: Optional[str] = Field(None, max_length = MAX_AVATAR_DATA_URL_BYTES)
     avatarShape: Literal["circle", "rounded"] = "circle"
     showGreetingSloth: bool = True
+    greetingStyle: Literal["text", "image"] = "text"
+    greetingIcon: Literal["sloth", "custom", "none"] = "sloth"
+    greetingIconDataUrl: Optional[str] = Field(
+        None,
+        max_length = MAX_GREETING_ICON_DATA_URL_LENGTH,
+        pattern = _GREETING_DATA_URL_PATTERN,
+    )
+    greetingText: str = Field("", max_length = 100)
+    greetingImageDataUrl: Optional[str] = Field(
+        None,
+        max_length = MAX_GREETING_IMAGE_DATA_URL_LENGTH,
+        pattern = _GREETING_DATA_URL_PATTERN,
+    )
+
+    @field_validator("greetingStyle", "greetingIcon", mode = "before")
+    @classmethod
+    def _known_greeting_choice(cls, value: object, info) -> object:
+        allowed = get_args(cls.model_fields[info.field_name].annotation)
+        return value if value in allowed else cls.model_fields[info.field_name].default
 
     @field_validator("avatarDataUrl")
     @classmethod
@@ -4865,6 +4889,7 @@ class PersonalizationResponse(PersonalizationPayload):
     sentAttachmentsSaved: bool = False
     paletteSaved: bool = False
     greetingSlothSaved: bool = False
+    greetingCustomSaved: bool = False
 
 
 @_account_settings_router.get("/personalization", response_model = PersonalizationResponse)
@@ -4884,6 +4909,7 @@ def get_personalization_settings(
     )
     response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
     response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
+    response.greetingCustomSaved = isinstance(profile, dict) and "greetingStyle" in profile
     return response
 
 
