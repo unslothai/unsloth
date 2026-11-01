@@ -371,6 +371,14 @@ jobs:
           export PW_BACKEND_PYTHON="$HOME/.unsloth/studio/unsloth_studio/bin/python"
           python tests/studio/playwright_mtp_download_visibility.py
 
+      - name: Check chat audio recording
+        if: matrix.shard == 'extra'
+        run: |
+          if [ ! -x studio/frontend/node_modules/.bin/vite ]; then
+            npm ci --prefix studio/frontend
+          fi
+          python tests/studio/playwright_chat_audio_recording.py
+
       - name: Reset auth + boot Unsloth
         if: matrix.shard == 'chat'
         run: |
