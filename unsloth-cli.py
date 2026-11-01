@@ -80,6 +80,13 @@ def _raw_text_loader_for_backend(
     )
 
 
+def _load_raw_text_file(RawTextDataLoader, tokenizer, is_mlx, args, path):
+    loader = _raw_text_loader_for_backend(
+        RawTextDataLoader, tokenizer, is_mlx, args.chunk_size, args.stride
+    )
+    return loader.load_from_file(path)
+
+
 def _train_with_legacy_save_control(trainer, is_mlx):
     if not is_mlx:
         return trainer.train()
@@ -279,13 +286,11 @@ def run(args):
     def load_dataset_smart(args):
         from transformers.utils import strtobool
         if args.raw_text_file:
-            loader = _raw_text_loader_for_backend(
-                RawTextDataLoader, tokenizer, is_mlx, args.chunk_size, args.stride
+            dataset = _load_raw_text_file(
+                RawTextDataLoader, tokenizer, is_mlx, args, args.raw_text_file
             )
-            dataset = loader.load_from_file(args.raw_text_file)
         elif args.dataset.endswith((".txt", ".md", ".json", ".jsonl")):
-            loader = _raw_text_loader_for_backend(RawTextDataLoader, tokenizer, is_mlx)
-            dataset = loader.load_from_file(args.dataset)
+            dataset = _load_raw_text_file(RawTextDataLoader, tokenizer, is_mlx, args, args.dataset)
         else:
             use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))
             if use_modelscope:
