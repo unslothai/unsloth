@@ -162,14 +162,18 @@ def _redacted_records(handle: IO[bytes], fd: int, limit: int, deadline: float) -
             break
         consumed += len(chunk)
         buffer += chunk
+        # Walks an offset instead of re-slicing the buffer per record, which copied the rest of
+        # the chunk once per line; the tail is sliced off once below.
+        position = 0
         while True:
             if time.monotonic() > deadline:
                 yield TRUNCATED_MARKER
                 return
-            newline = buffer.find(b"\n")
+            newline = buffer.find(b"\n", position)
             if newline == -1:
                 break
-            record, buffer = buffer[:newline], buffer[newline + 1 :]
+            record = buffer[position:newline]
+            position = newline + 1
             if dropping:
                 # The rest of a record already given up on.
                 dropping = False
@@ -179,6 +183,8 @@ def _redacted_records(handle: IO[bytes], fd: int, limit: int, deadline: float) -
                 yield OVERSIZED_MARKER
             else:
                 yield _redact_record(record)
+        if position:
+            buffer = buffer[position:]
         if len(buffer) > MAX_RECORD_BYTES:
             # A log with no newline at all must not be held in memory whole.
             dropping = True
@@ -273,10 +279,27 @@ def build_log_archive() -> tempfile.SpooledTemporaryFile:
                                     f"[skipped the first {skipped} bytes of this log]\n".encode()
                                 )
                             before = handle.tell()
+                            # Batched: one zipfile write per record spent more time in the
+                            # per-call CRC and compressor overhead than in deflate itself.
+                            pending: list[bytes] = []
+                            pending_bytes = 0
                             try:
                                 for record in _redacted_records(handle, fd, allowance, deadline):
-                                    destination.write((record + "\n").encode("utf-8"))
+                                    encoded = (record + "\n").encode("utf-8")
+                                    pending.append(encoded)
+                                    pending_bytes += len(encoded)
+                                    if pending_bytes >= STREAM_CHUNK_BYTES:
+                                        block = b"".join(pending)
+                                        pending.clear()
+                                        pending_bytes = 0
+                                        destination.write(block)
                             finally:
+                                # Flushed even when the reader raises, so a partial log keeps
+                                # every record it yielded.
+                                if pending:
+                                    block = b"".join(pending)
+                                    pending.clear()
+                                    destination.write(block)
                                 # Charged even on a partial read; inside the with because
                                 # tell() needs an open handle.
                                 remaining -= max(0, handle.tell() - before)
