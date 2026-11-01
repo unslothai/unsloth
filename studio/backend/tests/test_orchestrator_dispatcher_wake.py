@@ -61,8 +61,7 @@ def test_stray_wake_is_invisible_to_every_reader(monkeypatch):
 
 
 def test_restarted_dispatcher_skips_a_stray_wake_and_keeps_order(monkeypatch):
-    # A wake left by a stop that raced a real reply must neither stop the next dispatcher on the
-    # same worker nor reach or reorder a mailbox.
+    # A stray wake must not stop the next dispatcher or reach / reorder a mailbox.
     monkeypatch.setattr(orch_mod, "_DISPATCH_POLL_INTERVAL", 0.05)
     q = queue.Queue()
     o = _with_queue(q)
