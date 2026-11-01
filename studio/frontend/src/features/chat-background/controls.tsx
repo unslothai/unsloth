@@ -41,6 +41,7 @@ import {
 } from "./storage";
 import { canvasBlob, decodeImage } from "./image";
 import { useMaterialStore } from "./material";
+import { MATERIAL_LABELS } from "./material-labels";
 
 const labels: Record<BackgroundEffect, TranslationKey> = {
 	None: "chatBackground.none",
@@ -55,43 +56,60 @@ const sizingLabels: Record<ImageSizing, TranslationKey> = {
 	stretch: "chatBackground.stretch",
 	original: "chatBackground.original",
 };
-const materialLabels: Record<WindowMaterial, TranslationKey> = {
-	solid: "chatBackground.materialSolid",
-	transparent: "chatBackground.materialTransparent",
-	frosted: "chatBackground.materialFrosted",
-	blurred: "chatBackground.materialBlurred",
-	liquid: "chatBackground.materialLiquid",
-	"liquid-3d": "chatBackground.materialLiquid3d",
-};
-function MaterialRow({ hasImage }: { hasImage: boolean }) {
+function GlassStyleRow() {
 	const t = useT();
-	const { material, setMaterial } = useMaterialStore();
-	const note =
-		material !== "solid" && !hasImage ? "chatBackground.materialNeedsImage" : null;
+	const { style, setMaterial } = useMaterialStore();
+	const options = MATERIALS.filter((m) => m !== "solid");
 	return (
 		<SettingsRow
-			label={t("chatBackground.material")}
-			description={note ? t(note) : t("chatBackground.materialDescription")}
+			label={t("chatBackground.materialStyle")}
 		>
 			<Select
-				value={material}
+				value={style}
 				onValueChange={(next) => setMaterial(next as WindowMaterial)}
 			>
 				<SelectTrigger
-					aria-label={t("chatBackground.material")}
+					aria-label={t("chatBackground.materialStyle")}
 					className="w-52"
 				>
 					<SelectValue />
 				</SelectTrigger>
 				<SelectContent>
-					{MATERIALS.map((m) => (
+					{options.map((m) => (
 						<SelectItem key={m} value={m}>
-							{t(materialLabels[m])}
+							{t(MATERIAL_LABELS[m])}
 						</SelectItem>
 					))}
 				</SelectContent>
 			</Select>
 		</SettingsRow>
+	);
+}
+/** Glass has its own section, switched from its heading; it works over the background image or the
+    built-in backdrop. */
+export function GlassControls() {
+	const t = useT();
+	const { material, setEnabled } = useMaterialStore();
+	const on = material !== "solid";
+	return (
+		<SettingsSection
+			title={t("chatBackground.glassTheme")}
+			action={
+				<Switch
+					aria-label={t("chatBackground.glassTheme")}
+					checked={on}
+					onCheckedChange={setEnabled}
+				/>
+			}
+		>
+			{on && (
+				<>
+					<GlassStyleRow />
+					<MaterialStrengthRow />
+					<MaterialMenusRow />
+				</>
+			)}
+		</SettingsSection>
 	);
 }
 function MaterialMenusRow() {
@@ -240,9 +258,6 @@ export function ChatBackgroundControls() {
 					}
 				}}
 			/>
-			<MaterialRow hasImage={Boolean(value)} />
-			<MaterialStrengthRow />
-			<MaterialMenusRow />
 			{error && (
 				<p role="alert" className="mt-3 mb-3 text-sm text-destructive">
 					{t(errors[error])}

@@ -33,6 +33,39 @@ export function sanitizeStrength(value: unknown): number {
 		? Math.max(0, Math.min(100, Math.round(value)))
 		: 50;
 }
+/** Relative luminance of the image's darker quarter, its middle and its brighter quarter. */
+export type ImageTone = { lo: number; mid: number; hi: number };
+export function toneOf(values: number[]): ImageTone {
+	const sorted = [...values].sort((a, b) => a - b);
+	const at = (q: number) =>
+		sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? 0;
+	return { lo: at(0.25), mid: at(0.5), hi: at(0.75) };
+}
+
+const clamp = (v: number, lo: number, hi: number) =>
+	Math.max(lo, Math.min(hi, v));
+
+/**
+* How opaque glass panes must be for their text to read over this image, and (light mode) how far to
+* shade them so a pane still stands apart from a light image. Dark mode: light text needs the pane
+* under ~0.15 luminance over the image's bright quarter. Light mode: dark text needs it over ~0.5 over
+* the dark quarter, taking the pane colour as ~0.9.
+*/
+export function glassReadability(
+	tone: ImageTone,
+	dark: boolean,
+): { floor: number; shade: number } {
+	if (dark)
+		return {
+			floor: clamp(1 - 0.15 / Math.max(tone.hi, 1e-3), 0, 0.9),
+			shade: 0,
+		};
+	return {
+		floor:
+			tone.lo >= 0.5 ? 0 : clamp((0.5 - tone.lo) / (0.9 - tone.lo), 0, 0.85),
+		shade: clamp((tone.mid - 0.45) / 0.4, 0, 1) * 0.12,
+	};
+}
 export const IMAGE_SIZING = [
 	"cover",
 	"contain",

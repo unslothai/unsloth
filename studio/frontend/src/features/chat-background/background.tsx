@@ -10,14 +10,15 @@ import { useChatBackground, setBackgroundError } from "./storage";
 import { acquireRender } from "./render";
 import { safeArtworkOpacity, type RGB } from "./contrast";
 import type { ChatBackgroundValue } from "./model";
+import { type ImageTone, glassReadability, measureTone } from "./tone";
 
 type Frame = { url: string; value: ChatBackgroundValue };
 // The window titlebar sits outside the wallpaper's subtree, so a ready wallpaper marks the root
 // rather than having CSS ask html:has(), which re-matches on every DOM change.
-const ROOT_READY = "data-chat-wallpaper-ready";
-const ROOT_WORKSPACE_READY = "data-chat-wallpaper-workspace-ready";
+export const ROOT_READY = "data-chat-wallpaper-ready";
+export const ROOT_WORKSPACE_READY = "data-chat-wallpaper-workspace-ready";
 const rootMarks = new Map<string, number>();
-function markRoot(names: string[]): () => void {
+export function markRoot(names: string[]): () => void {
 	const root = document.documentElement;
 	for (const name of names) {
 		rootMarks.set(name, (rootMarks.get(name) ?? 0) + 1);
@@ -182,13 +183,47 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 		[],
 	);
 	const shownReady = Boolean(value && active && frames.current);
+	const [appWallpaper, setAppWallpaper] = useState<HTMLDivElement | null>(null);
+	const [tone, setTone] = useState<ImageTone | null>(null);
+	const frameUrl = frames.current?.url;
+	useEffect(() => {
+		if (!frameUrl) return;
+		let cancelled = false;
+		measureTone(frameUrl)
+			.then((next) => {
+				if (!cancelled) setTone(next);
+			})
+			.catch(() => undefined);
+		return () => {
+			cancelled = true;
+		};
+	}, [frameUrl]);
+	useEffect(() => {
+		// Glass panes over the app's own wallpaper (menus included, which portal to <body>) stay readable.
+		if (!appWallpaper || !tone) return;
+		const root = document.documentElement;
+		const { floor, shade } = glassReadability(tone, !skin.light);
+		root.style.setProperty("--glass-read-floor", `${Math.round(floor * 100)}%`);
+		root.style.setProperty("--glass-shade", `${Math.round(shade * 100)}%`);
+		return () => {
+			root.style.removeProperty("--glass-read-floor");
+			root.style.removeProperty("--glass-shade");
+		};
+	}, [appWallpaper, tone, skin.light]);
 	useEffect(() => {
 		// Only the app's own wallpaper drives the titlebar; a settings preview never marks the root.
 		const parent = host.current?.parentElement;
 		if (!shownReady || !parent) return;
 		const workspace = parent.hasAttribute("data-wallpaper-workspace");
+		if (workspace) setAppWallpaper(host.current);
 		if (!workspace && !parent.hasAttribute("data-chat-content-root")) return;
-		return markRoot(workspace ? [ROOT_READY, ROOT_WORKSPACE_READY] : [ROOT_READY]);
+		const unmark = markRoot(
+			workspace ? [ROOT_READY, ROOT_WORKSPACE_READY] : [ROOT_READY],
+		);
+		return () => {
+			unmark();
+			setAppWallpaper(null);
+		};
 	}, [shownReady]);
 	if (!value || !active) return null;
 	return (
