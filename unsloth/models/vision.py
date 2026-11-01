@@ -4277,8 +4277,6 @@ class FastBaseModel:
             ),
         )
 
-        device_map = exclude_no_placement_params(device_map, model_class, auto_config)
-
         if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
@@ -4334,6 +4332,8 @@ class FastBaseModel:
         if (_offload_layers or _embedding_needed) and _block_swap_device is not None:
             # A placement strategy would spill the host-bound weights to the CPU, which 4-bit loads refuse.
             device_map = {"": _block_swap_device}
+        # After the Block Swap decisions: they need the one-card map, and the CPU-kept table makes it two devices.
+        device_map = exclude_no_placement_params(device_map, model_class, auto_config)
         _block_swap_state = None
 
         # Prefetch the repo (killable child) so the in-process load is a cache hit. vLLM owns the download only when actually available; if it was requested but is missing, the load falls through in-process, so warm the weights here.
