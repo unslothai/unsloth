@@ -2063,10 +2063,14 @@ export const it = {
         label: "Tipo di installazione",
         description:
           "Solo chat (GGUF). L'installazione completa aggiunge addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini.",
+        descriptionCpu:
+          "Solo chat (GGUF). Non è stata trovata una GPU supportata, quindi l'installazione completa aggiunge l'addestramento sulla CPU.",
         action: "Passa all'installazione completa",
         confirmTitle: "Passare all'installazione completa?",
         confirmDescription:
           "Questa installazione solo chat esegue modelli GGUF. L'installazione completa aggiunge PyTorch per la GPU di questa macchina, abilitando addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini. Scarica diversi gigabyte (almeno 5 GB di spazio su disco) e riavvia il server. Le chat, i modelli e le impostazioni vengono mantenuti. L'operazione può richiedere alcuni minuti.",
+        confirmDescriptionCpu:
+          "Questa installazione solo chat esegue modelli GGUF. Su questa macchina non è stata trovata una GPU supportata, quindi l'installazione completa aggiunge PyTorch per la CPU, abilitando l'addestramento sulla CPU. L'addestramento su CPU è molto più lento che su GPU. Richiede almeno 5 GB di spazio su disco e riavvia il server. Le chat, i modelli e le impostazioni vengono mantenuti. L'operazione può richiedere alcuni minuti.",
         confirmAction: "Aggiorna",
         keywords:
           "full install upgrade tipo di installazione installazione completa aggiorna solo chat chat only gguf add training addestramento addestrare train fine-tune pytorch torch esportazione video generazione di immagini safetensors",
@@ -3656,6 +3660,8 @@ export const it = {
     imageTraining: "Addestramento immagini",
     goToImageTraining: "Addestra LoRA per immagini",
     routeTitle: "Addestra",
+    cpuTrainingNotice:
+      "Non è stata trovata alcuna GPU, quindi l'addestramento viene eseguito sulla CPU. È molto più lento che su GPU e supporta solo modelli di testo (LoRA o finetuning completo).",
     wizard: {
       modelTitle: "Modello",
       modelDescription: "Seleziona il modello e il metodo di addestramento",

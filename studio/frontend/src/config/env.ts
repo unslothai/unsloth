@@ -7,6 +7,7 @@ import {
   isDetectionDeferred,
   isProvisionalVerdict,
   resolveVerdict,
+  trainsOnCpu,
 } from "@/config/hardware-verdict";
 import { create } from "zustand";
 
@@ -43,6 +44,8 @@ interface PlatformState {
   // Developer mode's CPU video opt-in, from authed /api/health; keeps the Video row navigable
   // on a no-GPU host that opted in.
   videoCpuOptIn: boolean;
+  // authed /api/health cpu_training: training runs (or would, on "no_torch") on the CPU backend.
+  cpuTraining: boolean;
   // authenticated /api/health values for cloudflareUrl, serverUrl, and secure.
   cloudflareUrl: string | null;
   serverUrl: string | null;
@@ -53,6 +56,9 @@ interface PlatformState {
   // torch-warm kill switch defers detection to first use; the sidebar polls.
   detectionDeferred: boolean;
   isChatOnly: () => boolean;
+  // Train and /studio are off: chat-only, except a host that trains on the CPU backend.
+  isTrainUnavailable: () => boolean;
+  isCpuTrainingHost: () => boolean;
   // true until /api/health returns a verdict; guesses cannot gate features.
   capabilitiesUnknown: () => boolean;
 }
@@ -78,6 +84,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   chatOnlyDetail: null,
   chatOnlyHint: null,
   videoCpuOptIn: false,
+  cpuTraining: false,
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
@@ -86,6 +93,11 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   verdictStale: false,
   detectionDeferred: false,
   isChatOnly: () => get().chatOnly,
+  isTrainUnavailable: () => get().chatOnly && !get().isCpuTrainingHost(),
+  isCpuTrainingHost: () => {
+    const state = get();
+    return state.chatOnly && trainsOnCpu(state.chatOnlyReason, state.cpuTraining);
+  },
   // deferred detection is settled because no verdict will arrive this session.
   capabilitiesUnknown: () => {
     const state = get();
@@ -227,6 +239,7 @@ async function readHealth(
         chat_only?: boolean;
         chat_only_reason?: string | null;
         video_cpu_opt_in?: boolean;
+        cpu_training?: boolean;
         hardware_detecting?: boolean;
         cloudflare_url?: string | null;
         server_url?: string | null;
@@ -292,6 +305,8 @@ async function readHealth(
           data.video_cpu_opt_in === undefined
             ? previous.videoCpuOptIn
             : data.video_cpu_opt_in === true,
+        cpuTraining:
+          data.cpu_training === undefined ? previous.cpuTraining : data.cpu_training === true,
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,
