@@ -219,9 +219,7 @@ export function parseOptions(raw: unknown): PlanOption[] | null {
   return out;
 }
 
-/** Mind fields after a plan answer (or a failed call: `out` null); empty for classic minds.
- * `askedSeq` is the mind's `replanSeq` when the call was sent: a replan requested while it
- * was in flight stays pending. */
+/** Mind fields after a plan answer (`out` null = failed call); a replan raised after `askedSeq` stays pending. */
 export function lifePlanned(
   mind: NpcMind,
   out: unknown,
