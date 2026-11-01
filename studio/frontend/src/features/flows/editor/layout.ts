@@ -4,6 +4,7 @@
 import type { InternalNode } from "@xyflow/react";
 import { useDocStore } from "../stores/doc-store";
 import type { LayoutRequest, LayoutResult } from "./layout-core";
+import { foldLayout } from "./super-cards";
 
 let worker: Worker | null = null;
 let nextId = 0;
@@ -29,6 +30,23 @@ function getWorker(): Worker {
   return worker;
 }
 
+// A closed card's blocks leave React Flow, so it no longer knows their sizes; layout reads the
+// mounted canvas's own size map, so it folds the same notes the card does.
+let remembered: ReadonlyMap<string, { width: number; height: number }> =
+  new Map();
+
+export function rememberSizes(
+  sizes: ReadonlyMap<string, { width: number; height: number }>,
+): void {
+  remembered = sizes;
+}
+
+export function sizeLookup(
+  getInternalNode: (id: string) => InternalNode | undefined,
+): (id: string) => { width?: number; height?: number } | undefined {
+  return (id) => getInternalNode(id)?.measured ?? remembered.get(id);
+}
+
 export async function autoLayout(
   getInternalNode: (id: string) => InternalNode | undefined,
   direction: "LR" | "TB" = "LR",
@@ -50,9 +68,14 @@ export async function autoLayout(
     })),
   };
   const id = ++nextId;
+  const folded = foldLayout(
+    request,
+    useDocStore.getState(),
+    sizeLookup(getInternalNode),
+  );
   const result = await new Promise<LayoutResult>((resolve, reject) => {
     pending.set(id, { resolve, reject });
-    getWorker().postMessage({ id, request });
+    getWorker().postMessage({ id, request: folded.request });
   });
-  useDocStore.getState().moveNodes(result);
+  useDocStore.getState().moveNodes(folded.unfold(result));
 }

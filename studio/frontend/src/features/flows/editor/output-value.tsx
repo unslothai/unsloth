@@ -6,7 +6,7 @@ import { StructuredOutput, isStructuredValue } from "./value-viewers";
 
 export function OutputValue({ value }: { value: unknown }) {
   if (value === null || value === undefined)
-    return <span className="text-zinc-600">-</span>;
+    return <span className="text-muted-foreground/70">-</span>;
   if (isMediaValue(value)) {
     return (
       <MediaThumb media={value} className="w-full rounded-md object-contain" />
@@ -28,13 +28,13 @@ export function OutputValue({ value }: { value: unknown }) {
   if (isStructuredValue(value)) return <StructuredOutput value={value} />;
   if (typeof value === "string") {
     return (
-      <p className="max-h-72 overflow-y-auto whitespace-pre-wrap text-[12.5px] leading-relaxed text-zinc-200">
+      <p className="max-h-72 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-foreground">
         {value}
       </p>
     );
   }
   return (
-    <pre className="max-h-72 overflow-auto rounded-md bg-black/40 p-2 font-mono text-[11px] leading-snug text-zinc-300">
+    <pre className="max-h-72 overflow-auto rounded-lg border border-border/60 bg-muted/40 p-2 font-mono text-ui-11 leading-snug text-foreground">
       {JSON.stringify(value, null, 2).slice(0, 20_000)}
     </pre>
   );
