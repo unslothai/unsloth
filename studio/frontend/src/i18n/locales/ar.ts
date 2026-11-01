@@ -8,10 +8,13 @@ export const ar = {
   chatBackground: {
     noBackground: "بدون خلفية",
     sizing: "تحجيم الصورة",
+    sizingPosition: "تحجيم الصورة والموضع",
     fill: "ملء",
     fit: "احتواء",
     stretch: "تمديد",
     original: "الحجم الأصلي",
+    fitWidth: "ملاءمة العرض",
+    fitHeight: "ملاءمة الارتفاع",
     zoom: "تكبير",
     outline: "إطار حقل الرسالة",
     fade: "تلاشي إلى الخلفية",
@@ -30,6 +33,12 @@ export const ar = {
     visibility: "الظهور",
     blur: "تمويه الصورة",
     position: "الموضع",
+    horizontal: "الموضع الأفقي",
+    vertical: "الموضع العمودي",
+    scope: "الإظهار في",
+    scopeNewChat: "صفحة المحادثة الجديدة",
+    scopeChats: "المحادثات",
+    scopeAll: "كل الصفحات",
     positionValue: "أفقي {x}%، عمودي {y}%",
     newChat: "دردشة جديدة",
     conversation: "محادثة",
@@ -968,7 +977,7 @@ export const ar = {
       deleteProjects: "حذف المشاريع",
       deleteProjectsTitle: "حذف المشاريع",
       deleteProjectsDescription:
-        "هل تريد حذف {count} مشاريع؟ ستُحذف محادثاتها نهائيًا.",
+        "سيتم حذف المشاريع ({count}) وجميع محادثاتها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
       deleteProjectsFilesDescription:
         "يُحذف مجلد مساحة عمل كل مشروع من القرص.",
       countSelected: "{count} محددة",
@@ -979,7 +988,7 @@ export const ar = {
       markRead: "وضع علامة كمقروءة",
       deleteChats: "حذف المحادثات",
       deleteTitle: "حذف المحادثات",
-      deleteDescription: "هل تريد حذف {count} محادثة؟ لا يمكن التراجع عن ذلك.",
+      deleteDescription: "سيتم حذف المحادثات ({count}) ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
       deleteFilesDescription:
         "يُحذف مجلد بيئة العزل الخاص بكل محادثة من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
       deleteFilesLabel: "حذف الملفات ومجلد بيئة العزل",
@@ -1027,7 +1036,7 @@ export const ar = {
     dialog: {
       deleteChat: {
         title: "حذف المحادثة",
-        description: "هل أنت متأكد من رغبتك في حذف هذه المحادثة «{name}»؟",
+        description: "سيتم حذف المحادثة «{name}» ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
       },
       deleteRun: {
         title: "حذف عملية التدريب",
@@ -2137,10 +2146,14 @@ export const ar = {
         label: "نوع التثبيت",
         description:
           "دردشة فقط (GGUF). يضيف التثبيت الكامل التدريب والتصدير والفيديو ونماذج safetensors وميزات إضافية لتوليد الصور.",
+        descriptionCpu:
+          "دردشة فقط (GGUF). لم يُعثر على وحدة معالجة رسومات مدعومة، لذا يضيف التثبيت الكامل التدريب على المعالج المركزي.",
         action: "الترقية إلى التثبيت الكامل",
         confirmTitle: "هل تريد الترقية إلى التثبيت الكامل؟",
         confirmDescription:
           "يشغّل تثبيت الدردشة فقط هذا نماذج GGUF. يضيف التثبيت الكامل PyTorch لوحدة معالجة الرسومات في هذا الجهاز، ما يتيح التدريب والتصدير والفيديو ونماذج safetensors وميزات إضافية لتوليد الصور. ينزّل عدة غيغابايت (5 غيغابايت على الأقل من مساحة القرص) ثم يعيد تشغيل الخادم. تُحفظ المحادثات والنماذج والإعدادات. قد يستغرق ذلك عدة دقائق.",
+        confirmDescriptionCpu:
+          "يشغّل تثبيت الدردشة فقط هذا نماذج GGUF. لم يُعثر على وحدة معالجة رسومات مدعومة في هذا الجهاز، لذا يضيف التثبيت الكامل PyTorch للمعالج المركزي، ما يتيح التدريب على المعالج المركزي. التدريب على المعالج المركزي أبطأ بكثير من التدريب على وحدة معالجة الرسومات. يحتاج إلى 5 غيغابايت على الأقل من مساحة القرص ثم يعيد تشغيل الخادم. تُحفظ المحادثات والنماذج والإعدادات. قد يستغرق ذلك عدة دقائق.",
         confirmAction: "ترقية",
         keywords:
           "full install upgrade نوع التثبيت التثبيت الكامل ترقية دردشة فقط chat only gguf add training تدريب train fine-tune pytorch torch تصدير فيديو توليد الصور safetensors",
@@ -2330,6 +2343,22 @@ export const ar = {
         label: "حلوى أم خدعة",
         description:
           "سمات الهالوين وتحيات مخيفة حتى 1 نوفمبر.",
+      },
+      code: {
+        title: "الشيفرة",
+        fontDescription: "كتل الشيفرة في المحادثة ومعاينات الملفات وأمثلة API.",
+        lineNumbers: {
+          label: "أرقام الأسطر",
+          description: "ترقيم أسطر كتل الشيفرة في المحادثة.",
+        },
+        wordWrap: {
+          label: "التفاف الأسطر",
+          description: "التفاف الأسطر الطويلة في كتل الشيفرة بدل التمرير أفقيًا.",
+        },
+        ligatures: {
+          label: "الحروف المركّبة",
+          description: "دمج رموز مثل => و != في حرف واحد عندما يدعم خط الشيفرة ذلك.",
+        },
       },
       custom: {
         chatWidth: {
@@ -3190,9 +3219,9 @@ export const ar = {
         movedChatsToRecents: "المحادثات المنقولة إلى الأخيرة: {count}",
         moveFailed: "تعذر نقل المحادثات",
         deleteChatsTitle: "حذف المحادثات ({count})",
-        deleteChatsWarning: "هل تريد حذف المحادثات المحددة ({count})؟ لا يمكن التراجع عن هذا الإجراء.",
+        deleteChatsWarning: "سيتم حذف المحادثات ({count}) ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
         deleteArchivedTitle: "حذف المحادثات المؤرشفة ({count})",
-        deleteArchivedWarning: "هل تريد حذف المحادثات المؤرشفة المحددة ({count})؟ لا يمكن التراجع عن هذا الإجراء.",
+        deleteArchivedWarning: "سيتم حذف المحادثات المؤرشفة ({count}) ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
         deleting: "جارٍ الحذف...",
       },
       title: "البيانات",
@@ -3585,6 +3614,8 @@ export const ar = {
     imageTraining: "تدريب الصور",
     goToImageTraining: "تدريب LoRA للصور",
     routeTitle: "تدريب",
+    cpuTrainingNotice:
+      "لم يُعثر على وحدة معالجة رسومات، لذا يجري التدريب على المعالج المركزي. وهو أبطأ بكثير من التدريب على وحدة معالجة الرسومات ويدعم النماذج النصية فقط (LoRA أو الضبط الدقيق الكامل).",
     wizard: {
       modelTitle: "النموذج",
       modelDescription: "اختر النموذج وطريقة التدريب",
@@ -4674,8 +4705,8 @@ export const ar = {
       },
       dialog: {
         renameChat: "إعادة تسمية المحادثة",
-        deleteChatDescription: "سيتم حذف هذه المحادثة نهائيًا. لا يمكن التراجع عن ذلك.",
-        deleteProjectDescription: "سيتم حذف المشروع ومحادثاته ({count}) نهائيًا. لا يمكن التراجع عن ذلك.",
+        deleteChatDescription: "سيتم حذف المحادثة ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
+        deleteProjectDescription: "سيتم حذف المشروع ومحادثاته ({count}) نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
         deleteFilesMany: "احذف أيضًا الملفات ومجلدات بيئة الاختبار التي أنشأتها هذه المحادثات.",
         deleteProjectFilesLabel: "حذف مجلد مساحة عمل المشروع",
         deleteProjectFiles: "ستتم إزالة مجلد مساحة عمل المشروع من القرص.",
@@ -5131,14 +5162,14 @@ export const ar = {
     renameChat: "إعادة تسمية المحادثة",
     chatName: "اسم المحادثة",
     deleteChat: "حذف المحادثة",
-    deleteChatDescription: "هل تريد بالتأكيد حذف {name}؟ ستُحذف رسائلها نهائيًا.",
+    deleteChatDescription: "سيتم حذف المحادثة «{name}» ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
     importChats: "استيراد المحادثات",
     importDestination: "اختر مكان استيراد {name}:",
     selectDestination: "اختر الوجهة",
     recents: "الأحدث",
     import: "استيراد",
     deleteProject: "حذف المشروع",
-    deleteProjectDescription: "هل تريد بالتأكيد حذف {name}؟ ستُحذف محادثاته نهائيًا.",
+    deleteProjectDescription: "سيتم حذف المشروع «{name}» وجميع محادثاته نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
     deleteProjectFiles: "ستتم إزالة مجلد عمل المشروع من القرص.",
     deleteAll: "حذف الكل",
     projectFallback: "مشروع",
@@ -5221,6 +5252,18 @@ export const ar = {
     flaggedIntro: "رصد الفاحص التلقائي لدينا مشكلات منها:",
     nothingFlagged:
       "لم يرصد الفاحص التلقائي لدينا أي ملفات مثيرة للقلق، لكن يُرجى التحقق مرة أخرى.",
+    unscannedTitle: "تعذّر فحص ملفات النموذج",
+    unscannedBody: "يتضمن {model} أوزان pickle يمكنها تشغيل التعليمات البرمجية عند التحميل، ولا يتوفر فحص للبرامج الضارة لها، لذا لا يمكن تحميله. {note}",
+    unscannedIntro: "الملفات التي تعذّر فحصها:",
+    switchSourceNote: "بدّل مصدر النماذج إلى Hugging Face في الإعدادات لتحميله.",
+    reconnectNote: "اتصل بـ Hugging Face لتتمكن من قراءة نتيجة الفحص، ثم حاول مرة أخرى.",
+    managedTitle: "التعليمات البرمجية المخصصة معطلة لهذا الحساب",
+    managedNote: "إنها معطلة للحسابات المُدارة. اطلب من مالك التثبيت تفعيلها.",
+    notFoundTitle: "غير موجود على {source}",
+    notFoundBody: "لم يتم العثور على {model} على {source}، لذا تعذّر تشغيل فحوصات الأمان. تحقق من الاسم، أو عيّن رمزًا لديه صلاحية الوصول إذا كان المستودع خاصًا.",
+    notOnModelScopeBody: "{model} غير متوفر على ModelScope، لذا تعذّر تشغيل فحوصات الأمان ولا يمكن تحميله من هناك. بدّل مصدر النماذج إلى Hugging Face في الإعدادات لاستخدامه.",
+    checksFailedTitle: "تعذّر تشغيل فحوصات الأمان",
+    checksFailedBody: "تعذّرت قراءة {model} من {source}، لذا تعذّر إكمال فحوصات الأمان ولا يمكن تحميله. تحقق من اتصالك ورمزك، ثم حاول مرة أخرى. {note}",
     enableAndContinue: "التفعيل والمتابعة",
   },
   tour: {

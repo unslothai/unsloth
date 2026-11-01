@@ -5633,6 +5633,35 @@ def _full_access_tip(code_tools: list[str]) -> str:
     )
 
 
+def _project_folder_tip(tool_names) -> str:
+    """The tool schemas say "sandbox" outside Full access, so models deny a chosen folder they can reach."""
+    readers = [name for name in ("terminal", "python") if name in tool_names]
+    if not readers:
+        return ""
+    # Named: told only "a tool call", small models list the folder and then web-search how to read a file.
+    reader = " or ".join(readers) + " tool"
+    web = "; web_search cannot see them" if "web_search" in tool_names else ""
+    return (
+        "This chat belongs to a project, and the current working directory is the folder the "
+        'user chose for it, so "my project" and "my files" mean the files there. When asked '
+        f"about the project or its files, list and read them with the {reader} first{web}. "
+        "Read them rather than asking the user to upload or paste them, and if a read fails or "
+        "is denied, say what failed instead of saying you have no access. Use relative paths."
+    )
+
+
+async def _tools_run_in_user_folder(payload, tools) -> bool:
+    session_id = getattr(payload, "session_id", None)
+    names = {
+        (tool.get("function") or {}).get("name") for tool in tools or () if isinstance(tool, dict)
+    }
+    if not session_id or not names.intersection({"terminal", "python"}):
+        return False
+    from core.inference.tools import session_runs_in_user_folder
+
+    return await asyncio.to_thread(session_runs_in_user_folder, session_id)
+
+
 # Avoid the word 'greetings': small models then greet instead of researching.
 _TOOL_RESEARCH_TIP = (
     "Deep Research is turned on for this conversation. For factual questions or requests "
@@ -5737,8 +5766,9 @@ def _build_tool_action_nudge(
     model_name: str,
     full_access: bool = False,
     full_access_only: bool = False,
+    user_folder: bool = False,
 ) -> str:
-    """full_access_only keeps just the Full access sentence and skills catalog, not the general guidance."""
+    """full_access_only keeps just the environment sentences (Full access, project folder) and skills catalog, not the general guidance."""
     tool_names = {
         (tool.get("function") or {}).get("name")
         for tool in tools
@@ -5766,10 +5796,13 @@ def _build_tool_action_nudge(
         can_run_scripts = bool({"python", "terminal"} & tool_names),
         compact = compact,
     )
+    folder_tip = _project_folder_tip(tool_names) if user_folder else ""
     if full_access_only:
         tips = []
         if full_access and has_code:
             tips.append(_full_access_tip(code_tools))
+        if folder_tip:
+            tips.append(folder_tip)
         if has_skills:
             tips.append(skill_tip)
         return " ".join(tip for tip in tips if tip)
@@ -5791,6 +5824,8 @@ def _build_tool_action_nudge(
         tool_tip_parts.append(_TOOL_CODE_TIP)
         if full_access:
             tool_tip_parts.append(_full_access_tip(code_tools))
+        if folder_tip:
+            tool_tip_parts.append(folder_tip)
     if has_artifact:
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
     if has_research:
@@ -6633,15 +6668,45 @@ _DISPLAY_GEMMA_CALL_RE = _re.compile(r"(?<!\w)call\s*:")
 _DISPLAY_GEMMA_TAIL_RE = _re.compile(r"(?<!\w)c(?:a(?:l(?:l\s*)?)?)?\Z")
 
 
+# After the first sentinel: ``P + O + B`` with P free of ``<``, ``[``, ``{`` and ``call:``, O one of these openers.
+_DISPLAY_HOLD_OPENER_RE = _re.compile(
+    r'<tool_call>(?:\s*<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>)?'
+    r'|<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>'
+)
+# Every sentinel but ``</param`` (its end-anchored arm loses to the match at O), plus think and GLM argument tags.
+_DISPLAY_HOLD_TRIGGERS = tuple(
+    dict.fromkeys(
+        tuple(s for s in _DISPLAY_STRIP_SENTINELS if s != "</param")
+        + ("<think", "</think", "[THINK", "[/THINK", "<arg_key", "<arg_value", "</arg_value")
+    )
+)
+_DISPLAY_HOLD_OVERLAP = max(len(trigger) for trigger in _DISPLAY_HOLD_TRIGGERS) - 1
+# The longest text after a backtick that ``tool_healing.tag_mention_spans`` could still close as a lone-tag mention.
+_DISPLAY_HOLD_MENTION_TAG_RE = _re.compile(r"<[^<>`\n]*>?[\w.\-]*[ \t]*")
+
+
 class _StreamingDisplayStrip:
     """``_strip_tool_xml_for_display`` for a cumulative buffer that grows one token at a time.
 
-    The full strip rescans the whole buffer per call, quadratic over a turn on the event loop. No arm can edit
-    text holding none of ``_DISPLAY_STRIP_SENTINELS`` and no ``call:``, so such a buffer is returned as is and the
-    scan resumes where it stopped. After a sentinel the full strip runs on every call, as before.
+    No arm edits text holding no ``_DISPLAY_STRIP_SENTINELS`` and no ``call:``, so such a buffer is returned as is.
+    After a sentinel it holds at P while the buffer is ``P + O + B`` (P free of ``<``, ``[``, ``{``, ``call:``; O an
+    opener in ``_DISPLAY_HOLD_OPENER_RE``; B free of ``_DISPLAY_HOLD_TRIGGERS`` and ``call:``): every arm either runs
+    from O to the end or needs a ``<`` or ``[`` before O. Arms only once the full strip returned exactly P.
     """
 
-    __slots__ = ("_auto_heal", "_names", "_prev", "_scanned", "_gemma_from", "_marked")
+    __slots__ = (
+        "_auto_heal",
+        "_names",
+        "_prev",
+        "_scanned",
+        "_gemma_from",
+        "_marked",
+        "_hold_out",
+        "_hold_dead",
+        "_hold_from",
+        "_hold_scanned",
+        "_hold_gemma_from",
+    )
 
     def __init__(
         self,
@@ -6658,6 +6723,11 @@ class _StreamingDisplayStrip:
         self._scanned = 0
         self._gemma_from = 0
         self._marked = False
+        self._hold_out = None
+        self._hold_dead = False
+        self._hold_from = 0
+        self._hold_scanned = 0
+        self._hold_gemma_from = 0
 
     def _has_sentinel(self, text: str) -> bool:
         start = max(0, self._scanned - _DISPLAY_SENTINEL_OVERLAP)
@@ -6671,6 +6741,73 @@ class _StreamingDisplayStrip:
         self._scanned = len(text)
         return False
 
+    def _hold_clean(self, text: str) -> bool:
+        """No trigger and no ``call:`` in B, scanning only what was appended since the last call."""
+        lo = max(self._hold_from, self._hold_scanned - _DISPLAY_HOLD_OVERLAP)
+        if any(text.find(trigger, lo) >= 0 for trigger in _DISPLAY_HOLD_TRIGGERS):
+            return False
+        if _DISPLAY_GEMMA_CALL_RE.search(text, self._hold_gemma_from) is not None:
+            return False
+        tail = _DISPLAY_GEMMA_TAIL_RE.search(
+            text, max(self._hold_gemma_from, len(text.rstrip()) - 4)
+        )
+        self._hold_gemma_from = tail.start() if tail is not None else len(text)
+        self._hold_scanned = len(text)
+        return True
+
+    def _try_hold(self, text: str, out: str) -> None:
+        first = min(
+            (at for at in (text.find(s) for s in _DISPLAY_STRIP_SENTINELS) if at >= 0),
+            default = -1,
+        )
+        if first < 0:
+            self._hold_dead = True
+            return
+        prefix = text[:first]
+        if (
+            "<" in prefix
+            or "[" in prefix
+            or "{" in prefix
+            or _DISPLAY_GEMMA_CALL_RE.search(prefix) is not None
+        ):
+            self._hold_dead = True
+            return
+        if prefix.rstrip(" \t").endswith("`"):
+            # A backticked tag followed by its closing backticks is a mention the strip keeps; wait until B rules it out.
+            tag = _DISPLAY_HOLD_MENTION_TAG_RE.match(text, first)
+            if tag is not None and tag.end() == len(text):
+                return
+            if tag is not None and text[tag.end()] == "`":
+                self._hold_dead = True
+                return
+        opener = _DISPLAY_HOLD_OPENER_RE.match(text, first)
+        if opener is not None and opener.group().endswith("<tool_call>"):
+            # A wrapped ``<function=NAME>`` may still be arriving after the whitespace.
+            nxt = opener.end()
+            while nxt < len(text) and text[nxt].isspace():
+                nxt += 1
+            if nxt == len(text) or (text[nxt] == "<" and text.find(">", nxt) < 0):
+                return
+        if opener is None:
+            # ``<tool_call`` or ``<function=NA`` still arriving.
+            if text.find(">", first) < 0 and (
+                text.startswith("<function", first)
+                or (len(text) - first < 11 and "<tool_call>".startswith(text[first:]))
+            ):
+                return
+            self._hold_dead = True
+            return
+        if out != prefix:
+            self._hold_dead = True
+            return
+        self._hold_from = opener.end()
+        self._hold_scanned = opener.end()
+        self._hold_gemma_from = opener.end()
+        if not self._hold_clean(text):
+            self._hold_dead = True
+            return
+        self._hold_out = out
+
     def strip(self, text: str) -> str:
         if not self._auto_heal:
             return text
@@ -6681,11 +6818,19 @@ class _StreamingDisplayStrip:
             self._marked = True
         if not self._marked:
             return text
-        return _strip_tool_xml_for_display(
+        if self._hold_out is not None:
+            if self._hold_clean(text):
+                return self._hold_out
+            self._hold_out = None
+            self._hold_dead = True
+        out = _strip_tool_xml_for_display(
             text,
             auto_heal_tool_calls = True,
             enabled_tool_names = self._names,
         )
+        if not self._hold_dead:
+            self._try_hold(text, out)
+        return out
 
 
 class _ReasoningSpanGuard:
@@ -6708,6 +6853,8 @@ class _ReasoningSpanGuard:
         self._consumed = 0
         self._turn_wrap = None
         self._claimed = False
+        self._display = None
+        self._display_key = None
 
     @property
     def claimed(self) -> bool:
@@ -6756,19 +6903,30 @@ class _ReasoningSpanGuard:
         wrapped_so_far = None,
     ) -> str:
         wrap = self._wrap_for(text, wrapped_so_far)
+        display = self._display_strip(auto_heal_tool_calls, enabled_tool_names)
         if wrap is None:
-            return _strip_tool_xml_for_display(
-                text,
+            return display.strip(text)
+        # Clamp: mid-stream the close tag has not arrived yet, so the whole text is trace.
+        end = min(len(self._OPEN) + int(wrap.get("len", 0)) + len(self._CLOSE), len(text))
+        return text[:end] + display.strip(text[end:])
+
+    def _display_strip(
+        self, auto_heal_tool_calls: bool, enabled_tool_names
+    ) -> "_StreamingDisplayStrip":
+        """Returns exactly ``_strip_tool_xml_for_display`` for any input; a buffer that does not extend the last
+        one resets it, so a new turn or a moved span start is handled."""
+        key = (bool(auto_heal_tool_calls), enabled_tool_names)
+        if self._display is None or self._display_key != key:
+            self._display = _StreamingDisplayStrip(
                 auto_heal_tool_calls = auto_heal_tool_calls,
                 enabled_tool_names = enabled_tool_names,
             )
-        # Clamp: mid-stream the close tag has not arrived yet, so the whole text is trace.
-        end = min(len(self._OPEN) + int(wrap.get("len", 0)) + len(self._CLOSE), len(text))
-        return text[:end] + _strip_tool_xml_for_display(
-            text[end:],
-            auto_heal_tool_calls = auto_heal_tool_calls,
-            enabled_tool_names = enabled_tool_names,
-        )
+            # A copy: the caller's set may change between events.
+            self._display_key = (
+                key[0],
+                None if enabled_tool_names is None else frozenset(enabled_tool_names),
+            )
+        return self._display
 
 
 def _strip_tool_xml(text: str, enabled_tool_names: Optional[set] = None) -> str:
@@ -28462,6 +28620,7 @@ async def _proxy_to_external_provider(
                 tools = studio_tool_payloads,
                 model_name = model,
                 full_access = bool(payload.bypass_permissions),
+                user_folder = await _tools_run_in_user_folder(payload, studio_tool_payloads),
                 full_access_only = True,
             )
             chat_messages = _append_to_codex_instructions(chat_messages, _codex_nudge)
@@ -28832,6 +28991,7 @@ async def _proxy_to_external_provider(
             tools = external_studio_tools,
             model_name = model,
             full_access = bool(payload.bypass_permissions),
+            user_folder = await _tools_run_in_user_folder(payload, external_studio_tools),
             full_access_only = True,
         )
         # The compaction nudge is not part of the general nudge: once the thread has an archive
@@ -31695,6 +31855,7 @@ async def produce_openai_chat_completions(
                 tools = tools_to_use,
                 model_name = model_name,
                 full_access = bool(payload.bypass_permissions),
+                user_folder = await _tools_run_in_user_folder(payload, tools_to_use),
             )
 
             # Nudge the model to ground in attached documents instead of memory.
@@ -33700,6 +33861,7 @@ async def produce_openai_chat_completions(
             tools = _sf_tools_to_use,
             model_name = model_name,
             full_access = bool(payload.bypass_permissions),
+            user_folder = await _tools_run_in_user_folder(payload, _sf_tools_to_use),
         )
 
         # RAG nudge, mirroring the GGUF path.
@@ -41520,6 +41682,7 @@ async def _mlx_count_chat_tokens(
                 tools = _tools_to_use,
                 model_name = public_model_id(active) or payload.model,
                 full_access = bool(payload.bypass_permissions),
+                user_folder = await _tools_run_in_user_folder(payload, _tools_to_use),
             ),
             _tools_to_use,
             rag_scope = payload.rag_scope,
@@ -41915,6 +42078,7 @@ async def chat_count_tokens(
                     tools = tools_to_use,
                     model_name = _llama_public_model_id(llama_backend, payload.model),
                     full_access = bool(payload.bypass_permissions),
+                    user_folder = await _tools_run_in_user_folder(payload, tools_to_use),
                 ),
                 tools_to_use,
                 rag_scope = payload.rag_scope,
@@ -42107,6 +42271,8 @@ async def _anthropic_in_process_count(
     fields = _anthropic_chat_fields(
         payload, reads_images = bool(entry.get("is_vision")), server_tools = server_tools
     )
+    # The completion sends it too (anthropic_messages builds its ChatCompletionRequest with it).
+    fields["session_id"] = payload.session_id
     return JSONResponse(
         content = {"input_tokens": await _anthropic_chat_count(fields, request, current_subject)}
     )
@@ -42690,6 +42856,7 @@ async def anthropic_count_tokens(
             tools = openai_tools,
             model_name = _llama_public_model_id(llama_backend, payload.model),
             full_access = _count_full_access,
+            user_folder = await _tools_run_in_user_folder(payload, openai_tools),
         )
         openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 
@@ -43859,6 +44026,7 @@ async def anthropic_messages(
             tools = openai_tools,
             model_name = model_name,
             full_access = _full_access,
+            user_folder = await _tools_run_in_user_folder(payload, openai_tools),
         )
 
         if _nudge:
@@ -47711,6 +47879,73 @@ async def load_diffusion_model(
     )
 
 
+def _require_resolved_image_base_access(request, fam, kind: str, engine_name) -> None:
+    """A managed account must clear the base the predicted engine will publish as ``base_repo``, the same
+    ``require_model_access`` that /images/generate runs on it. Without it a cached gated base loads and every
+    generate then 404s. Refuses only when every base that engine could publish is refused (#16178)."""
+    if (
+        fam is None
+        or kind == "pipeline"
+        or engine_name is None
+        or not account_access.managed_account()
+    ):
+        return
+    from core.inference.diffusion import _resolve_base_repo
+    from core.inference.diffusion_families import named_variant_base, resolve_base_repo
+    from core.inference.sd_cpp_engine import ENGINE_MLX, ENGINE_SD_CPP
+
+    explicit = bool((request.base_repo or "").strip())
+
+    def _diffusers_base():
+        return _resolve_base_repo(
+            request.model_path, request.base_repo, fam, request.hf_token, request.gguf_filename
+        )
+
+    if engine_name == ENGINE_SD_CPP:
+        candidates = [resolve_base_repo(fam, request.base_repo)]
+        from core.inference.sd_cpp_backend import _SAMPLE_SIGMAS_FAMILIES
+        if not explicit and fam.name in _SAMPLE_SIGMAS_FAMILIES:
+            # With a sampling grid sd.cpp publishes the card's or the named variant's base instead.
+            candidates += [
+                _diffusers_base(),
+                named_variant_base(fam, request.model_path, request.gguf_filename),
+            ]
+    elif engine_name == ENGINE_MLX and not explicit:
+        from core.inference.mlx_diffusion_backend import resolve_variant_base
+        candidates = [
+            resolve_variant_base(
+                request.model_path,
+                fam,
+                request.hf_token,
+                request.gguf_filename,
+                fallback = resolve_base_repo(fam, None),
+            )
+        ]
+    else:
+        candidates = [_diffusers_base()]
+    candidates = [b for b in dict.fromkeys(candidates) if b and b != request.model_path]
+    refused = None
+    for base in candidates:
+        try:
+            account_access.require_model_access(base)
+            return
+        except HTTPException as exc:
+            refused = refused or (base, exc)
+    if refused is None:
+        return
+    base, exc = refused
+    if exc.status_code != 404:
+        raise exc
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            f"This image model loads its base components from {base}, which this account "
+            "cannot access. Download that repository with your own Hugging Face token first, "
+            "or pick a model whose base you can access."
+        ),
+    ) from exc
+
+
 async def load_diffusion_model_gated(
     request: DiffusionLoadRequest,
     current_subject: str,
@@ -47967,6 +48202,10 @@ async def load_diffusion_model_gated(
             request.gguf_filename,
             request.hf_token,
             user_initiated,
+        )
+        # The base a GGUF / single-file pick resolves to is what generate rechecks, so refuse it before any teardown.
+        await asyncio.to_thread(
+            _require_resolved_image_base_access, request, fam, kind, pending_name
         )
         preflighted = None
         if pending_name is not None and (needs_gpu or pending_name != active_engine_name()):
@@ -48431,11 +48670,20 @@ def _stop_external_image_runs() -> bool:
     return bool(runs)
 
 
+def _decode_external_images(encoded: list) -> list:
+    from PIL import Image
+
+    images = []
+    for item in encoded:
+        image = Image.open(io.BytesIO(base64.b64decode(item)))
+        image.load()
+        images.append(image)
+    return images
+
+
 async def _external_image_generation(
     body: DiffusionGenerateRequest, request: Request
 ) -> DiffusionGenerateResponse:
-    from PIL import Image
-
     from core.inference import image_gallery
     from core.inference.llama_keepwarm import (
         untrack_current_media_request,
@@ -48553,11 +48801,8 @@ async def _external_image_generation(
                     raise
                 from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
                 raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG) from None
-            images = []
-            for item in encoded:
-                image = Image.open(io.BytesIO(base64.b64decode(item)))
-                image.load()
-                images.append(image)
+            # Decode blocks for tens of ms per image: off the loop, like the save below.
+            images = await asyncio.to_thread(_decode_external_images, encoded)
         except HTTPException:
             raise
         except httpx.HTTPStatusError as exc:

@@ -400,3 +400,18 @@ def test_probe_times_on_the_blocks_device(monkeypatch):
         ("record", "cuda:1"),
     ]
     assert current[0] == "cuda:0"
+
+
+def test_auto_blocks_on_several_devices_keep_graphs_off(monkeypatch):
+    # device_map split: the first pass already visits both shards, before any timing or memory read.
+    layers, calls, compiles, timed = _harness(monkeypatch)
+    shard = {id(layers[0]): "cuda:0", id(layers[1]): "cuda:1"}
+    current = []
+    for layer in layers:
+        layer.register_forward_pre_hook(lambda m, a, layer = layer: current.append(shard[id(layer)]))
+    monkeypatch.setattr(bc, "_auto_block_device", lambda hs: current[-1], raising = False)
+    for _ in range(6):
+        assert _step(layers, calls) == ["plain", "plain"]
+    auto = bc._CUDAGRAPH_STATE["auto"]
+    assert auto["phase"] == "off" and auto["why"] == "blocks on several devices"
+    assert compiles == ["plain"] and not timed

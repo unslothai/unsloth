@@ -1135,6 +1135,7 @@
       "_MISTRAL_V11_NAME_RE": "'\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*' flags=32",
       "_ONE_STRING_ARG_CALL_RE": "'\\\\A\\\\s*\\\\{\\\\s*\"name\"\\\\s*:\\\\s*\"([\\\\w.\\\\-]+)\"\\\\s*,\\\\s*\"(?:arguments|parameters)\"\\\\s*:\\\\s*\\\\{\\\\s*\"([A-Za-z_][\\\\w\\\\-]*)\"\\\\s*:\\\\s*\"(.*)\"\\\\s*\\\\}\\\\s*\\\\}\\\\s*\\\\Z' flags=48",
       "_OPEN_CALL_WS_RE": "'\\\\s*' flags=32",
+      "_OPEN_FUNCTION_OPENER_RE": "'<function(?:=[\\\\w\\\\.\\\\-]+|\\\\s+name=\"[\\\\w\\\\.\\\\-]+\")>' flags=32",
       "_OUTER_ENVELOPE_CLOSED_PATS[0]": "'<tool_call>(?:(?!<tool_call>).)*</tool_call>' flags=48",
       "_OUTER_ENVELOPE_CLOSED_PATS[1]": "'<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>(?:(?!<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>).)*</function>' flags=48",
       "_OUTER_ENVELOPE_CLOSED_PATS[2]": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
@@ -1197,6 +1198,7 @@
       "re.compile('<function(?:=([\\\\w\\\\.\\\\-]+)|\\\\s+name=\"([\\\\w\\\\.\\\\-]+)\")>\\\\s*')": 1,
       "re.compile('<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>(?:(?!<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>).)*</function>', re.DOTALL)": 1,
       "re.compile('<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>.*$', re.DOTALL)": 1,
+      "re.compile('<function(?:=[\\\\w\\\\.\\\\-]+|\\\\s+name=\"[\\\\w\\\\.\\\\-]+\")>')": 1,
       "re.compile('<function\\\\s+name=\"')": 1,
       "re.compile('<invoke\\\\s+name=\"([\\\\w\\\\.\\\\-]+)\">')": 1,
       "re.compile('<tool_call>(?:(?!<tool_call>).)*</tool_call>', re.DOTALL)": 1,
@@ -1417,6 +1419,12 @@
       "_GEMMA_BARE_TC_RE": {
         "kind": "assign"
       },
+      "_GEMMA_BODY_SCAN_MIN": {
+        "kind": "assign"
+      },
+      "_GEMMA_BODY_SCAN_SLOTS": {
+        "kind": "assign"
+      },
       "_GEMMA_JSON_NUMBER_RE": {
         "kind": "assign"
       },
@@ -1597,6 +1605,12 @@
       "_ONE_STRING_ARG_CALL_RE": {
         "kind": "assign"
       },
+      "_OPEN_BODY_TRIGGERS": {
+        "kind": "assign"
+      },
+      "_OPEN_BODY_TRIGGER_MAX_LEN": {
+        "kind": "assign"
+      },
       "_OPEN_CALL_OPENER": {
         "kind": "assign"
       },
@@ -1607,6 +1621,12 @@
         "kind": "assign"
       },
       "_OPEN_CALL_WS_RE": {
+        "kind": "assign"
+      },
+      "_OPEN_FUNCTION_OPENER_RE": {
+        "kind": "assign"
+      },
+      "_OPEN_PARAMETER_TAGS": {
         "kind": "assign"
       },
       "_OUTER_ENVELOPE_CLOSED_PATS": {
@@ -1739,6 +1759,12 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, brace_pos: int"
+      },
+      "_gemma_body_scan_next": {
+        "kind": "assign"
+      },
+      "_gemma_body_scans": {
+        "kind": "assign"
       },
       "_gemma_call_is_anchored": {
         "decorators": [],
@@ -2261,7 +2287,9 @@
       "_TOOL_CLOSED_PATS[6]": "'\\\\[/TOOL_CALLS\\\\]' flags=32",
       "_TOOL_OPEN_XML_TAIL_PATS[0]": "'<tool_call>.*$' flags=48",
       "_TOOL_OPEN_XML_TAIL_PATS[1]": "'<\\\\|tool_call>.*$' flags=48",
-      "_TOOL_OPEN_XML_TAIL_PATS[2]": "'<function=[\\\\w-]+>.*$' flags=48"
+      "_TOOL_OPEN_XML_TAIL_PATS[2]": "'<function=[\\\\w-]+>.*$' flags=48",
+      "_WRAP_CLOSE_RE": "'\\\\s*</tool_call>' flags=32",
+      "_WRAP_OPEN_RE": "'<tool_call>\\\\s*$' flags=32"
     },
     "regexes": {
       "re.compile('(?:<tool_call>|<\\\\|content_invoke_tool_json\\\\|>)\\\\s*\\\\{')": 1,
@@ -2281,6 +2309,7 @@
       "re.compile('<think>|\\\\[THINK\\\\]')": 1,
       "re.compile('<tool_call>.*$', re.DOTALL)": 1,
       "re.compile('<tool_call>.*?</tool_call>', re.DOTALL)": 1,
+      "re.compile('<tool_call>\\\\s*$')": 1,
       "re.compile('<tool_call\\\\|>')": 2,
       "re.compile('[^\"\\\\\\\\]*(?:\\\\\\\\.[^\"\\\\\\\\]*)*', re.DOTALL)": 1,
       "re.compile('[^\"{}<]*(?:<(?!\\\\|\"\\\\|>)[^\"{}<]*)*')": 1,
@@ -2292,11 +2321,10 @@
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w-]+(?:\\\\[CALL_ID\\\\][\\\\w-]+)?(?:\\\\[ARGS\\\\])?\\\\s*' + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL)": 1,
       "re.compile('\\\\s*</function>\\\\s*$')": 1,
       "re.compile('\\\\s*</parameter>\\\\s*$')": 1,
+      "re.compile('\\\\s*</tool_call>')": 1,
       "re.compile('\\\\s*[A-Za-z_][\\\\w.\\\\-]*\\\\s*:')": 1,
       "re.compile('^[ \\\\t]*(?:>[ \\\\t]*)*(?:(?P<bt>```+)[^`\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=bt)`*[ \\\\t\\\\r]*$|\\\\Z)|(?P<tl>~~~+)[^\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=tl)~*[ \\\\t\\\\r]*$|\\\\Z))|``(?:[^`]|`(?!`))*?``|`[^`\\\\n]*`', re.DOTALL | re.MULTILINE)": 1,
-      "re.match('\\\\s*</tool_call>', content[span_end:])": 1,
-      "re.match('\\\\s*\\\\[/TOOL_CALLS\\\\]', content[end:])": 1,
-      "re.search('<tool_call>\\\\s*$', content[:span_start])": 1
+      "re.match('\\\\s*\\\\[/TOOL_CALLS\\\\]', content[end:])": 1
     },
     "symbols": {
       "EXECUTION_CLASS_TOOL_NAMES": {
@@ -2337,6 +2365,34 @@
       },
       "_MISTRAL_BRACKET_RE": {
         "kind": "assign"
+      },
+      "_OPEN_PARAMETER_SCAN_LIMIT": {
+        "kind": "assign"
+      },
+      "_OpenParameterIndex": {
+        "bases": [],
+        "decorators": [],
+        "kind": "class",
+        "methods": {
+          "__init__": {
+            "decorators": [],
+            "signature": "self, content: str, *, param_start_re=None, param_closers=(_PARAM_CLOSE_TAG,), func_closers=(_FUNC_CLOSE_TAG,)"
+          },
+          "_build": {
+            "decorators": [],
+            "signature": "self"
+          },
+          "_positions": {
+            "decorators": [
+              "staticmethod"
+            ],
+            "signature": "content: str, tags"
+          },
+          "inside": {
+            "decorators": [],
+            "signature": "self, pos: int"
+          }
+        }
       },
       "_PARAM_CLOSE_TAG": {
         "kind": "assign"
@@ -2410,6 +2466,12 @@
       "_TOOL_OPEN_XML_TAIL_PATS": {
         "kind": "assign"
       },
+      "_WRAP_CLOSE_RE": {
+        "kind": "assign"
+      },
+      "_WRAP_OPEN_RE": {
+        "kind": "assign"
+      },
       "_balanced_brace_end": {
         "decorators": [],
         "kind": "def",
@@ -2443,7 +2505,7 @@
       "_func_close_index": {
         "decorators": [],
         "kind": "def",
-        "signature": "content: str, body_start: int, body: str"
+        "signature": "content: str, body_start: int, body: str, *, inside=None"
       },
       "_gemma_arguments_to_json": {
         "decorators": [],

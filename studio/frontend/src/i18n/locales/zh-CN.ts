@@ -8,10 +8,13 @@ export const zhCN = {
   chatBackground: {
     noBackground: "无背景",
     sizing: "图片缩放方式",
+    sizingPosition: "图片缩放与位置",
     fill: "填充",
     fit: "适应",
     stretch: "拉伸",
     original: "原始尺寸",
+    fitWidth: "适应宽度",
+    fitHeight: "适应高度",
     zoom: "缩放",
     outline: "消息输入框边框",
     fade: "渐隐至背景",
@@ -30,6 +33,12 @@ export const zhCN = {
     visibility: "可见度",
     blur: "图片模糊",
     position: "位置",
+    horizontal: "水平位置",
+    vertical: "垂直位置",
+    scope: "显示位置",
+    scopeNewChat: "新聊天页面",
+    scopeChats: "聊天",
+    scopeAll: "所有页面",
     positionValue: "水平 {x}%，垂直 {y}%",
     newChat: "新聊天",
     conversation: "对话",
@@ -965,7 +974,7 @@ export const zhCN = {
       deleteProjects: "删除项目",
       deleteProjectsTitle: "删除项目",
       deleteProjectsDescription:
-        "删除 {count} 个项目？其中的对话将被永久删除。",
+        "{count} 个项目及其所有聊天将被永久删除。此操作无法撤销。",
       deleteProjectsFilesDescription:
         "每个项目的工作区文件夹会从磁盘中删除。",
       countSelected: "已选择 {count} 个",
@@ -976,7 +985,7 @@ export const zhCN = {
       markRead: "标记为已读",
       deleteChats: "删除对话",
       deleteTitle: "删除对话",
-      deleteDescription: "删除 {count} 个对话？此操作无法撤销。",
+      deleteDescription: "{count} 个聊天及其消息将被永久删除。此操作无法撤销。",
       deleteFilesDescription:
         "每个对话自己的沙盒文件夹会从磁盘中删除。它们在项目内写入的文件仍保留在该项目的工作区中。",
       deleteFilesLabel: "删除文件和沙盒文件夹",
@@ -1024,7 +1033,7 @@ export const zhCN = {
     dialog: {
       deleteChat: {
         title: "删除聊天",
-        description: "确定要删除聊天“{name}”吗？",
+        description: "聊天“{name}”及其消息将被永久删除。此操作无法撤销。",
       },
       deleteRun: {
         title: "删除训练运行",
@@ -2113,10 +2122,14 @@ export const zhCN = {
         label: "安装类型",
         description:
           "仅聊天 (GGUF)。完整安装会添加训练、导出、视频、safetensors 模型和更多图像生成功能。",
+        descriptionCpu:
+          "仅聊天 (GGUF)。未找到受支持的 GPU，因此完整安装会添加 CPU 训练。",
         action: "升级到完整安装",
         confirmTitle: "要升级到完整安装吗？",
         confirmDescription:
           "此仅聊天安装运行 GGUF 模型。完整安装会为本机 GPU 添加 PyTorch，从而启用训练、导出、视频、safetensors 模型和更多图像生成功能。它会下载几 GB 数据（至少 5 GB 磁盘空间）并重启服务器。聊天记录、模型和设置会保留。这可能需要几分钟。",
+        confirmDescriptionCpu:
+          "此仅聊天安装运行 GGUF 模型。本机未找到受支持的 GPU，因此完整安装会添加 CPU 版 PyTorch，从而启用 CPU 训练。CPU 训练比 GPU 训练慢得多。它需要至少 5 GB 磁盘空间并会重启服务器。聊天记录、模型和设置会保留。这可能需要几分钟。",
         confirmAction: "升级",
         keywords:
           "full install upgrade 安装类型 完整安装 升级 仅聊天 chat only gguf add training 训练 微调 train fine-tune pytorch torch 导出 视频 图像生成 safetensors",
@@ -2315,6 +2328,22 @@ export const zhCN = {
         label: "不给糖就捣蛋",
         description:
           "万圣节主题和惊悚问候，持续到 11 月 1 日。",
+      },
+      code: {
+        title: "代码",
+        fontDescription: "聊天中的代码块、文件预览和 API 示例。",
+        lineNumbers: {
+          label: "行号",
+          description: "为聊天中的代码块显示行号。",
+        },
+        wordWrap: {
+          label: "自动换行",
+          description: "代码块中的长行自动换行，而不是横向滚动。",
+        },
+        ligatures: {
+          label: "字体连字",
+          description: "代码字体支持时，将 => 和 != 等符号合成一个字形。",
+        },
       },
       custom: {
         chatWidth: {
@@ -3141,9 +3170,9 @@ export const zhCN = {
         movedChatsToRecents: "已将 {count} 个聊天移至最近使用",
         moveFailed: "无法移动聊天",
         deleteChatsTitle: "删除聊天（{count} 个）",
-        deleteChatsWarning: "删除所选的 {count} 个聊天？此操作无法撤销。",
+        deleteChatsWarning: "{count} 个聊天及其消息将被永久删除。此操作无法撤销。",
         deleteArchivedTitle: "删除 {count} 个已归档聊天",
-        deleteArchivedWarning: "删除所选的 {count} 个已归档聊天？此操作无法撤销。",
+        deleteArchivedWarning: "{count} 个已归档聊天及其消息将被永久删除。此操作无法撤销。",
         deleting: "正在删除...",
       },
       title: "数据",
@@ -3525,6 +3554,8 @@ export const zhCN = {
     imageTraining: "图像训练",
     goToImageTraining: "训练图像 LoRA",
     routeTitle: "训练",
+    cpuTrainingNotice:
+      "未找到 GPU，因此训练在 CPU 上运行。它比 GPU 训练慢得多，并且仅支持文本模型（LoRA 或完整微调）。",
     wizard: {
       modelTitle: "模型",
       modelDescription: "选择模型和训练方法",
@@ -4575,8 +4606,8 @@ export const zhCN = {
       },
       dialog: {
         renameChat: "重命名聊天",
-        deleteChatDescription: "此聊天将被永久删除，且无法撤销。",
-        deleteProjectDescription: "该项目及其聊天（{count} 个）将被永久删除，且无法撤销。",
+        deleteChatDescription: "该聊天及其消息将被永久删除。此操作无法撤销。",
+        deleteProjectDescription: "该项目及其聊天（{count} 个）将被永久删除。此操作无法撤销。",
         deleteFilesMany: "同时删除这些聊天创建的文件和沙盒文件夹。",
         deleteProjectFilesLabel: "删除项目工作文件夹",
         deleteProjectFiles: "项目工作文件夹将从磁盘中删除。",
@@ -5032,14 +5063,14 @@ export const zhCN = {
     renameChat: "重命名聊天",
     chatName: "聊天名称",
     deleteChat: "删除聊天",
-    deleteChatDescription: "确定要删除 {name} 吗？其消息将被永久删除。",
+    deleteChatDescription: "聊天“{name}”及其消息将被永久删除。此操作无法撤销。",
     importChats: "导入聊天",
     importDestination: "选择 {name} 的导入位置：",
     selectDestination: "选择目标",
     recents: "最近",
     import: "导入",
     deleteProject: "删除项目",
-    deleteProjectDescription: "确定要删除 {name} 吗？其聊天将被永久删除。",
+    deleteProjectDescription: "项目“{name}”及其所有聊天将被永久删除。此操作无法撤销。",
     deleteProjectFiles: "项目工作文件夹将从磁盘中删除。",
     deleteAll: "全部删除",
     projectFallback: "项目",
@@ -5122,6 +5153,18 @@ export const zhCN = {
     flaggedIntro: "我们的自动扫描器标记了以下问题：",
     nothingFlagged:
       "我们的自动扫描器未标记任何可疑文件，但请再次确认。",
+    unscannedTitle: "无法扫描模型文件",
+    unscannedBody: "{model} 包含 pickle 权重,这类文件在加载时可能运行代码,而且没有可用的恶意软件扫描结果,因此无法加载。{note}",
+    unscannedIntro: "无法扫描的文件:",
+    switchSourceNote: "请在设置中将模型来源切换为 Hugging Face 后加载。",
+    reconnectNote: "请连接到 Hugging Face 以读取其扫描结果,然后重试。",
+    managedTitle: "此账户已关闭自定义代码",
+    managedNote: "托管账户已关闭此功能。请联系安装所有者启用。",
+    notFoundTitle: "在 {source} 上未找到",
+    notFoundBody: "在 {source} 上未找到 {model},因此无法运行安全检查。请检查名称;如果仓库是私有的,请设置有访问权限的令牌。",
+    notOnModelScopeBody: "{model} 在 ModelScope 上不可用,因此无法运行安全检查,也无法从该来源加载。请在设置中将模型来源切换为 Hugging Face 后使用。",
+    checksFailedTitle: "无法运行安全检查",
+    checksFailedBody: "无法从 {source} 读取 {model},因此安全检查未能完成,也无法加载。请检查网络连接和令牌后重试。{note}",
     enableAndContinue: "启用并继续",
   },
   tour: {
