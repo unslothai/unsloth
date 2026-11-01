@@ -885,9 +885,14 @@ def _flex_kernel_options_for_head_dim(head_dim):
     return dict(_FLEX_LARGE_HEAD_DIM_KERNEL_OPTIONS)
 
 
-# Default flex backward tiles are about 10x slower on sm80 for 128 < head_dim <= 256, so only that
-# capability gets the override (B200 keeps default); backward only, forward and math unchanged since
-# tile sizes only reorder fp32 accumulation
+# Inductor's sm8x default flex BACKWARD config at 128 < head_dim <= 256 is (64, 64, 64, 64,
+# 2 stages, 4 warps). On an A100 (sm80) that config runs about 10x slower than a 32 x 32 tile with
+# one stage: Gemma 3 4B shapes (8 query / 4 kv heads, head_dim 256, bf16) fwd+bwd, causal
+# B8 x 1024: 32.4 ms default vs 3.2 ms; sliding 1024 window B2 x 4096: 53.3 vs 4.8 ms; causal
+# B2 x 4096: 115.3 vs 9.5 ms. In Gemma 3 4B LoRA training the flex backward was half of an A100
+# step. B200 (sm100, its own default) is faster on the default, so only the measured capability
+# gets the override. Backward only ("bwd_" keys): the forward template is unchanged, and so is the
+# math (tile sizes only reorder the float32 accumulation).
 _FLEX_TUNED_BWD_HEAD_DIM_RANGE = (128, 256)  # (exclusive low, inclusive high)
 _FLEX_TUNED_BWD_CAPABILITIES = ((8, 0),)
 _FLEX_TUNED_BWD_KERNEL_OPTIONS = {
@@ -961,8 +966,9 @@ def _flex_tuned_bwd_fits(
         return False
 
 
-# Inductor default flex tiles overflow sm86/sm89 shared memory (101376 B) at 128 < head_dim <= 256;
-# the fwd_ and bwd_ kernel option keys need torch 2.10 or newer
+# sm86 / sm89 (A10, RTX 3090 / 4090, A6000, L4, L40S; 101376 B shared memory): Inductor's default
+# flex tiles at 128 < head_dim <= 256 need 114688-151552 B and fail to compile, so Gemma 3 went to
+# eager. These fit and were the fastest that compiled on an L4. "fwd_" / "bwd_" keys need torch 2.10+.
 _FLEX_SMALL_SMEM_KERNEL_OPTIONS = {
     "fwd_BLOCK_M": 64,
     "fwd_BLOCK_N": 64,
@@ -979,6 +985,22 @@ _FLEX_SMALL_SMEM_KERNEL_OPTIONS = {
 _FLEX_SMALL_SMEM_MIN_SHARED_MEMORY = 101376
 _FLEX_SMALL_SMEM_CAPABILITY_MAJOR = 8
 _FLEX_SMALL_SMEM_ENV_VAR = "UNSLOTH_FLEX_SMALL_SMEM_TILES"
+# flex_decoding (no-grad query below 128) holds next_pow2(q_len * query heads per kv head) query rows
+# in one tile. At head_dim 256 on these cards up to 64 rows fit (one-token decode: 16), 128 need
+# 114688 B. A short prompt's prefill (Gemma 3 1B: 28 tokens x 4 heads) then fails to compile,
+# unsloth_zoo's suppress_errors hides it, and Dynamo marks flex_attention as skipped for the rest
+# of the process, so every later call, long prompts and decode included, runs the eager fallback.
+_FLEX_SMALL_SMEM_DECODE_MAX_ROWS = 64
+
+
+def _flex_decode_rows(query, key):
+    """Query rows flex_decoding would put in one tile for this call (transformers repeats K / V
+    for a head count that is not a power of two, so each kv head then serves one query head)."""
+    q_heads, kv_heads = query.shape[1], key.shape[1]
+    group = 1
+    if kv_heads > 0 and q_heads % kv_heads == 0 and (q_heads & (q_heads - 1)) == 0:
+        group = q_heads // kv_heads
+    return query.shape[2] * group
 
 
 def _flex_small_smem_device_ok():
@@ -1203,6 +1225,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             )
         except Exception:
             kernel_options = None
+        short_forced = False
         # First: on these cards the default forward tile does not fit, so this full set beats a forced
         # UNSLOTH_FLEX_TUNED_BACKWARD=1 (backward keys only).
         if (
@@ -1210,19 +1233,31 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             and small_smem_device_ok
             and hasattr(query, "dim")
             and query.dim() == 4
-            # Short no-grad queries use flex_decoding unless the main kernel is forced; the shape
-            # guard is last.
+            # Short no-grad queries go to flex_decoding, whose own tiles are left alone while they
+            # fit, unless the caller (the block compile hook, also for no-grad checkpoint forwards)
+            # forces the main kernel. Shape last, so training calls add no seq >= 128 guard.
             and (
                 _flex_call_needs_backward(query, key, value)
                 or _flex_main_kernel_forced(kwargs)
                 or decode_replaced
                 or query.shape[2] >= 128
+                or _flex_decode_rows(query, key) > _FLEX_SMALL_SMEM_DECODE_MAX_ROWS
             )
             and _flex_tuned_bwd_fits(
                 args, kwargs, _FLEX_SMALL_SMEM_KERNEL_OPTIONS, ("fwd_", "bwd_", "BLOCK_", "num_")
             )
         ):
             kernel_options = _flex_small_smem_kernel_options(query.shape[-1], small_smem_device_ok)
+            # Main kernel: flex_decoding with fwd_BLOCK_M 64 below its row count is wrong on 2.10 and
+            # fails to compile on 2.11. Shape last, as above (no training sequence guard).
+            if (
+                kernel_options is not None
+                and not _flex_call_needs_backward(query, key, value)
+                and not _flex_main_kernel_forced(kwargs)
+                and query.shape[2] < 128
+            ):
+                kernel_options["FORCE_USE_FLEX_ATTENTION"] = True
+                short_forced = True
         if (
             kernel_options is None
             and tuned_bwd_device_ok
@@ -1248,7 +1283,23 @@ def _wrap_flex_attention_forward(flex_attention_forward):
                 requested = {k: v for k, v in requested.items() if k != "BACKEND"}
         if kernel_options is not None:
             # A caller that already asked for something keeps it: only fill the gaps.
+            ours_forced = (
+                kernel_options.get("FORCE_USE_FLEX_ATTENTION") is True
+                and "FORCE_USE_FLEX_ATTENTION" not in requested
+            )
+            if ours_forced and requested.get("BACKEND") == "AUTO":
+                requested = {k: v for k, v in requested.items() if k != "BACKEND"}
             kernel_options.update(requested)
+            if short_forced and requested.get("FORCE_USE_FLEX_ATTENTION") is False:
+                # The caller turned the main kernel off: our main-kernel tiles do not cover flex_decoding.
+                kernel_options = dict(requested)
+            # torch 2.10+ rejects BACKEND with FORCE_USE_FLEX_ATTENTION: TRITON is the main kernel, so it
+            # keeps our tiles; any other backend keeps the caller's options, which our tiles do not fit.
+            elif ours_forced and "BACKEND" in kernel_options:
+                if kernel_options["BACKEND"] == "TRITON":
+                    kernel_options.pop("FORCE_USE_FLEX_ATTENTION")
+                else:
+                    kernel_options = dict(requested)
             kwargs["kernel_options"] = kernel_options
         return flex_attention_forward(module, query, key, value, *args, **kwargs)
 
@@ -5553,7 +5604,8 @@ def config_return_dict(config):
 
 
 def is_bfloat16_supported():
-    # XPU is re-checked each call so a torch.xpu.set_device after import is seen.
+    # XPU: ask again, so a torch.xpu.set_device after import is seen, as the trainer's live
+    # unsloth_zoo probe sees it. Cheap (device properties only).
     if DEVICE_TYPE == "xpu" and zoo_shares_xpu_bf16():
         return xpu_supports_native_bf16()
     if _BF16_BY_DEVICE is None:
@@ -6423,7 +6475,8 @@ def patch_gradient_accumulation_fix(Trainer):
 
         @functools.wraps(_original_call_model_init)
         def _unsloth_call_model_init(self, *args, **kwargs):
-            # model_init builds a new model, which needs the same DDP exclusions as __init__.
+            # model_init rebuilds the model when training starts: the new instance needs the same
+            # DDP exclusions as the one __init__ marked.
             model = _original_call_model_init(self, *args, **kwargs)
             _refuse_tensor_parallel_for_trainer(model)
             _tensor_subclass_weights_for_ddp(self, model)
@@ -9615,8 +9668,9 @@ def _nvfp4_any_rank_forward(self, x):
     # torchao's NVFP4FakeQuantizedLinear flattens only rank-3 inputs (vision layers see rank 4+), and
     # its quantizer asserts contiguous bfloat16 / float32 activations (nvfp4_quantize).
     out_dtype = None
-    # Float16 autocast: cast input to the weight dtype (prepare admits only bfloat16 or float32
-    # weights); return the autocast dtype rather than the input dtype
+    # float16 autocast hands over float16 activations (an earlier Linear / SDPA); prepare only
+    # admits bfloat16 / float32 weights, so quantize from the weight dtype and return what an
+    # autocast Linear would: the autocast dtype, not the input's.
     if x.dtype == torch.float16 and torch.is_autocast_enabled(x.device.type):
         out_dtype = torch.get_autocast_dtype(x.device.type)
         x = x.to(self.weight.dtype)
@@ -9992,7 +10046,9 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
     torchao_config = getattr(model, "torchao_config", None)
     if torchao_config is not None and torchao_config.qat_scheme is None:
         return torch.no_grad()
-    # FSDP reuses gathered params, so a gather under inference mode breaks backward (unsloth 3551).
+    # FSDP keeps the parameters it all-gathers for one forward and reuses them in the next, so a
+    # gather under inference mode poisons the training step: "Inference tensors cannot be saved
+    # for backward" (unsloth#3551). TRL generates under no_grad for the same reason.
     import os, sys
 
     if os.environ.get("ACCELERATE_USE_FSDP", "").strip().lower() in ("1", "true", "yes", "on"):
@@ -10639,7 +10695,8 @@ class _AutoCheckpointSkip:
             for p in trainable
             if p.device == device and not self._has_optimizer_state(p)
         )
-        # foreach AdamW allocates a float32 copy of each param every step, on its own device.
+        # foreach AdamW allocates about one fp32 copy of the params (sqrt of exp_avg_sq) every step,
+        # on each param's own card.
         optimizer += sum(p.numel() * 4 for p in trainable if p.device == device)
         self.optimizers = []
         headroom = usable_cuda_bytes(device) - activation_peak - optimizer

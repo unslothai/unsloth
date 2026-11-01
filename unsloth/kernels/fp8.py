@@ -2081,6 +2081,8 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
         elif (
             backend == "scaled_mm"
             and rowwise
+            # Before torch 2.14 rowwise outputs are bf16 / fp16 only: float32 dequantizes.
+            and (x.dtype != torch.float32 or not _SCALED_MM_FP16_OUT_BROKEN)
             and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
             and x.shape[-1] == weight.shape[1]
             # Decode-sized calls: dequant + 16-bit GEMM beats quantizing the activation unless the weight
@@ -2264,6 +2266,10 @@ def _fp8_rowwise_direct_route(X, weight, weight_scale):
         or weight_scale.device != weight.device
         or _fp8_e4m3fn_unsupported_in_trace(weight)
     ):
+        return None
+    # The compiled path dequantizes inside autocast's GEMM; a buffer in another dtype could overflow first.
+    # Checked after the cheap gates (it costs a few hundred ns per call); no-argument is_autocast_enabled is CUDA's.
+    if torch.is_autocast_enabled() and torch.get_autocast_dtype("cuda") != X.dtype:
         return None
     backend = _fp8_rowwise_backend(X.device)
     if backend == "fbgemm" and N % 8 == 0 and K % 8 == 0:

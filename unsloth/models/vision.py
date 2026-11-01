@@ -1623,6 +1623,18 @@ try:
 except:
     torch_compiler_set_stance = None
 
+try:
+    from unsloth_zoo.temporary_patches.utils import unsloth_reset_inference_runs
+except ImportError:
+    # Older unsloth_zoo: each compiled module counts its own inference forwards.
+    def unsloth_reset_inference_runs():
+        for name, module in list(sys.modules.items()):
+            if (
+                name.startswith("unsloth_compiled_module_")
+                and type(getattr(module, "INFERENCE_RUNS", None)) is int
+            ):
+                module.INFERENCE_RUNS = 0
+
 
 # Image and video only: get_block_sequence_ids_for_mask blocks token types 1 and 2.
 _MEDIA_GENERATE_KWARGS = ("pixel_values", "pixel_values_videos")
@@ -5805,6 +5817,9 @@ class FastBaseModel:
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
+        # A count left at 1 by a 1-token generate would go eager right after the next prefill.
+        if unsloth_reset_inference_runs is not None:
+            unsloth_reset_inference_runs()
         return model
 
     @staticmethod
