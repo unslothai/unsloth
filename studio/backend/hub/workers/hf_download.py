@@ -8,6 +8,7 @@ by HF_HUB_DISABLE_XET=1, HF_HUB_ENABLE_HF_TRANSFER=0 (http), one writer per blob
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import signal
@@ -15,6 +16,7 @@ import sys
 import threading
 import time
 import uuid
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Union
 
@@ -266,9 +268,9 @@ def _read_ref(ref: Path):
 
 
 def _write_ref(ref: Path, commit: str) -> None:
-    """Atomic; no temp file may survive, since every file under refs/ reads as a ref (scan_cache_dir)."""
+    """Atomic, with even transient files outside refs/ (scan_cache_dir reads branch names)."""
     ref.parent.mkdir(parents = True, exist_ok = True)
-    tmp = ref.with_name(f"main.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp = ref.parent.parent / f".studio-{ref.name}.{uuid.uuid4().hex}.tmp"
     try:
         tmp.write_text(commit, encoding = "utf-8")
         os.replace(tmp, ref)
@@ -281,43 +283,137 @@ def _write_ref(ref: Path, commit: str) -> None:
 
 
 def _pinned_revision(repo_type: RepoType, repo_id: str, commit) -> dict:
-    """Pin to the commit the manifest was planned from. A sha revision leaves refs/main unwritten, yet loads by
-    repo id (offline too) resolve through it, so it is written here as an unpinned download would."""
+    """Select an immutable revision without exposing an unverified snapshot through refs/main."""
     if not isinstance(commit, str) or not _COMMIT_SHA.fullmatch(commit):
-        return {}
-    from hub.utils.snapshot_reuse import repo_cache_dir
-
-    ref = repo_cache_dir(repo_type, repo_id) / "refs" / "main"
-    if _read_ref(ref) == commit:
-        return {"revision": commit}
-    try:
-        _write_ref(ref, commit)
-    except OSError as e:
-        print(
-            f"Could not record refs/main for {repo_id} ({e}); downloading unpinned.",
-            file = sys.stderr,
-        )
         return {}
     return {"revision": commit}
 
 
-def _landed_state(repo_dir: Path, commit: str) -> frozenset:
-    """``commit``'s snapshot entries plus partial blob sizes: what changes once a download transfers bytes."""
-    state = set()
-    snapshot = repo_dir / "snapshots" / commit
+# refs/main publication contract for cooperating, SHA-pinned workers:
+# 1. At quiescence, main names the most recently STARTED verified successful
+#    attempt, or the value before the attempts if none succeeded. A previous
+#    successful publication is the baseline for subsequent attempts.
+# 2. Failure/cancellation never exposes its incomplete commit and never hides
+#    a peer's completed publication, even if partial files have landed.
+# 3. Verification failure raises; it cannot succeed via an older cache fallback.
+# 4. Transfers and verification run without the lock. All coordination files,
+#    including temporary files, live outside refs/ (scan_cache_dir reads refs).
+#
+# Start and finish linearize under the same cross-process lock. Never pin main
+# before transfer: immutable SHA downloads do not write it, so rollback is just
+# removing an attempt. Only max(start sequence) among verified successes may
+# publish. A running newer attempt does not prevent an older success publishing;
+# it supersedes that publication only if it too succeeds. This also handles ABA
+# commits and successful no-op downloads without inspecting snapshot mutations.
+# The lock/state must be shared by all writers; unrelated Hub writers and cache
+# deletion are outside this protocol. This is not a power-loss transaction across
+# the JSON file and main; I/O errors fail closed rather than retrying unpinned.
+
+
+@dataclass(frozen = True)
+class _MainRefState:
+    next_sequence: int = 1
+    published_sequence: int = 0
+    published_commit: str | None = None
+    attempts: tuple[tuple[int, str], ...] = ()
+
+
+def _start_main_ref(state: _MainRefState, commit: str) -> tuple[_MainRefState, int]:
+    """Pure start decision; sequence allocation defines the attempt's start order."""
+    sequence = state.next_sequence
+    return _MainRefState(
+        sequence + 1,
+        state.published_sequence,
+        state.published_commit,
+        (*state.attempts, (sequence, commit)),
+    ), sequence
+
+
+def _finish_main_ref(state: _MainRefState, sequence: int, verified: bool) -> _MainRefState:
+    """Pure terminal decision, shared by success, transfer/verification failure and cancel."""
+    attempts = dict(state.attempts)
+    commit = attempts.pop(sequence)
+    publish = verified and sequence > state.published_sequence
+    return _MainRefState(
+        state.next_sequence,
+        sequence if publish else state.published_sequence,
+        commit if publish else state.published_commit,
+        tuple(attempts.items()),
+    )
+
+
+def _load_main_ref_state(path: Path, previous: str | None) -> _MainRefState:
     try:
-        state.update(("s", str(p.relative_to(snapshot))) for p in snapshot.rglob("*"))
-    except OSError:
-        pass
-    try:
-        for p in (repo_dir / "blobs").glob("*.incomplete"):
-            try:
-                state.add(("b", p.name, p.stat().st_size))
-            except OSError:
-                pass
-    except OSError:
-        pass
-    return frozenset(state)
+        raw = path.read_text(encoding = "utf-8")
+    except FileNotFoundError:
+        return _MainRefState(published_commit = previous)
+    # A damaged journal must not reset the sequence while peers are still alive.
+    # Propagate errors instead of starting an uncoordinated/unpinned transfer.
+    data = json.loads(raw)
+    state = _MainRefState(
+        data["next_sequence"],
+        data["published_sequence"],
+        data["published_commit"],
+        tuple(tuple(attempt) for attempt in data["attempts"]),
+    )
+    if (
+        type(state.next_sequence) is not int
+        or type(state.published_sequence) is not int
+        or not 0 <= state.published_sequence < state.next_sequence
+        or not (state.published_commit is None or isinstance(state.published_commit, str))
+        or (state.published_sequence > 0 and state.published_commit is None)
+        or len(dict(state.attempts)) != len(state.attempts)
+        or any(
+            type(sequence) is not int
+            or not 0 < sequence < state.next_sequence
+            or not isinstance(commit, str)
+            or not _COMMIT_SHA.fullmatch(commit)
+            for sequence, commit in state.attempts
+        )
+    ):
+        raise ValueError(f"Invalid refs/main publication state: {path}")
+    return state
+
+
+def _update_main_ref(
+    repo_dir: Path,
+    *,
+    commit: str | None = None,
+    sequence: int | None = None,
+    verified: bool = False,
+) -> int | None:
+    """Persist one decision under the lock; no network, transfer or verification here."""
+    from huggingface_hub.utils import WeakFileLock
+
+    lock_dir = repo_dir.parent / ".locks" / repo_dir.name
+    lock_dir.mkdir(parents = True, exist_ok = True)
+    state_path = lock_dir / "studio-main.json"
+    ref = repo_dir / "refs" / "main"
+    with WeakFileLock(lock_dir / "studio-main.lock"):
+        previous = _read_ref(ref)
+        before = _load_main_ref_state(state_path, previous)
+        if commit is not None:
+            state, sequence = _start_main_ref(before, commit)
+        else:
+            state = _finish_main_ref(before, sequence, verified)
+        try:
+            _write_ref(state_path, json.dumps(asdict(state)))
+            if verified and previous != state.published_commit:
+                _write_ref(ref, state.published_commit)
+        except BaseException:
+            if verified:
+                # Publication itself failed/cancelled. Do not leave a successful
+                # sequence that could disown an older still-running success.
+                # The lock excludes every peer until both files are restored.
+                failed = _finish_main_ref(before, sequence, False)
+                _write_ref(state_path, json.dumps(asdict(failed)))
+                if _read_ref(ref) != previous:
+                    if previous is None:
+                        ref.unlink(missing_ok = True)
+                    else:
+                        _write_ref(ref, previous)
+            raise
+    return sequence
 
 
 def _pinned_snapshot_download(
@@ -327,93 +423,37 @@ def _pinned_snapshot_download(
     expected_files = (),
     **kwargs,
 ):
-    """``snapshot_download(**kwargs)`` at ``commit``. A failure before anything of ``commit`` lands rolls refs/main
-    back. Transfer failures retry unpinned, but a planned manifest must still resolve to the requested commit.
-    Verification failures roll back too, then raise without retrying."""
-    from hub.utils.snapshot_reuse import repo_cache_dir
-    from huggingface_hub.utils import WeakFileLock
+    """Transfer at an immutable SHA, verify, then publish by start order.
 
-    if not isinstance(commit, str) or not _COMMIT_SHA.fullmatch(commit):
-        return snapshot_download(**kwargs)
+    No provisional refs and no unpinned retries: Hub's legacy cache fallback must
+    neither expose partial bytes nor turn a failed update into an older success.
+    """
+    from hub.utils.snapshot_reuse import repo_cache_dir
 
     repo_type, repo_id = kwargs.get("repo_type") or "model", kwargs["repo_id"]
-    repo_dir = repo_cache_dir(repo_type, repo_id)
-    ref = repo_dir / "refs" / "main"
-    # Workers are separate processes. Keep coordination files outside refs/, which
-    # scan_cache_dir interprets as branch names; never hold the lock during transfer.
-    lock_dir = repo_dir.parent / ".locks" / repo_dir.name
-    lock_path = lock_dir / "studio-main.lock"
-    generation_path = lock_dir / "studio-main.generation"
-    try:
-        lock_dir.mkdir(parents = True, exist_ok = True)
-        with WeakFileLock(lock_path):
-            previous = _read_ref(ref)
-            generation = _read_ref(generation_path)
-            # Only a successful publication advances the generation. A restarted
-            # attempt that rolls back must not disown a still-running peer.
-            if generation is None:
-                generation = uuid.uuid4().hex
-                _write_ref(generation_path, generation)
-            pin = _pinned_revision(repo_type, repo_id, commit)
-            before = None if previous == commit else _landed_state(repo_dir, commit)
-    except OSError as e:
-        print(
-            f"Could not coordinate refs/main for {repo_id} ({e}); downloading unpinned.",
-            file = sys.stderr,
-        )
-        return snapshot_download(**kwargs)
+    pin = _pinned_revision(repo_type, repo_id, commit)
     if not pin:
+        # Metadata-unavailable legacy downloads cannot participate in a protocol
+        # whose ordering and verification require a resolved immutable commit.
         return snapshot_download(**kwargs)
-    transfer_complete = False
+
+    repo_dir = repo_cache_dir(repo_type, repo_id)
+    sequence = _update_main_ref(repo_dir, commit = commit)
     try:
         path = snapshot_download(**kwargs, **pin)
-        transfer_complete = True
-        # Legacy Hub can return an existing, incomplete snapshot after a metadata error.
-        # Reuse may have created it before this call; verify inside the rollback boundary.
+        if Path(path).name != commit or not Path(path).is_dir():
+            raise OSError(f"Pinned download of {repo_id} returned a snapshot other than {commit}")
+        # Legacy Hub can return an existing incomplete snapshot after metadata
+        # fails. Check before making it visible to offline repo-ID resolution.
         if expected_files:
             from hub.utils.download_manifest import Manifest, verify_against_disk
             manifest = Manifest(repo_type, repo_id, None, "", tuple(expected_files))
             if not verify_against_disk(manifest, Path(path)).ok:
                 raise OSError(f"Pinned snapshot of {repo_id} is incomplete")
-    except BaseException as e:
-        if before is None:
-            raise
-        try:
-            with WeakFileLock(lock_path):
-                # A completed peer may have reused existing files, changing no sizes.
-                # Recheck both ownership and bytes under the same lock as publication.
-                if (
-                    _read_ref(generation_path) != generation
-                    or _landed_state(repo_dir, commit) != before
-                ):
-                    raise e
-                if _read_ref(ref) == commit:
-                    if previous is None:
-                        ref.unlink()
-                    else:
-                        _write_ref(ref, previous)
-        except OSError:
-            raise e
-        if not isinstance(e, Exception) or transfer_complete:
-            raise
-        print(
-            f"Pinned download of {repo_id} failed before any file landed "
-            f"({type(e).__name__}: {e}); retrying unpinned.",
-            file = sys.stderr,
-        )
-        path = snapshot_download(**kwargs)
-        # A cache fallback to the older snapshot cannot satisfy this commit's manifest.
-        if expected_files and Path(path).name != commit:
-            raise OSError(f"Retry of {repo_id} returned an older snapshot instead of {commit}")
-        return path
-    with WeakFileLock(lock_path):
-        # Repair a rollback unless a newer completion owns the ref, even when
-        # this worker started on that completion's commit.
-        if _read_ref(generation_path) == generation:
-            if _read_ref(ref) in (previous, None) or previous == commit:
-                _pinned_revision(repo_type, repo_id, commit)
-            if _read_ref(ref) == commit:
-                _write_ref(generation_path, uuid.uuid4().hex)
+    except BaseException:
+        _update_main_ref(repo_dir, sequence = sequence)
+        raise
+    _update_main_ref(repo_dir, sequence = sequence, verified = True)
     return path
 
 
