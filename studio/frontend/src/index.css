@@ -7162,6 +7162,10 @@ html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .
 .glass-lens-rim .glass-lens-copy {
   filter: blur(1.5px) saturate(1.5) brightness(1.4);
 }
+/* Brightening a light page's own colour leaves a white rim on white; light mode darkens it instead. */
+html:not(.dark) .glass-lens-rim .glass-lens-copy {
+  filter: blur(1.5px) saturate(1.5) brightness(.8);
+}
 .glass-lens-rim::after {
   content: "";
   position: absolute;
