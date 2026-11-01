@@ -2512,17 +2512,19 @@ class ExternalProviderClient:
         """call Anthropic Messages and translate its SSE into OpenAI stream events."""
         import json as _json
 
-        system: Optional[str] = None
+        system_parts: list[str] = []
         filtered: list[dict[str, Any]] = []
         compaction_replayed = False
         for msg in messages:
             if msg.get("role") == "system":
                 content = msg.get("content", "")
-                system = (
+                system_part = (
                     content
                     if isinstance(content, str)
                     else "\n".join(p["text"] for p in content if p.get("type") == "text")
                 )
+                if system_part:
+                    system_parts.append(system_part)
                 continue
 
             content = msg.get("content")
@@ -2825,6 +2827,7 @@ class ExternalProviderClient:
         if prompt_cache_ttl in ("5m", "1h"):
             cache_marker["ttl"] = prompt_cache_ttl
 
+        system = "\n\n".join(system_parts)
         if system:
             if prompt_caching_enabled:
                 # System is the most stable cross-turn prefix; own breakpoint.

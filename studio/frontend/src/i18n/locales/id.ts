@@ -8,10 +8,13 @@ export const id = {
   chatBackground: {
     noBackground: "Tanpa latar belakang",
     sizing: "Ukuran gambar",
+    sizingPosition: "Ukuran dan posisi gambar",
     fill: "Isi",
     fit: "Sesuaikan",
     stretch: "Regangkan",
     original: "Ukuran asli",
+    fitWidth: "Sesuaikan lebar",
+    fitHeight: "Sesuaikan tinggi",
     zoom: "Zoom",
     outline: "Garis tepi kolom pesan",
     fade: "Pudarkan ke latar belakang",
@@ -28,8 +31,15 @@ export const id = {
     halftone: "Halftone",
     scanlines: "Garis pindai",
     visibility: "Visibilitas",
+    conversationVisibility: "Visibilitas dalam percakapan",
     blur: "Keburaman gambar",
     position: "Posisi",
+    horizontal: "Posisi horizontal",
+    vertical: "Posisi vertikal",
+    scope: "Tampilkan di",
+    scopeNewChat: "Halaman chat baru",
+    scopeChats: "Chat",
+    scopeAll: "Semua halaman",
     positionValue: "Horizontal {x}%, vertikal {y}%",
     newChat: "Chat baru",
     conversation: "Percakapan",
@@ -40,6 +50,18 @@ export const id = {
     dimensionsError: "Pilih gambar di bawah 40 megapiksel.",
     decodeError: "Tidak dapat mendekode gambar ini. Coba file lain.",
     effectError: "Tidak dapat merender efek. Pilih Tidak ada atau gambar lain.",
+    material: "Kaca",
+    materialSolid: "Mati",
+    materialTransparent: "Transparan",
+    materialFrosted: "Buram kaca",
+    materialBlurred: "Kabur",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    glassTheme: "Tema kaca",
+    materialStyle: "Gaya",
+    materialMenus: "Menu kaca",
+    materialMenusDescription: "Dropdown, menu, dan pemilih juga menggunakan kaca.",
+    materialStrength: "Kekuatan kaca",
   },
   linkMenu: {
     openInBrowser: "Buka di browser Unsloth",
@@ -1071,7 +1093,7 @@ export const id = {
       deleteProjects: "Hapus proyek",
       deleteProjectsTitle: "Hapus proyek",
       deleteProjectsDescription:
-        "Hapus {count} proyek? Chat di dalamnya akan dihapus secara permanen.",
+        "{count} proyek dan semua chat di dalamnya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
       deleteProjectsFilesDescription:
         "Folder ruang kerja setiap proyek akan dihapus dari disk.",
       countSelected: "{count} dipilih",
@@ -1083,7 +1105,7 @@ export const id = {
       deleteChats: "Hapus chat",
       deleteTitle: "Hapus chat",
       deleteDescription:
-        "Hapus {count} chat? Tindakan ini tidak dapat diurungkan.",
+        "{count} chat dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
       deleteFilesDescription:
         "Folder sandbox milik setiap chat akan dihapus dari disk. File yang ditulisnya di dalam proyek tetap berada di ruang kerja proyek tersebut.",
       deleteFilesLabel: "Hapus file dan folder sandbox",
@@ -1131,7 +1153,7 @@ export const id = {
     dialog: {
       deleteChat: {
         title: "Hapus chat",
-        description: 'Yakin ingin menghapus chat "{name}" ini?',
+        description: 'Chat "{name}" dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.',
       },
       deleteRun: {
         title: "Hapus proses pelatihan",
@@ -2347,10 +2369,14 @@ export const id = {
         label: "Jenis instalasi",
         description:
           "Hanya chat (GGUF). Instalasi lengkap menambahkan pelatihan, ekspor, video, model safetensors, dan fitur pembuatan gambar tambahan.",
+        descriptionCpu:
+          "Hanya chat (GGUF). Tidak ditemukan GPU yang didukung, jadi instalasi lengkap menambahkan pelatihan di CPU.",
         action: "Tingkatkan ke instalasi lengkap",
         confirmTitle: "Tingkatkan ke instalasi lengkap?",
         confirmDescription:
           "Instalasi Hanya chat ini menjalankan model GGUF. Instalasi lengkap menambahkan PyTorch untuk GPU mesin ini, yang mengaktifkan pelatihan, ekspor, video, model safetensors, dan fitur pembuatan gambar tambahan. Proses ini mengunduh beberapa gigabyte (minimal 5 GB ruang disk) dan memulai ulang server. Chat, model, dan pengaturan tetap disimpan. Proses ini dapat memakan waktu beberapa menit.",
+        confirmDescriptionCpu:
+          "Instalasi Hanya chat ini menjalankan model GGUF. Tidak ditemukan GPU yang didukung di mesin ini, jadi instalasi lengkap menambahkan PyTorch untuk CPU, yang mengaktifkan pelatihan di CPU. Pelatihan di CPU jauh lebih lambat daripada di GPU. Proses ini memerlukan ruang disk minimal 5 GB dan memulai ulang server. Chat, model, dan pengaturan tetap disimpan. Proses ini dapat memakan waktu beberapa menit.",
         confirmAction: "Tingkatkan",
         keywords:
           "full install upgrade install type chat only gguf add training train training fine-tune pytorch torch export video image generation safetensors instalasi lengkap tingkatkan pelatihan latih ekspor gambar",
@@ -2520,14 +2546,28 @@ export const id = {
         description:
           "Warna yang digunakan di seluruh Unsloth, dalam mode terang dan gelap.",
         standard: "Standar",
-        classic: "Klasik",
-        minimal: "Minimal",
         moreThemes: "Tema lainnya",
         halloween: "Halloween",
       },
       trickOrTreat: {
         label: "Trick or treat",
         description: "Tema Halloween dan sapaan seram, hingga 1 November.",
+      },
+      code: {
+        title: "Kode",
+        fontDescription: "Blok kode di chat, pratinjau file, dan contoh API.",
+        lineNumbers: {
+          label: "Nomor baris",
+          description: "Beri nomor pada baris blok kode di chat.",
+        },
+        wordWrap: {
+          label: "Bungkus baris",
+          description: "Bungkus baris panjang di blok kode alih-alih menggulir ke samping.",
+        },
+        ligatures: {
+          label: "Ligatur font",
+          description: "Gabungkan simbol seperti => dan != menjadi satu glif jika font kode mendukungnya.",
+        },
       },
       custom: {
         chatWidth: {
@@ -3460,10 +3500,10 @@ export const id = {
         moveFailed: "Gagal memindahkan chat",
         deleteChatsTitle: "Hapus chat ({count})",
         deleteChatsWarning:
-          "Hapus chat yang dipilih ({count})? Tindakan ini tidak dapat diurungkan.",
+          "{count} chat dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleteArchivedTitle: "Hapus {count} chat yang diarsipkan",
         deleteArchivedWarning:
-          "Hapus chat yang diarsipkan yang dipilih ({count})? Tindakan ini tidak dapat diurungkan.",
+          "{count} chat yang diarsipkan dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleting: "Menghapus...",
       },
       title: "Data",
@@ -3882,6 +3922,8 @@ export const id = {
   },
   studio: {
     routeTitle: "Latih",
+    cpuTrainingNotice:
+      "Tidak ditemukan GPU, jadi pelatihan berjalan di CPU. Pelatihan ini jauh lebih lambat daripada di GPU dan hanya mendukung model teks (LoRA atau finetuning penuh).",
     wizard: {
       modelTitle: "Model",
       modelDescription: "Pilih model dan metode pelatihan",
@@ -5036,9 +5078,9 @@ export const id = {
       dialog: {
         renameChat: "Ganti nama chat",
         deleteChatDescription:
-          "Chat ini akan dihapus secara permanen. Tindakan ini tidak dapat diurungkan.",
+          "Chat dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleteProjectDescription:
-          "Proyek beserta chat-nya ({count}) akan dihapus secara permanen. Tindakan ini tidak dapat diurungkan.",
+          "Proyek dan chat di dalamnya ({count}) akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleteFilesMany:
           "Hapus juga file dan folder sandbox yang dibuat oleh chat ini.",
         deleteProjectFilesLabel: "Hapus folder ruang kerja proyek",
@@ -5532,7 +5574,7 @@ export const id = {
     chatName: "Nama chat",
     deleteChat: "Hapus chat",
     deleteChatDescription:
-      "Yakin ingin menghapus {name}? Pesan-pesannya akan dihapus secara permanen.",
+      'Chat "{name}" dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.',
     importChats: "Impor chat",
     importDestination: "Pilih tujuan impor {name}:",
     selectDestination: "Pilih tujuan",
@@ -5540,7 +5582,7 @@ export const id = {
     import: "Impor",
     deleteProject: "Hapus proyek",
     deleteProjectDescription:
-      "Yakin ingin menghapus {name}? Chat di dalamnya akan dihapus secara permanen.",
+      'Proyek "{name}" dan semua chat di dalamnya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.',
     deleteProjectFiles: "Folder ruang kerja proyek akan dihapus dari disk.",
     deleteAll: "Hapus semua",
     projectFallback: "proyek",
@@ -5625,6 +5667,18 @@ export const id = {
     flaggedIntro: "Pemindai otomatis kami menandai masalah, termasuk:",
     nothingFlagged:
       "Pemindai otomatis kami tidak menandai file yang mengkhawatirkan, tetapi harap periksa kembali.",
+    unscannedTitle: "File model tidak dapat dipindai",
+    unscannedBody: "{model} berisi bobot pickle, yang dapat menjalankan kode saat dimuat, dan tidak ada pemindaian malware yang tersedia untuknya, sehingga tidak dapat dimuat. {note}",
+    unscannedIntro: "File yang tidak dapat dipindai:",
+    switchSourceNote: "Ubah sumber model ke Hugging Face di Pengaturan untuk memuatnya.",
+    reconnectNote: "Hubungkan ke Hugging Face agar hasil pemindaiannya dapat dibaca, lalu coba lagi.",
+    managedTitle: "Kode kustom dinonaktifkan untuk akun ini",
+    managedNote: "Fitur ini dinonaktifkan untuk akun terkelola. Minta pemilik instalasi untuk mengaktifkannya.",
+    notFoundTitle: "Tidak ditemukan di {source}",
+    notFoundBody: "{model} tidak ditemukan di {source}, sehingga pemeriksaan keamanannya tidak dapat dijalankan. Periksa namanya, atau atur token dengan akses jika repositorinya privat.",
+    notOnModelScopeBody: "{model} tidak tersedia di ModelScope, sehingga pemeriksaan keamanannya tidak dapat dijalankan dan tidak dapat dimuat dari sana. Ubah sumber model ke Hugging Face di Pengaturan untuk menggunakannya.",
+    checksFailedTitle: "Pemeriksaan keamanan tidak dapat dijalankan",
+    checksFailedBody: "{model} tidak dapat dibaca dari {source}, sehingga pemeriksaan keamanannya tidak dapat diselesaikan dan tidak dapat dimuat. Periksa koneksi dan token Anda, lalu coba lagi. {note}",
     enableAndContinue: "Aktifkan dan lanjutkan",
   },
   tour: {

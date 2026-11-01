@@ -76,9 +76,12 @@ ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
 
 # install.sh needs curl + git; supervisor + openssh-server run the service
 # trio. The base image already has python + uv + pip.
+# openssh-server's postinst generates host keys; drop them so every container
+# mints its own at launch (ssh-keygen -A) instead of sharing a published key.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         curl git ca-certificates supervisor openssh-server \
+ && rm -f /etc/ssh/ssh_host_* \
  && rm -rf /var/lib/apt/lists/*
 
 # The linker the install RUN below finishes with, and the entrypoint reruns (studio_home.sh).

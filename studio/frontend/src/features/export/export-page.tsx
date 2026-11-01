@@ -290,6 +290,8 @@ export function ExportPage() {
     hardware.exportUnsupportedMessage,
     canUpgrade,
   );
+  // Only where the full install brings export: without a GPU it trains on CPU and still cannot export.
+  const offerFullInstall = canUpgrade && hardware.exportUnsupportedReason === "no_torch";
   const availableFormats = useMemo<MergedFormatOption[]>(
     () =>
       MERGED_FORMATS.filter((f) => {
@@ -1595,7 +1597,7 @@ export function ExportPage() {
                         <AlertTitle>Export unavailable</AlertTitle>
                         <AlertDescription>
                           {exportUnsupportedMessage}
-                          {fullInstall && (
+                          {offerFullInstall && (
                             <div className="mt-2">
                               <Button
                                 size="xs"

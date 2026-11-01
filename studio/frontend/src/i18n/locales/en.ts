@@ -5,10 +5,13 @@ export const en = {
   chatBackground: {
     noBackground: "No background",
     sizing: "Image sizing",
+    sizingPosition: "Image sizing & position",
     fill: "Fill",
     fit: "Fit",
     stretch: "Stretch",
     original: "Original size",
+    fitWidth: "Fit width",
+    fitHeight: "Fit height",
     zoom: "Zoom",
     outline: "Composer outline",
     fade: "Fade to background",
@@ -25,8 +28,15 @@ export const en = {
     halftone: "Halftone",
     scanlines: "Scanlines",
     visibility: "Visibility",
+    conversationVisibility: "Visibility in conversations",
     blur: "Image blur",
     position: "Position",
+    horizontal: "Horizontal position",
+    vertical: "Vertical position",
+    scope: "Show on",
+    scopeNewChat: "New chat page",
+    scopeChats: "Chats",
+    scopeAll: "All pages",
     positionValue: "Horizontal {x}%, vertical {y}%",
     newChat: "New chat",
     conversation: "Conversation",
@@ -37,6 +47,18 @@ export const en = {
     dimensionsError: "Choose an image smaller than 40 megapixels.",
     decodeError: "Could not decode this image. Try another file.",
     effectError: "Could not render the effect. Try None or choose another image.",
+    material: "Glass",
+    materialSolid: "Off",
+    materialTransparent: "Transparent",
+    materialFrosted: "Frosted",
+    materialBlurred: "Blurred",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    glassTheme: "Glass theme",
+    materialStyle: "Style",
+    materialMenus: "Glass menus",
+    materialMenusDescription: "Dropdowns, menus and pickers use the glass too.",
+    materialStrength: "Glass strength",
   },
 
   linkMenu: {
@@ -977,7 +999,7 @@ export const en = {
       deleteProjects: "Delete projects",
       deleteProjectsTitle: "Delete projects",
       deleteProjectsDescription:
-        "Delete {count} projects? Their chats are permanently deleted.",
+        "This permanently deletes {count} projects and all of their chats. This cannot be undone.",
       deleteProjectsFilesDescription:
         "Each project workspace folder is removed from disk.",
       countSelected: "{count} selected",
@@ -988,7 +1010,7 @@ export const en = {
       markRead: "Mark as read",
       deleteChats: "Delete chats",
       deleteTitle: "Delete chats",
-      deleteDescription: "Delete {count} chats? This cannot be undone.",
+      deleteDescription: "This permanently deletes {count} chats and their messages. This cannot be undone.",
       deleteFilesDescription:
         "Each chat's own sandbox folder is removed from disk. Files they wrote inside a project stay in that project's workspace.",
       deleteFilesLabel: "Delete files and sandbox folder",
@@ -1037,7 +1059,7 @@ export const en = {
     dialog: {
       deleteChat: {
         title: "Delete chat",
-        description: 'Are you sure you want to delete this chat "{name}"?',
+        description: 'This permanently deletes "{name}" and its messages. This cannot be undone.',
       },
       deleteRun: {
         title: "Delete training run",
@@ -2171,10 +2193,14 @@ export const en = {
         label: "Install type",
         description:
           "Chat only (GGUF). The full install adds training, export, video, safetensors models and additional image generation features.",
+        descriptionCpu:
+          "Chat only (GGUF). No supported GPU was found, so the full install adds training on the CPU.",
         action: "Upgrade to full install",
         confirmTitle: "Upgrade to the full install?",
         confirmDescription:
           "This Chat only install runs GGUF models. The full install adds PyTorch for this machine's GPU, which enables training, export, video, safetensors models and additional image generation features. It downloads several gigabytes (at least 5 GB of disk space) and restarts the server. Chats, models and settings are kept. This can take several minutes.",
+        confirmDescriptionCpu:
+          "This Chat only install runs GGUF models. No supported GPU was found on this machine, so the full install adds PyTorch for the CPU, which enables training on the CPU. CPU training is much slower than GPU training. It needs at least 5 GB of disk space and restarts the server. Chats, models and settings are kept. This can take several minutes.",
         confirmAction: "Upgrade",
         keywords:
           "full install upgrade install type chat only gguf add training train training fine-tune pytorch torch export video image generation safetensors",
@@ -2336,8 +2362,6 @@ export const en = {
         label: "Theme",
         description: "Colors used across Unsloth, in light and dark mode.",
         standard: "Standard",
-        classic: "Classic",
-        minimal: "Minimal",
         moreThemes: "More themes",
         halloween: "Halloween",
       },
@@ -2345,6 +2369,22 @@ export const en = {
         label: "Trick or treat",
         description:
           "Halloween themes and spooky greetings, until November 1.",
+      },
+      code: {
+        title: "Code",
+        fontDescription: "Code blocks in chat, file previews and API examples.",
+        lineNumbers: {
+          label: "Line numbers",
+          description: "Number the lines of code blocks in chat.",
+        },
+        wordWrap: {
+          label: "Word wrap",
+          description: "Wrap long lines in code blocks instead of scrolling sideways.",
+        },
+        ligatures: {
+          label: "Font ligatures",
+          description: "Join symbols such as => and != into one glyph when the code font supports it.",
+        },
       },
       custom: {
         chatWidth: {
@@ -3205,9 +3245,9 @@ export const en = {
         movedChatsToRecents: "Chats moved to Recents: {count}",
         moveFailed: "Failed to move chats",
         deleteChatsTitle: "Delete chats ({count})",
-        deleteChatsWarning: "Delete the selected chats ({count})? This cannot be undone.",
+        deleteChatsWarning: "This permanently deletes {count} chats and their messages. This cannot be undone.",
         deleteArchivedTitle: "Delete {count} archived chats",
-        deleteArchivedWarning: "Delete the selected archived chats ({count})? This cannot be undone.",
+        deleteArchivedWarning: "This permanently deletes {count} archived chats and their messages. This cannot be undone.",
         deleting: "Deleting...",
       },
       title: "Data",
@@ -3596,6 +3636,8 @@ export const en = {
   },
   studio: {
     routeTitle: "Train",
+    cpuTrainingNotice:
+      "No GPU was found, so training runs on the CPU. It is much slower than GPU training and supports text models only (LoRA or full finetuning).",
     wizard: {
       modelTitle: "Model",
       modelDescription: "Select model and training method",
@@ -4694,8 +4736,8 @@ export const en = {
       },
       dialog: {
         renameChat: "Rename chat",
-        deleteChatDescription: "This chat will be permanently deleted. This cannot be undone.",
-        deleteProjectDescription: "The project and its chats ({count}) will be permanently deleted. This cannot be undone.",
+        deleteChatDescription: "This permanently deletes the chat and its messages. This cannot be undone.",
+        deleteProjectDescription: "This permanently deletes the project and its chats ({count}). This cannot be undone.",
         deleteFilesMany: "Also remove the files and sandbox folders these chats created.",
         deleteProjectFilesLabel: "Delete project workspace folder",
         deleteProjectFiles: "The project workspace folder will be removed from disk.",
@@ -5167,14 +5209,14 @@ export const en = {
     renameChat: "Rename chat",
     chatName: "Chat name",
     deleteChat: "Delete chat",
-    deleteChatDescription: "Are you sure you want to delete {name}? Its messages will be permanently deleted.",
+    deleteChatDescription: 'This permanently deletes "{name}" and its messages. This cannot be undone.',
     importChats: "Import chats",
     importDestination: "Choose where to import {name}:",
     selectDestination: "Select destination",
     recents: "Recents",
     import: "Import",
     deleteProject: "Delete project",
-    deleteProjectDescription: "Are you sure you want to delete {name}? Its chats will be permanently deleted.",
+    deleteProjectDescription: 'This permanently deletes the project "{name}" and all of its chats. This cannot be undone.',
     deleteProjectFiles: "The project workspace folder will be removed from disk.",
     deleteAll: "Delete all",
     projectFallback: "project",
@@ -5258,6 +5300,18 @@ export const en = {
     flaggedIntro: "Our automatic scanner flagged issues including:",
     nothingFlagged:
       "Our automatic scanner did not flag any worrying files, but please double check.",
+    unscannedTitle: "Model files could not be scanned",
+    unscannedBody: "{model} ships pickle weights, which can run code when they load, and no malware scan is available for them, so it cannot be loaded. {note}",
+    unscannedIntro: "Files that could not be scanned:",
+    switchSourceNote: "Switch the model source to Hugging Face in Settings to load it.",
+    reconnectNote: "Connect to Hugging Face so its scan can be read, then try again.",
+    managedTitle: "Custom code is off for this account",
+    managedNote: "It is turned off for managed accounts. Ask the installation owner to enable it.",
+    notFoundTitle: "Not found on {source}",
+    notFoundBody: "{model} was not found on {source}, so its security checks could not run. Check the name, or set a token with access if the repository is private.",
+    notOnModelScopeBody: "{model} is not available on ModelScope, so its security checks could not run and it cannot be loaded from there. Switch the model source to Hugging Face in Settings to use it.",
+    checksFailedTitle: "Security checks could not run",
+    checksFailedBody: "{model} could not be read from {source}, so its security checks could not finish and it cannot be loaded. Check your connection and token, then try again. {note}",
     enableAndContinue: "Enable and continue",
   },
   tour: {

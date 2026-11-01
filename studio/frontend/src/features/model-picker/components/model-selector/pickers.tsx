@@ -143,13 +143,12 @@ import {
   PlusSignIcon,
   RemoveCircleIcon,
   Search01Icon,
-  Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { Folder02Icon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { useT } from "@/i18n";
-import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, Settings01Icon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SortIcon } from "@/lib/sort-icon";
 import { useNavigate } from "@tanstack/react-router";
@@ -159,10 +158,12 @@ import {
   type ReactNode,
   type SetStateAction,
   createContext,
+  memo,
   useCallback,
   useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -369,6 +370,64 @@ type ModelRowOptionProps = {
   "aria-current"?: "true";
 };
 
+/** Set after commit, read only from handlers, so memoized rows reach the latest callbacks. */
+class LatestBox<T> {
+  private value: T | null = null;
+  set(value: T) {
+    this.value = value;
+  }
+  get(): T {
+    return this.value as T;
+  }
+}
+
+type RovingMoveDirection = "next" | "previous" | "first" | "last";
+
+interface RovingOptionEvents {
+  setRovingOptionKey: (optionKey: string) => void;
+  moveFocus: (fromOptionKey: string, direction: RovingMoveDirection) => void;
+}
+
+function moveFocusForKey(
+  event: KeyboardEvent<HTMLButtonElement>,
+  optionKey: string,
+  moveFocus: RovingOptionEvents["moveFocus"],
+) {
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    moveFocus(optionKey, "next");
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    moveFocus(optionKey, "previous");
+  } else if (event.key === "Home") {
+    event.preventDefault();
+    moveFocus(optionKey, "first");
+  } else if (event.key === "End") {
+    event.preventDefault();
+    moveFocus(optionKey, "last");
+  }
+}
+
+/** The same props as `getOptionProps`, built from row data so a memoized row can hold them. */
+function rovingOptionProps(
+  events: LatestBox<RovingOptionEvents>,
+  optionKey: string,
+  optionId: string,
+  active: boolean,
+  selected: boolean,
+): ModelRowOptionProps {
+  return {
+    id: optionId,
+    tabIndex: 0,
+    onFocus: () => events.get().setRovingOptionKey(optionKey),
+    onKeyDown: (event) =>
+      moveFocusForKey(event, optionKey, events.get().moveFocus),
+    "data-model-picker-option": true,
+    "data-model-picker-active-option": active ? "true" : undefined,
+    "aria-current": selected ? "true" : undefined,
+  };
+}
+
 function useRovingModelList({
   label,
   optionKeys,
@@ -419,7 +478,7 @@ function useRovingModelList({
   const moveFocus = useCallback(
     (
       fromOptionKey: string,
-      direction: "next" | "previous" | "first" | "last",
+      direction: RovingMoveDirection,
     ) => {
       if (optionKeys.length === 0) {
         return;
@@ -459,21 +518,7 @@ function useRovingModelList({
       onFocus: () => {
         setRovingOptionKey(optionKey);
       },
-      onKeyDown: (event) => {
-        if (event.key === "ArrowDown") {
-          event.preventDefault();
-          moveFocus(optionKey, "next");
-        } else if (event.key === "ArrowUp") {
-          event.preventDefault();
-          moveFocus(optionKey, "previous");
-        } else if (event.key === "Home") {
-          event.preventDefault();
-          moveFocus(optionKey, "first");
-        } else if (event.key === "End") {
-          event.preventDefault();
-          moveFocus(optionKey, "last");
-        }
-      },
+      onKeyDown: (event) => moveFocusForKey(event, optionKey, moveFocus),
       "data-model-picker-option": true,
       "data-model-picker-active-option":
         optionKey === activeOptionKey ? "true" : undefined,
@@ -482,10 +527,22 @@ function useRovingModelList({
     [activeOptionKey, getOptionDomId, listboxId, moveFocus],
   );
 
+  const [optionEvents] = useState(() => new LatestBox<RovingOptionEvents>());
+  useLayoutEffect(() => {
+    optionEvents.set({ setRovingOptionKey, moveFocus });
+  }, [optionEvents, moveFocus]);
+  const getOptionId = useCallback(
+    (optionKey: string) =>
+      getOptionDomId(optionKey) ?? `${listboxId}-option-missing`,
+    [getOptionDomId, listboxId],
+  );
+
   return {
     activeOptionKey,
     focusOption,
     getOptionProps,
+    getOptionId,
+    optionEvents,
     moveFocus,
     listboxProps: {
       id: listboxId,
@@ -1141,7 +1198,7 @@ function ConnectedGroupHeading({
                 )}
               >
                 <HugeiconsIcon
-                  icon={Settings02Icon}
+                  icon={Settings01Icon}
                   strokeWidth={1.75}
                   className="size-3"
                 />
@@ -1599,6 +1656,691 @@ function ModelRow({
   }
   return content;
 }
+
+interface DeviceRowActions {
+  hfToken: string | undefined;
+  select: (id: string, meta: ModelSelectorChangeMeta) => void;
+  configure: (id: string, meta: ModelSelectorChangeMeta) => void;
+  toggleGgufExpanded: (id: string, showing?: boolean) => void;
+  togglePinned: (repoId: string, quant?: string) => void;
+  unpinRepo: (repoId: string) => void;
+  eject: (modelId: string) => void;
+  refreshCachedLists: () => void;
+  refreshLocalModelsList: () => void;
+  prunePinnedQuantValidation: (repoId: string, quant: string) => void;
+  updateGgufVariant: (
+    repoId: string,
+    quant: string,
+    expectedBytes: number,
+  ) => Promise<void> | void;
+  reportVision: (repoId: string, hasVision: boolean) => void;
+  focusOption: (optionKey: string) => void;
+  moveFocus: (optionKey: string, direction: RovingMoveDirection) => void;
+}
+
+type DeviceRowActionsBox = LatestBox<DeviceRowActions>;
+
+interface DeviceRowListProps {
+  actions: DeviceRowActionsBox;
+  optionEvents: LatestBox<RovingOptionEvents>;
+  optionId: string;
+  optionActive: boolean;
+  canConfigure: boolean;
+  deleteDisabled: boolean;
+}
+
+interface DeviceRowExpanderProps {
+  diffusionLoad: boolean;
+  hostPooledMemory: boolean;
+  gpuCount: number | undefined;
+  gpuGb: number | undefined;
+  systemRamGb: number | undefined;
+  budgetKnown: boolean;
+  /** Never wrap: the expander refetches companion sizes when this changes identity. */
+  resolveDownloadFootprint: ModelDownloadFootprintResolver | undefined;
+  hfToken: string | undefined;
+}
+
+const EMPTY_LOADED_QUANTS: readonly string[] = [];
+
+function ejectMenuItemsFor(
+  actions: DeviceRowActionsBox,
+  modelId: string,
+  ejectable: boolean,
+) {
+  return ejectable
+    ? [
+        {
+          key: "eject",
+          label: "Eject",
+          icon: (
+            <HugeiconsIcon
+              icon={RemoveCircleIcon}
+              strokeWidth={1.75}
+              className="size-icon"
+            />
+          ),
+          onSelect: () => actions.get().eject(modelId),
+        },
+      ]
+    : undefined;
+}
+
+/** Stable forwarders for the quant expander callbacks that only run from events. */
+function useDeviceExpanderCallbacks(
+  actions: DeviceRowActionsBox,
+  optionKey: string,
+) {
+  const onSelect = useCallback(
+    (id: string, meta: ModelSelectorChangeMeta) =>
+      actions.get().select(id, meta),
+    [actions],
+  );
+  const onConfigure = useCallback(
+    (id: string, meta: ModelSelectorChangeMeta) =>
+      actions.get().configure(id, meta),
+    [actions],
+  );
+  const onNavigatePastStart = useCallback(
+    () => actions.get().focusOption(optionKey),
+    [actions, optionKey],
+  );
+  const onNavigatePastEnd = useCallback(
+    () => actions.get().moveFocus(optionKey, "next"),
+    [actions, optionKey],
+  );
+  return {
+    onSelect,
+    onConfigure,
+    onNavigatePastStart,
+    onNavigatePastEnd,
+  };
+}
+
+const DownloadedModelDeviceRow = memo(function DownloadedModelDeviceRow({
+  model: c,
+  optionKey,
+  selected: isSelected,
+  loaded,
+  pinned,
+  ejectable,
+  actions,
+  optionEvents,
+  optionId,
+  optionActive,
+  canConfigure,
+  deleteDisabled,
+}: DeviceRowListProps & {
+  model: CachedModelRepo;
+  optionKey: string;
+  selected: boolean;
+  loaded: boolean;
+  pinned: boolean;
+  ejectable: boolean;
+}) {
+  // A partial pick must not claim downloaded, or the load fails on missing shards.
+  const isPartial = c.partial === true;
+  return (
+    <div className={downloadedRowShellClassName(isSelected)}>
+      <div className="min-w-0 flex-1">
+        <ModelRow
+          label={c.repo_id}
+          hubUrl={hubRepoUrl(c.repo_id)}
+          meta={`${isMlxId(c.repo_id) ? "MLX" : "Safetensors"} · ${formatBytes(
+            c.size_bytes,
+          )}`}
+          selected={isSelected}
+          alignMeta="device"
+          partial={isPartial}
+          partialResumable={c.partial_resumable}
+          loaded={loaded}
+          optionProps={rovingOptionProps(
+            optionEvents,
+            optionKey,
+            optionId,
+            optionActive,
+            isSelected,
+          )}
+          onClick={() =>
+            actions.get().select(c.repo_id, {
+              source: "hub",
+              isLora: false,
+              // The Audio route reads a forwarded loadId as proof the weights are there.
+              loadId: isPartial ? undefined : c.load_id,
+              isDownloaded: !isPartial,
+              pipelineTag: c.task ?? null,
+              audioType: c.audio_type ?? null,
+              familyOverrideRequired: c.opaque === true,
+            })
+          }
+          vramStatus={null}
+          className={downloadedRowButtonClassName}
+        />
+      </div>
+      <span className={isPartial ? ROW_ACTIONS_PINNED_CLASS : ROW_ACTIONS_CLASS}>
+        {canConfigure && (
+          <ModelLoadSettingsAction
+            ariaLabel={`Inference settings for ${c.repo_id}`}
+            onConfigure={() =>
+              actions.get().configure(c.repo_id, {
+                source: "hub",
+                isLora: false,
+                // No load identity for an incomplete snapshot.
+                loadId: isPartial ? undefined : c.load_id,
+                isDownloaded: !isPartial,
+                isGguf: false,
+                pipelineTag: c.task ?? null,
+                audioType: c.audio_type ?? null,
+                familyOverrideRequired: c.opaque === true,
+              })
+            }
+          />
+        )}
+        <ModelRowMenu
+          ariaLabel={`More options for ${c.repo_id}`}
+          cachePath={{ repoId: c.repo_id }}
+          items={ejectMenuItemsFor(actions, c.repo_id, ejectable)}
+          pin={{
+            pinned,
+            pinLabel: "Pin",
+            unpinLabel: "Unpin",
+            onToggle: () => actions.get().togglePinned(c.repo_id),
+          }}
+          del={{
+            title: "Delete cached model?",
+            impact: { repoId: c.repo_id },
+            description: (
+              <>
+                This will remove{" "}
+                <span className="font-medium text-foreground">{c.repo_id}</span>{" "}
+                from disk. You can re-download it later.
+              </>
+            ),
+            successMessage: `Deleted ${c.repo_id}`,
+            disabled: deleteDisabled,
+            onConfirm: async () => {
+              const a = actions.get();
+              await deleteCachedModel(
+                c.repo_id,
+                undefined,
+                a.hfToken || undefined,
+                c.cache_path || undefined,
+              );
+              // Repo-wide, so quant pins go too.
+              actions.get().unpinRepo(c.repo_id);
+            },
+            onDeleted: () => actions.get().refreshCachedLists(),
+          }}
+        />
+      </span>
+    </div>
+  );
+});
+
+// One quant on disk with "All quantizations" off: the row carries it as a chip.
+const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
+  repo: c,
+  sole,
+  optionKey,
+  selected: isSelected,
+  loaded,
+  pinned: isPinned,
+  ejectable,
+  gpuGb,
+  actions,
+  optionEvents,
+  optionId,
+  optionActive,
+  canConfigure,
+  deleteDisabled,
+}: DeviceRowListProps & {
+  repo: CachedGgufRepo;
+  sole: SoleDownloadedQuant;
+  optionKey: string;
+  selected: boolean;
+  loaded: boolean;
+  pinned: boolean;
+  ejectable: boolean;
+  gpuGb: number | undefined;
+}) {
+  const variant = sole.variant;
+  const expectedBytes = ggufVariantExpectedBytes(variant);
+  // Should never be partial, but if it is, state what is on disk rather than load a torn file.
+  const isPartial = c.partial === true;
+  const isDownloaded = variant.downloaded === true && !isPartial;
+  const selectMeta: ModelSelectorChangeMeta = {
+    source: "hub",
+    isLora: false,
+    // Only for complete snapshots: the Audio route reads a loadId as proof the weights are present.
+    loadId: isDownloaded ? c.load_id : undefined,
+    ggufVariant: variant.quant,
+    ggufFilename: variant.filename,
+    isDownloaded,
+    expectedBytes,
+    isGguf: true,
+    // Forward the mmproj verdict conservatively so a known text-only quant still warns.
+    isVision: sole.hasVision === false ? false : undefined,
+    pipelineTag: c.task ?? null,
+  };
+  return (
+    <div className={downloadedRowShellClassName(isSelected, true)}>
+      <div className="min-w-0 flex-1">
+        <ModelRow
+          label={onDeviceRepoLabel(c.repo_id)}
+          tooltipText={localPathTooltip(
+            c.repo_id,
+            c.cache_path,
+            ggufQuantDetailLabel(variant.quant),
+          )}
+          meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
+          quantChip={ggufQuantChipLabel(variant.quant)}
+          partial={isPartial}
+          // Only for llama.cpp loads: diffusion GGUFs run on a different planner and the estimate would be wrong.
+          memory={
+            mediaPageForTask(c.task)
+              ? undefined
+              : {
+                  repoId: c.repo_id,
+                  quant: variant.quant,
+                  sizeBytes: variant.size_bytes,
+                  lookupTableBytes: ggufVariantLookupTableBytes(variant),
+                  loadId: c.load_id,
+                }
+          }
+          gpuGb={gpuGb}
+          showVision={c.has_vision || sole.hasVision}
+          selected={isSelected}
+          loaded={loaded}
+          alignMeta="device"
+          optionProps={rovingOptionProps(
+            optionEvents,
+            optionKey,
+            optionId,
+            optionActive,
+            isSelected,
+          )}
+          onClick={() => actions.get().select(c.repo_id, selectMeta)}
+          vramStatus={null}
+          className={downloadedRowButtonClassName}
+        />
+      </div>
+      <span className={ROW_ACTIONS_CLASS}>
+        {canConfigure && (
+          <ModelLoadSettingsAction
+            ariaLabel={`Inference settings for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
+            onConfigure={() => actions.get().configure(c.repo_id, selectMeta)}
+          />
+        )}
+        <ModelRowMenu
+          ariaLabel={`More options for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
+          cachePath={{ repoId: c.repo_id, variant: variant.quant }}
+          items={ejectMenuItemsFor(actions, c.repo_id, ejectable)}
+          pin={{
+            pinned: isPinned,
+            pinLabel: "Pin",
+            unpinLabel: "Unpin",
+            onToggle: () => actions.get().togglePinned(c.repo_id, variant.quant),
+          }}
+          del={{
+            title: "Delete cached model?",
+            impact: {
+              repoId: c.repo_id,
+              variant: variant.quant,
+              cachePath:
+                variant.cache_ref ??
+                variant.cache_path ??
+                (mediaPageForTask(c.task) ? c.cache_path : null),
+            },
+            description: (
+              <>
+                This will remove{" "}
+                <span className="font-medium text-foreground">
+                  {onDeviceRepoLabel(c.repo_id)} ({variant.quant})
+                </span>{" "}
+                from disk. You can re-download it later.
+              </>
+            ),
+            successMessage: `Deleted ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`,
+            disabled: deleteDisabled,
+            onConfirm: async () => {
+              const hfToken = actions.get().hfToken;
+              await deleteCachedModel(
+                c.repo_id,
+                variant.quant,
+                hfToken || undefined,
+                variant.cache_ref ??
+                  variant.cache_path ??
+                  (mediaPageForTask(c.task) ? c.cache_path : undefined) ??
+                  undefined,
+              );
+              if (isChatGgufTask(c.task)) {
+                await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
+              } else if (isPinned) {
+                actions.get().togglePinned(c.repo_id, variant.quant);
+              }
+              actions.get().prunePinnedQuantValidation(c.repo_id, variant.quant);
+              actions.get().refreshCachedLists();
+            },
+          }}
+        />
+      </span>
+    </div>
+  );
+});
+
+const DownloadedGgufDeviceRow = memo(function DownloadedGgufDeviceRow({
+  repo: c,
+  optionKey,
+  selected: isSelected,
+  loaded,
+  loadedQuants,
+  showVision,
+  expanderOpen,
+  soleQuantPending,
+  updateDisabled,
+  expander,
+  actions,
+  optionEvents,
+  optionId,
+  optionActive,
+  canConfigure,
+  deleteDisabled,
+}: DeviceRowListProps & {
+  repo: CachedGgufRepo;
+  optionKey: string;
+  selected: boolean;
+  loaded: boolean;
+  loadedQuants: readonly string[];
+  showVision: boolean | undefined;
+  expanderOpen: boolean;
+  soleQuantPending: boolean;
+  updateDisabled: boolean;
+  expander: DeviceRowExpanderProps;
+}) {
+  const callbacks = useDeviceExpanderCallbacks(actions, optionKey);
+  // No clean quant, so nothing in the expander can carry the row's actions.
+  const isPartialRepo = c.partial === true;
+  return (
+    <div>
+      <div className={downloadedRowShellClassName(isSelected)}>
+        <div className="min-w-0 flex-1">
+          <ModelRow
+            label={onDeviceRepoLabel(c.repo_id)}
+            tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
+            meta="GGUF"
+            quantChip={loadedQuants.map(ggufQuantChipLabel).join(", ") || undefined}
+            showVision={showVision}
+            alignMeta="device"
+            partial={isPartialRepo}
+            partialResumable={c.partial_resumable}
+            selected={isSelected}
+            loaded={loaded}
+            optionProps={rovingOptionProps(
+              optionEvents,
+              optionKey,
+              optionId,
+              optionActive,
+              isSelected,
+            )}
+            onClick={() => actions.get().toggleGgufExpanded(c.repo_id, expanderOpen)}
+            onArrowDownIntoChildren={
+              expanderOpen ? () => focusFirstChildOption(optionKey) : undefined
+            }
+            vramStatus={null}
+            className={downloadedRowButtonClassName}
+          />
+        </div>
+        {isPartialRepo ? (
+          <span className={ROW_ACTIONS_PINNED_CLASS}>
+            <ModelRowMenu
+              ariaLabel={`More options for ${onDeviceRepoLabel(c.repo_id)}`}
+              cachePath={{ repoId: c.repo_id }}
+              del={{
+                title: "Delete cached model?",
+                impact: { repoId: c.repo_id },
+                // Repo-wide delete, which may include a complete copy in another format.
+                description: (
+                  <>
+                    This will remove{" "}
+                    <span className="font-medium text-foreground">
+                      {onDeviceRepoLabel(c.repo_id)}
+                    </span>{" "}
+                    and everything downloaded under it from disk. You can
+                    download it again later.
+                  </>
+                ),
+                successMessage: `Deleted ${onDeviceRepoLabel(c.repo_id)}`,
+                disabled: deleteDisabled,
+                onConfirm: async () => {
+                  const hfToken = actions.get().hfToken;
+                  await deleteCachedModel(
+                    c.repo_id,
+                    undefined,
+                    hfToken || undefined,
+                    c.cache_path || undefined,
+                  );
+                  if (isChatGgufTask(c.task)) {
+                    // Another remembered folder may still hold a pinned quant.
+                    await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
+                  } else {
+                    actions.get().unpinRepo(c.repo_id);
+                  }
+                },
+                onDeleted: () => actions.get().refreshCachedLists(),
+              }}
+            />
+          </span>
+        ) : (
+          // No chevron until the probe rules out a sole quant. The gutter is a mouse target (the row
+          // has the keyboard); pr-2.5 is the heading chevron's column.
+          <span className={cn(ROW_ACTIONS_PINNED_CLASS, "h-6")}>
+            {soleQuantPending ? null : (
+              <button
+                type="button"
+                tabIndex={-1}
+                aria-hidden="true"
+                onClick={() =>
+                  actions.get().toggleGgufExpanded(c.repo_id, expanderOpen)
+                }
+                className="flex h-full w-full cursor-pointer items-center justify-end pr-2.5 text-muted-foreground/80 hover:text-foreground"
+              >
+                <HugeiconsIcon
+                  icon={
+                    expanderOpen
+                      ? ChevronDownStandardIcon
+                      : ChevronRightStandardIcon
+                  }
+                  className="size-3"
+                />
+              </button>
+            )}
+          </span>
+        )}
+      </div>
+      {expanderOpen && (
+        <GgufVariantExpander
+          diffusionLoad={expander.diffusionLoad}
+          hostPooledMemory={expander.hostPooledMemory}
+          gpuCount={expander.gpuCount}
+          repoId={c.repo_id}
+          loadedQuants={loadedQuants}
+          pipelineTag={c.task ?? null}
+          loadId={c.load_id}
+          cachePath={c.cache_path}
+          onDevice={true}
+          allowPin={true}
+          onHasVision={(v) => actions.get().reportVision(c.repo_id, v)}
+          onSelect={callbacks.onSelect}
+          resolveDownloadFootprint={expander.resolveDownloadFootprint}
+          onConfigure={canConfigure ? callbacks.onConfigure : undefined}
+          hfToken={expander.hfToken}
+          parentOptionKey={optionKey}
+          onNavigatePastStart={callbacks.onNavigatePastStart}
+          onNavigatePastEnd={callbacks.onNavigatePastEnd}
+          gpuGb={expander.gpuGb}
+          systemRamGb={expander.systemRamGb}
+          budgetKnown={expander.budgetKnown}
+          variantActions={{
+            onUpdate: (quant, expectedBytes) =>
+              actions.get().updateGgufVariant(c.repo_id, quant, expectedBytes),
+            updateDisabled,
+            onDelete: async (quant, cachePath) => {
+              const a = actions.get();
+              await deleteCachedModel(
+                c.repo_id,
+                quant,
+                a.hfToken || undefined,
+                cachePath ??
+                  (mediaPageForTask(c.task) ? c.cache_path || undefined : undefined),
+              );
+              actions.get().prunePinnedQuantValidation(c.repo_id, quant);
+              actions.get().refreshCachedLists();
+            },
+          }}
+        />
+      )}
+    </div>
+  );
+});
+
+const LocalModelDeviceRow = memo(function LocalModelDeviceRow({
+  model: m,
+  optionKey,
+  directGguf: isDirectGguf,
+  selected: isSelected,
+  loaded,
+  expanded,
+  loadedQuants,
+  expander,
+  actions,
+  optionEvents,
+  optionId,
+  optionActive,
+  canConfigure,
+  deleteDisabled,
+}: DeviceRowListProps & {
+  model: LocalModelInfo;
+  optionKey: string;
+  /** Loads as one file, so it has no quant expander. */
+  directGguf: boolean;
+  selected: boolean;
+  loaded: boolean;
+  expanded: boolean;
+  loadedQuants: readonly string[];
+  expander: DeviceRowExpanderProps;
+}) {
+  const callbacks = useDeviceExpanderCallbacks(actions, optionKey);
+  // Honor the backend model_format hint (suffixless GGUF folders).
+  const isGguf = localModelIsGguf(m);
+  const name = m.model_id ?? m.display_name;
+  const showExpander = isGguf && !isDirectGguf && expanded;
+  return (
+    <div>
+      <div className={downloadedRowShellClassName(isSelected)}>
+        <div className="min-w-0 flex-1">
+          <ModelRow
+            label={name}
+            meta={isGguf ? "GGUF" : "Local"}
+            tooltipText={localPathTooltip(name, m.path)}
+            selected={isSelected}
+            loaded={loaded}
+            optionProps={rovingOptionProps(
+              optionEvents,
+              optionKey,
+              optionId,
+              optionActive,
+              isSelected,
+            )}
+            onClick={() => {
+              const a = actions.get();
+              if (isDirectGguf) {
+                a.select(m.id, localDirectGgufMeta(m.task));
+              } else if (isGguf) {
+                a.toggleGgufExpanded(m.id);
+              } else {
+                a.select(
+                  m.id,
+                  localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                );
+              }
+            }}
+            onArrowDownIntoChildren={
+              showExpander ? () => focusFirstChildOption(optionKey) : undefined
+            }
+            alignMeta="device"
+            vramStatus={null}
+            className={downloadedRowButtonClassName}
+          />
+        </div>
+        <span className={ROW_ACTIONS_CLASS}>
+          {isDirectGguf && canConfigure && (
+            <ModelLoadSettingsAction
+              ariaLabel={`Inference settings for ${name}`}
+              onConfigure={() =>
+                actions.get().configure(m.id, localDirectGgufMeta(m.task))
+              }
+            />
+          )}
+          {!isGguf && canConfigure && (
+            <ModelLoadSettingsAction
+              ariaLabel={`Inference settings for ${name}`}
+              onConfigure={() =>
+                actions
+                  .get()
+                  .configure(
+                    m.id,
+                    localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                  )
+              }
+            />
+          )}
+          <ModelRowMenu
+            ariaLabel={`More options for ${name}`}
+            onReveal={() => revealLocalModel(m.path, m.id)}
+            del={
+              DELETABLE_LOCAL_SOURCES.has(m.source)
+                ? {
+                    title: "Delete local model?",
+                    description: (
+                      <>
+                        This will permanently remove{" "}
+                        <span className="font-medium text-foreground">{name}</span>{" "}
+                        from{" "}
+                        <span className="break-all font-mono text-xs">{m.path}</span>.
+                      </>
+                    ),
+                    successMessage: `Deleted ${name}`,
+                    disabled: deleteDisabled,
+                    onConfirm: () => deleteLocalModel(m.path, m.id),
+                    onDeleted: () => actions.get().refreshLocalModelsList(),
+                  }
+                : undefined
+            }
+          />
+        </span>
+      </div>
+      {showExpander && (
+        <GgufVariantExpander
+          diffusionLoad={expander.diffusionLoad}
+          hostPooledMemory={expander.hostPooledMemory}
+          gpuCount={expander.gpuCount}
+          repoId={m.id}
+          loadedQuants={loadedQuants}
+          onDevice={true}
+          onSelect={callbacks.onSelect}
+          resolveDownloadFootprint={expander.resolveDownloadFootprint}
+          onConfigure={canConfigure ? callbacks.onConfigure : undefined}
+          parentOptionKey={optionKey}
+          onNavigatePastStart={callbacks.onNavigatePastStart}
+          onNavigatePastEnd={callbacks.onNavigatePastEnd}
+          gpuGb={expander.gpuGb}
+          systemRamGb={expander.systemRamGb}
+          budgetKnown={expander.budgetKnown}
+        />
+      )}
+    </div>
+  );
+});
 
 
 function isValidGgufVariant(variant: unknown): variant is GgufVariantDetail {
@@ -3081,7 +3823,7 @@ export function HubModelPicker({
   );
   const isKeptLoaded = (repoId: string) =>
     loadedIdSet.has(repoId.toLowerCase());
-  const loadedQuantsFor = (repoId: string): string[] => {
+  const loadedQuantsFor = (repoId: string): readonly string[] => {
     const quants = isChatPicker
       ? loadedModels
           .filter((m) => m.quant && modelIdsMatchForPicker(m.id, repoId))
@@ -3090,7 +3832,8 @@ export function HubModelPicker({
     if (activeGgufVariant && modelIdsMatchForPicker(loadedModelId, repoId)) {
       quants.push(activeGgufVariant);
     }
-    return [...new Set(quants)];
+    // One shared empty list, so a memoized row with nothing loaded keeps equal props.
+    return quants.length === 0 ? EMPTY_LOADED_QUANTS : [...new Set(quants)];
   };
   const loadedRows = useMemo(() => {
     if (!isChatPicker || section !== "recommended") return [];
@@ -6112,23 +6855,58 @@ export function HubModelPicker({
     );
   };
 
-  const ejectMenuItems = (modelId: string) =>
-    ejectsKept && isKeptLoaded(modelId)
-      ? [
-          {
-            key: "eject",
-            label: "Eject",
-            icon: (
-              <HugeiconsIcon
-                icon={RemoveCircleIcon}
-                strokeWidth={1.75}
-                className="size-icon"
-              />
-            ),
-            onSelect: () => onEject?.(modelId),
-          },
-        ]
-      : undefined;
+  const [deviceRowActions] = useState(() => new LatestBox<DeviceRowActions>());
+  useLayoutEffect(() => {
+    deviceRowActions.set({
+      hfToken: hfToken || undefined,
+      select: onSelect,
+      configure: (id, meta) => onConfigure?.(id, meta),
+      toggleGgufExpanded,
+      togglePinned,
+      unpinRepo,
+      eject: (modelId) => onEject?.(modelId),
+      refreshCachedLists,
+      refreshLocalModelsList,
+      prunePinnedQuantValidation,
+      updateGgufVariant,
+      reportVision,
+      focusOption: hubModelList.focusOption,
+      moveFocus: hubModelList.moveFocus,
+    });
+  });
+  const expanderBudgetKnown = expanderBudgetGpu.budgetKnown;
+  const hostPooledMemory = gpu.loadDeviceSharesHostMemory;
+  const deviceExpanderProps = useMemo<DeviceRowExpanderProps>(
+    () => ({
+      diffusionLoad,
+      hostPooledMemory,
+      gpuCount: expanderGpuCount,
+      gpuGb: expanderGpuGb,
+      systemRamGb: expanderRamGb || undefined,
+      budgetKnown: expanderBudgetKnown,
+      resolveDownloadFootprint,
+      hfToken: hfToken || undefined,
+    }),
+    [
+      diffusionLoad,
+      hostPooledMemory,
+      expanderGpuCount,
+      expanderGpuGb,
+      expanderRamGb,
+      expanderBudgetKnown,
+      resolveDownloadFootprint,
+      hfToken,
+    ],
+  );
+  const deviceRowListProps = (optionKey: string): DeviceRowListProps => ({
+    actions: deviceRowActions,
+    optionEvents: hubModelList.optionEvents,
+    optionId: hubModelList.getOptionId(optionKey),
+    optionActive: optionKey === hubModelList.activeOptionKey,
+    canConfigure: Boolean(onConfigure),
+    deleteDisabled,
+  });
+
 
   const renderLoadedRow = (entry: (typeof loadedModels)[number]) => {
     // Key by checkpoint: local models load by path and two files can share a name.
@@ -6557,427 +7335,119 @@ export function HubModelPicker({
     c: (typeof visibleCachedGguf)[number],
     sole: SoleDownloadedQuant,
   ) => {
-    const variant = sole.variant;
     const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
     const rowState = soleQuantRowState({
       pickerValue: value,
       repoId: c.repo_id,
-      quant: variant.quant,
+      quant: sole.variant.quant,
       loadedModelId,
       activeGgufVariant,
     });
-    const isSelected = rowState.selected;
-    const expectedBytes = ggufVariantExpectedBytes(variant);
-    const isPinned = pinnedSet.has(pinKey(c.repo_id, variant.quant));
-    // Should never be partial, but if it is, state what is on disk rather than load a torn file.
-    const isPartial = c.partial === true;
-    const isDownloaded = variant.downloaded === true && !isPartial;
-    const selectMeta: ModelSelectorChangeMeta = {
-      source: "hub",
-      isLora: false,
-      // Only for complete snapshots: the Audio route reads a loadId as proof the weights are present.
-      loadId: isDownloaded ? c.load_id : undefined,
-      ggufVariant: variant.quant,
-      ggufFilename: variant.filename,
-      isDownloaded,
-      expectedBytes,
-      isGguf: true,
-      // Forward the mmproj verdict conservatively so a known text-only quant still warns.
-      isVision: sole.hasVision === false ? false : undefined,
-      pipelineTag: c.task ?? null,
-    };
     return (
-      <div
+      <SoleQuantGgufDeviceRow
         key={c.repo_id}
-        className={downloadedRowShellClassName(isSelected, true)}
-      >
-        <div className="min-w-0 flex-1">
-          <ModelRow
-            label={onDeviceRepoLabel(c.repo_id)}
-            tooltipText={localPathTooltip(
-              c.repo_id,
-              c.cache_path,
-              ggufQuantDetailLabel(variant.quant),
-            )}
-            meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
-            quantChip={ggufQuantChipLabel(variant.quant)}
-            partial={isPartial}
-            // Only for llama.cpp loads: diffusion GGUFs run on a different planner and the estimate would be wrong.
-            memory={
-              mediaPageForTask(c.task)
-                ? undefined
-                : {
-                    repoId: c.repo_id,
-                    quant: variant.quant,
-                    sizeBytes: variant.size_bytes,
-                    lookupTableBytes: ggufVariantLookupTableBytes(variant),
-                    loadId: c.load_id,
-                  }
-            }
-            gpuGb={expanderGpuGb}
-            showVision={c.has_vision || sole.hasVision}
-            selected={isSelected}
-            loaded={rowState.loaded || isKeptLoaded(c.repo_id)}
-            alignMeta="device"
-            optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
-            onClick={() => onSelect(c.repo_id, selectMeta)}
-            vramStatus={null}
-            className={downloadedRowButtonClassName}
-          />
-        </div>
-        <span className={ROW_ACTIONS_CLASS}>
-          {onConfigure && (
-            <ModelLoadSettingsAction
-              ariaLabel={`Inference settings for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
-              onConfigure={() => onConfigure(c.repo_id, selectMeta)}
-            />
-          )}
-          <ModelRowMenu
-            ariaLabel={`More options for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
-            cachePath={{ repoId: c.repo_id, variant: variant.quant }}
-            items={ejectMenuItems(c.repo_id)}
-            pin={{
-              pinned: isPinned,
-              pinLabel: "Pin",
-              unpinLabel: "Unpin",
-              onToggle: () => togglePinned(c.repo_id, variant.quant),
-            }}
-            del={{
-              title: "Delete cached model?",
-              impact: {
-                repoId: c.repo_id,
-                variant: variant.quant,
-                cachePath:
-                  variant.cache_ref ??
-                  variant.cache_path ??
-                  (mediaPageForTask(c.task) ? c.cache_path : null),
-              },
-              description: (
-                <>
-                  This will remove{" "}
-                  <span className="font-medium text-foreground">
-                    {onDeviceRepoLabel(c.repo_id)} ({variant.quant})
-                  </span>{" "}
-                  from disk. You can re-download it later.
-                </>
-              ),
-              successMessage: `Deleted ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`,
-              disabled: deleteDisabled,
-              onConfirm: async () => {
-                await deleteCachedModel(
-                  c.repo_id,
-                  variant.quant,
-                  hfToken || undefined,
-                  variant.cache_ref ??
-                    variant.cache_path ??
-                    (mediaPageForTask(c.task) ? c.cache_path : undefined) ??
-                    undefined,
-                );
-                if (isChatGgufTask(c.task)) {
-                  await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
-                } else if (isPinned) {
-                  togglePinned(c.repo_id, variant.quant);
-                }
-                prunePinnedQuantValidation(c.repo_id, variant.quant);
-                refreshCachedLists();
-              },
-            }}
-          />
-        </span>
-      </div>
+        repo={c}
+        sole={sole}
+        optionKey={optionKey}
+        selected={rowState.selected}
+        loaded={rowState.loaded || isKeptLoaded(c.repo_id)}
+        pinned={pinnedSet.has(pinKey(c.repo_id, sole.variant.quant))}
+        ejectable={ejectsKept && isKeptLoaded(c.repo_id)}
+        gpuGb={expanderGpuGb}
+        {...deviceRowListProps(optionKey)}
+      />
     );
   };
 
   const renderDownloadedGgufRow = (c: (typeof visibleCachedGguf)[number]) => {
     const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
-    const isSelected = value === c.repo_id;
     const soleQuant = soleQuants.quants.get(c.repo_id);
     if (soleQuant) return renderSoleQuantGgufRow(c, soleQuant);
-    const loadedQuants = loadedQuantsFor(c.repo_id);
     // Auto-expansion waits for the probe, or every row mounts an expander and a remote listing.
     const expanderOpen = shouldMountVariantExpander({
       expanded: isGgufExpanded(c.repo_id),
       autoExpand: expandQuantizations && !reopenedGguf.has(c.repo_id),
       soleQuantsPending: soleQuants.pending.has(c.repo_id),
     });
-    // No clean quant, so nothing in the expander can carry the row's actions.
-    const isPartialRepo = c.partial === true;
     return (
-      <div key={c.repo_id}>
-        <div className={downloadedRowShellClassName(isSelected)}>
-          <div className="min-w-0 flex-1">
-            <ModelRow
-              label={onDeviceRepoLabel(c.repo_id)}
-              tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
-              meta="GGUF"
-              quantChip={loadedQuants.map(ggufQuantChipLabel).join(", ") || undefined}
-              showVision={c.has_vision ?? visionByRepo[c.repo_id]}
-              alignMeta="device"
-              partial={isPartialRepo}
-              partialResumable={c.partial_resumable}
-              selected={isSelected}
-              loaded={
-                isKeptLoaded(c.repo_id) ||
-                isRuntimeLoadedModel(
-                  loadedModelId,
-                  activeGgufVariant,
-                  c.repo_id,
-                  "required",
-                )
-              }
-              optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
-              onClick={() => toggleGgufExpanded(c.repo_id, expanderOpen)}
-              onArrowDownIntoChildren={
-                expanderOpen
-                  ? () => focusFirstChildOption(optionKey)
-                  : undefined
-              }
-              vramStatus={null}
-              className={downloadedRowButtonClassName}
-            />
-          </div>
-          {isPartialRepo ? (
-            <span className={ROW_ACTIONS_PINNED_CLASS}>
-              <ModelRowMenu
-                ariaLabel={`More options for ${onDeviceRepoLabel(c.repo_id)}`}
-                cachePath={{ repoId: c.repo_id }}
-                del={{
-                  title: "Delete cached model?",
-                  impact: { repoId: c.repo_id },
-                  // Repo-wide delete, which may include a complete copy in another format.
-                  description: (
-                    <>
-                      This will remove{" "}
-                      <span className="font-medium text-foreground">
-                        {onDeviceRepoLabel(c.repo_id)}
-                      </span>{" "}
-                      and everything downloaded under it from disk. You can
-                      download it again later.
-                    </>
-                  ),
-                  successMessage: `Deleted ${onDeviceRepoLabel(c.repo_id)}`,
-                  disabled: deleteDisabled,
-                  onConfirm: async () => {
-                    await deleteCachedModel(
-                      c.repo_id,
-                      undefined,
-                      hfToken || undefined,
-                      c.cache_path || undefined,
-                    );
-                    if (isChatGgufTask(c.task)) {
-                      // Another remembered folder may still hold a pinned quant.
-                      await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
-                    } else {
-                      unpinRepo(c.repo_id);
-                    }
-                  },
-                  onDeleted: refreshCachedLists,
-                }}
-              />
-            </span>
-          ) : (
-            // No chevron until the probe rules out a sole quant. The gutter is a mouse target (the row
-            // has the keyboard); pr-2.5 is the heading chevron's column.
-            <span className={cn(ROW_ACTIONS_PINNED_CLASS, "h-6")}>
-              {soleQuants.pending.has(c.repo_id) ? null : (
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  aria-hidden="true"
-                  onClick={() => toggleGgufExpanded(c.repo_id, expanderOpen)}
-                  className="flex h-full w-full cursor-pointer items-center justify-end pr-2.5 text-muted-foreground/80 hover:text-foreground"
-                >
-                  <HugeiconsIcon
-                    icon={
-                      expanderOpen
-                        ? ChevronDownStandardIcon
-                        : ChevronRightStandardIcon
-                    }
-                    className="size-3"
-                  />
-                </button>
-              )}
-            </span>
-          )}
-        </div>
-        {expanderOpen && (
-          <GgufVariantExpander
-            diffusionLoad={diffusionLoad}
-            hostPooledMemory={gpu.loadDeviceSharesHostMemory}
-            gpuCount={expanderGpuCount}
-            repoId={c.repo_id}
-            loadedQuants={loadedQuants}
-            pipelineTag={c.task ?? null}
-            loadId={c.load_id}
-            cachePath={c.cache_path}
-            onDevice={true}
-            allowPin={true}
-            onHasVision={(v) => reportVision(c.repo_id, v)}
-            onSelect={onSelect}
-            resolveDownloadFootprint={resolveDownloadFootprint}
-            onConfigure={onConfigure}
-            hfToken={hfToken || undefined}
-            parentOptionKey={optionKey}
-            onNavigatePastStart={() => hubModelList.focusOption(optionKey)}
-            onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
-            gpuGb={expanderGpuGb}
-            systemRamGb={expanderRamGb || undefined}
-            budgetKnown={expanderBudgetGpu.budgetKnown}
-            variantActions={{
-              onUpdate: (quant, expectedBytes) =>
-                updateGgufVariant(c.repo_id, quant, expectedBytes),
-              updateDisabled: loadedModelId === c.repo_id,
-              onDelete: async (quant, cachePath) => {
-                await deleteCachedModel(
-                  c.repo_id,
-                  quant,
-                  hfToken || undefined,
-                  cachePath ??
-                    (mediaPageForTask(c.task) ? c.cache_path || undefined : undefined),
-                );
-                prunePinnedQuantValidation(c.repo_id, quant);
-                refreshCachedLists();
-              },
-            }}
-          />
-        )}
-      </div>
+      <DownloadedGgufDeviceRow
+        key={c.repo_id}
+        repo={c}
+        optionKey={optionKey}
+        selected={value === c.repo_id}
+        loaded={
+          isKeptLoaded(c.repo_id) ||
+          isRuntimeLoadedModel(
+            loadedModelId,
+            activeGgufVariant,
+            c.repo_id,
+            "required",
+          )
+        }
+        loadedQuants={loadedQuantsFor(c.repo_id)}
+        showVision={c.has_vision ?? visionByRepo[c.repo_id]}
+        expanderOpen={expanderOpen}
+        soleQuantPending={soleQuants.pending.has(c.repo_id)}
+        updateDisabled={loadedModelId === c.repo_id}
+        expander={deviceExpanderProps}
+        {...deviceRowListProps(optionKey)}
+      />
     );
   };
   const renderDownloadedModelRow = (
     c: (typeof visibleCachedModelRows)[number],
   ) => {
     const optionKey = makeModelOptionKey("downloaded-model", c.repo_id);
-    const isSelected = value === c.repo_id;
-    // A partial pick must not claim downloaded, or the load fails on missing shards.
-    const isPartial = c.partial === true;
     return (
-      <div key={c.repo_id} className={downloadedRowShellClassName(isSelected)}>
-        <div className="min-w-0 flex-1">
-          <ModelRow
-            label={c.repo_id}
-            hubUrl={hubRepoUrl(c.repo_id)}
-            meta={`${isMlxId(c.repo_id) ? "MLX" : "Safetensors"} · ${formatBytes(
-              c.size_bytes,
-            )}`}
-            selected={isSelected}
-            alignMeta="device"
-            partial={isPartial}
-            partialResumable={c.partial_resumable}
-            loaded={
-              isKeptLoaded(c.repo_id) ||
-              isRuntimeLoadedModel(
-                loadedModelId,
-                activeGgufVariant,
-                c.repo_id,
-                "none",
-              )
-            }
-            optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
-            onClick={() =>
-              onSelect(c.repo_id, {
-                source: "hub",
-                isLora: false,
-                // The Audio route reads a forwarded loadId as proof the weights are there.
-                loadId: isPartial ? undefined : c.load_id,
-                isDownloaded: !isPartial,
-                pipelineTag: c.task ?? null,
-                audioType: c.audio_type ?? null,
-                familyOverrideRequired: c.opaque === true,
-              })
-            }
-            vramStatus={null}
-            className={downloadedRowButtonClassName}
-          />
-        </div>
-        <span
-          className={isPartial ? ROW_ACTIONS_PINNED_CLASS : ROW_ACTIONS_CLASS}
-        >
-          {onConfigure && (
-            <ModelLoadSettingsAction
-              ariaLabel={`Inference settings for ${c.repo_id}`}
-              onConfigure={() =>
-                onConfigure(c.repo_id, {
-                  source: "hub",
-                  isLora: false,
-                  // No load identity for an incomplete snapshot.
-                  loadId: isPartial ? undefined : c.load_id,
-                  isDownloaded: !isPartial,
-                  isGguf: false,
-                  pipelineTag: c.task ?? null,
-                  audioType: c.audio_type ?? null,
-                  familyOverrideRequired: c.opaque === true,
-                })
-              }
-            />
-          )}
-          <ModelRowMenu
-            ariaLabel={`More options for ${c.repo_id}`}
-            cachePath={{ repoId: c.repo_id }}
-            items={ejectMenuItems(c.repo_id)}
-            pin={{
-              pinned: pinnedSet.has(pinKey(c.repo_id)),
-              pinLabel: "Pin",
-              unpinLabel: "Unpin",
-              onToggle: () => togglePinned(c.repo_id),
-            }}
-            del={{
-              title: "Delete cached model?",
-              impact: { repoId: c.repo_id },
-              description: (
-                <>
-                  This will remove{" "}
-                  <span className="font-medium text-foreground">
-                    {c.repo_id}
-                  </span>{" "}
-                  from disk. You can re-download it later.
-                </>
-              ),
-              successMessage: `Deleted ${c.repo_id}`,
-              disabled: deleteDisabled,
-              onConfirm: async () => {
-                await deleteCachedModel(
-                  c.repo_id,
-                  undefined,
-                  hfToken || undefined,
-                  c.cache_path || undefined,
-                );
-                // Repo-wide, so quant pins go too.
-                unpinRepo(c.repo_id);
-              },
-              onDeleted: refreshCachedLists,
-            }}
-          />
-        </span>
-      </div>
+      <DownloadedModelDeviceRow
+        key={c.repo_id}
+        model={c}
+        optionKey={optionKey}
+        selected={value === c.repo_id}
+        loaded={
+          isKeptLoaded(c.repo_id) ||
+          isRuntimeLoadedModel(
+            loadedModelId,
+            activeGgufVariant,
+            c.repo_id,
+            "none",
+          )
+        }
+        pinned={pinnedSet.has(pinKey(c.repo_id))}
+        ejectable={ejectsKept && isKeptLoaded(c.repo_id)}
+        {...deviceRowListProps(optionKey)}
+      />
     );
   };
 
-  const renderLocalRowMenu = (m: LocalModelInfo) => {
-    const name = m.model_id ?? m.display_name;
+  /** Custom folder, LM Studio and models-directory rows. `directGguf` loads as one file. */
+  const renderLocalDeviceRow = (
+    m: LocalModelInfo,
+    section: string,
+    directGguf: boolean,
+  ) => {
+    const optionKey = makeModelOptionKey(section, m.id);
+    const isGguf = localModelIsGguf(m);
     return (
-      <ModelRowMenu
-        ariaLabel={`More options for ${name}`}
-        onReveal={() => revealLocalModel(m.path, m.id)}
-        del={
-          DELETABLE_LOCAL_SOURCES.has(m.source)
-            ? {
-                title: "Delete local model?",
-                description: (
-                  <>
-                    This will permanently remove{" "}
-                    <span className="font-medium text-foreground">{name}</span>{" "}
-                    from{" "}
-                    <span className="break-all font-mono text-xs">{m.path}</span>.
-                  </>
-                ),
-                successMessage: `Deleted ${name}`,
-                disabled: deleteDisabled,
-                onConfirm: () => deleteLocalModel(m.path, m.id),
-                onDeleted: refreshLocalModelsList,
-              }
-            : undefined
+      <LocalModelDeviceRow
+        key={m.id}
+        model={m}
+        optionKey={optionKey}
+        directGguf={directGguf}
+        selected={value === m.id}
+        loaded={isRuntimeLoadedModel(
+          loadedModelId,
+          activeGgufVariant,
+          m.id,
+          // Direct loads set no active variant.
+          directGguf ? "ignore" : isGguf ? "required" : "none",
+        )}
+        expanded={isGgufExpanded(m.id)}
+        loadedQuants={
+          isGguf && !directGguf ? loadedQuantsFor(m.id) : EMPTY_LOADED_QUANTS
         }
+        expander={deviceExpanderProps}
+        {...deviceRowListProps(optionKey)}
       />
     );
   };
@@ -7855,139 +8325,15 @@ export function HubModelPicker({
                     />
 
                     {!customFoldersCollapsed &&
-                      sortedCustomFolderModels.map((m) => {
-                        const isGgufFile = m.path
-                          .toLowerCase()
-                          .endsWith(".gguf");
-                        // Honor the backend model_format hint (suffixless GGUF folders).
-                        const isGguf = localModelIsGguf(m);
-                        // An Ollama manifest names one blob, so it loads directly.
-                        const isDirectGguf =
-                          isGgufFile || m.source === "ollama";
-                        const optionKey = makeModelOptionKey(
+                      sortedCustomFolderModels.map((m) =>
+                        renderLocalDeviceRow(
+                          m,
                           "custom-folder",
-                          m.id,
-                        );
-                        return (
-                          <div key={m.id}>
-                            <div
-                              className={downloadedRowShellClassName(
-                                value === m.id,
-                              )}
-                            >
-                              <div className="min-w-0 flex-1">
-                                <ModelRow
-                                  label={m.model_id ?? m.display_name}
-                                  meta={isGguf ? "GGUF" : "Local"}
-                                  tooltipText={localPathTooltip(
-                                    m.model_id ?? m.display_name,
-                                    m.path,
-                                  )}
-                                  selected={value === m.id}
-                                  loaded={isRuntimeLoadedModel(
-                                    loadedModelId,
-                                    activeGgufVariant,
-                                    m.id,
-                                    // Direct loads set no active variant.
-                                    isDirectGguf
-                                      ? "ignore"
-                                      : isGguf
-                                        ? "required"
-                                        : "none",
-                                  )}
-                                  optionProps={hubModelList.getOptionProps(
-                                    optionKey,
-                                    value === m.id,
-                                  )}
-                                  onClick={() => {
-                                    if (isDirectGguf) {
-                                      onSelect(
-                                        m.id,
-                                        localDirectGgufMeta(m.task),
-                                      );
-                                    } else if (isGguf) {
-                                      toggleGgufExpanded(m.id);
-                                    } else {
-                                      onSelect(
-                                        m.id,
-                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
-                                      );
-                                    }
-                                  }}
-                                  onArrowDownIntoChildren={
-                                    isGguf &&
-                                    !isDirectGguf &&
-                                    isGgufExpanded(m.id)
-                                      ? () => {
-                                          const focused =
-                                            focusFirstChildOption(optionKey);
-                                          return focused;
-                                        }
-                                      : undefined
-                                  }
-                                  alignMeta="device"
-                                  vramStatus={null}
-                                  className={downloadedRowButtonClassName}
-                                />
-                              </div>
-                              <span className={ROW_ACTIONS_CLASS}>
-                                {isDirectGguf && onConfigure && (
-                                  <ModelLoadSettingsAction
-                                    ariaLabel={`Inference settings for ${
-                                      m.model_id ?? m.display_name
-                                    }`}
-                                    onConfigure={() =>
-                                      onConfigure(
-                                        m.id,
-                                        localDirectGgufMeta(m.task),
-                                      )
-                                    }
-                                  />
-                                )}
-                                {!isGguf && onConfigure && (
-                                  <ModelLoadSettingsAction
-                                    ariaLabel={`Inference settings for ${
-                                      m.model_id ?? m.display_name
-                                    }`}
-                                    onConfigure={() =>
-                                      onConfigure(
-                                        m.id,
-                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
-                                      )
-                                    }
-                                  />
-                                )}
-                                {renderLocalRowMenu(m)}
-                              </span>
-                            </div>
-                            {isGguf &&
-                              !isDirectGguf &&
-                              isGgufExpanded(m.id) && (
-                                <GgufVariantExpander
-                                  diffusionLoad={diffusionLoad}
-                                  hostPooledMemory={gpu.loadDeviceSharesHostMemory}
-                                  gpuCount={expanderGpuCount}
-                                  repoId={m.id}
-                                  loadedQuants={loadedQuantsFor(m.id)}
-                                  onDevice={true}
-                                  onSelect={onSelect}
-                                  resolveDownloadFootprint={resolveDownloadFootprint}
-                                  onConfigure={onConfigure}
-                                  parentOptionKey={optionKey}
-                                  onNavigatePastStart={() =>
-                                    hubModelList.focusOption(optionKey)
-                                  }
-                                  onNavigatePastEnd={() =>
-                                    hubModelList.moveFocus(optionKey, "next")
-                                  }
-                                  gpuGb={expanderGpuGb}
-                                  systemRamGb={expanderRamGb || undefined}
-                                  budgetKnown={expanderBudgetGpu.budgetKnown}
-                                />
-                              )}
-                          </div>
-                        );
-                      })}
+                          // An Ollama manifest names one blob, so it loads directly.
+                          m.path.toLowerCase().endsWith(".gguf") ||
+                            m.source === "ollama",
+                        ),
+                      )}
                     {!customFoldersCollapsed &&
                     showHfSection &&
                     sortedCustomFolderModels.length === 0 ? (
@@ -8008,130 +8354,13 @@ export function HubModelPicker({
                       LM Studio
                     </ListLabel>
                     {!lmStudioCollapsed &&
-                      sortedLmStudio.map((m) => {
-                        const isGgufFile = m.path
-                          .toLowerCase()
-                          .endsWith(".gguf");
-                        // LM Studio dirs rarely carry a -GGUF suffix, so use the shared helper.
-                        const isGguf = localModelIsGguf(m);
-                        const optionKey = makeModelOptionKey("lm-studio", m.id);
-                        return (
-                          <div key={m.id}>
-                            <div
-                              className={downloadedRowShellClassName(
-                                value === m.id,
-                              )}
-                            >
-                              <div className="min-w-0 flex-1">
-                                <ModelRow
-                                  label={m.model_id ?? m.display_name}
-                                  meta={isGguf ? "GGUF" : "Local"}
-                                  tooltipText={localPathTooltip(
-                                    m.model_id ?? m.display_name,
-                                    m.path,
-                                  )}
-                                  selected={value === m.id}
-                                  loaded={isRuntimeLoadedModel(
-                                    loadedModelId,
-                                    activeGgufVariant,
-                                    m.id,
-                                    isGgufFile
-                                      ? "ignore"
-                                      : isGguf
-                                        ? "required"
-                                        : "none",
-                                  )}
-                                  optionProps={hubModelList.getOptionProps(
-                                    optionKey,
-                                    value === m.id,
-                                  )}
-                                  onClick={() => {
-                                    if (isGgufFile) {
-                                      onSelect(
-                                        m.id,
-                                        localDirectGgufMeta(m.task),
-                                      );
-                                    } else if (isGguf) {
-                                      toggleGgufExpanded(m.id);
-                                    } else {
-                                      onSelect(
-                                        m.id,
-                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
-                                      );
-                                    }
-                                  }}
-                                  onArrowDownIntoChildren={
-                                    isGguf &&
-                                    !isGgufFile &&
-                                    isGgufExpanded(m.id)
-                                      ? () => {
-                                          const focused =
-                                            focusFirstChildOption(optionKey);
-                                          return focused;
-                                        }
-                                      : undefined
-                                  }
-                                  alignMeta="device"
-                                  vramStatus={null}
-                                  className={downloadedRowButtonClassName}
-                                />
-                              </div>
-                              <span className={ROW_ACTIONS_CLASS}>
-                                {isGgufFile && onConfigure && (
-                                  <ModelLoadSettingsAction
-                                    ariaLabel={`Inference settings for ${
-                                      m.model_id ?? m.display_name
-                                    }`}
-                                    onConfigure={() =>
-                                      onConfigure(
-                                        m.id,
-                                        localDirectGgufMeta(m.task),
-                                      )
-                                    }
-                                  />
-                                )}
-                                {!isGguf && onConfigure && (
-                                  <ModelLoadSettingsAction
-                                    ariaLabel={`Inference settings for ${
-                                      m.model_id ?? m.display_name
-                                    }`}
-                                    onConfigure={() =>
-                                      onConfigure(
-                                        m.id,
-                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
-                                      )
-                                    }
-                                  />
-                                )}
-                                {renderLocalRowMenu(m)}
-                              </span>
-                            </div>
-                            {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
-                              <GgufVariantExpander
-                                diffusionLoad={diffusionLoad}
-                                hostPooledMemory={gpu.loadDeviceSharesHostMemory}
-                                gpuCount={expanderGpuCount}
-                                repoId={m.id}
-                                loadedQuants={loadedQuantsFor(m.id)}
-                                onDevice={true}
-                                onSelect={onSelect}
-                                resolveDownloadFootprint={resolveDownloadFootprint}
-                                onConfigure={onConfigure}
-                                parentOptionKey={optionKey}
-                                onNavigatePastStart={() =>
-                                  hubModelList.focusOption(optionKey)
-                                }
-                                onNavigatePastEnd={() =>
-                                  hubModelList.moveFocus(optionKey, "next")
-                                }
-                                gpuGb={expanderGpuGb}
-                                systemRamGb={expanderRamGb || undefined}
-                                budgetKnown={expanderBudgetGpu.budgetKnown}
-                              />
-                            )}
-                          </div>
-                        );
-                      })}
+                      sortedLmStudio.map((m) =>
+                        renderLocalDeviceRow(
+                          m,
+                          "lm-studio",
+                          m.path.toLowerCase().endsWith(".gguf"),
+                        ),
+                      )}
                   </>
                 ) : null}
 
@@ -8145,126 +8374,14 @@ export function HubModelPicker({
                       Local models
                     </ListLabel>
                     {!localDirCollapsed &&
-                      sortedLocalDir.map((m) => {
+                      sortedLocalDir.map((m) =>
                         // The variant scanner returns nothing for a config-less loose file, so expanding would dead-end.
-                        const isGgufFile = m.path
-                          .toLowerCase()
-                          .endsWith(".gguf");
-                        const isGguf = localModelIsGguf(m);
-                        const optionKey = makeModelOptionKey("local-dir", m.id);
-                        return (
-                          <div key={m.id}>
-                            <div
-                              className={downloadedRowShellClassName(
-                                value === m.id,
-                              )}
-                            >
-                              <div className="min-w-0 flex-1">
-                                <ModelRow
-                                  label={m.model_id ?? m.display_name}
-                                  meta={isGguf ? "GGUF" : "Local"}
-                                  tooltipText={localPathTooltip(
-                                    m.model_id ?? m.display_name,
-                                    m.path,
-                                  )}
-                                  selected={value === m.id}
-                                  loaded={isRuntimeLoadedModel(
-                                    loadedModelId,
-                                    activeGgufVariant,
-                                    m.id,
-                                    isGgufFile
-                                      ? "ignore"
-                                      : isGguf
-                                        ? "required"
-                                        : "none",
-                                  )}
-                                  optionProps={hubModelList.getOptionProps(
-                                    optionKey,
-                                    value === m.id,
-                                  )}
-                                  onClick={() => {
-                                    if (isGgufFile) {
-                                      onSelect(
-                                        m.id,
-                                        localDirectGgufMeta(m.task),
-                                      );
-                                    } else if (isGguf) {
-                                      toggleGgufExpanded(m.id);
-                                    } else {
-                                      onSelect(
-                                        m.id,
-                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
-                                      );
-                                    }
-                                  }}
-                                  onArrowDownIntoChildren={
-                                    isGguf &&
-                                    !isGgufFile &&
-                                    isGgufExpanded(m.id)
-                                      ? () => focusFirstChildOption(optionKey)
-                                      : undefined
-                                  }
-                                  alignMeta="device"
-                                  vramStatus={null}
-                                  className={downloadedRowButtonClassName}
-                                />
-                              </div>
-                              <span className={ROW_ACTIONS_CLASS}>
-                                {isGgufFile && onConfigure && (
-                                  <ModelLoadSettingsAction
-                                    ariaLabel={`Inference settings for ${
-                                      m.model_id ?? m.display_name
-                                    }`}
-                                    onConfigure={() =>
-                                      onConfigure(
-                                        m.id,
-                                        localDirectGgufMeta(m.task),
-                                      )
-                                    }
-                                  />
-                                )}
-                                {!isGguf && onConfigure && (
-                                  <ModelLoadSettingsAction
-                                    ariaLabel={`Inference settings for ${
-                                      m.model_id ?? m.display_name
-                                    }`}
-                                    onConfigure={() =>
-                                      onConfigure(
-                                        m.id,
-                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
-                                      )
-                                    }
-                                  />
-                                )}
-                                {renderLocalRowMenu(m)}
-                              </span>
-                            </div>
-                            {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
-                              <GgufVariantExpander
-                                diffusionLoad={diffusionLoad}
-                                hostPooledMemory={gpu.loadDeviceSharesHostMemory}
-                                gpuCount={expanderGpuCount}
-                                repoId={m.id}
-                                loadedQuants={loadedQuantsFor(m.id)}
-                                onDevice={true}
-                                onSelect={onSelect}
-                                resolveDownloadFootprint={resolveDownloadFootprint}
-                                onConfigure={onConfigure}
-                                parentOptionKey={optionKey}
-                                onNavigatePastStart={() =>
-                                  hubModelList.focusOption(optionKey)
-                                }
-                                onNavigatePastEnd={() =>
-                                  hubModelList.moveFocus(optionKey, "next")
-                                }
-                                gpuGb={expanderGpuGb}
-                                systemRamGb={expanderRamGb || undefined}
-                                budgetKnown={expanderBudgetGpu.budgetKnown}
-                              />
-                            )}
-                          </div>
-                        );
-                      })}
+                        renderLocalDeviceRow(
+                          m,
+                          "local-dir",
+                          m.path.toLowerCase().endsWith(".gguf"),
+                        ),
+                      )}
                   </>
                 ) : null}
 
