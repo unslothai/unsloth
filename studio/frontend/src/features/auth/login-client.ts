@@ -40,6 +40,9 @@ let statusKnown = false;
 let inflight: Promise<AuthStatusResponse> | null = null;
 const listeners = new Set<() => void>();
 export const getLoginMode = (): LoginMode => loginMode;
+/** The mode once the server has answered, null before: a cached or default mode is only a guess. */
+export const getConfirmedLoginMode = (): LoginMode | null =>
+  statusKnown ? loginMode : null;
 export const subscribeLoginMode = (listener: () => void): (() => void) => {
   if (listeners.size === 0 && typeof window !== "undefined") {
     window.addEventListener("storage", onLoginModeStorage);
@@ -65,6 +68,7 @@ function onLoginModeStorage(event: StorageEvent): void {
 let fullAccessAllowed: boolean = authHint() === null;
 export const getFullAccessAllowed = (): boolean => fullAccessAllowed;
 export function setLoginMode(mode: LoginMode, fullAccess?: boolean): void {
+  const firstAnswer = !statusKnown;
   statusKnown = true;
   const allowed = fullAccess ?? (mode === "multi" ? false : fullAccessAllowed);
   if (typeof window !== "undefined") {
@@ -79,7 +83,8 @@ export function setLoginMode(mode: LoginMode, fullAccess?: boolean): void {
       window.localStorage.setItem(LOGIN_MODE_HINT_KEY, hint);
     }
   }
-  const changed = loginMode !== mode || fullAccessAllowed !== allowed;
+  const changed =
+    firstAnswer || loginMode !== mode || fullAccessAllowed !== allowed;
   loginMode = mode;
   fullAccessAllowed = allowed;
   if (changed) listeners.forEach((listener) => listener());
