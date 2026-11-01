@@ -31,6 +31,7 @@ export const uk = {
     halftone: "Напівтони",
     scanlines: "Рядки сканування",
     visibility: "Видимість",
+    conversationVisibility: "Видимість у розмовах",
     blur: "Розмиття зображення",
     position: "Позиція",
     horizontal: "Положення по горизонталі",

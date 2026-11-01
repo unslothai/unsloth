@@ -172,13 +172,14 @@ function MaterialStrengthRow() {
 	);
 }
 const SLIDERS: {
-	key: "visibility" | "blur" | "zoom" | "outline";
+	key: "visibility" | "conversation" | "blur" | "zoom" | "outline";
 	label: TranslationKey;
 	min: number;
 	max: number;
 	unit: string;
 }[] = [
 	{ key: "visibility", label: "chatBackground.visibility", min: 0, max: 100, unit: "%" },
+	{ key: "conversation", label: "chatBackground.conversationVisibility", min: 0, max: 100, unit: "%" },
 	{ key: "blur", label: "chatBackground.blur", min: 0, max: 20, unit: "px" },
 	{ key: "zoom", label: "chatBackground.zoom", min: 100, max: 300, unit: "%" },
 	{ key: "outline", label: "chatBackground.outline", min: 0, max: 100, unit: "%" },

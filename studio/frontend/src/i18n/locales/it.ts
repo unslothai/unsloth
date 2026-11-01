@@ -28,6 +28,7 @@ export const it = {
     halftone: "Mezzitoni",
     scanlines: "Linee di scansione",
     visibility: "Visibilità",
+    conversationVisibility: "Visibilità nelle conversazioni",
     blur: "Sfocatura immagine",
     position: "Posizione",
     horizontal: "Posizione orizzontale",

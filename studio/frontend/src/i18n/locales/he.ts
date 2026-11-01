@@ -31,6 +31,7 @@ export const he = {
     halftone: "חצי גוון",
     scanlines: "קווי סריקה",
     visibility: "נראות",
+    conversationVisibility: "נראות בשיחות",
     blur: "טשטוש תמונה",
     position: "מיקום",
     horizontal: "מיקום אופקי",

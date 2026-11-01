@@ -31,6 +31,7 @@ export const pl = {
     halftone: "Raster",
     scanlines: "Linie skanowania",
     visibility: "Widoczność",
+    conversationVisibility: "Widoczność w rozmowach",
     blur: "Rozmycie obrazu",
     position: "Pozycja",
     horizontal: "Pozycja w poziomie",

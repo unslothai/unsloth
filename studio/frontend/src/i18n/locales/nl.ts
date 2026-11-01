@@ -31,6 +31,7 @@ export const nl = {
     halftone: "Halftoon",
     scanlines: "Scanlijnen",
     visibility: "Zichtbaarheid",
+    conversationVisibility: "Zichtbaarheid in gesprekken",
     blur: "Afbeelding vervagen",
     position: "Positie",
     horizontal: "Horizontale positie",

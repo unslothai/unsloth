@@ -46,6 +46,16 @@ test("background preferences repair malformed persisted data", () => {
     assert.equal(sanitizeAdjustments({ zoom: 0 }).zoom, 100);
     assert.equal(sanitizeAdjustments({ zoom: NaN }).zoom, 100);
 	assert.equal(sanitizeAdjustments({ fade: "false" as never }).fade, true);
+	// Backgrounds saved before the slider keep the dimmed conversation view.
+	assert.equal(sanitizeAdjustments({ visibility: 40 }).conversation, 0);
+	assert.equal(sanitizeAdjustments({ conversation: 250 }).conversation, 100);
+	assert.equal(sanitizeAdjustments({ conversation: "1" as never }).conversation, 0);
+});
+test("conversation visibility scales the conversation dim and wash, and 0 keeps both", async () => {
+	const { readFile } = await import("node:fs/promises");
+	const css = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /\{ opacity: calc\(\.4 \+ \.6 \* var\(--wallpaper-conversation, 0\)\); \}/);
+	assert.match(css, /calc\(\(1 - var\(--wallpaper-safe, 0\)\) \* \(1 - \.65 \* var\(--wallpaper-conversation, 0\)\) \* 100%\)/);
 });
 test("uploads bound processing dimensions", () => {
 	assert.deepEqual(normalizedSize(6000, 4000), [2048, 1365]);

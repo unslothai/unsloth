@@ -31,6 +31,7 @@ export const cs = {
     halftone: "Polotón",
     scanlines: "Skenovací řádky",
     visibility: "Viditelnost",
+    conversationVisibility: "Viditelnost v konverzacích",
     blur: "Rozmazání obrázku",
     position: "Pozice",
     horizontal: "Vodorovná pozice",

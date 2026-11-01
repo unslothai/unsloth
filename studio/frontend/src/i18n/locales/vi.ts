@@ -31,6 +31,7 @@ export const vi = {
     halftone: "Bán sắc",
     scanlines: "Đường quét",
     visibility: "Độ hiển thị",
+    conversationVisibility: "Độ hiển thị trong cuộc trò chuyện",
     blur: "Độ mờ ảnh",
     position: "Vị trí",
     horizontal: "Vị trí ngang",

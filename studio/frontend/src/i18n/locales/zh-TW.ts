@@ -31,6 +31,7 @@ export const zhTW = {
     halftone: "半色調",
     scanlines: "掃描線",
     visibility: "可見度",
+    conversationVisibility: "對話中的可見度",
     blur: "圖片模糊",
     position: "位置",
     horizontal: "水平位置",

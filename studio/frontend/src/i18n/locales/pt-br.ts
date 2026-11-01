@@ -31,6 +31,7 @@ export const ptBR = {
     halftone: "Meio-tom",
     scanlines: "Linhas de varredura",
     visibility: "Visibilidade",
+    conversationVisibility: "Visibilidade nas conversas",
     blur: "Desfoque da imagem",
     position: "Posição",
     horizontal: "Posição horizontal",

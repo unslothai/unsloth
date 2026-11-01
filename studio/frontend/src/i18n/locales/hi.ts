@@ -31,6 +31,7 @@ export const hi = {
     halftone: "हाफ़टोन",
     scanlines: "स्कैनलाइन",
     visibility: "दृश्यता",
+    conversationVisibility: "बातचीत में दृश्यता",
     blur: "छवि का धुंधलापन",
     position: "स्थिति",
     horizontal: "क्षैतिज स्थिति",

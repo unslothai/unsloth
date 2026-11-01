@@ -132,6 +132,15 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 			parent.style.removeProperty("--wallpaper-outline");
 		};
 	}, [outline, active]);
+	const conversation = value?.conversation;
+	useEffect(() => {
+		const parent = host.current?.parentElement;
+		if (!parent || !active || conversation === undefined) return;
+		parent.style.setProperty("--wallpaper-conversation", String(conversation / 100));
+		return () => {
+			parent.style.removeProperty("--wallpaper-conversation");
+		};
+	}, [conversation, active]);
 	const adoptFrame = useEffectEvent((url: string) => {
 		urls.current.add(url);
 		clearTimeout(timer.current);

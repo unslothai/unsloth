@@ -31,6 +31,7 @@ export const id = {
     halftone: "Halftone",
     scanlines: "Garis pindai",
     visibility: "Visibilitas",
+    conversationVisibility: "Visibilitas dalam percakapan",
     blur: "Keburaman gambar",
     position: "Posisi",
     horizontal: "Posisi horizontal",

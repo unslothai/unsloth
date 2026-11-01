@@ -31,6 +31,7 @@ export const fa = {
     halftone: "نیم‌سایه",
     scanlines: "خطوط اسکن",
     visibility: "میزان نمایش",
+    conversationVisibility: "میزان نمایش در گفتگوها",
     blur: "تاری تصویر",
     position: "موقعیت",
     horizontal: "موقعیت افقی",
