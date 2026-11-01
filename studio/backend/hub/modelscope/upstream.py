@@ -290,7 +290,11 @@ async def resolve_revision(kind: str, repo: str, revision: str) -> str:
 async def _listing_missing(kind: str, repo: str, sha: str) -> NotFound:
     # ModelScope answers an unknown commit of a real repo with the same 404 as a missing repo.
     await _refs(kind, repo)
-    return NotFound("RevisionNotFound", f"Revision {sha} not found on ModelScope.")
+    return NotFound(
+        "RevisionNotFound",
+        f"ModelScope's copy of {repo} has no commit {sha}. "
+        "Switch the model source to Hugging Face in Settings to use this revision.",
+    )
 
 
 async def _file_entries(kind: str, repo: str, sha: str) -> list[dict]:
