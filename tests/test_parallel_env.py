@@ -1205,3 +1205,49 @@ def test_pp_env_refuses_router_aux_loss_split_over_micro_batches():
     pp_env._refuse_split_router_aux(stage, 1)
     owner.config.output_router_logits = False
     pp_env._refuse_split_router_aux(stage, 2)
+
+
+def test_pending_expert_lora_counts_in_the_capability_query():
+    # Failing before: SFTTrainer(peft_config = LoraConfig(target_modules = expert projections)) was queried as
+    # attention-only LoRA (expert_lora read only the attached adapters) and hit an unverified cell.
+    import types
+
+    import torch
+    from unsloth import parallel_capabilities as caps
+
+    class Expert(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.down_proj = torch.nn.Linear(4, 4)
+
+    class Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = torch.nn.Linear(4, 4)
+            self.experts = torch.nn.ModuleList([Expert(), Expert()])
+
+    model = Block()
+    assert caps._pending_expert_lora(
+        model, types.SimpleNamespace(target_modules = ["down_proj"], target_parameters = None)
+    )
+    assert caps._pending_expert_lora(
+        model, types.SimpleNamespace(target_modules = None, target_parameters = ["x"])
+    )
+    assert not caps._pending_expert_lora(
+        model, types.SimpleNamespace(target_modules = ["q_proj"], target_parameters = None)
+    )
+    q = caps.query_from(
+        model = model,
+        peft_config = types.SimpleNamespace(target_modules = ["down_proj"], target_parameters = None),
+    )
+    assert q.expert_lora
+
+
+def test_pp_dp_optimizer_hook_takes_self_optimizer_when_create_returns_none():
+    import inspect
+
+    from unsloth.models import pp_env
+
+    # The wrapper must not hand None to the step hook (a create_optimizer override may only set self.optimizer).
+    src = inspect.getsource(pp_env)
+    assert "optimizer = trainer.optimizer" in src

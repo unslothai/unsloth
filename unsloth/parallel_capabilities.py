@@ -1053,6 +1053,29 @@ def _expert_lora(model) -> bool:
         return False
 
 
+def _pending_expert_lora(model, peft_config) -> bool:
+    """A LoraConfig not attached yet (SFTTrainer(peft_config = ...)) that will put adapters on the experts."""
+    if peft_config is None or model is None or isinstance(model, str):
+        return False
+    if getattr(peft_config, "target_parameters", None):
+        return True
+    targets = getattr(peft_config, "target_modules", None)
+    if not targets:
+        return False
+    try:
+        experts = [(n, m) for n, m in model.named_modules() if "experts" in n.split(".")]
+    except Exception:
+        return False
+    if isinstance(targets, str):
+        import re
+        if targets == "all-linear":
+            import torch
+            return any(isinstance(m, torch.nn.Linear) for _, m in experts)
+        return any(re.fullmatch(targets, n) for n, _ in experts)
+    targets = set(targets)
+    return any(n.split(".")[-1] in targets or n in targets for n, _ in experts)
+
+
 def _optimizer_name(args, optimizer = None):
     if optimizer is not None:
         inner = getattr(optimizer, "optimizer", optimizer)
@@ -1109,7 +1132,7 @@ def query_from(
         else "standard",
         moe = moe,
         router_aux_loss = router_aux_loss,
-        expert_lora = _expert_lora(model),
+        expert_lora = _expert_lora(model) or _pending_expert_lora(model, peft_config),
         moe_backend = __import__("os").environ.get("UNSLOTH_MOE_BACKEND", "").strip().lower(),
         optim = _optimizer_name(args, optimizer),
     )

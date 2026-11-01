@@ -947,6 +947,9 @@ def pp_trainer_setup(trainer):
         def create_optimizer_pp(*args, **kwargs):
             # DDP-style dp without clipping: average the gradients at the optimizer step instead.
             optimizer = create_optimizer(*args, **kwargs)
+            if optimizer is None:
+                # An override may set self.optimizer and return nothing (the Trainer reads self.optimizer).
+                optimizer = trainer.optimizer
             from .fsdp2_native import _inner_optimizer
 
             inner = _inner_optimizer(optimizer)
