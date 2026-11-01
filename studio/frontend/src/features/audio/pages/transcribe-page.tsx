@@ -151,7 +151,7 @@ export function TranscribeRail({
         <AudioSourceInput
           id="transcribe-source"
           label="Audio"
-          hint="Up to 30 minutes. Drop a file, record, or reuse a clip."
+          hint={switches.sourceHint}
           value={source}
           onChange={(next) => useAudioTranscribeStore.setState({ source: next })}
           disabled={disabled}
