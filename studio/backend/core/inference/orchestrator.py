@@ -2415,7 +2415,10 @@ class InferenceOrchestrator:
                     required_gb = gpu_selection.get("required_gb")
                     if required_gb is not None:
                         expected_free_gb = {int(resolved_gpu_ids[0]): float(required_gb)}
-                settled = self._wait_for_worker_vram_settle(
+                # An MLX worker first reads memory seconds after its imports, past the old worker's reclaim.
+                settled = (
+                    expected_free_gb is None and sub_config["device_backend"] == "mlx"
+                ) or self._wait_for_worker_vram_settle(
                     worker_shutdown_at or time.monotonic(),
                     expected_free_gb = expected_free_gb,
                     before_kill_free_mib = before_kill_free_mib,
