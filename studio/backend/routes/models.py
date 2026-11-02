@@ -246,7 +246,6 @@ try:
         decision_layout,
         is_decision_model,
     )
-    from core.inference import get_inference_backend
     from core.inference.orchestrator import peek_inference_backend
     from utils.paths import (
         is_local_path,
@@ -281,7 +280,6 @@ except ImportError:
         decision_layout,
         is_decision_model,
     )
-    from core.inference import get_inference_backend
     from core.inference.orchestrator import peek_inference_backend
     from utils.paths import (
         is_local_path,

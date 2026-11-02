@@ -23,7 +23,8 @@ def catalog(monkeypatch):
     monkeypatch.setattr(hw, "get_device", lambda: pytest.fail("catalog started hardware detection"))
     monkeypatch.setattr(models, "peek_inference_backend", lambda: None)
     monkeypatch.setattr(
-        models, "get_inference_backend", lambda: pytest.fail("catalog created a runtime")
+        models, "get_inference_backend", lambda: pytest.fail("catalog created a runtime"),
+        raising = False,  # Tripwire if the removed eager factory is called again.
     )
     monkeypatch.setattr(
         inference,
