@@ -6498,7 +6498,6 @@ export function createOpenAIStreamAdapter(
           providerType: externalProvider?.providerType ?? "local",
           startedAt: priorTiming?.startedAt ?? streamStartTime,
           finishedAt,
-          // Exclude the wait before a manual Continue.
           durationMs:
             (priorTiming ? (priorTiming.durationMs ?? priorTiming.totalStreamTime) : 0) +
             finishedAt -
