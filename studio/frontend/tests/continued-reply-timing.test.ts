@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { replyFinishedTimestamp } from "../src/lib/message-timestamp.ts";
 
 import { readText } from "./helpers/kit.ts";
 
@@ -92,6 +93,15 @@ test("a reply that was never continued keeps its own figures", () => {
   assert.equal(withPriorServerTimings(secondPass.serverTimings, undefined), secondPass.serverTimings);
   const diffusion = { diffusion: true, diffusion_steps: 8 };
   assert.equal(withPriorServerTimings(diffusion, { predicted_n: 5 }), diffusion);
+});
+
+test("a failed continuation keeps its actual finish time after aggregating active duration", () => {
+  const timing = withPriorTiming(secondPass.timing, priorPassTiming(firstPass));
+  assert.equal(replyFinishedTimestamp({
+    status: { type: "incomplete" },
+    metadata: { custom: { timing } },
+  }), 9348);
+  assert.equal(timing.totalStreamTime, 4548);
 });
 
 test("a first pass with no token puts the first token in a later pass", () => {

@@ -86,6 +86,8 @@ export function withPriorTiming(
       : undefined;
   return {
     ...timing,
+    // Preserve start + duration = finish while excluding pauses between passes.
+    streamStartTime: timing.streamStartTime - prior.totalStreamTime,
     firstTokenTime:
       prior.firstTokenTime ??
       (timing.firstTokenTime !== undefined ? prior.totalStreamTime + timing.firstTokenTime : undefined),
