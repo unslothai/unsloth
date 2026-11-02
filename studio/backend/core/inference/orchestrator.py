@@ -998,17 +998,12 @@ class InferenceOrchestrator:
 
     @staticmethod
     def _describe_vram_shortfall(expected_free_gb: dict[int, float]) -> str:
-        """The measured shortfall, e.g. "free 1.7 GiB of the 3.9 GiB needed on cuda:0".
-
-        The settle check only knows free VRAM, so the caller must not attribute the wait to any one
-        holder; this reports what was actually seen. Empty when telemetry cannot be read.
-        """
+        """Report measured free VRAM, or nothing when telemetry is unavailable."""
         try:
             from utils.hardware import get_visible_gpu_utilization, gpu_query
             with gpu_query.fresh_reads():
                 devices = get_visible_gpu_utilization().get("devices", [])
         except Exception:
-            # A diagnostic that raises would replace the real error with its own.
             return ""
         parts = []
         for device in devices:
@@ -1027,11 +1022,7 @@ class InferenceOrchestrator:
 
     @staticmethod
     def _vram_wait_message(expected_free_gb: dict[int, float]) -> str:
-        """The error raised when free VRAM has not reached the expected level in time.
-
-        Reports the measurement and both likely holders: this branch cannot tell a slow release
-        from a reply that is still finishing or another app on the card (#16436).
-        """
+        """The settle check cannot identify which process holds VRAM (#16436)."""
         shortfall = InferenceOrchestrator._describe_vram_shortfall(expected_free_gb)
         detail = f" ({shortfall})" if shortfall else ""
         return (

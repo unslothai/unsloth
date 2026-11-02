@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-# The settle check only observes free VRAM, so its error must report what was measured instead of
-# claiming the previous worker leaked: a reply still finishing or another GPU app holding the card
-# both reach the same branch (#16436).
-
 from contextlib import nullcontext
 import importlib.util
 from pathlib import Path
@@ -66,7 +62,6 @@ def test_shortfall_is_empty_when_telemetry_raises(monkeypatch):
 
     monkeypatch.setattr(hardware, "get_visible_gpu_utilization", boom)
 
-    # A diagnostic must never take down the error path it is describing.
     assert _orchestrator_class()._describe_vram_shortfall({0: 3.9}) == ""
 
 
@@ -86,7 +81,6 @@ def test_message_names_both_holders_and_carries_the_measurement(monkeypatch):
     assert "A reply may still be finishing" in text
     assert "another app" in text
     assert "Retry shortly." in text
-    # The old wording asserted a cause the check cannot see.
     assert "previous inference worker" not in text
 
 
