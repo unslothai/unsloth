@@ -163,7 +163,8 @@ def _qk_norm_case(fn, dtype, gemma):
 
 
 @pytest.mark.parametrize("gemma", [False, True], ids = ["llama", "gemma"])
-def test_multirow_compiled_matches_one_row_eager(multirow, gemma):
+@pytest.mark.parametrize("dynamic", [False, True], ids = ["static", "dynamic"])
+def test_multirow_compiled_matches_one_row_eager(multirow, gemma, dynamic):
     """Under torch.compile (fullgraph, no graph break) the bytes match the one-row eager kernel."""
     if not getattr(torch.library, "triton_op", None):
         pytest.skip("needs torch.library.triton_op")
@@ -173,7 +174,9 @@ def test_multirow_compiled_matches_one_row_eager(multirow, gemma):
     multirow.setattr(rms_layernorm, "_MULTIROW", True)
     torch._dynamo.reset()
     dynamo_utils.counters.clear()
-    compiled = torch.compile(lambda n, x, gm: fast_rms_layernorm(n, x, gm), fullgraph = True)
+    compiled = torch.compile(
+        lambda n, x, gm: fast_rms_layernorm(n, x, gm), fullgraph = True, dynamic = dynamic
+    )
     got = _qk_norm_case(compiled, dtype, gemma)
     torch._dynamo.reset()
     assert sum(dynamo_utils.counters["graph_break"].values()) == 0
