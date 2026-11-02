@@ -112,6 +112,7 @@ function fixture(t: TestContext, refreshes: Refresh[]) {
       clears++;
       tokens.access = null;
       tokens.refresh = null;
+      state.mark = null;
     },
   };
   const apiBase = {
@@ -191,6 +192,25 @@ test("a queued refresh does not use another account's session", async (t) => {
   assert.equal(await pending, "unavailable");
   assert.equal(f.refreshBodies.length, 0);
   assert.deepEqual(f.tokens, { access: "other-access", refresh: "other-refresh" });
+});
+
+test("both windows reject a revoked refresh token without replaying it", async (t) => {
+  const f = fixture(t, [() => new Response(null, { status: 401 })]);
+  let tail: Promise<unknown> = Promise.resolve();
+  Object.assign(window, { navigator: { locks: {
+    request: (_name: string, _options: unknown, callback: () => Promise<unknown>) => {
+      const result = tail.then(callback);
+      tail = result.catch(() => undefined);
+      return result;
+    },
+  } } });
+  const peer = f.makeApi();
+  assert.deepEqual(await Promise.all([
+    f.api.refreshSessionOutcome(), peer.refreshSessionOutcome(),
+  ]), ["rejected", "rejected"]);
+  assert.equal(f.refreshBodies.length, 1);
+  assert.deepEqual(f.tokens, { access: null, refresh: null });
+  assert.equal(f.state.mark, null);
 });
 
 test("a legacy session without a marker shares the peer's rotation", async (t) => {

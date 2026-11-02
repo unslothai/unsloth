@@ -395,10 +395,10 @@ export async function refreshSessionOutcome(): Promise<RefreshOutcome> {
               // Only bound the queue; a submitted POST may already have rotated.
               clearTimeout(timer);
               if (generation !== logoutGeneration) return "rejected";
-              if (accountTransitionPending() || getAuthSessionMark() !== sessionMark)
-                return "unavailable";
               const current = getRefreshToken();
               if (!current) return "rejected";
+              if (accountTransitionPending() || getAuthSessionMark() !== sessionMark)
+                return "unavailable";
               // A peer already rotated this session while we waited for the lock.
               if (current !== refreshToken) return "ok";
               return runRefresh(current, true);
