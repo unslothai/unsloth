@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { createServer } from "vite";
 
 import { katexWoff2Only, keepWoff2Sources } from "../vite-plugin-katex-woff2.ts";
 
@@ -84,4 +86,34 @@ test("the plugin runs before vite:css and only on KaTeX's stylesheet", () => {
   assert.ok(result);
   assert.equal(result.code, keepWoff2Sources(KATEX_CSS).css);
   assert.throws(() => transform.handler(".katex{color:red}", KATEX_CSS_PATH), /no KaTeX @font-face/);
+});
+
+test("Vite optimizes style imports and preserves raw KaTeX stylesheet imports", async () => {
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  const cacheDir = mkdtempSync(`${root}node_modules/.vite-katex-raw-`);
+  let server: Awaited<ReturnType<typeof createServer>> | undefined;
+  try {
+    server = await createServer({
+      root,
+      cacheDir,
+      logLevel: "silent",
+      server: { host: "127.0.0.1", port: 0, watch: null },
+      optimizeDeps: { noDiscovery: true, include: [] },
+    });
+    await server.listen();
+    const raw = await server.transformRequest("/node_modules/katex/dist/katex.min.css?raw");
+    assert.ok(raw);
+    const loaded = await server.ssrLoadModule("/node_modules/katex/dist/katex.min.css?raw");
+    assert.equal(loaded.default, KATEX_CSS);
+    const direct = await server.transformRequest("/node_modules/katex/dist/katex.min.css?direct");
+    assert.ok(direct);
+    assert.equal(
+      (direct.code.match(/format\(["']?woff2["']?\)/gi) ?? []).length,
+      (KATEX_CSS.match(FONT_FACE) ?? []).length,
+    );
+    assert.doesNotMatch(direct.code, /format\(["']?(?:woff|truetype)["']?\)/i);
+  } finally {
+    await server?.close();
+    rmSync(cacheDir, { recursive: true });
+  }
 });

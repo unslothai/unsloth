@@ -31,6 +31,9 @@ export function katexWoff2Only(): Plugin {
     transform: {
       filter: { id: KATEX_CSS, code: "@font-face" },
       handler(code, id) {
+        if (/[?&]raw\b/.test(id)) {
+          return null;
+        }
         const { css, rules } = keepWoff2Sources(code);
         if (rules === 0) throw new Error(`no KaTeX @font-face src found in ${id}`);
         return { code: css, map: null };
