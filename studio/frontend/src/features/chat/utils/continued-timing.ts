@@ -3,8 +3,6 @@
 
 import type { MessageTiming } from "@assistant-ui/core";
 
-/** What the earlier passes of a continued reply took. Continue carries it so the merged reply's timing
- *  describes the whole answer, as its text and "Worked for" time already do. */
 export type PriorPassTiming = {
   totalStreamTime: number;
   totalChunks: number;
@@ -35,9 +33,7 @@ function numbers(value: unknown): Record<string, number> | undefined {
   return kept.length > 0 ? Object.fromEntries(kept) : undefined;
 }
 
-/** A reply's own figures, read from its metadata; undefined when it recorded no timing. A reply that was
- *  stopped or broke off carries them, with every earlier pass, as `resumeTiming`: a Stop keeps only the
- *  last streamed metadata, which has no `timing`, and an error's has no server figures. */
+// Stop retains the last streamed metadata, which has resumeTiming but no final timing.
 export function priorPassTiming(metadata: unknown): PriorPassTiming | undefined {
   const message = record(metadata);
   const custom = record(message?.custom);
@@ -54,12 +50,10 @@ export function priorPassTiming(metadata: unknown): PriorPassTiming | undefined 
     firstTokenTime: timing?.firstTokenTime,
     durationMs: details?.durationMs,
     startedAt: details?.startedAt,
-    // A diffusion model's figures are steps and blocks, not a decode that continues.
     serverTimings: serverTimings?.diffusion === true ? undefined : serverTimings,
   });
 }
 
-/** Validates a carried PriorPassTiming; undefined for anything without a total time. */
 export function readPriorPassTiming(value: unknown): PriorPassTiming | undefined {
   const fields = record(value);
   const totalStreamTime = count(fields?.totalStreamTime);
@@ -79,7 +73,6 @@ export function readPriorPassTiming(value: unknown): PriorPassTiming | undefined
   };
 }
 
-/** Counts and times add up over the passes; the first token is the reply's first. */
 export function withPriorTiming(
   timing: MessageTiming,
   prior: PriorPassTiming | undefined,
@@ -108,8 +101,7 @@ export function withPriorTiming(
 
 const ADDED = ["prompt_n", "prompt_ms", "cache_n", "predicted_n", "predicted_ms", "draft_n", "draft_n_accepted"];
 
-/** llama-server's figures summed over the passes. A rate is the time-weighted mean of the passes'
- *  rates, which keeps llama.cpp's own definition (decode steps over decode time). */
+// Preserve llama.cpp's rate definition: decode steps / decode time, rather than tokens / wall time.
 export function withPriorServerTimings<T extends object>(
   current: T | undefined,
   prior: Record<string, number> | undefined,
@@ -134,7 +126,6 @@ export function withPriorServerTimings<T extends object>(
   return merged as T;
 }
 
-/** The earlier passes plus this one, in the same shape: what a Continue after this pass carries. */
 export function addPass(prior: PriorPassTiming | undefined, pass: PriorPassTiming): PriorPassTiming {
   if (!prior) return pass;
   const optional = {

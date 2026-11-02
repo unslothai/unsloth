@@ -5729,10 +5729,8 @@ export function createOpenAIStreamAdapter(
       // A seed that ends inside the thought: the next reasoning delta extends it.
       const resumesInsideThought = Boolean(resumedThought) && !continuation?.partial;
       let cumulativeText = continuationPartial;
-      // What this request appended, for counting its own tokens.
       const passText = () => cumulativeText.slice(continuationPartial.length);
       const priorTiming = continuation?.priorTiming;
-      // Bound once the pass's counters exist; until then a Resume carries the earlier passes alone.
       let passSoFar: (() => PriorPassTiming) | null = null;
       const geminiContinuationReplay = (
         final: boolean,
@@ -5832,7 +5830,6 @@ export function createOpenAIStreamAdapter(
       // Provisional reason per yield since aborts skip terminal yields; a reported window outranks it.
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
-        // A Stop keeps only the last streamed yield, so it carries the figures a Resume adds up.
         resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
         openaiCodexReasoning: codexReasoningLedger,
         openaiResponsesReasoning: openAIResponsesReasoningLedger,
@@ -6391,7 +6388,6 @@ export function createOpenAIStreamAdapter(
       };
       // llama.cpp output count, including reasoning.
       let windowCount: number | null = null;
-      // llama-server's per-token figures, the newest seen: what a stopped pass reports for itself.
       let liveServerTimings: ServerTimings | undefined;
       passSoFar = () => {
         const now = Date.now();
@@ -6399,7 +6395,6 @@ export function createOpenAIStreamAdapter(
           totalStreamTime: now - streamStartTime,
           totalChunks,
           toolCallCount: toolCallParts.length,
-          // Without per-token timings (Generation details off), the chars/4 estimate the final count falls back to.
           ...(windowCount !== null
             ? { tokenCount: windowCount }
             : cumulativeText.length > continuationPartial.length
@@ -6503,7 +6498,7 @@ export function createOpenAIStreamAdapter(
           providerType: externalProvider?.providerType ?? "local",
           startedAt: priorTiming?.startedAt ?? streamStartTime,
           finishedAt,
-          // The passes' own time; a manual Continue's wait between them is not the reply's.
+          // Exclude the wait before a manual Continue.
           durationMs:
             (priorTiming ? (priorTiming.durationMs ?? priorTiming.totalStreamTime) : 0) +
             finishedAt -
@@ -8642,7 +8637,6 @@ export function createOpenAIStreamAdapter(
         });
 
         const meta = serverMetadata;
-        // This pass's own output; withPriorTiming adds what the resumed reply already had.
         const finalTokenCount =
           meta?.usage?.completion_tokens ?? estimateTokenCount(passText());
         const finalServerTimings = withPriorServerTimings(
@@ -9043,7 +9037,6 @@ export function createOpenAIStreamAdapter(
                   ),
                 },
                 timing: partialTiming,
-                // Every pass so far with its server figures and start, for a Resume after this error.
                 resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
                 ...generationCustom(),
               },

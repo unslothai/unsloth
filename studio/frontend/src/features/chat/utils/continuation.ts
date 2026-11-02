@@ -367,7 +367,6 @@ export type ContinuationRequest = {
   providerCompactionProviderType?: string;
   providerCompactionModelId?: string;
   providerCompactionConnectionKey?: string;
-  /** The resumed reply's own figures, so the continued one's timing covers the whole answer. */
   priorTiming?: PriorPassTiming;
 };
 
