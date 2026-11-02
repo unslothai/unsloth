@@ -182,6 +182,61 @@ def test_an_uncancelled_custom_generate_returns_its_sequences():
     assert out == "sequences" and streamer.tokens == [0, 1, 2, 3] and streamer.ended
 
 
+@pytest.mark.parametrize("matched_stop", [False, True])
+def test_halted_custom_generation_keeps_usage_only_for_a_matched_stop(matched_stop):
+    import threading
+    import torch
+
+    _NS["torch"] = torch
+    cancel = threading.Event()
+
+    class StopRecorder(_Recorder):
+        def __init__(self):
+            super().__init__()
+            self.matched = threading.Event()
+            self.token_ids = []
+
+        def put(self, value):
+            super().put(value)
+            if value.ndim == 1:
+                self.token_ids.extend(value.tolist())
+                if len(self.token_ids) == 3:
+                    (self.matched if matched_stop else cancel).set()
+
+    class CustomGenerate:
+        _generation_fields_unsupported = {}
+
+        def generate(self, *, input_ids, streamer, **kwargs):
+            assert "stopping_criteria" not in kwargs
+            try:
+                streamer.put(input_ids)
+                for token in (21, 22, 23, 24):
+                    streamer.put(input_ids.new_tensor([token]))
+            finally:
+                streamer.end()
+            raise AssertionError("Generation should halt before the fourth token")
+
+    prompt = torch.tensor([[101, 102]], dtype = torch.long)
+    streamer = StopRecorder()
+    out = _generate_supported(
+        CustomGenerate(),
+        {
+            "input_ids": prompt,
+            "streamer": streamer,
+            "stopping_criteria": _criteria(cancel, streamer.matched),
+        },
+    )
+    assert streamer.ended and streamer.token_ids == [21, 22, 23]
+    assert torch.equal(prompt, torch.tensor([[101, 102]]))
+    if matched_stop:
+        assert isinstance(out, torch.Tensor)
+        assert out.tolist() == [[101, 102, 21, 22, 23]]
+        assert out.shape[-1] - prompt.shape[-1] == 3
+        assert out.dtype == prompt.dtype and out.device == prompt.device
+    else:
+        assert out is None
+
+
 def test_a_text_load_without_generate_is_refused_by_name():
     class Lfm3AudioModel:
         pass

@@ -821,6 +821,11 @@ def _generate_supported(
     try:
         return model.generate(**kwargs)
     except _GenerationHalted:
+        streamer = generation_kwargs.get("streamer")
+        matched = getattr(streamer, "matched", None)
+        prompt = generation_kwargs.get("input_ids")
+        if matched is not None and matched.is_set() and prompt is not None:
+            return prompt.new_tensor([prompt[0].tolist() + streamer.token_ids])
         streamer = kwargs.get("streamer")
         prompt = kwargs.get("input_ids")
         if not getattr(streamer, "restated", False) or not isinstance(prompt, torch.Tensor):
