@@ -2254,6 +2254,7 @@ def run_inference_process(
         logger.info("MLX inference subprocess ready, entering command loop")
         batch = _ResidentBatch(backend, resp_queue)
         warmth = _MLXIdleWarmth()
+        warmth.active()
         deferred: list[dict] = []
         stops = _Stops(stop_ledger, resp_queue, batch, deferred)
         waiting = lambda: stops.unread() or not cmd_queue.empty()

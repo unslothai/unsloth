@@ -6515,6 +6515,8 @@ class MLXInferenceBackend:
                 _mlx_warm_inference(
                     model, self._int8_prefill["active"], self._fast_verify_decision()
                 )
+            with mlx_rng_preserved():
+                self._warm_resident_batch()
             if self._ane_prefill["active"]:
                 self._ane_prefill = _ane_prefill_status(True, model)
                 self.models[model_name].update(
@@ -6523,6 +6525,42 @@ class MLXInferenceBackend:
                 )
         logger.info("Model %s loaded successfully", model_name)
         return True
+
+    def _warm_resident_batch(self):
+        """Serve short replies through the batch requests take, whose first-use work Zoo's warm-up generation misses.
+
+        Twice greedy, since the Qwen4 scopes build their kernels only on opening after a reply has
+        imported their mlx-vlm module, then sampled.
+        """
+        if self.resident_unavailable_reason({}) is not None:
+            return
+        messages = [{"role": "user", "content": "Count from one to ten."}]
+        try:
+            for temperature in (0.0, 0.0, 0.7):
+                session = self.open_resident_batch(width = 1)
+                try:
+                    session.admit(
+                        {"messages": messages, "temperature": temperature, "max_new_tokens": 16},
+                        "warm",
+                    )
+                    while session.rows_in_flight:
+                        for _, snapshot in session.step():
+                            if isinstance(snapshot, BaseException):
+                                raise snapshot
+                finally:
+                    session.close()
+        except Exception as error:
+            if is_metal_queue_dead(error):
+                raise
+            logger.warning(
+                "MLX batch warm-up failed, so the first request runs it: %s: %s",
+                type(error).__name__,
+                error,
+            )
+        finally:
+            room = self._prompt_cache_room
+            self._clear_prompt_cache()
+            self._prompt_cache_room = room
 
     def _render_template_probe(self, is_vision: bool) -> str:
         """Renders through the target generation uses, since the recovery renderer returns None off-list."""
