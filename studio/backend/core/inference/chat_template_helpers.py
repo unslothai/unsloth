@@ -22,7 +22,6 @@ _UNPARSED = object()
 
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
-_GEMMA_CHANNEL_START = "<|channel>"
 _GEMMA_THOUGHT_OPEN = "<|channel>thought"
 _GEMMA_THOUGHT_CLOSE = "<channel|>"
 _GEMMA_TEMPLATE_OPENERS = (
@@ -107,7 +106,7 @@ _CONTROL_MARKUP = re.compile(
     # Bare-tag families. <s> and </s> (Llama-2 BOS/EOS) collide with HTML; kept, since a live document boundary beats a space in a rare <s>.
     r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think|eos|bos|s|sop"
     r"|start_of_image|image_soft_token|audio_soft_token"
-    r"|arg_key|arg_value|function|parameter|param)>"
+    r"|arg_key|arg_value|function|parameter|param|minimax:tool_call)>"
     # Opener halves carry "=value", so the attribute form needs its own alternative beside function=
     r"|(?:function|parameter)=|(?:function|param(?:eter)?)\s+name=\""
     r"|(?:tool(?:_call|_response)?|channel|turn)\|>"
@@ -2592,7 +2591,7 @@ def messages_with_attached_image(
     fallback_user_text: str = "",
     structured_content: bool = False,
     image: int = 1,
-    video: bool = False,
+    video: int = 0,
     audio: Any = None,
     extra_audio: Sequence[Any] = (),
 ) -> list:

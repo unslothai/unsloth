@@ -67,6 +67,19 @@ def test_bun_is_not_provisioned_when_npm_ci_will_run():
     assert ps1.index(gate) < ps1.index("npm install -g bun")
 
 
+def test_bun_is_not_provisioned_without_a_frontend_build():
+    # Node provisioned only for the OXC validator (every Desktop install/update) must not fetch bun.
+    sh = _read("studio/setup.sh")
+    build_branch = sh.index('elif [ "$_NEED_FRONTEND_BUILD" = false ]; then')
+    assert build_branch < sh.index("npm install -g bun")
+    ps1 = _read("studio/setup.ps1")
+    install = ps1.index("npm install -g bun")
+    gate_start = ps1.rindex("if (", 0, install)
+    gate = ps1[gate_start : ps1.index("{", gate_start)]
+    assert "$NeedFrontendBuild" in gate, gate
+    assert ps1.index("$NeedFrontendBuild = $true") < gate_start
+
+
 def test_workflows_install_lockfiled_dirs_with_npm_ci():
     for name in (
         "release-desktop.yml",

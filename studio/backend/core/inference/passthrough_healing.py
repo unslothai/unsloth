@@ -5,6 +5,7 @@
 unmatched output; response_format requests untouched; auto_heal_tool_calls false and
 UNSLOTH_DISABLE_TOOL_CALL_HEALING=1 opt out"""
 
+import bisect
 import json
 import os
 import re
@@ -178,21 +179,11 @@ def _promote(
     return promoted
 
 
-def _remove_spans(text: str, spans: list) -> str:
-    """Text with the given non-overlapping, sorted (start, end) ranges removed."""
-    pieces = []
-    pos = 0
-    for start, end in spans:
-        pieces.append(text[pos:start])
-        pos = end
-    pieces.append(text[pos:])
-    return "".join(pieces)
-
-
 def heal_openai_message_events(
     msg: dict,
     allowed_tools: set,
     tools: Optional[list] = None,
+    allow_incomplete: bool = True,
 ) -> Optional[list]:
     if not isinstance(msg, dict) or msg.get("tool_calls"):
         return None
@@ -200,12 +191,22 @@ def heal_openai_message_events(
     if not isinstance(content, str) or not _has_heal_signal(content):
         return None
     parsed, spans = parse_tool_calls_from_text(content, allow_incomplete = True, with_spans = True)
+    # A strict parse alone would promote calls quoted inside a rejected unfinished call.
+    closed = (
+        None
+        if allow_incomplete
+        else set(parse_tool_calls_from_text(content, allow_incomplete = False, with_spans = True)[1])
+    )
     tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
     events: list = []
     pos = 0
     call_count = 0
     for call, (start, end) in zip(parsed, spans):
-        promoted = _promote([call], allowed_tools, id_offset = call_count, tool_schemas = tool_schemas)
+        promoted = (
+            _promote([call], allowed_tools, id_offset = call_count, tool_schemas = tool_schemas)
+            if closed is None or (start, end) in closed
+            else None
+        )
         if promoted:
             if content[pos:start]:
                 events.append(("text", content[pos:start]))
@@ -225,9 +226,10 @@ def heal_openai_message(
     msg: dict,
     allowed_tools: set,
     tools: Optional[list] = None,
+    allow_incomplete: bool = True,
 ) -> bool:
     """Edits in place; only promoted calls' markup is removed, undeclared calls stay byte-intact."""
-    events = heal_openai_message_events(msg, allowed_tools, tools)
+    events = heal_openai_message_events(msg, allowed_tools, tools, allow_incomplete)
     if not events:
         return False
     calls = [value for kind, value in events if kind == "tool_call"]
@@ -268,6 +270,8 @@ _STRICT_CLOSE_TOKENS = ("</tool_call>", "<|end_message|>", "<tool_call|>", "</fu
 _CALLS_TAG = "[TOOL_CALLS]"
 _ARGS_TAG = "[ARGS]"
 _WS_RE = re.compile(r"\s*")
+# A rehearsal name[ARGS] needs a name character right before the tag.
+_NAME_CHAR_RE = re.compile(r"[\w-]")
 _SPAN_SKIP_RE = re.compile(r'[^"{}\\]*')
 _STRING_SKIP_RE = re.compile(r'[^"\\]*')
 _BRACKET_SKIP_RE = re.compile(r'[^"\[\]{}]*')
@@ -342,7 +346,7 @@ class _StrictParseGate:
 
     Each chunk scans only the appended text; any buffer that does not extend the last one starts over."""
 
-    __slots__ = ("_buf", "_closer", "_calls", "_args", "_scans")
+    __slots__ = ("_buf", "_closer", "_calls", "_args", "_scans", "_brace_close", "_any_close")
 
     def __init__(self) -> None:
         self._reset()
@@ -354,6 +358,14 @@ class _StrictParseGate:
         self._args: list = []
         # (open index, is array) -> resumable scan state, or the close index once balanced.
         self._scans: dict = {}
+        # Last "}" and last "]" or "}": an opener after them cannot balance yet.
+        self._brace_close = -1
+        self._any_close = -1
+
+    def release(self) -> None:
+        """Drop the scan once the healer lets go of its held text."""
+        if self._buf:
+            self._reset()
 
     def may_parse(self, buffer: str) -> bool:
         prev_len = len(self._buf)
@@ -371,22 +383,31 @@ class _StrictParseGate:
         for tag, found in ((_CALLS_TAG, self._calls), (_ARGS_TAG, self._args)):
             pos = buffer.find(tag, max(0, prev_len - len(tag) + 1))
             while pos >= 0:
-                found.append(pos)
+                if found is self._calls or (pos and _NAME_CHAR_RE.match(buffer, pos - 1)):
+                    found.append(pos)
                 pos = buffer.find(tag, pos + len(tag))
         if not self._calls and not self._args:
             return False
-        # Every opener _iter_bracket_spans can try; regexes rerun since a tail match can still change.
+        brace_close = buffer.rfind("}", prev_len)
+        if brace_close >= 0:
+            self._brace_close = brace_close
+        brace_close = self._brace_close
+        any_close = max(buffer.rfind("]", prev_len), brace_close, self._any_close)
+        self._any_close = any_close
+        # Openers _iter_bracket_spans would scan; regexes rerun since a tail match can still change.
         opens = []
-        for pos in self._calls:
+        calls = self._calls
+        for pos in calls[: bisect.bisect_right(calls, any_close)]:
             m = _MISTRAL_BRACKET_RE.match(buffer, pos)
-            if m is not None:
+            if m is not None and m.end() < brace_close:
                 opens.append((m.end(), False))
             m = _MISTRAL_ARRAY_RE.match(buffer, pos)
-            if m is not None:
+            if m is not None and m.end() < any_close:
                 opens.append((m.end(), True))
-        for pos in self._args:
+        args = self._args
+        for pos in args[: bisect.bisect_right(args, brace_close)]:
             brace = _WS_RE.match(buffer, pos + len(_ARGS_TAG)).end()
-            if buffer.startswith("{", brace):
+            if brace < brace_close and buffer.startswith("{", brace):
                 opens.append((brace, False))
         scans = self._scans
         for key in opens:
@@ -451,6 +472,7 @@ class StreamToolCallHealer:
     def structured_tool_call_seen(self) -> list:
         """Go dormant; flush anything held so no text is swallowed."""
         self.dormant = True
+        self._strict_gate.release()
         held, self._buffer, self._holding = self._buffer, "", False
         return [("text", held)] if held else []
 
@@ -464,6 +486,7 @@ class StreamToolCallHealer:
         events: list = []
         while True:
             if not self._holding:
+                self._strict_gate.release()
                 start = _earliest_signal(self._buffer)
                 if start >= 0:
                     if start:
@@ -489,6 +512,14 @@ class StreamToolCallHealer:
                 if may_parse
                 else ([], [])
             )
+            # A bracket call after a still-open tag block is that block's argument text.
+            if (
+                parsed
+                and self._buffer.startswith("<")
+                and not self._buffer.startswith("<", spans[0][0])
+                and _closed_signal_span(self._buffer) is None
+            ):
+                parsed, spans = [], []
             if not parsed:
                 # Its close tags are gate tokens, so a closed gate means no closed span.
                 closed_span = _closed_signal_span(self._buffer) if may_parse else None
@@ -532,13 +563,14 @@ class StreamToolCallHealer:
             self._buffer = self._buffer[run_end:]
             self._holding = False
 
-    def finalize(self) -> list:
+    def finalize(self, promote: bool = True) -> list:
         """Keeps event order; only promoted call markup is dropped and all other residue flushes as text."""
+        self._strict_gate.release()
         if not self._buffer:
             return []
         residue, self._buffer = self._buffer, ""
         holding, self._holding = self._holding, False
-        if self.dormant or not holding:
+        if self.dormant or not holding or not promote:
             return [("text", residue)]
         parsed, spans = parse_tool_calls_from_text(
             residue,

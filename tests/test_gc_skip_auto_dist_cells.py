@@ -7,7 +7,6 @@ every rank takes it at the same forward, and that DDP training is unchanged by t
 import datetime
 import multiprocessing
 import os
-import socket
 import sys
 import types
 
@@ -19,9 +18,8 @@ GIB = 1 << 30
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _load(
@@ -174,6 +172,43 @@ def _ddp_scenario(rank, scenario, usable):
     }
 
 
+def _join_scenario(rank, scenario, usable):
+    """DDP.join(): rank 0 runs out of inputs before rank 1's planning forward."""
+    from torch.nn.parallel import DistributedDataParallel as DDP
+
+    T, ns = _load()
+    memory = {"allocated": 0}
+    model = T._model(layers = 4)
+    if scenario:
+        _spoof_cuda(ns, usable, memory)
+        for layer in model.model.layers:
+            layer.register_forward_hook(
+                lambda m, a, o: memory.__setitem__(
+                    "allocated", memory["allocated"] + (GIB // 16 if torch.is_grad_enabled() else 0)
+                )
+            )
+        ns["skip_checkpointing"](model, "auto")
+    planner = getattr(model, "_unsloth_auto_skip", None)
+    ddp = DDP(model)
+    optimizer = torch.optim.SGD(model.parameters(), lr = 0.1)
+    generator = torch.Generator().manual_seed(100)
+    batches = [torch.randint(0, 128, (2, 32), generator = generator) for _ in range(3)]
+    losses = []
+    with ddp.join():
+        for ids in batches[: 1 if rank == 0 else 3]:
+            loss = ddp(input_ids = ids, labels = ids).loss
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad(set_to_none = True)
+            losses.append(float(loss.detach()))
+    digest = float(sum(p.detach().double().sum() for p in model.parameters()))
+    return {
+        "kept": None if planner is None else list(planner.kept or []),
+        "losses": losses,
+        "digest": digest,
+    }
+
+
 class _null:
     def __enter__(self):
         return self
@@ -195,7 +230,7 @@ def _worker(rank, world, port, kind, scenario, usable, queue):
             world_size = world,
             timeout = datetime.timedelta(seconds = 30),
         )
-        run = _fake_scenario if kind == "fake" else _ddp_scenario
+        run = {"fake": _fake_scenario, "join": _join_scenario}.get(kind, _ddp_scenario)
         queue.put((rank, run(rank, scenario, usable[rank]), None))
     except Exception:
         import traceback
@@ -334,4 +369,14 @@ def test_fsdp2_training_unchanged_and_ranks_agree(accumulation):
     assert 0 < len(auto[1]["kept"]) < 4
     for rank in (0, 1):
         assert reference[rank]["checkpointed"] == [True] * 4
+        _assert_same_training(auto[rank], reference[rank])
+
+
+def test_ddp_join_with_uneven_inputs_keeps_every_layer_checkpointed():
+    # A joined rank only shadows DDP's collectives, so a planning all_reduce would mispair.
+    usable = [8 * GIB, 8 * GIB]
+    auto = _launch("join", True, usable)
+    reference = _launch("join", False, usable)
+    for rank in (0, 1):
+        assert auto[rank]["kept"] == []
         _assert_same_training(auto[rank], reference[rank])

@@ -13,16 +13,16 @@ import {
 import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
 import { useHubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  ArrowUpDownIcon,
-  CancelCircleIcon,
-  Delete02Icon,
-  FolderSearchIcon,
+  Cancel01Icon,
   Search01Icon,
   SlidersHorizontalIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderSearchIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { SortIcon } from "@/lib/sort-icon";
 import { memo, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import type {
@@ -401,7 +401,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             className="absolute right-2.5 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground"
           >
             <HugeiconsIcon
-              icon={CancelCircleIcon}
+              icon={Cancel01Icon}
               strokeWidth={1.75}
               className="size-[calc(18px*var(--ui-space-scale,1))]"
             />
@@ -488,7 +488,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                 )}
               >
                 <HugeiconsIcon
-                  icon={Delete02Icon}
+                  icon={TrashIcon}
                   strokeWidth={1.75}
                   className="size-[calc(18px*var(--ui-space-scale,1))]"
                 />
@@ -532,7 +532,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             triggerContent={
               <span className="flex items-center gap-1">
                 <HugeiconsIcon
-                  icon={ArrowUpDownIcon}
+                  icon={SortIcon}
                   strokeWidth={1.75}
                   className="size-3.5 shrink-0"
                 />
@@ -559,7 +559,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             triggerContent={
               <span className="flex items-center gap-1">
                 <HugeiconsIcon
-                  icon={ArrowUpDownIcon}
+                  icon={SortIcon}
                   strokeWidth={1.75}
                   className="size-3.5 shrink-0"
                 />

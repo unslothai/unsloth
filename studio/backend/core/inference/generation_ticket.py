@@ -24,12 +24,26 @@ class GenerationTicket:
         if stopped:
             event.set()
 
+    def cancelled(self) -> bool:
+        with self._lock:
+            return self._stopped or any(event.is_set() for event in self._events)
+
     def stop(self) -> None:
         with self._lock:
             self._stopped = True
             events = list(self._events)
         for event in events:
             event.set()
+
+
+class TicketStopEvent(threading.Event):
+    def __init__(self, ticket: GenerationTicket) -> None:
+        super().__init__()
+        self._ticket = ticket
+
+    def set(self) -> None:
+        super().set()
+        self._ticket.stop()
 
 
 _ticket: contextvars.ContextVar[Optional[GenerationTicket]] = contextvars.ContextVar(

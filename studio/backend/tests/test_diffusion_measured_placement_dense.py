@@ -250,6 +250,27 @@ def test_small_host_int8_klein_places_from_its_measured_seed(klein_pipe, monkeyp
     assert resident + KLEIN_SMALL_HOST_HEADROOM + dm.DEFAULT_BASE_OVERHEAD_MIB <= 12758
 
 
+KLEIN9_SMALL_HOST_LOADED = {
+    "transformer": (8664, "dit"),
+    "text_encoder": (11124, "text_encoder"),
+    "vae": (160, "other"),
+}
+
+
+def test_small_host_int8_klein9_places_from_the_shared_seed(klein_pipe, monkeypatch):
+    # unseeded on a 12.7 GB T4: 2212 of 8664 MiB resident, the rest re-read from the spill every step
+    pipe = _small_host_int8_pipe(klein_pipe, monkeypatch)
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: dict(KLEIN9_SMALL_HOST_LOADED))
+    plan = _flat_plan(12758)
+    new = _refine(pipe, plan)
+    assert new is not plan
+    assert new.estimates["measured_runtime_headroom_mib"] == KLEIN_SMALL_HOST_HEADROOM
+    assert new.estimates["measured_small_host_int8"] is True
+    assert 6000 <= (new.resident_transformer_mib or 0) < 8664
+    resident = new.resident_transformer_mib + (new.resident_text_encoder_mib or 0) + 160
+    assert resident + KLEIN_SMALL_HOST_HEADROOM + dm.DEFAULT_BASE_OVERHEAD_MIB <= 12758
+
+
 def test_small_host_int8_seed_kill_switch_and_scope(klein_pipe, monkeypatch):
     pipe = _small_host_int8_pipe(klein_pipe, monkeypatch)
     plan = _flat_plan(12758)
@@ -258,6 +279,7 @@ def test_small_host_int8_seed_kill_switch_and_scope(klein_pipe, monkeypatch):
     monkeypatch.delenv(SMALL_HOST_SEED_ENV)
     assert _refine(pipe, plan, family = "flux.1") is plan
     assert dm._small_host_int8_seed_mib("flux.2-klein", "default", 3700, 2) is None
+    assert dm._small_host_int8_seed_mib("flux.2-klein", "off", 8664, 2) == 2805
     assert dm._small_host_int8_seed_mib("flux.2-klein", "off", 9000, 2) is None
     assert dm._small_host_int8_seed_mib("flux.2-klein", "off", 3700, 4) == 5610
     pipe._unsloth_measured_reserve = (

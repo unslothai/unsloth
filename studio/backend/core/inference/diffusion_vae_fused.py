@@ -1157,7 +1157,6 @@ def uninstall(vae: Any) -> None:
 
 
 _WAN_VAES = frozenset({"AutoencoderKLWan", "AutoencoderKLQwenImage", "AutoencoderKLQwenImage21"})
-_CACHE_T = 2
 
 
 def _is_rms(norm: Any) -> bool:

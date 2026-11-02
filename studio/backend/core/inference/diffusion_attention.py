@@ -1831,7 +1831,6 @@ def _cudnn_attention_supported() -> bool:
 _SAGE_PROBE_CACHE: dict[tuple[str, str, int], str] = {}
 
 _SAGE_MAX_HEAD_DIM = 128  # sageattn raises above 128
-_SAGE_DTYPE_NAMES = ("float16", "bfloat16", "fp16", "bf16", "half")
 # SageAttention 2 lands near cos 0.9999 / rel-L1 0.01-0.03 vs fp32 here; a wrong-arch or broken build is far outside.
 _SAGE_MIN_COSINE = 0.99
 _SAGE_MAX_REL_L1 = 0.08
@@ -3477,6 +3476,23 @@ def apply_attention_backend(
             and not _cudnn_serves_pipe(pipe, target, logger)
         ):
             backend = None
+        if backend == "_native_flash" and target is not None:
+            # H3 Auto can pick flash after select(); refuse exclusive flash when this build has no kernel (#16294).
+            try:
+                kernels = available_sdpa_kernels(target)
+            except Exception:  # noqa: BLE001 -- an unreadable probe must not force flash
+                kernels = ()
+            if SDPA_FLASH not in kernels:
+                # A probe that answered without cuDNN keeps the default dispatch; an empty one keeps Auto's cuDNN.
+                cudnn_ok = (not kernels or SDPA_CUDNN in kernels) and _cudnn_serves_pipe(
+                    pipe, target, logger
+                )
+                if logger is not None:
+                    logger.info(
+                        "diffusion.attention: flash SDPA unavailable on this torch build; using %s",
+                        "cuDNN" if cudnn_ok else "the default SDPA dispatch",
+                    )
+                backend = AUTO_CUDNN if cudnn_ok else None
         if (
             isinstance(backend, _AutoCudnn)
             and target is not None

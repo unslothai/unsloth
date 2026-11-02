@@ -167,7 +167,7 @@ export function SettingsCardRow({
           description ? "items-start" : "items-center",
         )}
       >
-        <div className="flex min-w-0 flex-1 basis-60 flex-col gap-1">
+        <div className="flex min-w-0 max-w-[calc(32rem*var(--ui-space-scale,1))] flex-1 basis-60 flex-col gap-1">
           <span className="text-sm font-medium text-foreground">
             {label}
             {hint ? (

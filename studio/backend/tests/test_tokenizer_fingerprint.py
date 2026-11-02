@@ -144,7 +144,7 @@ def test_hashing_still_goes_through_datasets_own_reducer(restore_reducer):
     tok = _tokenizer()
     vocab, merges = tok._vocab, tok._merges
     _hash(tok)
-    assert seen == [[]]
+    assert seen == [["_merges", "_vocab"]]
     assert tok._vocab is vocab and tok._merges is merges
 
 
@@ -155,7 +155,7 @@ def test_init_state_is_put_back_when_the_reducer_raises(restore_reducer):
     tok = _tokenizer()
     with pytest.raises(Exception):
         _hash(tok)
-    assert seen == [[]]
+    assert seen == [["_merges", "_vocab"]]
     assert tok._vocab == {"<unk>": 0, "a": 1, "b": 2, "ab": 3}
     assert tok._merges == [("a", "b")]
 
@@ -173,3 +173,46 @@ def test_backend_truncation_does_not_move_the_hash_where_datasets_ignores_it(res
     tok(["ab ab ab ab"], truncation = True, max_length = 2)
     assert tok._tokenizer.truncation is not None
     assert _hash(tok) == before
+
+
+def test_serializing_the_tokenizer_during_a_hash_keeps_init_state(restore_reducer):
+    clones: list = []
+
+    def overlapping_serializer(pickler, obj):
+        clones.append(pickle.loads(pickle.dumps(obj)))
+        return restore_reducer(pickler, obj)
+
+    datasets_dill._save_transformersPreTrainedTokenizerBase = overlapping_serializer
+    datasets_dill.Pickler.dispatch.pop(transformers.PreTrainedTokenizerFast, None)
+    tokenizer_fingerprint.install_tokenizer_fingerprint()
+    tok = _tokenizer()
+    _hash(tok)
+    assert len(clones) == 1
+    assert clones[0].__dict__.get("_vocab") == tok._vocab
+    assert clones[0].__dict__.get("_merges") == tok._merges
+
+
+def test_fingerprint_equals_datasets_hash_without_init_state(restore_reducer):
+    tok = _tokenizer()
+    bare = _tokenizer()
+    del bare._vocab, bare._merges
+    expected = _hash(bare)
+    tokenizer_fingerprint.install_tokenizer_fingerprint()
+    assert _hash(tok) == expected
+
+
+class _VocabLookupTokenizer(transformers.PreTrainedTokenizerFast):
+    """A custom subclass that reads its Python vocab while encoding."""
+
+    def _convert_token_to_id_with_added_voc(self, token):
+        return self._vocab.get(token, 0)
+
+
+def test_custom_subclass_keeps_init_state_in_the_hash(restore_reducer):
+    tokenizer_fingerprint.install_tokenizer_fingerprint()
+    tok = _tokenizer()
+    tok.__class__ = _VocabLookupTokenizer
+    before = _hash(tok)
+    tok._vocab["ab"] = 7
+    assert tok.convert_tokens_to_ids("ab") == 7
+    assert _hash(tok) != before

@@ -52,7 +52,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
       - name: Install pytest only
@@ -101,7 +101,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
       - name: Install pytest only
@@ -140,8 +140,9 @@ jobs:
             # 3.11, not 3.12: lanes sharing an interpreter share one pip cache key.
             # Both pins must equal pyproject's ceilings (test_a_ceiling_lane_pins_the_declared_ceiling).
             python: '3.11'
+            # torch 2.15 reached the CPU index before torchvision 0.30, so the pair failed the import guard.
             torch_pins: >-
-              torch torchvision 'torchcodec>=0.12'
+              'torch<2.15' torchvision 'torchcodec>=0.12'
             pkg_pins: >-
               'transformers==5.17.0' 'trl==1.15.0'
               peft sentence-transformers accelerate 'datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0'
@@ -149,8 +150,9 @@ jobs:
           - slug: latest
             continue_on_error: true
             python: '3.12'
+            # torch 2.15 reached the CPU index before torchvision 0.30, so the pair failed the import guard.
             torch_pins: >-
-              torch torchvision 'torchcodec>=0.12'
+              'torch<2.15' torchvision 'torchcodec>=0.12'
             pkg_pins: >-
               transformers trl peft sentence-transformers
               accelerate datasets bitsandbytes triton hf_transfer
@@ -175,7 +177,7 @@ jobs:
             echo "::warning::clone failed (attempt $attempt/3), retrying in ${delay}s..."
             sleep "$delay"
           done
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         # Deps are pinned inline below, so the workflow file is the cache key's dependency spec.
         with:
           python-version: ${{ matrix.python }}
@@ -259,8 +261,9 @@ jobs:
             trl_pin: 'trl==0.18.2'
           - slug: latest
             python: '3.12'
+            # torch 2.15 reached the CPU index before torchvision 0.30, so the pair failed the import guard.
             torch_pins: >-
-              torch torchvision 'torchcodec>=0.12'
+              'torch<2.15' torchvision 'torchcodec>=0.12'
             pkg_pins: >-
               transformers peft accelerate datasets
               bitsandbytes triton hf_transfer
@@ -286,7 +289,7 @@ jobs:
             echo "::warning::clone failed (attempt $attempt/3), retrying in ${delay}s..."
             sleep "$delay"
           done
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         # Deps are pinned inline below, so the workflow file is the cache key's dependency spec.
         with:
           python-version: ${{ matrix.python }}
@@ -386,7 +389,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
       - name: Install pytest

@@ -325,6 +325,7 @@ del _guard_dataset_media
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 # Studio decides training / export / chat-only from its own hardware detection, so keep
 # `import unsloth` refusing on a GPU-less host here instead of loading the CPU training backend.
+# A training worker on a host Studio trains on CPU opts back in (core/training/worker.py).
 os.environ.setdefault("UNSLOTH_DISABLE_CPU_FALLBACK", "1")
 
 # Must not import unsloth here (pulls torch/GPU); before transformers reads sentencepiece.
@@ -431,7 +432,7 @@ from hub.utils.download_registry import (
 )
 from routes.settings import router as settings_router
 from routes.sandbox_capability import router as sandbox_capability_router
-from routes.systemone import MCP_PATH as DECISIONS_MCP_PATH, RequireStudioAuth, decisions_mcp
+from routes.systemone import MCP_PATH as DECISIONS_MCP_PATH, RequireStudioAuth
 from routes.systemone import router as systemone_router
 from routes.prompts import router as prompts_router
 from routes.scheduled_tasks import router as scheduled_tasks_router
@@ -609,6 +610,10 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
         daemon = True,
         name = "llama-cpp-startup-probe",
     ).start()
+
+
+# Torch warm start gate: set by the first response, and at shutdown so a parked warm reaches its epoch check.
+_first_response_sent = threading.Event()
 
 
 _post_warm_thread: Optional[threading.Thread] = None
@@ -792,6 +797,10 @@ async def lifespan(app: FastAPI):
     import structlog as _structlog
 
     _lifespan_log = _structlog.get_logger(__name__)
+    # Started first so keygen overlaps the steps below.
+    from core.inference.key_exchange import start_key_pair
+
+    _install_key_pair = start_key_pair()
     clear_compiled_cache_unless_shared(app)
 
     # Without a catch-all the engine paths answer 405, read as 'exists'.
@@ -851,6 +860,10 @@ async def lifespan(app: FastAPI):
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
     if overlay_dir.is_dir():
         shutil.rmtree(overlay_dir, ignore_errors = True)
+
+    from storage import rag_db
+
+    rag_db.start_wal_keepers()
 
     # Before the first writer, so startup's own connections stop checkpointing too.
     try:
@@ -969,9 +982,7 @@ async def lifespan(app: FastAPI):
     app.state.idle_unload_task = asyncio.create_task(idle_unload_loop())
 
     # Initialize RSA key pair for API key encryption (external providers).
-    from core.inference.key_exchange import init_key_pair
-
-    init_key_pair()
+    _install_key_pair()
 
     # Stall thread-dump watchdog (#9712), only with UNSLOTH_STUDIO_STALL_WATCHDOG=1.
     from utils.stall_watchdog import stand_down_for_the_warm, start_stall_watchdog
@@ -1011,8 +1022,9 @@ async def lifespan(app: FastAPI):
             + "\n"
         )
 
-    # Last, so it never contends for the GIL before the socket binds.
-    start_background_warm()
+    # Last, so it never contends for the GIL before the socket binds; its stages wait for the first response.
+    _first_response_sent.clear()
+    start_background_warm(gate = _first_response_sent)
     _start_post_warm_thread()
 
     _lifespan_log.info(
@@ -1046,6 +1058,7 @@ async def lifespan(app: FastAPI):
     _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
     if _invalidate_detection is not None:
         _invalidate_detection()
+    _first_response_sent.set()
 
     await asyncio.to_thread(_release_api_usage_writer, _api_usage_writer_lease)
 
@@ -1102,6 +1115,7 @@ async def lifespan(app: FastAPI):
     from storage.studio_db import close_wal_keeper
 
     close_wal_keeper()
+    rag_db.close_wal_keeper()
     try:
         storage.close_wal_keeper()
     except Exception as exc:
@@ -1123,18 +1137,38 @@ app = FastAPI(
 app.openapi_url = "/openapi.json"
 app.state.secure = os.environ.get("UNSLOTH_SECURE") == "1"
 
-from fastmcp.utilities.lifespan import combine_lifespans  # noqa: E402
+from utils.lazy_asgi_app import LazyLifespanApp, combine_lifespans  # noqa: E402
 
+
+def _build_decisions_mcp_app():
+    from routes.systemone import decisions_mcp
+    return decisions_mcp.http_app(path = "/", stateless_http = True, json_response = True)
+
+
+def _decisions_on_at_startup() -> bool:
+    from utils import systemone_settings
+    return systemone_settings.get_enabled()
+
+
+# Built on first request, or at startup when switched on: fastmcp is most of a second of import.
 # Mounted ahead of /mcp, which would otherwise swallow this path.
-_decisions_mcp_app = decisions_mcp.http_app(path = "/", stateless_http = True, json_response = True)
+_decisions_mcp_app = LazyLifespanApp(
+    _build_decisions_mcp_app, wanted_at_startup = _decisions_on_at_startup
+)
 app.router.lifespan_context = combine_lifespans(lifespan, _decisions_mcp_app.lifespan)
 app.mount(DECISIONS_MCP_PATH, RequireStudioAuth(_decisions_mcp_app))
 
 # Always mounted; the gate answers 404 until the owner turns agent access on.
-from mcp_server import create_studio_mcp  # noqa: E402
 from studio_mcp.gate import StudioMcpGate  # noqa: E402
+from utils.mcp_access import is_mcp_enabled  # noqa: E402
 
-_studio_mcp_app = create_studio_mcp().http_app(path = "/", stateless_http = True)
+
+def _build_studio_mcp_app():
+    from mcp_server import create_studio_mcp
+    return create_studio_mcp().http_app(path = "/", stateless_http = True)
+
+
+_studio_mcp_app = LazyLifespanApp(_build_studio_mcp_app, wanted_at_startup = is_mcp_enabled)
 app.router.lifespan_context = combine_lifespans(
     app.router.lifespan_context, _studio_mcp_app.lifespan
 )
@@ -1149,6 +1183,10 @@ logger = LogConfig.setup_logging(
 )
 
 app.add_middleware(LoggingMiddleware)
+
+from utils.first_response_gate import FirstResponseGateMiddleware  # noqa: E402
+
+app.add_middleware(FirstResponseGateMiddleware, event = _first_response_sent)
 
 if os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN", "").strip():
     logger.warning(
@@ -1359,8 +1397,8 @@ def _nonced_docs_response(html: str, *, tag: "_re.Pattern[str]") -> HTMLResponse
     return HTMLResponse(nonced, headers = {_CSP_SCRIPT_NONCE_HEADER: nonce})
 
 
-# FastAPI's own /openapi.json builds the schema on the event loop: seconds for ~550 routes, fetched by the chat
-# sidebar every session, stalling every request behind it (#9712). Built once in a worker thread instead.
+# FastAPI's own /openapi.json builds the schema on the event loop: seconds for ~550 routes, fetched by older chat
+# sidebars every session, stalling every request behind it (#9712). Built once in a worker thread instead.
 _openapi_build_lock = threading.Lock()
 _build_openapi_schema = app.openapi
 
@@ -1451,7 +1489,6 @@ if _DOCS_ASSETS_DIR.is_dir():
 # Cap request bodies on protected POSTs; upload routes get explicit multipart headroom.
 import json as _json_for_413  # noqa: E402
 from utils.upload_limits import (  # noqa: E402
-    AUDIO_INPUT_MAX_BYTES,
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     LIBRARY_UPLOAD_MAX_BYTES,
@@ -1459,6 +1496,7 @@ from utils.upload_limits import (  # noqa: E402
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
+    audio_input_max_bytes,
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
 )
@@ -1552,7 +1590,9 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     if path.rstrip("/") == _LIBRARY_UPLOAD_PATH:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _AUDIO_INPUT_UPLOAD_PATHS:
-        return AUDIO_INPUT_MAX_BYTES
+        # None means no cap, as the route treats it.
+        cap = audio_input_max_bytes()
+        return sys.maxsize if cap is None else cap
     if _SANDBOX_UPLOAD_RE.match(path):
         return upload_request_limit_bytes(SANDBOX_UPLOAD_MAX_BYTES)
     if _RAG_DOCUMENT_UPLOAD_RE.match(path):
@@ -2120,7 +2160,13 @@ async def _desktop_shell_subject(request: Request) -> Optional[str]:
 
 @app.get("/api/health")
 async def health_check(request: Request):
-    """Waits for detection so a GPU host does not grey out Train/Export, but only up to a budget; the snapshot below decides the reply."""
+    """Liveness plus launcher capability bits; host fingerprint gated on authentication.
+
+    Unauthenticated callers get non-sensitive fields (service, studio_root_id,
+    chat_only, desktop_*, native_path_leases_supported) to re-adopt a sibling
+    backend and gate UI before a token exists. version / studio_version /
+    device_type require authentication, including a valid desktop secret.
+    """
     await _await_hardware_detection(_HEALTH_DETECT_BUDGET_S)
     # Snapshot, not a bare global read: a forced re-detect can start at any moment.
     snapshot = _hardware_snapshot()
@@ -2223,6 +2269,8 @@ async def health_check(request: Request):
                 authed["video_cpu_opt_in"] = bool(video_cpu_enabled())
             except Exception:
                 pass
+        # chat_only stays set: chat stays GGUF-only and Export and Video keep their own verdicts.
+        authed["cpu_training"] = bool(snapshot[0]) and _hw_module.trains_on_cpu(snapshot[1])
         # What specifically blocked that reason, when detection recorded one. Only the MLX gate does today, and only
         # because it is all-or-nothing: without it the greyed-out Train row can only say "run `unsloth studio
         # update`". From the snapshot, so it cannot come from a different detection pass than the reason beside it.
@@ -3207,6 +3255,14 @@ def _match_assets_before_api_routes(app: FastAPI) -> None:
     routes.insert(position, mount)
 
 
+# Takes over at once, then unregisters: no fetch handler, so requests go straight to the network,
+# and no cache or storage is touched (another app's caches are not Studio's to clear).
+_RETIRING_SERVICE_WORKER = (
+    'self.addEventListener("install", () => self.skipWaiting());\n'
+    'self.addEventListener("activate", (event) => event.waitUntil(self.registration.unregister()));\n'
+)
+
+
 def setup_frontend(
     app: FastAPI,
     build_path: Path,
@@ -3283,9 +3339,24 @@ def setup_frontend(
         if is_engine_probe_path(full_path):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
+        # Studio registers no service worker, so this is the browser updating one another app left on
+        # this origin. The app shell fails that update forever and the worker keeps every Studio request.
+        if request.headers.get("service-worker") == "script":
+            return Response(
+                content = _RETIRING_SERVICE_WORKER,
+                media_type = "text/javascript",
+                headers = {"Cache-Control": "no-store", "Service-Worker-Allowed": "/"},
+            )
+
         # Serve index.html as bytes - avoids Content-Length mismatch
         return _build_index_response(request)
 
     # The lifespan reads this to decide whether engine paths need their own GET denial.
     app.state.frontend_mounted = True
     return True
+
+
+# Last, after every module-level route is registered; routes added later stay unguarded.
+from utils.route_prefix_guard import install_route_prefix_guards  # noqa: E402
+
+install_route_prefix_guards(app.router.routes)

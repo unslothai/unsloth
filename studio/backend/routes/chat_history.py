@@ -353,8 +353,16 @@ class ChatProjectPatch(BaseModel):
     updatedAt: Optional[SqliteInt] = None
 
 
+# Advertised on the thread lists so the title repair skips fetching /openapi.json (older backends still need it).
+_THREAD_PATCH_GUARD_FIELDS = ("expectedTitle", "expectedOpeningMessageId")
+THREAD_PATCH_GUARDS = all(
+    name in ChatThreadPatch.model_fields for name in _THREAD_PATCH_GUARD_FIELDS
+)
+
+
 class ChatThreadListResponse(BaseModel):
     threads: list[ChatThread]
+    threadPatchGuards: bool = False
 
 
 class ChatProjectListResponse(BaseModel):
@@ -397,6 +405,7 @@ class ChatSidebarRowsResponse(BaseModel):
     nextCursor: Optional[str] = None
     hasMore: bool
     total: int
+    threadPatchGuards: bool = False
 
 
 class ChatSidebarThreadRowsResponse(BaseModel):
@@ -714,6 +723,7 @@ class ChatPinsMigrationRequest(BaseModel):
 
 class ChatMessagesBatchRequest(BaseModel):
     threadIds: list[str]
+    view: Literal["full", "search"] = "full"
 
 
 class ChatMessagesBatchResponse(BaseModel):
@@ -762,7 +772,10 @@ def list_threads(
         project_id = project_id,
         include_archived = include_archived,
     )
-    return ChatThreadListResponse(threads = [thread_from_row(t) for t in threads])
+    return ChatThreadListResponse(
+        threads = [thread_from_row(t) for t in threads],
+        threadPatchGuards = THREAD_PATCH_GUARDS,
+    )
 
 
 @router.post(
@@ -788,7 +801,7 @@ def list_sidebar_rows(
         )
     except SidebarCursorError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    return ChatSidebarRowsResponse(**page)
+    return ChatSidebarRowsResponse(**page, threadPatchGuards = THREAD_PATCH_GUARDS)
 
 
 _SIDEBAR_THREAD_ROWS_MAX = 500
@@ -1676,16 +1689,67 @@ def get_thread_messages(thread_id: str, current_subject: str = Depends(get_curre
     )
 
 
+# Part types extractText (frontend use-chat-search-index.ts) reads; a frontend test guards drift.
+_SEARCH_PART_TYPES = frozenset(("text", "reasoning", "thinking", "tool-call", "source"))
+_PASTED_TEXT_PREFIX = "<pasted_text name="
+
+
+def _search_view_attachment_part(part: Any) -> bool:
+    """Keep what attachmentsPastedText reads; malformed parts stay so the index fails as before."""
+    if not isinstance(part, dict):
+        return True
+    if part.get("type") != "text" or "text" not in part:
+        return False
+    text = part["text"]
+    return not isinstance(text, str) or text.startswith(_PASTED_TEXT_PREFIX)
+
+
+def _search_view_message(message: dict) -> dict:
+    """What the search index reads of a message: no metadata, media or document bodies."""
+    out = {
+        key: message[key]
+        for key in ("id", "threadId", "parentId", "role", "createdAt")
+        if key in message
+    }
+    # Absent stays absent, so ChatMessage fills [] exactly as it does for the full view.
+    if "content" in message:
+        content = message["content"]
+        if isinstance(content, list):
+            content = [
+                part
+                for part in content
+                if isinstance(part, dict)
+                and isinstance(part.get("type"), str)
+                and part["type"] in _SEARCH_PART_TYPES
+            ]
+        out["content"] = content
+    attachments = message.get("attachments")
+    if isinstance(attachments, list):
+        kept = []
+        for attachment in attachments:
+            if not isinstance(attachment, dict) or not isinstance(attachment.get("content"), list):
+                kept.append(attachment)
+                continue
+            parts = [part for part in attachment["content"] if _search_view_attachment_part(part)]
+            if parts:
+                kept.append({"content": parts})
+        attachments = kept
+    if attachments is not None:
+        out["attachments"] = attachments
+    return out
+
+
 @router.post("/messages:batch", response_model = ChatMessagesBatchResponse)
 def batch_thread_messages(
     payload: ChatMessagesBatchRequest, current_subject: str = Depends(get_current_subject)
 ):
     """One round-trip per sidebar/search rebuild instead of N. Unknown thread ids return empty lists."""
     by_thread: dict[str, list[ChatMessage]] = {tid: [] for tid in payload.threadIds}
+    search_view = payload.view == "search"
     for m in list_chat_messages_for_threads(payload.threadIds):
         tid = m["threadId"]
         if tid in by_thread:
-            by_thread[tid].append(ChatMessage(**m))
+            by_thread[tid].append(ChatMessage(**(_search_view_message(m) if search_view else m)))
     return ChatMessagesBatchResponse(messagesByThreadId = by_thread)
 
 

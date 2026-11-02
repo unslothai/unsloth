@@ -153,17 +153,24 @@ def test_a_classified_load_failure_crosses_the_worker_and_the_parent(monkeypatch
 
 
 @pytest.mark.parametrize(
-    "device, served_as_vision, published",
-    [("mlx", False, False), ("mlx", True, True), ("cuda", False, True)],
+    "device, config_vision, served_as_vision, published",
+    [
+        ("mlx", True, False, False),
+        ("mlx", True, True, True),
+        ("cuda", True, False, True),
+        ("mlx", False, True, True),
+        ("cuda", False, True, False),
+    ],
 )
 def test_an_mlx_vision_config_served_as_text_stops_accepting_images(
-    monkeypatch, device, served_as_vision, published
+    monkeypatch, device, config_vision, served_as_vision, published
 ):
-    """MLX serves a vision config mlx-lm built (Muse Spark) as text: the parent must not offer images."""
+    """MLX serves a vision config mlx-lm built (Muse Spark) as text: the parent must not offer images.
+    And a tower only mlx-vlm knows (OXR's vit_config) reads them although the config detector said no."""
     from core.inference.orchestrator import _mirrored_model_entry
 
     mc = _mc(None, is_audio = False, has_audio_input = False)
-    mc.is_vision = True
+    mc.is_vision = config_vision
     entry = {"is_audio": False, "audio_type": None, "has_audio_input": False}
     entry["is_vision"] = served_as_vision
     info = _drive_handle_load(monkeypatch, mc, entry, device = device)

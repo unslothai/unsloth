@@ -14,6 +14,7 @@ type Module = {
     sessionId: string,
     approvalId: string,
     decision: "allow" | "deny",
+    fullAccess?: boolean,
   ) => Promise<boolean>;
   ToolApprovalGoneError: new (message?: string) => Error;
 };
@@ -29,7 +30,7 @@ function jsonResponse(status: number, body: unknown) {
   };
 }
 
-function harness(response: ReturnType<typeof jsonResponse>) {
+function harness(response: ReturnType<typeof jsonResponse>, epoch = { value: 0 }) {
   const requests: { url: string; init?: RequestInit }[] = [];
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
@@ -40,6 +41,7 @@ function harness(response: ReturnType<typeof jsonResponse>) {
         {},
       ),
       "@/features/auth": {
+        getAuthSessionEpoch: () => epoch.value,
         authFetch: async (url: string, init?: RequestInit) => {
           requests.push({ url, init });
           return response;
@@ -55,6 +57,7 @@ function harness(response: ReturnType<typeof jsonResponse>) {
         notifyChatHistoryUpdated: () => {},
         isCoalescedHistoryEvent: () => false,
       },
+      "../utils/openapi-support": { readAdvertisedPatchGuards: () => null },
       "../utils/load-warning-toast": { showLoadWarning: () => {} },
       "../lib/load-request": {},
       "./generation-length.ts": {},
@@ -137,7 +140,7 @@ test("the gone case gets its own copy and does not tell the user to retry", () =
 
 test("a decision that is gone disables the buttons instead of inviting another 404", () => {
   const disabled = CONTROLS.match(/disabled=\{pending !== null[^}]*\}/g) ?? [];
-  assert.equal(disabled.length, 3, "all three buttons carry a disabled expression");
+  assert.equal(disabled.length, 4, "approval buttons and the Full Access shortcut share the gone gate");
   for (const expr of disabled) {
     assert.match(
       expr,
@@ -160,4 +163,25 @@ test("Always allow records its session grant only after the backend takes the de
     /onClick=\{\(\) => void resolve\("allow", true\)\}/,
     "Always allow must route through resolve so the grant follows the backend's answer",
   );
+});
+
+
+test("Full Access needs an explicit server acknowledgment, including on an older backend", async () => {
+  for (const body of [{ resolved: true }, { resolved: false, full_access_granted: true }]) {
+    const { module } = harness(jsonResponse(200, body));
+    assert.equal(await module.resolveToolConfirmation("sess", "a1", "allow", true), false);
+  }
+  const { module, requests } = harness(jsonResponse(200, { resolved: true, full_access_granted: true }));
+  assert.equal(await module.resolveToolConfirmation("sess", "a1", "allow", true), true);
+  assert.deepEqual(JSON.parse(String(requests[0]!.init!.body)), {
+    session_id: "sess", approval_id: "a1", decision: "allow", permission_mode: "full",
+  });
+});
+
+test("a Full Access acknowledgment cannot cross an authentication session change", async () => {
+  const epoch = { value: 0 };
+  const response = jsonResponse(200, { resolved: true, full_access_granted: true });
+  response.json = async () => { epoch.value += 1; return { resolved: true, full_access_granted: true }; };
+  const { module } = harness(response, epoch);
+  assert.equal(await module.resolveToolConfirmation("sess", "a1", "allow", true), false);
 });

@@ -30,6 +30,8 @@ import httpx  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 from core.inference.llama_cpp import GgufLoadIntent
 
+from ._fake_llama_server import fake_llama_server
+
 # Sibling tests may install an httpx stub lacking get; fill gaps so order does not matter.
 if not hasattr(httpx, "get"):
     httpx.get = None
@@ -668,7 +670,8 @@ class TestCancelledWaitEndsTheLoad:
         gguf.write_bytes(b"GGUF" + b"\0" * 4096)
 
         b = LlamaCppBackend()
-        b._find_llama_server_binary = lambda *a, **kw: "/usr/bin/true"
+        fake_server = fake_llama_server(tmp_path / "bin")
+        b._find_llama_server_binary = lambda *a, **kw: fake_server
         b._non_chat_gguf_refusal_for_path = lambda *a, **kw: None
         b._non_chat_gguf_refusal = lambda *a, **kw: None
         b._kill_process = lambda *a, **kw: None
@@ -714,7 +717,8 @@ class TestCancelledWaitEndsTheLoad:
         gguf.write_bytes(b"GGUF" + b"\0" * 4096)
 
         b = LlamaCppBackend()
-        b._find_llama_server_binary = lambda *a, **kw: "/usr/bin/true"
+        fake_server = fake_llama_server(tmp_path / "bin")
+        b._find_llama_server_binary = lambda *a, **kw: fake_server
         b._non_chat_gguf_refusal_for_path = lambda *a, **kw: None
         b._non_chat_gguf_refusal = lambda *a, **kw: None
         # The drain thread would iterate a Mock's stdout forever.
@@ -840,7 +844,8 @@ def test_a_diffusion_cancel_after_health_reaps_the_runner():
 def _cancel_scaffold(tmp_path, kills):
     """A backend wired far enough to run load_model without weights or a server."""
     b = LlamaCppBackend()
-    b._find_llama_server_binary = lambda *a, **kw: "/usr/bin/true"
+    fake_server = fake_llama_server(tmp_path / "bin")
+    b._find_llama_server_binary = lambda *a, **kw: fake_server
     b._non_chat_gguf_refusal_for_path = lambda *a, **kw: None
     b._non_chat_gguf_refusal = lambda *a, **kw: None
     b._kill_process = lambda *a, **kw: kills.append(1)

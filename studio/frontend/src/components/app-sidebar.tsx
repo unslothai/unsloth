@@ -56,6 +56,7 @@ import {
   watchApprovalWaiting,
 } from "@/features/chat/utils/approval-waiting";
 import { keepOpenedChats, touchOpenedChat } from "@/features/chat/utils/opened-chats";
+import { liveThreadBranch } from "@/features/chat/utils/live-thread-head";
 import { isAssistantLocalThreadId } from "@/features/chat/utils/thread-ids";
 import {
   HELP_GROUPS,
@@ -106,27 +107,23 @@ import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useHoverFlyout } from "@/hooks/use-hover-flyout";
 import { NAV_FLYOUT_INTENT, NAV_TOOLTIP_INTENT } from "@/lib/hover-intent";
 import {
-  Archive03Icon,
+  ArchiveIcon,
   Cancel01Icon,
   BadgeInfoIcon,
   ChefHatIcon,
   CloudIcon,
-  CpuIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
   DashboardSquareEditIcon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FolderExportIcon,
-  Folder01Icon,
-  Folder02Icon,
   FlimSlateIcon,
   HelpCircleIcon,
-  Image03Icon,
+  ImageIcon,
   InformationCircleIcon,
   LibrariesIcon,
   Logout05Icon,
+  Moon02Icon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
   Search01Icon,
@@ -136,7 +133,6 @@ import {
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
-  Settings02Icon,
   Sun03Icon,
   UserCircleIcon,
   ViewIcon,
@@ -144,18 +140,13 @@ import {
   ZapIcon,
   PanelLeftIcon,
   LeftToRightListBulletIcon,
-  ArrowUpDownIcon,
   LayerIcon,
   ApiIcon,
   Clock01Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder02Icon, FolderExportIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
-import {
-  AiSpeechIcon,
-  MessageCircleIcon,
-  TestTubeOutlineIcon,
-  withNoticeDot,
-} from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, ChipIcon, MessageCircleIcon, Settings01Icon, TestTubeOutlineIcon, TrashIcon, withNoticeDot } from "@/lib/hugeicons-derived";
 import {
   Tooltip,
   TooltipContent,
@@ -163,7 +154,9 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, GitBranchIcon, Moon } from "lucide-react";
+import { ProjectIcon } from "@/lib/project-icon";
+import { ArrowRightIcon, GitBranchIcon } from "lucide-react";
+import { SortIcon } from "@/lib/sort-icon";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
@@ -174,41 +167,58 @@ import {
 } from "@tanstack/react-router";
 import {
   archiveChatItem,
-  ChatSearchDialog,
+  deleteChatItem,
+  renameChatItem,
+  type SidebarItem,
+} from "@/features/chat/hooks/use-chat-sidebar-items";
+import { ChatSearchDialog } from "@/features/chat/components/chat-search-dialog";
+import {
   canForkChatRow,
-  EditProjectDialog,
   forkChatRow,
+  getSidebarItemThreadIds,
+  sandboxSessionIdsHolding,
+} from "@/features/chat/components/chat-row-menu";
+import { EditProjectDialog } from "@/features/chat/components/edit-project-dialog";
+import {
   showForkCreatedToast,
   showForkFailedToast,
-  getSidebarItemThreadIds,
-  useForkInFlight,
-  sandboxSessionIdsHolding,
+} from "@/features/chat/utils/fork-toast";
+import { useForkInFlight } from "@/features/chat/utils/fork-in-flight";
+import {
   deleteChatProject,
-  deleteChatItem,
   moveChatItemToProject,
-  notifyChatHistoryUpdated,
-  renameChatItem,
-  useChatRuntimeStore,
   useChatProjects,
-  useChatSearchStore,
-  useSidebarRowPages,
-  fetchSidebarRowPage,
+} from "@/features/chat/hooks/use-chat-projects";
+import {
+  notifyChatHistoryUpdated,
   CHAT_HISTORY_UPDATED_EVENT,
   fetchSidebarThreadRows,
+} from "@/features/chat/api/chat-api";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useChatSearchStore } from "@/features/chat/stores/chat-search-store";
+import {
+  useSidebarRowPages,
+  fetchSidebarRowPage,
   readAllSidebarRowIds,
   readAllSidebarRows,
   type SidebarRowSlot,
+} from "@/features/chat/hooks/use-sidebar-row-pages";
+import {
   sidebarRowQuery,
   holdRowsPastLoadedChats,
   mergeManualOrderTail,
   settledManualOrder,
   SIDEBAR_PAGE_SIZE,
-  usePinnedChatsStore,
-  usePinnedProjectsStore,
+} from "@/features/chat/utils/sidebar-row-query";
+import { usePinnedChatsStore } from "@/features/chat/stores/pinned-chats-store";
+import { usePinnedProjectsStore } from "@/features/chat/stores/pinned-projects-store";
+import {
   rangeBetween,
   toggleSelected,
-  useChatPreferencesStore,
-  usePromptQueueUI,
+} from "@/features/chat/utils/row-selection";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+import { usePromptQueueUI } from "@/features/chat/stores/prompt-queue-ui-store";
+import {
   useSidebarOrganizationStore,
   applyManualOrder,
   showsInRecents,
@@ -228,8 +238,9 @@ import {
   type SidebarCustomSection,
   type SidebarOrganizeBy,
   type SidebarProjectSort,
-  type ProjectRecord,
-  type SidebarItem,
+} from "@/features/chat/stores/sidebar-organization-store";
+import type { ProjectRecord } from "@/features/chat/types";
+import {
   type ChatNavigationState,
   adjacentChatItem,
   countUnreadRows,
@@ -237,11 +248,14 @@ import {
   openChatItemById,
   recentChatItemAtSlot,
   useChatNavigationStore,
-  SectionNameDialog,
-  removeCustomSectionWithUndo,
+} from "@/features/chat/stores/chat-navigation-store";
+import { SectionNameDialog } from "@/features/chat/components/section-name-dialog";
+import { removeCustomSectionWithUndo } from "@/features/chat/stores/remove-custom-section";
+import {
   sectionKeyLanding,
   useSectionDrag,
-} from "@/features/chat";
+} from "@/features/chat/hooks/use-section-drag";
+import { prefetchChatPage } from "@/features/chat/load-chat-page";
 import {
   imeOwnsInputKeydown,
   inputImeHandlers,
@@ -253,15 +267,17 @@ import { NewProjectDialog } from "@/features/chat/components/new-project-dialog"
 import {
   sidebarNavRowPinned,
   useAppearanceCustomStore,
-  useSettingsDialogStore,
+  prefersReducedMotion,
+} from "@/features/settings/stores/appearance-custom-store";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import {
   isSurfaceBackgrounded,
   useShortcutLabel,
-  Shortcut,
-  type ShortcutId,
   useShortcut,
-  prefersReducedMotion,
-  FullInstallDialog,
-} from "@/features/settings";
+} from "@/features/settings/hooks/use-shortcut";
+import { Shortcut } from "@/features/settings/components/shortcut";
+import type { ShortcutId } from "@/features/settings/lib/keyboard-shortcuts";
+import { FullInstallDialog } from "@/features/settings/components/full-install-dialog";
 import type {
   SidebarNavItemId,
   SidebarNavItemPref,
@@ -282,17 +298,21 @@ import {
 import { TOUR_OPEN_EVENT, getTourId, useTourAvailable } from "@/features/tour";
 import {
   deleteTrainingRun,
+  renameTrainingRun,
+} from "@/features/training/api/history-api";
+import {
   emitTrainingRunDeleted,
   emitTrainingRunUpdated,
-  getTrainingRunDisplayTitle,
+} from "@/features/training/events";
+import { getTrainingRunDisplayTitle } from "@/features/training/lib/run-display";
+import {
   isTrainingStartPending,
-  removeTrainingUnloadGuard,
-  renameTrainingRun,
-  useDuplicateTrainingRun,
-  useTrainingCompletionWatch,
-  useTrainingHistorySidebarItems,
   useTrainingRuntimeStore,
-} from "@/features/training";
+} from "@/features/training/stores/training-runtime-store";
+import { removeTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
+import { useDuplicateTrainingRun } from "@/features/training/hooks/use-duplicate-training-run";
+import { useTrainingCompletionWatch } from "@/features/training/hooks/use-training-completion-watch";
+import { useTrainingHistorySidebarItems } from "@/features/training/hooks/use-training-history-sidebar";
 import type { TrainingRunSummary } from "@/features/training";
 import { useExportRuntimeStore } from "@/features/export";
 import {
@@ -310,17 +330,18 @@ import { toast } from "@/lib/toast";
 import {
   folderRingKey,
   sectionRingKey,
-  DROP_CUE_CLASS,
   SIDEBAR_TAIL_SCOPE,
-  useSidebarDrag,
   type SidebarDragItem,
   type SidebarDropContext,
   type SidebarDropEffects,
   type SidebarDropPlan,
   type SidebarSection,
-} from "@/features/chat";
+} from "@/features/chat/lib/sidebar-drag";
+import {
+  DROP_CUE_CLASS,
+  useSidebarDrag,
+} from "@/features/chat/hooks/use-sidebar-drag";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
-import { buildChatItemMarkdown } from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import { useActiveChatMenuStore } from "@/features/chat/stores/active-chat-menu-store";
 import { type PinnedPage, PinnedPageRow, usePinnedPages } from "@/features/browser";
 import { useUnseenScheduledRuns } from "@/features/scheduled-tasks";
@@ -329,36 +350,13 @@ import { Tick02Icon } from "@/lib/tick-icon";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
 
-const EMPHASIS_MARKER = "__UNSLOTH_I18N_EMPHASIS_MARKER__";
-
-type AppT = ReturnType<typeof useT>;
-
-function renderEmphasizedTranslation(
-  t: AppT,
-  key: TranslationKey,
-  emphasizedValue: string,
-): ReactNode {
-  const translated = t(key, { name: EMPHASIS_MARKER });
-  const parts = translated.split(EMPHASIS_MARKER);
-  if (parts.length === 1) return translated;
-
-  const nodes: ReactNode[] = [];
-  parts.forEach((part, index) => {
-    if (part.length > 0) nodes.push(part);
-    if (index < parts.length - 1) {
-      nodes.push(<em key={`emphasis-${index}`}>{emphasizedValue}</em>);
-    }
-  });
-  return nodes;
-}
-
 const SETTINGS_TAB_MENU_ITEMS: Record<
   "profile" | "appearance" | "resources" | "chat" | "connections",
   { icon: typeof ZapIcon; labelKey: TranslationKey }
 > = {
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
   appearance: { icon: BrushCleaningIcon, labelKey: "settings.tabs.appearance" },
-  resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
+  resources: { icon: ChipIcon, labelKey: "settings.tabs.resources" },
   chat: { icon: MessageCircleIcon, labelKey: "settings.tabs.chat" },
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
 };
@@ -583,7 +581,7 @@ const ORGANIZE_OPTIONS: Array<{
   key: TranslationKey;
   icon: typeof ZapIcon;
 }> = [
-  { value: "project", key: "shell.organize.byProject", icon: Folder01Icon },
+  { value: "project", key: "shell.organize.byProject", icon: ProjectIcon },
   { value: "list", key: "shell.organize.inOneList", icon: LeftToRightListBulletIcon },
 ];
 
@@ -1377,8 +1375,10 @@ export function AppSidebar() {
   }, [href, isMobile, setOpenMobile]);
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const trainUnavailable = usePlatformStore((s) => s.isTrainUnavailable());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const videoCpuOptIn = usePlatformStore((s) => s.videoCpuOptIn);
+  const cpuTraining = usePlatformStore((s) => s.cpuTraining);
   const chatOnlyDetail = usePlatformStore((s) => s.chatOnlyDetail);
   const chatOnlyHint = usePlatformStore((s) => s.chatOnlyHint);
   const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
@@ -1392,7 +1392,8 @@ export function AppSidebar() {
   // rows on a measured verdict and let them spin until it lands.
   const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
   const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;
-  const trainDisabledHint: string | undefined = !chatOnlyMeasured
+  const trainBlocked = trainUnavailable && !capabilitiesUnknown;
+  const trainDisabledHint: string | undefined = !trainBlocked
     ? undefined
     : chatOnlyReason === "mlx_unavailable"
       ? // The gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, and a resolver
@@ -1424,10 +1425,11 @@ export function AppSidebar() {
               ? `Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch ${chatOnlyDetail} cannot use them; repair the installation.`
               : "Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation."
           : chatOnlyReason === "no_gpu"
-            ? "Training needs an NVIDIA or AMD GPU."
+            ? // With PyTorch this host trains on CPU; without it there is nothing to train with.
+              "Training needs PyTorch, which is not installed. Reinstall without --no-torch to enable Train."
             : undefined;
   // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
-  const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn);
+  const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining);
   const videoDisabled = videoDisabledHint !== undefined;
 
   // MLX self-heal or late detection can change the verdict after first health; re-poll.
@@ -1618,10 +1620,10 @@ export function AppSidebar() {
     hasMore: runsHaveMore,
     loadMore: loadMoreRuns,
   } = useTrainingHistorySidebarItems(
-    !chatOnly && trainingRecentsRoute,
+    !trainUnavailable && trainingRecentsRoute,
   );
   const showTrainingRecents =
-    !chatOnly && trainingRecentsRoute && runItems.length > 0;
+    !trainUnavailable && trainingRecentsRoute && runItems.length > 0;
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
 
   const { projects, hasLoaded: projectsLoaded } = useChatProjects();
@@ -3314,7 +3316,7 @@ export function AppSidebar() {
 
   const navRows: Record<SidebarNavItemId, NavRowDef> = {
     projects: {
-      icon: Folder01Icon,
+      icon: ProjectIcon,
       label: t("shell.navigation.projects"),
       active: pathname === "/projects" || pathname.startsWith("/projects/"),
       onClick: () => {
@@ -3380,7 +3382,7 @@ export function AppSidebar() {
       },
     },
     images: {
-      icon: Image03Icon,
+      icon: ImageIcon,
       label: t("shell.navigation.images"),
       active: pathname === "/images" || pathname.startsWith("/images/"),
       onClick: () => {
@@ -3395,8 +3397,8 @@ export function AppSidebar() {
       icon: TestTubeOutlineIcon,
       label: t("shell.navigation.train"),
       active: pathname === "/studio" || pathname.startsWith("/studio/"),
-      disabled: chatOnlyMeasured && !fullInstall,
-      dimmed: chatOnlyMeasured && fullInstall !== null,
+      disabled: trainBlocked && !fullInstall,
+      dimmed: trainBlocked && fullInstall !== null,
       tooltip: fullInstall
         ? "Training is not installed. It needs at least 5 GB of disk space."
         : trainDisabledHint,
@@ -3407,7 +3409,7 @@ export function AppSidebar() {
       pending: capabilitiesUnknown,
       pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
-        if (chatOnlyMeasured) {
+        if (trainBlocked) {
           if (fullInstall) {
             setFullInstallOpen(true);
             closeMobileIfOpen();
@@ -3418,7 +3420,7 @@ export function AppSidebar() {
         closeMobileIfOpen();
       },
       onIntent: () => {
-        if (chatOnlyMeasured) return;
+        if (trainBlocked) return;
         preloadSilently(router.preloadRoute({ to: "/studio" }));
       },
     },
@@ -3950,10 +3952,14 @@ export function AppSidebar() {
   }
 
   async function copyChatItemAsMarkdown(item: SidebarItem) {
+    const liveBranch = item.type === "single" ? liveThreadBranch(item.id) : undefined;
     const empty = { value: false };
     // Read inside the write: Safari drops the gesture across an await.
     const copied = await copyToClipboardFrom(async () => {
-      const markdown = await buildChatItemMarkdown(item);
+      const { buildChatItemMarkdown } = await import(
+        "@/features/chat/prompt-storage/prompt-storage-dialog"
+      );
+      const markdown = await buildChatItemMarkdown(item, liveBranch);
       if (!markdown) {
         empty.value = true;
         throw new Error("nothing to copy");
@@ -4386,7 +4392,7 @@ export function AppSidebar() {
     return (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
-          <HugeiconsIcon icon={ArrowUpDownIcon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={SortIcon} strokeWidth={1.75} className="size-icon" />
           <span className="min-w-0 flex-1 truncate">{config.label}</span>
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent {...sidebarSubmenuOffsets} className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-44">
@@ -4469,7 +4475,7 @@ export function AppSidebar() {
               closeMobileIfOpen();
             }}
           >
-            <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={ProjectIcon} strokeWidth={1.75} className="size-icon" />
             <span>{t("shell.organize.projectsHome")}</span>
           </DropdownMenuItem>
         </>
@@ -4540,7 +4546,7 @@ export function AppSidebar() {
       body = (
         <>
           <DropdownMenuItem onSelect={() => setSectionDialog({ mode: "rename", section })}>
-            <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} className="size-icon" />
             <span>{t("shell.sections.edit")}</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -4555,7 +4561,7 @@ export function AppSidebar() {
             disabled={chats.length === 0}
             onSelect={() => void archiveSection().catch(() => undefined)}
           >
-            <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
             <span>{t("shell.selection.archiveChats")}</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -5133,7 +5139,7 @@ export function AppSidebar() {
           variant="destructive"
           onSelect={() => deleteSelectedProjects()}
         >
-          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.selection.deleteProjects")}</span>
         </ContextMenuItem>
       </ContextMenuContent>
@@ -5170,7 +5176,7 @@ export function AppSidebar() {
           selectedChatItems.map((selected) => selected.id),
         )}
         <ContextMenuItem onSelect={() => void archiveSelected()}>
-          <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.selection.archiveChats")}</span>
         </ContextMenuItem>
         <ContextMenuItem
@@ -5187,7 +5193,7 @@ export function AppSidebar() {
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem variant="destructive" onSelect={() => deleteSelected()}>
-          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.selection.deleteChats")}</span>
         </ContextMenuItem>
       </ContextMenuContent>
@@ -5278,7 +5284,7 @@ export function AppSidebar() {
                         key={project.id}
                         onSelect={() => void moveChatToProjectFromMenu(item, project.id)}
                       >
-                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                        <HugeiconsIcon icon={ProjectIcon} strokeWidth={1.75} className="size-icon" />
                         <span className="truncate">{project.name}</span>
                       </P.Item>
                     ))}
@@ -5310,7 +5316,7 @@ export function AppSidebar() {
             </P.Sub>
             <P.Separator />
             <P.Item onSelect={() => void handleArchiveThread(item)}>
-              <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
               <span>Archive</span>
             </P.Item>
             <P.Item
@@ -5323,7 +5329,7 @@ export function AppSidebar() {
                     })
               }
             >
-              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
               <span>Delete</span>
             </P.Item>
       </>
@@ -5658,7 +5664,7 @@ export function AppSidebar() {
     return (
       <>
           <P.Item onSelect={() => openProject(project.id)}>
-            <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={ProjectIcon} strokeWidth={1.75} className="size-icon" />
             <span>Project home</span>
           </P.Item>
           <P.Item onSelect={() => toggleProjectPin(project.id)}>
@@ -5666,7 +5672,7 @@ export function AppSidebar() {
             <span>{isProjectPinned ? "Unpin" : "Pin"}</span>
           </P.Item>
           <P.Item onSelect={() => setEditingProject(project)}>
-            <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} className="size-icon" />
             <span>Edit</span>
           </P.Item>
           <P.Separator />
@@ -5676,7 +5682,7 @@ export function AppSidebar() {
             anyFiled: !pinnedProjectIdSet.has(project.id) && Boolean(sectionByProjectId[project.id]),
           })}
           <P.Item onSelect={() => void archiveProjectChats()}>
-            <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
             <span>Archive chats</span>
           </P.Item>
           <P.Separator />
@@ -5687,7 +5693,7 @@ export function AppSidebar() {
               openDeleteDialog({ kind: "project", project });
             }}
           >
-            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
             <span>Delete project</span>
           </P.Item>
       </>
@@ -5779,7 +5785,7 @@ export function AppSidebar() {
             className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-16 [@media(pointer:coarse)]:pr-16"
           >
             <HugeiconsIcon
-              icon={expanded ? Folder02Icon : Folder01Icon}
+              icon={expanded ? Folder02Icon : ProjectIcon}
               strokeWidth={1.75}
               className="size-icon! shrink-0"
             />
@@ -5938,6 +5944,8 @@ export function AppSidebar() {
                     if (chatDisabled) return;
                     openNewChat(null);
                   }}
+                  onPointerEnter={prefetchChatPage}
+                  onFocus={prefetchChatPage}
                   className={cn(
                     "flex min-w-0 items-center gap-[calc(6px*var(--ui-space-scale,1))] select-none transition-opacity",
                     chatDisabled && "pointer-events-none",
@@ -6062,6 +6070,7 @@ export function AppSidebar() {
                   : t("shell.navigation.newChat")
               }
               spinner={anyChatRunning && !isChatRoute}
+              onIntent={prefetchChatPage}
               // On every route: the waiting row can be folded away, behind Show more, or scrolled off.
               waiting={
                 anyChatWaiting
@@ -6378,7 +6387,7 @@ export function AppSidebar() {
                             })
                         }
                       >
-                        <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
+                        <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} />
                         <span className="min-w-0 flex-1 truncate">
                           {t("shell.navigation.customizeSidebar")}
                         </span>
@@ -6594,7 +6603,7 @@ export function AppSidebar() {
                               openDeleteDialog({ kind: "run", run })
                             }
                           >
-                            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
                             <span>{t("common.delete")}</span>
                           </DropdownMenuItem>
                         </NonModalDropdownMenu>
@@ -6683,7 +6692,7 @@ export function AppSidebar() {
               sits above the avatar instead. */}
           <NavItem
             className="hidden group-data-[collapsible=icon]:block"
-            icon={Settings02Icon}
+            icon={Settings01Icon}
             label={t("shell.navigation.settings")}
             active={false}
             onClick={() => {
@@ -6725,7 +6734,7 @@ export function AppSidebar() {
                 <DropdownMenuItem
                   onSelect={() => useSettingsDialogStore.getState().openDialog()}
                 >
-                  <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+                  <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} className="size-icon" />
                   <span>{t("shell.navigation.settings")}</span>
                   {settingsShortcutLabel && (
                     <DropdownMenuShortcut>
@@ -6756,7 +6765,7 @@ export function AppSidebar() {
                         ref={anchorRef as React.Ref<HTMLDivElement>}
                         onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
                       >
-                        {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
+                        {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <HugeiconsIcon icon={Moon02Icon} strokeWidth={1.75} className="size-icon" />}
                         <span>
                           {isDark
                             ? t("shell.navigation.lightMode")
@@ -6792,6 +6801,11 @@ export function AppSidebar() {
                     >
                       <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} className="size-icon" />
                       <span>{t(tab.labelKey)}</span>
+                      {settingsTabId === "appearance" && (
+                        <Badge variant="accent" className="-my-0.5 ml-auto">
+                          {t("shell.navigation.newBadge")}
+                        </Badge>
+                      )}
                     </DropdownMenuItem>
                   );
                 })}
@@ -6868,7 +6882,7 @@ export function AppSidebar() {
               className="absolute right-2 top-1/2 flex size-[calc(32px*var(--ui-space-scale,1))] -translate-y-1/2 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
             >
               <HugeiconsIcon
-                icon={Settings02Icon}
+                icon={Settings01Icon}
                 strokeWidth={1.5}
                 className="!size-[calc(18px*var(--ui-space-scale,1))]"
               />
@@ -6908,7 +6922,7 @@ export function AppSidebar() {
             {confirmingDelete?.kind === "run"
               ? t("shell.dialog.deleteRun.title")
               : confirmingDelete?.kind === "project"
-                ? "Delete project"
+                ? t("projectsPage.deleteProject")
                 : confirmingDelete?.kind === "chats"
                   ? t("shell.selection.deleteTitle")
                   : confirmingDelete?.kind === "projects"
@@ -6917,17 +6931,13 @@ export function AppSidebar() {
           </DialogTitle>
           <DialogDescription>
             {confirmingDelete?.kind === "run" ? (
-              renderEmphasizedTranslation(
-                t,
-                "shell.dialog.deleteRun.description",
-                getTrainingRunDisplayTitle(confirmingDelete.run),
-              )
+              t("shell.dialog.deleteRun.description", {
+                name: getTrainingRunDisplayTitle(confirmingDelete.run),
+              })
             ) : confirmingDelete?.kind === "chat" ? (
-              renderEmphasizedTranslation(
-                t,
-                "shell.dialog.deleteChat.description",
-                confirmingDelete.item.title,
-              )
+              t("shell.dialog.deleteChat.description", {
+                name: confirmingDelete.item.title,
+              })
             ) : confirmingDelete?.kind === "chats" ? (
               t("shell.selection.deleteDescription", {
                 count: confirmingDelete.items.length,
@@ -6937,13 +6947,9 @@ export function AppSidebar() {
                 count: confirmingDelete.projects.length,
               })
             ) : confirmingDelete?.kind === "project" ? (
-              <>
-                Delete{" "}
-                <span className="font-medium text-foreground">
-                  &quot;{confirmingDelete.project.name}&quot;
-                </span>
-                ? Its chats will be permanently deleted.
-              </>
+              t("projectsPage.deleteProjectDescription", {
+                name: confirmingDelete.project.name,
+              })
             ) : null}
           </DialogDescription>
         </DialogHeader>
@@ -7053,6 +7059,7 @@ export function AppSidebar() {
           </Button>
           <Button
             type="button"
+            variant="dark"
             onClick={() => void commitRename()}
             disabled={!renameDirty}
           >

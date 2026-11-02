@@ -167,16 +167,24 @@ def _geometry(vae: Any) -> tuple[int, int, int]:
 
 
 def _cached_axis_weights(
-    vae: Any, starts: list[int], tile: int, length: int, ratio: int, torch: Any, device: Any
+    vae: Any,
+    starts: list[int],
+    tile: int,
+    length: int,
+    ratio: int,
+    torch: Any,
+    device: Any,
+    margin: int = MARGIN_LATENTS,
+    ramp: int = RAMP_LATENTS,
 ):
-    """``axis_weights`` memoised per VAE (a repeat decode syncs no device)."""
+    """``axis_weights`` memoised per VAE (a repeat decode or encode syncs no device)."""
     cache = vae.__dict__.setdefault("_unsloth_wide_weights", {}) if hasattr(vae, "__dict__") else {}
-    key = (tuple(starts), int(tile), int(length), int(ratio), str(device))
+    key = (tuple(starts), int(tile), int(length), int(ratio), str(device), int(margin), int(ramp))
     hit = cache.get(key)
     if hit is None:
         if len(cache) >= 64:
             cache.clear()
-        hit = cache[key] = axis_weights(starts, tile, length, ratio, torch, device)
+        hit = cache[key] = axis_weights(starts, tile, length, ratio, torch, device, margin, ramp)
     return hit
 
 
@@ -441,8 +449,8 @@ def tiled_encode(vae: Any, x: Any) -> Any:
     if len(hs) == 1 and len(ws) == 1:
         return _encode_tile(vae, x)
     margin, ramp = ENCODE_MARGIN_LATENTS, ENCODE_RAMP_LATENTS
-    wy = axis_weights(hs, tile, height, 1, torch, x.device, margin, ramp)
-    wx = axis_weights(ws, tile, width, 1, torch, x.device, margin, ramp)
+    wy = _cached_axis_weights(vae, hs, tile, height, 1, torch, x.device, margin, ramp)
+    wx = _cached_axis_weights(vae, ws, tile, width, 1, torch, x.device, margin, ramp)
     out, dtype = None, None
     for i, y in enumerate(hs):
         for j, xs in enumerate(ws):

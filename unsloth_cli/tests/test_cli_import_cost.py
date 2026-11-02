@@ -25,6 +25,9 @@ def _child_json(code: str):
         [sys.executable, "-c", probe],
         capture_output = True,
         text = True,
+        # The CLI writes UTF-8 on Windows (rich box drawing in help); the locale codec is cp1252 there.
+        encoding = "utf-8",
+        errors = "replace",
         cwd = str(_REPO_ROOT),
         timeout = 300,
     )

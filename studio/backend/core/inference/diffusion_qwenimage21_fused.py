@@ -45,10 +45,13 @@ def arch_ok(device: Any = None) -> bool:
             index = torch.cuda.current_device()
         else:
             index = dev.index if dev.index is not None else torch.cuda.current_device()
-        from .diffusion_int8_gemm import _gates, int8_gemm_mode
+        from .diffusion_int8_gemm import _gates, int8_gemm_mode, rotated_swapped
 
         if int8_gemm_mode() == "off":
             return True
+        swapped = rotated_swapped(index)
+        if swapped is not None:
+            return not swapped
         gemm, rotq = _gates(torch.cuda.get_device_capability(index))
         return not (gemm or rotq)
     except Exception:  # noqa: BLE001
@@ -239,10 +242,13 @@ def _swap_covers(index: int) -> bool:
 
         if not torch.cuda.is_available() or is_rocm_torch(torch):
             return False
-        from .diffusion_int8_gemm import _gates, int8_gemm_mode
+        from .diffusion_int8_gemm import _gates, int8_gemm_mode, rotated_swapped
 
         if int8_gemm_mode() == "off":
             return False
+        swapped = rotated_swapped(index)
+        if swapped is not None:
+            return swapped
         _, rotq = _gates(torch.cuda.get_device_capability(index))
         if not rotq:
             return False

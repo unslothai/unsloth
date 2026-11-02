@@ -86,12 +86,15 @@ _ZOO_VLLM_FREE_MODULES = [
     "unsloth_zoo.llama_cpp",
     "unsloth_zoo.logging_utils",
     "unsloth_zoo.loss_utils",
+    "unsloth_zoo.memory_budget",
     "unsloth_zoo.patching_utils",
     "unsloth_zoo.patch_torch_functions",
     "unsloth_zoo.peft_utils",
     "unsloth_zoo.rl_replacements",
     "unsloth_zoo.saving_utils",
+    "unsloth_zoo.sequence_tiling",
     "unsloth_zoo.tiled_mlp",
+    "unsloth_zoo.tiling_registry",
     "unsloth_zoo.tokenizer_utils",
     "unsloth_zoo.training_utils",
     "unsloth_zoo.utils",
@@ -132,6 +135,7 @@ _UNSLOTH_CORE_MODULES = [
     "unsloth.models.loader",
     "unsloth.models.loader_utils",
     "unsloth.models.mapper",
+    "unsloth.tiling",
 ]
 
 

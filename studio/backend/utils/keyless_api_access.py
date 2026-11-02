@@ -159,7 +159,22 @@ def _settings() -> tuple[str, bool]:
     return scope, tools
 
 
+def _fresh_settings() -> Optional[tuple[str, bool, int]]:
+    """``_settings_once``'s answers that need no SQLite read (a write in flight, a fresh cache), or None."""
+    now = time.monotonic()
+    with _cache_lock:
+        if _settings_write_inflight is not None:
+            return KEYLESS_SCOPE_OFF, False, _settings_generation
+        cached = _cached_settings
+        if cached is not None and now - cached[0] < _SETTINGS_CACHE_TTL_S:
+            return cached[1], cached[2], _settings_generation
+    return None
+
+
 async def _settings_async() -> tuple[str, bool, int]:
+    fresh = _fresh_settings()
+    if fresh is not None:
+        return fresh
     return await asyncio.shield(_async_settings_task())
 
 
@@ -584,7 +599,11 @@ class KeylessToolPolicyMiddleware:
 
         scope, tools, generation = await _settings_async()
         settings = (scope, tools)
-        admitted = await run_in_threadpool(asgi_request_is_keyless, asgi_scope, settings)
+        # Off admits nobody, so no worker-thread hop.
+        if scope == KEYLESS_SCOPE_OFF:
+            admitted = False
+        else:
+            admitted = await run_in_threadpool(asgi_request_is_keyless, asgi_scope, settings)
         with _cache_lock:
             if _settings_write_inflight is not None or generation != _settings_generation:
                 settings = (KEYLESS_SCOPE_OFF, False)

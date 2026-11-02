@@ -15,8 +15,8 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useChatRuntimeStore } from "@/features/chat";
-import { resetToNewChat } from "@/features/library";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { resetToNewChat } from "@/features/library/start-chat";
 import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { ForkIcon } from "@/lib/fork-icon";
@@ -24,7 +24,6 @@ import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Add01Icon,
   BubbleChatAddIcon,
   BubbleChatTemporaryIcon,
   Cancel01Icon,
@@ -33,6 +32,7 @@ import {
   PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
+  PlusSignIcon,
   Refresh01Icon,
   VolumeHighIcon,
   VolumeMute02Icon,
@@ -210,7 +210,7 @@ export function TabMenuItems({
     ],
     [
       strip && tab ? (
-        <Row key="newTabRight" P={P} icon={Add01Icon} onSelect={() => store.newTabAfter(tab.id)}>
+        <Row key="newTabRight" P={P} icon={PlusSignIcon} onSelect={() => store.newTabAfter(tab.id)}>
           {t("browser.tabMenu.newTabRight")}
         </Row>
       ) : null,

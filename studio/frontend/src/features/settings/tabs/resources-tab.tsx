@@ -73,7 +73,6 @@ import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
 
@@ -102,24 +101,10 @@ function usagePillClass(percent: number | null): string {
   return "bg-control-accent/10 text-control-accent";
 }
 
-function usageValueClass(percent: number | null): string {
-  if (!isFiniteNumber(percent)) return "text-muted-foreground/70";
-  if (percent >= 90) return "text-[#df4530] dark:text-[#ef5b40]";
-  if (percent >= 70) return "text-amber-600 dark:text-amber-400";
-  return "text-foreground";
-}
-
 function formatGb(value: number | null | undefined): string {
   const safe = isFiniteNumber(value) ? Math.max(0, value) : 0;
   const digits = safe >= 10 ? 1 : 2;
   return `${safe.toFixed(digits)} GB`;
-}
-
-function formatDiskSize(diskGb: number | null | undefined): string {
-  if (isFiniteNumber(diskGb) && diskGb >= 1000) {
-    return `${(diskGb / 1000).toFixed(2)} TB`;
-  }
-  return formatGb(diskGb);
 }
 
 // RAM/VRAM are binary (GiB, like nvidia-smi); disk is decimal GB.
@@ -175,40 +160,43 @@ function MetricTile({
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
   return (
-    <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-5 py-4 dark:border-transparent">
-      <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-1">
-        <div className="flex shrink-0 flex-col gap-0.5">
+    <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-6 pt-5 pb-6 dark:border-transparent">
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <div className="flex min-w-0 items-center justify-between gap-3">
           <span className="text-ui-12 text-muted-foreground">{label}</span>
-          {showUsage ? (
+          {showUsage && percentKnown ? (
             <span
               className={cn(
-                "font-heading text-ui-21 font-semibold leading-tight tracking-[-0.02em] tabular-nums",
-                usageValueClass(percentKnown ? safePercent : null),
+                "-my-1 shrink-0 rounded-full px-2 py-1 font-mono text-ui-12 leading-none tabular-nums",
+                usagePillClass(safePercent),
               )}
             >
-              {percentKnown ? formatPercent(safePercent) : "--"}
+              {formatPercent(safePercent)}
             </span>
           ) : null}
         </div>
-        <div className="ml-auto flex min-w-0 flex-col items-end gap-0.5 text-right">
-          <span
-            title={value}
-            className="max-w-full truncate text-ui-12 tabular-nums text-foreground"
-          >
-            {value}
+        <span
+          title={value}
+          className={cn(
+            "truncate font-mono text-ui-14 font-medium leading-tight tabular-nums",
+            showUsage && !percentKnown
+              ? "text-muted-foreground/70"
+              : "text-foreground",
+          )}
+        >
+          {value}
+        </span>
+        <span
+          title={detail}
+          className="truncate text-ui-11 text-muted-foreground"
+        >
+          {detail}
+        </span>
+        {extraDetail ? (
+          <span className="whitespace-pre-line text-ui-11 text-muted-foreground">
+            {extraDetail}
           </span>
-          <span
-            title={detail}
-            className="max-w-full truncate text-ui-11 text-muted-foreground"
-          >
-            {detail}
-          </span>
-          {extraDetail ? (
-            <span className="whitespace-pre-line text-ui-11 text-muted-foreground">
-              {extraDetail}
-            </span>
-          ) : null}
-        </div>
+        ) : null}
       </div>
       {showUsage && (
         <Progress
@@ -564,21 +552,25 @@ export function ResourcesTab() {
       !(metrics.modelsDisk && entry.key === "hf_hub") &&
       onSystemDisk(entry.paths),
   );
+  const diskBytes = (entry: (typeof cache.entries)[number]) =>
+    entry.systemDiskBytes ??
+    (systemEntries.includes(entry) ? entry.sizeBytes : 0);
   const modelsDiskGb =
-    (systemEntries.find((entry) => entry.key === "hf_hub")?.sizeBytes ?? 0) /
-    1e9;
+    cache.entries
+      .filter((entry) => entry.key === "hf_hub")
+      .reduce((sum, entry) => sum + diskBytes(entry), 0) / 1e9;
   const cachesDiskGb =
-    systemEntries
+    cache.entries
       .filter((entry) => entry.key !== "hf_hub")
-      .reduce((sum, entry) => sum + entry.sizeBytes, 0) / 1e9;
+      .reduce((sum, entry) => sum + diskBytes(entry), 0) / 1e9;
   const otherDiskGb = Math.max(
     0,
     metrics.diskUsed - modelsDiskGb - cachesDiskGb,
   );
   const cacheValue = (diskGb: number) =>
-    cache.inventory ? formatDiskSize(diskGb) : t("common.loading");
+    cache.inventory ? formatGb(diskGb) : t("common.loading");
   const storageSegments: StorageSegment[] = [
-    ...(metrics.modelsDisk
+    ...(metrics.modelsDisk && modelsDiskGb === 0
       ? []
       : [
           {
@@ -600,14 +592,14 @@ export function ResourcesTab() {
       key: "other",
       label: t("settings.resources.storage.segmentOther"),
       bytes: otherDiskGb,
-      value: formatDiskSize(otherDiskGb),
+      value: formatGb(otherDiskGb),
       color: STORAGE_COLORS.other,
     },
     {
       key: "free",
       label: t("settings.resources.storage.segmentFree"),
       bytes: metrics.diskFree,
-      value: formatDiskSize(metrics.diskFree),
+      value: formatGb(metrics.diskFree),
       color: STORAGE_COLORS.free,
     },
   ];
@@ -661,26 +653,15 @@ export function ResourcesTab() {
         </div>
         {/* Top edge on the h1's cap top (text-xl at leading 1.4; Hellix: 0.322em). */}
         <div className="mt-[calc(var(--text-xl)*0.322)] flex min-w-0 flex-wrap items-center gap-2">
-          <Button
-            variant={isOpen ? "secondary" : "outline"}
-            size="sm"
-            className="gap-1.5 h-8 text-xs rounded-full px-3"
-            onClick={() => setIsOpen(!isOpen)}
-          >
-            <LayersIcon className="size-3.5" />
-            {isOpen
-              ? t("settings.resources.disableOverlay")
-              : t("settings.resources.floatingWindow")}
-          </Button>
-
-          <div className="flex h-8 shrink-0 items-center gap-2 rounded-full border border-border/60 px-2.5 text-xs font-medium text-foreground">
+          <label className="flex h-9 shrink-0 items-center gap-2 rounded-full border border-border/60 px-3.5 text-xs font-medium text-foreground">
             <span>{t("settings.resources.liveUpdates")}</span>
             <Switch
+              className="scale-[0.88]"
               aria-label={t("settings.resources.liveUpdates")}
               checked={liveUpdates}
               onCheckedChange={setLiveUpdates}
             />
-          </div>
+          </label>
         </div>
       </header>
 
@@ -715,13 +696,13 @@ export function ResourcesTab() {
           <MetricTile
             label={t("settings.resources.liveMonitor.disk")}
             value={hostReading(
-              `${formatDiskSize(metrics.diskUsed)} / ${formatDiskSize(metrics.diskTotal)}`,
+              `${formatGb(metrics.diskUsed)} / ${formatGb(metrics.diskTotal)}`,
             )}
             detail={
               hostUnread
                 ? hostUnreadDetail
                 : t("settings.resources.liveMonitor.free", {
-                    value: formatDiskSize(metrics.diskFree),
+                    value: formatGb(metrics.diskFree),
                   })
             }
             percent={hostUnread ? null : metrics.diskPercent}
@@ -730,13 +711,13 @@ export function ResourcesTab() {
             <MetricTile
               label={t("settings.resources.liveMonitor.modelsDisk")}
               value={hostReading(
-                `${formatDiskSize(metrics.modelsDiskUsed)} / ${formatDiskSize(metrics.modelsDisk.total_gb)}`,
+                `${formatGb(metrics.modelsDiskUsed)} / ${formatGb(metrics.modelsDisk.total_gb)}`,
               )}
               detail={
                 hostUnread
                   ? hostUnreadDetail
                   : t("settings.resources.liveMonitor.free", {
-                      value: formatDiskSize(metrics.modelsDisk.free_gb),
+                      value: formatGb(metrics.modelsDisk.free_gb),
                     })
               }
               percent={hostUnread ? null : metrics.modelsDiskPercent}
@@ -797,40 +778,6 @@ export function ResourcesTab() {
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
         </div>
-        <SettingsRow
-          label={t("settings.resources.liveMonitor.detailedView")}
-          description={t(
-            "settings.resources.liveMonitor.detailedViewDescription",
-          )}
-        >
-          <Switch
-            aria-label={t("settings.resources.liveMonitor.detailedView")}
-            checked={showDetails}
-            onCheckedChange={setShowDetails}
-          />
-        </SettingsRow>
-        {showDetails && (
-          <div className="flex flex-wrap gap-x-5 gap-y-2 pb-3">
-            {MONITOR_DETAIL_METRICS.map((metric) => {
-              const label = t(`settings.resources.liveMonitor.${metric}`);
-              return (
-                <label
-                  key={metric}
-                  className="flex cursor-pointer items-center gap-2 text-xs font-medium text-foreground"
-                >
-                  <Checkbox
-                    checked={detailMetrics.has(metric)}
-                    onCheckedChange={(checked) =>
-                      setDetailMetric(metric, checked === true)
-                    }
-                    aria-label={label}
-                  />
-                  {label}
-                </label>
-              );
-            })}
-          </div>
-        )}
       </SettingsSection>
 
       <SettingsSection title={t("settings.resources.gpu.title")}>
@@ -1154,6 +1101,53 @@ export function ResourcesTab() {
         )}
       </SettingsSection>
 
+      <SettingsSection title={t("settings.resources.floatingWindow")}>
+        <SettingsRow
+          label={t("settings.resources.showFloatingWindow")}
+          description={t("settings.resources.showFloatingWindowDescription")}
+        >
+          <Switch
+            aria-label={t("settings.resources.showFloatingWindow")}
+            checked={isOpen}
+            onCheckedChange={setIsOpen}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.detailedView")}
+          description={t(
+            "settings.resources.liveMonitor.detailedViewDescription",
+          )}
+        >
+          <Switch
+            aria-label={t("settings.resources.liveMonitor.detailedView")}
+            checked={showDetails}
+            onCheckedChange={setShowDetails}
+          />
+        </SettingsRow>
+        {showDetails && (
+          <div className="flex flex-wrap gap-x-5 gap-y-2 pb-3">
+            {MONITOR_DETAIL_METRICS.map((metric) => {
+              const label = t(`settings.resources.liveMonitor.${metric}`);
+              return (
+                <label
+                  key={metric}
+                  className="flex cursor-pointer items-center gap-2 text-xs font-medium text-foreground"
+                >
+                  <Checkbox
+                    checked={detailMetrics.has(metric)}
+                    onCheckedChange={(checked) =>
+                      setDetailMetric(metric, checked === true)
+                    }
+                    aria-label={label}
+                  />
+                  {label}
+                </label>
+              );
+            })}
+          </div>
+        )}
+      </SettingsSection>
+
       <ModelMemorySection ref={modelMemoryRef} />
 
       <LlamaBackendSection />
@@ -1167,8 +1161,8 @@ export function ResourcesTab() {
         <StorageOverview
           label={t("settings.resources.storage.systemDisk")}
           heading={t("settings.resources.storage.systemUsed", {
-            used: formatDiskSize(metrics.diskUsed),
-            total: formatDiskSize(metrics.diskTotal),
+            used: formatGb(metrics.diskUsed),
+            total: formatGb(metrics.diskTotal),
           })}
           action={
             <Button

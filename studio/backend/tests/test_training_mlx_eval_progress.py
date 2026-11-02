@@ -24,6 +24,7 @@ def backend(monkeypatch):
     monkeypatch.setattr(sdb, "finish_run", lambda **kw: finished.append(kw))
     monkeypatch.setattr(sdb, "insert_metrics_batch", lambda *a, **k: None)
     monkeypatch.setattr(sdb, "update_run_progress", lambda **kw: None)
+    monkeypatch.setattr(sdb, "insert_metrics_with_progress", lambda *a, **k: None)
     b = TrainingBackend()
     monkeypatch.setattr(b, "_start_stop_watchdog", lambda *a, **k: None)
     b.current_job_id = "job-mlx-eval"

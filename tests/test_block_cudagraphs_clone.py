@@ -711,6 +711,7 @@ def test_graphed_call_records_the_compile_ids_it_created(monkeypatch):
         return n
 
     monkeypatch.setattr(bc, "_tree_manager", tree_manager)
+    bc._CUDAGRAPH_STATE["built"].update({"a", "b", "x", "y"})
     manager.ids_to_funcs[0], manager.id_to_compile_id[0] = None, "foreign"  # made before us
     assert bc._graphed_call(compiled, 0, 0, "x") == 0
     bc._graphed_call(compiled, 0, 2, "a")
@@ -719,6 +720,56 @@ def test_graphed_call_records_the_compile_ids_it_created(monkeypatch):
     assert lookups == [0]
     assert bc._CUDAGRAPH_STATE["ours"] == {"a", "b"}
     assert bc._pool_release_verdict([manager], bc._CUDAGRAPH_STATE["ours"]) == "foreign"
+
+
+def test_foreign_function_first_called_inside_a_block_is_not_ours(monkeypatch):
+    # A foreign region behind a graph break registers a tree function during the block call.
+    manager = _FakeManager([])
+    monkeypatch.setattr(bc, "_tree_manager", lambda device: manager)
+    bc._CUDAGRAPH_STATE["built"].add("block")
+
+    def compiled(*cids):
+        for cid in cids:
+            i = len(manager.ids_to_funcs)
+            manager.ids_to_funcs[i] = None
+            manager.id_to_compile_id[i] = cid
+
+    bc._graphed_call(compiled, 0, "block", "foreign")
+    assert bc._CUDAGRAPH_STATE["ours"] == {"block"}
+    assert bc._pool_release_verdict([manager], bc._CUDAGRAPH_STATE["ours"]) == "foreign"
+
+
+def test_block_backend_notes_the_compile_ids_it_builds(monkeypatch):
+    from torch._guards import CompileContext, CompileId
+
+    seen = []
+    monkeypatch.setattr(
+        torch._TorchCompileInductorWrapper,
+        "__call__",
+        lambda self, gm, inputs, **kwargs: seen.append(kwargs) or gm,
+    )
+    backend = bc._block_backend({**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    assert backend.config["triton.cudagraphs"] is True
+    cid = CompileId(frame_id = 7, frame_compile_id = 0)
+    with torch._guards.compile_context(CompileContext(cid)):
+        assert backend("gm", [], options = {"triton.cudagraphs": True}) == "gm"
+    assert seen == [{}]
+    assert bc._CUDAGRAPH_STATE["built"] == {cid}
+
+
+def test_only_the_graphs_on_compile_gets_the_owning_backend(monkeypatch):
+    seen = []
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: seen.append(kwargs) or fn)
+    A = _linear_layer_class("OwnedDecoderLayer")
+    bc._wrap(A, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    graphs, plain = seen
+    assert isinstance(graphs["backend"], torch._TorchCompileInductorWrapper)
+    assert graphs["options"]["triton.cudagraphs"] is True
+    assert "backend" not in plain and plain["options"]["triton.cudagraphs"] is False
+    seen.clear()
+    B = _linear_layer_class("UngraphedDecoderLayer")
+    bc._wrap(B, bc._COMPILE_OPTIONS)
+    assert all("backend" not in kwargs for kwargs in seen)
 
 
 def test_grad_trial_of_a_checkpointed_block_takes_the_recompute_path(monkeypatch):
@@ -848,3 +899,38 @@ def test_flex_block_mask_calls_run_without_graphs(monkeypatch, mask):
         layer(x, attention_mask = value).sum().backward()
         assert x.grad is not None
     assert set(seen) == ({"plain"} if mask == "block_mask" else {"graphs"})
+
+
+def test_block_mask_calls_are_recorded_for_the_fsdp2_keep(monkeypatch):
+    """The observer runs on the first BlockMask call and again once a non-BlockMask call regraphs."""
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+
+    class FlexKeepDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+            **kwargs,
+        ):
+            return self.proj(hidden_states)
+
+    bc._wrap(FlexKeepDecoderLayer, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layer = FlexKeepDecoderLayer().train()
+    calls = []
+    layer.__dict__["_unsloth_block_flex_observer"] = lambda m: calls.append(
+        m.__dict__["_unsloth_block_flex_only"]
+    )
+    for mask in (BlockMask(), BlockMask(), None, BlockMask(), None):
+        layer(torch.randn(2, 16, 8, requires_grad = True), attention_mask = mask).sum().backward()
+    assert calls == [True, False]
+    assert layer.__dict__["_unsloth_block_flex_only"] is False
+
+    dense = FlexKeepDecoderLayer().train()
+    dense.__dict__["_unsloth_block_flex_observer"] = lambda m: calls.append("dense")
+    for mask in (None, BlockMask()):
+        dense(torch.randn(2, 16, 8, requires_grad = True), attention_mask = mask).sum().backward()
+    assert calls == [True, False]  # graphed first: never dropped from the keep set

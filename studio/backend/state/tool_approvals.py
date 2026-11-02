@@ -71,6 +71,42 @@ _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 
 
+class LiveToolPermissions:
+    """One live tool loop's upgrade, never a process/session-wide permission grant."""
+
+    def __init__(
+        self,
+        session_id,
+        cancel_event = None,
+    ):
+        from utils.account_context import current_account
+
+        self.session_id = session_id or ""
+        self.account = current_account()
+        self.account_id = self.account.account_id
+        self.cancel_event = cancel_event
+        self._full = threading.Event()
+
+    def apply(self, permission_mode, bypass_permissions):
+        if self._full.is_set():
+            return "full", True
+        return permission_mode, bypass_permissions
+
+
+def bind_permission_upgrade(
+    slot,
+    permissions,
+    *,
+    eligible = True,
+):
+    """Bind before yielding the approval card; image disclosure alone never grants full access."""
+    if not isinstance(slot, dict) or not eligible or permissions is None:
+        return
+    with _lock:
+        if slot.get("session") == permissions.session_id and permissions.session_id:
+            slot["permission_upgrade"] = permissions
+
+
 def new_approval_id() -> str:
     """Mint an unguessable id for one pending tool-call confirmation."""
     return secrets.token_urlsafe(16)
@@ -78,8 +114,11 @@ def new_approval_id() -> str:
 
 def begin_tool_decision(session_id, approval_id) -> dict:
     """Register a pending decision slot and return it. Call this *before* yielding the ``tool_start`` event so the waiter always exists by the time the user's confirmation can arrive."""
+    from utils.account_context import current_account_id
+
     slot = {
         "event": threading.Event(),
+        "account_id": current_account_id(),
         "decision": None,
         "session": session_id or "",
         # Filled in by wait_tool_decision; read back with decision_reason().
@@ -133,7 +172,12 @@ def wait_tool_decision(
     renew_lease = getattr(cancel_event, "renew_lease", None)
 
     def _settle(verdict, reason):
-        if isinstance(slot, dict):
+        if not isinstance(slot, dict):
+            return verdict
+        # Under the resolver's lock: an Allow committed first wins, else the resolver sees the reason and refuses.
+        with _lock:
+            if slot["event"].is_set():
+                verdict, reason = slot["decision"] or "deny", DECISION_ANSWERED
             slot["reason"] = reason
         return verdict
 
@@ -212,6 +256,8 @@ def resolve_tool_decision(
     approval_id,
     decision,
     session_id = None,
+    *,
+    full_access = False,
 ) -> bool:
     """Record the user's "allow"/"deny" decision and unblock the loop. Returns ``True`` if a pending call matched, ``False`` otherwise (a stale or duplicate confirmation, or a session-scope mismatch). The first decision wins: once a slot's event is set, a later confirmation for the same id is rejected without mutating the recorded decision, so an Allow can never be flipped to Deny in the window before the waiter reads ``slot["decision"]`` and pops the slot."""
     if not approval_id:
@@ -222,8 +268,32 @@ def resolve_tool_decision(
             return False
         if session_id is not None and slot["session"] != (session_id or ""):
             return False
-        if slot["event"].is_set():
+        from utils.account_context import current_account_id
+
+        if (
+            slot.get("account_id") != current_account_id()
+            or slot["event"].is_set()
+            or slot.get("reason") is not None
+        ):
             return False
+        if full_access:
+            permissions = slot.get("permission_upgrade")
+            if (
+                decision != "allow"
+                or not session_id
+                or permissions is None
+                or permissions.account_id != current_account_id()
+                or permissions.session_id != session_id
+                or (permissions.cancel_event is not None and permissions.cancel_event.is_set())
+            ):
+                return False
+            from state.tool_policy import require_tool_access
+            from utils.account_context import run_as
+
+            require_tool_access("full")
+            # The tool worker keeps the run's API/UI identity: never acknowledge a grant it would refuse.
+            run_as(permissions.account, require_tool_access, "full")
+            permissions._full.set()
         slot["decision"] = decision
         slot["event"].set()
     return True
