@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Delete02Icon } from "@hugeicons/core-free-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   createOpenAIContainer,
@@ -486,7 +486,7 @@ export function OpenAICodeExecSection({
                     }}
                     aria-label={`Delete container ${c.name ?? c.id}`}
                   >
-                    <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-3.5" />
+                    <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-3.5" />
                   </Button>
                 </li>
               );
