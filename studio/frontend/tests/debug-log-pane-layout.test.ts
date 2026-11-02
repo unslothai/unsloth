@@ -69,4 +69,6 @@ test("asking for other log text ends the hold, and a context menu ends a press",
   for (const type of ["contextmenu", "dragend", "drop"]) {
     assert.ok(tab.includes(`window.addEventListener("${type}", release);`), type);
   }
+  assert.match(tab, /if \(event\.buttons === 0\) release\(\);/);
+  assert.match(tab, /window\.addEventListener\("pointermove", onPointerMove\)/);
 });

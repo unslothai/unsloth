@@ -450,7 +450,12 @@ export function DebuggingTab() {
       setHolding(held);
       if (!held) setShownText(textRef.current);
     };
+    // Ends any press whose release never reached this window.
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.buttons === 0) release();
+    };
     document.addEventListener("selectionchange", update);
+    window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", release);
     window.addEventListener("pointercancel", release);
     // A native context menu or text drag can swallow the pointerup.
@@ -459,6 +464,7 @@ export function DebuggingTab() {
     window.addEventListener("drop", release);
     return () => {
       document.removeEventListener("selectionchange", update);
+      window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", release);
       window.removeEventListener("pointercancel", release);
       window.removeEventListener("contextmenu", release);
