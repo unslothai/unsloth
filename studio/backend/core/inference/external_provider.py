@@ -77,7 +77,6 @@ _SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
 # refresh within one or two turns to detect server restarts.
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
-# a native Gemini page holds up to 1000 models, so 20 pages is far past any real catalog.
 _GEMINI_MAX_MODEL_PAGES = 20
 _served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
@@ -7336,13 +7335,11 @@ class ExternalProviderClient:
     async def _with_later_gemini_pages(
         self, data: Any, params: httpx.QueryParams, timeout: Any
     ) -> Any:
-        """Follow native Gemini's nextPageToken so models past the first page are listed."""
         if not isinstance(data, dict) or not isinstance(data.get("models"), list):
             return data
         models = list(data["models"])
         seen: set[str] = set()
         token = data.get("nextPageToken")
-        # a proxy that echoes the same token, or never stops paging, must not loop forever.
         while isinstance(token, str) and token and token not in seen:
             if len(seen) >= _GEMINI_MAX_MODEL_PAGES - 1:
                 logger.warning("Gemini model list still paging after %d pages", len(seen) + 1)
