@@ -47,6 +47,7 @@ import {
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { hydratePins } from "@/lib/pins-mirror";
 import { usePersonalizationSync } from "@/features/profile";
+import { useDeviceSettingsSync } from "@/features/settings/hooks/use-device-settings-sync";
 import { ScheduledTaskRunNotifier } from "@/features/scheduled-tasks/run-notifier";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
@@ -58,7 +59,9 @@ import {
   useSettingsDialogStore,
   useShortcut,
   useShortcutAvailable,
+  useVoiceSettingsStore,
 } from "@/features/settings";
+import { reconcileSttDevicePreference } from "@/features/settings/api/stt-device";
 import { useLowDiskNotice } from "@/features/settings/hooks/use-low-disk-notice";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
@@ -241,7 +244,24 @@ const AudioPage = lazy(() =>
 // Enabled once the session settles: a read refused mid password change would never retry until reload.
 function PersonalizationSyncMount() {
   useRouterState({ select: (s) => s.location.pathname });
-  usePersonalizationSync(hasSettledAuthSession());
+  const settled = hasSettledAuthSession();
+  usePersonalizationSync(settled);
+  useDeviceSettingsSync(settled);
+  return null;
+}
+
+// Voice Settings "Load into" kept in step with the server copy that device-less STT API loads read (#15280). Here,
+// not on store rehydrate: the store loads at startup, before the desktop backend port is known and before sign-in.
+function SttDeviceSyncMount() {
+  useRouterState({ select: (s) => s.location.pathname });
+  const settled = hasSettledAuthSession();
+  useEffect(() => {
+    if (!settled) return;
+    void reconcileSttDevicePreference(
+      useVoiceSettingsStore.getState().sttDevice,
+      (sttDevice) => useVoiceSettingsStore.setState({ sttDevice }),
+    );
+  }, [settled]);
   return null;
 }
 
@@ -703,6 +723,7 @@ function RootLayout() {
   const content = (
     <>
       <PersonalizationSyncMount />
+      <SttDeviceSyncMount />
       <InterfaceZoom />
       <WindowMaterialMount />
       <ReloadSnapshotPrivacy />

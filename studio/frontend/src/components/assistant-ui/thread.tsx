@@ -131,6 +131,8 @@ import {
   pasteLongTextAsFile,
   isPlainPasteChord,
   plainPasteStillCounts,
+  insertAtCaret,
+  richPasteMarkdown,
   currentDictationEntryMode,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
@@ -144,6 +146,7 @@ import {
   stopRecoveredRun,
   pythonToolRunsInStudio,
   withAttachmentOriginal,
+  priorPassTiming,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -3032,6 +3035,7 @@ const Composer: FC<{
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
   );
+  const richTextPaste = useChatPreferencesStore((s) => s.richTextPaste);
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
   const submitIntentRef = useRef<ComposerSubmitIntent>("default");
   const submitOnKey = useCallback(
@@ -3146,6 +3150,21 @@ const Composer: FC<{
           }),
       );
       if (event.defaultPrevented) return;
+      const markdown =
+        richTextPaste && !plainPaste ? richPasteMarkdown(event.clipboardData) : null;
+      if (markdown !== null) {
+        event.preventDefault();
+        if (pastedYoutubeUrl) setYoutubeLink(pastedYoutubeUrl);
+        // Before inserting: execCommand's input event is not a paste, so the guard would refuse a resend.
+        if (justSentRef.current?.draftKey === draftKeyRef.current) {
+          justSentRef.current = null;
+        }
+        insertAtCaret(input, markdown, (next, caret) => {
+          aui.composer().setText(next);
+          requestAnimationFrame(() => input.setSelectionRange(caret, caret));
+        });
+        return;
+      }
       if (pastedYoutubeUrl) {
         setYoutubeLink(pastedYoutubeUrl);
         if (!pastedText.includes(pastedYoutubeUrl)) {
@@ -3178,7 +3197,7 @@ const Composer: FC<{
         justSentRef.current = null;
       }
     },
-    [aui, overlay, pastedTextMinChars],
+    [aui, overlay, pastedTextMinChars, richTextPaste],
   );
 
   const composerText = useAuiState(({ composer }) => composer.text);
@@ -7703,24 +7722,25 @@ const GeneratingStatus: FC = () => {
   );
   const showDetails = useChatPreferencesStore((s) => s.showGenerationDetails);
   const locale = useLocale();
+  const t = useT();
   const percent = prefill ? prefillPercent(prefill) : null;
   // Held at 100% until the first token: going back to Working... for that moment would flash too.
   if (prefill === null || !labelShown || percent === null || decoding) {
     return (
       <span className="generating-glint text-sm text-muted-foreground">
-        Working...
+        {t("generationStats.working")}
       </span>
     );
   }
-  const timeLeft = formatPrefillTimeLeft(prefill);
+  const timeLeft = formatPrefillTimeLeft(prefill, t);
   return (
     <span
       data-slot="prefill-progress"
       className="generating-glint text-sm text-muted-foreground tabular-nums whitespace-normal!"
     >
-      Processing prompt {percent}%
+      {t("generationStats.processingPrompt", { percent })}
       {timeLeft ? ` · ${timeLeft}` : null}
-      {showDetails ? ` · ${formatPrefillDetails(prefill, locale)}` : null}
+      {showDetails ? ` · ${formatPrefillDetails(prefill, t, locale)}` : null}
     </span>
   );
 };
@@ -7877,6 +7897,8 @@ function useContinuation() {
       ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
       ...providerCompactionContinuationFields(metadata),
     };
+    const priorTiming = priorPassTiming(metadata);
+    if (priorTiming) request.priorTiming = priorTiming;
     return aui.thread().startRun({
       parentId: parent,
       runConfig: {
@@ -8287,9 +8309,9 @@ const AssistantMessage: FC = () => {
       <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
         {/* First, so the action bar mounting on hover never moves it. */}
         <AssistantMessageTime />
-        {/* Only while streaming, where the action bar is hidden; the timing badge takes over after. */}
+        {/* Match the row height so wrapping live text cannot move the picker. */}
+        <BranchPicker className="mr-0.5 h-8" />
         <LiveGenerationLine />
-        <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>
       {/* Renders nothing. `If last` keeps the hook off the other N-1. */}
