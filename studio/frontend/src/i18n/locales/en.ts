@@ -2001,8 +2001,7 @@ export const en = {
       display: {
         title: "Display",
         timeFormat: "Time format",
-        timeFormatDescription:
-          "System default follows your browser or OS clock preference.",
+        timeFormatDescription: "Show times on a 12-hour or 24-hour clock.",
         timeFormatSystem: "System default",
         timeFormat12: "12-hour",
         timeFormat24: "24-hour",
