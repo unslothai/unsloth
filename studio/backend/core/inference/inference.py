@@ -772,6 +772,11 @@ def _generate_supported(model, generation_kwargs: dict):
     try:
         return model.generate(**_supported_generate_kwargs(model, generation_kwargs))
     except _GenerationHalted:
+        streamer = generation_kwargs.get("streamer")
+        matched = getattr(streamer, "matched", None)
+        prompt = generation_kwargs.get("input_ids")
+        if matched is not None and matched.is_set() and prompt is not None:
+            return prompt.new_tensor([prompt[0].tolist() + streamer.token_ids])
         return None
 
 
