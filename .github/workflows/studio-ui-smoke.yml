@@ -508,7 +508,9 @@ jobs:
         env:
           STUDIO_E2E_URL: http://127.0.0.1:18894
           STUDIO_E2E_OWNER_PASSWORD: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_multi_account
         run: |
+          mkdir -p logs/playwright_multi_account
           python tests/studio/playwright_multi_account.py
 
       - name: Update banner layout regression (Playwright)
@@ -771,6 +773,7 @@ jobs:
             logs/playwright_modelcfg
             logs/playwright_memory_estimate
             logs/playwright_ime
+            logs/playwright_multi_account
             logs/studio-permissions-*.log
           # Repository-wide cap; larger values are silently clamped.
           retention-days: 1
