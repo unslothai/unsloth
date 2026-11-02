@@ -22,6 +22,7 @@ from core.inference.diffusion_denoiser_prequant import PIPELINE_SEED_DECLINED
 from core.inference.diffusion_device import DiffusionDeviceTarget
 from core.inference.diffusion_families import detect_family_for_pick
 from core.inference.diffusion_memory import DeviceMemory
+from models.inference import DiffusionDownloadPlanResponse
 
 MIB = 1024 * 1024
 
@@ -211,7 +212,7 @@ def test_the_plan_counts_and_stages_the_hosted_checkpoint(monkeypatch, hub):
     assert "transformer/config.json" in entries[Z_IMAGE_REPO]["files"]
     assert plan["required_bytes"] == ALL_BYTES - DENOISER_BYTES + PREQUANT_BYTES
     assert entries[Z_IMAGE_REPO]["checkpoint"] is True
-    assert entries[PREQUANT_REPO]["checkpoint"] is False
+    assert entries[PREQUANT_REPO]["checkpoint"] is True
 
 
 def test_an_unplanned_pipeline_pick_plans_exactly_as_before(monkeypatch, hub):
@@ -1958,3 +1959,28 @@ def test_a_large_variant_of_a_small_dit_family_quantises_under_auto(fake_runtime
     _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
     assert Z_IMAGE_REPO in seen  # the load hands the decider its resolved base
     assert spy.quantised == ["auto"]
+
+
+@pytest.mark.parametrize("shared_repo", [False, True])
+def test_denoiser_is_a_checkpoint_and_encoder_only_is_an_asset(monkeypatch, hub, shared_repo):
+    backend = _plan_backend(monkeypatch, planned = "fp8")
+    encoder_repo = PREQUANT_REPO if shared_repo else "test/shared-encoder"
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_te_prequant_plan_files",
+        lambda *_a, **_k: {
+            "text_encoder": (encoder_repo, [("text_encoder/model.safetensors", 1234)])
+        },
+    )
+    plan = backend.download_plan(Z_IMAGE_REPO, model_kind = "pipeline")
+    entries = {entry["repo_id"]: entry for entry in plan["entries"]}
+    assert entries[PREQUANT_REPO]["checkpoint"] is True
+    assert entries[PREQUANT_REPO]["hosted_denoiser"] is True
+    assert entries[Z_IMAGE_REPO]["hosted_denoiser"] is False
+    # The route returns this model, which would drop an undeclared field.
+    served = DiffusionDownloadPlanResponse(**plan).entries
+    assert {e.repo_id for e in served if e.hosted_denoiser} == {PREQUANT_REPO}
+    assert entries[encoder_repo]["checkpoint"] is shared_repo
+    assert entries[encoder_repo]["hosted_denoiser"] is shared_repo
+    assert "text_encoder/model.safetensors" in entries[encoder_repo]["files"]
+    assert entries[PREQUANT_REPO]["bytes"] == PREQUANT_BYTES + (1234 if shared_repo else 0)

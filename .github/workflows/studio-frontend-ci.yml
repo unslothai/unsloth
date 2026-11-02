@@ -40,7 +40,10 @@ on:
       - 'tests/studio/playwright_link_definition_probe.py'
       - 'tests/studio/playwright_user_message_time.py'
       - 'tests/studio/playwright_progressive_rows.py'
+      - 'tests/studio/playwright_long_chat_renders.py'
+      - 'tests/studio/playwright_model_picker_renders.py'
       - 'tests/studio/playwright_recipe_drag_renders.py'
+      - 'tests/studio/playwright_gallery_strip_renders.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
       - 'tests/studio/_playwright_robust.py'
@@ -86,7 +89,10 @@ on:
       - 'tests/studio/playwright_link_definition_probe.py'
       - 'tests/studio/playwright_user_message_time.py'
       - 'tests/studio/playwright_progressive_rows.py'
+      - 'tests/studio/playwright_long_chat_renders.py'
+      - 'tests/studio/playwright_model_picker_renders.py'
       - 'tests/studio/playwright_recipe_drag_renders.py'
+      - 'tests/studio/playwright_gallery_strip_renders.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
       - 'tests/studio/_playwright_robust.py'
@@ -525,11 +531,30 @@ jobs:
         timeout-minutes: 5
         run: python3 tests/studio/playwright_progressive_rows.py
 
+      - name: Browser check for long-chat re-renders
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        run: python3 tests/studio/playwright_long_chat_renders.py
+
+      # Render counts, not timings: a search keystroke or a quant probe answer in the model
+      # picker's On Device tab must not re-render every row, and the rows must still navigate.
+      - name: Browser check for model picker re-renders
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 8
+        run: python3 tests/studio/playwright_model_picker_renders.py
+
       # A drag step moves one node; the other nodes of the graph must not re-render.
       - name: Browser check for Recipe Studio drag re-renders
         working-directory: ${{ github.workspace }}
         timeout-minutes: 5
         run: python3 tests/studio/playwright_recipe_drag_renders.py
+
+      # Render counts, not timings: a thumbnail arriving or a page appending to the Images or Video
+      # strip must not re-render every card's menu, and a card's own menu must delete that card.
+      - name: Browser check for gallery strip re-renders
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 8
+        run: python3 tests/studio/playwright_gallery_strip_renders.py
 
       # Two small sizes and one repetition on Chromium: enough to prove the fixture still
       # renders every kind of content it claims to and that the curve still rises, which is all

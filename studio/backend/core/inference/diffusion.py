@@ -533,6 +533,36 @@ def _negative_prompt_guidance_threshold(family: DiffusionFamily) -> Optional[flo
     return None
 
 
+# ``{path: (size, mtime_ns)}`` of the adapter files the generation-time path last loaded onto a pipe.
+_LORA_FILE_SIGS_ATTR = "_unsloth_lora_file_sigs"
+
+
+def _lora_file_sigs(loras: Any) -> Optional[dict]:
+    """Size and mtime of each adapter file, or None when one cannot be read."""
+    sigs: dict = {}
+    for _name, path, _weight in loras:
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        sigs[path] = (st.st_size, st.st_mtime_ns)
+    return sigs
+
+
+def _lora_weights_only_change(state: Any, pipe: Any, current: Any, desired: Any) -> bool:
+    """Same adapter names and files in the same order, each file unchanged on disk since its load, and no
+    block-streamed graph: ``set_adapters`` alone then reaches the scales a full reload would set."""
+    if not current or len(current) != len(desired):
+        return False
+    if any((n, p) != (dn, dp) for (n, p, _w), (dn, dp, _dw) in zip(current, desired)):
+        return False
+    loaded = getattr(pipe, _LORA_FILE_SIGS_ATTR, None)
+    if not loaded or loaded != _lora_file_sigs(desired):
+        return False
+    handles = getattr(state, "cuda_graphs", ()) or ()
+    return not any(getattr(getattr(h, "placement", None), "mode", None) == "group" for h in handles)
+
+
 def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
     """Recapturing a block-streamed graph after a LoRA weight change fails, and the eager fallback then fails every
     later generate, so such a load keeps its baked weights until a reload."""
@@ -988,6 +1018,23 @@ def decode_b64_image(
     max_pixels: Optional[int] = None,
 ) -> Any:
     """Decode a base64 or data: URL image; masks decode as single-channel L, source images as RGB."""
+    return decode_b64_image_sized(data, mode = mode, max_side = max_side, max_pixels = max_pixels)[0]
+
+
+def refuse_oversized_image(w: int, h: int, max_side: int, max_pixels: Optional[int]) -> None:
+    if w > max_side or h > max_side:
+        raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_side}px per side.")
+    if max_pixels is not None and w * h > max_pixels:
+        raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_pixels:,} source pixels.")
+
+
+def decode_b64_image_sized(
+    data: str,
+    *,
+    mode: str = "RGB",
+    max_side: int = 4096,
+    max_pixels: Optional[int] = None,
+) -> tuple[Any, tuple[int, int]]:
     import base64
     import binascii
     import io
@@ -1005,12 +1052,7 @@ def decode_b64_image(
         img = Image.open(io.BytesIO(blob))
         # Reject from the header before img.load() so a huge-dimension file cannot spike memory
         w, h = img.size
-        if w > max_side or h > max_side:
-            raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_side}px per side.")
-        if max_pixels is not None and w * h > max_pixels:
-            raise ValueError(
-                f"Image is too large ({w}x{h}); maximum is {max_pixels:,} source pixels."
-            )
+        refuse_oversized_image(w, h, max_side, max_pixels)
         img.load()
         # Below the size guard because the transpose needs the pixels the guard exists to not read.
         img = exif_upright(img)
@@ -1018,7 +1060,7 @@ def decode_b64_image(
         raise  # the size guard's own message; don't wrap it as a decode error
     except Exception as exc:  # noqa: BLE001 - surfaced as a 400 to the client
         raise ValueError(f"Could not decode image: {exc}") from exc
-    return flattened_rgb(img) if mode == "RGB" else img.convert(mode)
+    return (flattened_rgb(img) if mode == "RGB" else img.convert(mode)), (w, h)
 
 
 def _snap_to_multiple(img: Any, multiple: int = 16) -> Any:
@@ -5470,7 +5512,7 @@ class DiffusionBackend:
                     kind,
                     base,
                     kwargs.get("gpu_ordinal"),
-                    kwargs.get("hf_token"),
+                    kwargs.get("_hub_token", kwargs.get("hf_token")),
                     local_files_only,
                 )
             )
@@ -6928,6 +6970,7 @@ class DiffusionBackend:
         scoped_files: dict[str, list[str]] = {}
         scoped_gguf: dict[str, Optional[str]] = {}
         missing_checkpoints: set[str] = set()
+        missing_denoisers: set[str] = set()
 
         def add_missing_entry(
             repo: str,
@@ -6936,6 +6979,7 @@ class DiffusionBackend:
             *,
             gguf: Optional[str] = None,
             checkpoint: bool = False,
+            hosted_denoiser: bool = False,
         ) -> None:
             """Adds only files neither cache root resolves, probed at the plan's revision; one entry per repo, else two jobs fight over progress and cancel."""
 
@@ -6982,6 +7026,8 @@ class DiffusionBackend:
             )
             if checkpoint:
                 missing_checkpoints.add(repo)
+            if hosted_denoiser:
+                missing_denoisers.add(repo)
             for entry in entries:
                 if entry["repo_id"] != repo:
                     continue
@@ -6993,6 +7039,7 @@ class DiffusionBackend:
                 )
                 entry["gguf_filename"] = scoped_gguf[repo]
                 entry["checkpoint"] = repo in missing_checkpoints
+                entry["hosted_denoiser"] = repo in missing_denoisers
                 return
             entries.append(
                 {
@@ -7004,6 +7051,7 @@ class DiffusionBackend:
                     ),
                     "gguf_filename": scoped_gguf[repo],
                     "checkpoint": repo in missing_checkpoints,
+                    "hosted_denoiser": repo in missing_denoisers,
                 }
             )
 
@@ -7043,7 +7091,14 @@ class DiffusionBackend:
         if dit_prequant is not None:
             # Staged, not just counted: leaving it out means a multi-GB inline pull under the load lock.
             prequant_repo, prequant_file, prequant_size = dit_prequant
-            add_missing_entry(prequant_repo, [prequant_file], {prequant_file: prequant_size})
+            # Part of a pipeline pick, replacing its dense denoiser; a GGUF pick keeps it a required asset.
+            add_missing_entry(
+                prequant_repo,
+                [prequant_file],
+                {prequant_file: prequant_size},
+                checkpoint = skip_transformer_weights,
+                hosted_denoiser = skip_transformer_weights,
+            )
         for ref in component_overrides.files.values() if component_overrides else ():
             if not ref.is_hub:
                 continue
@@ -9061,8 +9116,8 @@ class DiffusionBackend:
                                     "torch_dtype": dtype,
                                     "cache_dir": hub_cache_dir(),
                                 }
-                                if hf_token:
-                                    pipe_kwargs["token"] = hf_token
+                                if hub_token is not None:
+                                    pipe_kwargs["token"] = hub_token
                                 # fp16 load with a twin for every component reads the twins (bit-identical after cast).
                                 _te_replaced = te_precast_components(
                                     fam, fetch_base, text_encoder_quant, target
@@ -9153,7 +9208,7 @@ class DiffusionBackend:
                                             fetch_base,
                                             kind = kind,
                                             dtype = dtype,
-                                            hf_token = hf_token,
+                                            hf_token = hub_token,
                                             local_files_only = local_files_only,
                                             config_source = _base_local_dir,
                                             cache_dir = hub_cache_dir(),
@@ -12815,6 +12870,48 @@ class DiffusionBackend:
         return pipe
 
     @staticmethod
+    def _pipeline_compute_dtype(pipe: Any) -> Any:
+        """Best-effort floating dtype for a GGUF pipe whose denoiser params are packed uint8 only."""
+        dtype = getattr(pipe, "dtype", None)
+        if dtype is not None and getattr(dtype, "is_floating_point", False):
+            return dtype
+        for name in ("text_encoder", "text_encoder_2", "transformer", "unet"):
+            mod = getattr(pipe, name, None)
+            if mod is None:
+                continue
+            try:
+                found = next(
+                    (p.dtype for p in mod.parameters() if p.dtype.is_floating_point),
+                    None,
+                )
+            except (AttributeError, RuntimeError, StopIteration, TypeError):
+                found = None
+            if found is not None:
+                return found
+        return None
+
+    @staticmethod
+    def _vae_running_dtype(vae: Any) -> Any:
+        """Dtype of the layer that first consumes the encode input (``encoder.conv_in``), else the first floating
+        encoder / VAE weight; None when it cannot be read, so the input is left as is (#16375)."""
+        encoder = getattr(vae, "encoder", None)
+        first = getattr(getattr(encoder, "conv_in", None), "weight", None)
+        dtype = getattr(first, "dtype", None)
+        if dtype is not None and getattr(dtype, "is_floating_point", False):
+            return dtype
+        for mod in (encoder, vae):
+            if mod is None:
+                continue
+            try:
+                found = next((p.dtype for p in mod.parameters() if p.dtype.is_floating_point), None)
+            except (AttributeError, RuntimeError, StopIteration, TypeError):
+                found = None
+            if found is not None:
+                return found
+        dtype = getattr(vae, "dtype", None)
+        return dtype if dtype is not None and getattr(dtype, "is_floating_point", False) else None
+
+    @staticmethod
     def _align_vae_dtype(pipe: Any, denoiser_attr: str = "transformer") -> None:
         """A prior txt2img decode can leave the VAE upcast to fp32; re-align it to the denoiser's dtype."""
         denoiser = getattr(pipe, denoiser_attr, None)
@@ -12827,6 +12924,9 @@ class DiffusionBackend:
                 (p.dtype for p in denoiser.parameters() if p.dtype.is_floating_point),
                 None,
             )
+            # Packed-uint8 GGUF denoisers carry no float dtype (#16375).
+            if target_dtype is None:
+                target_dtype = DiffusionBackend._pipeline_compute_dtype(pipe)
             if target_dtype is None:
                 return
             if next(vae.parameters()).dtype != target_dtype:
@@ -12836,8 +12936,8 @@ class DiffusionBackend:
 
     @staticmethod
     def _make_vae_encode_dtype_safe(pipe: Any) -> None:
-        """Casts encode inputs to the VAE's dtype; img2img uses the text encoder's dtype, which can
-        mismatch."""
+        """Casts encode inputs to the VAE's dtype; img2img / Qwen Edit use the TE dtype, which can
+        mismatch (#16375)."""
         vae = getattr(pipe, "vae", None)
         if vae is None or getattr(vae, "_unsloth_dtype_safe_encode", False):
             return
@@ -12848,16 +12948,18 @@ class DiffusionBackend:
 
             @functools.wraps(original)
             def _encode(x: Any, *args: Any, **kwargs: Any) -> Any:
-                try:
-                    if isinstance(x, torch.Tensor):
-                        target = next(
-                            (p.dtype for p in vae.parameters() if p.dtype.is_floating_point),
-                            None,
-                        )
+                if isinstance(x, torch.Tensor):
+                    target = None
+                    try:
+                        target = DiffusionBackend._vae_running_dtype(vae)
+                    except (AttributeError, RuntimeError, StopIteration, TypeError):
+                        target = None
+                    try:
+                        # An unreadable dtype leaves the input alone: guessing fp32 breaks a half encoder.
                         if target is not None and x.dtype != target:
                             x = x.to(dtype = target)
-                except (AttributeError, RuntimeError, StopIteration, TypeError):
-                    pass
+                    except (AttributeError, RuntimeError, TypeError):
+                        pass
                 return original(x, *args, **kwargs)
 
             vae.encode = _encode
@@ -12929,6 +13031,7 @@ class DiffusionBackend:
                 except Exception:  # noqa: BLE001 -- best-effort clear
                     pass
                 pipe._unsloth_loras = ()
+                setattr(pipe, _LORA_FILE_SIGS_ATTR, None)
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
                 invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
             return
@@ -12952,17 +13055,30 @@ class DiffusionBackend:
             hf_token = state.hf_token,
             cancel = cancel,
         )
-        uniq = list(desired)
         if desired == current:
             return
+        names = [name for name, _p, _w in desired]
+        weights = [w for _n, _p, w in desired]
+        if _lora_weights_only_change(state, pipe, current, desired):
+            try:
+                pipe.set_adapters(names, adapter_weights = weights)
+            except Exception:  # noqa: BLE001 -- the full reload below sets the same scales or fails cleanly
+                pass
+            else:
+                pipe._unsloth_loras = desired
+                # A captured graph bakes the scales in.
+                cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+                invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
+                return
+        # Read before loading, so a file rewritten during the load reads as changed next time.
+        file_sigs = _lora_file_sigs(desired)
         try:
             if current:
                 pipe.unload_lora_weights()
-            for name, path, _weight in uniq:
+            setattr(pipe, _LORA_FILE_SIGS_ATTR, None)
+            for name, path, _weight in desired:
                 pipe.load_lora_weights(path, adapter_name = name)
-            pipe.set_adapters(
-                [name for name, _p, _w in uniq], adapter_weights = [w for _n, _p, w in uniq]
-            )
+            pipe.set_adapters(names, adapter_weights = weights)
         except Exception as exc:  # noqa: BLE001 -- surface as a clean 400
             try:
                 pipe.unload_lora_weights()
@@ -12974,6 +13090,7 @@ class DiffusionBackend:
             invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
             raise ValueError(f"Failed to apply LoRA: {exc}") from exc
         pipe._unsloth_loras = desired
+        setattr(pipe, _LORA_FILE_SIGS_ATTR, file_sigs)
         # load_lora_weights can re-materialise parameters the graphs baked pointers to.
         cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
         invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)

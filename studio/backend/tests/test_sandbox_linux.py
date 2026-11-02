@@ -777,10 +777,19 @@ def test_a_hard_link_wholly_inside_the_workdir_is_allowed(tmp_path):
 def test_a_nested_host_mount_under_the_workdir_is_refused(tmp_path, monkeypatch):
     nested = tmp_path / "mounted"
     nested.mkdir()
-    real = os.path.ismount
-    monkeypatch.setattr(
-        os.path, "ismount", lambda path: os.path.samefile(path, nested) or real(path)
-    )
+    identity = (nested.stat().st_dev, nested.stat().st_ino)
+    real = os.lstat
+
+    def lstat(path, *args, **kwargs):
+        # A mount answers with its own device; path/.. still answers with the host's.
+        info = real(path, *args, **kwargs)
+        if (info.st_dev, info.st_ino) != identity:
+            return info
+        fields = list(info)
+        fields[2] = info.st_dev + 1
+        return os.stat_result(fields, {"st_mtime_ns": info.st_mtime_ns})
+
+    monkeypatch.setattr(os, "lstat", lstat)
     with pytest.raises(SandboxUnavailableError, match = "nested host mount"):
         sandbox_linux._validate_workdir(str(tmp_path))
 

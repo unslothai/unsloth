@@ -8,7 +8,7 @@ import { Progress } from "@/components/ui/progress";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
 
-import { useMonitorOverlayStore } from "@/features/settings";
+import { useMonitorOverlayStore } from "@/features/settings/stores/monitor-overlay-store";
 import { useCornerCardFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
 import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
