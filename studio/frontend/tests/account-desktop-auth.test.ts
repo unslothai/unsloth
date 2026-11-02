@@ -46,6 +46,7 @@ function fixture(
   let access: string | null = null;
   let refresh: string | null = null;
   let passwordChange = false;
+  let browserAccount = "owner";
   let response: unknown = { access_token: "owner-access", refresh_token: "owner-refresh" };
   let invokeCalls = 0;
   const invokes: unknown[][] = [];
@@ -66,7 +67,11 @@ function fixture(
     hasRefreshToken: () => !!refresh,
     mustChangePassword: () => passwordChange,
     setMustChangePassword: (value: boolean) => { passwordChange = value; },
-    storeAuthTokens: (a: string, r: string) => { access = a; refresh = r; },
+    storeAuthTokens: (a: string, r: string) => {
+      access = a; refresh = r;
+      if (a.startsWith("alice")) browserAccount = "alice";
+      if (a.includes("owner")) browserAccount = "owner";
+    },
     clearAuthTokens: () => { access = null; refresh = null; passwordChange = false; },
     getPostAuthRoute: () => tauri ? "/chat" : passwordChange ? "/change-password" : "/chat",
     refreshSession: async () => {
@@ -106,6 +111,7 @@ function fixture(
     },
     "@/lib/account-transition": {
       OWNER_BROWSER_ACCOUNT: "unsloth",
+      browserAccountKey: () => browserAccount,
       transitionBrowserAccount: async (
         account: unknown,
         route: string,
@@ -329,16 +335,26 @@ for (const force of [false, true]) {
   });
 }
 
-test("a managed session that no longer refreshes gives way to the owner tokens", async (t) => {
+for (const cleared of [false, true]) {
+  test(`a rejected managed session requires sign-in in multi mode, tokens cleared ${cleared}`, async (t) => {
+    const f = fixture(t);
+    f.setStatus({ initialized: true, requires_password_change: true, login_mode: "multi", full_access: false });
+    f.session.storeAuthTokens("alice-access", "alice-refresh");
+    if (cleared) f.session.clearAuthTokens();
+    assert.equal(await f.auth.tauriAutoAuth({ force: true }), true);
+    assert.equal(f.access, null);
+    assert.deepEqual(f.transitions, []);
+    assert.deepEqual(f.navigations, [{ to: "/login", replace: true }]);
+    assert.equal(f.auth.isTauriLoginRequired(), true);
+  });
+}
+
+test("deleting the last managed account restores owner recovery after its session expires", async (t) => {
   const f = fixture(t);
-  f.setStatus({ initialized: true, requires_password_change: true, login_mode: "multi", full_access: false });
   f.session.storeAuthTokens("alice-access", "alice-refresh");
   assert.equal(await f.auth.tauriAutoAuth({ force: true }), true);
-  assert.equal(f.refreshCalls, 1);
   assert.equal(f.access, "owner-access");
   assert.deepEqual(f.transitions, [{ account: "unsloth", route: "/chat" }]);
-  assert.equal(f.auth.isTauriLoginRequired(), false);
-  assert.deepEqual(f.loginModes, [["multi", false]]);
 });
 
 test("owner tokens after the last managed account is deleted clear that account's browser data", async (t) => {

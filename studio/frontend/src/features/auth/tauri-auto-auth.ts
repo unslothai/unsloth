@@ -16,6 +16,7 @@ import { sessionAccount } from "./account-session";
 import { fetchAuthStatus } from "./login-client";
 import {
   OWNER_BROWSER_ACCOUNT,
+  browserAccountKey,
   transitionBrowserAccount,
 } from "@/lib/account-transition";
 
@@ -130,7 +131,6 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
       await router.navigate({ to: "/login", replace: true });
       return options.force === true;
     }
-    tauriLoginRequired = false;
     if (
       sessionAccount(getAuthToken())?.isOwner === false &&
       hasRefreshToken()
@@ -151,6 +151,23 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
         return true;
       }
     }
+    // API recovery clears rejected tokens; the account marker survives that clear.
+    if (
+      sessionAccount(getAuthToken())?.isOwner === false ||
+      browserAccountKey() !== "owner"
+    ) {
+      tauriLoginRequired = true;
+      const status = await fetchAuthStatus().catch(() => undefined);
+      clearTauriAuthFailure();
+      if (!status) return options.force === true;
+      if (status.login_mode === "multi") {
+        clearAuthTokens();
+        const { router } = await import("@/app/router");
+        await router.navigate({ to: "/login", replace: true });
+        return options.force === true;
+      }
+    }
+    tauriLoginRequired = false;
     // Owner tokens after the last managed account is deleted must not inherit its browser data.
     await transitionBrowserAccount(OWNER_BROWSER_ACCOUNT, "/chat", () => {
       storeAuthTokens(tokens.access_token, tokens.refresh_token);
