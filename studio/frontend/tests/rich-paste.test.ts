@@ -151,3 +151,14 @@ test("a copy holding only a code block or styled spans still converts", () => {
     "**Bold** text",
   );
 });
+
+test("a table caption and line breaks inside code survive", () => {
+  assert.equal(
+    htmlNodeToMarkdown(el("table", el("caption", "Use these limits"), el("tr", el("th", "A")), el("tr", el("td", "1")))),
+    "Use these limits\n\n| A |\n| --- |\n| 1 |",
+  );
+  assert.equal(
+    htmlNodeToMarkdown(el("pre", "def f():", el("br"), "    return 1")),
+    "```\ndef f():\n    return 1\n```",
+  );
+});
