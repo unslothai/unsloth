@@ -7674,9 +7674,7 @@ function Test-RocmTritonPairingNeedsPass {
 }
 
 function Enter-TritonInstallEnv {
-    # Clears inherited uv / pip inputs that would drop or replace a Triton install while still reporting success,
-    # and relaxes require-hashes, which an unhashed spec or local wheel can only fail (the dependency stack relaxes
-    # it the same way). Returns what Exit-TritonInstallEnv puts back.
+    # Ignore inherited resolver constraints for unhashed wheels; restore the snapshot in finally.
     $saved = @{}
     foreach ($n in 'UV_OVERRIDE', 'UV_EXCLUDE', 'UV_CONSTRAINT', 'PIP_CONSTRAINT', 'UV_REQUIRE_HASHES', 'PIP_REQUIRE_HASHES') {
         $saved[$n] = [Environment]::GetEnvironmentVariable($n)
@@ -7695,14 +7693,8 @@ function Exit-TritonInstallEnv {
 }
 
 function Get-XpuTritonState {
-    # Intel XPU: which dist owns `triton`, read from the venv as it is now. Name lookups, as in
-    # Get-RocmTritonPairing, so a ~riton_windows-* backup is not counted. XpuSpec is torch's own triton
-    # requirement; XpuDist the installed version of that dist ('?' for a record without Version); XpuOk that the
-    # version satisfies XpuSpec (packaging, else pip's vendored copy, else an exact == match; a missing or
-    # versionless record fails), that the imported triton reports that version, and that a registered backend has
-    # an importable driver and a compiler supporting XPU. Known is false when the metadata
-    # probe failed; the fields it printed before failing are still returned. No double quotes:
-    # Invoke-BoundedPythonProbe wraps $Code in them.
+    # Name lookups exclude pip backup directories. Keep metadata readable when runtime imports fail.
+    # No double quotes: Invoke-BoundedPythonProbe wraps $Code in them.
     $code = "import importlib, importlib.metadata as m, importlib.util as u, re; " +
         "print('TRITONWIN=' + next(((d.version or '?') for d in m.distributions(name='triton-windows')), '')); " +
         "q = next((r.split(';')[0].strip() for r in (m.requires('torch') or []) if 'triton' in r.lower()), ''); " +
@@ -7715,7 +7707,7 @@ function Get-XpuTritonState {
         "print('XPUOK=' + str(int(bool(ok))))"
     $probe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $code
     $win = if ($probe.Output -match '(?m)^TRITONWIN=(\S+)\s*$') { $Matches[1] } else { "" }
-    $spec = if ($probe.Output -match '(?m)^TRITONXPU=(\S+)\s*$') { $Matches[1] } else { "" }
+    $spec = if ($probe.Output -match '(?m)^TRITONXPU=([^\r\n]+)') { $Matches[1].Trim() } else { "" }
     $dist = if ($probe.Output -match '(?m)^XPUDIST=(\S+)\s*$') { $Matches[1] } else { "" }
     $ok = [bool]($probe.Ok -and $probe.Output -match '(?m)^XPUOK=1\s*$')
     if ($ok) {
@@ -8708,7 +8700,7 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
         }
         # Redacted: a mirror pin can carry a token.
         $_tritonRepairUrl = Redact-InstallOutput $XpuIndexUrl
-        $_tritonRepair = "python -m pip install --force-reinstall --no-deps $_tritonXpuSpec --index-url $_tritonRepairUrl"
+        $_tritonRepair = "python -m pip install --force-reinstall --no-deps `"$_tritonXpuSpec`" --index-url $_tritonRepairUrl"
         # test_intel_registry_fallback.ps1 asserts this literal matches MANIFEST_NAME.
         $_manifestPath = Join-Path $VenvDir "unsloth_install_manifest.json"
         # Fetch, then uninstall, then install, so a dead mirror cannot strand the venv between steps.
@@ -8798,13 +8790,12 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
                         -not $_tritonAfter.TritonWin -and (Get-TritonRuntimeState).Healthy)
                     if (-not $_tritonPresent) {
                         $_tritonXpuWhy = if ($tritonXpuExit -ne 0) { "exit $tritonXpuExit" } else { "exit 0, but it is not installed or triton does not import" }
-                        # Put SOME triton back rather than leave the venv without one. The XPU dist goes first, so its
-                        # record does not stay over the triton-windows files; the fallback counts once it is recorded.
+                        # A stale XPU RECORD can later delete the generic fallback's shared files.
                         Fast-Uninstall ($_tritonXpuSpec -replace '^([A-Za-z0-9._-]+).*$', '$1') | Out-Null
                         Fast-Install --force-reinstall --no-deps $_tritonSpec | Out-Null
                         $tritonBackExit = $LASTEXITCODE
                         $_tritonBack = Get-XpuTritonState
-                        $_tritonPresent = ($tritonBackExit -eq 0 -and $_tritonBack.Known -and $_tritonBack.TritonWin -and
+                        $_tritonPresent = ($tritonBackExit -eq 0 -and $_tritonBack.Known -and -not $_tritonBack.XpuDist -and $_tritonBack.TritonWin -and
                             (Get-TritonRuntimeState).Healthy)
                         Write-StudioLine (Redact-InstallOutput $tritonOutput) -ForegroundColor Yellow
                         if ($_tritonPresent -and $InstallerManagedSetup -and -not $_tritonWinVer) {
@@ -8814,14 +8805,15 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
                             $stackExit = 1
                         } elseif ($_tritonPresent) {
                             substep "[WARN] could not install $_tritonXpuSpec ($_tritonXpuWhy); fell back to triton-windows, so triton imports -- but torch.compile will not use the XPU." "Yellow"
-                        } elseif ($_tritonImportedBefore) {
-                            Write-StudioLine "[ERROR] triton-windows was removed and neither triton would reinstall -- torch.compile is broken." -ForegroundColor Red
+                        } elseif ($_tritonImportedBefore -or $InstallerManagedSetup) {
+                            $_tritonBackWhy = if ($_tritonBack.XpuDist) { "the Intel XPU distribution is still recorded over the fallback files" }
+                                else { "the fallback distribution or runtime could not be verified" }
+                            Write-StudioLine "[ERROR] could not verify the triton-windows fallback: $_tritonBackWhy." -ForegroundColor Red
                             Write-StudioLine "        Repair with: $_tritonRepair" -ForegroundColor Red
-                            # Fail, or install.ps1 commits this triton-less venv over its rollback copy.
                             $stackExit = if ($tritonBackExit -ne 0) { $tritonBackExit } else { 1 }
                         } else {
                             # Broken before the swap touched it: no worse, and the withheld manifest makes the next update retry.
-                            substep "[WARN] could not install $_tritonXpuSpec ($_tritonXpuWhy) and the triton-windows fallback does not import either; $_tritonLeft Repair with: $_tritonRepair" "Yellow"
+                            substep "[WARN] could not install $_tritonXpuSpec ($_tritonXpuWhy) and the triton-windows fallback could not be verified. Repair with: $_tritonRepair" "Yellow"
                         }
                     }
                     # Restore only once a triton imports; a lost manifest makes the next update repair.
@@ -8847,7 +8839,7 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
         $_tritonRepairUrl = Redact-InstallOutput $XpuIndexUrl
         $_tritonRepairSpec = if ($_tritonXpuSpec) { $_tritonXpuSpec } else { "pytorch-triton-xpu" }
         Write-StudioLine "[ERROR] triton does not import -- torch.compile is broken; keeping the installer's rollback copy." -ForegroundColor Red
-        Write-StudioLine "        Repair with: python -m pip install --force-reinstall --no-deps $_tritonRepairSpec --index-url $_tritonRepairUrl" -ForegroundColor Red
+        Write-StudioLine "        Repair with: python -m pip install --force-reinstall --no-deps `"$_tritonRepairSpec`" --index-url $_tritonRepairUrl" -ForegroundColor Red
         $stackExit = 1
     }
 }
