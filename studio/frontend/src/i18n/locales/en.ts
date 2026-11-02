@@ -2,6 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const en = {
+  turns: {
+    label: "Turn {number}",
+    bookmarkedLabel: "Turn {number}, bookmarked",
+    bookmark: "Bookmark turn",
+    removeBookmark: "Remove bookmark",
+    navigator: "Turns",
+  },
   chatBackground: {
     noBackground: "No background",
     sizing: "Image sizing",
@@ -1998,6 +2005,14 @@ export const en = {
             "Runs every tool call without asking and turns off the code sandbox, so Python and terminal code can read and change any file your account can access.",
         },
       },
+      display: {
+        title: "Display",
+        timeFormat: "Time format",
+        timeFormatDescription: "Show times on a 12-hour or 24-hour clock.",
+        timeFormatSystem: "System default",
+        timeFormat12: "12-hour",
+        timeFormat24: "24-hour",
+      },
       notifications: {
         sectionTitle: "Notifications",
         showLoadedModels: "Loaded models card",
@@ -2957,6 +2972,8 @@ export const en = {
       inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",
+      turnNavigation: "Turn navigation",
+      turnNavigationDescription: "Show your prompts as a rail at the left edge of long chats. Hover to preview a turn, click to jump to it, and bookmark turns to find them again.",
       composerAtBottom: "Composer at the bottom",
       composerAtBottomDescription: "Start new chats with the composer at the bottom of the page instead of the middle.",
       projectAttachments: "Share files across a project",
@@ -3571,8 +3588,6 @@ export const en = {
         repoCheckoutFallback:
           "If you still have the repo checkout, run the local installer from it:",
         restartAfterUpdate: "Restart Unsloth after updating.",
-        desktopManaged:
-          "The desktop app checks for new app versions automatically. You can also check or update here at any time.",
         desktopReady: "Desktop app updates",
         desktopReadyDescription:
           "Check whether a newer desktop app version is available.",

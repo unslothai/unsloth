@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const es419 = {
+  turns: {
+    label: "Turno {number}",
+    bookmarkedLabel: "Turno {number}, con marcador",
+    bookmark: "Marcar turno",
+    removeBookmark: "Quitar marcador",
+    navigator: "Turnos",
+  },
   chatBackground: {
     noBackground: "Sin fondo",
     sizing: "Tamaño de imagen",
@@ -2192,6 +2199,14 @@ export const es419 = {
           full: "Ejecuta todas las llamadas a herramientas sin preguntar y desactiva el sandbox de código, así que el código de Python y terminal puede leer y cambiar cualquier archivo al que tenga acceso tu cuenta.",
         },
       },
+      display: {
+        title: "Visualización",
+        timeFormat: "Formato de hora",
+        timeFormatDescription: "Muestra las horas en formato de 12 o 24 horas.",
+        timeFormatSystem: "Predeterminado del sistema",
+        timeFormat12: "12 horas",
+        timeFormat24: "24 horas",
+      },
       notifications: {
         sectionTitle: "Notificaciones",
         showLoadedModels: "Tarjeta de modelos cargados",
@@ -3237,6 +3252,8 @@ export const es419 = {
       inlineEditResponse: "Editar respuesta en las respuestas",
       inlineEditResponseDescription:
         "Mantén Editar respuesta en cada respuesta, en lugar de en el menú Más.",
+      turnNavigation: "Navegación por turnos",
+      turnNavigationDescription: "Muestra tus mensajes como una barra en el borde izquierdo de los chats largos. Pasa el cursor para ver un turno, haz clic para ir a él y márcalo para encontrarlo después.",
       composerAtBottom: "Cuadro de mensaje abajo",
       composerAtBottomDescription:
         "Empieza los chats nuevos con el cuadro de mensaje en la parte inferior de la página en lugar del centro.",
@@ -3921,8 +3938,6 @@ export const es419 = {
         repoCheckoutFallback:
           "Si aún tienes el checkout del repositorio, ejecuta el instalador local desde ahí:",
         restartAfterUpdate: "Reinicia Unsloth después de actualizar.",
-        desktopManaged:
-          "La app de escritorio busca nuevas versiones automáticamente. También puedes buscar o actualizar aquí en cualquier momento.",
         desktopReady: "Actualizaciones de la app de escritorio",
         desktopReadyDescription:
           "Verifica si hay disponible una versión más reciente de la app de escritorio.",

@@ -71,6 +71,8 @@ export interface ChatPreferencesState {
   setFilesPanelCollapsed: (value: boolean) => void;
   newChatComposerAtBottom: boolean;
   setNewChatComposerAtBottom: (value: boolean) => void;
+  showTurnNavigation: boolean;
+  setShowTurnNavigation: (value: boolean) => void;
 }
 
 // A stale stored value would leave the dropdown blank and unfixable.
@@ -133,6 +135,8 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       newChatComposerAtBottom: false,
       setNewChatComposerAtBottom: (newChatComposerAtBottom) =>
         set({ newChatComposerAtBottom }),
+      showTurnNavigation: true,
+      setShowTurnNavigation: (showTurnNavigation) => set({ showTurnNavigation }),
     }),
     {
       name: "unsloth_chat_preferences",
@@ -178,6 +182,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           autoScrollWhileGenerating: saved?.autoScrollWhileGenerating ?? true,
           notifyWhenReplyFinishes: saved?.notifyWhenReplyFinishes === true,
           filesPanelCollapsed: saved?.filesPanelCollapsed === true,
+          showTurnNavigation: saved?.showTurnNavigation !== false,
           newChatComposerAtBottom: saved?.newChatComposerAtBottom === true,
         };
       },

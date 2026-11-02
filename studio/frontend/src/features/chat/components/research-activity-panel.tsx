@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import {
@@ -338,6 +339,7 @@ const ActivityRow = memo(function ActivityRow({
   const setActivityOpen = useResearchRunStore(
     (state) => state.setActivityOpen,
   );
+  useTimeFormat();
   const open =
     storedOpen ??
     (activity.state === "running" || activity.state === "action");
@@ -502,10 +504,10 @@ const ActivityRow = memo(function ActivityRow({
             {activity.title}
           </span>
           <time className="shrink-0 text-ui-10p5 tabular-nums text-muted-foreground">
-            {new Date(activity.createdAt).toLocaleTimeString([], {
-              hour: "numeric",
-              minute: "2-digit",
-            })}
+            {new Date(activity.createdAt).toLocaleTimeString(
+              [],
+              withTimeFormat({ hour: "numeric", minute: "2-digit" }),
+            )}
           </time>
           {hasDetails ? (
             <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/activity:rotate-180" />

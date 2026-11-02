@@ -2,6 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const it = {
+  turns: {
+    label: "Turno {number}",
+    bookmarkedLabel: "Turno {number}, nei segnalibri",
+    bookmark: "Aggiungi turno ai segnalibri",
+    removeBookmark: "Rimuovi segnalibro",
+    navigator: "Turni",
+  },
   chatBackground: {
     noBackground: "Nessuno sfondo",
     sizing: "Dimensionamento immagine",
@@ -1908,6 +1915,14 @@ export const it = {
             "Esegue ogni chiamata agli strumenti senza chiedere e disattiva la sandbox del codice, così il codice Python e da terminale può leggere e modificare qualsiasi file accessibile al tuo account.",
         },
       },
+      display: {
+        title: "Visualizzazione",
+        timeFormat: "Formato ora",
+        timeFormatDescription: "Mostra gli orari nel formato a 12 o 24 ore.",
+        timeFormatSystem: "Predefinito di sistema",
+        timeFormat12: "12 ore",
+        timeFormat24: "24 ore",
+      },
       notifications: {
         sectionTitle: "Notifiche",
         showLoadedModels: "Scheda dei modelli caricati",
@@ -2880,6 +2895,8 @@ export const it = {
         "dettagli velocità token statistiche livelli scaricamento verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifica risposta nelle risposte",
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
+      turnNavigation: "Navigazione dei turni",
+      turnNavigationDescription: "Mostra i tuoi messaggi come una barra sul bordo sinistro delle chat lunghe. Passa sopra un turno per l’anteprima, fai clic per raggiungerlo e aggiungilo ai segnalibri per ritrovarlo.",
       composerAtBottom: "Casella di testo in basso",
       composerAtBottomDescription: "Avvia le nuove chat con la casella di testo in fondo alla pagina invece che al centro.",
       projectAttachments: "Condividi i file nel progetto",
@@ -3503,8 +3520,6 @@ export const it = {
         repoCheckoutFallback:
           "Se hai ancora il checkout del repository, esegui l'installer locale da lì:",
         restartAfterUpdate: "Riavvia Unsloth dopo l'aggiornamento.",
-        desktopManaged:
-          "L'app desktop verifica automaticamente la presenza di nuove versioni. Puoi anche controllare o aggiornare qui in qualsiasi momento.",
         desktopReady: "Aggiornamenti dell'app desktop",
         desktopReadyDescription:
           "Verifica se è disponibile una versione più recente dell'app desktop.",
