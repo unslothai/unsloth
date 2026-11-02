@@ -145,6 +145,155 @@ def test_a_modular_pipeline_manifest_is_a_cached_base(hub_down):
     assert video_mod._video_cached_while_hub_unreachable(None, repo, None, None)
 
 
+def test_a_local_base_keeps_its_path_when_a_matching_hub_cache_exists(
+    monkeypatch, hub_down, tmp_path
+):
+    _cache(hub_down, "org/local-base", "model_index.json")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "org/local-base").mkdir(parents = True)
+
+    assert not video_mod._video_cached_while_hub_unreachable(None, "org/local-base", None, None)
+
+
+@pytest.fixture
+def tiny_tokenizer():
+    from tokenizers import Tokenizer, models, pre_tokenizers, processors
+
+    reference = Tokenizer(
+        models.Unigram(
+            [("<pad>", 0), ("</s>", 0), ("<unk>", 0), ("▁", -1), ("hello", -1), ("world", -1)],
+            unk_id = 2,
+        )
+    )
+    reference.pre_tokenizer = pre_tokenizers.Sequence(
+        [
+            pre_tokenizers.WhitespaceSplit(),
+            pre_tokenizers.Metaspace(replacement = "▁", prepend_scheme = "always"),
+        ]
+    )
+    reference.post_processor = processors.TemplateProcessing(
+        single = "$A </s>",
+        special_tokens = [("</s>", 1)],
+    )
+    return reference
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_automatic_offline_loading_preserves_the_tokenizer_vocabulary(
+    monkeypatch, hub_down, complete, tiny_tokenizer
+):
+    import json
+    from transformers import AutoTokenizer
+    from core.inference.diffusion_families import mirror_repo
+
+    reference = tiny_tokenizer
+    _cache_everything(hub_down)
+    for repo in {WAN_BASE, mirror_repo(WAN_BASE)}:
+        snapshot = hub_down / ("models--" + repo.replace("/", "--")) / "snapshots" / "abc123"
+        (snapshot / "model_index.json").write_text(
+            json.dumps(
+                {
+                    "_class_name": "WanPipeline",
+                    "tokenizer": ["transformers", "T5TokenizerFast"],
+                }
+            )
+        )
+        folder = snapshot / "tokenizer"
+        folder.mkdir()
+        (folder / "tokenizer_config.json").write_text(
+            json.dumps(
+                {
+                    "tokenizer_class": "T5TokenizerFast",
+                    "extra_ids": 0,
+                    "pad_token": "<pad>",
+                    "eos_token": "</s>",
+                    "unk_token": "<unk>",
+                }
+            )
+        )
+        if complete:
+            reference.save(str(folder / "tokenizer.json"))
+    calls, encoded = [], []
+
+    def _load(**kw):
+        calls.append(kw.get("local_files_only"))
+        repo = kw.get("_base_fetch_repo") or WAN_BASE
+        folder = (
+            hub_down / ("models--" + repo.replace("/", "--")) / "snapshots" / "abc123" / "tokenizer"
+        )
+        if not kw.get("local_files_only"):
+            reference.save(str(folder / "tokenizer.json"))
+        tokenizer = AutoTokenizer.from_pretrained(folder, local_files_only = True)
+        encoded.append(tokenizer.encode("hello world"))
+
+    backend = _backend(monkeypatch, _load)
+    backend._run_load(repo_id = WAN_GGUF, gguf_filename = WAN_FILE, _load_token = 1)
+
+    assert backend._loading is None, getattr(backend._loading, "error", None)
+    assert encoded == [reference.encode("hello world").ids]
+    assert calls == ([True] if complete else [None])
+
+
+@pytest.mark.parametrize("cls", ["T5TokenizerFast", "Qwen3VLProcessor"])
+@pytest.mark.parametrize("subfolder", [None, "nested"])
+@pytest.mark.parametrize("complete", [False, True])
+def test_modular_tokenizer_sources_use_their_own_snapshot_folder(
+    hub_down, tiny_tokenizer, subfolder, complete, cls
+):
+    import json
+
+    base, external = "org/modular-base", "org/external-tokenizer"
+    _cache(hub_down, base, "modular_model_index.json")
+    _cache(hub_down, external, "placeholder")
+    source = {"pretrained_model_name_or_path": external}
+    if subfolder is not None:
+        source["subfolder"] = subfolder
+    snapshot = hub_down / "models--org--modular-base/snapshots/abc123"
+    (snapshot / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "TestModularPipeline",
+                "tokenizer": ["transformers", cls, source],
+            }
+        )
+    )
+    folder = hub_down / "models--org--external-tokenizer/snapshots/abc123" / (subfolder or "")
+    folder.mkdir(exist_ok = True)
+    (
+        folder / ("processor_config.json" if "Processor" in cls else "tokenizer_config.json")
+    ).write_text("{}")
+    if complete:
+        tiny_tokenizer.save(str(folder / "tokenizer.json"))
+
+    assert (
+        video_mod._video_cached_while_hub_unreachable(
+            None, base, None, None, family = detect_video_family("MiniMaxAI/MiniMax-H3")
+        )
+        is complete
+    )
+
+
+def test_a_modular_load_validates_its_preferred_manifest(hub_down):
+    import json
+
+    repo = "org/both-manifests"
+    _cache(hub_down, repo, "model_index.json", "modular_model_index.json")
+    snapshot = hub_down / "models--org--both-manifests/snapshots/abc123"
+    (snapshot / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "UnusedPipeline",
+                "tokenizer": ["transformers", "T5TokenizerFast"],
+            }
+        )
+    )
+
+    assert video_mod._video_cached_while_hub_unreachable(
+        None, repo, None, None, family = detect_video_family("MiniMaxAI/MiniMax-H3")
+    )
+    assert not video_mod._video_cached_while_hub_unreachable(None, repo, None, None)
+
+
 def test_a_mirrored_single_file_pick_uses_its_resolved_cached_checkpoint(monkeypatch, hub_down):
     import json
     import struct
@@ -214,8 +363,14 @@ def test_a_mirrored_single_file_pick_uses_its_resolved_cached_checkpoint(monkeyp
     assert [call.get("local_files_only") for call in calls] == [True]
 
 
-def test_the_failed_offline_attempt_is_released_before_the_online_retry(monkeypatch, hub_down):
+@pytest.mark.parametrize("deferred", [False, True])
+def test_the_failed_offline_attempt_is_released_before_the_online_retry(
+    monkeypatch, hub_down, deferred
+):
+    import contextlib
     import weakref
+
+    from core.inference.diffusion_prequant_cache import PendingWrite, _WriteJob
 
     _cache_everything(hub_down)
 
@@ -229,14 +384,22 @@ def test_the_failed_offline_attempt_is_released_before_the_online_retry(monkeypa
         if kw.get("local_files_only"):
             transformer = _Weights()  # held by this frame, so by the failure's traceback
             built.append(weakref.ref(transformer))
+            if deferred:
+                job = _WriteJob(
+                    "failed-load", hub_down / "pending", {"weight": transformer}, {}, {}, 1, 0, None
+                )
+                backend._resident_quant_write = (1, PendingWrite(job, contextlib.ExitStack()))
             raise OSError("vae/config.json is not in the cache")
         alive_at_retry.append(built[0]() is not None)
 
     backend = _backend(monkeypatch, _load)
-    backend._run_load(repo_id = WAN_GGUF, gguf_filename = WAN_FILE, _load_token = 1)
-
-    assert backend._loading is None, getattr(backend._loading, "error", None)
-    assert alive_at_retry == [False]
+    try:
+        backend._run_load(repo_id = WAN_GGUF, gguf_filename = WAN_FILE, _load_token = 1)
+        assert backend._loading is None, getattr(backend._loading, "error", None)
+        assert alive_at_retry == [False]
+        assert getattr(backend, "_resident_quant_write", None) is None
+    finally:
+        video_mod._discard_resident_quant_write(backend, 1)
 
 
 @pytest.mark.parametrize("cache_miss, retried", [(True, True), (False, False)])

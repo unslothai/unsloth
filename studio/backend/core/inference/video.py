@@ -2311,17 +2311,74 @@ def _video_cached_while_hub_unreachable(
     base_repo: Optional[str],
     checkpoint_repo: Optional[str],
     checkpoint_file: Optional[str],
+    *,
+    revision: Optional[str] = None,
+    family: Any = None,
 ) -> bool:
     if base_local or not base_repo or not hub_reachability.hub_unreachable():
         return False
     try:
-        from core.inference.diffusion import _cached_while_hub_unreachable
-
-        if not any(
-            _cached_while_hub_unreachable(base_repo, name)
-            for name in ("model_index.json", "modular_model_index.json")
-        ):
+        if Path(base_repo).expanduser().exists():
             return False
+        import json
+        from huggingface_hub import try_to_load_from_cache
+        from core.inference.diffusion import _cached_while_hub_unreachable
+        from .diffusion_families import _local_pipeline_component_is_complete, canonical_base
+        from .diffusion_offline_source import offline_snapshot_source
+
+        manifest = None
+        manifests = (
+            ("modular_model_index.json", "model_index.json")
+            if getattr(family, "modular_workflow", None)
+            else ("model_index.json", "modular_model_index.json")
+        )
+        for name in manifests:
+            hit = try_to_load_from_cache(
+                base_repo, name, cache_dir = hub_cache_dir(), revision = revision
+            )
+            if isinstance(hit, str):
+                manifest = Path(hit)
+                break
+        if manifest is None:
+            return False
+        metadata_types = (
+            ("tokenizer",)
+            if getattr(family, "name", None) == "ltx-2.5"
+            else ("tokenizer", "processor")
+        )
+        for name, spec in json.loads(manifest.read_text(encoding = "utf-8")).items():
+            if not isinstance(spec, (list, tuple)) or len(spec) < 2:
+                continue
+            library, cls = spec[:2]
+            if (
+                library != "transformers"
+                or not isinstance(cls, str)
+                or not any(kind in cls.lower() for kind in metadata_types)
+            ):
+                continue
+            source = (
+                spec[2]
+                if manifest.name == "modular_model_index.json"
+                and len(spec) > 2
+                and isinstance(spec[2], dict)
+                else {}
+            )
+            source_repo = source.get("pretrained_model_name_or_path") or source.get("repo")
+            repo = source_repo or base_repo
+            same_base = canonical_base(repo) == canonical_base(base_repo)
+            repo = base_repo if same_base else repo
+            subfolder = source.get("subfolder", "" if source_repo else name) or ""
+            root = offline_snapshot_source(
+                repo,
+                subfolder,
+                local_files_only = True,
+                cache_dir = hub_cache_dir(),
+                revision = source.get("revision") or (revision if same_base else None),
+            )
+            if not _local_pipeline_component_is_complete(
+                Path(root) / subfolder, library, cls, False
+            ):
+                return False
         if checkpoint_file and checkpoint_repo and not Path(checkpoint_repo).expanduser().exists():
             return _cached_while_hub_unreachable(checkpoint_repo, checkpoint_file)
         return True
@@ -5812,6 +5869,8 @@ class VideoBackend:
                 kwargs.get("_base_fetch_repo") or base,
                 checkpoint_cached_repo if kind != "pipeline" else None,
                 kwargs.get("gguf_filename") if kind != "pipeline" else None,
+                revision = kwargs.get("_base_fetch_revision"),
+                family = fam,
             )
 
             def _load(offline: bool) -> None:
@@ -5850,6 +5909,7 @@ class VideoBackend:
                 # Outside the except so the failed attempt's traceback frames are released before retrying online.
                 self._close_pending_ltx25_encoder(token)
                 self._rollback_precommit_globals(token)
+                _discard_resident_quant_write(self, token)
                 import gc
 
                 gc.collect()
