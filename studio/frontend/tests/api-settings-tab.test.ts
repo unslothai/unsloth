@@ -64,7 +64,7 @@ test("one tab row holds every example, with no jump links above it; Agents opens
     /<UsageExamples\s+part="chat"/,
     /<MediaApiExamples[^>]*showHeading=\{false\}/,
     /<AudioApiExamples[^>]*showHeading=\{false\}/,
-    /<DecisionApiSection showHeading=\{false\} \/>/,
+    /<DecisionApiSection[^>]*showHeading=\{false\}/,
   ]) {
     assert.match(tabs, card);
   }

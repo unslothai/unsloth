@@ -3732,6 +3732,9 @@ export const vi = {
         docsLabel: "Mở tài liệu API quyết định",
         description:
           "Trả lời các câu hỏi có/không, trắc nghiệm và chấm điểm về văn bản bằng một mô hình trên máy này hoặc một mô hình quyết định từ Kết nối. Hoạt động với TypeSafe SDK.",
+        codeTitle: "Gọi từ mã",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Các ứng dụng MCP khác kết nối tại đây bằng cùng một token.",
         enable: "Phục vụ yêu cầu",
         enableDescription:
           "Phục vụ /v1/systemone. Khi bật, mô hình sẽ được tải xuống.",
@@ -5469,6 +5472,8 @@ export const vi = {
     removeLevel: "Xóa mức {n}",
     addLevel: "Thêm mức",
     jsonHelp: "Nội dung yêu cầu. Nút Chạy sẽ gửi đúng như những gì đã viết.",
+    copyBody: "Sao chép nội dung",
+    copyCurl: "Sao chép dưới dạng cURL",
     examples: "Ví dụ",
     presetToolApproval: "Phê duyệt lệnh gọi công cụ của tác tử",
     presetPromptInjection: "Phát hiện tấn công chèn lời nhắc",

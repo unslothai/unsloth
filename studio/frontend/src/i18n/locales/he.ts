@@ -3525,6 +3525,9 @@ export const he = {
         docsLabel: "פתח את התיעוד של ממשק ה-API להחלטות",
         description:
           "ענה על שאלות כן/לא, רב-ברירה ודירוג לגבי טקסט באמצעות מודל במחשב זה או מודל החלטות מ'חיבורים'. עובד עם TypeSafe SDK.",
+        codeTitle: "קריאה מקוד",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "לקוחות MCP אחרים מתחברים לכאן עם אותו אסימון.",
         enable: "הגש בקשות",
         enableDescription: "מגיש את /v1/systemone. הפעלה מורידה את המודל.",
         enableRemoteDescription: "מגיש את /v1/systemone.",
@@ -5174,6 +5177,8 @@ export const he = {
     removeLevel: "הסר רמה {n}",
     addLevel: "הוסף רמה",
     jsonHelp: "גוף הבקשה. הרצה שולחת אותו כפי שהוא.",
+    copyBody: "העתקת גוף הבקשה",
+    copyCurl: "העתקה כ-cURL",
     examples: "דוגמאות",
     presetToolApproval: "אישור קריאות לכלים של סוכן",
     presetPromptInjection: "זיהוי הזרקת פרומפט",

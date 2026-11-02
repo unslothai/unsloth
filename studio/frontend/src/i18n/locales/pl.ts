@@ -3777,6 +3777,9 @@ export const pl = {
         docsLabel: "Otwórz dokumentację Decision API",
         description:
           "Odpowiadaj na pytania tak/nie, wielokrotnego wyboru i punktowe dotyczące tekstu za pomocą modelu na tym komputerze lub modelu decyzyjnego z Połączeń. Działa z TypeSafe SDK.",
+        codeTitle: "Wywołaj z kodu",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Inni klienci MCP łączą się tutaj tym samym tokenem.",
         enable: "Obsługuj żądania",
         enableDescription:
           "Udostępnia /v1/systemone. Włączenie powoduje pobranie modelu.",
@@ -5521,6 +5524,8 @@ export const pl = {
     removeLevel: "Usuń poziom {n}",
     addLevel: "Dodaj poziom",
     jsonHelp: "Treść żądania. Uruchomienie wysyła ją w niezmienionej postaci.",
+    copyBody: "Kopiuj treść",
+    copyCurl: "Kopiuj jako cURL",
     examples: "Przykłady",
     presetToolApproval: "Zatwierdzanie wywołań narzędzi agenta",
     presetPromptInjection: "Wykrywanie wstrzykiwania promptów",

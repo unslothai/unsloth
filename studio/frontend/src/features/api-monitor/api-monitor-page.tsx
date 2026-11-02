@@ -969,7 +969,11 @@ function QuickStart({
               showHeading={false}
             />
           ) : (
-            <DecisionApiSection showHeading={false} />
+            <DecisionApiSection
+              apiKey={freshKey}
+              useTunnel={useTunnel}
+              showHeading={false}
+            />
           )}
         </div>
       )}

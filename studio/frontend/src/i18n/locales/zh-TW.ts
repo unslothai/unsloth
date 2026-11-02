@@ -3549,6 +3549,9 @@ export const zhTW = {
         docsLabel: "開啟決策 API 文件",
         description:
           "使用此電腦上的模型或「連線」中的決策模型，回答與文字相關的是非題、選擇題和評分題。可搭配 TypeSafe SDK 使用。",
+        codeTitle: "透過程式碼呼叫",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "其他 MCP 用戶端使用同一權杖連線到此處。",
         enable: "處理請求",
         enableDescription: "提供 /v1/systemone 服務。開啟後會下載模型。",
         enableRemoteDescription: "提供 /v1/systemone 服務。",
@@ -5163,6 +5166,8 @@ export const zhTW = {
     removeLevel: "移除等級 {n}",
     addLevel: "新增等級",
     jsonHelp: "請求本文。執行時會依原樣傳送。",
+    copyBody: "複製請求內容",
+    copyCurl: "複製為 cURL",
     examples: "範例",
     presetToolApproval: "核准代理程式工具呼叫",
     presetPromptInjection: "偵測提示詞注入",
