@@ -5609,10 +5609,13 @@ class VideoBackend:
             from .diffusion_families import pinned_repo_revision
 
             # Avoid diffusers' untimed model_info when the cache can serve an unreachable Hub.
+            checkpoint_cached_repo = (
+                str(checkpoint_local) if checkpoint_local is not None else kwargs["repo_id"]
+            )
             forced_offline = not local_files_only and _video_cached_while_hub_unreachable(
                 base_local,
                 kwargs.get("_base_fetch_repo") or base,
-                kwargs["repo_id"] if kind != "pipeline" else None,
+                checkpoint_cached_repo if kind != "pipeline" else None,
                 kwargs.get("gguf_filename") if kind != "pipeline" else None,
             )
 

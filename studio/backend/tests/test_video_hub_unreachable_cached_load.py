@@ -145,6 +145,75 @@ def test_a_modular_pipeline_manifest_is_a_cached_base(hub_down):
     assert video_mod._video_cached_while_hub_unreachable(None, repo, None, None)
 
 
+def test_a_mirrored_single_file_pick_uses_its_resolved_cached_checkpoint(monkeypatch, hub_down):
+    import json
+    import struct
+    import huggingface_hub
+
+    from core.inference.diffusion_families import mirror_repo
+
+    repo, base = "Lightricks/LTX-2.3", "Lightricks/LTX-2"
+    filename = "ltx-2.3-22b-distilled.safetensors"
+    checkpoint_repo = mirror_repo(repo)
+    for source in {base, mirror_repo(base)}:
+        _cache(hub_down, source, "model_index.json")
+    _cache(hub_down, checkpoint_repo, filename)
+    checkpoint = (
+        hub_down
+        / ("models--" + checkpoint_repo.replace("/", "--"))
+        / "snapshots"
+        / "abc123"
+        / filename
+    )
+    header = json.dumps(
+        {
+            "model.diffusion_model.transformer_blocks.0.scale_shift_table": {
+                "dtype": "F32",
+                "shape": [9, 8],
+                "data_offsets": [0, 288],
+            },
+        }
+    ).encode("utf-8")
+    header += b" " * ((-len(header)) % 8)
+    checkpoint.write_bytes(struct.pack("<Q", len(header)) + header + bytes(288))
+    downloaded = []
+
+    def cached_download(
+        repo_id,
+        filename,
+        token = None,
+        **kwargs,
+    ):
+        path = huggingface_hub.hf_hub_download(
+            repo_id,
+            filename,
+            cache_dir = str(hub_down),
+            local_files_only = True,
+        )
+        downloaded.append((repo_id, filename, path))
+        return path
+
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", cached_download)
+    backend = VideoBackend()
+    backend._load_token = 1
+    backend._loading = video_mod._VideoLoadingState(repo_id = repo, base_repo = base)
+    family = detect_video_family(base)
+    monkeypatch.setattr(video_mod, "_detect_load_family", lambda *_a, **_k: family)
+    calls = []
+    monkeypatch.setattr(backend, "load_pipeline", lambda **kw: calls.append(dict(kw)))
+    backend._run_load(
+        repo_id = repo,
+        gguf_filename = filename,
+        _load_token = 1,
+        transformer_quant = "none",
+        text_encoder_quant = "none",
+    )
+
+    assert backend._loading is None, getattr(backend._loading, "error", None)
+    assert downloaded == [(checkpoint_repo, filename, str(checkpoint))]
+    assert [call.get("local_files_only") for call in calls] == [True]
+
+
 def test_the_failed_offline_attempt_is_released_before_the_online_retry(monkeypatch, hub_down):
     import weakref
 
