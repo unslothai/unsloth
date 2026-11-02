@@ -1,16 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""/v1/videos decodes each conditioning image once: the readability check's decode feeds the render."""
+"""Bounded request-local reuse of /v1/videos conditioning image decodes."""
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import gc
 import io
 import sys
+import weakref
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from PIL import Image
 
 import routes.video as video_routes
@@ -86,6 +90,49 @@ def _pixels(image):
     return None if image is None else (image.mode, image.size, image.tobytes())
 
 
+def test_cache_overflow_releases_every_image_and_stays_disabled(monkeypatch):
+    monkeypatch.setattr(video_routes, "_VIDEO_IMAGE_DECODE_CACHE_MAX_BYTES", 1025)
+    images = []
+    original = diffusion.decode_b64_image_sized
+
+    def tracked(*args, **kwargs):
+        image, size = original(*args, **kwargs)
+        images.append(weakref.ref(image))
+        return image, size
+
+    monkeypatch.setattr(diffusion, "decode_b64_image_sized", tracked)
+    body = video_routes.VideoJobCreateRequest(
+        prompt = "x",
+        reference_images = [_data_url((16, 16)), _data_url((16, 16)), _data_url((1, 1))],
+    )
+    inputs = asyncio.run(video_routes._validated_video_inputs(body, None))
+    assert inputs.decoded_images is None
+    assert len(images) == 3
+    gc.collect()
+    assert all(image() is None for image in images)
+
+
+@pytest.mark.parametrize("budget, retained", [(2048, 2), (2047, 0)])
+def test_cache_budget_counts_pillow_rgb_storage(monkeypatch, budget, retained):
+    monkeypatch.setattr(video_routes, "_VIDEO_IMAGE_DECODE_CACHE_MAX_BYTES", budget)
+    body = video_routes.VideoJobCreateRequest(
+        prompt = "x", reference_images = [_data_url((16, 16)), _data_url((16, 16))]
+    )
+    inputs = asyncio.run(video_routes._validated_video_inputs(body, None))
+    assert (len(inputs.decoded_images.entries) if inputs.decoded_images else 0) == retained
+
+
+def test_cache_overflow_still_validates_later_images(monkeypatch):
+    monkeypatch.setattr(video_routes, "_VIDEO_IMAGE_DECODE_CACHE_MAX_BYTES", 1)
+    body = video_routes.VideoJobCreateRequest(
+        prompt = "x", reference_images = [_data_url((16, 16)), "data:image/png;base64,aGVsbG8="]
+    )
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(video_routes._validated_video_inputs(body, None))
+    assert error.value.status_code == 400
+    assert "reference_images is not a readable image." in str(error.value.detail)
+
+
 @pytest.mark.parametrize("orientation", [None, 3, 6, 8])
 @pytest.mark.parametrize("mode", ["RGB", "RGBA"])
 def test_reused_keyframes_match_a_fresh_decode_without_decoding(monkeypatch, orientation, mode):
@@ -127,7 +174,6 @@ def test_reused_references_match_a_fresh_decode_and_a_repeat_gets_its_own_image(
     )
     assert opened == []
     assert [_pixels(x) for x in reused.images] == [_pixels(x) for x in fresh.images]
-    # Each slot consumes its own decode, as each was decoded on its own before.
     assert decoded.entries[0][2] is not decoded.entries[2][2]
 
 
@@ -205,9 +251,26 @@ def test_the_route_hands_its_decodes_to_the_render(client, backend, monkeypatch)
     assert size == Image.open(io.BytesIO(png)).size
 
 
-def test_a_queued_job_keeps_no_decoded_pixels(client, backend):
+def test_a_queued_job_keeps_no_decoded_pixels(client, backend, monkeypatch):
     from test_openai_videos_queue import _render_one
 
+    images = []
+    original_decode = diffusion.decode_b64_image_sized
+    original_display = video_routes._queued_job_display
+
+    def tracked(*args, **kwargs):
+        image, size = original_decode(*args, **kwargs)
+        images.append(weakref.ref(image))
+        return image, size
+
+    def display(*args, **kwargs):
+        gc.collect()
+        assert len(images) == 1
+        assert images[0]() is None
+        return original_display(*args, **kwargs)
+
+    monkeypatch.setattr(diffusion, "decode_b64_image_sized", tracked)
+    monkeypatch.setattr(video_routes, "_queued_job_display", display)
     png = _reference_image_bytes("PNG")
     _render_one(client, backend)
     try:
@@ -254,6 +317,5 @@ def test_a_model_switch_drops_the_decodes_and_the_render_decodes_again(
     assert resp.status_code == 200, resp.json()
     _wait_terminal(client, resp.json()["id"])
     (kwargs,) = calls
-    # Nothing decoded is held through a switch's load; the engine decodes as base did.
     assert "decoded_reference_images" not in kwargs
     assert kwargs["input_reference"] is not None
