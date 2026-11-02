@@ -4520,7 +4520,7 @@ def test_a_full_width_cache_pays_for_the_widest_call_mlx_does_not_fuse(monkeypat
     floor = mm._compute_bytes(_BONSAI[:3], 2, 2048, [_GROWING], n_ctx, None)
     asked = _unfused_route(monkeypatch, fuses)
     priced = mm._compute_bytes(_BONSAI, 2, 2048, [_GROWING], n_ctx, None)
-    assert priced - floor == cells * _SCORE
+    assert priced - floor == pytest.approx(cells * _SCORE, abs = 1)
     assert (2048, 16 * 2048) in asked
 
 
@@ -4529,7 +4529,7 @@ def test_a_tail_unfused_past_any_fixed_scan_is_still_priced(monkeypatch):
     _unfused_route(monkeypatch, lambda L, S: L <= 8 or L > 8160)
     floor = mm._compute_bytes(_BONSAI[:3], 2, 16384, [_GROWING], 32768, None)
     priced = mm._compute_bytes(_BONSAI, 2, 16384, [_GROWING], 32768, None)
-    assert priced - floor == 8160 * (16384 + 8160) * _SCORE
+    assert priced - floor == pytest.approx(8160 * (16384 + 8160) * _SCORE, abs = 1)
 
 
 def test_the_scores_charged_never_fall_as_the_context_grows(monkeypatch):
@@ -4593,7 +4593,8 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         row = mm._dequantized_row_bytes(widths, 2, 8, 64, 2048)
         floor = mm._compute_bytes(widths[:3], 2, 2048, [], 32768, None)
         charged = mm._compute_bytes(widths, 2, 2048, [], 32768, 2048, 8, 64) - floor
-        assert row is not None and charged == 8 * (15 * 2048 + 8) * 256 * 2 * mm._SCORE_LIVE
+        assert row is not None
+        assert charged == pytest.approx(8 * (15 * 2048 + 8) * 256 * 2 * mm._SCORE_LIVE, abs = 1)
         assert charged > row * 32768
 
     def test_a_full_width_cache_is_charged_only_the_tail_the_runtime_leaves_unfused(self):
@@ -4606,7 +4607,9 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         unrouted = mm._compute_bytes(self.GQA[:3], 2, 2048, plan, 32768, None)
         assert mm._compute_bytes(self.GQA, 2, 2048, plan, 32768, None) == unrouted
         wide = mm._compute_bytes(self.WIDE, 2, 2048, plan, 32768, None)
-        assert wide - unrouted == 63 * (15 * 2048 + 63) * 16 * 2 * mm._SCORE_LIVE
+        assert wide - unrouted == pytest.approx(
+            63 * (15 * 2048 + 63) * 16 * 2 * mm._SCORE_LIVE, abs = 1
+        )
 
     def test_a_copied_route_is_charged_a_tail_whose_scores_outgrow_the_copy(self):
         from unsloth_zoo.mlx import attention
@@ -4631,8 +4634,8 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         plan = [_GROWING] * 4
         unrouted = mm._compute_bytes(self.GQA[:3], 2, 2048, plan, 32768, None)
         wide = mm._compute_bytes(self.WIDE, 2, 2048, plan, 32768, None)
-        assert (
-            wide - unrouted == mm._widest_quantized_scores(32768, 0, 2048) * 16 * 2 * mm._SCORE_LIVE
+        assert wide - unrouted == pytest.approx(
+            mm._widest_quantized_scores(32768, 0, 2048) * 16 * 2 * mm._SCORE_LIVE, abs = 1
         )
 
     def test_a_zoo_that_cannot_route_it_keeps_the_scores_whole(self, monkeypatch):
@@ -4649,8 +4652,8 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         assert mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048) is None
         floor = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, None)
         priced = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, 2048, 4, 64)
-        assert priced - floor == (
-            mm._widest_quantized_scores(32768, 2048, 2048) * 32 * 2 * mm._SCORE_LIVE
+        assert priced - floor == pytest.approx(
+            mm._widest_quantized_scores(32768, 2048, 2048) * 32 * 2 * mm._SCORE_LIVE, abs = 1
         )
 
     @pytest.mark.parametrize(
@@ -4744,6 +4747,22 @@ def test_the_route_is_asked_about_a_cache_longer_than_the_chunk(monkeypatch, chu
 
 
 @_NEEDS_MLX
+def test_the_score_multiple_is_what_an_unfused_call_really_holds():
+    import mlx.core as mx
+
+    q = mx.zeros((1, 8, 512, 112), dtype = mx.bfloat16) + 1
+    k = mx.zeros((1, 8, 8192, 112), dtype = mx.bfloat16) + 1
+    mx.eval(q, k)
+    mx.synchronize()
+    mx.clear_cache()
+    base = mx.get_active_memory()
+    mx.reset_peak_memory()
+    mx.eval(mx.fast.scaled_dot_product_attention(q, k, k, scale = 0.1, mask = "causal"))
+    held = (mx.get_peak_memory() - base) / (8 * 512 * 8192 * 2)
+    assert held <= mm._SCORE_LIVE < held * 1.1
+
+
+@_NEEDS_MLX
 class TestATurboQuantCacheIsSizedAsMlxVlmConvertsIt:
     @pytest.fixture(autouse = True)
     def _off_nax(self, monkeypatch):
@@ -4768,7 +4787,9 @@ class TestATurboQuantCacheIsSizedAsMlxVlmConvertsIt:
         floor = mm._compute_bytes((*widths[:3], 0, 0, 0), 2, 2048, [], n_ctx, None)
         priced = mm._compute_bytes(widths, 2, 2048, [], n_ctx, 0, mm.MlxTurboQuant(4)) - floor
         copied = widths[3] * (widths[4] + widths[5]) * 10 * (n_ctx - 1)
-        assert priced == copied + scored_cells * widths[2] * 2 * mm._SCORE_LIVE
+        assert priced == pytest.approx(
+            copied + scored_cells * widths[2] * 2 * mm._SCORE_LIVE, abs = 1
+        )
 
     @staticmethod
     def _filled(

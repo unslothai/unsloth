@@ -53,8 +53,9 @@ _COMPUTE_BASE_BYTES = int(0.64 * 1024**3)
 
 _RECURRENT_DTYPE_SIZE = 4
 
-# Score copies an unfused call holds at the queries' width; Metal measured 1.03 to 1.15 (mlx 0.32.4).
-_SCORE_LIVE = 1.25
+# Score copies an unfused call holds at the queries' width; Metal measured 1.01 to 1.13 (mlx 0.32.4). A NAX head_dim 512
+# tail reaches 1.32, under 100 MiB beyond this at 65K keys, which the fixed compute charge covers.
+_SCORE_LIVE = 1.13
 # A TurboQuant prefill holds the whole cache dequantized to float32 and cast to the query dtype; measured.
 _TURBOQUANT_DEQUANT_BYTES = 10
 
