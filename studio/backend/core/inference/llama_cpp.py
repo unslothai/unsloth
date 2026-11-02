@@ -3054,11 +3054,14 @@ def _extract_reasoning_effort_levels(chat_template: str) -> list:
     ]
 
 
-_REASONING_EFFORT_ALLOWLIST_RE = re.compile(r"reasoning_effort\s+(?:not\s+)?in\s+\[([^\]]*)\]")
+# Only a validation guard: a plain membership branch can group levels or reject the ones it names.
+_REASONING_EFFORT_ALLOWLIST_RE = re.compile(
+    r"\{%-?\s*if\s+reasoning_effort\s+not\s+in\s+\[([^\]]*)\]\s*-?%\}\s*\{\{-?\s*raise_exception\("
+)
 
 
 def _reasoning_effort_allowlist(chat_template: str) -> list:
-    """Levels from a literal `reasoning_effort [not] in [...]` test, which the template enforces."""
+    """Levels from an `if reasoning_effort not in [...]` guard that raises, so the template enforces them."""
     match = _REASONING_EFFORT_ALLOWLIST_RE.search(chat_template)
     return _extract_reasoning_effort_levels(match.group(1)) if match else []
 

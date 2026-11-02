@@ -68,7 +68,9 @@ def test_enforced_allowlist_is_published():
 
 
 def test_allowlist_of_only_none_is_not_a_ladder():
-    template = "{%- if reasoning_effort in ['none'] %}x{%- endif %}"
+    template = (
+        "{%- if reasoning_effort not in ['none'] %}{{- raise_exception('off only') }}{%- endif %}"
+    )
     assert detect_reasoning_flags(template)["reasoning_effort_levels"] == []
 
 
@@ -80,16 +82,35 @@ def test_allowlist_of_only_none_is_not_a_ladder():
             "{%- if reasoning_effort == 'low' %}l{%- elif reasoning_effort == 'high' %}h{%- endif %}",
             ["low", "high"],
         ),
+        # A membership branch that groups levels is not a guard: high stays offered.
+        (
+            "{%- if reasoning_effort in ['low', 'medium'] %}short"
+            "{%- elif reasoning_effort == 'high' %}long{%- endif %}",
+            ["low", "medium", "high"],
+        ),
+        # Raising on membership rejects the listed level, so it must not become the only choice.
+        (
+            "{%- if reasoning_effort in ['high'] %}{{- raise_exception('high is not supported') }}{%- endif %}"
+            "{%- if reasoning_effort == 'low' %}l{%- endif %}",
+            ["low", "high"],
+        ),
+        # `not in` without a raise only formats.
+        (
+            "{%- if reasoning_effort not in ['low', 'high'] %}default{%- endif %}"
+            "{%- if reasoning_effort == 'medium' %}m{%- endif %}",
+            ["low", "medium", "high"],
+        ),
     ],
 )
-def test_templates_without_an_allowlist_keep_the_scan(template, expected):
+def test_templates_without_a_validation_guard_keep_the_scan(template, expected):
     assert detect_reasoning_flags(template)["reasoning_effort_levels"] == expected
 
 
 def test_allowlist_ignores_levels_quoted_elsewhere():
     template = (
-        "{%- if reasoning_effort in ['low', 'medium', 'high'] %}{{ reasoning_effort }}{%- endif %}"
         "{%- if tool_choice == 'none' %}{%- endif %}"
+        "{%- if reasoning_effort not in ['low', 'medium', 'high'] %}"
+        "{{- raise_exception('unsupported reasoning_effort') }}{%- endif %}"
     )
     assert detect_reasoning_flags(template)["reasoning_effort_levels"] == ["low", "medium", "high"]
 
