@@ -999,6 +999,15 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         )
 
 
+def _handle_narrow_context(backend, cmd: dict, resp_queue: Any) -> None:
+    try:
+        fields = backend.narrow_context(cmd.get("max_seq_length"))
+    except Exception as exc:
+        logger.warning("Could not narrow the context in place: %s", exc)
+        fields = None
+    _send_response(resp_queue, {"type": "context_narrowed", "fields": fields})
+
+
 def _drain_skip_generate(
     cmd: dict,
     resp_queue: Any,
@@ -2399,6 +2408,11 @@ def run_inference_process(
                     if backend.active_model_name:
                         backend.unload_model(backend.active_model_name)
                     _handle_load(backend, cmd, resp_queue)
+                elif cmd_type == "narrow_context":
+                    batch.cancel_all()
+                    batch.close()
+                    _abandon_held_commands(deferred, resp_queue)
+                    _handle_narrow_context(backend, cmd, resp_queue)
                 elif cmd_type == "unload":
                     batch.cancel_all()
                     batch.close()

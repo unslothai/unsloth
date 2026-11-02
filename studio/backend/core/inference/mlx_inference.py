@@ -6526,6 +6526,46 @@ class MLXInferenceBackend:
         logger.info("Model %s loaded successfully", model_name)
         return True
 
+    def narrow_context(self, max_seq_length):
+        """Serve a smaller pinned context from the weights already held, answering the entry's new
+        context fields. None where a fresh load could decide differently: a wider context is priced
+        again, and a narrower one may admit a drafter or drop an offload."""
+        entry = self.models.get(self.active_model_name)
+        pinned = _positive_int(max_seq_length)
+        if entry is None or pinned is None or not self._served_context:
+            return None
+        offload = entry.get("mlx_offload") or {}
+        drafter = getattr(self._speculative_draft, "drafter", None)
+        if (
+            any(part.get("applied") for part in offload.values() if isinstance(part, dict))
+            or self._kv_quant["requested_kv_bits"] is not None
+            or self._turboquant
+            or self._prompt_cache_room is not None
+            or (entry.get("spec_fallback_reason") and drafter is None)
+        ):
+            return None
+        # The served length reads this attribute before the argument.
+        previous = self._model.max_seq_length
+        self._model.max_seq_length = pinned
+        served = self._resolve_context_lengths(self._model, pinned)[0]
+        if not served or served > self._served_context:
+            self._model.max_seq_length = previous
+            return None
+        self._clear_prompt_cache()
+        self._served_context = served
+        self._kv_quant, self._kv_cache_window, enforced, self._kv_context_budget = (
+            self._resolve_kv_policy(self._is_vlm, None, pinned, served)
+        )
+        fields = {
+            "context_length": served,
+            "requested_context_length": pinned,
+            "context_length_enforced": enforced,
+            "context_length_fitted": None,
+            "mlx_context_budget": self._kv_context_budget,
+        }
+        entry.update(fields)
+        return fields
+
     def _warm_resident_batch(self):
         """Serve short replies through the batch requests take, whose first-use work Zoo's warm-up generation misses.
 
