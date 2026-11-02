@@ -118,6 +118,26 @@ def test_an_uncached_base_still_loads_online(monkeypatch, hub_down):
     assert [c.get("local_files_only") for c in calls] in ([False], [None])
 
 
+def test_a_pipeline_cached_only_in_its_mirror_loads_offline(monkeypatch, hub_down):
+    from core.inference.diffusion_families import mirror_repo
+
+    mirror = mirror_repo(WAN_BASE)
+    _cache(hub_down, mirror, "model_index.json")
+    calls = []
+    backend = _backend(monkeypatch, lambda **kw: calls.append(dict(kw)))
+    backend._run_load(
+        repo_id = WAN_BASE,
+        model_kind = "pipeline",
+        _load_token = 1,
+        transformer_quant = "none",
+        text_encoder_quant = "none",
+    )
+
+    assert backend._loading is None, getattr(backend._loading, "error", None)
+    assert [c.get("local_files_only") for c in calls] == [True]
+    assert calls[0]["_base_fetch_repo"] == mirror
+
+
 def test_the_failed_offline_attempt_is_released_before_the_online_retry(monkeypatch, hub_down):
     import weakref
 

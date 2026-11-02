@@ -5594,6 +5594,12 @@ class VideoBackend:
                     else None,
                     skip = ("transformer",),
                 )
+            if (
+                kwargs["_base_fetch_repo"] is None
+                and kind == "pipeline"
+                and hub_reachability.hub_unreachable()
+            ):
+                kwargs["_base_fetch_repo"] = _video_fetch_repo(base, kwargs.get("hf_token"))
             kwargs["_base_fetch_revision"] = (
                 base_fetch_choice.get("revision")
                 if base_fetch_choice
