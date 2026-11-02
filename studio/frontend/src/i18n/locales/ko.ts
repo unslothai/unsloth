@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const ko = {
+  turns: {
+    label: "턴 {number}",
+    bookmarkedLabel: "턴 {number}, 북마크됨",
+    bookmark: "턴 북마크",
+    removeBookmark: "북마크 해제",
+    navigator: "턴",
+  },
   chatBackground: {
     noBackground: "배경 없음",
     sizing: "이미지 크기 조정",
@@ -1964,6 +1971,14 @@ export const ko = {
         loadError: "관리 계정 연결 설정을 불러오지 못했습니다.",
         saveError: "관리 계정 연결 설정을 저장하지 못했습니다.",
       },
+      display: {
+        title: "표시",
+        timeFormat: "시간 형식",
+        timeFormatDescription: "시간을 12시간제 또는 24시간제로 표시합니다.",
+        timeFormatSystem: "시스템 기본값",
+        timeFormat12: "12시간제",
+        timeFormat24: "24시간제",
+      },
       notifications: {
         sectionTitle: "알림",
         showLoadedModels: "로드된 모델 카드",
@@ -2936,6 +2951,8 @@ export const ko = {
         "세부 속도 토큰 통계 레이어 오프로드 verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "응답에 응답 편집 표시",
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
+      turnNavigation: "턴 탐색",
+      turnNavigationDescription: "긴 채팅의 왼쪽 가장자리에 내 메시지를 레일로 표시합니다. 마우스를 올리면 미리보기, 클릭하면 해당 턴으로 이동하고, 북마크로 다시 찾을 수 있습니다.",
       composerAtBottom: "입력창을 아래에",
       composerAtBottomDescription: "새 채팅에서 입력창을 가운데가 아닌 페이지 아래쪽에 표시합니다.",
       projectAttachments: "프로젝트 전체에서 파일 공유",
@@ -3549,8 +3566,6 @@ export const ko = {
         repoCheckoutFallback:
           "저장소 체크아웃이 아직 있다면 거기에서 로컬 설치 프로그램을 실행하세요:",
         restartAfterUpdate: "업데이트 후 Unsloth를 다시 시작하세요.",
-        desktopManaged:
-          "데스크톱 앱은 새 앱 버전을 자동으로 확인합니다. 여기서 언제든지 업데이트를 확인하거나 설치할 수도 있습니다.",
         desktopReady: "데스크톱 앱 업데이트",
         desktopReadyDescription:
           "새로운 데스크톱 앱 버전이 있는지 확인합니다.",

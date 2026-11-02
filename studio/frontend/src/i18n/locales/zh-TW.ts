@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const zhTW = {
+  turns: {
+    label: "第 {number} 輪",
+    bookmarkedLabel: "第 {number} 輪，已加書籤",
+    bookmark: "為此輪加書籤",
+    removeBookmark: "移除書籤",
+    navigator: "輪次",
+  },
   chatBackground: {
     noBackground: "無背景",
     sizing: "圖片縮放方式",
@@ -2051,6 +2058,14 @@ export const zhTW = {
           full: "執行所有工具呼叫而不詢問，並關閉程式碼沙箱，因此 Python 與終端機程式碼可以讀取及變更您帳號能存取的任何檔案。",
         },
       },
+      display: {
+        title: "顯示",
+        timeFormat: "時間格式",
+        timeFormatDescription: "以 12 小時制或 24 小時制顯示時間。",
+        timeFormatSystem: "跟隨系統",
+        timeFormat12: "12 小時制",
+        timeFormat24: "24 小時制",
+      },
       notifications: {
         sectionTitle: "通知",
         showLoadedModels: "已載入模型卡片",
@@ -3039,6 +3054,8 @@ export const zhTW = {
       inlineEditResponse: "在回應上顯示「編輯回應」",
       inlineEditResponseDescription:
         "在每則回應上保留「編輯回應」，而不是放在「更多」選單中。",
+      turnNavigation: "輪次導覽",
+      turnNavigationDescription: "在長對話的左側邊緣以導軌形式顯示你的訊息。懸停可預覽某一輪，點擊可跳轉，並可加書籤以便再次找到。",
       composerAtBottom: "輸入框置於底部",
       composerAtBottomDescription:
         "開始新聊天時，將輸入框放在頁面底部而非中間。",
@@ -3669,8 +3686,6 @@ export const zhTW = {
         repoCheckoutFallback:
           "如果您仍保有存放庫的 checkout，請從中執行本機安裝程式：",
         restartAfterUpdate: "更新後請重新啟動 Unsloth。",
-        desktopManaged:
-          "桌面應用程式會自動檢查新版本。您也可以隨時在此檢查或更新。",
         desktopReady: "桌面應用程式更新",
         desktopReadyDescription: "檢查是否有較新的桌面應用程式版本。",
         desktopChecking: "正在檢查更新",

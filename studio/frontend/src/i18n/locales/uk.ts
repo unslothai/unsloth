@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const uk = {
+  turns: {
+    label: "Хід {number}",
+    bookmarkedLabel: "Хід {number}, у закладках",
+    bookmark: "Додати хід у закладки",
+    removeBookmark: "Прибрати закладку",
+    navigator: "Ходи",
+  },
   chatBackground: {
     noBackground: "Без тла",
     sizing: "Масштабування зображення",
@@ -2182,6 +2189,14 @@ export const uk = {
           full: "Виконує кожен виклик інструмента без запиту та вимикає пісочницю коду, тож код Python і термінала може читати й змінювати будь-який файл, доступний вашому обліковому запису.",
         },
       },
+      display: {
+        title: "Відображення",
+        timeFormat: "Формат часу",
+        timeFormatDescription: "Показувати час у 12- або 24-годинному форматі.",
+        timeFormatSystem: "Як у системі",
+        timeFormat12: "12-годинний",
+        timeFormat24: "24-годинний",
+      },
       notifications: {
         sectionTitle: "Сповіщення",
         showLoadedModels: "Картка завантажених моделей",
@@ -3218,6 +3233,8 @@ export const uk = {
       inlineEditResponse: "Редагування відповіді на відповідях",
       inlineEditResponseDescription:
         "Показувати «Редагувати відповідь» на кожній відповіді, а не в меню «Більше».",
+      turnNavigation: "Навігація ходами",
+      turnNavigationDescription: "Показує ваші повідомлення смугою біля лівого краю довгих чатів. Наведіть, щоб переглянути хід, натисніть, щоб перейти до нього, і додавайте закладки, щоб знаходити ходи.",
       composerAtBottom: "Поле введення внизу",
       composerAtBottomDescription:
         "Починати нові чати з полем введення внизу сторінки, а не посередині.",
@@ -3890,8 +3907,6 @@ export const uk = {
         repoCheckoutFallback:
           "Якщо у вас досі є checkout репозиторію, запустіть із нього локальний інсталятор:",
         restartAfterUpdate: "Після оновлення перезапустіть Unsloth.",
-        desktopManaged:
-          "Застосунок для комп’ютера автоматично перевіряє наявність нових версій. Ви також можете будь-коли перевірити або оновити його тут.",
         desktopReady: "Оновлення застосунку для комп’ютера",
         desktopReadyDescription:
           "Перевірте, чи доступна новіша версія застосунку для комп’ютера.",

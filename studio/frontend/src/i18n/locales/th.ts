@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const th = {
+  turns: {
+    label: "รอบที่ {number}",
+    bookmarkedLabel: "รอบที่ {number} (บุ๊กมาร์กแล้ว)",
+    bookmark: "บุ๊กมาร์กรอบนี้",
+    removeBookmark: "เอาบุ๊กมาร์กออก",
+    navigator: "รอบ",
+  },
   chatBackground: {
     noBackground: "ไม่มีพื้นหลัง",
     sizing: "การปรับขนาดภาพ",
@@ -2064,6 +2071,14 @@ export const th = {
           full: "เรียกใช้เครื่องมือทุกครั้งโดยไม่ถามและปิดแซนด์บ็อกซ์โค้ด โค้ด Python และเทอร์มินัลจึงอ่านและเปลี่ยนแปลงไฟล์ใดก็ได้ที่บัญชีของคุณเข้าถึงได้",
         },
       },
+      display: {
+        title: "การแสดงผล",
+        timeFormat: "รูปแบบเวลา",
+        timeFormatDescription: "แสดงเวลาแบบ 12 ชั่วโมงหรือ 24 ชั่วโมง",
+        timeFormatSystem: "ค่าเริ่มต้นของระบบ",
+        timeFormat12: "12 ชั่วโมง",
+        timeFormat24: "24 ชั่วโมง",
+      },
       notifications: {
         sectionTitle: "การแจ้งเตือน",
         showLoadedModels: "การ์ดโมเดลที่โหลดอยู่",
@@ -3057,6 +3072,8 @@ export const th = {
       inlineEditResponse: "แก้ไขคำตอบบนคำตอบ",
       inlineEditResponseDescription:
         "แสดง “แก้ไขคำตอบ” บนทุกคำตอบ แทนที่จะอยู่ในเมนูเพิ่มเติม",
+      turnNavigation: "การนำทางตามรอบ",
+      turnNavigationDescription: "แสดงข้อความของคุณเป็นแถบที่ขอบซ้ายของแชทยาว วางเมาส์เพื่อดูตัวอย่าง คลิกเพื่อไปยังรอบนั้น และบุ๊กมาร์กเพื่อหากลับมาได้",
       composerAtBottom: "ช่องเขียนข้อความอยู่ด้านล่าง",
       composerAtBottomDescription:
         "เริ่มแชทใหม่โดยให้ช่องเขียนข้อความอยู่ด้านล่างของหน้าแทนตรงกลาง",
@@ -3692,8 +3709,6 @@ export const th = {
         repoCheckoutFallback:
           "หากคุณยังมีโฟลเดอร์ checkout ของ repo อยู่ ให้เรียกใช้ตัวติดตั้งภายในเครื่องจากโฟลเดอร์นั้น:",
         restartAfterUpdate: "รีสตาร์ท Unsloth หลังอัปเดต",
-        desktopManaged:
-          "แอปเดสก์ท็อปจะตรวจหาเวอร์ชันใหม่ของแอปโดยอัตโนมัติ คุณยังตรวจหาหรืออัปเดตได้ที่นี่ทุกเมื่อ",
         desktopReady: "การอัปเดตแอปเดสก์ท็อป",
         desktopReadyDescription: "ตรวจสอบว่ามีแอปเดสก์ท็อปเวอร์ชันใหม่กว่าหรือไม่",
         desktopChecking: "กำลังตรวจหาการอัปเดต",

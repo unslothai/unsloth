@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat } from "@/lib/time-format";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -210,6 +211,7 @@ function PlayButton({ item }: { item: LibraryItem }) {
 
 export function ItemCard({ item }: { item: LibraryItem }) {
   const locale = useLocale();
+  useTimeFormat();
   const actions = useLibraryActions();
   const showTime = useLibrarySettingsStore((s) => s.showCardDates);
   const square = useLibrarySettingsStore((s) => s.imageLayout === "square");

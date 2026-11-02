@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const ptBR = {
+  turns: {
+    label: "Turno {number}",
+    bookmarkedLabel: "Turno {number}, com marcador",
+    bookmark: "Marcar turno",
+    removeBookmark: "Remover marcador",
+    navigator: "Turnos",
+  },
   chatBackground: {
     noBackground: "Sem fundo",
     sizing: "Dimensionamento da imagem",
@@ -1975,6 +1982,14 @@ export const ptBR = {
         saveError:
           "Não foi possível salvar as configurações de conexão das contas gerenciadas.",
       },
+      display: {
+        title: "Exibição",
+        timeFormat: "Formato de hora",
+        timeFormatDescription: "Mostrar horários no formato de 12 ou 24 horas.",
+        timeFormatSystem: "Padrão do sistema",
+        timeFormat12: "12 horas",
+        timeFormat24: "24 horas",
+      },
       notifications: {
         sectionTitle: "Notificações",
         showLoadedModels: "Cartão de modelos carregados",
@@ -2957,6 +2972,8 @@ export const ptBR = {
         "detalhes geração velocidade tokens estatísticas camadas especialistas desenvolvedor verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Editar resposta nas respostas",
       inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
+      turnNavigation: "Navegação por turnos",
+      turnNavigationDescription: "Mostra suas mensagens como uma barra na borda esquerda de chats longos. Passe o cursor para ver um turno, clique para ir até ele e marque turnos para encontrá-los depois.",
       composerAtBottom: "Caixa de texto embaixo",
       composerAtBottomDescription: "Comece novas conversas com a caixa de texto na parte de baixo da página, não no meio.",
       projectAttachments: "Compartilhar arquivos em todo o projeto",
@@ -3575,8 +3592,6 @@ export const ptBR = {
         repoCheckoutFallback:
           "Se você ainda tiver a cópia local do repositório, execute o instalador local a partir dela:",
         restartAfterUpdate: "Reinicie o Unsloth após a atualização.",
-        desktopManaged:
-          "O aplicativo de desktop verifica automaticamente se há novas versões. Você também pode verificar ou atualizar aqui a qualquer momento.",
         desktopReady: "Atualizações do aplicativo de desktop",
         desktopReadyDescription:
           "Verifique se há uma versão mais recente do aplicativo de desktop.",

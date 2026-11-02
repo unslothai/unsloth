@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const zhCN = {
+  turns: {
+    label: "第 {number} 轮",
+    bookmarkedLabel: "第 {number} 轮，已加书签",
+    bookmark: "为此轮加书签",
+    removeBookmark: "移除书签",
+    navigator: "轮次",
+  },
   chatBackground: {
     noBackground: "无背景",
     sizing: "图片缩放方式",
@@ -1948,6 +1955,14 @@ export const zhCN = {
         loadError: "无法加载受管账户的连接设置。",
         saveError: "无法保存受管账户的连接设置。",
       },
+      display: {
+        title: "显示",
+        timeFormat: "时间格式",
+        timeFormatDescription: "以 12 小时制或 24 小时制显示时间。",
+        timeFormatSystem: "跟随系统",
+        timeFormat12: "12 小时制",
+        timeFormat24: "24 小时制",
+      },
       notifications: {
         sectionTitle: "通知",
         showLoadedModels: "已加载模型卡片",
@@ -2900,6 +2915,8 @@ export const zhCN = {
         "详情 速度 统计 层 卸载 verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "在回复上显示编辑回复",
       inlineEditResponseDescription: "在每条回复上显示编辑回复，而不是放在“更多”菜单中。",
+      turnNavigation: "轮次导航",
+      turnNavigationDescription: "在长对话的左边缘以导轨形式显示你的消息。悬停可预览某一轮，点击可跳转，并可加书签以便再次找到。",
       composerAtBottom: "输入框置底",
       composerAtBottomDescription: "新聊天时将输入框放在页面底部，而不是中间。",
       projectAttachments: "在项目内共享文件",
@@ -3503,8 +3520,6 @@ export const zhCN = {
         repoCheckoutFallback:
           "如果仍保留仓库的代码检出目录，请在该目录中运行本地安装器：",
         restartAfterUpdate: "更新后请重启 Unsloth。",
-        desktopManaged:
-          "桌面应用会自动检查新版本。你也可以随时在此检查或更新。",
         desktopReady: "桌面应用更新",
         desktopReadyDescription: "检查是否有更新的桌面应用版本。",
         desktopChecking: "正在检查更新",

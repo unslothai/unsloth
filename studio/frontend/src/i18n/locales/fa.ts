@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const fa = {
+  turns: {
+    label: "نوبت {number}",
+    bookmarkedLabel: "نوبت {number}، نشانک‌شده",
+    bookmark: "نشانک‌گذاری نوبت",
+    removeBookmark: "حذف نشانک",
+    navigator: "نوبت‌ها",
+  },
   chatBackground: {
     noBackground: "بدون پس‌زمینه",
     sizing: "اندازه‌بندی تصویر",
@@ -2151,6 +2158,14 @@ export const fa = {
           full: "هر فراخوانی ابزار را بدون پرسیدن اجرا می‌کند و سندباکس کد را خاموش می‌کند، بنابراین کد Python و ترمینال می‌تواند هر فایلی را که حساب شما به آن دسترسی دارد بخواند و تغییر دهد.",
         },
       },
+      display: {
+        title: "نمایش",
+        timeFormat: "قالب زمان",
+        timeFormatDescription: "نمایش زمان به صورت ۱۲ ساعته یا ۲۴ ساعته.",
+        timeFormatSystem: "پیش‌فرض سیستم",
+        timeFormat12: "۱۲ ساعته",
+        timeFormat24: "۲۴ ساعته",
+      },
       notifications: {
         sectionTitle: "اعلان‌ها",
         showLoadedModels: "کارت مدل‌های بارگذاری‌شده",
@@ -3179,6 +3194,8 @@ export const fa = {
       inlineEditResponse: "«ویرایش پاسخ» روی پاسخ‌ها",
       inlineEditResponseDescription:
         "«ویرایش پاسخ» روی هر پاسخ باقی بماند، به‌جای منوی «بیشتر».",
+      turnNavigation: "پیمایش نوبت‌ها",
+      turnNavigationDescription: "پیام‌هایتان را به‌صورت نواری در لبهٔ چپ گفتگوهای طولانی نشان می‌دهد. برای پیش‌نمایش یک نوبت نشانگر را روی آن ببرید، برای رفتن به آن کلیک کنید و برای یافتن دوباره نشانکش بگذارید.",
       composerAtBottom: "کادر نوشتن در پایین",
       composerAtBottomDescription:
         "گفتگوهای جدید با کادر نوشتن در پایین صفحه آغاز شوند، نه در وسط.",
@@ -3846,8 +3863,6 @@ export const fa = {
           "اگر هنوز checkout مخزن را دارید، نصب‌کنندهٔ محلی را از همان‌جا اجرا کنید:",
         restartAfterUpdate:
           "پس از به‌روزرسانی، Unsloth را دوباره راه‌اندازی کنید.",
-        desktopManaged:
-          "برنامهٔ دسکتاپ به‌طور خودکار نسخه‌های جدید را بررسی می‌کند. همچنین می‌توانید هر زمان از اینجا بررسی یا به‌روزرسانی کنید.",
         desktopReady: "به‌روزرسانی‌های برنامهٔ دسکتاپ",
         desktopReadyDescription:
           "بررسی کنید که آیا نسخهٔ جدیدتری از برنامهٔ دسکتاپ در دسترس است.",

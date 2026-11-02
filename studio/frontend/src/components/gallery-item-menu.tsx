@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  Archive03Icon,
+  ArchiveIcon,
   ArchiveRestoreIcon,
   Download01Icon,
   MoreVerticalIcon,
@@ -139,7 +139,7 @@ export function GalleryItemMenu({
         ) : null}
         {project.submenu}
         <DropdownMenuItem onClick={onToggleArchive}>
-          <HugeiconsIcon icon={archived ? ArchiveRestoreIcon : Archive03Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={archived ? ArchiveRestoreIcon : ArchiveIcon} strokeWidth={1.75} className="size-icon" />
           {archived ? "Restore from archive" : "Archive"}
         </DropdownMenuItem>
         <DropdownMenuSeparator />

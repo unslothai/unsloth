@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const id = {
+  turns: {
+    label: "Giliran {number}",
+    bookmarkedLabel: "Giliran {number}, ditandai",
+    bookmark: "Tandai giliran",
+    removeBookmark: "Hapus tanda",
+    navigator: "Giliran",
+  },
   chatBackground: {
     noBackground: "Tanpa latar belakang",
     sizing: "Ukuran gambar",
@@ -2161,6 +2168,14 @@ export const id = {
           full: "Menjalankan setiap panggilan alat tanpa meminta izin dan menonaktifkan sandbox kode, sehingga kode Python dan terminal dapat membaca dan mengubah file apa pun yang dapat diakses akun Anda.",
         },
       },
+      display: {
+        title: "Tampilan",
+        timeFormat: "Format waktu",
+        timeFormatDescription: "Tampilkan waktu dalam format 12 jam atau 24 jam.",
+        timeFormatSystem: "Default sistem",
+        timeFormat12: "12 jam",
+        timeFormat24: "24 jam",
+      },
       notifications: {
         sectionTitle: "Notifikasi",
         showLoadedModels: "Kartu model yang dimuat",
@@ -3192,6 +3207,8 @@ export const id = {
       inlineEditResponse: "Edit respons pada respons",
       inlineEditResponseDescription:
         "Tampilkan Edit respons di setiap respons, alih-alih di menu Lainnya.",
+      turnNavigation: "Navigasi giliran",
+      turnNavigationDescription: "Tampilkan prompt Anda sebagai bilah di tepi kiri chat panjang. Arahkan kursor untuk pratinjau giliran, klik untuk melompat ke sana, dan tandai giliran agar mudah ditemukan lagi.",
       composerAtBottom: "Kolom pesan di bagian bawah",
       composerAtBottomDescription:
         "Mulai chat baru dengan kolom pesan di bagian bawah halaman, bukan di tengah.",
@@ -3858,8 +3875,6 @@ export const id = {
         repoCheckoutFallback:
           "Jika Anda masih memiliki checkout repo, jalankan penginstal lokal dari sana:",
         restartAfterUpdate: "Mulai ulang Unsloth setelah memperbarui.",
-        desktopManaged:
-          "Aplikasi desktop memeriksa versi aplikasi baru secara otomatis. Anda juga dapat memeriksa atau memperbarui di sini kapan saja.",
         desktopReady: "Pembaruan aplikasi desktop",
         desktopReadyDescription:
           "Periksa apakah versi aplikasi desktop yang lebih baru tersedia.",
