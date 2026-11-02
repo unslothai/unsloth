@@ -584,6 +584,33 @@ def test_unsloth_host_metadata_calls_keep_the_stock_forward(monkeypatch, key):
     assert calls  # no host metadata: compiled
 
 
+def test_packed_stock_forward_says_blocks_run_uncompiled(monkeypatch, capsys):
+    """The load-time "compiling each transformer block" line must not be the last word when
+    packed / padding-free rows fall back to the stock forward."""
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+
+    class PackedDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.proj(hidden_states)
+
+    PackedDecoderLayer.forward.__module__ = "unsloth.models.llama"
+    M._wrap(PackedDecoderLayer, {})
+    layer = PackedDecoderLayer().train()
+    x = torch.randn(1, 4, 8)
+    layer(x)
+    layer(x, packed_seq_lengths = None)
+    assert "uncompiled" not in capsys.readouterr().out
+    layer(x, packed_seq_lengths = torch.tensor([2, 2]))
+    layer(x, packed_seq_lengths = torch.tensor([1, 3]))
+    out = capsys.readouterr().out
+    assert out.count("packed / padding-free rows run each transformer block uncompiled") == 1
+
+
 def test_compiled_block_flags_packed_attention(monkeypatch):
     """hf_packed_attention runs packed rows outside the graph only while a block's compiled call
     runs: set there, restored after, never on the stock forward."""

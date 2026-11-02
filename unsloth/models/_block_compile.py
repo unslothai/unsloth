@@ -94,6 +94,12 @@ _SHAPES_NOTE = (
 )
 
 
+_PACKED_STOCK_NOTE = (
+    "Unsloth: packed / padding-free rows run each transformer block uncompiled; only unpacked "
+    "batches use the compiled blocks."
+)
+
+
 def _rank0_note(key, message):
     state = _CUDAGRAPH_STATE
     if key in state["notes"]:
@@ -1577,6 +1583,14 @@ def _wrap(
                 _graphs_off("packed", _PACKED_NOTE)
             elif phase == "probe" and self.training and _packed_kwargs(kwargs):
                 _auto_off(_CUDAGRAPH_STATE["auto"], "packed / padding-free rows")
+            if (
+                unsloth_forward
+                and self.training
+                and not tracing
+                and kwargs.get("packed_seq_lengths") is not None
+            ):
+                # The load-time "compiling each transformer block" line is no longer true here.
+                _rank0_note("packed_stock", _PACKED_STOCK_NOTE)
             return original(self, hidden_states, *args, **kwargs)
         if tracing:
             # Inside a user's torch.compile the enclosing graph owns the layer: no dynamic marking
