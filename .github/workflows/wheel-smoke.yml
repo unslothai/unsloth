@@ -32,9 +32,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
-  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
-  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
+  # Superseded runs are cancelled off main only; on main a running run is never killed, so a merge
+  # burst runs the executing commit plus the tip (see studio-backend-ci.yml).
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:

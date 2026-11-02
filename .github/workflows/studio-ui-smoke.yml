@@ -81,16 +81,9 @@ concurrency:
   # Per workflow, ref and event: a merge burst runs the executing commit plus the tip.
   # See studio-backend-ci.yml for the trade, and the note below.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # On a PR branch: latest-only, which is what cancel-in-progress buys.
-  #
-  # On main it buys less than it looks like. GitHub cancels any PENDING run in a
-  # concurrency group as soon as a newer one is queued, and cancel-in-progress
-  # governs only runs that are already EXECUTING ("any existing pending job or
-  # workflow in the same concurrency group will be canceled", workflow-syntax docs).
-  # So a burst of merges leaves only the tip's run alive: on 2026-08-17 four merges
-  # in 37 minutes cancelled three consecutive main runs of this workflow and none
-  # completed. Detection survives on the tip, since the tree is cumulative;
-  # per-commit attribution does not.
+  # On PR branches it gives latest-only; on main cancel-in-progress is off, and GitHub cancels every
+  # pending run once a newer one queues, so a merge burst leaves only the tip running; detection
+  # survives there, per-commit attribution does not.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -124,11 +117,9 @@ jobs:
       GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
       STUDIO_PORT: '18892'
       HF_HOME: ${{ github.workspace }}/hf-cache
-      # A llama.cpp, whisper.cpp or audio.cpp release published while this job runs leaves the prebuilt it
-      # just installed one behind, and Studio then puts an update card in the bottom-right overlay rail, over
-      # the composer the scripts click. Seen on main eb0617b6: audio.cpp v0.9.2 was published six minutes
-      # after the job installed v0.9.1, and the IME script timed out on a click the card intercepted. These
-      # scripts test chat, not live update checks; the update banner scripts stub the update routes.
+      # A llama.cpp, whisper.cpp or audio.cpp release published mid-run leaves the installed
+      # prebuilt behind and puts an update card over the composer the scripts click, so
+      # UNSLOTH_DISABLE_UPDATE_CHECK is set; update banner scripts stub the update routes.
       UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -224,38 +215,10 @@ jobs:
         # for the dpkg lock. Its outcome, which the cache saves read, is settled by the
         # `wait: pw-install` step after the install.
         background: true
-        # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
-        # the cached directory, so a restored cache without it gives browsers that cannot
-        # start. Only the download is skipped, which is the part that costs.
-        #
-        # Bounded and retried, because this step stalls. Three times in one day it sat in
-        # apt's download loop until the job's 30-minute timeout killed it: the shards that
-        # hit it took 30 minutes to report nothing, while their siblings finished the whole
-        # job in 4 to 9. GitHub scores that as "cancelled" rather than a failure, prints no
-        # reason, and skips every step after it, so an infrastructure hiccup costs a shard's
-        # entire surface and reads like a mystery.
-        #
-        # A per-attempt `timeout` makes the stall a failure instead of a silent wait, and
-        # the retry is what actually recovers -- both observed stalls cleared on a plain
-        # re-run of the same commit. The healthy time is about 2 minutes, so 8 is 4x
-        # headroom and a merely slow mirror will not trip it. timeout-minutes bounds the
-        # pair in case `timeout` itself is outlived by an unkillable child.
-        # Bounded and retried through the shared helper, which is where the dpkg
-        # lock wait and the exit-code reporting live. This was eight lines of
-        # inline loop and it shipped a bug that made the retry dead: GitHub runs
-        # `run:` as `bash -e`, so `timeout ...; rc=$?` aborted the step on the
-        # first stall and the second attempt never ran. The step exited 124 having
-        # printed nothing at all, which looked exactly like the unbounded stall it
-        # was supposed to replace. One definition, tested, instead of copies.
-        #
-        # Two attempts at 7 minutes, against a healthy ~2: worst case 14 plus the
-        # lock wait, which still leaves the job's 30 room for the work it exists to
-        # do. Three attempts here would not.
-        # Two helper calls now, not one: the CDN download and the apt transaction
-        # are separated, and each carries its own retry budget. 2 x 300s plus a lock
-        # wait, twice over, is 24m of worst case against the job's 30 -- which is
-        # why the per-attempt cap comes down from 420. Healthy is ~2 minutes for the
-        # download and seconds for the probe, so 300 is still 2.5x headroom.
+        # --with-deps stays unconditional: apt installs libraries outside the cache, so a restored
+        # cache without it gives browsers that cannot start; retries go through the shared helper,
+        # not inline (bash -e killed the inline retry); 2 x 300 s attempts; apt stalled 3x in one
+        # day past the 30-minute timeout
         timeout-minutes: 25
         env:
           RETRY_ATTEMPTS: '2'

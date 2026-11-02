@@ -1,31 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# When a pull request closes (merged or not), cancel its pull_request runs that
-# are still queued or running. Nobody reads them any more, and while the queue
-# is hours deep they hold slots the open PRs are waiting for: on 2026-10-14,
-# 121 of 498 queued pull_request runs belonged to PRs that were already merged
-# or closed.
-#
-# Trigger: `pull_request` (types: closed), not `pull_request_target`, which this
-# repo bans (scripts/lint_workflow_triggers.py). The cost is fork PRs: their
-# GITHUB_TOKEN is read-only whatever `permissions:` says, so for them the cancel
-# calls are refused and the job only reports what it would have cancelled. Same-
-# repository branches, where most of the stale runs come from (104 of the 121),
-# get the write token and are cleaned up.
-#
-# Nothing from the PR is checked out or executed. The head branch name is
-# untrusted text, so it reaches the shell only through env and is passed to
-# `gh api` as an argument, never interpolated into a command line.
-#
-# Which runs: event pull_request, status queued / waiting / pending / requested
-# / in_progress, and
-#   - the run lists this PR number in pull_requests[], or
-#   - pull_requests[] is empty (fork PRs) and the run's head branch AND head
-#     repository match this PR's, and no other OPEN PR has that same head.
-# Never a push, schedule or dispatch run, never another fork's same-named
-# branch, never this workflow's own runs. /cancel only, never /force-cancel:
-# force-cancel skips `always()` steps, where workflows keep their cleanup.
+# Cancels queued or running pull_request runs of a closed PR, never push, schedule, dispatch or runs
+# of this workflow; not the banned pull_request_target; untrusted branch names reach the shell only
+# via env; fork tokens read-only so forks only report; /cancel, never /force-cancel (skips always())
 
 name: Cancel closed PR runs
 
@@ -68,9 +46,8 @@ jobs:
           [ -n "${HEAD_REPO:-}" ] || HEAD_REPO="-"
           self_path="${SELF_WORKFLOW#*/*/}"; self_path="${self_path%@*}"
 
-          # Another OPEN PR with the same head (repo + branch) shares its runs'
-          # head_branch; for runs with empty pull_requests we cannot tell them
-          # apart, so leave those alone.
+          # Another open PR with the same head (repo and branch) shares those runs' head_branch;
+          # runs with empty pull_requests cannot be told apart, so they are left alone.
           shared=0
           if [ "$HEAD_REPO" != "-" ]; then
             owner="${HEAD_REPO%%/*}"
