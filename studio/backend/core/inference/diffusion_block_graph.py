@@ -250,10 +250,7 @@ _LIVE: "weakref.WeakSet" = weakref.WeakSet()
 
 
 def pool_bytes(device: Optional[int] = None) -> int:
-    """Free bytes inside every live block-graph pool (on CUDA ``device`` when given): reserved by the allocator yet
-    reusable only by those graphs, so the memory guard must not credit them back as reclaimable. Segment outputs
-    kept in a pool are already in ``memory_allocated``; only the recorded reservation is used when the allocator
-    snapshot cannot be read."""
+    """Unused graph-private bytes; retained outputs already count as allocated."""
     total = 0
     tracked = 0
     pools: set = set()
@@ -278,7 +275,7 @@ def pool_bytes(device: Optional[int] = None) -> int:
             if tuple(seg.get("segment_pool_id") or ()) in pools:
                 free += int(seg.get("total_size", 0)) - int(seg.get("allocated_size", 0))
         return total + max(0, free)
-    except Exception:  # noqa: BLE001 - over-counting only makes the guard stricter
+    except Exception:  # noqa: BLE001
         return total + tracked
 
 
@@ -299,7 +296,7 @@ class _Shared:
         self.static_out: dict = {}
         self.static_refs: dict = {}  # slot -> recordings reading its buffers
         self.warmed: set = set()
-        self.pools: list = []  # every pool recorded into, incl. one retired by a failed capture
+        self.pools: list = []  # Includes retired pools.
         self.pool_bytes = 0
         self.static_bytes = 0
         self.strict_device = False
