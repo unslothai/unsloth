@@ -335,11 +335,12 @@ def test_hybrid_gates():
         cp._check_stateful_mixers(model, "ulysses", 2)
 
 
-def test_eager_attention_is_refused():
+def test_flex_attention_is_refused():
+    # Eager is routed through the modeling module's eager_attention_forward now (test_ulysses_generic_gloo.py).
     model = _model(KINDS[0])
     attn = model.model.layers[1].self_attn
     with pytest.raises(NotImplementedError, match = "attn_implementation"):
-        uh.install_hf_attention_wrapper(attn, "eager", cp.get_cp_manager)
+        uh.install_hf_attention_wrapper(attn, "flex_attention", cp.get_cp_manager)
 
 
 def test_hybrid_packing_metadata_is_off_under_context_parallelism():

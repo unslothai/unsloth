@@ -1760,3 +1760,33 @@ def test_graphs_off_compile_gets_the_same_region_limit(monkeypatch):
     for kwargs in seen:
         assert kwargs["isolate_recompiles"] is True
         assert kwargs["recompile_limit"] == M._region_recompile_limit(2) == 48
+
+
+def test_parametrized_class_is_reused_per_module(monkeypatch):
+    """PEFT's ParamWrapper registers a parametrization per forward: each module keeps one
+    Parametrized<Class> (a stable type id for Dynamo), and two modules never share one."""
+    from torch.nn.utils import parametrize
+
+    monkeypatch.setattr(parametrize, "_inject_new_class", parametrize._inject_new_class)
+    bc = _load()
+    bc._stable_parametrized_classes()
+    bc._stable_parametrized_classes()  # idempotent
+
+    class Double(torch.nn.Module):
+        def forward(self, w):
+            return 2 * w
+
+    a, b = torch.nn.Linear(3, 3), torch.nn.Linear(3, 3)
+    seen = []
+    for _ in range(3):
+        parametrize.register_parametrization(a, "weight", Double())
+        seen.append(type(a))
+        expected = 2 * a.parametrizations["weight"].original
+        assert torch.equal(a.weight, expected)
+        parametrize.remove_parametrizations(a, "weight", leave_parametrized = False)
+        assert type(a) is torch.nn.Linear and "weight" in a._parameters
+    assert seen[0] is seen[1] is seen[2] and seen[0] is not torch.nn.Linear
+    parametrize.register_parametrization(b, "weight", Double())
+    assert type(b) is not seen[0] and torch.equal(
+        b.weight, 2 * b.parametrizations["weight"].original
+    )
