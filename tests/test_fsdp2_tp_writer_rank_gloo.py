@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""dp 2 x tp 2 gloo: a tensor parallel x native FSDP2 LoRA model has one writer for a gathered save, not one
-per tp row (its frozen tp DTensors come first, on the rank's own tp row)."""
+"""TP x FSDP2 gathered saves have one writer across named and flattened meshes."""
 
 import multiprocessing
 import os
@@ -10,7 +9,7 @@ import os
 if multiprocessing.parent_process() is not None or getattr(
     multiprocessing.current_process(), "_inheriting", False
 ):
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 import sys  # noqa: E402
 
@@ -22,7 +21,12 @@ from test_tp_native_oracle import LLAMA, build, tpn  # noqa: E402
 import test_tp_native_gloo as gloo  # noqa: E402
 
 
-def _case_tp_fsdp2_writer(rank, world, tmp):
+def _case_tp_fsdp2_writer(
+    rank,
+    world,
+    tmp,
+    flattened = False,
+):
     import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
     from test_fsdp2_native_units import _load_native
@@ -32,10 +36,15 @@ def _case_tp_fsdp2_writer(rank, world, tmp):
         return {"unsupported": True}
     from unsloth.models import fsdp2_save
 
-    mesh = init_device_mesh("cpu", (2, world // 2), mesh_dim_names = ("dp", "tp"))
+    mesh = init_device_mesh(
+        "cpu",
+        (2, 1, world // 2) if flattened else (2, world // 2),
+        mesh_dim_names = ("dp", "cp", "tp") if flattened else ("dp", "tp"),
+    )
+    dp = mesh["dp", "cp"]._flatten("dp_cp") if flattened else mesh["dp"]
     model = build(LLAMA)
     tpn.apply_tensor_parallel(model, mesh["tp"])
-    native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"]))
+    native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = dp))
     with fsdp2_save.fsdp2_gathered(model, trainable_only = True) as writer:
         gathered = bool(writer)
     state = native.native_full_state_dict(model, trainable_only = True)
@@ -51,14 +60,17 @@ def _case_tp_fsdp2_writer(rank, world, tmp):
 gloo.CASES["tp_fsdp2_writer"] = _case_tp_fsdp2_writer
 
 
-def _spawn(world):
+def _spawn(world, flattened):
     import tempfile
 
     ctx = multiprocessing.get_context("spawn")
     port = gloo._free_port()
     with tempfile.TemporaryDirectory() as tmp:
         procs = [
-            ctx.Process(target = _worker, args = (r, world, port, "tp_fsdp2_writer", tmp, {}))
+            ctx.Process(
+                target = _worker,
+                args = (r, world, port, "tp_fsdp2_writer", tmp, {"flattened": flattened}),
+            )
             for r in range(world)
         ]
         for p in procs:
@@ -77,10 +89,11 @@ def _worker(*args):
     gloo._worker(*args)
 
 
-def test_tp_fsdp2_model_has_one_writer():
-    results = _spawn(4)
+@pytest.mark.parametrize("flattened", [False, True])
+def test_tp_fsdp2_model_has_one_writer(flattened):
+    results = _spawn(4, flattened)
     if results[0].get("unsupported"):
-        pytest.skip("torch < 2.7: no fully_shard(ignored_params)")
+        pytest.skip(reason = "torch < 2.7: no fully_shard(ignored_params)")
     print("fsdp2_save:", results[0]["module"])
     assert [r["writer_rank"] for r in results] == [0, 0, 0, 0], results
     assert [r["gathered"] for r in results] == [True, False, False, False], results

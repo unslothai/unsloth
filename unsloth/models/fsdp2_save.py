@@ -100,21 +100,20 @@ def _root_mesh(mesh):
 
 
 def _composed_writer_rank(meshes):
-    """Lowest rank of the slice of the meshes' common root that they span together (a tp x FSDP2 model:
-    the whole (dp, tp) grid, not the rank's own tp row). None when they do not slice one named root."""
+    """Lowest rank of the common-root slice spanned by all participating meshes."""
     try:
         root = _root_mesh(meshes[0])
         if any(_root_mesh(m) is not root for m in meshes[1:]):
             return None
-        names = set()
+        axes = set()
         for m in meshes:
-            names.update(m.mesh_dim_names or ())
-        if not names or not names <= set(root.mesh_dim_names or ()):
-            return None
+            # Flattened mesh names need not exist in the root.
+            coordinates = torch.isin(root.mesh, m.mesh.reshape(-1)).nonzero()
+            if coordinates.shape[0] != m.mesh.numel():
+                return None
+            axes.update((coordinates != coordinates[0]).any(dim = 0).nonzero().flatten().tolist())
         coordinate = root.get_coordinate()
-        index = tuple(
-            slice(None) if name in names else c for name, c in zip(root.mesh_dim_names, coordinate)
-        )
+        index = tuple(slice(None) if axis in axes else c for axis, c in enumerate(coordinate))
         return int(root.mesh[index].min())
     except Exception:
         return None
