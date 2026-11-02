@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { ChevronDownStandardIcon, ChevronRightStandardIcon, ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -21,9 +22,9 @@ import { isTauri } from "@/lib/api-base";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Cancel01Icon,
-  Delete02Icon,
   Edit03Icon,
   FilterMailIcon,
   InternetIcon,
@@ -136,7 +137,7 @@ function Row({
       extra={
         <>
           {menu?.rows}
-          <MenuRow icon={Delete02Icon} onSelect={onRemove}>
+          <MenuRow icon={TrashIcon} onSelect={onRemove}>
             {t("browser.pages.remove")}
           </MenuRow>
         </>
@@ -250,7 +251,7 @@ function HistoryRow({
       tabId={tabId}
       extra={
         <MenuRow
-          icon={Delete02Icon}
+          icon={TrashIcon}
           onSelect={() => useBrowserHistoryStore.getState().removeVisit(item.id)}
         >
           {t("browser.pages.removeFromHistory")}
@@ -306,7 +307,7 @@ function HistoryRow({
               {t("browser.pages.openPage")}
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => useBrowserHistoryStore.getState().removeVisit(item.id)}>
-              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} />
               {t("browser.pages.removeFromHistory")}
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -531,7 +532,12 @@ function HistoryPage({ tabId }: { tabId: string }) {
     [needle],
   );
   const { groups, more } = useDays(history, visitTime, matches, filter.bounds, limit);
-  const timeFormat = useMemo(() => new Intl.DateTimeFormat(locale, { timeStyle: "short" }), [locale]);
+  const clock = useTimeFormat();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clock is the trigger.
+  const timeFormat = useMemo(
+    () => new Intl.DateTimeFormat(locale, withTimeFormat({ timeStyle: "short" }, locale)),
+    [locale, clock],
+  );
   const selected = useMemo(() => {
     const ids = new Set(history.map((item) => item.id));
     return new Set([...selection].filter((id) => ids.has(id)));
@@ -702,7 +708,7 @@ function DownloadRow({
               {revealLabel}
             </MenuRow>
           ) : null}
-          <MenuRow icon={Delete02Icon} onSelect={remove}>
+          <MenuRow icon={TrashIcon} onSelect={remove}>
             {t("browser.pages.removeFromHistory")}
           </MenuRow>
         </>
@@ -789,7 +795,12 @@ function DownloadsPage() {
   const needle = query.trim().toLowerCase();
   const matches = useMemo(() => nameMatches(needle), [needle]);
   const { groups } = useDays(downloads, downloadTime, matches, filter.bounds);
-  const timeFormat = useMemo(() => new Intl.DateTimeFormat(locale, { timeStyle: "short" }), [locale]);
+  const clock = useTimeFormat();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clock is the trigger.
+  const timeFormat = useMemo(
+    () => new Intl.DateTimeFormat(locale, withTimeFormat({ timeStyle: "short" }, locale)),
+    [locale, clock],
+  );
   const { missing, recheck } = useMissingDownloads(downloads);
   return (
     <div className="size-full overflow-auto bg-background">
