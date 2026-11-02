@@ -378,7 +378,7 @@ export function supportsProviderMaxOutputTokens(
 
 // One picker entry: the plan picks the registry type, and with it the URL that decides the billing.
 export const OPENCODE_PLANS = [
-  { providerType: "opencode", label: "Zen" },
+  { providerType: "opencode", label: "Console" },
   { providerType: "opencode_go", label: "Go" },
 ] as const;
 

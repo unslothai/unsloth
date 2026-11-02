@@ -21,6 +21,10 @@ test("both OpenCode plans share one picker entry", () => {
     OPENCODE_PLANS.map((plan: { providerType: string }) => plan.providerType),
     ["opencode", "opencode_go"],
   );
+  assert.deepEqual(
+    OPENCODE_PLANS.map((plan: { label: string }) => plan.label),
+    ["Console", "Go"],
+  );
   assert.equal(connectionPickerValue("opencode"), "opencode");
   assert.equal(connectionPickerValue("opencode_go"), "opencode");
   assert.match(dialog, /HIDDEN_PROVIDER_TYPES = new Set\(\[[^\]]*"opencode_go"/);
