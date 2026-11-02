@@ -261,6 +261,24 @@ def test_other_families_keep_the_bare_code(fake, side, source):
     assert [body["language"] for body in fake.bodies] == ["ja", "en", "en"]
 
 
+@pytest.mark.parametrize("duration, timeout", [(2.0, 600.0), (300.0, 600.0), (7200.0, 14400.0)])
+def test_the_transcribe_timeout_grows_with_long_audio(
+    fake, side, source, monkeypatch, duration, timeout
+):
+    seen = []
+    real = srv.AudioCppServer.post_json
+
+    def post_json(self, path, payload, **kwargs):
+        seen.append(kwargs.get("timeout"))
+        return real(self, path, payload, **kwargs)
+
+    monkeypatch.setattr(srv.AudioCppServer, "post_json", post_json)
+    monkeypatch.setattr(stt, "_wav_rate_and_duration", lambda _path: (16000, duration))
+    side.transcribe_path(source, QWEN3, None)
+    assert stt._transcribe_timeout(duration) == timeout
+    assert seen == [timeout]
+
+
 def test_parakeet_switches_to_bounded_windows_on_long_audio(fake, side, source):
     side.transcribe_path(source, PARAKEET, None)
     (start,) = fake.starts
@@ -580,3 +598,18 @@ def test_training_moves_the_server_only_when_its_placement_changes(
         training[0] = active
         side.transcribe(wav_bytes(), QWEN3, "en")
     assert len(fake.starts) == (3 if gpu_visible else 1)
+
+
+def test_a_device_less_load_follows_the_saved_voice_setting(fake, side, monkeypatch, tmp_path):
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
+    studio_db.upsert_app_settings({"stt_device": "cpu"}, read_back = False)
+    side.transcribe(wav_bytes(), QWEN3, "en")
+    assert side.device == "cpu"
+    # None keeps the running server: saving Auto later does not restart it under a caller.
+    studio_db.upsert_app_settings({"stt_device": "auto"}, read_back = False)
+    side.transcribe(wav_bytes(), QWEN3, "en")
+    assert side.device == "cpu" and len(fake.starts) == 1

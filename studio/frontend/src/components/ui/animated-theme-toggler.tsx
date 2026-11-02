@@ -7,7 +7,8 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { flushSync } from "react-dom"
 
 import { cn } from "@/lib/utils"
-import { prefersReducedMotion, setTheme } from "@/features/settings"
+import { prefersReducedMotion } from "@/features/settings/stores/appearance-custom-store"
+import { setTheme } from "@/features/settings/stores/theme-store"
 import { isWebKitGTK } from "./theme-view-transition"
 
 interface AnimatedThemeTogglerProps extends React.ComponentPropsWithoutRef<"button"> {

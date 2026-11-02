@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useBookmarkedTurnsStore } from "../stores/bookmarked-turns-store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { usePinnedChatsStore } from "../stores/pinned-chats-store";
 import { chatHistoryClearBoundary } from "./chat-history-clear-boundary";
@@ -27,6 +28,7 @@ export async function clearAllChats(options: { deleteFiles?: boolean } = {}) {
   // Snapshot first: a chat another client creates and pins mid-clear survives it.
   const pinnedBefore = usePinnedChatsStore.getState().pinnedIds;
   const result = await clearStoredChats(options);
+  useBookmarkedTurnsStore.getState().forgetThreads(result.deletedThreadIds);
   if (result.backend === "cleared") {
     // Unpin what was cleared, so a never-imported comparison's queued pin cannot block later saves.
     const failed = new Set(result.failedThreadIds);
