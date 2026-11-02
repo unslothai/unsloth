@@ -453,9 +453,16 @@ assert zoo._resolve_mlx_grad_clipping(trl.DPOConfig(output_dir="o", max_grad_val
 for stem in ("DPO", "ORPO", "KTO", "CPO", "GRPO"):
     extra = {"num_generations": 2, "per_device_train_batch_size": 2} if stem == "GRPO" else {}
     config = getattr(trl, stem + "Config")
-    for norm in (0, None):
+    for norm in (0, -1, None):
         assert zoo._resolve_mlx_grad_clipping(config(output_dir="o", max_grad_norm=norm, **extra))[-1] == "none", stem
 assert trl.DPOConfig(output_dir="o").max_grad_norm == 1.0
+for key in ("max_grad_value", "max_grad_leaf_norm"):
+    t = trl.DPOTrainer(model=model, args=trl.DPOConfig(output_dir="o"), train_dataset=[], **{key: 0.0})
+    assert zoo._resolve_mlx_grad_clipping(t.args)[-1] == "none", key
+edited_norm = trl.DPOConfig(output_dir="o")
+edited_norm.max_grad_norm = 0.5
+assert trl.DPOTrainer(model=model, args=edited_norm, train_dataset=[], seed=9).args.max_grad_norm == 0.5
+assert trl.DPOTrainer(model=model, args=trl.DPOConfig(output_dir="o"), train_dataset=[], seed=9).args.max_grad_norm == 1.0
 assert parsed(trl.GRPOConfig, "--num_generations", "2", "--per_device_train_batch_size", "2", "--scale_rewards", "batch").scale_rewards == "batch"
 assert pickle.loads(pickle.dumps(parsed(trl.DPOConfig))).learning_rate == 1e-6
 """)

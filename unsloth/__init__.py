@@ -1251,6 +1251,11 @@ if _IS_MLX:
                 "logging_steps"
             ) == getattr(args, "_unsloth_mlx_initial_logging_steps", None):
                 values.pop("logging_steps", None)
+            # An untouched default norm must not outvote a clip the trainer sets below.
+            if not grad_clip_explicit and values.get("max_grad_norm") == getattr(
+                config_class, "max_grad_norm", None
+            ):
+                values.pop("max_grad_norm", None)
         values.update(
             {
                 (
@@ -1780,9 +1785,9 @@ if _IS_MLX:
                     if getattr(kwargs[key], "value", kwargs[key]) in (value, None):
                         del kwargs[key]
             super().__init__(*args, **kwargs)
-            # TRL reads an unset norm as no clipping; zoo would fall back to leaf clipping at 1.0.
+            # TRL only clips on a positive norm; zoo would fall back to leaf clipping at 1.0.
             if (
-                not self.max_grad_norm
+                (self.max_grad_norm or 0) <= 0
                 and self.max_grad_value is None
                 and self.max_grad_leaf_norm is None
             ):
