@@ -49,6 +49,16 @@ def test_regular_model_keeps_all_kwargs():
     assert _supported_generate_kwargs(types.SimpleNamespace(), _KWARGS) is _KWARGS
 
 
+def test_omni_chat_requests_text_instead_of_unstreamed_speech():
+    model = types.SimpleNamespace(
+        config = types.SimpleNamespace(model_type = "lfm3_omni"),
+        _generation_fields_unsupported = {},
+    )
+    assert _supported_generate_kwargs(model, _KWARGS)["generation_mode"] == "text"
+    model.config.model_type = "other_custom_model"
+    assert "generation_mode" not in _supported_generate_kwargs(model, _KWARGS)
+
+
 class _TextFirst:
     def __call__(
         self,

@@ -736,8 +736,6 @@ class _GenerationHalted(Exception):
 
 
 class _HaltingStreamer:
-    """Ends a generate that takes no stopping_criteria: put() raises once a cancel or stop event is set."""
-
     def __init__(self, streamer, events):
         self.streamer = streamer
         self.events = events
@@ -755,11 +753,11 @@ class _HaltingStreamer:
 
 
 def _supported_generate_kwargs(model, generation_kwargs: dict) -> dict:
-    """Drops kwargs a custom-code generate rejects (no presence penalty there); cancel and stop
-    sequences move onto the streamer."""
     if not isinstance(getattr(model, "_generation_fields_unsupported", None), dict):
         return generation_kwargs
     kept = {k: v for k, v in generation_kwargs.items() if k not in _CUSTOM_GENERATE_REJECTED_KWARGS}
+    if getattr(getattr(model, "config", None), "model_type", None) == "lfm3_omni":
+        kept["generation_mode"] = "text"
     events = [
         c.ev
         for c in (generation_kwargs.get("stopping_criteria") or ())
@@ -771,7 +769,6 @@ def _supported_generate_kwargs(model, generation_kwargs: dict) -> dict:
 
 
 def _generate_supported(model, generation_kwargs: dict):
-    """model.generate with _supported_generate_kwargs; None when a cancel or stop ended it early."""
     try:
         return model.generate(**_supported_generate_kwargs(model, generation_kwargs))
     except _GenerationHalted:
@@ -779,7 +776,6 @@ def _generate_supported(model, generation_kwargs: dict):
 
 
 def _refuse_without_generate(model, model_name: str) -> None:
-    # e.g. LFM3-Audio: the text load builds its bare backbone, and chat would fail on the first turn.
     if not callable(getattr(model, "generate", None)):
         raise ValueError(
             f"{model_name} loads as {type(model).__name__}, which cannot generate text. "
@@ -2624,7 +2620,6 @@ class InferenceBackend:
 
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(None, timer)
-            # Without it, Stop leaves generate running to max_new_tokens while it holds the lock.
             stopping_criteria = self._cancel_stopping_criteria(cancel_event)
             if stopping_criteria is not None:
                 generation_kwargs["stopping_criteria"] = stopping_criteria
