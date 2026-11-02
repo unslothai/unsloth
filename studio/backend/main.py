@@ -2157,14 +2157,14 @@ async def _desktop_shell_subject(request: Request) -> Optional[str]:
 
 @app.get("/api/health")
 async def health_check(request: Request):
-    """Liveness plus launcher capability bits; host fingerprint gated on a bearer.
+    """Liveness plus launcher capability bits; host fingerprint gated on authentication.
 
     Unauthenticated callers get non-sensitive fields (service, studio_root_id,
     chat_only, desktop_*, native_path_leases_supported) to re-adopt a sibling
     backend and gate UI before a token exists. version / studio_version /
-    device_type require a bearer since they fingerprint the host.
+    device_type require authentication, including a valid desktop secret.
     """
-    # Waits for detection so a GPU host does not grey out Train/Export, but only up to a budget; the snapshot below decides the reply.
+    # Bound detection waits so Train/Export can use the latest hardware snapshot.
     await _await_hardware_detection(_HEALTH_DETECT_BUDGET_S)
     # Snapshot, not a bare global read: a forced re-detect can start at any moment.
     snapshot = _hardware_snapshot()
