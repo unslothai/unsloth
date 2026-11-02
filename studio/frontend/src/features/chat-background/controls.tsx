@@ -36,11 +36,11 @@ import {
 	type WindowMaterial,
 	IMAGE_SIZING,
 	type ImageSizing,
-	POSITIONS,
+	POSITION_OFFSETS,
 	SCOPES,
 	type BackgroundScope,
 	normalizedSize,
-	parsePosition,
+	sanitizeOffset,
 	validUpload,
 	type BackgroundEffect,
 } from "./model";
@@ -481,21 +481,21 @@ export function ChatBackgroundControls() {
 									<p className="text-xs text-muted-foreground">{t("chatBackground.position")}</p>
 									<div className="flex items-center gap-5">
 										<div
+											dir="ltr"
 											className="grid size-18 shrink-0 grid-cols-3 rounded-lg bg-[color-mix(in_srgb,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] p-1.5"
 											role="group"
 											aria-label={t("chatBackground.position")}
 										>
-											{POSITIONS.map((position) => {
-												const [x, y] = parsePosition(position)!;
+											{POSITION_OFFSETS.map(([x, y]) => {
 												return (
 													<button
-														key={position}
+														key={`${x},${y}`}
 														type="button"
-														aria-pressed={adjustments.position === position}
+														aria-pressed={adjustments.offsetX === x && adjustments.offsetY === y}
 														aria-label={t("chatBackground.positionValue", { x, y })}
 														title={t("chatBackground.positionValue", { x, y })}
 														className="group flex aspect-square items-center justify-center rounded-full hover:bg-[color-mix(in_srgb,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-pressed:bg-[color-mix(in_srgb,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]"
-														onClick={() => patchBackground({ position })}
+														onClick={() => patchBackground({ offsetX: x, offsetY: y })}
 													>
 														<span className="size-1 rounded-full bg-muted-foreground/60 group-aria-pressed:bg-foreground" />
 													</button>
@@ -504,18 +504,14 @@ export function ChatBackgroundControls() {
 										</div>
 										<div className="flex min-w-0 flex-1 flex-col gap-2">
 											{(["horizontal", "vertical"] as const).map((axis, index) => {
-												const current = parsePosition(adjustments.position) ?? [50, 50];
+												const key = index === 0 ? "offsetX" : "offsetY";
 												return (
 													<PositionField
 														key={axis}
 														axis={index === 0 ? "X" : "Y"}
 														label={t(`chatBackground.${axis}`)}
-														value={current[index]}
-														onCommit={(v) => {
-															const next = [...current];
-															next[index] = v;
-															patchBackground({ position: `${next[0]}% ${next[1]}%` });
-														}}
+														value={adjustments[key]}
+														onCommit={(v) => patchBackground({ [key]: v })}
 													/>
 												);
 											})}
@@ -583,15 +579,16 @@ function PositionField({
 			<span className="btn-fill flex h-8 min-w-0 flex-1 items-center rounded-full px-3 text-xs">
 				<input
 					type="number"
-					inputMode="numeric"
-					min={0}
+					inputMode="text"
+					dir="ltr"
+					min={-100}
 					max={100}
 					aria-label={label}
 					value={draft ?? String(value)}
 					onChange={(event) => {
 						setDraft(event.target.value);
 						const parsed = Number.parseInt(event.target.value, 10);
-						if (Number.isFinite(parsed)) onCommit(Math.min(100, Math.max(0, parsed)));
+						if (Number.isFinite(parsed)) onCommit(sanitizeOffset(parsed));
 					}}
 					onBlur={() => setDraft(null)}
 					className="w-full min-w-0 bg-transparent tabular-nums outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"

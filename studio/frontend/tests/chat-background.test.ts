@@ -51,6 +51,29 @@ test("background preferences repair malformed persisted data", () => {
 	assert.equal(sanitizeAdjustments({ conversation: 250 }).conversation, 100);
 	assert.equal(sanitizeAdjustments({ conversation: "1" as never }).conversation, 0);
 });
+test("signed wallpaper movement survives saving without changing legacy crop anchors", () => {
+	const legacy = sanitizeAdjustments({ position: "25% 80%", zoom: 175 });
+	assert.equal(legacy.position, "25% 80%");
+	assert.equal(legacy.zoom, 175);
+	assert.equal(legacy.offsetX, 0);
+	assert.equal(legacy.offsetY, 0);
+	const moved = sanitizeAdjustments({ ...legacy, offsetX: -25, offsetY: 40 });
+	assert.equal(moved.position, legacy.position);
+	assert.equal(moved.offsetX, -25);
+	assert.equal(moved.offsetY, 40);
+	assert.deepEqual(sanitizeAdjustments(JSON.parse(JSON.stringify(moved))), moved);
+	const centered = sanitizeAdjustments({ ...moved, offsetX: 0, offsetY: 0 });
+	assert.deepEqual(centered, legacy);
+});
+test("wallpaper movement bounds both signs and rejects malformed saved offsets", () => {
+	const bounded = sanitizeAdjustments({ offsetX: -250, offsetY: 250 });
+	assert.equal(bounded.offsetX, -100);
+	assert.equal(bounded.offsetY, 100);
+	const invalid = sanitizeAdjustments({ offsetX: NaN, offsetY: Infinity });
+	assert.equal(invalid.offsetX, 0);
+	assert.equal(invalid.offsetY, 0);
+	assert.equal(sanitizeAdjustments({ offsetX: "-25" as never }).offsetX, 0);
+});
 test("conversation visibility scales the conversation dim and wash, and 0 keeps both", async () => {
 	const { readFile } = await import("node:fs/promises");
 	const css = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
