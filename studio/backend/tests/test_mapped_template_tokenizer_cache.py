@@ -99,7 +99,6 @@ def test_template_applied_once_and_reused_across_messages(monkeypatch):
     assert len(rendered_with) == 5
     assert all(t is rendered_with[0] for t in rendered_with)
     assert rendered_with[0] is not orig
-    # The turn-end refresh still runs every message and still unions onto the load-time ids.
     assert model_info["chat_turn_end_eos_ids"] == [1, 107]
 
 
@@ -110,7 +109,6 @@ def test_eos_union_matches_uncached_repeat(monkeypatch):
     for _ in range(3):
         _send(backend)
 
-    # The uncached behaviour: a fresh model_info per message forces get_chat_template each time.
     fresh_ids = [5]
     for _ in range(3):
         info = {"tokenizer": orig, "is_vision": False, "chat_turn_end_eos_ids": fresh_ids}
@@ -129,13 +127,11 @@ def test_reload_and_tokenizer_swap_reapply(monkeypatch):
     _send(backend)
     assert len(gct.calls) == 1
 
-    # Same model_info, new tokenizer object: the old remap must not be reused.
     new_tok = _FakeTokenizer(1)
     model_info["tokenizer"] = new_tok
     _send(backend)
     assert len(gct.calls) == 2 and gct.calls[-1][0] is new_tok
 
-    # Reload: load_model builds a new model_info dict.
     backend.models = {_NAME: {"tokenizer": orig, "is_vision": False}}
     _send(backend)
     assert len(gct.calls) == 3
@@ -170,7 +166,6 @@ def test_failure_is_not_cached_and_falls_back(monkeypatch):
     backend, rendered_with = _backend(monkeypatch, model_info, gct)
     _send(backend)
     _send(backend)
-    # Failed calls render with the tokenizer's own template, and every message retries.
     assert rendered_with == [orig, orig]
     assert len(gct.calls) == 2
     assert "_mapped_template_tokenizer" not in model_info
