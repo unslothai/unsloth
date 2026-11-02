@@ -1647,6 +1647,30 @@ class TestPrefillOptionAvailabilityRoute:
         assert asked == ([model_dir] if answer[0] else [])
 
 
+class TestFastVerifyAvailabilityRoute:
+    @pytest.mark.parametrize(
+        "capable,verdict,answer",
+        [
+            (True, (True, ""), (True, None)),
+            (True, (False, "no_lane_kernel"), (False, "no_lane_kernel")),
+            (False, (True, ""), (False, "unsupported_zoo")),
+        ],
+    )
+    def test_the_answer(self, monkeypatch, tmp_path, capable, verdict, answer):
+        import models.inference as models
+
+        zoo = _types.ModuleType("unsloth_zoo.mlx.inference")
+        zoo.inference_scopes = (lambda m, fast_verify = None: m) if capable else (lambda m: m)
+        zoo.fast_verify_checkpoint_available = lambda path: SimpleNamespace(
+            available = verdict[0], reason = verdict[1]
+        )
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", zoo)
+        TestEstimateMemoryRoute._mlx_target(monkeypatch, str(tmp_path))
+        request = models.FastVerifyAvailabilityRequest(model_path = "org/model")
+        resp = asyncio.run(ri.fast_verify_availability(request, current_subject = "test"))
+        assert (resp.available, resp.reason) == answer
+
+
 class TestParallelSlotResolution:
     """Blank Parallel Slots means the server default (four in a standard launch), so price it, not one."""
 

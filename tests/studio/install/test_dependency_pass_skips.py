@@ -12,6 +12,7 @@ import os
 import pathlib
 import platform
 import re
+import shutil
 import sys
 import tempfile
 import types
@@ -594,7 +595,7 @@ def test_the_remote_commit_probe_reads_ls_remote_and_fails_closed(monkeypatch) -
     )
     argv, kwargs = calls[-1]
     assert argv[:3] == ["/usr/bin/git", "ls-remote", "--"]
-    assert argv[3:] == ["https://example.invalid/t.git", "release/3.6.x"]
+    assert argv[3:] == ["https://example.invalid/t.git", "release/3.6.x", "release/3.6.x^{}"]
     assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
 
     _fake_run.answer = _Done(
@@ -618,6 +619,32 @@ def test_the_remote_commit_probe_reads_ls_remote_and_fails_closed(monkeypatch) -
     assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") is None
     monkeypatch.setattr(stack.shutil, "which", lambda _name: None)
     assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") is None
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason = "needs git")
+def test_the_remote_commit_probe_peels_a_real_annotated_tag(tmp_path) -> None:
+    """Real git omits the `^{}` row unless asked, so the tag object (not a commit) leaked through."""
+    import subprocess as _sp
+
+    env = dict(os.environ, GIT_AUTHOR_NAME = "t", GIT_AUTHOR_EMAIL = "t@t")
+    env.update(GIT_COMMITTER_NAME = "t", GIT_COMMITTER_EMAIL = "t@t")
+
+    def git(*args):
+        argv = ["git", "-C", str(tmp_path), *args]
+        return _sp.run(argv, check = True, capture_output = True, text = True, env = env).stdout.strip()
+
+    git("init", "-q")
+    git("commit", "-q", "--allow-empty", "-m", "c")
+    git("tag", "-a", "v1", "-m", "annotated")
+    commit = git("rev-parse", "HEAD")
+    assert git("rev-parse", "v1") != commit
+    assert stack._git_remote_commit(tmp_path.as_uri(), "v1") == commit
+    branch = git("symbolic-ref", "--short", "HEAD")
+    assert stack._git_remote_commit(tmp_path.as_uri(), branch) == commit
+    # A same-named branch still wins over the tag, as pip and uv resolve it.
+    git("commit", "-q", "--allow-empty", "-m", "d")
+    git("branch", "v1")
+    assert stack._git_remote_commit(tmp_path.as_uri(), "v1") == git("rev-parse", "HEAD")
 
 
 @pytest.mark.parametrize("name", ["UV_CONSTRAINT", "PIP_CONSTRAINT", "PIP_NO_DEPS", "UV_NO_DEPS"])

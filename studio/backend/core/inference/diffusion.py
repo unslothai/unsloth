@@ -6958,6 +6958,7 @@ class DiffusionBackend:
         scoped_files: dict[str, list[str]] = {}
         scoped_gguf: dict[str, Optional[str]] = {}
         missing_checkpoints: set[str] = set()
+        missing_denoisers: set[str] = set()
 
         def add_missing_entry(
             repo: str,
@@ -6966,6 +6967,7 @@ class DiffusionBackend:
             *,
             gguf: Optional[str] = None,
             checkpoint: bool = False,
+            hosted_denoiser: bool = False,
         ) -> None:
             """Adds only files neither cache root resolves, probed at the plan's revision; one entry per repo, else two jobs fight over progress and cancel."""
 
@@ -7012,6 +7014,8 @@ class DiffusionBackend:
             )
             if checkpoint:
                 missing_checkpoints.add(repo)
+            if hosted_denoiser:
+                missing_denoisers.add(repo)
             for entry in entries:
                 if entry["repo_id"] != repo:
                     continue
@@ -7023,6 +7027,7 @@ class DiffusionBackend:
                 )
                 entry["gguf_filename"] = scoped_gguf[repo]
                 entry["checkpoint"] = repo in missing_checkpoints
+                entry["hosted_denoiser"] = repo in missing_denoisers
                 return
             entries.append(
                 {
@@ -7034,6 +7039,7 @@ class DiffusionBackend:
                     ),
                     "gguf_filename": scoped_gguf[repo],
                     "checkpoint": repo in missing_checkpoints,
+                    "hosted_denoiser": repo in missing_denoisers,
                 }
             )
 
@@ -7073,7 +7079,14 @@ class DiffusionBackend:
         if dit_prequant is not None:
             # Staged, not just counted: leaving it out means a multi-GB inline pull under the load lock.
             prequant_repo, prequant_file, prequant_size = dit_prequant
-            add_missing_entry(prequant_repo, [prequant_file], {prequant_file: prequant_size})
+            # Part of a pipeline pick, replacing its dense denoiser; a GGUF pick keeps it a required asset.
+            add_missing_entry(
+                prequant_repo,
+                [prequant_file],
+                {prequant_file: prequant_size},
+                checkpoint = skip_transformer_weights,
+                hosted_denoiser = skip_transformer_weights,
+            )
         for ref in component_overrides.files.values() if component_overrides else ():
             if not ref.is_hub:
                 continue
@@ -12845,6 +12858,48 @@ class DiffusionBackend:
         return pipe
 
     @staticmethod
+    def _pipeline_compute_dtype(pipe: Any) -> Any:
+        """Best-effort floating dtype for a GGUF pipe whose denoiser params are packed uint8 only."""
+        dtype = getattr(pipe, "dtype", None)
+        if dtype is not None and getattr(dtype, "is_floating_point", False):
+            return dtype
+        for name in ("text_encoder", "text_encoder_2", "transformer", "unet"):
+            mod = getattr(pipe, name, None)
+            if mod is None:
+                continue
+            try:
+                found = next(
+                    (p.dtype for p in mod.parameters() if p.dtype.is_floating_point),
+                    None,
+                )
+            except (AttributeError, RuntimeError, StopIteration, TypeError):
+                found = None
+            if found is not None:
+                return found
+        return None
+
+    @staticmethod
+    def _vae_running_dtype(vae: Any) -> Any:
+        """Dtype of the layer that first consumes the encode input (``encoder.conv_in``), else the first floating
+        encoder / VAE weight; None when it cannot be read, so the input is left as is (#16375)."""
+        encoder = getattr(vae, "encoder", None)
+        first = getattr(getattr(encoder, "conv_in", None), "weight", None)
+        dtype = getattr(first, "dtype", None)
+        if dtype is not None and getattr(dtype, "is_floating_point", False):
+            return dtype
+        for mod in (encoder, vae):
+            if mod is None:
+                continue
+            try:
+                found = next((p.dtype for p in mod.parameters() if p.dtype.is_floating_point), None)
+            except (AttributeError, RuntimeError, StopIteration, TypeError):
+                found = None
+            if found is not None:
+                return found
+        dtype = getattr(vae, "dtype", None)
+        return dtype if dtype is not None and getattr(dtype, "is_floating_point", False) else None
+
+    @staticmethod
     def _align_vae_dtype(pipe: Any, denoiser_attr: str = "transformer") -> None:
         """A prior txt2img decode can leave the VAE upcast to fp32; re-align it to the denoiser's dtype."""
         denoiser = getattr(pipe, denoiser_attr, None)
@@ -12857,6 +12912,9 @@ class DiffusionBackend:
                 (p.dtype for p in denoiser.parameters() if p.dtype.is_floating_point),
                 None,
             )
+            # Packed-uint8 GGUF denoisers carry no float dtype (#16375).
+            if target_dtype is None:
+                target_dtype = DiffusionBackend._pipeline_compute_dtype(pipe)
             if target_dtype is None:
                 return
             if next(vae.parameters()).dtype != target_dtype:
@@ -12866,8 +12924,8 @@ class DiffusionBackend:
 
     @staticmethod
     def _make_vae_encode_dtype_safe(pipe: Any) -> None:
-        """Casts encode inputs to the VAE's dtype; img2img uses the text encoder's dtype, which can
-        mismatch."""
+        """Casts encode inputs to the VAE's dtype; img2img / Qwen Edit use the TE dtype, which can
+        mismatch (#16375)."""
         vae = getattr(pipe, "vae", None)
         if vae is None or getattr(vae, "_unsloth_dtype_safe_encode", False):
             return
@@ -12878,16 +12936,18 @@ class DiffusionBackend:
 
             @functools.wraps(original)
             def _encode(x: Any, *args: Any, **kwargs: Any) -> Any:
-                try:
-                    if isinstance(x, torch.Tensor):
-                        target = next(
-                            (p.dtype for p in vae.parameters() if p.dtype.is_floating_point),
-                            None,
-                        )
+                if isinstance(x, torch.Tensor):
+                    target = None
+                    try:
+                        target = DiffusionBackend._vae_running_dtype(vae)
+                    except (AttributeError, RuntimeError, StopIteration, TypeError):
+                        target = None
+                    try:
+                        # An unreadable dtype leaves the input alone: guessing fp32 breaks a half encoder.
                         if target is not None and x.dtype != target:
                             x = x.to(dtype = target)
-                except (AttributeError, RuntimeError, StopIteration, TypeError):
-                    pass
+                    except (AttributeError, RuntimeError, TypeError):
+                        pass
                 return original(x, *args, **kwargs)
 
             vae.encode = _encode

@@ -1115,6 +1115,58 @@ def test_the_forced_recall_searches_for_the_USERS_question(archived, monkeypatch
     assert seen["query"] == "what was the VULPINE code from earlier"
 
 
+def test_the_forced_recall_skips_notices_a_tool_loop_added_to_its_branch(archived, monkeypatch):
+    """A tool loop's live branch ends on its own user-role notices; query_messages names the
+    user's question so the final pass does not search for the budget nudge (#16187)."""
+    seen = {}
+
+    def fake_recall(thread_id, query, **kwargs):
+        seen["query"] = query
+        seen["branch_messages"] = kwargs.get("branch_messages")
+        return ("earlier turn", [{"id": "1"}])
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+    request = [{"role": "user", "content": "what was the VULPINE code from earlier"}]
+    live = request + [
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "content": "result", "tool_call_id": "c1"},
+        {"role": "user", "content": "You have used all available tool calls. Answer now."},
+    ]
+
+    tools_mod.build_conversation_recall(
+        live, THREAD, style = "inline", branch_messages = live, query_messages = request
+    )
+
+    assert seen["query"] == "what was the VULPINE code from earlier"
+    assert seen["branch_messages"] is live
+
+
+def test_archive_and_recall_hands_query_messages_to_the_recall(archived, monkeypatch):
+    seen = {}
+
+    def build(_conversation, _thread_id, **kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(tools_mod, "build_conversation_recall", build)
+    request = [{"role": "user", "content": "the question"}]
+    live = request + [{"role": "user", "content": "a loop notice"}]
+
+    llama_cpp._archive_and_recall(
+        live,
+        live,
+        thread_id = THREAD,
+        style = "inline",
+        recall_done = False,
+        recall_budget_tokens = 100_000,
+        branch_messages = live,
+        query_messages = request,
+    )
+
+    assert seen["query_messages"] is request
+    assert seen["branch_messages"] is live
+
+
 def test_a_model_initiated_search_is_filtered_to_the_request_branch(archived, monkeypatch):
     """A model-initiated search must be branch-filtered too, or a replaced reply returns through it."""
     seen = {}

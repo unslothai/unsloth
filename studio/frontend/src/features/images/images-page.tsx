@@ -25,10 +25,10 @@ import {
 import {
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  Image01Icon,
+  HistoryIcon,
+  ImageIcon,
   ImageAdd02Icon,
   ImageCropIcon,
   InformationCircleIcon,
@@ -39,8 +39,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { History as HistoryIcon, Shuffle } from "lucide-react";
-import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { Shuffle } from "lucide-react";
+import { MessageCircleIcon, TestTubeOutlineIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
 
@@ -370,6 +370,7 @@ import {
   shouldOfferGenerateAnyway,
   shouldRunQueuedOversizedRetry,
 } from "./lib/memory-refusal";
+import { HELD_BY_OTHER_ACCOUNT_NOTICE, heldByOtherAccount, ownDiffusionStatus } from "./lib/resident-owner";
 import {
   AUTOMATIC_SCHEDULE,
   DEFAULT_SAMPLER,
@@ -3325,7 +3326,7 @@ export function ImagesPage({
   const refreshStatus = useCallback(async () => {
     const ticket = ++statusTicket.current;
     try {
-      setStatusIfNewest(ticket, await getDiffusionStatus());
+      setStatusIfNewest(ticket, ownDiffusionStatus(await getDiffusionStatus()));
     } catch {
       // Status is best-effort; a failed poll should not surface an error toast.
     }
@@ -3441,7 +3442,7 @@ export function ImagesPage({
       if (p.phase === "ready") {
         dismissLoadToast();
         const ticket = ++statusTicket.current;
-        const loaded = await getDiffusionStatus();
+        const loaded = ownDiffusionStatus(await getDiffusionStatus());
         if (seq !== cancelSeq.current) {
           // Cancelled mid-read: drop it, the unload's own response is authoritative.
           return;
@@ -3608,7 +3609,7 @@ export function ImagesPage({
           void pollLoadProgress();
         } else if (p.phase === "ready") {
           const ticket = ++statusTicket.current;
-          const loaded = await getDiffusionStatus();
+          const loaded = ownDiffusionStatus(await getDiffusionStatus());
           setStatusIfNewest(ticket, loaded);
           const resumed = finishedLoadTarget<LastLoad>(null, loaded);
           if (resumed) {
@@ -4998,7 +4999,7 @@ export function ImagesPage({
               className="w-full"
               onClick={() => setReferenceImages((prev) => prev.filter((_, j) => j !== i))}
             >
-              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
               Remove image {numberOf(i)}
             </Button>
           </div>
@@ -6259,7 +6260,7 @@ export function ImagesPage({
                           setMaskResetKey((k) => k + 1);
                         }}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                         Clear mask
                       </Button>
                       <Button
@@ -6488,7 +6489,7 @@ export function ImagesPage({
                         className="w-full"
                         onClick={() => handleInitChange(null)}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                         Remove source image
                       </Button>
                     </div>
@@ -6784,7 +6785,7 @@ export function ImagesPage({
                           aria-label={`Remove LoRA ${i + 1}`}
                           onClick={() => setLoras((prev) => prev.filter((_, j) => j !== i))}
                         >
-                          <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                          <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                         </Button>
                       </div>
                       <SliderField
@@ -7040,7 +7041,7 @@ export function ImagesPage({
                         if (lastSeed !== null) setSeed(String(lastSeed));
                       }}
                     >
-                      <HistoryIcon className="size-4" strokeWidth={1.5} />
+                      <HugeiconsIcon icon={HistoryIcon} className="size-4" strokeWidth={1.5} />
                     </Button>
                     </div>
                   </div>
@@ -7070,6 +7071,11 @@ export function ImagesPage({
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
           <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-3">
+            {!external && busy === null && heldByOtherAccount(status) && (
+              <p role="status" className="w-full text-center text-ui-11 leading-snug text-muted-foreground">
+                {HELD_BY_OTHER_ACCOUNT_NOTICE}
+              </p>
+            )}
             {busy === "generating" ? (
               <Button
                 className="relative z-10 text-ui-13 hover:bg-muted dark:hover:bg-muted"
@@ -7327,7 +7333,7 @@ export function ImagesPage({
               </>
             ) : busy === "generating" ? null : (
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <HugeiconsIcon icon={Image01Icon} className="size-12" strokeWidth={1.5} />
+                <HugeiconsIcon icon={ImageIcon} className="size-12" strokeWidth={1.5} />
                 <p className="text-sm">
                   {status?.loaded || external
                     ? "Enter a prompt and hit Generate."

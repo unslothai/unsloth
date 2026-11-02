@@ -9105,7 +9105,7 @@ def test_mlx_kv_quant_survives_the_whole_override_projection():
         assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_quant == "tq-4"
 
 
-@pytest.mark.parametrize("knob", ["mlx_int8_prefill", "mlx_ane_prefill"])
+@pytest.mark.parametrize("knob", ["mlx_int8_prefill", "mlx_ane_prefill", "mlx_fast_verify"])
 def test_mlx_prefill_options_are_stored_only_when_on_and_reach_the_load(monkeypatch, knob):
     _mock_override_store(monkeypatch)
     assert settings.normalize_model_override({knob: False}) == {}

@@ -12,6 +12,7 @@ import {
   trainingApiRequestFromPayload,
   useSettingsDialogStore,
 } from "@/features/settings";
+import { usePlatformStore } from "@/config/env";
 import { useTrainingConfigStore } from "@/features/training";
 import { buildTrainingStartPayload } from "@/features/training/api/mappers";
 import { useT } from "@/i18n";
@@ -25,7 +26,12 @@ export function TrainingApiButton(): ReactElement {
   const label = t("settings.apiKeys.audioApi.useViaApi");
   const openTrainingApi = () => {
     const config = useTrainingConfigStore.getState();
-    const payload = buildTrainingStartPayload(config, null);
+    const payload = buildTrainingStartPayload(
+      config,
+      null,
+      null,
+      usePlatformStore.getState().isCpuTrainingHost(),
+    );
     const uploaded = config.datasetSource === "upload" ? config.uploadedFile : null;
     useSettingsDialogStore
       .getState()
