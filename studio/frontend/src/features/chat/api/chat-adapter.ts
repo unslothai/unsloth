@@ -6399,7 +6399,12 @@ export function createOpenAIStreamAdapter(
           totalStreamTime: now - streamStartTime,
           totalChunks,
           toolCallCount: toolCallParts.length,
-          ...(windowCount !== null ? { tokenCount: windowCount } : {}),
+          // Without per-token timings (Generation details off), the chars/4 estimate the final count falls back to.
+          ...(windowCount !== null
+            ? { tokenCount: windowCount }
+            : cumulativeText.length > continuationPartial.length
+              ? { tokenCount: Math.max(1, Math.round((cumulativeText.length - continuationPartial.length) / 4)) }
+              : {}),
           ...(firstTokenTime !== undefined ? { firstTokenTime } : {}),
           startedAt: streamStartTime,
           durationMs: now - streamStartTime,
