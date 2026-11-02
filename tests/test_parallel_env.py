@@ -629,7 +629,7 @@ def test_every_cell_carries_three_kinds_of_evidence_that_exist():
                 assert cell.match["compile"] == ("eager",), cell.name
                 continue
             path, name = re.match(r"(tests/[\w.]+\.py)::(\w+)", ref).groups()
-            with open(os.path.join(os.path.dirname(here), path)) as f:
+            with open(os.path.join(os.path.dirname(here), path), encoding = "utf-8") as f:
                 assert f"def {name}(" in f.read(), ref
     assert caps.markdown_table("cells").count("\n") == len(caps.CELLS) + 1
 
@@ -805,7 +805,7 @@ def test_a_shard_unaware_muon_is_refused_on_fsdp2_and_tp_shards():
         ):
             caps.refuse_shard_unaware_optimizer(muon, what)
         caps.refuse_shard_unaware_optimizer(adamw, what)
-        # torch.optim.Muon steps DTensor shards as whole matrices (tests/test_muon_dtensor_gloo.py), as before.
+        # torch.optim.Muon steps DTensor shards as whole matrices (tests/test_optim_muon_dtensor_gloo.py), as before.
         caps.refuse_shard_unaware_optimizer(torch_muon, what)
     caps.check(_q(dp = 2, optim = "muon"))  # DDP holds whole matrices
     from unsloth.models import fsdp2_native
