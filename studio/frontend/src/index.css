@@ -6136,6 +6136,10 @@ html {
 }
 html { --glass-sidebar-floor: 64%; --glass-pane-tone: 6%; --glass-menu-floor: 80%; --glass-composer-floor: 45%; }
 html.dark { --glass-sidebar-floor: 40%; --glass-pane-tone: 0%; --glass-menu-floor: 0%; --glass-composer-floor: 0%; }
+/* Give dark 3D composers the sidebar's tint floor so bright artwork does not wash them out. */
+html.dark[data-glass="liquid-3d"] {
+  --glass-composer-floor: var(--glass-sidebar-floor);
+}
 html[data-glass] {
   --glass-pane-floor: max(var(--glass-sidebar-floor), var(--glass-read-floor, 0%));
   --glass-sidebar-fill: color-mix(in srgb, var(--sidebar), var(--foreground) max(var(--glass-shade, 0%), var(--glass-pane-tone)));
