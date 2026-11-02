@@ -986,6 +986,60 @@ def _preserve_tokenizer_eos_token(
         )
 
 
+@contextmanager
+def _without_runtime_truncation(
+    tokenizer,
+    save_directory = None,
+    filename_prefix = None,
+):
+    """A fast tokenizer keeps the last call's truncation and padding on its backend, so after training with max_length=2048 save_pretrained writes them into tokenizer.json and every later load truncates. A VLM prompt with large images then loses image tokens and the processor fails ("Failed to apply Qwen3VLProcessor"). Clear both for the save and restore them after; also drop the max_length a reload of such a file copies into tokenizer_config.json."""
+    source_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    backend = getattr(source_tokenizer, "_tokenizer", None)
+    truncation = getattr(backend, "truncation", None)
+    padding = getattr(backend, "padding", None)
+    if truncation is None and padding is None:
+        yield
+        return
+    try:
+        try:
+            backend.no_truncation()
+            backend.no_padding()
+        except Exception as error:
+            logger.warning_once(
+                f"Unsloth: Could not clear tokenizer truncation before saving: {error}"
+            )
+        yield
+    finally:
+        try:
+            if truncation is not None:
+                backend.enable_truncation(**truncation)
+            if padding is not None:
+                backend.enable_padding(**padding)
+        except Exception as error:
+            logger.warning_once(
+                f"Unsloth: Could not restore tokenizer truncation after saving: {error}"
+            )
+    if truncation is None or save_directory is None:
+        return
+    tokenizer_config = os.path.join(
+        str(save_directory),
+        f"{filename_prefix}-tokenizer_config.json" if filename_prefix else "tokenizer_config.json",
+    )
+    if not os.path.isfile(tokenizer_config):
+        return
+    try:
+        with open(tokenizer_config, "r", encoding = "utf-8") as file:
+            config = json.load(file)
+        if config.get("max_length") != truncation.get("max_length"):
+            return
+        del config["max_length"]
+        with open(tokenizer_config, "w", encoding = "utf-8") as file:
+            json.dump(config, file, indent = 2, ensure_ascii = False)
+            file.write("\n")
+    except Exception as error:
+        logger.warning_once(f"Unsloth: Could not drop max_length from {tokenizer_config}: {error}")
+
+
 def _preserve_repaired_tokenizer_class(
     tokenizer,
     save_directory,
@@ -1652,7 +1706,12 @@ def unsloth_save_model(
             old_padding_side = _tokenizer.padding_side
             _tokenizer.padding_side = "left"
 
-            tokenizer.save_pretrained(**tokenizer_save_settings)
+            with _without_runtime_truncation(
+                tokenizer,
+                tokenizer_save_settings["save_directory"],
+                tokenizer_save_settings.get("filename_prefix"),
+            ):
+                tokenizer.save_pretrained(**tokenizer_save_settings)
 
             _tokenizer.padding_side = old_padding_side
 
@@ -1921,7 +1980,12 @@ def unsloth_save_model(
         old_padding_side = _tokenizer.padding_side
         _tokenizer.padding_side = "left"
 
-        tokenizer.save_pretrained(**tokenizer_save_settings)
+        with _without_runtime_truncation(
+            tokenizer,
+            tokenizer_save_settings["save_directory"],
+            tokenizer_save_settings.get("filename_prefix"),
+        ):
+            tokenizer.save_pretrained(**tokenizer_save_settings)
         _preserve_tokenizer_eos_token(
             tokenizer,
             tokenizer_save_settings["save_directory"],
@@ -8826,11 +8890,12 @@ def _unsloth_tokenizer_save_pretrained(
         save_kwargs["legacy_format"] = legacy_format
     if filename_prefix is not None:
         save_kwargs["filename_prefix"] = filename_prefix
-    result = self.original_save_pretrained(
-        save_directory,
-        push_to_hub = False,
-        **save_kwargs,
-    )
+    with _without_runtime_truncation(self, save_directory, filename_prefix):
+        result = self.original_save_pretrained(
+            save_directory,
+            push_to_hub = False,
+            **save_kwargs,
+        )
     _preserve_sentencepiece_tokenizer_assets(
         self,
         save_directory,
