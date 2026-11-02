@@ -10,36 +10,11 @@ export const TestTubeOutlineIcon = TestTube01Icon.slice(
   3,
 ) as typeof TestTube01Icon;
 
-// BubbleChatIcon's first path alone is HugeIcons' message-circle, which this set lacks.
 export const MessageCircleIcon = BubbleChatIcon.slice(
   0,
   1,
 ) as typeof BubbleChatIcon;
 
-export const SheetIcon: IconSvgElement = [
-  ["path", { d: "M2.49219 9.5H21.4922", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "0" }],
-  ["path", { d: "M2.99219 15.5H20.9922", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "1" }],
-  ["path", { d: "M8.49219 21L8.49219 9.5", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "2" }],
-  ["path", { d: "M15.4922 21L15.4922 9.5", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "3" }],
-  [
-    "path",
-    {
-      d: "M2.49219 12C2.49219 7.52166 2.49219 5.28249 3.88343 3.89124C5.27467 2.5 7.51384 2.5 11.9922 2.5C16.4705 2.5 18.7097 2.5 20.1009 3.89124C21.4922 5.28249 21.4922 7.52166 21.4922 12C21.4922 16.4783 21.4922 18.7175 20.1009 20.1088C18.7097 21.5 16.4705 21.5 11.9922 21.5C7.51384 21.5 5.27467 21.5 3.88343 20.1088C2.49219 18.7175 2.49219 16.4783 2.49219 12Z",
-      stroke: "currentColor",
-      strokeWidth: "1.5",
-      key: "4",
-    },
-  ],
-];
-
-
-// HugeIcons "images" from @hugeicons/core-free-icons 4.3.5; the installed 4.1 predates it.
-export const ImagesIcon: IconSvgElement = [
-  ["path", { d: "M4 17.0429L8.75635 12.6942C10.4331 11.1612 11.2714 10.3947 12.3096 10.3191C13.3478 10.2435 14.2884 10.8805 16.1695 12.1545L17.5 13.0556", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "0" }],
-  ["path", { d: "M7.375 7.25H7.25M7.5 7.25C7.5 7.38807 7.38807 7.5 7.25 7.5C7.11193 7.5 7 7.38807 7 7.25C7 7.11193 7.11193 7 7.25 7C7.38807 7 7.5 7.11193 7.5 7.25Z", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "1" }],
-  ["path", { d: "M6 17.9745C6.1287 19.2829 6.41956 20.1636 7.07691 20.8209C8.25596 22 10.1536 22 13.9489 22C17.7442 22 19.6419 22 20.8209 20.8209C22 19.6419 22 17.7442 22 13.9489C22 10.1536 22 8.25596 20.8209 7.07691C20.1636 6.41956 19.2829 6.1287 17.9745 6", stroke: "currentColor", strokeWidth: "1.5", key: "2" }],
-  ["path", { d: "M2 10C2 6.22876 2 4.34315 3.17157 3.17157C4.34315 2 6.22876 2 10 2C13.7712 2 15.6569 2 16.8284 3.17157C18 4.34315 18 6.22876 18 10C18 13.7712 18 15.6569 16.8284 16.8284C15.6569 18 13.7712 18 10 18C6.22876 18 4.34315 18 3.17157 16.8284C2 15.6569 2 13.7712 2 10Z", stroke: "currentColor", strokeWidth: "1.5", key: "3" }],
-];
 
 export const StarPointedIcon: IconSvgElement = [
   [
@@ -55,7 +30,6 @@ export const StarPointedIcon: IconSvgElement = [
   ],
 ];
 
-// Hugeicons "ai-speech" and "text-to-speach" (MIT), only in core-free-icons 4.3+, newer than the pinned 4.1.1.
 const speechStroke = {
   stroke: "currentColor",
   strokeLinecap: "round",
@@ -70,23 +44,6 @@ export const AiSpeechIcon: IconSvgElement = [
   ["path", { d: "M20 11L20 15", ...speechStroke, key: "2" }],
   ["path", { d: "M8 3V21", ...speechStroke, key: "3" }],
   ["path", { d: "M4 9V15", ...speechStroke, key: "4" }],
-];
-
-// Text to Speech: hugeicons' ai-speech as drawn, sparkle included.
-export const TextToSpeechIcon: IconSvgElement = [
-  ["path", { d: "M12 7V17", ...speechStroke, key: "0" }],
-  ["path", { d: "M16 11L16 19", ...speechStroke, key: "1" }],
-  ["path", { d: "M20 11L20 14", ...speechStroke, key: "2" }],
-  ["path", { d: "M8 3V21", ...speechStroke, key: "3" }],
-  ["path", { d: "M4 9V15", ...speechStroke, key: "4" }],
-  [
-    "path",
-    {
-      d: "M18.5 3.9375V5.5M18.5 5.5V7.0625M18.5 5.5H17.25M18.5 5.5H19.75M21 5.5L19.9156 5.13852C19.4179 4.97263 19.0274 4.58211 18.8615 4.08443L18.5 3L18.1385 4.08443C17.9726 4.58211 17.5821 4.97263 17.0844 5.13852L16 5.5L17.0844 5.86148C17.5821 6.02737 17.9726 6.41789 18.1385 6.91557L18.5 8L18.8615 6.91557C19.0274 6.41789 19.4179 6.02737 19.9156 5.86148L21 5.5Z",
-      ...speechStroke,
-      key: "5",
-    },
-  ],
 ];
 
 /** `icon` with an accent dot; colours go in `style` because HugeiconsIcon overwrites child stroke attributes. */
@@ -125,11 +82,10 @@ export const FileSearchIcon: IconSvgElement = [
   ["path", { d: "M13.1 1.55V2.1C13.1 5.2113 13.1 6.7669 14.0666 7.7335C15.0331 8.7 16.5888 8.7 19.7 8.7H20.25M20.8 10.5226V14.2C20.8 18.3483 20.8 20.4226 19.5112 21.7112C18.2226 23 16.1483 23 12 23C7.8516 23 5.7775 23 4.4887 21.7112C3.2 20.4226 3.2 18.3483 3.2 14.2V9.2014C3.2 5.6319 3.2 3.8471 4.1747 2.6383C4.3716 2.394 4.594 2.1716 4.8383 1.9747C6.0471 1 7.8319 1 11.4014 1C12.1775 1 12.5655 1 12.9209 1.1254C12.9948 1.1515 13.0672 1.1815 13.138 1.2153C13.478 1.3779 13.7523 1.6523 14.3011 2.2011L19.5112 7.4113C20.1472 8.0471 20.465 8.3651 20.6326 8.7694C20.8 9.1737 20.8 9.6233 20.8 10.5226Z", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "1" }],
 ];
 
-// Hugeicons chip as drawn in core-free-icons 4.4; the installed 4.1 draws an older version.
-export const ChipIcon: IconSvgElement = [
-  ["path", { d: "M13 20H11C7.70017 20 6.05025 20 5.02513 18.9749C4 17.9497 4 16.2998 4 13V11C4 7.70017 4 6.05025 5.02513 5.02513C6.05025 4 7.70017 4 11 4H13C16.2998 4 17.9497 4 18.9749 5.02513C20 6.05025 20 7.70017 20 11V13C20 16.2998 20 17.9497 18.9749 18.9749C17.9497 20 16.2998 20 13 20Z", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "0" }],
-  ["path", { d: "M22 9.00003L20 9.00003M4 9.00003L2 9.00003M20 15L22 15M4 15H2M9 2L9 4M9 20L9 22M15 4L15 2M15 20L15 22", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "1" }],
-  ["path", { d: "M12 16C13.8856 16 14.8284 16 15.4142 15.4142C16 14.8284 16 13.8856 16 12C16 10.1144 16 9.17157 15.4142 8.58579C14.8284 8 13.8856 8 12 8C10.1144 8 9.17157 8 8.58579 8.58579C8 9.17157 8 10.1144 8 12C8 13.8856 8 14.8284 8.58579 15.4142C9.17157 16 10.1144 16 12 16Z", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "2" }],
+export const SiteInfoIcon: IconSvgElement = [
+  ["path", { d: "M12.325 7.125H19.625M4.375 16.875H11.675", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "0" }],
+  ["circle", { cx: "5.975", cy: "7.125", r: "2.6", stroke: "currentColor", strokeWidth: "1.5", key: "1" }],
+  ["circle", { cx: "18.025", cy: "16.875", r: "2.6", stroke: "currentColor", strokeWidth: "1.5", key: "2" }],
 ];
 
 // Hugeicons "shield-check" (4.3.5) with "tick-02" at 55%.
@@ -138,10 +94,31 @@ export const ShieldCheckIcon: IconSvgElement = [
   ["path", { d: "M8.15 12.3L10.075 14.225L15.85 8.175", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "1" }]
 ];
 
-// Hugeicons "hand" (4.3.5).
-export const HandIcon: IconSvgElement = [
-  ["path", { d: "M18.5 11.5V8.75C18.5 7.7835 19.2835 7 20.25 7C21.2165 7 22 7.7835 22 8.75V14.8C22 18.7765 18.7764 22 14.8 22H12.0588M8 14L5.61507 11.2176C5.22468 10.7621 4.65476 10.5 4.05489 10.5H3.91898C2.85916 10.5 2 11.3592 2 12.419C2 12.7978 2.11214 13.1682 2.32229 13.4834L5.7812 18.6718C7.16738 20.7511 9.50102 22 12 22", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "0" }],
-  ["path", { d: "M18.5 8.5V5.75C18.5 4.7835 17.7165 4 16.75 4C15.7835 4 15 4.7835 15 5.75V10.5", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "1" }],
-  ["path", { d: "M15 10.5V3.75C15 2.7835 14.2165 2 13.25 2C12.2835 2 11.5 2.7835 11.5 3.75V10", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "2" }],
-  ["path", { d: "M11.5 10V5.75C11.5 4.7835 10.7165 4 9.75 4C8.7835 4 8 4.7835 8 5.75V14", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "3" }]
+// 4.1.1 drawings; 4.4.0 redrew them.
+export const AiImageIcon: IconSvgElement = [
+  ["circle", { cx: "7", cy: "8", r: "1.5", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "0" }],
+  ["path", { d: "M20.9977 11C21 11.4701 21 11.9693 21 12.5C21 16.9783 21 19.2175 19.6088 20.6088C18.2175 22 15.9783 22 11.5 22C7.02166 22 4.78249 22 3.39124 20.6088C2 19.2175 2 16.9783 2 12.5C2 8.02166 2 5.78249 3.39124 4.39124C4.78249 3 7.02166 3 11.5 3C12.0307 3 12.5299 3 13 3.00231", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "1" }],
+  ["path", { d: "M18.5 2L18.7579 2.69703C19.0961 3.61102 19.2652 4.06802 19.5986 4.40139C19.932 4.73477 20.389 4.90387 21.303 5.24208L22 5.5L21.303 5.75792C20.389 6.09613 19.932 6.26524 19.5986 6.59861C19.2652 6.93198 19.0961 7.38898 18.7579 8.30297L18.5 9L18.2421 8.30297C17.9039 7.38898 17.7348 6.93198 17.4014 6.59861C17.068 6.26524 16.611 6.09613 15.697 5.75792L15 5.5L15.697 5.24208C16.611 4.90387 17.068 4.73477 17.4014 4.40139C17.7348 4.06802 17.9039 3.61102 18.2421 2.69703L18.5 2Z", stroke: "currentColor", strokeLinejoin: "round", strokeWidth: "1.5", key: "2" }],
+  ["path", { d: "M4.5 21.4999C8.87246 16.275 13.7741 9.384 20.9975 14.0424", stroke: "currentColor", strokeWidth: "1.5", key: "3" }],
 ];
+export const AiSecurity03Icon: IconSvgElement = [
+  ["path", { d: "M11.6769 8.67348C11.8274 8.43697 12.1726 8.43697 12.3231 8.67348L12.7586 9.35767C13.2401 10.1143 13.8818 10.756 14.6384 11.2375L15.3226 11.6729C15.5591 11.8235 15.5591 12.1687 15.3226 12.3192L14.6384 12.7547C13.8818 13.2362 13.2401 13.8779 12.7586 14.6345L12.3231 15.3187C12.1726 15.5552 11.8274 15.5552 11.6769 15.3187L11.2414 14.6345C10.7599 13.8779 10.1182 13.2362 9.36157 12.7547L8.67738 12.3192C8.44087 12.1687 8.44087 11.8235 8.67738 11.6729L9.36157 11.2375C10.1182 10.756 10.7599 10.1143 11.2414 9.35767L11.6769 8.67348Z", stroke: "currentColor", strokeLinejoin: "round", strokeWidth: "1.5", key: "0" }],
+  ["path", { d: "M3.9068 5.28387C6.87149 5.4984 8.78311 2.49713 12.0262 2.49713C15.2208 2.43341 16.784 5.32395 20.059 5.32395C21.8147 14.2606 18.1622 19.8743 12.053 21.4961C6.38992 20.15 2.13481 14.4788 3.9068 5.28387Z", stroke: "currentColor", strokeLinejoin: "round", strokeWidth: "1.5", key: "1" }],
+];
+export const Album02Icon: IconSvgElement = [
+  ["path", { d: "M6 17.9745C6.1287 19.2829 6.41956 20.1636 7.07691 20.8209C8.25596 22 10.1536 22 13.9489 22C17.7442 22 19.6419 22 20.8209 20.8209C22 19.6419 22 17.7442 22 13.9489C22 10.1536 22 8.25596 20.8209 7.07691C20.1636 6.41956 19.2829 6.1287 17.9745 6", stroke: "currentColor", strokeWidth: "1.5", key: "0" }],
+  ["path", { d: "M2 10C2 6.22876 2 4.34315 3.17157 3.17157C4.34315 2 6.22876 2 10 2C13.7712 2 15.6569 2 16.8284 3.17157C18 4.34315 18 6.22876 18 10C18 13.7712 18 15.6569 16.8284 16.8284C15.6569 18 13.7712 18 10 18C6.22876 18 4.34315 18 3.17157 16.8284C2 15.6569 2 13.7712 2 10Z", stroke: "currentColor", strokeWidth: "1.5", key: "1" }],
+  ["path", { d: "M2 11.1185C2.61902 11.0398 3.24484 11.001 3.87171 11.0023C6.52365 10.9533 9.11064 11.6763 11.1711 13.0424C13.082 14.3094 14.4247 16.053 15 18", stroke: "currentColor", strokeLinejoin: "round", strokeWidth: "1.5", key: "2" }],
+  ["path", { d: "M13.125 7H13M13.25 7C13.25 7.13807 13.1381 7.25 13 7.25C12.8619 7.25 12.75 7.13807 12.75 7C12.75 6.86193 12.8619 6.75 13 6.75C13.1381 6.75 13.25 6.86193 13.25 7Z", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "3" }],
+];
+
+export {
+  AiSpeechIcon as TextToSpeechIcon,
+  Bookmark01Icon as BookmarkIcon,
+  ChipIcon,
+  HandIcon,
+  ImagesIcon,
+  Settings01Icon,
+  SheetIcon,
+  TrashIcon,
+} from "@hugeicons/core-free-icons";

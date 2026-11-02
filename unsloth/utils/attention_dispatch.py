@@ -518,23 +518,62 @@ _LEAN_VARLEN = _TORCH_VARLEN_ATTN is not None and os.environ.get(
 ).lower() not in ("0", "false", "no", "off")
 if _LEAN_VARLEN:
     try:
-        from torch.nn.attention.varlen import _can_use_cudnn as _varlen_can_use_cudnn
+        # torch 2.15 removed _can_use_cudnn: varlen_attn takes the first eligible backend in SDPA
+        # priority order, and the per-device _should_use_cudnn below would rule lean out on every H100 / B200.
+        from torch.nn.attention.varlen import (
+            _CUDNN_ATTENTION_BACKEND as _VARLEN_CUDNN,
+            _select_backend as _varlen_select_backend,
+        )
+        def _varlen_can_use_cudnn(
+            query,
+            key,
+            value,
+            cu_seqlens,
+            max_q,
+            window_size,
+            enable_gqa = False,
+        ):
+            try:
+                backend = _varlen_select_backend(
+                    query, key, value, cu_seqlens, cu_seqlens, max_q, window_size
+                )
+            except RuntimeError:
+                return True  # no flash either: varlen_attn raises its own error
+            return backend == _VARLEN_CUDNN
+
     except Exception:
-        # torch 2.12 / 2.13 decide per device only (_should_use_cudnn, False on every GPU in 2.13).
         try:
-            from torch.nn.attention.varlen import _should_use_cudnn as _varlen_should_use_cudnn
+            from torch.nn.attention.varlen import _can_use_cudnn as _torch_varlen_can_use_cudnn
             def _varlen_can_use_cudnn(
                 query,
                 key,
                 value,
+                cu_seqlens,
                 max_q,
                 window_size,
                 enable_gqa = False,
             ):
-                return query.is_cuda and _varlen_should_use_cudnn(query.device.index)
+                return _torch_varlen_can_use_cudnn(
+                    query, key, value, max_q, window_size, enable_gqa
+                )
 
         except Exception:
-            _LEAN_VARLEN = False
+            # torch 2.12 / 2.13 decide per device only (_should_use_cudnn, False on every GPU in 2.13).
+            try:
+                from torch.nn.attention.varlen import _should_use_cudnn as _varlen_should_use_cudnn
+                def _varlen_can_use_cudnn(
+                    query,
+                    key,
+                    value,
+                    cu_seqlens,
+                    max_q,
+                    window_size,
+                    enable_gqa = False,
+                ):
+                    return query.is_cuda and _varlen_should_use_cudnn(query.device.index)
+
+            except Exception:
+                _LEAN_VARLEN = False
 
 
 class _LeanFlashVarlen(torch.autograd.Function):
@@ -591,7 +630,9 @@ def _varlen_attn_call(Q_f, K_f, V_f, cu_seqlens, max_seqlen, *, scale, window_si
     if (
         _LEAN_VARLEN
         and not torch.compiler.is_compiling()
-        and not _varlen_can_use_cudnn(Q_f, K_f, V_f, max_seqlen, list(window_size), enable_gqa)
+        and not _varlen_can_use_cudnn(
+            Q_f, K_f, V_f, cu_seqlens, max_seqlen, list(window_size), enable_gqa
+        )
     ):
         return _LeanFlashVarlen.apply(
             Q_f,

@@ -690,9 +690,12 @@ def test_twins_completed_by_a_supplied_component_skip_the_early_download(tmp_pat
     import inspect
 
     from core.inference import diffusion as dif
+    from core.inference import diffusion_fp16_variant as fp16
     from core.inference.diffusion_fp16_variant import local_fp16_variant
 
     monkeypatch.delenv(sh.DOWNLOAD_FIRST_ENV, raising = False)
+    # The fp32 pin needs diffusers importable to resolve the class; it is not what is under test.
+    monkeypatch.setattr(fp16, "_class_pins_fp32", lambda library, class_name: False)
     index = {
         "transformer": ["diffusers", "SD3Transformer2DModel"],
         "text_encoder": ["transformers", "CLIPTextModel"],

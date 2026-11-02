@@ -368,8 +368,8 @@ test("listing a partial never makes it auto-loadable", () => {
 
 test("a partial GGUF repo carries its own menu, not an empty gutter", () => {
   // A partial repo has no complete quant row, so its own row must offer delete and reveal.
-  const start = PICKERS.indexOf("const renderDownloadedGgufRow");
-  const row = PICKERS.slice(start, PICKERS.indexOf("\n  };", start));
+  const start = PICKERS.indexOf("const DownloadedGgufDeviceRow");
+  const row = PICKERS.slice(start, PICKERS.indexOf("\n});", start));
   assert.ok(row.includes("const isPartialRepo = c.partial === true;"));
   assert.match(
     row,
@@ -378,7 +378,7 @@ test("a partial GGUF repo carries its own menu, not an empty gutter", () => {
   );
   assert.match(
     row,
-    /\) : \([\s\S]*?<span className=\{cn\(ROW_ACTIONS_PINNED_CLASS, "h-6"\)\}>\s*\{soleQuants\.pending\.has\(c\.repo_id\) \? null : \(/,
+    /\) : \([\s\S]*?<span className=\{cn\(ROW_ACTIONS_PINNED_CLASS, "h-6"\)\}>\s*\{soleQuantPending \? null : \(/,
     "and a complete repo's gutter holds only the expand chevron",
   );
   assert.ok(row.includes("cachePath={{ repoId: c.repo_id }}"), "reveal");
@@ -387,8 +387,8 @@ test("a partial GGUF repo carries its own menu, not an empty gutter", () => {
 
 test("the partial repo delete says it removes the repo, because it does", () => {
   // No variant means a whole-repo delete, which may remove other formats too.
-  const start = PICKERS.indexOf("const renderDownloadedGgufRow");
-  const row = PICKERS.slice(start, PICKERS.indexOf("\n  };", start));
+  const start = PICKERS.indexOf("const DownloadedGgufDeviceRow");
+  const row = PICKERS.slice(start, PICKERS.indexOf("\n});", start));
   assert.ok(
     row.includes("and everything downloaded under it from disk"),
     "the copy states the real scope",
@@ -437,7 +437,7 @@ test("a partial pick carries no load identity", () => {
 test("configure carries the same rule, because Run replays its metadata", () => {
   // onRun spreads this meta back into a select, so a stray loadId would reach the load path.
   assert.equal(
-    PICKERS.split("onConfigure(c.repo_id, selectMeta)").length - 1,
+    PICKERS.split("actions.get().configure(c.repo_id, selectMeta)").length - 1,
     1,
   );
   const selector = read(
@@ -457,10 +457,10 @@ test("a partial row keeps its buttons on screen instead of hiding them behind ho
     ),
     "the pinned variant exists and is built from the shared one",
   );
-  const gguf = PICKERS.slice(PICKERS.indexOf("const renderDownloadedGgufRow"));
+  const gguf = PICKERS.slice(PICKERS.indexOf("const DownloadedGgufDeviceRow"));
   assert.ok(
     gguf
-      .slice(0, gguf.indexOf("\n  };"))
+      .slice(0, gguf.indexOf("\n});"))
       .includes("<span className={ROW_ACTIONS_PINNED_CLASS}>"),
     "GGUF partial repo row",
   );

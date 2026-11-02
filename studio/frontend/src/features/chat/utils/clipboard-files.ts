@@ -3,6 +3,7 @@
 
 import { isTauri } from "@/lib/api-base";
 import { MAX_AUDIO_SIZE } from "@/lib/audio-utils";
+import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import {
   browserClipboardFiles,
   clipboardAdvertisesFiles,
@@ -74,11 +75,7 @@ async function readNativeClipboardFiles(): Promise<File[]> {
     if (file.base64.length > Math.ceil((maxFileBytes * 4) / 3) + 4) {
       return [];
     }
-    const binary = globalThis.atob(file.base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index);
-    }
+    const bytes = decodeBase64Bytes(file.base64);
     if (bytes.byteLength > maxFileBytes) return [];
     totalBytes += bytes.byteLength;
     if (totalBytes > MAX_CLIPBOARD_BYTES) return [];

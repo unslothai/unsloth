@@ -32,6 +32,10 @@ _TRANSCRIPTS = [
     _PROSE + "so we call : python with args" + _PROSE,
     _PROSE + "recall: this is prose, not a call" + _PROSE,
     "<think>" + _PROSE + '<tool_call>{"name": "python"}</tool_call></think>' + _PROSE,
+    _PROSE
+    + '<minimax:tool_call>\n<invoke name="python">\n<parameter name="code">print(6)</parameter>\n</invoke>\n'
+    + "</minimax:tool_call>"
+    + _PROSE,
 ]
 
 
