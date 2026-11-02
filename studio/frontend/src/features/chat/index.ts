@@ -458,6 +458,7 @@ export {
   pastedTextPreview,
   shouldAttachPastedText,
 } from "./utils/pasted-text";
+export { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
 export {
   type DocumentAnnotation,
   type DocumentAnnotations,

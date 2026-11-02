@@ -131,6 +131,8 @@ import {
   pasteLongTextAsFile,
   isPlainPasteChord,
   plainPasteStillCounts,
+  insertAtCaret,
+  richPasteMarkdown,
   currentDictationEntryMode,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
@@ -3138,6 +3140,20 @@ const Composer: FC<{
           }),
       );
       if (event.defaultPrevented) return;
+      const markdown =
+        plainPaste ? null : richPasteMarkdown(event.clipboardData);
+      if (markdown !== null) {
+        event.preventDefault();
+        if (pastedYoutubeUrl) setYoutubeLink(pastedYoutubeUrl);
+        insertAtCaret(input, markdown, (next, caret) => {
+          aui.composer().setText(next);
+          requestAnimationFrame(() => input.setSelectionRange(caret, caret));
+        });
+        if (justSentRef.current?.draftKey === draftKeyRef.current) {
+          justSentRef.current = null;
+        }
+        return;
+      }
       if (pastedYoutubeUrl) {
         setYoutubeLink(pastedYoutubeUrl);
         if (!pastedText.includes(pastedYoutubeUrl)) {
