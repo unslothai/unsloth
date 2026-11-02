@@ -8,6 +8,9 @@ import { readSrc } from "./helpers/kit.ts";
 
 const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
 const adapter = readSrc("features/chat/adapters/studio-model-dictation-adapter.ts");
+const voiceStore = readSrc("features/settings/stores/voice-settings-store.ts");
+const sttDeviceApi = readSrc("features/settings/api/stt-device.ts");
+const root = readSrc("app/routes/__root.tsx");
 
 test("changing the dictation device releases only this tab's model", () => {
   // Unscoped, the unload can tear down a model this tab never owned.
@@ -38,4 +41,29 @@ test("the device preference travels with every load and transcribe", () => {
     adapter,
     /params\.set\("device", options\.device \?\? settings\.sttDevice\)/,
   );
+});
+
+test("Load into is synced to the server for cold API STT loads", () => {
+  // Browser localStorage alone left /v1/audio/transcriptions on auto/GPU (#15280).
+  assert.match(sttDeviceApi, /\/api\/settings\/stt-device/);
+  assert.match(sttDeviceApi, /from "@\/features\/auth\/api"/);
+  // One save at a time, so a quick Auto then CPU cannot commit Auto last.
+  assert.match(sttDeviceApi, /pending = pending\s*\.then\(/);
+  assert.match(
+    voiceStore,
+    /set\(\{ sttDevice \}\);\s*\/\/[^\n]*\n\s*syncSttDevicePreference\(sttDevice\)/,
+  );
+  // Startup sync waits for sign-in (desktop port known), then the saved server copy wins over this browser's.
+  assert.doesNotMatch(voiceStore, /onRehydrateStorage/);
+  assert.match(
+    root,
+    /function SttDeviceSyncMount[\s\S]*?hasSettledAuthSession\(\)[\s\S]*?if \(!settled\) return;[\s\S]*?reconcileSttDevicePreference\(/,
+  );
+  // Adopting the server copy must not send it back.
+  assert.match(root, /useVoiceSettingsStore\.setState\(\{ sttDevice \}\)/);
+  assert.match(
+    sttDeviceApi,
+    /if \(state\.saved\) \{\s*adopt\([\s\S]*?else if \(local !== "auto"\) \{\s*syncSttDevicePreference\(local\)/,
+  );
+  assert.match(root, /<SttDeviceSyncMount \/>/);
 });

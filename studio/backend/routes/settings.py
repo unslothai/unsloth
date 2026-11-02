@@ -210,6 +210,7 @@ from utils.embedding_model_settings import (
     set_rag_embedding_model,
     validate_embedding_model,
 )
+from utils.stt_device_settings import set_stt_device
 from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
 from utils.llama_cpp_path_settings import (
     MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH,
@@ -3040,6 +3041,31 @@ class EmbeddingDevicePayload(BaseModel):
     device: Literal["auto", "cpu", "gpu"]
 
 
+class SttDevicePayload(BaseModel):
+    device: Literal["auto", "cpu", "gpu"]
+
+
+class SttDeviceResponse(BaseModel):
+    device: Literal["auto", "cpu", "gpu"] = "auto"
+    # True when UNSLOTH_AUDIO_DEVICE names a device; Settings cannot override it.
+    locked: bool = False
+    # False until a choice is saved: the browser then migrates its local one instead of adopting this.
+    saved: bool = False
+
+
+def _stt_device_response() -> SttDeviceResponse:
+    from core.inference.audio_device import audio_device_env_locked, stt_device_default
+    from utils.stt_device_settings import stt_device_is_saved
+    try:
+        return SttDeviceResponse(
+            device = stt_device_default(),  # type: ignore[arg-type]
+            locked = audio_device_env_locked(),
+            saved = stt_device_is_saved(),
+        )
+    except Exception:  # noqa: BLE001 - probe must never block reading settings
+        return SttDeviceResponse()
+
+
 def _embedding_device_state() -> tuple[str, bool]:
     from core.rag import config as rag_config
     try:
@@ -3979,6 +4005,34 @@ def update_embedding_device(
         "settings.embedding_device_updated subject=%s device=%s", current_subject, payload.device
     )
     return _embedding_model_response()
+
+
+@_owner_settings_router.get("/stt-device", response_model = SttDeviceResponse)
+def get_stt_device_setting(
+    current_subject: str = Depends(get_current_subject),
+) -> SttDeviceResponse:
+    """Voice Settings "Load into": where a cold STT API load places the model (#15280)."""
+    return _stt_device_response()
+
+
+@_owner_settings_router.put("/stt-device", response_model = SttDeviceResponse)
+def update_stt_device_setting(
+    payload: SttDevicePayload, current_subject: str = Depends(get_current_subject)
+) -> SttDeviceResponse:
+    """Persist Voice Settings "Load into" so ``/v1/audio/transcriptions`` honours it on a cold load.
+
+    ``UNSLOTH_AUDIO_DEVICE`` still wins when set. An already-resident model is not moved;
+    the next cold load (or an explicit ``device`` on ``/audio/stt/load``) applies the choice.
+    """
+    from core.inference.audio_device import audio_device_env_locked
+
+    if audio_device_env_locked():
+        raise HTTPException(
+            status_code = 409, detail = "The STT device is set by UNSLOTH_AUDIO_DEVICE."
+        )
+    set_stt_device(payload.device)
+    logger.info("settings.stt_device_updated subject=%s device=%s", current_subject, payload.device)
+    return _stt_device_response()
 
 
 @_owner_settings_router.delete("/embedding-model", response_model = EmbeddingModelResponse)

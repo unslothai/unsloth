@@ -58,7 +58,9 @@ import {
   useSettingsDialogStore,
   useShortcut,
   useShortcutAvailable,
+  useVoiceSettingsStore,
 } from "@/features/settings";
+import { reconcileSttDevicePreference } from "@/features/settings/api/stt-device";
 import { useLowDiskNotice } from "@/features/settings/hooks/use-low-disk-notice";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
@@ -242,6 +244,21 @@ const AudioPage = lazy(() =>
 function PersonalizationSyncMount() {
   useRouterState({ select: (s) => s.location.pathname });
   usePersonalizationSync(hasSettledAuthSession());
+  return null;
+}
+
+// Voice Settings "Load into" kept in step with the server copy that device-less STT API loads read (#15280). Here,
+// not on store rehydrate: the store loads at startup, before the desktop backend port is known and before sign-in.
+function SttDeviceSyncMount() {
+  useRouterState({ select: (s) => s.location.pathname });
+  const settled = hasSettledAuthSession();
+  useEffect(() => {
+    if (!settled) return;
+    void reconcileSttDevicePreference(
+      useVoiceSettingsStore.getState().sttDevice,
+      (sttDevice) => useVoiceSettingsStore.setState({ sttDevice }),
+    );
+  }, [settled]);
   return null;
 }
 
@@ -703,6 +720,7 @@ function RootLayout() {
   const content = (
     <>
       <PersonalizationSyncMount />
+      <SttDeviceSyncMount />
       <InterfaceZoom />
       <WindowMaterialMount />
       <ReloadSnapshotPrivacy />

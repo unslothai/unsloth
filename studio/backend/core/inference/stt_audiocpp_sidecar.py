@@ -885,7 +885,7 @@ class AudioCppSttSidecar:
         on_phase: Optional[Callable[[str], None]] = None,
     ) -> None:
         """A server already holding the aligner keeps it for untimestamped requests (no restart)."""
-        from core.inference.audio_device import audio_device_forces_cpu
+        from core.inference.audio_device import stt_device_forces_cpu
 
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -900,7 +900,7 @@ class AudioCppSttSidecar:
             force_cpu = (
                 self._forced_cpu
                 if device is None and self._server_alive()
-                else audio_device_forces_cpu(device)
+                else stt_device_forces_cpu(device)
             )
             if (
                 self._server_alive()

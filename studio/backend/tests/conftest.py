@@ -236,6 +236,18 @@ def _forget_embedding_device_setting():
 
 
 @pytest.fixture(autouse = True)
+def _forget_stt_device_setting():
+    def _forget():
+        settings = sys.modules.get("utils.stt_device_settings")
+        if settings is not None:
+            settings.forget_cached_stt_device()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _no_background_sandbox_probes(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DISABLE_SANDBOX_WARMUP", "1")
 

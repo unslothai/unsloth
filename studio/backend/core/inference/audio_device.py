@@ -13,9 +13,12 @@ from typing import Optional
 __all__ = [
     "AUDIO_DEVICE_CHOICES",
     "audio_device_default",
+    "audio_device_env_locked",
     "audio_device_forces_cpu",
     "mask_accelerators_for_cpu_audio",
     "normalize_audio_device",
+    "stt_device_default",
+    "stt_device_forces_cpu",
 ]
 
 AUDIO_DEVICE_CHOICES = ("auto", "cpu", "gpu")
@@ -44,6 +47,31 @@ def normalize_audio_device(value: Optional[str]) -> str:
 def audio_device_default() -> str:
     """Reads UNSLOTH_AUDIO_DEVICE; does not reach GGUF TTS models, so a headless caller must send gpu_memory_mode and gpu_layers itself"""
     return normalize_audio_device(os.environ.get("UNSLOTH_AUDIO_DEVICE"))
+
+
+def audio_device_env_locked() -> bool:
+    """Whether ``UNSLOTH_AUDIO_DEVICE`` names a device, which Settings then cannot override."""
+    return bool(str(os.environ.get("UNSLOTH_AUDIO_DEVICE") or "").strip())
+
+
+def stt_device_default() -> str:
+    """``audio_device_default`` for speech-to-text only: with the environment unset, the owner's
+    saved Voice Settings "Load into", so a device-less API load lands where Settings says (#15280).
+    Native audio / TTS keep the environment-only default."""
+    if audio_device_env_locked():
+        return audio_device_default()
+    try:
+        from utils.stt_device_settings import get_stored_stt_device
+        return get_stored_stt_device()
+    except Exception:  # noqa: BLE001 - store unavailable: detect as before
+        return "auto"
+
+
+def stt_device_forces_cpu(value: Optional[str]) -> bool:
+    """``audio_device_forces_cpu`` with ``None`` read through ``stt_device_default``."""
+    if value is None:
+        return stt_device_default() == "cpu"
+    return normalize_audio_device(value) == "cpu"
 
 
 def audio_device_forces_cpu(value: Optional[str]) -> bool:
