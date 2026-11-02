@@ -2126,8 +2126,14 @@ def test_short_card_encodes_on_the_cpu_without_moving_the_encoder(monkeypatch):
 
 def test_worker_reports_its_own_memory():
     from core.inference import video_ltx25_te_worker as worker
+
     stats = worker._memory_stats("cpu")
-    assert stats.get("host_rss_mib", 0) > 0 and "gpu_peak_allocated_mib" not in stats
+    # ru_maxrss is bytes on macOS and kilobytes on Linux. The wrong shift
+    # reports hundreds of thousands of MiB for this process.
+    rss = stats.get("host_rss_mib", 0)
+    peak = stats.get("host_peak_rss_mib", 0)
+    assert rss > 0 and peak > 0 and rss < 64 * 1024 and peak < 64 * 1024, (rss, peak)
+    assert "gpu_peak_allocated_mib" not in stats
 
 
 class _Planned(Exception):
