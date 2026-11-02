@@ -605,8 +605,11 @@ def test_env_layout_parsing_and_refusals():
     assert (
         "WORLD_SIZE=1" in res["no_torchrun"] and "torchrun --nproc-per-node 2" in res["no_torchrun"]
     )
-    for key in ("pp", "pp_with_tp"):
-        assert "UNSLOTH_PP_SIZE=2" in res[key] and "Python API" in res[key], res[key]
+    # UNSLOTH_PP_SIZE is env-driven too now (models/pp_env.py, tests/test_pp_env_gloo.py).
+    assert res["pp"] == (1, 2, 4, False) and res["pp_with_tp"] == (2, 1, 4, False), (
+        res["pp"],
+        res["pp_with_tp"],
+    )
     assert res["pp_one"] == (2, 2, 4, False)
     assert res["tp_world"] == (4, 1, 4, False)
     assert res["ddp"] == (2, 2, 4, False)
@@ -786,6 +789,29 @@ def test_env_tp_model_and_model_init_is_refused():
     for res in _spawn("model_init", 2, {"UNSLOTH_TP_SIZE": "2"}, hooked = False, with_model = True):
         assert res["refused"] is not None and res["built"] == [], res
         assert "model_init" in res["refused"], res
+
+
+def _pipelining_step_outputs():
+    try:
+        import inspect
+
+        from torch.distributed.pipelining import ScheduleGPipe
+    except Exception:
+        return False
+    return "return_outputs" in inspect.signature(ScheduleGPipe.step).parameters
+
+
+@pytest.mark.skipif(not _pipelining_step_outputs(), reason = "UNSLOTH_PP_SIZE needs torch >= 2.10")
+@pytest.mark.parametrize("import_only", [False, True], ids = ["patched", "plain_import"])
+@pytest.mark.parametrize("hooked", [False, True], ids = ["plain", "unsloth_loaders"])
+def test_env_pp_model_init_is_refused(hooked, import_only):
+    """The same silent DDP under UNSLOTH_PP_SIZE: the pipeline split runs on the __init__ model only."""
+    for res in _spawn(
+        "model_init", 2, {"UNSLOTH_PP_SIZE": "2"}, hooked = hooked, import_only = import_only
+    ):
+        assert "UNSLOTH_PP_SIZE=2 (pipeline parallel)" in (res["refused"] or ""), res
+        assert "unset UNSLOTH_PP_SIZE." in res["refused"], res
+        assert "model_init" in res["refused"] and res["built"] == [], res
 
 
 @pytest.mark.parametrize("hooked", [False, True], ids = ["plain", "unsloth_loaders"])

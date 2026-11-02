@@ -6,8 +6,9 @@
 import multiprocessing
 import os
 
-if multiprocessing.parent_process() is not None or getattr(
-    multiprocessing.current_process(), "_inheriting", False
+if os.environ.get("UNSLOTH_TEST_RANKS_ON_GPU") != "1" and (
+    multiprocessing.parent_process() is not None
+    or getattr(multiprocessing.current_process(), "_inheriting", False)
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
