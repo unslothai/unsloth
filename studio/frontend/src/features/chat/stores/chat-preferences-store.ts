@@ -19,21 +19,6 @@ import {
   migrateVisibility,
 } from "../utils/display-visibility.ts";
 
-// Client-side chat UI prefs kept in localStorage, not the chat DB. confirmDeleteChats: off skips
-// the delete confirm dialog. alwaysDeleteChatFiles: on also removes the sandbox folder.
-// showResponseModel: on shows
-// the producing model on responses. thinkingVisibility / toolVisibility: collapsed, auto or
-// expanded, see display-visibility.ts. foldToolActivityIntoThinking: on hides a round's tool calls
-// until its thinking block is opened, and has no effect while toolVisibility is "expanded".
-// pastedTextMinChars: paste length that becomes a .txt attachment; 0 is off.
-// showInlineEditResponse: on keeps Edit response in each response's action bar instead of its
-// More menu. notifyWhenReplyFinishes: on sends a system notification when a reply ends while the
-// window is hidden or unfocused. showReplyTimes: on shows when each reply finished under it.
-// showGenerationDetails: on shows live prefill / decode figures while a reply streams and where
-// a local model's layers ended up after it loads.
-// filesPanelCollapsed: on shrinks Chat with files to a header and
-// a row of pills. newChatComposerAtBottom: on docks a new chat's composer at the bottom, as once
-// the chat has messages, instead of under the greeting mid-page.
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
   setPlainTextComposer: (value: boolean) => void;
@@ -49,6 +34,8 @@ export interface ChatPreferencesState {
   setAlwaysDeleteChatFiles: (value: boolean) => void;
   showResponseModel: boolean;
   setShowResponseModel: (value: boolean) => void;
+  showLinkPreviews: boolean;
+  setShowLinkPreviews: (value: boolean) => void;
   showReplyTimes: boolean;
   setShowReplyTimes: (value: boolean) => void;
   showGenerationDetails: boolean;
@@ -71,6 +58,8 @@ export interface ChatPreferencesState {
   setFilesPanelCollapsed: (value: boolean) => void;
   newChatComposerAtBottom: boolean;
   setNewChatComposerAtBottom: (value: boolean) => void;
+  showTurnNavigation: boolean;
+  setShowTurnNavigation: (value: boolean) => void;
 }
 
 // A stale stored value would leave the dropdown blank and unfixable.
@@ -99,10 +88,10 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set({ alwaysDeleteChatFiles }),
       showResponseModel: false,
       setShowResponseModel: (showResponseModel) => set({ showResponseModel }),
-      // Off by default: it adds text under every reply, so it stays opt in.
+      showLinkPreviews: true,
+      setShowLinkPreviews: (showLinkPreviews) => set({ showLinkPreviews }),
       showReplyTimes: false,
       setShowReplyTimes: (showReplyTimes) => set({ showReplyTimes }),
-      // Off by default: it adds a line of numbers under streaming replies, so it stays opt in.
       showGenerationDetails: false,
       setShowGenerationDetails: (showGenerationDetails) =>
         set({ showGenerationDetails }),
@@ -123,7 +112,6 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       autoScrollWhileGenerating: true,
       setAutoScrollWhileGenerating: (autoScrollWhileGenerating) =>
         set({ autoScrollWhileGenerating }),
-      // Off by default: it asks for notification permission, so it stays opt in.
       notifyWhenReplyFinishes: false,
       setNotifyWhenReplyFinishes: (notifyWhenReplyFinishes) =>
         set({ notifyWhenReplyFinishes }),
@@ -133,6 +121,8 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       newChatComposerAtBottom: false,
       setNewChatComposerAtBottom: (newChatComposerAtBottom) =>
         set({ newChatComposerAtBottom }),
+      showTurnNavigation: true,
+      setShowTurnNavigation: (showTurnNavigation) => set({ showTurnNavigation }),
     }),
     {
       name: "unsloth_chat_preferences",
@@ -157,6 +147,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           confirmDeleteChats: saved?.confirmDeleteChats ?? true,
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
+          showLinkPreviews: saved?.showLinkPreviews !== false,
           showReplyTimes: saved?.showReplyTimes === true,
           showGenerationDetails: saved?.showGenerationDetails === true,
           showInlineEditResponse: saved?.showInlineEditResponse ?? true,
@@ -178,6 +169,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           autoScrollWhileGenerating: saved?.autoScrollWhileGenerating ?? true,
           notifyWhenReplyFinishes: saved?.notifyWhenReplyFinishes === true,
           filesPanelCollapsed: saved?.filesPanelCollapsed === true,
+          showTurnNavigation: saved?.showTurnNavigation !== false,
           newChatComposerAtBottom: saved?.newChatComposerAtBottom === true,
         };
       },

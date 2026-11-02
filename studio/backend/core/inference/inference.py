@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from unsloth import FastLanguageModel, FastVisionModel
 from unsloth.chat_templates import get_chat_template
-from transformers import TextIteratorStreamer, TextStreamer
+from transformers import BatchEncoding, TextIteratorStreamer, TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
 import contextlib
@@ -695,6 +695,39 @@ class _StopSequenceStreamer:
             abort()
 
 
+def _decode_graphs():
+    """Unsloth's CUDA-graph decode module, or None for an Unsloth without the Studio scope."""
+    try:
+        from unsloth.models import _decode_graphs as graphs
+    except Exception:
+        return None
+    return graphs if hasattr(graphs, "studio_generation") else None
+
+
+def _decode_graph_scope():
+    """Graphed decode on by default for this thread's chat generate(): this worker only serves
+    inference. Llama / Qwen3 on NVIDIA CUDA only; UNSLOTH_DECODE_CUDA_GRAPHS=0 still turns it off."""
+    graphs = _decode_graphs()
+    return graphs.studio_generation() if graphs is not None else contextlib.nullcontext()
+
+
+def _release_decode_graphs(model, generation_lock) -> None:
+    """Frees the model's decode graphs and decode buffers now rather than at garbage collection.
+    Skipped while a generate() still holds the lock: that thread's model reference frees them."""
+    graphs = _decode_graphs()
+    if graphs is None or not hasattr(model, "modules"):
+        return
+    if generation_lock is not None and not generation_lock.acquire(blocking = False):
+        return
+    try:
+        graphs.release_for_training(model)
+    except Exception as e:
+        logger.warning(f"Could not release decode graphs: {e}")
+    finally:
+        if generation_lock is not None:
+            generation_lock.release()
+
+
 _CUSTOM_GENERATE_REJECTED_KWARGS = ("logits_processor", "stopping_criteria")
 
 
@@ -703,9 +736,6 @@ class _GenerationHalted(Exception):
 
 
 class _HaltingStreamer:
-    """Ends a generate that takes no stopping_criteria: put() raises once a cancel or stop event is
-    set, or on a second ``</think>`` with no ``<think>`` since the last one."""
-
     def __init__(
         self,
         streamer,
@@ -766,11 +796,11 @@ def _supported_generate_kwargs(
     generation_kwargs: dict,
     tokenizer = None,
 ) -> dict:
-    """Drops kwargs a custom-code generate rejects (no presence penalty there); cancel and stop
-    sequences move onto the streamer."""
     if not isinstance(getattr(model, "_generation_fields_unsupported", None), dict):
         return generation_kwargs
     kept = {k: v for k, v in generation_kwargs.items() if k not in _CUSTOM_GENERATE_REJECTED_KWARGS}
+    if getattr(getattr(model, "config", None), "model_type", None) == "lfm3_omni":
+        kept["generation_mode"] = "text"
     events = [
         c.ev
         for c in (generation_kwargs.get("stopping_criteria") or ())
@@ -787,8 +817,6 @@ def _generate_supported(
     generation_kwargs: dict,
     tokenizer = None,
 ):
-    """model.generate with _supported_generate_kwargs; None when a cancel or stop ended it early.
-    A reply cut at a restating ``</think>`` returns the kept tokens plus an eos, as a natural end."""
     kwargs = _supported_generate_kwargs(model, generation_kwargs, tokenizer)
     try:
         return model.generate(**kwargs)
@@ -806,7 +834,6 @@ def _generate_supported(
 
 
 def _refuse_without_generate(model, model_name: str) -> None:
-    # e.g. LFM3-Audio: the text load builds its bare backbone, and chat would fail on the first turn.
     if not callable(getattr(model, "generate", None)):
         raise ValueError(
             f"{model_name} loads as {type(model).__name__}, which cannot generate text. "
@@ -849,19 +876,51 @@ def _truncates_past_window(model) -> bool:
     )
 
 
-def _prompt_already_has_bos(tokenizer, prompt):
-    """Most templates render BOS, so no second one is added; zephyr and tinyllama-chat do not."""
+def _probe_prompt_bos(tokenizer, prompt):
+    """(tokenizer, prompt, encoding) when the rendered prompt already starts with BOS, else None.
+    Most templates render BOS, so no second one is added; zephyr and tinyllama-chat do not."""
     tok = getattr(tokenizer, "tokenizer", tokenizer)
     bos_token_id = getattr(tok, "bos_token_id", None)
     if bos_token_id is None:
-        return False
+        return None
     try:
-        ids = tok(prompt, add_special_tokens = False)["input_ids"]
+        encoding = tok(prompt, add_special_tokens = False)
+        ids = encoding["input_ids"]
     except Exception:
-        return False
+        return None
     while isinstance(ids, (list, tuple)) and ids and isinstance(ids[0], (list, tuple)):
         ids = ids[0]
-    return bool(len(ids)) and ids[0] == bos_token_id
+    if len(ids) and ids[0] == bos_token_id:
+        return tok, prompt, encoding
+    return None
+
+
+def _prompt_already_has_bos(tokenizer, prompt):
+    return _probe_prompt_bos(tokenizer, prompt) is not None
+
+
+def _tokenize_prompt(
+    tokenizer,
+    prompt,
+    add_special_tokens,
+    bos_probe = None,
+):
+    """``tokenizer(prompt, return_tensors="pt", ...)``, reusing a matching bos_probe encoding."""
+    if not add_special_tokens and bos_probe is not None:
+        probe_tok, probe_prompt, encoding = bos_probe
+        ids = encoding["input_ids"] if isinstance(encoding, BatchEncoding) else None
+        if (
+            probe_tok is tokenizer
+            and probe_prompt == prompt
+            and isinstance(ids, list)
+            and not (ids and isinstance(ids[0], (list, tuple)))
+        ):
+            return BatchEncoding(
+                {key: [value] for key, value in encoding.items()},
+                encoding = encoding.encodings,
+                tensor_type = "pt",
+            )
+    return tokenizer(prompt, return_tensors = "pt", add_special_tokens = add_special_tokens)
 
 
 _MISSING = object()
@@ -1503,7 +1562,10 @@ class InferenceBackend:
                     self._audio_codec_manager.unload()
 
                 logger.info(f"Unloading model '{model_name}' from memory.")
+                model = self.models[model_name].get("model")
                 del self.models[model_name]
+                _release_decode_graphs(model, getattr(self, "_generation_lock", None))
+                model = None
 
                 if self.active_model_name == model_name:
                     self.active_model_name = None
@@ -2007,6 +2069,7 @@ class InferenceBackend:
             template_messages = messages
         reasoning_channel_markers_resolved = False
         add_special_tokens = True
+        bos_probe = None
         try:
             if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
                 raise ValueError(
@@ -2072,7 +2135,8 @@ class InferenceBackend:
             reasoning_channel_markers = render_result.reasoning_channel_markers
             reasoning_channel_markers_resolved = True
             # suppress the tokenizer's BOS only when the template already emitted one.
-            add_special_tokens = not _prompt_already_has_bos(tokenizer, formatted_prompt)
+            bos_probe = _probe_prompt_bos(tokenizer, formatted_prompt)
+            add_special_tokens = bos_probe is None
 
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
         except Exception as e:
@@ -2102,6 +2166,7 @@ class InferenceBackend:
             else tool_protocol_active,
             add_special_tokens = add_special_tokens,
             stop = stop,
+            _bos_probe = bos_probe,
         )
 
     def _generate_deepseek_ocr_response(
@@ -2371,10 +2436,9 @@ class InferenceBackend:
             formatted_prompt = self.format_chat_prompt(
                 messages, system_prompt, continue_final_message = continue_final_message
             )
-            inputs = raw_tokenizer(
-                formatted_prompt,
-                return_tensors = "pt",
-                add_special_tokens = not _prompt_already_has_bos(raw_tokenizer, formatted_prompt),
+            bos_probe = _probe_prompt_bos(raw_tokenizer, formatted_prompt)
+            inputs = _tokenize_prompt(
+                raw_tokenizer, formatted_prompt, bos_probe is None, bos_probe
             ).to(model.device)
             prompt_text = formatted_prompt
 
@@ -2655,7 +2719,6 @@ class InferenceBackend:
 
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(None, timer)
-            # Without it, Stop leaves generate running to max_new_tokens while it holds the lock.
             stopping_criteria = self._cancel_stopping_criteria(cancel_event)
             if stopping_criteria is not None:
                 generation_kwargs["stopping_criteria"] = stopping_criteria
@@ -2959,6 +3022,7 @@ class InferenceBackend:
         preserve_tool_tokens: bool = False,
         add_special_tokens: bool = True,
         stop: Optional[list] = None,
+        _bos_probe = None,
     ) -> Generator[str, None, None]:
         """Rendered chat prompts pass add_special_tokens=False; raw prompts keep the tokenizer's BOS
         default."""
@@ -2986,9 +3050,9 @@ class InferenceBackend:
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
 
         try:
-            inputs = tokenizer(
-                prompt, return_tensors = "pt", add_special_tokens = add_special_tokens
-            ).to(model.device)
+            inputs = _tokenize_prompt(tokenizer, prompt, add_special_tokens, _bos_probe).to(
+                model.device
+            )
 
             import threading
 
@@ -3066,9 +3130,10 @@ class InferenceBackend:
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact token count.
-                        sequences = _generate_supported(model, generation_kwargs, tokenizer)
-                        if sequences is not None:
-                            gen_outputs["sequences"] = sequences
+                        with _decode_graph_scope():
+                            sequences = _generate_supported(model, generation_kwargs, tokenizer)
+                            if sequences is not None:
+                                gen_outputs["sequences"] = sequences
                     except Exception as e:
                         err["msg"] = str(e)
                         stop_streamer.abort()
