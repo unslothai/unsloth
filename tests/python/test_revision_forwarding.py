@@ -43,8 +43,6 @@ def _params(function):
 
 
 def _calls(function, callee):
-    """Every Call whose dotted name ends with `callee`. A probe routed through
-    `_memo_config_probe(loader, name, ...)` counts as the call `loader(name, ...)`."""
     found = []
     for node in ast.walk(function):
         if not isinstance(node, ast.Call):
