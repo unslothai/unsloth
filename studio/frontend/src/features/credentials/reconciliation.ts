@@ -123,6 +123,7 @@ export interface CredentialBootstrapDependencies<T> {
   setProviders: (providers: T[]) => void;
 
   isCurrent?: () => boolean;
+  onFailure?: (task: "hfToken" | "providers") => void;
 }
 
 export async function runCredentialBootstrap<T>(
@@ -131,10 +132,12 @@ export async function runCredentialBootstrap<T>(
 
   if (dependencies.isCurrent && !dependencies.isCurrent()) return;
   const providerSync = dependencies.syncProviders(dependencies.getProviders());
-  const [, providerResult] = await Promise.allSettled([
+  const [hfResult, providerResult] = await Promise.allSettled([
     dependencies.hydrateHfToken(),
     providerSync,
   ]);
+  if (hfResult.status === "rejected") dependencies.onFailure?.("hfToken");
+  if (providerResult.status === "rejected") dependencies.onFailure?.("providers");
   if (
     providerResult.status === "fulfilled" &&
     (!dependencies.isCurrent || dependencies.isCurrent())

@@ -2,42 +2,72 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthSessionEpoch, hasAuthToken } from "@/features/auth";
+import type { ExternalProviderConfig } from "@/features/chat";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { syncExternalProvidersFromBackend } from "@/features/chat/sync-external-providers";
 import { hydrateHfTokenFromBackend } from "@/features/hub/stores/hf-token-store";
 import { runCredentialBootstrap } from "./reconciliation";
 
-export function bootstrapPersistedCredentials(): Promise<void> {
+function credentialBootstrapDependencies() {
   const sessionEpoch = getAuthSessionEpoch();
   const isCurrent = () =>
     hasAuthToken() && getAuthSessionEpoch() === sessionEpoch;
-  return runCredentialBootstrap({
+  return {
     hydrateHfToken: hydrateHfTokenFromBackend,
     getProviders: () => useExternalProvidersStore.getState().providers,
-    syncProviders: (providers) =>
+    syncProviders: (providers: ExternalProviderConfig[]) =>
       syncExternalProvidersFromBackend(providers, isCurrent),
-    setProviders: (providers) =>
+    setProviders: (providers: ExternalProviderConfig[]) =>
       useExternalProvidersStore.getState().setProviders(providers),
     isCurrent,
-  });
+  };
 }
 
-let startupBootstrap: { sessionEpoch: number; run: Promise<void> } | null =
-  null;
+export function bootstrapPersistedCredentials(): Promise<void> {
+  return runCredentialBootstrap(credentialBootstrapDependencies());
+}
+
+let startupBootstrap: {
+  sessionEpoch: number;
+  run: Promise<void>;
+  retry: () => Promise<void>;
+} | null = null;
 let startupBootstrapRequested = false;
 
-/** Starts the gate's first run with the entry, so it overlaps the route checks. Once per page. */
 export function startStartupCredentialBootstrap(): void {
   if (startupBootstrapRequested) return;
   startupBootstrapRequested = true;
   if (!hasAuthToken()) return;
+  const sessionEpoch = getAuthSessionEpoch();
+  const dependencies = credentialBootstrapDependencies();
+  const failedTasks = new Set<"hfToken" | "providers">();
+  const run = runCredentialBootstrap({
+    ...dependencies,
+    onFailure: (task) => failedTasks.add(task),
+  });
   startupBootstrap = {
-    sessionEpoch: getAuthSessionEpoch(),
-    run: bootstrapPersistedCredentials(),
+    sessionEpoch,
+    run,
+    retry: async () => {
+      if (!dependencies.isCurrent() || !failedTasks.size) return;
+      await runCredentialBootstrap({
+        ...dependencies,
+        hydrateHfToken: () =>
+          failedTasks.has("hfToken")
+            ? dependencies.hydrateHfToken()
+            : Promise.resolve(),
+        syncProviders: (providers) =>
+          failedTasks.has("providers")
+            ? dependencies.syncProviders(providers)
+            : Promise.resolve(providers),
+        setProviders: (providers) => {
+          if (failedTasks.has("providers")) dependencies.setProviders(providers);
+        },
+      });
+    },
   };
 }
 
-/** The run the entry started, once, while it still belongs to this session. */
 export function takeStartupCredentialBootstrap(): Promise<void> | null {
   const startup = startupBootstrap;
   startupBootstrap = null;
@@ -46,7 +76,7 @@ export function takeStartupCredentialBootstrap(): Promise<void> | null {
     hasAuthToken() &&
     getAuthSessionEpoch() === startup.sessionEpoch
   ) {
-    return startup.run;
+    return startup.run.then(startup.retry);
   }
   return null;
 }
