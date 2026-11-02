@@ -255,6 +255,26 @@ def _send_response(resp_queue: Any, response: dict) -> None:
         logger.error("Failed to send response: %s", exc)
 
 
+def _exit_after_shutdown(resp_queue: Any) -> None:
+    """Models are unloaded and acked; interpreter shutdown can stall 10s+ on Windows CUDA (#16330)."""
+    try:
+        resp_queue.close()
+        resp_queue.join_thread()
+    except Exception:
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    try:
+        from utils.worker_stderr import stop_worker_stderr_mirror
+        stop_worker_stderr_mirror()
+    except Exception:
+        pass
+    os._exit(0)
+
+
 def _encode_share_object(obj: Any) -> bytes:
     data = json.dumps(obj, separators = (",", ":"), ensure_ascii = False).encode("utf-8")
     if len(data) > _SHARE_OBJECT_MAX_BYTES:
@@ -519,11 +539,7 @@ def _run_security_gates(
                 {
                     "type": "loaded",
                     "success": False,
-                    "message": (
-                        f"Model '{_rc.model_name}' ships custom code flagged as "
-                        f"{_rc.max_severity} by the security scan. Review "
-                        f"and approve it to proceed."
-                    ),
+                    "message": _rc.blocked_message(),
                     "error_kind": "remote_code_blocked",
                     "remote_code": _rc.response_payload(),
                 },
@@ -778,6 +794,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["kv_quant"] = config.get("mlx_kv_quant")
                 load_kwargs["int8_prefill"] = bool(config.get("mlx_int8_prefill"))
                 load_kwargs["ane_prefill"] = bool(config.get("mlx_ane_prefill"))
+                load_kwargs["fast_verify"] = bool(config.get("mlx_fast_verify"))
                 load_kwargs["offload"] = tuple(config.get("mlx_offload") or (None, None))
                 load_kwargs["speculative_type"] = config.get("speculative_type")
                 load_kwargs["spec_draft_n_max"] = config.get("spec_draft_n_max")
@@ -889,6 +906,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "mlx_ane_prefill",
                         "mlx_ane_prefill_requested",
                         "mlx_ane_prefill_reason",
+                        "mlx_fast_verify",
+                        "mlx_fast_verify_requested",
+                        "mlx_fast_verify_reason",
                         "mlx_offload",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
@@ -1845,12 +1865,13 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             )
             logger.info("Finished audio separation for request_id=%s", request_id)
             return
-        # Only audio.cpp and Orpheus (voice) models take per-model options; others never see the keyword.
-        extra = {"audio_options": cmd["audio_options"]} if cmd.get("audio_options") else {}
-        # Run fields reach only a backend that takes them: a Speak run on a native TTS model carries a
-        # workflow its backend has no keyword for.
         params = inspect.signature(backend.generate_audio_response).parameters
         takes_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+        extra = (
+            {"audio_options": cmd["audio_options"]}
+            if cmd.get("audio_options") and (takes_any or "audio_options" in params)
+            else {}
+        )
         for key in ("workflow", "audio_inputs", "reference_text", "speed", "convert", "edit"):
             if cmd.get(key) is None:
                 continue
@@ -2668,7 +2689,7 @@ def run_inference_process(
                         "type": "shutdown_ack",
                     },
                 )
-                return
+                _exit_after_shutdown(resp_queue)
 
             else:
                 logger.warning("Unknown command type: %s", cmd_type)

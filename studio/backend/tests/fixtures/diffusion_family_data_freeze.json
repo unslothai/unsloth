@@ -225,17 +225,17 @@
   ],
   "minimax-h3": {
    "fields": [
-    30,
+    20,
     1.0
    ],
    "resolved": [
-    30,
+    20,
     1.0
    ]
   },
   "moss-image": [
-   50,
-   3.0
+   25,
+   2.5
   ],
   "qwen-image": [
    20,

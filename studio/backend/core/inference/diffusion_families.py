@@ -1457,6 +1457,36 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
+    memo = _detect_family_memo()
+    try:
+        return memo[repo_id]
+    except (KeyError, TypeError):
+        pass
+    match = _detect_family_by_name(repo_id)
+    try:
+        if len(memo) >= _DETECT_FAMILY_MEMO_MAX:
+            memo.clear()
+        memo[repo_id] = match
+    except TypeError:
+        pass
+    return match
+
+
+_DETECT_FAMILY_MEMO_MAX = 8192
+# Paired with the table it was filled from: a replaced _FAMILIES starts an empty memo.
+_detect_family_memo_state: tuple[object, dict] = ((), {})
+
+
+def _detect_family_memo() -> dict:
+    global _detect_family_memo_state
+    families, memo = _detect_family_memo_state
+    if families is not _FAMILIES:
+        memo = {}
+        _detect_family_memo_state = (_FAMILIES, memo)
+    return memo
+
+
+def _detect_family_by_name(repo_id: str) -> Optional[DiffusionFamily]:
     needle = model_identity(repo_id).lower()
     match = _best_family_match(needle)
     if match is not None:
@@ -2099,12 +2129,12 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("hidream", 50, 5.0),
     # Ideogram 4: an explicit 48 steps at 7 still runs the card's tapered schedule.
     ("ideogram", 20, 7.0),
-    # MOSS-Image: ComfyUI workflow, 50 steps at CFG 3.
-    ("moss-image", 50, 3.0),
-    ("moss_image", 50, 3.0),
-    ("mossimage", 50, 3.0),
-    # SDXL: Turbo distilled; base wants ~30 steps + CFG ~7. "sdxl-turbo" precedes "sdxl".
-    ("sdxl-turbo", 3, 0.0),
+    # MOSS-Image: the SFT and Base t2i templates both run 25 steps at CFG 2.5.
+    ("moss-image", 25, 2.5),
+    ("moss_image", 25, 2.5),
+    ("mossimage", 25, 2.5),
+    # SDXL-Turbo: 1 step, CFG 1. "sdxl-turbo" must precede "sdxl".
+    ("sdxl-turbo", 1, 0.0),
     ("stable-diffusion-xl", 25, 7.0),
     ("sdxl", 25, 7.0),
 )

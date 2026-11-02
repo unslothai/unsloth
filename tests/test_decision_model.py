@@ -964,6 +964,68 @@ def _clef_rows(n):
     return rows
 
 
+def _clef_items_with(tokenizer, rows):
+    report = {"total": 0, "skipped": 0, "reason": None, "truncated": 0}
+    items = decision._clef_items(rows, tokenizer, 4096, None, report, lambda *args: None)
+    return [
+        (item["input_ids"], item["record"].input_ids, item["record"].questions, item["targets"])
+        for item in items
+    ], report
+
+
+def test_clef_items_tokenize_each_repeated_string_once():
+    from transformers import AutoTokenizer
+
+    from unsloth.models.clef import encode_record
+
+    tokenizer = AutoTokenizer.from_pretrained(TINY_QWEN3_5)
+    rows = [{**_row(i), "state": {"ticket": i, "note": "word " * (40 * i)}} for i in range(24)]
+    texts = []
+
+    class Counting:
+        def __call__(self, text, **kwargs):
+            texts.append(text)
+            return tokenizer(text, **kwargs)
+
+    items, report = _clef_items_with(Counting(), rows)
+    # Each row on its own, as encode_record sees a plain tokenizer.
+    plain = [
+        encode_record(tokenizer, {"state": r["state"], "questions": QUESTIONS}, max_length = 4096)
+        for r in rows
+    ]
+    assert [item[1] for item in items] == [record.input_ids for record in plain]
+    assert [item[2] for item in items] == [record.questions for record in plain]
+    assert all(list(item[1]) == item[0] for item in items)
+    assert report["skipped"] == 0
+    # Every distinct string once: the fixed prompt and option texts are shared by every row.
+    assert len(texts) == len(set(texts))
+    assert len(texts) < 2 * len(rows) + 30
+
+
+def test_memo_tokenizer_returns_fresh_lists_and_passes_other_calls_through():
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(TINY_QWEN3_5)
+    memo = decision._MemoTokenizer(tokenizer)
+    first = memo("OPTION 1: ", add_special_tokens = False).input_ids
+    first.extend([1, 2, 3])
+    assert (
+        memo("OPTION 1: ", add_special_tokens = False).input_ids
+        == tokenizer("OPTION 1: ", add_special_tokens = False).input_ids
+    )
+    long = "state " * 200
+    assert (
+        memo(long, add_special_tokens = False).input_ids
+        == tokenizer(long, add_special_tokens = False).input_ids
+    )
+    assert long not in memo.cache
+    assert memo("hi").input_ids == tokenizer("hi").input_ids
+    assert (
+        memo(["a", "b"], add_special_tokens = False).input_ids
+        == tokenizer(["a", "b"], add_special_tokens = False).input_ids
+    )
+
+
 def test_clef_encoding_is_token_identical_to_cloudflares():
     from transformers import AutoTokenizer
 

@@ -84,6 +84,7 @@ from utils.datasets.completion_masking import (
     truncated_drop_cause,
 )
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
+from utils.datasets.iterable import take_rows
 from utils.datasets.pretokenized import (
     PRETOKENIZED_FORMAT,
     has_custom_labels,
@@ -3462,7 +3463,7 @@ class UnslothTrainer:
                         )
                         stream = load_dataset(**load_kwargs, streaming = True)
                         dataset_attestation_source = stream
-                        dataset = Dataset.from_list(list(stream.take(rows_to_stream)))
+                        dataset = Dataset.from_list(take_rows(stream, rows_to_stream))
                         logger.info(
                             f"[dataset-slice] Downloaded {len(dataset)} rows "
                             f"(requested {rows_to_stream})\n"

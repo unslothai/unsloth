@@ -383,6 +383,15 @@ def test_speech_arch_names_the_audio_page(tmp_path):
     assert "Images page" not in message
 
 
+def test_a_parakeet_cpp_gguf_is_refused_without_blaming_llama_cpp(tmp_path):
+    _, message = _refusal(tmp_path, arch = "parakeet", name = "parakeet-tdt-0.6b-q8_0.gguf")
+    assert message is not None
+    assert "parakeet" in message.lower()
+    assert "updating llama.cpp will not help" in message.lower()
+    assert "Parakeet-TDT-0.6B-v3-GGUF" in message
+    assert "Images page" not in message
+
+
 def test_every_name_the_video_preflight_imports_from_routes_still_resolves():
     """Names the preflight imports from routes.models must resolve, or its broad except hides it."""
     import ast
