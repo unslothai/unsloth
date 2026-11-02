@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import copy
 import glob
 import functools
 import json
@@ -26,6 +27,7 @@ __all__ = [
     "MLX_KV_BLOCK",
     "MLX_PREFILL_CHUNK",
     "MlxMemoryBreakdown",
+    "MlxTurboQuant",
     "mlx_fit_context",
     "mlx_fit_outcome",
     "mlx_memory_breakdown",
@@ -53,12 +55,21 @@ _RECURRENT_DTYPE_SIZE = 4
 
 # Score copies an unfused call holds at the queries' width; Metal measured 1.03 to 1.15 (mlx 0.32.4).
 _SCORE_LIVE = 1.25
+# A TurboQuant prefill holds the whole cache dequantized to float32 and cast to the query dtype; measured.
+_TURBOQUANT_DEQUANT_BYTES = 10
 
 _WIDTH_NAMES = {"float64": "f64", "float32": "f32", "bfloat16": "bf16", "float16": "f16"}
 
 _CACHE_BOUND_ATTRS = ("max_size", "chunk_size")
 
 _MAX_SAFETENSORS_HEADER = 100_000_000
+
+
+@dataclass(frozen = True)
+class MlxTurboQuant:
+    """A TurboQuant cache of ``bits`` per element, passed where an ``mx.quantize`` width goes."""
+
+    bits: float
 
 
 @dataclass
@@ -532,10 +543,29 @@ def _probe_models(config: dict, dtype):
     yield prepared(_whole_tower), make_prompt_cache, getattr(arch, "Model", None)
 
 
-def _quantize_like_runtime(cache, kv_bits: Optional[int]):
+def _turboquant_like_runtime(cache, bits: float):
+    from mlx_vlm.generate.common import maybe_quantize_kv_cache
+    from mlx_vlm.turboquant import TurboQuantKVCache
+
+    # mlx-vlm converts in place, CacheLists included, and the probe still reads the full-width cache.
+    converted = [copy.copy(entry) for entry in cache]
+    maybe_quantize_kv_cache(converted, 0, _KV_GROUP_SIZE, bits, kv_quant_scheme = "turboquant")
+    return [
+        new if any(isinstance(leaf, TurboQuantKVCache) for leaf in _sub_caches(new)) else old
+        for new, old in zip(converted, cache)
+    ]
+
+
+def _quantize_like_runtime(cache, kv_bits):
     """The converted cache a load ends up with, or None if nothing in it converts."""
     if not kv_bits:
         return None
+    if isinstance(kv_bits, MlxTurboQuant):
+        try:
+            converted = _turboquant_like_runtime(cache, kv_bits.bits)
+        except Exception:
+            return None
+        return converted if any(new is not old for new, old in zip(converted, cache)) else None
     from core.inference.mlx_inference import _quantize_kv_entries
 
     try:
@@ -572,17 +602,14 @@ def _entry_bytes(entry) -> int:
     # mlx-lm 0.32's KV `state` is the whole preallocated buffer; `keys_and_values` is the held part.
     held = getattr(entry, "keys_and_values", None)
     state = held() if callable(held) and getattr(entry, "keys", None) is not None else entry.state
-    if isinstance(state, mx.array):
-        state = (state,)
-    elif not isinstance(state, (list, tuple)):
-        return 0
-    total = 0
-    for item in state:
+
+    def nbytes(item) -> int:
+        # TurboQuant's split states nest one state per half.
         if isinstance(item, mx.array):
-            total += item.size * item.dtype.size
-        elif isinstance(item, (list, tuple)):
-            total += sum(sub.size * sub.dtype.size for sub in item if isinstance(sub, mx.array))
-    return total
+            return item.size * item.dtype.size
+        return sum(nbytes(sub) for sub in item) if isinstance(item, (list, tuple)) else 0
+
+    return nbytes(state)
 
 
 def _width_name(dtype) -> str:
@@ -599,7 +626,10 @@ def _cache_width_name(
         if slot["slope"] <= 0:
             continue
         quantized = converted and slot["converts"]
-        name = f"{kv_bits}-bit" if quantized else full_width
+        name = full_width
+        if quantized:
+            turboquant = isinstance(kv_bits, MlxTurboQuant)
+            name = f"TurboQuant {kv_bits.bits:g}-bit" if turboquant else f"{kv_bits}-bit"
         const, slope = ("quant_const", "quant_slope") if quantized else ("const", "slope")
         charged[name] = (
             charged.get(name, 0.0)
@@ -991,7 +1021,14 @@ def _compute_bytes(
     attention_width = (hidden + intermediate) * dtype_size * _ATTENTION_LIVE
     recurrent_width = sum(int(entry["conv_width"]) for entry in plan) * _RECURRENT_DTYPE_SIZE
     total = _COMPUTE_BASE_BYTES + prefill_chunk * (attention_width + recurrent_width)
-    if quant_boundary is not None:
+    if quant_boundary is not None and isinstance(kv_bits, MlxTurboQuant):
+        # mlx-vlm decodes on its own kernel, and prefills attending over a dequantized cache.
+        kv_heads, head_dim, value_dim = widths[3:]
+        copy_row = kv_heads * (head_dim + (value_dim or head_dim)) * _TURBOQUANT_DEQUANT_BYTES
+        score = heads * dtype_size * _SCORE_LIVE
+        cells = _widest_unfused_scores(widths, dtype_size, n_ctx, prefill_chunk)
+        total += copy_row * max(n_ctx - 1, 0) + cells * score
+    elif quant_boundary is not None:
         score = heads * dtype_size * _SCORE_LIVE
         row = _dequantized_row_bytes(widths, dtype_size, kv_bits, kv_group_size, prefill_chunk)
         if row is None:

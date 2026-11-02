@@ -3293,7 +3293,8 @@ def _fitted_context(
         logger.debug("MLX snapshot unavailable for %s: %s", model_name, exc)
         return None, None
     verdict = eligibility
-    if verdict is None and kv_bits is not None:
+    # Only an mx.quantize width; the estimator's own probe converts a TurboQuant cache as mlx-vlm does.
+    if verdict is None and isinstance(kv_bits, int):
         verdict = _kv_quant_eligibility(model, is_vlm, kv_bits)
     fitted = mlx_fit_to_memory(
         model_dir,
@@ -6335,9 +6336,17 @@ class MLXInferenceBackend:
         self._fast_verify = _settle_fast_verify(
             self._fast_verify, self._model, getattr(self._speculative_draft, "drafter", None)
         )
-        # TurboQuant's layout is not one the planner prices, and a refused one stays full width:
-        # fit either at full width, which only ever under-promises.
-        _requested_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits)
+        # A refused TurboQuant stays full width, and is fitted there.
+        _requested_bits = _normalize_mlx_kv_bits(kv_bits)
+        if self._turboquant:
+            from core.inference.mlx_memory import MlxTurboQuant
+            _requested_bits = (
+                MlxTurboQuant(kv_bits)
+                if kv_bits is not None and not self._turboquant_refusal
+                else None
+            )
+            # Only mlx-vlm's caches convert, so a text load is priced on the route it takes.
+            _vlm_route = _vlm_route or (_requested_bits is not None and not is_vision)
         _fitted_ctx, _eligibility = (
             (_drafter_ctx, _eligibility)
             if _drafter_ctx is not None

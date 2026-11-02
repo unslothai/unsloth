@@ -1389,8 +1389,12 @@ class TestEstimateMemoryRoute:
         resp = _estimate(model_path = "org/model", n_ctx = 32_768, mlx_kv_quant = "4")
         assert (seen["kv_bits"], resp.context_fitted, widths) == (4, 24_576, [(str(tmp_path), 4)])
         widths.clear()
+        monkeypatch.setattr(mlx_inference, "mlx_vlm_snapshot_store_available", lambda: False)
         resp = _estimate(model_path = "org/model", mlx_kv_quant = "tq-4", mlx_kv_bits = 4)
-        assert (asked["kv_bits"], seen["kv_bits"], widths) == (None, None, [])
+        turboquant = mm.MlxTurboQuant(4)
+        assert (asked["kv_bits"], seen["kv_bits"], widths) == (turboquant, turboquant, [])
+        # The load serves TurboQuant through mlx-vlm, and prices that route.
+        assert (asked.pop("vision"), asked["retains_history"]) == (True, False)
 
         refuses["answer"] = True
         resp = _estimate(model_path = "org/model", mlx_kv_bits = 4)
@@ -3736,11 +3740,14 @@ class TestMlxEstimateKvBits:
             ("4", None, 4),
             (" 8 ", 4, 8),
             ("auto", 8, None),
-            ("tq-4", 4, None),
+            ("tq-4", 4, ("turboquant", 4)),
+            ("tq-3.5", None, ("turboquant", 3.5)),
             ("bogus", 4, None),
         ],
     )
     def test_kv_bits_resolution(self, quant, bits, expected):
+        if isinstance(expected, tuple):
+            expected = mm.MlxTurboQuant(expected[1])
         assert ri._mlx_estimate_kv_bits(quant, bits) == expected
 
 
@@ -4297,6 +4304,7 @@ class TestCacheWidthName:
             "2-bit",
         ]
         assert _caption([_GROWING] * 10, 4, False) == "bf16"
+        assert _caption([_GROWING] * 10, mm.MlxTurboQuant(3.5), True) == "TurboQuant 3.5-bit"
 
     def test_an_entry_that_cannot_convert_keeps_its_width_through_a_converting_run(self):
         staying = _plan_entry(converts = False, quant_slope = _GROWING["slope"])
@@ -4733,6 +4741,77 @@ def test_the_route_is_asked_about_a_cache_longer_than_the_chunk(monkeypatch, chu
     ((queries, keys, values, mask),) = asked
     assert queries == chunk and keys == values > chunk
     assert mask == "causal"
+
+
+@_NEEDS_MLX
+class TestATurboQuantCacheIsSizedAsMlxVlmConvertsIt:
+    @pytest.fixture(autouse = True)
+    def _off_nax(self, monkeypatch):
+        from unsloth_zoo.mlx import nax
+        monkeypatch.setattr(nax, "nax_available", lambda: False)
+
+    @pytest.mark.parametrize(
+        "widths, scored_cells",
+        [
+            # Long calls take the fused route; a 63-query tail still builds its scores.
+            ((3584, 18944, 16, 4, 256, 256), 63 * (16 * 2048 + 63)),
+            # mlx's own kernel for this width starts above 8 queries.
+            ((3584, 18944, 32, 4, 64, 64), 8 * (16 * 2048 + 8)),
+        ],
+    )
+    def test_a_prefill_is_charged_its_dequantized_cache_and_any_scores(self, widths, scored_cells):
+        from unsloth_zoo.mlx import attention
+
+        if scored_cells and not hasattr(attention, "runtime_fuses"):
+            pytest.skip("needs a zoo with the head_dim 256 fused route")
+        n_ctx = 16 * 2048 + 1024
+        floor = mm._compute_bytes((*widths[:3], 0, 0, 0), 2, 2048, [], n_ctx, None)
+        priced = mm._compute_bytes(widths, 2, 2048, [], n_ctx, 0, mm.MlxTurboQuant(4)) - floor
+        copied = widths[3] * (widths[4] + widths[5]) * 10 * (n_ctx - 1)
+        assert priced == copied + scored_cells * widths[2] * 2 * mm._SCORE_LIVE
+
+    @staticmethod
+    def _filled(
+        entry,
+        tokens = 40,
+        width = 64,
+    ):
+        import mlx.core as mx
+        entry.update_and_fetch(
+            mx.zeros((1, 2, tokens, width), dtype = mx.bfloat16),
+            mx.zeros((1, 2, tokens, width), dtype = mx.bfloat16),
+        )
+        return entry
+
+    def test_every_layer_but_the_last_converts_and_the_probed_cache_is_left_whole(self):
+        from mlx_vlm.models.cache import CacheList, KVCache
+        from mlx_vlm.turboquant import TurboQuantKVCache
+
+        cache = [
+            CacheList(self._filled(KVCache())),
+            self._filled(KVCache()),
+            self._filled(KVCache()),
+        ]
+        converted = mm._quantize_like_runtime(cache, mm.MlxTurboQuant(4))
+        assert [
+            isinstance(leaf, TurboQuantKVCache)
+            for entry in converted
+            for leaf in mm._sub_caches(entry)
+        ] == [True, True, False]
+        assert converted[2] is cache[2]
+        assert all(isinstance(leaf, KVCache) for entry in cache for leaf in mm._sub_caches(entry))
+
+    @pytest.mark.parametrize("bits", [4, 3.5])
+    def test_the_bytes_counted_are_the_ones_mlx_vlm_holds(self, bits):
+        from mlx_vlm.models.cache import KVCache
+
+        cache = [self._filled(KVCache(), width = 128) for _ in range(3)]
+        leaf = mm._quantize_like_runtime(cache, mm.MlxTurboQuant(bits))[0]
+        assert 0 < mm._entry_bytes(leaf) == leaf.nbytes < mm._entry_bytes(cache[0])
+
+    def test_a_cache_mlx_vlm_does_not_convert_stays_full_width(self):
+        from mlx_lm.models.cache import KVCache
+        assert mm._quantize_like_runtime([KVCache() for _ in range(3)], mm.MlxTurboQuant(4)) is None
 
 
 @pytest.mark.skipif(not _HAVE_MLX, reason = "imports architecture modules")

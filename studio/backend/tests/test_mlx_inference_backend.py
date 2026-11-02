@@ -8226,7 +8226,9 @@ def test_a_width_refusal_is_asked_once_per_checkpoint_and_width(monkeypatch, tmp
 
 def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path):
     from core.inference import mlx_inference
+    from core.inference.mlx_memory import MlxTurboQuant
 
+    turboquant = MlxTurboQuant(4)
     priced, rewound = [], []
     monkeypatch.setitem(
         sys.modules,
@@ -8285,6 +8287,9 @@ def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path
     for answer in (("refused", "r", True), ("none", "n", True)):
         verdict["answer"] = answer
         assert fit(4) == (24_576, answer) and priced[0]["kv_bits"] is None
+    # mx.quantize's probe has no TurboQuant width to try; the fit's own probe converts it.
+    assert fit(turboquant) == (24_576, None) and asked == []
+    assert priced[0]["kv_bits"] == turboquant
 
     monkeypatch.setitem(
         sys.modules,
@@ -8428,8 +8433,11 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
             requested_kv_bits = bits, kv_bits = bits, eligibility = "full", reason = "", note = ""
         ),
     )
+    from core.inference.mlx_memory import MlxTurboQuant
+
     load(max_seq_length = 0, kv_quant = "tq-4")
-    assert verdicts == [] and [kw["kv_bits"] for _, _, kw in asked] == [None]
+    assert verdicts == [] and [kw["kv_bits"] for _, _, kw in asked] == [MlxTurboQuant(4)]
+    assert asked[0][2]["vision"] is True
 
     for available, reserved in ((True, True), (False, False)):
         monkeypatch.setattr(
