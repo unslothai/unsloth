@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
+"""_UnslothFusedLinearHead against TRL >= 1.17's kernel slot, which takes score_ids after support_ids and returns a
+sixth output (score_log_probs). CPU only: the adapter is lifted from rl.py via ast, the zoo kernel is a fake."""
+
 from __future__ import annotations
 
 import ast
