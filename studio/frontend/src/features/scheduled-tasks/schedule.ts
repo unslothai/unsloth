@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withTimeFormat } from "../../lib/time-format.ts";
 
 /** Mirrors core/scheduled_tasks/schedule.py: hourly intervals use elapsed time; calendar schedules use the task's zone. */
 export type TaskSchedule =
@@ -158,9 +159,8 @@ function relativeFormat(locale: string): Intl.RelativeTimeFormat {
 
 export function formatClock(time: string, locale: string): string {
   const [hour, minute] = time.split(":").map(Number);
-  return dateFormat(locale, { hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(
-    Date.UTC(2000, 0, 1, hour, minute),
-  );
+  const options = withTimeFormat({ hour: "numeric", minute: "2-digit", timeZone: "UTC" }, locale);
+  return dateFormat(locale, options).format(Date.UTC(2000, 0, 1, hour, minute));
 }
 
 /** Quarter-hour times plus `current` when it falls between them. */

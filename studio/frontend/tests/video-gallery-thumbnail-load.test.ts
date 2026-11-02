@@ -37,11 +37,12 @@ test("video gallery tiles use still posters instead of media pipelines", () => {
     "{/* Tail spinner while older pages stream in on scroll.",
   );
 
-  assert.ok(strip.includes("thumbnailById[video.id]"));
-  assert.ok(strip.includes("<img"));
-  assert.ok(strip.includes("src={thumbnailById[video.id]}"));
-  assert.ok(!strip.includes("<video"));
+  assert.ok(strip.includes("thumbnail={thumbnailById[video.id]}"));
   assert.ok(!strip.includes("srcById[video.id]"));
+  const tile = between(page, "const VideoStripTile = memo(", "function RecipePopover(");
+  assert.ok(tile.includes("<img"));
+  assert.ok(tile.includes("src={thumbnail}"));
+  assert.ok(!tile.includes("<video"));
 });
 
 test("selected playback does not depend on poster decoding", () => {
@@ -196,7 +197,10 @@ test("a poster the renderer cannot decode falls back to the slate", () => {
     "{/* In-progress generation: a placeholder tile",
     "{/* Tail spinner while older pages stream in on scroll.",
   );
-  assert.ok(strip.includes("onError={() => handlePosterError(video.id)}"));
+  const tile = between(page, "const VideoStripTile = memo(", "function RecipePopover(");
+  assert.ok(tile.includes("onError={() => actions.get().posterError(id)}"));
+  assert.ok(strip.includes("thumbnailFailed={thumbnailFailedIds.has(video.id)}"));
+  assert.ok(page.includes("posterError: handlePosterError,"));
   const handler = between(page, "const handlePosterError", "}, []);");
   assert.ok(handler.includes("galleryCache.thumbnailById.delete(id)"));
   assert.ok(handler.includes("galleryCache.thumbnailFailed.add(id)"));

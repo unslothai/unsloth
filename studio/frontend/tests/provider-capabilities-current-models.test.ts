@@ -28,6 +28,15 @@ const {
   resolveExternalReasoningEffort,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
+test("Gemini Lite image output stays within its published limit", () => {
+  assert.equal(getExternalMaxOutputTokens("gemini", "gemini-3.1-flash-lite-image"), 4096);
+});
+
+test("Gemini Nano Banana 2.1 supports Search grounding", () => {
+  assert.equal(providerSupportsBuiltinWebSearch("gemini", "gemini-nano-banana-2.1"), true);
+  assert.equal(providerSupportsBuiltinWebSearch("gemini", "gemini-2.5-flash-image"), false);
+});
+
 const {
   providerModelSupportsStudioTools,
   providerModelSupportsVision,
