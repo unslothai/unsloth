@@ -21,7 +21,11 @@ _LORA_KEY = "unet.down.0.lora_A.weight"
 _MODEL_KEY = "model.layers.0.self_attn.q_proj.weight"
 
 
-def _safetensors(path, sidecar = None, key = _LORA_KEY):
+def _safetensors(
+    path,
+    sidecar = None,
+    key = _LORA_KEY,
+):
     path.parent.mkdir(parents = True, exist_ok = True)
     header = json.dumps({key: {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}).encode()
     path.write_bytes(struct.pack("<Q", len(header)) + header + b"\0\0\0\0")
