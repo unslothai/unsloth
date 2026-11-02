@@ -3047,9 +3047,8 @@ class SttDevicePayload(BaseModel):
 
 class SttDeviceResponse(BaseModel):
     device: Literal["auto", "cpu", "gpu"] = "auto"
-    # True when UNSLOTH_AUDIO_DEVICE names a device; Settings cannot override it.
     locked: bool = False
-    # False until a choice is saved: the browser then migrates its local one instead of adopting this.
+    # Distinguishes an unset preference from a saved Auto choice.
     saved: bool = False
 
 

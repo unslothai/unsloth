@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Voice Settings "Load into" against the server copy that device-less STT API loads read (#15280).
-
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
@@ -42,8 +40,8 @@ async function settle() {
 
 test("a saved server choice wins over this browser's and is not sent back", async () => {
   for (const [server, local] of [
-    ["cpu", "auto"], // another browser chose CPU
-    ["auto", "cpu"], // a stale tab still holds CPU
+    ["cpu", "auto"],
+    ["auto", "cpu"],
   ] as const) {
     const calls = fakeServer({ device: server, saved: true });
     let adopted: string | null = null;
@@ -75,7 +73,6 @@ test("quick changes reach the server in order", async () => {
   globalThis.fetch = (async (_url: string, init?: RequestInit) => {
     const { device } = JSON.parse(String(init?.body));
     calls.push({ method: "PUT", device });
-    // The first save is slow: without ordering the second would land first.
     if (calls.length === 1) await new Promise<void>((r) => resolvers.push(r));
     state.device = device;
     return new Response(JSON.stringify(state), { status: 200 });
@@ -115,7 +112,7 @@ test("a choice made while the sign-in read is in flight is not undone", async ()
       adopted = d;
     });
     await settle();
-    syncSttDevicePreference(saved ? "cpu" : "auto"); // the user picks while the read is out
+    syncSttDevicePreference(saved ? "cpu" : "auto");
     await settle();
     release();
     await done;

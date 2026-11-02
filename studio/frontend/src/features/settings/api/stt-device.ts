@@ -7,7 +7,7 @@ import type { SttDevice } from "../stores/voice-settings-store";
 
 type SttDeviceState = { device: SttDevice | "gpu"; saved?: boolean };
 
-// Soft-fails (#15280). Chained so the last choice lands last.
+// Serialize saves so the last choice lands last.
 let pending: Promise<unknown> = Promise.resolve();
 // Bumped per save, so a read that started before one is not applied after it.
 let revision = 0;
@@ -25,8 +25,7 @@ export function syncSttDevicePreference(device: SttDevice): void {
     .catch(() => undefined);
 }
 
-// After sign-in: the server copy wins once saved (another browser, a reset, a stale tab); otherwise this browser's
-// non-default choice from before the server kept one is migrated.
+// Adopt a saved server choice; otherwise migrate the local choice.
 export async function reconcileSttDevicePreference(
   local: SttDevice,
   adopt: (device: SttDevice) => void,

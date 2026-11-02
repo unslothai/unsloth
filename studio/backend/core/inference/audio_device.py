@@ -55,9 +55,7 @@ def audio_device_env_locked() -> bool:
 
 
 def stt_device_default() -> str:
-    """``audio_device_default`` for speech-to-text only: with the environment unset, the owner's
-    saved Voice Settings "Load into", so a device-less API load lands where Settings says (#15280).
-    Native audio / TTS keep the environment-only default."""
+    """Use the saved STT choice unless the environment overrides it; TTS is unaffected."""
     if audio_device_env_locked():
         return audio_device_default()
     try:

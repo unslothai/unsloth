@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Voice Settings "Load into" for speech-to-text, persisted for API loads (#15280).
-
-The UI keeps ``sttDevice`` in browser localStorage, which ``/v1/audio/transcriptions`` never
-sees. Mirrored into ``app_settings`` (as ``rag_embedding_device`` is), ``stt_device_default``
-reads it when ``UNSLOTH_AUDIO_DEVICE`` is unset.
-"""
+"""Persist STT placement for device-less API loads (#15280)."""
 
 from __future__ import annotations
 
@@ -24,7 +19,6 @@ _lock = threading.Lock()
 
 
 def _stored_stt_device() -> Optional[str]:
-    """The saved choice, or None when nothing valid is saved (cached briefly)."""
     now = time.monotonic()
     with _lock:
         if _device_cached and now - _device_cached[0][0] < _CACHE_TTL_S:
