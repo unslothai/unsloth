@@ -2187,6 +2187,14 @@ export const pl = {
           full: "Wykonuje każde wywołanie narzędzia bez pytania i wyłącza piaskownicę kodu, więc kod w Pythonie i terminalu może odczytywać i zmieniać każdy plik dostępny dla Twojego konta.",
         },
       },
+      display: {
+        title: "Wyświetlanie",
+        timeFormat: "Format godziny",
+        timeFormatDescription: "Pokazuj godziny w formacie 12- lub 24-godzinnym.",
+        timeFormatSystem: "Domyślny systemowy",
+        timeFormat12: "12-godzinny",
+        timeFormat24: "24-godzinny",
+      },
       notifications: {
         sectionTitle: "Powiadomienia",
         showLoadedModels: "Karta wczytanych modeli",

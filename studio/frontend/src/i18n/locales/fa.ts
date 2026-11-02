@@ -2151,6 +2151,14 @@ export const fa = {
           full: "هر فراخوانی ابزار را بدون پرسیدن اجرا می‌کند و سندباکس کد را خاموش می‌کند، بنابراین کد Python و ترمینال می‌تواند هر فایلی را که حساب شما به آن دسترسی دارد بخواند و تغییر دهد.",
         },
       },
+      display: {
+        title: "نمایش",
+        timeFormat: "قالب زمان",
+        timeFormatDescription: "نمایش زمان به صورت ۱۲ ساعته یا ۲۴ ساعته.",
+        timeFormatSystem: "پیش‌فرض سیستم",
+        timeFormat12: "۱۲ ساعته",
+        timeFormat24: "۲۴ ساعته",
+      },
       notifications: {
         sectionTitle: "اعلان‌ها",
         showLoadedModels: "کارت مدل‌های بارگذاری‌شده",

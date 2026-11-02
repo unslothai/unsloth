@@ -1908,6 +1908,14 @@ export const it = {
             "Esegue ogni chiamata agli strumenti senza chiedere e disattiva la sandbox del codice, così il codice Python e da terminale può leggere e modificare qualsiasi file accessibile al tuo account.",
         },
       },
+      display: {
+        title: "Visualizzazione",
+        timeFormat: "Formato ora",
+        timeFormatDescription: "Mostra gli orari nel formato a 12 o 24 ore.",
+        timeFormatSystem: "Predefinito di sistema",
+        timeFormat12: "12 ore",
+        timeFormat24: "24 ore",
+      },
       notifications: {
         sectionTitle: "Notifiche",
         showLoadedModels: "Scheda dei modelli caricati",

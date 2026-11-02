@@ -1967,6 +1967,14 @@ export const ar = {
         loadError: "تعذّر تحميل إعدادات اتصال الحسابات المُدارة.",
         saveError: "تعذّر حفظ إعدادات اتصال الحسابات المُدارة.",
       },
+      display: {
+        title: "العرض",
+        timeFormat: "تنسيق الوقت",
+        timeFormatDescription: "اعرض الأوقات بنظام 12 ساعة أو 24 ساعة.",
+        timeFormatSystem: "افتراضي النظام",
+        timeFormat12: "12 ساعة",
+        timeFormat24: "24 ساعة",
+      },
       notifications: {
         sectionTitle: "الإشعارات",
         showLoadedModels: "بطاقة النماذج المحمّلة",

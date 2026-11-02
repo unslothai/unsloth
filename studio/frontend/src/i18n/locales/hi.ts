@@ -1971,6 +1971,14 @@ export const hi = {
         loadError: "प्रबंधित खाता कनेक्शन सेटिंग्स लोड नहीं हो सकीं।",
         saveError: "प्रबंधित खाता कनेक्शन सेटिंग्स सहेजी नहीं जा सकीं।",
       },
+      display: {
+        title: "दिखावट",
+        timeFormat: "समय प्रारूप",
+        timeFormatDescription: "समय को 12-घंटे या 24-घंटे के प्रारूप में दिखाएँ।",
+        timeFormatSystem: "सिस्टम डिफ़ॉल्ट",
+        timeFormat12: "12-घंटे",
+        timeFormat24: "24-घंटे",
+      },
       notifications: {
         sectionTitle: "सूचनाएं",
         showLoadedModels: "लोड किए गए मॉडल कार्ड",

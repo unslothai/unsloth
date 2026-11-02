@@ -1975,6 +1975,14 @@ export const ptBR = {
         saveError:
           "Não foi possível salvar as configurações de conexão das contas gerenciadas.",
       },
+      display: {
+        title: "Exibição",
+        timeFormat: "Formato de hora",
+        timeFormatDescription: "Mostrar horários no formato de 12 ou 24 horas.",
+        timeFormatSystem: "Padrão do sistema",
+        timeFormat12: "12 horas",
+        timeFormat24: "24 horas",
+      },
       notifications: {
         sectionTitle: "Notificações",
         showLoadedModels: "Cartão de modelos carregados",

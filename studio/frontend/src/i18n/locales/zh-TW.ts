@@ -2051,6 +2051,14 @@ export const zhTW = {
           full: "執行所有工具呼叫而不詢問，並關閉程式碼沙箱，因此 Python 與終端機程式碼可以讀取及變更您帳號能存取的任何檔案。",
         },
       },
+      display: {
+        title: "顯示",
+        timeFormat: "時間格式",
+        timeFormatDescription: "以 12 小時制或 24 小時制顯示時間。",
+        timeFormatSystem: "跟隨系統",
+        timeFormat12: "12 小時制",
+        timeFormat24: "24 小時制",
+      },
       notifications: {
         sectionTitle: "通知",
         showLoadedModels: "已載入模型卡片",

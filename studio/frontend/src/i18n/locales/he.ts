@@ -2038,6 +2038,14 @@ export const he = {
           full: "מריץ כל קריאה לכלי בלי לשאול ומכבה את ארגז החול של הקוד, כך שקוד Python ו-Terminal יכול לקרוא ולשנות כל קובץ שהחשבון שלך יכול לגשת אליו.",
         },
       },
+      display: {
+        title: "תצוגה",
+        timeFormat: "תבנית שעה",
+        timeFormatDescription: "הצגת שעות בתבנית של 12 או 24 שעות.",
+        timeFormatSystem: "ברירת המחדל של המערכת",
+        timeFormat12: "12 שעות",
+        timeFormat24: "24 שעות",
+      },
       notifications: {
         sectionTitle: "התראות",
         showLoadedModels: "כרטיס מודלים טעונים",

@@ -1986,6 +1986,14 @@ export const fr = {
         saveError:
           "Impossible d'enregistrer les paramètres de connexion des comptes gérés.",
       },
+      display: {
+        title: "Affichage",
+        timeFormat: "Format de l'heure",
+        timeFormatDescription: "Afficher l'heure au format 12 heures ou 24 heures.",
+        timeFormatSystem: "Valeur par défaut du système",
+        timeFormat12: "12 heures",
+        timeFormat24: "24 heures",
+      },
       notifications: {
         sectionTitle: "Notifications",
         showLoadedModels: "Carte des modèles chargés",

@@ -1964,6 +1964,14 @@ export const ko = {
         loadError: "관리 계정 연결 설정을 불러오지 못했습니다.",
         saveError: "관리 계정 연결 설정을 저장하지 못했습니다.",
       },
+      display: {
+        title: "표시",
+        timeFormat: "시간 형식",
+        timeFormatDescription: "시간을 12시간제 또는 24시간제로 표시합니다.",
+        timeFormatSystem: "시스템 기본값",
+        timeFormat12: "12시간제",
+        timeFormat24: "24시간제",
+      },
       notifications: {
         sectionTitle: "알림",
         showLoadedModels: "로드된 모델 카드",

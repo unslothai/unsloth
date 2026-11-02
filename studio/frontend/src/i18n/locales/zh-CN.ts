@@ -1948,6 +1948,14 @@ export const zhCN = {
         loadError: "无法加载受管账户的连接设置。",
         saveError: "无法保存受管账户的连接设置。",
       },
+      display: {
+        title: "显示",
+        timeFormat: "时间格式",
+        timeFormatDescription: "以 12 小时制或 24 小时制显示时间。",
+        timeFormatSystem: "跟随系统",
+        timeFormat12: "12 小时制",
+        timeFormat24: "24 小时制",
+      },
       notifications: {
         sectionTitle: "通知",
         showLoadedModels: "已加载模型卡片",

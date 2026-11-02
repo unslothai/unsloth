@@ -2064,6 +2064,14 @@ export const th = {
           full: "เรียกใช้เครื่องมือทุกครั้งโดยไม่ถามและปิดแซนด์บ็อกซ์โค้ด โค้ด Python และเทอร์มินัลจึงอ่านและเปลี่ยนแปลงไฟล์ใดก็ได้ที่บัญชีของคุณเข้าถึงได้",
         },
       },
+      display: {
+        title: "การแสดงผล",
+        timeFormat: "รูปแบบเวลา",
+        timeFormatDescription: "แสดงเวลาแบบ 12 ชั่วโมงหรือ 24 ชั่วโมง",
+        timeFormatSystem: "ค่าเริ่มต้นของระบบ",
+        timeFormat12: "12 ชั่วโมง",
+        timeFormat24: "24 ชั่วโมง",
+      },
       notifications: {
         sectionTitle: "การแจ้งเตือน",
         showLoadedModels: "การ์ดโมเดลที่โหลดอยู่",

@@ -1973,6 +1973,14 @@ export const ru = {
         saveError:
           "Не удалось сохранить настройки подключений управляемых учётных записей.",
       },
+      display: {
+        title: "Отображение",
+        timeFormat: "Формат времени",
+        timeFormatDescription: "Показывать время в 12- или 24-часовом формате.",
+        timeFormatSystem: "Как в системе",
+        timeFormat12: "12-часовой",
+        timeFormat24: "24-часовой",
+      },
       notifications: {
         sectionTitle: "Уведомления",
         showLoadedModels: "Карточка загруженных моделей",

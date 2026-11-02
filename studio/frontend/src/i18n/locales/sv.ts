@@ -2098,6 +2098,14 @@ export const sv = {
           full: "Kör varje verktygsanrop utan att fråga och stänger av kodsandlådan, så att Python- och terminalkod kan läsa och ändra alla filer som ditt konto har åtkomst till.",
         },
       },
+      display: {
+        title: "Visning",
+        timeFormat: "Tidsformat",
+        timeFormatDescription: "Visa tider i 12- eller 24-timmarsformat.",
+        timeFormatSystem: "Systemstandard",
+        timeFormat12: "12-timmars",
+        timeFormat24: "24-timmars",
+      },
       notifications: {
         sectionTitle: "Aviseringar",
         showLoadedModels: "Kort för inlästa modeller",

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { withTimeFormat } from "@/lib/time-format";
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import {
@@ -339,6 +339,7 @@ const ActivityRow = memo(function ActivityRow({
   const setActivityOpen = useResearchRunStore(
     (state) => state.setActivityOpen,
   );
+  useTimeFormat();
   const open =
     storedOpen ??
     (activity.state === "running" || activity.state === "action");

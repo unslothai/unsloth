@@ -1988,6 +1988,14 @@ export const de = {
         saveError:
           "Verbindungseinstellungen für verwaltete Konten konnten nicht gespeichert werden.",
       },
+      display: {
+        title: "Anzeige",
+        timeFormat: "Zeitformat",
+        timeFormatDescription: "Uhrzeiten im 12- oder 24-Stunden-Format anzeigen.",
+        timeFormatSystem: "Systemstandard",
+        timeFormat12: "12-Stunden",
+        timeFormat24: "24-Stunden",
+      },
       notifications: {
         sectionTitle: "Benachrichtigungen",
         showLoadedModels: "Karte geladener Modelle",

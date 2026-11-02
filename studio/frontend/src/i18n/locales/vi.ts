@@ -2167,6 +2167,14 @@ export const vi = {
           full: "Chạy mọi lệnh gọi công cụ mà không hỏi và tắt sandbox mã, nên mã Python và terminal có thể đọc và thay đổi bất kỳ tệp nào mà tài khoản của bạn có quyền truy cập.",
         },
       },
+      display: {
+        title: "Hiển thị",
+        timeFormat: "Định dạng giờ",
+        timeFormatDescription: "Hiển thị giờ theo định dạng 12 giờ hoặc 24 giờ.",
+        timeFormatSystem: "Mặc định hệ thống",
+        timeFormat12: "12 giờ",
+        timeFormat24: "24 giờ",
+      },
       notifications: {
         sectionTitle: "Thông báo",
         showLoadedModels: "Thẻ mô hình đã nạp",
