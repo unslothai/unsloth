@@ -796,6 +796,28 @@ def test_auto_retries_an_over_long_state_on_pytorch_only_when_it_is_longer(
         assert home.torch_agents == []
 
 
+def test_auto_refuses_an_over_long_state_when_pytorch_is_not_downloaded(
+    home, client, stub, monkeypatch
+):
+    downloads = []
+
+    def not_downloaded(checkpoint, local_only):
+        if not local_only:
+            downloads.append(checkpoint.name)
+        raise FileNotFoundError(checkpoint.name)
+
+    monkeypatch.setattr(laya_runtime, "_clef_dir", not_downloaded)
+    _cache_gguf(home.cache)
+    _put(client, enabled = True, model = "clef-flash", native_ctx = 1024)
+    response = _post(client, state = "word " * 1100)
+    if laya_runtime._loader is not None:
+        laya_runtime._loader.join(5)
+    assert response.status_code == 422 and "at most 1024" in response.json()["detail"]["message"]
+    assert downloads == [] and home.torch_agents == []
+    assert _post(client).headers["x-unsloth-decision-backend"] == "llama.cpp"
+    assert len(stub.records("start")) == 1
+
+
 def test_other_native_failures_are_surfaced_not_retried(home, client, stub):
     _cache_gguf(home.cache)
     _put(client, enabled = True, model = "clef-flash")

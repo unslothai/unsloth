@@ -2282,6 +2282,8 @@ def _route(
     try:
         return _decide(target, state, questions, images, audio)
     except NativeContextOverflow as exc:
+        if not is_cached(checkpoint):
+            raise Unavailable(422, "invalid_request_error", str(exc)) from None
         # Auto answers on PyTorch only what its longer window can hold; at equal windows it would refuse too.
         from .catalog import clef_unsupported_reason
 
