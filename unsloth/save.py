@@ -991,7 +991,7 @@ def _without_runtime_truncation(
     save_directory = None,
     filename_prefix = None,
 ):
-    """A fast tokenizer keeps the last call's truncation and padding on its backend, so after training with max_length=2048 save_pretrained writes them into tokenizer.json and every later load truncates. A VLM prompt with large images then loses image tokens and the processor fails ("Failed to apply Qwen3VLProcessor"). Clear both for the save and restore them after; also drop the max_length a reload of such a file copies into tokenizer_config.json."""
+    """Keep runtime limits out of saved files, including nested processor saves."""
     source_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
     backend = getattr(source_tokenizer, "_tokenizer", None)
     truncation = getattr(backend, "truncation", None)
@@ -999,6 +999,11 @@ def _without_runtime_truncation(
     if truncation is None and padding is None:
         yield
         return
+    init_kwargs = getattr(source_tokenizer, "init_kwargs", {})
+    max_length = truncation["max_length"] if truncation else padding.get("length")
+    remove_max_length = max_length is not None and init_kwargs.get("max_length") == max_length
+    if remove_max_length:
+        init_kwargs.pop("max_length")
     try:
         try:
             backend.no_truncation()
@@ -1009,6 +1014,8 @@ def _without_runtime_truncation(
             )
         yield
     finally:
+        if remove_max_length:
+            init_kwargs["max_length"] = max_length
         try:
             if truncation is not None:
                 backend.enable_truncation(**truncation)
@@ -1018,25 +1025,6 @@ def _without_runtime_truncation(
             logger.warning_once(
                 f"Unsloth: Could not restore tokenizer truncation after saving: {error}"
             )
-    if truncation is None or save_directory is None:
-        return
-    tokenizer_config = os.path.join(
-        str(save_directory),
-        f"{filename_prefix}-tokenizer_config.json" if filename_prefix else "tokenizer_config.json",
-    )
-    if not os.path.isfile(tokenizer_config):
-        return
-    try:
-        with open(tokenizer_config, "r", encoding = "utf-8") as file:
-            config = json.load(file)
-        if config.get("max_length") != truncation.get("max_length"):
-            return
-        del config["max_length"]
-        with open(tokenizer_config, "w", encoding = "utf-8") as file:
-            json.dump(config, file, indent = 2, ensure_ascii = False)
-            file.write("\n")
-    except Exception as error:
-        logger.warning_once(f"Unsloth: Could not drop max_length from {tokenizer_config}: {error}")
 
 
 def _preserve_repaired_tokenizer_class(
