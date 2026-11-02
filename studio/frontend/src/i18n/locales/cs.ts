@@ -5528,6 +5528,7 @@ export const cs = {
       presetHint: "Odesílá se před každým promptem. Vaše rewards čtou tagy, které si vyžádá, tak je držte v souladu.",
       presetLabel: "Předvolba systémového promptu",
       presets: {
+        reasoningTags: "Tagy working out + solution",
         notebook: "Tagy reasoning + answer",
         none: "Žádný systémový prompt",
         custom: "Vlastní",
@@ -5536,6 +5537,7 @@ export const cs = {
         notebook: "Vyžádá postup v <reasoning> a odpověď v <answer>, tagy, které čtou přibalené rewards.",
         none: "Neodesílá žádnou systémovou zprávu, takže tag rewards nic neohodnotí, dokud model tagy nenapíše sám.",
         custom: "Napište si vlastní. Udržujte tagy, které vyžaduje, v souladu s vašimi rewards.",
+        reasoningTags: "Vyžádá postup mezi tagy <start_working_out> a odpověď v <SOLUTION>, formát, který čtou reasoning rewards.",
       },
       systemPrompt: "Systémový prompt",
       previewTitle: "Co model vidí, řádek 1",
@@ -5546,6 +5548,11 @@ export const cs = {
       tagsOk: "Vyžaduje {tags}, které vaše rewards čtou.",
       tagsMissing: "Vaše rewards čtou {tags}, ale prompt si je nevyžaduje.",
       thinkingHint: "Vypnuto zabrání modelům typu Qwen3 utrácet rozpočet odpovědi na skrytý blok přemýšlení.",
+      reasoningFormat: "Formát reasoning",
+      reasoningFormatHint: "Pro základní modely: chat šablona z GRPO notebooků, s postupem mezi tagy <start_working_out> a odpovědí v <SOLUTION>. Přepne prompt a rewards, aby odpovídaly.",
+      warmupSteps: "Kroky zahřívání formátu",
+      warmupStepsHint: "Krátký SFT průchod na formátovaných matematických příkladech před GRPO, aby model tagy už psal. 0 ho vynechá; notebooky používají asi 100.",
+      warmupContext: "Vyžaduje max. délku sekvence {n} nebo víc: ukázky zahřívání jsou dlouhé.",
     },
     charts: {
       reward: "Reward",

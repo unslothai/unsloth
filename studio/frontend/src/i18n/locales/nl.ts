@@ -5566,6 +5566,7 @@ export const nl = {
       presetHint: "Wordt voor elke prompt verstuurd. Je rewards lezen de tags die hierom gevraagd worden, dus houd beide in lijn.",
       presetLabel: "Systeemprompt-preset",
       presets: {
+        reasoningTags: "Working-out- + solution-tags",
         notebook: "Reasoning- + answer-tags",
         none: "Geen systeemprompt",
         custom: "Aangepast",
@@ -5574,6 +5575,7 @@ export const nl = {
         notebook: "Vraagt om de uitwerking in <reasoning> en het antwoord in <answer>, de tags die de meegeleverde rewards lezen.",
         none: "Stuurt geen systeembericht, dus tag-rewards scoren niets totdat het model zelf de tags schrijft.",
         custom: "Schrijf je eigen prompt. Houd de tags die hierom gevraagd worden in lijn met je rewards.",
+        reasoningTags: "Vraagt om de uitwerking tussen <start_working_out>-tags en het antwoord in <SOLUTION>, het formaat dat de reasoning-rewards lezen.",
       },
       systemPrompt: "Systeemprompt",
       previewTitle: "Wat het model ziet, rij 1",
@@ -5584,6 +5586,11 @@ export const nl = {
       tagsOk: "Vraagt om {tags}, die je rewards lezen.",
       tagsMissing: "Je rewards lezen {tags}, maar de prompt vraagt er niet om.",
       thinkingHint: "Uit houdt Qwen3-achtige modellen ervan af het antwoordbudget aan een verborgen denkblok te besteden.",
+      reasoningFormat: "Reasoning-formaat",
+      reasoningFormatHint: "Voor basismodellen: de chattemplate van de GRPO-notebooks, met de uitwerking tussen <start_working_out>-tags en het antwoord in <SOLUTION>. Past prompt en rewards hierop aan.",
+      warmupSteps: "Format-warm-up-stappen",
+      warmupStepsHint: "Korte SFT-pass op geformatteerde wiskundevoorbeelden vóór GRPO, zodat het model de tags al schrijft. 0 slaat dit over; de notebooks gebruiken ongeveer 100.",
+      warmupContext: "Vereist een max. sequentielengte van {n} of meer: de warm-up-voorbeelden zijn lang.",
     },
     charts: {
       reward: "Reward",

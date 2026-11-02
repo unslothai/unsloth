@@ -5560,6 +5560,7 @@ export const pl = {
       presetHint: "Wysyłane przed każdym poleceniem. Twoje nagrody odczytują tagi, o które ono prosi, więc trzymaj te dwa elementy w zgodzie.",
       presetLabel: "Szablon polecenia systemowego",
       presets: {
+        reasoningTags: "Tagi pracy i rozwiązania",
         notebook: "Tagi rozumowania i odpowiedzi",
         none: "Brak polecenia systemowego",
         custom: "Własny",
@@ -5568,6 +5569,7 @@ export const pl = {
         notebook: "Prosi o rozumowanie w <reasoning> i odpowiedź w <answer>, tagi odczytywane przez dołączone nagrody.",
         none: "Nie wysyła komunikatu systemowego, więc nagrody za tagi nic nie oceniają, dopóki model sam nie zacznie pisać tagów.",
         custom: "Napisz własny. Dbaj, by tagi, o które prosi, zgadzały się z Twoimi nagrodami.",
+        reasoningTags: "Prosi o pracę między tagami <start_working_out> i odpowiedź w <SOLUTION>, format odczytywany przez nagrody za rozumowanie.",
       },
       systemPrompt: "Polecenie systemowe",
       previewTitle: "Co widzi model, wiersz 1",
@@ -5578,6 +5580,11 @@ export const pl = {
       tagsOk: "Prosi o {tags}, które odczytują Twoje nagrody.",
       tagsMissing: "Twoje nagrody odczytują {tags}, ale polecenie nie prosi o nie.",
       thinkingHint: "Wyłączone powstrzymuje modele w stylu Qwen3 od wydawania budżetu odpowiedzi na ukryty blok myślenia.",
+      reasoningFormat: "Format rozumowania",
+      reasoningFormatHint: "Dla modeli bazowych: szablon czatu z notatników GRPO, z pracą między tagami <start_working_out> i odpowiedzią w <SOLUTION>. Przełącza polecenie i nagrody, by się do tego dopasować.",
+      warmupSteps: "Kroki rozgrzewki formatu",
+      warmupStepsHint: "Krótki przebieg SFT na sformatowanych przykładach matematycznych przed GRPO, aby model już pisał tagi. 0 pomija to; notatniki używają około 100.",
+      warmupContext: "Wymaga maksymalnej długości sekwencji co najmniej {n}: przykłady rozgrzewkowe są długie.",
     },
     charts: {
       reward: "Nagroda",

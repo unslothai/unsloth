@@ -5506,6 +5506,7 @@ export const tr = {
       presetHint: "Her istemden önce gönderilir. Ödülleriniz istediği etiketleri okur, o yüzden ikisini uyumlu tutun.",
       presetLabel: "Sistem istemi ön ayarı",
       presets: {
+        reasoningTags: "Çalışma + çözüm etiketleri",
         notebook: "Akıl yürütme + cevap etiketleri",
         none: "Sistem istemi yok",
         custom: "Özel",
@@ -5514,6 +5515,7 @@ export const tr = {
         notebook: "Çalışmayı <reasoning> içinde ve cevabı <answer> içinde ister; bunlar paketlenmiş ödüllerin okuduğu etiketlerdir.",
         none: "Sistem mesajı göndermez, bu yüzden etiket ödülleri model kendi etiketlerini yazana kadar hiçbir şey puanlamaz.",
         custom: "Kendinizinkini yazın. İstediği etiketleri ödüllerinizle uyumlu tutun.",
+        reasoningTags: "Çalışmayı <start_working_out> etiketleri arasında ve cevabı <SOLUTION> içinde ister; akıl yürütme ödüllerinin okuduğu biçim budur.",
       },
       systemPrompt: "Sistem istemi",
       previewTitle: "Modelin gördüğü, 1. satır",
@@ -5524,6 +5526,11 @@ export const tr = {
       tagsOk: "{tags} istiyor, ödülleriniz bunları okuyor.",
       tagsMissing: "Ödülleriniz {tags} okuyor, ama istem bunları istemiyor.",
       thinkingHint: "Kapalıyken Qwen3 tarzı modeller cevap bütçesini gizli bir düşünme bloğuna harcamaz.",
+      reasoningFormat: "Akıl yürütme biçimi",
+      reasoningFormatHint: "Temel modeller için: GRPO not defterlerinin sohbet şablonu, çalışma <start_working_out> etiketleri arasında, cevap <SOLUTION> içinde. İstemi ve ödülleri buna göre değiştirir.",
+      warmupSteps: "Biçim ısınma adımları",
+      warmupStepsHint: "GRPO'dan önce biçimlendirilmiş matematik örnekleri üzerinde kısa bir SFT geçişi, böylece model etiketleri zaten yazar. 0 bunu atlar; not defterleri yaklaşık 100 kullanır.",
+      warmupContext: "En az {n} maksimum dizi uzunluğu gerekir: ısınma örnekleri uzundur.",
     },
     charts: {
       reward: "Ödül",

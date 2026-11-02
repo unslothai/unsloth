@@ -5205,6 +5205,7 @@ export const zhTW = {
       presetHint: "會在每個提示前送出。你的獎勵會讀取它要求的標籤，所以請讓兩者保持一致。",
       presetLabel: "系統提示預設",
       presets: {
+        reasoningTags: "推導 + 解答標籤",
         notebook: "推理 + 答案標籤",
         none: "沒有系統提示",
         custom: "自訂",
@@ -5213,6 +5214,7 @@ export const zhTW = {
         notebook: "要求把推理寫在 <reasoning> 裡、答案寫在 <answer> 裡，這是內建獎勵會讀取的標籤。",
         none: "不會送出系統訊息，所以在模型自己寫出標籤之前，標籤類的獎勵都拿不到分數。",
         custom: "自行撰寫。讓它要求的標籤與你的獎勵保持一致。",
+        reasoningTags: "要求把推導過程寫在 <start_working_out> 標籤之間、答案寫在 <SOLUTION> 裡，這是推理獎勵會讀取的格式。",
       },
       systemPrompt: "系統提示",
       previewTitle: "模型看到的內容，第 1 列",
@@ -5223,6 +5225,11 @@ export const zhTW = {
       tagsOk: "要求輸出 {tags}，你的獎勵會讀取它們。",
       tagsMissing: "你的獎勵會讀取 {tags}，但提示沒有要求輸出它們。",
       thinkingHint: "關閉後，Qwen3 這類模型就不會把回答額度花在隱藏的思考區塊上。",
+      reasoningFormat: "推理格式",
+      reasoningFormatHint: "適用於基礎模型：採用 GRPO 筆記本的對話範本，推導過程寫在 <start_working_out> 標籤之間，答案寫在 <SOLUTION> 裡。會同時切換提示與獎勵以配合。",
+      warmupSteps: "格式暖身步數",
+      warmupStepsHint: "在 GRPO 之前，先用格式化的數學範例做一小段 SFT，讓模型一開始就會寫出這些標籤。0 表示略過；筆記本中大約使用 100。",
+      warmupContext: "需要最大序列長度至少為 {n}：暖身範例的長度較長。",
     },
     charts: {
       reward: "獎勵",

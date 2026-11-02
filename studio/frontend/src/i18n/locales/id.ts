@@ -5508,6 +5508,7 @@ export const id = {
       presetHint: "Dikirim sebelum setiap prompt. Reward Anda membaca tag yang dimintanya, jadi jaga agar keduanya tetap selaras.",
       presetLabel: "Preset system prompt",
       presets: {
+        reasoningTags: "Tag working out + solution",
         notebook: "Tag reasoning + answer",
         none: "Tanpa system prompt",
         custom: "Kustom",
@@ -5516,6 +5517,7 @@ export const id = {
         notebook: "Meminta proses berpikir ditulis di <reasoning> dan jawaban di <answer>, tag yang dibaca oleh reward bawaan.",
         none: "Tidak mengirim pesan system, sehingga reward berbasis tag tidak memberi skor apa pun sampai model menulis tag itu sendiri.",
         custom: "Tulis sendiri. Jaga agar tag yang dimintanya tetap selaras dengan reward Anda.",
+        reasoningTags: "Meminta proses berpikir ditulis di antara tag <start_working_out> dan jawaban di <SOLUTION>, format yang dibaca oleh reward reasoning.",
       },
       systemPrompt: "System prompt",
       previewTitle: "Yang dilihat model, baris 1",
@@ -5526,6 +5528,11 @@ export const id = {
       tagsOk: "Meminta {tags}, yang dibaca oleh reward Anda.",
       tagsMissing: "Reward Anda membaca {tags}, tetapi prompt tidak memintanya.",
       thinkingHint: "Mati membuat model bertipe Qwen3 tidak menghabiskan budget jawaban untuk blok thinking yang tersembunyi.",
+      reasoningFormat: "Format reasoning",
+      reasoningFormatHint: "Untuk model dasar: chat template dari notebook GRPO, dengan proses berpikir di antara tag <start_working_out> dan jawaban di <SOLUTION>. Mengubah prompt dan reward agar sesuai.",
+      warmupSteps: "Langkah pemanasan format",
+      warmupStepsHint: "Tahap SFT singkat pada contoh matematika yang sudah diformat sebelum GRPO, agar model sudah bisa menulis tag tersebut. 0 melewatinya; notebook memakai sekitar 100.",
+      warmupContext: "Membutuhkan panjang sequence maksimum {n} atau lebih: contoh pemanasan ini panjang.",
     },
     charts: {
       reward: "Reward",

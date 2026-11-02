@@ -5592,6 +5592,7 @@ export const es419 = {
       presetHint: "Se envía antes de cada prompt. Tus recompensas leen las etiquetas que pide, así que mantén ambos en sintonía.",
       presetLabel: "Preajuste del prompt de sistema",
       presets: {
+        reasoningTags: "Etiquetas de desarrollo + solución",
         notebook: "Etiquetas de razonamiento + respuesta",
         none: "Sin prompt de sistema",
         custom: "Personalizado",
@@ -5600,6 +5601,7 @@ export const es419 = {
         notebook: "Pide el razonamiento en <reasoning> y la respuesta en <answer>, las etiquetas que leen las recompensas incluidas.",
         none: "No envía mensaje de sistema, así que las recompensas basadas en etiquetas no califican nada hasta que el modelo escriba las etiquetas por su cuenta.",
         custom: "Escribe el tuyo. Mantén las etiquetas que pide alineadas con tus recompensas.",
+        reasoningTags: "Pide el desarrollo entre etiquetas <start_working_out> y la respuesta en <SOLUTION>, el formato que leen las recompensas de razonamiento.",
       },
       systemPrompt: "Prompt de sistema",
       previewTitle: "Lo que ve el modelo, fila 1",
@@ -5610,6 +5612,11 @@ export const es419 = {
       tagsOk: "Pide {tags}, que tus recompensas leen.",
       tagsMissing: "Tus recompensas leen {tags}, pero el prompt no las pide.",
       thinkingHint: "Desactivado evita que los modelos tipo Qwen3 gasten el presupuesto de la respuesta en un bloque de pensamiento oculto.",
+      reasoningFormat: "Formato de razonamiento",
+      reasoningFormatHint: "Para modelos base: la plantilla de chat de los notebooks de GRPO, con el desarrollo entre etiquetas <start_working_out> y la respuesta en <SOLUTION>. Cambia el prompt y las recompensas para que coincidan.",
+      warmupSteps: "Pasos de calentamiento de formato",
+      warmupStepsHint: "Una pasada corta de SFT con ejemplos de matemáticas formateados antes de GRPO, para que el modelo ya escriba las etiquetas desde el inicio. 0 la omite; los notebooks usan alrededor de 100.",
+      warmupContext: "Necesita una longitud máxima de secuencia de {n} o más: los ejemplos de calentamiento son largos.",
     },
     charts: {
       reward: "Recompensa",

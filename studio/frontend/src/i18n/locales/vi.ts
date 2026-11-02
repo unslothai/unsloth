@@ -5510,6 +5510,7 @@ export const vi = {
       presetHint: "Được gửi trước mỗi prompt. Reward của bạn đọc các tag mà nó yêu cầu, nên hãy giữ hai bên khớp nhau.",
       presetLabel: "Mẫu dựng sẵn cho system prompt",
       presets: {
+        reasoningTags: "Tag working out + solution",
         notebook: "Tag reasoning + answer",
         none: "Không có system prompt",
         custom: "Tùy chỉnh",
@@ -5518,6 +5519,7 @@ export const vi = {
         notebook: "Yêu cầu viết phần suy luận trong <reasoning> và câu trả lời trong <answer>, các tag mà reward có sẵn sẽ đọc.",
         none: "Không gửi system message, nên các reward dựa trên tag không chấm điểm gì cho đến khi model tự viết ra các tag đó.",
         custom: "Tự viết của riêng bạn. Giữ các tag nó yêu cầu khớp với reward của bạn.",
+        reasoningTags: "Yêu cầu viết phần suy luận giữa các tag <start_working_out> và câu trả lời trong <SOLUTION>, định dạng mà các reward reasoning đọc.",
       },
       systemPrompt: "System prompt",
       previewTitle: "Nội dung model nhìn thấy, dòng 1",
@@ -5528,6 +5530,11 @@ export const vi = {
       tagsOk: "Yêu cầu {tags}, thứ mà reward của bạn đọc.",
       tagsMissing: "Reward của bạn đọc {tags}, nhưng prompt không yêu cầu chúng.",
       thinkingHint: "Tắt giúp các model kiểu Qwen3 không dùng giới hạn câu trả lời cho một khối thinking ẩn.",
+      reasoningFormat: "Định dạng reasoning",
+      reasoningFormatHint: "Dành cho model nền: chat template của các notebook GRPO, với phần suy luận nằm giữa các tag <start_working_out> và câu trả lời trong <SOLUTION>. Sẽ đổi cả prompt và reward để khớp theo.",
+      warmupSteps: "Số bước làm nóng định dạng",
+      warmupStepsHint: "Một lượt SFT ngắn trên các ví dụ toán đã được định dạng trước khi chạy GRPO, để model đã biết viết các tag từ đầu. 0 sẽ bỏ qua bước này; các notebook dùng khoảng 100.",
+      warmupContext: "Cần độ dài sequence tối đa từ {n} trở lên: các ví dụ làm nóng khá dài.",
     },
     charts: {
       reward: "Reward",
