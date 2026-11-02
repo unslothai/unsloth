@@ -8,8 +8,6 @@ import { sessionAccount, useLoginMode } from "../account-session";
 import { fetchAuthStatus, loginFromForm, loginWithPassword, setLoginMode, type TokenResponse } from "../login-client";
 import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
-import { useSpookyGreetings } from "@/features/halloween/halloween-store";
-import { pickSpookySloth } from "@/features/halloween/spooky-greetings";
 import { Input } from "@/components/ui/input";
 import { useT } from "@/i18n";
 import { Label } from "@/components/ui/label";
@@ -80,9 +78,6 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     password: string;
     token: TokenResponse;
   } | null>(null);
-  const spooky = useSpookyGreetings();
-  const [halloweenSloth] = useState(pickSpookySloth);
-  const spookySloth = isLoginMode && spooky ? halloweenSloth : null;
 
   useEffect(() => {
     if (deadlineAt === null) {
@@ -367,13 +362,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     <div className="w-full max-w-sm space-y-6">
       <div className="space-y-1.5 text-center">
         <MascotImg
-          src={
-            spookySloth
-              ? `Sloth emojis/${spookySloth.sloth}`
-              : "Sloth emojis/large sloth wave.png"
-          }
+          src="Sloth emojis/large sloth wave.png"
           className="mx-auto mb-2 h-20 w-20 object-contain"
-          style={spookySloth?.enlarge ? { scale: "1.15" } : undefined}
         />
         <h2 className="text-[calc(1.5rem*var(--ui-font-scale,1))] font-semibold text-foreground">{title}</h2>
         <p className="text-muted-foreground">{subtitle}</p>

@@ -733,6 +733,15 @@ class AudioCppBackend:
             wf = workflow
         else:
             wf = "clone" if workflow == "clone" or bool(audio_inputs) else "speak"
+        # Only F5 takes a top-level clone speed; elsewhere speed is the model's own option.
+        if (
+            speed is not None
+            and wf in ("speak", "clone")
+            and "speed" not in audio_options
+            and not (wf == "clone" and (model.clone or CloneSpec()).speed)
+            and any(o["name"] == "speed" for o in workflow_options(model, wf))
+        ):
+            audio_options["speed"] = speed
         ignored = ignored_options(model, wf, audio_options)
         audio_options = {k: v for k, v in audio_options.items() if k not in ignored}
         seeded = takes_seed(model, wf)

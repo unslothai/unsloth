@@ -194,7 +194,7 @@ def test_raw_rows_overlap_checkpoint_and_model_load_but_preparation_waits(
 
     def build(rows, tok, loaded_model, validate):
         assert model_ready.is_set()
-        assert rows is train_rows and tok is tokenizer and loaded_model is model
+        assert rows == train_rows and tok is tokenizer and loaded_model is model
         assert seen.count("rows") == 1
         raise ReachedBuild
 
@@ -209,7 +209,7 @@ def test_raw_rows_overlap_checkpoint_and_model_load_but_preparation_waits(
         assert messages.index("dataset download must not replace model status") > messages.index(
             "Loading dataset..."
         )
-    assert messages[-1] == "Preparing decisions..."
+    assert messages[-1] == "Preparing decision rows..."
 
 
 def test_prefetch_keeps_strict_cached_splits_bounds_revision_and_token(monkeypatch):
@@ -289,3 +289,57 @@ def test_prefetch_strict_missing_snapshot_never_falls_back_to_hub(monkeypatch):
     with decision._DecisionRows(config, lambda: False, lambda _m: None, lambda _m: None) as pending:
         with pytest.raises(FileNotFoundError, match = "exact cached dataset split 'train'"):
             pending.result(_no_stop)
+
+
+def _frontend_regex(name):
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2] / "frontend/src/features/studio/preparation-progress.ts"
+    ).read_text(encoding = "utf-8")
+    pattern, flags = re.search(rf"const {name} =\s*/(.+)/(\w*);", source).groups()
+    return re.compile(pattern.replace("(?<", "(?P<"), re.I if "i" in flags else 0)
+
+
+def test_preparing_rows_reports_counted_dataset_progress(monkeypatch):
+    clock = iter(range(0, 10_000, 2))
+    monkeypatch.setattr(decision.time, "monotonic", lambda: next(clock))
+    messages, stops = [], []
+    rows = decision._ProgressRows(
+        [{"state": i} for i in range(5)],
+        "Preparing decision rows",
+        messages.append,
+        lambda: stops.append(1),
+    )
+
+    assert (
+        list(rows) == [{"state": i} for i in range(5)]
+        and len(rows) == 5
+        and rows[2] == {"state": 2}
+    )
+    assert len(stops) == 5
+    assert messages[0] == "Preparing decision rows 0% (0/5)"
+    assert messages[-1] == "Preparing decision rows 100% (5/5)"
+    counted, dataset = (
+        _frontend_regex("COUNTED_PREPARATION_RE"),
+        _frontend_regex("DATASET_PREPARATION_RE"),
+    )
+    for message in messages + ["Preparing evaluation rows 50% (1,000/2,000)"]:
+        groups = counted.match(message).groupdict()
+        assert dataset.search(groups["label"])
+        assert int(groups["current"].replace(",", "")) <= int(groups["total"].replace(",", ""))
+    assert dataset.search("Preparing decision rows...")
+    assert (
+        list(decision._ProgressRows([], "Preparing decision rows", messages.append, _no_stop)) == []
+    )
+
+
+def test_stop_while_preparing_rows_ends_the_read():
+    def stop():
+        raise decision._Stopped("Training cancelled")
+
+    with pytest.raises(decision._Stopped):
+        list(
+            decision._ProgressRows([{"state": 1}], "Preparing decision rows", lambda _m: None, stop)
+        )

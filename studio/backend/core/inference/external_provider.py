@@ -77,6 +77,8 @@ _SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
 # refresh within one or two turns to detect server restarts.
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
+_GEMINI_MAX_MODEL_PAGES = 20
+_GEMINI_RESTRICTED_GENERATION = re.compile(r"^gemini-(?:3\.[78]-flash|4-argon)(?:-|$)")
 _served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
@@ -784,6 +786,26 @@ def _mistral_thinking_spec(model: str) -> _MistralThinkingSpec:
         if model in spec.models:
             return spec
     return _MistralThinkingSpec(models = (), style = "disabled")
+
+
+_MINIMAX_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _apply_minimax_reasoning_controls(
+    body: dict[str, Any],
+    model: str,
+    enable_thinking: Optional[bool],
+    reasoning_effort: Optional[str],
+) -> None:
+    """M3.1-Flash 400s on thinking off; M3 can disable it."""
+    body["reasoning_split"] = True
+    normalized = model.strip().lower()
+    if normalized.startswith("minimax-m3.1"):
+        effort = (reasoning_effort or "").strip().lower()
+        if effort in _MINIMAX_EFFORTS:
+            body["reasoning_effort"] = effort
+    elif normalized == "minimax-m3" and enable_thinking is False:
+        body["thinking"] = {"type": "disabled"}
 
 
 def _apply_mistral_reasoning_controls(
@@ -1762,8 +1784,8 @@ class ExternalProviderClient:
         if stream and self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS:
             body["stream_options"] = {"include_usage": True}
         if max_tokens is not None:
-            # Newer OpenAI models (gpt-4o, gpt-5.x) reject max_tokens
-            if self.provider_type == "openai":
+            # Newer OpenAI models reject max_tokens; MiniMax counts thinking against it.
+            if self.provider_type in ("openai", "minimax"):
                 body["max_completion_tokens"] = max_tokens
             else:
                 body["max_tokens"] = max_tokens
@@ -1800,6 +1822,8 @@ class ExternalProviderClient:
                 body["thinking"] = {"type": "disabled"}
         elif self.provider_type == "mistral":
             _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
+        elif self.provider_type == "minimax":
+            _apply_minimax_reasoning_controls(body, model, enable_thinking, reasoning_effort)
         elif self.provider_type == "deepseek":
             _apply_deepseek_reasoning_controls(body, enable_thinking, reasoning_effort)
         elif self.provider_type in ("qwen", "qwencloud"):
@@ -2490,17 +2514,19 @@ class ExternalProviderClient:
         """call Anthropic Messages and translate its SSE into OpenAI stream events."""
         import json as _json
 
-        system: Optional[str] = None
+        system_parts: list[str] = []
         filtered: list[dict[str, Any]] = []
         compaction_replayed = False
         for msg in messages:
             if msg.get("role") == "system":
                 content = msg.get("content", "")
-                system = (
+                system_part = (
                     content
                     if isinstance(content, str)
                     else "\n".join(p["text"] for p in content if p.get("type") == "text")
                 )
+                if system_part:
+                    system_parts.append(system_part)
                 continue
 
             content = msg.get("content")
@@ -2803,6 +2829,7 @@ class ExternalProviderClient:
         if prompt_cache_ttl in ("5m", "1h"):
             cache_marker["ttl"] = prompt_cache_ttl
 
+        system = "\n\n".join(system_parts)
         if system:
             if prompt_caching_enabled:
                 # System is the most stable cross-turn prefix; own breakpoint.
@@ -4416,7 +4443,8 @@ class ExternalProviderClient:
         if system_text_parts:
             body["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_text_parts)}]}
 
-        # Frontend capability matrix limits Gemini sliders to temperature, topP, topK and maxOutputTokens.
+        model_lc = model.lower()
+        restricted_generation = bool(_GEMINI_RESTRICTED_GENERATION.match(model_lc))
         gen_config: dict[str, Any] = {}
         if temperature is not None:
             gen_config["temperature"] = temperature
@@ -4424,14 +4452,16 @@ class ExternalProviderClient:
             gen_config["topP"] = top_p
         if top_k is not None and top_k > 0:
             gen_config["topK"] = top_k
-        # presencePenalty shares the OpenAI sign convention: positive values discourage repetition.
-        if presence_penalty:
+        if presence_penalty and not restricted_generation:
             gen_config["presencePenalty"] = presence_penalty
         if max_tokens is not None:
-            gen_config["maxOutputTokens"] = max_tokens
+            gen_config["maxOutputTokens"] = (
+                min(max_tokens, 4096)
+                if model_lc.startswith("gemini-3.1-flash-lite-image")
+                else max_tokens
+            )
 
         # Only image-capable models accept TEXT+IMAGE modalities; text models 400.
-        model_lc = model.lower()
         is_image_picker_model = "-image" in model_lc or "nano-banana" in model_lc
         # tool_choice none or forced-function also suppresses implicit image generation, which still bills.
         _tool_choice_disabled = (
@@ -4504,6 +4534,8 @@ class ExternalProviderClient:
                 level = "high"
             elif enable_thinking is False:
                 level = "low" if is_gemini3_pro else "minimal"
+            if level == "minimal" and restricted_generation:
+                level = "low"
             if level is not None:
                 gen_config["thinkingConfig"] = {"thinkingLevel": level}
         elif not is_image_model_strict:
@@ -4545,6 +4577,7 @@ class ExternalProviderClient:
                 or _m.startswith("gemini-3.1-flash-image")
                 or _m.startswith("nano-banana-pro")
                 or _m.startswith("nano-banana-2")
+                or _m.startswith("gemini-nano-banana-2")
             )
 
         google_search_allowed = (
@@ -7128,6 +7161,13 @@ class ExternalProviderClient:
             "input": text,
             "response_format": response_format,
         }
+        mai_pcm = (
+            self.provider_type == "openrouter"
+            and model.strip().lower().startswith("microsoft/mai-voice-")
+            and response_format.strip().lower() == "wav"
+        )
+        if mai_pcm:
+            body["response_format"] = "pcm"
         if voice:
             body["voice"] = voice
         if speed is not None:
@@ -7143,6 +7183,19 @@ class ExternalProviderClient:
         response.raise_for_status()
         media_type = (response.headers.get("content-type") or "").split(";")[0].strip()
         audio = response.content
+        if mai_pcm:
+            if media_type.lower() not in ("audio/pcm", "application/octet-stream", ""):
+                raise httpx.DecodingError("OpenRouter MAI-Voice did not return PCM audio.")
+            if not audio or len(audio) % 2:
+                raise httpx.DecodingError("OpenRouter MAI-Voice returned malformed PCM audio.")
+            # https://openrouter.ai/docs/guides/overview/multimodal/tts#azure-mai-voice
+            output = io.BytesIO()
+            with wave.open(output, "wb") as writer:
+                writer.setnchannels(1)
+                writer.setsampwidth(2)
+                writer.setframerate(24_000)
+                writer.writeframes(audio)
+            return output.getvalue(), "audio/wav"
         if response_format.strip().lower() == "wav":
             merge_cancelled = threading.Event()
             merge_task = asyncio.create_task(
@@ -7300,9 +7353,39 @@ class ExternalProviderClient:
         )
         response.raise_for_status()
         data = response.json()
+        if self.provider_type == "gemini":
+            data = await self._with_later_gemini_pages(data, response.request.url.params, timeout)
         # Ollama returns data: null when no models are installed.
         raw = data.get("data") if isinstance(data, dict) else None
         return data, [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
+
+    async def _with_later_gemini_pages(
+        self, data: Any, params: httpx.QueryParams, timeout: Any
+    ) -> Any:
+        if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+            return data
+        models = list(data["models"])
+        seen: set[str] = set()
+        token = data.get("nextPageToken")
+        while isinstance(token, str) and token and token not in seen:
+            if len(seen) >= _GEMINI_MAX_MODEL_PAGES - 1:
+                logger.warning("Gemini model list still paging after %d pages", len(seen) + 1)
+                break
+            seen.add(token)
+            response = await _client().get(
+                f"{self.base_url}/models",
+                params = params.set("pageToken", token),
+                headers = self._auth_headers(),
+                timeout = timeout,
+            )
+            response.raise_for_status()
+            page = response.json()
+            if not isinstance(page, dict):
+                break
+            if isinstance(page.get("models"), list):
+                models.extend(page["models"])
+            token = page.get("nextPageToken")
+        return {**data, "models": models}
 
     async def _read_served_window(self, model: str) -> Optional[int]:
         _, entries = await self._models_payload(_SERVED_WINDOW_TIMEOUT_S)

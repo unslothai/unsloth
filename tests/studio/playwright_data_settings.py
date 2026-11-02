@@ -637,6 +637,7 @@ def run_library_locales(page):
                 data: api.translate('settings.data.title'),
                 back: api.translate('settings.data.backToData'),
                 archived: api.translate('settings.data.archivedChats'),
+                deleteChatDescription: api.messages[locale].shell.dialog.deleteChat.description,
             };
             }""",
             locale,
@@ -702,8 +703,9 @@ def run_library_locales(page):
                 ).to_be_visible()
                 expect(page.get_by_role("button", name = "Sample 1", exact = True)).to_have_count(0)
                 page.get_by_role("button", name = text["deleteResults"], exact = True).click()
+                # One result names the chat, as the single-chat delete does (#16390).
                 expect(page.get_by_role("alertdialog")).to_contain_text(
-                    text["deleteArchivedWarning"].replace("{count}", "1")
+                    text["deleteChatDescription"].replace("{name}", "Sample 0")
                 )
             else:
                 row = page.locator("[data-archived-id]")
