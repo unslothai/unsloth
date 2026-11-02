@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const zhTW = {
+  turns: {
+    label: "第 {number} 輪",
+    bookmarkedLabel: "第 {number} 輪，已加書籤",
+    bookmark: "為此輪加書籤",
+    removeBookmark: "移除書籤",
+    navigator: "輪次",
+  },
   chatBackground: {
     noBackground: "無背景",
     sizing: "圖片縮放方式",
@@ -689,6 +696,8 @@ export const zhTW = {
     plainText: "純文字輸入框",
     plainTextDescription:
       "將程式碼、Markdown 和連結保留為原始文字。關閉後會顯示格式化預覽。",
+    richPaste: "貼上豐富文字",
+    richPasteDescription: "將連結、表格和格式貼上為 Markdown。{shortcut} 貼上純文字。完整的富文字輸入框即將推出。",
     showContext: "上下文視窗用量",
     sendShortcut: "傳送快速鍵",
     sendMultiline: "多行提示詞使用 {mod} + Enter",
@@ -2051,6 +2060,14 @@ export const zhTW = {
           full: "執行所有工具呼叫而不詢問，並關閉程式碼沙箱，因此 Python 與終端機程式碼可以讀取及變更您帳號能存取的任何檔案。",
         },
       },
+      display: {
+        title: "顯示",
+        timeFormat: "時間格式",
+        timeFormatDescription: "以 12 小時制或 24 小時制顯示時間。",
+        timeFormatSystem: "跟隨系統",
+        timeFormat12: "12 小時制",
+        timeFormat24: "24 小時制",
+      },
       notifications: {
         sectionTitle: "通知",
         showLoadedModels: "已載入模型卡片",
@@ -2412,6 +2429,9 @@ export const zhTW = {
         description: "Unsloth 在淺色與深色模式中使用的色彩。",
         standard: "標準",
         moreThemes: "更多主題",
+      },
+      composer: {
+        title: "輸入框",
       },
       code: {
         title: "程式碼",
@@ -3025,6 +3045,8 @@ export const zhTW = {
         "通知已遭封鎖。請在瀏覽器或系統設定中允許 Unsloth 傳送通知，然後再試一次。",
       replyNotificationKeywords:
         "通知 提醒 完成 就緒 回應 回覆 背景 最小化 桌面 音效 notify notification alert done finished complete ready response reply background minimized desktop sound",
+      showLinkPreviews: "連結預覽",
+      showLinkPreviewsDescription: "將滑鼠游標停留在來源連結上時顯示預覽。",
       showResponseModel: "回應模型",
       showResponseModelDescription: "在助理回應中顯示模型詳細資料。",
       showReplyTimes: "回覆時間",
@@ -3039,6 +3061,8 @@ export const zhTW = {
       inlineEditResponse: "在回應上顯示「編輯回應」",
       inlineEditResponseDescription:
         "在每則回應上保留「編輯回應」，而不是放在「更多」選單中。",
+      turnNavigation: "輪次導覽",
+      turnNavigationDescription: "在長對話的左側邊緣以導軌形式顯示你的訊息。懸停可預覽某一輪，點擊可跳轉，並可加書籤以便再次找到。",
       composerAtBottom: "輸入框置於底部",
       composerAtBottomDescription:
         "開始新聊天時，將輸入框放在頁面底部而非中間。",
@@ -3669,8 +3693,6 @@ export const zhTW = {
         repoCheckoutFallback:
           "如果您仍保有存放庫的 checkout，請從中執行本機安裝程式：",
         restartAfterUpdate: "更新後請重新啟動 Unsloth。",
-        desktopManaged:
-          "桌面應用程式會自動檢查新版本。您也可以隨時在此檢查或更新。",
         desktopReady: "桌面應用程式更新",
         desktopReadyDescription: "檢查是否有較新的桌面應用程式版本。",
         desktopChecking: "正在檢查更新",
@@ -5516,5 +5538,60 @@ export const zhTW = {
     later: "稍後",
     update: "更新",
     undo: "復原",
+  },
+  generationStats: {
+    working: "處理中...",
+    processingPrompt: "正在處理提示詞 {percent}%",
+    timeLeft: "剩餘 {eta}",
+    tokensOne: "{count} 個 token",
+    tokens: "{count} 個 token",
+    tokensOf: "{done} / {total} 個 token",
+    draftAccepted: "草稿接受 {accepted}/{drafted}（{percent}%）",
+    timing: {
+      trigger: "訊息耗時",
+      firstToken: "首個 token",
+      speedInStep: "速度（步內）",
+      effective: "有效速度",
+      output: "輸出",
+      denoising: "去噪",
+      stepsOne: "{count} 步",
+      steps: "{count} 步",
+      blocksOne: "{count} 個區塊",
+      blocks: "{count} 個區塊",
+      canvas: "畫布",
+      generation: "生成",
+      answerTokens: "回答 token",
+      prompt: "提示詞",
+      total: "總計",
+      chunks: "分塊數",
+      promptEval: "提示詞處理",
+      promptSpeed: "提示詞速度",
+      speed: "速度",
+      tokens: "token",
+      draftAccepted: "草稿接受",
+      denoisingSteps: "去噪步數",
+      blocksLabel: "區塊數",
+      cacheHits: "快取命中",
+      cacheWrites: "快取寫入",
+      stopReason: "停止原因",
+      stoppedByYou: "由您停止",
+      endOfTurn: "回合結束",
+      lengthLimit: "長度上限",
+      toolCall: "工具呼叫",
+      contentFilter: "內容篩選",
+    },
+    placement: {
+      title: "權重配置",
+      allOnCpu: "全部 {total} 層位於 CPU",
+      split: "{total} 層中有 {gpu} 層位於 GPU，{cpu} 層位於 CPU",
+      allOnGpu: "全部 {total} 層位於 GPU",
+      expertCache: "全部 {total} 層位於 GPU，所有專家位於 RAM（GPU 上有 {amount} 專家快取）",
+      expertSpillOne: "全部 {total} 層位於 GPU，{count} 層的專家權重位於 RAM",
+      expertSpill: "全部 {total} 層位於 GPU，{count} 層的專家權重位於 RAM",
+      inUnifiedMemory: "{amount} 位於統一記憶體",
+      inSharedMemory: "{amount} 位於共用記憶體",
+      inVram: "{amount} 位於 VRAM",
+      inRam: "{amount} 位於 RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

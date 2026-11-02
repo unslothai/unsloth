@@ -1815,8 +1815,7 @@ _TEARDOWN_TASK_RECANCEL_S = 0.01
 _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
 # How often a UI stream looks for new prefill progress while the generator is silent.
 _LIVE_PROGRESS_POLL_S = 0.25
-# Minimum gap between two live decode frames: the client only redraws one line of text.
-_LIVE_DECODE_FRAME_INTERVAL_S = 1.0
+_LIVE_DECODE_FRAME_INTERVAL_S = 0.25
 _APPROVAL_CACHE_RECLAIM_POLL_S = 0.25
 
 
@@ -4366,23 +4365,8 @@ _PROBE_MESSAGES = ({"role": "user", "content": "hi"},)
 def _compile_generation_prompt_probe(template: str):
     """Cache the compiled template only: rendering is cheap, and messages must vary per request."""
     try:
-        from datetime import datetime
-
-        from jinja2.sandbox import ImmutableSandboxedEnvironment
-
-        def _raise_exception(message: str):
-            raise RuntimeError(message)
-
-        env = ImmutableSandboxedEnvironment(
-            trim_blocks = True,
-            lstrip_blocks = True,
-            extensions = ["jinja2.ext.loopcontrols"],
-        )
-        env.filters["tojson"] = lambda value, **kwargs: json.dumps(value, ensure_ascii = False)
-        env.globals["raise_exception"] = _raise_exception
-        # transformers exposes strftime_now to every template; without it date templates raise.
-        env.globals["strftime_now"] = lambda fmt: datetime.now().strftime(fmt)
-        return env.from_string(template)
+        from transformers.utils.chat_template_utils import _compile_jinja_template
+        return _compile_jinja_template(template)
     except Exception:
         return None
 
@@ -4410,6 +4394,8 @@ def _render_generation_prompt_probe(
             add_generation_prompt = generation_prompt,
             bos_token = "",
             eos_token = "",
+            tools = None,
+            documents = None,
             **reasoning_kwargs,
         )
     except Exception:
@@ -4422,18 +4408,16 @@ def _generation_prompt_opens_think(
     reasoning_effort: Optional[str] = None,
     messages: Optional[Collection] = None,
 ) -> bool:
-    """Diffs the no-prompt render so typed think tags do not count; unrenderable returns True."""
-    if not template:
+    """Diffs the no-prompt render so typed think tags do not count; unrenderable returns False."""
+    if not template or not isinstance(template, str):
         return False
-    if not isinstance(template, str):
-        return True
     args = (template, enable_thinking, reasoning_effort)
     rendered = _render_generation_prompt_probe(*args, messages)
     if rendered is None and messages is not None:
         messages = None
         rendered = _render_generation_prompt_probe(*args)
     if rendered is None:
-        return True
+        return False
     # Ignoring the flag gives an empty prefix, so nothing is prefilled; correct when no block opens.
     body = _render_generation_prompt_probe(*args, messages, generation_prompt = False)
     prefix = (
@@ -7163,11 +7147,7 @@ def _live_rate(value: Any) -> Optional[float]:
 
 
 class _PrefillProgressSignal:
-    """Counts advancing ``prompt_progress`` so the stall loop can send ``: prefill-progress``.
-
-    Native GGUF generators yield nothing until the first token, and ``: keep-alive`` does not renew the lease.
-
-    With ``live`` it also feeds ``live_frame``, the chat UI's ``generation_progress`` frames."""
+    """Renew the lease during silent GGUF prefill and optionally report live generation figures."""
 
     def __init__(
         self,
@@ -7184,6 +7164,7 @@ class _PrefillProgressSignal:
         self._prefill_sent: Optional[dict] = None
         self._decode: Optional[dict] = None
         self._decode_sent_at = 0.0
+        self._decode_started = False
         self.wants_timings = inner is not None or live
 
     @property
@@ -7219,6 +7200,7 @@ class _PrefillProgressSignal:
         cached = _live_count(progress.get("cache"))
         # A new prompt pass (the next round of a tool loop): the last round's decode figures must not follow it.
         self._decode = None
+        self._decode_started = False
         self._prefill = {
             "type": "generation_progress",
             "phase": "prefill",
@@ -7226,17 +7208,26 @@ class _PrefillProgressSignal:
             "total": total,
             "cached": min(cached, processed) if cached is not None else None,
             "tok_per_s": _live_rate(rate),
+            # Server time avoids poll-arrival quantization.
+            "time_ms": _live_count(progress.get("time_ms")),
         }
 
     def _record_decode(self, sample: dict) -> None:
         tokens = _live_count(sample.get("predicted_n"))
         if not tokens:
             return
+        if not self._decode_started:
+            # The first token has no decode rate; allow a full interval for speculative timing to settle.
+            self._decode_started = True
+            self._decode_sent_at = time.monotonic()
+        rate = _live_rate(sample.get("predicted_per_second"))
+        if rate is None:
+            return
         frame = {
             "type": "generation_progress",
             "phase": "decode",
             "tokens": tokens,
-            "tok_per_s": _live_rate(sample.get("predicted_per_second")),
+            "tok_per_s": rate,
         }
         draft_n = _live_count(sample.get("draft_n"))
         draft_accepted = _live_count(sample.get("draft_n_accepted"))
@@ -8337,6 +8328,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         audio_server_task = None,
         audio_convert = None,
         audio_convert_route = None,
+        audio_clone = None,
         audio_music = None,
         # Older/custom backend doubles predate this additive runtime field.
         preserve_thinking_default = bool(getattr(llama_backend, "preserve_thinking_default", False)),
@@ -19856,6 +19848,7 @@ async def _load_model_impl(
             audio_server_task = _model_info.get("audio_server_task"),
             audio_convert = _model_info.get("audio_convert"),
             audio_convert_route = _model_info.get("audio_convert_route"),
+            audio_clone = _model_info.get("audio_clone"),
             audio_required_inputs = _model_info.get("audio_required_inputs"),
             audio_request_inputs = _model_info.get("audio_request_inputs"),
             audio_device_fallback = _model_info.get("audio_device_fallback"),
@@ -22420,6 +22413,7 @@ async def _slot_status(current_subject: str):
             audio_server_task = model_info.get("audio_server_task"),
             audio_convert = model_info.get("audio_convert"),
             audio_convert_route = model_info.get("audio_convert_route"),
+            audio_clone = model_info.get("audio_clone"),
             audio_reference_text = model_info.get("audio_reference_text"),
             audio_required_inputs = model_info.get("audio_required_inputs"),
             audio_request_inputs = model_info.get("audio_request_inputs"),
@@ -24704,6 +24698,7 @@ async def openai_audio_transcriptions(
     provider_id: Optional[str] = Form(None),
     encrypted_api_key: Optional[str] = Form(None),
     timestamp_granularities: Optional[list[str]] = Form(None, alias = "timestamp_granularities[]"),
+    device: Optional[Literal["auto", "cpu", "gpu"]] = Form(None),
     current_subject: str = Depends(get_current_subject),
 ):
     """OpenAI-compatible speech-to-text (POST /v1/audio/transcriptions).
@@ -24712,7 +24707,8 @@ async def openai_audio_transcriptions(
     Otherwise ``model`` maps to a sidecar model id, with ``whisper-1`` or nothing
     selecting the default. ``response_format`` supports ``json``, ``text`` and
     ``verbose_json``; an audio.cpp model also gives segments, words (``timestamp_granularities``)
-    and ``diarized_json``."""
+    and ``diarized_json``. Optional ``device`` (``auto``/``cpu``/``gpu``) places a cold
+    load; when omitted, Voice Settings "Load into" / ``UNSLOTH_AUDIO_DEVICE`` apply (#15280)."""
     fmt = (response_format or "json").strip().lower()
     if fmt not in ("json", "text", "verbose_json", "diarized_json"):
         raise HTTPException(
@@ -24821,6 +24817,7 @@ async def openai_audio_transcriptions(
                 fast = False,
                 engine = engine,
                 request = request,
+                device = device,
                 source_path = path,
                 timestamps = bool(granularities),
             )
@@ -24902,13 +24899,15 @@ async def openai_audio_translations(
     model: Optional[str] = Form(None),
     response_format: str = Form("json"),
     provider_id: Optional[str] = Form(None),
+    device: Optional[Literal["auto", "cpu", "gpu"]] = Form(None),
     current_subject: str = Depends(get_current_subject),
 ):
     """OpenAI-compatible speech translation to English (POST /v1/audio/translations).
 
     Runs on the local Whisper sidecar; ``whisper-1`` or nothing selects the default model.
     ``response_format`` supports ``json``, ``text`` and ``verbose_json``. ``prompt`` and
-    ``temperature`` are accepted and ignored."""
+    ``temperature`` are accepted and ignored. Optional ``device`` (``auto``/``cpu``/``gpu``)
+    matches Voice Settings "Load into" on a cold load (#15280)."""
     fmt = (response_format or "json").strip().lower()
     if fmt not in ("json", "text", "verbose_json"):
         _raise_unsupported_openai_parameter(
@@ -24943,7 +24942,13 @@ async def openai_audio_translations(
         subject = current_subject,
     ) as monitor_id:
         result = await _transcribe_audio_result(
-            raw, sidecar_model, None, fast = False, request = request, translate = True
+            raw,
+            sidecar_model,
+            None,
+            fast = False,
+            request = request,
+            device = device,
+            translate = True,
         )
         text = str(result.get("text", ""))
         _served_model = str(result.get("model") or "")
@@ -27022,6 +27027,11 @@ def _llama_passthrough_audio(raw: bytes) -> Optional[tuple[str, float]]:
 _VIDEO_INPUT_REFUSAL = (
     "Video input is only supported on a local GGUF or MLX model with video support."
 )
+_VIDEO_NEEDS_FFMPEG_DETAIL = (
+    "This model takes video, but ffmpeg and ffprobe were not found in llama-server's search path. "
+    "Install FFmpeg so both are on PATH, or correct --video-ffmpeg-dir / "
+    "LLAMA_ARG_VIDEO_FFMPEG_DIR if configured. Then restart Unsloth and reload the model."
+)
 
 
 def _local_video_clips(payload, model_info) -> list[str]:
@@ -27293,12 +27303,20 @@ def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
 
 async def _shrink_clip_for_llama(video_b64: str, llama_backend) -> str:
     """Transcodes before llama-server samples frames, so the explicit rate must reach the transcode."""
+    process_env = getattr(llama_backend, "_process_env", None)
+    child_env = (
+        process_env[1]
+        if process_env is not None and process_env[0] is getattr(llama_backend, "_process", None)
+        else None
+    )
     try:
         return await asyncio.to_thread(
             shrink_video_for_llama,
             video_b64,
             _MAX_VIDEO_BYTES,
             sampled_fps = requested_video_fps(getattr(llama_backend, "extra_args", None)),
+            ffmpeg_dir = getattr(llama_backend, "_video_ffmpeg_dir", None),
+            env = child_env,
         )
     except Exception as e:
         # The helper absorbs ffmpeg errors, so a raw 500 would leak the monitor row; reject with a 400.
@@ -30550,7 +30568,7 @@ async def _chat_completion_from_connection_stream(response: StreamingResponse, m
 
 async def _collect_chat_completion(lines, model: str):
     completion_id, created, finish, usage = None, int(time.time()), None, None
-    content, reasoning = "", ""
+    content, reasoning, refusal = "", "", ""
     calls: dict[int, dict] = {}
     async for line in lines:
         data = line[len("data:") :].strip() if line.startswith("data:") else ""
@@ -30578,6 +30596,7 @@ async def _collect_chat_completion(lines, model: str):
             delta = choice.get("delta") or {}
             content += delta.get("content") or ""
             reasoning += delta.get("reasoning_content") or ""
+            refusal += delta.get("refusal") or ""
             for part in delta.get("tool_calls") or []:
                 call = calls.setdefault(
                     part.get("index", len(calls)),
@@ -30593,6 +30612,8 @@ async def _collect_chat_completion(lines, model: str):
     message: dict = {"role": "assistant", "content": content or None}
     if reasoning:
         message["reasoning_content"] = reasoning
+    if refusal:
+        message["refusal"] = refusal
     if calls:
         message["tool_calls"] = [calls[index] for index in sorted(calls)]
     body = {
@@ -31772,6 +31793,8 @@ async def produce_openai_chat_completions(
         video_b64 = None
         if _request_has_video(payload):
             if not getattr(llama_backend, "_has_video_input", False):
+                if getattr(llama_backend, "_video_needs_ffmpeg", False):
+                    raise _reject(400, _VIDEO_NEEDS_FFMPEG_DETAIL)
                 raise _reject(
                     400,
                     "Video provided but the current GGUF model cannot take video input. "
@@ -51020,7 +51043,15 @@ async def openai_image_generations(
     current_subject: str = Depends(get_current_subject),
     hf_token: Optional[str] = Depends(get_hf_token),
 ):
-    """Refused before the row opens, as on /audio/speech: a request rejected before work gets no error row"""
+    """OpenAI-compatible text-to-image (POST /v1/images/generations).
+
+    Generates ``n`` images from ``prompt`` on the loaded diffusion model and
+    returns them as URLs (default) or base64 PNGs per ``response_format``. Steps
+    and guidance have no OpenAI knob: the x-unsloth fields set them (and width, height,
+    seed, negative_prompt), else they default per loaded model.
+
+    With media auto-switch on, ``model`` names the image model to serve on and is loaded
+    when it is not the resident one; with it off ``model`` stays informational."""
     if body.stream:
         raise HTTPException(
             status_code = 400,

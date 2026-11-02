@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const cs = {
+  turns: {
+    label: "Kolo {number}",
+    bookmarkedLabel: "Kolo {number}, se záložkou",
+    bookmark: "Přidat záložku ke kolu",
+    removeBookmark: "Odebrat záložku",
+    navigator: "Kola",
+  },
   chatBackground: {
     noBackground: "Bez pozadí",
     sizing: "Velikost obrázku",
@@ -730,6 +737,8 @@ export const cs = {
     plainText: "Pole zprávy s prostým textem",
     plainTextDescription:
       "Ponechá kód, Markdown a odkazy jako doslovný text. Po vypnutí se zobrazí formátovaný náhled.",
+    richPaste: "Vkládání formátovaného textu",
+    richPasteDescription: "Vkládá odkazy, tabulky a formátování jako Markdown. {shortcut} vloží prostý text. Plný editor formátovaného textu brzy.",
     showContext: "Využití kontextového okna",
     sendShortcut: "Zkratka pro odeslání",
     sendMultiline: "{mod} + Enter pro víceřádkové prompty",
@@ -2177,6 +2186,14 @@ export const cs = {
           full: "Provádí každé volání nástroje bez ptaní a vypne sandbox pro kód, takže kód v Pythonu a terminálu může číst a měnit jakýkoli soubor, ke kterému má váš účet přístup.",
         },
       },
+      display: {
+        title: "Zobrazení",
+        timeFormat: "Formát času",
+        timeFormatDescription: "Zobrazovat čas ve 12hodinovém nebo 24hodinovém formátu.",
+        timeFormatSystem: "Podle systému",
+        timeFormat12: "12hodinový",
+        timeFormat24: "24hodinový",
+      },
       notifications: {
         sectionTitle: "Oznámení",
         showLoadedModels: "Karta načtených modelů",
@@ -2547,6 +2564,9 @@ export const cs = {
           "Barvy používané v celém Unsloth, ve světlém i tmavém režimu.",
         standard: "Standardní",
         moreThemes: "Další motivy",
+      },
+      composer: {
+        title: "Editor zpráv",
       },
       code: {
         title: "Kód",
@@ -3193,6 +3213,8 @@ export const cs = {
         "Oznámení jsou blokována. Povolte je pro Unsloth v nastavení prohlížeče nebo systému a zkuste to znovu.",
       replyNotificationKeywords:
         "oznámení upozornění hotovo dokončeno připraveno odpověď pozadí minimalizováno zvuk notify notification alert done finished complete ready response reply background minimized desktop sound",
+      showLinkPreviews: "Náhledy odkazů",
+      showLinkPreviewsDescription: "Zobrazovat náhledy při najetí na odkazy na zdroje.",
       showResponseModel: "Model odpovědi",
       showResponseModelDescription:
         "Zobrazovat v odpovědích asistenta podrobnosti o modelu.",
@@ -3209,6 +3231,8 @@ export const cs = {
       inlineEditResponse: "Upravit odpověď přímo u odpovědí",
       inlineEditResponseDescription:
         "Zobrazovat Upravit odpověď u každé odpovědi místo v nabídce Další.",
+      turnNavigation: "Navigace v kolech",
+      turnNavigationDescription: "Zobrazí vaše zprávy jako lištu u levého okraje dlouhých chatů. Najetím zobrazíte náhled kola, kliknutím na něj přejdete a záložkami si kola označíte.",
       composerAtBottom: "Pole zprávy dole",
       composerAtBottomDescription:
         "Zahajovat nové chaty s polem zprávy v dolní části stránky místo uprostřed.",
@@ -3877,8 +3901,6 @@ export const cs = {
         repoCheckoutFallback:
           "Pokud stále máte klon repozitáře, spusťte z něj místní instalátor:",
         restartAfterUpdate: "Po aktualizaci Unsloth restartujte.",
-        desktopManaged:
-          "Desktopová aplikace kontroluje nové verze automaticky. Kontrolu nebo aktualizaci můžete kdykoli spustit i zde.",
         desktopReady: "Aktualizace desktopové aplikace",
         desktopReadyDescription:
           "Zkontrolujte, zda je k dispozici novější verze desktopové aplikace.",
@@ -5861,5 +5883,60 @@ export const cs = {
     later: "Později",
     update: "Aktualizovat",
     undo: "Vrátit zpět",
+  },
+  generationStats: {
+    working: "Probíhá zpracování...",
+    processingPrompt: "Zpracování promptu {percent} %",
+    timeLeft: "zbývá {eta}",
+    tokensOne: "tokeny: {count}",
+    tokens: "tokeny: {count}",
+    tokensOf: "tokeny: {done} / {total}",
+    draftAccepted: "návrh: přijato {accepted}/{drafted} ({percent} %)",
+    timing: {
+      trigger: "Časování zprávy",
+      firstToken: "První token",
+      speedInStep: "Rychlost (v kroku)",
+      effective: "Efektivní",
+      output: "Výstup",
+      denoising: "Odšumování",
+      stepsOne: "kroky: {count}",
+      steps: "kroky: {count}",
+      blocksOne: "bloky: {count}",
+      blocks: "bloky: {count}",
+      canvas: "Plátno",
+      generation: "Generování",
+      answerTokens: "Tokeny odpovědi",
+      prompt: "Prompt",
+      total: "Celkem",
+      chunks: "Části",
+      promptEval: "Vyhodnocení promptu",
+      promptSpeed: "Rychlost promptu",
+      speed: "Rychlost",
+      tokens: "Tokeny",
+      draftAccepted: "Přijatý návrh",
+      denoisingSteps: "Kroky odšumování",
+      blocksLabel: "Bloky",
+      cacheHits: "Zásahy mezipaměti",
+      cacheWrites: "Zápisy do mezipaměti",
+      stopReason: "Důvod zastavení",
+      stoppedByYou: "Zastaveno vámi",
+      endOfTurn: "Konec odpovědi",
+      lengthLimit: "Limit délky",
+      toolCall: "Volání nástroje",
+      contentFilter: "Filtr obsahu",
+    },
+    placement: {
+      title: "Umístění vah",
+      allOnCpu: "Všechny vrstvy ({total}) na CPU",
+      split: "{gpu} z {total} vrstev na GPU, {cpu} na CPU",
+      allOnGpu: "Všechny vrstvy ({total}) na GPU",
+      expertCache: "Všechny vrstvy ({total}) na GPU, všichni experti v RAM ({amount} mezipaměti expertů na GPU)",
+      expertSpillOne: "Všechny vrstvy ({total}) na GPU, váhy expertů {count} vrstvy v RAM",
+      expertSpill: "Všechny vrstvy ({total}) na GPU, váhy expertů v RAM, vrstev: {count}",
+      inUnifiedMemory: "{amount} ve sjednocené paměti",
+      inSharedMemory: "{amount} ve sdílené paměti",
+      inVram: "{amount} ve VRAM",
+      inRam: "{amount} v RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;
