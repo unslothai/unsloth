@@ -1580,7 +1580,6 @@ def _wrap(
                 and not tracing
                 and kwargs.get("packed_seq_lengths") is not None
             ):
-                # The load-time "compiling each transformer block" line is no longer true here.
                 _rank0_note("packed_stock", _PACKED_STOCK_NOTE)
             return original(self, hidden_states, *args, **kwargs)
         if tracing:

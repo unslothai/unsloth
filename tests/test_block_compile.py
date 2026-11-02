@@ -585,8 +585,6 @@ def test_unsloth_host_metadata_calls_keep_the_stock_forward(monkeypatch, key):
 
 
 def test_packed_stock_forward_says_blocks_run_uncompiled(monkeypatch, capsys):
-    """The load-time "compiling each transformer block" line must not be the last word when
-    packed / padding-free rows fall back to the stock forward."""
     M = _load()
     monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
 
