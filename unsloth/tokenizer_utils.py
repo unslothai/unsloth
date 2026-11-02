@@ -381,6 +381,19 @@ def _repair_tokenizer_backend_from_json(
     cache_dir = None,
     revision = None,
 ):
+    for obj in _tokenizer_objects(tokenizer):
+        backend = getattr(obj, "_tokenizer", None)
+        if backend is None or hasattr(obj, "_unsloth_loaded_runtime_max_length"):
+            continue
+        truncation = getattr(backend, "truncation", None)
+        padding = getattr(backend, "padding", None)
+        limit = (
+            truncation["max_length"] if truncation else padding.get("length") if padding else None
+        )
+        init_kwargs = getattr(obj, "init_kwargs", {})
+        obj._unsloth_loaded_runtime_max_length = (
+            limit if limit is not None and init_kwargs.get("max_length") == limit else None
+        )
     if tokenizer is None or os.environ.get("UNSLOTH_DISABLE_TOKENIZER_JSON_REPAIR", "0") == "1":
         return tokenizer
     for obj in _tokenizer_objects(tokenizer):

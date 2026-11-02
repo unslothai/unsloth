@@ -63,6 +63,21 @@ def _trained_tokenizer():
     return tokenizer
 
 
+def _load_repair_helper():
+    source = Path(__file__).parents[2] / "unsloth" / "tokenizer_utils.py"
+    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    wanted = {"_tokenizer_objects", "_repair_tokenizer_backend_from_json"}
+    module = ast.Module(
+        body = [
+            node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
+        ],
+        type_ignores = [],
+    )
+    namespace = {"os": os}
+    exec(compile(ast.fix_missing_locations(module), str(source), "exec"), namespace)
+    return namespace["_repair_tokenizer_backend_from_json"]
+
+
 def test_saved_tokenizer_json_has_no_training_truncation(tmp_path):
     save = _load_save_helpers()
     tokenizer = _trained_tokenizer()
@@ -188,3 +203,73 @@ def test_failed_save_restores_serialization_limit(tmp_path):
         save(tokenizer, tmp_path)
     assert tokenizer.init_kwargs["max_length"] == 3
     assert tokenizer._tokenizer.truncation["max_length"] == 3
+
+
+@pytest.mark.parametrize("retrain", [False, True])
+def test_loaded_limit_survives_tokenizer_calls(tmp_path, monkeypatch, retrain):
+    monkeypatch.setenv("UNSLOTH_DISABLE_TOKENIZER_JSON_REPAIR", "1")
+    repair = _load_repair_helper()
+    tokenizer = _trained_tokenizer()
+    tokenizer.save_pretrained(tmp_path / "broken")
+    tokenizer = PreTrainedTokenizerFast.from_pretrained(tmp_path / "broken")
+    processor = types.SimpleNamespace(tokenizer = tokenizer)
+    assert repair(processor) is processor
+
+    if retrain:
+        tokenizer("a b c d e f g h", truncation = True, max_length = 7, padding = "max_length")
+    else:
+        tokenizer("a")
+    repair(processor)
+    before = dict(tokenizer.init_kwargs)
+    truncation, padding = tokenizer._tokenizer.truncation, tokenizer._tokenizer.padding
+    tokenizer.original_save_pretrained = tokenizer.save_pretrained
+
+    _load_save_helpers()(tokenizer, tmp_path / "fixed")
+
+    config = json.loads((tmp_path / "fixed/tokenizer_config.json").read_text(encoding = "utf-8"))
+    assert "max_length" not in config
+    assert tokenizer._unsloth_loaded_runtime_max_length == 3
+    assert tokenizer.init_kwargs == before
+    assert tokenizer._tokenizer.truncation == truncation
+    assert tokenizer._tokenizer.padding == padding
+
+
+def test_loaded_limit_preserves_explicit_override_and_restores_on_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DISABLE_TOKENIZER_JSON_REPAIR", "1")
+    tokenizer = _trained_tokenizer()
+    tokenizer.init_kwargs["max_length"] = 3
+    _load_repair_helper()(tokenizer)
+    tokenizer("a")
+    before = dict(tokenizer.init_kwargs)
+
+    def fail(*args, **kwargs):
+        assert "max_length" not in tokenizer.init_kwargs
+        raise ValueError("save failed")
+
+    tokenizer.original_save_pretrained = fail
+    with pytest.raises(ValueError, match = "save failed"):
+        _load_save_helpers()(tokenizer, tmp_path)
+    assert tokenizer.init_kwargs == before
+    assert tokenizer._tokenizer.truncation is None
+    assert tokenizer._tokenizer.padding is None
+
+    tokenizer.init_kwargs["max_length"] = 11
+    tokenizer.original_save_pretrained = tokenizer.save_pretrained
+    _load_save_helpers()(tokenizer, tmp_path)
+    config = json.loads((tmp_path / "tokenizer_config.json").read_text(encoding = "utf-8"))
+    assert config["max_length"] == 11
+    assert tokenizer.init_kwargs["max_length"] == 11
+
+
+def test_limit_without_loaded_provenance_is_not_recaptured(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DISABLE_TOKENIZER_JSON_REPAIR", "1")
+    repair = _load_repair_helper()
+    tokenizer = _trained_tokenizer()
+    tokenizer.init_kwargs["max_length"] = 11
+    repair(tokenizer)
+    tokenizer("a b", truncation = True, max_length = 11)
+    repair(tokenizer)
+    tokenizer("a")
+    _load_save_helpers()(tokenizer, tmp_path)
+    config = json.loads((tmp_path / "tokenizer_config.json").read_text(encoding = "utf-8"))
+    assert config["max_length"] == 11
