@@ -388,6 +388,8 @@ modern = Version(trl.__version__) >= Version("0.29.0")
 assert trl.DPOConfig(output_dir="o").truncation_mode == ("keep_start" if modern else "keep_end")
 assert trl.DPOConfig(output_dir="o", truncation_mode="keep_end").truncation_mode == "keep_end"
 assert trl.ORPOConfig(output_dir="o").truncation_mode == "keep_end"
+assert trl.DPOConfig(output_dir="o").max_prompt_length == (None if modern else 512)
+assert trl.DPOConfig(output_dir="o", max_prompt_length=64).max_prompt_length == 64
 grpo = trl.GRPOConfig(output_dir="o", num_generations=2, per_device_train_batch_size=2)
 assert grpo.max_completion_length == (512 if Version(trl.__version__) >= Version("1.10.0") else 256)
 
@@ -442,6 +444,15 @@ assert (explicit.learning_rate, explicit.max_steps, explicit.loss_type) == (0.00
 assert parsed(trl.DPOConfig, "--max_grad_norm", "0.5")._unsloth_mlx_grad_clip_explicit is True
 assert parsed(trl.DPOConfig, "--num_train_epochs", "0.5").num_train_epochs == 0.5
 
+long_model = nn.Linear(1, 1)
+long_model.max_seq_length = 4096
+args = parsed(trl.DPOConfig, "--max_seq_length", "2048", "--dataset_order", "default")
+explicit = trl.DPOTrainer(model=long_model, args=args, train_dataset=[]).args
+assert (explicit.max_seq_length, explicit.dataset_order) == (2048, "default")
+unset = trl.DPOTrainer(model=long_model, args=parsed(trl.DPOConfig), train_dataset=[]).args
+assert (unset.max_seq_length, unset.dataset_order) == (4096, "torch_randperm")
+assert trl.DPOConfig(output_dir="o").max_seq_length == zoo.MLXTrainingConfig.max_seq_length
+
 off = parsed(trl.DPOConfig, "--max_grad_norm", "0")
 assert trl.DPOTrainer(model=model, args=off, train_dataset=[]).args.max_grad_norm == 0
 kept = dataclasses.replace(trl.DPOConfig(output_dir="o", max_grad_norm=0.0), beta=0.3)
@@ -452,13 +463,37 @@ assert zoo._resolve_mlx_grad_clipping(trl.DPOConfig(output_dir="o", max_grad_val
 assert zoo._resolve_mlx_grad_clipping(trl.DPOConfig(output_dir="o", max_grad_value=0.0))[-1] == "none"
 for stem in ("DPO", "ORPO", "KTO", "CPO", "GRPO"):
     extra = {"num_generations": 2, "per_device_train_batch_size": 2} if stem == "GRPO" else {}
-    config = getattr(trl, stem + "Config")
+    extra = {**extra, "max_completion_length": 8} if stem == "GRPO" else extra
+    trainer_extra = {"reward_funcs": [print], "processing_class": tok} if stem == "GRPO" else {}
+    config, trainer = getattr(trl, stem + "Config"), getattr(trl, stem + "Trainer")
     for norm in (0, -1, None):
-        assert zoo._resolve_mlx_grad_clipping(config(output_dir="o", max_grad_norm=norm, **extra))[-1] == "none", stem
-assert trl.DPOConfig(output_dir="o").max_grad_norm == 1.0
+        built = trainer(model=model, args=config(output_dir="o", max_grad_norm=norm, **extra), train_dataset=[], **trainer_extra)
+        assert zoo._resolve_mlx_grad_clipping(built.args)[-1] == "none", stem
 for key in ("max_grad_value", "max_grad_leaf_norm"):
     t = trl.DPOTrainer(model=model, args=trl.DPOConfig(output_dir="o"), train_dataset=[], **{key: 0.0})
     assert zoo._resolve_mlx_grad_clipping(t.args)[-1] == "none", key
+long_model = nn.Linear(1, 1)
+long_model.max_seq_length = 4096
+for name, value in (
+    ("max_grad_norm", 0.0), ("max_grad_norm", -1), ("max_grad_norm", None), ("max_grad_norm", 0.5),
+    ("max_grad_value", 0.0), ("max_grad_value", 0.5), ("max_grad_leaf_norm", 0.0), ("max_grad_leaf_norm", 0.5),
+    ("max_seq_length", 128), ("warmup_steps", 30), ("logging_steps", 7),
+):
+    for overrides in ({}, {"seed": 9}):
+        built = trl.DPOTrainer(model=long_model, args=trl.DPOConfig(output_dir="o", **{name: value}), train_dataset=[], **overrides).args
+        late = trl.DPOConfig(output_dir="o")
+        setattr(late, name, value)
+        assigned = trl.DPOTrainer(model=long_model, args=late, train_dataset=[], **overrides).args
+        assert getattr(built, name) == getattr(assigned, name) == value, (name, value, overrides)
+        assert zoo._resolve_mlx_grad_clipping(built) == zoo._resolve_mlx_grad_clipping(assigned), (name, value, overrides)
+        assert built.max_seq_length == assigned.max_seq_length, (name, value, overrides)
+
+reused = trl.DPOTrainer(model=long_model, args=trl.DPOConfig(output_dir="o"), train_dataset=[]).args
+assert trl.DPOTrainer(model=model, args=reused, train_dataset=[]).args.max_seq_length == 96
+native = zoo.MLXDPOConfig(max_steps=1)
+for overrides in ({}, {"seed": native.seed}):
+    args = trl.DPOTrainer(model=model, args=native, train_dataset=[], **overrides).args
+    assert zoo._resolve_mlx_grad_clipping(args)[-1] == "leaf_norm", overrides
 edited_norm = trl.DPOConfig(output_dir="o")
 edited_norm.max_grad_norm = 0.5
 assert trl.DPOTrainer(model=model, args=edited_norm, train_dataset=[], seed=9).args.max_grad_norm == 0.5

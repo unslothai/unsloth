@@ -1179,6 +1179,10 @@ if _IS_MLX:
             _resolve_mlx_cuda_style_max_seq_length(args, model = model)
         return args
 
+    def _mlx_context_length_edited(args):
+        initial = getattr(args, "_unsloth_mlx_initial_max_seq_length", None)
+        return initial is not None and args.max_seq_length != initial
+
     def _coerce_mlx_training_args(
         args,
         overrides = None,
@@ -1224,6 +1228,7 @@ if _IS_MLX:
                     args_max_seq_length is not None
                     and args_max_seq_length != default_max_seq_length
                 )
+            max_seq_length_explicit = max_seq_length_explicit or _mlx_context_length_edited(args)
             max_length_value = getattr(
                 args,
                 "_unsloth_mlx_max_length_value",
@@ -1716,11 +1721,13 @@ if _IS_MLX:
 
     # TRL's own defaults: zoo's base config would run DPO at 200x the learning rate with no signal.
     _MLX_TRL_CONFIG_DEFAULTS = {
+        "dataset_order": None,
         "eval_strategy": "no",
         "gradient_accumulation_steps": 1,
         "learning_rate": 1e-6,
         "logging_steps": 10,
         "max_grad_norm": 1.0,
+        "max_seq_length": None,
         "max_steps": -1,
         "num_train_epochs": 3,
         "per_device_train_batch_size": 8,
@@ -1728,13 +1735,19 @@ if _IS_MLX:
         "warmup_steps": 0,
         "weight_decay": 0.0,
     }
-    # Defaults TRL changed: stem -> first release, field, value.
+    # Defaults TRL changed: stem -> first release, new defaults.
     _MLX_TRL_VERSIONED_DEFAULTS = {
-        "DPO": ("0.29.0", "truncation_mode", "keep_start"),
-        "GRPO": ("1.10.0", "max_completion_length", 512),
+        "DPO": ("0.29.0", {"max_prompt_length": None, "truncation_mode": "keep_start"}),
+        "GRPO": ("1.10.0", {"max_completion_length": 512}),
     }
     # What HfArgumentParser needs where zoo's own annotation is missing, too narrow or refused.
-    _MLX_TRL_CONFIG_TYPES = {"eval_strategy": str, "num_train_epochs": float, "scale_rewards": str}
+    _MLX_TRL_CONFIG_TYPES = {
+        "dataset_order": str | None,
+        "eval_strategy": str,
+        "max_seq_length": int | None,
+        "num_train_epochs": float,
+        "scale_rewards": str,
+    }
     _MLX_TRL_INERT_CONFIG_VALUES = {
         "base_model_attribute_name": "model",
         "cache_implementation": None,
@@ -1785,13 +1798,23 @@ if _IS_MLX:
                     if getattr(kwargs[key], "value", kwargs[key]) in (value, None):
                         del kwargs[key]
             super().__init__(*args, **kwargs)
+            # None on the field shows HfArgumentParser's caller left these unset; zoo's default stands.
+            for key in ("dataset_order", "max_seq_length"):
+                if getattr(self, key) is None:
+                    setattr(self, key, getattr(MLXTrainingConfig, key))
+            self._unsloth_mlx_initial_max_seq_length = self.max_seq_length
+
+    def _resolve_mlx_trl_grad_clip(args):
+        no_other_clip = args.max_grad_value is None and args.max_grad_leaf_norm is None
+        if no_other_clip and (args.max_grad_norm or 0) <= 0:
             # TRL only clips on a positive norm; zoo would fall back to leaf clipping at 1.0.
-            if (
-                (self.max_grad_norm or 0) <= 0
-                and self.max_grad_value is None
-                and self.max_grad_leaf_norm is None
-            ):
-                self.max_grad_leaf_norm = 0.0
+            args.max_grad_leaf_norm = 0.0
+        elif (
+            not no_other_clip
+            and not getattr(args, "_unsloth_mlx_grad_clip_explicit", False)
+            and args.max_grad_norm == type(args).max_grad_norm
+        ):
+            args.max_grad_norm = 0.0
 
     class _MLXTRLPolicyTrainer(UnslothTrainer):
         _unsloth_mlx_keep_dataset_order = False
@@ -1822,6 +1845,15 @@ if _IS_MLX:
                 return _coerce_mlx_training_args(args, overrides, self._unsloth_mlx_config_class)
             if not overrides:
                 return args
+            # A native zoo config with no clip set means zoo's leaf default, not TRL's "off".
+            if (
+                not isinstance(args, _MLXTRLConfig)
+                and (args.max_grad_norm or 0) <= 0
+                and args.max_grad_value is None
+                and args.max_grad_leaf_norm is None
+                and not {"max_grad_norm", "max_grad_value", "max_grad_leaf_norm"} & set(overrides)
+            ):
+                overrides = {**overrides, "max_grad_leaf_norm": 1.0}
             return _coerce_mlx_training_args(args, overrides, self._unsloth_mlx_config_class)
 
         def _unsloth_mlx_apply_defaults(self, args, model, max_seq_length_explicit):
@@ -1829,16 +1861,22 @@ if _IS_MLX:
             args = _copy.copy(args)
             if not self._unsloth_mlx_keep_dataset_order:
                 _default_mlx_dataset_order(args)
-            _default_mlx_grad_clip(args)
+            if isinstance(args, _MLXTRLConfig):
+                _resolve_mlx_trl_grad_clip(args)
             model_length = _positive_mlx_context_length(getattr(model, "max_seq_length", None))
             args_explicit = getattr(args, "_unsloth_mlx_max_seq_length_explicit", None)
             if args_explicit is None:
                 args_explicit = args.max_seq_length != MLXTrainingConfig.max_seq_length
-            args_explicit = max_seq_length_explicit or args_explicit
+            args_explicit = (
+                max_seq_length_explicit or args_explicit or _mlx_context_length_edited(args)
+            )
             if model_length is not None and (
                 not args_explicit or args.max_seq_length > model_length
             ):
                 args.max_seq_length = model_length
+            if not args_explicit:
+                # A trainer's own resolved length is not an edit if that config is reused.
+                args._unsloth_mlx_initial_max_seq_length = args.max_seq_length
             return args
 
     _MLX_TRL_POLICY_TRAINERS = (
@@ -1956,11 +1994,11 @@ if _IS_MLX:
         zoo_fields = {field.name: field for field in _dataclasses.fields(zoo_config)}
         defaults = dict(_MLX_TRL_CONFIG_DEFAULTS)
         if stem in _MLX_TRL_VERSIONED_DEFAULTS:
-            since, name, value = _MLX_TRL_VERSIONED_DEFAULTS[stem]
+            since, changed = _MLX_TRL_VERSIONED_DEFAULTS[stem]
             # Read the install, not trl.__version__: touching the module can pull torch.
             try:
                 if _Version(_package_version("trl")) >= _Version(since):
-                    defaults[name] = value
+                    defaults.update(changed)
             except _PackageNotFoundError:
                 pass
         if "scale_rewards" in zoo_fields:
