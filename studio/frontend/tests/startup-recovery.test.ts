@@ -18,6 +18,7 @@ function fixture() {
   const calls = { hf: 0, providers: 0 };
   const state = { hfHydrated: false, providers: [] as string[] };
   let holdHf: Promise<void> | null = null;
+  let holdProviders: Promise<string[]> | null = null;
   const reconciliation = loadWithStubs(
     new URL("reconciliation.ts", source), {},
   );
@@ -38,6 +39,7 @@ function fixture() {
       syncExternalProvidersFromBackend: async () => {
         calls.providers += 1;
         if (!live.providers) throw new Error("providers temporarily unavailable");
+        if (holdProviders) return holdProviders;
         return ["saved-provider"];
       },
     },
@@ -54,6 +56,7 @@ function fixture() {
   return {
     mod, session, live, calls, state,
     holdHf: (value: Promise<void>) => { holdHf = value; },
+    holdProviders: (value: Promise<string[]>) => { holdProviders = value; },
   };
 }
 
@@ -150,4 +153,38 @@ test("a failed handoff retry settles without a retry loop", async () => {
   assert.deepEqual(f.state.providers, []);
   await f.mod.bootstrapPersistedCredentials();
   assert.deepEqual(f.calls, { hf: 3, providers: 3 });
+});
+
+test("a replacement bootstrap suppresses a detached startup retry", async () => {
+  const f = fixture();
+  f.live.providers = false;
+  f.mod.startStartupCredentialBootstrap();
+  await settle();
+  f.live.providers = true;
+  f.holdProviders(Promise.resolve(["replacement"]));
+  const detached = f.mod.takeStartupCredentialBootstrap();
+  const replacement = f.mod.bootstrapPersistedCredentials();
+  let finish!: (providers: string[]) => void;
+  f.holdProviders(new Promise((resolve) => { finish = resolve; }));
+  await replacement;
+  f.state.providers = ["user-edit"];
+  finish(["stale-startup-retry"]);
+  await detached;
+  assert.deepEqual(f.state.providers, ["user-edit"]);
+  assert.equal(f.calls.providers, 2);
+});
+
+test("a replacement bootstrap supersedes a pending startup publication", async () => {
+  const f = fixture();
+  let finish!: (providers: string[]) => void;
+  f.holdProviders(new Promise((resolve) => { finish = resolve; }));
+  f.mod.startStartupCredentialBootstrap();
+  const detached = f.mod.takeStartupCredentialBootstrap();
+  f.holdProviders(Promise.resolve(["replacement"]));
+  await f.mod.bootstrapPersistedCredentials();
+  f.state.providers = ["user-edit"];
+  finish(["stale-original-startup"]);
+  await detached;
+  assert.deepEqual(f.state.providers, ["user-edit"]);
+  assert.equal(f.calls.providers, 2);
 });

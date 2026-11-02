@@ -8,10 +8,14 @@ import { syncExternalProvidersFromBackend } from "@/features/chat/sync-external-
 import { hydrateHfTokenFromBackend } from "@/features/hub/stores/hf-token-store";
 import { runCredentialBootstrap } from "./reconciliation";
 
+let credentialBootstrapRevision = 0;
+
 function credentialBootstrapDependencies() {
+  const bootstrapRevision = ++credentialBootstrapRevision;
   const sessionEpoch = getAuthSessionEpoch();
   const isCurrent = () =>
-    hasAuthToken() && getAuthSessionEpoch() === sessionEpoch;
+    hasAuthToken() && getAuthSessionEpoch() === sessionEpoch &&
+    bootstrapRevision === credentialBootstrapRevision;
   return {
     hydrateHfToken: hydrateHfTokenFromBackend,
     getProviders: () => useExternalProvidersStore.getState().providers,
