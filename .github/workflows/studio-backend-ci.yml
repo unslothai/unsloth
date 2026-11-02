@@ -398,8 +398,16 @@ jobs:
             selection: >-
               tests/test_[!fpt]*gloo*.py
               tests/test_f[!s]*gloo*.py
-              tests/test_p[!p]*gloo*.py
+              tests/test_parallel_[!c]*gloo*.py
               tests/test_tp_[!n]*gloo*.py
+          # #16407 grew test_parallel_cp_compose_gloo.py to about a third of the gloo shard's time
+          # (1143 of 3605 test-seconds measured per file), which took the shard to 1922 s of the
+          # 2100 s cap on main and over it on a slower runner. gloo-tp-pp has no room for it either
+          # (1397 s), so test_parallel_c*gloo* runs on its own. A *gloo* file named test_p[!ap]*
+          # would match no shard; tests/test_ci_repo_cpu_shards.py reports it as dropped.
+          - shard: gloo-cp
+            selection: >-
+              tests/test_parallel_c*gloo*.py
           # The gloo shard then ran 1331 to 2058 s of the same cap on 2026-10-29. Measured per
           # file, native tensor parallel plus pipeline parallel are about 51% of it, everything
           # else about 49%. A *gloo* file named test_t[!p]* or test_tp[!_]* would match neither
