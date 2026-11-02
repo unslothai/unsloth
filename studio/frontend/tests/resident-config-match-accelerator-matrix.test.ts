@@ -260,6 +260,12 @@ const FIELDS: FieldCase[] = [
     same: true,
     different: false,
   },
+  {
+    key: "mlxFastVerify",
+    statusKey: "mlx_fast_verify_requested",
+    same: true,
+    different: false,
+  },
   { key: "mlxPleOffload", statusKey: "mlx_offload", same: 0.5, different: "off", wrap: offloadRequest("ple") },
   {
     key: "mlxExpertOffload",

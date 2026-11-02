@@ -2811,6 +2811,11 @@ async def scan_model_remote_code(
             load_subdirs_by_target = consent_load_subdirs,
         )
         payload = decision.response_payload()
+        blocks = (
+            [(payload.get("block_cause"), payload.get("model_name"))]
+            if payload.get("block_cause")
+            else []
+        )
         payload["model_name"] = exact_snapshot_repo_id if exact_snapshot_path else model_name
         payload["requires_trust_remote_code"] = decision.has_remote_code
         # Prior approval lets the dialog be skipped; the scan still ran, so this is a real match.
@@ -2841,6 +2846,8 @@ async def scan_model_remote_code(
             )
             security_blocked = security_blocked or _sec.blocked
             unsafe_files.extend(_sec.unsafe_files)
+            if _sec.blocked:
+                blocks.append((_sec.block_cause, _sec.model_name))
         payload["unsafe_files"] = unsafe_files
         payload["security_blocked"] = security_blocked
         if security_blocked:
@@ -2848,6 +2855,16 @@ async def scan_model_remote_code(
             payload["approvable"] = False
             payload["requires_trust_remote_code"] = True
             payload["error_kind"] = "malware_blocked"
+        from utils.hub_settings import active_source_label
+        from utils.security.file_security import NOT_ON_SOURCE, strongest_block
+
+        block_cause, block_target = strongest_block(blocks)
+        payload["block_cause"] = block_cause
+        # A repo the source lacks declares nothing, but the load still stops at the dialog.
+        if block_cause:
+            payload["requires_trust_remote_code"] = True
+        payload["block_source"] = active_source_label()
+        payload["block_target"] = block_target if block_cause == NOT_ON_SOURCE else None
         # The findings quote paths inside the model directory.
         from hub.utils.host_paths import restore_inventory_handles
 

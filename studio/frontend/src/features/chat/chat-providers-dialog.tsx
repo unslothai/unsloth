@@ -35,8 +35,8 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
   Wifi02Icon,
@@ -2446,7 +2446,7 @@ export function ChatProvidersSettings({
                         title="Delete connection"
                         aria-label={`Delete ${provider.name}`}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                        <HugeiconsIcon icon={TrashIcon} className="size-4" />
                       </Button>
                       )}
                     </div>

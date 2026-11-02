@@ -34,7 +34,7 @@ import { cn } from "@/lib/utils";
 import {
   ArrowUpRight01Icon,
   BotIcon,
-  Image01Icon,
+  ImageIcon,
   InformationCircleIcon,
   McpServerIcon,
   TaskDone01Icon,
