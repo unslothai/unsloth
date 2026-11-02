@@ -2105,6 +2105,14 @@ export const sv = {
           full: "Kör varje verktygsanrop utan att fråga och stänger av kodsandlådan, så att Python- och terminalkod kan läsa och ändra alla filer som ditt konto har åtkomst till.",
         },
       },
+      display: {
+        title: "Visning",
+        timeFormat: "Tidsformat",
+        timeFormatDescription: "Visa tider i 12- eller 24-timmarsformat.",
+        timeFormatSystem: "Systemstandard",
+        timeFormat12: "12-timmars",
+        timeFormat24: "24-timmars",
+      },
       notifications: {
         sectionTitle: "Aviseringar",
         showLoadedModels: "Kort för inlästa modeller",
@@ -3756,8 +3764,6 @@ export const sv = {
         repoCheckoutFallback:
           "Om du fortfarande har arkivets checkout kör du det lokala installationsprogrammet därifrån:",
         restartAfterUpdate: "Starta om Unsloth efter uppdateringen.",
-        desktopManaged:
-          "Skrivbordsappen kontrollerar automatiskt nya appversioner. Du kan också kontrollera eller uppdatera här när som helst.",
         desktopReady: "Uppdateringar för skrivbordsappen",
         desktopReadyDescription:
           "Kontrollera om en nyare version av skrivbordsappen är tillgänglig.",

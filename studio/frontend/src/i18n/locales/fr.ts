@@ -1993,6 +1993,14 @@ export const fr = {
         saveError:
           "Impossible d'enregistrer les paramètres de connexion des comptes gérés.",
       },
+      display: {
+        title: "Affichage",
+        timeFormat: "Format de l'heure",
+        timeFormatDescription: "Afficher l'heure au format 12 heures ou 24 heures.",
+        timeFormatSystem: "Valeur par défaut du système",
+        timeFormat12: "12 heures",
+        timeFormat24: "24 heures",
+      },
       notifications: {
         sectionTitle: "Notifications",
         showLoadedModels: "Carte des modèles chargés",
@@ -3616,8 +3624,6 @@ export const fr = {
         repoCheckoutFallback:
           "Si vous avez encore le checkout du dépôt, lancez l'installateur local depuis celui-ci :",
         restartAfterUpdate: "Redémarrez Unsloth après la mise à jour.",
-        desktopManaged:
-          "L’application de bureau recherche automatiquement les nouvelles versions. Vous pouvez également rechercher ou installer une mise à jour ici à tout moment.",
         desktopReady: "Mises à jour de l’application de bureau",
         desktopReadyDescription:
           "Vérifiez si une version plus récente de l’application de bureau est disponible.",

@@ -1965,6 +1965,14 @@ export const ja = {
         loadError: "管理対象アカウントの接続設定を読み込めませんでした。",
         saveError: "管理対象アカウントの接続設定を保存できませんでした。",
       },
+      display: {
+        title: "表示",
+        timeFormat: "時刻の形式",
+        timeFormatDescription: "時刻を12時間制または24時間制で表示します。",
+        timeFormatSystem: "システムのデフォルト",
+        timeFormat12: "12時間制",
+        timeFormat24: "24時間制",
+      },
       notifications: {
         sectionTitle: "通知",
         showLoadedModels: "読み込み済みモデルのカード",
@@ -3537,8 +3545,6 @@ export const ja = {
           "ソースまたは VCS パッケージからのインストールが検出されました。元のローカルパスまたは Git URL から再インストールしてください。",
         repoCheckoutFallback: "リポジトリが手元に残っている場合は、そこからローカルインストーラーを実行してください:",
         restartAfterUpdate: "アップデート後に Unsloth を再起動してください。",
-        desktopManaged:
-          "デスクトップアプリは新しいバージョンを自動的に確認します。ここからいつでも手動で確認またはアップデートできます。",
         desktopReady: "デスクトップアプリのアップデート",
         desktopReadyDescription:
           "新しいバージョンのデスクトップアプリが利用可能か確認します。",

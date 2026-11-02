@@ -1991,6 +1991,14 @@ export const es = {
         saveError:
           "No se pudo guardar la configuración de conexiones de las cuentas gestionadas.",
       },
+      display: {
+        title: "Visualización",
+        timeFormat: "Formato de hora",
+        timeFormatDescription: "Muestra las horas en formato de 12 o 24 horas.",
+        timeFormatSystem: "Predeterminado del sistema",
+        timeFormat12: "12 horas",
+        timeFormat24: "24 horas",
+      },
       notifications: {
         sectionTitle: "Notificaciones",
         showLoadedModels: "Tarjeta de modelos cargados",
@@ -3609,8 +3617,6 @@ export const es = {
         repoCheckoutFallback:
           "Si aún tienes el checkout del repositorio, ejecuta el instalador local desde él:",
         restartAfterUpdate: "Reinicia Unsloth después de actualizar.",
-        desktopManaged:
-          "La app de escritorio busca nuevas versiones automáticamente. También puedes buscar o instalar una actualización aquí en cualquier momento.",
         desktopReady: "Actualizaciones de la app de escritorio",
         desktopReadyDescription:
           "Comprueba si hay disponible una versión más reciente de la app de escritorio.",

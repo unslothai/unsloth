@@ -1955,6 +1955,14 @@ export const zhCN = {
         loadError: "无法加载受管账户的连接设置。",
         saveError: "无法保存受管账户的连接设置。",
       },
+      display: {
+        title: "显示",
+        timeFormat: "时间格式",
+        timeFormatDescription: "以 12 小时制或 24 小时制显示时间。",
+        timeFormatSystem: "跟随系统",
+        timeFormat12: "12 小时制",
+        timeFormat24: "24 小时制",
+      },
       notifications: {
         sectionTitle: "通知",
         showLoadedModels: "已加载模型卡片",
@@ -3512,8 +3520,6 @@ export const zhCN = {
         repoCheckoutFallback:
           "如果仍保留仓库的代码检出目录，请在该目录中运行本地安装器：",
         restartAfterUpdate: "更新后请重启 Unsloth。",
-        desktopManaged:
-          "桌面应用会自动检查新版本。你也可以随时在此检查或更新。",
         desktopReady: "桌面应用更新",
         desktopReadyDescription: "检查是否有更新的桌面应用版本。",
         desktopChecking: "正在检查更新",

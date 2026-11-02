@@ -2058,6 +2058,14 @@ export const zhTW = {
           full: "執行所有工具呼叫而不詢問，並關閉程式碼沙箱，因此 Python 與終端機程式碼可以讀取及變更您帳號能存取的任何檔案。",
         },
       },
+      display: {
+        title: "顯示",
+        timeFormat: "時間格式",
+        timeFormatDescription: "以 12 小時制或 24 小時制顯示時間。",
+        timeFormatSystem: "跟隨系統",
+        timeFormat12: "12 小時制",
+        timeFormat24: "24 小時制",
+      },
       notifications: {
         sectionTitle: "通知",
         showLoadedModels: "已載入模型卡片",
@@ -3678,8 +3686,6 @@ export const zhTW = {
         repoCheckoutFallback:
           "如果您仍保有存放庫的 checkout，請從中執行本機安裝程式：",
         restartAfterUpdate: "更新後請重新啟動 Unsloth。",
-        desktopManaged:
-          "桌面應用程式會自動檢查新版本。您也可以隨時在此檢查或更新。",
         desktopReady: "桌面應用程式更新",
         desktopReadyDescription: "檢查是否有較新的桌面應用程式版本。",
         desktopChecking: "正在檢查更新",

@@ -1995,6 +1995,14 @@ export const de = {
         saveError:
           "Verbindungseinstellungen für verwaltete Konten konnten nicht gespeichert werden.",
       },
+      display: {
+        title: "Anzeige",
+        timeFormat: "Zeitformat",
+        timeFormatDescription: "Uhrzeiten im 12- oder 24-Stunden-Format anzeigen.",
+        timeFormatSystem: "Systemstandard",
+        timeFormat12: "12-Stunden",
+        timeFormat24: "24-Stunden",
+      },
       notifications: {
         sectionTitle: "Benachrichtigungen",
         showLoadedModels: "Karte geladener Modelle",
@@ -3615,8 +3623,6 @@ export const de = {
         repoCheckoutFallback:
           "Wenn Sie den Repository-Checkout noch haben, führen Sie den lokalen Installer daraus aus:",
         restartAfterUpdate: "Starten Sie Unsloth nach dem Update neu.",
-        desktopManaged:
-          "Die Desktop-App sucht automatisch nach neuen App-Versionen. Sie können hier auch jederzeit nach Updates suchen oder ein Update durchführen.",
         desktopReady: "Updates für die Desktop-App",
         desktopReadyDescription:
           "Prüfen Sie, ob eine neuere Version der Desktop-App verfügbar ist.",

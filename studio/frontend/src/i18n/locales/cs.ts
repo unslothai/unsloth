@@ -2184,6 +2184,14 @@ export const cs = {
           full: "Provádí každé volání nástroje bez ptaní a vypne sandbox pro kód, takže kód v Pythonu a terminálu může číst a měnit jakýkoli soubor, ke kterému má váš účet přístup.",
         },
       },
+      display: {
+        title: "Zobrazení",
+        timeFormat: "Formát času",
+        timeFormatDescription: "Zobrazovat čas ve 12hodinovém nebo 24hodinovém formátu.",
+        timeFormatSystem: "Podle systému",
+        timeFormat12: "12hodinový",
+        timeFormat24: "24hodinový",
+      },
       notifications: {
         sectionTitle: "Oznámení",
         showLoadedModels: "Karta načtených modelů",
@@ -3886,8 +3894,6 @@ export const cs = {
         repoCheckoutFallback:
           "Pokud stále máte klon repozitáře, spusťte z něj místní instalátor:",
         restartAfterUpdate: "Po aktualizaci Unsloth restartujte.",
-        desktopManaged:
-          "Desktopová aplikace kontroluje nové verze automaticky. Kontrolu nebo aktualizaci můžete kdykoli spustit i zde.",
         desktopReady: "Aktualizace desktopové aplikace",
         desktopReadyDescription:
           "Zkontrolujte, zda je k dispozici novější verze desktopové aplikace.",

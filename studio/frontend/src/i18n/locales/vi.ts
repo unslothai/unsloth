@@ -2174,6 +2174,14 @@ export const vi = {
           full: "Chạy mọi lệnh gọi công cụ mà không hỏi và tắt sandbox mã, nên mã Python và terminal có thể đọc và thay đổi bất kỳ tệp nào mà tài khoản của bạn có quyền truy cập.",
         },
       },
+      display: {
+        title: "Hiển thị",
+        timeFormat: "Định dạng giờ",
+        timeFormatDescription: "Hiển thị giờ theo định dạng 12 giờ hoặc 24 giờ.",
+        timeFormatSystem: "Mặc định hệ thống",
+        timeFormat12: "12 giờ",
+        timeFormat24: "24 giờ",
+      },
       notifications: {
         sectionTitle: "Thông báo",
         showLoadedModels: "Thẻ mô hình đã nạp",
@@ -3870,8 +3878,6 @@ export const vi = {
         repoCheckoutFallback:
           "Nếu bạn vẫn còn bản checkout của kho mã, hãy chạy trình cài đặt cục bộ từ đó:",
         restartAfterUpdate: "Khởi động lại Unsloth sau khi cập nhật.",
-        desktopManaged:
-          "Ứng dụng máy tính tự động kiểm tra phiên bản mới. Bạn cũng có thể kiểm tra hoặc cập nhật tại đây bất cứ lúc nào.",
         desktopReady: "Cập nhật ứng dụng máy tính",
         desktopReadyDescription:
           "Kiểm tra xem có phiên bản ứng dụng máy tính mới hơn không.",

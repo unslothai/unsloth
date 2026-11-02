@@ -2204,6 +2204,14 @@ export const nl = {
           full: "Voert elke toolaanroep uit zonder te vragen en schakelt de codesandbox uit, zodat Python- en terminalcode elk bestand kunnen lezen en wijzigen waartoe je account toegang heeft.",
         },
       },
+      display: {
+        title: "Weergave",
+        timeFormat: "Tijdnotatie",
+        timeFormatDescription: "Toon tijden in 12-uurs- of 24-uursnotatie.",
+        timeFormatSystem: "Systeemstandaard",
+        timeFormat12: "12-uurs",
+        timeFormat24: "24-uurs",
+      },
       notifications: {
         sectionTitle: "Meldingen",
         showLoadedModels: "Kaart met geladen modellen",
@@ -3915,8 +3923,6 @@ export const nl = {
         repoCheckoutFallback:
           "Als je de repository-checkout nog hebt, voer je daaruit het lokale installatieprogramma uit:",
         restartAfterUpdate: "Start Unsloth opnieuw na het bijwerken.",
-        desktopManaged:
-          "De desktop-app controleert automatisch op nieuwe app-versies. Je kunt hier ook op elk moment controleren of bijwerken.",
         desktopReady: "Updates van de desktop-app",
         desktopReadyDescription:
           "Controleren of er een nieuwere versie van de desktop-app beschikbaar is.",

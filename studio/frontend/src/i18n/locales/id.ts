@@ -2168,6 +2168,14 @@ export const id = {
           full: "Menjalankan setiap panggilan alat tanpa meminta izin dan menonaktifkan sandbox kode, sehingga kode Python dan terminal dapat membaca dan mengubah file apa pun yang dapat diakses akun Anda.",
         },
       },
+      display: {
+        title: "Tampilan",
+        timeFormat: "Format waktu",
+        timeFormatDescription: "Tampilkan waktu dalam format 12 jam atau 24 jam.",
+        timeFormatSystem: "Default sistem",
+        timeFormat12: "12 jam",
+        timeFormat24: "24 jam",
+      },
       notifications: {
         sectionTitle: "Notifikasi",
         showLoadedModels: "Kartu model yang dimuat",
@@ -3867,8 +3875,6 @@ export const id = {
         repoCheckoutFallback:
           "Jika Anda masih memiliki checkout repo, jalankan penginstal lokal dari sana:",
         restartAfterUpdate: "Mulai ulang Unsloth setelah memperbarui.",
-        desktopManaged:
-          "Aplikasi desktop memeriksa versi aplikasi baru secara otomatis. Anda juga dapat memeriksa atau memperbarui di sini kapan saja.",
         desktopReady: "Pembaruan aplikasi desktop",
         desktopReadyDescription:
           "Periksa apakah versi aplikasi desktop yang lebih baru tersedia.",

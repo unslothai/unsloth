@@ -1982,6 +1982,14 @@ export const ptBR = {
         saveError:
           "Não foi possível salvar as configurações de conexão das contas gerenciadas.",
       },
+      display: {
+        title: "Exibição",
+        timeFormat: "Formato de hora",
+        timeFormatDescription: "Mostrar horários no formato de 12 ou 24 horas.",
+        timeFormatSystem: "Padrão do sistema",
+        timeFormat12: "12 horas",
+        timeFormat24: "24 horas",
+      },
       notifications: {
         sectionTitle: "Notificações",
         showLoadedModels: "Cartão de modelos carregados",
@@ -3584,8 +3592,6 @@ export const ptBR = {
         repoCheckoutFallback:
           "Se você ainda tiver a cópia local do repositório, execute o instalador local a partir dela:",
         restartAfterUpdate: "Reinicie o Unsloth após a atualização.",
-        desktopManaged:
-          "O aplicativo de desktop verifica automaticamente se há novas versões. Você também pode verificar ou atualizar aqui a qualquer momento.",
         desktopReady: "Atualizações do aplicativo de desktop",
         desktopReadyDescription:
           "Verifique se há uma versão mais recente do aplicativo de desktop.",
