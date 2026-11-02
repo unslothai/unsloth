@@ -405,3 +405,18 @@ refused(lambda: trl.GRPOTrainer(model, [print], RealGRPO(output_dir="o"), [], No
             "RealORPO, RealKTO, RealGRPO, RealCPO = trl.ORPOConfig, trl.KTOConfig, trl.GRPOConfig, trl.CPOConfig\n"
         ),
     )
+
+
+@_needs_real_mlx
+def test_trl_star_import_exposes_the_mappings_without_trl_installed():
+    _run_shim_probe(
+        """
+assert trl.__version__.endswith("unsloth-mlx"), trl.__version__
+namespace = {}
+exec("from trl import *", namespace)
+for stem in ("SFT", "DPO", "ORPO", "KTO", "GRPO", "CPO"):
+    assert namespace[stem + "Trainer"] is getattr(trl, stem + "Trainer"), stem
+    assert namespace[stem + "Config"] is getattr(trl, stem + "Config"), stem
+""",
+        before_unsloth = "import sys\nsys.modules['trl'] = None\n",
+    )

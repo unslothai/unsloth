@@ -1630,6 +1630,8 @@ if _IS_MLX:
     def PatchFastRL(algorithm = None, FastLanguageModel = None):
         """No-op on MLX: trl's RL trainers already resolve to the MLX ones."""
 
+    _mlx_trl_mapped_names = {"SFTConfig", "SFTTrainer"}
+
     def _safe_mlx_trl_star_exports(_trl, exports):
         """Return importable TRL star exports plus the MLX SFT shims."""
         safe_exports = []
@@ -1639,7 +1641,7 @@ if _IS_MLX:
             except Exception:
                 continue
             safe_exports.append(name)
-        for name in ("SFTConfig", "SFTTrainer"):
+        for name in sorted(_mlx_trl_mapped_names):
             if name not in safe_exports:
                 safe_exports.append(name)
         return safe_exports
@@ -1947,6 +1949,7 @@ if _IS_MLX:
         _mapped.update(_build_mlx_trl_policy_trainers())
         for _name, _shim in _mapped.items():
             setattr(_trl, _name, _shim)
+        _mlx_trl_mapped_names.update(_mapped)
         _supported = sorted(
             _name[: -len("Trainer")] for _name in _mapped if _name.endswith("Trainer")
         )
