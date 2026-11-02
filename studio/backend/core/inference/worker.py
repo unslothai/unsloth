@@ -674,6 +674,24 @@ def _in_token_rejection_scope(handler):
     return scoped
 
 
+def _loaded_auto_map(backend, mc) -> bool | None:
+    """Whether the snapshot an MLX load just opened declares remote code, or None when its files do not answer for the requested repo (an adapter, a precision folder, a bitsandbytes substitution)."""
+    if getattr(backend, "device", None) != "mlx" or mc.is_lora or getattr(mc, "gguf_variant", None):
+        return None
+    try:
+        from core.inference.mlx_inference import _snapshot_dir
+        from core.inference.model_ids import mlx_host_bnb_base_repo
+        from utils.security.consent import _config_has_auto_map
+
+        if mlx_host_bnb_base_repo(mc.identifier):
+            return None
+        snapshot = _snapshot_dir(getattr(backend, "_model", None), mc.identifier)
+        return _config_has_auto_map(snapshot) if snapshot else None
+    except Exception as exc:
+        logger.warning("Could not read remote-code declarations from the loaded files: %s", exc)
+        return None
+
+
 @_in_token_rejection_scope
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     _restore_token_environment()
@@ -821,6 +839,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "is_gguf": False,
                 # MLX backend sets device="mlx"; lets the UI tag MLX models.
                 "is_mlx": getattr(backend, "device", None) == "mlx",
+                "loaded_auto_map": _loaded_auto_map(backend, mc),
                 "is_audio": getattr(mc, "is_audio", False),
                 "audio_type": getattr(mc, "audio_type", None),
                 "has_audio_input": getattr(mc, "has_audio_input", False),
