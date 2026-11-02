@@ -60,8 +60,8 @@ export function useDeviceSettingsSync(enabled: boolean): void {
       writePending(touched);
     };
 
-    // One save at a time, each sending the values current when it starts: a slow request can
-    // never land after a newer one.
+    // One save at a time, each sending the current values of only the sections edited here: a
+    // slow request cannot land after a newer one, nor a stale section undo another browser's.
     let saving: Promise<void> = Promise.resolve();
     const pushAll = () => {
       clearTimeout(timer);
@@ -69,9 +69,12 @@ export function useDeviceSettingsSync(enabled: boolean): void {
         saving = saving
           .then(async () => {
             const sent = edits;
+            if (!touched.scale && !touched.browser) return;
             await saveClientPreferences({
-              interfaceScale: useInterfaceScaleStore.getState().scale,
-              browser: browserPrefs(),
+              interfaceScale: touched.scale
+                ? useInterfaceScaleStore.getState().scale
+                : undefined,
+              browser: touched.browser ? browserPrefs() : undefined,
             });
             if (edits === sent) {
               touched.scale = false;
@@ -115,8 +118,9 @@ export function useDeviceSettingsSync(enabled: boolean): void {
           scale !== INTERFACE_SCALE_RANGE.default;
         const missingBrowser =
           !remote.browser && !sameBrowserPrefs(lastBrowser, DEFAULT_BROWSER_PREFS);
-        if (touched.scale || touched.browser || missingScale || missingBrowser)
-          pushAll();
+        if (missingScale) touch("scale");
+        if (missingBrowser) touch("browser");
+        if (touched.scale || touched.browser) pushAll();
       })
       .catch(() => {
         loaded = true;
