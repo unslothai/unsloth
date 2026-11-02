@@ -284,3 +284,51 @@ test("the route guard still sends a rejected refresh to /login", async (t) => {
   await assert.rejects(loadGuards(f).requireAuth(), /redirect \/login/);
   assert.equal(f.tokens.refresh, null);
 });
+
+for (const failure of [429, 500, 503, "network", "malformed"] as const) {
+  test(`desktop bootstrap recovery preserves a managed session on ${failure}`, async (t) => {
+    const attempt = () => {
+      if (failure === "network") throw new TypeError("Failed to fetch");
+      if (failure === "malformed") return new Response("not json");
+      return new Response(null, { status: failure, headers: { "Retry-After": "0" } });
+    };
+    const f = fixture(t, Array.from({ length: failure === "network" ? 4 : 3 }, () => attempt));
+    f.apiBase.isTauri = true;
+    const access = `e30.${Buffer.from(JSON.stringify({ sub: "alice", role: "member" })).toString("base64url")}.signature`;
+    f.tokens.access = access;
+    const account = loadWithStubs<typeof import("../src/features/auth/account-session.ts")>(
+      new URL("../src/features/auth/account-session.ts", import.meta.url),
+      { react: {}, "./login-client": {}, "./session": f.session },
+    );
+    const transitions: unknown[] = [];
+    const navigations: unknown[] = [];
+    const auth = loadWithStubs<typeof import("../src/features/auth/tauri-auto-auth.ts")>(
+      new URL("../src/features/auth/tauri-auto-auth.ts", import.meta.url),
+      {
+        "@/lib/api-base": f.apiBase,
+        "./session": f.session,
+        "./api": f.api,
+        "./account-session": account,
+        "./login-client": { fetchAuthStatus: async () => ({ login_mode: "multi" }) },
+        "@/lib/account-transition": {
+          OWNER_BROWSER_ACCOUNT: "unsloth",
+          transitionBrowserAccount: async (next: unknown, _route: string, commit: () => void) => {
+            transitions.push(next);
+            commit();
+          },
+        },
+        "@tauri-apps/api/core": {
+          invoke: async () => ({ access_token: "owner-access", refresh_token: "owner-refresh" }),
+        },
+        "@/app/router": { router: { navigate: async (next: unknown) => { navigations.push(next); } } },
+      },
+    );
+    assert.equal(await auth.tauriAutoAuth({ force: true }), true);
+    assert.deepEqual(f.tokens, { access, refresh: "old-refresh" });
+    assert.equal(account.sessionAccount(f.tokens.access)?.isOwner, false);
+    assert.equal(auth.isTauriLoginRequired(), true);
+    assert.equal(f.clears(), 0);
+    assert.deepEqual(transitions, []);
+    assert.deepEqual(navigations, []);
+  });
+}
