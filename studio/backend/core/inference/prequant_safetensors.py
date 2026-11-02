@@ -86,6 +86,40 @@ def safetensors_prequant_supported() -> bool:
     return True
 
 
+# The torchao weight subclass a scheme's safetensors file is rebuilt into, for schemes torchao added to its
+# safetensors allowlist after the 0.16 floor (0.16 lists neither; 0.17 lists both). fp8 / int8 are in every
+# release at the floor, so they are not listed here.
+_SCHEME_SUBCLASS = {"nvfp4": "NVFP4Tensor", "mxfp8": "MXTensor"}
+
+
+def _torchao_safetensors_subclasses() -> Optional[frozenset]:
+    """Subclass names this torchao's safetensors unflatten can rebuild; None when it cannot be read."""
+    try:
+        from torchao.prototype.safetensors import safetensors_utils
+    except Exception:  # noqa: BLE001 - module moved or absent: the feature import elsewhere decides
+        return None
+    names = getattr(safetensors_utils, "ALLOWED_TENSORS_SUBCLASSES", None)
+    if not isinstance(names, (list, tuple, set, frozenset)):
+        return None
+    return frozenset(str(n) for n in names)
+
+
+def safetensors_scheme_supported(scheme: Optional[str] = None) -> bool:
+    """Whether this install can rebuild a ``scheme`` safetensors pre-quant checkpoint.
+
+    torchao 0.16 ships the flatten helpers but cannot unflatten ``NVFP4Tensor`` / ``MXTensor``
+    ("Unsupported tensor type"), so answering the scheme-free question would pick the twin over a
+    loadable ``.pt`` and then fail the read. An unreadable allowlist keeps the scheme-free answer.
+    """
+    if not safetensors_prequant_supported():
+        return False
+    wanted = _SCHEME_SUBCLASS.get((scheme or "").strip().lower())
+    if wanted is None:
+        return True
+    names = _torchao_safetensors_subclasses()
+    return names is None or wanted in names
+
+
 def plain_safetensors_supported() -> bool:
     """The layerwise-cast encoder format stores plain tensors, without torchao subclasses."""
     try:

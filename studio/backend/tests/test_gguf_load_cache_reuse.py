@@ -1187,6 +1187,7 @@ class TestLoadHubDownloadExclusion:
             "parallel_slots",
             "is_mlx",
             "is_npu",
+            "speaks",
             "mlx_kv_quant",
             "mlx_kv_quant_requested",
             "mlx_kv_bits",
@@ -1197,6 +1198,12 @@ class TestLoadHubDownloadExclusion:
             "mlx_int8_prefill",
             "mlx_int8_prefill_requested",
             "mlx_int8_prefill_reason",
+            "mlx_ane_prefill",
+            "mlx_ane_prefill_requested",
+            "mlx_ane_prefill_reason",
+            "mlx_fast_verify",
+            "mlx_fast_verify_requested",
+            "mlx_fast_verify_reason",
             "mlx_offload",
             "mlx_context_budget",
             "spec_draft_model",
@@ -1219,6 +1226,7 @@ class TestLoadHubDownloadExclusion:
             "audio_server_task",
             "audio_convert",
             "audio_convert_route",
+            "audio_clone",
             "audio_music",
         }
         unresolved = sorted(

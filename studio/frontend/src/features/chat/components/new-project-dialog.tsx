@@ -16,17 +16,17 @@ import {
 } from "@/components/ui/dialog";
 import {
   linkStagedFolders,
-  ProjectFolderPicker,
   type StagedFolder,
-} from "@/features/rag";
+} from "@/features/rag/components/link-staged-folders";
+import { ProjectFolderPicker } from "@/features/rag/components/project-folder-picker";
 import {
   ProjectSourceDropzone,
   type StagedSource,
   uploadStagedSources,
 } from "@/features/rag/components/project-source-dropzone";
 import { toast } from "@/lib/toast";
-import { Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 
 import {
   getChatProject,
@@ -217,7 +217,7 @@ export function NewProjectDialog({
         <div className="flex items-stretch overflow-hidden rounded-full border border-border bg-background transition-colors focus-within:border-ring has-[input:disabled]:opacity-50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
           <span className="flex shrink-0 items-center pl-5 text-muted-foreground">
             <HugeiconsIcon
-              icon={Folder02Icon}
+              icon={ProjectIcon}
               strokeWidth={1.75}
               className="size-5"
             />

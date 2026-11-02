@@ -1199,7 +1199,7 @@ class ManagedEngine:
             raise ValueError(
                 "Tools and adapter comparisons are not supported by this optional engine profile."
             )
-        if params.get("video"):
+        if params.get("videos"):
             raise ValueError(
                 "Video input is not yet supported by the Unsloth managed engine transport."
             )

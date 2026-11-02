@@ -17,6 +17,12 @@ from ._import_gc import raise_gc_threshold as _raise_gc_threshold
 _raise_gc_threshold(sys.modules.get(__name__))
 del _raise_gc_threshold
 
+# transformers and TRL both scan every installed distribution at import: share one scan until the end of this file.
+from ._import_metadata_cache import install as _install_metadata_cache
+
+_metadata_cache_token = _install_metadata_cache(sys.modules.get(__name__))
+del _install_metadata_cache
+
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 # Opt into ROCm AOTriton kernels torch still gates as experimental; setdefault keeps an explicit "0".
@@ -27,6 +33,13 @@ if os.environ.get("UNSLOTH_DEBUG_DISTRIBUTED"):
     from .distributed_debug import apply_debug_distributed_env as _apply_debug_distributed_env
     _apply_debug_distributed_env()
     del _apply_debug_distributed_env
+
+# UNSLOTH_PARALLEL="dp=..,tp=..,pp=..,cp=.." -> UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE / UNSLOTH_CP_SIZE / UNSLOTH_FSDP2,
+# before anything below reads those. A conflict with a variable set by hand raises here, on every rank.
+from .parallel_env import apply_parallel_env as _apply_parallel_env, parallelize
+
+_apply_parallel_env()
+del _apply_parallel_env
 
 # UNSLOTH_FSDP2=1 under plain torchrun: export accelerate's FSDP2 launch env before transformers or
 # accelerate read it. A conflicting launch (DeepSpeed, FSDP_VERSION=1) raises here, on every rank.
@@ -1704,7 +1717,7 @@ else:
 
     if any(
         os.environ.get(_name, "").strip() not in ("", "1")
-        for _name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE")
+        for _name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
     ):
         from .models.tp_env import (
             install_tensor_parallel_env_trainer_init as _install_tp_trainer_init,
@@ -1760,6 +1773,8 @@ else:
             pass
 
 
+from .tiling import tile_mlp, untile_mlp
+
 # A pip --target / PYTHONPATH layout makes dill pickle modules by value, breaking dataset fingerprints.
 try:
     from .import_fixes import fix_dill_module_by_value_pickling as _fix_dill
@@ -1767,6 +1782,11 @@ try:
     del _fix_dill
 except Exception:
     pass
+
+from ._import_metadata_cache import uninstall as _uninstall_metadata_cache
+
+_uninstall_metadata_cache(_metadata_cache_token)
+del _uninstall_metadata_cache, _metadata_cache_token
 
 from ._import_gc import restore_gc_threshold as _restore_gc_threshold
 

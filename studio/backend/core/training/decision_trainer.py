@@ -307,6 +307,36 @@ class _DecisionRows:
         self._thread.join(timeout = 1)
 
 
+class _ProgressRows(list):
+    """Rows that report how far build_dataset has read them, as the overlay's counted progress."""
+
+    INTERVAL = 1.0
+
+    def __init__(
+        self, rows, label: str, status: Callable[[str], None], check_stop: Callable[[], None]
+    ):
+        super().__init__(rows)
+        self._label, self._status, self._check_stop = label, status, check_stop
+
+    def _report(self, done: int) -> None:
+        total = len(self)
+        self._status(f"{self._label} {done * 100 // total}% ({done:,}/{total:,})")
+
+    def __iter__(self):
+        if not self:
+            return
+        self._report(0)
+        last = time.monotonic()
+        for done, row in enumerate(super().__iter__()):
+            self._check_stop()
+            now = time.monotonic()
+            if now - last >= self.INTERVAL:
+                self._report(done)
+                last = now
+            yield row
+        self._report(len(self))
+
+
 def _sliced(rows: list, config: dict) -> list:
     start, end = config.get("dataset_slice_start"), config.get("dataset_slice_end")
     if start is None and end is None:
@@ -541,12 +571,21 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
         status("Loading dataset...")
         rows, eval_rows = pending_rows.result(check_stop)
     check_stop()
-    status("Preparing decisions...")
-    items, report = FastDecisionModel.build_dataset(rows, tokenizer, model, validate)
+    # "rows" files the step under the dataset in the overlay, with its counted progress bar.
+    status("Preparing decision rows...")
+    items, report = FastDecisionModel.build_dataset(
+        _ProgressRows(rows, "Preparing decision rows", status, check_stop),
+        tokenizer,
+        model,
+        validate,
+    )
     eval_items = []
     if eval_rows is not None:
         eval_items, eval_report = FastDecisionModel.build_dataset(
-            eval_rows, tokenizer, model, validate
+            _ProgressRows(eval_rows, "Preparing evaluation rows", status, check_stop),
+            tokenizer,
+            model,
+            validate,
         )
         report = {
             "total": report["total"] + eval_report["total"],

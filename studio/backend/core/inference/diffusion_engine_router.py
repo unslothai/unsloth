@@ -482,8 +482,8 @@ def mlx_selection(
 ) -> tuple[bool, Optional[str]]:
     """``(use_mlx, refusal)``. Shared by selection and ``predict_engine`` so the download plan and the load
     cannot disagree about MLX. ``engine`` is the load's own pick (``/images/load``'s ``engine`` field).
-    ``with_loras`` says the load applies LoRA adapters, which the MLX engine cannot, so the load keeps the engine it
-    would have had without MLX (in every mode) instead of reaching the MLX LoRA refusal.
+    ``with_loras`` says the load applies LoRA adapters: a family whose MLX build cannot keeps the engine it would have
+    had without MLX (in every mode) instead of reaching the MLX LoRA refusal.
     ``load_blocker`` (``mlx_load_blocker``) names a load option MLX cannot honour: in ``auto`` it keeps the load on
     diffusers; a forced MLX engine refuses that load in the route instead, as before."""
     mode = mlx_mode()
@@ -500,11 +500,13 @@ def mlx_selection(
         return False, "UNSLOTH_DIFFUSION_SD_CPP_MPS=1 asks for the native engine on the Mac GPU"
     if model_kind and model_kind != "gguf":
         return False, f"the MLX engine loads GGUF picks only (got {model_kind})"
-    if with_loras:
-        return False, "the MLX engine does not apply LoRA adapters yet"
     if fam is None or not family_mlx_supported(fam):
         name = getattr(fam, "name", None) or "unknown"
         return False, f"family '{name}' has no MLX implementation"
+    if with_loras:
+        from core.inference.mlx_diffusion_routing import mlx_capabilities
+        if not mlx_capabilities(fam.name).loras:
+            return False, f"the MLX engine does not apply LoRA adapters to {fam.name} yet"
     from core.inference.mlx_diffusion_convert import quant_convertible
 
     convertible, why = quant_convertible(gguf_filename)
@@ -527,14 +529,12 @@ def mlx_selection(
 
 def mlx_load_blocker(
     *,
-    loras: Any = None,
     component_files: Any = None,
     transformer_quant: Optional[str] = None,
     text_encoder_quant: Optional[str] = None,
 ) -> Optional[str]:
     from core.inference.mlx_diffusion_routing import load_blocker
     return load_blocker(
-        loras = loras,
         component_files = component_files,
         transformer_quant = transformer_quant,
         text_encoder_quant = text_encoder_quant,
@@ -558,9 +558,7 @@ def _refuse_lora_fallback(
 
     if supports_lora(engine = choice, family = fam.name, model_kind = "gguf", transformer_quant = None):
         return
-    via = (
-        "the native sd.cpp engine" if choice == ENGINE_SD_CPP else "the diffusers engine on a GGUF"
-    )
+    via = "the native sd.cpp engine" if choice == ENGINE_SD_CPP else "the diffusers engine"
     raise ValueError(
         "LoRA adapters are not supported on the MLX engine yet, and this load would fall back to "
         f"{via}, which cannot apply them here either. Load it without LoRA adapters."

@@ -465,6 +465,15 @@
       }
     },
     {
+      "file": "studio/backend/tests/test_sd_cpp_probe_error_mode.py",
+      "rule": "AV009",
+      "severity": "error",
+      "reason": "A real Windows loader failure needs a real PE that cannot find its DLL: python.exe copied away from pythonXY.dll stands in for an sd.cpp build without HIP. The console stub links nothing, so it would start. Runs only on Windows, in tmp_path.",
+      "digests": {
+        "4c82702c082e3a40": 1
+      }
+    },
+    {
       "file": "studio/backend/tests/test_stt_ggml_sidecar.py",
       "rule": "AV010",
       "severity": "warn",

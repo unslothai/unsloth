@@ -11,6 +11,7 @@ import functools
 import hashlib
 import http.client
 import json
+import math
 import os
 import re
 import shlex
@@ -5941,8 +5942,12 @@ def _vibe_env(
         entry["temperature"] = float(temperature)
     window = model.get("context_length") or model.get("max_context_length")
     if window:
-        # Vibe compacts at 200k tokens by default, past most local windows.
-        entry["auto_compact_threshold"] = max(1, int(int(window) * 0.9))
+        window = int(window)
+        entry["max_context_length"] = window
+        # Vibe's 200k default is past most local windows; Vibe 3 needs min(24k, window / 4) free.
+        entry["auto_compact_threshold"] = min(
+            int(window * 0.9), window - min(24_000, math.ceil(window / 4))
+        )
     provider = {
         "name": _VIBE_PROVIDER,
         "api_base": f"{base}/v1",
@@ -5981,7 +5986,7 @@ def write_pi_config(
         )
         return
     before = json.dumps(config, sort_keys = True)
-    # Pi reads custom providers from ~/.pi/agent/models.json (HOME-relocated for the session). Unsloth is a generic OpenAI-compatible /v1 endpoint, and the key lives in the config rather than the env, matching openclaw/opencode.
+    # Pi reads custom providers from $PI_CODING_AGENT_DIR/models.json; the key lives there, not in the env, matching openclaw/opencode.
     provider_model = {"id": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
@@ -6021,13 +6026,7 @@ def _link_user_dir(source: Path, target: Path) -> bool:
     return True
 
 
-def _pi_local_entry(
-    entry: str,
-    source: Path,
-    home: Path,
-    linked: frozenset,
-    agents_skills = None,
-) -> str:
+def _pi_local_entry(entry: str, source: Path, home: Path, linked: frozenset) -> str:
     """Re-anchor a user path from the original Pi agent directory."""
     value = entry.strip()
     if not value or value == "." or value.startswith("file:"):
@@ -6039,17 +6038,6 @@ def _pi_local_entry(
         # Pi stores local packages relative to its agent directory.
         target = os.path.join(source, value)
     target = os.path.normpath(target)
-    if agents_skills is not None:
-        # Pi reads ~/.agents/skills via HOME, which moved; rules naming the user copy must follow it.
-        user_root, session_root = agents_skills
-        try:
-            inside = os.path.relpath(target, user_root)
-        except ValueError:  # on another Windows drive
-            inside = os.pardir
-        if inside == os.curdir:
-            return session_root
-        if inside != os.pardir and not inside.startswith(os.pardir + os.sep):
-            return os.path.join(session_root, inside)
     try:
         relative = os.path.relpath(target, source)
     except ValueError:  # on another Windows drive
@@ -6060,14 +6048,7 @@ def _pi_local_entry(
     return target
 
 
-def _pi_settings_entries(
-    key: str,
-    entries,
-    source: Path,
-    home: Path,
-    linked: frozenset,
-    agents_skills = None,
-) -> list:
+def _pi_settings_entries(key: str, entries, source: Path, home: Path, linked: frozenset) -> list:
     if not isinstance(entries, list):
         return []
     result = []
@@ -6078,13 +6059,13 @@ def _pi_settings_entries(
             if isinstance(spec, str) and not spec.strip().startswith(
                 ("npm:", "git:", "github:", "http:", "https:", "ssh:")
             ):
-                spec = _pi_local_entry(spec, source, home, linked, agents_skills)
+                spec = _pi_local_entry(spec, source, home, linked)
                 entry = {**entry, "source": spec} if isinstance(entry, dict) else spec
         elif isinstance(entry, str):
             prefix = entry[:1] if entry.startswith(("!", "+", "-")) else ""
             pattern = entry[len(prefix) :]
             if not prefix and "*" not in entry and "?" not in entry:
-                entry = _pi_local_entry(entry, source, home, linked, agents_skills)
+                entry = _pi_local_entry(entry, source, home, linked)
             elif not pattern.strip().startswith("~"):  # Pi does not expand ~ in patterns
                 # The agent directory moved; keep the original too, it still matches basenames.
                 anchored = prefix + _pi_local_entry(
@@ -6092,7 +6073,6 @@ def _pi_settings_entries(
                     source,
                     home,
                     linked,
-                    agents_skills,
                 )
                 if anchored != entry:
                     result.append(entry)
@@ -6101,11 +6081,9 @@ def _pi_settings_entries(
     return result
 
 
-def _clear_pi_user_resources(agent_dir: Path, home: Path) -> None:
+def _clear_pi_user_resources(agent_dir: Path) -> None:
     """Undo what an earlier launch linked and copied, leaving session state alone."""
-    targets = [agent_dir / name for name in _PI_USER_RESOURCE_DIRS]
-    targets.append(home / ".agents" / "skills")
-    for target in targets:
+    for target in (agent_dir / name for name in _PI_USER_RESOURCE_DIRS):
         if target.is_symlink() or _is_junction(target):
             _remove_overlay_entry(target)
     manifest_path = agent_dir / _PI_USER_RESOURCES_MANIFEST
@@ -6136,11 +6114,11 @@ def _clear_pi_user_resources(agent_dir: Path, home: Path) -> None:
     manifest_path.unlink(missing_ok = True)
 
 
-def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
+def write_pi_user_resources(agent_dir: Path) -> None:
     """Expose selected user Pi resources inside an isolated session."""
     if _wsl_windows_executable(["pi"]):
         # Windows Pi cannot follow WSL links into mounted drives; drop those.
-        _clear_pi_user_resources(agent_dir, home)
+        _clear_pi_user_resources(agent_dir)
         return
     user_home = Path.home()
     configured = os.environ.get("PI_CODING_AGENT_DIR")
@@ -6163,14 +6141,6 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
         )
     linked = frozenset(
         name for name in _PI_USER_RESOURCE_DIRS if _link_user_dir(source / name, agent_dir / name)
-    )
-    # HOME is relocated, so link Pi's other global skill directory too.
-    user_skills = user_home / ".agents" / "skills"
-    session_skills = home / ".agents" / "skills"
-    agents_skills = (
-        (str(user_skills), str(session_skills))
-        if _link_user_dir(user_skills, session_skills)
-        else None
     )
 
     user_settings_path = source / "settings.json"
@@ -6209,7 +6179,6 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
             source,
             user_home,
             linked,
-            agents_skills,
         )
         # Refresh copied entries while preserving settings added inside the session.
         stale = previous.get(key) if isinstance(previous.get(key), list) else []
@@ -8219,7 +8188,7 @@ def pi(
     ]
     # --ignore-scripts matches Pi's documented install recipe (its README notes Pi needs no install scripts), so accepting the prompt skips dependency lifecycle scripts.
     with _session_config("pi", launch, persist = persist) as home:
-        # Pi resolves its config dir from PI_CODING_AGENT_DIR first (getAgentDir() prefers it over $HOME/.pi/agent), so pin it at the session dir: an inherited PI_CODING_AGENT_DIR in the user's shell would otherwise send Pi to their real config and skip our provider/key. HOME is relocated too so any other ~/.pi paths stay in the session. The key rides in the config rather than the env.
+        # getAgentDir() prefers PI_CODING_AGENT_DIR over $HOME/.pi/agent, so pin it here or an inherited value skips our provider/key. HOME stays the user's so Pi's shell commands keep git and gh.
         pi_agent_dir = home / ".pi" / "agent"
         write_pi_config(
             base,
@@ -8229,14 +8198,8 @@ def pi(
             max_tokens = max_tokens,
             request_body = server_options.request_body(),
         )
-        write_pi_user_resources(pi_agent_dir, home)
-        env = {"HOME": str(home), "PI_CODING_AGENT_DIR": str(pi_agent_dir)}
-        if os.name == "nt" or os.environ.get("WSL_DISTRO_NAME"):
-            # Node resolves ~/.pi via USERPROFILE (then HOMEDRIVE + HOMEPATH) on Windows, not HOME. Set them whenever Pi may run as a Windows process: native Windows, or a /mnt Windows shim launched from WSL, where the WSLENV bridge then translates the path. Otherwise the Windows process falls back to the user's real %USERPROFILE%\\.pi. splitdrive yields no drive off a POSIX path, so HOMEDRIVE/HOMEPATH stay unset there.
-            env["USERPROFILE"] = str(home)
-            drive, tail = os.path.splitdrive(str(home))
-            if drive:
-                env["HOMEDRIVE"], env["HOMEPATH"] = drive, tail
+        write_pi_user_resources(pi_agent_dir)
+        env = {"PI_CODING_AGENT_DIR": str(pi_agent_dir)}
         # Pi paints inline from the current cursor position (no alternate screen, no clear on first render), so give it the clean screen it assumes.
         _run(
             base,

@@ -597,6 +597,9 @@ def test_a_legacy_archive_still_gets_two_different_ends(rag_home, rag_conn):
 
 def test_dense_packs_float32_rows_without_struct_and_the_query_once(rag_conn, monkeypatch):
     np = pytest.importorskip("numpy")
+    # vec0 answers both searches: the first one queues the in-memory cache build (#15961) on a background
+    # thread, and a cache that lands between them scores in numpy, a few ulps away from vec0.
+    monkeypatch.setenv("RAG_VEC_CACHE", "0")
     texts = ["alpha alpha", "hotel golf", "alpha bravo"]
     for i, scope in enumerate(("kb_a", "kb_b", "kb_c")):
         doc = f"d{i}"

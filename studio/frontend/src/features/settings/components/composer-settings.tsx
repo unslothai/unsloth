@@ -3,6 +3,7 @@
 
 import { useEffect, useId, useRef } from "react";
 import { SegmentedPill } from "@/components/segmented-control";
+import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -141,6 +142,19 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
               aria-label={t("composerSettings.plainText")}
               checked={prefs.plainTextComposer}
               onCheckedChange={prefs.setPlainTextComposer}
+            />
+          </SettingsRow>
+          <SettingsRow
+            label={t("composerSettings.richPaste")}
+            badge={<Badge variant="secondary" className="h-4 px-1.5 text-[10px] text-muted-foreground">{t("shell.beta")}</Badge>}
+            description={t("composerSettings.richPasteDescription", {
+              shortcut: isMacPlatform() ? "\u21e7\u2318V" : "Ctrl+Shift+V",
+            })}
+          >
+            <Switch
+              aria-label={t("composerSettings.richPaste")}
+              checked={prefs.richTextPaste}
+              onCheckedChange={prefs.setRichTextPaste}
             />
           </SettingsRow>
           <SettingsRow label={t("composerSettings.showContext")}>

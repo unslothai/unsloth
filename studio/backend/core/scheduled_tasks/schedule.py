@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""When a task runs next: wall clock in its IANA zone; a skipped time runs past the gap, a repeated one once."""
+"""When a task runs next: elapsed hourly intervals or wall clock in its IANA zone."""
 
 from __future__ import annotations
 
@@ -47,6 +47,13 @@ class OnceSchedule(BaseModel):
     at: LocalMinute
 
 
+class HourlySchedule(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    kind: Literal["hourly"]
+    hours: int = Field(strict = True, ge = 1, le = 24)
+
+
 class DailySchedule(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
@@ -80,7 +87,7 @@ class MonthlySchedule(BaseModel):
 
 
 Schedule = Annotated[
-    Union[OnceSchedule, DailySchedule, WeeklySchedule, MonthlySchedule],
+    Union[OnceSchedule, HourlySchedule, DailySchedule, WeeklySchedule, MonthlySchedule],
     Field(discriminator = "kind"),
 ]
 _SCHEDULE = TypeAdapter(Schedule)
@@ -134,9 +141,25 @@ def _next_after(schedule: Schedule, zone: ZoneInfo, after: datetime) -> Optional
     return None
 
 
-def next_run_after(schedule: Schedule, timezone_name: str, after_ms: int) -> Optional[int]:
-    """The first run strictly after ``after_ms`` (epoch ms), or None once a schedule has none left."""
+def next_run_after(
+    schedule: Schedule,
+    timezone_name: str,
+    after_ms: int,
+    *,
+    anchor_ms: Optional[int] = None,
+) -> Optional[int]:
+    """The first run strictly after ``after_ms`` (epoch ms), or None once a schedule has none left.
+
+    Hourly schedules start one interval from now unless a persisted occurrence anchors their cadence.
+    """
     zone = resolve_timezone(timezone_name)
+    if isinstance(schedule, HourlySchedule):
+        interval_ms = schedule.hours * 60 * 60 * 1000
+        if anchor_ms is None:
+            return after_ms + interval_ms
+        # Keep elapsed intervals through DST and delayed polling; missed occurrences are skipped.
+        intervals = max(0, (after_ms - anchor_ms) // interval_ms + 1)
+        return anchor_ms + intervals * interval_ms
     after = datetime.fromtimestamp(after_ms / 1000, tz = timezone.utc)
     candidate = _next_after(schedule, zone, after)
     return None if candidate is None else int(candidate.timestamp() * 1000)

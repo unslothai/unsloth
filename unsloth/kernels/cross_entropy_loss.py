@@ -405,8 +405,8 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         logits = logits.contiguous()
         labels = labels.to(device).contiguous()
 
-        div, mod = divmod(vocab_size, MAX_FUSED_SIZE)
-        n_chunks: int = div + (mod != 0)
+        # Ceil division, not divmod: Dynamo cannot trace divmod on a symbolic size (dynamic=True).
+        n_chunks: int = (vocab_size + MAX_FUSED_SIZE - 1) // MAX_FUSED_SIZE
         losses = torch.empty(n_rows, dtype = torch.float32, device = device)
 
         DO_SOFTCAPPING: bool = bool(logit_softcapping != 0)
@@ -440,8 +440,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         else:
             # For large vocabs > 65336 like Gemma 256K
             BLOCK_SIZE, num_warps = _chunked_forward_config(device, vocab_size)
-            div, mod = divmod(vocab_size, BLOCK_SIZE)
-            n_chunks = div + (mod != 0)
+            n_chunks = (vocab_size + BLOCK_SIZE - 1) // BLOCK_SIZE
             logsumexp = torch.empty(
                 (
                     n_rows,
@@ -499,10 +498,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         dlogits = torch.empty_like(logits)
 
         BLOCK_SIZE: int = 4096
-        div: int
-        mod: int
-        div, mod = divmod(vocab_size, BLOCK_SIZE)
-        n_blocks: int = div + (mod != 0)
+        n_blocks: int = (vocab_size + BLOCK_SIZE - 1) // BLOCK_SIZE
 
         with torch_gpu_device(dlosses.device):
             _cross_entropy_backward[

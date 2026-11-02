@@ -78,8 +78,13 @@ from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
 from utils.datasets.cells import csv_as_text_kwargs
 from utils.datasets.chat_templates import get_training_chat_template
-from utils.datasets.completion_masking import apply_completion_masking
+from utils.datasets.completion_masking import (
+    apply_completion_masking,
+    count_truncated_drops,
+    truncated_drop_cause,
+)
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
+from utils.datasets.iterable import take_rows
 from utils.datasets.pretokenized import (
     PRETOKENIZED_FORMAT,
     has_custom_labels,
@@ -2337,14 +2342,101 @@ class UnslothTrainer:
         )
         return result_dataset
 
+    @staticmethod
+    def _resolve_audio_vlm_image_column(
+        dataset,
+        custom_format_mapping,
+        audio_col,
+        text_col = None,
+        speaker_col = None,
+    ):
+        cols = dataset.column_names
+        reserved = {audio_col, text_col}
+        reserved.update(
+            col for col, role in (custom_format_mapping or {}).items() if role and role != "image"
+        )
+        for col, role in (custom_format_mapping or {}).items():
+            if role == "image" and col in cols and col not in reserved:
+                return col
+        from hub.utils.dataset_format import (
+            _first_row,
+            _is_image_list_item,
+            _is_image_value,
+            detect_multimodal_dataset,
+        )
+
+        from datasets import Image
+
+        def image_typed(col):
+            feature = (getattr(dataset, "features", None) or {}).get(col)
+            inner = feature[0] if isinstance(feature, list) and feature else feature
+            return isinstance(getattr(inner, "feature", inner), Image)
+
+        if speaker_col and not image_typed(speaker_col):
+            reserved.add(speaker_col)
+
+        def image_list(value):
+            if not isinstance(value, list):
+                return False
+            items = [
+                item
+                for item in value
+                if item is not None and not (isinstance(item, str) and not item)
+            ]
+            return bool(items) and all(map(_is_image_list_item, items))
+
+        sample = _first_row(dataset) or {}
+
+        def empty(value):
+            # Not `in (None, "", [])`: that compares a pixel ndarray elementwise and raises.
+            return (
+                value is None
+                or (isinstance(value, str) and not value)
+                or (
+                    isinstance(value, list)
+                    and all(item is None or (isinstance(item, str) and not item) for item in value)
+                )
+            )
+
+        ordered = list(
+            dict.fromkeys(detect_multimodal_dataset(dataset)["multimodal_columns"] + cols)
+        )
+        ordered = [col for col in ordered if col not in reserved]
+        typed = {col: image_typed(col) for col in ordered}
+        values = {col: sample.get(col) for col in ordered}
+        first_candidate = next(
+            (
+                i
+                for i, col in enumerate(ordered)
+                if typed[col] or _is_image_value(values[col]) or image_list(values[col])
+            ),
+            len(ordered),
+        )
+        unresolved = {
+            col for col in ordered[:first_candidate] if not typed[col] and empty(values[col])
+        }
+        if unresolved:
+            for i, row in enumerate(dataset):
+                if i >= 100 or not unresolved:
+                    break
+                for col in tuple(unresolved):
+                    if not empty(row.get(col)):
+                        values[col] = row[col]
+                        unresolved.remove(col)
+        return next(
+            (
+                col
+                for col in ordered
+                if typed[col] or _is_image_value(values[col]) or image_list(values[col])
+            ),
+            None,
+        )
+
     def _format_audio_vlm_dataset(
         self,
         dataset,
         custom_format_mapping = None,
     ):
-        """Format dataset as audio chat messages for multimodal models (e.g. Gemma 3N). Expects
-        columns audio (Audio), text (str). Produces a messages column with system/user/assistant
-        chat format."""
         from datasets import Audio
 
         resolved = self._resolve_audio_columns(dataset, custom_format_mapping)
@@ -2356,14 +2448,82 @@ class UnslothTrainer:
             )
 
         self._audio_vlm_audio_col = audio_col
+        image_col = self._resolve_audio_vlm_image_column(
+            dataset, custom_format_mapping, audio_col, text_col, resolved["speaker_col"]
+        )
+        self._audio_vlm_image_col = image_col
 
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate = 16000))
+        if image_col:
+            from datasets import Image, Sequence
+
+            feature = dataset.features.get(image_col)
+            inner = feature[0] if isinstance(feature, list) else getattr(feature, "feature", None)
+
+            pixel_feature, dimensions = feature, 0
+            while getattr(pixel_feature, "feature", None) is not None:
+                pixel_feature = pixel_feature.feature
+                dimensions += 1
+            if dimensions <= 1 and getattr(pixel_feature, "dtype", "") in (
+                "string",
+                "large_string",
+            ):
+
+                def normalize_paths(values):
+                    return {
+                        image_col: [
+                            [None if item == "" else item for item in value]
+                            if isinstance(value, list)
+                            else None
+                            if value == ""
+                            else value
+                            for value in values
+                        ]
+                    }
+
+                dataset = dataset.map(normalize_paths, batched = True, input_columns = image_col)
+            if dimensions in (2, 3) and getattr(pixel_feature, "dtype", "").startswith(
+                ("int", "uint", "float")
+            ):
+                from itertools import islice
+
+                import numpy as np
+
+                value = next(
+                    (row[image_col] for row in islice(dataset, 100) if row[image_col] is not None),
+                    None,
+                )
+                shape = np.asarray(value).shape if value is not None else ()
+                if value is None or len(shape) == 2 or (len(shape) == 3 and shape[-1] in (1, 3, 4)):
+                    inner = None
+
+            # Image(decode = False) yields {"path", "bytes"} dicts the processor rejects.
+            def decodes(f):
+                return isinstance(f, Image) and f.decode
+
+            if inner is not None:
+                if not decodes(inner):
+                    dataset = dataset.cast_column(image_col, Sequence(Image()))
+            elif not decodes(feature):
+                dataset = dataset.cast_column(image_col, Image())
+            logger.info(f"Audio VLM dataset also has images in '{image_col}'; training on both\n")
 
         def format_messages(samples):
             formatted = {"messages": []}
             for idx in range(len(samples[audio_col])):
                 audio = samples[audio_col][idx]["array"]
                 label = str(samples[text_col][idx])
+                user_content = [
+                    {"type": "audio", "audio": audio},
+                    {"type": "text", "text": "Please transcribe this audio."},
+                ]
+                if image_col:
+                    row_images = samples[image_col][idx]
+                    if isinstance(row_images, list):
+                        n_images = sum(1 for i in row_images if i is not None)
+                    else:
+                        n_images = 0 if row_images is None else 1
+                    user_content[:0] = [{"type": "image"} for _ in range(n_images)]
                 message = [
                     {
                         "role": "system",
@@ -2374,13 +2534,7 @@ class UnslothTrainer:
                             }
                         ],
                     },
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "audio", "audio": audio},
-                            {"type": "text", "text": "Please transcribe this audio."},
-                        ],
-                    },
+                    {"role": "user", "content": user_content},
                     {"role": "assistant", "content": [{"type": "text", "text": label}]},
                 ]
                 formatted["messages"].append(message)
@@ -2965,15 +3119,21 @@ class UnslothTrainer:
             return None
 
     def _format_audio_vlm_eval_split(self, eval_dataset, custom_format_mapping):
-        """Format the audio VLM eval split, dropping it if it resolves a different audio
-        column: audio_vlm_collate_fn reads the one recorded name for BOTH splits."""
         if eval_dataset is None:
             return None
         train_audio_col = getattr(self, "_audio_vlm_audio_col", None)
+        train_image_col = getattr(self, "_audio_vlm_image_col", None)
+        eval_mapping = custom_format_mapping
+        image_feature = eval_dataset.features.get(train_image_col)
+        while getattr(image_feature, "feature", None) is not None:
+            image_feature = image_feature.feature
+        if train_image_col and getattr(image_feature, "dtype", None) == "null":
+            eval_mapping = {train_image_col: "image", **(custom_format_mapping or {})}
         formatted = self._preprocess_audio_eval_split(
-            eval_dataset, self._format_audio_vlm_dataset, custom_format_mapping
+            eval_dataset, self._format_audio_vlm_dataset, eval_mapping
         )
         eval_audio_col = getattr(self, "_audio_vlm_audio_col", None)
+        eval_image_col = getattr(self, "_audio_vlm_image_col", None)
         if formatted is not None and eval_audio_col != train_audio_col:
             self._record_warning(
                 f"The eval dataset stores audio in '{eval_audio_col}' but the training dataset "
@@ -2981,7 +3141,15 @@ class UnslothTrainer:
                 "same audio column name."
             )
             formatted = None
+        elif formatted is not None and eval_image_col != train_image_col:
+            self._record_warning(
+                f"The eval dataset's image column ('{eval_image_col}') does not match the training "
+                f"dataset's ('{train_image_col}'), so this run has no evaluation. Give both splits "
+                "the same image column."
+            )
+            formatted = None
         self._audio_vlm_audio_col = train_audio_col
+        self._audio_vlm_image_col = train_image_col
         return formatted
 
     def _audio_eval_config(self, training_args):
@@ -3458,7 +3626,7 @@ class UnslothTrainer:
                         )
                         stream = load_dataset(**load_kwargs, streaming = True)
                         dataset_attestation_source = stream
-                        dataset = Dataset.from_list(list(stream.take(rows_to_stream)))
+                        dataset = Dataset.from_list(take_rows(stream, rows_to_stream))
                         logger.info(
                             f"[dataset-slice] Downloaded {len(dataset)} rows "
                             f"(requested {rows_to_stream})\n"
@@ -4579,6 +4747,7 @@ class UnslothTrainer:
                 processor = self.tokenizer
 
                 audio_col_name = getattr(self, "_audio_vlm_audio_col", "audio")
+                image_col_name = getattr(self, "_audio_vlm_image_col", None)
                 if training_args.get("train_on_completions", False) and not training_args.get(
                     "is_cpt", False
                 ):
@@ -4609,6 +4778,7 @@ class UnslothTrainer:
                 def audio_vlm_collate_fn(examples):
                     texts = []
                     audios = []
+                    images = []
                     for example in examples:
                         text = processor.apply_chat_template(
                             example["messages"],
@@ -4617,8 +4787,25 @@ class UnslothTrainer:
                         ).strip()
                         texts.append(text)
                         audios.append(example[audio_col_name]["array"])
+                        if image_col_name:
+                            row = example[image_col_name]
+                            row = row if isinstance(row, list) else [row]
+                            images.append(
+                                [
+                                    i.convert("RGB") if hasattr(i, "convert") else i
+                                    for i in row
+                                    if i is not None
+                                ]
+                            )
 
-                    batch = processor(text = texts, audio = audios, return_tensors = "pt", padding = True)
+                    image_kwargs = {"images": images} if any(images) else {}
+                    batch = processor(
+                        text = texts,
+                        audio = audios,
+                        return_tensors = "pt",
+                        padding = True,
+                        **image_kwargs,
+                    )
 
                     labels = batch["input_ids"].clone()
                     labels[labels == processor.tokenizer.pad_token_id] = -100
@@ -5093,19 +5280,40 @@ class UnslothTrainer:
 
                             if filtered_len == 0 or drop_pct > 30:
                                 max_seq = training_args.get("max_seq_length", 2048)
+                                cause = None
+                                # Packed rows all reach the cap, so a truncated prompt cannot be told apart there.
+                                if not config_args.get("packing"):
+                                    try:
+                                        cap = (
+                                            getattr(self.trainer.args, "max_length", None)
+                                            or max_seq
+                                        )
+                                        cut = count_truncated_drops(
+                                            pre_mask_dataset["input_ids"],
+                                            self.trainer.train_dataset["input_ids"],
+                                            cap,
+                                        )
+                                        cause = truncated_drop_cause(cut, dropped, cap)
+                                    except Exception as e:  # noqa: BLE001 - keep the generic message
+                                        logger.info(f"Could not count truncated rows: {e}\n")
                                 error_msg = (
                                     f"{dropped}/{original_len} samples ({drop_pct}%) were "
                                     f"dropped after applying 'Train on completions': after "
                                     f"masking, those rows had no trainable response tokens "
-                                    f"left. The usual cause is that this model's response "
-                                    f"template was not found in the formatted samples, so "
-                                    f"every token was masked out. That typically means the "
-                                    f"dataset is already formatted, or its structure does "
-                                    f"not match the model's chat template, so 'Train on "
-                                    f"completions' should be turned off for this dataset. "
-                                    f"Less commonly, a max_seq_length ({max_seq}) shorter "
-                                    f"than the prompt can truncate the response away; only "
-                                    f"raise it if your samples are actually longer than that."
+                                    f"left. "
+                                ) + (
+                                    cause
+                                    or (
+                                        f"The usual cause is that this model's response "
+                                        f"template was not found in the formatted samples, so "
+                                        f"every token was masked out. That typically means the "
+                                        f"dataset is already formatted, or its structure does "
+                                        f"not match the model's chat template, so 'Train on "
+                                        f"completions' should be turned off for this dataset. "
+                                        f"Less commonly, a max_seq_length ({max_seq}) shorter "
+                                        f"than the prompt can truncate the response away; only "
+                                        f"raise it if your samples are actually longer than that."
+                                    )
                                 )
                                 logger.error(error_msg)
                                 self._update_progress(error = error_msg, is_training = False)
