@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""One from_pretrained call fetches each config probe once, even across the FastLanguageModel -> FastModel hand-off."""
 
 import json
 
 import pytest
 
-import unsloth  # noqa: F401  (patches transformers before the imports below)
+import unsloth
 import peft
 import transformers
 
@@ -43,17 +42,14 @@ def _count_probes(monkeypatch):
 
     monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", classmethod(_autoconfig))
     monkeypatch.setattr(peft.config.PeftConfigMixin, "from_pretrained", classmethod(_peftconfig))
-    # FastModel's weight load: everything that decides what to load has run by then.
     monkeypatch.setattr(FastBaseModel, "from_pretrained", staticmethod(_stop))
     return calls
 
 
-# On Apple Silicon with MLX the FastModel hand-off goes to the MLX loader, which needs real weights.
 @pytest.mark.skipif(
     getattr(unsloth, "_IS_MLX", False), reason = "the MLX loader needs real safetensors"
 )
 def test_delegated_load_probes_config_and_adapter_once(tmp_path, monkeypatch):
-    # Granite is not one of FastLanguageModel's own families, so it hands off to FastModel, which used to probe again.
     from unsloth import FastLanguageModel
 
     config = transformers.GraniteConfig(
@@ -73,7 +69,6 @@ def test_delegated_load_probes_config_and_adapter_once(tmp_path, monkeypatch):
         )
     assert calls["autoconfig"].count(path) == 1, calls
     assert calls["peftconfig"].count(path) == 1, calls
-    # The loader still reports its decision from both layers, as before.
     assert resolved == [path, path]
 
 
@@ -93,13 +88,12 @@ def test_mapper_fetched_once_per_load(monkeypatch):
         ]
 
     assert _two_lookups() == ["org/unmapped-model"] * 2
-    assert len(fetches) == 2  # outside a load nothing is kept
+    assert len(fetches) == 2
 
     fetches.clear()
     assert loader_utils._load_probe_memo_scope(_two_lookups)() == ["org/unmapped-model"] * 2
     assert len(fetches) == 1
 
-    # A failed fetch (empty tables) is retried, as before.
     fetches.clear()
     monkeypatch.setattr(
         loader_utils, "_get_new_mapper", lambda: fetches.append(1) or ({}, {}, {}, {}, {})
@@ -125,7 +119,6 @@ def test_probe_memo_copies_reraises_and_skips_network_errors():
 
     probe = loader_utils._memo_config_probe
 
-    # Outside a load: every call reaches the loader.
     probe(load, "repo", token = None)
     probe(load, "repo", token = None)
     assert len(calls) == 2
@@ -133,18 +126,15 @@ def test_probe_memo_copies_reraises_and_skips_network_errors():
     def body():
         calls.clear()
         first = probe(load, "repo", token = None, revision = None, cache_dir = None)
-        first.values["a"] = 2  # a caller mutating its config must not leak into the next one
+        first.values["a"] = 2
         second = probe(load, "repo", token = None, revision = None)
         assert second is not first and second.values == {"a": 1}
         assert len(calls) == 1
-        # Different token, revision or remote-code setting is a different probe.
         probe(load, "repo", token = "hf_x", revision = None)
         probe(load, "repo", token = None, revision = "v2")
         probe(load, "repo", token = None, revision = None, trust_remote_code = True)
         probe(load, "repo", token = None, revision = None, trust_remote_code = True)
         assert len(calls) == 5
-        # A definitive error is answered again without a second fetch, as a fresh copy: re-raising one stored
-        # object would chain every caller's frames onto its traceback and keep them alive.
         raised = []
         for _ in range(3):
             with pytest.raises(ValueError, match = "adapter_config.json") as excinfo:
@@ -153,7 +143,6 @@ def test_probe_memo_copies_reraises_and_skips_network_errors():
         assert len(calls) == 6
         assert len({id(e) for e in raised}) == 3
         assert all(type(e) is ValueError and str(e) == str(raised[0]) for e in raised)
-        # A network error is never kept: the second probe reaches the Hub again.
         for _ in range(2):
             with pytest.raises(ConnectionError):
                 probe(load, "flaky", token = None)
@@ -163,10 +152,8 @@ def test_probe_memo_copies_reraises_and_skips_network_errors():
 
 
 def test_reraised_probe_error_notes_stay_per_raise():
-    # A note one caller adds to its copy must not reach the next caller's copy.
     def load(name, **kwargs):
         error = ValueError("Can't find 'adapter_config.json'")
-        # What add_note (3.11+) writes; set directly so 3.9 / 3.10 run the same check.
         error.__notes__ = ["from the loader"]
         raise error
 
@@ -178,7 +165,6 @@ def test_reraised_probe_error_notes_stay_per_raise():
                 loader_utils._memo_config_probe(load, "repo")
             except ValueError as error:
                 seen.append(list(error.__notes__))
-                # add_note appends to the existing list in place.
                 error.__notes__.append(f"caller {i}")
 
     loader_utils._load_probe_memo_scope(body)()

@@ -1803,13 +1803,10 @@ def _prefer_legacy_lowercase_cache(
     return repo_id
 
 
-# One from_pretrained call answers the same probes again when FastLanguageModel hands off to FastModel (mapper.py from GitHub, config.json, adapter_config.json). Inside one top-level load each identical probe is fetched once; the scope ends with the call, so nothing outlives it.
 _LOAD_PROBE_MEMO = contextvars.ContextVar("_unsloth_load_probe_memo", default = None)
 
 
 def _load_probe_memo_scope(fn):
-    """Give fn (a from_pretrained) a probe memo, or join the one an enclosing load already opened."""
-
     @functools.wraps(fn)
     def _wrapper(*args, **kwargs):
         if _LOAD_PROBE_MEMO.get() is not None:
@@ -1824,7 +1821,6 @@ def _load_probe_memo_scope(fn):
 
 
 def _new_mapper_tables():
-    """_get_new_mapper, fetched once per load. Only a fetch that returned tables is kept: an empty one (network failure) is retried exactly as before."""
     memo = _LOAD_PROBE_MEMO.get()
     if memo is not None and "new_mapper" in memo:
         return tuple(dict(table) for table in memo["new_mapper"])
@@ -1835,14 +1831,13 @@ def _new_mapper_tables():
 
 
 def _copy_error(error):
-    """A fresh exception equal to error (same type, args, attributes and cause chain) with no traceback, so a re-raise never pins the frames it passes through. None when the type cannot be rebuilt."""
     try:
         clone = copy.copy(error)
     except Exception:
         return None
     if type(clone) is not type(error) or str(clone) != str(error):
         return None
-    # copy.copy shares the notes list, so a note a caller adds to one raise would show up on every later one.
+    # copy.copy shares exception notes.
     notes = getattr(error, "__notes__", None)
     if isinstance(notes, list):
         clone.__notes__ = list(notes)
@@ -1854,13 +1849,9 @@ def _copy_error(error):
 
 
 def _memo_config_probe(loader, model_name, **kwargs):
-    """loader(model_name, **kwargs) for AutoConfig / PeftConfig.from_pretrained, answered once per load.
-
-    A hit hands back a deep copy of the first result, so the caller may mutate it freely, or raises a copy of the first error. Network errors are never kept (the retry must reach the Hub, as before), nor are remote-code configs (their module import is a side effect), nor answers from a different offline state."""
     memo = _LOAD_PROBE_MEMO.get()
     if memo is None or kwargs.get("trust_remote_code") or not isinstance(model_name, str):
         return loader(model_name, **kwargs)
-    # cache_dir = None is transformers' default, so an omitted one is the same probe.
     if kwargs.get("cache_dir", 0) is None:
         kwargs.pop("cache_dir")
     try:
@@ -1881,7 +1872,6 @@ def _memo_config_probe(loader, model_name, **kwargs):
     except Exception as error:
         if not _is_offline_related_error(error):
             stored = _copy_error(error)
-            # Kept only if a second copy can be made from it on a hit.
             if stored is not None and _copy_error(stored) is not None:
                 memo[key] = (None, stored)
         raise
