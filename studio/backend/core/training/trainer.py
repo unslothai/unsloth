@@ -2348,10 +2348,15 @@ class UnslothTrainer:
         custom_format_mapping,
         audio_col,
         text_col = None,
+        speaker_col = None,
     ):
         cols = dataset.column_names
+        reserved = {audio_col, text_col}
+        reserved.update(
+            col for col, role in (custom_format_mapping or {}).items() if role and role != "image"
+        )
         for col, role in (custom_format_mapping or {}).items():
-            if role == "image" and col in cols and col not in (audio_col, text_col):
+            if role == "image" and col in cols and col not in reserved:
                 return col
         from hub.utils.dataset_format import (
             _first_row,
@@ -2367,10 +2372,17 @@ class UnslothTrainer:
             inner = feature[0] if isinstance(feature, list) and feature else feature
             return isinstance(getattr(inner, "feature", inner), Image)
 
+        if speaker_col and not image_typed(speaker_col):
+            reserved.add(speaker_col)
+
         def image_list(value):
             if not isinstance(value, list):
                 return False
-            items = [item for item in value if item is not None]
+            items = [
+                item
+                for item in value
+                if item is not None and not (isinstance(item, str) and not item)
+            ]
             return bool(items) and all(map(_is_image_list_item, items))
 
         sample = _first_row(dataset) or {}
@@ -2380,13 +2392,16 @@ class UnslothTrainer:
             return (
                 value is None
                 or (isinstance(value, str) and not value)
-                or (isinstance(value, list) and all(item is None for item in value))
+                or (
+                    isinstance(value, list)
+                    and all(item is None or (isinstance(item, str) and not item) for item in value)
+                )
             )
 
         ordered = list(
             dict.fromkeys(detect_multimodal_dataset(dataset)["multimodal_columns"] + cols)
         )
-        ordered = [col for col in ordered if col not in (audio_col, text_col)]
+        ordered = [col for col in ordered if col not in reserved]
         typed = {col: image_typed(col) for col in ordered}
         values = {col: sample.get(col) for col in ordered}
         first_candidate = next(
@@ -2435,7 +2450,7 @@ class UnslothTrainer:
 
         self._audio_vlm_audio_col = audio_col
         image_col = self._resolve_audio_vlm_image_column(
-            dataset, custom_format_mapping, audio_col, text_col
+            dataset, custom_format_mapping, audio_col, text_col, resolved["speaker_col"]
         )
         self._audio_vlm_image_col = image_col
 
@@ -2450,6 +2465,24 @@ class UnslothTrainer:
             while getattr(pixel_feature, "feature", None) is not None:
                 pixel_feature = pixel_feature.feature
                 dimensions += 1
+            if dimensions <= 1 and getattr(pixel_feature, "dtype", "") in (
+                "string",
+                "large_string",
+            ):
+
+                def normalize_paths(values):
+                    return {
+                        image_col: [
+                            [None if item == "" else item for item in value]
+                            if isinstance(value, list)
+                            else None
+                            if value == ""
+                            else value
+                            for value in values
+                        ]
+                    }
+
+                dataset = dataset.map(normalize_paths, batched = True, input_columns = image_col)
             if dimensions in (2, 3) and getattr(pixel_feature, "dtype", "").startswith(
                 ("int", "uint", "float")
             ):

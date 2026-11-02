@@ -134,6 +134,30 @@ def test_an_image_filename_transcript_stays_text(audio_vlm_trainer):
     assert formatted[0]["messages"][-1]["content"][0]["text"] == "diagram.png"
 
 
+@pytest.mark.parametrize(
+    "column, mapping",
+    [
+        ("speaker_id", None),
+        ("speaker_tag", {"audio": "audio", "text": "text", "speaker_tag": "speaker_id"}),
+    ],
+)
+def test_an_image_filename_speaker_id_stays_text(audio_vlm_trainer, column, mapping):
+    ds = _dataset([])
+    ds = _NoAudioCast(ds._ds.add_column(column, ["voice.png", "speaker.jpg"]))
+    formatted = audio_vlm_trainer._format_audio_vlm_dataset(ds, mapping)
+
+    assert audio_vlm_trainer._audio_vlm_image_col is None
+    assert _user_part_types(formatted) == ["audio", "text"]
+    assert formatted[0][column] == "voice.png"
+
+
+def test_an_image_typed_source_column_remains_an_image(audio_vlm_trainer):
+    formatted = audio_vlm_trainer._format_audio_vlm_dataset(_dataset(["source"]))
+
+    assert audio_vlm_trainer._audio_vlm_image_col == "source"
+    assert _user_part_types(formatted) == ["image", "audio", "text"]
+
+
 @pytest.mark.parametrize("shape", [(8, 8), (8, 8, 3)])
 def test_a_mapped_pixel_array_is_one_image(audio_vlm_trainer, shape):
     np = pytest.importorskip("numpy")
@@ -206,6 +230,43 @@ def test_untyped_nullable_images_are_found(audio_vlm_trainer, tmp_path, column, 
             else int(value is not None)
         )
         assert sum(part["type"] == "image" for part in user["content"]) == count
+
+
+@pytest.mark.parametrize(
+    "cells, counts",
+    [
+        (["", "image"], [0, 1]),
+        ([["", "image"], ["image"]], [1, 1]),
+        ([["", None], ["", "image"]], [0, 1]),
+    ],
+)
+def test_blank_optional_image_paths_are_missing(audio_vlm_trainer, tmp_path, cells, counts):
+    path = tmp_path / "image.png"
+    PIL_Image.new("RGB", (8, 8)).save(path)
+    values = [
+        [str(path) if value == "image" else value for value in cell]
+        if isinstance(cell, list)
+        else str(path)
+        if cell == "image"
+        else cell
+        for cell in cells
+    ]
+    rows = {
+        "audio": [{"array": [0.0] * 160, "sampling_rate": 16000}] * 2,
+        "text": ["one", "two"],
+        "image": values,
+    }
+    formatted = audio_vlm_trainer._format_audio_vlm_dataset(
+        _NoAudioCast(datasets.Dataset.from_dict(rows))
+    )
+
+    assert audio_vlm_trainer._audio_vlm_image_col == "image"
+    for row, expected in zip(formatted, counts):
+        user = next(message for message in row["messages"] if message["role"] == "user")
+        assert sum(part["type"] == "image" for part in user["content"]) == expected
+        images = row["image"] if isinstance(row["image"], list) else [row["image"]]
+        assert sum(isinstance(image, PIL_Image.Image) for image in images) == expected
+        assert all(image is None or isinstance(image, PIL_Image.Image) for image in images)
 
 
 def test_a_mapped_image_column_is_used(audio_vlm_trainer):
