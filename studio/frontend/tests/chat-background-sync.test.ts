@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { planBackgroundPull } from "../src/features/chat-background/sync-plan.ts";
+import { readSrc } from "./helpers/kit.ts";
 
 const image = { sha256: "abc", type: "image/png", size: 10 };
 const clean = { updatedAt: 1, sha256: "abc", dirty: false };
@@ -35,4 +36,17 @@ test("adjustments from another browser reuse the image already here", () => {
 
 test("a background removed elsewhere is removed here instead of uploaded back", () => {
   assert.equal(planBackgroundPull({ saved: true, updatedAt: 8, image: null }, clean, true), "clear");
+});
+
+test("an edit made while the account's copy downloads is not overwritten by it", () => {
+  const sync = readSrc("features/chat-background/sync.ts");
+  const pull = sync.slice(sync.indexOf("async function pull()"));
+  assert.match(pull, /const started = changes;/);
+  assert.match(pull, /await loadChatBackgroundImage\(\);\n\s*if \(changes !== started\) return;\n\s*await applyServerBackground\(/);
+  assert.match(pull, /if \(changes === started\) await applyServerBackground\(null, stamp\);/);
+});
+
+test("adjustments saved against another browser's newer image re-upload this browser's image", () => {
+  const sync = readSrc("features/chat-background/sync.ts");
+  assert.match(sync, /if \(record\.image\?\.sha256 !== sha256\) \{\n[^}]*saveChatBackgroundImage\(value\.blob\)[^}]*record = await save\(\);/);
 });

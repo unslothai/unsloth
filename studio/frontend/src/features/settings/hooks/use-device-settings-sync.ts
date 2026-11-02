@@ -13,6 +13,7 @@ import {
   INTERFACE_SCALE_RANGE,
   useInterfaceScaleStore,
 } from "../stores/interface-scale-store";
+import { type Pending, readPending, writePending } from "../lib/client-prefs-pending";
 
 const PUSH_DEBOUNCE_MS = 800;
 
@@ -55,14 +56,29 @@ export function useDeviceSettingsSync(enabled: boolean): void {
     let applying = false;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const touched = { scale: false, browser: false };
+    const touched = readPending();
+    let edits = 0;
+    const touch = (section: keyof Pending) => {
+      touched[section] = true;
+      edits++;
+      writePending(touched);
+    };
 
     const push = (
       data: Partial<Pick<ClientPreferences, "interfaceScale" | "browser">>,
     ) => {
       clearTimeout(timer);
       timer = setTimeout(() => {
-        void saveClientPreferences(data).catch(() => undefined);
+        const sent = edits;
+        void saveClientPreferences(data)
+          .then(() => {
+            if (edits === sent) {
+              touched.scale = false;
+              touched.browser = false;
+              writePending(touched);
+            }
+          })
+          .catch(() => undefined);
       }, PUSH_DEBOUNCE_MS);
     };
     const pushAll = () =>
@@ -73,7 +89,7 @@ export function useDeviceSettingsSync(enabled: boolean): void {
 
     const stopScale = useInterfaceScaleStore.subscribe((state, prev) => {
       if (applying || state.scale === prev.scale) return;
-      touched.scale = true;
+      touch("scale");
       if (loaded) pushAll();
     });
     let lastBrowser = browserPrefs();
@@ -81,7 +97,7 @@ export function useDeviceSettingsSync(enabled: boolean): void {
       const next = browserPrefs();
       if (applying || sameBrowserPrefs(next, lastBrowser)) return;
       lastBrowser = next;
-      touched.browser = true;
+      touch("browser");
       if (loaded) pushAll();
     });
 
@@ -90,7 +106,7 @@ export function useDeviceSettingsSync(enabled: boolean): void {
         if (cancelled) return;
         loaded = true;
         applying = true;
-        // A change made while the request was in flight is newer than the account's copy.
+        // An unconfirmed edit, from this load or an earlier one, is newer than the account's copy.
         if (remote.interfaceScale !== null && !touched.scale)
           useInterfaceScaleStore.getState().setScale(remote.interfaceScale);
         if (remote.browser && !touched.browser)

@@ -47,18 +47,24 @@ async function push() {
 			await writeBackgroundSync({ sha256 });
 	}
 	const { blob: _blob, ...adjustments } = value;
-	const record = await saveChatBackgroundAdjustments(adjustments).catch(
-		async (error: unknown) => {
+	const save = () =>
+		saveChatBackgroundAdjustments(adjustments).catch(async (error: unknown) => {
 			// Another browser removed the image in between: upload it again next time.
 			await writeBackgroundSync({ sha256: null });
 			throw error;
-		},
-	);
+		});
+	let record = await save();
+	if (record.image?.sha256 !== sha256) {
+		// Another browser replaced the image since this one uploaded; this browser's edit wins.
+		sha256 = (await saveChatBackgroundImage(value.blob)).image?.sha256 ?? null;
+		record = await save();
+	}
 	if (changes === started)
 		await writeBackgroundSync({ dirty: false, updatedAt: record.updatedAt, sha256 });
 }
 
 async function pull() {
+	const started = changes;
 	await hydrateBackground();
 	const [remote, sync] = await Promise.all([
 		loadChatBackground(),
@@ -69,12 +75,14 @@ async function pull() {
 	if (plan === "push") return push();
 	if (plan === "keep") return;
 	const stamp = { updatedAt: remote.updatedAt, sha256: remote.image?.sha256 ?? null };
+	// An edit made while this ran is newer than the account's copy; its own push follows.
 	if (plan === "clear" || !remote.image) {
-		await applyServerBackground(null, stamp);
+		if (changes === started) await applyServerBackground(null, stamp);
 		return;
 	}
 	const blob =
 		plan === "adjust" && local ? local.blob : await loadChatBackgroundImage();
+	if (changes !== started) return;
 	await applyServerBackground(
 		{ ...sanitizeAdjustments(remote.adjustments ?? {}), blob },
 		stamp,
