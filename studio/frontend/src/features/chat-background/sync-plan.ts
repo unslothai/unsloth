@@ -5,7 +5,6 @@ import type { ChatBackgroundRecord } from "@/features/settings/api/device-sync";
 
 export type PullPlan = "push" | "keep" | "clear" | "adjust" | "download";
 
-/** What to do with this browser's background once the account's copy is known. */
 export function planBackgroundPull(
 	remote: Pick<ChatBackgroundRecord, "saved" | "updatedAt" | "image">,
 	sync: { updatedAt: number | null; sha256: string | null; dirty: boolean },

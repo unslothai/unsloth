@@ -25,7 +25,7 @@ function prefsOf(state: object): BrowserPrefs {
 }
 
 const browserPrefs = () => prefsOf(useBrowserPrefsStore.getState());
-// The store's own defaults, from before it read this browser's saved copy.
+// Defaults from before the store read this browser's saved copy.
 const DEFAULT_BROWSER_PREFS = prefsOf(useBrowserPrefsStore.getInitialState());
 
 /** Keeps only known fields whose type matches the default, so a stale record cannot break the store. */
@@ -47,7 +47,6 @@ function sameBrowserPrefs(a: BrowserPrefs, b: BrowserPrefs): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** Interface scale, Browser tab preferences and the chat background follow the account, not the origin. */
 export function useDeviceSettingsSync(enabled: boolean): void {
   useEffect(() => {
     if (!enabled) return;

@@ -22,7 +22,7 @@ let revision = 0;
 let committed: ChatBackgroundValue | null = null;
 let writes: Promise<unknown> = Promise.resolve();
 let hydration: Promise<void> | undefined;
-/** What the server last confirmed for this browser's copy; `dirty` = a local edit it has not seen. */
+/** `dirty`: a local edit the server has not seen. */
 export type BackgroundSyncState = {
 	updatedAt: number | null;
 	sha256: string | null;

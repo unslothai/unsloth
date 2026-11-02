@@ -81,7 +81,6 @@ async function pull() {
 	);
 }
 
-/** Keeps the background with the account, so another browser or origin shows the same one. */
 export function startChatBackgroundSync(): () => void {
 	setBackgroundChangeListener(() => {
 		changes++;
