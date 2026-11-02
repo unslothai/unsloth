@@ -24,7 +24,6 @@ function closingParen(text: string, from: number): number {
   return -1;
 }
 
-// -1 inside another pseudo-class.
 function selectorStart(text: string, at: number): number {
   let depth = 0;
   for (let i = at - 1; i >= 0; i--) {

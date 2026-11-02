@@ -6514,8 +6514,7 @@ html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper
   background-color: var(--glass-control-pill);
   box-shadow: var(--glass-control-rim);
 }
-/* Translucent hovers stack: a lit row shell and its button would show two pills. Focus and open
-   match the button itself: a :has() over this [class*] subject restyles the whole app on every mount. */
+/* A lit row shell and its button would stack two translucent pills. No :has() over this [class*] subject. */
 html[data-glass] [class*="hover:bg-sidebar-accent"]:is(:hover, .bg-sidebar-accent) [class*="hover:bg-sidebar-accent"],
 html[data-glass] [class*="hover:bg-sidebar-accent"] [class*="hover:bg-sidebar-accent"]:is(:focus-visible, [data-state="open"]) {
   background-color: transparent;

@@ -156,7 +156,7 @@ export const TurnNavigator: FC<{
 });
 TurnNavigator.displayName = "TurnNavigator";
 
-// mounts the rail once the thread's progressive mounts finish, so it never competes with them
+// after the progressive mounts, so the rail never competes with them
 const TurnRailGate: FC<{
   viewportRef: RefObject<HTMLElement | null>;
 }> = ({ viewportRef }) => {
@@ -463,12 +463,11 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       const next = `linear-gradient(to bottom, transparent, #000 ${fade(top)}, #000 calc(100% - ${fade(railRange - top)}), transparent)`;
       if (next !== mask) {
         mask = next;
-        // prefixed for older WebKit (Tauri on macOS and Linux)
         rail.style.setProperty("-webkit-mask-image", next);
         rail.style.setProperty("mask-image", next);
       }
     };
-    // reads before writes, no-op writes skipped: one layout per frame (autoscroll, resize drag)
+    // reads before writes, no-op writes skipped: one layout per frame
     const sync = () => {
       frame = 0;
       const scrollTop = viewport.scrollTop;
@@ -479,8 +478,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
         const box = viewport.getBoundingClientRect();
         const anchorBox = anchor.getBoundingClientRect();
         const centre = anchorBox.top;
-        // scroll bar space left of the column (both-edges gutter, or thread-gutter.ts's shift):
-        // the rail stays by the panel's edge when the OS switches overlay and classic scroll bars
+        // from the panel edge, so switching overlay and classic scroll bars never moves the rail
         const edge = Math.max(
           0,
           anchorBox.left -
