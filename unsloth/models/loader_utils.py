@@ -2063,8 +2063,7 @@ def _drop_fp8_dequantize_conversions(model):
         return tuple(p[:-1] if p.endswith("$") else p for p in patterns)
 
     def _sources(patterns):
-        # The dequantizing copy anchors `.weight` sources with `$` and adds `.weight_scale_inv$` ones
-        # (and `.activation_scale$` ones on transformers >= 5.21).
+        # Ignore the scale companions added by the dequantizing converter.
         patterns = [p[:-1] if p.endswith("$") else p for p in patterns or []]
         return tuple(
             sorted(
