@@ -8,18 +8,37 @@ import type {
   HighlightResult,
   ThemeInput,
 } from "@streamdown/code";
-import {
-  type BundledLanguage,
-  bundledLanguages,
-  bundledLanguagesInfo,
-  createHighlighter,
-  type GrammarState,
-  type ThemedToken,
-} from "shiki";
+import type { GrammarState, ThemedToken } from "shiki";
+import { createBundledHighlighter } from "shiki/core";
 import {
   createJavaScriptRegexEngine,
   defaultJavaScriptRegexConstructor,
 } from "shiki/engine/javascript";
+import {
+  type BundledLanguage,
+  bundledLanguages,
+  bundledLanguagesInfo,
+} from "shiki/langs";
+
+// The only themes ever named: the defaults below, and Streamdown's own default (tool cells and
+// previews that pass no theme). Every other caller passes a theme object, which needs no entry.
+// shiki's full themes map is one lazy chunk per bundled theme, none of them reachable.
+type NamedTheme = "github-light" | "github-dark";
+const NAMED_THEMES = {
+  "github-light": () => import("@shikijs/themes/github-light"),
+  "github-dark": () => import("@shikijs/themes/github-dark"),
+};
+
+// shiki's own createHighlighter, minus its default Oniguruma engine: every call below passes the
+// JavaScript engine, so the WASM engine never ran and only cost startup bytes.
+const createHighlighter = createBundledHighlighter<
+  BundledLanguage,
+  NamedTheme
+>({
+  langs: bundledLanguages,
+  themes: NAMED_THEMES,
+  engine: () => createJavaScriptRegexEngine({ forgiving: true }),
+});
 
 // Fence tags shiki does not alias: lower-cased input to canonical shiki id.
 const LANGUAGE_ALIAS_OVERRIDES: Record<string, BundledLanguage> = {
