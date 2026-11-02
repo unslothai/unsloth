@@ -123,6 +123,27 @@ def test_studio_runtime_messages_classify(tmp_path, monkeypatch):
     assert newer.code == "family_unknown_to_runtime" and "Model M" in newer.message
 
 
+def test_estimate_uses_measured_family_overhead_only_up_to_the_measured_size():
+    gb = 1024**3
+    generic = af.estimate_resident_gb(3 * gb)
+    assert generic == af.estimate_resident_gb(3 * gb, "qwen3_tts") == 9.0
+    assert af.estimate_resident_gb(3 * gb, None) == generic
+    assert af.estimate_resident_gb(3 * gb, "new") == generic
+    # Peak grows with the input, so it keeps the generic formula.
+    assert af.estimate_resident_gb(3 * gb, "vibevoice") == generic
+    assert af.estimate_resident_gb(3 * gb, "chatterbox") == 6.5
+    assert af.estimate_resident_gb(int(4.4 * gb), "voxtral_tts") == 6.4
+    # Past the largest package measured for a family (a bigger model of it), the generic formula.
+    assert af.estimate_resident_gb(8 * gb, "voxtral_tts") == af.estimate_resident_gb(8 * gb) == 21.5
+
+
+def test_smaller_variants_estimate_with_the_family(monkeypatch):
+    model = replace(_model(sizes = (6, 3, 1), current = 0), family = "chatterbox")
+    rows = af.smaller_variants(model)
+    assert [(row["label"], row["estimate_gb"]) for row in rows] == [("Q3", 6.5), ("Q1", 4.5)]
+    assert [row["label"] for row in af.smaller_variants(model, free_gb = 7.3)] == ["Q3", "Q1"]
+
+
 def test_oom_lists_smaller_variants_and_offload_options(monkeypatch):
     from core.inference import audio_cpp_models as models
 

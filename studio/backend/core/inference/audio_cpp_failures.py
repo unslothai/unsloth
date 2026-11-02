@@ -134,10 +134,26 @@ def attach_failure(exc: BaseException, failure: Optional[AudioCppFailure]) -> Ba
     return exc
 
 
-def estimate_resident_gb(size_bytes: int) -> float:
+# family -> (GB over the weights, largest package GB measured). Peak CUDA use on audio.cpp v0.9.3
+# reading ~1,250 words, plus about 1 GB: Chatterbox q8 4.2 / f16 4.7, Higgs Audio v3 4B q8 5.7,
+# Voxtral 4B q8 5.3. Larger packages keep the generic formula. Not listed: families whose peak
+# grows with the input, e.g. VibeVoice 1.5B q8 (5.7 GB at ~300 words, 12 GB at ~1,250).
+_MEASURED_OVERHEAD_GB = {
+    "chatterbox": (3.5, 3.5),
+    "higgs_audio_tts": (2.0, 4.8),
+    "voxtral_tts": (2.0, 4.4),
+}
+
+
+def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float:
     """Resident GPU memory for an audio.cpp package: weights plus graph and cache buffers.
-    Measured TTS peaks run about 3x the q8 weights (Qwen3-TTS 0.6B: 1.9 GB file, 5.9 GB peak)."""
-    return round(size_bytes / (1024**3) * 2.5 + 1.5, 2)
+    Generic: Qwen3-TTS peaks near 3x its weights at the 8192-token cap (1.7B q8: 2.6 GB file,
+    7.5 GB peak); families measured far below that use their own overhead."""
+    weights_gb = size_bytes / (1024**3)
+    overhead_gb, measured_up_to_gb = _MEASURED_OVERHEAD_GB.get(family or "", (None, 0.0))
+    if overhead_gb is not None and weights_gb <= measured_up_to_gb:
+        return round(weights_gb + overhead_gb, 2)
+    return round(weights_gb * 2.5 + 1.5, 2)
 
 
 def smaller_variants(
@@ -160,7 +176,7 @@ def smaller_variants(
         extra += found.size_bytes if found is not None else 0
     rows = []
     for variant in sorted(model.variants, key = lambda v: v.size_bytes, reverse = True):
-        estimate = estimate_resident_gb(variant.size_bytes + extra)
+        estimate = estimate_resident_gb(variant.size_bytes + extra, getattr(model, "family", None))
         if not 0 < variant.size_bytes < model.size_bytes or (
             free_gb is not None and estimate > free_gb
         ):

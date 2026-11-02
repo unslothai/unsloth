@@ -16155,7 +16155,9 @@ async def _preflight_native_audio_placement(
             # Umbrella id: size from the one variant it loads, not repository bytes.
             audio_cpp_model = getattr(config, "audio_cpp", None)
             if audio_cpp_model is not None:
-                required_gb = audio_cpp_resident_gb(audio_cpp_model.size_bytes)
+                required_gb = audio_cpp_resident_gb(
+                    audio_cpp_model.size_bytes, audio_cpp_model.family
+                )
         elif len(targets) > 1:
             required_gb = 0.0
             for target in targets:
