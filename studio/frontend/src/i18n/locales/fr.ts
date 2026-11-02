@@ -2518,7 +2518,7 @@ export const fr = {
         apiDescription: "Voyez ce que les autres applications envoient à l'API de ce serveur dès son arrivée.",
         summary: "Requêtes en cours, erreurs et utilisation des jetons",
         status: "{active} actives · {recent} récentes · {model}",
-        noModelLoaded: "aucun modèle chargé",
+        noModelLoaded: "Aucun modèle chargé",
         autoOpen: "Afficher automatiquement le moniteur flottant",
         autoOpenDescription:
           "Ouvre un petit panneau lorsque l’API reçoit du trafic.",
@@ -2540,6 +2540,21 @@ export const fr = {
         gpuLoad: "Charge GPU",
         temperature: "Température",
         power: "Puissance",
+        memory: "Mémoire",
+        gpuInUse: "Utilisée par le GPU",
+        availableForModels: "Disponible pour les modèles",
+        refreshRate: "Fréquence d'actualisation",
+        refreshRateDescription: "Fréquence à laquelle le moniteur flottant lit l'utilisation de la mémoire et du GPU lorsqu'il est ouvert.",
+        refreshEvery: "Toutes les {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Autres apps",
+        otherInUse: "Autre usage",
+        freeLabel: "Libre",
+        unslothApp: "App Unsloth",
+        unslothShare: "Afficher la part d'Unsloth",
+        unslothShareDescription: "Répartit la mémoire entre Unsloth, les autres apps et la mémoire libre.",
+        modelBreakdown: "Détail par modèle",
+        modelBreakdownDescription: "Répartit la part d'Unsloth dans la barre de mémoire entre chaque modèle chargé et le reste de l'app.",
       },
       gpu: {
         title: "Périphériques GPU",
@@ -5195,6 +5210,7 @@ export const fr = {
     monitor: {
       dragHandleLabel: "Déplacer le moniteur en direct. Les touches fléchées le déplacent légèrement, un double-clic le réinitialise.",
       reconnecting: "Reconnexion...",
+      resizeHint: "Faites glisser un côté ou un coin pour changer la largeur. Double-cliquez pour la rétablir.",
     },
   },
   projectsPage: {

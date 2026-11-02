@@ -2520,7 +2520,7 @@ export const de = {
         apiDescription: "Sieh, was andere Apps an die API dieses Servers senden, sobald es ankommt.",
         summary: "Aktive Anfragen, Fehler und Token-Nutzung",
         status: "Aktiv: {active} · kürzlich: {recent} · {model}",
-        noModelLoaded: "kein Modell geladen",
+        noModelLoaded: "Kein Modell geladen",
         autoOpen: "Schwebenden Monitor automatisch anzeigen",
         autoOpenDescription:
           "Öffnet ein kleines Fenster, wenn API-Aktivität eingeht.",
@@ -2542,6 +2542,21 @@ export const de = {
         gpuLoad: "GPU-Last",
         temperature: "Temperatur",
         power: "Leistung",
+        memory: "Arbeitsspeicher",
+        gpuInUse: "Von der GPU belegt",
+        availableForModels: "Für Modelle verfügbar",
+        refreshRate: "Aktualisierungsrate",
+        refreshRateDescription: "Wie oft der schwebende Monitor Speicher- und GPU-Auslastung liest, solange er geöffnet ist.",
+        refreshEvery: "Alle {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Andere Apps",
+        otherInUse: "Sonstige Nutzung",
+        freeLabel: "Frei",
+        unslothApp: "Unsloth-App",
+        unslothShare: "Anteil von Unsloth anzeigen",
+        unslothShareDescription: "Teilt den Speicher in Unsloth, andere Apps und freien Speicher auf.",
+        modelBreakdown: "Nach Modell aufschlüsseln",
+        modelBreakdownDescription: "Teilt den Anteil von Unsloth im Speicherbalken in jedes geladene Modell und den Rest der App auf.",
       },
       gpu: {
         title: "GPU-Geräte",
@@ -5185,6 +5200,7 @@ export const de = {
     monitor: {
       dragHandleLabel: "Live-Monitor verschieben. Mit den Pfeiltasten feinjustieren, per Doppelklick zurücksetzen.",
       reconnecting: "Verbindung wird wiederhergestellt...",
+      resizeHint: "Zum Ändern der Breite an einer Seite oder Ecke ziehen. Doppelklick setzt sie zurück.",
     },
   },
   projectsPage: {

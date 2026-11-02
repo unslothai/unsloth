@@ -2503,7 +2503,7 @@ export const ptBR = {
         apiDescription: "Veja o que outros apps enviam para a API deste servidor assim que chega.",
         summary: "Solicitações ativas, erros e uso de tokens",
         status: "{active} ativas · {recent} recentes · {model}",
-        noModelLoaded: "nenhum modelo carregado",
+        noModelLoaded: "Nenhum modelo carregado",
         autoOpen: "Mostrar o monitor flutuante automaticamente",
         autoOpenDescription:
           "Abre um pequeno painel quando chega tráfego da API.",
@@ -2525,6 +2525,21 @@ export const ptBR = {
         gpuLoad: "Carga da GPU",
         temperature: "Temperatura",
         power: "Consumo",
+        memory: "Memória",
+        gpuInUse: "Em uso pela GPU",
+        availableForModels: "Disponível para modelos",
+        refreshRate: "Taxa de atualização",
+        refreshRateDescription: "Com que frequência o monitor flutuante lê o uso de memória e GPU enquanto está aberto.",
+        refreshEvery: "A cada {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Outros apps",
+        otherInUse: "Outro uso",
+        freeLabel: "Livre",
+        unslothApp: "App do Unsloth",
+        unslothShare: "Mostrar a parte do Unsloth",
+        unslothShareDescription: "Divide a memória entre o que o Unsloth usa, o que outros apps usam e o que está livre.",
+        modelBreakdown: "Detalhar por modelo",
+        modelBreakdownDescription: "Divide a parte do Unsloth na barra de memória entre cada modelo carregado e o restante do app.",
       },
       gpu: {
         title: "Dispositivos de GPU",
@@ -5140,6 +5155,7 @@ export const ptBR = {
     monitor: {
       dragHandleLabel: "Mover o monitor ao vivo. As setas do teclado o deslocam um pouco; clique duplo o redefine.",
       reconnecting: "Reconectando...",
+      resizeHint: "Arraste uma lateral ou um canto para mudar a largura. Clique duas vezes para redefinir.",
     },
   },
   projectsPage: {
