@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const ru = {
+  turns: {
+    label: "Ход {number}",
+    bookmarkedLabel: "Ход {number}, в закладках",
+    bookmark: "Добавить ход в закладки",
+    removeBookmark: "Убрать закладку",
+    navigator: "Ходы",
+  },
   chatBackground: {
     noBackground: "Без фона",
     sizing: "Масштабирование изображения",
@@ -2956,6 +2963,8 @@ export const ru = {
         "подробности скорость токены статистика слои выгрузка verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
+      turnNavigation: "Навигация по ходам",
+      turnNavigationDescription: "Показывает ваши сообщения полосой у левого края длинных чатов. Наведите, чтобы увидеть ход, нажмите, чтобы перейти к нему, и добавляйте закладки, чтобы быстро находить ходы.",
       composerAtBottom: "Поле ввода внизу",
       composerAtBottomDescription: "Начинать новые чаты с полем ввода внизу страницы, а не посередине.",
       projectAttachments: "Общий доступ к файлам в проекте",

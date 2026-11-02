@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const nl = {
+  turns: {
+    label: "Beurt {number}",
+    bookmarkedLabel: "Beurt {number}, met bladwijzer",
+    bookmark: "Bladwijzer voor beurt",
+    removeBookmark: "Bladwijzer verwijderen",
+    navigator: "Beurten",
+  },
   chatBackground: {
     noBackground: "Geen achtergrond",
     sizing: "Afbeeldingsgrootte",
@@ -3233,6 +3240,8 @@ export const nl = {
       inlineEditResponse: "Antwoord bewerken bij antwoorden",
       inlineEditResponseDescription:
         "Antwoord bewerken bij elk antwoord tonen, in plaats van in het menu Meer.",
+      turnNavigation: "Beurtnavigatie",
+      turnNavigationDescription: "Toont je berichten als een balk aan de linkerrand van lange chats. Wijs een beurt aan voor een voorbeeld, klik om erheen te gaan en zet bladwijzers om beurten terug te vinden.",
       composerAtBottom: "Invoerveld onderaan",
       composerAtBottomDescription:
         "Nieuwe chats starten met het invoerveld onderaan de pagina in plaats van in het midden.",

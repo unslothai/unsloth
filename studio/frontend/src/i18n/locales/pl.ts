@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const pl = {
+  turns: {
+    label: "Tura {number}",
+    bookmarkedLabel: "Tura {number}, z zakładką",
+    bookmark: "Dodaj zakładkę do tury",
+    removeBookmark: "Usuń zakładkę",
+    navigator: "Tury",
+  },
   chatBackground: {
     noBackground: "Brak tła",
     sizing: "Skalowanie obrazu",
@@ -3228,6 +3235,8 @@ export const pl = {
       inlineEditResponse: "Edycja odpowiedzi przy odpowiedziach",
       inlineEditResponseDescription:
         "Pokazuj opcję Edytuj odpowiedź przy każdej odpowiedzi zamiast w menu Więcej.",
+      turnNavigation: "Nawigacja po turach",
+      turnNavigationDescription: "Pokazuje Twoje wiadomości jako pasek przy lewej krawędzi długich czatów. Najedź, aby zobaczyć podgląd tury, kliknij, aby do niej przejść, i dodaj zakładkę, aby łatwo ją znaleźć.",
       composerAtBottom: "Pole wiadomości na dole",
       composerAtBottomDescription:
         "Rozpoczynaj nowe czaty z polem wiadomości na dole strony zamiast na środku.",

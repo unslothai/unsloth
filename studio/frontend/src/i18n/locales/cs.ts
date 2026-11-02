@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const cs = {
+  turns: {
+    label: "Kolo {number}",
+    bookmarkedLabel: "Kolo {number}, se záložkou",
+    bookmark: "Přidat záložku ke kolu",
+    removeBookmark: "Odebrat záložku",
+    navigator: "Kola",
+  },
   chatBackground: {
     noBackground: "Bez pozadí",
     sizing: "Velikost obrázku",
@@ -3209,6 +3216,8 @@ export const cs = {
       inlineEditResponse: "Upravit odpověď přímo u odpovědí",
       inlineEditResponseDescription:
         "Zobrazovat Upravit odpověď u každé odpovědi místo v nabídce Další.",
+      turnNavigation: "Navigace v kolech",
+      turnNavigationDescription: "Zobrazí vaše zprávy jako lištu u levého okraje dlouhých chatů. Najetím zobrazíte náhled kola, kliknutím na něj přejdete a záložkami si kola označíte.",
       composerAtBottom: "Pole zprávy dole",
       composerAtBottomDescription:
         "Zahajovat nové chaty s polem zprávy v dolní části stránky místo uprostřed.",

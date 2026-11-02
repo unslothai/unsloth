@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const hi = {
+  turns: {
+    label: "टर्न {number}",
+    bookmarkedLabel: "टर्न {number}, बुकमार्क किया गया",
+    bookmark: "टर्न बुकमार्क करें",
+    removeBookmark: "बुकमार्क हटाएँ",
+    navigator: "टर्न",
+  },
   chatBackground: {
     noBackground: "कोई पृष्ठभूमि नहीं",
     sizing: "छवि का आकार",
@@ -2952,6 +2959,8 @@ export const hi = {
         "विवरण गति टोकन आँकड़े परतें verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
       inlineEditResponseDescription: "जवाब संपादित करें को “और” मेन्यू के बजाय हर जवाब पर दिखाएँ।",
+      turnNavigation: "टर्न नेविगेशन",
+      turnNavigationDescription: "लंबी चैट के बाएँ किनारे पर आपके संदेशों की एक पट्टी दिखाएँ। किसी टर्न का प्रीव्यू देखने के लिए होवर करें, उस पर जाने के लिए क्लिक करें, और बाद में ढूँढने के लिए बुकमार्क करें।",
       composerAtBottom: "कंपोज़र नीचे",
       composerAtBottomDescription: "नई चैट में कंपोज़र को पेज के बीच के बजाय नीचे दिखाएँ।",
       projectAttachments: "प्रोजेक्ट भर में फ़ाइलें साझा करें",

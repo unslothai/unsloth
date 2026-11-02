@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const ptBR = {
+  turns: {
+    label: "Turno {number}",
+    bookmarkedLabel: "Turno {number}, com marcador",
+    bookmark: "Marcar turno",
+    removeBookmark: "Remover marcador",
+    navigator: "Turnos",
+  },
   chatBackground: {
     noBackground: "Sem fundo",
     sizing: "Dimensionamento da imagem",
@@ -2957,6 +2964,8 @@ export const ptBR = {
         "detalhes geração velocidade tokens estatísticas camadas especialistas desenvolvedor verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Editar resposta nas respostas",
       inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
+      turnNavigation: "Navegação por turnos",
+      turnNavigationDescription: "Mostra suas mensagens como uma barra na borda esquerda de chats longos. Passe o cursor para ver um turno, clique para ir até ele e marque turnos para encontrá-los depois.",
       composerAtBottom: "Caixa de texto embaixo",
       composerAtBottomDescription: "Comece novas conversas com a caixa de texto na parte de baixo da página, não no meio.",
       projectAttachments: "Compartilhar arquivos em todo o projeto",

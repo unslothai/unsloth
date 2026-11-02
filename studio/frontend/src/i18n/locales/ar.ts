@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const ar = {
+  turns: {
+    label: "الجولة {number}",
+    bookmarkedLabel: "الجولة {number}، عليها إشارة مرجعية",
+    bookmark: "إضافة إشارة مرجعية للجولة",
+    removeBookmark: "إزالة الإشارة المرجعية",
+    navigator: "الجولات",
+  },
   chatBackground: {
     noBackground: "بدون خلفية",
     sizing: "تحجيم الصورة",
@@ -2943,6 +2950,8 @@ export const ar = {
         "تفاصيل سرعة رموز إحصاءات طبقات ذاكرة verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "تعديل الرد في الردود",
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
+      turnNavigation: "التنقل بين الجولات",
+      turnNavigationDescription: "اعرض رسائلك كشريط على الحافة اليسرى للمحادثات الطويلة. مرّر المؤشر لمعاينة جولة، وانقر للانتقال إليها، وأضف إشارات مرجعية للعثور عليها لاحقًا.",
       composerAtBottom: "حقل الكتابة في الأسفل",
       composerAtBottomDescription: "ابدأ المحادثات الجديدة وحقل الكتابة أسفل الصفحة بدلًا من منتصفها.",
       projectAttachments: "مشاركة الملفات عبر المشروع",

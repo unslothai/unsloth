@@ -322,7 +322,7 @@ test("the build gates every main-document stylesheet and loads the boot script b
 test("the build config and the reload snapshot use the gate", () => {
   assert.match(
     readText("../vite.config.ts"),
-    /plugins: \[react\(\), tailwindcss\(\), childSelectorOrder\(\), viewportMediaGate\(\),/,
+    /plugins: \[react\(\), tailwindcss\(\), childSelectorOrder\(\), hasAnchorOrder\(\), viewportMediaGate\(\),/,
   );
   assert.match(
     readText("../public/reload-snapshot.js"),
