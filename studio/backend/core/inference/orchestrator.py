@@ -214,6 +214,10 @@ _DISPATCH_POLL_INTERVAL = 0.5
 _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
 _CANCELLED_ROWS_GRACE = 5.0
+_SHUTDOWN_CANCEL_GRACE_S = 0.5
+_SHUTDOWN_JOIN_SLICE_S = 0.05
+_SHUTDOWN_READER_IDLE_S = 0.8
+_SHUTDOWN_READER_MAX_S = 5.0
 
 # Transformers TTS only; generous since _ensure_subprocess_alive already catches dead workers.
 _AUDIO_GENERATION_TIMEOUT = 900.0
@@ -445,6 +449,8 @@ class InferenceOrchestrator:
     """Inference backend orchestrator, subprocess-based. Same API surface as InferenceBackend (so
     routes/inference.py needs minimal changes); all heavy ML work happens in a persistent
     subprocess."""
+
+    _replies_read = 0
 
     _load_download_keys: Sequence[str] = ()
 
@@ -855,24 +861,22 @@ class InferenceOrchestrator:
             # Already gone: a nonzero status is an unwaited crash and keeps its replay.
             exitcode = getattr(self._proc, "exitcode", 0) if self._proc is not None else 0
             self._worker_stopped_deliberately = exitcode == 0
+            self._stop_shutdown_drainer()
             self._proc = None
             return True
 
         self._teardown_going_out()
+        if self._drain_event is not None:
+            self._drain_event.set()
         self._cancel_generation()
-        time.sleep(0.5)
-
-        self._drain_queue()
+        self._drain_unread_replies()
 
         try:
             self._cmd_queue.put({"type": "shutdown"})
         except (OSError, ValueError):
             self._teardown_not_sent()
 
-        try:
-            self._proc.join(timeout = timeout)
-        except Exception:
-            pass
+        self._join_worker_draining(timeout + _SHUTDOWN_CANCEL_GRACE_S)
 
         if self._proc is not None and self._proc.is_alive():
             logger.warning("Inference subprocess did not exit gracefully, terminating")
@@ -905,6 +909,10 @@ class InferenceOrchestrator:
             )
             return False
 
+        # Termination can leave a partial queue frame that blocks even get_nowait().
+        if self._proc is not None and self._proc.exitcode == 0:
+            self._let_readers_finish()
+        self._stop_shutdown_drainer()
         # Without this flag every model switch replayed a healthy worker's stderr at ERROR.
         self._worker_stopped_deliberately = True
         self._proc = None
@@ -917,6 +925,135 @@ class InferenceOrchestrator:
         self._reset_worker_scoped_state()
         logger.info("Inference subprocess shut down")
         return True
+
+    def _join_worker_draining(self, timeout: float) -> None:
+        """Join while draining replies: a child exits only once its queue feeder flushes."""
+        proc = self._proc
+        try:
+            if getattr(proc, "sentinel", None) is None:
+                proc.join(timeout = timeout)
+                return
+            now = time.monotonic()
+            deadline = now + max(timeout, 0.0)
+            reader_hard_deadline = now + _SHUTDOWN_READER_MAX_S
+            reader_idle_deadline = now + _SHUTDOWN_READER_IDLE_S
+            seen = self._replies_read
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                proc.join(timeout = min(_SHUTDOWN_JOIN_SLICE_S, remaining))
+                now = time.monotonic()
+                if self._replies_read != seen:
+                    seen = self._replies_read
+                    reader_idle_deadline = now + _SHUTDOWN_READER_IDLE_S
+                abandoned = False
+                if now >= min(reader_hard_deadline, reader_idle_deadline):
+                    with self._mailbox_lock:
+                        for rid, mailbox in tuple(self._direct_mailboxes.items()):
+                            owner = self._request_cancel_events.get(rid)
+                            if owner is None:
+                                continue
+                            owner.set()
+                            self._request_cancel_events.pop(rid, None)
+                            mailbox.put({"type": "gen_done", "request_id": rid})
+                            mailbox.put(
+                                {
+                                    "type": "audio_error",
+                                    "request_id": rid,
+                                    "cancelled": True,
+                                    "error": "Audio generation cancelled",
+                                }
+                            )
+                            self._direct_mailboxes.pop(rid, None)
+                            abandoned = True
+                self._drain_unread_replies()
+                if abandoned:
+                    proc.join(timeout = _SHUTDOWN_JOIN_SLICE_S)
+                if not proc.is_alive():
+                    break
+        except Exception:
+            pass
+
+    def _drain_unread_replies(self) -> None:
+        """Route pending replies unless a direct reader owns the queue."""
+        with self._mailbox_lock:
+            if self._direct_mailboxes:
+                return
+        resp_queue, worker = self._resp_queue, self._proc
+        if resp_queue is None:
+            return
+        state = getattr(self, "_shutdown_drainer", None)
+        if state is not None and state[0] is resp_queue and state[1].is_alive():
+            return
+        stop = threading.Event()
+
+        def drain():
+            try:
+                while not stop.is_set():
+                    with self._mailbox_lock:
+                        if (
+                            self._direct_mailboxes
+                            or self._resp_queue is not resp_queue
+                            or self._proc is not worker
+                        ):
+                            return
+                    try:
+                        resp = resp_queue.get(timeout = _SHUTDOWN_JOIN_SLICE_S)
+                    except queue.Empty:
+                        continue
+                    except (EOFError, OSError, ValueError):
+                        return
+                    rid = resp.get("request_id") if isinstance(resp, dict) else None
+                    with self._mailbox_lock:
+                        if self._resp_queue is not resp_queue or self._proc is not worker:
+                            return
+                        mbox = self._mailboxes.get(rid) if rid else None
+                        if mbox is not None:
+                            mbox.put(resp)
+            finally:
+                if stop.is_set():
+                    reader = getattr(resp_queue, "_reader", None)
+                    if reader is not None:
+                        reader.close()
+
+        thread = threading.Thread(target = drain, daemon = True, name = "inference-shutdown-drain")
+        self._shutdown_drainer = (resp_queue, thread, stop)
+        thread.start()
+
+    def _stop_shutdown_drainer(self) -> None:
+        state = getattr(self, "_shutdown_drainer", None)
+        if state is None:
+            return
+        resp_queue, thread, stop = state
+        stop.set()
+        # A dead producer can leave a partial frame; its parent's writer otherwise prevents EOF.
+        writer = getattr(resp_queue, "_writer", None)
+        if writer is not None:
+            writer.close()
+        thread.join(timeout = _SHUTDOWN_JOIN_SLICE_S * 2)
+        if not thread.is_alive():
+            reader = getattr(resp_queue, "_reader", None)
+            if reader is not None:
+                reader.close()
+        self._shutdown_drainer = None
+
+    def _let_readers_finish(self) -> None:
+        """A stream reports a worker crash once the handle swaps, so let it read its tail first."""
+        now = time.monotonic()
+        hard_deadline = now + _SHUTDOWN_READER_MAX_S
+        idle_deadline = now + _SHUTDOWN_READER_IDLE_S
+        seen = self._replies_read
+        while now < min(hard_deadline, idle_deadline):
+            with self._mailbox_lock:
+                if not self._mailboxes and not self._direct_mailboxes:
+                    return
+            self._drain_unread_replies()
+            time.sleep(0.02)
+            now = time.monotonic()
+            if self._replies_read != seen:
+                seen = self._replies_read
+                idle_deadline = now + _SHUTDOWN_READER_IDLE_S
 
     @staticmethod
     def _wait_for_worker_vram_settle(
@@ -1130,6 +1267,7 @@ class InferenceOrchestrator:
 
     def _observe_response(self, resp, worker):
         """Retire ``worker`` if its Metal queue is dead; nothing else reaps it."""
+        self._replies_read += 1
         detail = resp.get("error") or ""
         if worker is None or not is_metal_queue_dead(detail):
             return resp
@@ -2188,7 +2326,6 @@ class InferenceOrchestrator:
             worker_shutdown_at = 0.0
             if self._ensure_subprocess_alive():
                 self._cancel_generation()
-                time.sleep(0.3)
                 if self._shutdown_subprocess() is False:
                     # Worker survived kill (wedged CUDA syscall); do not spawn a second over its GPU memory.
                     raise RuntimeError(
