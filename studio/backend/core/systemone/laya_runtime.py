@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 import gc
 import importlib.util
 import logging
@@ -59,6 +60,8 @@ TRAINING_POLL_S = 2.0
 IDLE_UNLOAD_S = 300.0
 # Binaries (path, mtime) whose server answered without a "decisions" output.
 _incapable: set[tuple[str, int]] = set()
+_unloadable: set = set()
+_LAYA_OPTION_TOKENS = 48
 
 
 class Unavailable(Exception):
@@ -315,15 +318,15 @@ def _mlx_choice(
 
 
 def _native_target(checkpoint: Checkpoint) -> Checkpoint | None:
-    """The llama.cpp form of an entry: ggml-org's GGUF for a stock Clef, a current export for a folder, a GGUF entry itself."""
+    """The llama.cpp form of an entry: ggml-org's GGUF for a stock Clef, a current export for a Clef or Laya folder, a GGUF entry itself."""
     if checkpoint.layout == GGUF:
         return checkpoint
-    if checkpoint.layout != "clef" or _is_native(checkpoint):
+    if _is_native(checkpoint):
         return None
     if checkpoint.is_local:
         from .gguf_export_contract import served_files
 
-        files = served_files(Path(checkpoint.source).expanduser(), "clef")
+        files = served_files(Path(checkpoint.source).expanduser(), checkpoint.layout)
         if files is None:
             return None
         return dataclasses.replace(
@@ -357,7 +360,7 @@ def _native_files(checkpoint: Checkpoint, local_only: bool) -> tuple[Path, Path 
     if checkpoint.is_local:
         from .gguf_export_contract import served_files
 
-        files = served_files(Path(checkpoint.source).expanduser(), "clef")
+        files = served_files(Path(checkpoint.source).expanduser(), checkpoint.layout)
         if files is None:
             raise FileNotFoundError(f"No current GGUF export in {checkpoint.source}")
         return files[1], files[2]
@@ -427,6 +430,8 @@ def _native_unavailable(checkpoint: Checkpoint, native: Checkpoint | None) -> st
         return "llama-server is not installed."
     if _binary_key(binary) in _incapable:
         return "This llama.cpp build cannot serve decision models; update llama.cpp in Unsloth."
+    if (_binary_key(binary), native) in _unloadable:
+        return "This llama.cpp build cannot load this GGUF export."
     return None
 
 
@@ -443,7 +448,7 @@ def select(
     Auto takes llama.cpp when the entry has a GGUF and Studio's llama-server serves decisions, else PyTorch;
     on Apple Silicon it answers through unsloth-zoo's MLX engine first.
     Images are read by llama.cpp, and by MLX for a Clef. Audio is heard only by MLX, for a Clef with an audio tower.
-    Laya is always served by PyTorch, a GGUF entry otherwise by llama.cpp.
+    Laya is served by PyTorch unless llama.cpp is chosen for a folder with a current export, a GGUF entry otherwise by llama.cpp.
     """
     from utils.systemone_settings import get_backend
 
@@ -483,13 +488,14 @@ def select(
         return mlx, None
     if checkpoint.layout == GGUF:
         return _select_gguf(checkpoint, questions, preference or get_backend()), None
+    preference = preference or get_backend()
     if checkpoint.layout != "clef":
         if images:
             raise Unavailable(
                 400, "api_usage_error", "Images need a Clef model; Laya reads text only."
             )
-        return checkpoint, None
-    preference = preference or get_backend()
+        if preference != LLAMA_CPP or _native_target(checkpoint) is None:
+            return checkpoint, None
     if preference == "pytorch":
         if images:
             raise Unavailable(
@@ -642,9 +648,13 @@ def mlx_ready(checkpoint) -> bool:
     )
 
 
+def has_native_form(checkpoint) -> bool:
+    return isinstance(checkpoint, Checkpoint) and _native_target(checkpoint) is not None
+
+
 def native_ready(checkpoint) -> bool:
-    """Whether llama.cpp could serve this Clef or GGUF entry here under the runtime setting."""
-    if not isinstance(checkpoint, Checkpoint) or checkpoint.layout == "laya":
+    """Whether llama.cpp could serve this entry here under the runtime setting."""
+    if not has_native_form(checkpoint):
         return False
     from utils.systemone_settings import get_backend
 
@@ -670,7 +680,7 @@ def input_modalities(checkpoint) -> list[str]:
 def _native_reads_images(native: Checkpoint) -> bool:
     if native.is_local:
         from .gguf_export_contract import served_files
-        files = served_files(Path(native.source).expanduser(), "clef")
+        files = served_files(Path(native.source).expanduser(), native.layout)
         return files is not None and files[2] is not None
     return bool(GGUF_COMPANIONS[native.name].mmproj)
 
@@ -1166,12 +1176,109 @@ def _build_laya(
     return agent, str(agent.device.type)
 
 
+def _is_laya_export(checkpoint: Checkpoint) -> bool:
+    return checkpoint.layout == "laya" and _is_native(checkpoint)
+
+
+def _stock_laya(checkpoint) -> bool:
+    return checkpoint.layout == "laya" and not checkpoint.is_local
+
+
+def _laya_max_len(checkpoint: Checkpoint) -> int:
+    import json
+    config = Path(checkpoint.source).expanduser() / "rl_agent_config.json"
+    return int(json.loads(config.read_text(encoding = "utf-8")).get("max_len", 512))
+
+
+@functools.lru_cache(maxsize = 4)
+def _export_tokenizer(checkpoint: Checkpoint):
+    import json
+
+    from tokenizers import Tokenizer
+
+    folder = Path(checkpoint.source).expanduser() / "tokenizer"
+    mask = json.loads((folder / "tokenizer_config.json").read_text(encoding = "utf-8"))["mask_token"]
+    return Tokenizer.from_file(str(folder / "tokenizer.json")), mask
+
+
+def _export_criterion(value) -> str:
+    import json
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii = False, separators = (", ", ": "), default = str)
+
+
+def _export_options(question: dict[str, Any]) -> list[str]:
+    kind, criteria = question["type"], question.get("criteria")
+    if kind == "choice":
+        return [
+            key if value in (None, "") else f"{key}: {_export_criterion(value)}"
+            for key, value in criteria.items()
+        ]
+    if kind == "score":
+        return [f"level {i}: {_export_criterion(c)}" for i, c in enumerate(criteria)]
+    criteria = criteria or {}
+    no, yes = criteria.get("false"), criteria.get("true")
+    return [
+        f"false: {_export_criterion(no)}"
+        if no not in (None, "")
+        else "false: no, the statement does not hold",
+        f"true: {_export_criterion(yes)}"
+        if yes not in (None, "")
+        else "true: yes, the statement holds",
+    ]
+
+
+def _refuse_cut_questions(checkpoint: Checkpoint, questions: dict[str, dict[str, Any]]) -> None:
+    """llama.cpp cuts what does not fit Laya's question budget without saying so; refused here as PyTorch refuses it."""
+    import json
+
+    from .native_worker import resolve_binary
+
+    try:
+        tokenizer, mask = _export_tokenizer(checkpoint)
+    except Exception as exc:
+        _unloadable.add((_binary_key(resolve_binary()), checkpoint))
+        raise Unavailable(
+            503, "model_unavailable", f"Could not read the tokenizer of {checkpoint.name}: {exc}"
+        ) from None
+    count = lambda text: len(
+        tokenizer.encode(text.replace(mask, " "), add_special_tokens = False).ids
+    )
+    config = Path(checkpoint.source).expanduser() / "rl_agent_config.json"
+    head_max_len = int(json.loads(config.read_text(encoding = "utf-8")).get("head_max_len", 192))
+    for name, question in questions.items():
+        sizes = [
+            1 + min(_LAYA_OPTION_TOKENS, count(f" {option}"))
+            for option in _export_options(question)
+        ]
+        budget = head_max_len - 16
+        if sum(sizes) > budget and max(sizes) > max(4, budget // len(sizes)):
+            problem = f"options would be cut short to fit Laya's {budget}-token option budget. Use fewer or shorter criteria"
+        else:
+            instructions = question.get("instructions") or name
+            if not isinstance(instructions, str):
+                instructions = json.dumps(instructions, ensure_ascii = False)
+            if count(f"{question['type']} question: {instructions}") <= max(
+                8, head_max_len - sum(sizes)
+            ):
+                continue
+            problem = f"instructions would be cut short to fit beside its options in Laya's {head_max_len}-token question budget. Use shorter instructions or fewer criteria"
+        raise Unavailable(422, "invalid_request_error", f"Question {name!r} {problem}.")
+
+
 def _load_native(checkpoint: Checkpoint):
     global _gpu_load
     from core.inference import gpu_arbiter
     from utils.systemone_settings import get_native_ctx
 
-    from .native_worker import NativeClefAgent, NativeError, NativeIncapable, resolve_binary
+    from .native_worker import (
+        NativeClefAgent,
+        NativeError,
+        NativeIncapable,
+        NativeLoadError,
+        resolve_binary,
+    )
 
     # Fetched (pinned revision) before the eviction, so a failed download leaves the resident model serving.
     model, mmproj = _native_files(checkpoint, local_only = False)
@@ -1191,7 +1298,9 @@ def _load_native(checkpoint: Checkpoint):
             checkpoint.name,
             gpu = gpu,
             clef_answers = checkpoint.layout == "clef",
-            ctx = get_native_ctx(),
+            ctx = min(get_native_ctx(), _laya_max_len(checkpoint))
+            if checkpoint.layout == "laya"
+            else get_native_ctx(),
             cancelled = lambda: (gpu and _training_active()) or _unloaded(),
         )
         if gpu and _training_active():
@@ -1202,6 +1311,9 @@ def _load_native(checkpoint: Checkpoint):
     except BaseException as exc:
         if isinstance(exc, NativeIncapable) and (binary := resolve_binary()):
             _incapable.add(_binary_key(binary))
+        if isinstance(exc, NativeLoadError) and _is_laya_export(checkpoint):
+            if binary := resolve_binary():
+                _unloadable.add((_binary_key(binary), checkpoint))
         if gpu:
             gpu_arbiter.release(gpu_arbiter.DECISIONS)
         raise
@@ -1570,7 +1682,7 @@ def _misplaced() -> bool:
 
 
 def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
-    if checkpoint.layout == "laya":
+    if checkpoint.layout == "laya" and not _is_laya_export(checkpoint):
         return
     from .catalog import clef_unsupported_reason
 
@@ -1582,7 +1694,11 @@ def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
         return
     # Clef has no CPU fallback: it waits for the GPU instead of taking it from the run.
     # Only a resident on the GPU: a llama.cpp server on CPU keeps serving during the run.
-    if _loaded is not None and _loaded.layout != "laya" and _device_name not in (None, "cpu"):
+    if (
+        _loaded is not None
+        and (_loaded.layout != "laya" or _is_laya_export(_loaded))
+        and _device_name not in (None, "cpu")
+    ):
         _evict(external = True)
     raise Unavailable(
         503,
@@ -2277,9 +2393,11 @@ def _route(
         hardware.get_device()
     state_images = _state_has_images(state)
     target, reason = select(checkpoint, images, questions, state_images = state_images, audio = audio)
-    if checkpoint.layout != "laya":
+    if not _stock_laya(checkpoint):
         _fallback_reason = reason
     try:
+        if _is_laya_export(target):
+            _refuse_cut_questions(target, questions)
         return _decide(target, state, questions, images, audio)
     except NativeContextOverflow as exc:
         # Auto answers on PyTorch only what its longer window can hold; at equal windows it would refuse too.

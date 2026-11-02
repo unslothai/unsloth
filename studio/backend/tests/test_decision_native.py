@@ -25,6 +25,9 @@ from routes import systemone
 from utils import systemone_settings
 from utils.account_context import OWNER, run_as
 from utils.paths import outputs_root
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
+from tokenizers.pre_tokenizers import Whitespace
 
 _REAL_LOAD = laya_runtime._load_checkpoint
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -329,6 +332,7 @@ def _export(
     quants = ("Q8_0",),
     mmproj = True,
     fingerprint = None,
+    layout = "clef",
 ) -> None:
     directory = folder / contract.EXPORT_DIR
     directory.mkdir(exist_ok = True)
@@ -346,10 +350,10 @@ def _export(
             {
                 "format": contract.FORMAT,
                 "version": 1,
-                "layout": "clef",
+                "layout": layout,
                 "quantizations": list(quants),
                 "files": files,
-                "source_fingerprint": fingerprint or contract.fingerprint(folder, "clef"),
+                "source_fingerprint": fingerprint or contract.fingerprint(folder, layout),
             }
         ),
         encoding = "utf-8",
@@ -1332,12 +1336,198 @@ def test_an_image_that_decodes_to_too_many_pixels_is_refused(home, client, stub)
     assert stub.records("start") == []
 
 
+def _laya_fine_tune(
+    root: Path,
+    name = "laya_run",
+    exported = True,
+) -> Path:
+    folder = root / name
+    (folder / "encoder").mkdir(parents = True)
+    (folder / "tokenizer").mkdir()
+    tokenizer = Tokenizer(WordLevel({"[UNK]": 0}, unk_token = "[UNK]"))
+    tokenizer.pre_tokenizer = Whitespace()
+    tokenizer.save(str(folder / "tokenizer" / "tokenizer.json"))
+    (folder / "tokenizer" / "tokenizer_config.json").write_text(
+        '{"mask_token": "[MASK]"}', encoding = "utf-8"
+    )
+    (folder / "rl_agent_config.json").write_text(
+        '{"max_len": 1024, "head_max_len": 256}', encoding = "utf-8"
+    )
+    (folder / "model.safetensors").write_bytes(b"weights")
+    if exported:
+        _export(folder, mmproj = False, layout = "laya")
+    return folder
+
+
+def _torch_laya(monkeypatch) -> list:
+    loaded = []
+
+    def load(checkpoint):
+        if laya_runtime._is_native(checkpoint):
+            return _REAL_LOAD(checkpoint)
+        loaded.append(checkpoint)
+        return SimpleNamespace(), "cpu"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", load)
+    monkeypatch.setattr(
+        laya_runtime,
+        "_predict",
+        lambda agent, state, questions: (
+            {
+                "answers": {n: {"type": "noul", "noul": 0.5, "confidence": 0.5} for n in questions},
+                "usage": {"input_tokens": 1, "output_tokens": 0},
+            },
+            False,
+        ),
+    )
+    return loaded
+
+
+NOUL = {"q": {"type": "noul", "instructions": "x"}}
+
+
+def test_an_exported_laya_fine_tune_answers_through_llama_cpp(home, client, stub):
+    folder = _laya_fine_tune(home.outputs)
+    settings = _put(client, enabled = True, model = "laya-ft:laya_run", backend = "llama.cpp")
+    assert settings["effective_backend"] == "llama.cpp" and settings["has_gguf_form"] is True
+    assert settings["input_modalities"] == ["text"]
+    response = _post(client, questions = NOUL)
+    assert response.status_code == 200, response.text
+    assert response.headers["x-unsloth-decision-backend"] == "llama.cpp"
+    assert response.json()["answers"]["q"]["noul"] == 0.7
+    argv = stub.records("start")[0]["argv"]
+    assert argv[argv.index("-m") + 1] == str(folder / "gguf" / "model-Q8_0.gguf")
+
+
+def test_a_laya_export_reads_no_more_than_pytorch_serves(home, client, stub):
+    _laya_fine_tune(home.outputs)
+    _put(client, enabled = True, model = "laya-ft:laya_run", backend = "llama.cpp")
+    assert _post(client, questions = NOUL).status_code == 200
+    argv = stub.records("start")[0]["argv"]
+    assert argv[argv.index("-c") + 1] == argv[argv.index("-ub") + 1] == "1024"
+    refused = _post(client, state = "word " * 1100, questions = NOUL)
+    assert refused.status_code == 422 and "at most 1024" in refused.json()["detail"]["message"]
+    assert laya_runtime._loaded.backend == "llama.cpp"
+
+
+def test_auto_keeps_an_exported_laya_fine_tune_on_pytorch(home, client, stub, monkeypatch):
+    loaded = _torch_laya(monkeypatch)
+    _laya_fine_tune(home.outputs)
+    settings = _put(client, enabled = True, model = "laya-ft:laya_run")
+    assert settings["effective_backend"] == "pytorch" and settings["has_gguf_form"] is True
+    response = _post(client, questions = NOUL)
+    assert response.status_code == 200, response.text
+    assert response.headers["x-unsloth-decision-backend"] == "pytorch"
+    assert len(loaded) == 1 and loaded[0].backend == "pytorch"
+    assert stub.records("start") == []
+
+
+def test_a_laya_fine_tune_stays_on_pytorch_without_a_usable_export(home, client, stub, monkeypatch):
+    laya = catalog.fine_tune(f"laya-ft:{_laya_fine_tune(home.outputs).name}")
+    assert laya_runtime.select(laya, preference = "pytorch") == (laya, None)
+    assert laya_runtime.select(laya, preference = "mlx") == (laya, None)
+    plain = catalog.fine_tune(f"laya-ft:{_laya_fine_tune(home.outputs, 'plain', False).name}")
+    assert laya_runtime.select(plain, preference = "llama.cpp") == (plain, None)
+    assert not laya_runtime.native_ready(plain)
+    (Path(laya.source) / "model.safetensors").write_bytes(b"retrained")
+    assert laya_runtime.select(laya) == (laya, None)
+    stock = catalog.CHECKPOINTS["laya-multilingual"]
+    assert laya_runtime.select(stock, preference = "llama.cpp") == (stock, None)
+
+
+def test_a_laya_export_refuses_what_llama_cpp_cannot_take(home, client, stub, monkeypatch):
+    laya = catalog.fine_tune(f"laya-ft:{_laya_fine_tune(home.outputs).name}")
+    gap = {"q": {"type": "score", "instructions": "x", "criteria": ["only"]}}
+    with pytest.raises(laya_runtime.Unavailable):
+        laya_runtime.select(laya, questions = gap, preference = "llama.cpp")
+    monkeypatch.setattr(native_worker, "resolve_binary", lambda: None)
+    with pytest.raises(laya_runtime.Unavailable, match = "not installed"):
+        laya_runtime.select(laya, preference = "llama.cpp")
+
+
+def test_a_laya_export_gives_way_to_a_training_run(home, client, stub, monkeypatch):
+    laya = catalog.fine_tune(f"laya-ft:{_laya_fine_tune(home.outputs).name}")
+    monkeypatch.setattr(laya_runtime, "_native_gpu", lambda: True)
+    forced = laya_runtime.select(laya, preference = "llama.cpp")[0]
+    assert forced.backend == "llama.cpp"
+    home.training = True
+    with pytest.raises(laya_runtime.Unavailable, match = "training run"):
+        laya_runtime._ensure_loading(forced)
+
+
+def test_a_laya_export_llama_cpp_cannot_load_is_refused_and_remembered(home, client, stub):
+    laya = catalog.fine_tune(f"laya-ft:{_laya_fine_tune(home.outputs).name}")
+    _put(client, enabled = True, model = laya.name, backend = "llama.cpp")
+    stub.set_mode("exit")
+    assert _post(client, questions = NOUL).status_code == 503
+    assert len(stub.records("start")) >= 1
+    with pytest.raises(laya_runtime.Unavailable, match = "cannot load"):
+        laya_runtime.select(laya, preference = "llama.cpp")
+    assert laya_runtime.select(laya, preference = "auto") == (laya, None)
+
+
+LONG_OPTION = " ".join(f"word{i}" for i in range(60))
+
+
+@pytest.mark.parametrize(
+    "question, refusal",
+    [
+        (
+            {"type": "score", "instructions": "x", "criteria": ["a " * 40] * 8},
+            "option budget",
+        ),
+        ({"type": "noul", "instructions": "word " * 300}, "instructions would be cut short"),
+    ],
+)
+def test_a_laya_export_refuses_what_llama_cpp_would_cut(home, client, stub, question, refusal):
+    _laya_fine_tune(home.outputs)
+    _put(client, enabled = True, model = "laya-ft:laya_run", backend = "llama.cpp")
+    assert _post(client, questions = NOUL).status_code == 200
+    sent = len(stub.records("request"))
+    response = _post(client, questions = {"q": question})
+    assert response.status_code == 422 and refusal in response.json()["detail"]["message"]
+    assert len(stub.records("request")) == sent
+
+
+def test_a_laya_export_answers_a_long_option_as_pytorch_does(home, client, stub):
+    _laya_fine_tune(home.outputs)
+    _put(client, enabled = True, model = "laya-ft:laya_run", backend = "llama.cpp")
+    question = {"type": "choice", "instructions": "x", "criteria": {"a": LONG_OPTION, "b": "short"}}
+    response = _post(client, questions = {"q": question})
+    assert response.status_code == 200
+    assert response.headers["x-unsloth-decision-backend"] == "llama.cpp"
+
+
+def test_a_laya_export_without_a_readable_tokenizer_is_refused(home, client, stub):
+    folder = _laya_fine_tune(home.outputs)
+    (folder / "tokenizer" / "tokenizer.json").unlink()
+    _put(client, enabled = True, model = "laya-ft:laya_run", backend = "llama.cpp")
+    assert _post(client, questions = NOUL).status_code == 503
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        {"type": "choice", "instructions": "x", "criteria": {"a": None, "b": "", "c": {"k": 1}}},
+        {"type": "score", "instructions": "x", "criteria": ["low", {"k": [1, 2]}]},
+        {"type": "noul", "instructions": "x"},
+        {"type": "noul", "instructions": "x", "criteria": {"true": "yes", "false": ""}},
+    ],
+)
+def test_export_options_read_like_the_vendored_laya(question):
+    common = laya_runtime._laya().common
+    internal = laya_runtime._laya().agent.Agent._to_internal(question)
+    assert laya_runtime._export_options(question) == common.render_options(internal)
+
+
 def test_a_laya_model_never_reports_an_earlier_clefs_fallback_reason(monkeypatch):
     from core.systemone import laya_runtime
 
     monkeypatch.setattr(laya_runtime, "_fallback_reason", "The GGUF is not downloaded.")
     clef = SimpleNamespace(name = "clef-flash", backend = "pytorch", layout = "clef")
-    laya = SimpleNamespace(name = "laya-multilingual", backend = "pytorch", layout = "laya")
+    laya = SimpleNamespace(
+        name = "laya-multilingual", backend = "pytorch", layout = "laya", is_local = False
+    )
     monkeypatch.setattr(laya_runtime, "_loaded", clef)
     assert laya_runtime.status()["fallback_reason"] == "The GGUF is not downloaded."
     monkeypatch.setattr(laya_runtime, "_loaded", laya)

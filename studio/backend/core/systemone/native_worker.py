@@ -57,6 +57,10 @@ class NativeIncapable(NativeError):
     """This llama-server build cannot serve decision models."""
 
 
+class NativeLoadError(NativeError):
+    """llama-server exited before it finished loading the model."""
+
+
 class NativeInputError(NativeError):
     """The server refused this request; the server itself is fine."""
 
@@ -457,7 +461,7 @@ class NativeClefAgent:
                 raise NativeError("The llama.cpp decision server was stopped while it loaded.")
             if not self.is_alive():
                 tail = self._log_tail()
-                raise NativeError(
+                raise NativeLoadError(
                     f"llama.cpp exited while loading {self.alias} (code {self._process.returncode})"
                     + (f":\n{tail}" if tail else ".")
                 )
