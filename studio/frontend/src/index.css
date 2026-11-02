@@ -3072,8 +3072,7 @@ html[data-chat-font] .aui-root {
 	.composer-pill-glyph > * {
 		grid-area: 1 / 1;
 	}
-	/* The hover swaps below set this on the glyph, never on `> :not(.composer-pill-x)` behind a :has():
-	   a featureless subject there makes Chromium restyle the whole app on every node the thread mounts. */
+	/* Swapped via the glyph: a :has() rule over `> :not(...)` restyles the whole app on every mount. */
 	.composer-pill-glyph > :not(.composer-pill-x) {
 		opacity: var(--pill-glyph-icon-opacity, 1);
 	}
@@ -6515,9 +6514,8 @@ html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper
   background-color: var(--glass-control-pill);
   box-shadow: var(--glass-control-rim);
 }
-/* Translucent hovers stack: a lit row shell and its button would show two pills. A focused or open
-   button is matched itself: a :has() over this [class*] subject restyles the whole app on every
-   node the thread mounts. */
+/* Translucent hovers stack: a lit row shell and its button would show two pills. Focus and open
+   match the button itself: a :has() over this [class*] subject restyles the whole app on every mount. */
 html[data-glass] [class*="hover:bg-sidebar-accent"]:is(:hover, .bg-sidebar-accent) [class*="hover:bg-sidebar-accent"],
 html[data-glass] [class*="hover:bg-sidebar-accent"] [class*="hover:bg-sidebar-accent"]:is(:focus-visible, [data-state="open"]) {
   background-color: transparent;

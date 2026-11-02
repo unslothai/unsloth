@@ -24,7 +24,7 @@ function closingParen(text: string, from: number): number {
   return -1;
 }
 
-// Start of the selector holding `at`, or -1 when `at` sits inside another pseudo-class.
+// -1 inside another pseudo-class.
 function selectorStart(text: string, at: number): number {
   let depth = 0;
   for (let i = at - 1; i >= 0; i--) {
@@ -39,7 +39,6 @@ function selectorStart(text: string, at: number): number {
   return 0;
 }
 
-// End of the selector holding `from`: the block or the next selector in the list.
 function selectorEnd(text: string, from: number): number {
   let depth = 0;
   for (let i = from; i < text.length; i++) {
@@ -91,10 +90,8 @@ function splitAnchor(argument: string): { anchor: string; combinator: string } |
   return anchor !== rest && anchor ? { anchor, combinator: " " } : null;
 }
 
-// Tailwind's group-has-* and peer-has-* compile to `X:is(:where(.group):has(A) *)`. Chromium cannot
-// scope a :has() nested in :is() past a combinator, so every insertion below any element that could
-// anchor it (action bars mounting on hover) restyles the app's whole subtree. The same match as
-// `:where(.group):has(A) X` (same specificity), which Chromium invalidates precisely.
+// Tailwind's group-has-*/peer-has-* emit `X:is(:where(.group):has(A) *)`; Chromium restyles a whole anchor
+// subtree on any insertion below it. `:where(.group):has(A) X` matches the same with the same specificity.
 export function hoistHasAnchors(css: string): string {
   let out = "";
   let cursor = 0;

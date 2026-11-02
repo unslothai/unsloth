@@ -456,14 +456,13 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     };
     const fade = (hidden: number) =>
       `${Math.min(Math.max(hidden, 0), RAIL_FADE_PX)}px`;
-    // the mask itself, not inherited custom properties: those restyle every marker on each change.
-    // Compared as written, since the style reads back reserialized.
+    // the mask, not inherited custom properties (those restyle every marker); compared as written
     let mask = "";
     const setFades = (top: number) => {
       const next = `linear-gradient(to bottom, transparent, #000 ${fade(top)}, #000 calc(100% - ${fade(railRange - top)}), transparent)`;
       if (next !== mask) {
         mask = next;
-        // prefixed too, as the build emits it for older WebKit (Tauri on macOS and Linux)
+        // prefixed for older WebKit (Tauri on macOS and Linux)
         rail.style.setProperty("-webkit-mask-image", next);
         rail.style.setProperty("mask-image", next);
       }
@@ -556,7 +555,6 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       },
       { root: viewport },
     );
-    // One pass over the thread: a lookup per marker walks the whole DOM once per turn.
     const messages = new Map<string, Element>();
     for (const message of viewport.querySelectorAll("[data-message-id]")) {
       messages.set(message.getAttribute("data-message-id") ?? "", message);
@@ -669,7 +667,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
             onBlur={hidePreview}
             className="group flex h-[var(--rail-row,8px)] w-full shrink-0 cursor-pointer items-center justify-start rounded-sm pl-1.5 outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
-            {/* only the hover scale animates: an in-view tint transition restyles the rail every scrolled frame */}
+            {/* only scale animates: a tint transition restyles the rail every scrolled frame */}
             <span
               className={cn(
                 "h-[var(--rail-line,2px)] w-6 origin-left scale-x-[0.333] rounded-full transition-[scale] duration-150 ease-out group-data-[dist=0]:scale-x-100 group-data-[dist=1]:scale-x-[0.667] group-data-[dist=2]:scale-x-[0.417] motion-reduce:transition-none",
