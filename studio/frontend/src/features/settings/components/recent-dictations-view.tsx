@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { withTimeFormat } from "@/lib/time-format";
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import {
   AlertDialog,
@@ -83,6 +83,7 @@ export function RecentDictationsView({
   onBack: () => void;
 }) {
   const t = useT();
+  useTimeFormat();
   const recentDictations = useVoiceSettingsStore((s) => s.recentDictations);
   const removeRecentDictation = useVoiceSettingsStore(
     (s) => s.removeRecentDictation,

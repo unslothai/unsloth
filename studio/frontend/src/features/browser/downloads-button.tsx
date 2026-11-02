@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { withTimeFormat } from "@/lib/time-format";
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -95,6 +95,7 @@ function DownloadRow({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const failed = (key: "browser.downloads.openFailed" | "browser.pages.revealFailed") => (name: string) => {
     toast.error(t(key, { name }));
     onFailed();

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { withTimeFormat } from "@/lib/time-format";
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { apiMonitorTourSteps } from "./tour";
@@ -549,6 +549,7 @@ const RequestRow = memo(function RequestRow({
   onSelect: (id: string) => void;
   now: number;
 }): ReactElement {
+  useTimeFormat();
   const age = (
     <span title={formatFullTime(entry.started_at)}>
       {formatAgo(entry.started_at, now)}
@@ -801,6 +802,7 @@ function RequestDetail({
   detail?: ApiMonitorEntry;
   loading: boolean;
 }): ReactElement {
+  useTimeFormat();
   // Prefer the detail only once it is as fresh as the list row, or the panel rewinds.
   const detailIsCurrent =
     detail != null &&

@@ -47,7 +47,7 @@ function subscribe(listener: () => void): () => void {
 }
 
 export function useTimeFormat(): TimeFormat {
-  return useSyncExternalStore(subscribe, getTimeFormat);
+  return useSyncExternalStore(subscribe, getTimeFormat, getTimeFormat);
 }
 
 export function watchTimeFormat(win: Window): void {

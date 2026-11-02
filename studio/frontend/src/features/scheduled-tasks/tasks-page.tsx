@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { withTimeFormat } from "@/lib/time-format";
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Edit03Icon,
@@ -172,6 +172,7 @@ function TaskRow({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const navigate = useNavigate();
   const update = useScheduledTasksStore((state) => state.update);
   const runNow = useScheduledTasksStore((state) => state.runNow);

@@ -3,7 +3,7 @@
 
 "use client";
 
-import { withTimeFormat } from "@/lib/time-format";
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import {
   Sheet,
   SheetCloseButton,
@@ -347,6 +347,7 @@ export const MessageResponseDetailsSheet: FC<{
   onOpenChange: (open: boolean) => void;
 }> = ({ open, onOpenChange }) => {
   const [mounted, setMounted] = useState(open);
+  useTimeFormat();
   if (open && !mounted) setMounted(true);
   useEffect(() => {
     if (open) return;
