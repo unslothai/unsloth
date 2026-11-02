@@ -312,6 +312,10 @@ assert r.args.warmup_steps == 20, r.args.warmup_steps
 assert trl.DPOTrainer(model=model, args=trl.SFTConfig(max_steps=7, learning_rate=0.1), train_dataset=[], processing_class=tok).args.learning_rate == 0.1
 raw = zoo.MLXDPOConfig(max_steps=1, beta=0.3)
 assert trl.DPOTrainer(model=model, args=raw, train_dataset=[], processing_class=tok).args.beta == 0.3
+assert trl.DPOTrainer(model=model, args=raw, train_dataset=[]).args.max_seq_length == 96, "default follows the model"
+for length, expected in ((64, 64), (512, 96)):
+    raw = zoo.MLXDPOConfig(max_steps=1, max_seq_length=length)
+    assert trl.DPOTrainer(model=model, args=raw, train_dataset=[]).args.max_seq_length == expected
 """)
 
 

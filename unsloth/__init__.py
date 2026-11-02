@@ -1766,9 +1766,11 @@ if _IS_MLX:
             _default_mlx_grad_clip(args)
             # append_eos stays True: TRL appends EOS to completions. max_length is TRL's own budget here.
             model_length = _positive_mlx_context_length(getattr(model, "max_seq_length", None))
-            args_explicit = max_seq_length_explicit or getattr(
-                args, "_unsloth_mlx_max_seq_length_explicit", False
-            )
+            args_explicit = getattr(args, "_unsloth_mlx_max_seq_length_explicit", None)
+            if args_explicit is None:
+                # A native zoo config carries no marker; a non-default value was set on purpose.
+                args_explicit = args.max_seq_length != MLXTrainingConfig.max_seq_length
+            args_explicit = max_seq_length_explicit or args_explicit
             if model_length is not None and (
                 not args_explicit or args.max_seq_length > model_length
             ):
