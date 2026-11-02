@@ -544,7 +544,7 @@ export function SettingsDialog() {
                 <HugeiconsIcon
                   icon={Search01Icon}
                   strokeWidth={2}
-                  className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground"
+                  className="pointer-events-none absolute top-[calc(50%-0.5px)] left-[13.5px] size-4 -translate-y-1/2 text-muted-foreground"
                 />
                 <input
                   value={query}
@@ -558,7 +558,7 @@ export function SettingsDialog() {
                   data-type-to-activate="settings-search"
                   placeholder={t("common.search")}
                   aria-label={t("settings.dialog.searchPlaceholder")}
-                  className="h-[calc(36px*var(--ui-space-scale,1))] w-full rounded-full border-0 bg-accent pr-8 pl-10 text-ui-14p5 text-foreground outline-none transition-colors placeholder:text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))]"
+                  className="h-[calc(36px*var(--ui-space-scale,1))] w-full rounded-full border-0 bg-accent pt-px pr-8 pl-[39.5px] text-ui-14p5 text-foreground outline-none transition-colors placeholder:text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))]"
                 />
                 {query && (
                   <button
