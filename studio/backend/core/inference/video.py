@@ -2841,6 +2841,30 @@ def _h3_card_reserve_bytes(
 
         with gpu_query.fresh_reads():
             devices = get_visible_gpu_utilization(no_context = True).get("devices", [])
+        if not devices:
+            from utils.hardware import hardware
+            if (
+                hardware.IS_ROCM
+                and hardware.platform.system() == "Linux"
+                and not hardware._rocm_visibility_mask_active()
+            ):
+                module, _backend = hardware._torch_get_device_module()
+                if module is not None and module.is_initialized():
+                    for index in range(hardware._torch_get_physical_gpu_count() or 0):
+                        if not single_card_only and index != (
+                            0 if ordinal is None else int(ordinal)
+                        ):
+                            continue
+                        props = module.get_device_properties(index)
+                        arch = str(getattr(props, "gcnArchName", "")).split(":")[0]
+                        if arch not in hardware._ROCM_DISCRETE_ONLY_ARCHES:
+                            return None
+                        devices.append(
+                            {
+                                "visible_ordinal": index,
+                                "vram_total_gb": int(props.total_memory) / 1024**3,
+                            }
+                        )
         want = 0 if ordinal is None else int(ordinal)
         totals = [
             int(float(entry["vram_total_gb"]) * 1024**3)

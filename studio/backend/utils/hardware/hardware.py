@@ -2575,6 +2575,17 @@ def _smi_visible_utilization(parent_visible_spec: Dict[str, Any]) -> Optional[Di
     """SMI visible-GPU utilization keyed by the parent's ids. amd-smi filters by its own gpu ids, not HIP's, so translate when the mapping is readable."""
     ids = parent_visible_spec["numeric_ids"]
     smi_ids = _amd_smi_ids_for_hip_ids(ids) if IS_ROCM and ids else None
+    if IS_ROCM and ids and smi_ids is None and not _rocm_visibility_mask_active():
+        from . import amd
+
+        runtime_count = _torch_get_physical_gpu_count()
+        physical_count = amd.get_physical_gpu_count()
+        if (
+            runtime_count is not None
+            and physical_count is not None
+            and runtime_count != physical_count
+        ):
+            return None
     result = _smi_query(
         "get_visible_gpu_utilization",
         ids if smi_ids is None else smi_ids,
