@@ -1727,7 +1727,8 @@ if _IS_MLX:
                 kwargs.pop("f_alpha_divergence_coef", None)
             for key, value in _MLX_TRL_INERT_CONFIG_VALUES.items():
                 if key not in config_fields and key in kwargs:
-                    if getattr(kwargs[key], "value", kwargs[key]) == value:
+                    # None: some TRL releases default these fields to it.
+                    if getattr(kwargs[key], "value", kwargs[key]) in (value, None):
                         del kwargs[key]
             for key, value in _MLX_TRL_CONFIG_DEFAULTS.items():
                 kwargs.setdefault(key, value)

@@ -15,6 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """On MLX, trl.__all__ is filtered on first read: resolving every name at import pulled torch in."""
 
+import importlib.metadata
 import importlib.util
 import pathlib
 import platform
@@ -362,6 +363,8 @@ assert trl.SFTConfig(output_dir="o", eval_strategy="steps", logging_steps=7).eva
 assert trl.SFTConfig(output_dir="o", eval_strategy="steps", eval_steps=3, logging_steps=7).eval_steps == 3
 assert trl.SFTConfig(output_dir="o", eval_strategy="no", logging_steps=7).eval_steps == 0
 assert trl.DPOConfig(output_dir="o", f_alpha_divergence_coef=0.5).output_dir == "o"
+assert trl.DPOConfig(output_dir="o", use_liger_loss=None).output_dir == "o"
+refused(lambda: trl.DPOConfig(output_dir="o", use_liger_loss=True), "use_liger_loss")
 refused(lambda: trl.DPOConfig(output_dir="o", f_divergence_type="alpha_divergence"), "f_divergence_type")
 """)
 
@@ -408,7 +411,11 @@ for fast in (unsloth.FastLanguageModel, unsloth.FastModel, unsloth.FastVisionMod
 
 @_needs_real_mlx
 def test_trl_configs_built_before_the_shim_keep_their_meaning():
-    pytest.importorskip("trl")
+    # importorskip would find the shim an earlier test left in sys.modules.
+    try:
+        importlib.metadata.version("trl")
+    except importlib.metadata.PackageNotFoundError:
+        pytest.skip("needs a real trl install")
     _run_shim_probe(
         """
 assert RealDPO is not trl.DPOConfig
