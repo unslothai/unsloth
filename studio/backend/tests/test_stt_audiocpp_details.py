@@ -601,17 +601,15 @@ def test_training_moves_the_server_only_when_its_placement_changes(
 
 
 def test_a_device_less_load_follows_the_saved_voice_setting(fake, side, monkeypatch, tmp_path):
-    """/v1/audio/transcriptions sends no device: a cold load lands where Settings says (#15280)."""
     from storage import studio_db
-    from utils import stt_device_settings as sds
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(studio_db, "_schema_ready", set())
     monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
-    sds.set_stt_device("cpu")
+    studio_db.upsert_app_settings({"stt_device": "cpu"}, read_back = False)
     side.transcribe(wav_bytes(), QWEN3, "en")
     assert side.device == "cpu"
     # None keeps the running server: saving Auto later does not restart it under a caller.
-    sds.set_stt_device("auto")
+    studio_db.upsert_app_settings({"stt_device": "auto"}, read_back = False)
     side.transcribe(wav_bytes(), QWEN3, "en")
     assert side.device == "cpu" and len(fake.starts) == 1
