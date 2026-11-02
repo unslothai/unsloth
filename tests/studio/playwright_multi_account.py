@@ -86,7 +86,9 @@ def record_stalled_login(page: Page, unfinished: list[str]) -> None:
     except PlaywrightError as error:
         ready_state = f"unreadable: {error}"
     state = {"url": page.url, "ready_state": ready_state, "unfinished_requests": unfinished}
-    print(f"WARN: /login did not fire load in {STEP_TIMEOUT_MS} ms, retrying once: {json.dumps(state)}")
+    print(
+        f"WARN: /login did not fire load in {STEP_TIMEOUT_MS} ms, retrying once: {json.dumps(state)}"
+    )
     if not ART_DIR:
         return
     os.makedirs(ART_DIR, exist_ok = True)
