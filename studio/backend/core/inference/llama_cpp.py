@@ -30371,14 +30371,7 @@ class LlamaCppBackend:
                     }
 
                 def _spawn_and_wait(run_cmd, *, label = ""):
-                    """Start llama-server with run_cmd and wait for health.
-
-                    Up to five launches: the first, one ROCm env correction, one
-                    retry without the MoE expert cache, one --fit recovery, and one
-                    --fit off retry for a crash inside llama.cpp's fit step.
-                    Separate flags, so a library mix does not spend the fit slot
-                    and a VRAM crash after the correction can still fit-retry.
-                    """
+                    """Start llama-server; each recovery has a separate once-only guard."""
                     # _mem_host_resident too: the --fit on retry re-arms the
                     # page-lock and writes it back, which without this makes the
                     # read below an UnboundLocalError instead.
@@ -30960,10 +30953,6 @@ class LlamaCppBackend:
                             # The fit that vouched for the ceiling is what just failed.
                             self._vram_fit_context_length = None
                             continue
-                        # The child died inside llama.cpp's own fit step, before any
-                        # weights loaded: some drivers (an RX 5700 XT on Vulkan, #16395)
-                        # crash in its device-memory query, so a fitter Unsloth turned
-                        # on gets one try without it before the CPU fallback.
                         _fit_step_crashed = (
                             not _did_fit_step_retry
                             and _startup_crashed
@@ -30999,9 +30988,6 @@ class LlamaCppBackend:
                                 )
                             run_cmd = [*run_cmd, "--fit", "off"]
                             if _fit_step_crashed:
-                                # Without the fitter nothing shrinks the context, and a
-                                # missing -c means the model's native one (262k for
-                                # LFM2). Keep the window the fitter was told to keep.
                                 run_cmd = self._fit_step_retry_ctx(run_cmd, env, extra_args)
                             # The mirror of the --fit on retry above. Turning the
                             # fitter off leaves -ngl at its default, which llama.cpp
@@ -34872,15 +34858,11 @@ class LlamaCppBackend:
                 return False
         return True
 
-    # llama.cpp's fit step logs from common_fit_params / common_params_fit_impl
-    # (cut to "common_fit_a" in some builds' log prefix) and llama_params_fit.
     _FIT_STEP_LOG_RE = re.compile(r"\b(?:common_(?:params_)?fit|llama_params_fit)")
 
     @classmethod
     def _is_fit_step_crash(cls, lines: "Iterable[str]") -> bool:
-        """Whether the last thing llama-server logged came from its fit step, i.e. it died
-        before the real model load began; Studio's own "[studio]" lines are skipped."""
-        # An entry can hold several lines; judge the last real one.
+        # Studio appends an attempt-end marker after the child's last line.
         for line in reversed("\n".join(entry or "" for entry in lines or ()).splitlines()):
             text = line.strip()
             if not text or text.startswith("[studio]"):
@@ -34892,7 +34874,6 @@ class LlamaCppBackend:
     def _fit_step_retry_eligible(
         cmd: "list[str]", extra_args: "Optional[Iterable[str]]", env: "Optional[Mapping[str, str]]"
     ) -> bool:
-        """Only a fitter Unsloth turned on: a user's -fit/--fit or LLAMA_ARG_FIT is kept."""
         if _extra_args_set_any_flag(extra_args, {"-fit", "--fit"}):
             return False
         if env and env.get("LLAMA_ARG_FIT") is not None:
@@ -34905,7 +34886,7 @@ class LlamaCppBackend:
         env: "Optional[Mapping[str, str]]",
         extra_args: "Optional[Iterable[str]]" = None,
     ) -> "list[str]":
-        """Bound managed Auto context after disabling fitting; preserve caller choices."""
+        # Studio emits -c 0 for Auto too; extras/env distinguish an explicit native context.
         context_flags = {"-c", "--ctx-size"}
         if _extra_args_set_any_flag(extra_args, context_flags):
             return cmd

@@ -1716,7 +1716,6 @@ _WINDOWS_ACCESS_VIOLATION = 0xC0000005
 
 
 def _last_fit_mode(cmd):
-    """llama.cpp keeps the last --fit it is given."""
     modes = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "--fit"]
     return modes[-1] if modes else None
 
@@ -1741,7 +1740,6 @@ class TestFitStepCrashRetry:
         assert _last_fit_mode(launches[1][0]) == "off"
         assert launches[0][0][launches[0][0].index("-c") + 1] == "0"
         assert launches[1][0][launches[1][0].index("-c") + 1] == "8192"
-        # Still the GPU launch, not the CPU replay, and the same flash-attn choice.
         assert "--device" not in launches[1][0]
         assert launches[1][0][launches[1][0].index("--flash-attn") + 1] == "on"
 
