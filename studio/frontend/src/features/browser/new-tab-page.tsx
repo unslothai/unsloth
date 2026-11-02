@@ -298,7 +298,7 @@ export function NewTabPage({ tabId }: { tabId: string }) {
     (shownPage + 1) * RECENTS_PER_PAGE,
   );
   const clock = useTimeFormat();
-  // biome-ignore lint/correctness/useExhaustiveDependencies: clock is the trigger; withTimeFormat reads it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clock is the trigger.
   const timeFormat = useMemo(
     () => new Intl.DateTimeFormat(locale, withTimeFormat({ timeStyle: "short" }, locale)),
     [locale, clock],

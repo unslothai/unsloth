@@ -533,7 +533,7 @@ function HistoryPage({ tabId }: { tabId: string }) {
   );
   const { groups, more } = useDays(history, visitTime, matches, filter.bounds, limit);
   const clock = useTimeFormat();
-  // biome-ignore lint/correctness/useExhaustiveDependencies: clock is the trigger; withTimeFormat reads it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clock is the trigger.
   const timeFormat = useMemo(
     () => new Intl.DateTimeFormat(locale, withTimeFormat({ timeStyle: "short" }, locale)),
     [locale, clock],
@@ -796,7 +796,7 @@ function DownloadsPage() {
   const matches = useMemo(() => nameMatches(needle), [needle]);
   const { groups } = useDays(downloads, downloadTime, matches, filter.bounds);
   const clock = useTimeFormat();
-  // biome-ignore lint/correctness/useExhaustiveDependencies: clock is the trigger; withTimeFormat reads it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clock is the trigger.
   const timeFormat = useMemo(
     () => new Intl.DateTimeFormat(locale, withTimeFormat({ timeStyle: "short" }, locale)),
     [locale, clock],

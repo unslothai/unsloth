@@ -50,7 +50,6 @@ export function useTimeFormat(): TimeFormat {
   return useSyncExternalStore(subscribe, getTimeFormat);
 }
 
-/** Follow changes made in another tab. */
 export function watchTimeFormat(win: Window): void {
   win.addEventListener("storage", (event) => {
     if (event.key === TIME_FORMAT_STORAGE_KEY || event.key === null) {
@@ -63,8 +62,7 @@ type HourCycle = "h12" | "h23";
 
 const language = (tag: string) => tag.split("-")[0].toLowerCase();
 
-// The UI locale drops the region ("en" for en-GB), so when it shares the browser's language the
-// browser's own clock wins; any other UI language keeps its convention (German stays 24-hour).
+// The UI locale has no region (en-GB is "en"), so a shared language takes the browser's clock.
 function systemHourCycle(locale: string | undefined): HourCycle | undefined {
   if (!locale) {
     return undefined;
@@ -84,7 +82,6 @@ function systemHourCycle(locale: string | undefined): HourCycle | undefined {
   }
 }
 
-/** Intl options with the chosen clock, for formatting in `locale` (omit it for the browser's). */
 export function withTimeFormat(
   options: Intl.DateTimeFormatOptions = {},
   locale?: string,
@@ -99,7 +96,7 @@ export function withTimeFormat(
   if (!hourCycle) {
     return options;
   }
-  // hour12 outranks hourCycle, so drop it.
+  // hour12 would outrank hourCycle.
   const { hour12: _hour12, ...rest } = options;
   return { ...rest, hourCycle };
 }
