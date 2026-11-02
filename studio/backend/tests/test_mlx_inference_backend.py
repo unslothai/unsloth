@@ -5388,7 +5388,6 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
     ]
     assert reasons == [mlx_speculative.RUNTIME_ERROR, "refused"]
     failing.clear()
-    # An adapter drafts on mlx-vlm's route, which a text architecture's adapter cannot take.
     asked = []
     monkeypatch.setattr(
         mlx_speculative, "speculation_refusal", lambda **k: asked.append(k["lora"]) or "refused"
@@ -5399,7 +5398,6 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
         adapter = SimpleNamespace(**{**vars(config), "is_lora": True, "is_vision": is_vision})
         backend.load_model(adapter, spec_draft_model = "org/d")
     assert asked == [True, False]
-    # A diffusion model gets no draft at load, so the resident batch cannot speculate on it either.
     monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_k: None)
     monkeypatch.setattr(mlx_inference, "_vlm_generation_is_diffusion", lambda model: True)
     backend.load_model(config, max_seq_length = 0, speculative_type = "ngram")
@@ -7601,7 +7599,6 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
     assert seen["draft_model"] is draft and seen["extra"] == 1 and prepared == [([7, 8, 9], 0.5, 0)]
     # The draft is told every processor the reply runs: none reaches mlx-vlm as a shortcut.
     assert "repetition_penalty" not in seen and draft.given == seen["logits_processors"] != []
-    # A grammar settles on what verification accepted, so its reply drafts too.
     grammar = SimpleNamespace(allows_reasoning = False, stops_on = lambda ids: None)
     with monkeypatch.context() as patch:
         patch.setattr(mlx_inference, "_build_grammar_constraint", lambda *_a, **_k: grammar)
@@ -7616,10 +7613,8 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
         seen = _drive_vlm_generation(backend, monkeypatch, **request)
         assert "max_tokens" in seen and "draft_model" not in seen
         assert "draft_n" not in backend.last_generation_stats["timings"]
-    # Only the drafted replies entered the verify scope: open from preparing the draft through decoding.
     assert len(prepared) == 2 and verify_scope == ["open", "closed"] * 2
     assert scopes == [["open"], ["open"], ["open", "closed", "open"]]
-    # A tool reply drafts like any other: the target verifies every token the call is parsed from.
     for request in ({"tools": [{"type": "function"}]}, {"tool_protocol_active": True}):
         assert _drive_vlm_generation(backend, monkeypatch, **request)["draft_model"] is draft
     opened, backend._is_vlm, backend._vlm_batch_unavailable_reason = [], True, lambda r, **_k: None
@@ -9320,7 +9315,7 @@ def test_an_out_of_range_logit_bias_id_cannot_corrupt_a_batch(batch_backend):
     assert replies[3] != replies[0]
 
 
-DRAFTING_MODEL = "Qwen/Qwen3.5-0.8B"  # its checkpoint keeps the MTP head
+DRAFTING_MODEL = "Qwen/Qwen3.5-0.8B"
 CITY_SCHEMA = {
     "type": "object",
     "properties": {
@@ -9818,7 +9813,6 @@ def test_a_settled_grammar_masks_each_drafted_position_as_a_plain_decode_would(
     mx, width, prompt = _metal_mx(), len(tiny_tokenizer), [0, 0]
     encode = lambda text: tiny_tokenizer.encode(text, add_special_tokens = False)
     eos = tiny_tokenizer.eos_token_id
-    # The reasoning prelude is a max_tokens rule, a state llguidance's rollback does not restore.
     build = dict(text = "chat\n<think>\n", reasoning_is_extracted = True) if in_reasoning else {}
     grammar = lambda: _grammar_after_prompt(tiny_tokenizer, **build)
 
@@ -9834,11 +9828,9 @@ def test_a_settled_grammar_masks_each_drafted_position_as_a_plain_decode_would(
                 _mask_at(drafting, prompt + committed + drafted[:j], width),
                 plain(committed + drafted[:j]),
             )
-    # Past a token the grammar refuses, or an end token, a position is never accepted.
     refused = [encode('"a":1}') + [eos] + encode("1")] + ([] if in_reasoning else [encode('"a"]1')])
     for drafted in refused:
         assert not np.isneginf(_mask_at(drafting, prompt + committed + drafted, width)).any()
-    # Verification kept '"a":' and drew 7: the matcher ends there, whatever was drafted past it.
     committed += encode('"a":7')
     drafting.settle(mx.array(prompt + committed))
     np.testing.assert_array_equal(_mask_at(drafting, prompt + committed, width), plain(committed))
@@ -11051,11 +11043,9 @@ def test_a_quantized_speculative_load_batches_unless_its_caches_are_turboquant(m
     assert backend._kv_policy_batch_reason(resident = True) == "no drafted rows"
     gaps["drafted"] = None
     assert backend._kv_policy_batch_reason(resident = True) is None
-    # The fixed multi-reply command of a speculative load is that resident session.
     assert "does not carry" in backend._kv_policy_batch_reason()
     backend._turboquant = True
     assert "TurboQuant" in backend._kv_policy_batch_reason(resident = True)
-    # A budget alone leaves the caches at full precision.
     backend._kv_quant, backend._kv_context_budget = {"kv_bits": None}, 1
     gaps["row"] = "no rows"
     assert backend._kv_policy_batch_reason(resident = True) == "no rows"

@@ -4603,7 +4603,6 @@ def _failing_alone(row, processors):
                     row.failure = exc
             return logits
 
-        # A drafted batch drafts only for rows whose processors read just the history or settle.
         _processor.history_only = getattr(processor, "history_only", False)
         if hasattr(processor, "settle"):
 
@@ -6282,7 +6281,6 @@ class MLXInferenceBackend:
                 allowed = spec_drafters_allowed,
             )
 
-            # As _fitted_context prices it: a refused quantization stays full width.
             if not self._turboquant and kv_bits is not None and _eligibility is None:
                 _eligibility = _kv_quant_eligibility(
                     self._model, use_vlm, _normalize_mlx_kv_bits(kv_bits)
@@ -8107,8 +8105,6 @@ class MLXInferenceBackend:
             vlm_kwargs.update(self._prefill_step_kwargs())
         session_scope = session if session is not None else nullcontext()
         processors = vlm_kwargs.get("logits_processors") or ()
-        # The draft is told these processors, and takes only ones that read just the history or settle on
-        # what was accepted (a grammar).
         if (
             draft is None
             or not all(
@@ -8158,7 +8154,6 @@ class MLXInferenceBackend:
                         if draft is None or "input_ids" in vlm_kwargs:
                             vlm_kwargs.update(clip_media)
                         else:
-                            # The draft needs the prompt as the clip's frames expand it.
                             clip_media["videos"] = clip_media.pop("video")
                             vlm_kwargs.update(
                                 _vlm_generate_kwargs(
@@ -8169,8 +8164,6 @@ class MLXInferenceBackend:
                             )
                     if draft is not None:
                         from unsloth_zoo.mlx.generate import SamplingParams
-
-                        # Under the lock: the load's one draft serves one generation at a time.
                         draft.prepare(
                             vlm_kwargs["input_ids"][0].tolist(),
                             SamplingParams(
@@ -8354,7 +8347,6 @@ class MLXInferenceBackend:
         reason = self._video_batch_gap(requests)
         if reason is not None:
             return reason
-        # A speculative load's batch is the resident session, whose rows carry their own caches.
         reason = self._kv_policy_batch_reason(
             resident = getattr(self, "_speculative_draft", None) is not None
         )

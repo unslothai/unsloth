@@ -347,7 +347,6 @@ class GrammarConstraint:
             raise GrammarDesyncError(f"guided decoding desynced on token {int(token_id)}: {error}")
 
     def follow(self, drafted) -> bool:
-        """Matcher after the committed tokens and the admitted ``drafted`` ones; False on a refusal."""
         kept = _common_prefix(self._drafted, drafted)
         rest = drafted[kept:]
         if kept < len(self._drafted):
@@ -365,7 +364,6 @@ class GrammarConstraint:
         return admitted == len(rest)
 
     def mask_ahead(self, logits):
-        """``mask_logits`` at a drafted state, whose error waits for ``commit`` to reach it."""
         try:
             return self.mask_logits(logits)
         except ResponseFormatError as error:
@@ -385,7 +383,6 @@ class GrammarConstraint:
             if self._matcher is not None and not self._matcher.is_stopped():
                 if self._matcher.try_consume_tokens([int(token_id)]):
                     continue
-                # Judged against this state's own mask, as a plain decode would.
                 _llg_mlx.fill_next_token_bitmask(self._matcher, self._bitmask)
             self.advance(token_id)
 

@@ -883,7 +883,7 @@ class TestEstimateMemoryRoute:
             (4096, ("/ok", False)),
             (16384, ("/big", True)),
             (65536, None),  # past MLX's own cap the load falls back, so no drafter is charged
-            (12288, ("/ok", False)),  # a quantized KV cache drafts too
+            (12288, ("/ok", False)),
             (20480, None),
             (24576, None),
             (12288, ("/big", True)),
@@ -915,7 +915,6 @@ class TestEstimateMemoryRoute:
         mlx_inference.mlx_drafter_fit("/m", 8, None, source, load_in_4bit = False, kv_bits = 8)
         mlx_inference.mlx_prompt_cache_room("/m", 8, source, load_in_4bit = False, kv_bits = 8)
         assert asked == [8, 8]
-        # A width the load will refuse stays full width in the fit too.
         monkeypatch.setattr(mlx_inference, "mlx_kv_quant_is_refused", lambda _d, _b: True)
         mlx_inference.mlx_drafter_fit("/m", 8, None, source, load_in_4bit = False, kv_bits = 8)
         assert asked[-1] is None
