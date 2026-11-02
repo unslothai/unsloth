@@ -5707,14 +5707,12 @@ def _video_tools_search(
     cwd: Optional[str] = None,
     supports_ffmpeg_dir: bool = True,
 ) -> str:
-    """Where the child looks for ffmpeg and ffprobe: a folder, or a PATH-style list. Raises on a bad flag."""
     source = os.environ if env is None else env
     bin_dir = _last_flag_value(cmd, frozenset({"--video-ffmpeg-dir"}), preserve_raw = True)
     search = bin_dir or (source.get(_VIDEO_FFMPEG_DIR_ENV_VAR) if supports_ffmpeg_dir else None)
     if not search:
         search = source.get("PATH", os.defpath)
         if sys.platform == "win32":
-            # CreateProcess also searches the binary's folder and the working directory.
             launch_dir = os.path.dirname(str(cmd[0])) if cmd else ""
             search = os.pathsep.join(d for d in (launch_dir, cwd or os.getcwd(), search) if d)
     return search
