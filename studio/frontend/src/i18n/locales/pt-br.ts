@@ -3343,6 +3343,10 @@ export const ptBR = {
         "Acesse este Unsloth dos seus outros dispositivos, pela rede local ou por uma URL pública temporária.",
     },
     apiKeys: {
+      requestUsage: {
+        label: "Informar uso de tokens",
+        description: "Pede ao endpoint a contagem exata de tokens para que a barra de contexto mostre o uso real. Desative se o endpoint rejeitar as solicitações.",
+      },
       title: "API",
       description:
         "Acesse o Unsloth por meio da API compatível com OpenAI.",

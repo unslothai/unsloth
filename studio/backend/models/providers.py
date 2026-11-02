@@ -118,6 +118,10 @@ class ProviderCreate(BaseModel):
         False,
         description = "Let every account on this installation use this connection (owner only)",
     )
+    request_usage: bool = Field(
+        False,
+        description = "Ask this Custom connection for exact streamed token usage (stream_options.include_usage)",
+    )
 
 
 class ProviderUpdate(BaseModel):
@@ -153,6 +157,10 @@ class ProviderUpdate(BaseModel):
     shared: Optional[bool] = Field(
         None,
         description = "Let every account on this installation use this connection (owner only)",
+    )
+    request_usage: Optional[bool] = Field(
+        None,
+        description = "Ask this Custom connection for exact streamed token usage (stream_options.include_usage)",
     )
 
 
@@ -195,6 +203,10 @@ class ProviderResponse(BaseModel):
         description = "Configured maximum Max Tokens cap for this connection",
     )
     shared: bool = Field(False, description = "Whether every account on this installation can use it")
+    request_usage: bool = Field(
+        False,
+        description = "Ask this Custom connection for exact streamed token usage (stream_options.include_usage)",
+    )
     shared_by_owner: bool = Field(
         False,
         description = "The installation owner shared this connection; this account can use but not edit it",

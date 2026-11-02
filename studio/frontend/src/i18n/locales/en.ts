@@ -3341,6 +3341,10 @@ export const en = {
         "Reach this Unsloth from your other devices, over your local network or a temporary public URL.",
     },
     apiKeys: {
+      requestUsage: {
+        label: "Report token usage",
+        description: "Asks the endpoint for exact token counts so the context bar shows real usage. Turn this off if the endpoint rejects requests.",
+      },
       title: "API",
       description: "Access Unsloth via the OpenAI- and Anthropic-compatible API.",
       readDocs: "Read the API docs",

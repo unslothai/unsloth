@@ -3376,6 +3376,10 @@ export const de = {
         "Erreiche dieses Unsloth von deinen anderen Geräten über dein lokales Netzwerk oder eine temporäre öffentliche URL.",
     },
     apiKeys: {
+      requestUsage: {
+        label: "Token-Verbrauch melden",
+        description: "Fragt den Endpunkt nach exakten Token-Zahlen, damit die Kontextleiste den echten Verbrauch zeigt. Schalte es aus, wenn der Endpunkt Anfragen ablehnt.",
+      },
       title: "API",
       description: "Zugriff auf Unsloth über die OpenAI-kompatible API.",
       readDocs: "API-Dokumentation lesen",

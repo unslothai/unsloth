@@ -3369,6 +3369,10 @@ export const es = {
         "Accede a este Unsloth desde tus otros dispositivos, por tu red local o mediante una URL pública temporal.",
     },
     apiKeys: {
+      requestUsage: {
+        label: "Informar del uso de tokens",
+        description: "Pide al endpoint el número exacto de tokens para que la barra de contexto muestre el uso real. Desactívalo si el endpoint rechaza las solicitudes.",
+      },
       title: "API",
       description: "Accede a Unsloth mediante la API compatible con OpenAI.",
       readDocs: "Leer la documentación de la API",

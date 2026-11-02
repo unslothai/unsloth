@@ -3271,6 +3271,10 @@ export const it = {
         "Raggiungi questo Unsloth dagli altri tuoi dispositivi, tramite la rete locale o un URL pubblico temporaneo.",
     },
     apiKeys: {
+      requestUsage: {
+        label: "Segnala l'uso dei token",
+        description: "Chiede all'endpoint il conteggio esatto dei token, così la barra del contesto mostra l'uso reale. Disattivalo se l'endpoint rifiuta le richieste.",
+      },
       title: "API",
       description: "Accedi a Unsloth tramite le API compatibili con OpenAI.",
       readDocs: "Leggi la documentazione delle API",
