@@ -220,7 +220,7 @@ export async function fetchSystemInfo({
     return fetchSystemInfo({ force, refreshMemory, probeMedia });
   }
   if (!force && !refreshMemory && !probeMedia && cachedSystem) {
-    refreshDeviceTypeAfterSystemInfo();
+    refreshDeviceTypeAfterSystemInfo({ detectHardware: true });
     return cachedSystem;
   }
 

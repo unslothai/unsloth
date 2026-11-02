@@ -142,14 +142,15 @@ let backendGeneration = 0;
 let requestedHardwareGeneration: number | null = null;
 let systemVerdictRead: { generation: number; promise: Promise<DeviceType> } | null = null;
 
-/** /api/system has already detected hardware; refresh the platform verdict used by pickers. */
-export function refreshDeviceTypeAfterSystemInfo(): void {
+/** Refresh the picker verdict; a cached caller may need to request detection again. */
+export function refreshDeviceTypeAfterSystemInfo(
+  { detectHardware = false }: { detectHardware?: boolean } = {},
+): void {
   if (!usePlatformStore.getState().capabilitiesUnknown()) return;
   if (systemVerdictRead?.generation === backendGeneration) return;
   const entry = {
     generation: backendGeneration,
-    // A cached snapshot may predate a backend restart that never detected; ask this one to.
-    promise: fetchDeviceType({ force: true, detectHardware: true }),
+    promise: fetchDeviceType({ force: true, detectHardware }),
   };
   systemVerdictRead = entry;
   const release = () => {
