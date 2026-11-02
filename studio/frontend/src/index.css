@@ -3029,10 +3029,8 @@ html[data-chat-font] .aui-root {
 
 		/* Caret pills open a menu, so keep the icon and skip the X swap; the off-switch rules below would
 		   otherwise blank the slot when collapsed. */
-		&:has(.composer-pill-caret):hover
-			.composer-pill-glyph
-			> :not(.composer-pill-x) {
-			opacity: 1;
+		&:has(.composer-pill-caret):hover .composer-pill-glyph {
+			--pill-glyph-icon-opacity: 1;
 		}
 
 		&:has(.composer-pill-caret) .composer-pill-x {
@@ -3074,14 +3072,19 @@ html[data-chat-font] .aui-root {
 	.composer-pill-glyph > * {
 		grid-area: 1 / 1;
 	}
+	/* The hover swaps below set this on the glyph, never on `> :not(.composer-pill-x)` behind a :has():
+	   a featureless subject there makes Chromium restyle the whole app on every node the thread mounts. */
+	.composer-pill-glyph > :not(.composer-pill-x) {
+		opacity: var(--pill-glyph-icon-opacity, 1);
+	}
 
 	.composer-pill-x {
 		@apply pointer-events-none size-[var(--ui-icon-size)] rounded-full bg-wash-10 p-[calc(3px*var(--ui-space-scale,1))] opacity-0 transition-opacity dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))];
 	}
 
-	.composer-pill-btn[data-active="true"]:has(.composer-pill-x):hover .composer-pill-glyph > :not(.composer-pill-x),
-	.unsloth-thinking-pill[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x) {
-		@apply opacity-0;
+	.composer-pill-btn[data-active="true"]:has(.composer-pill-x):hover .composer-pill-glyph,
+	.unsloth-thinking-pill[data-active="true"]:hover .composer-pill-glyph {
+		--pill-glyph-icon-opacity: 0;
 	}
 
 	.composer-pill-btn[data-active="true"]:has(.composer-pill-x):hover .composer-pill-x,
@@ -3091,10 +3094,8 @@ html[data-chat-font] .aui-root {
 
 	/* Off-switch pills (RAG, MCP) render only while the feature is on, so reveal the X even when
 	   not in their active look. */
-	.composer-pill-btn:has(> .composer-pill-glyph[role="button"]):hover
-		.composer-pill-glyph
-		> :not(.composer-pill-x) {
-		@apply opacity-0;
+	.composer-pill-btn:has(> .composer-pill-glyph[role="button"]):hover .composer-pill-glyph {
+		--pill-glyph-icon-opacity: 0;
 	}
 
 	.composer-pill-btn:has(> .composer-pill-glyph[role="button"]):hover
@@ -6456,7 +6457,7 @@ html[data-glass^="liquid"][data-glass-menus] [data-slot="dialog-content"] {
 }
 /* These panes clear the surface token, so ink drawn in the page colour (dark buttons' labels) takes the opaque one back. */
 html[data-glass][data-glass-menus] :is([data-slot="dialog-content"], [data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) [class*="text-background"],
-html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] [class*="text-background"] {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] [class*="text-background"] {
   --background: var(--glass-page-bg);
   --color-background: var(--glass-page-bg);
 }
@@ -6499,23 +6500,26 @@ html[data-glass]:not(.dark) {
 }
 html[data-glass][data-glass-menus]:not(.dark) [data-slot="dialog-content"] :is(.hub-tab-toggle, .btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]),
 html[data-glass][data-chat-wallpaper-workspace-ready]:not(.dark) [data-slot="chat-settings-panel"] :is(.hub-tab-toggle, .btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]),
-html[data-glass]:not(.dark) [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] :is(.hub-tab-toggle, .btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]) {
+html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :is(.hub-tab-toggle, .btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]) {
   border-color: transparent;
   background-color: var(--glass-control);
 }
 html[data-glass][data-glass-menus]:not(.dark) [data-slot="dialog-content"] :is(.btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]):is(:hover, [data-state="open"]),
 html[data-glass][data-chat-wallpaper-workspace-ready]:not(.dark) [data-slot="chat-settings-panel"] :is(.btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]):is(:hover, [data-state="open"]),
-html[data-glass]:not(.dark) [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] :is(.btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]):is(:hover, [data-state="open"]) {
+html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :is(.btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]):is(:hover, [data-state="open"]) {
   background-color: var(--glass-control-hover);
 }
 html[data-glass][data-glass-menus]:not(.dark) [data-slot="dialog-content"] .hub-tab-toggle-pill,
 html[data-glass][data-chat-wallpaper-workspace-ready]:not(.dark) [data-slot="chat-settings-panel"] .hub-tab-toggle-pill,
-html[data-glass]:not(.dark) [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] .hub-tab-toggle-pill {
+html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .hub-tab-toggle-pill {
   background-color: var(--glass-control-pill);
   box-shadow: var(--glass-control-rim);
 }
-/* Translucent hovers stack: a lit row shell and its button would show two pills. */
-html[data-glass] [class*="hover:bg-sidebar-accent"]:is(:hover, :has(:focus-visible), :has([data-state="open"]), .bg-sidebar-accent) [class*="hover:bg-sidebar-accent"] {
+/* Translucent hovers stack: a lit row shell and its button would show two pills. A focused or open
+   button is matched itself: a :has() over this [class*] subject restyles the whole app on every
+   node the thread mounts. */
+html[data-glass] [class*="hover:bg-sidebar-accent"]:is(:hover, .bg-sidebar-accent) [class*="hover:bg-sidebar-accent"],
+html[data-glass] [class*="hover:bg-sidebar-accent"] [class*="hover:bg-sidebar-accent"]:is(:focus-visible, [data-state="open"]) {
   background-color: transparent;
 }
 
@@ -6535,7 +6539,7 @@ html[data-glass^="liquid"] [data-auth-wallpaper]:has(> .chat-wallpaper[data-read
 html {
   --glass-page-floor: 70%;
 }
-html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] {
   background-color: color-mix(in srgb, var(--glass-page-bg) min(96%, calc(max(clamp(var(--glass-page-floor), calc(var(--glass-tint) + 22%), 88%), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent);
   background-image: var(--glass-sheen, none);
   --background: color-mix(in srgb, var(--glass-page-bg) 35%, transparent);
@@ -6564,7 +6568,7 @@ html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat
 html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper::after {
   content: none;
 }
-html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] .sticky {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .sticky {
   background-color: transparent;
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
