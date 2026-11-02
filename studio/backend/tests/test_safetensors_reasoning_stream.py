@@ -168,13 +168,25 @@ def test_a_template_that_stamps_a_date_still_renders():
 
 
 def test_a_generation_tag_template_is_not_read_as_an_open_think():
-    # Before: the probe could not compile {% generation %}, failed open, and "Four" became reasoning_content.
     assert _sf_reasoning_prefill_mode(_ETHINK, None, _GENERATION_TAG_TPL) is False
     assert _sf_reasoning_prefill_mode(_ETHINK, False, _GENERATION_TAG_TPL) is False
+    # True only if the tag compiles: an unrenderable template now reads as not open.
     assert _sf_reasoning_prefill_mode(_ETHINK, True, _GENERATION_TAG_TPL) is True
+
+
+@pytest.mark.parametrize(
+    "template",
+    (
+        # An extension the probe does not register fails the compile.
+        "{% unknown %}{% for m in messages %}{{ m['content'] }}{% endfor %}<think></think>",
+        # transformers renders this: it passes tools=None, while the probe leaves tools undefined.
+        "{{ tools | tojson }}{% for m in messages %}{{ m['content'] }}{% endfor %}<think></think>",
+    ),
+)
+def test_an_unrenderable_template_keeps_the_answer_visible(template):
     extractor = _ResponsesReasoningExtractor(
         parse_think_markers = _sf_parse_think_markers(_ETHINK),
-        reasoning_prefilled = _sf_reasoning_prefill_mode(_ETHINK, None, _GENERATION_TAG_TPL),
+        reasoning_prefilled = _sf_reasoning_prefill_mode(_ETHINK, None, template),
     )
     reasoning, visible = extractor.feed("Four")
     tail_reasoning, tail_visible = extractor.finish()

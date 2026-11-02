@@ -4372,7 +4372,7 @@ def _compile_generation_prompt_probe(template: str):
         def _raise_exception(message: str):
             raise RuntimeError(message)
 
-        # Without {% generation %} (LFM3, SmolLM3) the compile fails and the probe reports an open <think>.
+        # transformers registers {% generation %} (LFM3, SmolLM3), so those templates must compile here too.
         env = ImmutableSandboxedEnvironment(
             trim_blocks = True,
             lstrip_blocks = True,
@@ -4422,18 +4422,17 @@ def _generation_prompt_opens_think(
     reasoning_effort: Optional[str] = None,
     messages: Optional[Collection] = None,
 ) -> bool:
-    """Diffs the no-prompt render so typed think tags do not count; unrenderable returns True."""
-    if not template:
+    """Diffs the no-prompt render so typed think tags do not count; unrenderable returns False."""
+    if not template or not isinstance(template, str):
         return False
-    if not isinstance(template, str):
-        return True
     args = (template, enable_thinking, reasoning_effort)
     rendered = _render_generation_prompt_probe(*args, messages)
     if rendered is None and messages is not None:
         messages = None
         rendered = _render_generation_prompt_probe(*args)
+    # A wrong False leaks the thought beside the answer; a wrong True hides the whole answer as reasoning.
     if rendered is None:
-        return True
+        return False
     # Ignoring the flag gives an empty prefix, so nothing is prefilled; correct when no block opens.
     body = _render_generation_prompt_probe(*args, messages, generation_prompt = False)
     prefix = (
