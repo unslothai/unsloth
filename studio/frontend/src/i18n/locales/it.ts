@@ -962,6 +962,7 @@ export const it = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Imposta la password del proprietario dell'installazione prima di aggiungere un altro account. La userai per accedere quando questa installazione avrà più account.",
       signsInAs: "Accede come {username}",
       signsInAsOwner: "Accede come {alias} o {username}",
       signInName: "Il tuo nome di accesso",
