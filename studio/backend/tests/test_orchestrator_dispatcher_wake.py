@@ -9,7 +9,7 @@ import time
 import core.inference.orchestrator as orch_mod
 from core.inference.orchestrator import InferenceOrchestrator
 
-_WAKE = {"type": orch_mod._DISPATCHER_WAKE}
+_WAKE = {"type": "_dispatcher_wake"}
 
 
 def _with_queue(resp_queue):
@@ -19,12 +19,19 @@ def _with_queue(resp_queue):
 
 
 def test_stop_does_not_wait_for_the_poll_timeout(monkeypatch):
-    # A poll this long would make the old stop hit its join timeout instead of returning.
     monkeypatch.setattr(orch_mod, "_DISPATCH_POLL_INTERVAL", 60.0)
     monkeypatch.setattr(orch_mod, "_DISPATCH_STOP_TIMEOUT", 10.0)
     o = _with_queue(mp.get_context("spawn").Queue())
+    entered = threading.Event()
+    get = o._resp_queue.get
+
+    def parked_get(*args, **kwargs):
+        entered.set()
+        return get(*args, **kwargs)
+
+    monkeypatch.setattr(o._resp_queue, "get", parked_get)
     thread = o._start_dispatcher()
-    time.sleep(0.2)  # parked in its poll
+    assert entered.wait(5)
     started = time.monotonic()
     o._stop_dispatcher()
     assert not thread.is_alive()
@@ -61,7 +68,6 @@ def test_stray_wake_is_invisible_to_every_reader(monkeypatch):
 
 
 def test_restarted_dispatcher_skips_a_stray_wake_and_keeps_order(monkeypatch):
-    # A stray wake must not stop the next dispatcher or reach / reorder a mailbox.
     monkeypatch.setattr(orch_mod, "_DISPATCH_POLL_INTERVAL", 0.05)
     q = queue.Queue()
     o = _with_queue(q)
