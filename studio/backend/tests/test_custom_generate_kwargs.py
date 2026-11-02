@@ -14,6 +14,10 @@ _WANTED = {
     "_CUSTOM_GENERATE_REJECTED_KWARGS",
     "_supported_generate_kwargs",
     "_processor_takes_text_first",
+    "_GenerationHalted",
+    "_HaltingStreamer",
+    "_generate_supported",
+    "_refuse_without_generate",
 }
 _NS = {"inspect": inspect}
 exec(
@@ -34,6 +38,8 @@ exec(
 )
 _supported_generate_kwargs = _NS["_supported_generate_kwargs"]
 _processor_takes_text_first = _NS["_processor_takes_text_first"]
+_generate_supported = _NS.get("_generate_supported")
+_refuse_without_generate = _NS.get("_refuse_without_generate")
 
 _KWARGS = {"input_ids": 1, "logits_processor": [], "stopping_criteria": [], "streamer": object()}
 
@@ -127,13 +133,11 @@ class _CustomGenerate:
 
 
 def _criteria(*events):
-    from core.inference.inference import InferenceBackend
-    return InferenceBackend._cancel_stopping_criteria(None, *events)
+    return [types.SimpleNamespace(ev = event) for event in events]
 
 
 def test_cancel_ends_a_custom_generate_without_stopping_criteria():
     import threading
-    from core.inference.inference import _generate_supported
 
     cancel = threading.Event()
     model = _CustomGenerate(on_step = lambda step: step == 3 and cancel.set())
@@ -147,7 +151,6 @@ def test_cancel_ends_a_custom_generate_without_stopping_criteria():
 
 def test_a_matched_stop_sequence_ends_it_too():
     import threading
-    from core.inference.inference import _generate_supported
 
     matched = threading.Event()
     model = _CustomGenerate(on_step = lambda step: step == 5 and matched.set())
@@ -164,7 +167,6 @@ def test_a_matched_stop_sequence_ends_it_too():
 
 def test_an_uncancelled_custom_generate_returns_its_sequences():
     import threading
-    from core.inference.inference import _generate_supported
 
     model = _CustomGenerate()
     streamer = _Recorder()
@@ -181,7 +183,6 @@ def test_an_uncancelled_custom_generate_returns_its_sequences():
 
 def test_a_text_load_without_generate_is_refused_by_name():
     import pytest
-    from core.inference.inference import _refuse_without_generate
 
     class Lfm3AudioModel:
         pass
