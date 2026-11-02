@@ -47,6 +47,7 @@ import {
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { hydratePins } from "@/lib/pins-mirror";
 import { usePersonalizationSync } from "@/features/profile";
+import { useDeviceSettingsSync } from "@/features/settings/hooks/use-device-settings-sync";
 import { ScheduledTaskRunNotifier } from "@/features/scheduled-tasks/run-notifier";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
@@ -243,7 +244,9 @@ const AudioPage = lazy(() =>
 // Enabled once the session settles: a read refused mid password change would never retry until reload.
 function PersonalizationSyncMount() {
   useRouterState({ select: (s) => s.location.pathname });
-  usePersonalizationSync(hasSettledAuthSession());
+  const settled = hasSettledAuthSession();
+  usePersonalizationSync(settled);
+  useDeviceSettingsSync(settled);
   return null;
 }
 
