@@ -613,7 +613,6 @@ _LFM3_OMNI_PROCESSOR_CONFIG = {
     "image_token": "<|image|>",
     "processor_class": "Lfm3OmniProcessor",
 }
-# LFM3-Audio-2B: no image processor; its feature extractor takes the audio.
 _LFM3_AUDIO_PROCESSOR_CONFIG = {
     "audio_out_token": "<|audio_out|>",
     "audio_token": "<|audio|>",

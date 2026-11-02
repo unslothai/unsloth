@@ -791,7 +791,6 @@ def _refuse_without_generate(model, model_name: str) -> None:
 
 
 def _audio_chat_auto_model(config):
-    """AutoModelForMultimodalLM for an audio-input chat model with no vision (LFM3-Audio), else None."""
     if not getattr(config, "has_audio_input", False) or getattr(config, "is_vision", False):
         return None
     if getattr(config, "audio_type", None) != "audio_vlm":
