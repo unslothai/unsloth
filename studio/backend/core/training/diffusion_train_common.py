@@ -947,7 +947,6 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
 
 
 def _training_fetch_repo(base: str, token: Optional[str] = None) -> str:
-    """Repo the trainer downloads for a non-SDXL base."""
     from core.inference.diffusion_families import (
         _is_local_path,
         mirror_repo,
@@ -956,7 +955,7 @@ def _training_fetch_repo(base: str, token: Optional[str] = None) -> str:
     )
 
     fetched = prefer_ungated_mirror(base, token)
-    # Gated upstream with no token only: prefer the mirror even with a cached shard; UNSLOTH_DIFFUSION_NO_MIRROR still wins, and a local clone wins over both.
+    # Anonymous training ignores partial caches of gated upstreams.
     if (
         not token
         and upstream_is_gated(base)
@@ -968,7 +967,6 @@ def _training_fetch_repo(base: str, token: Optional[str] = None) -> str:
 
 
 def _training_mirror_access_specs(repo: str, note: str = "") -> dict[str, dict[str, Any]]:
-    """Access facts for a gated vendor base and its mirror, using the trainer's no-token fetch policy."""
     from core.inference.diffusion_families import mirror_repo, upstream_is_gated
 
     mirror = mirror_repo(repo)

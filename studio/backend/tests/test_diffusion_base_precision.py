@@ -1124,8 +1124,6 @@ def test_lowp_probe_skips_off_cuda_and_raises_on_a_failing_gemm():
 def test_training_access_facts_follow_no_token_mirror_with_cached_vendor_shard(
     monkeypatch, tmp_path, vendor
 ):
-    """A cached vendor shard keeps inference on the vendor id, but a tokenless trainer still fetches the
-    mirror, so the panel must not ask for a token."""
     from core.inference import diffusion_families as families
     from utils import hf_cache_settings
 
