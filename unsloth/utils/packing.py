@@ -1837,12 +1837,13 @@ def _refresh_derived_packed_caches(previous, seq_lengths, result, device):
     segments = _SEGMENT_LENGTHS_CACHE.get(result[0].device)
     if segments is not None and segments[0] is previous["result"][0]:
         _SEGMENT_LENGTHS_CACHE[result[0].device] = (result[0], segments[1], segments[2])
-    padded = _PADDED_CU_SEQLENS_CACHE.get(device)
+    padded_device = result[1].device
+    padded = _PADDED_CU_SEQLENS_CACHE.get(padded_device)
     if padded is not None and padded["cu_seqlens"] is previous["result"][1]:
         value = padded["result"]
         if _holds_inference_tensor(value):
             value = (value[0].clone(), value[1])
-        _PADDED_CU_SEQLENS_CACHE[device] = {
+        _PADDED_CU_SEQLENS_CACHE[padded_device] = {
             "cu_seqlens": result[1],
             "total": padded["total"],
             "result": value,

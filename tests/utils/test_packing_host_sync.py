@@ -551,6 +551,32 @@ def test_compiled_mode_transition_preserves_derived_cache(backend, dtype, mode, 
         torch._dynamo.reset()
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "requires CUDA")
+@pytest.mark.parametrize("backend", ["eager", "aot_eager"])
+def test_compiled_inference_metadata_preserves_cuda_device_alias(backend):
+    device = torch.device("cuda")
+    seq = torch.tensor([3, 5], dtype = torch.int32, device = "cpu")
+
+    def build(seq):
+        return packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, device)
+
+    def train(x, seq):
+        padded, _ = packing.cover_padded_cu_seqlens(build(seq), 10)
+        return (x * padded).sum()
+
+    torch._dynamo.reset()
+    try:
+        with torch._dynamo.config.patch(capture_scalar_outputs = True):
+            with torch.inference_mode():
+                info = torch.compile(build, backend = backend, fullgraph = True, dynamic = True)(seq)
+            packing.cover_padded_cu_seqlens(info, 10)
+            x = torch.ones(4, device = info[1].device, requires_grad = True)
+            torch.compile(train, backend = backend, fullgraph = True, dynamic = True)(x, seq).backward()
+            torch.testing.assert_close(x.grad, x.new_tensor([0.0, 3.0, 8.0, 10.0]))
+    finally:
+        torch._dynamo.reset()
+
+
 def test_new_lengths_do_not_inherit_derived_caches():
     device = torch.device("cpu")
     with torch.inference_mode():
