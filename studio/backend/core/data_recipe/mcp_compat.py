@@ -14,17 +14,20 @@ _DATA_DESIGNER_MCP_IO = "data_designer.engine.mcp.io"
 async def _streamablehttp_client(url, headers = None):
     from mcp.client.streamable_http import streamable_http_client
     from mcp.shared._httpx_utils import create_mcp_http_client
-
     async with create_mcp_http_client(headers = headers) as client:
         async with streamable_http_client(url, http_client = client) as streams:
             yield streams
 
 
 class _StreamableHttpAliasFinder(importlib.abc.MetaPathFinder):
-    def find_spec(self, fullname, path, target = None):
+    def find_spec(
+        self,
+        fullname,
+        path,
+        target = None,
+    ):
         if fullname == _DATA_DESIGNER_MCP_IO:
             import mcp.client.streamable_http as streamable_http
-
             if not hasattr(streamable_http, "streamablehttp_client"):
                 streamable_http.streamablehttp_client = _streamablehttp_client
         return None

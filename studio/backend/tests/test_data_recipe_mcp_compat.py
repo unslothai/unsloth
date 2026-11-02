@@ -81,7 +81,9 @@ def test_single_env_installs_the_mcp_that_speaks_the_modern_protocol(name):
 
 
 def test_data_designer_mcp_pin_is_relaxed_for_pip_check(tmp_path):
-    spec = importlib.util.spec_from_file_location("patch_metadata", _SINGLE_ENV / "patch_metadata.py")
+    spec = importlib.util.spec_from_file_location(
+        "patch_metadata", _SINGLE_ENV / "patch_metadata.py"
+    )
     patch_metadata = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(patch_metadata)
     metadata = tmp_path / "METADATA"
