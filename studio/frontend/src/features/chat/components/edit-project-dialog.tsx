@@ -18,8 +18,8 @@ import { WorkingFolderPicker } from "./working-folder-picker";
 import { LinkedFoldersManager } from "@/features/rag";
 import { isModEnter } from "@/features/settings/lib/keyboard-shortcuts";
 import { toast } from "@/lib/toast";
-import { Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 
 import { setChatProjectWorkingFolder } from "../api/chat-api";
 import {
@@ -180,7 +180,7 @@ export function EditProjectDialog({
         <div className="flex items-stretch overflow-hidden rounded-full border border-border bg-background transition-colors focus-within:border-ring has-[input:disabled]:opacity-50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
           <span className="flex shrink-0 items-center pl-5 text-muted-foreground">
             <HugeiconsIcon
-              icon={Folder02Icon}
+              icon={ProjectIcon}
               strokeWidth={1.75}
               className="size-5"
             />

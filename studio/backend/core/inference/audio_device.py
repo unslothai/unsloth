@@ -1,21 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Where an audio model's weights go: the accelerator, or plain CPU RAM.
-
-Audio loads take an accelerator whenever one exists. That is right until the GPU
-is the scarce resource (a resident chat model, a training run, a card too small
-for the checkpoint), and Whisper and the smaller TTS models run fine on CPU.
-
-Values match ``RAG_EMBED_DEVICE`` (``core/rag/config.py``):
-
-``auto``  detect as before.
-``cpu``   force CPU RAM, even with a working accelerator.
-``gpu``   prefer the accelerator. The existing CPU retry after a failed load
-          still applies, so this is a preference and not a guarantee.
-
-``UNSLOTH_AUDIO_DEVICE`` supplies the default for a request that names none.
-"""
+"""Audio weights go to the accelerator or CPU RAM: auto detects, cpu forces RAM, gpu prefers the
+accelerator (a failed load still retries on CPU). Values match RAG_EMBED_DEVICE
+(core/rag/config.py); UNSLOTH_AUDIO_DEVICE sets the default."""
 
 from __future__ import annotations
 

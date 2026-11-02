@@ -2,14 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Lockfile supply-chain audit for the Unsloth frontend and Tauri shell.
-
-Runs BEFORE `npm ci` / `cargo fetch` in CI and refuses to proceed when a lockfile carries patterns indicating supply-chain injection (npm Shai-Hulud waves, cargo crates.io brand-squats). package-lock.json (lockfileVersion 2/3): `resolved` must be the npm registry (direct git/github/file refs are the injection vector), `integrity` SHA must be present, known IOC substrings grepped from the body. Cargo.lock: `source` must be the crates.io registry index, plus known cargo IOC substrings.
-
-Exit codes: 0 clean (or skip env var set to a justification >=5 chars, not '1'/'true'), 1 findings, 2 internal error.
-
-Only PARSES the lockfiles, never executes or networks, and fires before any third-party install script runs on the runner. Complements rather than replaces `npm audit` / OSV-Scanner / the advisory-DB pipeline.
-"""
+"""Audits lockfiles before npm ci/cargo fetch; only parses them and rejects non-registry sources."""
 
 from __future__ import annotations
 

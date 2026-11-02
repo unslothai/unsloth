@@ -238,8 +238,8 @@ def test_kill_switches_fall_back_to_the_up_front_pin(monkeypatch, env, value):
     groups = [_FakeGroup() for _ in range(3)]
     monkeypatch.setattr(res, "h3_offload_groups", lambda _t: (None, groups))
     monkeypatch.setattr(te, "h3_te_pin_allowed", lambda *_a, **_k: True)
-    monkeypatch.setattr(dm, "_fast_pin_supported", lambda: env != dm.FAST_PIN_ENV)
-    monkeypatch.setattr(dm, "host_pinning_allowed", lambda: True)
+    monkeypatch.setattr(dm, "_fast_pin_supported", lambda *_a, **_k: env != dm.FAST_PIN_ENV)
+    monkeypatch.setattr(dm, "host_pinning_allowed", lambda *_a, **_k: True)
     monkeypatch.setenv(env, value)
     pipe = _Pipe()
     assert res.defer_streamed_block_pins(pipe, torch.nn.Module(), "cuda") is None
@@ -255,8 +255,8 @@ def test_hosts_and_layouts_the_up_front_pin_owns(monkeypatch, case):
     monkeypatch.setattr(res, "h3_offload_groups", lambda _t: (None, groups))
     monkeypatch.setattr(te, "h3_te_pin_allowed", lambda *_a, **_k: case != "refused")
     monkeypatch.setattr(dm, "_pinned_memory_capped", lambda: case == "capped")
-    monkeypatch.setattr(dm, "_fast_pin_supported", lambda: True)
-    monkeypatch.setattr(dm, "host_pinning_allowed", lambda: True)
+    monkeypatch.setattr(dm, "_fast_pin_supported", lambda *_a, **_k: True)
+    monkeypatch.setattr(dm, "host_pinning_allowed", lambda *_a, **_k: True)
     pipe = _Pipe()
     assert res.defer_streamed_block_pins(pipe, torch.nn.Module(), "cuda") is None
     assert [g.low_cpu_mem_usage for g in groups] == [

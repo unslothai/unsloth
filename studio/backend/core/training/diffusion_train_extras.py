@@ -1,34 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Optional extras for the diffusion LoRA trainers: LoRA EMA, the persistent
-conditioning cache, and aspect-ratio bucketing.
-
-Everything here is opt-in and family-agnostic:
-
-- ``LoRAEMA`` keeps an exponential moving average of ONLY the trainable LoRA
-  parameters. Short LoRA runs (a few hundred steps) can't afford the classic
-  0.9999 decay -- the shadow would still be ~frozen at the init when the run
-  ends -- so the default decay is 0.99 with a warmup ramp that keeps early
-  updates responsive. The EMA weights export as a SECOND adapter next to the
-  primary one, so the user can A/B both.
-
-- ``PersistentConditioningCache`` stores the trainer's precomputed conditioning
-  tensors (VAE latent posterior stats + text-encoder embeddings) on disk as one
-  safetensors file per item, keyed by content hash + family + resolution. On a
-  warm start the trainer can skip loading the VAE and the multi-GB text
-  encoders entirely. The cached latent tensors are EXACTLY what the in-memory
-  path produces (the family's ``encode_latent_stats`` output with all
-  normalisation -- including Qwen's per-channel latents_mean/std -- already
-  folded in, held in fp32), so a cache hit is bit-identical to a fresh encode.
-
-- Aspect-ratio bucketing assigns each image a same-area bucket resolution
-  (width/height multiples of a divisor the VAE + patching can consume) and
-  batches only within a bucket, so a mixed-aspect dataset trains without
-  square-cropping away composition.
-
-Pure helpers avoid torch at import time so the CPU unit tests stay light.
-"""
+"""Opt-in extras: LoRA EMA (0.99 default decay, exported as a second adapter), conditioning cache
+(bit-identical to a fresh encode), aspect bucketing; pure helpers avoid torch at import time"""
 
 from __future__ import annotations
 

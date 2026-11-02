@@ -7,7 +7,7 @@ import {
   Doc01Icon,
   FileEmpty02Icon,
   FlimSlateIcon,
-  Image02Icon,
+  ImageIcon,
   Pdf01Icon,
   Presentation01Icon,
   SourceCodeIcon,
@@ -97,7 +97,7 @@ export function attachmentFileKind(
 }
 
 export const ATTACHMENT_KIND_ICONS = {
-  image: Image02Icon,
+  image: ImageIcon,
   pdf: Pdf01Icon,
   audio: AiSpeechIcon,
   video: FlimSlateIcon,

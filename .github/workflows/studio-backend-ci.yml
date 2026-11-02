@@ -157,7 +157,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '${{ matrix.python }}'
 
@@ -207,8 +207,10 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests \
-            'numpy<3' pytest pytest-asyncio pytest-xdist pytest-timeout httpx \
+            'numpy<3' 'pytest<9.2' pytest-asyncio pytest-xdist pytest-timeout httpx \
             soundfile librosa
+          # pytest 9.2.0 deletes torch config keys when undoing monkeypatch.setattr (reads the old value
+          # from __dict__, which torch's ConfigModule does not use), breaking every later config read.
           # soundfile + librosa, or the no-torchcodec decode test silently skips.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchaudio<2.11'
@@ -254,6 +256,7 @@ jobs:
             --ignore=tests/test_profile_stats.py \
             --ignore=tests/test_media_auto_switch.py \
             --ignore=tests/test_pr5624_regressions.py \
+            --ignore=tests/test_web_tools_overlap.py \
             -k 'not llama_cpp_load_progress_live'
 
       - name: Backend tests that cannot share a worker
@@ -275,7 +278,8 @@ jobs:
             tests/test_anthropic_messages.py \
             tests/test_profile_stats.py \
             tests/test_media_auto_switch.py \
-            tests/test_pr5624_regressions.py
+            tests/test_pr5624_regressions.py \
+            tests/test_web_tools_overlap.py
 
       - name: Decision model training tests
         # Their worker imports unsloth, so unsloth_zoo is installed here, after the suite above ran
@@ -348,17 +352,42 @@ jobs:
               --ignore=tests/sh
               --ignore=tests/vllm_compat
               --ignore=tests/version_compat
+              --ignore=tests/diffusion
+              --ignore=tests/kaggle
+              --ignore=tests/security
+              --ignore-glob=tests/test_[dimsu]*.py
               --ignore-glob=tests/test_fsdp2*.py
               --ignore-glob=tests/test_[!f]*gloo*.py
               --ignore-glob=tests/test_f[!s]*gloo*.py
+          # The catch-all then ran 1213 to 2092 s of its 2100 s cap on 2026-10-29 (median about
+          # 1750 s), and was interrupted after passing on a slow runner. Measured per file, the
+          # diffusion, kaggle and security folders plus top-level test_d/i/m/s/u files are about
+          # half of it. No *gloo* or fsdp2 file starts with d, i, m, s or u, so the glob cannot
+          # take a file another shard also names (tests/test_ci_repo_cpu_shards.py checks it).
+          - shard: rest-2
+            selection: >-
+              tests/diffusion
+              tests/kaggle
+              tests/security
+              tests/test_[dimsu]*.py
               --deselect tests/test_model_registry.py::test_model_registration
               --deselect tests/test_model_registry.py::test_all_model_registration
           # Native FSDP2's gloo tests spawn 2 to 4 ranks each: about ten minutes of this
           # runner on their own, which pushed the catch-all to the 2100 s step cap. They run
           # beside it instead.
+          # They then grew to 2092 s of the same cap on their own (364 tests by 2026-10-28)
+          # and were interrupted after passing, so they are split in two by file name: native_d
+          # onwards is about 55% of the measured time, everything else about 45%. Each glob
+          # must match a file, or bash hands pytest the literal pattern
+          # (tests/test_ci_repo_cpu_shards.py checks both).
           - shard: fsdp2
             selection: >-
-              tests/test_fsdp2*.py
+              tests/test_fsdp2_[!n]*.py
+              tests/test_fsdp2_n[!a]*.py
+              tests/test_fsdp2_native_[abc]*.py
+          - shard: fsdp2-native
+            selection: >-
+              tests/test_fsdp2_native_[!abc]*.py
           # The other multi-rank gloo suites (tensor, pipeline and context parallel, float8 and
           # fp8 under FSDP2) did the same again: with them the catch-all hit the 2100 s cap and was
           # interrupted at 74 to 98% on most runs. Locally on 4 cores they are 578 s of the
@@ -367,14 +396,36 @@ jobs:
           # the globs themselves.
           - shard: gloo
             selection: >-
-              tests/test_[!f]*gloo*.py
+              tests/test_[!fpt]*gloo*.py
               tests/test_f[!s]*gloo*.py
+              tests/test_parallel_[!c]*gloo*.py
+              tests/test_tp_[!n]*gloo*.py
+          # #16407 grew test_parallel_cp_compose_gloo.py to about a third of the gloo shard's time
+          # (1143 of 3605 test-seconds measured per file), which took the shard to 1922 s of the
+          # 2100 s cap on main and over it on a slower runner. gloo-tp-pp has no room for it either
+          # (1397 s), so test_parallel_c*gloo* runs on its own. A *gloo* file named test_p[!ap]*
+          # would match no shard; tests/test_ci_repo_cpu_shards.py reports it as dropped.
+          # Its tests spawn 2 to 8 gloo ranks each: four at once peaked at about 20 GB (summed PSS,
+          # measured locally) and the 16 GB runner was shut down mid-run, twice. Two at once peak
+          # at about 12 GB.
+          - shard: gloo-cp
+            workers: 2
+            selection: >-
+              tests/test_parallel_c*gloo*.py
+          # The gloo shard then ran 1331 to 2058 s of the same cap on 2026-10-29. Measured per
+          # file, native tensor parallel plus pipeline parallel are about 51% of it, everything
+          # else about 49%. A *gloo* file named test_t[!p]* or test_tp[!_]* would match neither
+          # shard; tests/test_ci_repo_cpu_shards.py reports it as dropped.
+          - shard: gloo-tp-pp
+            selection: >-
+              tests/test_tp_n*gloo*.py
+              tests/test_pp*gloo*.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
@@ -402,8 +453,8 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests typer \
-            'numpy<3' pytest pytest-asyncio pytest-xdist pytest-timeout httpx
-          # pytest-timeout names a hung test instead of a `cancelled` job.
+            'numpy<3' 'pytest<9.2' pytest-asyncio pytest-xdist pytest-timeout httpx
+          # pytest<9.2: see the first install step. pytest-timeout names a hung test instead of a `cancelled` job.
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
@@ -442,7 +493,7 @@ jobs:
         # globals. The outer timeout must fire before the job cap.
         run: |
           timeout --signal=INT --kill-after=60 2100 \
-          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n 4 --dist loadgroup --timeout=330 \
+          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n ${{ matrix.workers || 4 }} --dist loadgroup --timeout=330 \
             -m 'not server and not e2e'
 
       - name: Hardware-spoof tests (state-sensitive, run in isolation)
@@ -498,7 +549,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 

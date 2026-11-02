@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Family-agnostic helpers for a render that calls its pipeline more than once per request (a multi-stage recipe:
-LTX-2.5's half-size stage, latent upsample, full-size stage). Each helper keys on what the pipeline object carries
-(its offload hook list, its denoiser, its ``encode_prompt``), never on a family name, so any multi-stage render can wrap
-its calls in them.
-
-``encode_once``: every stage encodes the same prompt; the later stages take the first one's device tensors.
-``hold_denoiser_between_calls``: under model CPU offload a pipeline call ends by offloading every component, so the
-next stage would upload the whole denoiser again; hold it when the work in between still fits beside it.
-"""
+"""Multi-stage render helpers keyed on pipeline attributes: encode once, hold denoiser under offload."""
 
 from __future__ import annotations
 

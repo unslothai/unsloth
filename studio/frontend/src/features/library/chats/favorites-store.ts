@@ -4,6 +4,8 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
+
 export const LIBRARY_CHAT_FAVORITES_STORAGE_KEY = "unsloth_library_chat_favorites";
 
 export interface ChatFavoritesState {
@@ -55,3 +57,5 @@ export const useChatFavoritesStore = create<ChatFavoritesState>()(
     },
   ),
 );
+
+syncAcrossWindows(useChatFavoritesStore);

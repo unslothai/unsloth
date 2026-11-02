@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Settings policy: the account, shared and owner routers decide who may reach each
-/api/settings path."""
+"""Access to each /api/settings path is decided by the account, shared and owner routers"""
 
 import asyncio
 import functools
@@ -72,13 +71,14 @@ from utils.personalization_settings import (
 from utils.upload_limits import (
     MAX_UPLOAD_LIMIT_MB,
     MIN_UPLOAD_LIMIT_MB,
+    audio_input_max_bytes,
     default_upload_limit_mb,
     get_upload_limit_mb,
     set_upload_limit_mb,
     upload_limit_bytes,
     upload_limit_label,
 )
-from utils.cache_inventory import CACHE_KEYS, cache_inventory, purge_caches
+from utils.cache_inventory import CACHE_KEYS, cache_inventory, cache_breakdown, purge_caches
 from utils.xet_notice_settings import reserve_xet_notice
 from utils.chat_preferences_settings import (
     get_show_model_disclaimer,
@@ -595,6 +595,8 @@ class UploadLimitResponse(BaseModel):
     default_upload_size_mb: int
     min_upload_size_mb: int = MIN_UPLOAD_LIMIT_MB
     max_allowed_upload_size_mb: int = MAX_UPLOAD_LIMIT_MB
+    # Audio page upload cap; None means no cap.
+    audio_input_max_bytes: Optional[int] = None
 
 
 class ToolResultLimitPayload(BaseModel):
@@ -905,6 +907,10 @@ class CacheEntryResponse(BaseModel):
     # Clearing costs a re-download, so it is never folded into a clear-everything action.
     opt_in: bool
     paths: list[str]
+    measured_paths: list[str] = Field(default_factory = list)
+    clear_size_bytes: Optional[int] = None
+    clear_entry_count: Optional[int] = None
+    system_disk_bytes: Optional[int] = None
     size_bytes: int
     entry_count: int
     present: bool
@@ -918,6 +924,7 @@ class CacheInventoryResponse(BaseModel):
     reclaimable_bytes: int
     free_bytes: Optional[int] = None
     total_disk_bytes: Optional[int] = None
+    refreshing: bool = False
 
 
 class CachePurgePayload(BaseModel):
@@ -1057,6 +1064,8 @@ class ModelOverridePayload(BaseModel):
     tensor_parallel: bool = False
     disable_vision: bool = False
     mlx_int8_prefill: bool = False
+    mlx_ane_prefill: bool = False
+    mlx_fast_verify: bool = False
     # Auto (null or "auto") is stored as absence; omitted keeps the stored value.
     mlx_ple_offload: Optional[Union[Literal["auto", "off"], float]] = None
     mlx_expert_offload: Optional[Union[Literal["auto", "off"], float]] = None
@@ -1164,6 +1173,7 @@ def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
         max_upload_size_bytes = upload_limit_bytes(limit_mb),
         max_upload_size_label = upload_limit_label(limit_mb),
         default_upload_size_mb = default_upload_limit_mb(),
+        audio_input_max_bytes = audio_input_max_bytes(limit_mb),
     )
 
 
@@ -1396,6 +1406,19 @@ async def get_caches(
     # Cold walks of a large hub or triton cache take seconds, so this runs off the event loop.
     inventory = await asyncio.to_thread(cache_inventory, refresh = refresh)
     return CacheInventoryResponse(**inventory)
+
+
+@_owner_settings_router.get("/caches/{key}/breakdown")
+async def get_cache_breakdown(
+    key: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    require_ui_session(via_api_key)
+    try:
+        return await asyncio.to_thread(cache_breakdown, key)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
 
 @_owner_settings_router.post("/caches/purge", response_model = CachePurgeResponse)
@@ -2672,6 +2695,8 @@ def update_openai_auto_switch_override(
                 not payload.tensor_parallel
                 and not payload.disable_vision
                 and not payload.mlx_int8_prefill
+                and not payload.mlx_ane_prefill
+                and not payload.mlx_fast_verify
                 and payload.load_in_4bit
                 # null clears just that knob, so naming one is not a forget.
                 and not {"mlx_ple_offload", "mlx_expert_offload"} & payload.model_fields_set
@@ -2679,7 +2704,14 @@ def update_openai_auto_switch_override(
                     key: value
                     for key, value in saved_fields.items()
                     if key
-                    not in ("tensor_parallel", "disable_vision", "mlx_int8_prefill", "load_in_4bit")
+                    not in (
+                        "tensor_parallel",
+                        "disable_vision",
+                        "mlx_int8_prefill",
+                        "mlx_ane_prefill",
+                        "mlx_fast_verify",
+                        "load_in_4bit",
+                    )
                 }
             )
         if requested_extra_args is None and not is_removal:
@@ -2903,6 +2935,8 @@ def update_openai_auto_switch_override(
                 tensor_parallel = payload.tensor_parallel,
                 disable_vision = payload.disable_vision,
                 mlx_int8_prefill = payload.mlx_int8_prefill,
+                mlx_ane_prefill = payload.mlx_ane_prefill,
+                mlx_fast_verify = payload.mlx_fast_verify,
                 load_in_4bit = payload.load_in_4bit,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
@@ -3284,14 +3318,6 @@ def _gguf_conversion_name_matches(hit_name: str, base: str) -> bool:
     name = hit_name.casefold()
     base = base.casefold()
     return name == base or name in {f"{base}-gguf", f"{base}_gguf", f"{base}.gguf"}
-
-
-def _gguf_files_for_pick(names: list[str], picked: str) -> Optional[list[str]]:
-    """The complete downloadable file family for a picked GGUF. llama-server opens split siblings implicitly,
-    so a single selected shard is not a usable plan, and incomplete published families are rejected.
-    Deferred to the loader so the plan offered here and the transfer name one set."""
-    from core.rag.embed_llama_server import LlamaServerBackend
-    return LlamaServerBackend._split_family(names, picked)
 
 
 def _pick_downloadable_gguf(names: list[str]) -> Optional[list[str]]:
@@ -4588,6 +4614,11 @@ def _is_bundled_avatar_url(value: str) -> bool:
     return path[path.index(marker) :].lower().endswith(".png")
 
 
+_GREETING_DATA_URL_PATTERN = r"^data:image/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$"
+MAX_GREETING_ICON_DATA_URL_LENGTH = 96 * 1024
+MAX_GREETING_IMAGE_DATA_URL_LENGTH = MAX_AVATAR_DATA_URL_BYTES
+
+
 class PersonalizationProfile(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
@@ -4596,6 +4627,25 @@ class PersonalizationProfile(BaseModel):
     avatarDataUrl: Optional[str] = Field(None, max_length = MAX_AVATAR_DATA_URL_BYTES)
     avatarShape: Literal["circle", "rounded"] = "circle"
     showGreetingSloth: bool = True
+    greetingStyle: Literal["text", "image"] = "text"
+    greetingIcon: Literal["sloth", "custom", "none"] = "sloth"
+    greetingIconDataUrl: Optional[str] = Field(
+        None,
+        max_length = MAX_GREETING_ICON_DATA_URL_LENGTH,
+        pattern = _GREETING_DATA_URL_PATTERN,
+    )
+    greetingText: str = Field("", max_length = 100)
+    greetingImageDataUrl: Optional[str] = Field(
+        None,
+        max_length = MAX_GREETING_IMAGE_DATA_URL_LENGTH,
+        pattern = _GREETING_DATA_URL_PATTERN,
+    )
+
+    @field_validator("greetingStyle", "greetingIcon", mode = "before")
+    @classmethod
+    def _known_greeting_choice(cls, value: object, info) -> object:
+        allowed = get_args(cls.model_fields[info.field_name].annotation)
+        return value if value in allowed else cls.model_fields[info.field_name].default
 
     @field_validator("avatarDataUrl")
     @classmethod
@@ -4786,6 +4836,9 @@ class PersonalizationCustomization(BaseModel):
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"
     fontSmoothing: bool = True
+    codeLineNumbers: bool = False
+    codeWordWrap: bool = False
+    codeLigatures: bool = True
     sidebarMenu: list[PersonalizationSidebarMenuItem] = Field(
         default_factory = _default_sidebar_menu,
         max_length = MAX_SIDEBAR_MENU_INPUT_ITEMS,
@@ -4841,8 +4894,6 @@ class PersonalizationAppearance(BaseModel):
     theme: Literal["light", "dark", "system"] = "system"
     palette: Literal[
         "standard",
-        "classic",
-        "minimal",
         "blueberry",
         "butterfly-pea",
         "cherry",
@@ -4865,6 +4916,7 @@ class PersonalizationAppearance(BaseModel):
         "taro",
         "wasabi",
         "yuzu",
+        "trick-or-treat",
     ] = "standard"
     language: Optional[str] = Field(None, max_length = 20)
     customization: PersonalizationCustomization = Field(
@@ -4891,6 +4943,7 @@ class PersonalizationResponse(PersonalizationPayload):
     sentAttachmentsSaved: bool = False
     paletteSaved: bool = False
     greetingSlothSaved: bool = False
+    greetingCustomSaved: bool = False
 
 
 @_account_settings_router.get("/personalization", response_model = PersonalizationResponse)
@@ -4910,6 +4963,7 @@ def get_personalization_settings(
     )
     response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
     response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
+    response.greetingCustomSaved = isinstance(profile, dict) and "greetingStyle" in profile
     return response
 
 

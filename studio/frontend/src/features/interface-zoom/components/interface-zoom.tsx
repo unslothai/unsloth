@@ -20,7 +20,6 @@ import {
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { Z_LAYER } from "@/lib/z-layers";
-import { MinusIcon } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -37,7 +36,7 @@ import {
   zoomDirectionForKey,
 } from "../lib/zoom-chords.ts";
 import { createWheelZoomAccumulator, isZoomWheel } from "../lib/zoom-wheel.ts";
-import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { MinusSignIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 export const ZOOM_POPUP_HIDE_MS = 2500;
@@ -118,7 +117,7 @@ function ZoomPopup() {
           aria-label={t("shell.zoom.zoomOut")}
           title={withChord(t("shell.zoom.zoomOut"), -1)}
         >
-          <MinusIcon
+          <HugeiconsIcon icon={MinusSignIcon}
             strokeWidth={1.75}
             className="size-[calc(16px*var(--ui-space-scale,1))]"
           />

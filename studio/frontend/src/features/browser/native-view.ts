@@ -310,8 +310,11 @@ function onNativeEvent(event: NativeEvent): void {
 // A page at work in a chat off screen opens its popups there, not over this chat's tabs.
 function openPopup(tab: BrowserTab, url: string): void {
   const store = useBrowserStore.getState();
-  if (tab.chat !== store.chat) store.openTabIn(tab.chat, url, { from: shownUrl(tab), background: true });
-  else store.openUrl(url, { newTab: true, from: shownUrl(tab) });
+  if (tab.chat !== store.chat) {
+    // The opener's temporary flag, not the shown chat's: a temporary page's popups stay out of history.
+    const temporary = pageTemporary(tab.id, currentEntry(tab));
+    store.openTabIn(tab.chat, url, { from: shownUrl(tab), background: true, temporary });
+  } else store.openUrl(url, { newTab: true, from: shownUrl(tab) });
 }
 
 function promptPopup(tab: BrowserTab, url: string): void {

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from pydantic import BaseModel
 from typing import List, NamedTuple, Optional
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 # Dependency-light leaf (PEP 562 package init): no llama.cpp / torch import chain.
 from core.inference.memory_contract import (
@@ -533,7 +534,7 @@ def _scan_models_dir(
                 )
 
     # Several loose checkpoints: one row per file (the folder rescue below needs exactly one).
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion_local_files import resolve_local_single_file
     from hub.utils.comfy_models import loose_diffusion_checkpoints
 
     sole = resolve_local_single_file(str(models_dir)) if not (found or loose_files) else None
@@ -615,10 +616,7 @@ def _scan_hf_cache(
             if variant_states is not None
             else None
         )
-        partial = hf_cache_scan.is_snapshot_partial(
-            "model", model_id, repo_dir, variant_state = variant_state
-        )
-        partial = partial or hf_cache_scan.is_gguf_repo_partial(
+        partial = hf_cache_scan.repo_listing_partial(
             model_id, repo_dir, variant_state = variant_state
         )
 
@@ -912,6 +910,7 @@ def _with_comfy_compat_rows(
     return existing + found
 
 
+@in_scan_memo
 def collect_local_models(
     models_root: Path,
     *,
@@ -979,7 +978,10 @@ def collect_local_models(
         except OSError:
             continue
     try:
-        from hub.utils import download_manifest
+        from hub.utils import download_manifest, partial_verdict_cache
+
+        # Taken before the index reads the Hub state, so a write in between misses next time.
+        partial_verdict_cache.scan_token()
         variant_states = download_manifest.build_variant_state_index(
             state_repositories,
             active_hub_cache = hf_cache_dir,
@@ -1201,6 +1203,7 @@ def _compat_inventory_path_identity(path: object) -> str:
         return os.path.normcase(raw)
 
 
+@in_scan_memo
 async def _shared_compat_local_inventory_scan(
     models_root: Path, sources: Optional[_CompatLocalInventorySources] = None
 ) -> List[LocalModelInfo]:
@@ -2509,6 +2512,15 @@ async def get_model_config(
                 is_decision, layout = True, "llm"
                 config_dict = load_llm_decision_defaults()
 
+            from utils.models.training_defaults import model_training_recommendations
+
+            config_dict = model_training_recommendations(
+                config_dict,
+                is_vision = is_vision,
+                is_audio = audio_type is not None,
+                is_embedding = is_embedding,
+                is_decision = is_decision,
+            )
             logger.info(
                 f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, audio_type_known={audio_type_definitive}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
             )
@@ -2799,6 +2811,11 @@ async def scan_model_remote_code(
             load_subdirs_by_target = consent_load_subdirs,
         )
         payload = decision.response_payload()
+        blocks = (
+            [(payload.get("block_cause"), payload.get("model_name"))]
+            if payload.get("block_cause")
+            else []
+        )
         payload["model_name"] = exact_snapshot_repo_id if exact_snapshot_path else model_name
         payload["requires_trust_remote_code"] = decision.has_remote_code
         # Prior approval lets the dialog be skipped; the scan still ran, so this is a real match.
@@ -2829,6 +2846,8 @@ async def scan_model_remote_code(
             )
             security_blocked = security_blocked or _sec.blocked
             unsafe_files.extend(_sec.unsafe_files)
+            if _sec.blocked:
+                blocks.append((_sec.block_cause, _sec.model_name))
         payload["unsafe_files"] = unsafe_files
         payload["security_blocked"] = security_blocked
         if security_blocked:
@@ -2836,6 +2855,16 @@ async def scan_model_remote_code(
             payload["approvable"] = False
             payload["requires_trust_remote_code"] = True
             payload["error_kind"] = "malware_blocked"
+        from utils.hub_settings import active_source_label
+        from utils.security.file_security import NOT_ON_SOURCE, strongest_block
+
+        block_cause, block_target = strongest_block(blocks)
+        payload["block_cause"] = block_cause
+        # A repo the source lacks declares nothing, but the load still stops at the dialog.
+        if block_cause:
+            payload["requires_trust_remote_code"] = True
+        payload["block_source"] = active_source_label()
+        payload["block_target"] = block_target if block_cause == NOT_ON_SOURCE else None
         # The findings quote paths inside the model directory.
         from hub.utils.host_paths import restore_inventory_handles
 
@@ -5052,6 +5081,7 @@ async def list_cached_gguf(
         return {"cached": []}
 
 
+@in_scan_memo
 def cached_gguf_rows(cache_scans = None) -> list[dict]:
     if cache_scans is None:
         cache_scans = _all_hf_cache_scans()
@@ -5283,6 +5313,7 @@ def _repo_hosts_artifacts(repo_id: str) -> bool:
         return False
 
 
+@in_scan_memo
 def cached_model_rows(cache_scans = None) -> list[dict]:
     _WEIGHT_EXTENSIONS = _NON_GGUF_WEIGHT_EXTENSIONS
     if cache_scans is None:
@@ -5610,7 +5641,10 @@ async def list_checkpoints(
     outputs_dir = account_access.private_directory(outputs_dir, "outputs")
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
-        raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir, include_decision = True)
+        # Reads every checkpoint's trainer_state.json: keep it off the event loop.
+        raw_models = await asyncio.to_thread(
+            scan_checkpoints, outputs_dir = resolved_outputs_dir, include_decision = True
+        )
 
         models = [
             ModelCheckpoints(

@@ -3,7 +3,8 @@
 
 """Keep the chat context when an image or video load takes the GPU from chat.
 
-Before the media acquire (outside every lock) the chat slots' KV is saved to disk, bounded by
+Before the media acquire (outside every lock) the chat KV (llama-server's slots, or the MLX
+worker's prompt cache) is saved to disk, bounded by
 ``SWAP_KV_SAVE_BUDGET_S``. The manifest waits here as "pending" until ``gpu_arbiter._evict_chat``
 unloads that same model; only then does it become the keep-warm stash that the next chat load
 restores. If nothing was evicted, ``SwapSave.close`` drops it and deletes its files.
@@ -304,11 +305,36 @@ def _chat_account() -> Optional[str]:
         return gpu_arbiter.owner_account()
 
 
-def _save_in_thread(llama, should_abort, abort: threading.Event, loop, future) -> None:
+def mlx_chat_identity(orchestrator):
+    serves_mlx = getattr(orchestrator, "_serves_mlx", None)
+    if not callable(serves_mlx) or not serves_mlx():
+        return None
+    name = orchestrator.active_model_name
+    return (name, None, getattr(orchestrator, "_openai_advertised_id", None) or name, "mlx")
+
+
+def _chat_saver():
+    from core.inference.llama_keepwarm import _loaded_identity
+    from routes.inference import get_llama_cpp_backend
+
+    llama = get_llama_cpp_backend()
+    identity = _loaded_identity(llama)
+    if identity is not None:
+        if not getattr(llama, "_gguf_path", None):
+            return None
+        return identity, llama.save_slots_for_resume
+    from core.inference.orchestrator import peek_inference_backend
+
+    orchestrator = peek_inference_backend()
+    identity = mlx_chat_identity(orchestrator)
+    return None if identity is None else (identity, orchestrator.save_prompt_cache_for_resume)
+
+
+def _save_in_thread(save, should_abort, abort: threading.Event, loop, future) -> None:
     """Runs the blocking save on its own thread, so neither the budget nor the event loop's
     shutdown waits on it. A result nobody is waiting for any more is deleted right here."""
     try:
-        manifest, error = llama.save_slots_for_resume(should_abort), None
+        manifest, error = save(should_abort), None
     except BaseException as exc:  # noqa: BLE001 - reported to the waiter
         manifest, error = None, exc
     if abort.is_set():
@@ -345,19 +371,16 @@ async def save_chat_kv_before_swap(
     global _pending
     try:
         from core.inference import gpu_arbiter
-        from core.inference.llama_keepwarm import _loaded_identity
         from utils.openai_auto_switch_settings import get_auto_unload_keep_kv
 
         if not gpu_arbiter.would_evict(owner, policy = policy, need_mib = need_mib, gpu_ids = gpu_ids):
             return SwapSave()
         if not await asyncio.to_thread(get_auto_unload_keep_kv):
             return SwapSave()
-        from routes.inference import get_llama_cpp_backend
-
-        llama = get_llama_cpp_backend()
-        identity = _loaded_identity(llama)
-        if identity is None or not getattr(llama, "_gguf_path", None):
+        saver = _chat_saver()
+        if saver is None:
             return SwapSave()
+        identity, save = saver
         account = _account_id()
         counted = _request_counted()
         if _chat_account() != account or _chat_busy(counted):
@@ -389,7 +412,7 @@ async def save_chat_kv_before_swap(
     try:
         threading.Thread(
             target = _save_in_thread,
-            args = (llama, should_abort, abort, loop, future),
+            args = (save, should_abort, abort, loop, future),
             name = "chat-kv-swap-save",
             daemon = True,
         ).start()

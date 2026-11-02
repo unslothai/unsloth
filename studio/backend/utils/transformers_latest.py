@@ -1,38 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Latest-transformers support check for brand-new model architectures.
-
-When a model's ``model_type`` is absent from every installed transformers overlay
-(base 4.57.x plus the .venv_t5_530/550/510 sidecars and, if provisioned, .venv_t5_latest),
-Unsloth cannot load it today. This module answers, without authentication, code execution,
-or trust_remote_code:
-
-  1. Does the LATEST transformers release on PyPI ship this ``model_type``?
-  2. Does transformers ``main`` on GitHub ship it (installable from main after consent)?
-
-Sources (all unauthenticated; raw.githubusercontent.com is not API rate-limited and
-api.github.com is deliberately never used):
-  - https://pypi.org/pypi/transformers/json                       -> latest release version
-  - https://raw.githubusercontent.com/huggingface/transformers/{ref}/src/transformers/
-        models/auto/configuration_auto.py + auto_mappings.py      -> CONFIG_MAPPING_NAMES
-
-The fetched sources are parsed with the same AST extractor the static router uses
-(:func:`utils.transformers_version._model_types_from_source`), so the remote answer is
-computed exactly like the local overlay answer.
-
-Results are cached in memory and in a small JSON snapshot under ``studio_root()/cache``
-(ttl ~1 day) so repeated tier resolutions never re-fetch; failures are backed off in
-memory. Every fetch is bounded by an explicit wall-clock budget on the transfer (not just
-the socket timeout, which only bounds one read), so a hung or drip-feeding network cannot
-block model loading. Fully offline-safe: offline env vars or the kill switch
-``UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS=1`` make every check return None (current
-behavior preserved).
-
-The consented install path (:func:`install_latest_transformers`) provisions the
-persistent ``.venv_t5_latest`` sidecar via
-:func:`utils.transformers_version.ensure_latest_transformers_venv`.
-"""
+"""Checks whether PyPI's latest or GitHub main transformers ships a missing model_type, with no
+auth, code execution or trust_remote_code; each fetch has a wall-clock budget so a hung network
+never blocks loading; UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS=1 or offline env vars make checks
+return None."""
 
 import contextlib
 import json
@@ -51,6 +23,9 @@ from utils.transformers_version import (
     _tier_from_config_mapping,
     _config_model_types,
     _NESTED_CONFIG_KEYS,
+    _release_tuple,
+    _remote_code_min_version,
+    _remote_code_tier,
     _TIER_RANK,
     _model_types_from_config,
     _TRANSFORMERS_510_MODEL_TYPES,
@@ -417,6 +392,38 @@ def _hardcoded_tier_ships(model_type: str) -> bool:
     return True
 
 
+def _remote_code_upgrade(model_name: str, cfg: dict) -> dict | None:
+    """Offer latest transformers when it meets a custom-code config's saving version and no installed tier does."""
+    required = _remote_code_min_version(cfg)
+    if required is None or _remote_code_tier(cfg) is not None:
+        return None
+    snapshot = _get_snapshot()
+    if snapshot is None:
+        return None
+    pypi = _release_tuple(snapshot["pypi_version"])
+    main = _release_tuple(snapshot.get("main_version"))
+    in_pypi = pypi is not None and pypi >= required
+    # Main ships as the next release's .dev0, so a dev build of the required release counts.
+    offerable = in_pypi or (main is not None and main >= required)
+    if not offerable:
+        return None
+    logger.info(
+        "Model %s has custom code saved by transformers %s, newer than every installed tier "
+        "(latest PyPI %s)",
+        model_name,
+        cfg.get("transformers_version"),
+        snapshot["pypi_version"],
+    )
+    types = _model_types_from_config(cfg)
+    return {
+        "model_type": types[0] if types else str(cfg.get("model_type") or ""),
+        "pypi_version": snapshot["pypi_version"],
+        "supported_in_pypi": in_pypi,
+        "supported_in_main": True,
+        "main_version": snapshot.get("main_version"),
+    }
+
+
 def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dict | None:
     """Fires only when model_type is in no installed overlay or tier table, i.e. the load would fail."""
     try:
@@ -427,6 +434,9 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
             return None
         if _architecture_cannot_come_from_transformers(model_name, cfg):
             return None
+        # Custom code loads from the repo, so only the saving version matters, not the mapping.
+        if _remote_code_min_version(cfg) is not None:
+            return _remote_code_upgrade(model_name, cfg)
         candidates = _model_types_from_config(cfg)
         if not candidates:
             return None

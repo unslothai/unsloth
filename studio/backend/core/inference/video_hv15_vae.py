@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HunyuanVideo-1.5 VAE: build the causal attention mask with one masked_fill instead of a Python loop.
-
-The stock per-row loop unrolls under compile into a graph inductor cannot schedule (RecursionError in
-``reorder_for_peak_memory``). Same values, bit-identical decode.
-"""
+"""Causal mask via one masked_fill; the Python loop unrolls under compile into a RecursionError."""
 
 from __future__ import annotations
 

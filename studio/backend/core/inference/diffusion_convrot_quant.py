@@ -1,40 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ConvRot rotation and the int8 per-row activation quant as ONE kernel (``rotq_i8``), for every int8 ConvRot Linear.
-
-The stock path is two kernels: ``ConvRotLinear.forward``'s block-Hadamard rotation as a bf16 GEMM (writes the rotated
-activation to HBM), then torchao's per-row act quant (reads it back, writes int8 + one scale per row). ``rotq_i8`` holds
-whole activation rows of the ``[M * K / G, G]`` group view per tile, runs the rotation GEMM in the stock K order with
-the stock bf16 rounding, closes the per-row amax in the epilogue and writes the int8 codes and the row scale: one read
-of x, no rotated intermediate.
-
-NUMERICS: codes and scales are bit-identical to the stock rotation + torchao quant (v1
-``_int8_symm_per_token_reduced_range_quant``; v2 ``Int8Tensor.from_hp(PerRow)``: bf16 scale, reciprocal and product on
-torchao <= 0.17, fp32 on >= 0.18). Every device is probed against that path before use (outliers, a zero row, ragged
-M, every K the tile admits); a miss keeps the stock path on that device.
-
-One home for the kernel: ``diffusion_int8_gemm`` uses it for every ConvRot Linear it swaps (fused-dequant GEMM on
-sm80 / sm89 / sm120, cuBLAS ``_int_mm`` + torchao's epilogue on the other measured archs), and ``convrot_act_quant``
-gives any other int8 consumer of a rotated activation the same codes.
-
-Per-arch gate (``_ROTQ_CONFIG``): measured archs only; ``UNSLOTH_DIFFUSION_INT8_ROTQUANT=1`` (or
-``UNSLOTH_DIFFUSION_INT8_GEMM=1``) also enables it on an unmeasured sm80+ part, still probe-gated. Kill switch
-``UNSLOTH_DIFFUSION_INT8_ROTQUANT=0``; ``UNSLOTH_DIFFUSION_INT8_GEMM=0`` turns off the whole int8 Linear swap.
-
-H16 ROTATION (``rotq_h16``, default where ``rotq_i8`` passed): ``H256 = H16 (x) H16``, so a group rotates as
-``H16 . X . H16`` (one bf16 tensor-core dot, one fp32 dot): 32 multiply-adds per element instead of 256, bandwidth-bound
-everywhere. A different fp32 summation order: ~1 code in 10^6 differs by one step, scales equal; the probe gates it per
-device at that tolerance (``codes_close``). ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_H16=0`` keeps the bit-identical dense kernel.
-
-UNLISTED ARCHS (sm86, sm87, sm90, sm100, sm103, sm121, ...: no ``_ROTQ_CONFIG`` entry, so no dense tile to probe):
-``rotq_h16`` needs no tile, so ``unlisted_device_ok`` probes it there directly, then a latency check against the two
-kernels it replaces (see below). Kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_UNLISTED=0``.
-
-SwiGLU PROLOGUE (``rotq_h16`` only): the down projection's codes come straight from the gate / value halves, the
-product computed in-kernel like the compiled stock MLP; the [M, hidden] HBM round trip was ConvRot's largest cost over
-plain int8 at Qwen-Image-2.1 1024px. Kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_SWIGLU=0``.
-"""
+"""Fused ConvRot rotation and int8 per-row quant (rotq_i8), bit-identical to stock; each device is
+probed first and a miss keeps the stock path; H16 variant not bit-exact;
+UNSLOTH_DIFFUSION_INT8_ROTQUANT=0 disables"""
 
 from __future__ import annotations
 

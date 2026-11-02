@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""audio.cpp speech-to-text sidecar for Unsloth dictation.
-
-Serves any audio.cpp ASR GGUF (Qwen3-ASR, Parakeet, Canary, Moonshine, Nemotron and
-whatever else audio.cpp transcribes) through one ``audiocpp_server`` child, with the same lifecycle as the
-whisper.cpp sidecar: loads on demand, stays warm for the keep-alive window, yields
-to training, and is paused while the managed runtime is being replaced. Audio is
-decoded with PyAV like every other engine and handed to the server as a 16 kHz mono
-WAV file it reads by path (``/v1/audio/transcriptions/details``), which also returns
-the timestamps and speakers a model produces.
-"""
+"""audio.cpp ASR sidecar, whisper.cpp lifecycle: yields to training and pauses during runtime
+replacement; 16 kHz mono WAV by path to /v1/audio/transcriptions/details"""
 
 from __future__ import annotations
 
@@ -82,6 +74,12 @@ logger = get_logger(__name__)
 
 _TRANSCRIBE_TIMEOUT_SECONDS = 600.0
 _DETAILS_PATH = "/v1/audio/transcriptions/details"
+
+
+def _transcribe_timeout(duration: Optional[float]) -> float:
+    """600 s, or twice the audio's length for anything past 5 minutes."""
+    return max(_TRANSCRIBE_TIMEOUT_SECONDS, 2.0 * (duration or 0))
+
 
 # Fixed chunking keeps the runtime off its Silero VAD, which Studio does not ship.
 QWEN3_ALIGNER = CompanionModel(
@@ -1048,6 +1046,7 @@ class AudioCppSttSidecar:
                     sent,
                     cancel_event,
                     dict(_TIMESTAMP_OPTIONS) if aligned else {},
+                    timeout = _transcribe_timeout(duration),
                 )
                 if cancel_event is not None and cancel_event.is_set():
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -1086,6 +1085,8 @@ class AudioCppSttSidecar:
         lang: Optional[str],
         cancel_event: Optional[threading.Event],
         options: dict,
+        *,
+        timeout: float = _TRANSCRIBE_TIMEOUT_SECONDS,
     ) -> dict:
         server = self._server
         if server is None:
@@ -1100,7 +1101,7 @@ class AudioCppSttSidecar:
             return server.post_json(
                 _DETAILS_PATH,
                 request,
-                timeout = _TRANSCRIBE_TIMEOUT_SECONDS,
+                timeout = timeout,
                 cancel_event = cancel_event,
             )[1]
 

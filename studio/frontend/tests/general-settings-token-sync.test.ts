@@ -108,6 +108,7 @@ function generalTab(initialToken: string) {
     "@/components/ui/button": componentStub,
     "@/components/ui/dialog": componentStub,
     "@/components/ui/input": { Input: "Input" },
+    "@/components/ui/select": componentStub,
     "@/components/ui/switch": componentStub,
     "@/features/chat": {
       useChatRuntimeStore: Object.assign(
@@ -115,6 +116,7 @@ function generalTab(initialToken: string) {
         { getState: () => runtime },
       ),
     },
+    "@/features/chat-background": { resetChatBackground: async () => true },
     "@/features/chat/stores/sidebar-organization-keys": {
       SIDEBAR_ORGANIZATION_STORAGE_KEY: "sidebar-order",
     },
@@ -151,6 +153,11 @@ function generalTab(initialToken: string) {
       setSpellCheck: noop,
       useSpellCheck: () => true,
     },
+    "@/lib/time-format": {
+      TIME_FORMAT_STORAGE_KEY: "unsloth_time_format",
+      setTimeFormat: noop,
+      useTimeFormat: () => "system",
+    },
     "@/lib/toast": { toast: { success: noop, error: noop } },
     "@/lib/utils": {
       cn: (...values: unknown[]) => values.filter(Boolean).join(" "),
@@ -159,6 +166,7 @@ function generalTab(initialToken: string) {
     "@/lib/tick-icon": { Tick02Icon: {} },
     "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
     "@hugeicons/core-free-icons": new Proxy({}, { get: () => ({}) }),
+    "@/lib/folder-icons": new Proxy({}, { get: () => ({}) }),
     "../api/helper-precache": {
       loadHelperPrecacheSettings: never,
       updateHelperPrecacheSettings: never,

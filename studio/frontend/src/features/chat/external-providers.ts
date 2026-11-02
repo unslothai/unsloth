@@ -136,6 +136,7 @@ const VISION_CAPABLE_PROVIDER_TYPES = new Set<string>([
   "openai",
   "anthropic",
   "gemini",
+  "minimax",
   "openrouter",
 ]);
 
@@ -250,9 +251,17 @@ export function providerModelSupportsVision(
 // Mirrors _MIXED_CATALOG_PROVIDER_TYPES in studio/backend/routes/inference.py: vision for
 // the family, unknown for a given model, so an MCP picture is not sent to one the
 // registry says nothing about.
-const MIXED_CATALOG_PROVIDER_TYPES = new Set(["huggingface", "openrouter", "qwen", "qwencloud", "zai"]);
+const MIXED_CATALOG_PROVIDER_TYPES = new Set([
+  "huggingface",
+  "openrouter",
+  "qwen",
+  "qwencloud",
+  "zai",
+  "opencode",
+  "opencode_go",
+]);
 // Mirrors _CATALOG_VISION_NAMESPACES: mixed catalogs whose model catalog answers vision per model.
-const CATALOG_VISION_PROVIDER_TYPES = new Set(["qwencloud", "zai"]);
+const CATALOG_VISION_PROVIDER_TYPES = new Set(["qwencloud", "zai", "opencode", "opencode_go"]);
 
 /** Same rule as the backend's _external_takes_mcp_images, so stripped images are not resent. */
 export function providerModelTakesMcpImages(

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hosted bf16 VAE for a bf16 diffusers pipeline load whose base repo stores its VAE in fp32.
-
-Same module as bf16 ``from_pretrained`` of the fp32 ``vae/``, half the bytes. Any load failure falls back to the
-base ``vae/``, fetching it when the plan dropped it. ``UNSLOTH_DIFFUSION_HOSTED_VAE=0`` disables.
-"""
+"""bf16 VAE for fp32-VAE base repos (fallback: base vae/); UNSLOTH_DIFFUSION_HOSTED_VAE=0 disables."""
 
 from __future__ import annotations
 

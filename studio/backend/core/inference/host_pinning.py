@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Integrated GPUs skip pinned host memory: their VRAM is system RAM, so a pinned copy only takes RAM from the GPU
-(ComfyUI does the same). An unclassifiable device answers discrete (pinning allowed)."""
+"""Integrated GPUs skip pinned host memory (VRAM is RAM); unclassifiable devices count as discrete"""
 
 from __future__ import annotations
 

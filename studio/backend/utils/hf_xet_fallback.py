@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unsloth shim over the shared ``unsloth_zoo.hf_xet_fallback`` Xet -> HTTP stall fallback.
-
-Re-exports the shared API and injects Unsloth's marker-aware cache purge
-(``prepare_cache_for_transport``) so the download manager keeps its ``.transport``
-marker semantics on the HTTP retry.
-
-Import discipline: ``unsloth_zoo``'s ``__init__`` eagerly imports ``transformers``. The workers
-import this shim at startup (to decide the per-worker Xet env flip) *before* activating the model's
-``transformers`` sidecar. Activation only prepends the sidecar to ``sys.path``, so a ``transformers``
-already cached in ``sys.modules`` (via an eager ``unsloth_zoo`` import here) wins -- pinning the
-default 4.57.x and regressing Qwen3.5 / GLM-4.7 / gemma-4 training with
-``Tokenizer class TokenizersBackend does not exist``. So the shared backend is loaded **lazily**
-(``_load_shared``), only on first use of a heavy download helper, i.e. after the sidecar is active.
-``child_should_disable_xet`` and the ``DEFAULT_*`` constants are defined locally so importing them
-never triggers the heavy load.
-"""
+"""unsloth_zoo Xet fallback shim; loaded lazily so transformers isn't pinned before the model sidecar."""
 
 from __future__ import annotations
 

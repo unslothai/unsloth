@@ -1254,6 +1254,27 @@ def _unified_plan(
     )
 
 
+def test_mps_plan_is_tight_past_the_resident_margin_only():
+    from core.inference.diffusion_memory import mps_plan_tight
+
+    budget = _unified_plan(model_dense_mib = 1000).estimates["safe_device_budget_mib"]
+    # resident_required = weights + the 3072 runtime headroom + the 2048 base overhead
+    at_margin = int(budget * 0.85) - 3072 - 2048
+    assert not mps_plan_tight(_unified_plan(model_dense_mib = at_margin))
+    assert mps_plan_tight(_unified_plan(model_dense_mib = at_margin + 1))
+    # far past their budgets, but only MPS changes: discrete VRAM, an integrated GPU and the CPU keep their rules
+    for kind, device in (
+        ("discrete_vram", "cuda"),
+        ("unified_memory", "cuda"),
+        ("system_memory", "cpu"),
+    ):
+        other = _unified_plan(model_dense_mib = 4 * budget, kind = kind, device = device)
+        assert other.estimates["resident_required_mib"] > other.estimates["safe_device_budget_mib"]
+        assert not mps_plan_tight(other), (kind, device)
+    assert not mps_plan_tight(_unified_plan(model_dense_mib = at_margin + 1, free_mib = None))
+    assert not mps_plan_tight(None)
+
+
 def test_unified_oversize_refuses_and_names_family_and_both_numbers():
     from core.inference.diffusion_memory import unified_memory_shortfall_message
 
@@ -3062,4 +3083,6 @@ def test_both_offload_tiers_fall_back_to_the_no_copy_back_top_group():
     for fn in (mem._apply_group_offload, mem._apply_streaming_offload):
         src = ast.unparse(ast.parse(inspect.getsource(fn).lstrip()))
         assert "_skip_top_level_copy_back(module, logger)" in src, fn.__name__
-        assert "not _pin_top_level_group(module, logger, pinned_mib)" in src, fn.__name__
+        assert (
+            "not _pin_top_level_group(module, logger, pinned_mib, device=onload)" in src
+        ), fn.__name__

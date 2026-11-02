@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The ``generate_video`` chat tool: one clip on the video model already loaded in Unsloth Studio.
-
-It goes through the same job path as ``POST /v1/videos`` (``_create_openai_video``) with no
-model named, so it never loads, switches or unloads a model. The job runs on the video
-backend's own thread; the tool polls it and copies the finished MP4 into the chat workdir.
-"""
+"""Chat tool: a clip on the loaded video model, as POST /v1/videos does; never loads/switches/unloads"""
 
 from __future__ import annotations
 

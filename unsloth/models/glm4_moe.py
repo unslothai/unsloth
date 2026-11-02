@@ -9,16 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-GLM-4.7 Flash (GLM4 MoE Lite) optimized implementation using grouped GEMM.
-
-Key architecture differences from Qwen3 MoE:
-- Router uses sigmoid activation (not softmax)
-- Has routed_scaling_factor of 1.8
-- Has 1 shared expert that processes all tokens
-- Uses group-based selection before topk
-- Uses MLA (Multi-head Latent Attention)
-"""
+"""GLM-4.7 Flash MoE with sigmoid routing, routed_scaling_factor 1.8, a shared expert and MLA."""
 
 from .loader_utils import DEFAULT_DEVICE_MAP
 from .llama import *

@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-layer NVFP4 policies for the image DiTs: a named set of layers at 4 bits over an fp8 model.
-
-A policy puts a named set of layers at 4 bits over fp8: a memory lever, not a speed win, so nvfp4
-sits BELOW fp8 in the image auto order. FAILS CLOSED: exact suffixes and asserted counts per rule.
-"""
+"""Per-layer NVFP4 policies for image DiTs: 4-bit layer sets over fp8, a memory lever not a speed
+win, so the image auto order puts nvfp4 below fp8; fails closed"""
 
 from __future__ import annotations
 

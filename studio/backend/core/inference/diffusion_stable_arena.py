@@ -1,25 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Stable device addresses for a whole-module CPU-offloaded denoiser (``memory_mode=low_vram``).
-
-accelerate's ``CpuOffload`` hook onloads the denoiser with ``module.to(device)`` at the start of every render, so the
-caching allocator hands its weights new addresses each time and a CUDA graph recorded on render 1 cannot replay on
-render 2 (``diffusion_cuda_graph.MODEL_OFFLOAD_REASON``). Here the denoiser's device copy lives in one CUDA virtual
-address range reserved once for the load (driver VMM: ``cuMemAddressReserve``). An onload creates physical memory,
-maps it at that range and copies the kept host weights in; the offload syncs the card, unmaps and releases the
-physical memory, so the text encoder and VAE phases get the VRAM back exactly as with the stock hook. The weights
-land at the same addresses on every render, so the recorded step graph keeps replaying.
-
-ComfyUI does the same for its graph replays over offloaded weights (comfy_aimdo ``model_vbar``).
-
-Plain dense tensors (with their strides) and torchao-style wrapper weights (int8 / fp8: their plain inner tensors,
-rebuilt over the range) are placed; a module holding any other parameter type (GGUF) is left to the stock hook.
-Opt out with ``UNSLOTH_DIFFUSION_MODEL_OFFLOAD_ARENA=0``.
-
-Block offload uses the same ranges per resident group, for the groups a prompt encode streams and pins again
-(``GroupRange``, below; opt out with ``UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE=0``).
-"""
+"""Keeps offloaded denoiser weights at fixed VMM addresses so recorded CUDA graphs replay; GGUF or
+other parameter types left to the stock hook"""
 
 from __future__ import annotations
 

@@ -1706,11 +1706,23 @@ def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
         share = max(4, budget // len(sizes))
         if sum(sizes) > budget and max(sizes) > share:
             raise ValueError(
-                f"options would be cut short to fit Laya's {budget}-token option budget"
+                f"options would be cut short to fit Laya's {budget}-token option budget. "
+                "Use fewer or shorter criteria"
+            )
+        ins = str(internal["ins"]).replace(tok.mask_token, " ")
+        head = tok(f"{internal['t']} question: {ins}", add_special_tokens = False)["input_ids"]
+        if len(head) > max(8, head_max_len - sum(sizes)):
+            raise ValueError(
+                f"instructions would be cut short to fit beside its options in Laya's "
+                f"{head_max_len}-token question budget. Use shorter instructions or fewer "
+                "criteria"
             )
         ids, markers = build_sequence(tok, "", internal, max_len, head_max_len)
         if len(markers) != len(sizes):
-            raise ValueError(f"options exceed the Laya context window ({max_len} tokens)")
+            raise ValueError(
+                f"options exceed the Laya context window ({max_len} tokens). "
+                "Use fewer or shorter criteria"
+            )
         if len(cache) >= _HEAD_CACHE_SIZE:
             cache.clear()
         cache[key] = (ids, markers, internal)
@@ -1732,7 +1744,7 @@ def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[s
         try:
             heads.append(_head(agent, questions[name], max_len, head_max_len))
         except ValueError as exc:
-            raise ValueError(f"Question {name!r} {exc}. Use fewer or shorter criteria.") from None
+            raise ValueError(f"Question {name!r} {exc}.") from None
     room = max(0, max_len - min(len(ids) for ids, _, _ in heads))
     state_ids, state_cut = _state_ids(agent.tok, state, room)
     items, truncated = [], False

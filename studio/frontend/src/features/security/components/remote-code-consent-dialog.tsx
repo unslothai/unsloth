@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   SecurityWarningIcon,
@@ -19,6 +20,8 @@ import {
   SourceCodeSquareIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Fragment, type ReactNode } from "react";
+import { blockCopy } from "../lib/block-copy";
 import { severityTone } from "../lib/severity-tone";
 import { useRemoteCodeConsentDialogStore } from "../stores/remote-code-consent-dialog-store";
 import type {
@@ -161,20 +164,17 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
   );
 }
 
-function modelDisplayName(modelName?: string): string {
-  if (!modelName) return "This model";
+function modelDisplayName(modelName?: string): string | null {
+  if (!modelName) return null;
   return modelName.split("/").pop() || modelName;
 }
 
-function ProviderSuffix({ provider }: { provider: string | null }) {
-  if (!provider) return null;
-  return (
-    <>
-      {" "}
-      from{" "}
-      <span className="font-medium text-foreground">"{provider}"</span>
-    </>
-  );
+function fillSlots(template: string, slots: Record<string, ReactNode>): ReactNode[] {
+  return template
+    .split(/\{(\w+)\}/)
+    .map((part, i) =>
+      i % 2 === 1 ? <Fragment key={i}>{slots[part] ?? `{${part}}`}</Fragment> : part,
+    );
 }
 
 /** Consent dialog for trust_remote_code loads; CRITICAL is a hard block. Mounted once. */
@@ -182,13 +182,23 @@ export function RemoteCodeConsentDialog() {
   const open = useRemoteCodeConsentDialogStore((s) => s.open);
   const scan = useRemoteCodeConsentDialogStore((s) => s.scan);
   const resolve = useRemoteCodeConsentDialogStore((s) => s.resolve);
+  const t = useT();
 
-  const displayName = modelDisplayName(scan?.modelName);
+  const displayName =
+    modelDisplayName(scan?.blockTarget ?? scan?.modelName) ?? t("remoteCode.thisModel");
   const provider = scan?.provider ?? null;
   const blocked = scan ? !scan.approvable : false;
   const findings = scan?.findings ?? [];
   const unsafeFiles = scan?.unsafeFiles ?? [];
-  const malware = unsafeFiles.length > 0;
+  const source = scan?.blockSource ?? "Hugging Face";
+  const block = blocked
+    ? blockCopy(scan?.blockCause ?? null, source, Boolean(provider))
+    : null;
+  const slots = {
+    source,
+    model: <span className="font-medium text-foreground">{displayName}</span>,
+    provider: <span className="font-medium text-foreground">"{provider}"</span>,
+  };
 
   return (
     <AlertDialog
@@ -222,45 +232,37 @@ export function RemoteCodeConsentDialog() {
             <div className="min-w-0 flex-1 space-y-3">
               <div className="space-y-1">
                 <AlertDialogTitle>
-                  {malware
-                    ? "Unsafe files detected"
-                    : blocked
-                      ? "Custom code blocked"
-                      : "Enable custom code for this model?"}
+                  {block
+                    ? t(block.title, { source })
+                    : t("remoteCode.enableTitle")}
                 </AlertDialogTitle>
                 <AlertDialogDescription>
-                  {malware ? (
-                    <>
-                      <span className="font-medium text-foreground">
-                        {displayName}
-                      </span>
-                      <ProviderSuffix provider={provider} />{" "}
-                      contains files that Hugging Face's security scan flagged as
-                      unsafe (for example, a malicious pickle that would run code
-                      when the model loads). It cannot be loaded. The flagged
-                      files were never downloaded.
-                    </>
-                  ) : (
-                    <>
-                      <span className="font-medium text-foreground">
-                        {displayName}
-                      </span>
-                      <ProviderSuffix provider={provider} />{" "}
-                      declares custom Python code in its repository.{" "}
-                      {blocked
-                        ? "A security scan flagged CRITICAL issues, so it cannot be enabled."
+                  {fillSlots(
+                    block
+                      ? t(block.body)
+                      : provider
+                        ? t("remoteCode.customCodeFromProvider")
+                        : t("remoteCode.customCode"),
+                    {
+                      ...slots,
+                      note: block
+                        ? block.note
+                          ? t(block.note)
+                          : ""
                         : findings.length > 0
-                          ? "Review the security scan below. Continue only if you trust the model source."
-                          : "Continue only if you trust the model source."}
-                    </>
+                          ? t("remoteCode.reviewNote")
+                          : t("remoteCode.trustNote"),
+                    },
                   )}
                 </AlertDialogDescription>
               </div>
 
-              {malware ? (
+              {unsafeFiles.length > 0 ? (
                 <div className="min-w-0 space-y-2">
                   <p className="text-xs font-medium text-muted-foreground">
-                    Our automatic scanner flagged issues including:
+                    {scan?.blockCause === "unsafe_files"
+                      ? t("remoteCode.flaggedIntro")
+                      : t("remoteCode.unscannedIntro")}
                   </p>
                   <div className="max-h-[calc(14rem*var(--ui-space-scale,1))] min-w-0 space-y-2 overflow-y-auto pr-1">
                     {unsafeFiles.map((f, i) => (
@@ -273,7 +275,7 @@ export function RemoteCodeConsentDialog() {
               {findings.length > 0 ? (
                 <div className="min-w-0 space-y-2">
                   <p className="text-xs font-medium text-muted-foreground">
-                    Our automatic scanner flagged issues including:
+                    {t("remoteCode.flaggedIntro")}
                   </p>
                   <div className="max-h-[calc(22rem*var(--ui-space-scale,1))] min-w-0 space-y-3 overflow-y-auto pr-1">
                     {findings.map((f, i) => (
@@ -283,10 +285,9 @@ export function RemoteCodeConsentDialog() {
                 </div>
               ) : null}
 
-              {!malware && !blocked && findings.length === 0 ? (
+              {!blocked && findings.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  Our automatic scanner did not flag any worrying files, but
-                  please double check.
+                  {t("remoteCode.nothingFlagged")}
                 </p>
               ) : null}
             </div>
@@ -294,10 +295,10 @@ export function RemoteCodeConsentDialog() {
         </AlertDialogHeader>
 
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
           {blocked ? null : (
             <AlertDialogAction variant="dark" onClick={() => resolve(true)}>
-              Enable and continue
+              {t("remoteCode.enableAndContinue")}
             </AlertDialogAction>
           )}
         </AlertDialogFooter>

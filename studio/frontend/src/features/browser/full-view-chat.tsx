@@ -14,9 +14,9 @@ import {
 } from "@/components/ui/tooltip";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { ExpandArrowsIcon } from "@/lib/expand-icons";
 import { cn } from "@/lib/utils";
 import {
-  ArrowExpand01Icon,
   ArrowLeft02Icon,
   ArrowRight02Icon,
   BubbleChatIcon,
@@ -134,7 +134,7 @@ export function FullViewChatBar({ title }: { title: string | undefined }) {
             >
               <DropdownMenuItem onSelect={closePanel}>
                 <HugeiconsIcon
-                  icon={ArrowExpand01Icon}
+                  icon={ExpandArrowsIcon}
                   strokeWidth={1.75}
                   className="size-4.5"
                 />

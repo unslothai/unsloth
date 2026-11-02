@@ -655,6 +655,15 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   },
   qwen: OPENAI_COMPAT_BASE,
   zai: { ...OPENAI_COMPAT_BASE, presencePenalty: false },
+  // Fixed server-side; the backend omits them too.
+  minimax: {
+    temperature: false,
+    topP: false,
+    topK: false,
+    minP: false,
+    repetitionPenalty: false,
+    presencePenalty: false,
+  },
   huggingface: OPENAI_COMPAT_BASE,
   // OpenRouter silently drops unsupported params, so surface every knob.
   openrouter: ALL_SUPPORTED,
@@ -915,6 +924,20 @@ function withReasoningEffortStyle(caps: ReasoningCaps): ExternalReasoningCapabil
     supportsReasoningOff: caps.supportsReasoningOff,
     reasoningEffortLevels: caps.reasoningEffortLevels,
   };
+}
+
+function resolveMiniMaxReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
+  if (modelId.startsWith("minimax-m3.1")) {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+    });
+  }
+  if (modelId === "minimax-m3") {
+    return withEnableThinkingStyle({ supportsReasoning: true, supportsReasoningOff: true });
+  }
+  return withEnableThinkingStyle();
 }
 
 function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
@@ -1273,6 +1296,8 @@ export function getExternalReasoningCapabilities(
         ? table
         : (catalogCapabilities("mistral", normalizedModel) ?? table);
     }
+    case "minimax":
+      return resolveMiniMaxReasoningCapabilities(modelForMatching);
     case "gemini": {
       // Compat gateways drop native thinkingConfig, so hide the ladder.
       if (isGeminiCustomOpenAICompatBase(options?.baseUrl)) {
@@ -1346,7 +1371,10 @@ export function providerModelReplaysReasoning(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
 ): boolean {
-  return providerType === "kimi" && modelId?.trim().toLowerCase() === "kimi-k3";
+  return (
+    providerType === "minimax" ||
+    (providerType === "kimi" && modelId?.trim().toLowerCase() === "kimi-k3")
+  );
 }
 
 /** Sent as a llama-server / vLLM template kwarg, so the model's template must still read it. */

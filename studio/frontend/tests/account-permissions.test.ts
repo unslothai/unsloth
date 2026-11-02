@@ -39,6 +39,7 @@ function permissionUi(
   const levels: string[] = [];
   const popups: boolean[] = [];
   const opened: [string, unknown][] = [];
+  const links: string[] = [];
   const capabilityStub = {
     loadSandboxCapability: async () => capability,
     loadSettledSandboxCapability: async () => capability,
@@ -86,9 +87,8 @@ function permissionUi(
       },
       "lucide-react": {
         ChevronDown: "ChevronDown",
-        Hand: "Hand",
-        ShieldCheck: "ShieldCheck",
       },
+      "@/lib/hugeicons-derived": { HandIcon: "HandIcon", ShieldCheckIcon: "ShieldCheckIcon" },
       "radix-ui": {
         DropdownMenu: {
           Item: "DropdownMenuPrimitive.Item",
@@ -136,7 +136,9 @@ function permissionUi(
       "@/lib/sparkles-icon": { SparklesGlyph: "SparklesGlyph" },
       "@/lib/shield-alert-icon": { ShieldAlertGlyph: "ShieldAlertGlyph" },
       "@hugeicons/core-free-icons": {},
+      "@/lib/folder-icons": {},
       "@/lib/tick-icon": {},
+      "@/lib/open-link": { openExternalLink: (url: string) => links.push(url) },
       "@/lib/utils": { cn: () => "" },
       "@hugeicons/react": {},
       "./stores/chat-runtime-store": {
@@ -147,7 +149,7 @@ function permissionUi(
       },
     },
   );
-  return { component, changes, levels, popups, opened };
+  return { component, changes, levels, popups, opened, links };
 }
 
 for (const loginMode of ["single", "multi"]) {
@@ -323,10 +325,12 @@ test("picking the level already in effect changes nothing", async () => {
   assert.deepEqual(ui.popups, []);
 });
 
-test("Learn more beside the picker heading opens Settings > Sandbox at Permissions", async () => {
+test("Learn more beside the picker heading opens the sandboxing docs", () => {
   const ui = permissionUi(true, "auto", "single", OS_SANDBOX);
   const { learnMore } = sandboxPicker(ui);
   (learnMore.props.onSelect as () => void)();
-  await until(() => ui.opened.length > 0);
-  assert.deepEqual(ui.opened, [["sandbox", "sandbox-permissions"]]);
+  assert.deepEqual(ui.links, [
+    "https://unsloth.ai/docs/new/studio/sandboxing-in-unsloth",
+  ]);
+  assert.deepEqual(ui.opened, []);
 });

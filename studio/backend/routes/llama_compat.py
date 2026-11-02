@@ -1,19 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Answer engine discovery probes with JSON, or with a 404, but never with the app.
-
-Probes for engine endpoints used to land on main.py's SPA catch-all, so ``GET /props`` returned 200 and a page
-of HTML. That is worse than a 404: a probe reads the status before the body. Served here: ``/props``,
-``/v1/props``, ``/version``, a passthrough to the resident llama-server for ``GET /metrics``, ``GET /slots``,
-``POST /tokenize`` and ``POST /detokenize`` (#11705), owner only, and Open WebUI's llama.cpp model management
-(``GET /models``, ``POST /models/load``, ``POST /models/unload``, #10610). Everything else in llama-server's
-table gets an explicit 404, on its real method as well as GET.
-
-Deliberately NOT served: Ollama's ``/api/tags`` and ``/api/show``. Answering them makes a client select Ollama
-and then fail on ``/api/chat``, which Studio does not implement; the reporting user's client instead fell back
-to the OpenAI surface and worked. Advertising a protocol we do not have is the HTML 200 again, one layer up.
-"""
+"""Engine probes answer JSON or 404, never SPA HTML: /props, /v1/props, /version, owner-only GET
+/metrics, GET /slots, POST /tokenize, POST /detokenize, GET /models, POST /models/load,
+/models/unload; other llama-server routes 404; Ollama /api/tags and /api/show not served."""
 
 from __future__ import annotations
 

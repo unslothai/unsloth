@@ -501,6 +501,7 @@ export function syncModelCapabilities(
     audio_type?: string | null;
     has_audio_input?: boolean;
     has_video_input?: boolean;
+    speaks?: boolean;
   },
 ): void {
   const store = useChatRuntimeStore.getState();
@@ -514,6 +515,8 @@ export function syncModelCapabilities(
     hasAudioInput: Boolean(resp.has_audio_input),
     // /api/models/list omits this for the active GGUF row.
     hasVideoInput: Boolean(resp.has_video_input),
+
+    speaks: Boolean(resp.speaks),
   };
   const idx = models.findIndex((m) => m.id === modelId);
   if (idx === -1) {
@@ -1519,7 +1522,6 @@ export function useChatModelRuntime() {
           (resetsPerModelSettings
             ? {
                 ...DEFAULT_PER_MODEL_CONFIG,
-                kvCacheDtype: live.kvCacheDtype ?? null,
                 tensorParallel: live.tensorParallel ?? false,
                 gpuMemoryMode: live.gpuMemoryMode,
               }
@@ -1969,6 +1971,12 @@ export function useChatModelRuntime() {
           const previousMlxInt8Prefill = rollbackConfig
             ? (rollbackConfig.mlxInt8Prefill ?? false)
             : useChatRuntimeStore.getState().mlxInt8Prefill;
+          const previousMlxAnePrefill = rollbackConfig
+            ? (rollbackConfig.mlxAnePrefill ?? false)
+            : useChatRuntimeStore.getState().mlxAnePrefill;
+          const previousMlxFastVerify = rollbackConfig
+            ? (rollbackConfig.mlxFastVerify ?? false)
+            : useChatRuntimeStore.getState().mlxFastVerify;
           const previousMlxPleOffload = rollbackConfig
             ? (rollbackConfig.mlxPleOffload ?? null)
             : useChatRuntimeStore.getState().mlxPleOffload;
@@ -2051,7 +2059,7 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.chatTemplateOverride?.trim()
               ? pendingLoadConfig.chatTemplateOverride
               : stateBeforeUnload.chatTemplateOverride;
-          const loadKvCacheDtype =
+          let loadKvCacheDtype =
             pendingLoadConfig?.kvCacheDtype ?? stateBeforeUnload.kvCacheDtype;
           let loadMlxKvQuant =
             pendingLoadConfig
@@ -2060,6 +2068,12 @@ export function useChatModelRuntime() {
           let loadMlxInt8Prefill = pendingLoadConfig
             ? (pendingLoadConfig.mlxInt8Prefill ?? false)
             : stateBeforeUnload.mlxInt8Prefill;
+          let loadMlxAnePrefill = pendingLoadConfig
+            ? (pendingLoadConfig.mlxAnePrefill ?? false)
+            : stateBeforeUnload.mlxAnePrefill;
+          let loadMlxFastVerify = pendingLoadConfig
+            ? (pendingLoadConfig.mlxFastVerify ?? false)
+            : stateBeforeUnload.mlxFastVerify;
           let loadMlxPleOffload = pendingLoadConfig
             ? (pendingLoadConfig.mlxPleOffload ?? null)
             : stateBeforeUnload.mlxPleOffload;
@@ -2230,8 +2244,11 @@ export function useChatModelRuntime() {
                 ctxCheckpoints: pendingLoadConfig?.ctxCheckpoints ?? null,
                 cacheRam: pendingLoadConfig?.cacheRam ?? null,
               };
+              loadKvCacheDtype = pendingLoadConfig?.kvCacheDtype ?? null;
               loadMlxKvQuant = pendingLoadConfig?.mlxKvQuant ?? null;
               loadMlxInt8Prefill = pendingLoadConfig?.mlxInt8Prefill ?? false;
+              loadMlxAnePrefill = pendingLoadConfig?.mlxAnePrefill ?? false;
+              loadMlxFastVerify = pendingLoadConfig?.mlxFastVerify ?? false;
               loadMlxPleOffload = pendingLoadConfig?.mlxPleOffload ?? null;
               loadMlxExpertOffload = pendingLoadConfig?.mlxExpertOffload ?? null;
               loadChatTemplateOverride =
@@ -2335,6 +2352,8 @@ export function useChatModelRuntime() {
               cache_type_kv: loadKvCacheDtype,
               mlx_kv_quant: loadMlxKvQuant ?? null,
               mlx_int8_prefill: loadMlxInt8Prefill,
+              mlx_ane_prefill: loadMlxAnePrefill,
+              mlx_fast_verify: loadMlxFastVerify,
               mlx_ple_offload: loadMlxPleOffload,
               mlx_expert_offload: loadMlxExpertOffload,
               speculative_type: loadSpeculativeType,
@@ -2917,6 +2936,8 @@ export function useChatModelRuntime() {
                   cache_type_kv: rollbackState.loadedKvCacheDtype,
                   mlx_kv_quant: rollbackState.loadedMlxKvQuantRequested,
                   mlx_int8_prefill: rollbackState.loadedMlxInt8PrefillRequested,
+                  mlx_ane_prefill: rollbackState.loadedMlxAnePrefillRequested,
+                  mlx_fast_verify: rollbackState.loadedMlxFastVerifyRequested,
                   mlx_ple_offload: rollbackState.loadedMlxPleOffloadRequested,
                   mlx_expert_offload: rollbackState.loadedMlxExpertOffloadRequested,
                   speculative_type:
@@ -3014,6 +3035,8 @@ export function useChatModelRuntime() {
                   ...mlxRuntimeStateFrom(rollbackResponse),
                   mlxKvQuant: previousMlxKvQuant,
                   mlxInt8Prefill: previousMlxInt8Prefill,
+                  mlxAnePrefill: previousMlxAnePrefill,
+                  mlxFastVerify: previousMlxFastVerify,
                   mlxPleOffload: previousMlxPleOffload,
                   mlxExpertOffload: previousMlxExpertOffload,
                   loadedChatTemplateOverride:

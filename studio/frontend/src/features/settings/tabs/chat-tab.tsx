@@ -17,9 +17,7 @@ import {
   DEFAULT_TOOL_VISIBILITY,
   type PlusMenuItemId,
   normaliseDisplayVisibility,
-  refreshModelDisclaimerPreference,
   requestReplyFinishedPermission,
-  saveModelDisclaimerPreference,
   useChatPreferencesStore,
   useChatRuntimeStore,
   usePlusMenuPrefsStore,
@@ -28,24 +26,22 @@ import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useIsAccountOwner } from "@/features/auth";
-import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Bookmark02Icon,
   Download01Icon,
-  FileDatabaseIcon,
-  Folder01Icon,
+  LayoutTwoColumnIcon,
   LibrariesIcon,
   McpServerIcon,
   Scroll01Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
+import { BookmarkIcon, FileSearchIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { useNavigate } from "@tanstack/react-router";
-import { Columns2Icon } from "lucide-react";
 import { Suspense, lazy, useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
 import {
@@ -108,7 +104,7 @@ const PLUS_MENU_SETTINGS: {
     labelKey: "settings.chat.menu.chatWithFiles",
     icon: (
       <HugeiconsIcon
-        icon={FileDatabaseIcon}
+        icon={FileSearchIcon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />
@@ -141,7 +137,7 @@ const PLUS_MENU_SETTINGS: {
     labelKey: "settings.chat.menu.savedPrompts",
     icon: (
       <HugeiconsIcon
-        icon={Bookmark02Icon}
+        icon={BookmarkIcon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />
@@ -150,7 +146,7 @@ const PLUS_MENU_SETTINGS: {
   {
     id: "compareChat",
     labelKey: "settings.chat.menu.compareChat",
-    icon: <Columns2Icon className={PLUS_MENU_ICON_CLASS} />,
+    icon: <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={2} className={PLUS_MENU_ICON_CLASS} />,
   },
   {
     id: "exportChat",
@@ -168,7 +164,7 @@ const PLUS_MENU_SETTINGS: {
     labelKey: "shell.navigation.projects",
     icon: (
       <HugeiconsIcon
-        icon={Folder01Icon}
+        icon={ProjectIcon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />
@@ -319,9 +315,11 @@ export function ChatTab() {
   const setKeepRunningWhenTabClosed = useChatRuntimeStore(
     (state) => state.setKeepRunningWhenTabClosed,
   );
-  const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
-  const setShowGreetingSloth = useUserProfileStore(
-    (s) => s.setShowGreetingSloth,
+  const showTurnNavigation = useChatPreferencesStore(
+    (s) => s.showTurnNavigation,
+  );
+  const setShowTurnNavigation = useChatPreferencesStore(
+    (s) => s.setShowTurnNavigation,
   );
   const searchImages = useChatRuntimeStore((state) => state.searchImages);
   const setSearchImages = useChatRuntimeStore((state) => state.setSearchImages);
@@ -347,9 +345,6 @@ export function ChatTab() {
   const fitOnDeviceOnly = useChatRuntimeStore((state) => state.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore(
     (state) => state.setFitOnDeviceOnly,
-  );
-  const showModelDisclaimer = useChatPreferencesStore(
-    (state) => state.showModelDisclaimer,
   );
   const showResponseModel = useChatPreferencesStore(
     (state) => state.showResponseModel,
@@ -380,12 +375,6 @@ export function ChatTab() {
   );
   const setAutoScrollWhileGenerating = useChatPreferencesStore(
     (state) => state.setAutoScrollWhileGenerating,
-  );
-  const showScrollToBottomButton = useChatPreferencesStore(
-    (state) => state.showScrollToBottomButton,
-  );
-  const setShowScrollToBottomButton = useChatPreferencesStore(
-    (state) => state.setShowScrollToBottomButton,
   );
   const notifyWhenReplyFinishes = useChatPreferencesStore(
     (state) => state.notifyWhenReplyFinishes,
@@ -435,7 +424,6 @@ export function ChatTab() {
 
   useEffect(() => {
     void hydratePersistedSettings();
-    refreshModelDisclaimerPreference().catch(() => undefined);
   }, [hydratePersistedSettings]);
 
   useEffect(() => {
@@ -599,16 +587,6 @@ export function ChatTab() {
               </button>
             ))}
           </div>
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.scrollToBottomButton")}
-          description={t("settings.chat.scrollToBottomButtonDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.scrollToBottomButton")}
-            checked={showScrollToBottomButton}
-            onCheckedChange={setShowScrollToBottomButton}
-          />
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.replyNotification")}
@@ -819,28 +797,13 @@ export function ChatTab() {
           />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.modelDisclaimer")}
-          description={t("settings.chat.modelDisclaimerDescription")}
+          label={t("settings.chat.turnNavigation")}
+          description={t("settings.chat.turnNavigationDescription")}
         >
           <Switch
-            aria-label={t("settings.chat.modelDisclaimer")}
-            checked={showModelDisclaimer}
-            onCheckedChange={(checked) => {
-              return saveModelDisclaimerPreference(checked).catch(() => {
-                toast.error("Could not save the model disclaimer setting.");
-              });
-            }}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.profile.greetingSloth")}
-          description={t("settings.profile.greetingSlothDescription")}
-        >
-          <Switch
-            aria-label={t("settings.profile.greetingSloth")}
-            id="profile-greeting-sloth"
-            checked={showGreetingSloth}
-            onCheckedChange={setShowGreetingSloth}
+            aria-label={t("settings.chat.turnNavigation")}
+            checked={showTurnNavigation}
+            onCheckedChange={setShowTurnNavigation}
           />
         </SettingsRow>
       </SettingsSection>

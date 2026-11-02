@@ -1,22 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in idle auto-unload for the diffusion image and video backends.
-
-The image and video pipelines are the largest thing Unsloth holds in VRAM, and until now only
-the chat GGUF was freed when the user walked away: one generation and a navigate-away left
-several GB resident forever. This is the same mechanism rather than a second one -- the same
-in-flight bookkeeping (``LlamaKeepWarmMiddleware`` already tracks the generate routes) and one
-step per tick of ``llama_keepwarm.idle_unload_loop``. The TTL is its own setting, off by
-default, so nothing here runs until the user asks for it: the tick returns before it resolves
-a backend, which is also what keeps torch out of an Unsloth that never opened these pages.
-
-Each backend owns its teardown barrier, so this decides only WHEN: it calls the same
-``unload()`` the arbiter's evictor calls, resolved through ``get_active_diffusion_engine()``
-so a native sd.cpp selection stops the sd-server instead of a diffusers pipeline that was
-never loaded. Device-agnostic on purpose: CUDA, ROCm, XPU and MPS free VRAM, and a CPU load
-frees the host RAM the same weights occupy there, which is just as much the user's.
-"""
+"""Opt-in idle unload for image/video backends, off by default; the tick returns before resolving a
+backend so torch stays out; calls the arbiter's unload()."""
 
 from __future__ import annotations
 

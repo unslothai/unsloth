@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Approval decisions for file access that leaves the session sandbox.
-
-Split out of ``tools.py`` because it is a subsystem rather than a handful of helpers: the read and
-write silent roots, the shared ``_path_needs_approval`` predicate, and the two operand scanners that
-decide which tokens of a terminal command or which arguments of a python snippet are paths at all.
-
-The import between this module and ``tools`` runs both ways, so both sides bind the MODULE rather
-than its names and resolve attributes at call time. That is what keeps the cycle harmless whichever
-module is imported first.
-"""
+"""Sandbox-escape file approval; tools.py and this module import each other, so both bind the module."""
 
 import ast
 import fnmatch

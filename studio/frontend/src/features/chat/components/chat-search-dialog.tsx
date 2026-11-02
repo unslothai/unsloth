@@ -24,16 +24,17 @@ import {
   Cancel01Icon,
   DashboardCircleIcon,
   FlimSlateIcon,
-  Folder01Icon,
-  Image03Icon,
+  ImageIcon,
+  LayoutTwoColumnIcon,
   PencilEdit02Icon,
   Search01Icon,
   BubbleChatTemporaryIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
-import { Columns2Icon, GitBranchIcon, type LucideIcon } from "lucide-react";
+import { GitBranchIcon, type LucideIcon } from "lucide-react";
 import {
   type KeyboardEvent,
   type ReactNode,
@@ -146,7 +147,7 @@ const ACTIONS: Action[] = [
   },
   {
     id: "switchToImages",
-    icon: Image03Icon,
+    icon: ImageIcon,
     labelKey: "shell.search.generateImage",
   },
   {
@@ -287,7 +288,7 @@ export function ChatSearchDialog() {
           title: project.name,
           time: activityAt(project),
           haystack: project.name.toLowerCase(),
-          icon: Folder01Icon,
+          icon: ProjectIcon,
           open: () =>
             navigate({ to: "/chat", search: { project: project.id } }),
         }))
@@ -630,7 +631,7 @@ function chatRow(
     haystack: item.searchText,
     icon:
       item.type === "compare"
-        ? Columns2Icon
+        ? LayoutTwoColumnIcon
         : item.isFork
           ? GitBranchIcon
           : MessageCircleIcon,

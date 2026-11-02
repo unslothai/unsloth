@@ -538,6 +538,12 @@ def _install_fake_db(monkeypatch):
         recs["insert_ids"].append(job_id),
     )
     fake_db.update_run_progress = lambda **kw: recs["progress_ids"].append(kw.get("id"))
+
+    def _insert_with_progress(job_id, batch, **kw):
+        fake_db.insert_metrics_batch(job_id, batch)
+        fake_db.update_run_progress(id = job_id, **kw)
+
+    fake_db.insert_metrics_with_progress = _insert_with_progress
     fake_db.mark_run_cancel_requested = lambda _run_id: True
     fake_storage.studio_db = fake_db
     monkeypatch.setitem(sys.modules, "storage", fake_storage)

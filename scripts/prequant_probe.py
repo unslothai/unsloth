@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Does a *pre-quantized* checkpoint fix the dense-quant load-VRAM spike?
-
-The current fast-transformer path materialises the dense bf16 transformer on the GPU
-and quantises it in place -> ~2x the GGUF load peak. This probe checks the fix: quantise
-once, ``torch.save`` the quantized state dict, then load it onto an empty (meta) model
-with ``load_state_dict(assign=True)`` so the bf16 never touches the GPU.
-
-Modes (run each in its own process so peak VRAM is clean):
-  build     -- load dense bf16, quantize_ fp8, torch.save the state dict + on-disk size.
-  baseline  -- current path: from_pretrained bf16 -> quantize_ on GPU. Report load peak + gen.
-  prequant  -- meta-init -> load_state_dict(saved, assign=True) -> cuda. Report load peak + gen.
-
-Run on one CUDA (Blackwell) GPU. Reference image for LPIPS is the baseline path."""
+"""Tests whether a pre-quantized checkpoint (assign=True onto meta) avoids the bf16 GPU load spike."""
 
 from __future__ import annotations
 

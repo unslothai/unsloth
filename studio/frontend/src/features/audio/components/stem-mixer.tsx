@@ -18,7 +18,7 @@ import {
   Download01Icon,
   HeadphonesIcon,
   VolumeHighIcon,
-  VolumeOffIcon,
+  VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
 import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -274,7 +274,7 @@ export function StemMixer({
                   }
                 >
                   <HugeiconsIcon
-                    icon={level.muted ? VolumeOffIcon : VolumeHighIcon}
+                    icon={level.muted ? VolumeMute02Icon : VolumeHighIcon}
                     strokeWidth={1.75}
                   />
                 </Button>

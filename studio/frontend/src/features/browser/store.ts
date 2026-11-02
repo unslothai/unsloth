@@ -321,7 +321,7 @@ type BrowserState = {
   /** A new chat got its id on its first save: its tabs go with it. */
   adoptChat: (from: string, to: string) => void;
   /** A web tab for `chat`, in front only when that chat is on screen (`background`: behind its front tab); its id. */
-  openTabIn: (chat: string, url: string, options?: { from?: string; background?: boolean }) => string | null;
+  openTabIn: (chat: string, url: string, options?: { from?: string; background?: boolean; temporary?: boolean }) => string | null;
   forgetChat: (chat: string) => void;
   /** `tabId` in front of `chat`'s open panel: now if it is on screen, else when it comes back. */
   revealIn: (chat: string, tabId: string) => void;
@@ -572,7 +572,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     },
     openTabIn: (chat, url, options) => {
       if (!isWeb(url)) return null;
-      const tab = createTab(webEntry(unwrapRedirect(url), undefined, undefined, options?.from));
+      const tab = createTab(webEntry(unwrapRedirect(url), undefined, undefined, options?.from, options?.temporary));
       openTab(tab, options?.background, undefined, chat);
       return tab.id;
     },

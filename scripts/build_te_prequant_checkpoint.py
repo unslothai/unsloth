@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Build a pre-cast text-encoder checkpoint for the Unsloth TE prequant path.
-
-Apply the runtime layerwise-fp8 STORAGE cast (``diffusion_precision._cast_fp8``) to a
-model's dense text encoder ONCE and save the cast state dict, so the backend can load the
-~half-size artifact (meta-init + ``load_state_dict(assign=True)``, see
-``core/inference/diffusion_te_prequant.py``) instead of downloading the full bf16 encoder
-and casting on every load. The cast is a deterministic storage transform, so the loaded
-encoder is bit-identical to dense-load-then-cast by construction. CPU-runnable: the cast
-touches storage dtypes only, no kernels.
-
-  python scripts/build_te_prequant_checkpoint.py \
-      --base Lightricks/LTX-2 --family ltx-2 --component text_encoder \
-      --out outputs/te_prequant/ltx2/text_encoder_fp8.pt
-
-Ideogram 4 ships its Qwen3-VL encoder as vendor fp8 + weight_scale, which ``from_pretrained`` cannot read;
-``--loader ideogram4`` builds it through Studio's own loader first:
-
-  python scripts/build_te_prequant_checkpoint.py \
-      --base unsloth/ideogram-4-fp8 --base-model-id ideogram-ai/ideogram-4-fp8 --family ideogram-4 \
-      --loader ideogram4 --out temp/te_default_build/ideogram-4-text_encoder-FP8.pt
-"""
+"""Pre-casts the TE to layerwise fp8 storage once; Ideogram 4's vendor fp8 needs --loader ideogram4."""
 
 from __future__ import annotations
 

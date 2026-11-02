@@ -19,7 +19,7 @@ fi
 
 assert_decision() {
     _label="$1"; _node="$2"; _npm="$3"; _skip="$4"; _expected="$5"
-    _actual="$(decide_node_source "$_node" "$_npm" "$_skip")"
+    _actual="$(decide_node_source "$_node" "$_npm" "$_skip" "${6:-0}")"
     if [ "$_actual" = "$_expected" ]; then
         echo "  PASS: $_label (node='$_node' npm='$_npm' skip='$_skip' -> $_actual)"
         PASS=$((PASS + 1))
@@ -47,6 +47,10 @@ assert_decision "npm10 + skip"         "v22.17.1" "10.9.2" "1" skip
 assert_decision "missing + skip"       ""         ""       "1" skip
 # The skip flag does NOT override an already-good system.
 assert_decision "good system + skip"   "v22.17.1" "11.13.0" "1" system
+assert_decision "managed on PATH"     "v24.17.0" "11.13.0" "0" bundled 1
+assert_decision "managed + skip"      "v24.17.0" "11.13.0" "1" system 1
+assert_decision "broken managed"      ""         ""        "0" bundled 1
+assert_decision "broken managed + skip" ""       ""        "1" skip 1
 
 rm -f "$_FUNC_FILE"
 echo ""

@@ -1,25 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""QLoRA (bitsandbytes 4-bit) under FSDP2.
-
-FSDP2 can only shard a frozen 4-bit weight whose packed bytes are stored in a float dtype: uint8 cannot
-become a sharded nn.Parameter before torch 2.12 and accelerate leaves it replicated on every rank. So:
-1. a fresh quantization stores the packed bytes as the compute dtype (`bnb_4bit_quant_storage`), and a
-   pre-quantized uint8 checkpoint is reinterpreted (a view, no copy) as the same dtype after loading;
-2. FSDPParam keeps the bitsandbytes QuantState on the sharded and the all-gathered parameter (FSDP2
-   rebuilds both as plain Parameters, which drops it), so the fused LoRA kernels and bnb's own forward
-   still read `weight.quant_state`;
-3. FSDP2 mixed precision never casts packed 4-bit bytes (or any other non-float parameter), and an
-   all-gather holding them moves bytes: when every input of a group shares one float dtype FSDP2
-   copies them with `torch._foreach_copy_`, which on CUDA rewrites float16 / bfloat16 NaN bit patterns
-   (about 1 in 60 packed float16 words) to the canonical NaN;
-4. `nonfloat_param_guard` lets torch < 2.12 shard what is still uint8; torch < 2.8, which wants one
-   dtype per unit frozen weights included, leaves uint8 weights out of the units (replicated);
-5. SIZE_BASED_WRAP counts float-packed weights at their uint8 numel, so wrap decisions do not move.
-Float storage is used only when 2 and 3 can be patched and the wrap does not upcast the whole model.
-Method wrappers (not source rewrites, as in axolotl's monkeypatch/fsdp2_qlora.py) hold on torch 2.6 .. 2.14.
-"""
+"""QLoRA under FSDP2: packed 4-bit bytes stored as float dtype to shard, QuantState kept; mixed
+precision never casts them (foreach copy rewrites NaN bit patterns on CUDA); float storage only
+when patchable."""
 
 __all__ = [
     "is_params4bit",
@@ -605,6 +589,8 @@ def nonfloat_param_guard(model = None):
                 p.requires_grad_(False)
     Parameter = torch.nn.Parameter
     original_new = Parameter.__dict__.get("__new__")
+    # Called through the class: a raw staticmethod object is not callable before Python 3.10.
+    call_new = Parameter.__new__
 
     def __new__(
         cls,
@@ -613,7 +599,7 @@ def nonfloat_param_guard(model = None):
     ):
         if data is not None and not (data.is_floating_point() or data.is_complex()):
             requires_grad = False
-        return original_new(cls, data, requires_grad)
+        return call_new(cls, data, requires_grad)
 
     Parameter.__new__ = __new__
     try:

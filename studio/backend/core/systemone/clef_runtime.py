@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cloudflare Clef decision models for the Decision API, served from a spawn child.
-
-Clef is a Qwen3.5 / Qwen3.8 backbone (9B or 27B) with a joint schema head, so it only runs on a
-GPU, through Unsloth's loader and its fast linear attention kernels. Unsloth patches transformers
-process-wide and a CUDA context is never returned while its process lives, so the model gets its
-own process: unloading ends it and the memory goes with it (as core/inference/stt_transformers_worker.py).
-"""
+"""Clef decision models run in a spawn child: CUDA memory is only returned when that process exits."""
 
 from __future__ import annotations
 

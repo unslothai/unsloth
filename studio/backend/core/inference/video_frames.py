@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Convert a decoded clip to uint8 RGB frames on its own device, bit-identical to the np / pil export
-(float32 ``(x * 255).round()`` matches numpy); out-of-range clips or non CUDA / CPU devices use the original path."""
+"""On-device uint8 RGB conversion, bit-identical to np/pil; non-CUDA/CPU or out-of-range falls back."""
 
 from __future__ import annotations
 

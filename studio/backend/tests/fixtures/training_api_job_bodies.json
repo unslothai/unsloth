@@ -1,0 +1,227 @@
+{
+  "lora": {
+    "model": "unsloth/Qwen3-0.6B",
+    "hyperparameters": {
+      "n_epochs": 3,
+      "batch_size": 4
+    },
+    "seed": 3407,
+    "suffix": "my run",
+    "learning_rate": "0.0002",
+    "load_in_4bit": false,
+    "max_seq_length": 4096,
+    "gradient_accumulation_steps": 2,
+    "warmup_steps": 5,
+    "weight_decay": 0.001,
+    "optim": "adamw_8bit",
+    "lr_scheduler_type": "linear",
+    "packing": false,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0,
+    "target_modules": [
+      "q_proj",
+      "v_proj"
+    ],
+    "use_dora": true,
+    "gradient_checkpointing": "unsloth",
+    "train_on_completions": true
+  },
+  "fullFinetuning": {
+    "model": "unsloth/Qwen3-0.6B",
+    "hyperparameters": {
+      "n_epochs": 3,
+      "batch_size": 4
+    },
+    "seed": 3407,
+    "learning_rate": "0.0002",
+    "max_steps": 60,
+    "training_type": "Full Finetuning",
+    "load_in_4bit": false,
+    "max_seq_length": 4096,
+    "gradient_accumulation_steps": 2,
+    "warmup_ratio": 0.03,
+    "weight_decay": 0.001,
+    "optim": "adamw_8bit",
+    "lr_scheduler_type": "linear",
+    "packing": false,
+    "gradient_checkpointing": "unsloth",
+    "train_on_completions": true,
+    "format_type": "alpaca"
+  },
+  "qloraMapping": {
+    "model": "unsloth/Qwen3-0.6B",
+    "hyperparameters": {
+      "n_epochs": 3,
+      "batch_size": 4
+    },
+    "seed": 3407,
+    "suffix": "my run",
+    "learning_rate": "1e-5",
+    "load_in_4bit": true,
+    "max_seq_length": 4096,
+    "gradient_accumulation_steps": 2,
+    "warmup_steps": 5,
+    "weight_decay": 0.001,
+    "optim": "adamw_8bit",
+    "lr_scheduler_type": "linear",
+    "packing": false,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0,
+    "target_modules": [
+      "q_proj",
+      "v_proj"
+    ],
+    "use_rslora": true,
+    "gradient_checkpointing": "unsloth",
+    "train_on_completions": false,
+    "custom_format_mapping": {
+      "question": "user",
+      "answer": "assistant",
+      "__system_prompt": "Answer in one word.",
+      "__label_mapping": {
+        "answer": {
+          "0": "no",
+          "1": "yes"
+        }
+      }
+    }
+  },
+  "continuedPretraining": {
+    "model": "unsloth/Qwen3-0.6B",
+    "hyperparameters": {
+      "n_epochs": 3,
+      "batch_size": 4
+    },
+    "seed": 3407,
+    "suffix": "my run",
+    "learning_rate": "0.0002",
+    "training_type": "Continued Pretraining",
+    "load_in_4bit": false,
+    "max_seq_length": 4096,
+    "gradient_accumulation_steps": 2,
+    "warmup_steps": 5,
+    "weight_decay": 0.001,
+    "optim": "adamw_8bit",
+    "lr_scheduler_type": "linear",
+    "packing": false,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0,
+    "target_modules": [
+      "q_proj",
+      "v_proj"
+    ],
+    "use_loftq": true,
+    "gradient_checkpointing": "unsloth",
+    "train_on_completions": true
+  },
+  "decision": {
+    "model": "unsloth/Qwen3-0.6B",
+    "hyperparameters": {
+      "n_epochs": 3,
+      "batch_size": 4
+    },
+    "seed": 3407,
+    "suffix": "my run",
+    "learning_rate": "0.0002",
+    "load_in_4bit": false,
+    "max_seq_length": 4096,
+    "gradient_accumulation_steps": 2,
+    "warmup_steps": 5,
+    "weight_decay": 0.001,
+    "optim": "adamw_8bit",
+    "lr_scheduler_type": "linear",
+    "packing": false,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0,
+    "target_modules": [
+      "q_proj",
+      "v_proj"
+    ],
+    "gradient_checkpointing": "unsloth",
+    "model_subfolder": "multilingual",
+    "is_decision": true,
+    "train_on_completions": true
+  },
+  "vision": {
+    "model": "unsloth/Qwen3-0.6B",
+    "hyperparameters": {
+      "n_epochs": 3,
+      "batch_size": 4
+    },
+    "seed": 3407,
+    "suffix": "my run",
+    "learning_rate": "0.0002",
+    "load_in_4bit": false,
+    "max_seq_length": 4096,
+    "gradient_accumulation_steps": 2,
+    "warmup_steps": 5,
+    "weight_decay": 0.001,
+    "optim": "adamw_8bit",
+    "lr_scheduler_type": "linear",
+    "packing": false,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0,
+    "target_modules": [
+      "q_proj",
+      "v_proj"
+    ],
+    "gradient_checkpointing": "unsloth",
+    "is_dataset_image": true,
+    "finetune_vision_layers": true,
+    "train_on_completions": true
+  },
+  "everySetting": {
+    "model": "unsloth/Qwen3-0.6B",
+    "hyperparameters": {
+      "n_epochs": 3,
+      "batch_size": 4
+    },
+    "seed": 3407,
+    "suffix": "my run",
+    "learning_rate": "0.0002",
+    "training_type": "Continued Pretraining",
+    "load_in_4bit": false,
+    "max_seq_length": 4096,
+    "gradient_accumulation_steps": 2,
+    "warmup_steps": 5,
+    "weight_decay": 0.001,
+    "optim": "adamw_8bit",
+    "lr_scheduler_type": "linear",
+    "packing": false,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0,
+    "target_modules": [
+      "q_proj",
+      "v_proj"
+    ],
+    "vision_image_size": 448,
+    "trust_remote_code": true,
+    "dataset_slice_start": 10,
+    "dataset_slice_end": 500,
+    "embedding_learning_rate": 0.000005,
+    "save_steps": 25,
+    "gradient_checkpointing": "true",
+    "max_grad_norm": 0.5,
+    "max_grad_value": 2,
+    "train_on_completions": true
+  },
+  "example": {
+    "model": "unsloth/Qwen3-0.6B",
+    "hyperparameters": {
+      "n_epochs": 1,
+      "batch_size": 2
+    },
+    "seed": 3407,
+    "learning_rate": "2e-4",
+    "load_in_4bit": true,
+    "max_seq_length": 2048,
+    "lora_r": 16,
+    "lora_alpha": 16
+  }
+}

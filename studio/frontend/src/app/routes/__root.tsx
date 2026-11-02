@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  ChatBackground,
+  WindowMaterialMount,
+} from "@/features/chat-background";
 import { ImageViewer } from "@/components/image-viewer";
 import { useAppShellReadySignal } from "@/components/app-readiness";
+import { LazyImportFailure } from "@/components/lazy-import-boundary";
 import { AppSidebar } from "@/components/app-sidebar";
 import { CommandPalette } from "@/components/command-palette";
 import { Navbar } from "@/components/navbar";
@@ -20,14 +25,15 @@ import {
   useIsAccountOwner,
 } from "@/features/auth";
 import {
-  ChatPage,
   type ChatSearch,
-  hydrateModelDisclaimerPreference,
+  loadChatPage,
+  loadedChatPage,
   openFolderAsProject,
   startLlamaCppAutoReload,
   StopRunningChatsDialog,
   useOpeningFolder,
   useChatRuntimeStore,
+  usePinnedChatsSync,
 } from "@/features/chat";
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
@@ -76,10 +82,12 @@ import {
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  type ComponentType,
   lazy,
 
   type ReactNode,
   Suspense,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -95,7 +103,6 @@ import { hasAppMenus, useAppMenuActions } from "../use-app-menu-actions";
 
 declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
-    title?: string;
     titleKey?: TranslationKey;
     isAuthFlow?: boolean;
   }
@@ -162,6 +169,64 @@ function RouteBoundary({
   );
 }
 
+type ChatPageProps = { search: ChatSearch; active: boolean };
+type ChatPageAttemptProps = ChatPageProps & { onRetry: () => void };
+
+function ChatPageLoadFailure({
+  active,
+  onRetry,
+}: {
+  active: boolean;
+  onRetry: () => void;
+}) {
+  const t = useT();
+  const signalReady = useAppShellReadySignal();
+  // The page it stands in for would have signalled; without this Desktop keeps its startup screen.
+  useLayoutEffect(() => {
+    signalReady();
+  }, [signalReady]);
+  const wasActive = useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) {
+      onRetry();
+    }
+    wasActive.current = active;
+  }, [active, onRetry]);
+  return (
+    <LazyImportFailure
+      message={t("settings.dialog.panelFailed")}
+      reloadLabel={t("settings.dialog.panelReload")}
+      testId="chat-page-load-failure"
+      className="flex h-full min-h-0 flex-1 flex-col items-center justify-center p-6 text-center text-muted-foreground"
+    />
+  );
+}
+
+// A failed import resolves to the failure panel (not a throw), so a crash inside the page still
+// reaches the route boundary; a new lazy() per attempt since lazy() caches its result.
+function chatPageAttempt(): ComponentType<ChatPageAttemptProps> {
+  return (
+    loadedChatPage() ??
+    lazy<ComponentType<ChatPageAttemptProps>>(() =>
+      loadChatPage().then(
+        (m) => ({ default: m.ChatPage }),
+        () => ({ default: ChatPageLoadFailure }),
+      ),
+    )
+  );
+}
+
+function ChatPage(props: ChatPageProps) {
+  // Kept until a failure: swapping component type would remount the page and drop its state.
+  const [Page, setPage] = useState(chatPageAttempt);
+  const retry = useCallback(() => setPage(() => chatPageAttempt()), []);
+  return (
+    <Suspense fallback={<RouteFallback />}>
+      <Page {...props} onRetry={retry} />
+    </Suspense>
+  );
+}
+
 // Mounted persistently below so an in-flight batch survives leaving the tab; lazy on first visit.
 const ImagesPage = lazy(() =>
   import("@/features/images").then((m) => ({ default: m.ImagesPage })),
@@ -213,12 +278,12 @@ function HubSourceNoticeMount() {
 
 // Models page and picker read chat settings too, so hydration cannot wait for ChatPage.
 function ChatSettingsHydrationMount() {
+  usePinnedChatsSync();
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
   );
   useEffect(() => {
     void hydratePersistedSettings();
-    hydrateModelDisclaimerPreference().catch(() => undefined);
   }, [hydratePersistedSettings]);
   return null;
 }
@@ -311,8 +376,10 @@ function waitsOutUnknownVerdict(pathname: string): boolean {
   );
 }
 
-function isChatOnlyAllowed(pathname: string): boolean {
+function isChatOnlyAllowed(pathname: string, trainAvailable: boolean): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
+  if (trainAvailable && (pathname === "/studio" || pathname.startsWith("/studio/")))
+    return true;
   if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/"))
     return true;
   // Images runs on CPU/MPS via sd.cpp; chat-only is about training/export.
@@ -326,11 +393,11 @@ function isChatOnlyAllowed(pathname: string): boolean {
 export const Route = createRootRoute({
   beforeLoad: async ({ location }) => {
     await fetchDeviceType();
-    const { isChatOnly, capabilitiesUnknown } = usePlatformStore.getState();
+    const { isChatOnly, isTrainUnavailable, capabilitiesUnknown } = usePlatformStore.getState();
     const unmeasured = capabilitiesUnknown();
     if (
       isChatOnly() &&
-      !isChatOnlyAllowed(location.pathname) &&
+      !isChatOnlyAllowed(location.pathname, !isTrainUnavailable()) &&
       !(unmeasured && waitsOutUnknownVerdict(location.pathname))
     ) {
       throw redirect({ to: "/chat" });
@@ -363,12 +430,16 @@ function RootLayout() {
   const chatOnlyMeasured = usePlatformStore(
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
+  const trainBlocked = usePlatformStore(
+    (s) => s.isTrainUnavailable() && !s.capabilitiesUnknown(),
+  );
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   // Video is the other row the sidebar grays out, on the two verdicts its pipelines cannot run on
   // at all. Same hint the row reads, so the two cannot disagree about which hosts they are.
   const videoCpuOptIn = usePlatformStore((s) => s.videoCpuOptIn);
+  const cpuTraining = usePlatformStore((s) => s.cpuTraining);
   const videoDisabled =
-    videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn) !== undefined;
+    videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining) !== undefined;
   // Exact match: a prefix would treat /chatty as chat, hiding its not-found UI.
   const isChatRoute = pathname === "/chat";
   const { pinned, setPinned, togglePinned } = useSidebarPin();
@@ -446,9 +517,8 @@ function RootLayout() {
   const matchedTitle = useMatches({
     select: (matches) => {
       for (let i = matches.length - 1; i >= 0; i--) {
-        const { title, titleKey } = matches[i].staticData;
+        const { titleKey } = matches[i].staticData;
         if (titleKey) return t(titleKey);
-        if (title) return title;
       }
       return null;
     },
@@ -464,14 +534,17 @@ function RootLayout() {
       : DEFAULT_DOCUMENT_TITLE;
   }, [documentTitle]);
 
+  // Desktop mounts this root before the port exists; authFetch retries keep the URL it started with.
+  const desktopShellReady = useDesktopShellReady();
+
   // Settings predating the server override map live only locally; backfill once after auth.
   useEffect(() => {
-    if (isAuthFlowRoute) {
+    if (isAuthFlowRoute || !desktopShellReady) {
       return;
     }
     void backfillModelOverrides();
     void hydratePins();
-  }, [isAuthFlowRoute]);
+  }, [isAuthFlowRoute, desktopShellReady]);
 
   useEffect(() => {
     if (isAuthFlowRoute) {
@@ -530,7 +603,6 @@ function RootLayout() {
   const pathLeasesSupported = useNativePathLeasesSupported();
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   const openingFolder = useOpeningFolder();
-  const desktopShellReady = useDesktopShellReady();
   // Menu items for web shortcuts are live exactly while a mounted handler would take them.
   const sidebarMounted = useShortcutAvailable("toggleSidebar", hasAppMenus);
   const findMounted = useShortcutAvailable("findInPage", hasAppMenus);
@@ -590,7 +662,7 @@ function RootLayout() {
     "go-projects": goAction(routeShortcutEnabled, goTo("/projects")),
     "go-library": goAction(routeShortcutEnabled, goTo("/library")),
     "go-hub": goAction(routeShortcutEnabled, goTo("/hub")),
-    "go-train": goAction(routeShortcutEnabled && !chatOnlyMeasured, goTo("/studio")),
+    "go-train": goAction(routeShortcutEnabled && !trainBlocked, goTo("/studio")),
     "go-recipes": goAction(routeShortcutEnabled, goTo("/data-recipes")),
     "go-images": goAction(routeShortcutEnabled, goTo("/images")),
     "go-video": goAction(routeShortcutEnabled && !videoDisabled, goTo("/video")),
@@ -613,7 +685,7 @@ function RootLayout() {
   });
   // Train's chord waits for a measured verdict, or it would bounce off /studio to /chat.
   useShortcut("switchToTrain", goTo("/studio"), {
-    enabled: routeShortcutEnabled && !chatOnlyMeasured,
+    enabled: routeShortcutEnabled && !trainBlocked,
   });
   useShortcut("switchToRecipes", goTo("/data-recipes"), {
     enabled: routeShortcutEnabled,
@@ -650,6 +722,7 @@ function RootLayout() {
       <PersonalizationSyncMount />
       <SttDeviceSyncMount />
       <InterfaceZoom />
+      <WindowMaterialMount />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <LowDiskNoticeMount />}
@@ -675,8 +748,11 @@ function RootLayout() {
           pinned={pinned}
           setPinned={setPinned}
           togglePinned={togglePinned}
-          className="!min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
+          data-wallpaper-workspace=""
+          data-wallpaper-route={isChatRoute ? "chat" : "page"}
+          className="relative !min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
+          <ChatBackground route={isChatRoute ? "chat" : "page"} backdrop />
           <AppSidebar />
           <SidebarEdgeTrigger />
           <SidebarInset

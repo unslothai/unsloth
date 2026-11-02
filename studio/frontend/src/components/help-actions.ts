@@ -3,11 +3,11 @@
 
 import { type SettingsTab, settingsTabVisible, useSettingsDialogStore } from "@/features/settings";
 import type { TranslationKey } from "@/i18n";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 import { openLink } from "@/lib/open-link";
 import {
   Book03Icon,
   ComputerTerminal01Icon,
-  CpuIcon,
   EnergyRectangleIcon,
   MessageNotification01Icon,
   NewReleasesIcon,
@@ -33,7 +33,7 @@ export const HELP_ITEMS: Record<HelpAction, { label: TranslationKey; icon: IconS
   "help-keyboard-shortcuts": { label: "shell.helpMenu.keyboardShortcuts", icon: EnergyRectangleIcon },
   "help-whats-new": { label: "shell.helpMenu.whatsNew", icon: NewReleasesIcon },
   "help-troubleshooting": { label: "shell.helpMenu.troubleshooting", icon: ComputerTerminal01Icon },
-  "help-system-status": { label: "shell.helpMenu.systemStatus", icon: CpuIcon },
+  "help-system-status": { label: "shell.helpMenu.systemStatus", icon: ChipIcon },
   "help-send-feedback": { label: "shell.helpMenu.sendFeedback", icon: MessageNotification01Icon },
 };
 

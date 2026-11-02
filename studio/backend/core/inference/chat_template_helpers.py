@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Dependency-light wrapper around tokenizer.apply_chat_template with a kwarg fallback for templates
-that reject reasoning/tools args, plus the shared native-chat-template fallback used by the
-transformers and MLX backends."""
+"""Dependency-light wrapper around tokenizer.apply_chat_template, dropping reasoning/tools kwargs
+for templates that reject them; shared native fallback for transformers and MLX."""
 
 import copy
 import functools
@@ -23,7 +22,6 @@ _UNPARSED = object()
 
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
-_GEMMA_CHANNEL_START = "<|channel>"
 _GEMMA_THOUGHT_OPEN = "<|channel>thought"
 _GEMMA_THOUGHT_CLOSE = "<channel|>"
 _GEMMA_TEMPLATE_OPENERS = (
@@ -108,7 +106,7 @@ _CONTROL_MARKUP = re.compile(
     # Bare-tag families. <s> and </s> (Llama-2 BOS/EOS) collide with HTML; kept, since a live document boundary beats a space in a rare <s>.
     r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think|eos|bos|s|sop"
     r"|start_of_image|image_soft_token|audio_soft_token"
-    r"|arg_key|arg_value|function|parameter|param)>"
+    r"|arg_key|arg_value|function|parameter|param|minimax:tool_call)>"
     # Opener halves carry "=value", so the attribute form needs its own alternative beside function=
     r"|(?:function|parameter)=|(?:function|param(?:eter)?)\s+name=\""
     r"|(?:tool(?:_call|_response)?|channel|turn)\|>"
@@ -140,7 +138,8 @@ _TURN_BOUNDARY_MARKUP = re.compile(
     # Tool RESULT / CATALOG markup forges trusted context; tool CALL spellings are the assistant's own.
     r"|tool_response|tool"
     r"|assistant|return|system|start|turn|user|call)\|?>"
-    r"|\uff5c(?:User|Assistant|(?:begin|end)\u2581of\u2581sentence)\uff5c>"
+    # DeepSeek-V4.1 rejects this marker in string content and treats text-block copies as images.
+    r"|\uff5c(?:User|Assistant|(?:begin|end)\u2581of\u2581sentence|deepseek_image)\uff5c>"
     # Optional slash: Gemma delimiters are bare tags, so a replayed </start_of_turn> is a boundary too
     r"|/?(?:(?:start|end)_of_turn|eos|bos|s|sop|tool_response|tools"
     r"|start_of_image|image_soft_token|audio_soft_token)>"
@@ -2592,7 +2591,7 @@ def messages_with_attached_image(
     fallback_user_text: str = "",
     structured_content: bool = False,
     image: int = 1,
-    video: bool = False,
+    video: int = 0,
     audio: Any = None,
     extra_audio: Sequence[Any] = (),
 ) -> list:

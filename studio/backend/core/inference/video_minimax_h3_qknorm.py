@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 fused q/k RMSNorm + partial RoPE, one read and one write per row (``UNSLOTH_H3_QK_ROPE=0`` = off).
-
-Rounds where the eager bf16 chain rounds; only the order of the sum of squares is free, so rstd can differ in the
-last fp32 bit (bounded at one bf16 step by the tests). Opaque custom op with a fake kernel; Triton on NVIDIA CUDA
-only, the stock math everywhere else.
-"""
+"""Fused q/k RMSNorm + partial RoPE (off with UNSLOTH_H3_QK_ROPE=0); Triton on NVIDIA CUDA only,
+stock math elsewhere; rstd may differ in the last fp32 bit."""
 
 from __future__ import annotations
 

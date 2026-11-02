@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Run a first-frame render by swapping the loaded pipeline's class to its image-to-video class.
-
-Not ``from_pipe``: it casts every shared module to float32 (undoing fp32-VAE / bf16-DiT, GGUF,
-torchao, offload hooks) and builds a second object lacking what Studio set on the loaded one.
-"""
+"""First-frame render swaps the loaded pipeline's class in place; from_pipe would recast to float32."""
 
 from __future__ import annotations
 

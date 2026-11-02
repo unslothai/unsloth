@@ -1207,3 +1207,69 @@ def test_compiled_blocks_under_group_offload_skip_hook_tracing():
         torch.testing.assert_close(out, expected, rtol = 0, atol = 1e-6)
     # Traced hooks add a graph per hook variant; eager hooks leave only the block graph.
     assert counters["stats"]["unique_graphs"] <= 1
+
+
+# Qwen-Image-Edit-2511 auto on a 16 / 12 GiB card: int8 DiT (20.4 GB), int8 ConvRot encoder, bf16 VAE; MiB as loaded.
+QEDIT_LOADED = {
+    "transformer": (19932, "dit"),
+    "text_encoder": (8560, "text_encoder"),
+    "vae": (242, "other"),
+}
+QEDIT_FLAT = dict(model_dense_mib = 38956, companion_dense_mib = 16062, text_encoder_dense_mib = 15820)
+
+
+@pytest.fixture
+def qedit_pipe(monkeypatch):
+    for env in (
+        "MEASURED_ACTIVATION_ENV",
+        "PARTIAL_RESIDENT_ENV",
+        "MEASURED_ACTIVATION_QWEN_EDIT_ENV",
+    ):
+        monkeypatch.delenv(getattr(dm, env, "UNSET_" + env), raising = False)
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: dict(QEDIT_LOADED), raising = False)
+    monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda pipe: True)
+    return object()
+
+
+def _qedit_flat_plan(budget_mib: int, total_mib: int):
+    plan = dm.plan_diffusion_memory(
+        target = types.SimpleNamespace(supports_model_cpu_offload = True),
+        device_memory = _memory(budget_mib, total_mib),
+        runtime_headroom_mib = dm.estimate_image_runtime_mib(
+            width = None, height = None, family = "qwen-image-edit"
+        ),
+        requested_mode = None,
+        **QEDIT_FLAT,
+    )
+    if plan.offload_policy == dm.OFFLOAD_MODEL:
+        plan = dm.torchao_streaming_plan(plan)
+    return plan
+
+
+def test_qwen_edit_seed_value():
+    # 6046 MiB whole edit render x 1.15, rounded up to 256 MiB
+    assert dm.measured_image_runtime_mib("qwen-image-edit", "default") == 7168
+    assert dm.measured_image_runtime_mib("qwen-image-edit", "off") is None
+
+
+@pytest.mark.parametrize("budget,total", [(13638, 16376), (9550, 12288)])
+def test_qwen_edit_fresh_home_keeps_part_of_the_int8_dit_resident(qedit_pipe, budget, total):
+    """A fresh home streamed every one of the 60 int8 DiT groups at 16 / 12 GiB (no seed, no learned peak)."""
+    plan = _qedit_flat_plan(budget, total)
+    assert (
+        plan.offload_policy in (dm.OFFLOAD_GROUP, dm.OFFLOAD_STREAMING) and plan.stream_transformer
+    )
+    new = _refine(qedit_pipe, plan, family = "qwen-image-edit")
+    assert new is not plan
+    resident = new.resident_transformer_mib
+    assert resident and 0 < resident < 19932
+    assert new.estimates["measured_runtime_headroom_mib"] == 7168
+    assert resident + 7168 + dm.DEFAULT_BASE_OVERHEAD_MIB + 242 <= budget
+
+
+def test_qwen_edit_seed_kill_switch(qedit_pipe, monkeypatch):
+    monkeypatch.setenv(dm.MEASURED_ACTIVATION_QWEN_EDIT_ENV, "0")
+    assert dm.measured_image_runtime_mib("qwen-image-edit", "default") is None
+    plan = _qedit_flat_plan(13638, 16376)
+    assert _refine(qedit_pipe, plan, family = "qwen-image-edit") is plan
+    assert dm.measured_image_runtime_mib("qwen-image-2.1", "default") == 2304

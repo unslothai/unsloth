@@ -8,14 +8,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-FastDiffusionModel: a transformers-only slow path for text-diffusion models (e.g. DiffusionGemma).
-
-These models use a block-diffusion sampling loop (custom generate) and a novel backbone, so we skip
-Unsloth's autoregressive kernel/compile patching and load the unmodified HF model (outputs stay
-bit-identical to transformers), keeping only the safe conveniences: 4bit/8bit loading, PEFT LoRA, the
-(model, tokenizer) API, and for_inference/for_training. Extend DIFFUSION_MODEL_TYPES as more land.
-"""
+"""FastDiffusionModel: unpatched HF text-diffusion models; outputs bit-identical to transformers."""
 
 import os
 import re

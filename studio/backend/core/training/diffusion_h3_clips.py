@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The clip dataset layer for MiniMax-H3 LoRA training.
-
-MiniMax-H3 is the first family Unsloth trains from **clips with sound** rather than stills,
-and it has no still-image shortcut: its video VAE encodes ``17 * n + 5`` pixel frames at a
-time (a 1-frame clip is not a valid input, unlike LTX-2's), and every forward carries audio
-rows in the same packed sequence as the video rows. So the dataset unit is a video file with
-a soundtrack, and this module is the part of that which needs no torch and no diffusers:
-discovery, captions, the frame/latent/row arithmetic, and the canvas rule.
-
-The decode itself (``decode_clip``) needs PyAV, which the video backend already depends on.
-Everything above it is pure filesystem + arithmetic so the geometry contract is unit-testable
-on a CPU-only box.
-"""
+"""MiniMax-H3 clip datasets: frames must be 17*n+5, with no still-image path; torch-free geometry."""
 
 from __future__ import annotations
 

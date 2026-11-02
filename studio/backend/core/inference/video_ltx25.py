@@ -1,22 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2.5 on diffusers' LTX-2 pipelines.
-
-LTX-2.5 keeps the LTX-2.3 DiT layout (minus the video FFN bias, plus a keyframe position embedding) and the 2.3 conv
-VAE, but conditions on a fine-tuned Gemma 4 12B (``Gemma4UnifiedForConditionalGeneration``) that only transformers
->= 5.10.1 provides. Studio's server runs an older transformers, so the encoder runs in a spawned worker on the
-``.venv_t5_510`` sidecar (``video_ltx25_te_worker``) and hands back the packed prompt embeddings; ``pipe.encode_prompt``
-is replaced by a call into that worker, and everything after it (connectors, DiT, VAE, vocoder) runs here.
-
-Generation follows the reference two-stage distilled recipe: stage 1 at half resolution on the 8 distilled sigmas,
-the latent x2 spatial upsampler, then stage 2 at full resolution on 0.85 / 0.725 / 0.421875 with the stage-1 audio
-latents carried over, CFG 1 and every other guidance off, sampled euler-ancestral. Image-to-video conditions the first
-latent frame through ``LTX2ConditionPipeline`` at CRF 18, strength 0.7 in stage 1 and 1.0 in stage 2. The dev (full)
-DiT runs the pipeline's own single-stage SFT recipe instead.
-
-Everything here is gated on the ``ltx-2.5`` family; no other family reaches this module.
-"""
+"""LTX-2.5 pipeline, gated to the ltx-2.5 family (no other family reaches this module); Gemma 4
+encoder runs in a worker on the .venv_t5_510 transformers 5.10 sidecar"""
 
 from __future__ import annotations
 

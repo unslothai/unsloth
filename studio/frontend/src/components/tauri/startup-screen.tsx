@@ -15,6 +15,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
+import { useT } from "@/i18n";
 import { useDocumentFlag } from "@/lib/document-flag";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import {
@@ -69,6 +70,7 @@ function Logo() {
 // ---------------------------------------------------------------------------
 
 function CheckingContent() {
+  const t = useT();
   return (
     <div className="flex h-full flex-col items-center">
       <div className="flex flex-1 items-center">
@@ -76,7 +78,7 @@ function CheckingContent() {
       </div>
       <div className="mb-10 flex flex-col items-center gap-2">
         <Spinner className="size-6 text-primary" />
-        <p className="text-sm text-muted-foreground">Checking...</p>
+        <p className="text-sm text-muted-foreground">{t("desktopStartup.checking")}</p>
       </div>
     </div>
   );
@@ -93,6 +95,7 @@ function NotInstalledContent({
     "idle" | "checking" | "explain" | "elevating"
   >("idle");
   const [chatOnly, setChatOnly] = useState(false);
+  const t = useT();
 
   // Synchronous: a double click lands before the re-render that disables the buttons.
   const busy = useRef(false);
@@ -150,7 +153,7 @@ function NotInstalledContent({
           className="text-ui-13 font-semibold tracking-[-0.01em] text-muted-foreground"
           style={{ fontFamily: '"Hellix", sans-serif' }}
         >
-          To install Unsloth, click Get Started.
+          {t("desktopStartup.installPrompt")}
         </p>
         <Button
           variant="dark"
@@ -158,7 +161,7 @@ function NotInstalledContent({
           onClick={getStarted}
           disabled={phase === "checking"}
         >
-          Get Started
+          {t("desktopStartup.getStarted")}
         </Button>
         <div className="flex items-center gap-2">
           <Checkbox
@@ -171,7 +174,7 @@ function NotInstalledContent({
             htmlFor="install-chat-only"
             className="text-ui-12 font-normal text-muted-foreground"
           >
-            Chat only (GGUF): smaller install, no training
+            {t("desktopStartup.chatOnly")}
           </Label>
         </div>
         <InstallLocation disabled={phase !== "idle"} />
@@ -189,34 +192,34 @@ function LongPathsExplainer({
   onContinue: () => void;
   onSkip: () => void;
 }) {
+  const t = useT();
+  const [approveBefore, approveAfter] = t("desktopStartup.longPaths.approve").split("{tool}");
   return (
     <>
       <Logo />
       <div className="mt-8 flex max-w-md flex-col items-center gap-2">
         <p className="text-sm font-medium text-foreground">
-          Windows will ask for permission
+          {t("desktopStartup.longPaths.title")}
         </p>
         <p className="text-xs text-muted-foreground">
-          Approve{" "}
-          <span className="font-medium text-foreground">
-            Registry Console Tool
-          </span>{" "}
-          once to turn on long file paths for compiled kernels.
+          {approveBefore}
+          <span className="font-medium text-foreground">Registry Console Tool</span>
+          {approveAfter}
         </p>
         {waiting ? (
           <div className="mt-4 flex items-center gap-2">
             <Spinner className="size-4 text-primary" />
             <p className="text-xs text-muted-foreground" aria-live="polite">
-              Waiting for Windows permission...
+              {t("desktopStartup.longPaths.waiting")}
             </p>
           </div>
         ) : (
           <div className="mt-4 flex gap-3">
             <Button variant="muted" size="hero" onClick={onSkip}>
-              Skip
+              {t("desktopStartup.skip")}
             </Button>
             <Button variant="dark" size="hero" onClick={onContinue}>
-              Continue
+              {t("desktopStartup.continue")}
             </Button>
           </div>
         )}
@@ -248,6 +251,7 @@ function InstallingContent({
   currentStepIndex: number;
   progressDetail: string | null;
 }) {
+  const t = useT();
   const messageIndex = useRotatingMessageIndex();
   const message = installProgressMessage(currentStepIndex, messageIndex);
   const detailLines = progressDetail
@@ -262,10 +266,14 @@ function InstallingContent({
       <div className="mb-10 flex w-full flex-col items-center gap-2">
         <Spinner className="size-6 text-primary" />
         <p className="text-sm font-bold text-foreground" aria-live="polite">
-          {message.title}
+          {t(message.title)}
         </p>
-        <p className="text-sm text-muted-foreground">{message.subtitle}</p>
-        <LogDetails label="installation details" lines={detailLines} />
+        <p className="text-sm text-muted-foreground">{t(message.subtitle)}</p>
+        <LogDetails
+          showLabel={t("desktopStartup.details.showInstall")}
+          hideLabel={t("desktopStartup.details.hideInstall")}
+          lines={detailLines}
+        />
       </div>
     </div>
   );
@@ -280,6 +288,7 @@ function RepairingContent({
   progressDetail: string | null;
   upgradingToFull: boolean;
 }) {
+  const t = useT();
   const detailLines = progressDetail
     ? [...logs, progressDetail]
     : logs;
@@ -292,20 +301,27 @@ function RepairingContent({
       <div className="mb-10 flex w-full flex-col items-center gap-2">
         <Spinner className="size-6 text-primary" />
         <p className="text-sm font-bold text-foreground">
-          {upgradingToFull ? "Upgrading to the full install..." : "Getting things ready..."}
+          {upgradingToFull
+            ? t("desktopStartup.repair.upgrading")
+            : t("desktopStartup.repair.gettingReady")}
         </p>
         <p className="text-sm text-muted-foreground">
           {upgradingToFull
-            ? "Downloading PyTorch and its libraries for this machine's GPU. This can take several minutes."
-            : "This won’t take long."}
+            ? t("desktopStartup.repair.upgradingDetail")
+            : t("desktopStartup.repair.wontTakeLong")}
         </p>
-        <LogDetails label="setup details" lines={detailLines} />
+        <LogDetails
+          showLabel={t("desktopStartup.details.showSetup")}
+          hideLabel={t("desktopStartup.details.hideSetup")}
+          lines={detailLines}
+        />
       </div>
     </div>
   );
 }
 
 function ClosingContent() {
+  const t = useT();
   return (
     <div className="flex h-full w-full flex-col items-center">
       <div className="flex flex-1 items-center">
@@ -314,9 +330,9 @@ function ClosingContent() {
       <div className="mb-10 flex w-full flex-col items-center gap-2">
         <Spinner className="size-6 text-primary" />
         <p className="text-sm font-bold text-foreground" aria-live="polite">
-          Closing Unsloth Desktop...
+          {t("desktopStartup.closing")}
         </p>
-        <p className="text-sm text-muted-foreground">Shutting down the backend.</p>
+        <p className="text-sm text-muted-foreground">{t("desktopStartup.closingDetail")}</p>
       </div>
     </div>
   );
@@ -333,19 +349,20 @@ function InstallErrorContent({
   onRetryInstall: () => void;
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }) {
+  const t = useT();
   return (
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
         <p className="text-sm font-medium text-destructive">
-          {diskFull ? "Not enough disk space" : "Setup ran into a problem"}
+          {diskFull ? t("desktopStartup.diskFull") : t("desktopStartup.setupFailed")}
         </p>
         {error && (
           <p className="max-w-xs text-center text-xs text-muted-foreground">{error}</p>
         )}
         <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
           <Button variant="dark" size="hero" onClick={onRetryInstall}>
-            Try Again
+            {t("desktopStartup.tryAgain")}
           </Button>
         </DiagnosticsCopyActions>
       </div>
@@ -364,19 +381,22 @@ function RepairErrorContent({
   onRetry: () => void;
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }) {
+  const t = useT();
   return (
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
         <p className="text-sm font-medium text-destructive">
-          {upgradingToFull ? "Could not upgrade to the full install" : "Update failed"}
+          {upgradingToFull
+            ? t("desktopStartup.repair.upgradeFailed")
+            : t("desktopStartup.repair.updateFailed")}
         </p>
         {error && (
           <p className="max-w-md text-center text-xs text-muted-foreground">{error}</p>
         )}
         <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
           <Button variant="dark" size="hero" onClick={onRetry}>
-            Retry
+            {t("desktopStartup.retry")}
           </Button>
         </DiagnosticsCopyActions>
       </div>
@@ -393,13 +413,16 @@ function NeedsElevationContent({
   onApproveElevation: () => void;
   onRetryInstall: () => void;
 }) {
+  const t = useT();
   return (
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
-        <p className="text-sm font-medium text-foreground">Permission needed</p>
+        <p className="text-sm font-medium text-foreground">
+          {t("desktopStartup.elevation.title")}
+        </p>
         <p className="text-xs text-muted-foreground">
-          The following system packages need to be installed:
+          {t("desktopStartup.elevation.packages")}
         </p>
         <div className="mt-2 w-full max-w-xs rounded-lg bg-muted p-3 font-mono text-xs">
           {elevationPackages.map((pkg) => (
@@ -407,8 +430,12 @@ function NeedsElevationContent({
           ))}
         </div>
         <div className="mt-4 flex gap-3">
-          <Button variant="muted" size="hero" onClick={onRetryInstall}>Cancel</Button>
-          <Button variant="dark" size="hero" onClick={onApproveElevation}>Allow</Button>
+          <Button variant="muted" size="hero" onClick={onRetryInstall}>
+            {t("common.cancel")}
+          </Button>
+          <Button variant="dark" size="hero" onClick={onApproveElevation}>
+            {t("desktopStartup.elevation.allow")}
+          </Button>
         </div>
       </div>
     </>
@@ -416,8 +443,9 @@ function NeedsElevationContent({
 }
 
 function StartingContent({ message }: { message: StartupMessage }) {
+  const t = useT();
   const messageIndex = useRotatingMessageIndex();
-  const displayMessage = startupWaitingMessage(message, messageIndex);
+  const displayMessage = t(startupWaitingMessage(message, messageIndex));
 
   return (
     <div className="flex h-full flex-col items-center">
@@ -433,14 +461,15 @@ function StartingContent({ message }: { message: StartupMessage }) {
 }
 
 function StoppedContent({ onStartServer }: { onStartServer: () => void }) {
+  const t = useT();
   return (
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
-        <p className="text-sm font-medium text-foreground">Server stopped</p>
+        <p className="text-sm font-medium text-foreground">{t("desktopStartup.serverStopped")}</p>
         <div className="mt-4">
           <Button variant="dark" size="hero" onClick={onStartServer}>
-            Start Server
+            {t("desktopStartup.startServer")}
           </Button>
         </div>
       </div>
@@ -457,17 +486,18 @@ function ErrorContent({
   onRetry: () => void;
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }) {
+  const t = useT();
   return (
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
-        <p className="text-sm font-medium text-destructive">Something went wrong</p>
+        <p className="text-sm font-medium text-destructive">{t("desktopStartup.somethingWrong")}</p>
         {error && (
           <p className="max-w-md text-center text-xs text-muted-foreground">{error}</p>
         )}
         <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
           <Button variant="dark" size="hero" onClick={onRetry}>
-            Retry
+            {t("desktopStartup.retry")}
           </Button>
         </DiagnosticsCopyActions>
       </div>

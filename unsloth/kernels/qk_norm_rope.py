@@ -188,8 +188,10 @@ def _norm_rope_bwd_block(
     rowsum = tl.sum(g0 * n0, axis = 1) + tl.sum(g1 * n1, axis = 1)
     scale = (inv / HEAD_DIM)[:, None]
     dx_ptr = dX + (row * n_heads + hoff) * HEAD_DIM + cols[None, :]
-    tl.store(dx_ptr, scale * (HEAD_DIM * g0 - n0 * rowsum[:, None]), mask = mask)
-    tl.store(dx_ptr + HALF, scale * (HEAD_DIM * g1 - n1 * rowsum[:, None]), mask = mask)
+    # HEAD_DIM * g - n * rowsum with the contraction pinned (HEAD_DIM * g is exact): left to the backend
+    # the eager and the Inductor build contract it differently on ROCm, and fp16 dX lands 1 ulp apart.
+    tl.store(dx_ptr, scale * tl.fma(-n0, rowsum[:, None], HEAD_DIM * g0), mask = mask)
+    tl.store(dx_ptr + HALF, scale * tl.fma(-n1, rowsum[:, None], HEAD_DIM * g1), mask = mask)
 
 
 @triton.jit

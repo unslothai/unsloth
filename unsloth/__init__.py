@@ -11,6 +11,18 @@
 
 import os, importlib.util, platform, sys
 
+# Restored at the end of this file.
+from ._import_gc import raise_gc_threshold as _raise_gc_threshold
+
+_raise_gc_threshold(sys.modules.get(__name__))
+del _raise_gc_threshold
+
+# transformers and TRL both scan every installed distribution at import: share one scan until the end of this file.
+from ._import_metadata_cache import install as _install_metadata_cache
+
+_metadata_cache_token = _install_metadata_cache(sys.modules.get(__name__))
+del _install_metadata_cache
+
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 # Opt into ROCm AOTriton kernels torch still gates as experimental; setdefault keeps an explicit "0".
@@ -21,6 +33,13 @@ if os.environ.get("UNSLOTH_DEBUG_DISTRIBUTED"):
     from .distributed_debug import apply_debug_distributed_env as _apply_debug_distributed_env
     _apply_debug_distributed_env()
     del _apply_debug_distributed_env
+
+# UNSLOTH_PARALLEL="dp=..,tp=..,pp=..,cp=.." -> UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE / UNSLOTH_CP_SIZE / UNSLOTH_FSDP2,
+# before anything below reads those. A conflict with a variable set by hand raises here, on every rank.
+from .parallel_env import apply_parallel_env as _apply_parallel_env, parallelize
+
+_apply_parallel_env()
+del _apply_parallel_env
 
 # UNSLOTH_FSDP2=1 under plain torchrun: export accelerate's FSDP2 launch env before transformers or
 # accelerate read it. A conflicting launch (DeepSpeed, FSDP_VERSION=1) raises here, on every rank.
@@ -1549,9 +1568,8 @@ if _IS_MLX:
             )
         return _train_on_responses_only(*args, **kwargs)
 
-    def _safe_mlx_trl_star_exports(_trl):
+    def _safe_mlx_trl_star_exports(_trl, exports):
         """Return importable TRL star exports plus the MLX SFT shims."""
-        exports = list(getattr(_trl, "__all__", ()))
         safe_exports = []
         for name in exports:
             try:
@@ -1602,6 +1620,11 @@ if _IS_MLX:
                 kwargs.setdefault("num_train_epochs", 3)
             super().__init__(*args, **kwargs)
 
+    from ._mlx_trl_all import (
+        install_lazy_trl_all as _install_lazy_trl_all,
+        raw_trl_all as _raw_trl_all,
+    )
+
     def _install_mlx_trl_sft_shim():
         """Install MLX-backed TRL SFT shims without replacing the TRL module."""
         _trl = _sys.modules.get("trl")
@@ -1619,7 +1642,7 @@ if _IS_MLX:
         _trl.SFTTrainer = UnslothTrainer
         _trl.SFTConfig = _MLXSFTConfig
         # Names come from trl's __all__, never a getattr probe: that triggers trl's lazy import and pulls torch.
-        _trl_exports = set(getattr(_trl, "__all__", ()) or ())
+        _trl_exports = set(_raw_trl_all(_trl))
         # Stub every non-SFT trl trainer so newer ones fail clearly too; take names from __all__ and never resolve them, since that pulls torch.
         _unsupported = set(_MLX_UNSUPPORTED_TRL_TRAINERS) | {
             _n for _n in _trl_exports if _n.endswith("Trainer") and _n != "SFTTrainer"
@@ -1630,7 +1653,8 @@ if _IS_MLX:
                 continue
             if _name in _trl_exports or _current is not None:
                 setattr(_trl, _name, _make_mlx_unsupported_trl_trainer(_name))
-        _trl.__all__ = _safe_mlx_trl_star_exports(_trl)
+        # Filtered on first read of trl.__all__: resolving every name here imported all of trl (datasets, peft, ...).
+        _install_lazy_trl_all(_trl, _safe_mlx_trl_star_exports)
         _trl.__UNSLOTH_MLX_COMPAT__ = True
 
     def _install_mlx_unsloth_trainer_shim():
@@ -1691,6 +1715,16 @@ else:
     _install_native_trainer_init()
     del _install_native_trainer_init
 
+    if any(
+        os.environ.get(_name, "").strip() not in ("", "1")
+        for _name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
+    ):
+        from .models.tp_env import (
+            install_tensor_parallel_env_trainer_init as _install_tp_trainer_init,
+        )
+        _install_tp_trainer_init()
+        del _install_tp_trainer_init
+
     def get_gpu_memory_stats():
         """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""
         try:
@@ -1739,6 +1773,8 @@ else:
             pass
 
 
+from .tiling import tile_mlp, untile_mlp
+
 # A pip --target / PYTHONPATH layout makes dill pickle modules by value, breaking dataset fingerprints.
 try:
     from .import_fixes import fix_dill_module_by_value_pickling as _fix_dill
@@ -1746,3 +1782,13 @@ try:
     del _fix_dill
 except Exception:
     pass
+
+from ._import_metadata_cache import uninstall as _uninstall_metadata_cache
+
+_uninstall_metadata_cache(_metadata_cache_token)
+del _uninstall_metadata_cache, _metadata_cache_token
+
+from ._import_gc import restore_gc_threshold as _restore_gc_threshold
+
+_restore_gc_threshold()
+del _restore_gc_threshold

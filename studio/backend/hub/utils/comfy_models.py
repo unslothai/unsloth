@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ComfyUI models-folder discovery and loose single-file diffusion checkpoints.
-
-Role folders hold many loose ``.safetensors`` with no ``config.json``; each denoiser is listed as its
-own row when its header says DiT. A local DiT's text encoder is taken from the layout's text-encoder
-folders when one fits (``diffusion_comfy_components.pick_comfy_text_encoders``); VAE folders are
-resolved but nothing loads from them. No torch: called on every listing.
-"""
+"""Loose ComfyUI checkpoints; no torch import (runs on every listing); VAE folders never loaded."""
 
 from __future__ import annotations
 

@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useShortcut, useShortcutLabel } from "@/features/settings";
 import { useT } from "@/i18n";
-import { Add01Icon, InternetIcon } from "@hugeicons/core-free-icons";
+import { InternetIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { EnterFullViewIcon } from "./icons";
@@ -130,7 +130,7 @@ export function BrowserToggleButton({
         className="browser-menu library-actions-menu w-56"
       >
         <DropdownMenuItem onSelect={() => openTab()}>
-          <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
           {label}
           {newTabShortcut ? <DropdownMenuShortcut className="text-ui-11">{newTabShortcut}</DropdownMenuShortcut> : null}
         </DropdownMenuItem>

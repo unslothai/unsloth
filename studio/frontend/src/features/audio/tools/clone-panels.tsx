@@ -15,7 +15,7 @@ import { PillTabs } from "@/features/model-picker/components/model-selector/pill
 import type { ReactNode } from "react";
 import { INDEX_TTS2_EMOTIONS } from "../clone-policy";
 import { AudioSourceInput } from "../components/audio-source-input";
-import { Field } from "../components/field";
+import { Field, FieldLabel } from "../components/field";
 import {
   type CosyVoiceMode,
   type CosyVoiceModeValue,
@@ -62,7 +62,7 @@ const qwen3TimbrePanel: AudioToolPanel<TimbreOnlyValue> = {
   ...qwen3TimbreLogic,
   Component: ({ value, onChange, disabled }) => (
     <div className="grid gap-1.5">
-      <label
+      <FieldLabel
         htmlFor="clone-timbre-only"
         className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
       >
@@ -73,7 +73,7 @@ const qwen3TimbrePanel: AudioToolPanel<TimbreOnlyValue> = {
           disabled={disabled}
           onCheckedChange={(timbreOnly) => onChange({ timbreOnly })}
         />
-      </label>
+      </FieldLabel>
       <p className="text-ui-11p5 leading-snug text-muted-foreground">
         Copies the sound of the voice without the clip's words, so no transcript
         is needed. Usually a little less close to the original.
@@ -267,12 +267,12 @@ const f5SpeedDialectPanel: AudioToolPanel<SpeedDialectValue> = {
       />
       {specs.some((spec) => spec.name === "dialect") ? (
         <div className="grid gap-1.5">
-          <label
+          <FieldLabel
             htmlFor="clone-dialect"
             className="text-ui-13 font-medium text-foreground"
           >
             Dialect
-          </label>
+          </FieldLabel>
           <Select
             value={value.dialect}
             onValueChange={(dialect) => onChange({ ...value, dialect })}

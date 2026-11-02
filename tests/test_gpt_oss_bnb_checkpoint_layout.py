@@ -190,6 +190,44 @@ def _expert_weight(experts, name):
     return w.detach().float().cpu()
 
 
+def _dense_expert_checkpoint(tensors_saved, original):
+    """Swap fused 4-bit experts for dense originals, dropping their quant state (else applied to dense bytes)."""
+    experts = ("experts.gate_up_proj", "experts.down_proj")
+    replaced = [name for name in tensors_saved if name.endswith(experts)]
+    tensors = {
+        name: value
+        for name, value in tensors_saved.items()
+        if not any(name.startswith(f"{r}.") for r in replaced)
+    }
+    for name in replaced:
+        tensors[name] = original[name]
+    return tensors
+
+
+def test_dense_expert_checkpoint_drops_replaced_quant_state():
+    w = torch.zeros(1)
+    q = f"{P}.experts.gate_up_proj"
+    saved = {
+        q: w,
+        f"{q}.absmax": w,
+        f"{q}.quant_map": w,
+        f"{q}.nested_absmax": w,
+        f"{q}.quant_state.bitsandbytes__nf4": w,
+        f"{P}.experts.gate_up_proj_bias": w,
+        "model.layers.0.self_attn.q_proj.weight": w,
+        "model.layers.0.self_attn.q_proj.weight.absmax": w,
+    }
+    dense = torch.ones(2, 2)
+    tensors = _dense_expert_checkpoint(saved, {q: dense})
+    assert tensors[q] is dense
+    assert set(tensors) == {
+        q,
+        f"{P}.experts.gate_up_proj_bias",
+        "model.layers.0.self_attn.q_proj.weight",
+        "model.layers.0.self_attn.q_proj.weight.absmax",
+    }
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU for bitsandbytes")
 def test_reload_of_saved_fused_4bit_checkpoints(tmp_path):
     pytest.importorskip("bitsandbytes")
@@ -216,6 +254,10 @@ def test_reload_of_saved_fused_4bit_checkpoints(tmp_path):
     saved = str(tmp_path / "saved_4bit")
     model.save_pretrained(saved)
     tokenizer.save_pretrained(saved)
+    before = [
+        {name: _expert_weight(layer.mlp.experts, name) for name in ("gate_up_proj", "down_proj")}
+        for layer in model.model.layers
+    ]
     del model
     torch.cuda.empty_cache()
 
@@ -227,10 +269,7 @@ def test_reload_of_saved_fused_4bit_checkpoints(tmp_path):
     for f in os.listdir(saved):
         if f != "model.safetensors":
             shutil.copy(os.path.join(saved, f), dense)
-    tensors = dict(tensors_saved)
-    for name in list(tensors):
-        if name.endswith(("experts.gate_up_proj", "experts.down_proj")):
-            tensors[name] = original[name]
+    tensors = _dense_expert_checkpoint(tensors_saved, original)
     save_file(tensors, os.path.join(dense, "model.safetensors"), metadata = {"format": "pt"})
 
     model, _ = FastLanguageModel.from_pretrained(dense, **load)
@@ -262,6 +301,10 @@ def test_reload_of_saved_fused_4bit_checkpoints(tmp_path):
     else:
         model, _ = FastLanguageModel.from_pretrained(saved, **load)
         assert not hasattr(model.model.layers[0].mlp.experts, "gate_up_projs")
+        for layer_idx, layer in enumerate(model.model.layers):
+            for name, want in before[layer_idx].items():
+                got = _expert_weight(layer.mlp.experts, name)
+                assert torch.equal(got, want), (layer_idx, name)
         del model
 
 

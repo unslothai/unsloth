@@ -1,31 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Memory-scalable loading for native FSDP2: each rank reads only its FSDP2 shard of the weights.
-
-Without it every rank loads the whole model before `shard_model`, so a model larger than one GPU cannot load.
-Inside `fsdp2_sharded_loading()` every transformers `from_pretrained` (FastLanguageModel, FastModel,
-FastVisionModel and plain transformers loaders all end there) builds the model on meta, then each rank reads
-from the safetensors checkpoint:
-
-* every nn.Linear weight except the output head as this rank's dim-0 chunk (torch.chunk rows, the slice
-  `fully_shard` keeps), via safetensors `get_slice` (only those bytes are read);
-* everything else whole (embeddings, norms, biases, buffers), as the full load does.
-
-A chunk stays a plain tensor tagged with its full shape, so nn.Linear keeps its full features and
-get_peft_model builds full-size LoRA with the 1-GPU init. `shard_model` then swaps each chunk for a meta
-placeholder of the full shape (the layout planner sees the whole model), fully_shards, and installs the chunk
-as the FSDP2 local shard (padded as fully_shard pads it), so the full weight never exists on any rank. A chunk
-the layout keeps replicated (fit layout frozen weights, minority-dtype parameters) is all-gathered back,
-exactly what the full load would have held. 16-bit checkpoints only.
-
-    with fsdp2_sharded_loading():
-        model, tokenizer = FastLanguageModel.from_pretrained(name, load_in_4bit = False, ...)
-    model = FastLanguageModel.get_peft_model(model, ...)
-    trainer = SFTTrainer(model = model, ...)  # UNSLOTH_FSDP2=1: shard_model installs the shards
-
-or `UNSLOTH_FSDP2_SHARDED_LOAD=1` next to `UNSLOTH_FSDP2=1` (Unsloth's loaders then run inside the context).
-"""
+"""Inside fsdp2_sharded_loading() or UNSLOTH_FSDP2_SHARDED_LOAD=1, each rank reads only its dim-0
+chunk of nn.Linear weights (not output head); others whole; 16-bit only."""
 
 from __future__ import annotations
 

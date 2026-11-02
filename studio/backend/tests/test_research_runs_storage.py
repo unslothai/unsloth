@@ -1459,7 +1459,7 @@ def test_research_budget_defaults_support_long_runs():
     assert config["budgets"] == {
         "maxSteps": 12,
         "maxSources": 40,
-        "modelTimeoutSeconds": 900,
+        "modelTimeoutSeconds": 0,
         "toolTimeoutSeconds": 120,
         "firstOutputTimeoutSeconds": 120,
     }

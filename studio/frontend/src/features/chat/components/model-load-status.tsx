@@ -6,6 +6,13 @@ import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+export const MODEL_LOAD_TOAST_CLASSNAMES = {
+  toast: "chat-model-load-toast items-center gap-2.5",
+  content: "gap-0.5 flex-1 min-w-0",
+  title: "leading-5",
+  description: "mt-0 w-full",
+};
+
 type ModelLoadDescriptionProps = {
   title?: string | null;
   message?: string | null;

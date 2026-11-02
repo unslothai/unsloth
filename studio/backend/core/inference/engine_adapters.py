@@ -34,9 +34,22 @@ def tool_parser_for_template(template, engine):
     return None
 
 
+_SGLANG_REASONING_PARSERS = {
+    "openai_gptoss": "gpt-oss",
+    "minimax_m2": "minimax",
+    "deepseek_v3": "deepseek-v3",
+    "deepseek_r1": "deepseek-r1",
+}
+
+
 def reasoning_parser_for_template(template, engine):
-    """vLLM reasoning parser for the model's own thinking markup; None leaves the launch unchanged."""
-    if engine != "vllm" or not isinstance(template, str):
+    """Reasoning parser for the model's own thinking markup; None leaves the launch unchanged."""
+    parser = _vllm_reasoning_parser(template)
+    return parser if engine == "vllm" else _SGLANG_REASONING_PARSERS.get(parser, parser)
+
+
+def _vllm_reasoning_parser(template):
+    if not isinstance(template, str):
         return None
     if "<|channel|>" in template and "<|message|>" in template:
         return "openai_gptoss"
@@ -121,7 +134,7 @@ class EngineAdapter:
             tool_args = ["--tool-call-parser", options["tool_parser"]]
             if self.name == "vllm":
                 tool_args.append("--enable-auto-tool-choice")
-        if self.name == "vllm" and options.get("reasoning_parser"):
+        if options.get("reasoning_parser"):
             tool_args += ["--reasoning-parser", options["reasoning_parser"]]
         mode = options.get("parallelism", "tensor")
         parallel_args = ["--tensor-parallel-size", str(gpu_count if mode == "tensor" else 1)]
@@ -304,6 +317,7 @@ ADAPTERS = {
         "--context-length",
         "--mem-fraction-static",
         ("--attention-backend", "triton", "--sampling-backend", "pytorch"),
+        True,
     ),
 }
 

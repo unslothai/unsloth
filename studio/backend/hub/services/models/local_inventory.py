@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import List, NamedTuple, Optional
 
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 from hub.schemas.inventory import LocalModelInfo, LocalModelListResponse, ModelFormat
 from hub.storage.scan_folders import (
@@ -1728,6 +1729,7 @@ def _classify_unsloth_models(models: List[LocalModelInfo]) -> List[LocalModelInf
         return models
 
 
+@in_scan_memo
 async def list_unsloth_models_response() -> LocalModelListResponse:
     # Off the loop with the scan: classifying a GGUF reads its header.
     try:
@@ -1746,6 +1748,7 @@ async def _account_local_response(response):
     return response.model_copy(update = {"models": models})
 
 
+@in_scan_memo
 async def list_local_models_response(models_dir: str = "./models") -> LocalModelListResponse:
     """Coalesce overlapping local inventory requests for the same models root."""
 

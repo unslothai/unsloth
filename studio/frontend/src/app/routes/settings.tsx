@@ -11,7 +11,7 @@ import { Route as rootRoute } from "./__root";
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings",
-  staticData: { title: "Settings" },
+  staticData: { titleKey: "settings.title" },
   beforeLoad: async () => {
     await requireAuth();
     useSettingsDialogStore.getState().openDialog();

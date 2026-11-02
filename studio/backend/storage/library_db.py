@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Library state in studio.db.
-
-The Library lists files that already live elsewhere (chat uploads, generated images, sandbox
-files), so it only stores what those sources cannot: folders, and a per-item overlay of display
-name, favorite flag and folder. Files uploaded straight into the Library are the one source it
-owns; their bytes sit under ``account_path("library")``.
-"""
+"""Library state (studio.db): folders and an overlay for files kept elsewhere, except Library uploads"""
 
 import sqlite3
 import threading

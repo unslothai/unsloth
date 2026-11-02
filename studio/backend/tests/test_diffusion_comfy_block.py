@@ -810,14 +810,6 @@ def test_a_small_file_that_widens_past_the_floor_is_still_checked(block_file, mo
         _load(path)  # float32: 8 MiB dense from a ~1 MiB file
 
 
-def _rss_anon_now():
-    with open("/proc/self/status") as status:
-        for line in status:
-            if line.startswith("RssAnon:"):
-                return int(line.split()[1]) * 1024
-    return None
-
-
 _PEAK_PROBE = r"""
 import ctypes, json, sys, threading, time
 
@@ -939,43 +931,98 @@ def test_chunked_block_dequant_is_bit_identical_to_one_pass(monkeypatch, fmt):
         assert torch.equal(got, want), chunk_bytes
 
 
-@pytest.mark.parametrize("kind", ["int8_convrot", "fp8"])
-def test_int8_fp8_dequant_is_checked_for_its_float32_peak(monkeypatch, kind):
-    """int8 / fp8 dequantization holds float32 codes and their float32 product together (and ConvRot's
-    float32 matmul result); the check before it must cover the measured peak, not only the output."""
-    import threading
-    import time
+_HOST_PEAK_PROBE = r"""
+import ctypes, json, sys, threading, time
 
-    import core.inference.diffusion_single_file_converters as conv
+sys.path.insert(0, sys.argv[2])
+import torch
+import core.inference.diffusion_comfy_block as cb
+import core.inference.diffusion_comfy_quant as cq
+import core.inference.diffusion_single_file_converters as conv
 
-    if _rss_anon_bytes() is None:
-        pytest.skip("needs /proc/self/status RssAnon")
-    rows, cols = 4096, 4096
-    gen = torch.Generator().manual_seed(3)
-    if kind == "int8_convrot":
-        codes = torch.randint(-127, 128, (rows, cols), dtype = torch.int8, generator = gen)
-        scale, group = torch.rand(rows, 1, generator = gen) / 127.0, 256
-    else:
-        codes = (torch.randn(rows, cols, generator = gen) * 50).to(torch.float8_e4m3fn)
-        scale, group = torch.tensor([0.01]), 0
-    seen = []
-    monkeypatch.setattr(conv, "charge_host_ram", lambda n: seen.append(int(n)))
+kind = sys.argv[1]
+
+
+def rss_anon(trim):
+    if trim:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)  # hand freed heap back, so RssAnon is what is live
+    with open("/proc/self/status") as status:
+        for line in status:
+            if line.startswith("RssAnon:"):
+                return int(line.split()[1]) * 1024
+
+
+rows, cols = 4096, 4096
+gen = torch.Generator().manual_seed(3)
+if kind == "swap_nibbles":
+    packed = torch.randint(0, 256, (8192, 8192), dtype = torch.uint8, generator = gen)
+elif kind == "int8_convrot":
+    codes = torch.randint(-127, 128, (rows, cols), dtype = torch.int8, generator = gen)
+    scale, group = torch.rand(rows, 1, generator = gen) / 127.0, 256
+else:
+    codes = (torch.randn(rows, cols, generator = gen) * 50).to(torch.float8_e4m3fn)
+    scale, group = torch.tensor([0.01]), 0
+seen = []
+conv.charge_host_ram = lambda n: seen.append(int(n))
+
+
+def measure():
     peak, stop = [0], [False]
 
     def sample():
         while not stop[0]:
-            peak[0] = max(peak[0], _rss_anon_now())
+            peak[0] = max(peak[0], rss_anon(False))
             time.sleep(0.0005)
 
-    _rss_anon_bytes()
-    start = _rss_anon_now()
+    start = rss_anon(True)
     thread = threading.Thread(target = sample, daemon = True)
     thread.start()
-    out = cq._dequant(codes, scale, group, torch.bfloat16)
+    if kind == "swap_nibbles":
+        out = cb.swap_nibbles(packed)
+        assert out.shape == packed.shape
+    else:
+        out = cq._dequant(codes, scale, group, torch.bfloat16)
+        assert out.shape == (rows, cols) and out.dtype == torch.bfloat16
     stop[0] = True
     thread.join()
-    growth = peak[0] - start
-    assert out.shape == (rows, cols) and out.dtype == torch.bfloat16
+    return peak[0] - start
+
+
+growth = min(measure() for _ in range(3))
+print("PEAK " + json.dumps({"seen": seen, "growth": growth}))
+"""
+
+
+def _host_peak_in_a_fresh_process(kind):
+    """(charges, growth) for one host-side op, measured with nothing else in the process."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    backend = str(Path(__file__).resolve().parents[1])
+    proc = subprocess.run(
+        [sys.executable, "-c", _HOST_PEAK_PROBE, kind, backend],
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+    line = [l for l in proc.stdout.splitlines() if l.startswith("PEAK ")]
+    assert proc.returncode == 0 and line, proc.stdout[-2000:] + proc.stderr[-4000:]
+    result = json.loads(line[-1][len("PEAK ") :])
+    return result["seen"], result["growth"]
+
+
+@pytest.mark.parametrize("kind", ["int8_convrot", "fp8"])
+def test_int8_fp8_dequant_is_checked_for_its_float32_peak(kind):
+    """int8 / fp8 dequantization holds float32 codes and their float32 product together (and ConvRot's
+    float32 matmul result); the check before it must cover the measured peak, not only the output.
+
+    In a fresh process for the reason given on test_block_dequant_is_checked_for_its_peak_intermediates:
+    in a pytest worker the readings carry whatever earlier tests left behind (CI saw 237.7 MB of growth
+    against a 201.3 MB charge for int8_convrot, which measures under the charge on its own)."""
+    if _rss_anon_bytes() is None:
+        pytest.skip("needs /proc/self/status RssAnon")
+    seen, growth = _host_peak_in_a_fresh_process(kind)
     assert seen and max(seen) >= 0.9 * growth, (seen, growth)
 
 
@@ -993,11 +1040,6 @@ def test_a_load_under_the_floor_is_checked_once_its_allocations_reach_it(block_f
 
 
 def test_swap_nibbles_is_bit_identical_and_checked_for_its_peak(monkeypatch):
-    import threading
-    import time
-
-    import core.inference.diffusion_single_file_converters as conv
-
     gen = torch.Generator().manual_seed(4)
     small = torch.randint(0, 256, (37, 19), dtype = torch.uint8, generator = gen)
     for chunk_bytes in (1, 64, 1 << 30):
@@ -1006,25 +1048,8 @@ def test_swap_nibbles_is_bit_identical_and_checked_for_its_peak(monkeypatch):
     monkeypatch.undo()
     if _rss_anon_bytes() is None:
         pytest.skip("needs /proc/self/status RssAnon")
-    packed = torch.randint(0, 256, (8192, 8192), dtype = torch.uint8, generator = gen)
-    seen = []
-    monkeypatch.setattr(conv, "charge_host_ram", lambda n: seen.append(int(n)))
-    peak, stop = [0], [False]
-
-    def sample():
-        while not stop[0]:
-            peak[0] = max(peak[0], _rss_anon_now())
-            time.sleep(0.0005)
-
-    _rss_anon_bytes()
-    start = _rss_anon_now()
-    thread = threading.Thread(target = sample, daemon = True)
-    thread.start()
-    out = cb.swap_nibbles(packed)
-    stop[0] = True
-    thread.join()
-    growth = peak[0] - start
-    assert out.shape == packed.shape
+    # Peak in a fresh process, like the dequant checks above.
+    seen, growth = _host_peak_in_a_fresh_process("swap_nibbles")
     assert seen and max(seen) >= 0.9 * growth, (seen, growth)
 
 

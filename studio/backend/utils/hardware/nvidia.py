@@ -758,6 +758,32 @@ def get_cuda_ordinal_smi_rows() -> Optional[list[int]]:
     return rows or None
 
 
+def get_pci_bus_ids() -> dict[int, tuple[int, str]]:
+    """nvidia-smi row index -> normalized PCI bus id; {} when nvidia-smi does not answer."""
+    try:
+        smi = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "--query-gpu=index,pci.bus_id", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if smi.returncode != 0:
+        return {}
+    bus_ids: dict[int, tuple[int, str]] = {}
+    for line in smi.stdout.strip().splitlines():
+        index, _, bus_id = (part.strip() for part in line.partition(","))
+        key = _normalize_bus_id(bus_id)
+        if index.isdigit() and key is not None:
+            bus_ids[int(index)] = key
+    return bus_ids
+
+
 def get_physical_gpu_inventory() -> dict[str, Any]:
     """Every NVIDIA GPU the driver enumerates, with no visibility mask and no torch. Display-only inventory: ``index`` is nvidia-smi's own row number, a physical id and NOT something a caller may pin, because the whole point of this probe is that PyTorch cannot open these devices. A failed probe comes back as a structured unavailable result, so this never raises out of an endpoint."""
     rows = _query_gpu_inventory("get_physical_gpu_inventory")

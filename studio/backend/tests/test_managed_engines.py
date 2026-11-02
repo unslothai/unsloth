@@ -808,6 +808,239 @@ def test_cancellation_does_not_wait_for_next_token(peer):
     assert time.monotonic() - start < 2
 
 
+def test_structured_output_and_continuation_reach_the_engine(peer):
+    engine, requests = peer
+    schema = {
+        "type": "json_schema",
+        "json_schema": {"name": "city", "schema": {"type": "object"}},
+    }
+    partial = {"role": "assistant", "content": "Once upon"}
+    list(
+        engine.generate(
+            messages = [{"role": "user", "content": "Hi"}, partial],
+            response_format = schema,
+            continue_final_message = True,
+        )
+    )
+    body = requests[-1][2]
+    assert body["response_format"] == schema
+    assert body["messages"][-1] == partial
+    assert body["continue_final_message"] is True
+    assert body["add_generation_prompt"] is False
+    list(engine.generate(messages = [{"role": "user", "content": "Hi"}]))
+    assert not {"response_format", "continue_final_message", "add_generation_prompt"} & set(
+        requests[-1][2]
+    )
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_chat_completions_hand_structured_output_and_continuation_to_the_engine(
+    monkeypatch, engine
+):
+    import asyncio
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+    from fastapi import HTTPException
+    from core.inference.api_monitor import ApiMonitor
+    from models.inference import ChatCompletionRequest
+    from state.tool_policy import reset_tool_policy
+
+    calls = []
+
+    class Backend:
+        active_model_name = "m"
+        models = {"m": {"engine": engine, "context_length": 2048}}
+
+        def generate_chat_response(self, **kwargs):
+            calls.append(kwargs)
+            yield '{"city": "Tokyo"}'
+
+        def reset_generation_state(self, caller_cancel_event = None):
+            pass
+
+    class Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        method = "POST"
+        scope: dict = {}
+        headers: dict = {}
+
+        async def is_disconnected(self):
+            return False
+
+    reset_tool_policy()
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 8))
+    monkeypatch.setattr(
+        inf,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = False, supports_tools = False, is_vision = False, context_length = None
+        ),
+    )
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: Backend())
+
+    def chat(status = 200, **fields):
+        payload = ChatCompletionRequest(model = "m", stream = False, enable_tools = False, **fields)
+        try:
+            response = asyncio.run(
+                inf.openai_chat_completions(payload, request = Request(), current_subject = "u")
+            )
+        except HTTPException as exc:
+            assert exc.status_code == status, exc.detail
+            return exc.detail
+        assert response.status_code == status, response.body
+        return calls[-1]
+
+    schema = {"type": "json_schema", "json_schema": {"name": "c", "schema": {"type": "object"}}}
+    sent = chat(messages = [{"role": "user", "content": "City?"}], response_format = schema)
+    assert sent["response_format"] == schema
+    sent = chat(
+        messages = [
+            {"role": "user", "content": "Count to five."},
+            {"role": "assistant", "content": "one, two,"},
+        ],
+        continue_final_message = True,
+    )
+    assert sent["continue_final_message"] is True
+    sent_before = len(calls)
+    refusal = chat(
+        status = 400,
+        messages = [
+            {"role": "user", "content": "Count to five."},
+            {"role": "assistant", "content": "", "reasoning_content": "The user wants"},
+        ],
+        continue_final_message = True,
+    )
+    assert "mid-thought" in str(refusal)
+    assert len(calls) == sent_before
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_studio_tool_execution_refuses_a_response_format_it_cannot_honor(monkeypatch, stream):
+    import asyncio
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+    from fastapi import HTTPException
+    from core.inference.api_monitor import ApiMonitor
+    from models.inference import ChatCompletionRequest
+    from state.tool_policy import reset_tool_policy
+
+    class Backend:
+        active_model_name = "m"
+        models = {"m": {"engine": "vllm", "context_length": 2048, "supports_tools": True}}
+        _managed_engine = None
+
+        def reset_generation_state(self, caller_cancel_event = None):
+            pass
+
+    class Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        method = "POST"
+        scope: dict = {}
+        headers: dict = {}
+
+        async def is_disconnected(self):
+            return False
+
+    reset_tool_policy()
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 8))
+    monkeypatch.setattr(
+        inf,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = False, supports_tools = False, is_vision = False, context_length = None
+        ),
+    )
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: Backend())
+    payload = ChatCompletionRequest(
+        model = "m",
+        stream = stream,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "bypass",
+        messages = [{"role": "user", "content": "Compute 7*567 and answer as JSON."}],
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {"name": "a", "schema": {"type": "object"}},
+        },
+    )
+    with pytest.raises(HTTPException) as refusal:
+        asyncio.run(inf.openai_chat_completions(payload, request = Request(), current_subject = "u"))
+    assert refusal.value.status_code == 400
+    assert refusal.value.detail["error"]["param"] == "response_format"
+
+
+def test_studio_tool_loop_resumes_the_partial_it_was_given(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+    import routes.managed_engine_chat as mec
+    from core.inference.api_monitor import ApiMonitor
+    from models.inference import ChatCompletionRequest
+    from state.tool_policy import reset_tool_policy
+
+    runs = []
+
+    class _Stop(Exception):
+        pass
+
+    def capture(transport, *, run, **kwargs):
+        runs.append(run)
+        raise _Stop
+
+    engine = ManagedEngine("vllm")
+    engine.base_url, engine.model, engine.context = "http://127.0.0.1:9", "m", 2048
+
+    class Backend:
+        active_model_name = "m"
+        models = {"m": {"engine": "vllm", "context_length": 2048, "supports_tools": True}}
+        _managed_engine = engine
+
+        def reset_generation_state(self, caller_cancel_event = None):
+            pass
+
+    class Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        method = "POST"
+        scope: dict = {}
+        headers: dict = {}
+
+        async def is_disconnected(self):
+            return False
+
+    reset_tool_policy()
+    monkeypatch.setattr(mec, "stream_with_studio_tools", capture)
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 8))
+    monkeypatch.setattr(
+        inf,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = False, supports_tools = False, is_vision = False, context_length = None
+        ),
+    )
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: Backend())
+    payload = ChatCompletionRequest(
+        model = "m",
+        stream = False,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        continue_final_message = True,
+        messages = [
+            {"role": "user", "content": "Count to five."},
+            {"role": "assistant", "content": "one, two,"},
+        ],
+    )
+    with pytest.raises(_Stop):
+        asyncio.run(inf.openai_chat_completions(payload, request = Request(), current_subject = "u"))
+    assert runs and runs[-1].continue_final_message is True
+
+
 def test_unsupported_tools_are_not_silently_dropped(peer):
     engine, requests = peer
     with pytest.raises(ValueError, match = "Tools"):
@@ -933,6 +1166,51 @@ def test_orchestrator_dispatches_managed_generation_without_worker(peer):
         "hello",
         "hello world",
     ]
+
+
+def test_an_engine_rejecting_the_schema_is_a_response_format_refusal():
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    errors = ["Grammar error: Invalid type: ?"]
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            error = {"message": errors[-1], "type": "BadRequestError", "code": 400}
+            self.wfile.write(f"data: {json.dumps({'error': error})}\n\n".encode())
+            self.wfile.flush()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target = server.serve_forever, daemon = True)
+    thread.start()
+    try:
+        engine = ManagedEngine("vllm")
+        engine.base_url = f"http://127.0.0.1:{server.server_port}"
+        engine.model = "org/model"
+        orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+        orchestrator._managed_engine = engine
+        messages = [{"role": "user", "content": "Hi"}]
+        schema = {"type": "json_schema", "json_schema": {"name": "x", "schema": {"type": "?"}}}
+        [refusal] = orchestrator._generate_inner(messages = messages, response_format = schema)
+        assert refusal.openai_param == "response_format"
+        assert "Grammar error" in refusal
+        [failure] = orchestrator._generate_inner(messages = messages)
+        assert failure.openai_param is None
+        assert failure == "Engine generation failed."
+        errors.append("This model's maximum context length is 2048 tokens.")
+        [overflow] = orchestrator._generate_inner(messages = messages, response_format = schema)
+        assert overflow.openai_param is None
+        assert overflow == "Engine generation failed."
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(2)
 
 
 def test_managed_load_launches_the_validated_local_path(monkeypatch):
@@ -1469,7 +1747,8 @@ def test_max_tokens_sentinel_is_not_sent_as_a_negative_limit(peer, limit):
     engine, requests = peer
     engine.context = 4096
     assert list(engine.generate(messages = [{"role": "user", "content": "Hi"}], max_new_tokens = limit))
-    payload = requests[0][2]
+    # A cap is first fitted to the window through /tokenize.
+    payload = next(body for path, _, body in requests if path.endswith("/chat/completions"))
     if limit is not None and 0 < limit < engine.context:
         assert payload["max_tokens"] == limit
     else:
@@ -2296,7 +2575,7 @@ def test_a_24_gb_card_leaves_the_headroom_measured_on_an_l4(monkeypatch, engine,
     assert engine_adapters.gpu_memory_fraction([0], reserve) < highest_passing
 
 
-def test_a_spelled_out_text_response_format_is_not_structured_output():
+def test_structured_output_and_continuation_pass_the_managed_engine_gate():
     from types import SimpleNamespace
     from routes import inference as route
 
@@ -2314,9 +2593,11 @@ def test_a_spelled_out_text_response_format_is_not_structured_output():
 
     assert not route._managed_engine_unsupported_controls(payload())
     assert not route._managed_engine_unsupported_controls(payload(response_format = {"type": "text"}))
-    assert route._managed_engine_unsupported_controls(
+    assert not route._managed_engine_unsupported_controls(
         payload(response_format = {"type": "json_object"})
     )
+    assert not route._managed_engine_unsupported_controls(payload(continue_final_message = True))
+    assert route._managed_engine_unsupported_controls(payload(use_adapter = True))
     assert route._managed_engine_unsupported_controls(payload(reasoning_effort = "high"))
 
 

@@ -345,3 +345,26 @@ def test_the_shared_dataset_loader_quiets_the_bars_it_just_imported():
     assert body.index("from datasets import load_dataset") < body.index(
         "quiet_third_party_progress_bars()"
     )
+
+
+def test_countable_worker_bars_restore_the_hub_default_cached_before_bootstrap(monkeypatch):
+    import importlib
+
+    hub_bars = importlib.import_module("huggingface_hub.utils.tqdm")
+    hub_constants = importlib.import_module("huggingface_hub.constants")
+    monkeypatch.setattr(log_config, "_BARS_RESTORED", False)
+    monkeypatch.setenv(_HUB, "1")
+    monkeypatch.setenv(log_config._PROGRESS_BARS_DEFAULTED, "1")
+    monkeypatch.setattr(hub_constants, "HF_HUB_DISABLE_PROGRESS_BARS", True)
+    monkeypatch.setattr(hub_bars, "HF_HUB_DISABLE_PROGRESS_BARS", True)
+    monkeypatch.setattr(hub_bars, "progress_bar_states", {"_global": False})
+    log_config.keep_progress_bars_countable()
+    assert not hub_bars.are_progress_bars_disabled()
+    with hub_bars.tqdm(total = 10, unit = "B", desc = "training weights", disable = None) as progress:
+        progress.update(4)
+        from core.training.diffusion_download_progress import download_snapshot
+
+        snapshot = download_snapshot([progress])
+        assert snapshot["bytes_done"] == 4
+    with hub_bars.tqdm(total = 10, unit = "B", disable = True) as progress:
+        assert progress.disable is True

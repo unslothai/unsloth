@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Empirical quant probe: torchao int8/fp8/fp4 dynamic quant vs GGUF+compile.
-
-Question this answers: GGUF stores the Z-Image DiT at 4-bit but dequantizes to bf16
-per matmul, so it runs at bf16 tensor-core rate. Can a low-precision *tensor-core*
-path (int8dq on any Ampere+, fp8dq on Ada+, NVFP4/MXFP8 on Blackwell), loaded from
-the dense bf16 transformer, beat GGUF+compile on speed while staying inside the
-quality bar -- and how does its quality compare to GGUF's own 4-bit loss?
-
-Reference for all quality numbers is the DENSE bf16 EAGER image (the best this model
-can do). Each config is a fresh pipeline (no compile/quant cross-contamination).
-Reports median latency, PSNR + LPIPS vs reference, and peak VRAM. Run on one CUDA GPU.
-"""
+"""Compares torchao int8/fp8/fp4 dynamic quant with GGUF+compile, scored against dense bf16 eager."""
 
 from __future__ import annotations
 

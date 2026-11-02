@@ -2,11 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Moon, Sun } from "lucide-react"
+import { Moon02Icon, Sun03Icon } from "@hugeicons/core-free-icons"
+import { HugeiconsIcon } from "@hugeicons/react"
 import { flushSync } from "react-dom"
 
 import { cn } from "@/lib/utils"
 import { prefersReducedMotion, setTheme } from "@/features/settings"
+import { isWebKitGTK } from "./theme-view-transition"
 
 interface AnimatedThemeTogglerProps extends React.ComponentPropsWithoutRef<"button"> {
   duration?: number
@@ -45,7 +47,12 @@ export function useAnimatedThemeToggle(duration = 400) {
     }
 
     // Reduced motion cannot reach the view transition's Web Animations clip-path, so skip it.
-    if (!document.startViewTransition || prefersReducedMotion()) {
+    // WebKitGTK skips it too: the call itself can crash the page.
+    if (
+      !document.startViewTransition ||
+      prefersReducedMotion() ||
+      isWebKitGTK(navigator.platform, navigator.userAgent)
+    ) {
       applyTheme()
       return
     }
@@ -104,7 +111,7 @@ export const AnimatedThemeToggler = ({
       className={cn(className)}
       {...props}
     >
-      {isDark ? <Sun /> : <Moon />}
+      {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={2} /> : <HugeiconsIcon icon={Moon02Icon} strokeWidth={2} />}
       <span className="sr-only">Toggle theme</span>
     </button>
   )

@@ -265,3 +265,45 @@ def test_heterogeneous_composite_keeps_one_copy_of_an_unwrapped_converter(monkey
     from transformers.integrations.finegrained_fp8 import Fp8Dequantize
 
     assert not any(isinstance(op, Fp8Dequantize) for c in convs for op in c.operations)
+
+
+def _quantization_config_restores(path, cls_name):
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls_name)
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
+    found = []
+
+    def restores(call):
+        if not (isinstance(call.func, ast.Attribute) and call.func.attr == "update"):
+            return False
+        if ast.unparse(call.func.value) != "model.config" or not call.args:
+            return False
+        arg = call.args[0]
+        if not isinstance(arg, ast.Dict):
+            return False
+        return any(
+            isinstance(k, ast.Constant)
+            and k.value == "quantization_config"
+            and ast.unparse(v).startswith("quantization_config")
+            for k, v in zip(arg.keys, arg.values)
+        )
+
+    def visit(node, guards):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.Call) and restores(child):
+                found.append(guards)
+            g = guards + [ast.unparse(child.test)] if isinstance(child, ast.If) else guards
+            visit(child, g)
+
+    visit(fn, [])
+    return found
+
+
+@pytest.mark.parametrize("cls_name", ["FastLanguageModel", "FastModel"])
+def test_caller_fp8_config_is_not_restored_over_dequantized_weights(cls_name):
+    # Restoring an fp8 config over dequantized weights saves bf16 as fp8 with no scales (unloadable).
+    found = _quantization_config_restores(ROOT / "unsloth/models/loader.py", cls_name)
+    assert found, "quantization_config restore missing"
+    for guards in found:
+        text = " ".join(guards)
+        assert "_unsloth_fp8_dequantized" in text or "_stamp_bnb" in text, guards

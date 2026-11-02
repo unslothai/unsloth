@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One registry and one lifecycle for every diffusion source / forward patch.
-
-Each per-architecture module (eager fusions, arch ``_SPECS``, Qwen RoPE, Q2.1 fast step / RoPE / fused, FLUX.2 RoPE,
-ROCm fused, Z-Image fused, Wan fused) used to be installed from its own call site with its own teardown list. They now
-register a :class:`PatchSpec` here and are installed by stage, uninstalled by group, and report one outcome each into
-the load's audit record. The modules keep their internals (fingerprints, eligibility, stashes); the registry owns
-WHEN they run, the kill switches, and the record.
-
-Fingerprints share one helper, :func:`source_digest` (the two identical ``_digest`` copies it replaces stay importable
-as aliases), plus :func:`body_has` / :func:`body_has_once` for needle guards. :func:`splice_source` is the safe in-memory
-source rewrite of unsloth-zoo's ``fused_losses/forward_install.py``: exactly-once needles, an unresolved-globals check,
-exec in the original module globals, a digest gate, and the original kept for an exact uninstall.
-"""
+"""PatchSpec registry for source/forward patches; splice_source keeps originals for exact uninstall."""
 
 from __future__ import annotations
 
@@ -391,6 +379,27 @@ def _builtin_specs() -> list[PatchSpec]:
         from ..diffusion_eager_patches import uninstall_patches
         uninstall_patches()
 
+    def fp16_rmsnorm(ctx: PatchContext) -> bool:
+        from ..diffusion_eager_patches import (
+            fp16_rmsnorm_wanted,
+            install_fp16_rmsnorm,
+            uninstall_fp16_rmsnorm,
+        )
+
+        denoiser = (
+            ctx.transformer
+            if ctx.transformer is not None
+            else getattr(ctx.pipe, "transformer", None)
+        )
+        if not fp16_rmsnorm_wanted(denoiser, ctx.dtype, ctx.speed_mode):
+            uninstall_fp16_rmsnorm()  # never outlives the load that installed it
+            return False
+        return install_fp16_rmsnorm()
+
+    def fp16_rmsnorm_uninstall() -> None:
+        from ..diffusion_eager_patches import uninstall_fp16_rmsnorm
+        uninstall_fp16_rmsnorm()
+
     def arch_install(ctx: PatchContext) -> int:
         from ..diffusion_arch_patches import install_arch_patches
         return install_arch_patches()
@@ -492,6 +501,16 @@ def _builtin_specs() -> list[PatchSpec]:
             backends = ("image",),
             speed_only = True,
             env = "UNSLOTH_DIFFUSION_ARCH_PATCHES",
+        ),
+        # Must follow the shared fusions (an ``off`` load uninstalls them first).
+        PatchSpec(
+            "fp16_eager_rmsnorm",
+            STAGE_LOAD_EAGER,
+            fp16_rmsnorm,
+            fp16_rmsnorm_uninstall,
+            group = GROUP_EAGER,
+            backends = ("image",),
+            env = "UNSLOTH_DIFFUSION_FP16_RMSNORM",
         ),
         # Per-pipe installs that gate themselves on class / dtype / device, on every tier.
         PatchSpec(

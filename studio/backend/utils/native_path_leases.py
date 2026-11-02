@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Verification for Tauri native path signed grants.
-
-Rust signs compact ``base64url(payload_json).base64url(hmac)`` grants. The
-frontend can see and forward the grant, but cannot change it without breaking
-the HMAC. The backend verifies the original payload segment bytes, then
-re-stats the path before any native read.
-"""
+"""Verifies Tauri native path grants: HMAC over the original payload bytes, then re-stats the path."""
 
 from __future__ import annotations
 
