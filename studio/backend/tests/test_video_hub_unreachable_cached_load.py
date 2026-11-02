@@ -7,7 +7,6 @@ diffusers' untimed ``model_info``; anything missing retries online."""
 from __future__ import annotations
 
 import time
-import types
 
 import pytest
 
@@ -193,3 +192,42 @@ def test_the_encoder_worker_flags_a_cache_miss_across_the_process_boundary(monke
     assert _replies(LocalEntryNotFoundError("tokenizer.json is not in the cache")) is True
     assert _replies(OSError("We couldn't connect and the file is not cached")) is True
     assert _replies(RuntimeError("CUDA out of memory")) is False
+
+
+@pytest.mark.parametrize("missing, expected", [(True, True), (False, False)])
+def test_hosted_encoder_cache_miss_survives_dense_memory_refusal(monkeypatch, missing, expected):
+    import queue
+    import transformers
+
+    from huggingface_hub.errors import LocalEntryNotFoundError
+    from core.inference import video_ltx25_te_worker as worker
+
+    def _hosted(*_args):
+        if missing:
+            raise LocalEntryNotFoundError("hosted int8 encoder is not cached")
+        raise RuntimeError("invalid encoder checkpoint")
+
+    monkeypatch.setattr(transformers, "__version__", "5.10.1")
+    monkeypatch.setattr(
+        transformers, "Gemma4UnifiedForConditionalGeneration", object, raising = False
+    )
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *_a, **_k: object())
+    monkeypatch.setattr(worker, "_activate_sidecar", lambda _venv: None)
+    monkeypatch.setattr(worker, "_load_hosted", _hosted)
+    monkeypatch.setattr(worker, "_available_host_bytes", lambda: 16 * 1000**3)
+    replies = queue.Queue()
+    worker.run_text_encoder_worker(
+        cmd_queue = queue.Queue(),
+        resp_queue = replies,
+        config = {
+            "repo": "org/cached-base",
+            "local_files_only": True,
+            "te_quant": "int8",
+            "te_prequant": {"repo": "org/encoder"},
+            "dense_te_gb": 23.9,
+        },
+    )
+    reply = replies.get_nowait()
+    assert reply["type"] == "error"
+    assert "24 GB of free memory (16 GB free)" in reply["error"]
+    assert reply["cache_miss"] is expected

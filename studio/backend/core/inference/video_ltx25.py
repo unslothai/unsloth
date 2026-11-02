@@ -810,7 +810,6 @@ class TextEncoderWorkerError(RuntimeError):
         cache_miss: bool = False,
     ) -> None:
         super().__init__(*args)
-        # The worker's load failed on a file missing from the cache (an OSError there).
         self.cache_miss = cache_miss
 
 
