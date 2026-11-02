@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from filelock import FileLock
+
 CLIENT_PREFERENCES_KEY = "client_preferences"
 CHAT_BACKGROUND_KEY = "chat_background"
 MAX_BACKGROUND_IMAGE_BYTES = 20 * 1024 * 1024
@@ -39,14 +41,17 @@ def get_client_preferences() -> dict:
 
 
 def update_client_preferences(changes: dict) -> dict:
-    """Replace only the sections the client sent, so a scale change never drops browser prefs."""
-    stored = get_client_preferences()
-    merged = {
-        **stored,
-        **{k: v for k, v in changes.items() if v is not None},
-        "updatedAt": _now_ms(),
-    }
-    return _write(CLIENT_PREFERENCES_KEY, merged)
+    from storage.studio_db import compare_and_set_app_setting, get_app_setting
+    while True:
+        previous = get_app_setting(CLIENT_PREFERENCES_KEY, None)
+        stored = previous if isinstance(previous, dict) else {}
+        merged = {
+            **stored,
+            **{k: v for k, v in changes.items() if v is not None},
+            "updatedAt": _now_ms(),
+        }
+        if compare_and_set_app_setting(CLIENT_PREFERENCES_KEY, previous, merged):
+            return merged
 
 
 def get_chat_background() -> dict:
@@ -58,8 +63,13 @@ def background_image_path() -> Path:
     return account_path("appearance/chat-background")
 
 
+def background_lock() -> FileLock:
+    path = background_image_path()
+    path.parent.mkdir(parents = True, exist_ok = True)
+    return FileLock(str(path.with_name(".chat-background.lock")))
+
+
 def sniff_image_type(data: bytes) -> Optional[str]:
-    """The upload's own bytes decide its type; a client-sent content type is never trusted."""
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
     if data.startswith(b"\xff\xd8\xff"):
@@ -75,34 +85,37 @@ def save_background_image(data: bytes) -> dict:
     media_type = sniff_image_type(data)
     if media_type is None:
         raise ValueError("Background image must be PNG, JPEG or WebP.")
-    path = background_image_path()
-    path.parent.mkdir(parents = True, exist_ok = True)
-    fd, tmp = tempfile.mkstemp(dir = path.parent, prefix = ".chat-background-")
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok = True)
-        raise
-    image = {"sha256": hashlib.sha256(data).hexdigest(), "type": media_type, "size": len(data)}
-    stored = get_chat_background()
-    return _write(
-        CHAT_BACKGROUND_KEY,
-        {"adjustments": stored.get("adjustments"), "image": image, "updatedAt": _now_ms()},
-    )
+    with background_lock():
+        path = background_image_path()
+        fd, tmp = tempfile.mkstemp(dir = path.parent, prefix = ".chat-background-")
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok = True)
+            raise
+        image = {"sha256": hashlib.sha256(data).hexdigest(), "type": media_type, "size": len(data)}
+        stored = get_chat_background()
+        return _write(
+            CHAT_BACKGROUND_KEY,
+            {"adjustments": stored.get("adjustments"), "image": image, "updatedAt": _now_ms()},
+        )
 
 
 def save_background_adjustments(adjustments: dict) -> dict:
-    stored = get_chat_background()
-    if not stored.get("image"):
-        raise LookupError("No background image is saved.")
-    return _write(
-        CHAT_BACKGROUND_KEY, {**stored, "adjustments": adjustments, "updatedAt": _now_ms()}
-    )
+    with background_lock():
+        stored = get_chat_background()
+        if not stored.get("image"):
+            raise LookupError("No background image is saved.")
+        return _write(
+            CHAT_BACKGROUND_KEY, {**stored, "adjustments": adjustments, "updatedAt": _now_ms()}
+        )
 
 
 def clear_background() -> dict:
-    """Kept as a dated record, so other devices remove their copy instead of uploading it back."""
-    background_image_path().unlink(missing_ok = True)
-    return _write(CHAT_BACKGROUND_KEY, {"adjustments": None, "image": None, "updatedAt": _now_ms()})
+    with background_lock():
+        background_image_path().unlink(missing_ok = True)
+        return _write(
+            CHAT_BACKGROUND_KEY, {"adjustments": None, "image": None, "updatedAt": _now_ms()}
+        )

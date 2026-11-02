@@ -64,6 +64,7 @@ from utils.utils import safe_curated_detail, safe_error_detail, log_and_http_err
 from utils.device_sync_settings import (
     MAX_BACKGROUND_IMAGE_BYTES,
     background_image_path,
+    background_lock,
     clear_background,
     get_chat_background,
     get_client_preferences,
@@ -5030,15 +5031,16 @@ def get_chat_background_settings(
 
 @_account_settings_router.get("/chat-background/image")
 def get_chat_background_image(current_subject: str = Depends(get_current_subject)) -> Response:
-    image = get_chat_background().get("image")
-    path = background_image_path()
-    if not isinstance(image, dict) or not path.is_file():
-        raise HTTPException(status_code = 404, detail = "No background image is saved.")
-    return Response(
-        content = path.read_bytes(),
-        media_type = image.get("type", "application/octet-stream"),
-        headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
-    )
+    with background_lock():
+        image = get_chat_background().get("image")
+        path = background_image_path()
+        if not isinstance(image, dict) or not path.is_file():
+            raise HTTPException(status_code = 404, detail = "No background image is saved.")
+        return Response(
+            content = path.read_bytes(),
+            media_type = image.get("type", "application/octet-stream"),
+            headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
 
 
 @_account_settings_router.put("/chat-background/image", response_model = ChatBackgroundResponse)
