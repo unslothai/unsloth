@@ -4,11 +4,7 @@
 import { useBrowserPrefsStore } from "@/features/browser/prefs-store";
 import { startChatBackgroundSync } from "@/features/chat-background/sync";
 import { useEffect } from "react";
-import {
-  type ClientPreferences,
-  loadClientPreferences,
-  saveClientPreferences,
-} from "../api/device-sync";
+import { loadClientPreferences, saveClientPreferences } from "../api/device-sync";
 import {
   INTERFACE_SCALE_RANGE,
   useInterfaceScaleStore,
@@ -64,14 +60,19 @@ export function useDeviceSettingsSync(enabled: boolean): void {
       writePending(touched);
     };
 
-    const push = (
-      data: Partial<Pick<ClientPreferences, "interfaceScale" | "browser">>,
-    ) => {
+    // One save at a time, each sending the values current when it starts: a slow request can
+    // never land after a newer one.
+    let saving: Promise<void> = Promise.resolve();
+    const pushAll = () => {
       clearTimeout(timer);
       timer = setTimeout(() => {
-        const sent = edits;
-        void saveClientPreferences(data)
-          .then(() => {
+        saving = saving
+          .then(async () => {
+            const sent = edits;
+            await saveClientPreferences({
+              interfaceScale: useInterfaceScaleStore.getState().scale,
+              browser: browserPrefs(),
+            });
             if (edits === sent) {
               touched.scale = false;
               touched.browser = false;
@@ -81,11 +82,6 @@ export function useDeviceSettingsSync(enabled: boolean): void {
           .catch(() => undefined);
       }, PUSH_DEBOUNCE_MS);
     };
-    const pushAll = () =>
-      push({
-        interfaceScale: useInterfaceScaleStore.getState().scale,
-        browser: browserPrefs(),
-      });
 
     const stopScale = useInterfaceScaleStore.subscribe((state, prev) => {
       if (applying || state.scale === prev.scale) return;

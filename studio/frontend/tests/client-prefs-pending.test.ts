@@ -34,3 +34,9 @@ test("a corrupt marker reads as nothing pending", () => {
   store.set(key, "{");
   assert.deepEqual(readPending(), { scale: false, browser: false });
 });
+
+test("preference saves run one at a time with the values current when each starts", async () => {
+  const { readSrc } = await import("./helpers/kit.ts");
+  const hook = readSrc("features/settings/hooks/use-device-settings-sync.ts");
+  assert.match(hook, /saving = saving\n\s*\.then\(async \(\) => \{\n\s*const sent = edits;\n\s*await saveClientPreferences\(\{\n\s*interfaceScale: useInterfaceScaleStore\.getState\(\)\.scale,/);
+});
