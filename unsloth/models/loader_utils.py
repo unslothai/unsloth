@@ -4735,10 +4735,11 @@ def _mark_loaded_revision(
     result,
     revision,
     cache_dir = None,
+    load_kwargs = None,
 ):
     """Retain the source ref and cache for tokenizer saving."""
-    if revision is None and not cache_dir:
-        return result
+    from ..save import _capture_source_tokenizer_class
+
     for obj in result if isinstance(result, (tuple, list)) else (result,):
         try:
             targets = (obj, getattr(obj, "tokenizer", None))
@@ -4752,6 +4753,19 @@ def _mark_loaded_revision(
                     setattr(target, _LOADED_REVISION_ATTR, str(revision))
                 if cache_dir and not getattr(target, _LOADED_CACHE_DIR_ATTR, None):
                     setattr(target, _LOADED_CACHE_DIR_ATTR, str(cache_dir))
+                source_tokenizer = getattr(target, "tokenizer", target)
+                context = load_kwargs or {}
+                _capture_source_tokenizer_class(
+                    target,
+                    source = getattr(source_tokenizer, "name_or_path", None)
+                    if load_kwargs is not None
+                    else None,
+                    cache_dir = _tokenizer_cache_dir(source_tokenizer),
+                    revision = _tokenizer_revision(source_tokenizer)
+                    or context.get("tokenizer_revision")
+                    or context.get("revision"),
+                    subfolder = context.get("subfolder") or "",
+                )
             except Exception:
                 pass
     return result
@@ -5075,16 +5089,21 @@ def _offline_aware_load(fn):
 
     @functools.wraps(fn)
     def _wrapper(*args, **kwargs):
+        def finish(result):
+            return _mark_loaded_revision(
+                result, None, cache_dir = kwargs.get("cache_dir"), load_kwargs = kwargs
+            )
+
         if _get_effective_local_files_only(kwargs):
             kwargs["local_files_only"] = True
             with _force_hf_offline():
                 # Stamp inside the window: the env vars are restored on exit, so the request has to travel on the objects themselves to reach saving.
-                return _mark_loaded_local_files_only(fn(*args, **kwargs), kwargs.get("cache_dir"))
+                return finish(
+                    _mark_loaded_local_files_only(fn(*args, **kwargs), kwargs.get("cache_dir"))
+                )
         _pb_were_disabled = _progress_bars_were_disabled()
         try:
-            return _mark_loaded_revision(
-                fn(*args, **kwargs), None, cache_dir = kwargs.get("cache_dir")
-            )
+            return finish(fn(*args, **kwargs))
         except Exception as e:
             # Skip if not network-related, or already retried by a nested decorator (else outer layers reload the whole model again).
             if not _is_offline_related_error(e) or getattr(e, "_unsloth_offline_retried", False):
@@ -5103,7 +5122,7 @@ def _offline_aware_load(fn):
         kwargs["local_files_only"] = True
         try:
             with _force_hf_offline():
-                return fn(*args, **kwargs)
+                return finish(fn(*args, **kwargs))
         except Exception as e:
             # A real retry failure (corrupt checkpoint, OOM) is news and goes out as itself; only the empty-cache artifact is worth replacing.
             if not _empty_cache_artifact(e):
