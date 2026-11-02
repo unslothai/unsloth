@@ -91,6 +91,8 @@ test("a background selected during download survives a pending IndexedDB write",
     assert.equal(await storage.useBackgroundStore.getState().value.blob.text(), "chosen");
     assert.equal(await rows.get("current").value.blob.text(), "chosen");
     assert.equal(rows.get("sync").state.dirty, true);
+    rows.set("current", { value: { blob: server }, sha256: "server" });
+    assert.equal((await storage.readBackgroundSync()).sha256, null);
   } finally {
     stop();
     localWrite.resolve();

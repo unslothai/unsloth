@@ -43,11 +43,11 @@ export function backgroundRevision(): number {
 }
 export async function readBackgroundSync(): Promise<BackgroundSyncState> {
 	const table = currentDatabase().table("backgrounds");
-	const [row, current] = await Promise.all([table.get("sync"), table.get("current")]);
+	const row = await table.get("sync");
 	return {
 		...CLEAN_SYNC,
 		...(row?.state ?? {}),
-		sha256: typeof current?.sha256 === "string" ? current.sha256 : null,
+		sha256: committedSha,
 	};
 }
 export async function writeBackgroundSync(
