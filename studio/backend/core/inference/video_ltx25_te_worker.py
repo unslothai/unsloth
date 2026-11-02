@@ -557,6 +557,42 @@ def _encode_device(
     return device if room >= need else "cpu"
 
 
+def _peak_rss_mib() -> int:
+    """ru_maxrss is bytes on macOS and kilobytes on Linux."""
+    import resource
+
+    rss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    shift = 20 if sys.platform == "darwin" else 10
+    return rss >> shift
+
+
+def _current_rss_bytes() -> Optional[int]:
+    try:
+        with open("/proc/self/statm", encoding = "ascii") as handle:
+            pages = int(handle.read().split()[1])
+        return pages * os.sysconf("SC_PAGE_SIZE")
+    except OSError:
+        pass
+    if sys.platform != "darwin":
+        return None
+    import subprocess
+
+    try:
+        done = subprocess.run(
+            ["ps", "-o", "rss=", "-p", str(os.getpid())],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+            check = False,
+        )
+        text = (done.stdout or "").strip()
+        if done.returncode != 0 or not text:
+            return None
+        return int(text) * 1024
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
 def _memory_stats(device: str) -> dict:
     """This worker's own peaks: accelerator bytes since the last reset and the host resident set."""
     stats: dict = {}
@@ -571,12 +607,12 @@ def _memory_stats(device: str) -> dict:
     except Exception:  # noqa: BLE001 -- stats are best-effort
         pass
     try:
-        import resource
-        stats["host_peak_rss_mib"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10
-        with open("/proc/self/statm", encoding = "ascii") as fh:
-            stats["host_rss_mib"] = (int(fh.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")) >> 20
-    except Exception:  # noqa: BLE001 -- not Linux
+        stats["host_peak_rss_mib"] = _peak_rss_mib()
+    except Exception:  # noqa: BLE001 -- stats are best-effort
         pass
+    current = _current_rss_bytes()
+    if current:
+        stats["host_rss_mib"] = current >> 20
     return stats
 
 
