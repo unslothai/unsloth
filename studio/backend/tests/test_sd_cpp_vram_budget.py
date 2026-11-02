@@ -548,7 +548,8 @@ def _rocm_linux_host(
     cards,
     boards = None,
 ):
-    """``cards`` = [(pci, gfx target, (used_gb, total_gb) or None)] in KFD order; torch and amd-smi are tripwires."""
+    import torch
+
     from utils.hardware import amd, hardware
 
     for name in _ROCM_MASKS:
@@ -575,8 +576,6 @@ def _rocm_linux_host(
 
     def _no_torch(*a, **k):
         pytest.fail("the no-context probe touched torch")
-
-    import torch
 
     for name in ("mem_get_info", "get_device_properties", "init", "_lazy_init", "device_count"):
         monkeypatch.setattr(torch.cuda, name, _no_torch)
