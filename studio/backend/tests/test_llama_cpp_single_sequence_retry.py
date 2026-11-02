@@ -143,14 +143,31 @@ def test_a_clean_environment_reports_nothing_dropped():
 
 
 def test_the_fit_recovery_rungs_stand_down_for_this_refusal():
-    """A startup crash, so the --fit rungs would take it first and waste a load."""
+    import ast
     import inspect
+    import textwrap
 
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "_capability_crash = _tensor_capability_crash or self._is_kv_unified_refused" in src
-    # Every --fit rung and the MoE cache rung, and only those: the HIP rung keeps its
-    # narrower gate.
-    assert src.count("and not _capability_crash") == 4
+    flags = {"_did_fit_retry", "_did_fit_step_retry", "_did_moe_cache_retry"}
+    guards = [
+        {ast.unparse(term) for term in node.values}
+        for node in ast.walk(ast.parse(textwrap.dedent(src)))
+        if isinstance(node, ast.BoolOp)
+        and isinstance(node.op, ast.And)
+        and any(
+            isinstance(term, ast.Name) and term.id == "_startup_crashed" for term in node.values
+        )
+        and any(
+            isinstance(term, ast.UnaryOp)
+            and isinstance(term.op, ast.Not)
+            and isinstance(term.operand, ast.Name)
+            and term.operand.id in flags
+            for term in node.values
+        )
+    ]
+    assert guards
+    assert all("not _capability_crash" in guard for guard in guards)
     assert src.count("and not _tensor_capability_crash") == 1
 
 
