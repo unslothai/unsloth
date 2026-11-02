@@ -421,6 +421,7 @@ def test_wrapper_training_calls_add_no_sequence_guard(monkeypatch):
 def test_float32_query_gets_no_small_tiles(monkeypatch, q_len, grad, requested):
     import torch
 
+    monkeypatch.setattr(torch, "is_autocast_enabled", lambda *a: False)
     wrapped, seen = _wrapped(monkeypatch)
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: grad)
     qkv = _qkv(q_len, grad = grad, dtype = torch.float32)
@@ -432,6 +433,52 @@ def test_float32_query_gets_no_small_tiles(monkeypatch, q_len, grad, requested):
         qkv = _qkv(q_len, grad = grad, dtype = dtype)
         wrapped(_Causal(), *qkv, object(), kernel_options = dict(requested))
         assert seen["fwd_BLOCK_M"] == 64
+
+
+def test_flex_cuda_autocast_handler_is_detected(monkeypatch):
+    from torch._higher_order_ops.flex_attention import flex_attention
+    monkeypatch.setattr(
+        flex_attention, "py_kernels", {u.torch._C.DispatchKey.AutocastCUDA: lambda *a: None}
+    )
+    assert u._flex_autocasts_cuda_inputs() is True
+
+
+def test_flex_without_cuda_autocast_handler_is_detected(monkeypatch):
+    from torch._higher_order_ops.flex_attention import flex_attention
+    monkeypatch.setattr(flex_attention, "py_kernels", {})
+    assert u._flex_autocasts_cuda_inputs() is False
+
+
+@pytest.mark.parametrize("autocast_dtype", ["float16", "bfloat16"])
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("has_handler", [False, True])
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_float32_cuda_autocast_keeps_fitting_tiles(
+    monkeypatch, autocast_dtype, enabled, has_handler, device
+):
+    import torch
+
+    monkeypatch.setattr(u, "_flex_autocasts_cuda_inputs", lambda: has_handler, raising = False)
+    monkeypatch.setattr(
+        torch, "is_autocast_enabled", lambda device: enabled if device == "cuda" else False
+    )
+    monkeypatch.setattr(torch, "get_autocast_dtype", lambda device: getattr(torch, autocast_dtype))
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: True)
+    wrapped, seen = _wrapped(monkeypatch)
+    query = SimpleNamespace(
+        dtype = torch.float32,
+        device = torch.device(device),
+        shape = (1, 2, 256, 256),
+        requires_grad = True,
+        dim = lambda: 4,
+    )
+    wrapped(_Causal(), query, query, query, object())
+    if device == "cuda" and has_handler and enabled:
+        assert {
+            k: seen.get(k) for k in u._FLEX_SMALL_SMEM_KERNEL_OPTIONS
+        } == u._FLEX_SMALL_SMEM_KERNEL_OPTIONS
+    else:
+        assert not any(k in seen for k in u._FLEX_SMALL_SMEM_KERNEL_OPTIONS)
 
 
 def test_wrapper_forced_short_prompt_drops_auto_backend(monkeypatch):
