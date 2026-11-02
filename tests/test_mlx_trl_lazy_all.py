@@ -340,9 +340,33 @@ refused(lambda: trl.ORPOTrainer(model=model, train_dataset=[], peft_config=objec
 refused(lambda: trl.DPOTrainer(model="org/repo", train_dataset=[]), "model")
 refused(lambda: trl.DPOTrainer(model=model, ref_model="org/repo", train_dataset=[]), "ref_model")
 for name in ("GKDTrainer", "PPOTrainer", "RewardTrainer"):
-    trainer = getattr(trl, name)
+    trainer = getattr(trl, name, None)
+    if trainer is None:
+        continue
     assert getattr(trainer, "_unsloth_mlx_unsupported", False), name
     refused(trainer, name, "DPO", "GRPO", "SFT")
+""")
+
+
+@_needs_real_mlx
+def test_trl_configs_match_trl_semantics_and_stay_the_callers():
+    _run_shim_probe("""
+from transformers import HfArgumentParser
+cfg = trl.DPOConfig(output_dir="o", max_seq_length=4096)
+first = trl.DPOTrainer(model=model, args=cfg, train_dataset=[])
+assert first.args.max_seq_length == 96 and cfg.max_seq_length == 4096
+longer = nn.Linear(1, 1)
+longer.max_seq_length = 2048
+assert trl.DPOTrainer(model=longer, args=cfg, train_dataset=[]).args.max_seq_length == 2048
+assert trl.DPOTrainer(model=model, evaluation_strategy="epoch", train_dataset=[]).args.eval_strategy == "epoch"
+assert trl.SFTConfig(output_dir="o", eval_strategy="steps", logging_steps=7).eval_steps == 7
+assert trl.SFTConfig(output_dir="o", eval_strategy="steps", eval_steps=3, logging_steps=7).eval_steps == 3
+assert trl.SFTConfig(output_dir="o", eval_strategy="no", logging_steps=7).eval_steps == 0
+assert trl.DPOConfig(output_dir="o", f_alpha_divergence_coef=0.5).output_dir == "o"
+refused(lambda: trl.DPOConfig(output_dir="o", f_divergence_type="alpha_divergence"), "f_divergence_type")
+parsed = HfArgumentParser(trl.DPOConfig).parse_args_into_dataclasses(["--output_dir", "o"])[0]
+assert (parsed.learning_rate, parsed.per_device_train_batch_size, parsed.num_train_epochs) == (1e-6, 8, 3)
+assert pickle.loads(pickle.dumps(parsed)).learning_rate == 1e-6
 """)
 
 
@@ -388,17 +412,19 @@ for fast in (unsloth.FastLanguageModel, unsloth.FastModel, unsloth.FastVisionMod
 
 @_needs_real_mlx
 def test_trl_configs_built_before_the_shim_keep_their_meaning():
+    pytest.importorskip("trl")
     _run_shim_probe(
         """
 assert RealDPO is not trl.DPOConfig
 t = trl.DPOTrainer(model=model, args=RealDPO(output_dir="o", beta=0.3, max_length=99), train_dataset=[], processing_class=tok)
 assert isinstance(t.args, zoo.MLXDPOConfig) and (t.args.beta, t.args.max_length, t.args.learning_rate) == (0.3, 99, 1e-6)
-refused(lambda: trl.DPOTrainer(model=model, args=RealDPO(output_dir="o", rpo_alpha=1.0), train_dataset=[]), "rpo_alpha")
+if hasattr(RealDPO(output_dir="o"), "rpo_alpha"):
+    refused(lambda: trl.DPOTrainer(model=model, args=RealDPO(output_dir="o", rpo_alpha=1.0), train_dataset=[]), "rpo_alpha")
 refused(lambda: trl.DPOTrainer(model=model, args=RealDPO(output_dir="o", use_weighting=True), train_dataset=[]), "use_weighting")
 assert trl.DPOTrainer(model=model, args=RealDPO(output_dir="o", eval_strategy="epoch"), train_dataset=[]).args.eval_strategy == "epoch"
 refused(lambda: trl.DPOTrainer(model=model, args=RealDPO(output_dir="o", dataloader_drop_last=True), train_dataset=[]), "dataloader_drop_last")
 assert trl.DPOTrainer(model=model, args=RealDPO(output_dir="o", bf16=False, learning_rate=0.1, save_strategy="no", optim="adamw_torch"), train_dataset=[]).args.learning_rate == 0.1
-for stem, real in (("ORPO", RealORPO), ("KTO", RealKTO), ("CPO", RealCPO)):
+for stem, real in RealConfigs.items():
     config = getattr(trl, stem + "Config")
     assert isinstance(unsloth._coerce_mlx_training_args(real(output_dir="o"), None, config), config), stem
 refused(lambda: trl.GRPOTrainer(model, [print], RealGRPO(output_dir="o"), [], None, tok), "GRPOConfig")
@@ -406,7 +432,8 @@ refused(lambda: trl.GRPOTrainer(model, [print], RealGRPO(output_dir="o"), [], No
         before_unsloth = (
             "import trl\n"
             "RealDPO = trl.DPOConfig\n"
-            "RealORPO, RealKTO, RealGRPO, RealCPO = trl.ORPOConfig, trl.KTOConfig, trl.GRPOConfig, trl.CPOConfig\n"
+            "RealGRPO = trl.GRPOConfig\n"
+            "RealConfigs = {s: getattr(trl, s + 'Config') for s in ('ORPO', 'KTO', 'CPO') if hasattr(trl, s + 'Config')}\n"
         ),
     )
 

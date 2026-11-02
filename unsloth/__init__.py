@@ -286,6 +286,7 @@ if _IS_MLX:
             "`pip install -U unsloth-zoo` or rerun install.sh."
         ) from _e
 
+    import copy as _copy
     import dataclasses as _dataclasses
     import inspect as _inspect
     import importlib.machinery as _machinery
@@ -821,7 +822,7 @@ if _IS_MLX:
                 trainer_kwargs[key] = value
                 continue
             target = aliases.get(key, key)
-            if target in config_fields or key in _MLX_ALLOWED_EXTRA_ARGUMENTS:
+            if target in config_fields or target in _MLX_ALLOWED_EXTRA_ARGUMENTS:
                 config_kwargs[key] = value
             else:
                 ignored_kwargs[key] = value
@@ -1060,6 +1061,10 @@ if _IS_MLX:
             for key, value in extra_kwargs.items():
                 setattr(self, key, value)
             _warn_ignored_mlx_training_args(extra_kwargs)
+            # Like TrainingArguments: zoo's eval_steps=0 would silently never evaluate.
+            eval_strategy = getattr(self, "eval_strategy", None)
+            if getattr(eval_strategy, "value", eval_strategy) == "steps" and not self.eval_steps:
+                self.eval_steps = self.logging_steps
 
     def _resolve_mlx_cuda_style_max_seq_length(args, model = None):
         model_max_seq_length = _positive_mlx_context_length(
@@ -1544,7 +1549,9 @@ if _IS_MLX:
                 if processing_class is not None
                 else self.processor or self.tokenizer
             )
-            if trainer_kwargs.get("max_seq_length") is not None and not self.preference_kind:
+            if trainer_kwargs.get("max_seq_length") is not None and not getattr(
+                self, "preference_kind", None
+            ):
                 _set_mlx_cuda_style_context_length(
                     self.args,
                     self.args.max_seq_length,
@@ -1690,7 +1697,6 @@ if _IS_MLX:
         "base_model_attribute_name": "model",
         "cache_implementation": None,
         "ds3_gather_for_generation": True,
-        "f_alpha_divergence_coef": 1.0,
         "f_divergence_type": "reverse_kl",
         "is_encoder_decoder": None,
         "label_pad_token_id": -100,
@@ -1708,13 +1714,17 @@ if _IS_MLX:
     }
 
     class _MLXTRLConfig(_MLXSFTConfig):
-        _unsloth_mlx_trl_arguments = tuple(_MLX_TRL_INERT_CONFIG_VALUES)
+        _unsloth_mlx_trl_arguments = (*_MLX_TRL_INERT_CONFIG_VALUES, "f_alpha_divergence_coef")
 
         def __init__(self, *args, **kwargs):
             if len(args) == 1 and isinstance(args[0], dict):
                 kwargs = {**args[0], **kwargs}
                 args = ()
             config_fields = {field.name for field in _dataclasses.fields(type(self))}
+            divergence = kwargs.get("f_divergence_type", "reverse_kl")
+            # Only alpha_divergence reads it, and its default differs across TRL releases.
+            if getattr(divergence, "value", divergence) == "reverse_kl":
+                kwargs.pop("f_alpha_divergence_coef", None)
             for key, value in _MLX_TRL_INERT_CONFIG_VALUES.items():
                 if key not in config_fields and key in kwargs:
                     if getattr(kwargs[key], "value", kwargs[key]) == value:
@@ -1755,6 +1765,8 @@ if _IS_MLX:
             return _coerce_mlx_training_args(args, overrides, self._unsloth_mlx_config_class)
 
         def _unsloth_mlx_apply_defaults(self, args, model, max_seq_length_explicit):
+            # args may be the caller's config, which another trainer can reuse.
+            args = _copy.copy(args)
             if not self._unsloth_mlx_keep_dataset_order:
                 _default_mlx_dataset_order(args)
             _default_mlx_grad_clip(args)
@@ -1886,16 +1898,31 @@ if _IS_MLX:
             for key, value in _MLX_TRAINING_ARGUMENT_ALIASES.items()
             if key != "max_length"
         }
+        _mlx_trl_field_defaults = {
+            **_MLX_TRL_CONFIG_DEFAULTS,
+            "max_steps": -1,
+            "num_train_epochs": 3,
+        }
         built = {}
         for stem, trainer, config, positional, extra, keep_order in _MLX_TRL_POLICY_TRAINERS:
             zoo_trainer = getattr(_mlx_zoo_trainer, trainer, None)
             zoo_config = getattr(_mlx_zoo_trainer, config, None)
             if zoo_trainer is None or zoo_config is None:
                 continue
-            config_class = type(
+            # Real dataclass defaults: HfArgumentParser passes them all, past the config's setdefault.
+            zoo_fields = {field.name: field for field in _dataclasses.fields(zoo_config)}
+            config_class = _dataclasses.make_dataclass(
                 f"{stem}Config",
-                (_MLXTRLConfig, zoo_config),
-                {"_unsloth_mlx_argument_aliases": aliases},
+                [
+                    (name, zoo_fields[name].type, _dataclasses.field(default = value))
+                    for name, value in _mlx_trl_field_defaults.items()
+                ],
+                bases = (_MLXTRLConfig, zoo_config),
+                init = False,
+                namespace = {
+                    "__module__": __name__,
+                    "_unsloth_mlx_argument_aliases": aliases,
+                },
             )
             built[f"{stem}Config"] = config_class
             # Pickle finds a class by module and name; importing unsloth also installs the trl shim.
