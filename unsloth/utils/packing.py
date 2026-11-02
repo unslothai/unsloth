@@ -473,6 +473,29 @@ def _stateful_mixer_kind(module) -> Optional[str]:
     return None
 
 
+# Pool / recur over the whole row (V4 compressed entries numbered row-wide), ignoring position_ids.
+_PACKING_BOUNDARY_BLIND_MODULES = (
+    "DeepseekV4CSACompressor",
+    "DeepseekV4HCACompressor",
+    "ZayaCCAProjection",
+    "RecurrentGemmaRglru",
+)
+_PACKING_BOUNDARY_BLIND_MODEL_TYPES = ("deepseek_v4", "zaya", "recurrent_gemma")
+
+
+def packing_boundary_blocker(model, model_types = ()) -> Optional[str]:
+    modules = getattr(model, "modules", None)
+    if callable(modules) and not isinstance(model, str):
+        for module in modules():
+            name = type(module).__name__
+            if name in _PACKING_BOUNDARY_BLIND_MODULES:
+                return name
+    for model_type in model_types or ():
+        if model_type in _PACKING_BOUNDARY_BLIND_MODEL_TYPES:
+            return model_type
+    return None
+
+
 def _iter_stateful_mixers(model):
     """(module, kind) for every stateful mixer, outermost first; submodules of a gated-delta
     mixer (its own short convs) are owned by that mixer's shim."""
@@ -1817,8 +1840,9 @@ def get_packed_info_from_kwargs(
         lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
         cu_seqlens = torch.zeros(lengths.numel() + 1, dtype = torch.int32, device = device)
         torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
-        # The one D2H read per batch.
-        host = tuple(lengths.tolist())
+        host = _attached_host_lengths(seq_lengths)
+        if host is None:
+            host = tuple(lengths.tolist())
 
     max_seqlen = max(host)
     result = (lengths, cu_seqlens, max_seqlen)
@@ -1829,6 +1853,14 @@ def get_packed_info_from_kwargs(
     }
     _PACKED_HOST_LENGTHS_CACHE[lengths.device] = (lengths, cu_seqlens, host)
     return result
+
+
+def _attached_host_lengths(seq_lengths) -> Optional[Tuple[int, ...]]:
+    """Host `_unsloth_lengths_tuple` attached by the producer (unsloth_zoo GRPO), used if the count matches."""
+    host = getattr(seq_lengths, "_unsloth_lengths_tuple", None)
+    if not isinstance(host, tuple) or len(host) != seq_lengths.numel():
+        return None
+    return host
 
 
 def _cached_host_lengths(seq_lengths, cu_seqlens = None) -> Optional[Tuple[int, ...]]:
@@ -1844,6 +1876,8 @@ def _cached_host_lengths(seq_lengths, cu_seqlens = None) -> Optional[Tuple[int, 
 
 def _host_segment_lengths(seq_lengths) -> Tuple[int, ...]:
     host = _cached_host_lengths(seq_lengths)
+    if host is None:
+        host = _attached_host_lengths(seq_lengths)
     if host is not None:
         return host
     return tuple(int(length) for length in seq_lengths.tolist())
@@ -2135,4 +2169,5 @@ __all__ = [
     "mask_packed_sequence_boundaries",
     "mask_packed_boundary_labels",
     "clear_packed_caches",
+    "packing_boundary_blocker",
 ]

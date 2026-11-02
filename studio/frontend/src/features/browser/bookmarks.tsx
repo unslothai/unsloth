@@ -23,13 +23,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   ArrowRightDoubleIcon,
-  Delete02Icon,
-  Folder01Icon,
-  PencilEdit02Icon,
+  Edit03Icon,
   StarIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, type RefObject, useEffect, useId, useMemo, useRef, useState } from "react";
 import { hostOf } from "./address";
@@ -386,7 +386,7 @@ function BookmarkItem({
         extra={
           <>
             <MenuRow
-              icon={PencilEdit02Icon}
+              icon={Edit03Icon}
               onSelect={() => {
                 editChosen.current = true;
                 setEditing(true);
@@ -394,7 +394,7 @@ function BookmarkItem({
             >
               {t("browser.bookmarks.edit")}
             </MenuRow>
-            <MenuRow icon={Delete02Icon} onSelect={() => removeBookmarkWithUndo(bookmark, t)}>
+            <MenuRow icon={TrashIcon} onSelect={() => removeBookmarkWithUndo(bookmark, t)}>
               {t("browser.bookmarks.delete")}
             </MenuRow>
           </>

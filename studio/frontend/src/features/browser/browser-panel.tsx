@@ -60,23 +60,20 @@ import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { asPng, copyToClipboard, copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { openExternalLink } from "@/lib/open-link";
-import { RefreshGlyph } from "@/lib/refresh-icon";
+import { Settings01Icon, SiteInfoIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { ShieldAlertGlyph } from "@/lib/shield-alert-icon";
 import { SquareDashedMousePointerIcon } from "@/lib/annotate-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Add01Icon,
+  Refresh01Icon,
   Search01Icon,
-  Settings02Icon,
-  Delete02Icon,
   ArrowUpRight01Icon,
   BubbleChatAddIcon,
   Cancel01Icon,
   Clock01Icon,
   ComputerTerminal01Icon,
-  Folder01Icon,
   Link01Icon,
   Download01Icon,
   InternetIcon,
@@ -88,17 +85,14 @@ import {
   StarIcon,
   Tablet01Icon,
   TextWrapIcon,
+  UndoIcon,
   ViewIcon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import {
-  ArrowLeft,
-  ArrowRight,
-  RotateCw,
-  ShieldCheck,
-} from "lucide-react";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type PointerEvent as ReactPointerEvent,
@@ -743,7 +737,7 @@ function TabStrip({
       </div>
       <IconButton
         label={t("browser.newTab")}
-        icon={Add01Icon}
+        icon={PlusSignIcon}
         onClick={newTab}
         className="size-8"
       />
@@ -842,7 +836,7 @@ function AddressBar({
             autoCorrect="off"
             className={cn(
               "h-9 w-full min-w-0 bg-transparent pe-1 text-ui-13 text-foreground outline-none placeholder:text-muted-foreground",
-              editing ? "ps-2" : "ps-0",
+              editing ? "ps-2.5" : "ps-0",
               // The input keeps the full URL, so focusing never changes its text or selection.
               !editing && address && "text-transparent",
             )}
@@ -886,7 +880,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
   }
   if (!url || !/^https?:$/.test(url.protocol)) {
     return (
-      <span className="flex h-7 w-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center justify-center text-muted-foreground">
+      <span className="flex size-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center justify-center text-muted-foreground">
         <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} aria-hidden={true} className="size-4" />
       </span>
     );
@@ -914,10 +908,10 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
               <button
                 type="button"
                 aria-label={label}
-                className="flex h-7 w-[calc(26px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] aria-expanded:text-foreground"
+                className="flex size-[calc(26px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] aria-expanded:text-foreground"
               >
                 {secure ? (
-                  <ShieldCheck strokeWidth={2} className="size-4" />
+                  <HugeiconsIcon icon={SiteInfoIcon} strokeWidth={2.25} className="size-4" />
                 ) : (
                   <ShieldAlertGlyph strokeWidth={2} className="size-4" />
                 )}
@@ -954,7 +948,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
                   setClearOpen(true);
                 }}
               >
-                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
                 {t("browser.menu.clearData")}
               </button>
               <button
@@ -965,7 +959,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
                   useSettingsDialogStore.getState().openDialog("browser");
                 }}
               >
-                <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} className="size-icon" />
                 {t("browser.settings")}
               </button>
             </>
@@ -1166,7 +1160,7 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
         onClick={() => setZoom(resetZoom)}
         className={cn(step, "rounded-full")}
       >
-        <RefreshGlyph strokeWidth={1.75} className="size-3.5" />
+        <HugeiconsIcon icon={UndoIcon} strokeWidth={1.75} className="size-3.5" />
       </button>
     </div>
   );
@@ -1483,7 +1477,7 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
           }}
           className={NAV_BUTTON}
         >
-          <RotateCw strokeWidth={NAV_STROKE} className={cn(NAV_ICON, "scale-[0.94]")} />
+          <HugeiconsIcon icon={Refresh01Icon} strokeWidth={NAV_STROKE} className={cn(NAV_ICON, "scale-[0.94]")} />
         </IconButton>
       </div>
       <AddressBar
@@ -1598,7 +1592,7 @@ function BrowserFileToolbar({
           onClick={runAgain}
           className={NAV_BUTTON}
         >
-          <RotateCw strokeWidth={NAV_STROKE} className={cn(NAV_ICON, "scale-[0.94]")} />
+          <HugeiconsIcon icon={Refresh01Icon} strokeWidth={NAV_STROKE} className={cn(NAV_ICON, "scale-[0.94]")} />
         </IconButton>
       </div>
       <AddressBar

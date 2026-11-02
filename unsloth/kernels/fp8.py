@@ -78,9 +78,31 @@ def _opaque_under_compile(name, fake):
             ValueError,
         ):  # Already registered by an earlier import of this module.
             pass
-        return fn
+        if name not in _EAGER_COUNTED_LOWP_GEMMS:
+            return fn
+        from ..precision import engage
+
+        # Eager calls launch Triton directly and never dispatch the op, so count_lowp_gemms() is told here.
+        @functools.wraps(fn)
+        def counted(*args, **kwargs):
+            if torch.compiler.is_compiling() or not engage._active():
+                return fn(*args, **kwargs)
+            entered = engage.note_lowp_gemm(f"unsloth::{name}")
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                engage.release_lowp_gemm(entered)
+
+        return counted
 
     return decorator
+
+
+_EAGER_COUNTED_LOWP_GEMMS = (
+    "fp8_block_matmul_triton",
+    "fp8_block_small_m_linear",
+    "fp8_block_matmul_torchao",
+)
 
 
 try:
@@ -1981,11 +2003,14 @@ if hasattr(torch._dynamo, "assume_constant_result"):
     _fp8_rowwise_backend = torch._dynamo.assume_constant_result(_fp8_rowwise_backend)
 
 
+# torch < 2.14 rowwise CUTLASS takes its output type from the bias dtype: no bias + fp16 out = bf16 bits (garbage).
+# 2.14 dispatches on out.dtype, where a bf16 detour would lose precision and overflow 65408..65504. Pre-releases keep it.
+_SCALED_MM_FP16_OUT_BROKEN = torch.__version__ < "2.14.0"
+
+
 def _scaled_mm_out_dtype(dtype):
-    """Rowwise torch._scaled_mm output dtype for activations of `dtype`. torch 2.10's rowwise CUTLASS
-    kernel picks its output element type from the bias dtype, so without a bias an fp16 output buffer
-    receives bf16 bits (every value garbage); ask for bf16 and let the caller cast back."""
-    return torch.bfloat16 if dtype == torch.float16 else dtype
+    """Rowwise torch._scaled_mm out dtype: bf16 for fp16 on torch < 2.14 (caller casts back), else `dtype`."""
+    return torch.bfloat16 if dtype == torch.float16 and _SCALED_MM_FP16_OUT_BROKEN else dtype
 
 
 def _parse_fp8_dequant_max_rows(value):
@@ -2088,6 +2113,8 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
         elif (
             backend == "scaled_mm"
             and rowwise
+            # Before torch 2.14 rowwise outputs are bf16 / fp16 only: float32 dequantizes.
+            and (x.dtype != torch.float32 or not _SCALED_MM_FP16_OUT_BROKEN)
             and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
             and x.shape[-1] == weight.shape[1]
             # Decode-sized calls: dequant + 16-bit GEMM beats quantizing the activation unless the weight
@@ -2271,6 +2298,10 @@ def _fp8_rowwise_direct_route(X, weight, weight_scale):
         or weight_scale.device != weight.device
         or _fp8_e4m3fn_unsupported_in_trace(weight)
     ):
+        return None
+    # The compiled path dequantizes inside autocast's GEMM; a buffer in another dtype could overflow first.
+    # Checked after the cheap gates (it costs a few hundred ns per call); no-argument is_autocast_enabled is CUDA's.
+    if torch.is_autocast_enabled() and torch.get_autocast_dtype("cuda") != X.dtype:
         return None
     backend = _fp8_rowwise_backend(X.device)
     if backend == "fbgemm" and N % 8 == 0 and K % 8 == 0:

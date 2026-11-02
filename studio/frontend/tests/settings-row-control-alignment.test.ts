@@ -5,7 +5,7 @@ import { readSrcAsync } from "./helpers/kit.ts";
 
 const ALIGN_BY_DESCRIPTION = /description \? "items-start" : "items-center"/;
 const TITLE_LINE_CONTROL =
-  /data-title-line-control=\{description \? true : undefined\}\s*className=\{cn\(\s*"flex [^"]*",\s*!description && "items-center",?\s*\)\}/;
+  /data-title-line-control=\{description \? true : undefined\}\s*className=\{cn\(\s*"flex [^"]*",\s*!description && "items-center",?(?:\s*![\w]+ &&\s*"[^"]*",?)?\s*\)\}/;
 
 for (const path of [
   "features/settings/components/settings-row.tsx",

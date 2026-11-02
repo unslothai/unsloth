@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import {
   UPDATE_NOTES_BULLET_CLASS,
   UPDATE_NOTES_EXPANDED_SCROLL_CLASS,
@@ -13,15 +12,68 @@ import {
   UPDATE_NOTES_SURFACE_CLASS,
 } from "@/components/update/update-notes-layout";
 import { useReleaseNotes } from "@/hooks/use-release-notes";
+import { useT } from "@/i18n";
 import { resolveReleaseBodyLinks } from "@/lib/release-body-links";
 import { releaseNotesPreview } from "@/lib/release-notes-preview";
 import {
   type ReactElement,
   type ReactNode,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
+
+type MarkdownPreviewComponent =
+  typeof import("@/components/markdown/markdown-preview")["MarkdownPreview"];
+
+let markdownPreviewModule: Promise<MarkdownPreviewComponent> | null = null;
+let loadedMarkdownPreview: MarkdownPreviewComponent | null = null;
+
+function loadMarkdownPreview(): Promise<MarkdownPreviewComponent> {
+  if (!markdownPreviewModule) {
+    markdownPreviewModule = import("@/components/markdown/markdown-preview").then(
+      (module) => {
+        loadedMarkdownPreview = module.MarkdownPreview;
+        return module.MarkdownPreview;
+      },
+      (error: unknown) => {
+        markdownPreviewModule = null;
+        throw error;
+      },
+    );
+  }
+  return markdownPreviewModule;
+}
+
+function useMarkdownPreview(): {
+  Preview: MarkdownPreviewComponent | null;
+  failed: boolean;
+  retry: () => void;
+} {
+  const [Preview, setPreview] = useState(() => loadedMarkdownPreview);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (Preview || failed) return;
+    let live = true;
+    loadMarkdownPreview().then(
+      (component) => {
+        if (live) setPreview(() => component);
+      },
+      () => {
+        if (live) setFailed(true);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [Preview, failed]);
+  const retry = useCallback(() => {
+    window.location.reload();
+  }, []);
+  return { Preview, failed, retry };
+}
 
 interface ReleaseNotesPanelProps {
   version: string;
@@ -51,6 +103,7 @@ function NotesLink({
   href: string;
   isRelease: boolean;
 }): ReactElement {
+  const t = useT();
   return (
     <a
       href={href}
@@ -59,7 +112,7 @@ function NotesLink({
       className={UPDATE_NOTES_LINK_CLASS}
       data-testid="update-release-notes-link"
     >
-      {isRelease ? "Open release" : "Open changelog"}
+      {isRelease ? t("updateNotes.openRelease") : t("updateNotes.openChangelog")}
     </a>
   );
 }
@@ -69,8 +122,10 @@ export function ReleaseNotesPanel({
   open,
   releaseNotesUrl = null,
 }: ReleaseNotesPanelProps): ReactElement | null {
+  const t = useT();
   // Fetched with the popup: the collapsed preview needs the notes too.
   const { state, notes, retry } = useReleaseNotes({ version, enabled: true });
+  const renderer = useMarkdownPreview();
   const scrollRef = useRef<HTMLElement | null>(null);
 
   // No fallback body: the updater's `notes` is install boilerplate the backend strips.
@@ -88,11 +143,12 @@ export function ReleaseNotesPanel({
   );
 
   // Start at the top on expand, and again once async notes land.
+  const Preview = renderer.Preview;
   useEffect(() => {
-    if (open && markdown && scrollRef.current) {
+    if (open && markdown && Preview && scrollRef.current) {
       scrollRef.current.scrollTop = 0;
     }
-  }, [open, markdown]);
+  }, [open, markdown, Preview]);
 
   // The page the notes are on wins, then the caller's URL, then the API's.
   const notesUrl = notes?.htmlUrl ?? releaseNotesUrl ?? notes?.releaseNotesUrl;
@@ -129,19 +185,33 @@ export function ReleaseNotesPanel({
               ref={scrollRef}
               // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
               tabIndex={0}
-              aria-label={`Release notes for ${notes?.tag ?? `version ${version}`}`}
+              aria-label={
+                notes?.tag
+                  ? t("updateNotes.notesFor", { release: notes.tag })
+                  : t("updateNotes.notesForVersion", { version })
+              }
               // Long notes scroll here instead of pushing the buttons off screen.
               className={UPDATE_NOTES_EXPANDED_SCROLL_CLASS}
               data-testid="update-release-notes-scroll"
             >
-              <MarkdownPreview
-                markdown={markdown}
-                // Rescale Streamdown's headings, code and max-width; `anywhere` splits words.
-                className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-11 [&_[data-streamdown=link-safety-modal]>*]:max-w-md [&_img]:h-auto [&_img]:max-w-full [&>*:first-child]:mt-0 [&>*>*:first-child]:mt-0 [&_code]:text-[0.92em] [&_h1]:mt-4 [&_h1]:font-heading [&_h1]:text-ui-13 [&_h2]:mt-4 [&_h2]:font-heading [&_h2]:text-ui-13 [&_h3]:mt-4 [&_h3]:font-heading [&_h3]:text-ui-11 [&_pre]:text-[0.92em] [&_td]:break-words [&_th]:break-words"
-              />
+              {Preview ? (
+                <Preview
+                  markdown={markdown}
+                  // Rescale Streamdown's headings, code and max-width; `anywhere` splits words.
+                  className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-11 [&_[data-streamdown=link-safety-modal]>*]:max-w-md [&_img]:h-auto [&_img]:max-w-full [&>*:first-child]:mt-0 [&>*>*:first-child]:mt-0 [&_code]:text-[0.92em] [&_h1]:mt-4 [&_h1]:font-heading [&_h1]:text-ui-13 [&_h2]:mt-4 [&_h2]:font-heading [&_h2]:text-ui-13 [&_h3]:mt-4 [&_h3]:font-heading [&_h3]:text-ui-11 [&_pre]:text-[0.92em] [&_td]:break-words [&_th]:break-words"
+                />
+              ) : (
+                <NotesStatus
+                  state={renderer.failed ? "error" : "loading"}
+                  release={notes?.tag ?? null}
+                  link={link}
+                  retry={renderer.retry}
+                  retryLabel={t("settings.dialog.panelReload")}
+                />
+              )}
               {notes?.truncated ? (
                 <p className="mt-2 text-ui-10 text-muted-foreground/80">
-                  Notes truncated. See the full release notes.
+                  {t("updateNotes.notesTruncated")}
                 </p>
               ) : null}
             </section>
@@ -169,6 +239,7 @@ function ReleaseNotesSummary({
 }: {
   preview: ReturnType<typeof releaseNotesPreview> | null;
 }): ReactElement | null {
+  const t = useT();
   if (preview === null || preview.items.length === 0) {
     return null;
   }
@@ -180,7 +251,7 @@ function ReleaseNotesSummary({
       // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
       tabIndex={0}
       // Unversioned: the notes are the release's, not the offered version's.
-      aria-label="Release notes summary"
+      aria-label={t("updateNotes.summaryLabel")}
       className="hover-scrollbar min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain py-2 pr-1"
       data-testid="update-release-notes-summary"
     >
@@ -201,7 +272,7 @@ function ReleaseNotesSummary({
       ))}
       {remaining > 0 ? (
         <li className="pl-3 text-ui-10 text-muted-foreground/70">
-          +{remaining} more
+          {t("updateNotes.moreCount", { count: remaining })}
         </li>
       ) : null}
     </ul>
@@ -213,14 +284,17 @@ function NotesStatus({
   release,
   link,
   retry,
+  retryLabel,
 }: {
   state: ReturnType<typeof useReleaseNotes>["state"];
   release: string | null;
   link: ReactNode;
   retry: () => void;
+  retryLabel?: string;
 }): ReactElement {
+  const t = useT();
   if (state === "loading" || state === "idle") {
-    return <NotesMessage>Loading release notes...</NotesMessage>;
+    return <NotesMessage>{t("updateNotes.loadingNotes")}</NotesMessage>;
   }
 
   if (state === "error") {
@@ -235,13 +309,13 @@ function NotesStatus({
               className={UPDATE_NOTES_LINK_CLASS}
               data-testid="update-release-notes-retry"
             >
-              Retry
+              {retryLabel ?? t("updateNotes.retry")}
             </button>
             {link}
           </span>
         }
       >
-        Could not load release notes.
+        {t("updateNotes.loadFailed")}
       </NotesMessage>
     );
   }
@@ -250,8 +324,8 @@ function NotesStatus({
   return (
     <NotesMessage action={link}>
       {release
-        ? `No release notes published for ${release} yet.`
-        : "No release notes published yet."}
+        ? t("updateNotes.noNotesFor", { release })
+        : t("updateNotes.noNotes")}
     </NotesMessage>
   );
 }

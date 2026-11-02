@@ -13,7 +13,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { FolderOpenIcon, Upload01Icon } from "@hugeicons/core-free-icons";
+import { Upload01Icon } from "@hugeicons/core-free-icons";
+import { FolderOpenIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";

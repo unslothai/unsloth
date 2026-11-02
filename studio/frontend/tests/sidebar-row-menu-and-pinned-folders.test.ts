@@ -56,7 +56,7 @@ test("the quick-action beside an open menu is revealed with it", () => {
 
 // The row toggles its chats, so the folder says which way it is.
 test("a folder row's icon follows its disclosure", () => {
-  assert.match(APP_SIDEBAR, /icon=\{expanded \? Folder02Icon : Folder01Icon\}/);
+  assert.match(APP_SIDEBAR, /icon=\{expanded \? Folder02Icon : ProjectIcon\}/);
 });
 
 test("an empty open folder says it is empty", () => {
@@ -108,7 +108,7 @@ test("a chat's Move to submenu groups projects and sections, New first and Remov
   );
   assert.match(
     APP_SIDEBAR,
-    /<P\.Item onSelect=\{\(\) => setEditingProject\(project\)\}>\n\s*<HugeiconsIcon icon=\{Settings02Icon\}/,
+    /<P\.Item onSelect=\{\(\) => setEditingProject\(project\)\}>\n\s*<HugeiconsIcon icon=\{Settings01Icon\}/,
   );
   assert.ok(!APP_SIDEBAR.includes("newSectionEllipsis"));
 });

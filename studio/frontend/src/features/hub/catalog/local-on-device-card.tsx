@@ -21,10 +21,10 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
-  Folder01Icon,
   LayerIcon,
   LinkSquare02Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
 import {

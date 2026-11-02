@@ -274,6 +274,12 @@ _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_int8_prefill",
     "mlx_int8_prefill_requested",
     "mlx_int8_prefill_reason",
+    "mlx_ane_prefill",
+    "mlx_ane_prefill_requested",
+    "mlx_ane_prefill_reason",
+    "mlx_fast_verify",
+    "mlx_fast_verify_requested",
+    "mlx_fast_verify_reason",
     "mlx_offload",
     "chat_template_override_requested",
     "chat_template_override_reason",
@@ -403,6 +409,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_type": model_info.get("audio_type"),
         "has_audio_input": model_info.get("has_audio_input", False),
         "has_video_input": model_info.get("has_video_input", False),
+        "speaks": model_info.get("speaks", False),
         "context_length": model_info.get("context_length"),
         "native_context_length": model_info.get("native_context_length"),
         "max_context_length": model_info.get("max_context_length"),
@@ -989,6 +996,41 @@ class InferenceOrchestrator:
             previous = current
         return not expected_free_gb
 
+    @staticmethod
+    def _describe_vram_shortfall(expected_free_gb: dict[int, float]) -> str:
+        """Report measured free VRAM, or nothing when telemetry is unavailable."""
+        try:
+            from utils.hardware import get_visible_gpu_utilization, gpu_query
+            with gpu_query.fresh_reads():
+                devices = get_visible_gpu_utilization().get("devices", [])
+        except Exception:
+            return ""
+        parts = []
+        for device in devices:
+            try:
+                index = int(device["index"])
+                needed = expected_free_gb.get(index)
+                if needed is None:
+                    continue
+                free = max(float(device["vram_total_gb"]) - float(device["vram_used_gb"]), 0.0)
+                parts.append(
+                    f"free {free:.1f} GiB of the {float(needed):.1f} GiB needed on cuda:{index}"
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        return "; ".join(parts)
+
+    @staticmethod
+    def _vram_wait_message(expected_free_gb: dict[int, float]) -> str:
+        """The settle check cannot identify which process holds VRAM (#16436)."""
+        shortfall = InferenceOrchestrator._describe_vram_shortfall(expected_free_gb)
+        detail = f" ({shortfall})" if shortfall else ""
+        return (
+            "GPU memory has not freed up yet; not starting the replacement model"
+            f"{detail}. A reply may still be finishing, or another app may be "
+            "holding the GPU. Retry shortly."
+        )
+
     def _reset_worker_scoped_state(self) -> None:
         """Drop bookkeeping that only means anything for the worker that just died."""
         with self._active_cancel_lock:
@@ -1390,7 +1432,7 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         rows: Optional[list] = None,
-        video_b64: Optional[str] = None,
+        videos_b64: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
@@ -1426,8 +1468,8 @@ class InferenceOrchestrator:
         if response_format is not None:
             cmd["response_format"] = response_format
             cmd["reasoning_is_extracted"] = bool(reasoning_is_extracted)
-        if video_b64:
-            cmd["video_base64"] = video_b64
+        if videos_b64:
+            cmd["videos_base64"] = videos_b64
         if use_adapter is not None:
             cmd["use_adapter"] = use_adapter
         if tools is not None:
@@ -1557,6 +1599,9 @@ class InferenceOrchestrator:
                     yield int(resp.get("row", 0)), resp.get("text", "")
                 else:
                     yield resp.get("text", "")
+            elif rtype == "speech":
+                if rows is None and not stop_sent:
+                    yield {"speech": resp.get("speech"), "sample_rate": resp.get("sample_rate")}
             elif rtype == "diffusion_frame":
                 if frames and rows is None and not stop_sent:
                     yield {
@@ -1695,7 +1740,7 @@ class InferenceOrchestrator:
         stop: Optional[list] = None,
         rows: Optional[list] = None,
         expected_model: Optional[str] = None,
-        video: Optional[str] = None,
+        videos: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
@@ -1753,7 +1798,7 @@ class InferenceOrchestrator:
             tool_protocol_active = tool_protocol_active,
             seed = seed,
             rows = rows,
-            video_b64 = video,
+            videos_b64 = videos,
             diffusion_frames = diffusion_frames,
             prompt_ids = prompt_ids,
             penalty_window = penalty_window,
@@ -2001,6 +2046,8 @@ class InferenceOrchestrator:
         mlx_distributed: bool = False,
         mlx_kv_quant: Optional[str] = None,
         mlx_int8_prefill: bool = False,
+        mlx_ane_prefill: bool = False,
+        mlx_fast_verify: bool = False,
         mlx_offload: tuple = (None, None),
         speculative_type: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
@@ -2079,6 +2126,8 @@ class InferenceOrchestrator:
                 else None,
                 "mlx_kv_quant": mlx_kv_quant,
                 "mlx_int8_prefill": bool(mlx_int8_prefill),
+                "mlx_ane_prefill": bool(mlx_ane_prefill),
+                "mlx_fast_verify": bool(mlx_fast_verify),
                 "mlx_offload": tuple(mlx_offload),
                 "speculative_type": speculative_type,
                 "spec_draft_n_max": spec_draft_n_max,
@@ -2167,10 +2216,7 @@ class InferenceOrchestrator:
                     expected_free_gb = expected_free_gb,
                 )
                 if expected_free_gb is not None and not settled:
-                    raise RuntimeError(
-                        "GPU memory from the previous inference worker was not released; "
-                        "not starting the replacement model. Retry shortly."
-                    )
+                    raise RuntimeError(self._vram_wait_message(expected_free_gb))
 
             # Previous worker gone, VRAM back: the last moment before a long download.
             if on_prior_worker_released is not None:
@@ -2937,6 +2983,7 @@ class InferenceOrchestrator:
                 fitted,
                 conversation,
                 branch_messages = live_branch or conversation,
+                query_messages = request_branch,
                 thread_id = thread_id,
                 # A forged tool exchange is only safe when the request advertises the tool.
                 style = "tool" if recall_offered else "inline",
@@ -3193,7 +3240,7 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
-        video: Optional[str] = None,
+        videos: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
@@ -3227,7 +3274,7 @@ class InferenceOrchestrator:
             stop = stop,
             response_format = response_format,
             reasoning_is_extracted = reasoning_is_extracted,
-            video = video,
+            videos = videos,
             diffusion_frames = diffusion_frames,
         )
 
@@ -3258,7 +3305,7 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
-        video: Optional[str] = None,
+        videos: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
     ) -> Generator[Any, None, None]:
@@ -3290,7 +3337,7 @@ class InferenceOrchestrator:
             logit_bias = logit_bias,
             stop = stop,
             rows = rows,
-            video = video,
+            videos = videos,
             response_format = response_format,
             reasoning_is_extracted = reasoning_is_extracted,
         )
@@ -3594,7 +3641,7 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         rows: Optional[list] = None,
-        video: Optional[str] = None,
+        videos: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
@@ -3663,7 +3710,7 @@ class InferenceOrchestrator:
                 stop = stop,
                 rows = rows,
                 expected_model = expected_model,
-                video = video,
+                videos = videos,
                 response_format = response_format,
                 reasoning_is_extracted = reasoning_is_extracted,
                 diffusion_frames = diffusion_frames,
@@ -3711,7 +3758,7 @@ class InferenceOrchestrator:
                 tool_protocol_active = tool_protocol_active,
                 seed = seed,
                 rows = rows,
-                video_b64 = video,
+                videos_b64 = videos,
                 diffusion_frames = diffusion_frames,
                 prompt_ids = prompt_ids,
                 penalty_window = penalty_window,
@@ -4141,8 +4188,11 @@ class InferenceOrchestrator:
         stats_holder: Optional[dict] = None,
         stop = None,
         extra_audio_arrays: Optional[list] = None,
+        speak: bool = False,
+        tools: Optional[list] = None,
     ) -> Generator[str, None, None]:
-        """Audio input generation (e.g. Gemma 3n): streams text tokens."""
+        """Audio input generation (e.g. Gemma 3n): streams text tokens; with ``speak``, then one
+        ``{"speech", "sample_rate"}`` item carrying the spoken reply."""
         yield from self._generate_audio_input_inner(
             audio_array = audio_array,
             audio_type = None,  # worker uses generate_audio_input_response
@@ -4159,6 +4209,8 @@ class InferenceOrchestrator:
             stats_holder = stats_holder,
             stop = stop,
             extra_audio_arrays = extra_audio_arrays,
+            speak = speak,
+            tools = tools,
         )
 
     def _generate_audio_input_inner(
@@ -4178,6 +4230,8 @@ class InferenceOrchestrator:
         stats_holder: Optional[dict] = None,
         stop = None,
         extra_audio_arrays: Optional[list] = None,
+        speak: bool = False,
+        tools: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR). ``stats_holder``: as in
         generate_chat_response, caller-owned and filled on gen_done with the worker's usage /
@@ -4223,6 +4277,10 @@ class InferenceOrchestrator:
                 cmd["use_adapter"] = use_adapter
             if stop:
                 cmd["stop"] = stop
+            if speak:
+                cmd["speak"] = True
+            if tools is not None:
+                cmd["tools"] = tools
 
             read_one, drain, release_mailbox = self._direct_reader(request_id, cancel_event)
             try:

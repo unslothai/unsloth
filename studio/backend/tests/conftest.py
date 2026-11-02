@@ -18,6 +18,7 @@ for _up in _iso.parents:
 
 import contextlib
 import errno
+import functools
 import itertools
 import os
 import shutil
@@ -235,6 +236,18 @@ def _forget_embedding_device_setting():
 
 
 @pytest.fixture(autouse = True)
+def _forget_stt_device_setting():
+    def _forget():
+        settings = sys.modules.get("utils.stt_device_settings")
+        if settings is not None:
+            settings.forget_cached_stt_device()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _no_background_sandbox_probes(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DISABLE_SANDBOX_WARMUP", "1")
 
@@ -391,6 +404,28 @@ def _no_sandbox_mover_outlives_its_test(monkeypatch):
     _drain_sandbox_movers()
     yield
     _drain_sandbox_movers()
+
+
+@pytest.fixture(autouse = True)
+def _no_crash_watchdog_outlives_its_test(monkeypatch):
+    # Every load arms the crash watchdog, and one left running replays a real load_model in a later test.
+    llama = sys.modules.get("core.inference.llama_cpp")
+    backend = getattr(llama, "LlamaCppBackend", None)
+    if backend is None:
+        yield
+        return
+    armed = []
+    start = backend._start_mtp_crash_watchdog
+
+    @functools.wraps(start)
+    def _tracked(self):
+        armed.append(self)
+        return start(self)
+
+    monkeypatch.setattr(backend, "_start_mtp_crash_watchdog", _tracked)
+    yield
+    for armed_backend in armed:
+        armed_backend._stop_mtp_crash_watchdog()
 
 
 def pytest_configure(config):
@@ -590,17 +625,130 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
     monkeypatch.setattr(constants, "HF_HUB_CACHE", _empty_hf_hub_cache)
 
 
+_REAL_APPLE_METAL_BUDGET = None
+
+
 @pytest.fixture(autouse = True)
 def _no_live_metal_wired_ceiling(monkeypatch):
     """Keep Metal context verdicts off the host's live GPU memory."""
+    import inspect
+
     from core.inference.llama_cpp import LlamaCppBackend
 
+    global _REAL_APPLE_METAL_BUDGET
+    if _REAL_APPLE_METAL_BUDGET is None:
+        _REAL_APPLE_METAL_BUDGET = inspect.getattr_static(
+            LlamaCppBackend, "_apple_metal_memory_budget_bytes"
+        )
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_wired_ceiling_bytes", staticmethod(lambda: 0)
     )
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_wired_headroom_bytes", staticmethod(lambda: None)
     )
+    # On a Mac the real budget is non-zero, which sends every GGUF load down the Metal
+    # context-fit path and adds its "cannot size the KV cache" notice to loads that tests
+    # written against a CPU or CUDA host expect to be silent. Tests of the budget itself,
+    # or of the Metal path, set it explicitly or ask for real_apple_metal_budget.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
+    )
+
+
+@pytest.fixture
+def real_apple_metal_budget(monkeypatch):
+    """The real budget probe, for the tests of the probe itself."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_memory_budget_bytes", _REAL_APPLE_METAL_BUDGET
+    )
+
+
+# Below the ephemeral range on Linux (32768+), macOS and Windows (49152+), one block per xdist worker.
+_ENGINE_PORT_BASE = 21000
+_ENGINE_PORT_SPAN = 10000
+_ENGINE_PORTS_PER_WORKER = 250
+_engine_port_counter = itertools.count()
+
+
+_engine_port_slots = {}
+
+
+def _engine_port_block(slot, worker_count):
+    """(first port, size); past 40 workers blocks shrink so each stays disjoint inside the span.
+    Without a controller slot a replacement gwN (N >= count) uses the span's spare blocks first."""
+    count = max(worker_count, 1)
+    size = min(_ENGINE_PORTS_PER_WORKER, _ENGINE_PORT_SPAN // count)
+    if size < 1:
+        raise RuntimeError(f"{count} xdist workers do not fit {_ENGINE_PORT_SPAN} engine ports")
+    return _ENGINE_PORT_BASE + (slot % (_ENGINE_PORT_SPAN // size)) * size, size
+
+
+@pytest.hookimpl(optionalhook = True)
+def pytest_configure_node(node):
+    """xdist controller: a replacement worker gets a new gwN, so hand it the lowest slot no live
+    worker holds (the crashed one's) instead of deriving the slot from N."""
+    taken = set(_engine_port_slots.values())
+    slot = next(i for i in itertools.count() if i not in taken)
+    _engine_port_slots[node.gateway.id] = slot
+    node.workerinput["engine_port_slot"] = slot
+
+
+@pytest.hookimpl(optionalhook = True)
+def pytest_testnodedown(node, error):
+    _engine_port_slots.pop(node.gateway.id, None)
+
+
+@pytest.fixture
+def engine_port_block():
+    return _engine_port_block
+
+
+@pytest.fixture
+def engine_port_slot_hooks(monkeypatch):
+    """The controller-side slot hooks, on an empty slot table."""
+    monkeypatch.setitem(globals(), "_engine_port_slots", {})
+    return pytest_configure_node, pytest_testnodedown
+
+
+@pytest.fixture(autouse = True)
+def _engine_ports_no_other_worker_can_take(monkeypatch, request):
+    """managed_engine._free_port releases an ephemeral port that the engine binds later. In that
+    gap any bind(0) on the runner, such as another worker's test server, can be handed the same
+    port and answer /health, and a start that should time out returns ready. Each worker gets its
+    own ports below the ephemeral range instead, which bind(0) never hands out."""
+    module = sys.modules.get("core.inference.managed_engine")
+    if module is None:
+        return
+    import socket
+
+    count = os.environ.get("PYTEST_XDIST_WORKER_COUNT", "")
+    slot = getattr(request.config, "workerinput", {}).get("engine_port_slot")
+    if slot is None:
+        worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")[2:]
+        slot = int(worker) if worker.isdigit() else 0
+    base, size = _engine_port_block(slot, int(count) if count.isdigit() else 1)
+
+    def _worker_port(limit = None):
+        for _ in range(size):
+            port = base + next(_engine_port_counter) % size
+            with socket.socket() as sock:
+                try:
+                    sock.bind(("127.0.0.1", port))
+                except OSError:
+                    continue
+            return port
+        raise RuntimeError("no free engine port left in this worker's block")
+
+    _worker_port.__wrapped__ = module._free_port
+    monkeypatch.setattr(module, "_free_port", _worker_port)
+
+
+@pytest.fixture
+def real_engine_free_port(monkeypatch):
+    """The real allocator, for the tests of the allocator itself."""
+    from core.inference import managed_engine
+    monkeypatch.setattr(managed_engine, "_free_port", managed_engine._free_port.__wrapped__)
 
 
 @pytest.fixture(autouse = True)
@@ -973,14 +1121,26 @@ def rag_home(tmp_path, monkeypatch, linkable_temp_base):
         root.mkdir(parents = True, exist_ok = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(root))
     monkeypatch.setattr(rag_db, "_schema_ready", set())
-    return root
+    yield root
+    from core.rag import vec_cache
+
+    # A background build still holding the db would block its removal on Windows.
+    vec_cache.drain()
+    vec_cache.clear()
 
 
 @pytest.fixture
 def rag_conn(rag_home):
     """A fresh RAG connection bound to the isolated ``rag_home`` database."""
+    import sqlite3
+
     from storage import rag_db
 
+    # Same gate as the RAG tests that skip on their own: an interpreter whose sqlite3 cannot load
+    # extensions (the macos-15 runner's) never has RAG, and the product reports that rather than
+    # failing. Anything else that stops sqlite-vec loading still errors here.
+    if not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"):
+        pytest.skip("sqlite-vec cannot be loaded by this Python's sqlite3")
     conn = rag_db.get_connection()
     try:
         yield conn

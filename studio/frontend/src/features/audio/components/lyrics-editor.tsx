@@ -9,7 +9,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
-import { Add01Icon } from "@hugeicons/core-free-icons";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef } from "react";
 import { insertSectionTag, sectionTags } from "../music/music-policy";
@@ -73,7 +73,7 @@ export function LyricsEditor({
               disabled={disabled}
               className="-me-2 h-auto px-2 py-1 text-ui-11p5"
             >
-              <HugeiconsIcon icon={Add01Icon} className="size-3" />
+              <HugeiconsIcon icon={PlusSignIcon} className="size-3" />
               Add section
             </Button>
           </DropdownMenuTrigger>

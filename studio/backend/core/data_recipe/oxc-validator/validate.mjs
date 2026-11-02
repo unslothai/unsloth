@@ -28,6 +28,12 @@ const OXLINT_MIN_TIMEOUT_MS = 1_000;
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url));
 // Lint with the shipped empty config only: never one found next to or above the snippets.
 const OXLINT_CONFIG_PATH = join(TOOL_DIR, "oxlintrc.json");
+// Windows cannot run the extensionless .bin/oxlint shim (spawn only tries .com/.exe there) and
+// refuses the .cmd one without a shell, so run oxlint's bin entry with this Node instead.
+const IS_WINDOWS = process.platform === "win32";
+const OXLINT_ENTRY = join(TOOL_DIR, "node_modules", "oxlint", "bin", "oxlint");
+// Windows caps a whole command line at 32,767 chars and batch_size is unbounded: lint in chunks.
+const OXLINT_FILE_ARGS_MAX_CHARS = 24_000;
 
 function mapLang(value) {
   const normalized = String(value || "").trim().toLowerCase();
@@ -386,7 +392,7 @@ function fallbackLintResults(entries, message) {
   );
 }
 
-function runLintBatch(entries, budgetMs) {
+function runLintBatch(entries, budgetMs, startedAtMs) {
   if (entries.length === 0) {
     return new Map();
   }
@@ -394,58 +400,75 @@ function runLintBatch(entries, budgetMs) {
   const entryByIndex = new Map(entries.map((entry) => [entry.index, entry]));
   const tempDir = mkdtempSync(join(tmpdir(), "oxlint-"));
   try {
+    // Named files: a folder walk skips a temp dir under any ignoring .gitignore. Relative = short args.
+    const chunks = [[]];
+    let chunkChars = 0;
     for (const entry of entries) {
       const ext = LANG_TO_EXT[entry.lang] ?? "js";
-      const filePath = join(tempDir, `snippet_${entry.index}.${ext}`);
-      writeFileSync(filePath, entry.code, "utf8");
+      const name = `snippet_${entry.index}.${ext}`;
+      writeFileSync(join(tempDir, name), entry.code, "utf8");
+      if (chunkChars + name.length + 1 > OXLINT_FILE_ARGS_MAX_CHARS) {
+        chunks.push([]);
+        chunkChars = 0;
+      }
+      chunks[chunks.length - 1].push(name);
+      chunkChars += name.length + 1;
     }
 
-    const oxlintBin = join(TOOL_DIR, "node_modules", ".bin", "oxlint");
-    const oxlintArgs = [
+    const oxlintBin = IS_WINDOWS
+      ? process.execPath
+      : join(TOOL_DIR, "node_modules", ".bin", "oxlint");
+    const oxlintBaseArgs = [
+      ...(IS_WINDOWS ? [OXLINT_ENTRY] : []),
       "--config",
       OXLINT_CONFIG_PATH,
       "--disable-nested-config",
       ...OXLINT_SUPPRESSED_RULES.flatMap((rule) => ["-A", rule]),
       "--format",
       "json",
-      tempDir,
     ];
-    const timeoutMs = Math.floor(budgetMs - OXLINT_BUDGET_MARGIN_MS - performance.now());
-    if (timeoutMs < OXLINT_MIN_TIMEOUT_MS) {
-      return fallbackLintResults(entries, "oxlint skipped: validation budget exhausted");
-    }
-    const exec = spawnSync(oxlintBin, oxlintArgs, {
-      encoding: "utf8",
-      cwd: TOOL_DIR,
-      timeout: timeoutMs,
-      // SIGTERM is ignorable, and spawnSync then waits out the child regardless.
-      killSignal: "SIGKILL",
-    });
-    if (exec.error) {
-      return fallbackLintResults(
-        entries,
-        `oxlint execution failed: ${exec.error.message}`,
+    const rawDiagnostics = [];
+    for (const names of chunks) {
+      const timeoutMs = Math.floor(
+        budgetMs - OXLINT_BUDGET_MARGIN_MS - (performance.now() - startedAtMs),
       );
-    }
-    const stdout = String(exec.stdout || "").trim();
-    if (!stdout) {
-      const stderr = String(exec.stderr || "").trim();
-      return fallbackLintResults(
-        entries,
-        stderr || "oxlint returned empty output",
-      );
+      if (timeoutMs < OXLINT_MIN_TIMEOUT_MS) {
+        return fallbackLintResults(entries, "oxlint skipped: validation budget exhausted");
+      }
+      const oxlintArgs = [...oxlintBaseArgs, ...names];
+      const exec = spawnSync(oxlintBin, oxlintArgs, {
+        encoding: "utf8",
+        cwd: tempDir,
+        timeout: timeoutMs,
+        // SIGTERM is ignorable, and spawnSync then waits out the child regardless.
+        killSignal: "SIGKILL",
+      });
+      if (exec.error) {
+        return fallbackLintResults(
+          entries,
+          `oxlint execution failed: ${exec.error.message}`,
+        );
+      }
+      const stdout = String(exec.stdout || "").trim();
+      if (!stdout) {
+        const stderr = String(exec.stderr || "").trim();
+        return fallbackLintResults(
+          entries,
+          stderr || "oxlint returned empty output",
+        );
+      }
+
+      let parsed;
+      try {
+        parsed = JSON.parse(stdout);
+      } catch {
+        return fallbackLintResults(entries, "oxlint JSON parse failed");
+      }
+      if (Array.isArray(parsed?.diagnostics)) {
+        rawDiagnostics.push(...parsed.diagnostics);
+      }
     }
 
-    let parsed;
-    try {
-      parsed = JSON.parse(stdout);
-    } catch {
-      return fallbackLintResults(entries, "oxlint JSON parse failed");
-    }
-
-    const rawDiagnostics = Array.isArray(parsed?.diagnostics)
-      ? parsed.diagnostics
-      : [];
     const byIndex = new Map();
 
     for (const diag of rawDiagnostics) {
@@ -518,7 +541,7 @@ function readStdin() {
   });
 }
 
-function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs }) {
+function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs, startedAtMs }) {
   if (mode === "syntax") {
     return codes.map((code, index) =>
       validateSyntaxOne({ code, lang, index, codeShape }).result,
@@ -529,7 +552,7 @@ function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs }) {
     const entries = codes.map((code, index) =>
       resolveLintEntry({ code, lang, index, codeShape }),
     );
-    const lintMap = runLintBatch(entries, oxlintBudgetMs);
+    const lintMap = runLintBatch(entries, oxlintBudgetMs, startedAtMs);
     return entries.map(
       (entry) =>
         lintMap.get(entry.index) ??
@@ -547,7 +570,7 @@ function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs }) {
   const lintTargets = syntaxRuns
     .filter((run) => run.result.is_valid === true)
     .map((run) => run.lintEntry);
-  const lintMap = runLintBatch(lintTargets, oxlintBudgetMs);
+  const lintMap = runLintBatch(lintTargets, oxlintBudgetMs, startedAtMs);
 
   return syntaxRuns.map((run) => {
     if (run.result.is_valid !== true) {
@@ -562,6 +585,17 @@ function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs }) {
       })
     );
   });
+}
+
+function validatePayload(payload, startedAtMs) {
+  const lang = mapLang(payload?.lang);
+  const mode = mapMode(payload?.mode);
+  const codeShape = mapCodeShape(payload?.code_shape);
+  const codes = Array.isArray(payload?.codes) ? payload.codes : [];
+  const oxlintBudgetMs = mapBudgetMs(payload?.timeout_ms);
+  return JSON.stringify(
+    runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs, startedAtMs }),
+  );
 }
 
 async function main() {
@@ -583,17 +617,71 @@ async function main() {
     );
     return;
   }
-
-  const lang = mapLang(payload?.lang);
-  const mode = mapMode(payload?.mode);
-  const codeShape = mapCodeShape(payload?.code_shape);
-  const codes = Array.isArray(payload?.codes) ? payload.codes : [];
-  const oxlintBudgetMs = mapBudgetMs(payload?.timeout_ms);
-  const out = runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs });
-  process.stdout.write(JSON.stringify(out));
+  process.stdout.write(validatePayload(payload, 0));
 }
 
-main().catch((error) => {
-  process.stderr.write(String(error?.stack || error));
-  process.exit(1);
-});
+// --serve: one {"id", "payload"} per line, answered in order with {"id", "result"|"error"}.
+const SERVE_MAX_LINE_CHARS = 64 * 1024 * 1024;
+
+let servedRequests = 0;
+
+function serveLine(line) {
+  // The caller's deadline started before Node did, so the first request pays for startup.
+  const startedAtMs = servedRequests++ === 0 ? 0 : performance.now();
+  let id = null;
+  let reply;
+  try {
+    const request = JSON.parse(line);
+    id = Number.isSafeInteger(request?.id) ? request.id : null;
+    reply = `{"id":${JSON.stringify(id)},"result":${validatePayload(request?.payload, startedAtMs)}}`;
+  } catch (error) {
+    reply = JSON.stringify({ id, error: String(error?.stack || error) });
+  }
+  process.stdout.write(`${reply}\n`);
+}
+
+function serve() {
+  // A closed stdin (caller done or dead) ends the process.
+  const parentPid = process.ppid;
+  if (process.platform !== "win32") {
+    setInterval(() => {
+      if (process.ppid !== parentPid) {
+        process.exit(0);
+      }
+    }, 1000).unref();
+  }
+  // Only each new chunk is scanned: rescanning the whole pending line made large requests quadratic.
+  let pending = [];
+  let pendingChars = 0;
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    let start = 0;
+    let newline = chunk.indexOf("\n");
+    while (newline !== -1) {
+      pending.push(chunk.slice(start, newline));
+      const line = pending.join("");
+      pending = [];
+      pendingChars = 0;
+      serveLine(line);
+      start = newline + 1;
+      newline = chunk.indexOf("\n", start);
+    }
+    if (start < chunk.length) {
+      pending.push(chunk.slice(start));
+      pendingChars += chunk.length - start;
+    }
+    if (pendingChars > SERVE_MAX_LINE_CHARS) {
+      process.exit(2);
+    }
+  });
+  process.stdin.on("error", () => process.exit(0));
+}
+
+if (process.argv.includes("--serve")) {
+  serve();
+} else {
+  main().catch((error) => {
+    process.stderr.write(String(error?.stack || error));
+    process.exit(1);
+  });
+}

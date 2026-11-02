@@ -376,6 +376,34 @@ def test_completion_masking_masks_the_prompt():
     assert labels[response:] == ids[response:]
 
 
+def test_completion_drops_from_truncation_name_the_context_length():
+    tokenizer = _tokenizer()
+    tokenizer._unsloth_input_part = "[U]"
+    tokenizer._unsloth_output_part = "[B]"
+    long_prompt = "[U] " + " ".join(WORDS[:20]) + " [B] w4 w5 [EOS]"
+    info = {
+        "dataset": Dataset.from_dict({"text": [long_prompt] * 3 + ["[U] w1 [B] w2 [EOS]"]}),
+        "final_format": "",
+    }
+    with pytest.raises(ValueError) as exc:
+        mlt._tokenize_member(info, tokenizer, {"train_on_completions": True}, "tiny/qwen3", 16)
+    message = str(exc.value)
+    assert "3/4 samples (75.0%) were dropped" in message
+    assert "3 of them reach the context length (16 tokens)" in message
+    assert "response template was not found in the formatted samples" not in message
+
+
+def test_completion_drops_without_a_template_keep_the_template_advice():
+    tokenizer = _tokenizer()
+    tokenizer._unsloth_input_part = "[U]"
+    tokenizer._unsloth_output_part = "[B]"
+    info = {"dataset": Dataset.from_dict({"text": ["[U] w1 w2 [EOS]"] * 3}), "final_format": ""}
+    with pytest.raises(ValueError) as exc:
+        mlt._tokenize_member(info, tokenizer, {"train_on_completions": True}, "tiny/qwen3", 64)
+    assert "response template was not found" in str(exc.value)
+    assert "context length" not in str(exc.value)
+
+
 def test_batch_trains_through_sft_trainer_and_saves_checkpoints(monkeypatch, tmp_path):
     from trl import SFTTrainer
 

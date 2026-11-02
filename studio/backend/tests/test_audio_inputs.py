@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
+import json
 import math
 import os
 import time
@@ -83,6 +85,24 @@ def _clip(rate = 16000, audio_type = "snac") -> dict:
 def _frames(path) -> tuple[int, int, int]:
     with wave.open(str(path)) as w:
         return w.getframerate(), w.getnchannels(), w.getnframes()
+
+
+def test_transcode_writes_the_wav_header_sizes_once_at_close(tmp_path, monkeypatch):
+    src = tmp_path / "clip.wav"
+    src.write_bytes(encode("wav", "pcm_s16le", 44100, "stereo", 1.5))
+    patches = []
+    real = wave.Wave_write._patchheader
+
+    def patch(self):
+        patches.append(self._datawritten)
+        return real(self)
+
+    monkeypatch.setattr(wave.Wave_write, "_patchheader", patch)
+    dst = tmp_path / "out.wav"
+    info = audio_inputs.transcode(src, dst)
+    assert patches == [os.path.getsize(dst) - 44]
+    assert _frames(dst) == (44100, 2, int(round(44100 * 1.5)))
+    assert info == {"duration_s": 1.5, "sample_rate": 44100, "channels": 2}
 
 
 @pytest.fixture
@@ -176,8 +196,18 @@ def test_an_oversize_body_is_refused_while_streaming():
 @pytest.mark.parametrize(
     "patches, make, status, detail",
     [
-        ({"AUDIO_INPUT_MAX_BYTES": 2048}, lambda: wav_bytes(2.0), 413, "Audio is too large."),
-        ({"MAX_SECONDS": 1}, lambda: wav_bytes(2.0), 413, "Audio is longer than 0 minutes."),
+        (
+            {"audio_input_max_bytes": lambda: 2048},
+            lambda: wav_bytes(2.0),
+            413,
+            "Audio is too large.",
+        ),
+        (
+            {"transcribe_max_seconds": lambda: 1},
+            lambda: wav_bytes(2.0),
+            413,
+            "Audio is longer than 0 minutes.",
+        ),
         ({}, lambda: b"", 400, "Audio is empty."),
         ({}, lambda: b"not audio " * 120, 400, "This file is not audio Unsloth can read."),
         ({}, _video_without_audio, 400, "This file has no audio stream."),
@@ -192,13 +222,128 @@ def test_bad_or_over_cap_uploads_are_refused(client, monkeypatch, patches, make,
     assert not list(audio_inputs.inputs_dir().glob("*.wav"))
 
 
-def test_the_body_middleware_passes_the_upload_through_at_its_own_cap():
+def test_the_body_middleware_passes_the_upload_through_at_its_own_cap(monkeypatch):
     import main
 
+    monkeypatch.delenv(limits.AUDIO_INPUT_MAX_UPLOAD_MB_ENV, raising = False)
     assert limits.AUDIO_INPUT_MAX_BYTES == 200 * 1024 * 1024
     for path in (INPUTS, f"{INPUTS}/"):
-        assert main._get_upload_passthrough_request_max_bytes(path) == limits.AUDIO_INPUT_MAX_BYTES
+        cap = main._get_upload_passthrough_request_max_bytes(path)
+        assert cap == limits.audio_input_max_bytes()
     assert f"{INPUTS}/x/transcribe" not in main._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+
+
+@pytest.fixture
+def kib_limits(monkeypatch):
+    """Upload limits in KiB rather than MiB, so a few seconds of WAV crosses them."""
+    monkeypatch.delenv(limits.AUDIO_INPUT_MAX_UPLOAD_MB_ENV, raising = False)
+    monkeypatch.setattr(limits, "_BYTES_PER_MB", 1024)
+    monkeypatch.setattr(limits, "AUDIO_INPUT_MAX_BYTES", 200 * 1024)
+    setting = {"mb": 300}
+    monkeypatch.setattr(limits, "get_upload_limit_mb", lambda: setting["mb"])
+    return setting
+
+
+@pytest.mark.parametrize("setting, cap", [(300, 300 * 1024), (100, 200 * 1024)])
+def test_the_audio_cap_follows_the_upload_setting_above_its_floor(client, kib_limits, setting, cap):
+    import main
+
+    kib_limits["mb"] = setting
+    assert limits.audio_input_max_bytes() == cap
+    assert main._get_upload_passthrough_request_max_bytes(INPUTS) == cap
+    fits, over_floor = wav_bytes(6.0), wav_bytes(9.0)  # ~188 KiB and ~281 KiB
+    assert len(fits) < 200 * 1024 < len(over_floor) < 300 * 1024
+    assert _upload(client, fits, "a.wav").status_code == 201
+    response = _upload(client, over_floor, "b.wav")
+    assert response.status_code == (201 if setting == 300 else 413), response.text
+    with pytest.raises(audio_inputs.AudioInputError) as refused:
+        asyncio.run(audio_inputs.save_stream(_chunks([b"\x00" * (cap + 1)]), "d.wav"))
+    assert (refused.value.status, refused.value.detail) == (413, "Audio is too large.")
+
+
+@pytest.mark.parametrize(
+    "env, cap",
+    [("0", None), ("2", 2 * 1024), ("abc", 300 * 1024), ("-1", 300 * 1024), ("", 300 * 1024)],
+)
+def test_the_audio_cap_env_overrides_the_setting_exactly(kib_limits, monkeypatch, env, cap):
+    import sys
+
+    import main
+    from routes.settings import _upload_limit_response
+
+    monkeypatch.setenv(limits.AUDIO_INPUT_MAX_UPLOAD_MB_ENV, env)
+    assert limits.audio_input_max_bytes() == cap
+    passthrough = main._get_upload_passthrough_request_max_bytes(INPUTS)
+    assert passthrough == (sys.maxsize if cap is None else cap)
+    assert _upload_limit_response(300).audio_input_max_bytes == cap
+
+
+def test_no_audio_cap_takes_any_size(client, kib_limits, monkeypatch):
+    monkeypatch.setenv(limits.AUDIO_INPUT_MAX_UPLOAD_MB_ENV, "0")
+    big = wav_bytes(20.0)
+    assert len(big) > 300 * 1024
+    assert _upload(client, big, "big.wav").status_code == 201
+
+
+def test_the_upload_limit_settings_name_the_audio_cap(monkeypatch):
+    from routes.settings import _upload_limit_response
+
+    monkeypatch.delenv(limits.AUDIO_INPUT_MAX_UPLOAD_MB_ENV, raising = False)
+    assert _upload_limit_response(1000).audio_input_max_bytes == 1000 * 1024 * 1024
+    assert _upload_limit_response(100).audio_input_max_bytes == 200 * 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    "env, seconds", [("90", 5400), ("10", 1800), ("abc", 14400), ("0", 14400), ("-5", 14400)]
+)
+def test_the_longest_upload_reads_its_env_in_minutes(monkeypatch, env, seconds):
+    monkeypatch.setenv(audio_inputs.TRANSCRIBE_MAX_MINUTES_ENV, env)
+    assert audio_inputs.transcribe_max_seconds() == seconds
+
+
+@pytest.mark.parametrize(
+    "seconds, words",
+    [
+        (14400, "4 hours"),
+        (3600, "1 hour"),
+        (5400, "90 minutes"),
+        (1800, "30 minutes"),
+        (1, "0 minutes"),
+    ],
+)
+def test_lengths_read_in_hours_or_minutes(seconds, words):
+    assert audio_inputs.length_words(seconds) == words
+
+
+def test_an_upload_past_the_old_30_minutes_is_kept(client, monkeypatch):
+    monkeypatch.delenv(audio_inputs.TRANSCRIBE_MAX_MINUTES_ENV, raising = False)
+    monkeypatch.setattr(audio_inputs, "MAX_SECONDS", 1)
+    response = _upload(client, wav_bytes(2.0), "long.wav")
+    assert response.status_code == 201, response.text
+    assert response.json()["duration_s"] == pytest.approx(2.0)
+
+
+def test_an_upload_whose_wav_would_pass_the_store_cap_is_refused(client, monkeypatch):
+    monkeypatch.setattr(audio_inputs, "BYTE_CAP", 20000)
+    response = _upload(client, wav_bytes(1.0), "big.wav")
+    assert response.status_code == 413
+    assert response.json()["detail"].startswith("This audio is too long to keep: its WAV copy")
+    assert not list(audio_inputs.inputs_dir().iterdir())
+    monkeypatch.setattr(audio_inputs, "BYTE_CAP", 64000)
+    assert _upload(client, wav_bytes(1.0), "fits.wav").status_code == 201
+
+
+def test_the_store_cap_reads_in_gb():
+    assert audio_inputs._size_words(audio_inputs.BYTE_CAP) == "2 GB"
+
+
+def test_media_audio_keeps_the_30_minute_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(audio_inputs, "MAX_SECONDS", 1)
+    src = tmp_path / "clip.wav"
+    src.write_bytes(wav_bytes(2.0))
+    with pytest.raises(audio_inputs.AudioInputError) as refused:
+        audio_inputs.save_from_media(src, "clip")
+    assert refused.value.status == 413
 
 
 def test_the_sweep_drops_the_oldest_past_the_byte_cap_then_all_past_the_ttl(client, monkeypatch):
@@ -359,3 +504,103 @@ def test_the_sweep_reaps_a_prepared_upload_a_crash_left_behind():
         os.utime(path, (time.time() - age, time.time() - age))
     audio_inputs.sweep()
     assert not stale.exists() and waiting.exists()
+
+
+def _sidecar_for(directory, input_id, touched):
+    import json
+    meta = {
+        "name": "a.wav",
+        "duration_s": 1,
+        "sample_rate": 16000,
+        "channels": 1,
+        "sha256": input_id,
+        "created_at": "x",
+        "touched_at": touched,
+    }
+    (directory / f"{input_id}.json").write_text(json.dumps(meta), encoding = "utf-8")
+
+
+def test_the_sweep_lists_prepared_copies_once_for_every_live_input(monkeypatch):
+    directory = audio_inputs.inputs_dir()
+    now = time.time()
+    for i in range(6):
+        input_id = f"{i:032x}"
+        (directory / f"{input_id}.wav").write_bytes(b"w" * 10)
+        (directory / f"{input_id}.24000.mono.wav").write_bytes(b"d" * 10)
+        _sidecar_for(directory, input_id, now)
+    globs = []
+    real = audio_inputs._derived
+    monkeypatch.setattr(audio_inputs, "_derived", lambda d, s: globs.append(s) or real(d, s))
+    assert audio_inputs.sweep() == 0
+    assert globs == []
+
+
+def test_the_sweep_sizes_prepared_copies_like_the_per_input_glob(monkeypatch):
+    directory = audio_inputs.inputs_dir()
+    now = time.time()
+    names = {
+        "aaaa": ["aaaa.24000.mono.wav", "aaaa..wav", "aaaa.x.y.wav", "aaaa.1.wav.tmp"],
+        "aaaab": ["aaaab.1.wav"],
+        "bbbb": ["bbbb.16000.stereo.m30.wav"],
+        "cc-dd_1": ["cc-dd_1.24000.mono.wav", "cc-dd_1x.1.wav"],
+    }
+    for age, (input_id, derived) in enumerate(names.items()):
+        (directory / f"{input_id}.wav").write_bytes(b"w" * 100)
+        for name in derived:
+            (directory / name).write_bytes(b"d" * 1000)
+        _sidecar_for(directory, input_id, now - age)
+    (directory / "zz.notes.wav").write_bytes(b"q")
+    index = audio_inputs._derived_index(directory)
+    for input_id in names:
+        assert sorted(audio_inputs._derived_from(index, directory, input_id)) == sorted(
+            audio_inputs._derived(directory, input_id)
+        )
+    # aaaa = 100 + 3 * 1000 (the .tmp is not a WAV), aaaab = 1100, bbbb = 1100, cc-dd_1 = 1100.
+    assert audio_inputs.sweep(byte_cap = 3100 + 1100 + 1100) == 1
+    assert not (directory / "cc-dd_1.wav").exists()
+    assert (directory / "cc-dd_1x.1.wav").exists()
+    assert (directory / "bbbb.wav").exists()
+
+
+@pytest.mark.parametrize(
+    "fmt, codec, rate, layout, start_s, end_s",
+    [
+        ("mp4", "aac", 44100, "stereo", 0.25, 1.1),
+        ("wav", "pcm_s16le", 96000, "mono", 0.0, None),
+        ("flac", "flac", 16000, "5.1", 0.5, None),
+    ],
+)
+def test_a_media_cut_is_decoded_once_and_stored_as_cut(
+    tmp_path, monkeypatch, fmt, codec, rate, layout, start_s, end_s
+):
+    src = tmp_path / f"clip.{fmt}"
+    src.write_bytes(encode(fmt, codec, rate, layout, 1.5))
+    whole = tmp_path / "whole.wav"
+    audio_inputs.transcode(src, whole)
+    with wave.open(str(whole)) as r:
+        out_rate, channels, total = r.getframerate(), r.getnchannels(), r.getnframes()
+        first = int(start_s * out_rate)
+        last = total if end_s is None else min(total, int(end_s * out_rate))
+        r.setpos(first)
+        expected = io.BytesIO()
+        with wave.open(expected, "wb") as w:
+            w.setparams(r.getparams())
+            w.writeframes(r.readframes(last - first))
+
+    calls = []
+    real = audio_inputs.transcode
+    monkeypatch.setattr(audio_inputs, "transcode", lambda *a, **k: calls.append(a) or real(*a, **k))
+    record, created = audio_inputs.save_from_media(src, "clip", start_s, end_s)
+    assert created and len(calls) == 1
+    stored = audio_inputs.inputs_dir() / f"{record['id']}.wav"
+    assert stored.read_bytes() == expected.getvalue()
+    assert record["sample_rate"] == out_rate and record["channels"] == channels
+    assert record["duration_s"] == round((last - first) / out_rate, 3)
+    meta = json.loads((audio_inputs.inputs_dir() / f"{record['id']}.json").read_text())
+    assert meta["sha256"] == hashlib.sha256(expected.getvalue()).hexdigest()
+    assert meta["bytes"] == len(expected.getvalue())
+
+    again, created = audio_inputs.save_from_media(src, "clip", start_s, end_s)
+    assert not created and again["id"] == record["id"]
+    leftovers = [p.name for p in audio_inputs.inputs_dir().iterdir() if p.name.startswith(".")]
+    assert leftovers == []
