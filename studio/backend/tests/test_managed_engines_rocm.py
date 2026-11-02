@@ -99,19 +99,19 @@ def test_rocm_engine_stays_isolated_even_when_studio_matches_its_lock(rocm, monk
     assert not plan["shared"] and not plan["provided"]
 
 
-def test_windows_waits_for_hardware_detection_before_choosing_the_profile(monkeypatch):
+def test_windows_uses_installed_build_metadata_before_hardware_detection(monkeypatch):
     # IS_ROCM is False until detection settles; Windows has no KFD to fall back on.
+    from core import _torchao_stub
     from utils.hardware import hardware
 
     monkeypatch.setattr(install.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hardware, "IS_ROCM", False)
     monkeypatch.setattr(hardware, "DETECTION_COMPLETE", threading.Event())
-
-    def detect(*_a, **_k):
-        hardware.IS_ROCM = True
-        hardware.DETECTION_COMPLETE.set()
-
-    monkeypatch.setattr(hardware, "ensure_hardware_detected", detect)
+    monkeypatch.delitem(install.sys.modules, "torch", raising = False)
+    monkeypatch.setattr(_torchao_stub, "_installed_torch_is_rocm", lambda: True)
+    monkeypatch.setattr(
+        hardware, "ensure_hardware_detected", lambda: pytest.fail("profile imported torch")
+    )
     assert install.gpu_platform() == "rocm"
     assert install.profile("vllm")["lock"] == "vllm-linux-rocm723"
 

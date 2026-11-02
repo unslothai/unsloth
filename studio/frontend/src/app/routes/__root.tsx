@@ -14,7 +14,7 @@ import { Navbar } from "@/components/navbar";
 import { SidebarEdgeTrigger } from "@/components/sidebar-edge-trigger";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
-import { videoNavHint } from "@/config/hardware-verdict";
+import { routeNeedsHardware, videoNavHint } from "@/config/hardware-verdict";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
 import { DownloadApprovalDialog } from "@/features/browser";
 import {
@@ -374,8 +374,11 @@ function isChatOnlyAllowed(pathname: string, trainAvailable: boolean): boolean {
 }
 
 export const Route = createRootRoute({
-  beforeLoad: async ({ location }) => {
-    await fetchDeviceType();
+  beforeLoad: async ({ location, preload }) => {
+    await fetchDeviceType({
+      // Hover preloads must leave an idle session cold.
+      detectHardware: !preload && routeNeedsHardware(location.pathname),
+    });
     const { isChatOnly, isTrainUnavailable, capabilitiesUnknown } = usePlatformStore.getState();
     const unmeasured = capabilitiesUnknown();
     if (
