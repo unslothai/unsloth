@@ -1374,6 +1374,7 @@ def test_an_auto_drafter_gets_offload_room_only_within_the_cap_where_it_then_fit
             True,
             {
                 "load_in_4bit": False,
+                "kv_bits": None,
                 "costless": True,
                 "baseline": {"offload": (0.5, 0.5), "prefill_chunk": 8192},
                 "offload": (0.5, 0.53),
@@ -1390,6 +1391,7 @@ def test_an_auto_drafter_gets_offload_room_only_within_the_cap_where_it_then_fit
     assert resolve(False) == ((None, 0.78, 8192), None)
     assert asked[-1][4] == {
         "load_in_4bit": False,
+        "kv_bits": None,
         "offload": (None, 1.0),
         "prefill_chunk": None,
         "reserve": False,
@@ -5376,9 +5378,7 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
     # ... and is a request, so a load that cannot honour it says why.
     failing.append(True)
     backend.load_model(config, spec_draft_model = "org/d")
-    monkeypatch.setattr(
-        mlx_speculative, "speculation_refusal", lambda **_k: mlx_speculative.KV_QUANT
-    )
+    monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_k: "refused")
     reasons = [
         entry["spec_fallback_reason"]
         for entry in (
@@ -5386,9 +5386,20 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
             backend.load_model(config, spec_draft_model = "org/d") and backend.models["org/text"],
         )
     ]
-    assert reasons == [mlx_speculative.RUNTIME_ERROR, mlx_speculative.KV_QUANT]
-    # A diffusion model gets no draft at load, so the resident batch cannot speculate on it either.
+    assert reasons == [mlx_speculative.RUNTIME_ERROR, "refused"]
     failing.clear()
+    # An adapter drafts on mlx-vlm's route, which a text architecture's adapter cannot take.
+    asked = []
+    monkeypatch.setattr(
+        mlx_speculative, "speculation_refusal", lambda **k: asked.append(k["lora"]) or "refused"
+    )
+    monkeypatch.setattr(mlx_inference, "load_mlx_adapter_processor", lambda p, *_a: p)
+    monkeypatch.setattr(mlx_inference, "load_mlx_adapter_tokenizer", lambda t, *_a: t)
+    for is_vision in (False, True):
+        adapter = SimpleNamespace(**{**vars(config), "is_lora": True, "is_vision": is_vision})
+        backend.load_model(adapter, spec_draft_model = "org/d")
+    assert asked == [True, False]
+    # A diffusion model gets no draft at load, so the resident batch cannot speculate on it either.
     monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_k: None)
     monkeypatch.setattr(mlx_inference, "_vlm_generation_is_diffusion", lambda model: True)
     backend.load_model(config, max_seq_length = 0, speculative_type = "ngram")
@@ -7590,21 +7601,27 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
     assert seen["draft_model"] is draft and seen["extra"] == 1 and prepared == [([7, 8, 9], 0.5, 0)]
     # The draft is told every processor the reply runs: none reaches mlx-vlm as a shortcut.
     assert "repetition_penalty" not in seen and draft.given == seen["logits_processors"] != []
+    # A grammar settles on what verification accepted, so its reply drafts too.
+    grammar = SimpleNamespace(allows_reasoning = False, stops_on = lambda ids: None)
+    with monkeypatch.context() as patch:
+        patch.setattr(mlx_inference, "_build_grammar_constraint", lambda *_a, **_k: grammar)
+        seen = _drive_vlm_generation(backend, patch, response_format = {"type": "json_object"})
+    assert seen["draft_model"] is draft and [hasattr(p, "settle") for p in draft.given] == [True]
     monkeypatch.setattr(
         mlx_inference, "_mlx_sampling_processors", lambda **_: [lambda tokens, logits: logits]
     )
     timings = backend.last_generation_stats["timings"]
     assert (timings["draft_n"], timings["draft_n_accepted"]) == (6, 4)
-    for request in (
-        {"repetition_penalty": 1.1},
-        {"tools": [{"type": "function"}]},
-        {"tool_protocol_active": True},
-    ):
+    for request in ({"repetition_penalty": 1.1},):
         seen = _drive_vlm_generation(backend, monkeypatch, **request)
         assert "max_tokens" in seen and "draft_model" not in seen
         assert "draft_n" not in backend.last_generation_stats["timings"]
-    # Only the drafted reply entered the verify scope: open from preparing the draft through decoding.
-    assert len(prepared) == 1 and scopes == [["open"]] * 2 and verify_scope == ["open", "closed"]
+    # Only the drafted replies entered the verify scope: open from preparing the draft through decoding.
+    assert len(prepared) == 2 and verify_scope == ["open", "closed"] * 2
+    assert scopes == [["open"], ["open"], ["open", "closed", "open"]]
+    # A tool reply drafts like any other: the target verifies every token the call is parsed from.
+    for request in ({"tools": [{"type": "function"}]}, {"tool_protocol_active": True}):
+        assert _drive_vlm_generation(backend, monkeypatch, **request)["draft_model"] is draft
     opened, backend._is_vlm, backend._vlm_batch_unavailable_reason = [], True, lambda r, **_k: None
     backend._vlm_resident_unavailable_reason = lambda r, gaps = iter(["no stream"]): next(gaps, None)
     assert backend.batch_unavailable_reason([{}, {}]) == "no stream"
@@ -8790,9 +8807,9 @@ def test_a_vision_row_times_its_prefill_wherever_the_batch_runs_it(monkeypatch, 
         sampling = {},
         processors = None,
         think_prefix = "",
+        videos = None,
         stream = _vlm_row(backend),
         streamed = None,
-        speculates = True,
     )
     backend._plan_vlm_request = lambda request, **_k: plan
     backend._reads_vision = False
@@ -8910,6 +8927,7 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
         sampling = {},
         processors = None,
         think_prefix = "",
+        videos = None,
         stream = _vlm_row(backend),
         streamed = None,
     )
@@ -9116,20 +9134,24 @@ def test_a_quantized_vision_load_batches_only_as_resident_rows(monkeypatch):
     assert backend.resident_unavailable_reason({}) == "old mlx-vlm"
 
 
-@pytest.mark.parametrize("gap", (None, "speculative", "old zoo", "no decoder", "no vision"))
+@pytest.mark.parametrize(
+    "gap", (None, "drafted", "drafted and quantized", "old zoo", "no decoder", "no vision")
+)
 def test_a_video_reply_batches_only_as_a_fixed_command_of_a_load_that_reads_it(monkeypatch, gap):
     from core.inference import mlx_inference
 
     engine, backend = _batch_engine(monkeypatch), _vlm_backend(monkeypatch, markers = None)
-    backend._speculative_draft = gap == "speculative" or None
+    backend._speculative_draft = gap in ("drafted", "drafted and quantized") or None
+    backend._kv_quant = {"kv_bits": 8 if gap == "drafted and quantized" else None}
     backend._reads_vision, available = gap != "no vision", lambda request: None
     backend._vlm_batch_unavailable_reason = backend._vlm_resident_unavailable_reason = available
+    monkeypatch.setattr(mlx_inference, "_speculative_quantized_row_gap", lambda: None)
     monkeypatch.setattr(mlx_inference, "_mlx_vlm_decodes_video", lambda: gap != "no decoder")
     fields = SimpleNamespace(__dataclass_fields__ = ("image", "videos")[: 1 + (gap != "old zoo")])
     monkeypatch.setattr(engine, "GenerationRequest", fields, raising = False)
     clip, sent = {"videos": [_CLIP_B64]}, {"videos_base64": [_CLIP_B64]}
     for row in (clip, sent):
-        assert (backend.batch_unavailable_reason([{}, row]) is None) == (gap is None)
+        assert (backend.batch_unavailable_reason([{}, row]) is None) == (gap in (None, "drafted"))
     assert backend.resident_unavailable_reason(sent) == "a reply carries a video clip"
     assert backend.resident_unavailable_reason({}) is None
 
@@ -9296,6 +9318,100 @@ def test_an_out_of_range_logit_bias_id_cannot_corrupt_a_batch(batch_backend):
     assert replies[1] == replies[0]
     assert replies[2] == replies[0]
     assert replies[3] != replies[0]
+
+
+DRAFTING_MODEL = "Qwen/Qwen3.5-0.8B"  # its checkpoint keeps the MTP head
+CITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "city": {"type": "string"},
+        "country": {"type": "string"},
+        "landmarks": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["city", "country", "landmarks"],
+    "additionalProperties": False,
+}
+
+
+@pytest.fixture(scope = "module")
+def drafting_backend(allow_outbound_network):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    loaded = MLXInferenceBackend()
+    with allow_outbound_network():
+        loaded.load_model(DRAFTING_MODEL, speculative_type = "mtp")
+    assert loaded._speculative_draft is not None and loaded._speculative_draft.drafter is not None
+    return loaded
+
+
+def _drafted_reply(backend, drafted, **request):
+    held = backend._speculative_draft
+    backend._speculative_draft = held if drafted else None
+    # Each reply prefills its prompt: a drafted reply resumed from a snapshot can round a tie differently.
+    backend._release_vlm_snapshots()
+    try:
+        text = ""
+        for text in backend.generate_chat_response(**request):
+            pass
+    finally:
+        backend._speculative_draft = held
+    return text, backend.last_generation_stats["timings"]
+
+
+def _is_city(text):
+    city = json.loads(text)
+    return (
+        set(city) == set(CITY_SCHEMA["properties"])
+        and isinstance(city["city"], str)
+        and isinstance(city["country"], str)
+        and isinstance(city["landmarks"], list)
+        and all(isinstance(landmark, str) for landmark in city["landmarks"])
+    )
+
+
+@metal_only
+def test_a_drafted_constrained_reply_is_the_plain_constrained_reply(drafting_backend):
+    from unsloth_zoo.mlx import speculative
+
+    if not hasattr(speculative._Row, "settle"):
+        pytest.skip("this unsloth-zoo decodes a constrained reply without drafting")
+    request = dict(
+        messages = [
+            {"role": "user", "content": "Describe Paris as JSON with three famous landmarks."}
+        ],
+        response_format = {"type": "json_schema", "schema": CITY_SCHEMA},
+        enable_thinking = False,
+        max_new_tokens = 96,
+    )
+    greedy = dict(request, temperature = 0.0, top_p = 1.0, top_k = 0)
+    drafted, timings = _drafted_reply(drafting_backend, True, **greedy)
+    plain, plain_timings = _drafted_reply(drafting_backend, False, **greedy)
+    assert timings["draft_n_accepted"] > 0
+    assert drafted == plain and timings["predicted_n"] == plain_timings["predicted_n"]
+    assert _is_city(drafted)
+    for seed in (1, 2):
+        sampled, timings = _drafted_reply(
+            drafting_backend, True, **request, temperature = 0.8, top_p = 0.95, top_k = 0, seed = seed
+        )
+        assert timings["draft_n_accepted"] > 0 and _is_city(sampled)
+
+
+def test_a_row_keeps_a_settling_failure_rather_than_raising_it_through_the_batch():
+    from core.inference import mlx_inference
+
+    def processor(tokens, logits):
+        return logits
+
+    def settle(tokens):
+        raise ValueError("refused")
+
+    processor.settle = settle
+    row = SimpleNamespace(failure = None)
+    (guarded,) = mlx_inference._failing_alone(row, [processor])
+    guarded.settle([1])
+    assert str(row.failure) == "refused"
+    plain = mlx_inference._failing_alone(row, [lambda tokens, logits: logits])[0]
+    assert not hasattr(plain, "settle")
 
 
 def test_a_repeated_token_is_charged_the_penalty_it_earned():
@@ -9674,6 +9790,86 @@ def test_advance_before_the_first_mask_raises_rather_than_dropping_the_token(tin
     constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
     with pytest.raises(gc.GrammarDesyncError, match = "before the grammar was bound"):
         constraint.advance(tiny_tokenizer.encode("{", add_special_tokens = False)[0])
+
+
+def _grammar_after_prompt(
+    tokenizer,
+    response_format = JSON_SCHEMA_FORMAT,
+    prompt = (0, 0),
+    **build,
+):
+    mx = _metal_mx()
+    constraint = build_constraint(response_format, tokenizer, build.pop("text", "p"), **build)
+    processor = gc.make_grammar_logits_processor(constraint)
+    width = len(gc._unwrap_hf_tokenizer(tokenizer))
+    processor(mx.array(prompt), mx.zeros((width,), dtype = mx.float32))
+    return processor
+
+
+def _mask_at(processor, history, width):
+    mx = _metal_mx()
+    return np.asarray(processor(mx.array(history), mx.zeros((width,), dtype = mx.float32)))
+
+
+@pytest.mark.parametrize("in_reasoning", [False, True])
+def test_a_settled_grammar_masks_each_drafted_position_as_a_plain_decode_would(
+    tiny_tokenizer, in_reasoning
+):
+    mx, width, prompt = _metal_mx(), len(tiny_tokenizer), [0, 0]
+    encode = lambda text: tiny_tokenizer.encode(text, add_special_tokens = False)
+    eos = tiny_tokenizer.eos_token_id
+    # The reasoning prelude is a max_tokens rule, a state llguidance's rollback does not restore.
+    build = dict(text = "chat\n<think>\n", reasoning_is_extracted = True) if in_reasoning else {}
+    grammar = lambda: _grammar_after_prompt(tiny_tokenizer, **build)
+
+    def plain(generated):
+        return _mask_at(grammar(), prompt + generated, width)
+
+    drafting = grammar()
+    committed = encode("ok" if in_reasoning else "{")
+    drafting.settle(mx.array(prompt + committed))
+    for drafted in (encode('"a":12}'), encode('"a":3'), encode('"a":45}')):
+        for j in range(len(drafted) + 1):
+            np.testing.assert_array_equal(
+                _mask_at(drafting, prompt + committed + drafted[:j], width),
+                plain(committed + drafted[:j]),
+            )
+    # Past a token the grammar refuses, or an end token, a position is never accepted.
+    refused = [encode('"a":1}') + [eos] + encode("1")] + ([] if in_reasoning else [encode('"a"]1')])
+    for drafted in refused:
+        assert not np.isneginf(_mask_at(drafting, prompt + committed + drafted, width)).any()
+    # Verification kept '"a":' and drew 7: the matcher ends there, whatever was drafted past it.
+    committed += encode('"a":7')
+    drafting.settle(mx.array(prompt + committed))
+    np.testing.assert_array_equal(_mask_at(drafting, prompt + committed, width), plain(committed))
+    if not in_reasoning:
+        # Rows take tokens past an end token the decode loop stops on, which a plain advance ignores.
+        drafting.settle(mx.array(prompt + committed + encode("}") + [eos] + encode("1")))
+
+
+def test_a_drafted_state_the_schema_cannot_spell_fails_only_once_accepted():
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+    mx = _metal_mx()
+    tokenizer, runtime_stop = _two_stop_tokenizer()
+    wrapped, width = TokenizerWrapper(tokenizer, eos_token_ids = [runtime_stop]), len(tokenizer)
+    control = tokenizer.convert_ids_to_tokens(runtime_stop)
+    either = {"type": "json_schema", "schema": {"anyOf": [{"const": control}, {"type": "integer"}]}}
+    quote, digit = (tokenizer.encode(text, add_special_tokens = False)[0] for text in '"4')
+    for accepted in ([digit], [quote], [quote, digit]):
+        processor = _grammar_after_prompt(wrapped, either, prompt = [0])
+        processor.settle(mx.array([0]))
+        assert not np.isneginf(_mask_at(processor, [0, quote], width)).any()
+        if accepted[0] == quote:
+            with pytest.raises(ResponseFormatError, match = "reserves as a control token"):
+                processor.settle(mx.array([0, *accepted]))
+        else:
+            processor.settle(mx.array([0, digit]))
+            assert set(np.nonzero(~np.isneginf(_mask_at(processor, [0, digit], width)))[0]) >= {
+                digit,
+                runtime_stop,
+            }
 
 
 def _uncopyable_naive_detokenizer(detokenizers):
@@ -10840,6 +11036,104 @@ def _video_vlm_backend(monkeypatch, streams):
     backend._is_vlm = True
     backend._reads_vision = True
     return backend
+
+
+def test_a_quantized_speculative_load_batches_unless_its_caches_are_turboquant(monkeypatch):
+    from core.inference import mlx_inference
+
+    gaps = {"row": None, "drafted": "no drafted rows"}
+    monkeypatch.setattr(mlx_inference, "_row_quantized_cache_gap", lambda: gaps["row"])
+    monkeypatch.setattr(mlx_inference, "_speculative_quantized_row_gap", lambda: gaps["drafted"])
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._is_vlm, backend._kv_quant = True, {"kv_bits": 4}
+    assert backend._kv_policy_batch_reason(resident = True) is None
+    backend._speculative_draft = object()
+    assert backend._kv_policy_batch_reason(resident = True) == "no drafted rows"
+    gaps["drafted"] = None
+    assert backend._kv_policy_batch_reason(resident = True) is None
+    # The fixed multi-reply command of a speculative load is that resident session.
+    assert "does not carry" in backend._kv_policy_batch_reason()
+    backend._turboquant = True
+    assert "TurboQuant" in backend._kv_policy_batch_reason(resident = True)
+    # A budget alone leaves the caches at full precision.
+    backend._kv_quant, backend._kv_context_budget = {"kv_bits": None}, 1
+    gaps["row"] = "no rows"
+    assert backend._kv_policy_batch_reason(resident = True) == "no rows"
+
+
+def test_a_drafted_batch_row_decodes_its_own_clip_and_resumes_no_cache(monkeypatch):
+    from contextlib import ExitStack
+
+    from core.inference import mlx_inference
+
+    engine = _batch_engine(monkeypatch)
+    monkeypatch.setattr(engine, "GenerationRequest", lambda **k: k, raising = False)
+    monkeypatch.setattr(engine, "SamplingParams", lambda **k: k, raising = False)
+    monkeypatch.setattr(engine, "BatchRowRefused", ValueError, raising = False)
+    clips = {"videos": ["clip.mp4"], "fps": 2.0}
+    monkeypatch.setattr(mlx_inference, "_batch_clips", lambda stack, plans, _p: [clips])
+    added, released = [], []
+    plan = SimpleNamespace(
+        videos = ("a",),
+        images = None,
+        prompt = "p",
+        max_tokens = 4,
+        sampling = {},
+        processors = None,
+        think_prefix = "",
+    )
+    session = mlx_inference._VisionBatchSession.__new__(mlx_inference._VisionBatchSession)
+    session.backend = SimpleNamespace(
+        _plan_vlm_request = lambda *_a, **_k: plan,
+        _vlm_batch_row_cache = lambda *_a, **_k: pytest.fail("a clip's row resumes no cache"),
+        _kv_quant_bits = lambda: None,
+        _release_vlm_snapshots = lambda: released.append(True),
+        _vlm_batch_prompt = lambda prompt: {"prompt": prompt},
+        _processor = None,
+        _model = None,
+    )
+    session.stream = SimpleNamespace(add = lambda request: added.append(request) or 0)
+    session._adapter_state, session._decodes_ids, session._resumes_rows = None, False, True
+    session._retires_rows, session._speculative, session._held = False, object(), ExitStack()
+    session._rows, session._by_row = {}, {}
+    session.admit({}, 0)
+    assert added[0]["videos"] == ["clip.mp4"] and added[0]["fps"] == 2.0
+    assert "prompt_cache_state" not in added[0] and released == [True]
+
+
+def test_a_speculative_load_drafts_a_video_reply_on_its_expanded_prompt(monkeypatch):
+    from core.inference import mlx_inference
+
+    streams, prepared, drafted = [], [], []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    backend._vlm_is_diffusion_model = lambda _model: False
+    monkeypatch.setattr(mlx_inference, "_video_sampling_fps", lambda *_a: 2.0)
+
+    class _Ids(list):
+        def tolist(self):
+            return list(self)
+
+    utils = types.ModuleType("mlx_vlm.utils")
+    utils.prepare_inputs = lambda *_a, **kwargs: prepared.append(kwargs) or {
+        "input_ids": [_Ids([7, 7, 8])],
+        "pixel_values_videos": "frames",
+    }
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+    backend._speculative_draft = SimpleNamespace(
+        draft_kind = "mtp",
+        draft_n = 0,
+        draft_n_accepted = 0,
+        prepare = lambda ids, *_a: drafted.append(ids),
+    )
+    turn = [
+        {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
+    ]
+    args = (turn, None, 0, 1, 0, 0, 1, 1, None)
+    assert list(backend._generate_vlm(*args, _adapter_state = False, videos = [_CLIP_B64])) == ["ok"]
+    ((_, stream_kwargs, _),) = streams
+    assert drafted == [[7, 7, 8]] and stream_kwargs["draft_model"] is backend._speculative_draft
+    assert stream_kwargs["pixel_values_videos"] == "frames" and prepared[0]["fps"] == 2.0
+    assert len(prepared[0]["videos"]) == 1
 
 
 def test_mlx_vlm_a_video_turn_never_resumes_a_prompt_cache_snapshot(monkeypatch):

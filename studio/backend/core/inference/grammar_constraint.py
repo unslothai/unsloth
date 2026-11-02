@@ -273,6 +273,9 @@ class GrammarConstraint:
         self._strips_special_tokens = strips_special_tokens
         self._dropped_ids = None
         self._runtime_stops = None
+        self._settled = None
+        self._drafted = []
+        self._deferred = {}
         self.allows_reasoning = allows_reasoning
 
     def _bind(self, n_vocab: int) -> None:
@@ -343,6 +346,49 @@ class GrammarConstraint:
                 raise ResponseFormatError(self._desync_message(int(token_id)))
             raise GrammarDesyncError(f"guided decoding desynced on token {int(token_id)}: {error}")
 
+    def follow(self, drafted) -> bool:
+        """Matcher after the committed tokens and the admitted ``drafted`` ones; False on a refusal."""
+        kept = _common_prefix(self._drafted, drafted)
+        rest = drafted[kept:]
+        if kept < len(self._drafted):
+            self._matcher, self._settled, self._drafted, rest = self._settled, None, [], drafted
+            self._deferred = {
+                depth: error for depth, error in self._deferred.items() if depth <= kept
+            }
+        if not rest:
+            return True
+        if self._settled is None:
+            # llguidance's rollback misrestores a max_tokens rule (the prelude) and an end token.
+            self._settled, self._matcher = self._matcher, self._matcher.deep_copy()
+        admitted = self._matcher.try_consume_tokens(rest)
+        self._drafted.extend(rest[:admitted])
+        return admitted == len(rest)
+
+    def mask_ahead(self, logits):
+        """``mask_logits`` at a drafted state, whose error waits for ``commit`` to reach it."""
+        try:
+            return self.mask_logits(logits)
+        except ResponseFormatError as error:
+            self._deferred.setdefault(len(self._drafted), error)
+            return logits
+
+    def commit(self, tokens) -> None:
+        reached = [
+            depth for depth in self._deferred if depth <= _common_prefix(self._drafted, tokens)
+        ]
+        if reached:
+            raise self._deferred[min(reached)]
+        if self._settled is not None:
+            self._matcher, self._settled = self._settled, None
+        self._drafted, self._deferred = [], {}
+        for token_id in tokens:
+            if self._matcher is not None and not self._matcher.is_stopped():
+                if self._matcher.try_consume_tokens([int(token_id)]):
+                    continue
+                # Judged against this state's own mask, as a plain decode would.
+                _llg_mlx.fill_next_token_bitmask(self._matcher, self._bitmask)
+            self.advance(token_id)
+
     def _mask_allowed(self, token_id: int) -> bool:
         try:
             import numpy as np
@@ -361,19 +407,39 @@ class GrammarConstraint:
         )
 
 
+def _common_prefix(held, tokens) -> int:
+    kept = 0
+    for a, b in zip(held, tokens):
+        if a != b:
+            break
+        kept += 1
+    return kept
+
+
 def make_grammar_logits_processor(constraint: GrammarConstraint):
-    state = {"seen": None}
+    """Each call commits its history until ``settle`` is first called; then only ``settle`` does."""
+    state = {"seen": None, "committed": None}
 
     def _processor(tokens, logits):
-        seen = state["seen"]
+        seen, committed = state["seen"], state["committed"]
         if seen is None:
             state["seen"] = int(tokens.shape[0])
-        else:
+        elif committed is None:
             for token_id in tokens[seen:].tolist():
                 constraint.advance(int(token_id))
             state["seen"] = int(tokens.shape[0])
+        elif not constraint.follow(tokens[committed:].tolist()):
+            return logits
+        elif int(tokens.shape[0]) > committed:
+            return constraint.mask_ahead(logits)
         return constraint.mask_logits(logits)
 
+    def settle(tokens):
+        start = state["seen"] if state["committed"] is None else state["committed"]
+        constraint.commit(tokens[start:].tolist())
+        state["committed"] = int(tokens.shape[0])
+
+    _processor.settle = settle
     return _processor
 
 

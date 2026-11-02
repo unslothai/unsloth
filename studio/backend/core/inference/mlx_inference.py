@@ -1431,6 +1431,7 @@ def mlx_resolve_drafter_offload(model_dir, knobs, drafter, *, auto: bool, **pric
             priced["pinned"],
             SimpleNamespace(path = drafter[0], builtin = drafter[1]),
             load_in_4bit = priced["load_in_4bit"],
+            kv_bits = priced.get("kv_bits"),
             **kwargs,
             **mlx_offload_route(plan),
         )[0]
@@ -3322,6 +3323,7 @@ def mlx_drafter_fit(
     prefill_chunk = None,
     baseline = None,
     reserve = True,
+    kv_bits = None,
 ):
     """``(attaches, fitted context or None)`` for *source*'s drafter on an mlx-vlm load of *model_dir*:
     only a priced fit reserves it, a pinned context must fit whole, and a ``costless`` one must fit
@@ -3336,6 +3338,8 @@ def mlx_drafter_fit(
         try:
             from core.inference.mlx_memory import mlx_fit_outcome
 
+            if kv_bits is not None and mlx_kv_quant_is_refused(model_dir, kv_bits):
+                kv_bits = None
             fit = functools.partial(
                 mlx_fit_outcome,
                 model_dir,
@@ -3345,6 +3349,7 @@ def mlx_drafter_fit(
                 vision = True,
                 offload = offload,
                 prefill_chunk = prefill_chunk,
+                kv_bits = kv_bits,
             )
             outcome, fitted = fit(drafter = (source.path, source.builtin))
             if outcome == "unsizable":
@@ -3365,6 +3370,7 @@ def mlx_prompt_cache_room(
     load_in_4bit: bool,
     offload = None,
     prefill_chunk = None,
+    kv_bits = None,
 ):
     """Bytes MLX's own cap leaves the prompt cache beside *source*'s drafter at *n_ctx*; None where unsized."""
     budget = mlx_memory_budget(retains_history = False)
@@ -3382,6 +3388,7 @@ def mlx_prompt_cache_room(
                 drafter = (source.path, source.builtin),
                 offload = offload,
                 prefill_chunk = prefill_chunk,
+                kv_bits = kv_bits,
             )
         except Exception as exc:
             logger.info("MLX prompt cache room beside %s not priced: %s", source.path, exc)
@@ -4256,7 +4263,7 @@ def _vlm_add_special_tokens(model_type, processor):
         )
 
 
-def _vlm_prepared_inputs(model, processor, prompt, images):
+def _vlm_prepared_inputs(model, processor, prompt, images, **media):
     """The processor's inputs for *prompt* and *images*, as mlx-vlm's ``stream_generate`` prepares them."""
     from mlx_vlm.utils import prepare_inputs
 
@@ -4268,6 +4275,7 @@ def _vlm_prepared_inputs(model, processor, prompt, images):
         prompts = prompt,
         image_token_index = read("image_token_index"),
         add_special_tokens = _vlm_add_special_tokens(read("model_type"), processor),
+        **media,
     )
 
 
@@ -4595,8 +4603,18 @@ def _failing_alone(row, processors):
                     row.failure = exc
             return logits
 
-        # A drafted batch drafts only for rows whose processors all read just the history.
+        # A drafted batch drafts only for rows whose processors read just the history or settle.
         _processor.history_only = getattr(processor, "history_only", False)
+        if hasattr(processor, "settle"):
+
+            def _settle(tokens):
+                if row.failure is None:
+                    try:
+                        processor.settle(tokens)
+                    except Exception as exc:
+                        row.failure = exc
+
+            _processor.settle = _settle
         return _processor
 
     return [guarded(processor) for processor in processors]
@@ -4885,7 +4903,6 @@ class _VLMRowPlan:
         "max_tokens",
         "processors",
         "streamed",
-        "speculates",
     )
 
     def __init__(
@@ -4900,7 +4917,6 @@ class _VLMRowPlan:
         max_tokens,
         processors = None,
         streamed = None,
-        speculates = True,
         videos = None,
     ):
         self.prompt = prompt
@@ -4913,7 +4929,6 @@ class _VLMRowPlan:
         self.max_tokens = max_tokens
         self.processors = processors
         self.streamed = streamed
-        self.speculates = speculates
 
 
 class _VisionBatchRow:
@@ -4974,6 +4989,14 @@ def _row_retire_gap():
     except ImportError:
         return "the installed unsloth-zoo cannot hand a batched row's cache back"
     return row_retire_unavailable_reason()
+
+
+def _speculative_quantized_row_gap():
+    try:
+        from unsloth_zoo.mlx.generate import speculative_quantized_rows_unavailable_reason
+    except ImportError:
+        return "the installed unsloth-zoo cannot draft a batch on a quantized KV cache"
+    return speculative_quantized_rows_unavailable_reason()
 
 
 def _row_quantized_cache_gap():
@@ -5056,19 +5079,21 @@ class _VisionBatchSession:
         plan = backend._plan_vlm_request(request, decodes_ids = self._decodes_ids)
         row = _VisionBatchRow(handle = handle, plan = plan)
         alone = self._alone(handle) if self._retires_rows else None
+        # A clip's row resumes nothing: token ids do not vary with the clip.
         state = (
             backend._vlm_batch_row_cache(self._adapter_state, plan.images, alone = alone)
-            if self._resumes_rows
+            if self._resumes_rows and not plan.videos
             else None
         )
         if state is None and backend._kv_quant_bits() is not None:
             # mlx-vlm's own batch cache would be float.
             raise RowRefused("this row cannot carry the load's quantized KV cache")
-        if state is None and plan.images:
+        if state is None and (plan.images or plan.videos):
             backend._release_vlm_snapshots()
         elif state is None:
             backend._release_held_vlm_snapshots()
         resume = {} if state is None else {"prompt_cache_state": state}
+        clips = _batch_clips(self._held, [plan], backend._processor)[0] if plan.videos else {}
         admitted_at = time.perf_counter()
         try:
             row_number = self.stream.add(
@@ -5078,8 +5103,8 @@ class _VisionBatchSession:
                     max_tokens = plan.max_tokens,
                     sampling = SamplingParams(**plan.sampling),
                     logits_processors = plan.processors and _failing_alone(row, plan.processors),
+                    **clips,
                     **resume,
-                    **({} if self._speculative is None or plan.speculates else {"drafts": False}),
                 )
             )
         except BatchRowRefused as refusal:
@@ -6000,9 +6025,9 @@ class MLXInferenceBackend:
         )
         if speculates:
             spec_reason = mlx_speculative.speculation_refusal(
-                kv_quant = kv_bits is not None or self._turboquant,
                 distributed = is_distributed,
-                lora = is_lora,
+                # A text architecture's adapter loads only through mlx-lm, and speculation runs on mlx-vlm.
+                lora = is_lora and not (is_vision or zoo_multimodal),
             )
             speculates = spec_reason is None
             if (
@@ -6175,7 +6200,7 @@ class MLXInferenceBackend:
                     if spec_mode == "auto" and not spec_draft_model
                     else mlx_speculative.RUNTIME_ERROR
                 )
-            elif self._turboquant:
+            if self._turboquant:
                 self._turboquant_refusal = MLX_TURBOQUANT_TEXT_LOAD
             use_vlm = False
         if model is None:
@@ -6257,6 +6282,17 @@ class MLXInferenceBackend:
                 allowed = spec_drafters_allowed,
             )
 
+            # As _fitted_context prices it: a refused quantization stays full width.
+            if not self._turboquant and kv_bits is not None and _eligibility is None:
+                _eligibility = _kv_quant_eligibility(
+                    self._model, use_vlm, _normalize_mlx_kv_bits(kv_bits)
+                )
+            _drafter_bits = (
+                _normalize_mlx_kv_bits(kv_bits)
+                if not self._turboquant and _eligibility and _eligibility[0] in ("full", "partial")
+                else None
+            )
+
             def _fits(source, reserve = True):
                 if not _priceable:
                     return None, None
@@ -6269,6 +6305,7 @@ class MLXInferenceBackend:
                     costless = spec_mode == "auto",
                     baseline = offload_baseline["route"],
                     reserve = reserve,
+                    kv_bits = _drafter_bits,
                     **_offloaded,
                 )
 
@@ -6332,7 +6369,12 @@ class MLXInferenceBackend:
             and getattr(self._speculative_draft, "drafter", None) is not None
         ):
             self._prompt_cache_room = mlx_prompt_cache_room(
-                model_dir, _served_ctx, _stretched[-1], load_in_4bit = load_in_4bit, **_offloaded
+                model_dir,
+                _served_ctx,
+                _stretched[-1],
+                load_in_4bit = load_in_4bit,
+                kv_bits = _drafter_bits,
+                **_offloaded,
             )
             if self._prompt_cache_room is not None:
                 logger.info(
@@ -7845,8 +7887,6 @@ class MLXInferenceBackend:
             max_tokens = vlm_kwargs["max_tokens"],
             processors = processors,
             streamed = streamed,
-            # As _generate_vlm, which drops the draft for tool turns.
-            speculates = not (tools or tool_protocol_active),
         )
 
     def _generate_vlm(
@@ -8067,18 +8107,18 @@ class MLXInferenceBackend:
             vlm_kwargs.update(self._prefill_step_kwargs())
         session_scope = session if session is not None else nullcontext()
         processors = vlm_kwargs.get("logits_processors") or ()
-        # The draft is told these processors, and takes only ones that read just the history (a grammar's
-        # matcher advances per call); tool turns decode as before; a clip is nothing a drafter was built for.
+        # The draft is told these processors, and takes only ones that read just the history or settle on
+        # what was accepted (a grammar).
         if (
             draft is None
-            or tools
-            or tool_protocol_active
-            or videos
-            or not all(getattr(processor, "history_only", False) for processor in processors)
+            or not all(
+                getattr(processor, "history_only", False) or hasattr(processor, "settle")
+                for processor in processors
+            )
             or _vlm_generation_is_diffusion(self._model)
         ):
             draft = None
-        elif "input_ids" not in vlm_kwargs:
+        elif "input_ids" not in vlm_kwargs and not videos:
             vlm_kwargs.update(
                 _vlm_generate_kwargs(
                     _vlm_prepared_inputs(self._model, self._processor, prompt, images)
@@ -8107,30 +8147,42 @@ class MLXInferenceBackend:
                 )
                 final_response = None
                 clip_paths = []
-                if draft is not None:
-                    from unsloth_zoo.mlx.generate import SamplingParams
-
-                    # Under the lock: the load's one draft serves one generation at a time.
-                    draft.prepare(
-                        vlm_kwargs["input_ids"][0].tolist(),
-                        SamplingParams(
-                            temperature = temperature,
-                            top_p = top_p,
-                            top_k = max(int(top_k or 0), 0),
-                            min_p = float(min_p or 0.0),
-                            seed = seed,
-                        ),
-                        processors,
-                    )
-                    vlm_kwargs.update(draft_model = draft, draft_kind = draft.draft_kind)
                 try:
                     if videos:
                         for clip in videos:
                             clip_paths.append(_write_video_clip(clip))
-                        vlm_kwargs["video"] = clip_paths
+                        clip_media = {"video": clip_paths}
                         frame_rate = _video_sampling_fps(clip_paths, self._processor)
                         if frame_rate is not None:
-                            vlm_kwargs["fps"] = frame_rate
+                            clip_media["fps"] = frame_rate
+                        if draft is None or "input_ids" in vlm_kwargs:
+                            vlm_kwargs.update(clip_media)
+                        else:
+                            # The draft needs the prompt as the clip's frames expand it.
+                            clip_media["videos"] = clip_media.pop("video")
+                            vlm_kwargs.update(
+                                _vlm_generate_kwargs(
+                                    _vlm_prepared_inputs(
+                                        self._model, self._processor, prompt, images, **clip_media
+                                    )
+                                )
+                            )
+                    if draft is not None:
+                        from unsloth_zoo.mlx.generate import SamplingParams
+
+                        # Under the lock: the load's one draft serves one generation at a time.
+                        draft.prepare(
+                            vlm_kwargs["input_ids"][0].tolist(),
+                            SamplingParams(
+                                temperature = temperature,
+                                top_p = top_p,
+                                top_k = max(int(top_k or 0), 0),
+                                min_p = float(min_p or 0.0),
+                                seed = seed,
+                            ),
+                            processors,
+                        )
+                        vlm_kwargs.update(draft_model = draft, draft_kind = draft.draft_kind)
                     # Emit prefilled <think> first; inside the adapter so unsupported requests raise before any output.
                     if prefill:
                         yield prefill
@@ -8285,6 +8337,10 @@ class MLXInferenceBackend:
             return None
         # Only resident vision rows carry their own cache, where the quantization lives.
         if resident and self._is_vlm:
+            if self._kv_quant_bits() is not None and getattr(self, "_speculative_draft", None):
+                if getattr(self, "_turboquant", False):
+                    return "a speculative batch cannot run TurboQuant caches"
+                return _speculative_quantized_row_gap()
             return _row_quantized_cache_gap()
         return "the load quantizes or budgets its KV cache, which a batch does not carry"
 
@@ -8298,7 +8354,10 @@ class MLXInferenceBackend:
         reason = self._video_batch_gap(requests)
         if reason is not None:
             return reason
-        reason = self._kv_policy_batch_reason()
+        # A speculative load's batch is the resident session, whose rows carry their own caches.
+        reason = self._kv_policy_batch_reason(
+            resident = getattr(self, "_speculative_draft", None) is not None
+        )
         if reason is not None:
             return reason
         if len(requests) < 2:
@@ -8336,8 +8395,9 @@ class MLXInferenceBackend:
         # The one-at-a-time decode refuses these clips by name.
         if not self._is_vlm or not self._reads_vision_input() or not _mlx_vlm_decodes_video():
             return "a reply carries a video clip this load does not read"
-        if self._speculative_draft is not None:
-            return "a video clip decodes without the draft"
+        if self._speculative_draft is not None and self._kv_quant_bits() is not None:
+            # A clip's row resumes no cache, and only a resumed row carries the quantization.
+            return "a quantized speculative batch does not decode a video clip"
         try:
             from unsloth_zoo.mlx import generate as engine
         except ImportError:
