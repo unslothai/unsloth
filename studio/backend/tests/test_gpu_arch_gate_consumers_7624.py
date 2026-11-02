@@ -524,9 +524,19 @@ class TestArchRetryDropsTensorSplit:
         text = path.read_text(encoding = "utf-8")
         # Arch-crash retry and the gated manual-split launch both mask devices under a positional ratio.
         assert text.count("self._without_tensor_split(") == 2
-        block = text.split("_arch_crash_retry_gpu_ids(\n")[-1].split('label = "-archfallback"')[0]
+        block = text.split("self._kernel_image_invalid(_arch_crash_tail)")[1]
+        block = block.split('label = "-archfallback"')[0]
         assert "_without_tensor_split(cmd)" in block
         assert "self._tensor_split = None" in block  # /status must not report a dropped split
+
+    def test_an_unpinned_launch_reaches_the_retry_too(self):
+        # A manual split leaves gpu_indices None; the retry must still narrow it and record the drop.
+        path = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+        text = path.read_text(encoding = "utf-8")
+        block = text.split("self._kernel_image_invalid(_arch_crash_tail)")[1]
+        block = block.split('label = "-archfallback"')[0]
+        assert "self._unpinned_arch_crash_retry(" in block
+        assert "self._arch_gate_dropped_tensor_split = tuple(self._tensor_split)" in block
 
 
 class TestArchRetryRestoresTheMemoryPolicy:
