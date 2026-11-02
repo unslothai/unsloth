@@ -8,6 +8,15 @@ import type {
   LivePrefillFit,
 } from "../stores/chat-runtime-store";
 import { formatEta } from "../utils/format-transfer";
+import type { InterpolationValues, TranslationKey } from "@/i18n";
+
+export type Translate = (key: TranslationKey, values?: InterpolationValues) => string;
+
+function tokenCount(count: number, t: Translate, locale?: string): string {
+  return t(count === 1 ? "generationStats.tokensOne" : "generationStats.tokens", {
+    count: count.toLocaleString(locale),
+  });
+}
 
 export type GenerationProgressUpdate =
   | { phase: "prefill"; prefill: LivePrefillProgress }
@@ -70,14 +79,18 @@ export function readGenerationProgress(
  *  cached prefix like the percent. */
 export function formatPrefillDetails(
   prefill: LivePrefillProgress,
+  t: Translate,
   locale?: string,
 ): string {
   const cached = prefill.cached ?? 0;
-  const done = Math.max(0, prefill.processed - cached).toLocaleString(locale);
+  const done = Math.max(0, prefill.processed - cached);
   const parts = [
     prefill.total
-      ? `${done} / ${Math.max(0, prefill.total - cached).toLocaleString(locale)} tokens`
-      : `${done} tokens`,
+      ? t("generationStats.tokensOf", {
+          done: done.toLocaleString(locale),
+          total: Math.max(0, prefill.total - cached).toLocaleString(locale),
+        })
+      : tokenCount(done, t, locale),
   ];
   // The label shows only once prefillLabelShown has a rate it trusts, so the rate is past the first sample.
   if (prefill.tokPerS !== null) {
@@ -192,17 +205,18 @@ export function prefillLabelShown(
   return left !== null && left >= PREFILL_LABEL_MIN_SECONDS;
 }
 
-/** "12s left", like the load toast; null without a trusted rate or under a second. */
-export function formatPrefillTimeLeft(prefill: LivePrefillProgress): string | null {
+export function formatPrefillTimeLeft(prefill: LivePrefillProgress, t: Translate): string | null {
   const left = prefillSecondsLeft(prefill);
-  return left !== null && left >= 1 ? `${formatEta(left)} left` : null;
+  return left !== null && left >= 1 ? t("generationStats.timeLeft", { eta: formatEta(left) }) : null;
 }
 
 /** "4,306 tokens · 58.3 tok/s · draft 1,791/5,030 accepted (36%)", every number in the reader's locale. */
-export function formatLiveDecode(decode: LiveDecodeProgress, locale?: string): string {
-  const parts = [
-    `${decode.tokens.toLocaleString(locale)} ${decode.tokens === 1 ? "token" : "tokens"}`,
-  ];
+export function formatLiveDecode(
+  decode: LiveDecodeProgress,
+  t: Translate,
+  locale?: string,
+): string {
+  const parts = [tokenCount(decode.tokens, t, locale)];
   if (decode.tokPerS !== null) {
     const rate = decode.tokPerS.toLocaleString(locale, {
       minimumFractionDigits: 1,
@@ -211,9 +225,12 @@ export function formatLiveDecode(decode: LiveDecodeProgress, locale?: string): s
     parts.push(`${rate} tok/s`);
   }
   if (decode.draftN && decode.draftAccepted !== null) {
-    const share = Math.round((decode.draftAccepted / decode.draftN) * 100);
     parts.push(
-      `draft ${decode.draftAccepted.toLocaleString(locale)}/${decode.draftN.toLocaleString(locale)} accepted (${share}%)`,
+      t("generationStats.draftAccepted", {
+        accepted: decode.draftAccepted.toLocaleString(locale),
+        drafted: decode.draftN.toLocaleString(locale),
+        percent: Math.round((decode.draftAccepted / decode.draftN) * 100),
+      }),
     );
   }
   return parts.join(" · ");
