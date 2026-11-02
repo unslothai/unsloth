@@ -2136,6 +2136,7 @@ export const nl = {
           "Kan de instellingen voor automatisch van model wisselen niet opslaan.",
         idleError:
           "Voer 0 in om het model geladen te houden, of minimaal 60 seconden.",
+        idleUnsaved: "Nog niet opgeslagen.",
         keepKv: "Chatcontext behouden bij ontladen",
         keepKvDescription:
           "De KV-cache opslaan vóór het ontladen bij inactiviteit, of voordat een afbeeldings- of videomodel de GPU overneemt, zodat hervatte chats de geschiedenis niet opnieuw hoeven te lezen. Tot 10 GB op schijf.",

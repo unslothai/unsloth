@@ -1920,6 +1920,7 @@ export const ko = {
         loadError: "모델 자동 전환 설정을 불러오지 못했습니다.",
         saveError: "모델 자동 전환 설정을 저장하지 못했습니다.",
         idleError: "모델을 로드 상태로 유지하려면 0을, 그렇지 않으면 60초 이상을 입력하세요.",
+        idleUnsaved: "아직 저장되지 않았습니다.",
         autoDownload: "아직 받지 않은 모델 다운로드",
         autoDownloadDescription:
           "API 요청에 지정된 GGUF 모델이 아직 다운로드되어 있지 않으면 해당 모델을 자동으로 다운로드합니다. 이 기능을 사용하면 API 키를 가진 사용자가 디스크 공간과 네트워크 대역폭을 사용할 수 있습니다.",

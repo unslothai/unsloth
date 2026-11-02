@@ -1904,6 +1904,7 @@ export const zhCN = {
         loadError: "加载模型自动切换设置失败。",
         saveError: "保存模型自动切换设置失败。",
         idleError: "输入 0 保持模型加载，或输入至少 60 秒。",
+        idleUnsaved: "尚未保存。",
         autoDownload: "下载缺失的模型",
         autoDownloadDescription:
           "获取 API 请求中指定但尚未下载的 GGUF。开启后，任何持有 API 密钥的人都可以占用你的磁盘空间和带宽。",

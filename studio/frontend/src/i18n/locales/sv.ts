@@ -2037,6 +2037,7 @@ export const sv = {
           "Det gick inte att spara inställningarna för automatiskt modellbyte.",
         idleError:
           "Ange 0 för att behålla modellen inläst, eller minst 60 sekunder.",
+        idleUnsaved: "Inte sparat ännu.",
         keepKv: "Behåll chattkontext mellan avlastningar",
         keepKvDescription:
           "Spara KV-cachen före en avlastning efter inaktivitet, eller innan en bild- eller videomodell tar över GPU:n, så att återupptagna chattar slipper läsa historiken igen. Upp till 10 GB på disk.",

@@ -2104,6 +2104,7 @@ export const id = {
         loadError: "Gagal memuat pengaturan peralihan model otomatis.",
         saveError: "Gagal menyimpan pengaturan peralihan model otomatis.",
         idleError: "Masukkan 0 agar model tetap dimuat, atau minimal 60 detik.",
+        idleUnsaved: "Belum disimpan.",
         keepKv: "Pertahankan konteks chat saat model dilepas",
         keepKvDescription:
           "Simpan cache KV sebelum pelepasan karena tidak aktif, atau sebelum model gambar atau video mengambil alih GPU, agar chat yang dilanjutkan tidak perlu membaca ulang riwayat. Hingga 10 GB di disk.",

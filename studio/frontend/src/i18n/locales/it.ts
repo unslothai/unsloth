@@ -1843,6 +1843,7 @@ export const it = {
           "Salvataggio delle impostazioni di cambio automatico del modello non riuscito.",
         idleError:
           "Inserisci 0 per mantenere il modello in memoria, oppure almeno 60 secondi.",
+        idleUnsaved: "Non ancora salvato.",
         keepKv:
           "Mantieni il contesto della chat tra gli scaricamenti",
         keepKvDescription:

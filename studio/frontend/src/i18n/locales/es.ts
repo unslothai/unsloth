@@ -1936,6 +1936,7 @@ export const es = {
         saveError:
           "No se pudo guardar la configuración de cambio automático de modelo.",
         idleError: "Introduce 0 para mantener el modelo cargado, o al menos 60 segundos.",
+        idleUnsaved: "Aún no se ha guardado.",
         autoDownload: "Descargar los modelos que falten",
         autoDownloadDescription:
           "Descarga un GGUF que se indique en una solicitud de la API y que aún no esté descargado. Cualquiera con una clave de API podría así consumir disco y ancho de banda.",

@@ -1929,6 +1929,7 @@ export const ptBR = {
         loadError: "Falha ao carregar as configurações de troca automática de modelo.",
         saveError: "Falha ao salvar as configurações de troca automática de modelo.",
         idleError: "Insira 0 para manter o modelo carregado, ou pelo menos 60 segundos.",
+        idleUnsaved: "Ainda não salvo.",
         autoDownload: "Baixar modelos ausentes",
         autoDownloadDescription:
           "Busca um GGUF indicado em uma requisição da API que ainda não foi baixado. Com isso, qualquer pessoa com uma chave de API pode consumir disco e largura de banda.",

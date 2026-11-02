@@ -2118,6 +2118,7 @@ export const cs = {
           "Nastavení automatického přepínání modelu se nepodařilo uložit.",
         idleError:
           "Zadejte 0, chcete-li model ponechat načtený, nebo alespoň 60 sekund.",
+        idleUnsaved: "Zatím neuloženo.",
         keepKv: "Zachovat kontext chatu i po uvolnění",
         keepKvDescription:
           "Uložit mezipaměť KV před uvolněním při nečinnosti nebo před tím, než GPU převezme model obrázků či videa, aby obnovené chaty nemusely znovu číst historii. Až 10 GB na disku.",

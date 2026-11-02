@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { useT } from "@/i18n";
-import { useEffect, useState } from "react";
+import { type KeyboardEvent, useEffect, useState } from "react";
 import {
   type OpenAIAutoSwitchSettings,
   type OpenAIAutoSwitchUpdate,
@@ -29,6 +29,15 @@ export const parseIdleSeconds = (draft: string): number | null => {
   }
   return parsed === 0 || parsed >= MIN_IDLE_SECONDS ? parsed : null;
 };
+
+// Chromium still delivers keydown to a focused input once it turns disabled.
+const saveOnEnter =
+  (save: () => void, disabled: boolean) =>
+  (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter" && !event.nativeEvent.isComposing && !disabled) {
+      save();
+    }
+  };
 
 // The image/video TTL, shown under Model memory: no enable toggle gates it, so
 // it lives beside the other memory settings rather than the chat TTL.
@@ -82,6 +91,7 @@ export function MediaIdleUnloadRow({
             )}
             disabled={disabled}
             onChange={(event) => onDraftChange(event.target.value)}
+            onKeyDown={saveOnEnter(onSave, disabled)}
             className="h-control w-24"
           />
           <span className="text-xs font-medium text-muted-foreground">s</span>
@@ -362,6 +372,8 @@ export function ModelAutoSwitchSection() {
     void persist({ enabled: settings.enabled, autoUnloadApiOnly: apiOnly });
   };
 
+  const idleDisabled = !settings?.enabled || isSaving;
+
   return (
     <SettingsSection title={t("settings.general.modelAutoSwitch.sectionTitle")}>
       <SettingsRow
@@ -404,6 +416,13 @@ export function ModelAutoSwitchSection() {
             <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
               {t("settings.general.modelAutoSwitch.idleNeedsEnable")}
             </span>
+          ) : settings &&
+            !isSaving &&
+            parseIdleSeconds(draftIdleSeconds) !==
+              settings.autoUnloadIdleSeconds ? (
+            <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
+              {t("settings.general.modelAutoSwitch.idleUnsaved")}
+            </span>
           ) : null
         }
       >
@@ -417,8 +436,9 @@ export function ModelAutoSwitchSection() {
               aria-label={t(
                 "settings.general.modelAutoSwitch.idleSecondsAriaLabel",
               )}
-              disabled={!settings?.enabled || isSaving}
+              disabled={idleDisabled}
               onChange={(event) => setDraftIdleSeconds(event.target.value)}
+              onKeyDown={saveOnEnter(handleSaveIdle, idleDisabled)}
               className="h-control w-24"
             />
             <span className="text-xs font-medium text-muted-foreground">s</span>
@@ -426,7 +446,7 @@ export function ModelAutoSwitchSection() {
           <Button
             variant="outline"
             size="sm"
-            disabled={!settings?.enabled || isSaving}
+            disabled={idleDisabled}
             onClick={handleSaveIdle}
           >
             {isSaving ? t("common.saving") : t("common.save")}
