@@ -2,9 +2,16 @@
 """Stopping the dispatcher wakes it at once instead of waiting out its response-queue poll."""
 
 import multiprocessing as mp
+import inspect
+import json
 import queue
+import subprocess
+import sys
+import textwrap
 import threading
 import time
+
+import pytest
 
 import core.inference.orchestrator as orch_mod
 from core.inference.orchestrator import InferenceOrchestrator
@@ -97,3 +104,47 @@ def test_wake_is_sent_only_while_stopping_a_live_dispatcher():
     o._dispatcher_thread = stopped
     o._stop_dispatcher()
     assert q.empty()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "Windows queues have no shared write lock")
+def test_pending_frame_from_dead_writer_does_not_start_a_parent_feeder(tmp_path):
+    script = tmp_path / "dead_writer_wake.py"
+    method = textwrap.dedent(inspect.getsource(InferenceOrchestrator._wake_dispatcher))
+    script.write_text(
+        "import json, logging, multiprocessing as mp, os, types\n"
+        f"METHOD = {method!r}\n"
+        "def worker(q):\n"
+        "    q.put({'type': 'speech', 'request_id': 'r1', 'speech': 'x' * 1048576})\n"
+        "    if not q._reader.poll(10):\n"
+        "        os._exit(2)\n"
+        "    os._exit(1)\n"
+        "if __name__ == '__main__':\n"
+        "    q = mp.get_context('spawn').Queue()\n"
+        "    proc = mp.get_context('spawn').Process(target=worker, args=(q,))\n"
+        "    proc.start()\n"
+        "    try:\n"
+        "        proc.join(15)\n"
+        "        assert proc.exitcode == 1, proc.exitcode\n"
+        "        assert not q.empty()\n"
+        "        scope = {'logger': logging.getLogger('test'), '_DISPATCHER_WAKE': '_dispatcher_wake'}\n"
+        "        exec(METHOD, scope)\n"
+        "        scope['_wake_dispatcher'](types.SimpleNamespace(_resp_queue=q))\n"
+        "        feeder = q._thread\n"
+        "        q._writer.close()\n"
+        "        q._reader.close()\n"
+        "        q.close()\n"
+        "        if feeder is not None:\n"
+        "            feeder.join(0.2)\n"
+        "        print(json.dumps({'feeder_started': feeder is not None,\n"
+        "                          'feeder_still_alive': feeder is not None and feeder.is_alive()}))\n"
+        "    finally:\n"
+        "        if proc.is_alive():\n"
+        "            proc.kill()\n"
+        "        proc.join(5)\n",
+        encoding = "utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, str(script)], capture_output = True, text = True, timeout = 30
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"feeder_started": False, "feeder_still_alive": False}

@@ -1779,6 +1779,9 @@ class InferenceOrchestrator:
         if resp_queue is None:
             return
         try:
+            # Pending data already wakes the reader; a dead writer may still hold the feeder lock.
+            if not resp_queue.empty():
+                return
             # Interpreter exit must not wait on this put over a full or dead pipe.
             cancel_join = getattr(resp_queue, "cancel_join_thread", None)
             if cancel_join is not None:
