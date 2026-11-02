@@ -1018,6 +1018,16 @@ def describe_cache(definition: CacheDefinition) -> dict:
         occupancy = _OccupancyLedger()
         clear_ledger = LinkLedger()
         clear_roots = {_safe_resolve(root) for root in measurable} if purgeable else set()
+        measured_keys = {_safe_resolve(root) for root in measured_paths}
+        nested = {root for root in clear_roots if root is not None and root not in measured_keys}
+        # Share one stat observation between both ledgers, even while downloads grow.
+        for root in measurable if purgeable else []:
+            if _safe_resolve(root) not in nested:
+                continue
+            _, count = _measure_root(
+                root, patterns = patterns, ledger = clear_ledger, occupancy = occupancy
+            )
+            clear_entries += count
         for root in measured_paths:
             clearable = _safe_resolve(root) in clear_roots
             _, count = _measure_root(
@@ -1025,20 +1035,13 @@ def describe_cache(definition: CacheDefinition) -> dict:
                 patterns = patterns,
                 occupancy = occupancy,
                 ledger = clear_ledger if clearable else None,
+                excluded_roots = nested,
             )
             entries += count
             if clearable:
                 clear_entries += count
-        measured_keys = {_safe_resolve(root) for root in measured_paths}
-        for root in measurable if purgeable else []:
-            if _safe_resolve(root) in measured_keys:
-                continue
-            _, count = _measure_root(
-                root, patterns = patterns, ledger = clear_ledger, occupancy = occupancy
-            )
-            clear_entries += count
         total = occupancy.bytes
-        clear_size = min(total, clear_ledger.freeable_bytes())
+        clear_size = clear_ledger.freeable_bytes()
         system_disk_bytes = _system_disk_occupancy(occupancy)
     else:
         if definition.custom_measure is not None:

@@ -493,6 +493,12 @@ def test_a_growing_nested_hub_does_not_offer_more_bytes_than_it_measured(
     monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: paths)
     monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [active, old_hub])
     measure = cache_inventory._measure_root
+    scandir = os.scandir
+    visits = []
+
+    def tracked_scandir(path):
+        visits.append(Path(path))
+        return scandir(path)
 
     def grow_after_measure(root, **kwargs):
         result = measure(root, **kwargs)
@@ -501,9 +507,11 @@ def test_a_growing_nested_hub_does_not_offer_more_bytes_than_it_measured(
         return result
 
     monkeypatch.setattr(cache_inventory, "_measure_root", grow_after_measure)
+    monkeypatch.setattr(cache_inventory.os, "scandir", tracked_scandir)
     described = describe_cache(definition_for("hf_hub"))
     assert described["size_bytes"] == 384
-    assert 0 < described["clear_size_bytes"] <= described["size_bytes"]
+    assert described["clear_size_bytes"] == 128
+    assert visits.count(active_blob.parent) == 1
 
 
 def test_the_inductor_cache_follows_the_account_name_torch_uses(
