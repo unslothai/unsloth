@@ -27,6 +27,7 @@ import time as _time
 import uuid
 import weakref
 from dataclasses import asdict, dataclass
+from dataclasses import field as _dc_field
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Optional
 
@@ -1412,6 +1413,7 @@ _VIDEO_CREATE_FIELDS = (
 _VIDEO_CREATE_LISTS = ("reference_images", "reference_audios")
 # VideoJobCreateRequest's list limits, checked before multipart files are encoded.
 _VIDEO_CREATE_LIST_MAX = {"reference_images": 9, "reference_audios": 3}
+_VIDEO_IMAGE_DECODE_CACHE_MAX_BYTES = 64 * 1024 * 1024
 # The OpenAI SDK flattens a list of objects to key[][field]; each such part is one item.
 _OBJECT_PART = {
     "reference_images": _re.compile(r"reference_images(?:\[\d*\])?\[(image_url|file_id)\]"),
@@ -1942,25 +1944,32 @@ def _audio_ref_data_url(ref) -> str:
     )
 
 
-def _refuse_unreadable_audio(audios: Optional[list[str]]) -> None:
-    """Decode each reference audio the engine would, refusing one it could not read."""
+def _refuse_unreadable_audio(audios: Optional[list[str]]):
+    """Decode each reference audio the engine would, refusing one it could not read.
+
+    Returns the decoded audios for this request's render to reuse, or None when nothing was decoded."""
     if not audios:
-        return
+        return None
     from core.inference.video import _decode_b64_media
 
     try:
-        from core.inference.video_minimax_h3 import decode_h3_reference_audio
+        from core.inference.video_minimax_h3 import (
+            DecodedReferenceAudios,
+            decode_h3_reference_audio,
+        )
     except ImportError:  # no media decoder here; begin_generate reports it
-        return
+        return None
+    decoded = []
     for index, item in enumerate(audios):
         try:
-            decode_h3_reference_audio(_decode_b64_media(item))
+            decoded.append(decode_h3_reference_audio(_decode_b64_media(item)))
         except ImportError:
-            return
+            return None
         except Exception:  # noqa: BLE001 -- any decode failure is client input feedback
             raise _openai_video_error(
                 400, f"reference_audios[{index}] is not readable audio.", param = "reference_audios"
             )
+    return DecodedReferenceAudios(sources = tuple(audios), decoded = tuple(decoded))
 
 
 def _conditioning_param(
@@ -2077,6 +2086,7 @@ class _VideoCreateInputs:
     size: Optional[tuple[int, int]]
     seconds: Optional[float]
     reference_audios: Optional[list[str]]
+    decoded_images: Optional[Any] = _dc_field(default = None, compare = False, repr = False)
 
 
 async def _validated_video_inputs(
@@ -2118,20 +2128,21 @@ async def _validated_video_inputs(
             raise _openai_video_error(exc.status, exc.detail, param = "reference_audios")
     images = [("input_reference", reference), ("last_frame", body.last_frame)]
     images += [("reference_images", item) for item in body.reference_images or []]
+    decoded_images = []
+    decoded_bytes = 0
     for param, image in images:
         if image is None:
             continue
-        # Check readability before a model switch. The conditioning path applies its own
-        # keyframe or Ref2VA limit later, so this uses the broadest bounded source policy.
-        from core.inference.diffusion import decode_b64_image
+        # Validate before switching; task-specific limits apply during resolution.
+        from core.inference.diffusion import decode_b64_image_sized
         from core.inference.video_minimax_h3 import (
             H3_REF_IMAGE_SOURCE_MAX_PIXELS,
             H3_REF_IMAGE_SOURCE_MAX_SIDE,
         )
 
         try:
-            await asyncio.to_thread(
-                decode_b64_image,
+            decoded, stored_size = await asyncio.to_thread(
+                decode_b64_image_sized,
                 image,
                 mode = "RGB",
                 max_side = H3_REF_IMAGE_SOURCE_MAX_SIDE,
@@ -2139,7 +2150,21 @@ async def _validated_video_inputs(
             )
         except Exception:  # noqa: BLE001 -- any decode failure is client input feedback
             raise _openai_video_error(400, f"{param} is not a readable image.", param = param)
-    return _VideoCreateInputs(size = size, seconds = seconds, reference_audios = reference_audios)
+        if decoded_images is not None:
+            decoded_bytes += 4 * decoded.width * decoded.height
+            if decoded_bytes <= _VIDEO_IMAGE_DECODE_CACHE_MAX_BYTES:
+                decoded_images.append((image, stored_size, decoded))
+            else:
+                decoded_images = None
+        del decoded
+    from core.inference.video_minimax_h3 import DecodedReferenceImages
+
+    return _VideoCreateInputs(
+        size = size,
+        seconds = seconds,
+        reference_audios = reference_audios,
+        decoded_images = DecodedReferenceImages(tuple(decoded_images)) if decoded_images else None,
+    )
 
 
 def _new_video_id() -> str:
@@ -2264,17 +2289,20 @@ async def _start_openai_video(
     size, seconds, reference_audios = inputs.size, inputs.seconds, inputs.reference_audios
     width, height = size if size is not None else (None, None)
     audio_checked = [False]
+    decoded_audios = [None]
 
     def _refuse_unservable_request(pick) -> None:
         from core.inference.media_model_index import expected_partition
         from core.inference.video import _detect_load_family
 
+        # Release pixels before loading another model.
+        inputs.decoded_images = None
         fam = _detect_load_family(pick.model_path, pick.gguf_filename, None)
         if fam is None:
             return
         _refuse_family_inputs(fam, expected_partition(pick), body, reference, inputs)
         # Decoded here, like the images above, so unreadable audio never costs a switch.
-        _refuse_unreadable_audio(reference_audios)
+        decoded_audios[0] = _refuse_unreadable_audio(reference_audios)
         audio_checked[0] = True
 
     pin_requested_model = bool(
@@ -2297,7 +2325,7 @@ async def _start_openai_video(
         )
     if not audio_checked[0]:
         # No switch ran the check, and the engine's own decode can fail with more than ValueError.
-        await asyncio.to_thread(_refuse_unreadable_audio, reference_audios)
+        decoded_audios[0] = await asyncio.to_thread(_refuse_unreadable_audio, reference_audios)
 
     backend = get_video_backend()
     # Managed callers are authorized against the exact resident state, pinned to the reservation;
@@ -2353,6 +2381,10 @@ async def _start_openai_video(
                 reference_audios = reference_audios,
             )
             generate_kwargs.update({k: v for k, v in controls.items() if v is not None})
+            if decoded_audios[0] is not None:
+                generate_kwargs["decoded_reference_audios"] = decoded_audios[0]
+            if inputs.decoded_images is not None:
+                generate_kwargs["decoded_reference_images"] = inputs.decoded_images
             if expected_state is not None:
                 generate_kwargs["expected_state"] = expected_state
             resolved = await asyncio.to_thread(
@@ -2643,6 +2675,7 @@ async def _create_or_queue_openai_video(
         except Exception as exc:
             if _video_wait(exc) != "busy":
                 raise
+    inputs.decoded_images = None
     await asyncio.to_thread(_refuse_unreadable_audio, inputs.reference_audios)
     model, size, seconds = await asyncio.to_thread(_queued_job_display, body, reference, inputs)
     account = current_account()

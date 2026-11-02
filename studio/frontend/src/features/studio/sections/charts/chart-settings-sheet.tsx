@@ -15,7 +15,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { useT } from "@/i18n";
-import { Settings02Icon } from "@hugeicons/core-free-icons";
+import { Settings01Icon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -195,7 +195,7 @@ export function ChartSettingsSheet(): ReactElement {
         onClick={() => setOpen(true)}
         aria-label={t("studio.charts.openSettings")}
       >
-        <HugeiconsIcon icon={Settings02Icon} className="size-4" />
+        <HugeiconsIcon icon={Settings01Icon} className="size-4" />
       </Button>
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent

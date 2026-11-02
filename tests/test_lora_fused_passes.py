@@ -400,6 +400,31 @@ def test_shared_lora_a_grads_have_the_parameter_layout(monkeypatch):
         assert dA.t().is_contiguous(), dA.stride()
 
 
+def test_shared_lora_backward_can_be_recorded_for_a_second_derivative(monkeypatch):
+    # create_graph runs the backward with grad on: no in-place write through sibling views of one buffer.
+    _set(monkeypatch, True)
+    X = torch.randn(10, H, dtype = torch.float64)
+    As = (torch.randn(4, H, dtype = torch.float64).t(), torch.randn(3, H, dtype = torch.float64).t())
+    Bs = (torch.randn(H, 4, dtype = torch.float64).t(), torch.randn(I, 3, dtype = torch.float64).t())
+    dYs = tuple(torch.randn(10, n, dtype = torch.float64, requires_grad = True) for n in (H, I))
+    with torch.enable_grad():
+        d_As, d_Bs, dX = fast_lora._shared_lora_backward(X, dYs, As, Bs, 2.0, None)
+        total = sum(t.square().sum() for t in (*d_As, *d_Bs, dX))
+    got = torch.autograd.grad(total, dYs)
+
+    def ref(*dYs):
+        out = []
+        for dY, A, B in zip(dYs, As, Bs):
+            y_dB = dY @ B.t()
+            out += [2.0 * X.t() @ y_dB, 2.0 * (A.t() @ X.t()) @ dY, 2.0 * y_dB @ A.t()]
+        dX = out[2] + out[5]
+        return sum(t.square().sum() for t in (out[0], out[3], out[1], out[4], dX))
+
+    want = torch.autograd.grad(ref(*dYs), dYs)
+    for g, w in zip(got, want):
+        torch.testing.assert_close(g, w)
+
+
 def test_shared_lora_a_grads_are_views_of_one_buffer(monkeypatch):
     # Each d_A is a row block of one [sum r, K] buffer: no per-projection copy into the parameter layout.
     _set(monkeypatch, True)
