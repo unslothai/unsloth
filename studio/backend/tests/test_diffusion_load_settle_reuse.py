@@ -15,6 +15,8 @@ CUDA = types.SimpleNamespace(device = "cuda", backend = "cuda")
 
 @pytest.fixture
 def card(monkeypatch):
+    import torch
+
     state = types.SimpleNamespace(free = 10_000, total = 24_000, reads = 0, sleeps = 0, raise_on_read = False)
 
     def snapshot(target):
@@ -32,6 +34,9 @@ def card(monkeypatch):
 
     monkeypatch.setattr(mem, "snapshot_device_memory", snapshot)
     monkeypatch.setattr(mem, "_release_cuda_cache", lambda: None)
+    mps = getattr(torch, "mps", None)
+    if mps is not None:
+        monkeypatch.setattr(mps, "empty_cache", lambda: None, raising = False)
     monkeypatch.setattr("time.sleep", sleep)
     monkeypatch.setenv("UNSLOTH_SETTLE_DELAY_S", "1.0")
     monkeypatch.setenv("UNSLOTH_DIFFUSION_REUSE_SETTLED_MEMORY", "1")
