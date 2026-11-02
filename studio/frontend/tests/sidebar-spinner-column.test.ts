@@ -56,9 +56,8 @@ test("nav and Recents spinners land on one trailing column", async () => {
   );
 });
 
-// The kebab overlays the row's right edge, so a spinner row must pad past it.
-// The spinner, the waiting-for-approval dot and the unread dot take turns in one slot; a dot off
-// that centre reads as misaligned next to a spinner or a dot in the row above.
+// The kebab overlays the row's right edge, so a spinner row must pad past it; the spinner, approval
+// dot and unread dot share one slot, and a dot off that centre reads as misaligned.
 test("the Recents spinner, the approval mark and the unread dot share one centre", () => {
   const centre = (anchor: string, box: string) => inset(anchor, "right") + inset(box, "size") / 2;
   const spinnerAnchor = grab(

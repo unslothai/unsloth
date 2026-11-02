@@ -19,10 +19,9 @@ export interface TrainingApiSnippetInput {
 const LORA = "LoRA/QLoRA";
 
 /**
- * Where each field Start sends goes in the example. Exhaustive over the request type, so a new
- * field fails typecheck until it is placed: "openai" fields map to the OpenAI job fields, "extra"
- * ones are sent as Studio settings, "derived" ones follow from another field, and "host" ones
- * (secrets, this machine's paths and caches, offload, eval, logging, Hub / S3 data, resume) stay out.
+ * Route per request field, exhaustive so a new field fails typecheck until placed: openai maps to
+ * OpenAI job fields, extra to Studio settings, derived follows another field, host stays out
+ * (secrets, this machine's paths and caches, offload, eval, logging, Hub or S3 data, resume).
  */
 export const TRAINING_FIELD_ROUTE: Record<keyof TrainingStartRequest, "openai" | "extra" | "derived" | "host"> = {
   model_name: "openai",

@@ -47,12 +47,8 @@ type AutoScrollContextValue = {
   /** Detach as if scrolled up: composer growth must not let observer pins shove the chat up. */
   detachFromBottom: () => void;
   /**
-   * `deltaPx` of content was inserted ABOVE the viewport; shift by it so the
-   * user keeps looking at the same thing. Progressive mounting (see
-   * progressive-mount-controller) is the only caller and calls on EVERY
-   * widening commit, zero included, since a zero correction still resyncs the
-   * intent bookkeeping below. A method rather than a scrollTop write at the
-   * inserting commit because this hook owns scrollTop.
+   * Called on every widening commit, zero included, since this hook owns scrollTop and resyncs
+   * intent.
    */
   adjustForContentInsertedAbove: (deltaPx: number) => boolean;
   notifyContentResized: () => void;
@@ -205,9 +201,8 @@ export function useIntentAwareAutoScroll(): {
 
       const marker = (): HTMLElement => markerElRef.current ?? el;
 
-      // Room to scroll upward. Guards wheel/touch detach: a gesture on a viewport with nothing
-      // above can't express intent to leave the bottom and must not flip userDetachedRef, else
-      // later streaming skips extendFollow and auto-follow stays dead for the session.
+      // Upward wheel/touch detaches only with room above, else auto-follow stays dead for the
+      // session.
       const canScrollUp = (): boolean => el.scrollTop > 0;
 
       // An inner scroller with room above consumes the upward delta, so it must not detach.
@@ -662,9 +657,8 @@ export function useIntentAwareAutoScroll(): {
       el.addEventListener("pointerdown", onPointerDown, { passive: true });
       el.ownerDocument.addEventListener("pointerup", onPointerUp, true);
       el.ownerDocument.addEventListener("pointercancel", onPointerUp, true);
-      // ResizeObserver covers window resizes. visualViewport.resize is the
-      // only signal for iOS software-keyboard changes, where the visual
-      // viewport shrinks without the element's clientHeight changing.
+      // visualViewport resize is the only signal for iOS keyboard changes, where clientHeight stays
+      // put.
       window.visualViewport?.addEventListener("resize", onViewportResize);
 
       const unsubscribePreferences = useChatPreferencesStore.subscribe(

@@ -2072,12 +2072,11 @@ export function findLatestUserVideoBase64(
   return undefined;
 }
 
-/** The MCP image bound applied to the run's own tool results, BEFORE they are
- *  serialized. Bounding the OpenAI history afterwards meant every result's image
- *  array was stringified into an envelope on the main thread and then parsed again
- *  to be cut or dropped -- on every send, for pictures the request would not carry.
- *  A result that keeps no picture becomes its plain text, which is what the
- *  serializer emits for a stripped envelope. */
+/**
+ * MCP image bound applied to the run's tool results before serialization; bounding afterwards
+ * stringified and re-parsed every image array on each send, for pictures the request would not
+ * carry; a result with no picture becomes plain text.
+ */
 function boundMcpImageResults(
   messages: RunMessages,
   { readsImages, localMarkers }: { readsImages: boolean; localMarkers: boolean },

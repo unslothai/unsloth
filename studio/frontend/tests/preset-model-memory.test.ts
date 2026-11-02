@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Picking a preset is not a per-model edit (#14068). Default fell back to fixed sampling for every
-// model, and a custom preset's values came back on the next load after switching to Default. These
-// drive the real store the way the settings sheet, a model load and a status poll do.
+// Picking a preset is not a per-model edit (issue 14068): switching to Default must not fall back
+// to fixed sampling for every model or revive a custom preset's values on the next load.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";

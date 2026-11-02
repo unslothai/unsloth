@@ -38,9 +38,8 @@ const GLUE_WINDOW = () =>
   );
 
 test("the thread renders rows through MessageByIndex, never ThreadPrimitive.Messages", () => {
-  // Upstream renders MessageByIndexProvider -> RenderChildrenWithAccessor -> children; this row map
-  // renders MessageByIndexProvider -> children. Switching between the two on convergence would
-  // change the element type at that position, so React would unmount and rebuild every message.
+  // Upstream renders MessageByIndexProvider, RenderChildrenWithAccessor, then children, while this
+  // row map skips the accessor; switching between them on convergence would remount every message.
   assert.match(
     GLUE,
     /<AuiProvider key=\{index\} value=\{gate\.row\(index\)\}>\s*<MessageByIndexProvider index=\{index\}>/,

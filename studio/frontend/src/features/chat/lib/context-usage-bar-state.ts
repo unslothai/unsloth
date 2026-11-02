@@ -71,13 +71,9 @@ export function contextUsageRows(
 }
 
 /**
- * Which limit warning the tooltip carries, if any.
- *
- * llama.cpp stops generating at the window, so its advice is to raise the limit before
- * hitting it. MLX generates straight past instead, so the same wording would promise a
- * stop that never comes -- and once a conversation is over the window there is something
- * different to say about it. Read from the unclamped ratio: the reported percent caps at
- * 100%, which is exactly the state being reported on.
+ * Which limit warning the tooltip carries: llama.cpp stops at the window, so its advice is to raise
+ * the limit first; MLX runs past it, so no stop is promised, and an over-window conversation gets
+ * other wording; read the unclamped ratio, since the reported percent caps at 100%.
  */
 export type ContextLimitAdvice =
   | "none"
