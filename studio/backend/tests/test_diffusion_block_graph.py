@@ -736,10 +736,10 @@ def test_known_pool_is_counted_when_net_reservation_is_zero(monkeypatch):
     shared = bg._Shared(0)
     shared.pools.append((7, 1))
     monkeypatch.setattr(bg, "_LIVE", {shared})
+    segments = [{"device": 0, "segment_pool_id": (7, 1), "total_size": 200, "allocated_size": 80}]
+    monkeypatch.setattr(torch.cuda, "memory_snapshot", lambda: segments)
     monkeypatch.setattr(
-        cg,
-        "_allocator_segments",
-        lambda: [{"device": 0, "segment_pool_id": (7, 1), "total_size": 200, "allocated_size": 80}],
+        torch._C, "_cuda_memorySnapshot", lambda *a: {"segments": segments}, raising = False
     )
     assert shared.pool_bytes == 0
     assert bg.pool_bytes(0) == 120
