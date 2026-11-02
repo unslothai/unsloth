@@ -9,6 +9,7 @@ import {
   EMPTY_BUFFER,
   MAX_CLIENT_LINES,
   applyLogChunk,
+  clearSelectionInside,
   isPageStale,
   nextDroppedState,
   parseRefreshMode,
@@ -313,4 +314,27 @@ test("a selection holds the pane only when it is non-empty and touches the pane"
   assert.equal(selectionInside(select(outside, outside), pane), false);
   assert.equal(selectionInside(null, pane), false);
   assert.equal(selectionInside(select(inside, inside), null), false);
+});
+
+test("only a selection in the pane is cleared", () => {
+  const pane = { contains: (node: unknown) => node === "pane" };
+  const clearedFor = (anchorNode: string, focusNode: string) => {
+    let cleared = false;
+    clearSelectionInside(
+      {
+        isCollapsed: false,
+        anchorNode,
+        focusNode,
+        removeAllRanges: () => {
+          cleared = true;
+        },
+      },
+      pane,
+    );
+    return cleared;
+  };
+
+  assert.equal(clearedFor("pane", "pane"), true);
+  assert.equal(clearedFor("sidebar", "pane"), true);
+  assert.equal(clearedFor("sidebar", "sidebar"), false);
 });

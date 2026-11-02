@@ -71,6 +71,7 @@ import {
   REQUEST_TIMEOUT_MS,
   type RefreshMode,
   applyLogChunk,
+  clearSelectionInside,
   isPageStale,
   nextDroppedState,
   parseRefreshMode,
@@ -370,6 +371,7 @@ export function DebuggingTab() {
   );
 
   useEffect(() => {
+    clearSelectionInside(document.getSelection(), paneRef.current);
     selectionRef.current += 1;
     cursorRef.current = null;
     setBuffer(EMPTY_BUFFER);
@@ -423,9 +425,8 @@ export function DebuggingTab() {
 
   const text = useMemo(() => visibleLines.join("\n"), [visibleLines]);
 
-  // Repainting the pane drops any selection in it, so hold the shown text while the user selects.
-  // Nothing re-renders between mousedown and the first selected character: a render there
-  // (even the badge) stops Chromium extending the drag.
+  // Rewriting the pane's text drops any selection or drag in it, so hold it from press to release.
+  // The press is a ref so that a plain click does not flash the Paused badge.
   const [holding, setHolding] = useState(false);
   const pointerDownRef = useRef(false);
   const textRef = useRef(text);
@@ -452,16 +453,20 @@ export function DebuggingTab() {
     document.addEventListener("selectionchange", update);
     window.addEventListener("pointerup", release);
     window.addEventListener("pointercancel", release);
+    // A native context menu can swallow the pointerup.
+    window.addEventListener("contextmenu", release);
     return () => {
       document.removeEventListener("selectionchange", update);
       window.removeEventListener("pointerup", release);
       window.removeEventListener("pointercancel", release);
+      window.removeEventListener("contextmenu", release);
     };
   }, []);
 
   const scrollToBottom = useCallback(() => {
     const pane = paneRef.current;
     if (!pane) return;
+    clearSelectionInside(document.getSelection(), pane);
     pane.scrollTop = pane.scrollHeight;
     pinnedRef.current = true;
     setFollowing(true);
@@ -712,6 +717,7 @@ export function DebuggingTab() {
               variant="outline"
               disabled={mode !== "manual"}
               onClick={() => {
+                clearSelectionInside(document.getSelection(), paneRef.current);
                 void refreshSources();
                 void poll();
               }}

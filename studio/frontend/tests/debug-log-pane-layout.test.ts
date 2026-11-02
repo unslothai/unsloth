@@ -56,7 +56,15 @@ test("the pane repaints from the held text, so a poll cannot drop a selection", 
   assert.match(pane, /\{shownText \|\|/);
   assert.doesNotMatch(pane, /\{text \|\|/);
   assert.match(tab, /document\.addEventListener\("selectionchange", update\)/);
-  assert.match(tab, /if \(pointerDownRef\.current && !held\) return;/);
-  // A render between mousedown and the first selected character stops Chromium extending the drag.
+  assert.match(tab, /if \(pointerDownRef\.current && !held\) return;\s*setHolding\(held\);/);
+  assert.match(tab, /pointerDownRef\.current = false;\s*const held = inside\(\);\s*setHolding\(held\);/);
+  // A plain click must not flash Paused.
   assert.doesNotMatch(pane, /onPointerDown=\{\(\) => \{[^}]*setHolding/);
+});
+
+test("asking for other log text ends the hold, and a context menu ends a press", () => {
+  assert.match(tab, /clearSelectionInside\(document\.getSelection\(\), paneRef\.current\);\s*selectionRef\.current \+= 1;/);
+  assert.match(tab, /clearSelectionInside\(document\.getSelection\(\), paneRef\.current\);\s*void refreshSources\(\);/);
+  assert.match(tab, /clearSelectionInside\(document\.getSelection\(\), pane\);\s*pane\.scrollTop = pane\.scrollHeight;/);
+  assert.match(tab, /addEventListener\("contextmenu", release\)/);
 });

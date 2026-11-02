@@ -174,3 +174,15 @@ export function selectionInside<N>(
   if (!selection || !pane || selection.isCollapsed) return false;
   return pane.contains(selection.anchorNode) || pane.contains(selection.focusNode);
 }
+
+export function clearSelectionInside<N>(
+  selection: {
+    isCollapsed: boolean;
+    anchorNode: N | null;
+    focusNode: N | null;
+    removeAllRanges(): void;
+  } | null,
+  pane: { contains(node: N | null): boolean } | null,
+): void {
+  if (selectionInside(selection, pane)) selection?.removeAllRanges();
+}
