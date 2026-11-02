@@ -1295,8 +1295,9 @@ _GGUF_LISTING_TIMEOUTS = (_HUB_MODEL_INFO_TIMEOUT, 30.0, 60.0)
 
 @_contextlib.contextmanager
 def shared_hub_model_info():
-    """Share a ``model_info`` response between the Hub probes here, per repo and credential."""
-    token = _hub_model_info_scope.set({})
+    """Share a ``model_info`` response between the Hub probes here, per repo and credential. A nested block joins the open one."""
+    open_scope = _hub_model_info_scope.get()
+    token = _hub_model_info_scope.set({} if open_scope is None else open_scope)
     try:
         yield
     finally:

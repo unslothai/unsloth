@@ -12,6 +12,7 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import base64
 import inspect
@@ -2119,6 +2120,7 @@ def run_inference_process(
     # Offline auto-detect, run before any HF import: child_env scrubs the parent's scoped guard, so probe here; skipped for filesystem-only loads.
     _probe_model = config["model_name"]
     _probe_base, _probe_needs_hub = _recorded_local_base(_probe_model)
+    _probed_offline = None
     if "HF_HUB_OFFLINE" not in os.environ and (
         _probe_needs_hub or not _hub_targets_are_local(_probe_model, _probe_base)
     ):
@@ -2137,6 +2139,7 @@ def run_inference_process(
                     gateway_errors_offline = False,
                     proxy_timeouts_offline = False,
                 )
+                _probed_offline = _offline
             if _offline:
                 os.environ["HF_HUB_OFFLINE"] = "1"
                 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
@@ -2199,10 +2202,16 @@ def run_inference_process(
 
     _hw.detect_hardware()
     if _hw.DEVICE == _hw.DeviceType.MLX and not _native_audio_worker:
+        hub_answers = contextlib.ExitStack()
         try:
             from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
             from utils.models.diffusion_lm import mlx_refusal
+            from utils.models.model_config import shared_hub_model_info
+            from utils.utils import pinned_hf_reachability
 
+            # One load is one request: its checks read the Hub's answer once, and only the load holds it.
+            hub_answers.enter_context(pinned_hf_reachability(_probed_offline))
+            hub_answers.enter_context(shared_hub_model_info())
             refusal = mlx_refusal(model_name, _config_hf_token(config))
             if refusal:
                 raise RuntimeError(refusal)
@@ -2239,6 +2248,8 @@ def run_inference_process(
                 },
             )
             return
+        finally:
+            hub_answers.close()
 
         logger.info("MLX inference subprocess ready, entering command loop")
         batch = _ResidentBatch(backend, resp_queue)
