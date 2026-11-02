@@ -2553,7 +2553,6 @@ export const es = {
         detailedView: "Vista detallada",
         detailedViewDescription:
           "Muestra la carga de la CPU y la carga, temperatura y consumo de cada GPU en la ventana flotante.",
-        cpuLoad: "Carga de CPU",
         gpuLoad: "Carga de GPU",
         temperature: "Temperatura",
         power: "Consumo",

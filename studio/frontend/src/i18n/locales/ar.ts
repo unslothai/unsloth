@@ -2527,7 +2527,6 @@ export const ar = {
         detailedView: "عرض مفصل",
         detailedViewDescription:
           "اعرض حمل المعالج وحمل كل وحدة GPU وحرارتها واستهلاكها للطاقة في النافذة العائمة.",
-        cpuLoad: "حمل المعالج",
         gpuLoad: "حمل GPU",
         temperature: "الحرارة",
         power: "الطاقة",

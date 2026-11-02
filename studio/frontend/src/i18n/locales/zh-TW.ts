@@ -2619,7 +2619,6 @@ export const zhTW = {
         detailedView: "詳細檢視",
         detailedViewDescription:
           "在浮動視窗中顯示 CPU 負載，以及每個 GPU 的負載、溫度和功耗。",
-        cpuLoad: "CPU 負載",
         gpuLoad: "GPU 負載",
         temperature: "溫度",
         power: "功耗",

@@ -2731,7 +2731,6 @@ export const fa = {
         detailedView: "نمای جزئی",
         detailedViewDescription:
           "بار CPU و بار، دما و توان هر GPU در پنجرهٔ شناور نمایش داده شود.",
-        cpuLoad: "بار CPU",
         gpuLoad: "بار GPU",
         temperature: "دما",
         power: "توان",

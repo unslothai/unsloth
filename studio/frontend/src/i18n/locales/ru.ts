@@ -2538,7 +2538,6 @@ export const ru = {
         detailedView: "Подробный вид",
         detailedViewDescription:
           "Показывать загрузку CPU, а также загрузку, температуру и мощность каждой GPU в плавающем окне.",
-        cpuLoad: "Загрузка CPU",
         gpuLoad: "Загрузка GPU",
         temperature: "Температура",
         power: "Мощность",

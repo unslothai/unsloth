@@ -2744,7 +2744,6 @@ export const id = {
         detailedView: "Tampilan terperinci",
         detailedViewDescription:
           "Tampilkan beban CPU serta beban, suhu, dan daya setiap GPU di jendela mengambang.",
-        cpuLoad: "Beban CPU",
         gpuLoad: "Beban GPU",
         temperature: "Suhu",
         power: "Daya",

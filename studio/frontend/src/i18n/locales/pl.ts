@@ -2775,7 +2775,6 @@ export const pl = {
         detailedView: "Widok szczegółowy",
         detailedViewDescription:
           "Pokazuj w oknie pływającym obciążenie CPU oraz obciążenie, temperaturę i pobór mocy każdego GPU.",
-        cpuLoad: "Obciążenie CPU",
         gpuLoad: "Obciążenie GPU",
         temperature: "Temperatura",
         power: "Pobór mocy",

@@ -2521,7 +2521,6 @@ export const ko = {
         detailedView: "자세히 보기",
         detailedViewDescription:
           "플로팅 창에 CPU 부하와 각 GPU의 부하, 온도, 전력을 표시합니다.",
-        cpuLoad: "CPU 부하",
         gpuLoad: "GPU 부하",
         temperature: "온도",
         power: "전력",

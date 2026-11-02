@@ -2499,7 +2499,6 @@ export const zhCN = {
         detailedView: "详细视图",
         detailedViewDescription:
           "在浮动窗口中显示 CPU 负载以及每个 GPU 的负载、温度和功耗。",
-        cpuLoad: "CPU 负载",
         gpuLoad: "GPU 负载",
         temperature: "温度",
         power: "功耗",

@@ -2533,7 +2533,6 @@ export const hi = {
         detailedView: "विस्तृत दृश्य",
         detailedViewDescription:
           "फ़्लोटिंग विंडो में CPU लोड तथा हर GPU का लोड, तापमान और पावर दिखाएँ।",
-        cpuLoad: "CPU लोड",
         gpuLoad: "GPU लोड",
         temperature: "तापमान",
         power: "पावर",

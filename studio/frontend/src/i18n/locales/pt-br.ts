@@ -2541,7 +2541,6 @@ export const ptBR = {
         detailedView: "Visualização detalhada",
         detailedViewDescription:
           "Mostra a carga da CPU e a carga, temperatura e consumo de cada GPU na janela flutuante.",
-        cpuLoad: "Carga da CPU",
         gpuLoad: "Carga da GPU",
         temperature: "Temperatura",
         power: "Consumo",

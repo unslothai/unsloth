@@ -2780,7 +2780,6 @@ export const nl = {
         detailedView: "Gedetailleerde weergave",
         detailedViewDescription:
           "CPU-belasting en per GPU de belasting, temperatuur en het vermogen tonen in het zwevende venster.",
-        cpuLoad: "CPU-belasting",
         gpuLoad: "GPU-belasting",
         temperature: "Temperatuur",
         power: "Vermogen",

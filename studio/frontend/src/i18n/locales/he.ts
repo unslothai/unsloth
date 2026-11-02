@@ -2581,7 +2581,6 @@ export const he = {
         detailedView: "תצוגה מפורטת",
         detailedViewDescription:
           "הצגת עומס המעבד ועומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף.",
-        cpuLoad: "עומס מעבד",
         gpuLoad: "עומס GPU",
         temperature: "טמפרטורה",
         power: "הספק",

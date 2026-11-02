@@ -2558,7 +2558,6 @@ export const de = {
         detailedView: "Detailansicht",
         detailedViewDescription:
           "Zeigt CPU-Last sowie Last, Temperatur und Leistungsaufnahme jeder GPU im schwebenden Fenster.",
-        cpuLoad: "CPU-Last",
         gpuLoad: "GPU-Last",
         temperature: "Temperatur",
         power: "Leistung",

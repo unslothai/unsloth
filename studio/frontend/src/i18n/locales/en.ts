@@ -2541,7 +2541,6 @@ export const en = {
         detailedView: "Detailed view",
         detailedViewDescription:
           "Show CPU load and each GPU's load, temperature and power in the floating window.",
-        cpuLoad: "CPU load",
         gpuLoad: "GPU load",
         temperature: "Temperature",
         power: "Power",

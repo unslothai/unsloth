@@ -2767,7 +2767,6 @@ export const uk = {
         detailedView: "Докладний вигляд",
         detailedViewDescription:
           "Показувати в плаваючому вікні навантаження CPU, а також навантаження, температуру й споживання кожного GPU.",
-        cpuLoad: "Навантаження CPU",
         gpuLoad: "Навантаження GPU",
         temperature: "Температура",
         power: "Споживання",

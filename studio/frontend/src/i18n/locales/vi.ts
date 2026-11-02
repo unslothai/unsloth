@@ -2746,7 +2746,6 @@ export const vi = {
         detailedView: "Chế độ xem chi tiết",
         detailedViewDescription:
           "Hiển thị tải CPU cùng tải, nhiệt độ và công suất của từng GPU trong cửa sổ nổi.",
-        cpuLoad: "Tải CPU",
         gpuLoad: "Tải GPU",
         temperature: "Nhiệt độ",
         power: "Công suất",

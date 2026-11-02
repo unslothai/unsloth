@@ -2737,7 +2737,6 @@ export const tr = {
         detailedView: "Ayrıntılı görünüm",
         detailedViewDescription:
           "Kayan pencerede CPU yükünü ve her GPU'nun yükünü, sıcaklığını ve güç tüketimini gösterin.",
-        cpuLoad: "CPU yükü",
         gpuLoad: "GPU yükü",
         temperature: "Sıcaklık",
         power: "Güç",

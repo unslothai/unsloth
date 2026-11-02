@@ -2759,7 +2759,6 @@ export const cs = {
         detailedView: "Podrobné zobrazení",
         detailedViewDescription:
           "Zobrazovat v plovoucím okně zatížení CPU a zatížení, teplotu a příkon každého GPU.",
-        cpuLoad: "Zatížení CPU",
         gpuLoad: "Zatížení GPU",
         temperature: "Teplota",
         power: "Příkon",

@@ -2631,7 +2631,6 @@ export const th = {
         detailedView: "มุมมองแบบละเอียด",
         detailedViewDescription:
           "แสดงโหลด CPU และโหลด อุณหภูมิ และพลังงานของ GPU แต่ละตัวในหน้าต่างลอย",
-        cpuLoad: "โหลด CPU",
         gpuLoad: "โหลด GPU",
         temperature: "อุณหภูมิ",
         power: "พลังงาน",

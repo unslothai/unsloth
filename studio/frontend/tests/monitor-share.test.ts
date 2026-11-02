@@ -149,3 +149,11 @@ test("a combined inference inventory that includes the displayed backend is not 
   assert.equal(inferenceGpuDisjoint("cuda", null), false);
   assert.equal(inferenceGpuDisjoint(undefined, "vulkan"), false);
 });
+
+test("CPU is a core row, so Detailed view offers no CPU load option that would do nothing", async () => {
+  const { MONITOR_DETAIL_METRICS, selectedDetailMetrics } = await import("../src/components/monitor-details.ts");
+  assert.ok(!(MONITOR_DETAIL_METRICS as readonly string[]).includes("cpuLoad"));
+  // A stored selection from before still resolves to the GPU metrics it named.
+  assert.deepEqual([...selectedDetailMetrics(["cpuLoad", "gpuLoad"])], ["gpuLoad"]);
+  assert.match(readSrc("components/floating-monitor.tsx"), /testId="floating-monitor-cpu"/);
+});

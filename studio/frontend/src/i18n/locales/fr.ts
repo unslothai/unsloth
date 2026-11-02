@@ -2556,7 +2556,6 @@ export const fr = {
         detailedView: "Vue détaillée",
         detailedViewDescription:
           "Affiche la charge du CPU ainsi que la charge, la température et la consommation de chaque GPU dans la fenêtre flottante.",
-        cpuLoad: "Charge CPU",
         gpuLoad: "Charge GPU",
         temperature: "Température",
         power: "Puissance",
