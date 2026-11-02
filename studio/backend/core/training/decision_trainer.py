@@ -8,6 +8,7 @@ import json
 import math
 import os
 import random
+import re
 import threading
 import time
 from contextvars import copy_context
@@ -32,6 +33,11 @@ STRUCT_COLUMNS_WARNING = (
 
 class _Stopped(Exception):
     pass
+
+
+def _no_decisions_message(reason: str | None) -> str:
+    detail = f" ({reason})" if reason else ""
+    return f"No usable decisions in the dataset{detail}. Each row needs state, questions and gold."
 
 
 def _decision_count(items: list) -> int:
@@ -101,6 +107,11 @@ def _local_files(paths: list[str]) -> list[Path]:
     return files
 
 
+def _bad_json(path: Path, line: int, exc: json.JSONDecodeError) -> ValueError:
+    name = re.sub(r"^[0-9a-f]{32}_", "", path.name)
+    return ValueError(f"Invalid JSON at {name}:{line}: {exc.msg}")
+
+
 def _read_local_rows(paths: list[str], load_dataset, warn: Callable[[str], None]) -> list[dict]:
     from utils.datasets.cells import csv_as_text_kwargs
 
@@ -116,8 +127,17 @@ def _read_local_rows(paths: list[str], load_dataset, warn: Callable[[str], None]
             try:
                 data = json.loads(text)
                 rows.extend(data if isinstance(data, list) else [data])
-            except ValueError:
-                rows.extend(json.loads(line) for line in text.splitlines() if line.strip())
+            except json.JSONDecodeError as exc:
+                # "Extra data" means the first line parsed, so this is JSONL.
+                if exc.msg != "Extra data":
+                    raise _bad_json(path, exc.lineno, exc) from None
+                for number, line in enumerate(text.splitlines(), 1):
+                    if not line.strip():
+                        continue
+                    try:
+                        rows.append(json.loads(line))
+                    except json.JSONDecodeError as bad_line:
+                        raise _bad_json(path, number, bad_line) from None
         elif suffix in (".csv", ".parquet"):
             dataset = load_dataset(
                 suffix[1:],
@@ -239,11 +259,19 @@ def _load_rows(
 class _DecisionRows:
     """Reads raw rows on a thread, in this job's context, while the model loads."""
 
-    def __init__(self, config, should_stop, status, warn):
+    def __init__(
+        self,
+        config,
+        should_stop,
+        status,
+        warn,
+        check = None,
+    ):
         self._config = config
         self._should_stop = should_stop
         self._status = status
         self._warn = warn
+        self._check = check
         self._cancelled = threading.Event()
         self._done = threading.Event()
         self._lock = threading.Lock()
@@ -272,9 +300,12 @@ class _DecisionRows:
         try:
             if self._stopped():
                 raise _Stopped("Training cancelled")
-            self._result = _load_rows(
+            result = _load_rows(
                 self._config, self._stopped, self._report_status, self._report_warning
             )
+            if self._check is not None:
+                self._check(result[0])
+            self._result = result
         except BaseException as exc:
             self._error = exc
         finally:
@@ -299,6 +330,29 @@ class _DecisionRows:
         if self._error is not None:
             raise self._error
         return self._result
+
+    def alongside(self, work, check_stop):
+        from utils.account_context import account_thread
+
+        failure = []
+
+        def run():
+            try:
+                work()
+            except BaseException as exc:
+                failure.append(exc)
+
+        # A daemon thread, so bad rows end the run without waiting out the model download.
+        context = copy_context()
+        thread = account_thread(target = context.run, args = (run,), daemon = True)
+        thread.start()
+        while thread.is_alive():
+            thread.join(0.1)
+            check_stop()
+            if self._done.is_set() and self._error is not None:
+                raise self._error
+        if failure:
+            raise failure[0]
 
     def __exit__(self, *_exc):
         with self._lock:
@@ -513,9 +567,18 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     use_lora = config["training_type"] == "LoRA/QLoRA"
     gradient_checkpointing = normalize_gradient_checkpointing(config["gradient_checkpointing"])
 
-    with _DecisionRows(config, lambda: stop["requested"], status, warn) as pending_rows:
+    def check_rows(rows: list) -> None:
+        problem = FastDecisionModel.rows_problem(rows, clef, validate)
+        if problem is not None:
+            raise ValueError(_no_decisions_message(problem))
+
+    with _DecisionRows(config, lambda: stop["requested"], status, warn, check_rows) as pending_rows:
         check_stop()
-        _download_decision_checkpoint(event_queue, config)
+        if config.get("local_datasets"):
+            pending_rows.result(check_stop)
+        pending_rows.alongside(
+            lambda: _download_decision_checkpoint(event_queue, config), check_stop
+        )
         check_stop()
         status("Loading decision model...")
         if llm:
@@ -593,12 +656,7 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
             "reason": report["reason"] or eval_report["reason"],
         }
     if not items:
-        reason = f" ({report['reason']})" if report["reason"] else ""
-        send(
-            "error",
-            error = f"No usable decisions in the dataset{reason}. Each row needs state, questions and gold.",
-            stack = "",
-        )
+        send("error", error = _no_decisions_message(report["reason"]), stack = "")
         return
     if report["skipped"]:
         warn(f"Skipped {report['skipped']:,} of {report['total']:,} decisions: {report['reason']}.")
