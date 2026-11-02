@@ -6,6 +6,7 @@ import {
   CHAT_HISTORY_UPDATED_EVENT,
   notifyChatHistoryUpdated,
 } from "../api/chat-api";
+import { useBookmarkedTurnsStore } from "../stores/bookmarked-turns-store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
 import {
@@ -346,6 +347,7 @@ export async function deleteChatItems(
     );
     // retain the head until deletion succeeds so a restored chat reopens on the same branch.
     for (const id of threadIds) clearBranchHead(id);
+    useBookmarkedTurnsStore.getState().forgetThreads(threadIds);
     // offer recovery for sandbox files that outlive a deleted chat and lose their sidebar entry.
     offerToDeleteKeptSandboxes(kept);
   } catch (error) {

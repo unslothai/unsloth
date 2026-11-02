@@ -459,6 +459,7 @@ export {
   shouldAttachPastedText,
 } from "./utils/pasted-text";
 export { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
+export { useBookmarkedTurnsStore } from "./stores/bookmarked-turns-store";
 export {
   type DocumentAnnotation,
   type DocumentAnnotations,

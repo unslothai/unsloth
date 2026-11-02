@@ -33,11 +33,10 @@ import {
   HomeWifiIcon,
   LibrariesIcon,
   Search01Icon,
-  Settings02Icon,
   UserCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { ShieldCogIcon } from "@/lib/shield-cog-icon";
-import { ChipIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { ChipIcon, MessageCircleIcon, Settings01Icon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -180,13 +179,13 @@ class SettingsPanelBoundary extends Component<
 interface TabDef {
   id: SettingsTab;
   labelKey: TranslationKey;
-  icon?: typeof Settings02Icon;
+  icon?: typeof Settings01Icon;
   iconComponent?: FC<{ className?: string }>;
   badgeKey?: TranslationKey;
 }
 
 const TABS: TabDef[] = [
-  { id: "general", labelKey: "settings.tabs.general", icon: Settings02Icon },
+  { id: "general", labelKey: "settings.tabs.general", icon: Settings01Icon },
   {
     id: "profile",
     labelKey: "settings.tabs.profile",
@@ -284,7 +283,7 @@ function useStackedLayout(): boolean {
     () => window.matchMedia(query).matches,
     () => false,
   );
-  return width > 960 || narrow;
+  return width > 1000 || narrow;
 }
 
 export function SettingsDialog() {
@@ -481,14 +480,14 @@ export function SettingsDialog() {
             }
           }}
           className={cn(
-            "settings-surface !max-w-[min(960px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
+            "settings-surface !max-w-[min(1000px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(1000px,calc(100vw-2rem))] p-0 overflow-hidden",
             // Soft shadow, no outline ring.
             "shadow-border rounded-3xl ring-0",
             // Same chrome-subtracted height the shared DialogContent uses at this
             // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
             // (and its overflow-hidden bottom edge) below the window. 0px on web.
             "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
-            "4xl:w-[min(1120px,calc(100vw-2rem))] 4xl:!max-w-[min(1120px,calc(100vw-2rem))] 4xl:h-[min(940px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
+            "4xl:w-[min(1160px,calc(100vw-2rem))] 4xl:!max-w-[min(1160px,calc(100vw-2rem))] 4xl:h-[min(940px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
           )}
         >
           <DialogTitle className="sr-only">
@@ -505,7 +504,7 @@ export function SettingsDialog() {
                 page fill, so both track the active palette. */}
             <aside
               className={cn(
-                "font-heading flex w-[min(calc(248px*var(--ui-space-scale,1)),50%)] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 group-data-stacked/settings:w-full group-data-stacked/settings:border-r-0 group-data-stacked/settings:border-b group-data-stacked/settings:border-sidebar-border",
+                "font-heading flex w-[min(calc(248px*var(--ui-space-scale,1)),50%)] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground px-2 py-2 dark:border-r-0 group-data-stacked/settings:w-full group-data-stacked/settings:border-r-0 group-data-stacked/settings:border-b group-data-stacked/settings:border-sidebar-border",
                 !stacked && "md:max-lg:w-[min(calc(208px*var(--ui-space-scale,1)),50%)]",
               )}
             >
@@ -548,7 +547,7 @@ export function SettingsDialog() {
                 )}
               </div>
               {results ? (
-                <div className="hover-scrollbar -mr-2 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto py-1 pl-1 pr-0.5 group-data-stacked/settings:hidden">
+                <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-1 group-data-stacked/settings:hidden">
                   {results.length === 0 ? (
                     <p className="px-3 py-2 text-sm text-muted-foreground">
                       {t("settings.dialog.searchNoResults")}
@@ -592,7 +591,7 @@ export function SettingsDialog() {
                 onScroll={onRailScroll}
                 className={cn(
                   // A short window leaves the list taller than the clipped sidebar, so scroll it.
-                  "hover-scrollbar settings-rail-fade -mr-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1 pl-1 pr-0.5 group-data-stacked/settings:mr-0",
+                  "hover-scrollbar settings-rail-fade flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-1",
                   railFadeClass,
                   "group-data-stacked/settings:flex-none group-data-stacked/settings:flex-row group-data-stacked/settings:overflow-x-auto group-data-stacked/settings:py-0",
                   results !== null && "group-data-stacked/settings:flex hidden",
@@ -672,7 +671,7 @@ export function SettingsDialog() {
                 </button>
                 <div
                   ref={mainScrollRef}
-                  className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
+                  className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-7 py-6 [scrollbar-gutter:stable]"
                 >
                   {/* Only a panel's first view waits, so the fallback is delayed and a
                       promptly arriving panel never flashes it. */}
