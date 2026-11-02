@@ -5512,7 +5512,7 @@ class DiffusionBackend:
                     kind,
                     base,
                     kwargs.get("gpu_ordinal"),
-                    kwargs.get("hf_token"),
+                    kwargs.get("_hub_token", kwargs.get("hf_token")),
                     local_files_only,
                 )
             )
@@ -9116,8 +9116,8 @@ class DiffusionBackend:
                                     "torch_dtype": dtype,
                                     "cache_dir": hub_cache_dir(),
                                 }
-                                if hf_token:
-                                    pipe_kwargs["token"] = hf_token
+                                if hub_token is not None:
+                                    pipe_kwargs["token"] = hub_token
                                 # fp16 load with a twin for every component reads the twins (bit-identical after cast).
                                 _te_replaced = te_precast_components(
                                     fam, fetch_base, text_encoder_quant, target
@@ -9208,7 +9208,7 @@ class DiffusionBackend:
                                             fetch_base,
                                             kind = kind,
                                             dtype = dtype,
-                                            hf_token = hf_token,
+                                            hf_token = hub_token,
                                             local_files_only = local_files_only,
                                             config_source = _base_local_dir,
                                             cache_dir = hub_cache_dir(),
