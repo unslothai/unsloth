@@ -14,6 +14,15 @@ test("the turn rail sits in the left gutter and its dashes grow rightwards", () 
   assert.match(source, /opacity-0[^"]*hover:opacity-100 focus-within:opacity-100 @min-\[2\.25rem\]\/turn-gutter:opacity-100/);
 });
 
+test("scrolling restyles no rail markers: no colour transition, no inherited fade properties", () => {
+  const source = readSrc("components/assistant-ui/turn-navigation.tsx");
+  // Tailwind's scale-x-* sets `scale`, which a `transform` transition does not animate.
+  assert.match(source, /rounded-full transition-\[scale\] duration-150/);
+  assert.doesNotMatch(source, /transition-\[[^\]]*(?:background-color|transform)/);
+  assert.doesNotMatch(source, /--rail-fade-/);
+  assert.match(source, /setProperty\("mask-image", next\)/);
+});
+
 test("turn navigation is on by default and stays off once turned off", async () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(thread, /<TurnNavigator viewportRef=\{viewportElRef\} \/>\s*\{\/\* Drop-in for ThreadPrimitive\.Messages/);

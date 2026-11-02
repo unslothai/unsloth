@@ -6,7 +6,6 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { Bookmark02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type FC,
@@ -25,7 +24,6 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { create } from "zustand";
 
 import {
   completeProgressiveMounts,
@@ -45,6 +43,7 @@ import {
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { prefersReducedMotion } from "@/features/settings";
 import { useT } from "@/i18n";
+import { BookmarkIcon } from "@/lib/hugeicons-derived";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import { cn } from "@/lib/utils";
 
@@ -58,16 +57,6 @@ const REPLY_PREVIEW_CHARS = 480;
 const PREVIEW_HIDE_DELAY_MS = 150;
 const PYRAMID_REACH = 2;
 const JUMP_ALIGN_FRAMES = 4;
-
-interface TurnIndex {
-  turns: ReadonlyMap<string, number>;
-  settled: boolean;
-}
-const useTurnIndexStore = create<Record<string, TurnIndex>>(() => ({}));
-
-function useTurnIndexSettled(threadKey: string): boolean {
-  return useTurnIndexStore((state) => state[threadKey]?.settled === true);
-}
 
 function useIsTurnBookmarked(
   threadId: string | undefined,
@@ -120,7 +109,7 @@ const BookmarkTurnButtonInner: FC = () => {
       onClick={turnBookmark.toggle}
     >
       <HugeiconsIcon
-        icon={Bookmark02Icon}
+        icon={BookmarkIcon}
         strokeWidth={1.75}
         className={cn("size-icon", turnBookmark.bookmarked && "fill-current")}
       />
@@ -149,7 +138,7 @@ const BookmarkTurnMenuItemInner: FC<{ className?: string }> = ({
       className={className}
     >
       <HugeiconsIcon
-        icon={Bookmark02Icon}
+        icon={BookmarkIcon}
         strokeWidth={1.75}
         className={cn("size-icon", turnBookmark.bookmarked && "fill-current")}
       />
@@ -162,28 +151,16 @@ export const TurnNavigator: FC<{
   viewportRef: RefObject<HTMLElement | null>;
 }> = memo(({ viewportRef }) => {
   const enabled = useChatPreferencesStore((state) => state.showTurnNavigation);
-  return enabled ? <TurnIndexPublisher viewportRef={viewportRef} /> : null;
+  return enabled ? <TurnRailGate viewportRef={viewportRef} /> : null;
 });
 TurnNavigator.displayName = "TurnNavigator";
 
-const TurnIndexPublisher: FC<{
+// mounts the rail once the thread's progressive mounts finish, so it never competes with them
+const TurnRailGate: FC<{
   viewportRef: RefObject<HTMLElement | null>;
 }> = ({ viewportRef }) => {
   const threadKey = useAuiState(({ threadListItem }) => threadListItem.id);
-  const signature = useAuiState(
-    ({ thread }) => threadTurns(thread.messages).signature,
-  );
-  const settled = useTurnIndexSettled(threadKey);
-  useEffect(() => {
-    const turns = new Map(
-      signature
-        ? signature.split("\n").map((id, index) => [id, index + 1])
-        : [],
-    );
-    useTurnIndexStore.setState((state) => ({
-      [threadKey]: { turns, settled: state[threadKey]?.settled ?? false },
-    }));
-  }, [threadKey, signature]);
+  const [settledKey, setSettledKey] = useState<string | null>(null);
   useEffect(() => {
     let cancel = () => {};
     const waitForSettle = () => {
@@ -192,24 +169,15 @@ const TurnIndexPublisher: FC<{
           waitForSettle();
           return;
         }
-        useTurnIndexStore.setState((state) => ({
-          [threadKey]: {
-            turns: state[threadKey]?.turns ?? new Map(),
-            settled: true,
-          },
-        }));
+        setSettledKey(threadKey);
       });
     };
     waitForSettle();
-    return () => {
-      cancel();
-      useTurnIndexStore.setState((state) => {
-        const { [threadKey]: _, ...rest } = state;
-        return rest;
-      }, true);
-    };
+    return () => cancel();
   }, [threadKey]);
-  return settled ? <TurnRail viewportRef={viewportRef} /> : null;
+  return settledKey === threadKey ? (
+    <TurnRail viewportRef={viewportRef} />
+  ) : null;
 };
 
 function alignTurnTop(
@@ -488,9 +456,17 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     };
     const fade = (hidden: number) =>
       `${Math.min(Math.max(hidden, 0), RAIL_FADE_PX)}px`;
+    // the mask itself, not inherited custom properties: those restyle every marker on each change.
+    // Compared as written, since the style reads back reserialized.
+    let mask = "";
     const setFades = (top: number) => {
-      setStyle("--rail-fade-top", fade(top));
-      setStyle("--rail-fade-bottom", fade(railRange - top));
+      const next = `linear-gradient(to bottom, transparent, #000 ${fade(top)}, #000 calc(100% - ${fade(railRange - top)}), transparent)`;
+      if (next !== mask) {
+        mask = next;
+        // prefixed too, as the build emits it for older WebKit (Tauri on macOS and Linux)
+        rail.style.setProperty("-webkit-mask-image", next);
+        rail.style.setProperty("mask-image", next);
+      }
     };
     // reads before writes, no-op writes skipped: one layout per frame (autoscroll, resize drag)
     const sync = () => {
@@ -693,13 +669,13 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
             onBlur={hidePreview}
             className="group flex h-[var(--rail-row,8px)] w-full shrink-0 cursor-pointer items-center justify-start rounded-sm pl-1.5 outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
-            {/* transform and colour only: hover and the in-view tint change every frame */}
+            {/* only the hover scale animates: an in-view tint transition restyles the rail every scrolled frame */}
             <span
               className={cn(
-                "h-[var(--rail-line,2px)] w-6 origin-left scale-x-[0.333] rounded-full transition-[transform,background-color] duration-150 ease-out group-data-[dist=0]:scale-x-100 group-data-[dist=1]:scale-x-[0.667] group-data-[dist=2]:scale-x-[0.417] motion-reduce:transition-none",
+                "h-[var(--rail-line,2px)] w-6 origin-left scale-x-[0.333] rounded-full transition-[scale] duration-150 ease-out group-data-[dist=0]:scale-x-100 group-data-[dist=1]:scale-x-[0.667] group-data-[dist=2]:scale-x-[0.417] motion-reduce:transition-none",
                 isBookmarked
                   ? "bg-primary"
-                  : "bg-muted-foreground/30 group-data-[in-view]:bg-muted-foreground group-data-[dist=0]:bg-foreground",
+                  : "bg-muted-foreground opacity-30 group-data-[in-view]:opacity-100 group-data-[dist=0]:bg-foreground group-data-[dist=0]:opacity-100",
               )}
             />
           </button>
@@ -748,7 +724,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
             ref={railRef}
             onKeyDown={onRailKeyDown}
             onScroll={onRailScroll}
-            className="aui-turn-navigator pointer-events-auto flex w-9 shrink-0 flex-col overflow-y-hidden py-1 transition-[height] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] [contain:layout_paint] [mask-image:linear-gradient(to_bottom,transparent,#000_var(--rail-fade-top,0px),#000_calc(100%_-_var(--rail-fade-bottom,0px)),transparent)] motion-reduce:transition-none"
+            className="aui-turn-navigator pointer-events-auto flex w-9 shrink-0 flex-col overflow-y-hidden py-1 transition-[height] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] [contain:layout_paint] motion-reduce:transition-none"
           >
             {markers}
           </nav>
@@ -794,7 +770,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
                 className="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md hover:bg-accent"
               >
                 <HugeiconsIcon
-                  icon={Bookmark02Icon}
+                  icon={BookmarkIcon}
                   strokeWidth={1.75}
                   className={cn("size-4", previewBookmarked && "fill-current")}
                 />
