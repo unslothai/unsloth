@@ -5654,7 +5654,6 @@ def _video_ffmpeg_dir_flags(
     env: Optional[Mapping[str, str]] = None,
     extra_args: Optional[Sequence[str]] = None,
 ) -> tuple[list[str], Optional[str]]:
-    """Pin the native FFmpeg pair unless the user selected a directory."""
     if not server_caps.get("supports_video_ffmpeg_dir"):
         return [], None
     source = os.environ if env is None else env

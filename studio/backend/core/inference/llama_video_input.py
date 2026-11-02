@@ -32,7 +32,6 @@ _SHRINK_TIMEOUT_S = 300
 
 
 def video_tools(ffmpeg_dir: Optional[str] = None) -> Optional[tuple[str, str]]:
-    """Resolve the native FFmpeg pair on llama-server's search path."""
     names = ("ffmpeg.exe", "ffprobe.exe") if sys.platform == "win32" else ("ffmpeg", "ffprobe")
     if ffmpeg_dir:
         found = [shutil.which(name, path = ffmpeg_dir) for name in names]
