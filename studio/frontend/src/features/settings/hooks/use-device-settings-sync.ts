@@ -60,8 +60,7 @@ export function useDeviceSettingsSync(enabled: boolean): void {
       writePending(touched);
     };
 
-    // One save at a time, each sending the current values of only the sections edited here: a
-    // slow request cannot land after a newer one, nor a stale section undo another browser's.
+    // One save at a time, sending only sections edited here: no slow or stale write can win.
     let saving: Promise<void> = Promise.resolve();
     const pushAll = () => {
       clearTimeout(timer);

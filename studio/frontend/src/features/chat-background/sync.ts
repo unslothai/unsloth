@@ -43,7 +43,6 @@ async function push() {
 	let { sha256 } = await readBackgroundSync();
 	if (!sha256) {
 		sha256 = (await saveChatBackgroundImage(value.blob)).image?.sha256 ?? null;
-		// The image is the account's now even if adjustments moved meanwhile.
 		await recordUploadedImage(value.blob, sha256);
 	}
 	const { blob: _blob, ...adjustments } = value;
