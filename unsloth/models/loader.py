@@ -2263,7 +2263,7 @@ class FastModel(FastBaseModel):
     ):
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         user_config = kwargs.pop("config", None)
-        float8_training = resolve_float8_training(kwargs.pop("float8_training", None))
+        float8_training = resolve_float8_training(kwargs.pop("float8_training", None), dtype = dtype)
         if float8_training is not None and not full_finetuning:
             raise ValueError(
                 "Unsloth: `float8_training` is for `full_finetuning = True` only; LoRA / QLoRA keep "

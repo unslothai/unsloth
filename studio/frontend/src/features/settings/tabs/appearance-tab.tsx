@@ -3,14 +3,15 @@
 
 // Keep the background settings UI in this lazy tab, outside the chat startup barrel.
 // eslint-disable-next-line no-restricted-imports
-import { ChatBackgroundControls } from "@/features/chat-background/controls";
+import {
+  ChatBackgroundControls,
+  GlassControls,
+} from "@/features/chat-background/controls";
 import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useChatPreferencesStore } from "@/features/chat";
-import { useUserProfileStore } from "@/features/profile";
-import { TrickOrTreatSettingsRow } from "@/features/halloween/trick-or-treat-settings-row";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import {
@@ -21,6 +22,7 @@ import {
   SentAttachmentsSelect,
   CodeFontRow,
   CodeFontSizeRow,
+  ComposerOutlineSliderRow,
   ContrastSliderRow,
   FontSmoothingSwitch,
   HeadingFontRow,
@@ -33,6 +35,7 @@ import {
 } from "../components/appearance-custom-controls";
 import { CodeDisplayPreview } from "../components/code-display-preview";
 import { ColorThemeSelect } from "../components/color-theme-select";
+import { GreetingSettingsRows } from "../components/greeting-controls";
 import { GpuRenderingSegmented } from "../components/gpu-rendering-segmented";
 import { SettingsRow } from "../components/settings-row";
 import { SidebarMenuCustomizer } from "../components/sidebar-menu-customizer";
@@ -166,10 +169,6 @@ export function AppearanceTab() {
   const setComposerAtBottom = useChatPreferencesStore(
     (s) => s.setNewChatComposerAtBottom,
   );
-  const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
-  const setShowGreetingSloth = useUserProfileStore(
-    (s) => s.setShowGreetingSloth,
-  );
   const sidebarNavSectionRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
@@ -204,7 +203,6 @@ export function AppearanceTab() {
         <SettingsRow label={t("settings.appearance.palette.label")}>
           <ColorThemeSelect />
         </SettingsRow>
-        <TrickOrTreatSettingsRow />
         <SettingsRow label={t("settings.appearance.custom.colors.accent")}>
           <ActiveColorControl
             colorKey="accent"
@@ -228,6 +226,7 @@ export function AppearanceTab() {
         </SettingsRow>
       </SettingsSection>
 
+      <GlassControls />
       <ChatBackgroundControls />
       <SettingsSection title={t("settings.appearance.custom.preferencesTitle")}>
         <SettingsRow label={t("settings.appearance.custom.uiFont.label")}>
@@ -254,41 +253,7 @@ export function AppearanceTab() {
         >
           <InterfaceScaleRow />
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.chatWidth.label")}
-          description={t("settings.appearance.custom.chatWidth.description")}
-        >
-          <ChatWidthSelect />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.profile.greetingSloth")}
-          description={t("settings.profile.greetingSlothDescription")}
-        >
-          <Switch
-            aria-label={t("settings.profile.greetingSloth")}
-            id="profile-greeting-sloth"
-            checked={showGreetingSloth}
-            onCheckedChange={setShowGreetingSloth}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.composerAtBottom")}
-          description={t("settings.chat.composerAtBottomDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.composerAtBottom")}
-            checked={composerAtBottom}
-            onCheckedChange={setComposerAtBottom}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.sentAttachments.label")}
-          description={t(
-            "settings.appearance.custom.sentAttachments.description",
-          )}
-        >
-          <SentAttachmentsSelect />
-        </SettingsRow>
+        <GreetingSettingsRows />
         <SettingsRow
           label={t("settings.appearance.custom.pointerCursors.label")}
           description={t(
@@ -310,6 +275,36 @@ export function AppearanceTab() {
           )}
         >
           <FontSmoothingSwitch />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.appearance.composer.title")}>
+        <SettingsRow
+          label={t("settings.appearance.custom.chatWidth.label")}
+          description={t("settings.appearance.custom.chatWidth.description")}
+        >
+          <ChatWidthSelect />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.composerAtBottom")}
+          description={t("settings.chat.composerAtBottomDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.composerAtBottom")}
+            checked={composerAtBottom}
+            onCheckedChange={setComposerAtBottom}
+          />
+        </SettingsRow>
+        <SettingsRow label={t("chatBackground.outline")}>
+          <ComposerOutlineSliderRow />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.sentAttachments.label")}
+          description={t(
+            "settings.appearance.custom.sentAttachments.description",
+          )}
+        >
+          <SentAttachmentsSelect />
         </SettingsRow>
       </SettingsSection>
 

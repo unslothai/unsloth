@@ -3424,9 +3424,13 @@ def test_deeply_nested_headers_do_not_blow_up_quadratically():
     timings = []
     for depth in (20, 80):
         html = build(depth)
-        start = time.perf_counter()
-        html_to_markdown(html, main_content = True)
-        timings.append(time.perf_counter() - start)
+        runs = []
+        # Best of five: one descheduled call on a shared runner must not read as growth.
+        for _ in range(5):
+            start = time.perf_counter()
+            html_to_markdown(html, main_content = True)
+            runs.append(time.perf_counter() - start)
+        timings.append(min(runs))
     assert timings[1] < timings[0] * 12, timings
 
 
@@ -3765,7 +3769,12 @@ def test_deeply_nested_tags_stay_linear():
 
     timings = []
     for count in (1000, 4000):
-        start = time.perf_counter()
-        html_to_markdown(build(count), main_content = True)
-        timings.append(time.perf_counter() - start)
+        html = build(count)
+        runs = []
+        # Best of five: one descheduled call on a shared runner must not read as growth.
+        for _ in range(5):
+            start = time.perf_counter()
+            html_to_markdown(html, main_content = True)
+            runs.append(time.perf_counter() - start)
+        timings.append(min(runs))
     assert timings[1] < timings[0] * 12, timings
