@@ -24186,6 +24186,8 @@ class LlamaCppBackend:
                 self._moe_spill_batch_restore: Optional[tuple[Optional[int], Optional[int]]] = None
                 _moe_cache_candidate = False
                 _moe_cache_ram_ok = False
+                _moe_table_bytes = 0
+                _moe_cache_lazy_table = False
                 _shared_gpus = frozenset()
                 _integrated_gpus = frozenset()
                 # The discrete-first tier; accounting keeps _integrated_gpus.
@@ -27957,6 +27959,8 @@ class LlamaCppBackend:
                             binary = binary,
                         )
                     if _managed_lazy_flags and _fit_lazy_bytes:
+                        # Kept resident by --lazy-mode off; the MoE cache below may want it lazy.
+                        _moe_table_bytes = _fit_lazy_bytes
                         if _fit_load_mode_kwargs["model_size"]:
                             _fit_load_mode_kwargs["model_size"] = max(
                                 1, _fit_load_mode_kwargs["model_size"] - _fit_lazy_bytes
@@ -28020,6 +28024,31 @@ class LlamaCppBackend:
                             )
                             == self._FIT_LOAD_MODE
                         )
+                        if not _moe_cache_ram_ok and _moe_table_bytes > 0 and _moe_expert_bytes > 0:
+                            # Reading the resident table lazily frees the RAM to pin the experts; the cache beats the --fit split.
+                            _moe_cache_ram_ok = bool(
+                                _moe_prompt_cache_bytes is not None
+                                and self._fit_derived_load_mode(
+                                    **{
+                                        **_fit_load_mode_kwargs,
+                                        "model_size": max(
+                                            1,
+                                            _fit_load_mode_kwargs["model_size"] - _moe_expert_bytes,
+                                        ),
+                                        "host_only_bytes": max(
+                                            0,
+                                            _fit_load_mode_kwargs["host_only_bytes"]
+                                            - _moe_table_bytes,
+                                        )
+                                        + _moe_expert_bytes
+                                        + _moe_prompt_cache_bytes,
+                                        "announce": False,
+                                    }
+                                )
+                                == self._FIT_LOAD_MODE
+                            )
+                            # --lazy-mode off goes only where the cache is really added below.
+                            _moe_cache_lazy_table = _moe_cache_ram_ok
                         if not _moe_cache_ram_ok:
                             logger.info(
                                 "MoE cache: system RAM cannot hold the %.1f GB of routed "
@@ -28035,7 +28064,7 @@ class LlamaCppBackend:
                     # Same reasoning: an unpriced load keeps llama.cpp's default.
                     _fit_load_mode = None
                     _managed_lazy_flags = None
-                    _moe_cache_candidate = _moe_cache_ram_ok = False
+                    _moe_cache_candidate = _moe_cache_ram_ok = _moe_cache_lazy_table = False
                     # And a half-built snapshot is not a price either: the throw can
                     # land after the dict exists but before the later terms are added
                     # to it, which would plan against a footprint missing them.
@@ -29554,6 +29583,16 @@ class LlamaCppBackend:
                     and _placed_by_fitter
                     and _argv_loads_pinned(cmd, _fit_load_mode_env_view)
                 ):
+                    if _moe_cache_lazy_table and self._lazy_mode_flags:
+                        # These flags sit after the spec block, so removing them leaves _spec_start valid.
+                        cmd = _without_subsequence(cmd, self._lazy_mode_flags)
+                        self._lazy_mode_flags = []
+                        logger.info(
+                            "MoE cache: reading the %.1f GB lookup table lazily so system "
+                            "RAM can pin the %.1f GB of routed experts.",
+                            _moe_table_bytes / (1024**3),
+                            _moe_expert_bytes / (1024**3),
+                        )
                     self._moe_cache_flags = list(_MOE_CACHE_AUTO_TOKENS)
                     cmd.extend(self._moe_cache_flags)
                     logger.info(
