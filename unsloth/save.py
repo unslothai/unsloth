@@ -986,6 +986,48 @@ def _preserve_tokenizer_eos_token(
         )
 
 
+@contextmanager
+def _without_runtime_truncation(
+    tokenizer,
+    save_directory = None,
+    filename_prefix = None,
+):
+    """Keep runtime limits out of saved files, including nested processor saves."""
+    source_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    backend = getattr(source_tokenizer, "_tokenizer", None)
+    truncation = getattr(backend, "truncation", None)
+    padding = getattr(backend, "padding", None)
+    if truncation is None and padding is None:
+        yield
+        return
+    init_kwargs = getattr(source_tokenizer, "init_kwargs", {})
+    max_length = truncation["max_length"] if truncation else padding.get("length")
+    remove_max_length = max_length is not None and init_kwargs.get("max_length") == max_length
+    if remove_max_length:
+        init_kwargs.pop("max_length")
+    try:
+        try:
+            backend.no_truncation()
+            backend.no_padding()
+        except Exception as error:
+            logger.warning_once(
+                f"Unsloth: Could not clear tokenizer truncation before saving: {error}"
+            )
+        yield
+    finally:
+        if remove_max_length:
+            init_kwargs["max_length"] = max_length
+        try:
+            if truncation is not None:
+                backend.enable_truncation(**truncation)
+            if padding is not None:
+                backend.enable_padding(**padding)
+        except Exception as error:
+            logger.warning_once(
+                f"Unsloth: Could not restore tokenizer truncation after saving: {error}"
+            )
+
+
 def _source_tokenizer_class(tokenizer, token = None):
     """Read before an in-place save overwrites the source config; never fetch it."""
     if tokenizer is None:
@@ -1718,7 +1760,12 @@ def unsloth_save_model(
             old_padding_side = _tokenizer.padding_side
             _tokenizer.padding_side = "left"
 
-            tokenizer.save_pretrained(**tokenizer_save_settings)
+            with _without_runtime_truncation(
+                tokenizer,
+                tokenizer_save_settings["save_directory"],
+                tokenizer_save_settings.get("filename_prefix"),
+            ):
+                tokenizer.save_pretrained(**tokenizer_save_settings)
 
             _tokenizer.padding_side = old_padding_side
 
@@ -1990,7 +2037,12 @@ def unsloth_save_model(
         source_tokenizer_class = _source_tokenizer_class(
             tokenizer, token = tokenizer_save_settings.get("token")
         )
-        tokenizer.save_pretrained(**tokenizer_save_settings)
+        with _without_runtime_truncation(
+            tokenizer,
+            tokenizer_save_settings["save_directory"],
+            tokenizer_save_settings.get("filename_prefix"),
+        ):
+            tokenizer.save_pretrained(**tokenizer_save_settings)
         _preserve_tokenizer_eos_token(
             tokenizer,
             tokenizer_save_settings["save_directory"],
@@ -8903,11 +8955,12 @@ def _unsloth_tokenizer_save_pretrained(
     if filename_prefix is not None:
         save_kwargs["filename_prefix"] = filename_prefix
     source_tokenizer_class = _source_tokenizer_class(self, token = kwargs.get("token", None))
-    result = self.original_save_pretrained(
-        save_directory,
-        push_to_hub = False,
-        **save_kwargs,
-    )
+    with _without_runtime_truncation(self, save_directory, filename_prefix):
+        result = self.original_save_pretrained(
+            save_directory,
+            push_to_hub = False,
+            **save_kwargs,
+        )
     _preserve_sentencepiece_tokenizer_assets(
         self,
         save_directory,
