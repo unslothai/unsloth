@@ -1775,16 +1775,21 @@ def _inference_mode() -> bool:
 
 
 def _built_in_inference_mode():
-    """Cache entry tag. None marks a grad-off traced build: dynamo cannot read inference_mode, so
-    _cache_hit checks its tensors eagerly or rebuilds it in a grad-enabled trace."""
+    """None marks a traced grad-off build whose tensor provenance is not yet known."""
     if _is_compiling():
         return None if not torch.is_grad_enabled() else False
     return torch.is_inference_mode_enabled()
 
 
+@torch.compiler.assume_constant_result
+def _cached_tensor_is_inference(tensor) -> bool:
+    # Tensor provenance is immutable; Dynamo guards the cached tensor's dispatch keys.
+    return torch.is_inference(tensor)
+
+
 def _holds_inference_tensor(value) -> bool:
     if isinstance(value, torch.Tensor):
-        return torch.is_inference(value)
+        return _cached_tensor_is_inference(value)
     if isinstance(value, (tuple, list)):
         return any(_holds_inference_tensor(item) for item in value)
     # Opaque objects (an xformers mask) cannot be checked: rebuild them.
@@ -1796,11 +1801,15 @@ def _cache_hit(entry) -> bool:
     inference = entry["inference"]
     if inference is None:
         if _is_compiling():
-            # Tracing cannot inspect the tensors: rebuild uncertain entries before autograd use.
-            return not torch.is_grad_enabled()
+            return not torch.is_grad_enabled() or not _holds_inference_tensor(
+                entry.get("result", entry.get("mask"))
+            )
         if torch.is_inference_mode_enabled():
             return True
-        return not _holds_inference_tensor(entry.get("result", entry.get("mask")))
+        if _holds_inference_tensor(entry.get("result", entry.get("mask"))):
+            return False
+        entry["inference"] = False
+        return True
     return not inference or _inference_mode()
 
 

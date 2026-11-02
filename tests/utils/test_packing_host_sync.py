@@ -422,6 +422,62 @@ def test_compiled_training_rejects_inference_mode_cache(backend, grad_mode, kind
         torch._dynamo.reset()
 
 
+@pytest.mark.parametrize("backend", ["eager", "aot_eager"])
+def test_compiled_no_grad_preserves_padded_metadata(backend):
+    packing.clear_packed_caches()
+    torch._dynamo.reset()
+    device = torch.device("cpu")
+    seq = torch.tensor([3, 5], dtype = torch.int32)
+
+    def build(seq):
+        return packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, device)
+
+    def train(x, seq):
+        padded, _ = packing.cover_padded_cu_seqlens(build(seq), 10)
+        return (x * padded).sum()
+
+    try:
+        with torch._dynamo.config.patch(capture_scalar_outputs = True):
+            with torch.no_grad():
+                info = torch.compile(build, backend = backend, fullgraph = True, dynamic = True)(seq)
+            assert not torch.is_inference(info[1])
+            padded, _ = packing.cover_padded_cu_seqlens(info, 10)
+            assert padded.tolist() == [0, 3, 8, 10]
+            x = torch.ones(4, requires_grad = True)
+            torch.compile(train, backend = backend, fullgraph = True, dynamic = True)(x, seq).backward()
+            torch.testing.assert_close(x.grad, torch.tensor([0.0, 3.0, 8.0, 10.0]))
+    finally:
+        packing.clear_packed_caches()
+        torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+def test_compiled_cache_checks_replaced_tensor_provenance(backend):
+    device = torch.device("cpu")
+    seq = torch.tensor([3, 5], dtype = torch.int32)
+
+    def build(seq):
+        return packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, device)[1]
+
+    def train(x, seq):
+        return (x * build(seq)).sum()
+
+    torch._dynamo.reset()
+    try:
+        producer = torch.compile(build, backend = backend, fullgraph = True, dynamic = True)
+        consumer = torch.compile(train, backend = backend, fullgraph = True, dynamic = True)
+        with torch._dynamo.config.patch(capture_scalar_outputs = True):
+            for mode in (torch.no_grad, torch.inference_mode, torch.no_grad, torch.inference_mode):
+                packing.clear_packed_caches()
+                with mode():
+                    producer(seq)
+                x = torch.ones(3, requires_grad = True)
+                consumer(x, seq).backward()
+                torch.testing.assert_close(x.grad, torch.tensor([0.0, 3.0, 8.0]))
+    finally:
+        torch._dynamo.reset()
+
+
 def test_xformers_mask_lru_keeps_inference_masks_out_of_training(monkeypatch):
     class _Mask:
         @classmethod
