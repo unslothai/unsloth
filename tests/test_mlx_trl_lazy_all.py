@@ -282,6 +282,10 @@ assert cfg.max_seq_length == zoo.MLXTrainingConfig.max_seq_length, "max_length i
 assert t.args.max_seq_length == 96, "follows the loaded model"
 c = trl.DPOTrainer(model=model, args=cfg, train_dataset=[], processing_class=tok, max_seq_length=2048)
 assert (c.args.max_seq_length, c.args.max_length) == (2048, 512), "trainer context length keeps TRL's budget"
+long_model = nn.Linear(1, 1)
+long_model.max_seq_length = 4096
+b = trl.DPOTrainer(model=long_model, args=trl.DPOConfig(max_steps=1), train_dataset=[], max_length=48)
+assert (b.args.max_seq_length, b.args.max_length) == (4096, 48), "trainer budget leaves the context length implicit"
 assert t.args.dataset_order == "torch_randperm" and t.args.max_grad_norm == 1.0
 assert t.args.append_eos is True, "TRL appends EOS to completions"
 assert t.tokenizer is tok and t.ref_model is None

@@ -1256,7 +1256,10 @@ if _IS_MLX:
         if (
             max_seq_length_explicit is not None
             and "max_seq_length" not in overrides
-            and "max_length" not in overrides
+            and (
+                "max_length" not in overrides
+                or "max_length" not in config_class._unsloth_mlx_argument_aliases
+            )
         ):
             coerced._unsloth_mlx_max_seq_length_explicit = max_seq_length_explicit
         if max_length_value is not None and "max_length" not in overrides:
