@@ -214,11 +214,8 @@ _DISPATCH_POLL_INTERVAL = 0.5
 _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
 _CANCELLED_ROWS_GRACE = 5.0
-# Old fixed post-cancel sleep, now added to the exit wait so a slow cancel keeps its full budget.
 _SHUTDOWN_CANCEL_GRACE_S = 0.5
 _SHUTDOWN_JOIN_SLICE_S = 0.05
-# Replaces the old fixed 0.3 + 0.5 s switch sleeps: after worker exit a live stream may read its tail
-# while it keeps making progress, abandoned after this long without a read.
 _SHUTDOWN_READER_IDLE_S = 0.8
 _SHUTDOWN_READER_MAX_S = 5.0
 
@@ -450,7 +447,7 @@ class InferenceOrchestrator:
     routes/inference.py needs minimal changes); all heavy ML work happens in a persistent
     subprocess."""
 
-    _replies_read = 0  # replies consumed by readers: progress signal for _let_readers_finish
+    _replies_read = 0
 
     _load_download_keys: Sequence[str] = ()
 
@@ -868,7 +865,6 @@ class InferenceOrchestrator:
         self._cancel_generation()
         self._drain_unread_replies()
 
-        # The worker reads commands in order, so shutdown runs once the cancelled reply ends.
         try:
             self._cmd_queue.put({"type": "shutdown"})
         except (OSError, ValueError):
@@ -907,7 +903,9 @@ class InferenceOrchestrator:
             )
             return False
 
-        self._let_readers_finish()
+        # Termination can leave a partial queue frame that blocks even get_nowait().
+        if self._proc is not None and self._proc.exitcode == 0:
+            self._let_readers_finish()
         # Without this flag every model switch replayed a healthy worker's stderr at ERROR.
         self._worker_stopped_deliberately = True
         self._proc = None
@@ -941,8 +939,7 @@ class InferenceOrchestrator:
             pass
 
     def _drain_unread_replies(self) -> None:
-        """Stand in for the stopped dispatcher so a cancelled stream keeps its tail; a direct reader
-        reads the queue itself."""
+        """Route pending replies unless a direct reader owns the queue."""
         with self._mailbox_lock:
             if self._direct_mailboxes:
                 return
@@ -2225,7 +2222,6 @@ class InferenceOrchestrator:
             worker_shutdown_at = 0.0
             before_kill_free_mib = None
             if self._ensure_subprocess_alive():
-                # _shutdown_subprocess cancels too and waits on worker exit, not a fixed sleep.
                 self._cancel_generation()
                 if post_handoff_expected_free_gb is None and not (
                     len(resolved_gpu_ids or ()) == 1

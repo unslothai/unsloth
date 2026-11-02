@@ -14,7 +14,6 @@ from core.inference.orchestrator import InferenceOrchestrator
 
 
 def _worker(cmd_queue, resp_queue, cancel_event, unload_s, ignore_cancel_s, tok_bytes):
-    """Same command protocol as the real worker loop: in order, shutdown acks then returns."""
     while True:
         try:
             cmd = cmd_queue.get(timeout = 0.2)
@@ -85,7 +84,6 @@ def test_idle_worker_shutdown_has_no_fixed_sleep(monkeypatch):
     proc = o._proc
     assert o._shutdown_subprocess() is True
     assert not proc.is_alive() and o._proc is None
-    # No wall-time assert: spawned process exit is slow on Windows.
     assert rec.sleeps == [] and rec.terminated == []
 
 
@@ -121,8 +119,6 @@ def test_late_cancel_with_full_pipe_still_exits_cleanly(monkeypatch):
 
 
 class _NeverExits:
-    """A live process handle that never exits within a join."""
-
     pid = 999999
     exitcode = None
 
@@ -198,7 +194,6 @@ def test_source_has_no_fixed_switch_sleeps():
 
 @pytest.mark.parametrize("reader", ["direct", "dispatched"])
 def test_streaming_reader_keeps_its_tail_across_a_switch(monkeypatch, reader):
-    # A reader slower than the worker still holds its tail at cancel; teardown must not drop it.
     _Recorder(monkeypatch)
     o = _live()
     proc = o._proc
@@ -266,7 +261,6 @@ def test_idle_switch_does_not_wait_for_readers(monkeypatch):
     rec = _Recorder(monkeypatch)
     o = _live()
     assert o._shutdown_subprocess() is True
-    # _let_readers_finish sleeps only while a reader is registered; wall time is load-dependent.
     assert rec.sleeps == [] and rec.terminated == []
 
 
@@ -287,3 +281,55 @@ def test_stalled_reader_is_abandoned_after_the_idle_grace(monkeypatch):
     assert o._shutdown_subprocess() is True
     assert orch_mod._SHUTDOWN_READER_IDLE_S <= waits[0] < orch_mod._SHUTDOWN_READER_MAX_S, waits
     assert rec.terminated == []
+
+
+def _send_interrupted_frame(replies, send):
+    send.wait()
+    replies.put({"type": "diffusion_frame", "request_id": "r1", "image": "x" * 1048576})
+    time.sleep(60)
+
+
+def _shutdown_interrupted_writer():
+    ctx = mp.get_context("spawn")
+    o = InferenceOrchestrator()
+    o._cmd_queue, o._resp_queue = ctx.Queue(), ctx.Queue()
+    o._cancel_event = ctx.Event()
+    send = ctx.Event()
+    o._proc = ctx.Process(target = _send_interrupted_frame, args = (o._resp_queue, send))
+    o._proc.start()
+    proc = o._proc
+    o._mailboxes["r1"] = orch_mod._WorkerMailbox(proc)
+    drain = o._drain_queue
+    calls = 0
+
+    def enqueue_after_drain():
+        nonlocal calls
+        replies = drain()
+        calls += 1
+        if calls == 2:
+            send.set()
+            assert o._resp_queue._reader.poll(30)
+            time.sleep(orch_mod._SHUTDOWN_CANCEL_GRACE_S + 0.1)
+        return replies
+
+    o._drain_queue = enqueue_after_drain
+    try:
+        assert o._shutdown_subprocess(timeout = 0.01) is True
+        assert o._proc is None and not proc.is_alive()
+    finally:
+        if proc.is_alive():
+            proc.kill()
+        proc.join(5)
+
+
+def test_forced_shutdown_does_not_read_an_interrupted_queue_frame():
+    runner = mp.get_context("spawn").Process(target = _shutdown_interrupted_writer)
+    runner.start()
+    try:
+        runner.join(30)
+        assert not runner.is_alive(), "shutdown blocked reading the killed writer's partial frame"
+        assert runner.exitcode == 0
+    finally:
+        if runner.is_alive():
+            runner.kill()
+        runner.join(5)
