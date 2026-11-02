@@ -2953,6 +2953,8 @@ export const hi = {
         "सूचनाएँ ब्लॉक हैं। ब्राउज़र या सिस्टम सेटिंग्स में Unsloth के लिए इन्हें अनुमति दें, फिर दोबारा कोशिश करें।",
       replyNotificationKeywords:
         "सूचना अलर्ट पूरा तैयार जवाब बैकग्राउंड notify notification alert done finished reply background",
+      showLinkPreviews: "लिंक पूर्वावलोकन",
+      showLinkPreviewsDescription: "स्रोत लिंक पर कर्सर ले जाने पर पूर्वावलोकन दिखाएं।",
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",

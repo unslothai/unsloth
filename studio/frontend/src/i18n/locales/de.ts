@@ -2985,6 +2985,8 @@ export const de = {
         "Benachrichtigungen sind blockiert. Erlaube sie für Unsloth in den Browser- oder Systemeinstellungen und versuche es erneut.",
       replyNotificationKeywords:
         "Benachrichtigung benachrichtigen Hinweis fertig abgeschlossen bereit Antwort Hintergrund minimiert notify notification alert done finished reply background",
+      showLinkPreviews: "Linkvorschauen",
+      showLinkPreviewsDescription: "Vorschauen beim Bewegen des Mauszeigers über Quellenlinks anzeigen.",
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",

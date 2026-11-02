@@ -2930,6 +2930,8 @@ export const ja = {
         "通知がブロックされています。ブラウザーまたはシステムの設定で Unsloth の通知を許可してから、もう一度お試しください。",
       replyNotificationKeywords:
         "通知 アラート 完了 終了 準備完了 応答 バックグラウンド 最小化 notify notification alert done finished reply background",
+      showLinkPreviews: "リンクのプレビュー",
+      showLinkPreviewsDescription: "ソースのリンクにカーソルを合わせるとプレビューを表示します。",
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
         "アシスタントの応答にモデルのメタデータを表示します。",

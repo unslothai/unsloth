@@ -2957,6 +2957,8 @@ export const ru = {
         "Уведомления заблокированы. Разрешите их для Unsloth в настройках браузера или системы и попробуйте снова.",
       replyNotificationKeywords:
         "уведомление оповещение готово завершено ответ фон свернут notify notification alert done finished reply background",
+      showLinkPreviews: "Предпросмотр ссылок",
+      showLinkPreviewsDescription: "Показывать предпросмотр при наведении на ссылки на источники.",
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",

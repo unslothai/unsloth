@@ -3227,6 +3227,8 @@ export const pl = {
         "Powiadomienia są zablokowane. Zezwól na nie dla Unsloth w ustawieniach przeglądarki lub systemu i spróbuj ponownie.",
       replyNotificationKeywords:
         "notify notification alert done finished complete ready response reply background minimized desktop sound powiadomienie alert gotowe zakończone odpowiedź tło zminimalizowany dźwięk",
+      showLinkPreviews: "Podglądy linków",
+      showLinkPreviewsDescription: "Pokazuj podglądy po najechaniu kursorem na linki do źródeł.",
       showResponseModel: "Model odpowiedzi",
       showResponseModelDescription:
         "Pokazuj szczegóły modelu w odpowiedziach asystenta.",

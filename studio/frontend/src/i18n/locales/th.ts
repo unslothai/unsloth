@@ -3058,6 +3058,8 @@ export const th = {
         "การแจ้งเตือนถูกบล็อก อนุญาตการแจ้งเตือนสำหรับ Unsloth ในการตั้งค่าเบราว์เซอร์หรือระบบ แล้วลองอีกครั้ง",
       replyNotificationKeywords:
         "แจ้งเตือน การแจ้งเตือน เตือน เสร็จ เสร็จสิ้น พร้อม การตอบกลับ ตอบกลับ เบื้องหลัง ย่อ เดสก์ท็อป เสียง notify notification alert done reply background desktop sound",
+      showLinkPreviews: "ตัวอย่างลิงก์",
+      showLinkPreviewsDescription: "แสดงตัวอย่างเมื่อวางตัวชี้เมาส์เหนือลิงก์แหล่งข้อมูล",
       showResponseModel: "โมเดลที่ตอบ",
       showResponseModelDescription: "แสดงรายละเอียดโมเดลในคำตอบของผู้ช่วย",
       showReplyTimes: "เวลาตอบกลับ",

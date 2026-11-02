@@ -2957,6 +2957,8 @@ export const en = {
         "Notifications are blocked. Allow them for Unsloth in your browser or system settings, then try again.",
       replyNotificationKeywords:
         "notify notification alert done finished complete ready response reply background minimized desktop sound",
+      showLinkPreviews: "Link previews",
+      showLinkPreviewsDescription: "Show previews when hovering over source links.",
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",

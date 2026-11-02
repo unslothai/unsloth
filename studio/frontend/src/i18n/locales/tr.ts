@@ -3189,6 +3189,8 @@ export const tr = {
         "Bildirimler engellenmiş. Tarayıcınızın veya sisteminizin ayarlarından Unsloth için bildirimlere izin verin, ardından yeniden deneyin.",
       replyNotificationKeywords:
         "bildir bildirim uyarı bitti tamamlandı hazır yanıt cevap arka plan simge durumu masaüstü ses notification",
+      showLinkPreviews: "Bağlantı önizlemeleri",
+      showLinkPreviewsDescription: "Kaynak bağlantılarının üzerine gelindiğinde önizlemeleri göster.",
       showResponseModel: "Yanıt modeli",
       showResponseModelDescription:
         "Asistan yanıtlarında model ayrıntılarını gösterin.",

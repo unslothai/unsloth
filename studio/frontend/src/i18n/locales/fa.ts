@@ -3178,6 +3178,8 @@ export const fa = {
         "اعلان‌ها مسدود هستند. آن‌ها را برای Unsloth در تنظیمات مرورگر یا سیستم مجاز کنید و دوباره تلاش کنید.",
       replyNotificationKeywords:
         "اعلان هشدار تمام پایان کامل آماده پاسخ پس‌زمینه کوچک‌شده دسکتاپ صدا notification",
+      showLinkPreviews: "پیش‌نمایش پیوندها",
+      showLinkPreviewsDescription: "نمایش پیش‌نمایش هنگام قرار گرفتن نشانگر روی پیوندهای منابع.",
       showResponseModel: "مدل پاسخ",
       showResponseModelDescription:
         "جزئیات مدل در پاسخ‌های دستیار نمایش داده شود.",

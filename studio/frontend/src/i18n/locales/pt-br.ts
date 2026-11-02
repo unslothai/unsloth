@@ -2958,6 +2958,8 @@ export const ptBR = {
         "As notificações estão bloqueadas. Permita-as para o Unsloth nas configurações do navegador ou do sistema e tente novamente.",
       replyNotificationKeywords:
         "notificação avisar alerta terminou concluído pronto resposta segundo plano minimizado notify notification alert done finished reply background",
+      showLinkPreviews: "Prévias de links",
+      showLinkPreviewsDescription: "Mostrar prévias ao passar o cursor sobre os links das fontes.",
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",

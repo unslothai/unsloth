@@ -3191,6 +3191,8 @@ export const vi = {
         "Thông báo đang bị chặn. Hãy cho phép thông báo của Unsloth trong cài đặt trình duyệt hoặc hệ thống, rồi thử lại.",
       replyNotificationKeywords:
         "notify notification alert done finished complete ready response reply background minimized desktop sound thông báo cảnh báo xong hoàn tất sẵn sàng trả lời chạy nền thu nhỏ âm thanh",
+      showLinkPreviews: "Xem trước liên kết",
+      showLinkPreviewsDescription: "Hiển thị bản xem trước khi di chuột qua liên kết nguồn.",
       showResponseModel: "Mô hình trả lời",
       showResponseModelDescription:
         "Hiển thị thông tin mô hình trong câu trả lời của trợ lý.",

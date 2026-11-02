@@ -358,6 +358,12 @@ export function ChatTab() {
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
   );
+  const showLinkPreviews = useChatPreferencesStore(
+    (state) => state.showLinkPreviews,
+  );
+  const setShowLinkPreviews = useChatPreferencesStore(
+    (state) => state.setShowLinkPreviews,
+  );
   const showReplyTimes = useChatPreferencesStore(
     (state) => state.showReplyTimes,
   );
@@ -673,6 +679,16 @@ export function ChatTab() {
       </LazyImportBoundary>
 
       <SettingsSection title={t("settings.chat.groups.display.title")}>
+        <SettingsRow
+          label={t("settings.chat.showLinkPreviews")}
+          description={t("settings.chat.showLinkPreviewsDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.showLinkPreviews")}
+            checked={showLinkPreviews}
+            onCheckedChange={setShowLinkPreviews}
+          />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.chat.webSearch.images")}
           description={t("settings.chat.webSearch.imagesDescription")}

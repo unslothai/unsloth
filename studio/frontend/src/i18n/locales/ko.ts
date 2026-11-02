@@ -2937,6 +2937,8 @@ export const ko = {
         "알림이 차단되어 있습니다. 브라우저 또는 시스템 설정에서 Unsloth의 알림을 허용한 후 다시 시도하세요.",
       replyNotificationKeywords:
         "알림 통지 완료 끝 준비 응답 백그라운드 최소화 notify notification alert done finished reply background",
+      showLinkPreviews: "링크 미리보기",
+      showLinkPreviewsDescription: "출처 링크 위에 마우스를 올리면 미리보기를 표시합니다.",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",

@@ -3040,6 +3040,8 @@ export const zhTW = {
         "通知已遭封鎖。請在瀏覽器或系統設定中允許 Unsloth 傳送通知，然後再試一次。",
       replyNotificationKeywords:
         "通知 提醒 完成 就緒 回應 回覆 背景 最小化 桌面 音效 notify notification alert done finished complete ready response reply background minimized desktop sound",
+      showLinkPreviews: "連結預覽",
+      showLinkPreviewsDescription: "將滑鼠游標停留在來源連結上時顯示預覽。",
       showResponseModel: "回應模型",
       showResponseModelDescription: "在助理回應中顯示模型詳細資料。",
       showReplyTimes: "回覆時間",

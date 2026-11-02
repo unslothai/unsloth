@@ -2981,6 +2981,8 @@ export const fr = {
         "Les notifications sont bloquées. Autorisez-les pour Unsloth dans les réglages du navigateur ou du système, puis réessayez.",
       replyNotificationKeywords:
         "notification notifier alerte terminé fini prêt réponse arrière-plan réduit notify notification alert done finished reply background",
+      showLinkPreviews: "Aperçus des liens",
+      showLinkPreviewsDescription: "Afficher un aperçu au survol des liens vers les sources.",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",

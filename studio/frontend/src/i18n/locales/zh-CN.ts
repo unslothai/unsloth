@@ -2902,6 +2902,8 @@ export const zhCN = {
         "通知已被阻止。请在浏览器或系统设置中允许 Unsloth 发送通知，然后重试。",
       replyNotificationKeywords:
         "通知 提醒 完成 结束 就绪 回复 后台 最小化 notify notification alert done finished reply background",
+      showLinkPreviews: "链接预览",
+      showLinkPreviewsDescription: "将鼠标悬停在来源链接上时显示预览。",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
       showReplyTimes: "回复时间",

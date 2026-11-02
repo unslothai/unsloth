@@ -3232,6 +3232,8 @@ export const nl = {
         "Meldingen zijn geblokkeerd. Sta ze toe voor Unsloth in je browser- of systeeminstellingen en probeer het opnieuw.",
       replyNotificationKeywords:
         "melden melding waarschuwing klaar voltooid gereed antwoord reactie achtergrond geminimaliseerd bureaublad geluid notify notification alert done reply",
+      showLinkPreviews: "Linkvoorbeelden",
+      showLinkPreviewsDescription: "Toon voorbeelden wanneer je de muisaanwijzer boven bronlinks houdt.",
       showResponseModel: "Antwoordmodel",
       showResponseModelDescription:
         "Modelgegevens tonen in antwoorden van de assistent.",

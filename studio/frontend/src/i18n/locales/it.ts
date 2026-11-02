@@ -2881,6 +2881,8 @@ export const it = {
         "Le notifiche sono bloccate. Consentile per Unsloth nelle impostazioni del browser o del sistema, poi riprova.",
       replyNotificationKeywords:
         "notifica avvisare avviso finito completato pronto risposta background ridotto notify notification alert done finished reply background",
+      showLinkPreviews: "Anteprime dei link",
+      showLinkPreviewsDescription: "Mostra le anteprime passando il puntatore sui link alle fonti.",
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
         "Mostra i metadati del modello nelle risposte dell'assistente.",

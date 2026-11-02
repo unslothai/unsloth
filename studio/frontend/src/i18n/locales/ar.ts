@@ -2944,6 +2944,8 @@ export const ar = {
         "الإشعارات محظورة. اسمح بها لـ Unsloth في إعدادات المتصفح أو النظام، ثم حاول مرة أخرى.",
       replyNotificationKeywords:
         "إشعار تنبيه انتهى اكتمل جاهز رد خلفية مصغر notify notification alert done finished reply background",
+      showLinkPreviews: "معاينات الروابط",
+      showLinkPreviewsDescription: "عرض المعاينات عند تمرير المؤشر فوق روابط المصادر.",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",

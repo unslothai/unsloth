@@ -3106,6 +3106,8 @@ export const sv = {
         "Aviseringar är blockerade. Tillåt dem för Unsloth i webbläsarens eller systemets inställningar och försök igen.",
       replyNotificationKeywords:
         "avisering notis meddelande klar färdig svar bakgrund minimerad notify notification alert done finished reply background",
+      showLinkPreviews: "Länkförhandsvisningar",
+      showLinkPreviewsDescription: "Visa förhandsvisningar när du håller muspekaren över källänkar.",
       showResponseModel: "Svarsmodell",
       showResponseModelDescription:
         "Visa modellinformation i assistentens svar.",

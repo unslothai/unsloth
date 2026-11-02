@@ -3208,6 +3208,8 @@ export const cs = {
         "Oznámení jsou blokována. Povolte je pro Unsloth v nastavení prohlížeče nebo systému a zkuste to znovu.",
       replyNotificationKeywords:
         "oznámení upozornění hotovo dokončeno připraveno odpověď pozadí minimalizováno zvuk notify notification alert done finished complete ready response reply background minimized desktop sound",
+      showLinkPreviews: "Náhledy odkazů",
+      showLinkPreviewsDescription: "Zobrazovat náhledy při najetí na odkazy na zdroje.",
       showResponseModel: "Model odpovědi",
       showResponseModelDescription:
         "Zobrazovat v odpovědích asistenta podrobnosti o modelu.",

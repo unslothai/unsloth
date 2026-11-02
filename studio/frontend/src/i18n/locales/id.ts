@@ -3191,6 +3191,8 @@ export const id = {
         "Notifikasi diblokir. Izinkan notifikasi untuk Unsloth di pengaturan browser atau sistem Anda, lalu coba lagi.",
       replyNotificationKeywords:
         "notify notification alert done finished complete ready response reply background minimized desktop sound notifikasi pemberitahuan selesai balasan latar belakang suara",
+      showLinkPreviews: "Pratinjau tautan",
+      showLinkPreviewsDescription: "Tampilkan pratinjau saat mengarahkan kursor ke tautan sumber.",
       showResponseModel: "Model respons",
       showResponseModelDescription:
         "Tampilkan detail model di respons asisten.",

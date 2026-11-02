@@ -3236,6 +3236,8 @@ export const es419 = {
         "Las notificaciones están bloqueadas. Permítelas para Unsloth en la configuración del navegador o del sistema y vuelve a intentarlo.",
       replyNotificationKeywords:
         "notificación avisar alerta terminado completado listo respuesta segundo plano minimizado escritorio sonido notify notification alert done finished complete ready response reply background minimized desktop sound",
+      showLinkPreviews: "Vistas previas de enlaces",
+      showLinkPreviewsDescription: "Mostrar vistas previas al pasar el cursor sobre los enlaces a fuentes.",
       showResponseModel: "Modelo de la respuesta",
       showResponseModelDescription:
         "Muestra los detalles del modelo en las respuestas del asistente.",
