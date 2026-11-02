@@ -13,7 +13,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   BotIcon,
-  Image01Icon,
+  ImageIcon,
   TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -61,7 +61,7 @@ export function useApiExampleKinds(current?: ApiExampleKind): {
     {
       id: "media",
       label: "Images / Video",
-      icon: Image01Icon,
+      icon: ImageIcon,
       searchLabel: "settings.apiKeys.mediaApi.title",
     },
     {

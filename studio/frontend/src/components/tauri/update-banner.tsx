@@ -13,7 +13,7 @@ import type {
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
-import { AlertCircleIcon, Download01Icon } from "@hugeicons/core-free-icons";
+import { Alert02Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
@@ -77,7 +77,7 @@ export function UpdateBanner({
     : isExternalServer;
   const currentVersion = formatVersion(info?.currentVersion);
   const latestVersion = formatVersion(info?.version);
-  const icon = showFailure ? AlertCircleIcon : Download01Icon;
+  const icon = showFailure ? Alert02Icon : Download01Icon;
   const notesTargetVersion = info?.version?.replace(LEADING_V, "") ?? null;
   const notesOpen =
     notesTargetVersion !== null && notesVersion === notesTargetVersion;

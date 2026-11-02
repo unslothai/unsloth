@@ -118,7 +118,7 @@ import {
   Edit03Icon,
   FlimSlateIcon,
   HelpCircleIcon,
-  Image01Icon,
+  ImageIcon,
   InformationCircleIcon,
   LibrariesIcon,
   Logout05Icon,
@@ -3354,7 +3354,7 @@ export function AppSidebar() {
       },
     },
     images: {
-      icon: Image01Icon,
+      icon: ImageIcon,
       label: t("shell.navigation.images"),
       active: pathname === "/images" || pathname.startsWith("/images/"),
       onClick: () => {

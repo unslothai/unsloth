@@ -66,9 +66,8 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { cornerInsets, watchChatSettingsInset } from "@/lib/toast-offset";
 import { cn } from "@/lib/utils";
-import { Edit03Icon, LinkSquare02Icon, PanelRightIcon } from "@hugeicons/core-free-icons";
+import { BracesIcon, Edit03Icon, LinkSquare02Icon, PanelRightIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Braces } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { type CSSProperties, Fragment, type ReactNode } from "react";
 import {
@@ -1728,7 +1727,7 @@ export function ChatSettingsPanel({
                   className="h-7 gap-1.5 rounded-full px-2.5 text-ui-11 text-muted-foreground"
                   aria-expanded={systemVariablesOpen}
                 >
-                  <Braces className="size-3.5" />
+                  <HugeiconsIcon icon={BracesIcon} className="size-3.5" />
                   Variables
                   <HugeiconsIcon
                     icon={ChevronDownStandardIcon}

@@ -5,7 +5,7 @@ import { usePlatformStore } from "@/config/env";
 import { useIsAccountOwner } from "@/features/auth";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
-import { Image01Icon } from "@hugeicons/core-free-icons";
+import { ImageIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
@@ -166,7 +166,7 @@ export function MediaApiExamples({
       <div className="flex flex-col gap-1">
         {showHeading && (
           <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
-            <HugeiconsIcon icon={Image01Icon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
+            <HugeiconsIcon icon={ImageIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
             {t("settings.apiKeys.mediaApi.title")}
           </h2>
         )}

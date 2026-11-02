@@ -431,7 +431,8 @@ import {
   CodeIcon,
   Download01Icon,
   Edit03Icon,
-  Image03Icon,
+  ImageIcon,
+  LayoutTwoColumnIcon,
   McpServerIcon,
   Refresh01Icon,
   Scroll01Icon,
@@ -455,7 +456,6 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  Columns2Icon,
   Loader2Icon,
   TerminalIcon,
 } from "lucide-react";
@@ -6622,7 +6622,7 @@ const ImagesToggle: FC = () => {
       }
     >
       <PillGlyph>
-        <HugeiconsIcon icon={Image03Icon} className="size-3.5" strokeWidth={2} />
+        <HugeiconsIcon icon={ImageIcon} className="size-3.5" strokeWidth={2} />
       </PillGlyph>
       <span>Images</span>
     </button>
@@ -7065,7 +7065,7 @@ const ComposerToolsMenu: FC<{
     ),
     compareChat: (
       <DropdownMenuItem onSelect={() => startCompare()}>
-        <Columns2Icon />
+        <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={2} />
         Compare chat
       </DropdownMenuItem>
     ),
@@ -7267,7 +7267,7 @@ const ComposerToolsMenu: FC<{
             }
             onSelect={() => setImageToolsEnabled(!imageToolsEnabled)}
           >
-            <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
+            <HugeiconsIcon icon={ImageIcon} strokeWidth={2} />
             Images
             {imageToolsEnabled && !imageDisabled ? (
               <HugeiconsIcon

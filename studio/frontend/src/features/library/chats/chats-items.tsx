@@ -44,6 +44,7 @@ import {
   Download01Icon,
   Edit03Icon,
   LayerIcon,
+  LayoutTwoColumnIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
   PinIcon,
@@ -61,7 +62,6 @@ import { ForkIcon } from "@/lib/fork-icon";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  Columns2Icon,
   GitBranchIcon,
 } from "lucide-react";
 import { type ReactNode, createContext, useContext } from "react";
@@ -575,7 +575,7 @@ function ChatTile({
   const iconClass = bare ? CARD_ICON : TILE_ICON;
   const icon =
     chat.type === "compare" ? (
-      <Columns2Icon strokeWidth={1.75} className={iconClass} />
+      <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={1.75} className={iconClass} />
     ) : chat.isFork ? (
       <GitBranchIcon strokeWidth={1.75} className={iconClass} />
     ) : (
@@ -1813,7 +1813,7 @@ export function FavoriteChatTile({ chat }: { chat: SidebarItem }) {
   const actions = useChatsActions();
   const icon =
     chat.type === "compare" ? (
-      <Columns2Icon strokeWidth={1.5} className={FILE_CARD_ICON_CLASS} />
+      <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={1.5} className={FILE_CARD_ICON_CLASS} />
     ) : chat.isFork ? (
       <GitBranchIcon strokeWidth={1.5} className={FILE_CARD_ICON_CLASS} />
     ) : (

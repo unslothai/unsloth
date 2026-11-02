@@ -3,6 +3,8 @@
 
 "use client";
 
+import { CodeIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
 
 import { SandboxFiles } from "./sandbox-files-view";
@@ -18,7 +20,6 @@ import {
 } from "@/features/chat";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
-import { CodeIcon } from "lucide-react";
 import { memo } from "react";
 import { pythonToolImagePath } from "./python-tool-image-path";
 import { useSandboxImage } from "./use-sandbox-image";
@@ -39,6 +40,10 @@ interface StructuredResult {
   files?: SandboxFile[];
 }
 
+
+function CodeGlyph(props: { className?: string }) {
+  return <HugeiconsIcon icon={CodeIcon} {...props} />;
+}
 function isStructuredResult(val: unknown): val is StructuredResult {
   if (typeof val !== "object" || val === null) return false;
   const v = val as { files?: unknown };
@@ -138,7 +143,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackTrigger
         toolName={firstLine ? `Python: ${firstLine}` : "Python"}
         status={status}
-        icon={CodeIcon}
+        icon={CodeGlyph}
       />
       {!collapseByDefault && scriptCell}
       <ToolFallbackContent>

@@ -91,7 +91,7 @@ test("one tab row holds every example, with no jump links above it; Agents opens
   assert.doesNotMatch(monitor, /<ApiJumpLinks|<UsageExamples/);
   assert.match(monitor, /<ApiExampleTabNav kind=\{kind\} onChange=\{setKind\}/);
   assert.match(tabs, /font-heading text-ui-15/);
-  for (const icon of ["MessageCircleIcon", "Image01Icon", "AiSpeechIcon", "TaskDone01Icon", "BotIcon"]) {
+  for (const icon of ["MessageCircleIcon", "ImageIcon", "AiSpeechIcon", "TaskDone01Icon", "BotIcon"]) {
     assert.match(tabs, new RegExp(`icon: ${icon}`));
   }
   const decision = readSrc("features/settings/components/decision-api-section.tsx");

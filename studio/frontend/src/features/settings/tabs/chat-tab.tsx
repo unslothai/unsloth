@@ -31,6 +31,7 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Download01Icon,
+  LayoutTwoColumnIcon,
   LibrariesIcon,
   McpServerIcon,
   Scroll01Icon,
@@ -41,7 +42,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { useNavigate } from "@tanstack/react-router";
-import { Columns2Icon } from "lucide-react";
 import { Suspense, lazy, useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
 import {
@@ -146,7 +146,7 @@ const PLUS_MENU_SETTINGS: {
   {
     id: "compareChat",
     labelKey: "settings.chat.menu.compareChat",
-    icon: <Columns2Icon className={PLUS_MENU_ICON_CLASS} />,
+    icon: <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={2} className={PLUS_MENU_ICON_CLASS} />,
   },
   {
     id: "exportChat",

@@ -43,7 +43,7 @@ import {
   type ToolCallMessagePartStatus,
   useAuiState,
 } from "@assistant-ui/react";
-import { AlertCircleIcon, CancelCircleIcon } from "@hugeicons/core-free-icons";
+import { Alert02Icon, CancelCircleIcon } from "@hugeicons/core-free-icons";
 import { LoaderIcon } from "lucide-react";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { WrenchIcon } from "@/lib/wrench-icon";
@@ -178,7 +178,7 @@ function CancelCircleGlyph(props: { className?: string }) {
 }
 
 function AlertCircleGlyph(props: { className?: string }) {
-  return <HugeiconsIcon icon={AlertCircleIcon} {...props} />;
+  return <HugeiconsIcon icon={Alert02Icon} {...props} />;
 }
 
 const statusIconMap: Record<Exclude<ToolStatus, "complete">, ElementType> = {

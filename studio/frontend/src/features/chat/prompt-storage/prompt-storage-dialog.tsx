@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils";
 import { BookmarkIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Download01Icon,
+  LeftToRightListBulletIcon,
   Search01Icon,
   Cancel01Icon,
   Edit03Icon,
@@ -36,7 +37,6 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  LayoutListIcon,
   PlayIcon,
 } from "lucide-react";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
@@ -2797,7 +2797,7 @@ export function PromptStorageDialog({
                   />
                 ) : (
                   <EmptyDetail
-                    icon={<LayoutListIcon className="size-5 text-muted-foreground/40" />}
+                    icon={<HugeiconsIcon icon={LeftToRightListBulletIcon} className="size-5 text-muted-foreground/40" />}
                     title={searchQuery.trim() ? `No prompt lists match “${searchQuery}”` : "No prompt lists yet"}
                     hint={searchQuery.trim() ? undefined : "A prompt list queues a sequence of prompts for quick reuse"}
                     onClearSearch={searchQuery.trim() ? () => setSearchQuery("") : undefined}
