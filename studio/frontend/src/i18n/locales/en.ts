@@ -1998,6 +1998,15 @@ export const en = {
             "Runs every tool call without asking and turns off the code sandbox, so Python and terminal code can read and change any file your account can access.",
         },
       },
+      display: {
+        title: "Display",
+        timeFormat: "Time format",
+        timeFormatDescription:
+          "System default follows your browser or OS clock preference.",
+        timeFormatSystem: "System default",
+        timeFormat12: "12-hour",
+        timeFormat24: "24-hour",
+      },
       notifications: {
         sectionTitle: "Notifications",
         showLoadedModels: "Loaded models card",
@@ -2468,12 +2477,6 @@ export const en = {
         noResults: "No matching languages",
         spellCheck: "Spell check",
         spellCheckDescription: "Underline misspelled words as you type.",
-        timeFormat: "Time format",
-        timeFormatDescription:
-          "System default follows your browser or OS clock preference.",
-        timeFormatSystem: "System default",
-        timeFormat12: "12-hour",
-        timeFormat24: "24-hour",
       },
       layout: {
         title: "Layout",

@@ -644,8 +644,17 @@ export function GeneralTab() {
           <LanguageSelect />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.appearance.language.timeFormat")}
-          description={t("settings.appearance.language.timeFormatDescription")}
+          label={t("settings.appearance.language.spellCheck")}
+          description={t("settings.appearance.language.spellCheckDescription")}
+        >
+          <Switch checked={spellCheck} onCheckedChange={setSpellCheck} />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.display.title")}>
+        <SettingsRow
+          label={t("settings.general.display.timeFormat")}
+          description={t("settings.general.display.timeFormatDescription")}
         >
           <Select
             value={timeFormat}
@@ -654,28 +663,22 @@ export function GeneralTab() {
             <SelectTrigger
               size="sm"
               className="w-48"
-              aria-label={t("settings.appearance.language.timeFormat")}
+              aria-label={t("settings.general.display.timeFormat")}
             >
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="end">
               <SelectItem value="system">
-                {t("settings.appearance.language.timeFormatSystem")}
+                {t("settings.general.display.timeFormatSystem")}
               </SelectItem>
               <SelectItem value="12h">
-                {t("settings.appearance.language.timeFormat12")}
+                {t("settings.general.display.timeFormat12")}
               </SelectItem>
               <SelectItem value="24h">
-                {t("settings.appearance.language.timeFormat24")}
+                {t("settings.general.display.timeFormat24")}
               </SelectItem>
             </SelectContent>
           </Select>
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.language.spellCheck")}
-          description={t("settings.appearance.language.spellCheckDescription")}
-        >
-          <Switch checked={spellCheck} onCheckedChange={setSpellCheck} />
         </SettingsRow>
       </SettingsSection>
 
