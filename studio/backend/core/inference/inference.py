@@ -736,37 +736,13 @@ class _GenerationHalted(Exception):
 
 
 class _HaltingStreamer:
-    def __init__(
-        self,
-        streamer,
-        events,
-        think_ids = None,
-    ):
+    def __init__(self, streamer, events):
         self.streamer = streamer
         self.events = events
-        self.think_ids = think_ids
-        self.generated = []
-        self.prompt_seen = False
-        self.think_closed = False
-        self.restated = False
 
     def put(self, value):
         if any(ev.is_set() for ev in self.events):
             raise _GenerationHalted
-        if self.think_ids and isinstance(value, torch.Tensor):
-            if not self.prompt_seen:
-                self.prompt_seen = True
-            else:
-                for token in value.reshape(-1).tolist():
-                    if token == self.think_ids[0]:
-                        self.think_closed = False
-                    elif token == self.think_ids[1]:
-                        # LFM3-Audio restates its answer after a stray closer; the first answer stands.
-                        if self.think_closed:
-                            self.restated = True
-                            raise _GenerationHalted
-                        self.think_closed = True
-                    self.generated.append(token)
         return self.streamer.put(value)
 
     def end(self):
@@ -776,26 +752,7 @@ class _HaltingStreamer:
         return getattr(self.streamer, name)
 
 
-def _think_tag_ids(tokenizer):
-    """(<think>, </think>) when both are single tokens, else None."""
-    convert = getattr(getattr(tokenizer, "tokenizer", tokenizer), "convert_tokens_to_ids", None)
-    if not callable(convert):
-        return None
-    try:
-        ids = (convert("<think>"), convert("</think>"))
-    except Exception:
-        return None
-    unk = getattr(getattr(tokenizer, "tokenizer", tokenizer), "unk_token_id", None)
-    if all(isinstance(i, int) and i != unk for i in ids):
-        return ids
-    return None
-
-
-def _supported_generate_kwargs(
-    model,
-    generation_kwargs: dict,
-    tokenizer = None,
-) -> dict:
+def _supported_generate_kwargs(model, generation_kwargs: dict) -> dict:
     if not isinstance(getattr(model, "_generation_fields_unsupported", None), dict):
         return generation_kwargs
     kept = {k: v for k, v in generation_kwargs.items() if k not in _CUSTOM_GENERATE_REJECTED_KWARGS}
@@ -807,20 +764,13 @@ def _supported_generate_kwargs(
         for c in (generation_kwargs.get("stopping_criteria") or ())
         if getattr(c, "ev", None) is not None
     ]
-    think_ids = (
-        _think_tag_ids(tokenizer) if tokenizer is not None and model_type == "lfm3_audio" else None
-    )
-    if (events or think_ids) and kept.get("streamer") is not None:
-        kept["streamer"] = _HaltingStreamer(kept["streamer"], events, think_ids)
+    if events and kept.get("streamer") is not None:
+        kept["streamer"] = _HaltingStreamer(kept["streamer"], events)
     return kept
 
 
-def _generate_supported(
-    model,
-    generation_kwargs: dict,
-    tokenizer = None,
-):
-    kwargs = _supported_generate_kwargs(model, generation_kwargs, tokenizer)
+def _generate_supported(model, generation_kwargs: dict):
+    kwargs = _supported_generate_kwargs(model, generation_kwargs)
     try:
         return model.generate(**kwargs)
     except _GenerationHalted:
@@ -829,16 +779,7 @@ def _generate_supported(
         prompt = generation_kwargs.get("input_ids")
         if matched is not None and matched.is_set() and prompt is not None:
             return prompt.new_tensor([prompt[0].tolist() + streamer.token_ids])
-        streamer = kwargs.get("streamer")
-        prompt = kwargs.get("input_ids")
-        if not getattr(streamer, "restated", False) or not isinstance(prompt, torch.Tensor):
-            return None
-        eos = kwargs.get("eos_token_id")
-        if eos is None:
-            eos = getattr(getattr(model, "generation_config", None), "eos_token_id", None)
-        eos = eos[0] if isinstance(eos, (list, tuple)) and eos else eos
-        tail = streamer.generated + ([int(eos)] if isinstance(eos, int) else [])
-        return torch.cat((prompt, prompt.new_tensor([tail])), 1)
+        return None
 
 
 def _refuse_without_generate(model, model_name: str) -> None:
@@ -2541,7 +2482,7 @@ class InferenceBackend:
                         # Started inside the lock so a queued request's wait is not billed as prefill.
                         timer.start()
                         # Only the returned sequences carry an exact generated-token count; see generate_stream.
-                        sequences = _generate_supported(model, generation_kwargs, raw_tokenizer)
+                        sequences = _generate_supported(model, generation_kwargs)
                         if sequences is not None:
                             gen_outputs["sequences"] = sequences
                     except Exception as e:
@@ -2743,7 +2684,7 @@ class InferenceBackend:
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact generated-token count; see generate_stream.
-                        sequences = _generate_supported(model, generation_kwargs, raw_tokenizer)
+                        sequences = _generate_supported(model, generation_kwargs)
                         if sequences is not None:
                             gen_outputs["sequences"] = sequences
                     except Exception as e:
@@ -3139,7 +3080,7 @@ class InferenceBackend:
                         timer.start()
                         # Only the returned sequences carry an exact token count.
                         with _decode_graph_scope():
-                            sequences = _generate_supported(model, generation_kwargs, tokenizer)
+                            sequences = _generate_supported(model, generation_kwargs)
                             if sequences is not None:
                                 gen_outputs["sequences"] = sequences
                     except Exception as e:

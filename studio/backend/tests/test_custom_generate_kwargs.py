@@ -246,7 +246,7 @@ def test_a_text_load_without_generate_is_refused_by_name():
     _refuse_without_generate(types.SimpleNamespace(generate = lambda **kw: None), "any/causal-lm")
 
 
-_OPEN, _CLOSE, _EOS = 901, 902, 900
+_OPEN, _CLOSE, _EOS = 124901, 124902, 124900
 _THINK_TOKENIZER = types.SimpleNamespace(
     unk_token_id = 0,
     convert_tokens_to_ids = lambda t: {"<think>": _OPEN, "</think>": _CLOSE}.get(t, 0),
@@ -287,22 +287,40 @@ def _scripted(
         "eos_token_id": [_EOS],
         **extra,
     }
-    out = _generate_supported(model, kwargs, _THINK_TOKENIZER)
+    if "tokenizer" in inspect.signature(_generate_supported).parameters:
+        out = _generate_supported(model, kwargs, _THINK_TOKENIZER)
+    else:
+        out = _generate_supported(model, kwargs)
     return model, [int(t) for t in streamer.tokens[1:]], out
 
 
-def test_a_second_think_close_ends_the_reply_before_its_restatement():
-    model, streamed, out = _scripted([_OPEN, 10, _CLOSE, 11, _CLOSE, 11, _EOS])
-    assert streamed == [_OPEN, 10, _CLOSE, 11]
-    assert model.steps == 5
-    assert out.tolist() == [[1, 2, _OPEN, 10, _CLOSE, 11, _EOS]]
-
-
-@pytest.mark.parametrize("model_type", ["lfm3_omni", "other_custom_model"])
-def test_existing_custom_models_keep_repeated_think_closers(model_type):
+@pytest.mark.parametrize("model_type", ["lfm3_audio", "lfm3_omni", "other_custom_model"])
+def test_literal_think_close_in_an_answer_is_not_a_stop(model_type):
     import threading
 
-    reply = [_OPEN, 10, _CLOSE, 11, _CLOSE, 12, _EOS]
+    # LiquidAI/LFM3-Audio-2B: "<think>I should explain the tag.</think>The literal closing tag </think> ends a thinking block."
+    reply = [
+        _OPEN,
+        49,
+        1252,
+        6986,
+        278,
+        10194,
+        22,
+        _CLOSE,
+        597,
+        30020,
+        23189,
+        10194,
+        229,
+        _CLOSE,
+        11676,
+        267,
+        6416,
+        3908,
+        22,
+        _EOS,
+    ]
     model, streamed, out = _scripted(
         reply,
         model_type = model_type,
@@ -312,17 +330,7 @@ def test_existing_custom_models_keep_repeated_think_closers(model_type):
     assert model.steps == len(reply)
 
 
-def test_one_think_block_and_a_prefilled_close_stream_untouched():
-    for reply in (
-        [_OPEN, 10, _CLOSE, 11, _EOS],
-        [10, _CLOSE, 11, _EOS],
-        [_OPEN, 10, _CLOSE, _OPEN, 12, _CLOSE, 11, _EOS],
-    ):
-        model, streamed, out = _scripted(reply)
-        assert streamed == reply and out.tolist() == [[1, 2, *reply]]
-
-
-def test_cancel_still_returns_no_sequences_beside_the_think_guard():
+def test_cancel_still_returns_no_sequences_with_a_tensor_stream():
     import threading
 
     cancel = threading.Event()
