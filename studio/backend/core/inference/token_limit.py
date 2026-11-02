@@ -121,7 +121,11 @@ def _zone(name: str):
     return timezone.utc
 
 
-def period_window(period: str, tz_name: str, now_ms: Optional[int] = None) -> tuple[int, int]:
+def period_window(
+    period: str,
+    tz_name: str,
+    now_ms: Optional[int] = None,
+) -> tuple[int, int]:
     """Start and end of the current period in epoch ms, in the timezone the limit was saved from.
     Weeks start on Monday. The limit resets on its own when the window rolls over."""
     zone = _zone(tz_name)

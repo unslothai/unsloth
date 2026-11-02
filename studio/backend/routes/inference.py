@@ -30666,9 +30666,7 @@ async def openai_chat_completions(
             status_code = 403,
             detail = "External providers can only be used from the Unsloth UI or with an API key.",
         )
-    await _enforce_token_limit(
-        request, external = bool(payload.provider_id or payload.provider_type)
-    )
+    await _enforce_token_limit(request, external = bool(payload.provider_id or payload.provider_type))
     response = await produce_openai_chat_completions(
         payload,
         request,

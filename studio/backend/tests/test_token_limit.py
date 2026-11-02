@@ -292,7 +292,14 @@ def test_routes_refuse_api_key_changes_and_report_status(limiter_db):
     assert client.put("/api/token-limit", json = {"limit": 0, "password": "pw"}).status_code == 422
     status = client.get("/api/token-limit/status").json()
     assert status["pools"] == [
-        {"pool": "combined", "used": 0, "limit": 5, "reached": False, "warning": False, "override": None}
+        {
+            "pool": "combined",
+            "used": 0,
+            "limit": 5,
+            "reached": False,
+            "warning": False,
+            "override": None,
+        }
     ]
     assert status["resetsAt"] > status["periodStart"]
 
