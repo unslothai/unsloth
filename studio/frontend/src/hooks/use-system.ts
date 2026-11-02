@@ -116,6 +116,8 @@ export interface SystemInfoResponse {
 
 let cachedSystem: SystemInfoResponse | null = null;
 let systemFetchPromise: Promise<SystemInfoResponse | null> | null = null;
+/** The in-flight fetch's GPU freshness bound; undefined is the server's 10 s cache. */
+let systemFetchGpuMaxAgeMs: number | undefined;
 const systemSubscribers = new Set<(data: SystemInfoResponse) => void>();
 let vulkanRetrySubscribers = 0;
 let vulkanRetryId: number | null = null;
@@ -229,13 +231,18 @@ export async function fetchSystemInfo({
   gpuMaxAgeMs?: number;
 } = {}): Promise<SystemInfoResponse | null> {
   if (systemFetchPromise) {
-    if (!refreshMemory) return systemFetchPromise;
+    // A pending fetch with a looser GPU bound would hand a fast poll the 10 s cache.
+    const looser =
+      gpuMaxAgeMs !== undefined &&
+      (systemFetchGpuMaxAgeMs === undefined || systemFetchGpuMaxAgeMs > gpuMaxAgeMs);
+    if (!refreshMemory && !looser) return systemFetchPromise;
     // An in-flight snapshot may predate the resident model.
     await systemFetchPromise;
     return fetchSystemInfo({ force, refreshMemory, gpuMaxAgeMs });
   }
   if (!force && !refreshMemory && cachedSystem) return cachedSystem;
 
+  systemFetchGpuMaxAgeMs = gpuMaxAgeMs;
   systemFetchPromise = (async () => {
     const timeout = disposableTimeoutSignal(SYSTEM_FETCH_TIMEOUT_MS);
     try {
