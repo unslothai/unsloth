@@ -109,7 +109,6 @@ test("the time left allows for later prompt tokens costing more than earlier one
       previous = { prefill: current, prefillShown: false, decode: null };
       const left = prefillSecondsLeft(current);
       const actual = (endMs - time_ms) / 1000;
-      // From 30% in (the fit has its samples and full weight by 45%) to the last few seconds.
       if (left === null || processed < 0.3 * total || actual < 3) continue;
       const rateError = ((total - processed) / tok_per_s - actual) / actual;
       const error = (left - actual) / actual;
@@ -118,16 +117,12 @@ test("the time left allows for later prompt tokens costing more than earlier one
       if (processed >= 0.45 * total) errors.push(error);
     }
     assert.ok(errors.length >= 6);
-    // The rate so far ran 32-45% short at every one of these points; past 45% the fit stays within 20%.
     assert.ok(rateSoFar.every((e) => e < -0.3), String(rateSoFar));
     assert.ok(errors.every((e) => Math.abs(e) < 0.2), String(errors));
   }
 });
 
 test("one slow batch early in a long prompt does not read as a slowdown for the rest of it", () => {
-  // 2,048 tokens every 500 ms, with batch 4 taking 250 ms longer and the rest back to normal. A curve fit
-  // to four samples and extrapolated over the whole prompt read 18 s for 6 s left at 32K and 271 s
-  // for 30 s at 131K.
   for (const total of [32768, 131072]) {
     let previous: { prefill: LivePrefillProgress; prefillShown: boolean; decode: null } | undefined;
     let elapsed = 0;
@@ -153,15 +148,12 @@ test("the time-left fit sums a pass's timed samples and starts over with the nex
   const at = (processed: number, elapsedMs: number, total = 30382) =>
     prefill({ processed, total, cached: 0, tokPerS: 1000, elapsedMs });
   const pass = (p: LivePrefillProgress) => ({ prefill: p, prefillShown: false, decode: null });
-  // A few tokens in is noise, so nothing is summed yet.
   const first = withPrefillFit(undefined, at(1, 6));
   assert.equal(first.fit, null);
   const second = withPrefillFit(pass(first), at(2049, 1230));
   const third = withPrefillFit(pass(second), at(4097, 2643));
   assert.equal(third.fit?.sums[0], 2);
-  // Until four timed samples, one slow batch swings the fit: the rate so far stands.
   assert.equal(prefillSecondsLeft(third), (30382 - 4097) / 1000);
-  // A repeated frame is not a new sample.
   assert.equal(withPrefillFit(pass(third), at(4097, 2643)).fit?.sums[0], 2);
   const fourth = withPrefillFit(pass(third), at(6145, 4180));
   assert.equal(prefillSecondsLeft(fourth), (30382 - 6145) / 1000);
@@ -169,10 +161,8 @@ test("the time-left fit sums a pass's timed samples and starts over with the nex
   assert.equal(fifth.fit?.sums[0], 4);
   assert.equal(fifth.fit?.first, 2049, "the span the curve may be extended by starts at the first timed sample");
   assert.notEqual(prefillSecondsLeft(fifth), (30382 - 8193) / 1000);
-  // An older llama-server without time_ms keeps the rate so far.
   const untimed = prefill({ processed: 4097, total: 30382, cached: 0, tokPerS: 1000 });
   assert.equal(withPrefillFit(undefined, untimed).fit, null);
-  // The next round of a tool loop (a decode in between, or a new total) starts over.
   const decode = { tokens: 9, tokPerS: 50, draftN: null, draftAccepted: null };
   assert.equal(withPrefillFit({ ...pass(fifth), decode }, at(4097, 900)).fit?.sums[0], 1);
   assert.equal(withPrefillFit(pass(fifth), at(4097, 900, 40000)).fit?.sums[0], 1);

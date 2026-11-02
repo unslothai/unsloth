@@ -426,8 +426,7 @@ export type LoadedPlacement = {
   /** Set when every routed expert is in RAM with a GPU cache of the busiest (--moe-cache-mib auto). */
   expertCacheMib: number | null;
 };
-/** Least-squares sums over a pass's timed samples, x in thousands of tokens past the cached prefix
- *  and y in seconds of llama-server's clock: n, then the sums of x, x^2, x^3, x^4, y, x*y and x^2*y. */
+// x = uncached kilotokens, y = server seconds; sums: n, x, x², x³, x⁴, y, xy, x²y.
 export type LivePrefillFit = { first: number; done: number; sums: readonly number[] };
 export type LivePrefillProgress = {
   processed: number;
@@ -435,7 +434,6 @@ export type LivePrefillProgress = {
   cached: number | null;
   tokPerS: number | null;
   elapsedMs: number | null;
-  /** Kept by the store across the pass for the time-left estimate. */
   fit: LivePrefillFit | null;
 };
 export type LiveDecodeProgress = {

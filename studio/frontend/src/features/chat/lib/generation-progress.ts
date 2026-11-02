@@ -103,7 +103,6 @@ function samePrefillPass(
   );
 }
 
-/** A sample past llama.cpp's noisy first one (a few tokens in, before the first batch). */
 function timedSample(prefill: LivePrefillProgress): { done: number; elapsedMs: number } | null {
   const done = prefill.processed - (prefill.cached ?? 0);
   return done >= MIN_TOKENS_FOR_PREFILL_RATE && prefill.elapsedMs
@@ -111,7 +110,6 @@ function timedSample(prefill: LivePrefillProgress): { done: number; elapsedMs: n
     : null;
 }
 
-/** Adds this sample to the pass's sums for the time-left fit; a new pass starts them over. */
 export function withPrefillFit(
   previous: LiveGenerationProgress | undefined,
   prefill: LivePrefillProgress,
@@ -136,11 +134,7 @@ function det3(m: number[][]): number {
   );
 }
 
-/** Seconds of prefill from `from` to `to` thousand tokens, by the pass's samples so far: elapsed time
- *  fit as c + a*x + b*x^2 (each prompt token attends to all before it, so later ones cost more), or a
- *  straight line when the curve bends the wrong way. The cost per token grows only across as many
- *  tokens again as the samples span, then holds: a few samples cannot tell one slow batch from a
- *  trend, and extrapolating its curve over a far longer prompt read minutes for seconds. */
+// Fit c + a*x + b*x²; cap extrapolation at the observed span so one slow batch cannot dominate.
 function fittedSeconds(fit: LivePrefillFit, from: number, to: number): number | null {
   const [n, sx, sx2, sx3, sx4, sy, sxy, sx2y] = fit.sums;
   if (n < MIN_SAMPLES_FOR_PREFILL_FIT) return null;
@@ -165,10 +159,6 @@ function fittedSeconds(fit: LivePrefillFit, from: number, to: number): number | 
   return Number.isFinite(slope) && slope > 0 ? slope * (to - from) : null;
 }
 
-/** Seconds left, or null while llama.cpp's first sample is all there is, since its rate is noise.
- *  The rate so far assumes every token costs the same, so it always ran short (~40% on a 30K-token
- *  prompt). From the pass's fourth timed sample the fit above takes over, fully once the pass has
- *  six samples and 30% of the prompt read: before that one slow batch weighs too much. */
 export function prefillSecondsLeft(prefill: LivePrefillProgress): number | null {
   if (!prefill.total) return null;
   const cached = prefill.cached ?? 0;

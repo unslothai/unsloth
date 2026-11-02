@@ -7226,7 +7226,7 @@ class _PrefillProgressSignal:
             "total": total,
             "cached": min(cached, processed) if cached is not None else None,
             "tok_per_s": _live_rate(rate),
-            # llama-server's clock since the pass started: the client's arrival times are quantized by the poll.
+            # Server time avoids poll-arrival quantization.
             "time_ms": _live_count(progress.get("time_ms")),
         }
 
