@@ -943,13 +943,11 @@ def _dequantized_row_bytes(widths, dtype_size: int, kv_bits, kv_group_size, pref
     try:
         import mlx.core as mx
 
-        from unsloth_zoo.mlx.attention import (
-            _row_bytes,
-            dequantizing_is_smaller,
-            fused_kernel_exists,
-        )
+        from unsloth_zoo.mlx.attention import _row_bytes, dequantizing_is_smaller
     except Exception as exc:
         logger.debug("MLX estimate cannot reach the quantized-attention wrapper: %s", exc)
+        return None
+    if _zoo_route() is None:
         return None
     try:
         dtype = mx.float32 if dtype_size == 4 else mx.bfloat16
@@ -965,7 +963,7 @@ def _dequantized_row_bytes(widths, dtype_size: int, kv_bits, kv_group_size, pref
 
         keys, values = rows(head_dim), rows(value_dim or head_dim)
         queries = mx.zeros((1, heads, prefill_chunk, head_dim), dtype = dtype)
-        if not fused_kernel_exists(queries, keys, values, kv_group_size, "causal"):
+        if not _zoo_route()(queries, keys, values, kv_group_size, "causal"):
             return None
         if not dequantizing_is_smaller(queries, keys, values, kv_group_size):
             return None
@@ -999,7 +997,9 @@ def _compute_bytes(
         if row is None:
             total += _widest_quantized_scores(n_ctx, quant_boundary, prefill_chunk) * score
         else:
-            total += max(row * n_ctx, (n_ctx + 1) * score)
+            # A tail too short for the fused route still builds its scores.
+            cells = max(n_ctx + 1, _widest_unfused_scores(widths, dtype_size, n_ctx, prefill_chunk))
+            total += max(row * n_ctx, cells * score)
     elif not any(entry.get("bound_spec") for entry in plan):
         # Windowed models are skipped: the config's head_dim need not be the full-context layers' width.
         score = heads * dtype_size * _SCORE_LIVE
@@ -1069,7 +1069,12 @@ def _zoo_route():
         from unsloth_zoo.mlx.attention import fused_kernel_exists
     except Exception:
         return None
-    return fused_kernel_exists
+    try:
+        from unsloth_zoo.mlx.attention import runtime_fuses
+    except ImportError:
+        # An older zoo leaves head_dim 256 prefill on mlx's own dispatch.
+        return fused_kernel_exists
+    return runtime_fuses
 
 
 def _attention_fuses(route, widths, dtype_size: int, queries: int, keys: int) -> bool:

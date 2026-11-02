@@ -4557,8 +4557,6 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
             (GQA, 256, True),
             (MHA, 2048, True),
             (MHA, 256, False),
-            (WIDE, 2048, False),
-            (WIDE, 256, False),
         ],
     )
     def test_both_halves_of_the_wrappers_choice_are_asked(self, widths, chunk, copies):
@@ -4581,22 +4579,49 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         scores = mm._widest_quantized_scores(32768, 2048, 2048) * 32 * 2 * mm._SCORE_LIVE
         assert priced - floor == row * 32768 < scores
 
-    def test_the_decode_step_still_scores_where_that_is_the_wider_of_the_two(self):
+    def test_a_short_call_still_scores_where_that_is_the_wider_of_the_two(self):
+        # 256:1 is past the vector kernel's limit, so the eight-query tail is unfused.
         widths = (3584, 18944, 256, 1, 64, 0)
         row = mm._dequantized_row_bytes(widths, 2, 8, 64, 2048)
         floor = mm._compute_bytes(widths[:3], 2, 2048, [], 32768, None)
         charged = mm._compute_bytes(widths, 2, 2048, [], 32768, 2048, 8, 64) - floor
-        assert row is not None and charged == (32769) * 256 * 2 * mm._SCORE_LIVE
+        assert row is not None and charged == 8 * (15 * 2048 + 8) * 256 * 2 * mm._SCORE_LIVE
         assert charged > row * 32768
 
-    def test_a_full_width_cache_is_charged_the_scores_mlx_builds_below_nax(self):
+    def test_a_full_width_cache_is_charged_only_the_tail_the_runtime_leaves_unfused(self):
+        from unsloth_zoo.mlx import attention
+
+        if not hasattr(attention, "runtime_fuses"):
+            pytest.skip("this zoo keeps head_dim 256 on mlx's dispatch")
+        assert mm._dequantized_row_bytes(self.WIDE, 2, 4, 64, 2048) is not None
+        plan = [_GROWING] * 4
+        unrouted = mm._compute_bytes(self.GQA[:3], 2, 2048, plan, 32768, None)
+        assert mm._compute_bytes(self.GQA, 2, 2048, plan, 32768, None) == unrouted
+        wide = mm._compute_bytes(self.WIDE, 2, 2048, plan, 32768, None)
+        assert wide - unrouted == 63 * (15 * 2048 + 63) * 16 * 2 * mm._SCORE_LIVE
+
+    def test_a_copied_route_is_charged_a_tail_whose_scores_outgrow_the_copy(self):
+        from unsloth_zoo.mlx import attention
+
+        if not hasattr(attention, "runtime_fuses"):
+            pytest.skip("this zoo keeps head_dim 256 on mlx's dispatch")
+        widths, n_ctx = (3584, 18944, 32, 2, 256, 0), 262144
+        row = mm._dequantized_row_bytes(widths, 2, 4, 64, 2048)
+        floor = mm._compute_bytes(widths[:3], 2, 2048, [], n_ctx, None)
+        tail = 63 * (127 * 2048 + 63) * 32 * 2 * mm._SCORE_LIVE
+        priced = mm._compute_bytes(widths, 2, 2048, [], n_ctx, 0, 4, 64) - floor
+        assert row * n_ctx < tail and priced == int(tail)
+
+    def test_an_older_zoo_keeps_head_dim_256_on_mlxs_dispatch(self, monkeypatch):
+        from unsloth_zoo.mlx import attention
         from unsloth_zoo.mlx.nax import nax_available
 
         if nax_available():
             pytest.skip("NAX fuses head_dim 256 prefill")
+        monkeypatch.delattr(attention, "runtime_fuses", raising = False)
+        assert mm._dequantized_row_bytes(self.WIDE, 2, 4, 64, 2048) is None
         plan = [_GROWING] * 4
         unrouted = mm._compute_bytes(self.GQA[:3], 2, 2048, plan, 32768, None)
-        assert mm._compute_bytes(self.GQA, 2, 2048, plan, 32768, None) == unrouted
         wide = mm._compute_bytes(self.WIDE, 2, 2048, plan, 32768, None)
         assert (
             wide - unrouted == mm._widest_quantized_scores(32768, 0, 2048) * 16 * 2 * mm._SCORE_LIVE
