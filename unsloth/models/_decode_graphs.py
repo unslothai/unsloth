@@ -530,9 +530,10 @@ def decode_step(
     attn0 = layers[0].self_attn
     paged = attn0.__dict__.get("paged_attention")
     bsz = input_ids.shape[0]
+    store = attn0.__dict__.get("_unsloth_graph_buffers") or {}
     if (
         paged is None
-        or "_unsloth_graph_buffers" not in attn0.__dict__
+        or not any(bufs[0] is paged for bufs in store.values())
         or paged.shape[2] != bsz
         or input_ids.shape[1] != 1
     ):
