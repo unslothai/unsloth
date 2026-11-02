@@ -43221,6 +43221,7 @@ def _anthropic_in_process_sse(
 
         def finish():
             return [] if source.cancelled else emitter.finish()
+
     # The chat handler's tracker holds cancel_id and session_id; the message id is Messages' own.
     tracker = _TrackedCancel(source.cancel_event, message_id, track_run = False)
     tracker.__enter__()
