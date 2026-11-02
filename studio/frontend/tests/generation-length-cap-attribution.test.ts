@@ -195,6 +195,7 @@ test("a count that leaves out reasoning does not claim a full window", () => {
     ),
     "unknown",
   );
+  assert.equal(windowEvidenceCount({ predicted_n: 9, source: "studio" }), null);
 });
 
 test("an output budget the server lowered does not claim a full window", () => {
