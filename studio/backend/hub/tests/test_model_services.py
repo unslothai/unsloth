@@ -4553,6 +4553,19 @@ def test_encoder_companion_refuses_a_bad_index_and_an_empty_file(tmp_path):
     assert check() is False
 
 
+def test_encoder_companion_requires_the_index_of_numbered_shards(tmp_path):
+    shards = [f"text_encoder/model-0000{n}-of-00002.safetensors" for n in (1, 2)]
+    repo_dir, snapshot = _encoder_cache(tmp_path, shards)
+    check = lambda: inventory_scan.snapshot_is_encoder_companion(
+        _QWEN_ENCODER_REPO, repo_dir, snapshot
+    )
+    assert check() is False
+    (snapshot / "text_encoder" / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {str(n): Path(s).name for n, s in enumerate(shards)}})
+    )
+    assert check() is True
+
+
 def test_encoder_cache_behind_a_dangling_ref_stays_partial(tmp_path):
     repo_dir, snapshot = _encoder_cache(tmp_path, [_QWEN_ENCODER_FILE], ref = "b" * 40)
     assert (

@@ -1436,6 +1436,9 @@ def snapshot_is_encoder_companion(
                 return False
             match = _WEIGHT_SHARD_RE.search(weight.name)
             if match:
+                index = weight.name[: match.start()] + weight.name[match.end() :] + ".index.json"
+                if not (weight.parent / index).is_file():
+                    return False
                 template = weight.name[: match.start(1)] + "{}" + weight.name[match.end(1) :]
                 for number in range(1, int(match.group(2)) + 1):
                     sibling = weight.parent / template.format(
