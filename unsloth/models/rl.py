@@ -4681,7 +4681,6 @@ class _UnslothFusedLinearHead:
             self._lazy_entropy = False
 
     def __getattr__(self, name):
-        # Keep TRL's attributes visible so a later patch pass recognises what it already wrapped.
         if name == "function":
             raise AttributeError(name)
         return getattr(self.function, name)
@@ -4833,7 +4832,6 @@ class _UnslothFusedLinearHead:
 
 
 def patch_trl_fused_lm_head_kernel():
-    # UNSLOTH_FUSED_LINEAR=0 keeps TRL's own chunked log-prob kernel.
     if os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
         return
     try:
