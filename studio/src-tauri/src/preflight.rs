@@ -274,7 +274,6 @@ pub async fn desktop_preflight_result() -> DesktopPreflightResult {
 pub async fn desktop_preflight_result_with_state(
     state: &crate::process::BackendState,
 ) -> Result<(DesktopPreflightResult, Option<(u64, bool)>), String> {
-    // Keep metadata side effects; defer HTTP until no state-owned backend remains.
     let state_owns_backend = matches!(crate::process::owned_backend_snapshot(state), Ok(Some(_)));
     let (managed, backend, owned) = tokio::join!(
         probe_managed_install(),
