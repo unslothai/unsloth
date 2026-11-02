@@ -29,6 +29,8 @@ export interface DiffusionResolvedControl {
 
 export interface DiffusionStatus {
   loaded: boolean;
+  // False when the resident model belongs to another account; the response then carries nothing else.
+  yours?: boolean;
   repo_id: string | null;
   display_repo_id?: string | null;
   resident_mib?: number | null;

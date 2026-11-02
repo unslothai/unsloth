@@ -123,6 +123,23 @@ def test_an_explicit_tag_is_frozen_too(tmp_path):
     assert _build_arg(argv, "UNSLOTH_ZOO_REF") == ZOO_SHA
 
 
+def test_an_annotated_tag_is_frozen_to_its_commit(tmp_path):
+    """The tag object's own sha is not a commit; uv refuses it ("does not match precise commit")."""
+    tag_object = "d" * 40
+    _proc, argv = _run(
+        tmp_path,
+        'if [ "$1" = "ls-remote" ]; then\n'
+        f'    echo -e "{tag_object}\\trefs/tags/v1"\n'
+        '    for a in "$@"; do [ "$a" = "v1^{}" ] && echo -e "'
+        + UNSLOTH_SHA
+        + '\\trefs/tags/v1^{}"; done\n'
+        "fi\nexit 0\n",
+        {"UNSLOTH_REF": "v1", "UNSLOTH_ZOO_REF": "v1"},
+    )
+    assert _build_arg(argv, "UNSLOTH_REF") == UNSLOTH_SHA
+    assert _build_arg(argv, "UNSLOTH_ZOO_REF") == UNSLOTH_SHA
+
+
 def test_a_sha_is_passed_through_without_a_lookup(tmp_path):
     sha = "c" * 40
     _proc, argv = _run(

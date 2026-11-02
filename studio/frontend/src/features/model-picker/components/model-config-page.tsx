@@ -1454,11 +1454,15 @@ function MlxSpeculativeRows({
   update,
   speculativeFallback,
   modelPath,
+  fastVerifyAvailable,
+  onFastVerifyChange,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   speculativeFallback: string;
   modelPath: string;
+  fastVerifyAvailable: boolean;
+  onFastVerifyChange: (checked: boolean) => void;
 }) {
   const [drafters, setDrafters] = useState<MlxDrafter[]>([]);
   useEffect(() => {
@@ -1595,6 +1599,27 @@ function MlxSpeculativeRows({
           </Select>
         </div>
       )}
+      {/* Only a drafter runs it; stays visible while on so it can be turned off. */}
+      {((fastVerifyAvailable && DRAFTER_MODEL_SPEC_TYPES.has(mode)) || config.mlxFastVerify) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Fast Verify</span>
+            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+              Exp
+            </span>
+            <InfoHint>
+              Speeds up speculative decoding with faster checks of the drafter's
+              tokens. Answers can change slightly from plain decoding, the same way
+              on every run. Applies only when a drafter loads; changing it reloads.
+            </InfoHint>
+          </div>
+          <Switch
+            className="panel-switch shrink-0"
+            checked={config.mlxFastVerify ?? false}
+            onCheckedChange={onFastVerifyChange}
+          />
+        </div>
+      )}
     </>
   );
 }
@@ -1608,6 +1633,8 @@ function MlxAdvancedSettings({
   onInt8PrefillChange,
   anePrefillAvailable,
   onAnePrefillChange,
+  fastVerifyAvailable,
+  onFastVerifyChange,
   offloadable,
   offloadDecided,
   offloadNotes,
@@ -1624,6 +1651,8 @@ function MlxAdvancedSettings({
   onInt8PrefillChange: (checked: boolean) => void;
   anePrefillAvailable: boolean;
   onAnePrefillChange: (checked: boolean) => void;
+  fastVerifyAvailable: boolean;
+  onFastVerifyChange: (checked: boolean) => void;
   offloadable: readonly MlxOffloadablePart[];
   offloadDecided: Record<MlxOffloadablePart, number | null> | null;
   offloadNotes: Record<MlxOffloadablePart, string | null>;
@@ -1721,6 +1750,8 @@ function MlxAdvancedSettings({
           update={update}
           speculativeFallback={speculativeFallback}
           modelPath={modelPath}
+          fastVerifyAvailable={fastVerifyAvailable}
+          onFastVerifyChange={onFastVerifyChange}
         />
       )}
       {servedByMlx && (
@@ -2705,6 +2736,12 @@ export function ModelConfigPage({
   );
   const [int8PrefillConfirmOpen, setInt8PrefillConfirmOpen] = useState(false);
   const [anePrefillConfirmOpen, setAnePrefillConfirmOpen] = useState(false);
+  const fastVerifyAvailable = usePrefillOptionAvailable(
+    "fast-verify",
+    prefillOptionPath,
+    hfToken || null,
+  );
+  const [fastVerifyConfirmOpen, setFastVerifyConfirmOpen] = useState(false);
   // Read live: the sidebar copy stays mounted while collapsed.
   const advancedPreference = useSyncExternalStore(
     subscribeAdvancedSettingsOpen,
@@ -2731,6 +2768,7 @@ export function ModelConfigPage({
   const [initialMlxAnePrefill] = useState(
     () => configState.mlxAnePrefill ?? false,
   );
+  const [initialMlxFastVerify] = useState(() => configState.mlxFastVerify ?? false);
   const [initialMlxOffload] = useState(
     () => configState.mlxPleOffload != null || configState.mlxExpertOffload != null,
   );
@@ -2739,6 +2777,7 @@ export function ModelConfigPage({
   const autoOpenForMlxKvQuant = servedByMlx && initialMlxKvQuant != null;
   const autoOpenForMlxInt8Prefill = servedByMlx && initialMlxInt8Prefill;
   const autoOpenForMlxAnePrefill = servedByMlx && initialMlxAnePrefill;
+  const autoOpenForMlxFastVerify = servedByMlx && initialMlxFastVerify;
   const autoOpenForMlxOffload = servedByMlx && initialMlxOffload;
   // Opened to change one field: show its section for this visit, leaving the saved switch alone.
   const [revealForFocus, setRevealForFocus] = useState(focusField != null);
@@ -2749,6 +2788,7 @@ export function ModelConfigPage({
         autoOpenForMlxKvQuant ||
         autoOpenForMlxInt8Prefill ||
         autoOpenForMlxAnePrefill ||
+        autoOpenForMlxFastVerify ||
         autoOpenForMlxOffload));
   const toggleAdvanced = (open: boolean) => {
     setRevealForFocus(false);
@@ -4310,6 +4350,12 @@ export function ModelConfigPage({
                         ? setAnePrefillConfirmOpen(true)
                         : update({ mlxAnePrefill: false })
                     }
+                    fastVerifyAvailable={fastVerifyAvailable}
+                    onFastVerifyChange={(checked) =>
+                      checked
+                        ? setFastVerifyConfirmOpen(true)
+                        : update({ mlxFastVerify: false })
+                    }
                     offloadable={memoryEstimate.estimate?.mlxOffloadable ?? []}
                     offloadDecided={mlxOffloadDecidedNow}
                     offloadNotes={mlxOffloadNotes}
@@ -4526,6 +4572,34 @@ export function ModelConfigPage({
               onClick={() => {
                 update({ mlxAnePrefill: true });
                 setAnePrefillConfirmOpen(false);
+              }}
+            >
+              Turn on
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={fastVerifyConfirmOpen}
+        onOpenChange={setFastVerifyConfirmOpen}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Turn on Fast Verify?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Speculative decoding runs faster, but the model&apos;s answers will
+              change slightly from plain decoding, the same way on every run. It
+              applies only when a drafter loads, and changing it reloads the
+              model. You can turn it off at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                update({ mlxFastVerify: true });
+                setFastVerifyConfirmOpen(false);
               }}
             >
               Turn on

@@ -23,16 +23,15 @@ import { resumesThought } from "@/features/model-picker";
 import { useShortcutLabel } from "@/features/settings";
 import type { ShortcutId } from "@/features/settings";
 import { useT } from "@/i18n";
-import { StarPointedIcon } from "@/lib/hugeicons-derived";
+import { StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Archive03Icon,
+  ArchiveIcon,
   BubbleChatTemporaryIcon,
   Cancel01Icon,
   CollapseIcon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
   LayerIcon,
@@ -408,10 +407,10 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       <OpenChatFolderItem item={menu.item} />
       <UploadToChatFolderItem item={menu.item} />
       <DropdownMenuSeparator className="mx-3" />
-      <Item icon={Archive03Icon} onSelect={menu.archive} shortcut="archiveChat">
+      <Item icon={ArchiveIcon} onSelect={menu.archive} shortcut="archiveChat">
         {t("settings.data.library.archive")}
       </Item>
-      <Item icon={Delete02Icon} onSelect={menu.remove} destructive={true}>
+      <Item icon={TrashIcon} onSelect={menu.remove} destructive={true}>
         {t("common.delete")}
       </Item>
     </>

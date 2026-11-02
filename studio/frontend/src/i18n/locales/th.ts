@@ -38,13 +38,18 @@ export const th = {
     halftone: "ฮาล์ฟโทน",
     scanlines: "เส้นสแกน",
     visibility: "การมองเห็น",
+    conversationVisibility: "การมองเห็นในบทสนทนา",
     blur: "ความเบลอของภาพ",
     position: "ตำแหน่ง",
     horizontal: "ตำแหน่งแนวนอน",
     vertical: "ตำแหน่งแนวตั้ง",
+    scope: "แสดงบน",
+    scopeNewChat: "หน้าแชทใหม่",
+    scopeChats: "แชท",
+    scopeAll: "ทุกหน้า",
     positionValue: "แนวนอน {x}% แนวตั้ง {y}%",
-    newChat: "แชทใหม่",
-    conversation: "การสนทนา",
+    newChat: "ตัวอย่างแชทใหม่",
+    conversation: "ตัวอย่างการสนทนา",
     prompt: "คุณอยากสำรวจอะไร?",
     response: "ข้อความสนทนายังคงอ่านได้ชัดเจนบนพื้นหลัง",
     storageError: "บันทึกพื้นหลังไม่ได้ ตรวจสอบพื้นที่จัดเก็บของเบราว์เซอร์",
@@ -52,6 +57,26 @@ export const th = {
     dimensionsError: "เลือกภาพที่เล็กกว่า 40 ล้านพิกเซล",
     decodeError: "ถอดรหัสภาพนี้ไม่ได้ ลองใช้ไฟล์อื่น",
     effectError: "แสดงเอฟเฟกต์ไม่ได้ เลือกไม่มีหรือเลือกภาพอื่น",
+    material: "กระจก",
+    materialSolid: "ปิด",
+    materialTransparent: "โปร่งใส",
+    materialFrosted: "ฝ้า",
+    materialBlurred: "เบลอ",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "กระจกระบบ macOS",
+    materialMacosNote: "ใช้วัสดุหน้าต่างโปร่งแสงของ macOS จึงมองเห็นเดสก์ท็อปผ่านได้",
+    materialNativeFailed: "Unsloth Desktop เวอร์ชันนี้ใช้วัสดุของ macOS ไม่ได้ อัปเดตแอปเพื่อเปิดใช้งาน",
+    glassTheme: "ธีมกระจก",
+    materialStyle: "สไตล์",
+    materialMenus: "เมนูกระจก",
+    materialMenusDescription: "ดรอปดาวน์ เมนู และตัวเลือกก็ใช้กระจกด้วย",
+    materialStrength: "ความเข้มของกระจก",
+    lens: "เลนส์กระจก",
+    lensDescription: "หักเหภาพใต้ช่องพิมพ์ข้อความเหมือนกระจกจริง",
+    lensOff: "ปิด",
+    lensMagnify: "ขยาย",
+    lensShrink: "ย่อ",
   },
   linkMenu: {
     openInBrowser: "เปิดในเบราว์เซอร์ Unsloth",
@@ -778,36 +803,6 @@ export const th = {
     compactEmpty: "ยังไม่มีอะไรให้ย่อ",
     compactUnsupported: "การย่อการสนทนาต้องใช้โมเดล GGUF หรือ MLX ที่รองรับเครื่องมือ",
   },
-  halloween: {
-    navLabel: "หลอกหรือเลี้ยง…",
-    title: "หลอกหรือเลี้ยง?!",
-    description:
-      "เราปรุงความสยองเล็กๆ น้อยๆ ไว้ให้ Unsloth ตลอดช่วงที่เหลือของเดือนตุลาคม",
-    chooseTheme: "เลือกธีมสุดหลอน",
-    spookyGreetings: "คำทักทายสุดหลอน",
-    spookyGreetingsDescription: "สลอธจะทักทายแชทใหม่ด้วยความสยอง",
-    decorations: "แมงมุมและค้างคาว",
-    decorationsDescription: "ใยแมงมุม พร้อมแมงมุมหรือค้างคาวโผล่มาเป็นบางครั้ง",
-    surprise: "หลอกหรือเลี้ยง!",
-    surpriseDescription: "ให้สลอธเลือกธีมให้คุณ",
-    themesTitle: "ธีมสุดหลอน",
-    back: "กลับ",
-    footer: "Unsloth จะกลับสู่ปกติในเวลาเที่ยงคืนของวันที่ 1 พฤศจิกายน",
-    removeNow: "นำออกเดี๋ยวนี้",
-    hideFromSidebar: "ซ่อนจากแถบด้านข้าง",
-    greeting: {
-      pumpkins: "แกะสลักฟักทองเสร็จแล้ว ต่อไปทำอะไรดี",
-      brewing: "มาเริ่มปรุงยากันเถอะ",
-      trickOrTreat: "หลอกหรือเลี้ยงดี",
-      manor: "ยินดีต้อนรับสู่คฤหาสน์",
-      manorName: "ยินดีต้อนรับสู่คฤหาสน์ {name}",
-      happyHalloween: "สุขสันต์วันฮาโลวีน",
-      happyHalloweenName: "สุขสันต์วันฮาโลวีน {name}",
-      spirits: "วิญญาณกำลังฟังอยู่…",
-      mysteries: "คืนนี้เราจะไขปริศนาอะไรกันดี",
-      conjure: "ให้เสกอะไรให้คุณดี",
-    },
-  },
   welcome: {
     goodToSeeYou: "ยินดีที่ได้พบคุณ",
     goodToSeeYouName: "ยินดีที่ได้พบคุณ {name}",
@@ -1031,7 +1026,7 @@ export const th = {
       deleteProjects: "ลบโปรเจกต์",
       deleteProjectsTitle: "ลบโปรเจกต์",
       deleteProjectsDescription:
-        "ลบโปรเจกต์ {count} รายการหรือไม่ แชทในโปรเจกต์เหล่านี้จะถูกลบอย่างถาวร",
+        "โปรเจกต์ {count} รายการและแชททั้งหมดจะถูกลบอย่างถาวร การดำเนินการนี้ไม่สามารถย้อนกลับได้",
       deleteProjectsFilesDescription:
         "โฟลเดอร์พื้นที่ทำงานของแต่ละโปรเจกต์จะถูกนำออกจากดิสก์",
       countSelected: "เลือกแล้ว {count} รายการ",
@@ -1043,7 +1038,7 @@ export const th = {
       deleteChats: "ลบแชท",
       deleteTitle: "ลบแชท",
       deleteDescription:
-        "ลบแชท {count} รายการหรือไม่ การดำเนินการนี้ไม่สามารถเลิกทำได้",
+        "แชท {count} รายการและข้อความทั้งหมดจะถูกลบอย่างถาวร การดำเนินการนี้ไม่สามารถย้อนกลับได้",
       deleteFilesDescription:
         "โฟลเดอร์แซนด์บ็อกซ์ของแต่ละแชทจะถูกนำออกจากดิสก์ ไฟล์ที่แชทเขียนไว้ภายในโปรเจกต์จะยังคงอยู่ในพื้นที่ทำงานของโปรเจกต์นั้น",
       deleteFilesLabel: "ลบไฟล์และโฟลเดอร์แซนด์บ็อกซ์",
@@ -1091,7 +1086,7 @@ export const th = {
     dialog: {
       deleteChat: {
         title: "ลบแชท",
-        description: "คุณแน่ใจหรือไม่ว่าต้องการลบแชท “{name}” นี้",
+        description: "แชท “{name}” และข้อความทั้งหมดในแชทจะถูกลบอย่างถาวร การดำเนินการนี้ไม่สามารถย้อนกลับได้",
       },
       deleteRun: {
         title: "ลบการเทรน",
@@ -2255,10 +2250,14 @@ export const th = {
         label: "ประเภทการติดตั้ง",
         description:
           "แชทเท่านั้น (GGUF) การติดตั้งแบบเต็มจะเพิ่มการเทรน การส่งออก วิดีโอ โมเดล safetensors และฟีเจอร์การสร้างรูปภาพเพิ่มเติม",
+        descriptionCpu:
+          "แชทเท่านั้น (GGUF) ไม่พบ GPU ที่รองรับ การติดตั้งแบบเต็มจึงเพิ่มการเทรนบน CPU",
         action: "อัปเกรดเป็นการติดตั้งแบบเต็ม",
         confirmTitle: "อัปเกรดเป็นการติดตั้งแบบเต็มหรือไม่",
         confirmDescription:
           "การติดตั้งแบบแชทเท่านั้นนี้รันโมเดล GGUF การติดตั้งแบบเต็มจะเพิ่ม PyTorch สำหรับ GPU ของเครื่องนี้ ซึ่งเปิดใช้การเทรน การส่งออก วิดีโอ โมเดล safetensors และฟีเจอร์การสร้างรูปภาพเพิ่มเติม โดยจะดาวน์โหลดหลายกิกะไบต์ (ใช้พื้นที่ดิสก์อย่างน้อย 5 GB) และรีสตาร์ทเซิร์ฟเวอร์ แชท โมเดล และการตั้งค่าจะยังคงอยู่ ขั้นตอนนี้อาจใช้เวลาหลายนาที",
+        confirmDescriptionCpu:
+          "การติดตั้งแบบแชทเท่านั้นนี้รันโมเดล GGUF ไม่พบ GPU ที่รองรับในเครื่องนี้ การติดตั้งแบบเต็มจึงเพิ่ม PyTorch สำหรับ CPU ซึ่งเปิดใช้การเทรนบน CPU การเทรนบน CPU ช้ากว่าบน GPU มาก ต้องใช้พื้นที่ดิสก์อย่างน้อย 5 GB และจะรีสตาร์ทเซิร์ฟเวอร์ แชท โมเดล และการตั้งค่าจะยังคงอยู่ อาจใช้เวลาหลายนาที",
         confirmAction: "อัปเกรด",
         keywords:
           "ติดตั้งแบบเต็ม อัปเกรด ประเภทการติดตั้ง แชทเท่านั้น เทรน ปรับแต่งโมเดล ส่งออก วิดีโอ สร้างรูปภาพ full install upgrade install type chat only gguf add training train training fine-tune pytorch torch export video image generation safetensors",
@@ -2303,6 +2302,13 @@ export const th = {
       avatarShapeRounded: "มุมมน",
       greetingSloth: "คำทักทาย",
       greetingSlothDescription: "แสดงคำทักทายในแชทใหม่",
+      greetingDefault: "ค่าเริ่มต้น",
+      greetingCustom: "กำหนดเอง",
+      greetingImage: "รูปภาพ",
+      greetingText: "ข้อความทักทาย",
+      greetingTextDescription: "เว้นว่างไว้เพื่อใช้คำทักทายในตัว",
+      greetingFileError: "เลือกไฟล์ PNG, JPEG, WebP หรือ GIF ที่มีขนาดไม่เกิน 10 MB",
+      greetingImageError: "ใช้รูปภาพนี้ไม่ได้ ลองใช้รูปที่เล็กกว่านี้",
       chooseSloth: "หรือเลือกสลอธ",
       noPicture: "ไม่มีรูปโปรไฟล์",
       noneLabel: "ไม่มี",
@@ -2425,20 +2431,29 @@ export const th = {
         label: "ธีม",
         description: "สีที่ใช้ทั่วทั้ง Unsloth ทั้งในโหมดสว่างและโหมดมืด",
         standard: "มาตรฐาน",
-        classic: "คลาสสิก",
-        minimal: "มินิมอล",
         moreThemes: "ธีมเพิ่มเติม",
-        halloween: "ฮาโลวีน",
       },
-      trickOrTreat: {
-        label: "หลอกหรือเลี้ยง",
-        description: "ธีมฮาโลวีนและคำทักทายสยองขวัญ จนถึง 1 พฤศจิกายน",
+      code: {
+        title: "โค้ด",
+        fontDescription: "บล็อกโค้ดในแชท ตัวอย่างไฟล์ และตัวอย่าง API",
+        lineNumbers: {
+          label: "หมายเลขบรรทัด",
+          description: "แสดงหมายเลขบรรทัดของบล็อกโค้ดในแชท",
+        },
+        wordWrap: {
+          label: "ตัดบรรทัด",
+          description: "ตัดบรรทัดยาวในบล็อกโค้ดแทนการเลื่อนด้านข้าง",
+        },
+        ligatures: {
+          label: "อักษรควบ",
+          description: "รวมสัญลักษณ์อย่าง => และ != เป็นอักขระเดียวเมื่อฟอนต์โค้ดรองรับ",
+        },
       },
       custom: {
         chatWidth: {
           label: "ความกว้างของแชท",
           description: "ความกว้างของข้อความและช่องเขียนข้อความ",
-          standard: "มาตรฐาน",
+          standard: "ค่าเริ่มต้น",
           wide: "กว้าง",
           full: "เต็มความกว้าง",
         },
@@ -3323,10 +3338,10 @@ export const th = {
         moveFailed: "ย้ายแชทไม่สำเร็จ",
         deleteChatsTitle: "ลบแชท ({count})",
         deleteChatsWarning:
-          "ลบแชทที่เลือก ({count}) หรือไม่ การดำเนินการนี้ไม่สามารถเลิกทำได้",
+          "แชท {count} รายการและข้อความทั้งหมดจะถูกลบอย่างถาวร การดำเนินการนี้ไม่สามารถย้อนกลับได้",
         deleteArchivedTitle: "ลบแชทที่เก็บถาวร {count} รายการ",
         deleteArchivedWarning:
-          "ลบแชทที่เก็บถาวรที่เลือก ({count}) หรือไม่ การดำเนินการนี้ไม่สามารถเลิกทำได้",
+          "แชทที่เก็บถาวร {count} รายการและข้อความทั้งหมดจะถูกลบอย่างถาวร การดำเนินการนี้ไม่สามารถย้อนกลับได้",
         deleting: "กำลังลบ...",
       },
       title: "ข้อมูล",
@@ -3725,6 +3740,8 @@ export const th = {
   },
   studio: {
     routeTitle: "เทรน",
+    cpuTrainingNotice:
+      "ไม่พบ GPU การเทรนจึงทำงานบน CPU ซึ่งช้ากว่าการเทรนบน GPU มาก และรองรับเฉพาะโมเดลข้อความ (LoRA หรือ full finetuning)",
     wizard: {
       modelTitle: "โมเดล",
       modelDescription: "เลือกโมเดลและวิธีการเทรน",
@@ -4807,9 +4824,9 @@ export const th = {
       },
       dialog: {
         renameChat: "เปลี่ยนชื่อแชท",
-        deleteChatDescription: "แชทนี้จะถูกลบอย่างถาวร การดำเนินการนี้ไม่สามารถเลิกทำได้",
+        deleteChatDescription: "แชทและข้อความทั้งหมดในแชทจะถูกลบอย่างถาวร การดำเนินการนี้ไม่สามารถย้อนกลับได้",
         deleteProjectDescription:
-          "โปรเจกต์และแชทในโปรเจกต์ ({count}) จะถูกลบอย่างถาวร การดำเนินการนี้ไม่สามารถเลิกทำได้",
+          "โปรเจกต์และแชท ({count}) จะถูกลบอย่างถาวร การดำเนินการนี้ไม่สามารถย้อนกลับได้",
         deleteFilesMany: "นำไฟล์และโฟลเดอร์แซนด์บ็อกซ์ที่แชทเหล่านี้สร้างออกด้วย",
         deleteProjectFilesLabel: "ลบโฟลเดอร์พื้นที่ทำงานของโปรเจกต์",
         deleteProjectFiles: "โฟลเดอร์พื้นที่ทำงานของโปรเจกต์จะถูกนำออกจากดิสก์",
@@ -5278,7 +5295,7 @@ export const th = {
     chatName: "ชื่อแชท",
     deleteChat: "ลบแชท",
     deleteChatDescription:
-      "แน่ใจหรือไม่ว่าต้องการลบ {name} ข้อความในแชทนี้จะถูกลบอย่างถาวร",
+      "แชท “{name}” และข้อความทั้งหมดในแชทจะถูกลบอย่างถาวร การดำเนินการนี้ไม่สามารถย้อนกลับได้",
     importChats: "นำเข้าแชท",
     importDestination: "เลือกตำแหน่งที่จะนำเข้า {name}:",
     selectDestination: "เลือกปลายทาง",
@@ -5286,7 +5303,7 @@ export const th = {
     import: "นำเข้า",
     deleteProject: "ลบโปรเจกต์",
     deleteProjectDescription:
-      "แน่ใจหรือไม่ว่าต้องการลบ {name} แชทในโปรเจกต์นี้จะถูกลบอย่างถาวร",
+      "โปรเจกต์ “{name}” และแชททั้งหมดในโปรเจกต์จะถูกลบอย่างถาวร การดำเนินการนี้ไม่สามารถย้อนกลับได้",
     deleteProjectFiles: "โฟลเดอร์พื้นที่ทำงานของโปรเจกต์จะถูกนำออกจากดิสก์",
     deleteAll: "ลบทั้งหมด",
     projectFallback: "โปรเจกต์",
@@ -5365,6 +5382,18 @@ export const th = {
     trustNote: "ดำเนินการต่อเฉพาะเมื่อคุณเชื่อถือแหล่งที่มาของโมเดลเท่านั้น",
     flaggedIntro: "ตัวสแกนอัตโนมัติของเราพบปัญหา ได้แก่:",
     nothingFlagged: "ตัวสแกนอัตโนมัติของเราไม่พบไฟล์ที่น่ากังวล แต่โปรดตรวจสอบอีกครั้ง",
+    unscannedTitle: "ไม่สามารถสแกนไฟล์โมเดลได้",
+    unscannedBody: "{model} มีน้ำหนักแบบ pickle ซึ่งอาจรันโค้ดขณะโหลด และไม่มีผลสแกนมัลแวร์สำหรับไฟล์เหล่านี้ จึงไม่สามารถโหลดได้ {note}",
+    unscannedIntro: "ไฟล์ที่สแกนไม่ได้:",
+    switchSourceNote: "เปลี่ยนแหล่งโมเดลเป็น Hugging Face ในการตั้งค่าเพื่อโหลด",
+    reconnectNote: "เชื่อมต่อกับ Hugging Face เพื่อให้อ่านผลสแกนได้ แล้วลองอีกครั้ง",
+    managedTitle: "โค้ดที่กำหนดเองถูกปิดสำหรับบัญชีนี้",
+    managedNote: "ถูกปิดสำหรับบัญชีที่มีการจัดการ โปรดขอให้เจ้าของการติดตั้งเปิดใช้งาน",
+    notFoundTitle: "ไม่พบใน {source}",
+    notFoundBody: "ไม่พบ {model} ใน {source} จึงไม่สามารถตรวจสอบความปลอดภัยได้ โปรดตรวจสอบชื่อ หรือตั้งค่าโทเค็นที่มีสิทธิ์เข้าถึงหากที่เก็บเป็นแบบส่วนตัว",
+    notOnModelScopeBody: "{model} ไม่มีใน ModelScope จึงไม่สามารถตรวจสอบความปลอดภัยและโหลดจากแหล่งนั้นได้ เปลี่ยนแหล่งโมเดลเป็น Hugging Face ในการตั้งค่าเพื่อใช้งาน",
+    checksFailedTitle: "ไม่สามารถตรวจสอบความปลอดภัยได้",
+    checksFailedBody: "อ่าน {model} จาก {source} ไม่ได้ จึงตรวจสอบความปลอดภัยไม่เสร็จและไม่สามารถโหลดได้ โปรดตรวจสอบการเชื่อมต่อและโทเค็น แล้วลองอีกครั้ง {note}",
     enableAndContinue: "เปิดใช้และดำเนินการต่อ",
   },
   tour: {

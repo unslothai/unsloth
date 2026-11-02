@@ -45,6 +45,11 @@ def test_defaults_fill_missing_fields():
     assert p.profile.avatarShape == "circle"
     assert p.profile.displayName == ""
     assert p.profile.showGreetingSloth is True
+    assert p.profile.greetingStyle == "text"
+    assert p.profile.greetingIcon == "sloth"
+    assert p.profile.greetingText == ""
+    assert p.profile.greetingIconDataUrl is None
+    assert p.profile.greetingImageDataUrl is None
 
 
 def test_unknown_keys_are_ignored():
@@ -85,6 +90,9 @@ def test_customization_defaults():
     assert c.reduceMotion == "system"
     assert c.fontSmoothing is True
     assert c.pointerCursors is False
+    assert c.codeLineNumbers is False
+    assert c.codeWordWrap is False
+    assert c.codeLigatures is True
     assert c.colors.light.accent is None
     assert c.headingFont is None
     assert c.chatFont is None
@@ -470,10 +478,15 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
             "avatarDataUrl": "/Sloth%20emojis/large%20sloth%20yay.png",
             "avatarShape": "rounded",
             "showGreetingSloth": False,
+            "greetingStyle": "image",
+            "greetingIcon": "custom",
+            "greetingIconDataUrl": "data:image/webp;base64,AAAA",
+            "greetingText": "Hello there",
+            "greetingImageDataUrl": "data:image/png;base64,BBBB",
         },
         "appearance": {
             "theme": "dark",
-            "palette": "classic",
+            "palette": "matcha",
             "language": "en",
             "customization": {
                 "colors": {
@@ -495,6 +508,9 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                 "pointerCursors": True,
                 "reduceMotion": "off",
                 "fontSmoothing": True,
+                "codeLineNumbers": True,
+                "codeWordWrap": True,
+                "codeLigatures": False,
                 "sidebarMenu": [
                     {"id": "darkMode", "visible": True},
                     {"id": "api", "visible": False},
@@ -532,6 +548,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
     assert body["customizationSaved"] is True
     assert body["paletteSaved"] is True
     assert body["greetingSlothSaved"] is True
+    assert body["greetingCustomSaved"] is True
     assert body["profile"] == payload["profile"]
     assert body["appearance"] == payload["appearance"]
 
@@ -555,6 +572,8 @@ def test_personalization_get_flags_legacy_fields(monkeypatch):
     assert body["customizationSaved"] is False
     assert body["paletteSaved"] is False
     assert body["greetingSlothSaved"] is False
+    assert body["greetingCustomSaved"] is False
+    assert body["profile"]["greetingStyle"] == "text"
 
 
 def test_personalization_legacy_chat_width_presence(monkeypatch):
@@ -680,7 +699,7 @@ def test_personalization_put_preserves_existing_fields_on_stale_write(monkeypatc
             "profile": {"displayName": "Mike", "showGreetingSloth": False},
             "appearance": {
                 "theme": "light",
-                "palette": "classic",
+                "palette": "matcha",
                 "customization": {"uiFont": "Georgia"},
             },
         }
@@ -695,15 +714,61 @@ def test_personalization_put_preserves_existing_fields_on_stale_write(monkeypatc
 
     put_body = put.json()
     assert put_body["appearance"]["theme"] == "dark"
-    assert put_body["appearance"]["palette"] == "classic"
+    assert put_body["appearance"]["palette"] == "matcha"
     assert put_body["appearance"]["customization"]["uiFont"] == "Georgia"
 
     stored_appearance = store[pers.PERSONALIZATION_SETTING_KEY]["appearance"]
     assert stored_appearance["theme"] == "dark"
-    assert stored_appearance["palette"] == "classic"
+    assert stored_appearance["palette"] == "matcha"
     assert stored_appearance["customization"]["uiFont"] == "Georgia"
 
     body = client.get("/api/settings/personalization").json()
     assert body["paletteSaved"] is True
     assert body["customizationSaved"] is True
     assert body["greetingSlothSaved"] is True
+
+
+@pytest.mark.parametrize("field", ["greetingIconDataUrl", "greetingImageDataUrl"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "data:image/svg+xml;base64,PHN2Zz48c2NyaXB0Lz48L3N2Zz4=",
+        "data:image/svg+xml,<svg onload=alert(1)>",
+        "javascript:alert(1)",
+        "https://example.com/a.png",
+        "/Sloth%20emojis/large%20sloth%20yay.png",
+        "data:image/png;base64,AAAA\nBBBB",
+    ],
+)
+def test_greeting_images_must_be_raster_data_urls(field, value):
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate({"profile": {field: value}})
+
+
+@pytest.mark.parametrize("mime", ["png", "jpeg", "webp", "gif"])
+def test_greeting_images_accept_raster_types(mime):
+    url = f"data:image/{mime};base64,AAAA"
+    p = PersonalizationPayload.model_validate(
+        {"profile": {"greetingIconDataUrl": url, "greetingImageDataUrl": url}}
+    )
+    assert p.profile.greetingIconDataUrl == url
+    assert p.profile.greetingImageDataUrl == url
+
+
+def test_greeting_sizes_are_capped():
+    icon = "data:image/png;base64," + "A" * settings_routes.MAX_GREETING_ICON_DATA_URL_LENGTH
+    image = "data:image/png;base64," + "A" * settings_routes.MAX_GREETING_IMAGE_DATA_URL_LENGTH
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate({"profile": {"greetingIconDataUrl": icon}})
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate({"profile": {"greetingImageDataUrl": image}})
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate({"profile": {"greetingText": "x" * 101}})
+
+
+def test_unknown_greeting_choices_fall_back_to_defaults():
+    p = PersonalizationPayload.model_validate(
+        {"profile": {"greetingStyle": "video", "greetingIcon": "rocket"}}
+    )
+    assert p.profile.greetingStyle == "text"
+    assert p.profile.greetingIcon == "sloth"

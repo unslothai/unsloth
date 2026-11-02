@@ -651,6 +651,14 @@
       "reason": "Falls back to the auto class unless the caller passed trust_remote_code; revision pinned to the config commit hash."
     },
     {
+      "file": "unsloth/models/float8_training.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "2e91eef0396304a9",
+      "count": 1,
+      "reason": "Fallback when this file is loaded on its own: loads unsloth/precision/__init__.py from the sibling directory of the shipped package, a fixed path, never a user-supplied one."
+    },
+    {
       "file": "unsloth/models/fsdp2_save.py",
       "rule": "unsafe-deserialize",
       "sink": "pickle.loads",

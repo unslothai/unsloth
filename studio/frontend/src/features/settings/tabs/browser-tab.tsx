@@ -39,7 +39,8 @@ import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
-import { ArrowUpRight01Icon, Cancel01Icon, Delete02Icon } from "@hugeicons/core-free-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
+import { ArrowUpRight01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
@@ -557,7 +558,7 @@ export function BrowserTab() {
           )}
         >
           <Button variant="destructive" size="sm" onClick={() => setClearOpen(true)}>
-            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} data-icon="inline-start" />
+            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} data-icon="inline-start" />
             {t("browser.menu.clearData")}
           </Button>
         </SettingsRow>

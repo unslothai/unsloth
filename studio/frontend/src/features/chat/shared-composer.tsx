@@ -33,7 +33,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
-import { AiSpeechIcon, FileSearchIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, BookmarkIcon, FileSearchIcon } from "@/lib/hugeicons-derived";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
@@ -114,8 +114,7 @@ import {
   Columns2Icon,
 } from "lucide-react";
 import {
-  AttachmentIcon,
-  Bookmark02Icon,
+  Attachment01Icon,
   CodeIcon,
   Download01Icon,
   Image03Icon,
@@ -1801,6 +1800,7 @@ export function SharedComposer({
           mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
           mlx_int8_prefill: ownConfig.mlxInt8Prefill ?? false,
           mlx_ane_prefill: ownConfig.mlxAnePrefill ?? false,
+          mlx_fast_verify: ownConfig.mlxFastVerify ?? false,
           mlx_ple_offload: ownConfig.mlxPleOffload ?? null,
           mlx_expert_offload: ownConfig.mlxExpertOffload ?? null,
           speculative_type: effectiveSpeculativeType,
@@ -2525,7 +2525,7 @@ export function SharedComposer({
     savedPrompts: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
-          <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+          <HugeiconsIcon icon={BookmarkIcon} strokeWidth={2} />
           Saved prompts
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
@@ -2686,7 +2686,7 @@ export function SharedComposer({
           className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100" : "opacity-0"}`}
         >
           <HugeiconsIcon
-            icon={AttachmentIcon}
+            icon={Attachment01Icon}
             strokeWidth={2}
             className="size-6 text-primary"
           />
@@ -2793,7 +2793,7 @@ export function SharedComposer({
                 onCloseAutoFocus={(event) => event.preventDefault()}
               >
                 <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
-                  <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
+                  <HugeiconsIcon icon={Attachment01Icon} strokeWidth={2} />
                   Add photos &amp; files
                 </DropdownMenuItem>
                 {activeModel?.hasAudioInput && (

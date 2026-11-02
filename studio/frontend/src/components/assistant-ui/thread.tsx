@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { AiSpeechIcon, FileSearchIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, BookmarkIcon, FileSearchIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { createPortal } from "react-dom";
 import {
   canQueueTextAttachment,
@@ -14,6 +14,7 @@ import {
   type QueuedPrompt,
 } from "@/features/chat/utils/queued-text-attachments";
 import { getAuthSessionEpoch } from "@/features/auth";
+import { useMarkChatWelcome } from "@/features/chat-background";
 
 import {
   ComposerAttachments,
@@ -392,8 +393,7 @@ import { useRagAvailabilityStore } from "@/features/rag/api/rag-availability";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
-import { useSpookyGreetings } from "@/features/halloween/halloween-store";
-import { buildSpookyWelcome } from "@/features/halloween/spooky-greetings";
+import { resolveGreeting } from "@/features/profile/greeting";
 import { usePublishedFrame } from "@/features/settings/hooks/use-published-frame";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
@@ -433,10 +433,8 @@ import {
 } from "@assistant-ui/react";
 import { flushResourcesSync } from "@assistant-ui/tap";
 import {
-  AttachmentIcon,
-  Bookmark02Icon,
+  Attachment01Icon,
   CodeIcon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
   Image03Icon,
@@ -2705,12 +2703,7 @@ const pickRandom = <T,>(arr: T[]): T =>
 // same mascot. Greeting varies by local time; name-bearing lines drop the
 // name when none is set. Text is a message key, translated at render so a
 // language switch updates the open greeting.
-type Welcome = {
-  key: TranslationKey;
-  name?: string;
-  sloth: string;
-  enlarge?: boolean;
-};
+type Welcome = { key: TranslationKey; name?: string; sloth: string };
 const DEFAULT_WELCOME: Welcome = {
   key: "welcome.onYourMind",
   sloth: "sloth magnify final.png",
@@ -2761,23 +2754,35 @@ const ThreadWelcome: FC<{
   const displayName = useUserProfileStore((s) => s.displayName);
   const nickname = useUserProfileStore((s) => s.nickname);
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
+  const greetingStyle = useUserProfileStore((s) => s.greetingStyle);
+  const greetingIcon = useUserProfileStore((s) => s.greetingIcon);
+  const greetingIconDataUrl = useUserProfileStore((s) => s.greetingIconDataUrl);
+  const greetingText = useUserProfileStore((s) => s.greetingText);
+  const greetingImageDataUrl = useUserProfileStore(
+    (s) => s.greetingImageDataUrl,
+  );
+  const greeting = resolveGreeting({
+    showGreetingSloth,
+    greetingStyle,
+    greetingIcon,
+    greetingIconDataUrl,
+    greetingText,
+    greetingImageDataUrl,
+  });
+  const customText = greeting.kind === "text" ? greeting.text : null;
   // At the bottom, Thread docks the composer and the greeting centres in the space above it.
   const composerAtBottom = useChatPreferencesStore(
     (s) => s.newChatComposerAtBottom,
   );
-  const spooky = useSpookyGreetings();
+  useMarkChatWelcome();
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
   const t = useT();
 
   useEffect(() => {
     const raw = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
     const name = raw.length > 20 ? `${raw.slice(0, 20)}…` : raw;
-    setWelcome(
-      spooky
-        ? buildSpookyWelcome(name)
-        : buildWelcome(new Date().getHours(), name),
-    );
-  }, [displayName, nickname, spooky]);
+    setWelcome(buildWelcome(new Date().getHours(), name));
+  }, [displayName, nickname]);
 
   const currentEmojiSrc = `Sloth emojis/${welcome.sloth}`;
 
@@ -2789,27 +2794,69 @@ const ThreadWelcome: FC<{
           "aui-thread-welcome-center flex w-full grow flex-col items-center",
           composerAtBottom
             ? "justify-center pb-[calc(160px*var(--ui-space-scale,1))]"
-            : "justify-start pt-[27.5dvh] has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]",
+            : "justify-start has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]",
+          // Without the greeting, its row and gap become padding, so the composer stays where it was.
+          !composerAtBottom &&
+            (greeting.kind !== "off" || incognito
+              ? "pt-[27.5dvh]"
+              : "pt-[calc(27.5dvh_+_44px*var(--ui-space-scale,1)_+_2.25rem)]"),
         )}
       >
         {/* No padding, so the composer here is as wide as once it docks. */}
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9">
           {/* The setting hides the whole greeting; the incognito title is a status, so it stays. */}
-          {(showGreetingSloth || incognito) && (
-            <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[calc(15px*var(--ui-space-scale,1))]">
-              {!incognito && (
+          {greeting.kind === "image" && !incognito && (
+            <div
+              className={cn(
+                "unsloth-welcome-greeting flex flex-row items-end justify-center",
+                !composerAtBottom &&
+                  "h-[calc(120px*var(--ui-space-scale,1))] -mt-[calc(76px*var(--ui-space-scale,1))]",
+              )}
+            >
+              <h1 className="sr-only">{t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}</h1>
+              <img
+                src={greeting.src}
+                alt=""
+                draggable={false}
+                className="unsloth-welcome-image fade-in slide-in-from-bottom-1 animate-in max-h-[calc(120px*var(--ui-space-scale,1))] max-w-full object-contain duration-200"
+              />
+            </div>
+          )}
+          {(greeting.kind === "text" || incognito) && (
+            <div
+              className={cn(
+                "unsloth-welcome-greeting flex flex-row items-center justify-center gap-[calc(15px*var(--ui-space-scale,1))]",
+                !incognito &&
+                  greeting.kind === "text" &&
+                  greeting.icon.kind === "none" &&
+                  "min-h-[calc(44px*var(--ui-space-scale,1))]",
+              )}
+            >
+              {!incognito && greeting.kind === "text" && greeting.icon.kind === "sloth" && (
                 <MascotImg
                   src={currentEmojiSrc}
-                  className={cn(
-                    "unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]",
-                    welcome.enlarge && "scale-[1.15]",
-                  )}
+                  className="unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]"
                 />
               )}
-              <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
+              {!incognito && greeting.kind === "text" && greeting.icon.kind === "custom" && (
+                <img
+                  src={greeting.icon.src}
+                  alt=""
+                  draggable={false}
+                  className="unsloth-welcome-sloth unsloth-welcome-icon size-[calc(44px*var(--ui-space-scale,1))] shrink-0 -translate-y-[2px] object-contain"
+                />
+              )}
+              <h1
+                className={cn(
+                  "aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200",
+                  customText && "min-w-0 text-balance text-center [overflow-wrap:anywhere]",
+                )}
+              >
                 {incognito
                   ? t("welcome.temporaryChat")
-                  : t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}
+                  : customText
+                    ? customText
+                    : t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}
               </h1>
             </div>
           )}
@@ -5816,7 +5863,7 @@ const Composer: FC<{
       )}
     >
       <HugeiconsIcon
-        icon={AttachmentIcon}
+        icon={Attachment01Icon}
         strokeWidth={2}
         className="size-6 text-primary"
       />
@@ -6994,7 +7041,7 @@ const ComposerToolsMenu: FC<{
     savedPrompts: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
-          <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+          <HugeiconsIcon icon={BookmarkIcon} strokeWidth={2} />
           Saved prompts
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
@@ -7163,7 +7210,7 @@ const ComposerToolsMenu: FC<{
           disabled={!composerCanAddAttachments}
           onSelect={() => pickAttachment()}
         >
-          <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
+          <HugeiconsIcon icon={Attachment01Icon} strokeWidth={2} />
           Add photos &amp; files
         </DropdownMenuItem>
         <DropdownMenuItem
@@ -8505,7 +8552,7 @@ const DeleteMessageButton: FC = () => {
       onClick={() => void handleDelete()}
       className="hover:!text-destructive"
     >
-      <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
     </TooltipIconButton>
   );
 };

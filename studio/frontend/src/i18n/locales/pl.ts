@@ -38,13 +38,18 @@ export const pl = {
     halftone: "Raster",
     scanlines: "Linie skanowania",
     visibility: "Widoczność",
+    conversationVisibility: "Widoczność w rozmowach",
     blur: "Rozmycie obrazu",
     position: "Pozycja",
     horizontal: "Pozycja w poziomie",
     vertical: "Pozycja w pionie",
+    scope: "Pokazuj na",
+    scopeNewChat: "Stronie nowego czatu",
+    scopeChats: "Czatach",
+    scopeAll: "Wszystkich stronach",
     positionValue: "Poziomo {x}%, pionowo {y}%",
-    newChat: "Nowy czat",
-    conversation: "Rozmowa",
+    newChat: "Podgląd nowego czatu",
+    conversation: "Podgląd rozmowy",
     prompt: "Co chcesz odkryć?",
     response: "Rozmowa pozostaje czytelna na tle.",
     storageError: "Nie udało się zapisać tła. Sprawdź dostępne miejsce w pamięci przeglądarki.",
@@ -52,6 +57,26 @@ export const pl = {
     dimensionsError: "Wybierz obraz mniejszy niż 40 megapikseli.",
     decodeError: "Nie udało się zdekodować obrazu. Spróbuj innego pliku.",
     effectError: "Nie udało się wyrenderować efektu. Wybierz Brak lub inny obraz.",
+    material: "Szkło",
+    materialSolid: "Wyłączone",
+    materialTransparent: "Przezroczyste",
+    materialFrosted: "Matowe",
+    materialBlurred: "Rozmyte",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "Systemowe szkło macOS",
+    materialMacosNote: "Używa półprzezroczystego materiału okien macOS, więc widać przez nie pulpit.",
+    materialNativeFailed: "Ta wersja Unsloth Desktop nie może używać materiału macOS. Zaktualizuj aplikację, aby go włączyć.",
+    glassTheme: "Motyw szkła",
+    materialStyle: "Styl",
+    materialMenus: "Szklane menu",
+    materialMenusDescription: "Listy rozwijane, menu i selektory też używają szkła.",
+    materialStrength: "Siła szkła",
+    lens: "Soczewka szklana",
+    lensDescription: "Zakrzywia obraz pod polem tekstowym jak prawdziwe szkło.",
+    lensOff: "Wyłączone",
+    lensMagnify: "Powiększ",
+    lensShrink: "Pomniejsz",
   },
   linkMenu: {
     openInBrowser: "Otwórz w przeglądarce Unsloth",
@@ -832,36 +857,6 @@ export const pl = {
     compactUnsupported:
       "Kompaktowanie wymaga modelu GGUF lub MLX z obsługą narzędzi",
   },
-  halloween: {
-    navLabel: "Cukierek albo psikus…",
-    title: "Cukierek albo psikus?!",
-    description:
-      "Przygotowaliśmy dla Unsloth kilka strachów, dostępnych do końca października.",
-    chooseTheme: "Wybierz straszny motyw",
-    spookyGreetings: "Upiorne powitania",
-    spookyGreetingsDescription: "Leniwiec wita nowe czaty dreszczykiem.",
-    decorations: "Pająki i nietoperze",
-    decorationsDescription: "Pajęczyny, a czasem pająk lub nietoperz.",
-    surprise: "Cukierek albo psikus!",
-    surpriseDescription: "Pozwól leniwcowi wybrać motyw za Ciebie.",
-    themesTitle: "Straszne motywy",
-    back: "Wstecz",
-    footer: "Unsloth wróci do normy o północy 1 listopada.",
-    removeNow: "Usuń teraz",
-    hideFromSidebar: "Ukryj na pasku bocznym",
-    greeting: {
-      pumpkins: "Dynie wydrążone. Co dalej?",
-      brewing: "Czas zacząć warzyć miksturę",
-      trickOrTreat: "Cukierek albo psikus?",
-      manor: "Witaj w posiadłości",
-      manorName: "Witaj w posiadłości, {name}",
-      happyHalloween: "Wesołego Halloween",
-      happyHalloweenName: "Wesołego Halloween, {name}",
-      spirits: "Duchy słuchają…",
-      mysteries: "Jakie tajemnice odkryjemy dziś w nocy?",
-      conjure: "Co mogę dla Ciebie wyczarować?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Miło Cię widzieć",
     goodToSeeYouName: "Miło Cię widzieć, {name}",
@@ -1089,7 +1084,7 @@ export const pl = {
       deleteProjects: "Usuń projekty",
       deleteProjectsTitle: "Usuń projekty",
       deleteProjectsDescription:
-        "Usunąć wybrane projekty ({count})? Ich czaty zostaną trwale usunięte.",
+        "Projekty ({count}) i wszystkie ich czaty zostaną trwale usunięte. Tej operacji nie można cofnąć.",
       deleteProjectsFilesDescription:
         "Folder obszaru roboczego każdego projektu zostanie usunięty z dysku.",
       countSelected: "Zaznaczone: {count}",
@@ -1101,7 +1096,7 @@ export const pl = {
       deleteChats: "Usuń czaty",
       deleteTitle: "Usuń czaty",
       deleteDescription:
-        "Usunąć wybrane czaty ({count})? Tej operacji nie można cofnąć.",
+        "Czaty ({count}) i ich wiadomości zostaną trwale usunięte. Tej operacji nie można cofnąć.",
       deleteFilesDescription:
         "Własny folder piaskownicy każdego czatu zostanie usunięty z dysku. Pliki zapisane przez czaty wewnątrz projektu pozostaną w obszarze roboczym tego projektu.",
       deleteFilesLabel: "Usuń pliki i folder piaskownicy",
@@ -1150,7 +1145,7 @@ export const pl = {
     dialog: {
       deleteChat: {
         title: "Usuń czat",
-        description: "Czy na pewno chcesz usunąć czat „{name}”?",
+        description: "Czat „{name}” i jego wiadomości zostaną trwale usunięte. Tej operacji nie można cofnąć.",
       },
       deleteRun: {
         title: "Usuń przebieg trenowania",
@@ -2390,10 +2385,14 @@ export const pl = {
         label: "Typ instalacji",
         description:
           "Tylko czat (GGUF). Pełna instalacja dodaje trenowanie, eksport, wideo, modele safetensors i dodatkowe funkcje generowania obrazów.",
+        descriptionCpu:
+          "Tylko czat (GGUF). Nie znaleziono obsługiwanego GPU, więc pełna instalacja dodaje trenowanie na CPU.",
         action: "Uaktualnij do pełnej instalacji",
         confirmTitle: "Uaktualnić do pełnej instalacji?",
         confirmDescription:
           "Ta instalacja Tylko czat uruchamia modele GGUF. Pełna instalacja dodaje PyTorch dla GPU tego komputera, co umożliwia trenowanie, eksport, wideo, modele safetensors i dodatkowe funkcje generowania obrazów. Pobiera kilka gigabajtów (co najmniej 5 GB miejsca na dysku) i uruchamia ponownie serwer. Czaty, modele i ustawienia zostaną zachowane. Może to potrwać kilka minut.",
+        confirmDescriptionCpu:
+          "Ta instalacja Tylko czat uruchamia modele GGUF. Na tym komputerze nie znaleziono obsługiwanego GPU, więc pełna instalacja dodaje PyTorch dla CPU, co umożliwia trenowanie na CPU. Trenowanie na CPU jest znacznie wolniejsze niż na GPU. Wymaga co najmniej 5 GB miejsca na dysku i uruchamia ponownie serwer. Czaty, modele i ustawienia zostaną zachowane. Może to potrwać kilka minut.",
         confirmAction: "Uaktualnij",
         keywords:
           "full install upgrade install type chat only gguf add training train training fine-tune pytorch torch export video image generation safetensors pełna instalacja uaktualnij tylko czat trenowanie dostrajanie eksport wideo generowanie obrazów",
@@ -2438,6 +2437,13 @@ export const pl = {
       avatarShapeRounded: "Zaokrąglony",
       greetingSloth: "Powitanie",
       greetingSlothDescription: "Pokazuj powitanie w nowych czatach.",
+      greetingDefault: "Domyślne",
+      greetingCustom: "Własne",
+      greetingImage: "Obraz",
+      greetingText: "Tekst powitania",
+      greetingTextDescription: "Pozostaw puste, aby używać wbudowanych powitań.",
+      greetingFileError: "Wybierz plik PNG, JPEG, WebP lub GIF mniejszy niż 10 MB.",
+      greetingImageError: "Nie można użyć tego obrazu. Spróbuj mniejszego.",
       chooseSloth: "Lub wybierz leniwca",
       noPicture: "Brak zdjęcia profilowego",
       noneLabel: "Brak",
@@ -2562,20 +2568,29 @@ export const pl = {
         description:
           "Kolory używane w całym Unsloth, w trybie jasnym i ciemnym.",
         standard: "Standardowy",
-        classic: "Klasyczny",
-        minimal: "Minimalistyczny",
         moreThemes: "Więcej motywów",
-        halloween: "Halloween",
       },
-      trickOrTreat: {
-        label: "Cukierek albo psikus",
-        description: "Motywy Halloween i upiorne powitania, do 1 listopada.",
+      code: {
+        title: "Kod",
+        fontDescription: "Bloki kodu na czacie, podglądy plików i przykłady API.",
+        lineNumbers: {
+          label: "Numery wierszy",
+          description: "Numeruj wiersze bloków kodu na czacie.",
+        },
+        wordWrap: {
+          label: "Zawijanie wierszy",
+          description: "Zawijaj długie wiersze w blokach kodu zamiast przewijać w poziomie.",
+        },
+        ligatures: {
+          label: "Ligatury czcionki",
+          description: "Łącz symbole takie jak => i != w jeden glif, jeśli czcionka kodu to obsługuje.",
+        },
       },
       custom: {
         chatWidth: {
           label: "Szerokość czatu",
           description: "Szerokość wiadomości i pola wiadomości.",
-          standard: "Standardowa",
+          standard: "Domyślna",
           wide: "Szeroka",
           full: "Pełna szerokość",
         },
@@ -3514,10 +3529,10 @@ export const pl = {
         moveFailed: "Nie udało się przenieść czatów",
         deleteChatsTitle: "Usuń czaty ({count})",
         deleteChatsWarning:
-          "Usunąć wybrane czaty ({count})? Tej operacji nie można cofnąć.",
+          "Czaty ({count}) i ich wiadomości zostaną trwale usunięte. Tej operacji nie można cofnąć.",
         deleteArchivedTitle: "Usuń zarchiwizowane czaty ({count})",
         deleteArchivedWarning:
-          "Usunąć wybrane zarchiwizowane czaty ({count})? Tej operacji nie można cofnąć.",
+          "Zarchiwizowane czaty ({count}) i ich wiadomości zostaną trwale usunięte. Tej operacji nie można cofnąć.",
         deleting: "Usuwanie...",
       },
       title: "Dane",
@@ -3943,6 +3958,8 @@ export const pl = {
   },
   studio: {
     routeTitle: "Trenowanie",
+    cpuTrainingNotice:
+      "Nie znaleziono GPU, więc trenowanie odbywa się na CPU. Jest znacznie wolniejsze niż na GPU i obsługuje tylko modele tekstowe (LoRA lub pełny finetuning).",
     wizard: {
       modelTitle: "Model",
       modelDescription: "Wybierz model i metodę trenowania",
@@ -5097,7 +5114,7 @@ export const pl = {
       dialog: {
         renameChat: "Zmień nazwę czatu",
         deleteChatDescription:
-          "Ten czat zostanie trwale usunięty. Tej operacji nie można cofnąć.",
+          "Czat i jego wiadomości zostaną trwale usunięte. Tej operacji nie można cofnąć.",
         deleteProjectDescription:
           "Projekt i jego czaty ({count}) zostaną trwale usunięte. Tej operacji nie można cofnąć.",
         deleteFilesMany:
@@ -5594,7 +5611,7 @@ export const pl = {
     chatName: "Nazwa czatu",
     deleteChat: "Usuń czat",
     deleteChatDescription:
-      "Czy na pewno chcesz usunąć: {name}? Jego wiadomości zostaną trwale usunięte.",
+      "Czat „{name}” i jego wiadomości zostaną trwale usunięte. Tej operacji nie można cofnąć.",
     importChats: "Importuj czaty",
     importDestination: "Wybierz, gdzie zaimportować: {name}",
     selectDestination: "Wybierz miejsce docelowe",
@@ -5602,7 +5619,7 @@ export const pl = {
     import: "Importuj",
     deleteProject: "Usuń projekt",
     deleteProjectDescription:
-      "Czy na pewno chcesz usunąć: {name}? Jego czaty zostaną trwale usunięte.",
+      "Projekt „{name}” i wszystkie jego czaty zostaną trwale usunięte. Tej operacji nie można cofnąć.",
     deleteProjectFiles:
       "Folder obszaru roboczego projektu zostanie usunięty z dysku.",
     deleteAll: "Usuń wszystko",
@@ -5689,6 +5706,18 @@ export const pl = {
     flaggedIntro: "Nasz automatyczny skaner wykrył problemy, w tym:",
     nothingFlagged:
       "Nasz automatyczny skaner nie wykrył niepokojących plików, ale sprawdź to jeszcze raz.",
+    unscannedTitle: "Nie można przeskanować plików modelu",
+    unscannedBody: "{model} zawiera wagi pickle, które mogą uruchamiać kod podczas ładowania, a skanowanie pod kątem złośliwego oprogramowania jest dla nich niedostępne, więc nie można go załadować. {note}",
+    unscannedIntro: "Pliki, których nie można przeskanować:",
+    switchSourceNote: "Zmień źródło modeli na Hugging Face w Ustawieniach, aby go załadować.",
+    reconnectNote: "Połącz się z Hugging Face, aby można było odczytać wynik skanowania, i spróbuj ponownie.",
+    managedTitle: "Kod niestandardowy jest wyłączony dla tego konta",
+    managedNote: "Jest wyłączony dla kont zarządzanych. Poproś właściciela instalacji o jego włączenie.",
+    notFoundTitle: "Nie znaleziono w {source}",
+    notFoundBody: "Nie znaleziono {model} w {source}, więc nie można było uruchomić kontroli bezpieczeństwa. Sprawdź nazwę lub ustaw token z dostępem, jeśli repozytorium jest prywatne.",
+    notOnModelScopeBody: "{model} nie jest dostępny w ModelScope, więc nie można było uruchomić kontroli bezpieczeństwa ani załadować go z tego źródła. Zmień źródło modeli na Hugging Face w Ustawieniach, aby go użyć.",
+    checksFailedTitle: "Nie można uruchomić kontroli bezpieczeństwa",
+    checksFailedBody: "Nie można odczytać {model} z {source}, więc nie udało się ukończyć kontroli bezpieczeństwa i nie można go załadować. Sprawdź połączenie i token, a następnie spróbuj ponownie. {note}",
     enableAndContinue: "Włącz i kontynuuj",
   },
   tour: {

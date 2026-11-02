@@ -65,6 +65,8 @@ def _stub_inference_scopes(module):
         ane_prefill = None,
         on_error = None,
         _modules = None,
+        # Newer zoo keywords (fast_verify), unnamed so Studio's signature probe still reads this stub as an older zoo.
+        **_newer,
     ):
         # The call-shape replay below passes placeholders; anything but a tuple serves every scope.
         traits = set(call) if isinstance(call, tuple) else None
@@ -128,7 +130,14 @@ def _fusion_modules(model, modules):
 
 
 # Plain-function helpers zoo's generate.py imports; the neutral scope cannot stand in for them.
-PLAIN_HELPERS = {"_fusion_modules": _fusion_modules}
+PLAIN_HELPERS = {
+    "_fusion_modules": _fusion_modules,
+    # Private names zoo's speculative.py imports (unsloth_zoo #2330); only their presence matters here.
+    "_SparseDrafter": type(
+        "_SparseDrafter", (), {"__init__": lambda self, *_args, **_kwargs: None}
+    ),
+    "_VERIFY_GDN_MAX_ROWS": 16,
+}
 
 
 def _fused_drafter_ops(model, *_args, **_kwargs):
@@ -138,7 +147,15 @@ def _fused_drafter_ops(model, *_args, **_kwargs):
 
 
 # Plain calls whose zoo body cannot run here, so the stub returns their do-nothing answer instead.
-NEUTRAL_PLAIN_HELPERS = {"fused_drafter_ops": _fused_drafter_ops}
+def _unless_failed_buffer(error):
+    """zoo re-raises a failed Metal command buffer (unsloth_zoo #2333); the stub has none to fail."""
+
+
+NEUTRAL_PLAIN_HELPERS = {
+    "fused_drafter_ops": _fused_drafter_ops,
+    "fused_drafter_layers": _fused_drafter_ops,
+    "_unless_failed_buffer": _unless_failed_buffer,
+}
 
 
 def _neutral_zoo_helper(name):
@@ -5794,6 +5811,133 @@ def test_ane_prefill_is_pinned_inside_int8_released_on_unload_and_reloads_on_cha
         assert events == [("int8", False), ("int8_exit", False)]
     else:
         pytest.fail("the Neural Engine scope's error was swallowed")
+
+
+def _fast_verify_zoo(module, *verdict):
+    """Zoo's pin over the stub: `calls` holds what Zoo calls were told, with a refusal recorded as raised."""
+    calls, pinned = [], {}
+    inner = module.inference_scopes
+    available, reason = verdict or (True, "")
+
+    def pin_fast_verify(model, fast_verify = None):
+        if pinned.setdefault(id(model), fast_verify) != fast_verify:
+            raise ValueError("pinned the other way")
+
+    @contextmanager
+    def inference_scopes(model, call, *, fast_verify, **others):
+        calls.append(("scopes", fast_verify))
+        if pinned.get(id(model), fast_verify) != fast_verify:
+            calls.append("refused")
+            raise ValueError("pinned the other way")
+        with inner(model, call, **others):
+            yield model
+
+    module.inference_scopes = inference_scopes
+    module.pin_fast_verify = pin_fast_verify
+    module.fast_verify_available = lambda m: SimpleNamespace(available = available, reason = reason)
+    module.warm_inference = lambda m, fast_verify, **_: calls.append(("warm", fast_verify))
+    return calls, pinned
+
+
+def _load_for_fast_verify(monkeypatch, drafter, requested, mode, build):
+    from core.inference import mlx_speculative
+
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+    told = []
+
+    def build_draft(target, resolution, **kwargs):
+        told.append(kwargs.get("fast_verify"))
+        if build is not None:
+            build(target, kwargs.get("fast_verify"))
+        draft = None if drafter is None else SimpleNamespace(drafter = drafter)
+        return draft, "dflash" if drafter else None, None, None
+
+    monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **k: None)
+    resolved = lambda m, *a, **k: mlx_speculative.SpecResolution(m)
+    monkeypatch.setattr(mlx_speculative, "resolve_speculation", resolved)
+    monkeypatch.setattr(mlx_speculative, "build_draft", build_draft)
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+    assert backend.load_model(config, speculative_type = mode, fast_verify = requested) is True
+    return backend, told, backend.models["fake/text"]
+
+
+def test_fast_verify_reloads_on_change_and_reports_why_it_is_off(mlx_inference_patches):
+    from core.inference import mlx_inference, orchestrator
+    from models.inference import LoadRequest
+    from routes.inference import _mlx_runtime_settings_match
+
+    req = lambda **knobs: LoadRequest(model = "m", model_path = "m", **knobs)
+    entry = {"mlx_kv_quant_requested": "auto", "mlx_fast_verify_requested": False}
+    be = SimpleNamespace(active_model_name = "m", models = {"m": entry})
+    assert _mlx_runtime_settings_match(be, req())
+    assert not _mlx_runtime_settings_match(be, req(mlx_fast_verify = True))
+    entry["mlx_fast_verify_requested"] = True
+    assert _mlx_runtime_settings_match(be, req(mlx_fast_verify = True))
+    assert not _mlx_runtime_settings_match(be, req())
+    assert "mlx_fast_verify_requested" in orchestrator._MLX_RUNTIME_MIRROR_FIELDS
+
+    status = lambda *a: mlx_inference._fast_verify_status(*a)["reason"]
+    assert status(True, object()) == "unsupported_zoo"
+    _fast_verify_zoo(mlx_inference_patches)
+    mlx_inference_patches.fast_verify_available = None  # raises inside the check
+    assert status(True, object()) == "probe_failed"
+
+
+@pytest.mark.parametrize(
+    "requested,available,drafter,mode,active,reason,told",
+    [
+        (True, True, object(), "dflash", True, "", [True]),
+        (False, True, object(), "dflash", False, "", [False]),
+        (True, False, object(), "dflash", False, "no_lane_kernel", [False]),
+        (True, True, None, "dflash", False, "no_drafter", [True]),  # built for it, nothing attached
+        (True, True, None, "off", False, "no_drafter", []),
+    ],
+)
+def test_a_load_tells_every_zoo_call_one_fast_verify_decision(
+    monkeypatch, mlx_inference_patches, requested, available, drafter, mode, active, reason, told
+):
+    calls, pinned = _fast_verify_zoo(
+        mlx_inference_patches, available, "" if available else "no_lane_kernel"
+    )
+    backend, heard, entry = _load_for_fast_verify(monkeypatch, drafter, requested, mode, None)
+    assert (entry["mlx_fast_verify"], entry["mlx_fast_verify_reason"]) == (active, reason)
+    assert entry["mlx_fast_verify_requested"] is requested
+    assert heard == told and pinned == {id(backend._model): active}
+    assert calls == [("warm", active)]
+    for call in ((), ("batch",), ("vision", "speculative")):
+        with backend._generation_scopes(*call):
+            pass
+    assert calls[1:] == [("scopes", active)] * 3
+    assert backend.unload_model("fake/text") and not backend._fast_verify["requested"]
+
+
+def test_a_drafter_that_failed_after_pinning_keeps_fast_verify_on(
+    monkeypatch, mlx_inference_patches
+):
+    calls, pinned = _fast_verify_zoo(mlx_inference_patches)
+    pin = mlx_inference_patches.pin_fast_verify
+    backend, _, entry = _load_for_fast_verify(monkeypatch, None, True, "dflash", pin)
+    assert (entry["mlx_fast_verify"], entry["mlx_fast_verify_reason"]) == (True, "")
+    assert pinned == {id(backend._model): True}
+    with backend._generation_scopes():
+        pass
+    assert calls[-1] == ("scopes", True) and "refused" not in calls
+
+
+def test_a_zoo_without_fast_verify_is_never_told_of_it(monkeypatch, mlx_inference_patches):
+    from core.inference import mlx_inference
+
+    warmed = []
+    mlx_inference_patches.warm_inference = lambda m, int8_prefill = None: warmed.append(int8_prefill)
+    backend, told, entry = _load_for_fast_verify(monkeypatch, object(), True, "dflash", None)
+    assert (entry["mlx_fast_verify"], entry["mlx_fast_verify_reason"]) == (False, "unsupported_zoo")
+    assert told == [None] and warmed == [False]
+    refused = _capture_rng_warnings(monkeypatch, mlx_inference)
+    with backend._generation_scopes():
+        pass
+    assert not refused and backend._fast_verify_decision() is None
 
 
 def test_a_batch_session_holds_int8_prefill_for_its_whole_life(monkeypatch, mlx_inference_patches):

@@ -503,6 +503,7 @@ from utils import gguf_names as _gguf_names
 from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
     is_audio_cpp_gguf_architecture,
+    is_foreign_asr_gguf_architecture,
     is_speech_gguf_architecture,
 )
 
@@ -2175,8 +2176,10 @@ def _archive_and_recall(
     branch_messages: Optional[list[dict]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
     background: bool = False,
+    query_messages: Optional[list[dict]] = None,
 ) -> dict:
-    """Never raises: any failure falls back to the plain fitted messages. Recall runs at most once per request or refits stack recall blocks."""
+    """Never raises: any failure falls back to the plain fitted messages. Recall runs at most once per request or refits stack recall blocks.
+    ``query_messages`` is the client's transcript: a tool loop's live branch ends on its own notices, not the user's question."""
     result = {
         "conversation": conversation,
         "events": [],
@@ -2237,6 +2240,9 @@ def _archive_and_recall(
                 break
             attempt_k = max(1, attempt_k // 2)
 
+        recall_kwargs = {"branch_messages": branch_messages}
+        if query_messages is not None:
+            recall_kwargs["query_messages"] = query_messages
         # Retries re-ask the same queries: encode each once and reuse lexical passes and branch checks.
         with query_vector_memo(), conversation_archive.recall_session():
             for index, k in enumerate(attempts):
@@ -2245,7 +2251,7 @@ def _archive_and_recall(
                     thread_id,
                     style = style,
                     top_k = k,
-                    branch_messages = branch_messages,
+                    **recall_kwargs,
                 )
                 if not recall:
                     result["counts"] = counts
@@ -2312,6 +2318,10 @@ def _inject_recall(conversation: list[dict], recall: dict, style: str) -> Option
 
 # Transport errors can beat the child to reapable; a request cannot wait the 5s MTP reload spends.
 _RESPAWN_REAP_GRACE_S = 1.0
+# Extra --fit-target per mid-session GPU OOM of one load: an identical respawn hits the same
+# allocation once the conversation is replayed (#16177).
+_GPU_OOM_HEADROOM_STEP_MIB = 1024.0
+_GPU_OOM_HEADROOM_MAX_STRIKES = 3
 
 
 def _finalize_reasoning_only_cumulative(
@@ -8360,6 +8370,9 @@ class LlamaCppBackend:
         # (load key, count) of Metal OOM retirements, and the key that stopped respawning.
         self._metal_oom_strikes = None
         self._metal_oom_terminal_key = None
+        # (load key, count) of mid-session GPU OOM deaths, and the child that logged one.
+        self._gpu_oom_strikes = None
+        self._gpu_oom_process = None
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
         # Wakes the health probe on subprocess readiness/exit, not left to the 500 ms fallback poll.
@@ -18191,6 +18204,9 @@ class LlamaCppBackend:
                         if level.group(1) == "E":
                             if any(m in line for m in _DRAFT_CONTEXT_FAILURE_MARKERS):
                                 metal_poison["draft"] = True
+                            # Startup OOM has its own retries; this one is a served child's.
+                            if startup_len is not None and self._is_gpu_memory_start_failure(line):
+                                self._gpu_oom_process = proc
                             if not device_lost_seen and any(
                                 marker in line for marker in _GPU_DEVICE_LOST_MARKERS
                             ):
@@ -19358,6 +19374,7 @@ class LlamaCppBackend:
         self._mtp_runtime_fallback_active = False
         self._metal_oom_strikes = None
         self._metal_oom_terminal_key = None
+        self._gpu_oom_strikes = None
         # Record the applied split and reset the other knobs so status and reload dedup agree.
         self._gpu_memory_mode = gpu_memory_mode if manual_ngl is not None else "auto"
         self._gpu_layers = manual_ngl if manual_ngl is not None else -1
@@ -20523,6 +20540,7 @@ class LlamaCppBackend:
             arch not in self._DIFFUSION_ARCHES
             and not is_speech_gguf_architecture(arch)
             and not is_audio_cpp_gguf_architecture(arch)
+            and not is_foreign_asr_gguf_architecture(arch)
             and not getattr(self, "_gguf_header_parsed", False)
         ):
             return None
@@ -20534,6 +20552,13 @@ class LlamaCppBackend:
                 return (
                     "This is an audio GGUF (speech, music or transcription), which cannot run as "
                     "a chat model. Open it from the Audio page instead."
+                )
+            if is_foreign_asr_gguf_architecture(arch):
+                return (
+                    f"This is a '{arch}' speech-recognition GGUF (parakeet.cpp / LocalAI), which "
+                    "llama.cpp cannot load. Updating llama.cpp will not help. For Parakeet in "
+                    "Unsloth, open the Audio page and use the curated audio.cpp model "
+                    "(Parakeet-TDT-0.6B-v3-GGUF)."
                 )
             if is_speech_gguf_architecture(arch):
                 # Points at the Transformers build: the Audio page cannot list a speech GGUF either.
@@ -21137,6 +21162,13 @@ class LlamaCppBackend:
                 return (
                     "This is an audio GGUF (speech, music or transcription), which llama-server "
                     "cannot run as a chat/completion model. Open it from Unsloth's Audio page instead."
+                )
+            if is_foreign_asr_gguf_architecture(arch):
+                return (
+                    f"'{arch}' is a speech-recognition GGUF for parakeet.cpp / LocalAI, which "
+                    "llama-server cannot run as a chat/completion model. Updating llama.cpp will "
+                    "not add support for it. For Parakeet in Unsloth, open the Audio page and use "
+                    "the curated audio.cpp model (Parakeet-TDT-0.6B-v3-GGUF)."
                 )
             if is_speech_gguf_architecture(arch):
                 # Name the build that runs it, not a page this file will not appear on.
@@ -24490,6 +24522,23 @@ class LlamaCppBackend:
                                 int(_idx): (_CTX_FIT_VRAM_FRACTION - _vram_frac)
                                 * (_total if _total and _total > 0 else _free)
                                 for _idx, _free, _total in _gpu_mem
+                            }
+
+                    # Each card keeps its own margin plus the headroom a mid-session OOM earned.
+                    _oom_headroom_mib = self._gpu_oom_headroom_mib(intent)
+                    if _oom_headroom_mib:
+                        _min_delta = _VRAM_FLOOR_RESERVE_MIB - (
+                            _VRAM_FLOOR_RESERVE_MIB
+                            if gpu_memory_mode == "manual" and gpu_layers < 0
+                            else _LLAMA_FIT_TARGET_DEFAULT_MIB
+                        )
+                        _fit_target_delta_mib = (
+                            max(_min_delta, _fit_target_delta_mib) + _oom_headroom_mib
+                        )
+                        if _fit_target_delta_by_idx:
+                            _fit_target_delta_by_idx = {
+                                _idx: max(_min_delta, _delta) + _oom_headroom_mib
+                                for _idx, _delta in _fit_target_delta_by_idx.items()
                             }
 
                     _sysmem_fallback = self._sysmem_fallback_risk(binary)
@@ -32600,6 +32649,7 @@ class LlamaCppBackend:
                     # the strike count.
                     self._metal_oom_strikes = None
                     self._metal_oom_terminal_key = None
+                    self._gpu_oom_strikes = None
                 self._mtp_runtime_fallback_active = _mtp_active_for_launched_server
                 self._start_mtp_crash_watchdog()
 
@@ -33519,6 +33569,7 @@ class LlamaCppBackend:
             self._mtp_runtime_fallback_active = False
             self._metal_oom_strikes = None
             self._metal_oom_terminal_key = None
+            self._gpu_oom_strikes = None
             self._hf_variant = None
             self._is_vision = False
             self._disable_vision = False
@@ -36323,6 +36374,8 @@ class LlamaCppBackend:
                     f"llama-server for '{self._model_identifier}' exited "
                     f"(code {proc.returncode}); respawning to recover the session"
                 )
+                if self._died_of_gpu_oom(proc):
+                    self._note_gpu_oom_strike(intent)
                 try:
                     with _automatic_recovery_load():
                         started = bool(self.load_model(intent))
@@ -36486,6 +36539,36 @@ class LlamaCppBackend:
             return replace(intent, speculative_type = None, verified_gguf = None)
         except TypeError:
             return intent
+
+    def _died_of_gpu_oom(self, proc) -> bool:
+        """Whether the dead served child logged a GPU out-of-memory error before exiting."""
+        drain = getattr(self, "_stdout_thread", None)
+        if drain is not None and drain is not threading.current_thread():
+            # Its last lines can still be in the pipe when the exit status lands.
+            drain.join(timeout = 2)
+        return proc is not None and getattr(self, "_gpu_oom_process", None) is proc
+
+    def _note_gpu_oom_strike(self, intent) -> None:
+        key = self._metal_oom_key(intent)
+        prior = getattr(self, "_gpu_oom_strikes", None)
+        strikes = prior[1] + 1 if prior is not None and prior[0] == key else 1
+        strikes = min(strikes, _GPU_OOM_HEADROOM_MAX_STRIKES)
+        self._gpu_oom_strikes = (key, strikes)
+        try:
+            logger.warning(
+                f"llama-server for '{self._model_identifier}' ran out of GPU memory; "
+                f"respawning it with {int(strikes * _GPU_OOM_HEADROOM_STEP_MIB)} MiB more "
+                "free VRAM kept (--fit-target)."
+            )
+        except Exception:
+            pass
+
+    def _gpu_oom_headroom_mib(self, intent) -> float:
+        """Extra --fit-target for a reload of the load that ran out of GPU memory; 0 otherwise."""
+        prior = getattr(self, "_gpu_oom_strikes", None)
+        if prior is None or intent is None or prior[0] != self._metal_oom_key(intent):
+            return 0.0
+        return prior[1] * _GPU_OOM_HEADROOM_STEP_MIB
 
     def _metal_oom_is_terminal(self, intent) -> bool:
         """Whether ``intent`` already ran out of Metal memory twice (no more replays)."""
@@ -37778,6 +37861,7 @@ class LlamaCppBackend:
                             conversation,
                             _before_fit,
                             branch_messages = _extend_live_branch(_before_fit),
+                            query_messages = _request_branch,
                             thread_id = thread_id,
                             # Forge a tool exchange only when search_conversation is advertised.
                             style = (
@@ -40287,6 +40371,8 @@ class LlamaCppBackend:
                         conversation,
                         _before_final_fit,
                         branch_messages = _extend_live_branch(_before_final_fit),
+                        # The budget nudge and loop notices are user turns; search for the user's question.
+                        query_messages = _request_branch,
                         thread_id = thread_id,
                         # Inline: under tool_choice "none" a forged tool role breaks strict templates.
                         style = "inline",

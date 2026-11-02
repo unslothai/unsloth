@@ -6,7 +6,9 @@ import {
 	DEFAULT_ADJUSTMENTS,
 	EFFECTS,
 	sanitizeAdjustments,
+	fadeKey,
 	normalizedSize,
+	visibilityKey,
 	validUpload,
 } from "../src/features/chat-background/model.ts";
 import {
@@ -35,11 +37,25 @@ test("background preferences repair malformed persisted data", () => {
     assert.equal(sanitizeAdjustments({ position: "101% 0%" }).position, "50% 50%");
     assert.equal(sanitizeAdjustments({ sizing: "width" }).sizing, "width");
     assert.equal(sanitizeAdjustments({ sizing: "contain" }).sizing, "contain");
+    assert.equal(sanitizeAdjustments({}).scope, "chats");
+    assert.equal(sanitizeAdjustments({ scope: "all" }).scope, "all");
+    assert.equal(sanitizeAdjustments({ scope: "newChat" }).scope, "newChat");
+    assert.equal(sanitizeAdjustments({ scope: "everywhere" as never }).scope, "chats");
     assert.equal(sanitizeAdjustments({ sizing: "invalid" as never }).sizing, "cover");
     assert.equal(sanitizeAdjustments({ zoom: 500 }).zoom, 300);
     assert.equal(sanitizeAdjustments({ zoom: 0 }).zoom, 100);
     assert.equal(sanitizeAdjustments({ zoom: NaN }).zoom, 100);
 	assert.equal(sanitizeAdjustments({ fade: "false" as never }).fade, true);
+	// Backgrounds saved before the slider keep the dimmed conversation view.
+	assert.equal(sanitizeAdjustments({ visibility: 40 }).conversation, 0);
+	assert.equal(sanitizeAdjustments({ conversation: 250 }).conversation, 100);
+	assert.equal(sanitizeAdjustments({ conversation: "1" as never }).conversation, 0);
+});
+test("conversation visibility scales the conversation dim and wash, and 0 keeps both", async () => {
+	const { readFile } = await import("node:fs/promises");
+	const css = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /\{ opacity: calc\(\.4 \+ \.6 \* var\(--wallpaper-conversation, 0\)\); \}/);
+	assert.match(css, /calc\(\(1 - var\(--wallpaper-safe, 0\)\) \* \(1 - \.65 \* var\(--wallpaper-conversation, 0\)\) \* 100%\)/);
 });
 test("uploads bound processing dimensions", () => {
 	assert.deepEqual(normalizedSize(6000, 4000), [2048, 1365]);
@@ -196,4 +212,13 @@ test("effect textures retain their established appearance", () => {
 			);
 		}
 	}
+});
+
+test("glass image defaults apply only while glass is on", () => {
+	const saved = sanitizeAdjustments({ visibility: 100, fade: true });
+	for (const dark of [false, true]) assert.equal(saved[visibilityKey(false, dark)], 100);
+	assert.equal(saved[fadeKey(false)], true);
+	assert.equal(saved[visibilityKey(true, false)], 70);
+	assert.equal(saved[visibilityKey(true, true)], 40);
+	assert.equal(saved[fadeKey(true)], false);
 });

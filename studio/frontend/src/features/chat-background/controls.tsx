@@ -22,13 +22,23 @@ import { MenuTickIcon } from "@/lib/tick-icon";
 import { SettingsSection } from "@/features/settings/components/settings-section";
 // eslint-disable-next-line no-restricted-imports
 import { SettingsRow } from "@/features/settings/components/settings-row";
+// eslint-disable-next-line no-restricted-imports
+import { useTheme } from "@/features/settings/stores/theme-store";
 import { ChatBackground } from "./index";
 import {
 	DEFAULT_ADJUSTMENTS,
 	EFFECTS,
+	fadeKey,
+	visibilityKey,
+	LENS_MODES,
+	type LensMode,
+	MATERIALS,
+	type WindowMaterial,
 	IMAGE_SIZING,
 	type ImageSizing,
 	POSITIONS,
+	SCOPES,
+	type BackgroundScope,
 	normalizedSize,
 	parsePosition,
 	validUpload,
@@ -43,6 +53,12 @@ import {
 	useChatBackground,
 } from "./storage";
 import { canvasBlob, decodeImage } from "./image";
+import {
+	nativeMaterialAvailable,
+	useGlassStrength,
+	useMaterialStore,
+} from "./material";
+import { MATERIAL_LABELS } from "./material-labels";
 
 const labels: Record<BackgroundEffect, TranslationKey> = {
 	None: "chatBackground.none",
@@ -50,6 +66,11 @@ const labels: Record<BackgroundEffect, TranslationKey> = {
 	ASCII: "chatBackground.ascii",
 	Halftone: "chatBackground.halftone",
 	Scanlines: "chatBackground.scanlines",
+};
+const scopeLabels: Record<BackgroundScope, TranslationKey> = {
+	newChat: "chatBackground.scopeNewChat",
+	chats: "chatBackground.scopeChats",
+	all: "chatBackground.scopeAll",
 };
 const sizingLabels: Record<ImageSizing, TranslationKey> = {
 	cover: "chatBackground.fill",
@@ -59,14 +80,159 @@ const sizingLabels: Record<ImageSizing, TranslationKey> = {
 	stretch: "chatBackground.stretch",
 	original: "chatBackground.original",
 };
+function GlassStyleRow() {
+	const t = useT();
+	const { style, nativeFailed, setMaterial } = useMaterialStore();
+	const native = nativeMaterialAvailable();
+	const options = MATERIALS.filter(
+		(m) => m !== "solid" && (m !== "macos" || native),
+	);
+	const shown = options.includes(style) ? style : "liquid";
+	const note = nativeFailed
+		? "chatBackground.materialNativeFailed"
+		: shown === "macos"
+			? "chatBackground.materialMacosNote"
+			: null;
+	return (
+		<SettingsRow
+			label={t("chatBackground.materialStyle")}
+			description={note ? t(note) : undefined}
+		>
+			<Select
+				value={shown}
+				onValueChange={(next) => setMaterial(next as WindowMaterial)}
+			>
+				<SelectTrigger
+					aria-label={t("chatBackground.materialStyle")}
+					className="w-52"
+				>
+					<SelectValue />
+				</SelectTrigger>
+				<SelectContent>
+					{options.map((m) => (
+						<SelectItem key={m} value={m}>
+							{t(MATERIAL_LABELS[m])}
+						</SelectItem>
+					))}
+				</SelectContent>
+			</Select>
+		</SettingsRow>
+	);
+}
+export function GlassControls() {
+	const t = useT();
+	const { material, setEnabled } = useMaterialStore();
+	const on = material !== "solid";
+	return (
+		<SettingsSection
+			title={t("chatBackground.glassTheme")}
+			action={
+				<Switch
+					aria-label={t("chatBackground.glassTheme")}
+					checked={on}
+					onCheckedChange={setEnabled}
+				/>
+			}
+		>
+			{on && (
+				<>
+					<GlassStyleRow />
+					<MaterialStrengthRow />
+					<LensRow />
+					<MaterialMenusRow />
+				</>
+			)}
+		</SettingsSection>
+	);
+}
+function MaterialMenusRow() {
+	const t = useT();
+	const { material, menus, setMenus } = useMaterialStore();
+	const off =
+		material === "solid" || (material === "macos" && !nativeMaterialAvailable());
+	return (
+		<SettingsRow
+			label={t("chatBackground.materialMenus")}
+			description={t("chatBackground.materialMenusDescription")}
+		>
+			<Switch
+				aria-label={t("chatBackground.materialMenus")}
+				checked={menus && !off}
+				disabled={off}
+				onCheckedChange={setMenus}
+			/>
+		</SettingsRow>
+	);
+}
+function MaterialStrengthRow() {
+	const t = useT();
+	const { material, setStrength } = useMaterialStore();
+	const strength = useGlassStrength();
+	const { resolved } = useTheme();
+	const off =
+		material === "solid" || (material === "macos" && !nativeMaterialAvailable());
+	return (
+		<SettingsRow label={t("chatBackground.materialStrength")}>
+			<div className="flex w-52 items-center gap-3">
+				<Slider
+					disabled={off}
+					aria-label={t("chatBackground.materialStrength")}
+					min={0}
+					max={100}
+					step={1}
+					value={[strength]}
+					onValueChange={([v]) => setStrength(v, resolved)}
+				/>
+				<span className="w-12 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+					{strength}%
+				</span>
+			</div>
+		</SettingsRow>
+	);
+}
+const lensLabels: Record<LensMode, TranslationKey> = {
+	off: "chatBackground.lensOff",
+	magnify: "chatBackground.lensMagnify",
+	shrink: "chatBackground.lensShrink",
+};
+function LensRow() {
+	const t = useT();
+	const { material, lens, setLens } = useMaterialStore();
+	const off =
+		material === "solid" || (material === "macos" && !nativeMaterialAvailable());
+	return (
+		<SettingsRow
+			label={t("chatBackground.lens")}
+			description={t("chatBackground.lensDescription")}
+		>
+			<Select
+				disabled={off}
+				value={lens}
+				onValueChange={(next) => setLens(next as LensMode)}
+			>
+				<SelectTrigger aria-label={t("chatBackground.lens")} className="w-52">
+					<SelectValue />
+				</SelectTrigger>
+				<SelectContent>
+					{LENS_MODES.map((mode) => (
+						<SelectItem key={mode} value={mode}>
+							{t(lensLabels[mode])}
+						</SelectItem>
+					))}
+				</SelectContent>
+			</Select>
+		</SettingsRow>
+	);
+}
 const SLIDERS: {
-	key: "visibility" | "blur" | "zoom" | "outline";
+	key: "visibility" | "conversation" | "blur" | "zoom" | "outline";
 	label: TranslationKey;
 	min: number;
 	max: number;
 	unit: string;
 }[] = [
 	{ key: "visibility", label: "chatBackground.visibility", min: 0, max: 100, unit: "%" },
+	{ key: "conversation", label: "chatBackground.conversationVisibility", min: 0, max: 100, unit: "%" },
 	{ key: "blur", label: "chatBackground.blur", min: 0, max: 20, unit: "px" },
 	{ key: "zoom", label: "chatBackground.zoom", min: 100, max: 300, unit: "%" },
 	{ key: "outline", label: "chatBackground.outline", min: 0, max: 100, unit: "%" },
@@ -83,6 +249,8 @@ export function ChatBackgroundControls() {
 	const { value, error, ready, busy } = useChatBackground();
 	const input = useRef<HTMLInputElement>(null);
 	const adjustments = value ?? DEFAULT_ADJUSTMENTS;
+	const { resolved } = useTheme();
+	const glass = useMaterialStore((s) => s.material !== "solid");
 	return (
 		<SettingsSection
 			title={t("chatBackground.title")}
@@ -199,7 +367,9 @@ export function ChatBackgroundControls() {
 							className="wallpaper-preview relative h-48 overflow-hidden rounded-xl border border-border bg-background"
 							data-wallpaper-conversation={conversation || undefined}
 						>
-							<ChatBackground />
+							<ChatBackground
+								active={!(conversation && adjustments.scope === "newChat")}
+							/>
 							{!value && (
 								<p className="absolute inset-x-4 top-4 text-center text-xs text-muted-foreground">
 									{t("chatBackground.noBackground")}
@@ -221,7 +391,30 @@ export function ChatBackgroundControls() {
 			</div>
 			{value && (
 				<>
-					<SettingsRow label={t("chatBackground.effect")} className="mt-3 items-start">
+					<SettingsRow label={t("chatBackground.scope")} className="mt-3 items-start">
+						<Select
+							disabled={busy}
+							value={adjustments.scope}
+							onValueChange={(scope) =>
+								patchBackground({ scope: scope as BackgroundScope })
+							}
+						>
+							<SelectTrigger
+								aria-label={t("chatBackground.scope")}
+								className="w-52"
+							>
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								{SCOPES.map((scope) => (
+									<SelectItem key={scope} value={scope}>
+										{t(scopeLabels[scope])}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+					</SettingsRow>
+					<SettingsRow label={t("chatBackground.effect")} className="items-start">
 						<Select
 							disabled={!value || busy}
 							value={adjustments.effect}
@@ -332,8 +525,13 @@ export function ChatBackgroundControls() {
 							</PopoverContent>
 						</Popover>
 					</SettingsRow>
-					{SLIDERS.map(({ key, label, min, max, unit }) => (
-						<SettingsRow key={key} className="items-start" label={t(label)}>
+					{SLIDERS.map(({ key: slider, label, min, max, unit }) => {
+						const key =
+							slider === "visibility"
+								? visibilityKey(glass, resolved === "dark")
+								: slider;
+						return (
+							<SettingsRow key={slider} className="items-start" label={t(label)}>
 							<div className="flex w-52 items-center gap-3">
 								<Slider
 									disabled={!value || busy}
@@ -349,14 +547,15 @@ export function ChatBackgroundControls() {
 									{unit}
 								</span>
 							</div>
-						</SettingsRow>
-					))}
+							</SettingsRow>
+						);
+					})}
 					<SettingsRow label={t("chatBackground.fade")} className="items-start">
 						<Switch
 							aria-label={t("chatBackground.fade")}
-							checked={adjustments.fade}
+							checked={adjustments[fadeKey(glass)]}
 							disabled={!value || busy}
-							onCheckedChange={(fade) => patchBackground({ fade })}
+							onCheckedChange={(fade) => patchBackground({ [fadeKey(glass)]: fade })}
 						/>
 					</SettingsRow>
 				</>

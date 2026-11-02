@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Delete02Icon, FlimSlateIcon, MusicNote01Icon } from "@hugeicons/core-free-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
+import { FlimSlateIcon, MusicNote01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { Button } from "@/components/ui/button";
@@ -149,7 +150,7 @@ export function ReferenceMediaPicker({
                 if (inputRef.current) inputRef.current.value = "";
               }}
             >
-              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
             </Button>
           </TooltipTrigger>
           <TooltipContent>Remove</TooltipContent>

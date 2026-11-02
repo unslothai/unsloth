@@ -41,9 +41,9 @@ import {
 } from "@/lib/gguf-fit";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Refresh01Icon,
-  Delete02Icon,
   Download01Icon,
   HelpCircleIcon,
   InformationCircleIcon,
@@ -535,7 +535,7 @@ export function QuantOptionsMenu({
               }}
             >
               <HugeiconsIcon
-                icon={Delete02Icon}
+                icon={TrashIcon}
                 strokeWidth={1.75}
                 className="size-icon"
               />

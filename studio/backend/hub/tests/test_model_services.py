@@ -1429,7 +1429,7 @@ def test_cached_inventory_requests_share_scan(monkeypatch, inventory_request, sc
         scans += 1
         return cached
 
-    monkeypatch.setattr(cache_inventory.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(cache_inventory, "_inventory_scan_thread", fake_to_thread)
     monkeypatch.setattr(cache_inventory, scanner_name, scan)
     _shared_setup_11(epoch, monkeypatch)
 
@@ -1453,6 +1453,23 @@ def test_cached_inventory_requests_share_scan(monkeypatch, inventory_request, sc
 
     assert asyncio.run(run_requests()) == [{"cached": cached, "scan_confirmed": True}] * 2
     assert scans == 1 and cache_inventory._cached_inventory_flights == {}
+
+
+def test_cached_inventory_scan_keeps_off_the_default_executor(monkeypatch):
+    """The cache walk must not run on the loop's default executor (#14038)."""
+    threads = []
+
+    def scan(**_kwargs):
+        threads.append(threading.current_thread().name)
+        return [{"repo_id": "Org/Model"}]
+
+    _shared_setup_11([0], monkeypatch)
+    result = asyncio.run(cache_inventory._shared_cached_inventory_scan("gguf", scan))
+    assert result.rows == [{"repo_id": "Org/Model"}]
+    assert result.confirmed is True
+    assert threads and threads[0].startswith(
+        "cached-inventory-scan"
+    ), f"the cache walk ran on {threads}, the default executor"
 
 
 @pytest.mark.parametrize(
