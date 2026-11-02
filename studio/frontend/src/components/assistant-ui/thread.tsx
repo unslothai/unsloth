@@ -144,6 +144,7 @@ import {
   stopRecoveredRun,
   pythonToolRunsInStudio,
   withAttachmentOriginal,
+  priorPassTiming,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -253,7 +254,6 @@ import {
   holdAutoContinueRun,
   watchAutoContinueRun,
 } from "@/features/chat/utils/auto-continue-run-keeper";
-import { priorPassTiming } from "@/features/chat/utils/continued-timing";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import {
   SkillsComposerButton,
