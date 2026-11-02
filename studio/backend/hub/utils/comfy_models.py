@@ -211,6 +211,14 @@ def comfy_dit_scan_roots(folder: Path) -> tuple[Path, ...]:
     return tuple(roots)
 
 
+def comfy_lora_scan_roots(folder: Path) -> tuple[Path, ...]:
+    layout = comfy_layout(folder)
+    if layout is None or layout.models_dir is None:
+        return ()
+    root = layout.models_dir / "loras"
+    return (root, *_plain_subdirs(root)) if _is_dir(root) else ()
+
+
 # models/<dit folder>/ plus the scanner's subfolder depth, then the ComfyUI root above models/.
 _MAX_LAYOUT_ANCESTORS = _MAX_SUBDIR_DEPTH + 3
 _MAX_COMPONENT_FILES = 64
