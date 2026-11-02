@@ -66,5 +66,7 @@ test("asking for other log text ends the hold, and a context menu ends a press",
   assert.match(tab, /clearSelectionInside\(document\.getSelection\(\), paneRef\.current\);\s*selectionRef\.current \+= 1;/);
   assert.match(tab, /clearSelectionInside\(document\.getSelection\(\), paneRef\.current\);\s*void refreshSources\(\);/);
   assert.match(tab, /clearSelectionInside\(document\.getSelection\(\), pane\);\s*pane\.scrollTop = pane\.scrollHeight;/);
-  assert.match(tab, /addEventListener\("contextmenu", release\)/);
+  for (const type of ["contextmenu", "dragend", "drop"]) {
+    assert.ok(tab.includes(`window.addEventListener("${type}", release);`), type);
+  }
 });

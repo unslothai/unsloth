@@ -453,13 +453,17 @@ export function DebuggingTab() {
     document.addEventListener("selectionchange", update);
     window.addEventListener("pointerup", release);
     window.addEventListener("pointercancel", release);
-    // A native context menu can swallow the pointerup.
+    // A native context menu or text drag can swallow the pointerup.
     window.addEventListener("contextmenu", release);
+    window.addEventListener("dragend", release);
+    window.addEventListener("drop", release);
     return () => {
       document.removeEventListener("selectionchange", update);
       window.removeEventListener("pointerup", release);
       window.removeEventListener("pointercancel", release);
       window.removeEventListener("contextmenu", release);
+      window.removeEventListener("dragend", release);
+      window.removeEventListener("drop", release);
     };
   }, []);
 
