@@ -76,7 +76,7 @@ export const SIDEBAR_MENU_DEFAULT_VISIBLE: Record<SidebarMenuItemId, boolean> =
     darkMode: true,
     guidedTour: true,
     profile: false,
-    appearance: false,
+    appearance: true,
     resources: false,
     chat: false,
     connections: false,
@@ -230,10 +230,15 @@ export type AppearanceCustomization = {
   codeFontSize: number | null;
   /** 0–100; 50 is neutral. */
   contrast: number;
+  /** 0–100; null = the background image's own outline, or none without one. */
+  composerOutline: number | null;
   pointerCursors: boolean;
   reduceMotion: ReduceMotionSetting;
   /** true = the app default (antialiased). */
   fontSmoothing: boolean;
+  codeLineNumbers: boolean;
+  codeWordWrap: boolean;
+  codeLigatures: boolean;
   sidebarMenu: SidebarMenuItemPref[];
   sidebarNav: SidebarNavItemPref[];
   /** Rows still following their automatic rule; only Projects has one. */
@@ -258,9 +263,13 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   uiFontSize: null,
   codeFontSize: null,
   contrast: 50,
+  composerOutline: null,
   pointerCursors: false,
   reduceMotion: "system",
   fontSmoothing: true,
+  codeLineNumbers: false,
+  codeWordWrap: false,
+  codeLigatures: true,
   sidebarMenu: SIDEBAR_MENU_ITEM_IDS.map((id) => ({
     id,
     visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id],
@@ -459,12 +468,20 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
     uiFontSize: sanitizeSize(source.uiFontSize, UI_FONT_SIZE_RANGE),
     codeFontSize: sanitizeSize(source.codeFontSize, CODE_FONT_SIZE_RANGE),
     contrast,
+    composerOutline:
+      typeof source.composerOutline === "number" &&
+      Number.isFinite(source.composerOutline)
+        ? Math.min(100, Math.max(0, Math.round(source.composerOutline)))
+        : null,
     pointerCursors: source.pointerCursors === true,
     reduceMotion:
       source.reduceMotion === "on" || source.reduceMotion === "off"
         ? source.reduceMotion
         : "system",
     fontSmoothing: source.fontSmoothing !== false,
+    codeLineNumbers: source.codeLineNumbers === true,
+    codeWordWrap: source.codeWordWrap === true,
+    codeLigatures: source.codeLigatures !== false,
     sidebarMenu: sanitizeSidebarMenu(source.sidebarMenu),
     sidebarNav,
     sidebarNavAuto: sanitizeSidebarNavAuto(source.sidebarNavAuto, sidebarNav),
@@ -493,6 +510,21 @@ export function migrateShippedSidebarNavDefault(
         sidebarNav: [...DEFAULT_CUSTOMIZATION.sidebarNav],
       }
     : customization;
+}
+
+/** Older records adopt the Appearance menu item once; after that a hidden one stays hidden. */
+export function migrateAppearanceMenuDefault(
+  customization: AppearanceCustomization,
+  storedVersion: number,
+  migrationVersion: number,
+): AppearanceCustomization {
+  if (storedVersion >= migrationVersion) return customization;
+  return {
+    ...customization,
+    sidebarMenu: customization.sidebarMenu.map((item) =>
+      item.id === "appearance" ? { ...item, visible: true } : item,
+    ),
+  };
 }
 
 export function isDefaultCustomization(c: AppearanceCustomization): boolean {
@@ -568,14 +600,18 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     }),
     {
       name: "unsloth_appearance_customization",
-      version: 8,
+      version: 9,
       storage: createJSONStorage(() => guardedLocalStorage),
       migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
-        const customization = migrateShippedSidebarNavDefault(
-          sanitizeCustomization(state.customization),
+        const customization = migrateAppearanceMenuDefault(
+          migrateShippedSidebarNavDefault(
+            sanitizeCustomization(state.customization),
+            version,
+            8,
+          ),
           version,
-          8,
+          9,
         );
         return { customization } as AppearanceCustomState;
       },
@@ -592,8 +628,8 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
 );
 
 /* ------------------------------ DOM applier ------------------------------ */
-const DEFAULT_SANS_STACK =
-  '"Inter Variable", ui-sans-serif, sans-serif, system-ui';
+// Platform default from index.css: Inter, or the system font on macOS.
+const DEFAULT_SANS_STACK = "var(--font-sans-default)";
 const DEFAULT_HEADING_STACK =
   '"Hellix", "Space Grotesk Variable", var(--font-sans)';
 const DEFAULT_MONO_STACK = "JetBrains Mono, monospace";
@@ -996,11 +1032,24 @@ export function applyCustomizationToDocument(
     setVar(CONTRAST_SEAM_GAIN_VAR, null);
   }
 
+  setVar(
+    "--composer-outline",
+    c.composerOutline === null ? null : `${c.composerOutline}%`,
+  );
   el.classList.toggle("pointer-cursors", c.pointerCursors);
   el.classList.toggle("force-reduced-motion", c.reduceMotion === "on");
   // "off" overrides OS reduced motion; index.css media rules skip html.force-motion.
   el.classList.toggle("force-motion", c.reduceMotion === "off");
   el.classList.toggle("no-font-smoothing", !c.fontSmoothing);
+  for (const [name, on] of [
+    ["data-code-line-numbers", c.codeLineNumbers],
+    ["data-code-wrap", c.codeWordWrap],
+    ["data-code-no-ligatures", !c.codeLigatures],
+    ["data-composer-outline", (c.composerOutline ?? 0) > 0],
+  ] as const) {
+    if (on) el.setAttribute(name, "");
+    else el.removeAttribute(name);
+  }
 }
 
 /** For imperative motion (confetti, view transitions) CSS/MotionConfig cannot reach. */
