@@ -790,7 +790,8 @@ def test_live_segment_outputs_in_a_graph_pool_are_not_subtracted_twice(monkeypat
         },
         {"device": 0, "segment_pool_id": (0, 0), "total_size": 100 * mib, "allocated_size": 0},
     ]
-    monkeypatch.setattr(cg, "_allocator_segments", lambda: snapshot)
+    monkeypatch.setattr(torch.cuda, "memory_snapshot", lambda: snapshot)
+    monkeypatch.setattr(cg, "_allocator_segments", lambda: snapshot, raising = False)
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a, **k: 600 * mib)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a, **k: 500 * mib)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
@@ -799,7 +800,8 @@ def test_live_segment_outputs_in_a_graph_pool_are_not_subtracted_twice(monkeypat
     snapshot[0]["allocated_size"] = 250 * mib
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a, **k: 250 * mib)
     assert dm.cuda_reusable_cache_bytes(0) == 100 * mib
-    monkeypatch.setattr(cg, "_allocator_segments", lambda: 1 / 0)
+    monkeypatch.setattr(torch.cuda, "memory_snapshot", lambda: 1 / 0)
+    monkeypatch.setattr(cg, "_allocator_segments", lambda: 1 / 0, raising = False)
     assert dm.cuda_reusable_cache_bytes(0) == 0
 
 

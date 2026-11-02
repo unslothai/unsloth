@@ -281,7 +281,8 @@ def test_every_live_graph_pool_stays_out_of_the_reclaimable_memory(monkeypatch):
             "allocated_size": 0,
         },
     ]
-    monkeypatch.setattr(cg, "_allocator_segments", lambda: segments)
+    monkeypatch.setattr(torch.cuda, "memory_snapshot", lambda: segments)
+    monkeypatch.setattr(cg, "_allocator_segments", lambda: segments, raising = False)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     assert cg.live_pool_free_bytes() == 60
 
