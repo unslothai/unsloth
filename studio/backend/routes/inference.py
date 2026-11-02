@@ -1815,8 +1815,6 @@ _TEARDOWN_TASK_RECANCEL_S = 0.01
 _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
 # How often a UI stream looks for new prefill progress while the generator is silent.
 _LIVE_PROGRESS_POLL_S = 0.25
-# Minimum gap between two live decode frames, the stall poll's period: at 1 s a reply of a second or two
-# showed one stale count.
 _LIVE_DECODE_FRAME_INTERVAL_S = 0.25
 _APPROVAL_CACHE_RECLAIM_POLL_S = 0.25
 
@@ -7236,8 +7234,7 @@ class _PrefillProgressSignal:
         if not tokens:
             return
         if not self._decode_started:
-            # A pass's first sample opens the interval instead of going out: its token comes from the prompt pass
-            # with no rate, and the next one's single-step rate reads ~10x low after a speculative verify step.
+            # The first token has no decode rate; allow a full interval for speculative timing to settle.
             self._decode_started = True
             self._decode_sent_at = time.monotonic()
         rate = _live_rate(sample.get("predicted_per_second"))

@@ -150,7 +150,6 @@ test("Generation details is off by default and wired into Settings > Chat > Disp
   assert.match(readSrc("features/settings/settings-search.ts"), /"settings\.chat\.showGenerationDetailsKeywords"/);
 });
 
-// Layout is the contract here, and these suites render no DOM: ordering the footer is the practical guard.
 test("the live line follows the branch picker, so its growing text never moves the picker", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   const footer = thread.indexOf("aui-assistant-message-footer");

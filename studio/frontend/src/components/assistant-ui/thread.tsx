@@ -8279,9 +8279,8 @@ const AssistantMessage: FC = () => {
       <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
         {/* First, so the action bar mounting on hover never moves it. */}
         <AssistantMessageTime />
-        {/* h-8 is the row's min height, so the picker stays put when the live line wraps onto a row of its own. */}
+        {/* Match the row height so wrapping live text cannot move the picker. */}
         <BranchPicker className="mr-0.5 h-8" />
-        {/* Only while streaming, in the slot the hidden action bar leaves, so its growing text never moves the picker. */}
         <LiveGenerationLine />
         <AssistantActionBar />
       </div>

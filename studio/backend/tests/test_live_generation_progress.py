@@ -91,7 +91,6 @@ def test_the_first_frame_waits_an_interval_past_the_first_token(monkeypatch):
     clock = {"now": 1000.0}
     monkeypatch.setattr(route.time, "monotonic", lambda: clock["now"])
     signal = route._PrefillProgressSignal(None, live = True)
-    # llama-server's first token comes from the prompt pass: n_gen_steps() is 0, so the rate reads 0.
     signal({"predicted_n": 1, "predicted_per_second": 0.0})
     assert signal.live_frame() is None, "a lone '1 token' held the line for a whole interval"
     clock["now"] += 0.01
@@ -100,7 +99,6 @@ def test_the_first_frame_waits_an_interval_past_the_first_token(monkeypatch):
     clock["now"] += route._LIVE_DECODE_FRAME_INTERVAL_S
     signal({"predicted_n": 31, "predicted_per_second": 118.0})
     assert _frame(signal.live_frame())["tokens"] == 31
-    # The next prompt pass (a tool loop's round 2) starts its own wait.
     signal({"prompt_progress": {"total": 3000, "processed": 3000}})
     signal.live_frame()
     clock["now"] += route._LIVE_DECODE_FRAME_INTERVAL_S
