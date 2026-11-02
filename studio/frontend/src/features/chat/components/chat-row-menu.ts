@@ -67,7 +67,7 @@ export async function exportConversationByFormat(
   threadId: string,
   format: ConversationExportFormat,
 ): Promise<void> {
-  // The exporters (and the markdown renderer beside them) load with the chat page, not at startup.
+  const liveBranch = liveThreadBranch(threadId);
   const {
     exportConversationCsv,
     exportConversationMarkdown,
@@ -77,15 +77,15 @@ export async function exportConversationByFormat(
   } = await import("../prompt-storage/prompt-storage-dialog");
   switch (format) {
     case "raw-jsonl":
-      return exportConversationRawJsonl(threadId);
+      return exportConversationRawJsonl(threadId, liveBranch);
     case "messages-jsonl":
-      return exportConversationMessagesJsonl(threadId);
+      return exportConversationMessagesJsonl(threadId, liveBranch);
     case "csv":
-      return exportConversationCsv(threadId);
+      return exportConversationCsv(threadId, liveBranch);
     case "sharegpt-jsonl":
-      return exportConversationShareGPT(threadId);
+      return exportConversationShareGPT(threadId, liveBranch);
     case CONVERSATION_MARKDOWN_FORMAT:
-      return exportConversationMarkdown(threadId);
+      return exportConversationMarkdown(threadId, liveBranch);
     default: {
       const unhandled: never = format;
       throw new Error(`Unhandled export format: ${String(unhandled)}`);

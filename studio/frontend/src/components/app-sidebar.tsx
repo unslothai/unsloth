@@ -56,6 +56,7 @@ import {
   watchApprovalWaiting,
 } from "@/features/chat/utils/approval-waiting";
 import { keepOpenedChats, touchOpenedChat } from "@/features/chat/utils/opened-chats";
+import { liveThreadBranch } from "@/features/chat/utils/live-thread-head";
 import { isAssistantLocalThreadId } from "@/features/chat/utils/thread-ids";
 import {
   HELP_GROUPS,
@@ -3951,13 +3952,14 @@ export function AppSidebar() {
   }
 
   async function copyChatItemAsMarkdown(item: SidebarItem) {
+    const liveBranch = item.type === "single" ? liveThreadBranch(item.id) : undefined;
     const empty = { value: false };
     // Read inside the write: Safari drops the gesture across an await.
     const copied = await copyToClipboardFrom(async () => {
       const { buildChatItemMarkdown } = await import(
         "@/features/chat/prompt-storage/prompt-storage-dialog"
       );
-      const markdown = await buildChatItemMarkdown(item);
+      const markdown = await buildChatItemMarkdown(item, liveBranch);
       if (!markdown) {
         empty.value = true;
         throw new Error("nothing to copy");
