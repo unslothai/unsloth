@@ -169,6 +169,17 @@ test("the live figures and the placement read in the reader's language", () => {
   assert.notEqual(g.placement.allOnGpu, en.generationStats.placement.allOnGpu);
 });
 
+test("languages whose noun form depends on the number put counts after a label", async () => {
+  // A one/other pair cannot say "2 токена" and "5 токенов" in Russian, so these read "токены: 21" instead.
+  for (const file of ["ru", "uk", "pl", "cs", "ar"]) {
+    const catalog = (await import(`../src/i18n/locales/${file}.ts`)) as Record<string, { generationStats: typeof en.generationStats }>;
+    const g = Object.values(catalog)[0].generationStats;
+    for (const template of [g.tokens, g.tokensOf, g.timing.steps, g.timing.blocks, g.placement.expertSpill]) {
+      assert.doesNotMatch(template, /\{(count|total)\} \p{L}/u, `${file}: ${template}`);
+    }
+  }
+});
+
 test("the prompt line, live line, timing tooltip and placement row hold no English of their own", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   const status = thread.slice(thread.indexOf("const GeneratingStatus"), thread.indexOf("// Placeholder when stop fires"));
