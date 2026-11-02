@@ -2468,6 +2468,12 @@ export const en = {
         noResults: "No matching languages",
         spellCheck: "Spell check",
         spellCheckDescription: "Underline misspelled words as you type.",
+        timeFormat: "Time format",
+        timeFormatDescription:
+          "System default follows your browser or OS clock preference.",
+        timeFormatSystem: "System default",
+        timeFormat12: "12-hour",
+        timeFormat24: "24-hour",
       },
       layout: {
         title: "Layout",

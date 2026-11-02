@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withTimeFormat } from "@/lib/time-format";
 import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Edit03Icon,
@@ -131,11 +132,10 @@ function clockText(task: ScheduledTask, locale: string): string {
   if (schedule.kind === "hourly") {
     return task.nextRunAt === null
       ? "—"
-      : new Intl.DateTimeFormat(locale, {
-          hour: "numeric",
-          minute: "2-digit",
-          timeZone: task.timezone,
-        }).format(task.nextRunAt);
+      : new Intl.DateTimeFormat(
+          locale,
+          withTimeFormat({ hour: "numeric", minute: "2-digit", timeZone: task.timezone }, locale),
+        ).format(task.nextRunAt);
   }
   return formatClock(schedule.kind === "once" ? schedule.at.split("T")[1] : schedule.time, locale);
 }

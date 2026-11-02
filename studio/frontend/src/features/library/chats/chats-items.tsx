@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withTimeFormat } from "@/lib/time-format";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
@@ -766,10 +767,10 @@ function groupedTime(
 ): string {
   const date = new Date(ts);
   if (bucket === "today" || bucket === "yesterday") {
-    return date.toLocaleTimeString(locale, {
-      hour: "numeric",
-      minute: "2-digit",
-    });
+    return date.toLocaleTimeString(
+      locale,
+      withTimeFormat({ hour: "numeric", minute: "2-digit" }, locale),
+    );
   }
   if (bucket === "week") {
     return date.toLocaleDateString(locale, { weekday: "long" });

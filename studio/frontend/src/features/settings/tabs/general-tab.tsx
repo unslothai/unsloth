@@ -12,6 +12,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useChatRuntimeStore } from "@/features/chat";
 // From the keys module, not the barrel or the store: both are in an import cycle with this file,
@@ -42,6 +49,12 @@ import {
   setSpellCheck,
   useSpellCheck,
 } from "@/lib/spellcheck";
+import {
+  TIME_FORMAT_STORAGE_KEY,
+  type TimeFormat,
+  setTimeFormat,
+  useTimeFormat,
+} from "@/lib/time-format";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useEffect, useRef, useState } from "react";
@@ -129,6 +142,7 @@ const PREFS_KEYS: string[] = [
   INTERFACE_SCALE_STORAGE_KEY,
   LOCALE_STORAGE_KEY,
   SPELLCHECK_STORAGE_KEY,
+  TIME_FORMAT_STORAGE_KEY,
   // UI state
   "sidebar_pinned",
   "sidebar_width",
@@ -229,6 +243,7 @@ export function GeneralTab() {
   const hfTokenIsPersisting = useHfTokenStore((s) => s.isPersisting);
   const showLoadedModels = useShowLoadedModels();
   const spellCheck = useSpellCheck();
+  const timeFormat = useTimeFormat();
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
   const [showToken, setShowToken] = useState(false);
@@ -627,6 +642,34 @@ export function GeneralTab() {
           description={t("settings.appearance.language.description")}
         >
           <LanguageSelect />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.language.timeFormat")}
+          description={t("settings.appearance.language.timeFormatDescription")}
+        >
+          <Select
+            value={timeFormat}
+            onValueChange={(next) => setTimeFormat(next as TimeFormat)}
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-48"
+              aria-label={t("settings.appearance.language.timeFormat")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value="system">
+                {t("settings.appearance.language.timeFormatSystem")}
+              </SelectItem>
+              <SelectItem value="12h">
+                {t("settings.appearance.language.timeFormat12")}
+              </SelectItem>
+              <SelectItem value="24h">
+                {t("settings.appearance.language.timeFormat24")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
         </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.language.spellCheck")}
