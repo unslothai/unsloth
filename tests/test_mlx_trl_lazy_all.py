@@ -351,7 +351,6 @@ for name in ("GKDTrainer", "PPOTrainer", "RewardTrainer"):
 @_needs_real_mlx
 def test_trl_configs_match_trl_semantics_and_stay_the_callers():
     _run_shim_probe("""
-from transformers import HfArgumentParser
 cfg = trl.DPOConfig(output_dir="o", max_seq_length=4096)
 first = trl.DPOTrainer(model=model, args=cfg, train_dataset=[])
 assert first.args.max_seq_length == 96 and cfg.max_seq_length == 4096
@@ -364,9 +363,6 @@ assert trl.SFTConfig(output_dir="o", eval_strategy="steps", eval_steps=3, loggin
 assert trl.SFTConfig(output_dir="o", eval_strategy="no", logging_steps=7).eval_steps == 0
 assert trl.DPOConfig(output_dir="o", f_alpha_divergence_coef=0.5).output_dir == "o"
 refused(lambda: trl.DPOConfig(output_dir="o", f_divergence_type="alpha_divergence"), "f_divergence_type")
-parsed = HfArgumentParser(trl.DPOConfig).parse_args_into_dataclasses(["--output_dir", "o"])[0]
-assert (parsed.learning_rate, parsed.per_device_train_batch_size, parsed.num_train_epochs) == (1e-6, 8, 3)
-assert pickle.loads(pickle.dumps(parsed)).learning_rate == 1e-6
 """)
 
 

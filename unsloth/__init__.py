@@ -1898,31 +1898,16 @@ if _IS_MLX:
             for key, value in _MLX_TRAINING_ARGUMENT_ALIASES.items()
             if key != "max_length"
         }
-        _mlx_trl_field_defaults = {
-            **_MLX_TRL_CONFIG_DEFAULTS,
-            "max_steps": -1,
-            "num_train_epochs": 3,
-        }
         built = {}
         for stem, trainer, config, positional, extra, keep_order in _MLX_TRL_POLICY_TRAINERS:
             zoo_trainer = getattr(_mlx_zoo_trainer, trainer, None)
             zoo_config = getattr(_mlx_zoo_trainer, config, None)
             if zoo_trainer is None or zoo_config is None:
                 continue
-            # Real dataclass defaults: HfArgumentParser passes them all, past the config's setdefault.
-            zoo_fields = {field.name: field for field in _dataclasses.fields(zoo_config)}
-            config_class = _dataclasses.make_dataclass(
+            config_class = type(
                 f"{stem}Config",
-                [
-                    (name, zoo_fields[name].type, _dataclasses.field(default = value))
-                    for name, value in _mlx_trl_field_defaults.items()
-                ],
-                bases = (_MLXTRLConfig, zoo_config),
-                init = False,
-                namespace = {
-                    "__module__": __name__,
-                    "_unsloth_mlx_argument_aliases": aliases,
-                },
+                (_MLXTRLConfig, zoo_config),
+                {"_unsloth_mlx_argument_aliases": aliases},
             )
             built[f"{stem}Config"] = config_class
             # Pickle finds a class by module and name; importing unsloth also installs the trl shim.
