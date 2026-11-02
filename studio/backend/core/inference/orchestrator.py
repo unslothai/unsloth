@@ -869,6 +869,8 @@ class InferenceOrchestrator:
             return True
 
         self._teardown_going_out()
+        if self._drain_event is not None:
+            self._drain_event.set()
         self._cancel_generation()
         self._drain_unread_replies()
 
