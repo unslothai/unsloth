@@ -141,8 +141,7 @@ def _find_file(file_id: str) -> Path:
 
 
 def _refuse_message_weights(path: Path, param: str) -> None:
-    """OpenAI's per-message ``weight: 0`` keeps an assistant turn as context only. Studio's chat formatter
-    trains every assistant turn, so a file asking to exclude one is refused instead of training on it."""
+    """Refuse context-only assistant turns that Studio's formatter would train on."""
     if path.suffix.lower() != ".jsonl":
         return
     with open(path, "rb") as handle:
@@ -156,7 +155,11 @@ def _refuse_message_weights(path: Path, param: str) -> None:
                 continue
             messages = row.get("messages") if isinstance(row, dict) else None
             for message in messages if isinstance(messages, list) else ():
-                if isinstance(message, dict) and message.get("weight", 1) != 1:
+                if (
+                    isinstance(message, dict)
+                    and message.get("weight") is not None
+                    and message["weight"] != 1
+                ):
                     raise _bad_request(
                         f"{param} line {number}: per-message 'weight' {message.get('weight')!r} is not "
                         "supported; Unsloth Studio trains every assistant message. Remove the message "

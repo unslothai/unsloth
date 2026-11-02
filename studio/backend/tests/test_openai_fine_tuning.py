@@ -139,6 +139,35 @@ def _finished_run(
     return run_id
 
 
+def test_exported_unit_weight_messages_still_train(studio, tmp_path):
+    from datasets import Dataset
+
+    client, calls, _live = studio
+    exported = tmp_path / "export.jsonl"
+    Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "Hi"},
+                    {"role": "assistant", "content": "Hello"},
+                    {"role": "user", "content": "Bye"},
+                    {"role": "assistant", "content": "Goodbye", "weight": 1},
+                ]
+            }
+        ]
+    ).to_json(exported)
+    rows = exported.read_bytes()
+    assert json.loads(rows)["messages"][1]["weight"] is None
+
+    async def flow():
+        uploaded = await client.files.create(file = ("export.jsonl", rows), purpose = "fine-tune")
+        return await _create(client, uploaded.id)
+
+    job = _run(flow())
+    assert job.status == "validating_files"
+    assert len(calls["start"]) == 1
+
+
 @pytest.mark.parametrize("weight, escaped", [(0, False), (0.5, False), (0, True)])
 def test_a_file_excluding_an_assistant_message_by_weight_is_refused(studio, weight, escaped):
     client, calls, _live = studio
