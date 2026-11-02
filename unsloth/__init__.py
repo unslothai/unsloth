@@ -288,6 +288,7 @@ if _IS_MLX:
 
     import copy as _copy
     import dataclasses as _dataclasses
+    from typing import Optional as _Optional
     import inspect as _inspect
     import importlib.machinery as _machinery
     import sys as _sys
@@ -1742,9 +1743,9 @@ if _IS_MLX:
     }
     # What HfArgumentParser needs where zoo's own annotation is missing, too narrow or refused.
     _MLX_TRL_CONFIG_TYPES = {
-        "dataset_order": str | None,
+        "dataset_order": _Optional[str],
         "eval_strategy": str,
-        "max_seq_length": int | None,
+        "max_seq_length": _Optional[int],
         "num_train_epochs": float,
         "scale_rewards": str,
     }
