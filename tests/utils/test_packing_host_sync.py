@@ -422,8 +422,11 @@ def test_compiled_training_rejects_inference_mode_cache(backend, grad_mode, kind
         torch._dynamo.reset()
 
 
-@pytest.mark.parametrize("backend", ["eager", "aot_eager"])
-def test_compiled_no_grad_preserves_padded_metadata(backend):
+@pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+@pytest.mark.parametrize("mode", [torch.no_grad, torch.inference_mode])
+@pytest.mark.parametrize("warm_inside", [False, True])
+@pytest.mark.parametrize("total", [8, 10])
+def test_compiled_mode_transition_preserves_padded_metadata(backend, mode, warm_inside, total):
     packing.clear_packed_caches()
     torch._dynamo.reset()
     device = torch.device("cpu")
@@ -433,19 +436,21 @@ def test_compiled_no_grad_preserves_padded_metadata(backend):
         return packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, device)
 
     def train(x, seq):
-        padded, _ = packing.cover_padded_cu_seqlens(build(seq), 10)
+        padded, _ = packing.cover_padded_cu_seqlens(build(seq), total)
         return (x * padded).sum()
 
     try:
         with torch._dynamo.config.patch(capture_scalar_outputs = True):
-            with torch.no_grad():
+            with mode():
                 info = torch.compile(build, backend = backend, fullgraph = True, dynamic = True)(seq)
-            assert not torch.is_inference(info[1])
-            padded, _ = packing.cover_padded_cu_seqlens(info, 10)
-            assert padded.tolist() == [0, 3, 8, 10]
-            x = torch.ones(4, requires_grad = True)
+                if warm_inside:
+                    padded, _ = packing.cover_padded_cu_seqlens(info, total)
+            if not warm_inside:
+                padded, _ = packing.cover_padded_cu_seqlens(info, total)
+            expected = torch.tensor([0.0, 3.0, 8.0] + ([10.0] if total == 10 else []))
+            x = torch.ones(expected.shape, requires_grad = True)
             torch.compile(train, backend = backend, fullgraph = True, dynamic = True)(x, seq).backward()
-            torch.testing.assert_close(x.grad, torch.tensor([0.0, 3.0, 8.0, 10.0]))
+            torch.testing.assert_close(x.grad, expected)
     finally:
         packing.clear_packed_caches()
         torch._dynamo.reset()
@@ -498,6 +503,70 @@ def test_compiled_cache_created_and_consumed_in_one_graph(backend, mode):
         torch.testing.assert_close(x.grad, torch.tensor([0.0, 3.0, 8.0]))
     finally:
         torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize("mode", [torch.no_grad, torch.inference_mode])
+@pytest.mark.parametrize("warm_inside", [False, True])
+@pytest.mark.parametrize("kind", ["mask", "segments"])
+def test_compiled_mode_transition_preserves_derived_cache(backend, dtype, mode, warm_inside, kind):
+    device = torch.device("cpu")
+    seq = torch.tensor([3, 5], dtype = dtype)
+
+    def build(seq):
+        return packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, device)
+
+    def consume(info):
+        if kind == "mask":
+            mask = packing.build_sdpa_packed_attention_mask(
+                info, dtype = torch.float32, device = device, total_tokens = 10
+            )
+            return mask.isfinite().float(), mask
+        coeff = torch.tensor(packing.packed_segment_lengths(info, 10), dtype = torch.float32)
+        return coeff, coeff
+
+    def train(x, seq):
+        coeff, saved = consume(build(seq))
+        return (x * coeff).sum(), saved
+
+    torch._dynamo.reset()
+    try:
+        with torch._dynamo.config.patch(capture_scalar_outputs = True):
+            with mode():
+                info = torch.compile(build, backend = backend, fullgraph = True, dynamic = True)(seq)
+                if warm_inside:
+                    expected = consume(info)[0]
+            if not warm_inside:
+                expected = consume(info)[0]
+            expected = expected.clone()
+            x = torch.ones(expected.shape, requires_grad = True)
+            loss, saved = torch.compile(train, backend = backend, fullgraph = True, dynamic = True)(
+                x, seq
+            )
+            loss.backward()
+            assert not torch.is_inference(saved)
+            torch.testing.assert_close(x.grad, expected)
+    finally:
+        torch._dynamo.reset()
+
+
+def test_new_lengths_do_not_inherit_derived_caches():
+    device = torch.device("cpu")
+    with torch.inference_mode():
+        old = packing.get_packed_info_from_kwargs(
+            {"packed_seq_lengths": torch.tensor([3, 5], dtype = torch.int64)}, device
+        )
+        packing.cover_padded_cu_seqlens(old, 10)
+        packing.build_sdpa_packed_attention_mask(old, dtype = torch.float32, device = device)
+        packing.packed_segment_lengths(old, 10)
+    new = packing.get_packed_info_from_kwargs(
+        {"packed_seq_lengths": torch.tensor([2, 6], dtype = torch.int64)}, device
+    )
+    assert packing.cover_padded_cu_seqlens(new, 10)[0].tolist() == [0, 2, 8, 10]
+    assert packing.packed_segment_lengths(new, 10) == (2, 6, 2)
+    mask = packing.build_sdpa_packed_attention_mask(new, dtype = torch.float32, device = device)
+    assert mask.isfinite().sum().item() == 24
 
 
 def test_xformers_mask_lru_keeps_inference_masks_out_of_training(monkeypatch):

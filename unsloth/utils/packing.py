@@ -1831,6 +1831,37 @@ def _pinned_to_device(tensor: torch.Tensor, device) -> torch.Tensor:
     return pinned.to(device = device, non_blocking = True)
 
 
+def _refresh_derived_packed_caches(previous, seq_lengths, result, device):
+    if previous is None or previous["seq_lengths"] is not seq_lengths:
+        return
+    segments = _SEGMENT_LENGTHS_CACHE.get(result[0].device)
+    if segments is not None and segments[0] is previous["result"][0]:
+        _SEGMENT_LENGTHS_CACHE[result[0].device] = (result[0], segments[1], segments[2])
+    padded = _PADDED_CU_SEQLENS_CACHE.get(device)
+    if padded is not None and padded["cu_seqlens"] is previous["result"][1]:
+        value = padded["result"]
+        if _holds_inference_tensor(value):
+            value = (value[0].clone(), value[1])
+        _PADDED_CU_SEQLENS_CACHE[device] = {
+            "cu_seqlens": result[1],
+            "total": padded["total"],
+            "result": value,
+            "inference": _built_in_inference_mode(),
+        }
+    cached = _SDPA_MASK_CACHE.get(device)
+    if cached is None or cached["seq_lengths"] is not previous["result"][0]:
+        return
+    mask = cached["mask"]
+    if _holds_inference_tensor(mask):
+        mask = mask.clone()
+    _SDPA_MASK_CACHE[device] = {
+        "seq_lengths": result[0],
+        "params": cached["params"],
+        "mask": mask,
+        "inference": _built_in_inference_mode(),
+    }
+
+
 def get_packed_info_from_kwargs(
     kwargs: dict,
     device: torch.device,
@@ -1861,6 +1892,7 @@ def get_packed_info_from_kwargs(
         torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
         max_seqlen = int(lengths.max().item())
         result = (lengths, cu_seqlens, max_seqlen)
+        _refresh_derived_packed_caches(entry, seq_lengths, result, device)
         _PACKED_INFO_CACHE[device] = {
             "seq_lengths": seq_lengths,
             "result": result,
@@ -1888,6 +1920,7 @@ def get_packed_info_from_kwargs(
 
     max_seqlen = max(host)
     result = (lengths, cu_seqlens, max_seqlen)
+    _refresh_derived_packed_caches(entry, seq_lengths, result, device)
     _PACKED_INFO_CACHE[device] = {
         "seq_lengths": seq_lengths,
         "result": result,
