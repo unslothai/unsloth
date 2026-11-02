@@ -91,6 +91,15 @@ def test_render_context_keeps_its_foreign_cache_tokens():
     assert _in_thread(render) == "render-owned;unsloth_fp8_unit_scale=256"
 
 
+def test_setter_preserves_appended_correctness_tag():
+    nvfp4._set_compile_cache_tag("0")
+    cc.cache_key_tag += ",unsloth/inductor-rand4x-off"
+    fp8._set_compile_cache_tag("256")
+    assert "unsloth/inductor-rand4x-off" in cc.cache_key_tag
+    nvfp4.reset_compile_cache_tag()
+    assert cc.cache_key_tag == "unsloth/inductor-rand4x-off;unsloth_fp8_unit_scale=256"
+
+
 def test_nvfp4_reset_in_a_fresh_context_keeps_the_recorded_fp8_tag():
     _in_thread(lambda: (fp8._set_compile_cache_tag("256"), nvfp4._set_compile_cache_tag("1")))
     _in_thread(nvfp4.reset_compile_cache_tag)
