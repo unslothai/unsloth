@@ -150,6 +150,17 @@ test("Generation details is off by default and wired into Settings > Chat > Disp
   assert.match(readSrc("features/settings/settings-search.ts"), /"settings\.chat\.showGenerationDetailsKeywords"/);
 });
 
+// Layout is the contract here, and these suites render no DOM: ordering the footer is the practical guard.
+test("the live line follows the branch picker, so its growing text never moves the picker", () => {
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const footer = thread.indexOf("aui-assistant-message-footer");
+  const picker = thread.indexOf("<BranchPicker", footer);
+  const line = thread.indexOf("<LiveGenerationLine />", footer);
+  const bar = thread.indexOf("<AssistantActionBar />", footer);
+  assert.ok(footer !== -1 && picker > footer, "the picker sits in the footer");
+  assert.ok(line > picker && bar > line, "picker, then the live line, then the action bar");
+});
+
 test("the live line gates on the preference before any assistant-ui selector", () => {
   const line = readSrc("components/assistant-ui/live-generation-line.tsx");
   const gate = line.slice(line.indexOf("export const LiveGenerationLine"), line.indexOf("const RunningGate"));
