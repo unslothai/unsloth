@@ -2343,10 +2343,15 @@ class UnslothTrainer:
         return result_dataset
 
     @staticmethod
-    def _resolve_audio_vlm_image_column(dataset, custom_format_mapping, audio_col):
+    def _resolve_audio_vlm_image_column(
+        dataset,
+        custom_format_mapping,
+        audio_col,
+        text_col = None,
+    ):
         cols = dataset.column_names
         for col, role in (custom_format_mapping or {}).items():
-            if role == "image" and col in cols:
+            if role == "image" and col in cols and col not in (audio_col, text_col):
                 return col
         from hub.utils.dataset_format import (
             _first_row,
@@ -2362,49 +2367,62 @@ class UnslothTrainer:
             inner = feature[0] if isinstance(feature, list) and feature else feature
             return isinstance(getattr(inner, "feature", inner), Image)
 
-        # Not _holds_images: it also matches a messages column with image parts.
         def image_list(value):
-            return isinstance(value, list) and bool(value) and all(map(_is_image_list_item, value))
+            if not isinstance(value, list):
+                return False
+            items = [item for item in value if item is not None]
+            return bool(items) and all(map(_is_image_list_item, items))
 
         sample = _first_row(dataset) or {}
 
         def empty(value):
             # Not `in (None, "", [])`: that compares a pixel ndarray elementwise and raises.
-            return value is None or (isinstance(value, (str, list)) and not value)
+            return (
+                value is None
+                or (isinstance(value, str) and not value)
+                or (isinstance(value, list) and all(item is None for item in value))
+            )
 
-        def first_value(col, limit = 100):
-            # An untyped column has no schema to fall back on, so look past empty leading rows.
-            if not empty(sample.get(col)):
-                return sample.get(col)
+        ordered = list(
+            dict.fromkeys(detect_multimodal_dataset(dataset)["multimodal_columns"] + cols)
+        )
+        ordered = [col for col in ordered if col not in (audio_col, text_col)]
+        typed = {col: image_typed(col) for col in ordered}
+        values = {col: sample.get(col) for col in ordered}
+        first_candidate = next(
+            (
+                i
+                for i, col in enumerate(ordered)
+                if typed[col] or _is_image_value(values[col]) or image_list(values[col])
+            ),
+            len(ordered),
+        )
+        unresolved = {
+            col for col in ordered[:first_candidate] if not typed[col] and empty(values[col])
+        }
+        if unresolved:
             for i, row in enumerate(dataset):
-                if i >= limit:
+                if i >= 100 or not unresolved:
                     break
-                if not empty(row.get(col)):
-                    return row.get(col)
-            return None
-
-        def image_valued(col):
-            value = first_value(col)
-            return _is_image_value(value) or image_list(value)
-
-        # The detector also takes a column by its name (file_name), which may hold audio paths;
-        # the schema settles it even when row 0 has no image.
-        candidates = [
-            c
-            for c in detect_multimodal_dataset(dataset)["multimodal_columns"]
-            if c != audio_col and (image_typed(c) or image_valued(c))
-        ]
-        candidates += [c for c in cols if c != audio_col and c not in candidates and image_typed(c)]
-        return candidates[0] if candidates else None
+                for col in tuple(unresolved):
+                    if not empty(row.get(col)):
+                        values[col] = row[col]
+                        unresolved.remove(col)
+        return next(
+            (
+                col
+                for col in ordered
+                if typed[col] or _is_image_value(values[col]) or image_list(values[col])
+            ),
+            None,
+        )
 
     def _format_audio_vlm_dataset(
         self,
         dataset,
         custom_format_mapping = None,
     ):
-        """Format dataset as audio chat messages for multimodal models (e.g. Gemma 3N). Expects
-        columns audio (Audio), text (str). Produces a messages column with system/user/assistant
-        chat format."""
+        """Format audio, optional images and transcript into chat messages."""
         from datasets import Audio
 
         resolved = self._resolve_audio_columns(dataset, custom_format_mapping)
@@ -2416,7 +2434,9 @@ class UnslothTrainer:
             )
 
         self._audio_vlm_audio_col = audio_col
-        image_col = self._resolve_audio_vlm_image_column(dataset, custom_format_mapping, audio_col)
+        image_col = self._resolve_audio_vlm_image_column(
+            dataset, custom_format_mapping, audio_col, text_col
+        )
         self._audio_vlm_image_col = image_col
 
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate = 16000))
@@ -2426,12 +2446,31 @@ class UnslothTrainer:
             feature = dataset.features.get(image_col)
             inner = feature[0] if isinstance(feature, list) else getattr(feature, "feature", None)
 
+            pixel_feature, dimensions = feature, 0
+            while getattr(pixel_feature, "feature", None) is not None:
+                pixel_feature = pixel_feature.feature
+                dimensions += 1
+            if dimensions in (2, 3) and getattr(pixel_feature, "dtype", "").startswith(
+                ("int", "uint", "float")
+            ):
+                from itertools import islice
+
+                import numpy as np
+
+                value = next(
+                    (row[image_col] for row in islice(dataset, 100) if row[image_col] is not None),
+                    None,
+                )
+                shape = np.asarray(value).shape if value is not None else ()
+                # Numeric HxW/HxWxC cells are one image, not one image per pixel row.
+                if value is None or len(shape) == 2 or (len(shape) == 3 and shape[-1] in (1, 3, 4)):
+                    inner = None
+
             # Image(decode = False) yields {"path", "bytes"} dicts the processor rejects.
             def decodes(f):
                 return isinstance(f, Image) and f.decode
 
             if inner is not None:
-                # A list of images per row (e.g. an "images" column) stays a list.
                 if not decodes(inner):
                     dataset = dataset.cast_column(image_col, Sequence(Image()))
             elif not decodes(feature):
@@ -2448,9 +2487,7 @@ class UnslothTrainer:
                     {"type": "text", "text": "Please transcribe this audio."},
                 ]
                 if image_col:
-                    # The collator passes the images themselves; the template only needs the slots.
                     row_images = samples[image_col][idx]
-                    # A partly filled column: a None row (or entry) gets no image slot.
                     if isinstance(row_images, list):
                         n_images = sum(1 for i in row_images if i is not None)
                     else:
@@ -3051,14 +3088,19 @@ class UnslothTrainer:
             return None
 
     def _format_audio_vlm_eval_split(self, eval_dataset, custom_format_mapping):
-        """Format the audio VLM eval split, dropping it if it resolves a different audio
-        column: audio_vlm_collate_fn reads the one recorded name for BOTH splits."""
+        """Keep eval columns aligned with the shared train/eval collator."""
         if eval_dataset is None:
             return None
         train_audio_col = getattr(self, "_audio_vlm_audio_col", None)
         train_image_col = getattr(self, "_audio_vlm_image_col", None)
+        eval_mapping = custom_format_mapping
+        image_feature = eval_dataset.features.get(train_image_col)
+        while getattr(image_feature, "feature", None) is not None:
+            image_feature = image_feature.feature
+        if train_image_col and getattr(image_feature, "dtype", None) == "null":
+            eval_mapping = {train_image_col: "image", **(custom_format_mapping or {})}
         formatted = self._preprocess_audio_eval_split(
-            eval_dataset, self._format_audio_vlm_dataset, custom_format_mapping
+            eval_dataset, self._format_audio_vlm_dataset, eval_mapping
         )
         eval_audio_col = getattr(self, "_audio_vlm_audio_col", None)
         eval_image_col = getattr(self, "_audio_vlm_image_col", None)

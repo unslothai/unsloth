@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An audio VLM (Gemma 3n, Gemma 4, LFM3-Omni) trained on a dataset with both audio and images.
-
-pre_detect routes such a run to the audio VLM path (is_vlm is False), so that path has to carry the
-images itself or they are silently dropped.
-"""
+"""Image transport through Studio's audio VLM training path."""
 
 from __future__ import annotations
 
@@ -124,6 +120,92 @@ def test_audio_only_dataset_is_unchanged(audio_vlm_trainer):
 
     assert getattr(audio_vlm_trainer, "_audio_vlm_image_col", None) is None
     assert _user_part_types(formatted) == ["audio", "text"]
+
+
+def test_an_image_filename_transcript_stays_text(audio_vlm_trainer):
+    ds = _dataset([])
+    ds = _NoAudioCast(
+        ds._ds.remove_columns("text").add_column("text", ["diagram.png", "photo.jpg"])
+    )
+    formatted = audio_vlm_trainer._format_audio_vlm_dataset(ds)
+
+    assert audio_vlm_trainer._audio_vlm_image_col is None
+    assert _user_part_types(formatted) == ["audio", "text"]
+    assert formatted[0]["messages"][-1]["content"][0]["text"] == "diagram.png"
+
+
+@pytest.mark.parametrize("shape", [(8, 8), (8, 8, 3)])
+def test_a_mapped_pixel_array_is_one_image(audio_vlm_trainer, shape):
+    np = pytest.importorskip("numpy")
+    pixels = np.arange(np.prod(shape), dtype = np.uint8).reshape(shape)
+    rows = {
+        "audio": [{"array": [0.0] * 160, "sampling_rate": 16000}] * 2,
+        "text": ["one", "two"],
+        "photo": [pixels] * 2,
+    }
+    formatted = audio_vlm_trainer._format_audio_vlm_dataset(
+        _NoAudioCast(datasets.Dataset.from_dict(rows)), {"photo": "image"}
+    )
+
+    assert isinstance(formatted[0]["photo"], PIL_Image.Image)
+    assert formatted[0]["photo"].size == (8, 8)
+    assert np.array_equal(np.asarray(formatted[0]["photo"]), pixels)
+    assert _user_part_types(formatted) == ["image", "audio", "text"]
+
+
+def test_a_list_of_grayscale_pixel_images_stays_a_list(audio_vlm_trainer):
+    np = pytest.importorskip("numpy")
+    rows = {
+        "audio": [{"array": [0.0] * 160, "sampling_rate": 16000}] * 2,
+        "text": ["one", "two"],
+        "photo": [[np.zeros((8, 8), dtype = np.uint8)] * 2] * 2,
+    }
+    formatted = audio_vlm_trainer._format_audio_vlm_dataset(
+        _NoAudioCast(datasets.Dataset.from_dict(rows)), {"photo": "image"}
+    )
+
+    assert [image.size for image in formatted[0]["photo"]] == [(8, 8), (8, 8)]
+    assert _user_part_types(formatted) == ["image", "image", "audio", "text"]
+
+
+@pytest.mark.parametrize(
+    "column, cells",
+    [
+        ("images", [[], ["image"]]),
+        ("attachments", [None, "image"]),
+        ("photo", [[None, "image"], ["image"]]),
+        ("photo", [[None], [None, "image"]]),
+    ],
+)
+def test_untyped_nullable_images_are_found(audio_vlm_trainer, tmp_path, column, cells):
+    path = tmp_path / "image.png"
+    PIL_Image.new("RGB", (8, 8)).save(path)
+    values = [
+        [str(path) if value == "image" else value for value in cell]
+        if isinstance(cell, list)
+        else str(path)
+        if cell == "image"
+        else cell
+        for cell in cells
+    ]
+    rows = {
+        "audio": [{"array": [0.0] * 160, "sampling_rate": 16000}] * 2,
+        "text": ["one", "two"],
+        column: values,
+    }
+    formatted = audio_vlm_trainer._format_audio_vlm_dataset(
+        _NoAudioCast(datasets.Dataset.from_dict(rows))
+    )
+
+    assert audio_vlm_trainer._audio_vlm_image_col == column
+    for row, value in zip(formatted, values):
+        user = next(message for message in row["messages"] if message["role"] == "user")
+        count = (
+            sum(item is not None for item in value)
+            if isinstance(value, list)
+            else int(value is not None)
+        )
+        assert sum(part["type"] == "image" for part in user["content"]) == count
 
 
 def test_a_mapped_image_column_is_used(audio_vlm_trainer):
