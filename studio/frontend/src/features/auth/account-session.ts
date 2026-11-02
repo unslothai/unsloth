@@ -4,6 +4,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import {
   ensureLoginMode,
+  getConfirmedLoginMode,
   getLoginMode,
   subscribeLoginMode,
 } from "./login-client";
@@ -54,6 +55,13 @@ export function isAccountOwner(): boolean {
 
 export function useIsAccountOwner(): boolean {
   return useSyncExternalStore(subscribeSession, isAccountOwner, () => false);
+}
+export function useConfirmedLoginMode() {
+  return useSyncExternalStore(
+    subscribeLoginMode,
+    getConfirmedLoginMode,
+    () => null,
+  );
 }
 export function useLoginMode() {
   const mode = useSyncExternalStore(

@@ -31,7 +31,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
-  AlertCircleIcon,
+  Alert02Icon,
   BookOpen01Icon,
   Cancel01Icon,
   CodeIcon,
@@ -672,7 +672,7 @@ function ErrorResult({
       className="flex gap-3 rounded-lg border border-red-500/25 bg-red-500/5 px-4 py-3.5"
     >
       <HugeiconsIcon
-        icon={AlertCircleIcon}
+        icon={Alert02Icon}
         strokeWidth={1.75}
         className="mt-0.5 size-4 shrink-0 text-red-600 dark:text-red-400"
       />
