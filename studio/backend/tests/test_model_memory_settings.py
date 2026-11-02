@@ -223,9 +223,9 @@ class TestPersistence:
 
 
 class TestMemlockLimit:
-    """mlock cannot exceed RLIMIT_MEMLOCK. Linux commonly defaults to 8 MB,
-    where llama.cpp warns and carries on, so residency silently does nothing.
-    The settings response reports the cap so the UI can say so."""
+    @pytest.fixture(autouse = True)
+    def require_resource(self):
+        pytest.importorskip("resource")
 
     def test_unlimited_reports_none(self, monkeypatch):
         import resource
@@ -263,6 +263,12 @@ class TestMemlockLimit:
 
         monkeypatch.setattr(resource, "getrlimit", boom)
         assert mm.memlock_limit_bytes() is None
+
+
+def test_memlock_limit_is_unavailable_without_resource(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "resource", None)
+    assert mm_settings.memlock_limit_bytes() is None
 
 
 class TestMemoryEnv:
