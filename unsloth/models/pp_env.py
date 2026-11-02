@@ -95,9 +95,6 @@ def _env_vars(stage):
     return layout.env_vars if layout is not None else f"UNSLOTH_PP_SIZE={stage.num_stages}"
 
 
-# ---------------------------------------------------------------------------------------------- the split
-
-
 def pipeline_parallel_env_apply(model, layout):
     """Trainer.__init__ under UNSLOTH_PP_SIZE: split `model` over mesh["pp"] (once) and attach the DDP-style dp
     dimension. Native FSDP2 (UNSLOTH_FSDP2=1) shards the stage over mesh["dp"] next (fsdp2_native)."""
@@ -225,9 +222,6 @@ def _pad_rows(input_ids, labels, extra, pad):
         out[key] = value
     labels = torch.cat([labels, torch.full_like(take(labels), -100)])
     return torch.cat([input_ids, take(input_ids)]), labels, out
-
-
-# ------------------------------------------------------------------------- the other stages, kept on the CPU
 
 
 def _move(module, device, skip):
@@ -518,9 +512,6 @@ def pp_for_training(model):
     release_replica(model)
 
 
-# ----------------------------------------------------------------------------------------------------- saves
-
-
 def pp_collective(model, what, call):
     """Every rank calls: the whole model goes back on every rank, rank 0 runs `call` (the unchanged
     single-process export), the others wait on the store and return its result."""
@@ -573,9 +564,6 @@ def pp_save_adapter(model, args, kwargs):
     values.pop("is_main_process", None)
     stage.save_adapter(directory, **values, **extra)
     return None
-
-
-# --------------------------------------------------------------------------------------------- the Trainer
 
 
 def _trainer_classes(cls):

@@ -24,8 +24,7 @@ mesh["pp"], context parallel mesh["cp"], and data parallel gradients (FSDP2 shar
 flattened (dp, cp) mesh, because context parallel peers hold different tokens of the same rows. The data loader
 splits over dp only. Size-1 axes are left out of the mesh, so they create no process group.
 
-This module imports nothing heavy at module level: `import unsloth` translates the flag before transformers,
-accelerate or torch.distributed read any of it.
+Imports nothing heavy at module level: the flag is translated before transformers / accelerate read it.
 """
 
 from __future__ import annotations
@@ -187,8 +186,7 @@ def parse_parallel_spec(raw, source = FLAG):
         spec["dp"] = size
         if fsdp is not None:
             spec["fsdp"] = fsdp
-    # cp_backend with cp = 1 and pp_schedule / pp_microbatches with pp = 1 are accepted and unused: a launcher
-    # writes every axis, and may pass the user's backend / schedule through for a layout without that axis.
+    # cp_backend at cp=1 and pp_schedule / pp_microbatches at pp=1 are accepted unused (launchers write every axis).
     return spec
 
 
@@ -351,8 +349,7 @@ def parallelize(
             f'Unsloth: unsloth.parallelize({raw}) disagrees with {FLAG}="{current}" from the environment; '
             "use one of the two."
         )
-    # Our own earlier call: undo only what it wrote (back to the values it replaced), so inherited
-    # variables it left alone (UNSLOTH_FSDP2, a backend) stay, and the layout check below decides.
+    # Our own earlier call: undo only what it wrote, so inherited variables it left alone stay.
     prior = dict(_SET_BY_PARALLELIZE[1]) if ours else {}
     environ = dict(os.environ)
     for name, value in prior.items():
@@ -632,8 +629,7 @@ def read_layout():
     )
     from .parallel_capabilities import check_layout
 
-    # The layout-only rules, before any model is loaded under it (UNSLOTH_CP_BACKEND too: ring x tp is refused
-    # here, before the tensor parallel split, not first at Trainer.__init__).
+    # Layout-only rules before any model loads (ring x tp is refused here, before the tp split).
     check_layout(layout, cells = False, cp_backend = cp_backend)
     return layout
 
