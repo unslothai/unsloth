@@ -1151,10 +1151,7 @@ class PipelineParallel:
         return total[0]
 
     def _average_replicated_grads(self):
-        """Trainable parameters FSDP2 keeps replicated (Unsloth averages them over dp like DDP from an
-        autograd callback, deferred while gradient sync is off): the pipeline schedule runs every micro-batch
-        backward with sync off and reduces FSDP2's own groups outside autograd, so average them here once.
-        Averaging equal values is a no-op, so an earlier per-backward average stays correct."""
+        """Reduce replicas after the pipeline schedule's deferred backward passes."""
         params = self.model.__dict__.get("_unsloth_replicated_grad_params")
         if not params:
             return
@@ -1164,7 +1161,11 @@ class PipelineParallel:
 
         state = self.model.__dict__.setdefault("_unsloth_replicated_grad_state", {"queued": False})
         _sync_replicated_grads(
-            params, dist, model_mesh(self.model) or self.dp_mesh, state.setdefault("buffers", {})
+            params,
+            dist,
+            model_mesh(self.model) or self.dp_mesh,
+            state.setdefault("buffers", {}),
+            state.pop("pending", None),
         )
 
     def _grad_copies(self, grad):

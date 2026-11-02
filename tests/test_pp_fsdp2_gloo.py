@@ -362,11 +362,41 @@ def _case_pp_tp_mesh_refusal(rank, world, tmp):
     return {"err": err, "tp": tpn.is_tensor_parallel(model)}
 
 
+def _case_fp16_replicas(rank, world, tmp):
+    from torch.distributed.device_mesh import init_device_mesh
+
+    native = _native()
+    mesh = init_device_mesh("cpu", (2, 2), mesh_dim_names = ("pp", "dp"))
+    model = build(LLAMA)
+    norm = model.get_base_model().model.norm.weight
+    norm.data = norm.data.half()
+    norm.requires_grad_(True)
+    ids, labels = global_batch(model, 8)
+    model(input_ids = ids, labels = labels, use_cache = False).loss.backward()
+    expected = norm.grad.detach().float().clone()
+    model.zero_grad(set_to_none = True)
+    pp = ppn.apply_pipeline_parallel(model, mesh["pp"], n_microbatches = 2)
+    native.shard_model(
+        model,
+        native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"], ignored_params = {norm}),
+    )
+    dp_rank = mesh["dp"].get_local_rank()
+    grads, pending = [], []
+    for _ in range(2):
+        pp.step(ids[4 * dp_rank : 4 * dp_rank + 4], labels[4 * dp_rank : 4 * dp_rank + 4])
+        if pp.is_last:
+            grads.append(None if norm.grad is None else norm.grad.detach().float().clone())
+            pending.append(bool(model.__dict__["_unsloth_replicated_grad_state"].get("pending")))
+        model.zero_grad(set_to_none = True)
+    return {"last": pp.is_last, "grads": grads, "expected": expected, "pending": pending}
+
+
 CASES = {
     "compose": _case_compose,
     "scaler": _case_scaler,
     "order": _case_order_refusals,
     "pp_tp_mesh": _case_pp_tp_mesh_refusal,
+    "fp16_replicas": _case_fp16_replicas,
 }
 
 
@@ -563,6 +593,17 @@ def test_pp2_x_dp2_grad_scaler_skip_is_global():
     for res in results:
         assert res["unchanged"], res
         assert res["scale"] == 512.0, res
+
+
+def test_pp2_x_fsdp2_dp2_consumes_fp16_replicated_gradients():
+    for res in _spawn("fp16_replicas"):
+        if not res["last"]:
+            continue
+        assert res["pending"] == [False, False], res
+        assert res["expected"].norm() > 0
+        for grad in res["grads"]:
+            assert grad is not None, res
+            torch.testing.assert_close(grad, res["expected"], rtol = 1e-2, atol = 1e-4)
 
 
 def test_pp_composition_order_and_meshes_are_refused_before_any_change():
