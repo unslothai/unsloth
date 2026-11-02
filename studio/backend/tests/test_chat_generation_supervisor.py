@@ -375,7 +375,10 @@ async def test_a_follow_up_reaches_the_model_with_an_image_the_run_never_stored(
         {"id": "user-1", "threadId": "thread-1", "role": "user", "content": [], "createdAt": 2}
     )
     url = "data:image/png;base64,iVBORw0KGgo="
-    image_turn = [{"type": "text", "text": "what?"}, {"type": "image_url", "image_url": {"url": url}}]
+    image_turn = [
+        {"type": "text", "text": "what?"},
+        {"type": "image_url", "image_url": {"url": url}},
+    ]
     payload = _create_payload("and the colour?")
     payload.requestPayload["messages"] = [
         {"role": "user", "content": image_turn},

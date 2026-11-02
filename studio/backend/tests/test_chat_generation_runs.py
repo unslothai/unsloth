@@ -948,7 +948,10 @@ def test_a_different_image_is_a_different_stored_request():
     follow_up = {"role": "user", "content": "again"}
     first = _sanitize_request(_model(messages = _image_thread(follow_up)))
     other = _image_thread(follow_up)
-    other[0]["content"][1] = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    other[0]["content"][1] = {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,AAAA"},
+    }
     second = _sanitize_request(_model(messages = other))
     detach_embedded_images(first)
     detach_embedded_images(second)
