@@ -22,20 +22,49 @@ from core.inference import audio_gallery
 from loggers import get_logger
 from utils.account_context import OWNER, AccountContext, is_owner_context, run_as
 from utils.paths.storage_roots import account_path
-from utils.upload_limits import AUDIO_INPUT_MAX_BYTES
+from utils.upload_limits import audio_input_max_bytes
 
 logger = get_logger(__name__)
 
 MAX_SECONDS = 30 * 60
+# Uploads (and Transcribe on audio.cpp) take up to this; minutes in the env var override it.
+TRANSCRIBE_MAX_MINUTES_ENV = "UNSLOTH_STUDIO_TRANSCRIBE_MAX_MINUTES"
+DEFAULT_TRANSCRIBE_MAX_SECONDS = 4 * 60 * 60
 TTL_SECONDS = 24 * 60 * 60
 BYTE_CAP = 2 * 1024 * 1024 * 1024
 REFERENCE_MAX_SECONDS = 30.0
 REFERENCE_RATE = 24000
 _MAX_CHANNELS = 2
-# Caps the stored rate so a 30 minute upload stays under ~350 MB however it was encoded.
+# Caps the stored rate so a 30 minute upload stays under ~350 MB however it was encoded;
+# longer uploads are refused once their WAV copy would pass BYTE_CAP.
 MAX_RATE = 48000
 _NAME_MAX = 255
 _STALE_TMP_SECONDS = 60 * 60
+
+
+def transcribe_max_seconds() -> int:
+    """The longest upload, read per call; never under MAX_SECONDS."""
+    try:
+        minutes = int(os.environ.get(TRANSCRIBE_MAX_MINUTES_ENV, "").strip())
+    except ValueError:
+        minutes = 0
+    seconds = minutes * 60 if minutes > 0 else DEFAULT_TRANSCRIBE_MAX_SECONDS
+    return max(MAX_SECONDS, seconds)
+
+
+def length_words(seconds: float) -> str:
+    """``4 hours``, ``1 hour`` or ``90 minutes``."""
+    if seconds >= 3600 and seconds % 3600 == 0:
+        hours = int(seconds // 3600)
+        return "1 hour" if hours == 1 else f"{hours} hours"
+    return f"{int(seconds // 60)} minutes"
+
+
+def _size_words(nbytes: int) -> str:
+    gib = 1024 * 1024 * 1024
+    if nbytes >= gib and nbytes % gib == 0:
+        return f"{nbytes // gib} GB"
+    return f"{nbytes // (1024 * 1024)} MB"
 
 
 class AudioInputError(ValueError):
@@ -160,8 +189,10 @@ def transcode(
     stereo: bool = False,
     max_seconds: Optional[float] = None,
     cut: bool = False,
+    max_bytes: Optional[int] = None,
 ) -> dict[str, Any]:
-    """Streams through the FFmpeg resampler so a voice reference does not alias; past max_seconds it is cut if cut is set, else refused with 413."""
+    """Streams through the FFmpeg resampler so a voice reference does not alias; past max_seconds it is cut if cut is set, else refused with 413.
+    A WAV that would pass max_bytes is refused with 413."""
     import av
 
     max_seconds = MAX_SECONDS if max_seconds is None else max_seconds
@@ -174,8 +205,13 @@ def transcode(
         for block in blocks:
             take = min(block.samples, ceiling - frames)
             if take < block.samples and not cut:
+                raise AudioInputError(413, f"Audio is longer than {length_words(max_seconds)}.")
+            if max_bytes is not None and (frames + take) * channels * 2 > max_bytes:
                 raise AudioInputError(
-                    413, f"Audio is longer than {int(max_seconds // 60)} minutes."
+                    413,
+                    "This audio is too long to keep: its WAV copy would pass the "
+                    f"{_size_words(max_bytes)} an account can hold. Trim it, or upload it as "
+                    "mono or at a lower sample rate.",
                 )
             out.writeframesraw(block.to_ndarray().reshape(-1)[: take * channels].tobytes())
             frames += take
@@ -306,7 +342,7 @@ async def save_stream(
     """The byte cap is checked per chunk, so an oversize upload is refused before it is read whole."""
     import asyncio
 
-    cap = AUDIO_INPUT_MAX_BYTES if max_bytes is None else max_bytes
+    cap = audio_input_max_bytes() if max_bytes is None else max_bytes
     directory = inputs_dir()
     tmp = directory / f".{uuid.uuid4().hex}.upload.tmp"
     digest = hashlib.sha256()
@@ -317,14 +353,21 @@ async def save_stream(
                 if not chunk:
                     continue
                 size += len(chunk)
-                if size > cap:
+                if cap is not None and size > cap:
                     raise AudioInputError(413, "Audio is too large.")
                 digest.update(chunk)
                 f.write(chunk)
         if not size:
             raise AudioInputError(400, "Audio is empty.")
         return await asyncio.to_thread(
-            _finish_upload, directory, tmp, digest.hexdigest(), _clean_name(name), size
+            _finish_upload,
+            directory,
+            tmp,
+            digest.hexdigest(),
+            _clean_name(name),
+            size,
+            max_seconds = transcribe_max_seconds(),
+            max_wav_bytes = BYTE_CAP,
         )
     finally:
         tmp.unlink(missing_ok = True)
@@ -410,8 +453,11 @@ def _finish_upload(
     size: int,
     *,
     prepared: Optional[dict[str, Any]] = None,
+    max_seconds: Optional[float] = None,
+    max_wav_bytes: Optional[int] = None,
 ) -> tuple[dict[str, Any], bool]:
-    """``prepared``: ``tmp`` is already a ``transcode`` output with this info, so it is moved in as is."""
+    """``prepared``: ``tmp`` is already a ``transcode`` output with this info, so it is moved in
+    as is; otherwise it is transcoded under ``max_seconds`` and ``max_wav_bytes``."""
     existing = _find_by_sha(directory, sha)
     if existing is not None:
         input_id, meta = existing
@@ -422,7 +468,7 @@ def _finish_upload(
     wav = directory / f"{input_id}.wav"
     try:
         if prepared is None:
-            info = transcode(tmp, wav)
+            info = transcode(tmp, wav, max_seconds = max_seconds, max_bytes = max_wav_bytes)
         else:
             os.replace(tmp, wav)
             info = prepared

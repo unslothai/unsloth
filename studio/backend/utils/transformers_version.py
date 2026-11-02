@@ -1104,6 +1104,66 @@ def _config_saved_by_transformers_5(cfg: dict | None) -> bool:
         return False
 
 
+def _release_tuple(ver) -> tuple[int, int, int] | None:
+    """``"5.19.0.dev0"`` -> ``(5, 19, 0)``; a dev build counts as its release."""
+    m = re.match(r"\s*(\d+)\.(\d+)(?:\.(\d+))?", ver) if isinstance(ver, str) else None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)) if m else None
+
+
+def _remote_code_min_version(cfg: dict | None) -> tuple[int, int, int] | None:
+    """Saving transformers 5.x version of a custom-code (``auto_map`` AutoConfig) config, else None."""
+    if not isinstance(cfg, dict) or not _config_saved_by_transformers_5(cfg):
+        return None
+    auto_map = cfg.get("auto_map")
+    if not isinstance(auto_map, dict) or "AutoConfig" not in auto_map:
+        return None
+    v = _release_tuple(cfg.get("transformers_version"))
+    # Patch releases keep remote-code APIs: 5.5.4 still fits the 5.5.0 default.
+    return (v[0], v[1], 0) if v else None
+
+
+def _remote_code_tier(cfg: dict | None) -> str | None:
+    """Default if new enough, else the oldest sidecar at or above the saving version; None if none is."""
+    required = _remote_code_min_version(cfg)
+    if required is None:
+        return None
+    tiers = [
+        ("default", TRANSFORMERS_DEFAULT_VERSION),
+        ("530", TRANSFORMERS_530_VERSION),
+        ("550", TRANSFORMERS_550_VERSION),
+        ("510", TRANSFORMERS_510_VERSION),
+    ]
+    if not _latest_tier_disabled():
+        tiers.append(("latest", latest_venv_pinned_version()))
+    fits = [
+        (tier != "default", v, _TIER_RANK[tier], tier)
+        for tier, ver in tiers
+        if (v := _release_tuple(ver)) is not None and v >= required
+    ]
+    return min(fits)[3] if fits else None
+
+
+def _route_remote_code(
+    model_name: str,
+    cfg: dict | None,
+    above: str | None = None,
+) -> str | None:
+    """Tier for a custom-code config; None falls through, also when ``above`` already satisfies it."""
+    required = _remote_code_min_version(cfg)
+    if required is None or (above is not None and required <= _release_tuple(above)):
+        return None
+    tier = _remote_code_tier(cfg)
+    if tier is None:
+        tier = "latest" if (not _latest_tier_disabled() and latest_venv_pinned_version()) else "510"
+    logger.info(
+        "Transformers tier %s selected for %s (custom code saved by transformers %s)",
+        tier,
+        model_name,
+        cfg.get("transformers_version"),
+    )
+    return tier
+
+
 def _cached_config_json(model_name: str, hf_token: str | None) -> dict | None:
     """Already-fetched config.json from the in-process cache (no new fetch); the tier checks
     above populate it, and a miss just skips the version-field probe."""
@@ -1618,6 +1678,30 @@ def get_transformers_tier(
     probe: bool = True,
 ) -> str:
     """Returns 510, 550, 530 or default; local config.json is checked before name heuristics (dir-name false positives); probe=False skips sidecar subprocesses."""
+    tier = _native_transformers_tier(model_name, hf_token, probe)
+    # Raise only; the name fast path fetched no config, so a real load (probe=True) reads it here.
+    if probe and tier != "default":
+        cfg = _load_config_json(model_name, hf_token)
+    else:
+        cfg = _cached_config_json(model_name, hf_token)
+    required = _remote_code_min_version(cfg)
+    current = _release_tuple(_tier_version(tier))
+    if required is not None and current is not None and current < required:
+        return _route_remote_code(model_name, cfg) or tier
+    return tier
+
+
+def _tier_version(tier: str) -> str | None:
+    return {
+        "default": TRANSFORMERS_DEFAULT_VERSION,
+        "457": TRANSFORMERS_457_VERSION,
+        "530": TRANSFORMERS_530_VERSION,
+        "550": TRANSFORMERS_550_VERSION,
+        "510": TRANSFORMERS_510_VERSION,
+    }.get(tier) or (latest_venv_pinned_version() if tier == "latest" else None)
+
+
+def _native_transformers_tier(model_name: str, hf_token: str | None, probe: bool) -> str:
     local_cfg = Path(model_name) / "config.json"
     if _safe_is_file(local_cfg):
         cfg = _load_config_json(model_name, hf_token)
@@ -1700,6 +1784,10 @@ def get_transformers_tier(
                     model_name,
                 )
                 return static
+            # The fall-through's 530 floor fits these; routing here would lower them to default.
+            remote_code = _route_remote_code(model_name, cfg, above = TRANSFORMERS_530_VERSION)
+            if remote_code is not None:
+                return remote_code
             local_tc = Path(model_name) / "tokenizer_config.json"
             if _safe_is_file(local_tc) and _check_tokenizer_config_needs_v5(model_name, hf_token):
                 if not probe:
@@ -1780,6 +1868,9 @@ def get_transformers_tier(
                 model_name,
             )
             return static
+        remote_code = _route_remote_code(model_name, remote_cfg, above = TRANSFORMERS_530_VERSION)
+        if remote_code is not None:
+            return remote_code
     if _check_tokenizer_config_needs_v5(model_name, hf_token):
         if not probe:
             return "530"

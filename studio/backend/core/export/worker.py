@@ -326,11 +326,7 @@ def _run_export_security_gates(
                 {
                     "type": "loaded",
                     "success": False,
-                    "message": (
-                        f"Checkpoint '{_rc.model_name}' ships custom code flagged as "
-                        f"{_rc.max_severity} by the security scan. Review and "
-                        f"approve it to proceed."
-                    ),
+                    "message": _rc.blocked_message("Checkpoint"),
                     "error_kind": "remote_code_blocked",
                     "remote_code": _rc.response_payload(),
                     "ts": time.time(),

@@ -11,9 +11,10 @@ import json
 import logging
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
@@ -30,19 +31,34 @@ _PROBE_TIMEOUT_S = 30
 _SHRINK_TIMEOUT_S = 300
 
 
-def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess:
+def video_tools(ffmpeg_dir: Optional[str] = None) -> Optional[tuple[str, str]]:
+    names = ("ffmpeg.exe", "ffprobe.exe") if sys.platform == "win32" else ("ffmpeg", "ffprobe")
+    if ffmpeg_dir:
+        found = [shutil.which(name, path = ffmpeg_dir) for name in names]
+    else:
+        found = [shutil.which(name) for name in names]
+    return (found[0], found[1]) if found[0] and found[1] else None
+
+
+def _run(
+    argv: list[str],
+    timeout: float,
+    env: Optional[Mapping[str, str]] = None,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         argv,
         stdin = subprocess.DEVNULL,
         capture_output = True,
         timeout = timeout,
-        env = child_env_without_native_path_secret(),
+        env = child_env_without_native_path_secret(env),
         **windows_hidden_subprocess_kwargs(),
     )
 
 
 def _frame_geometry(
-    ffprobe: str, clip: Path
+    ffprobe: str,
+    clip: Path,
+    env: Optional[Mapping[str, str]] = None,
 ) -> tuple[Optional[int], Optional[float], Optional[float]]:
     """Any field is None when ffprobe cannot answer; the caller then leaves the clip alone."""
     result = _run(
@@ -64,6 +80,7 @@ def _frame_geometry(
             str(clip),
         ],
         _PROBE_TIMEOUT_S,
+        env = env,
     )
     if result.returncode != 0:
         return None, None, None
@@ -85,11 +102,15 @@ def _frame_geometry(
         except (TypeError, ValueError):
             duration = None
     if duration is None:
-        duration = _packet_duration(ffprobe, clip)
+        duration = _packet_duration(ffprobe, clip, env = env)
     return area, _frame_rate(streams[0].get("avg_frame_rate")), duration
 
 
-def _packet_duration(ffprobe: str, clip: Path) -> Optional[float]:
+def _packet_duration(
+    ffprobe: str,
+    clip: Path,
+    env: Optional[Mapping[str, str]] = None,
+) -> Optional[float]:
     """Duration from packet timestamps, for containers that carry none: a raw
     elementary stream has no `format.duration`, so the sub-second floor never fired
     on one. Bounded to twice the floor, past which a clip is long enough anyway."""
@@ -111,6 +132,7 @@ def _packet_duration(ffprobe: str, clip: Path) -> Optional[float]:
             str(clip),
         ],
         _PROBE_TIMEOUT_S,
+        env = env,
     )
     if result.returncode != 0:
         return None
@@ -186,6 +208,8 @@ def shrink_video_for_llama(
     max_bytes: int,
     max_pixels: int = MAX_FRAME_PIXELS,
     sampled_fps: Optional[float] = None,
+    ffmpeg_dir: Optional[str] = None,
+    env: Optional[Mapping[str, str]] = None,
 ) -> str:
     """Make a clip cheap and safe for llama-server to sample, as bare base64.
 
@@ -200,15 +224,15 @@ def shrink_video_for_llama(
         return video_b64
     # Before the tool check: without ffmpeg the clip still reaches llama-server's own FFmpeg.
     refuse_playlist(raw)
-    ffmpeg = shutil.which("ffmpeg")
-    ffprobe = shutil.which("ffprobe")
-    if not ffmpeg or not ffprobe:
+    tools = video_tools(ffmpeg_dir)
+    if tools is None:
         return video_b64
+    ffmpeg, ffprobe = tools
     try:
         with tempfile.TemporaryDirectory(prefix = "unsloth-video-") as tmp:
             source = Path(tmp) / "clip"
             source.write_bytes(raw)
-            area, rate, duration = _frame_geometry(ffprobe, source)
+            area, rate, duration = _frame_geometry(ffprobe, source, env = env)
             if area is None:
                 return video_b64
             oversized = area > max_pixels
@@ -249,6 +273,7 @@ def shrink_video_for_llama(
                     str(shrunk),
                 ],
                 _SHRINK_TIMEOUT_S,
+                env = env,
             )
             if result.returncode != 0 or not shrunk.is_file() or shrunk.stat().st_size == 0:
                 logger.warning(
