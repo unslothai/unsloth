@@ -4230,7 +4230,7 @@ export function ModelConfigPage({
         {isActiveModel && target.isGguf && !audioRuntimeGguf ? (
           // The same pool the estimate above names: "Unified" on Apple Silicon, "Shared" on other one-pool machines.
           <LoadedPlacementRow
-            pool={singleMemoryPool ? (isAppleUnifiedMemory ? "unified memory" : "shared memory") : null}
+            pool={singleMemoryPool ? (isAppleUnifiedMemory ? "unified" : "shared") : null}
           />
         ) : null}
         {target.isGguf && !audioRuntimeGguf && (

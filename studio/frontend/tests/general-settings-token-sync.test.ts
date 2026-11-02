@@ -108,6 +108,7 @@ function generalTab(initialToken: string) {
     "@/components/ui/button": componentStub,
     "@/components/ui/dialog": componentStub,
     "@/components/ui/input": { Input: "Input" },
+    "@/components/ui/select": componentStub,
     "@/components/ui/switch": componentStub,
     "@/features/chat": {
       useChatRuntimeStore: Object.assign(
@@ -151,6 +152,11 @@ function generalTab(initialToken: string) {
       SPELLCHECK_STORAGE_KEY: "unsloth_spellcheck",
       setSpellCheck: noop,
       useSpellCheck: () => true,
+    },
+    "@/lib/time-format": {
+      TIME_FORMAT_STORAGE_KEY: "unsloth_time_format",
+      setTimeFormat: noop,
+      useTimeFormat: () => "system",
     },
     "@/lib/toast": { toast: { success: noop, error: noop } },
     "@/lib/utils": {

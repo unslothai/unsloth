@@ -196,6 +196,11 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   },
   {
     providerType: "gemini",
+    prefixes: ["gemini-3.1-flash-lite-image"],
+    cap: 4096,
+  },
+  {
+    providerType: "gemini",
     prefixes: ["gemini-3", "gemini-pro", "gemini-flash"],
     cap: 65536,
   },
@@ -559,7 +564,8 @@ function geminiImageModelAllowsGoogleSearch(modelId: string): boolean {
     m.startsWith("gemini-3-pro-image") ||
     m.startsWith("gemini-3.1-flash-image") ||
     m.startsWith("nano-banana-pro") ||
-    m.startsWith("nano-banana-2")
+    m.startsWith("nano-banana-2") ||
+    m.startsWith("gemini-nano-banana-2")
   );
 }
 

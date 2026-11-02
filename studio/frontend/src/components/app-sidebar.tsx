@@ -106,7 +106,7 @@ import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useHoverFlyout } from "@/hooks/use-hover-flyout";
 import { NAV_FLYOUT_INTENT, NAV_TOOLTIP_INTENT } from "@/lib/hover-intent";
 import {
-  Archive03Icon,
+  ArchiveIcon,
   Cancel01Icon,
   BadgeInfoIcon,
   ChefHatIcon,
@@ -114,12 +114,11 @@ import {
   CursorInfo02Icon,
   DashboardCircleIcon,
   DashboardSquareEditIcon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
   FlimSlateIcon,
   HelpCircleIcon,
-  Image01Icon,
+  ImageIcon,
   InformationCircleIcon,
   LibrariesIcon,
   Logout05Icon,
@@ -146,14 +145,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { Folder02Icon, FolderExportIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
-import {
-  AiSpeechIcon,
-  ChipIcon,
-  MessageCircleIcon,
-  Settings01Icon,
-  TestTubeOutlineIcon,
-  withNoticeDot,
-} from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, ChipIcon, MessageCircleIcon, Settings01Icon, TestTubeOutlineIcon, TrashIcon, withNoticeDot } from "@/lib/hugeicons-derived";
 import {
   Tooltip,
   TooltipContent,
@@ -3363,7 +3355,7 @@ export function AppSidebar() {
       },
     },
     images: {
-      icon: Image01Icon,
+      icon: ImageIcon,
       label: t("shell.navigation.images"),
       active: pathname === "/images" || pathname.startsWith("/images/"),
       onClick: () => {
@@ -4538,7 +4530,7 @@ export function AppSidebar() {
             disabled={chats.length === 0}
             onSelect={() => void archiveSection().catch(() => undefined)}
           >
-            <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
             <span>{t("shell.selection.archiveChats")}</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -5116,7 +5108,7 @@ export function AppSidebar() {
           variant="destructive"
           onSelect={() => deleteSelectedProjects()}
         >
-          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.selection.deleteProjects")}</span>
         </ContextMenuItem>
       </ContextMenuContent>
@@ -5153,7 +5145,7 @@ export function AppSidebar() {
           selectedChatItems.map((selected) => selected.id),
         )}
         <ContextMenuItem onSelect={() => void archiveSelected()}>
-          <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.selection.archiveChats")}</span>
         </ContextMenuItem>
         <ContextMenuItem
@@ -5170,7 +5162,7 @@ export function AppSidebar() {
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem variant="destructive" onSelect={() => deleteSelected()}>
-          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.selection.deleteChats")}</span>
         </ContextMenuItem>
       </ContextMenuContent>
@@ -5293,7 +5285,7 @@ export function AppSidebar() {
             </P.Sub>
             <P.Separator />
             <P.Item onSelect={() => void handleArchiveThread(item)}>
-              <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
               <span>Archive</span>
             </P.Item>
             <P.Item
@@ -5306,7 +5298,7 @@ export function AppSidebar() {
                     })
               }
             >
-              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
               <span>Delete</span>
             </P.Item>
       </>
@@ -5659,7 +5651,7 @@ export function AppSidebar() {
             anyFiled: !pinnedProjectIdSet.has(project.id) && Boolean(sectionByProjectId[project.id]),
           })}
           <P.Item onSelect={() => void archiveProjectChats()}>
-            <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
             <span>Archive chats</span>
           </P.Item>
           <P.Separator />
@@ -5670,7 +5662,7 @@ export function AppSidebar() {
               openDeleteDialog({ kind: "project", project });
             }}
           >
-            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
             <span>Delete project</span>
           </P.Item>
       </>
@@ -6580,7 +6572,7 @@ export function AppSidebar() {
                               openDeleteDialog({ kind: "run", run })
                             }
                           >
-                            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
                             <span>{t("common.delete")}</span>
                           </DropdownMenuItem>
                         </NonModalDropdownMenu>

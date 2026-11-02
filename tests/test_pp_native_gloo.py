@@ -56,6 +56,7 @@ GEMMA2 = "trl-internal-testing/tiny-Gemma2ForCausalLM"
 GEMMA3 = "hf-internal-testing/tiny-random-Gemma3ForCausalLM"
 MISTRAL = "hf-internal-testing/tiny-random-MistralForCausalLM"
 QWEN3_MOE = "trl-internal-testing/tiny-Qwen3MoeForCausalLM"
+OLMOE = "hf-internal-testing/tiny-random-OlmoeForCausalLM"
 DEEPSEEK_V3 = "trl-internal-testing/tiny-DeepseekV3ForCausalLM"
 
 ARCHS = {"llama": LLAMA, "qwen3": QWEN3, "gemma2": GEMMA2, "gemma3": GEMMA3, "mistral": MISTRAL}
@@ -300,8 +301,16 @@ def _case_ga(rank, world, tmp, arch, n_mb):
     # [1, seq] position_ids (the default positions) are broadcast to every micro-batch.
     loss = float(pp.step(ids, labels, position_ids = torch.arange(ids.shape[1])[None]))
     grads = {n: p.grad.detach().clone() for n, p in model.named_parameters() if p.grad is not None}
+    # Failing before: eval_loss did not expand [1, seq] kwargs ("Expecting 2 arg_mbs but got 1").
+    eval_loss = float(pp.eval_loss(ids, labels, position_ids = torch.arange(ids.shape[1])[None]))
     # Unscaled-mean mistake check: what scale_grads=True (divide by n_mb) would have produced.
-    return {"ga_loss": total, "ga_grads": ga_grads, "loss": loss, "grads": grads}
+    return {
+        "ga_loss": total,
+        "ga_grads": ga_grads,
+        "loss": loss,
+        "grads": grads,
+        "eval_loss": eval_loss,
+    }
 
 
 def _case_scaler(rank, world, tmp):
@@ -339,7 +348,8 @@ def _case_refusals(rank, world, tmp):
         except (ValueError, RuntimeError) as exc:
             out[key] = str(exc)
 
-    catch("moe", lambda: ppn.apply_pipeline_parallel(build(QWEN3_MOE, layers = 2), mesh))
+    # Qwen3-MoE carries its router auxiliary loss between stages (test_pp_moe_aux_gloo.py); OLMoE is unproven.
+    catch("moe", lambda: ppn.apply_pipeline_parallel(build(OLMOE, layers = 2), mesh))
     catch("mla", lambda: ppn.apply_pipeline_parallel(build(DEEPSEEK_V3, layers = 2), mesh))
 
     def tied_trainable():
@@ -683,6 +693,7 @@ def test_pp2_tied_embeddings_kept_on_both_ends():
 def test_pp2_microbatches_equal_gradient_accumulation(n_mb):
     for res in _spawn("ga", 2, arch = "qwen3", n_mb = n_mb):
         assert res["loss"] == pytest.approx(res["ga_loss"], rel = 1e-5)
+        assert res["eval_loss"] == pytest.approx(res["ga_loss"], rel = 1e-5)
         assert res["grads"]
         for name, grad in res["grads"].items():
             torch.testing.assert_close(grad, res["ga_grads"][name], rtol = 1e-4, atol = 1e-6, msg = name)

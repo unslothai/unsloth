@@ -24,7 +24,8 @@ import {
   Cancel01Icon,
   DashboardCircleIcon,
   FlimSlateIcon,
-  Image01Icon,
+  ImageIcon,
+  LayoutTwoColumnIcon,
   PencilEdit02Icon,
   Search01Icon,
   BubbleChatTemporaryIcon,
@@ -33,7 +34,7 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
-import { Columns2Icon, GitBranchIcon, type LucideIcon } from "lucide-react";
+import { GitBranchIcon, type LucideIcon } from "lucide-react";
 import {
   type KeyboardEvent,
   type ReactNode,
@@ -146,7 +147,7 @@ const ACTIONS: Action[] = [
   },
   {
     id: "switchToImages",
-    icon: Image01Icon,
+    icon: ImageIcon,
     labelKey: "shell.search.generateImage",
   },
   {
@@ -630,7 +631,7 @@ function chatRow(
     haystack: item.searchText,
     icon:
       item.type === "compare"
-        ? Columns2Icon
+        ? LayoutTwoColumnIcon
         : item.isFork
           ? GitBranchIcon
           : MessageCircleIcon,

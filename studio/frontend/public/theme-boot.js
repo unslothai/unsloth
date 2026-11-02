@@ -30,6 +30,14 @@ try {
   }
 } catch (e) {}
 
+// macOS defaults the UI font to the system font (index.css html.client-mac); set before
+// first paint so Inter never flashes. Follows the browser OS, not the possibly remote server.
+try {
+  if (/Macintosh/.test(navigator.userAgent)) {
+    document.documentElement.classList.add("client-mac");
+  }
+} catch (e) {}
+
 // One screen pixel in CSS px, for slider tracks (index.css); re-run when the zoom changes.
 try {
   (function px() {

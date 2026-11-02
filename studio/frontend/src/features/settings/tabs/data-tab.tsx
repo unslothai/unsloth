@@ -77,14 +77,13 @@ import {
 import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
-  Archive03Icon,
-  Delete02Icon,
+  ArchiveIcon,
   Download01Icon,
   FlimSlateIcon,
-  Image03Icon,
+  ImageIcon,
   LibrariesIcon,
 } from "@hugeicons/core-free-icons";
-import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, MessageCircleIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
@@ -820,7 +819,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                 "archived-images",
                 "archivedImages",
                 "shell.navigation.images",
-                Image03Icon,
+                ImageIcon,
               ],
               [
                 "archived-videos",
@@ -870,7 +869,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             size="sm"
             onClick={() => setArchiveConfirmOpen(true)}
           >
-            <HugeiconsIcon icon={Archive03Icon} data-icon="inline-start" />
+            <HugeiconsIcon icon={ArchiveIcon} data-icon="inline-start" />
             {t("settings.data.archiveAllAction")}
           </Button>
         </SettingsRow>
@@ -1120,7 +1119,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                   disabled={count === null || count === 0 || clearing}
                   className="text-destructive hover:text-destructive aria-expanded:text-destructive hover:border-destructive/60"
                 >
-                  <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                  <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                   {t("settings.data.deleteAllAction")}
                   <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5" />
                 </Button>
