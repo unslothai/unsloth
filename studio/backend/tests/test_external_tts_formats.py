@@ -79,7 +79,7 @@ def _speak(
     return result
 
 
-@pytest.mark.parametrize("content_type", ["audio/pcm", "audio/pcm; rate=24000", None])
+@pytest.mark.parametrize("content_type", ["audio/pcm", "Audio/PCM", "audio/pcm; rate=24000", None])
 def test_openrouter_mai_returns_playable_wav(monkeypatch, content_type):
     audio, media_type = _speak(
         monkeypatch, "openrouter", _MODEL, "wav", "pcm", _PCM, content_type, repeat = 2

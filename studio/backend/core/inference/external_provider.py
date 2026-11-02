@@ -7176,7 +7176,7 @@ class ExternalProviderClient:
         media_type = (response.headers.get("content-type") or "").split(";")[0].strip()
         audio = response.content
         if mai_pcm:
-            if media_type not in ("audio/pcm", "application/octet-stream", ""):
+            if media_type.lower() not in ("audio/pcm", "application/octet-stream", ""):
                 raise httpx.DecodingError("OpenRouter MAI-Voice did not return PCM audio.")
             if not audio or len(audio) % 2:
                 raise httpx.DecodingError("OpenRouter MAI-Voice returned malformed PCM audio.")
