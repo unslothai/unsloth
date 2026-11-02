@@ -5295,10 +5295,17 @@ def test_a_resident_table_that_crowds_out_the_pinned_experts_is_read_lazily_for_
     # With the RAM for both, the table stays resident beside the pinned cache.
     backend, cmd = _cache_launch(tmp_path, ram_gib = 256, **shape)
     assert _has_moe_cache(cmd) and _load_mode(cmd) == "none", cmd
+    assert cmd[cmd.index("--lazy-mode") + 1] == "off", cmd
+    assert backend._lazy_mode_flags == ["--lazy-mode", "off"]
 
-    # Too little RAM even with the table lazy: no cache, and the table decision stands.
+    # Too little RAM even with the table lazy: no cache, and the table decision is the
+    # one a build without the cache makes (here the table already streams).
+    no_cache = dict(_CACHE_CAPS_ON, supports_moe_cache = False, supports_moe_cache_auto = False)
+    reference, reference_cmd = _cache_launch(tmp_path, ram_gib = 26, caps = no_cache, **shape)
     backend, cmd = _cache_launch(tmp_path, ram_gib = 26, **shape)
     assert not _has_moe_cache(cmd), cmd
+    assert backend._lazy_mode_flags == reference._lazy_mode_flags, (cmd, reference_cmd)
+    assert ("--lazy-mode" in cmd) == ("--lazy-mode" in reference_cmd), (cmd, reference_cmd)
 
 
 @pytest.mark.parametrize(
