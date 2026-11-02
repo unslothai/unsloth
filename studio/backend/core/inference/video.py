@@ -2303,8 +2303,6 @@ def _video_index_repo(base: str, *, local_files_only: bool = False) -> str:
 
 
 def _video_offline_cache_miss(exc: BaseException) -> bool:
-    """A forced-offline load failed on something missing from the cache: an OSError here, or the LTX-2.5 encoder
-    worker's load failing on one (it crosses the process boundary as a flagged TextEncoderWorkerError)."""
     return isinstance(exc, OSError) or bool(getattr(exc, "cache_miss", False))
 
 
@@ -2314,14 +2312,15 @@ def _video_cached_while_hub_unreachable(
     checkpoint_repo: Optional[str],
     checkpoint_file: Optional[str],
 ) -> bool:
-    """No local snapshot, the Hub verdict says unreachable, and the base manifest (plus a GGUF / single-file pick)
-    is cached. False on any doubt, so a first download still asks."""
     if base_local or not base_repo or not hub_reachability.hub_unreachable():
         return False
     try:
         from core.inference.diffusion import _cached_while_hub_unreachable
 
-        if not _cached_while_hub_unreachable(base_repo, "model_index.json"):
+        if not any(
+            _cached_while_hub_unreachable(base_repo, name)
+            for name in ("model_index.json", "modular_model_index.json")
+        ):
             return False
         if checkpoint_file and checkpoint_repo and not Path(checkpoint_repo).expanduser().exists():
             return _cached_while_hub_unreachable(checkpoint_repo, checkpoint_file)
@@ -5609,8 +5608,7 @@ class VideoBackend:
 
             from .diffusion_families import pinned_repo_revision
 
-            # With the Hub unreachable, diffusers' "Couldn't connect" fallback first sends an untimed model_info.
-            # A cached base loads offline instead, as the image backend does; a cache miss retries online.
+            # Avoid diffusers' untimed model_info when the cache can serve an unreachable Hub.
             forced_offline = not local_files_only and _video_cached_while_hub_unreachable(
                 base_local,
                 kwargs.get("_base_fetch_repo") or base,
@@ -5621,7 +5619,6 @@ class VideoBackend:
             def _load(offline: bool) -> None:
                 if forced_offline:
                     kwargs["local_files_only"] = offline
-                # Pin every hub-id config read during assembly to the plan's commit (no-op when unpinned).
                 with pread_safetensors():
                     with pinned_repo_revision(
                         kwargs.get("_base_fetch_repo"), kwargs.get("_base_fetch_revision")

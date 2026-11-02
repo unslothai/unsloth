@@ -138,6 +138,13 @@ def test_a_pipeline_cached_only_in_its_mirror_loads_offline(monkeypatch, hub_dow
     assert calls[0]["_base_fetch_repo"] == mirror
 
 
+def test_a_modular_pipeline_manifest_is_a_cached_base(hub_down):
+    repo = "MiniMaxAI/MiniMax-H3"
+    _cache(hub_down, repo, "modular_model_index.json")
+
+    assert video_mod._video_cached_while_hub_unreachable(None, repo, None, None)
+
+
 def test_the_failed_offline_attempt_is_released_before_the_online_retry(monkeypatch, hub_down):
     import weakref
 
