@@ -1094,7 +1094,6 @@ def _restore_source_tokenizer_class(
     token = None,
     source_class = None,
 ):
-    """Replace generic TokenizersBackend metadata for Transformers 4.x readers."""
     if tokenizer is None or save_directory is None:
         return
     tokenizer_config_name = (

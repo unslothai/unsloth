@@ -4737,9 +4737,7 @@ def _mark_loaded_revision(
     cache_dir = None,
     load_kwargs = None,
 ):
-    """Retain the source ref and cache for tokenizer saving."""
     from ..save import _capture_source_tokenizer_class
-
     for obj in result if isinstance(result, (tuple, list)) else (result,):
         try:
             targets = (obj, getattr(obj, "tokenizer", None))
