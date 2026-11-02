@@ -24,7 +24,6 @@ let committed: ChatBackgroundValue | null = null;
 let committedSha: string | null = null;
 let writes: Promise<unknown> = Promise.resolve();
 let hydration: Promise<void> | undefined;
-/** `dirty`: a local edit the server has not seen. */
 export type BackgroundSyncState = {
 	updatedAt: number | null;
 	sha256: string | null;
@@ -38,6 +37,9 @@ const CLEAN_SYNC: BackgroundSyncState = {
 let onLocalChange: (() => void) | null = null;
 export function setBackgroundChangeListener(listener: (() => void) | null) {
 	onLocalChange = listener;
+}
+export function backgroundRevision(): number {
+	return revision;
 }
 export async function readBackgroundSync(): Promise<BackgroundSyncState> {
 	const table = currentDatabase().table("backgrounds");
@@ -56,7 +58,6 @@ export async function writeBackgroundSync(
 	const { sha256: _sha, ...state } = { ...CLEAN_SYNC, ...(row?.state ?? {}), ...patch };
 	await table.put({ id: "sync", state });
 }
-/** Records the account's hash for `blob`, only while this tab still holds that image. */
 export async function recordUploadedImage(
 	blob: Blob,
 	sha256: string | null,
@@ -133,6 +134,7 @@ async function persist(
 	const ticket = ++revision;
 	if (optimistic) useBackgroundStore.setState({ value, error: null });
 	const write = writes.then(async () => {
+		if (fromServer && ticket !== revision) return;
 		const sameImage = Boolean(value && committed && value.blob === committed.blob);
 		const sha256 = fromServer ? (fromServer.sha256 ?? null) : sameImage ? committedSha : null;
 		if (value) await db.table("backgrounds").put({ id: "current", value, sha256 });
@@ -164,11 +166,12 @@ async function persist(
 		return false;
 	}
 }
-/** Adopts the account's copy without marking it as a local edit to send back. */
 export function applyServerBackground(
 	value: ChatBackgroundValue | null,
 	sync: Pick<BackgroundSyncState, "updatedAt" | "sha256">,
+	expectedRevision: number,
 ): Promise<boolean> {
+	if (expectedRevision !== revision) return Promise.resolve(false);
 	return persist(value, false, sync);
 }
 export function patchBackground(patch: Partial<BackgroundAdjustments>) {

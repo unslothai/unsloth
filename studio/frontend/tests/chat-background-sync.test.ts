@@ -43,7 +43,7 @@ test("an edit made while the account's copy downloads is not overwritten by it",
   const pull = sync.slice(sync.indexOf("async function pull()"));
   assert.match(pull, /const started = changes;/);
   assert.match(pull, /await loadChatBackgroundImage\(\);\n\s*if \(changes !== started\) return;\n\s*await applyServerBackground\(/);
-  assert.match(pull, /if \(changes === started\) await applyServerBackground\(null, stamp\);/);
+  assert.match(pull, /if \(changes === started\) await applyServerBackground\(null, stamp, revision\);/);
 });
 
 test("adjustments saved against another browser's newer image re-upload this browser's image", () => {
