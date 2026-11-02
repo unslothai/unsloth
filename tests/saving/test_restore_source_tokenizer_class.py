@@ -4,6 +4,7 @@ import ast
 import json
 import os
 import types
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ def _load_restore_helper(hub_path = None):
         "_source_tokenizer_class",
         "_restore_source_tokenizer_class",
         "_unsloth_tokenizer_save_pretrained",
+        "_without_runtime_truncation",
     }
     nodes = [
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
@@ -33,6 +35,7 @@ def _load_restore_helper(hub_path = None):
         "json": json,
         "os": os,
         "logger": _Logger(),
+        "contextmanager": contextmanager,
         "_resolve_hub_repo_cached_file": lambda *args, **kwargs: hub_path,
         "_tokenizer_cache_dir": lambda tokenizer: None,
         "_tokenizer_revision": lambda tokenizer: None,
