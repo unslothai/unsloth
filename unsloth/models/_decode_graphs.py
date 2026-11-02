@@ -697,7 +697,9 @@ def decode_step(
         _fill_keep(state, s, mask, bsz, kv_len, cap, device)
 
     autocast = _autocast_state()
-    key = (bsz, device, autocast, torch.is_inference_mode_enabled(), span)
+    # The fused 4bit decode (UNSLOTH_DECODE_FUSED_NF4) records other launches: its own steps.
+    fused = os.environ.get("UNSLOTH_DECODE_FUSED_NF4", "0")
+    key = (bsz, device, autocast, torch.is_inference_mode_enabled(), span, fused)
     step = state.graphs.get(key)
     if step is None:
         if len(state.graphs) >= (MAX_GRAPHS if span is None else MAX_FULL_GRAPHS):
