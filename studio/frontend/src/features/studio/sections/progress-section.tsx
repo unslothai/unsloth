@@ -44,13 +44,13 @@ import {
   Alert02Icon,
   ChartAverageIcon,
   DashboardSpeed01Icon,
-  FolderExportIcon,
   Notebook01Icon,
   RamMemoryIcon,
   TaskDone01Icon,
   TemperatureIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderExportIcon } from "@/lib/folder-icons";
 import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";

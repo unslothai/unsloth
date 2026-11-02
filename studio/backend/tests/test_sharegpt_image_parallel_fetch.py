@@ -156,6 +156,11 @@ def test_mixed_local_and_url_rows_keep_row_order(monkeypatch, workers, tmp_path)
 
 def test_local_only_dataset_starts_no_threads(monkeypatch, workers, tmp_path):
     monkeypatch.setattr(format_conversion, "_own_image_path", lambda path, account: path)
+    # The first tqdm bar in a process starts tqdm's own TMonitor thread; that is not a fetch worker,
+    # and whether this test is that first bar depends on what ran before it in the worker.
+    from tqdm import std as tqdm_std
+
+    monkeypatch.setattr(tqdm_std.tqdm, "monitor_interval", 0)
     before = threading.active_count()
     created = []
     real_init = threading.Thread.__init__

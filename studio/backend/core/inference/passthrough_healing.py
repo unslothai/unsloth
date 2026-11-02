@@ -183,6 +183,7 @@ def heal_openai_message_events(
     msg: dict,
     allowed_tools: set,
     tools: Optional[list] = None,
+    allow_incomplete: bool = True,
 ) -> Optional[list]:
     if not isinstance(msg, dict) or msg.get("tool_calls"):
         return None
@@ -190,12 +191,22 @@ def heal_openai_message_events(
     if not isinstance(content, str) or not _has_heal_signal(content):
         return None
     parsed, spans = parse_tool_calls_from_text(content, allow_incomplete = True, with_spans = True)
+    # A strict parse alone would promote calls quoted inside a rejected unfinished call.
+    closed = (
+        None
+        if allow_incomplete
+        else set(parse_tool_calls_from_text(content, allow_incomplete = False, with_spans = True)[1])
+    )
     tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
     events: list = []
     pos = 0
     call_count = 0
     for call, (start, end) in zip(parsed, spans):
-        promoted = _promote([call], allowed_tools, id_offset = call_count, tool_schemas = tool_schemas)
+        promoted = (
+            _promote([call], allowed_tools, id_offset = call_count, tool_schemas = tool_schemas)
+            if closed is None or (start, end) in closed
+            else None
+        )
         if promoted:
             if content[pos:start]:
                 events.append(("text", content[pos:start]))
@@ -215,9 +226,10 @@ def heal_openai_message(
     msg: dict,
     allowed_tools: set,
     tools: Optional[list] = None,
+    allow_incomplete: bool = True,
 ) -> bool:
     """Edits in place; only promoted calls' markup is removed, undeclared calls stay byte-intact."""
-    events = heal_openai_message_events(msg, allowed_tools, tools)
+    events = heal_openai_message_events(msg, allowed_tools, tools, allow_incomplete)
     if not events:
         return False
     calls = [value for kind, value in events if kind == "tool_call"]
@@ -500,6 +512,14 @@ class StreamToolCallHealer:
                 if may_parse
                 else ([], [])
             )
+            # A bracket call after a still-open tag block is that block's argument text.
+            if (
+                parsed
+                and self._buffer.startswith("<")
+                and not self._buffer.startswith("<", spans[0][0])
+                and _closed_signal_span(self._buffer) is None
+            ):
+                parsed, spans = [], []
             if not parsed:
                 # Its close tags are gate tokens, so a closed gate means no closed span.
                 closed_span = _closed_signal_span(self._buffer) if may_parse else None
@@ -543,14 +563,14 @@ class StreamToolCallHealer:
             self._buffer = self._buffer[run_end:]
             self._holding = False
 
-    def finalize(self) -> list:
+    def finalize(self, promote: bool = True) -> list:
         """Keeps event order; only promoted call markup is dropped and all other residue flushes as text."""
         self._strict_gate.release()
         if not self._buffer:
             return []
         residue, self._buffer = self._buffer, ""
         holding, self._holding = self._holding, False
-        if self.dormant or not holding:
+        if self.dormant or not holding or not promote:
             return [("text", residue)]
         parsed, spans = parse_tool_calls_from_text(
             residue,

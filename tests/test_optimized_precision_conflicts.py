@@ -28,6 +28,16 @@ def _mistral_format_names(tree):
     return names
 
 
+def _tiling_names(tree):
+    """Names loader.py imports from ..tiling (tiled MLP), which these precision checks never reach."""
+    return {
+        alias.asname or alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == "tiling" and node.level == 2
+        for alias in node.names
+    }
+
+
 def _loader_utils_functions(tree, path, method):
     """Real definitions of the .loader_utils functions loader.py imports and `method` calls."""
     imported = {
@@ -120,6 +130,8 @@ def loader():
         _revision_for_resolved_repo = lambda revision, *args: revision,
         AutoConfig = SimpleNamespace(from_pretrained = config),
         PeftConfig = SimpleNamespace(from_pretrained = no_adapter),
+        # No load scope here, so every probe reaches its loader, as _memo_config_probe does outside one.
+        _memo_config_probe = lambda loader, name, **kwargs: loader(name, **kwargs),
         get_transformers_model_type = lambda *args, **kwargs: ["llama"],
         FastLlamaModel = SimpleNamespace(from_pretrained = dispatch),
         apply_unsloth_gradient_checkpointing = lambda value, *args: value,
@@ -133,6 +145,8 @@ def loader():
     # No fixture is Mistral-format: stub each loader.py helper deciding that, new ones included.
     for name in _mistral_format_names(tree):
         env.setdefault(name, RuntimeError if name[0].isupper() else (lambda *args, **kwargs: False))
+    for name in _tiling_names(tree):
+        env.setdefault(name, lambda *args, **kwargs: None)
     # Real loader_utils helpers (e.g. the fp8 dequantize check from #14516) where no stub is given.
     env.setdefault("inspect", inspect)
     real = [n for n in _loader_utils_functions(tree, path, method) if n.name not in env]

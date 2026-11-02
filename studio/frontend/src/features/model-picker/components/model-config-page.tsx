@@ -148,7 +148,7 @@ import {
   selectResidentEstimateSettings,
 } from "../model-config/resident-memory-request";
 import { useMemoryEstimate } from "../hooks/use-memory-estimate";
-import { useInt8PrefillAvailable } from "../hooks/use-int8-prefill-available";
+import { usePrefillOptionAvailable } from "../hooks/use-int8-prefill-available";
 import {
   fetchLoadModelOverride,
   fromApiOverride,
@@ -1454,11 +1454,15 @@ function MlxSpeculativeRows({
   update,
   speculativeFallback,
   modelPath,
+  fastVerifyAvailable,
+  onFastVerifyChange,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   speculativeFallback: string;
   modelPath: string;
+  fastVerifyAvailable: boolean;
+  onFastVerifyChange: (checked: boolean) => void;
 }) {
   const [drafters, setDrafters] = useState<MlxDrafter[]>([]);
   useEffect(() => {
@@ -1595,6 +1599,27 @@ function MlxSpeculativeRows({
           </Select>
         </div>
       )}
+      {/* Only a drafter runs it; stays visible while on so it can be turned off. */}
+      {((fastVerifyAvailable && DRAFTER_MODEL_SPEC_TYPES.has(mode)) || config.mlxFastVerify) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Fast Verify</span>
+            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+              Exp
+            </span>
+            <InfoHint>
+              Speeds up speculative decoding with faster checks of the drafter's
+              tokens. Answers can change slightly from plain decoding, the same way
+              on every run. Applies only when a drafter loads; changing it reloads.
+            </InfoHint>
+          </div>
+          <Switch
+            className="panel-switch shrink-0"
+            checked={config.mlxFastVerify ?? false}
+            onCheckedChange={onFastVerifyChange}
+          />
+        </div>
+      )}
     </>
   );
 }
@@ -1606,6 +1631,10 @@ function MlxAdvancedSettings({
   servedByMlx,
   int8PrefillAvailable,
   onInt8PrefillChange,
+  anePrefillAvailable,
+  onAnePrefillChange,
+  fastVerifyAvailable,
+  onFastVerifyChange,
   offloadable,
   offloadDecided,
   offloadNotes,
@@ -1620,6 +1649,10 @@ function MlxAdvancedSettings({
   servedByMlx: boolean;
   int8PrefillAvailable: boolean;
   onInt8PrefillChange: (checked: boolean) => void;
+  anePrefillAvailable: boolean;
+  onAnePrefillChange: (checked: boolean) => void;
+  fastVerifyAvailable: boolean;
+  onFastVerifyChange: (checked: boolean) => void;
   offloadable: readonly MlxOffloadablePart[];
   offloadDecided: Record<MlxOffloadablePart, number | null> | null;
   offloadNotes: Record<MlxOffloadablePart, string | null>;
@@ -1691,12 +1724,34 @@ function MlxAdvancedSettings({
           />
         </div>
       )}
+      {servedByMlx && (anePrefillAvailable || config.mlxAnePrefill) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Neural Engine Prefill</span>
+            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+              Exp
+            </span>
+            <InfoHint>
+              Reads long prompts faster by running part of each layer on the
+              Neural Engine beside the GPU. Answers can change slightly. Loading
+              takes longer the first time while it measures this Mac.
+            </InfoHint>
+          </div>
+          <Switch
+            className="panel-switch shrink-0"
+            checked={config.mlxAnePrefill ?? false}
+            onCheckedChange={onAnePrefillChange}
+          />
+        </div>
+      )}
       {servedByMlx && (
         <MlxSpeculativeRows
           config={config}
           update={update}
           speculativeFallback={speculativeFallback}
           modelPath={modelPath}
+          fastVerifyAvailable={fastVerifyAvailable}
+          onFastVerifyChange={onFastVerifyChange}
         />
       )}
       {servedByMlx && (
@@ -2664,14 +2719,29 @@ export function ModelConfigPage({
     platformDeviceType,
     platformChatOnlyReason,
   );
-  const int8PrefillAvailable = useInt8PrefillAvailable(
+  const prefillOptionPath =
     servedByMlx &&
-      !(target.meta.nativePathToken ?? (isActiveModel ? activeNativePathToken : null))
+    !(target.meta.nativePathToken ?? (isActiveModel ? activeNativePathToken : null))
       ? target.id
-      : null,
+      : null;
+  const int8PrefillAvailable = usePrefillOptionAvailable(
+    "int8",
+    prefillOptionPath,
+    hfToken || null,
+  );
+  const anePrefillAvailable = usePrefillOptionAvailable(
+    "ane",
+    prefillOptionPath,
     hfToken || null,
   );
   const [int8PrefillConfirmOpen, setInt8PrefillConfirmOpen] = useState(false);
+  const [anePrefillConfirmOpen, setAnePrefillConfirmOpen] = useState(false);
+  const fastVerifyAvailable = usePrefillOptionAvailable(
+    "fast-verify",
+    prefillOptionPath,
+    hfToken || null,
+  );
+  const [fastVerifyConfirmOpen, setFastVerifyConfirmOpen] = useState(false);
   // Read live: the sidebar copy stays mounted while collapsed.
   const advancedPreference = useSyncExternalStore(
     subscribeAdvancedSettingsOpen,
@@ -2695,6 +2765,10 @@ export function ModelConfigPage({
   const [initialMlxInt8Prefill] = useState(
     () => configState.mlxInt8Prefill ?? false,
   );
+  const [initialMlxAnePrefill] = useState(
+    () => configState.mlxAnePrefill ?? false,
+  );
+  const [initialMlxFastVerify] = useState(() => configState.mlxFastVerify ?? false);
   const [initialMlxOffload] = useState(
     () => configState.mlxPleOffload != null || configState.mlxExpertOffload != null,
   );
@@ -2702,6 +2776,8 @@ export function ModelConfigPage({
   // and a width that starts applying then has to surface.
   const autoOpenForMlxKvQuant = servedByMlx && initialMlxKvQuant != null;
   const autoOpenForMlxInt8Prefill = servedByMlx && initialMlxInt8Prefill;
+  const autoOpenForMlxAnePrefill = servedByMlx && initialMlxAnePrefill;
+  const autoOpenForMlxFastVerify = servedByMlx && initialMlxFastVerify;
   const autoOpenForMlxOffload = servedByMlx && initialMlxOffload;
   // Opened to change one field: show its section for this visit, leaving the saved switch alone.
   const [revealForFocus, setRevealForFocus] = useState(focusField != null);
@@ -2711,6 +2787,8 @@ export function ModelConfigPage({
       (autoOpenAdvanced ||
         autoOpenForMlxKvQuant ||
         autoOpenForMlxInt8Prefill ||
+        autoOpenForMlxAnePrefill ||
+        autoOpenForMlxFastVerify ||
         autoOpenForMlxOffload));
   const toggleAdvanced = (open: boolean) => {
     setRevealForFocus(false);
@@ -4152,7 +4230,7 @@ export function ModelConfigPage({
         {isActiveModel && target.isGguf && !audioRuntimeGguf ? (
           // The same pool the estimate above names: "Unified" on Apple Silicon, "Shared" on other one-pool machines.
           <LoadedPlacementRow
-            pool={singleMemoryPool ? (isAppleUnifiedMemory ? "unified memory" : "shared memory") : null}
+            pool={singleMemoryPool ? (isAppleUnifiedMemory ? "unified" : "shared") : null}
           />
         ) : null}
         {target.isGguf && !audioRuntimeGguf && (
@@ -4265,6 +4343,18 @@ export function ModelConfigPage({
                       checked
                         ? setInt8PrefillConfirmOpen(true)
                         : update({ mlxInt8Prefill: false })
+                    }
+                    anePrefillAvailable={anePrefillAvailable}
+                    onAnePrefillChange={(checked) =>
+                      checked
+                        ? setAnePrefillConfirmOpen(true)
+                        : update({ mlxAnePrefill: false })
+                    }
+                    fastVerifyAvailable={fastVerifyAvailable}
+                    onFastVerifyChange={(checked) =>
+                      checked
+                        ? setFastVerifyConfirmOpen(true)
+                        : update({ mlxFastVerify: false })
                     }
                     offloadable={memoryEstimate.estimate?.mlxOffloadable ?? []}
                     offloadDecided={mlxOffloadDecidedNow}
@@ -4454,6 +4544,62 @@ export function ModelConfigPage({
               onClick={() => {
                 update({ mlxInt8Prefill: true });
                 setInt8PrefillConfirmOpen(false);
+              }}
+            >
+              Turn on
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={anePrefillConfirmOpen}
+        onOpenChange={setAnePrefillConfirmOpen}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Turn on Neural Engine Prefill?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Long prompts are read faster, but the model&apos;s answers will
+              change slightly. The first load on this Mac takes longer while it
+              measures whether this helps; when it does not, the model runs as
+              before. You can turn it off at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                update({ mlxAnePrefill: true });
+                setAnePrefillConfirmOpen(false);
+              }}
+            >
+              Turn on
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={fastVerifyConfirmOpen}
+        onOpenChange={setFastVerifyConfirmOpen}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Turn on Fast Verify?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Speculative decoding runs faster, but the model&apos;s answers will
+              change slightly from plain decoding, the same way on every run. It
+              applies only when a drafter loads, and changing it reloads the
+              model. You can turn it off at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                update({ mlxFastVerify: true });
+                setFastVerifyConfirmOpen(false);
               }}
             >
               Turn on

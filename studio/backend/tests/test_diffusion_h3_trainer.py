@@ -799,7 +799,8 @@ def test_int8_training_applies_h3s_small_m_guards():
     assert "_int8_quantize_base(transformer, cfg.resolved_family)" in src
     dit_src = Path(dit.__file__).read_text()
     body = dit_src.split("def _int8_quantize_base", 1)[1].split("\ndef ", 1)[0]
-    assert 'exclude_tokens_for_scheme("int8", family)' in body
+    # training keeps the baked list: the streamed-inference text-stream scope never reaches it
+    assert 'exclude_tokens_for_scheme("int8", family, baked = True)' in body
     assert 'apply_small_m_padding(transformer, "int8", family)' in body
 
 

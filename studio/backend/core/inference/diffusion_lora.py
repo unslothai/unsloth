@@ -658,6 +658,54 @@ def diffusers_lora_family_message(family: Optional[str]) -> str:
     )
 
 
+def _whole_pipeline_label(family: str) -> Optional[str]:
+    from .diffusion_families import detect_family
+
+    fam = detect_family("", override = family) if family else None
+    if fam is None or not fam.single_file_is_pipeline:
+        return None
+    return fam.label or fam.name
+
+
+def lora_unavailable_reason(
+    *,
+    engine: Optional[str],
+    family: Optional[str],
+    model_kind: Optional[str],
+    transformer_quant: Optional[str],
+    compiled: bool = False,
+) -> Optional[str]:
+    """Why ``engine`` cannot apply LoRAs to this build, shown on the Images page; None when it can."""
+    fam = (family or "").lower()
+    name = family or "this model"
+    if engine == "mlx":
+        from .mlx_diffusion_routing import mlx_capabilities
+        if mlx_capabilities(fam).loras:
+            return None
+        return f"The MLX engine does not apply LoRAs to {name} yet."
+    if engine == "sd_cpp":
+        if any(tok in fam for tok in _NATIVE_LORA_FAMILY_TOKENS):
+            return None
+        return f"The native sd.cpp engine cannot apply LoRAs to {name}."
+    if not diffusers_lora_family_supported(fam):
+        return f"LoRAs are not supported for {name} yet: its pipeline has no LoRA loader."
+    quant = (transformer_quant or "").lower()
+    if quant in _DIFFUSERS_LORA_BAKED_QUANT:
+        return None  # load-time bake; adapters ride inside the compiled quantized build
+    if quant in _DIFFUSERS_LORA_BLOCKED_QUANT:
+        return f"LoRAs cannot be applied to a {quant.upper()} transformer."
+    # A GGUF transformer takes adapters unfused (peft wraps each GGUFLinear); only a whole-pipeline GGUF is refused.
+    whole = _whole_pipeline_label(fam) if model_kind == "gguf" else None
+    if whole:
+        return (
+            f"LoRAs are not applied to a whole-pipeline {whole} GGUF. "
+            "Load the .safetensors checkpoint to use LoRAs."
+        )
+    if compiled:
+        return "Speed compiled this model, so LoRAs are off. Reload it with Speed set to Off or Eager to use LoRAs."
+    return None
+
+
 def supports_lora(
     *,
     engine: Optional[str],
@@ -666,19 +714,13 @@ def supports_lora(
     transformer_quant: Optional[str],
     compiled: bool = False,
 ) -> bool:
-    """Adapters bake before torch.compile for torchao int8/fp8; native sd_cpp is LoRA-capable families only, nvfp4/mxfp8 unsupported."""
-    fam = (family or "").lower()
-    if engine == "sd_cpp":
-        return any(tok in fam for tok in _NATIVE_LORA_FAMILY_TOKENS)
-    if not diffusers_lora_family_supported(fam):
-        return False
-    quant = (transformer_quant or "").lower()
-    if quant in _DIFFUSERS_LORA_BAKED_QUANT:
-        return True  # load-time bake; adapters ride inside the compiled quantized build
-    if quant in _DIFFUSERS_LORA_BLOCKED_QUANT:
-        return False
-    if model_kind == "gguf":
-        return False  # GGUF diffusers transformer: use the native engine for LoRA
-    if compiled:
-        return False  # can't load an adapter onto an already-compiled transformer
-    return True
+    return (
+        lora_unavailable_reason(
+            engine = engine,
+            family = family,
+            model_kind = model_kind,
+            transformer_quant = transformer_quant,
+            compiled = compiled,
+        )
+        is None
+    )

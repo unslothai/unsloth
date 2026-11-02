@@ -26,6 +26,7 @@ import signal
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 import asyncio
+import contextvars
 import queue
 import random
 import re
@@ -132,6 +133,9 @@ EMPTY_SEARCH_RESULTS = (
 )
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
+# While text engines fail, no early image lookup: its answer is discarded and adds to rate limiting.
+_TEXT_SEARCH_FAILURE_HOLD_S = 120.0
+_text_search_failed_at: "float | None" = None
 # Not "connection error": DNS failures and refused connections are not resets (#12638).
 _DDGS_RESET_MARKERS = (
     "connection reset",
@@ -9090,15 +9094,23 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
         packages = os.path.join(plan.workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
         if os.path.isdir(packages):
             # Served by sitecustomize's last-resort finder, not sys.path, so plugin discovery never sees them.
-            env["_UNSLOTH_HOST_SESSION_PACKAGES"] = packages
+            env["_UNSLOTH_HOST_SESSION_PACKAGES"] = os.pathsep.join(
+                os_sandbox.session_package_paths(packages)
+            )
             env["PYTHONNOUSERSITE"] = "1"
             # Chat-installed CLIs the approved call names resolve too, but only after every system executable.
             # Copies of just those: a tool probing for a command it lacks never reaches the rest of the folder.
-            requested = _requested_chat_clis(
-                os.path.join(packages, "Scripts" if os.name == "nt" else "bin"),
-                script if script is not None else " ".join(map(str, argv)),
-                os.path.join(private, ".unsloth-chat-bin"),
-            )
+            requested = None
+            # Reversed, so the scheme's own scripts dir wins a name clash, as it does on PATH.
+            for scripts in reversed(os_sandbox.session_script_dirs(packages)):
+                requested = (
+                    _requested_chat_clis(
+                        scripts,
+                        script if script is not None else " ".join(map(str, argv)),
+                        os.path.join(private, ".unsloth-chat-bin"),
+                    )
+                    or requested
+                )
             if requested:
                 env["PATH"] = os.pathsep.join(
                     part for part in (env.get("PATH", ""), requested) if part
@@ -9978,6 +9990,23 @@ def _project_workdir_for(session_id: "str | None") -> "str | None":
     if not _usable_session_id(session_id) and not session_id.startswith(_PROJECT_SESSION_PREFIX):
         return None
     return _get_project_workdir(session_id)
+
+
+def session_runs_in_user_folder(session_id: "str | None") -> bool:
+    """Whether this session's code tools run in the owner's chosen project folder, resolved as the executor does."""
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    try:
+        from storage.studio_db import available_project_working_folder, get_chat_project
+
+        # One read rules out most projects before the four the full resolution makes.
+        project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+        if not available_project_working_folder(project):
+            return False
+        workdir = _project_workdir_for(session_id)
+        return bool(workdir) and _is_user_project_folder(session_id, workdir)
+    except Exception:
+        return False
 
 
 def _get_project_workdir(session_id: str) -> str | None:
@@ -13692,18 +13721,17 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
     if not found:
         return "No earlier turns of this conversation matched that query."
 
-    # Halve until the rendered result fits: chunk size is a target, not a weight (overlap, other
-    # tokenizer, markup). A single chunk that still does not fit is refused.
+    # One fewer until the text the model reads fits: chunk size is a target, not a weight (overlap,
+    # other tokenizer, markup). A single chunk that still does not fit is refused.
     if budget is not None:
         counter = scope.get("token_counter")
         attempt = max(1, int(top_k or 1))
         while True:
-            rendered = _rendered_conversation_search(found)
-            if _conversation_search_cost(rendered, counter) <= int(budget):
-                return rendered
+            if _conversation_search_cost(found[0], counter) <= int(budget):
+                return _rendered_conversation_search(found)
             if attempt <= 1:
                 return "There is no room left in this context to search earlier conversation."
-            attempt = max(1, attempt // 2)
+            attempt -= 1
             found = _recall(attempt)
             if not found:
                 return "No earlier turns of this conversation matched that query."
@@ -13731,7 +13759,7 @@ def _conversation_search_tokens(text: str) -> int:
 
 
 def _rendered_conversation_search(found) -> str:
-    """The tool result exactly as the model would receive it."""
+    """The full result; the model never sees the source map."""
     text, sources = found
     if sources:
         import json as _json
@@ -14022,8 +14050,10 @@ def build_conversation_recall(
     style: str = "tool",
     top_k: int | None = None,
     branch_messages: list[dict] | None = None,
+    query_messages: list[dict] | None = None,
 ) -> dict | None:
-    """Not gated on rag_scope, since compaction happens with or without document RAG; style=inline avoids forged tool_calls, which break strict templates."""
+    """Not gated on rag_scope, since compaction happens with or without document RAG; style=inline avoids forged tool_calls, which break strict templates.
+    ``query_messages`` (the client's transcript) supplies the query when the branch carries a loop's own user-role notices."""
     if not thread_id:
         return None
     try:
@@ -14034,7 +14064,8 @@ def build_conversation_recall(
         return None
 
     # The branch's last user turn: the loop conversation may end with an internal nudge.
-    query = _last_user_text(branch_messages or conversation) or _last_user_text(conversation)
+    _asked = query_messages or branch_messages or conversation
+    query = _last_user_text(_asked) or _last_user_text(conversation)
     if not query:
         return None
     # A nudge ("continue") retrieves nothing, so also query the last real instruction. Not for
@@ -14045,7 +14076,7 @@ def build_conversation_recall(
         from core.inference import instruction_pin
         thin = instruction_pin.is_thin_query(query)
         if thin:
-            _behind = branch_messages or conversation
+            _behind = _asked
             anchor = instruction_pin.last_substantive_instruction(_behind)
             if not anchor:
                 # Use is_thin_query, not a length rule: short prompts can still name something.
@@ -16646,7 +16677,74 @@ def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) ->
     cls._unsloth_http1_retry = True
 
 
-def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
+class _ImageSweep:
+    """Image lookup started beside the text search; the caller still decides whether to register it."""
+
+    def __init__(self, lookup) -> None:
+        from .search_images import cache_generation
+
+        # Read before the sweep so a clear-all during it invalidates new entries.
+        self.generation = cache_generation()
+        self._done = threading.Event()
+        self._value = None
+        self._error: BaseException | None = None
+        context = contextvars.copy_context()
+        threading.Thread(
+            target = context.run,
+            args = (self._run, lookup),
+            name = "web-search-images",
+            daemon = True,
+        ).start()
+
+    def _run(self, lookup) -> None:
+        try:
+            self._value = lookup()
+        except BaseException as exc:  # noqa: BLE001 - re-raised to the caller by result()
+            self._error = exc
+        finally:
+            self._done.set()
+
+    def result(self):
+        self._done.wait()
+        if self._error is not None:
+            raise self._error
+        return self._value
+
+    @classmethod
+    def start(cls, subjects, query, wanted, timeout, website_policy) -> "_ImageSweep | None":
+        """None when the serial path would not reach the network."""
+        try:
+            from ddgs import DDGS
+
+            if not callable(getattr(DDGS, "images", None)):
+                return None
+            if subjects:
+                cleaned = _clean_image_queries(subjects)
+                if not cleaned:
+                    return None
+                return cls(lambda: _image_lookups(cleaned, timeout, website_policy))
+            from .search_images import MAX_IMAGES_PER_SEARCH
+
+            images_fn = DDGS(timeout = timeout).images
+            return cls(
+                lambda: images_fn(
+                    query,
+                    max_results = max(wanted, MAX_IMAGES_PER_SEARCH * 2),
+                    safesearch = "moderate",
+                )
+            )
+        except Exception:  # noqa: BLE001 - the serial path stays available
+            logger.debug("image lookup not started early", exc_info = True)
+            return None
+
+
+def _image_search_or_none(
+    subjects: list,
+    timeout,
+    cancel_event,
+    website_policy,
+    sweep = None,
+) -> "str | None":
     """Returns None on failure: an image error must not discard the text results already found."""
     try:
         return _image_search(
@@ -16654,6 +16752,7 @@ def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy)
             timeout = timeout,
             cancel_event = cancel_event,
             website_policy = website_policy,
+            sweep = sweep,
         )
     except Exception as exc:  # noqa: BLE001 - a garnish must not become the answer
         logger.debug("image lookup failed (%s)", type(exc).__name__)
@@ -16661,7 +16760,13 @@ def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy)
 
 
 def _empty_result_with_requested_images(
-    empty_text: str, subjects: list, include_images: bool, timeout, cancel_event, website_policy
+    empty_text: str,
+    subjects: list,
+    include_images: bool,
+    timeout,
+    cancel_event,
+    website_policy,
+    sweep = None,
 ) -> str:
     """Explicitly named image subjects still return pictures when the text search comes back empty."""
     if not subjects:
@@ -16671,7 +16776,7 @@ def _empty_result_with_requested_images(
         return empty_text + "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
     if cancel_event is not None and cancel_event.is_set():
         return empty_text
-    found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
+    found = _image_search_or_none(subjects, timeout, cancel_event, website_policy, sweep)
     if found is None:
         return empty_text
     return empty_text + "\n\n---\n\n" + found
@@ -16728,6 +16833,16 @@ def _usable_search_results(results, website_policy):
     ]
 
 
+def _note_text_search_outcome(found: bool, error, timeout) -> None:
+    """Holds back early image lookups after an engine failure; any answer, even empty, clears it."""
+    global _text_search_failed_at
+    if found:
+        _text_search_failed_at = None
+    elif error is not None:
+        empty = _search_failure_message(error, timeout) == EMPTY_SEARCH_RESULTS[0]
+        _text_search_failed_at = None if empty else time.monotonic()
+
+
 def _web_search(
     query: str,
     max_results: int = 5,
@@ -16764,6 +16879,7 @@ def _web_search(
     # DDGS.text() is blocking, so cancellation is checked before and after the call.
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
+    sweep = None
     try:
         from .web_access_policy import check_url_access, scope_search_query
 
@@ -16791,6 +16907,13 @@ def _web_search(
                 raise RuntimeError("no approved search engine is available.")
             # reset after setup to keep the primary budget; the earlier deadline bounds fallback.
             deadline = time.monotonic() + timeout if timeout else None
+            failed_at = _text_search_failed_at
+            if include_images and (
+                failed_at is None or time.monotonic() - failed_at > _TEXT_SEARCH_FAILURE_HOLD_S
+            ):
+                sweep = _ImageSweep.start(
+                    subjects, effective_query, wanted, timeout, website_policy
+                )
             client = DDGS(timeout = timeout)
             # DDGS uses per-client timeouts; tiers share one budget and images reuse the client.
             for backend in engine_tiers:
@@ -16812,6 +16935,7 @@ def _web_search(
                     break
         except Exception as exc:
             last_error = exc
+        _note_text_search_outcome(bool(results) or rejected_results, last_error, timeout)
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
@@ -16852,6 +16976,7 @@ def _web_search(
                 timeout,
                 cancel_event,
                 website_policy,
+                sweep,
             )
         parts = []
         for r in results:
@@ -16872,6 +16997,7 @@ def _web_search(
                 timeout,
                 cancel_event,
                 website_policy,
+                sweep,
             )
         text = "\n\n---\n\n".join(parts)
         if wikipedia_fallback:
@@ -16887,7 +17013,7 @@ def _web_search(
         )
         if include_images and subjects:
             # named subjects require one image each rather than a generic image batch.
-            found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
+            found = _image_search_or_none(subjects, timeout, cancel_event, website_policy, sweep)
             if found is not None:
                 text += "\n\n---\n\n" + found
         elif include_images and not wikipedia_fallback:
@@ -16897,6 +17023,7 @@ def _web_search(
                 wanted,
                 cancel_event,
                 website_policy,
+                sweep,
             )
         elif subjects:
             # replayed history must retain the disabled-search reminder.
@@ -16913,6 +17040,7 @@ def _web_search(
                 timeout,
                 cancel_event,
                 website_policy,
+                sweep,
             )
         return failure
 
@@ -16942,33 +17070,12 @@ def _clean_image_queries(queries) -> list[str]:
     return cleaned
 
 
-def _image_search(
-    queries,
-    timeout: int = _EXEC_TIMEOUT,
-    cancel_event = None,
-    website_policy: dict | None = None,
-) -> str:
-    # One lookup per subject, concurrently; same registry and tokens as web_search.
+def _image_lookups(cleaned: list, timeout, website_policy) -> list:
     from concurrent.futures import ThreadPoolExecutor
 
-    from .search_images import cache_generation, images_envelope, register_images
+    from ddgs import DDGS
 
-    cleaned = _clean_image_queries(queries)
-    if not cleaned:
-        return "No subjects provided."
-    if cancel_event is not None and cancel_event.is_set():
-        return "Search cancelled."
-    expected_generation = cache_generation()
-    try:
-        from ddgs import DDGS
-
-        from .web_access_policy import scope_search_query
-    except Exception as e:
-        return _search_failure_message(e, timeout)
-    _install_ddgs_http1_retry()
-    _install_ddgs_connect_timeout()
-    if not callable(getattr(DDGS, "images", None)):
-        return "Image search is unavailable in this install."
+    from .web_access_policy import scope_search_query
 
     def lookup(subject: str) -> list:
         # A client per call: ddgs instances are not documented thread-safe.
@@ -16986,7 +17093,40 @@ def _image_search(
             return []
 
     with ThreadPoolExecutor(max_workers = len(cleaned)) as pool:
-        raw_by_subject = list(pool.map(lookup, cleaned))
+        return list(pool.map(lookup, cleaned))
+
+
+def _image_search(
+    queries,
+    timeout: int = _EXEC_TIMEOUT,
+    cancel_event = None,
+    website_policy: dict | None = None,
+    sweep: "_ImageSweep | None" = None,
+) -> str:
+    # Same registry and tokens as web_search; a sweep is these lookups already under way.
+    from .search_images import cache_generation, images_envelope, register_images
+
+    cleaned = _clean_image_queries(queries)
+    if not cleaned:
+        return "No subjects provided."
+    if cancel_event is not None and cancel_event.is_set():
+        return "Search cancelled."
+    expected_generation = cache_generation() if sweep is None else sweep.generation
+    try:
+        from ddgs import DDGS
+
+        from .web_access_policy import scope_search_query  # noqa: F401 - fail here, as before
+    except Exception as e:
+        return _search_failure_message(e, timeout)
+    _install_ddgs_http1_retry()
+    _install_ddgs_connect_timeout()
+    if not callable(getattr(DDGS, "images", None)):
+        return "Image search is unavailable in this install."
+
+    if sweep is not None:
+        raw_by_subject = sweep.result()
+    else:
+        raw_by_subject = _image_lookups(cleaned, timeout, website_policy)
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
 
@@ -17020,7 +17160,14 @@ def _image_search(
     return header + "\n\n" + "\n\n".join(sections) + images_envelope(entries_all)
 
 
-def _web_search_images_suffix(client, query, wanted, cancel_event, website_policy) -> str:
+def _web_search_images_suffix(
+    client,
+    query,
+    wanted,
+    cancel_event,
+    website_policy,
+    sweep = None,
+) -> str:
     # "" when images are unavailable; never raises, the text results stand on their own.
     from .search_images import (
         MAX_IMAGES_PER_SEARCH,
@@ -17034,11 +17181,14 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
     if not callable(images_fn):
         return ""
     # Read before the sweep so a clear-all during it invalidates new entries.
-    expected_generation = cache_generation()
+    expected_generation = cache_generation() if sweep is None else sweep.generation
     try:
-        raw = images_fn(
-            query, max_results = max(wanted, MAX_IMAGES_PER_SEARCH * 2), safesearch = "moderate"
-        )
+        if sweep is not None:
+            raw = sweep.result()
+        else:
+            raw = images_fn(
+                query, max_results = max(wanted, MAX_IMAGES_PER_SEARCH * 2), safesearch = "moderate"
+            )
     except Exception as exc:  # noqa: BLE001 - optional extra; the text results stand on their own
         logger.debug("web_search image lookup skipped (%s)", type(exc).__name__)
         return ""
@@ -19871,6 +20021,31 @@ class _WindowsToolJob:
             return False
         return bool(self._kernel32.TerminateJobObject(self._handle, 1))
 
+    def active_processes(self) -> "int | None":
+        """JOBOBJECT_BASIC_ACCOUNTING_INFORMATION.ActiveProcesses; None when the query fails."""
+        if not self._handle:
+            return None
+        import ctypes
+
+        class _Accounting(ctypes.Structure):
+            _fields_ = [("times", ctypes.c_int64 * 4)] + [
+                (name, ctypes.c_uint32)
+                for name in (
+                    "TotalPageFaultCount",
+                    "TotalProcesses",
+                    "ActiveProcesses",
+                    "TotalTerminatedProcesses",
+                )
+            ]
+
+        info = _Accounting()
+        # 1 = JobObjectBasicAccountingInformation
+        if not self._kernel32.QueryInformationJobObject(
+            self._handle, 1, ctypes.byref(info), ctypes.sizeof(info), None
+        ):
+            return None
+        return info.ActiveProcesses
+
     def close(self) -> None:
         handle, self._handle = self._handle, None
         if handle:
@@ -19901,6 +20076,14 @@ def _windows_job_capture(proc) -> "_WindowsToolJob | None":
         kernel32.AssignProcessToJobObject.restype = BOOL
         kernel32.TerminateJobObject.argtypes = [H, UINT]
         kernel32.TerminateJobObject.restype = BOOL
+        kernel32.QueryInformationJobObject.argtypes = [
+            H,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+        ]
+        kernel32.QueryInformationJobObject.restype = BOOL
         kernel32.CloseHandle.argtypes = [H]
         kernel32.CloseHandle.restype = BOOL
 
@@ -19994,6 +20177,22 @@ def _killpg_captured(pgid) -> None:
         os.killpg(pgid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
         pass
+
+
+def _captured_group_alive(pgid) -> bool:
+    """False when no member provably remains; a pid-only Windows capture cannot tell, nor kill one."""
+    if pgid is None:
+        return False
+    if isinstance(pgid, tuple):
+        if pgid[0] != "windows-job":
+            return False
+        active = pgid[1].active_processes()
+        return active is None or active > 0
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    return True
 
 
 def _cancel_watcher(
@@ -21093,6 +21292,13 @@ def _missing_path_hint(output: str, workdir: str | None = None) -> str:
 
 # Kept past the spill's head so a trailing traceback still reaches `_missing_path_hint`; also the drain's read size.
 _DRAIN_TAIL_CHARS = 64 * 1024
+_DRAIN_EOF_GRACE_S = 1.5
+# A holder that never lets the reader go quiet is still stopped this long after the leader exits.
+_DRAIN_BUSY_CAP_S = 10.0
+_BACKGROUND_STOPPED_NOTE = (
+    "[Background processes still writing to this output were stopped when the command exited. "
+    "To keep one running, redirect its output to a file, e.g. `nohup cmd > out.log 2>&1 &`.]\n"
+)
 
 
 def _drain_process_output(
@@ -21107,13 +21313,14 @@ def _drain_process_output(
     chunks: list[str] = []
     tail: "deque[str]" = deque()
     kept = joined = tail_chars = omitted_chars = omitted_lines = 0
+    last_read = time.monotonic()
 
     # Captured before waiting so a pipe-holding grandchild can be killed after the leader is reaped.
     if pgid is None:
         pgid = _capture_process_group(proc)
 
     def _reader() -> None:
-        nonlocal kept, joined, tail_chars, omitted_chars, omitted_lines
+        nonlocal kept, joined, tail_chars, omitted_chars, omitted_lines, last_read
         try:
             # Sized reads: a newline-free stream would otherwise arrive as one unbounded "line".
             for line in iter(lambda: proc.stdout.readline(_DRAIN_TAIL_CHARS), ""):
@@ -21138,6 +21345,7 @@ def _drain_process_output(
                         output_callback(line)
                     except Exception:  # noqa: BLE001 - observer must never kill the tool
                         logger.debug("tool output_callback raised", exc_info = True)
+                last_read = time.monotonic()
         except (ValueError, OSError):
             pass  # pipe closed during kill
 
@@ -21156,30 +21364,38 @@ def _drain_process_output(
             proc.wait(timeout = 5)
         except subprocess.TimeoutExpired:
             pass
-    # A grandchild that inherited stdout can hold the pipe open past the main process's exit.
+    # A grandchild holding the inherited stdout outlives the leader: stop the group once the reader has
+    # sat idle for the grace, so a slow drain never kills a redirected background job.
+    background_stopped = False
     if not timed_out:
-        if timeout is not None:
-            # Poll cancel_event in slices: the cancel watcher is gone once the leader exits.
-            deadline = started_at + timeout
-            while reader.is_alive():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    timed_out = True
-                    _killpg_captured(pgid)
-                    break
-                if cancel_event is not None and cancel_event.is_set():
-                    _killpg_captured(pgid)
-                    break
-                reader.join(timeout = min(0.5, remaining))
-        else:
-            # Unlimited timeout drains until the pipe closes, like communicate(timeout=None); cancel stops it.
-            while reader.is_alive():
-                if cancel_event is not None and cancel_event.is_set():
-                    _killpg_captured(pgid)
-                    break
-                reader.join(timeout = 0.5)
+        exited_at = time.monotonic()
+        deadline = None if timeout is None else started_at + timeout
+        # Poll cancel_event in slices: the cancel watcher is gone once the leader exits.
+        while reader.is_alive():
+            if cancel_event is not None and cancel_event.is_set():
+                _killpg_captured(pgid)
+                break
+            now = time.monotonic()
+            past_deadline = deadline is not None and now >= deadline
+            give_up = (
+                now - max(exited_at, last_read) >= _DRAIN_EOF_GRACE_S
+                or now - exited_at >= _DRAIN_BUSY_CAP_S
+                or past_deadline
+            )
+            if give_up and _captured_group_alive(pgid):
+                _killpg_captured(pgid)
+                background_stopped = True
+                break
+            if past_deadline:
+                timed_out = True
+                _killpg_captured(pgid)
+                break
+            reader.join(timeout = 0.25)
     reader.join(timeout = 5)
-    return "".join(chunks) + "".join(tail), timed_out, (omitted_chars, omitted_lines)
+    output = "".join(chunks) + "".join(tail)
+    if background_stopped:
+        output += ("\n" if output and not output.endswith("\n") else "") + _BACKGROUND_STOPPED_NOTE
+    return output, timed_out, (omitted_chars, omitted_lines)
 
 
 _MAX_REPORTED_FILES = 25
@@ -21474,20 +21690,6 @@ def _snapshot_and_history_begin(
     return before
 
 
-def _walk_lists(workdir: str, rel: str) -> bool:
-    """Whether `_history_walk` would list *rel*, so a file edit_file records is never
-    taken for a deletion by the next python or terminal walk."""
-    parts = rel.split("/")
-    if not all(map(_servable_segment, parts)):
-        return False
-    base = workdir
-    for part in parts[:-1]:
-        if part.startswith(".") or _snapshot_skips_dir(base, part):
-            return False
-        base = os.path.join(base, part)
-    return not (len(parts) == 1 and parts[0] in _INTERNAL_SANDBOX_FILES)
-
-
 def _history_begin_file(session_id: "str | None", target: str) -> dict:
     """Track the one file an edit_file call writes. The first call in a folder walks it once for the baseline."""
     if file_history.current_turn() is None or not session_id:
@@ -21500,7 +21702,11 @@ def _history_begin_file(session_id: "str | None", target: str) -> dict:
     if rel.startswith(os.pardir) or os.path.isabs(rel):
         return {}
     rel = rel.replace(os.sep, "/")
-    if not _walk_lists(workdir, rel) or not file_history.tracked(rel, ()):
+    if (
+        not all(map(_servable_segment, rel.split("/")))
+        or rel in _INTERNAL_SANDBOX_FILES
+        or not file_history.tracked(rel, ())
+    ):
         return {}
     try:
         baseline = file_history.store().needs_baseline(workdir)

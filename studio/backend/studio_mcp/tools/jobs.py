@@ -342,7 +342,7 @@ async def get_job(
         int,
         Field(
             ge = 0,
-            le = loading.MAX_WAIT_S,
+            le = loading.WAIT_S_LIMIT,
             description = (
                 "Seconds to wait for the job to finish or move on, 0 to 240. "
                 "50 stays under Codex's 60 s default tool timeout; above that, raise the client's timeout."

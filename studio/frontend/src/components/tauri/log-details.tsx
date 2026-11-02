@@ -9,11 +9,12 @@ import { useLayoutEffect, useRef } from "react";
 
 /** Shared log tail; scrolling up pins the view, scrolling back to the bottom resumes follow. */
 export function LogDetails({
-  label,
+  showLabel,
+  hideLabel,
   lines,
 }: {
-  /** Noun phrase completing "Show ..." / "Hide ...", e.g. "installation details". */
-  label: string;
+  showLabel: string;
+  hideLabel: string;
   lines: string[];
 }) {
   const detailsRef = useRef<HTMLDetailsElement>(null);
@@ -67,8 +68,8 @@ export function LogDetails({
       className="group mt-2 w-full max-w-sm text-left"
     >
       <summary className="mx-auto flex w-fit cursor-pointer list-none items-center gap-1 rounded-full px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-        <span className="group-open:hidden">Show {label}</span>
-        <span className="hidden group-open:inline">Hide {label}</span>
+        <span className="group-open:hidden">{showLabel}</span>
+        <span className="hidden group-open:inline">{hideLabel}</span>
         <HugeiconsIcon
           icon={ChevronDownStandardIcon}
           aria-hidden="true"
