@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  AiImageIcon,
   Edit03Icon,
   MagicWand01Icon,
   ZoomInAreaIcon,
@@ -10,6 +9,7 @@ import {
 import type { IconSvgElement } from "@hugeicons/react";
 // Relative with .ts: the node tests import this file and cannot resolve @/.
 import { ExpandArrowsIcon } from "../../lib/expand-icons.ts";
+import { AiImageIcon } from "../../lib/hugeicons-derived.ts";
 import { ImagesIcon } from "../../lib/hugeicons-derived.ts";
 import { PaintbrushIcon } from "../../lib/paintbrush-icon.ts";
 

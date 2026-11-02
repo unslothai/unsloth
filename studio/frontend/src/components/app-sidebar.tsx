@@ -106,7 +106,7 @@ import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useHoverFlyout } from "@/hooks/use-hover-flyout";
 import { NAV_FLYOUT_INTENT, NAV_TOOLTIP_INTENT } from "@/lib/hover-intent";
 import {
-  Archive03Icon,
+  ArchiveIcon,
   Cancel01Icon,
   BadgeInfoIcon,
   ChefHatIcon,
@@ -4529,7 +4529,7 @@ export function AppSidebar() {
             disabled={chats.length === 0}
             onSelect={() => void archiveSection().catch(() => undefined)}
           >
-            <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
             <span>{t("shell.selection.archiveChats")}</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -5144,7 +5144,7 @@ export function AppSidebar() {
           selectedChatItems.map((selected) => selected.id),
         )}
         <ContextMenuItem onSelect={() => void archiveSelected()}>
-          <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.selection.archiveChats")}</span>
         </ContextMenuItem>
         <ContextMenuItem
@@ -5284,7 +5284,7 @@ export function AppSidebar() {
             </P.Sub>
             <P.Separator />
             <P.Item onSelect={() => void handleArchiveThread(item)}>
-              <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
               <span>Archive</span>
             </P.Item>
             <P.Item
@@ -5650,7 +5650,7 @@ export function AppSidebar() {
             anyFiled: !pinnedProjectIdSet.has(project.id) && Boolean(sectionByProjectId[project.id]),
           })}
           <P.Item onSelect={() => void archiveProjectChats()}>
-            <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
             <span>Archive chats</span>
           </P.Item>
           <P.Separator />
