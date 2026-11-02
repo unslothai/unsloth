@@ -1235,12 +1235,14 @@ def _sync_replicated_grads(
     dist,
     mesh = None,
     buffers = None,
+    pending = None,
 ):
     """Average gradients over `mesh` (DDP-style), one all_reduce per (device, reduce dtype), entered
     by every rank: a missing local gradient counts as zeros, and a "has a gradient" flag keeps grad
     None for a parameter no rank used. Sums in float32 (fp16 sums overflow). The summed flags are
     read (a host sync) only when some local gradient is None. `buffers` caches one flat buffer per
-    (device, dtype); gradients never alias it."""
+    (device, dtype); gradients never alias it. `pending` maps id(param) to a float32 local sum from
+    unsynced micro-batches (see _stash_fp16_grads), added to the local gradient before the sum."""
     groups = {}
     for p in params:
         dtype = torch.float64 if p.dtype == torch.float64 else torch.float32
@@ -1258,16 +1260,22 @@ def _sync_replicated_grads(
             if buffers is not None:
                 buffers[(device, dtype)] = (key, flat)
         grads = [_local_tensor(p.grad) for p in group]
-        local_all = all(g is not None for g in grads)
+        extra = [pending.get(id(p)) if pending else None for p in group]
+        local_all = all(g is not None or e is not None for g, e in zip(grads, extra))
         flags = flat[total:]
         if local_all:
             flags.fill_(1)
         else:
             flags.zero_()
         offset = 0
-        for i, (g, n) in enumerate(zip(grads, sizes)):
-            if g is not None:
-                flat[offset : offset + n].copy_(g.detach().reshape(-1))
+        for i, (g, e, n) in enumerate(zip(grads, extra, sizes)):
+            if g is not None or e is not None:
+                if g is None:
+                    flat[offset : offset + n].copy_(e.reshape(-1))
+                else:
+                    flat[offset : offset + n].copy_(g.detach().reshape(-1))
+                    if e is not None:
+                        flat[offset : offset + n].add_(e.reshape(-1))
                 if not local_all:
                     # Not flags[i] = 1: that is a host sync on CUDA.
                     flags[i].fill_(1)
@@ -1278,14 +1286,28 @@ def _sync_replicated_grads(
         flat[:total].div_(world)
         used = None if local_all else flags.tolist()
         offset = 0
-        for i, (p, g, n) in enumerate(zip(group, grads, sizes)):
-            if g is not None or used[i] > 0:
+        for i, (p, g, e, n) in enumerate(zip(group, grads, extra, sizes)):
+            if g is not None or e is not None or used[i] > 0:
                 value = flat[offset : offset + n].view(_local_tensor(p).shape)
                 if g is None:
                     p.grad = _like_param(p, value.to(p.dtype, copy = True))
                 else:
                     g.copy_(value)
             offset += n
+
+
+def _stash_fp16_grads(params, state):
+    """Unsynced micro-batch: move fp16 replicated gradients into float32 local sums, so the local sum
+    over micro-batches cannot overflow fp16 before the averaging sync (FSDP2 likewise accumulates its
+    unsharded gradients in reduce_dtype). The grad stays None until that sync writes the average."""
+    pending = state.setdefault("pending", {})
+    for p in params:
+        if p.dtype != torch.float16 or p.grad is None:
+            continue
+        g = _local_tensor(p.grad).detach().float()
+        prev = pending.get(id(p))
+        pending[id(p)] = g if prev is None else prev.add_(g)
+        p.grad = None
 
 
 def _local_tensor(t):
@@ -1397,8 +1419,9 @@ def reduce_unsharded_trainable_grads(model):
         state["queued"] = False
         # Every rank enters the same branch: the GA flag is set alike on all ranks.
         if _fsdp_grad_sync_deferred(model, state):
+            _stash_fp16_grads(params, state)
             return
-        _sync_replicated_grads(params, dist, mesh, buffers)
+        _sync_replicated_grads(params, dist, mesh, buffers, state.pop("pending", None))
 
     def _queue(*_):
         if not state["queued"]:
