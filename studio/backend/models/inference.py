@@ -5904,6 +5904,11 @@ class DiffusionDownloadPlanEntry(BaseModel):
         "planner has to say so: a gated base is staged from its ungated mirror, so the entry's "
         "repo id is not the id the caller picked and the role cannot be recovered downstream.",
     )
+    hosted_denoiser: bool = Field(
+        False,
+        description = "This checkpoint entry holds a hosted denoiser replacing the pipeline's "
+        "dense weights, which a pinned snapshot of that pipeline does not contain.",
+    )
 
 
 class DiffusionDownloadPlanResponse(BaseModel):

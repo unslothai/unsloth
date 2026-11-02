@@ -22,6 +22,7 @@ from core.inference.diffusion_denoiser_prequant import PIPELINE_SEED_DECLINED
 from core.inference.diffusion_device import DiffusionDeviceTarget
 from core.inference.diffusion_families import detect_family_for_pick
 from core.inference.diffusion_memory import DeviceMemory
+from models.inference import DiffusionDownloadPlanResponse
 
 MIB = 1024 * 1024
 
@@ -1974,6 +1975,12 @@ def test_denoiser_is_a_checkpoint_and_encoder_only_is_an_asset(monkeypatch, hub,
     plan = backend.download_plan(Z_IMAGE_REPO, model_kind = "pipeline")
     entries = {entry["repo_id"]: entry for entry in plan["entries"]}
     assert entries[PREQUANT_REPO]["checkpoint"] is True
+    assert entries[PREQUANT_REPO]["hosted_denoiser"] is True
+    assert entries[Z_IMAGE_REPO]["hosted_denoiser"] is False
+    # The route returns this model, which would drop an undeclared field.
+    served = DiffusionDownloadPlanResponse(**plan).entries
+    assert {e.repo_id for e in served if e.hosted_denoiser} == {PREQUANT_REPO}
     assert entries[encoder_repo]["checkpoint"] is shared_repo
+    assert entries[encoder_repo]["hosted_denoiser"] is shared_repo
     assert "text_encoder/model.safetensors" in entries[encoder_repo]["files"]
     assert entries[PREQUANT_REPO]["bytes"] == PREQUANT_BYTES + (1234 if shared_repo else 0)

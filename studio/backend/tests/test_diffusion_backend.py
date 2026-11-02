@@ -8814,8 +8814,7 @@ def test_download_plan_counts_the_hosted_prequant_in_the_required_footprint(monk
     assert plan["required_bytes"] - baseline["required_bytes"] == 6 * GB
     prequant = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/Z-Image-Turbo-FP8")
     assert prequant["checkpoint"] is False
-    # The selected GGUF remains the model; an explicitly requested FP8 denoiser is
-    # additional required data, even though the file itself contains model weights.
+    assert prequant["hosted_denoiser"] is False
     selected = [entry for entry in plan["entries"] if entry["checkpoint"]]
     assert len(selected) == 1
     assert selected[0]["repo_id"] == "unsloth/Z-Image-GGUF"
