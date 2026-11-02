@@ -21,6 +21,24 @@ pytestmark = pytest.mark.skipif(
     reason = "needs torch float8 dtypes",
 )
 
+
+def _cpu_scaled_mm_works():
+    # Older torch builds (2.6) have the fp8 dtypes and torch._scaled_mm but no CPU kernel for it: probe the op.
+    if not hasattr(torch, "float8_e4m3fn") or not hasattr(torch, "_scaled_mm"):
+        return False
+    try:
+        a = torch.zeros(16, 16).to(torch.float8_e4m3fn)
+        one = torch.ones((), dtype = torch.float32)
+        torch._scaled_mm(a, a.t(), scale_a = one, scale_b = one, out_dtype = torch.bfloat16)
+        return True
+    except (NotImplementedError, RuntimeError):
+        return False
+
+
+needs_cpu_scaled_mm = pytest.mark.skipif(
+    not _cpu_scaled_mm_works(), reason = "this torch build has no CPU torch._scaled_mm kernel"
+)
+
 FP8_FWD_TOL = 0.06  # tensorwise e4m3 x e4m3: ~0.037 relative on Gaussian data
 FP8_DGRAD_TOL = 0.09  # e5m2 dy x e4m3 W: ~0.059
 
@@ -52,6 +70,7 @@ def _weight(
 
 # ---- op numerics -----------------------------------------------------------------------------------------
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@needs_cpu_scaled_mm
 def test_fwd_and_dgrad_within_fp8_error(dtype):
     W = _weight(dtype = dtype)
     x = torch.randn(64, 256).to(dtype)
@@ -71,6 +90,7 @@ def test_fwd_and_dgrad_within_fp8_error(dtype):
     assert FL.FP8_LORA_STATS["fwd"] == 1 and FL.FP8_LORA_STATS["dgrad"] == 2
 
 
+@needs_cpu_scaled_mm
 def test_scaled_mm_counted_and_fp16_never_written_by_the_fp8_gemm(monkeypatch):
     seen = []
     real = torch._scaled_mm
@@ -92,6 +112,7 @@ def test_scaled_mm_counted_and_fp16_never_written_by_the_fp8_gemm(monkeypatch):
     assert y.dtype == torch.float16 and torch.isfinite(y).all()
 
 
+@needs_cpu_scaled_mm
 def test_large_fp16_values_stay_finite():
     # Outputs near the fp16 limit: exact as the 16-bit GEMM would be, no fp8-specific overflow.
     W = torch.full((32, 64), 0.5, dtype = torch.float16)
@@ -101,6 +122,7 @@ def test_large_fp16_values_stay_finite():
     assert abs(y.float().mean().item() - 57600.0) / 57600.0 < 0.07
 
 
+@needs_cpu_scaled_mm
 def test_fp16_results_at_the_fp16_limit_stay_finite():
     # Failing before: the GEMM wrote bf16, which rounds 65504 to 65536, an inf after the cast back to fp16.
     W = torch.full((32, 64), 0.5, dtype = torch.float16)
@@ -111,6 +133,7 @@ def test_fp16_results_at_the_fp16_limit_stay_finite():
     assert torch.isfinite(state.dgrad(dy, W)).all()
 
 
+@needs_cpu_scaled_mm
 def test_nan_propagates_for_the_grad_scaler():
     W = _weight()
     state = FL.Fp8LoRABaseState(W)
@@ -128,6 +151,7 @@ def test_decode_rows_use_the_16bit_weight():
 
 
 # ---- cache -----------------------------------------------------------------------------------------------
+@needs_cpu_scaled_mm
 def test_quantized_once_and_requantized_after_an_in_place_change(monkeypatch):
     monkeypatch.setattr(FL, "_CACHE_T", True)
     W = _weight()
@@ -231,6 +255,7 @@ def _run_block(kind, fp8):
 
 
 @pytest.mark.parametrize("kind", ["mlp", "qkv", "o"])
+@needs_cpu_scaled_mm
 def test_lora_kernels_run_fp8_and_keep_lora_grads_16bit(kind):
     outs_ref, dX_ref, grads_ref, _ = _run_block(kind, fp8 = False)
     FL.reset_fp8_lora_stats()
@@ -250,6 +275,7 @@ def test_lora_kernels_run_fp8_and_keep_lora_grads_16bit(kind):
         assert p.base_layer.weight.grad is None
 
 
+@needs_cpu_scaled_mm
 def test_peft_path_base_forward_and_backward():
     # PEFT lora.Linear calls base_layer(x): the patched forward runs the same two fp8 GEMMs.
     base = torch.nn.Linear(256, 384, bias = True, dtype = torch.bfloat16)
@@ -313,6 +339,7 @@ def _loss_and_grads(model):
     return out.loss.item(), grads
 
 
+@needs_cpu_scaled_mm
 def test_enable_fp8_lora_on_a_peft_model():
     model = _tiny_qwen3_peft()
     loss_ref, grads_ref = _loss_and_grads(model)
@@ -359,6 +386,7 @@ def test_eligibility_reasons():
 
 
 # ---- torch.compile ---------------------------------------------------------------------------------------
+@needs_cpu_scaled_mm
 def test_compile_aot_eager_fullgraph():
     torch._dynamo.reset()
     base = torch.nn.Linear(256, 384, bias = False, dtype = torch.bfloat16).requires_grad_(False)
@@ -453,6 +481,7 @@ def rowwise(monkeypatch):
     yield
 
 
+@needs_cpu_scaled_mm
 def test_rowwise_numerics_and_outlier_tokens(rowwise):
     W = _weight()
     x = torch.randn(64, 256).bfloat16()
@@ -473,6 +502,7 @@ def test_rowwise_numerics_and_outlier_tokens(rowwise):
     assert _rel(dx, dy.float() @ W.float()) < FP8_FWD_TOL
 
 
+@needs_cpu_scaled_mm
 def test_rowwise_lora_kernels_and_peft_path(rowwise):
     outs_ref, dX_ref, grads_ref, _ = _run_block("mlp", fp8 = False)
     FL.reset_fp8_lora_stats()
@@ -501,6 +531,7 @@ def test_loaded_adapter_is_converted_when_marked(monkeypatch):
     assert P.engaged(model)[f8t.FP8_LORA_RECIPE]["modules"] == 14
 
 
+@needs_cpu_scaled_mm
 def test_default_no_transposed_cache_matches_cached(monkeypatch):
     W = _weight()
     dy = torch.randn(32, 384).bfloat16()
@@ -514,6 +545,7 @@ def test_default_no_transposed_cache_matches_cached(monkeypatch):
     torch.testing.assert_close(lean.dgrad(dy, W), cached.dgrad(dy, W), rtol = 0, atol = 0)
 
 
+@needs_cpu_scaled_mm
 def test_compiled_graph_has_no_fp8_transpose_outside_the_ops():
     # sm89 Inductor writes corrupt bytes into 2D-tiled fp8 transposes (scripts/fp8_lora/l4_wgrad_bisect2.py):
     # every fp8 tensor op must stay inside the opaque fwd / dgrad ops, never in the traced graph.
@@ -603,6 +635,7 @@ def test_host_master_leaves_only_fp8_bytes_on_the_compute_device(offload_on_cpu)
     }
 
 
+@needs_cpu_scaled_mm
 def test_host_master_gives_the_same_fp8_results(offload_on_cpu):
     lin, ref = _frozen_linear(bias = True), _frozen_linear(bias = True)
     FL.attach_fp8_lora_base(lin)
@@ -644,6 +677,7 @@ def test_host_master_dequantize_is_exact(offload_on_cpu):
     assert torch.equal(fast_dequantize(lin.weight.t(), state), W0.t())
 
 
+@needs_cpu_scaled_mm
 def test_module_moves_keep_or_restore_the_host_master(offload_on_cpu):
     lin = _frozen_linear(bias = True)
     state = FL.attach_fp8_lora_base(lin)
@@ -677,6 +711,7 @@ def test_no_host_master_for_16bit_dgrad_or_distributed(offload_on_cpu, monkeypat
     assert not FL.offload_supported()
 
 
+@needs_cpu_scaled_mm
 def test_save_and_merge_exact_with_host_master(offload_on_cpu):
     import copy
 
@@ -788,6 +823,7 @@ def test_merge_of_a_deepcopy_merges_the_copy_only(offload_on_cpu):
     assert torch.equal(twin_layer.base_layer.weight, plain_layer.base_layer.weight)
 
 
+@needs_cpu_scaled_mm
 def test_compiled_fp8_lora_ops_are_counted():
     # Under torch.compile the fp8 forward and dgrad are opaque custom ops; the counter names them.
     torch._dynamo.reset()
@@ -807,6 +843,7 @@ def test_compiled_fp8_lora_ops_are_counted():
     )
 
 
+@needs_cpu_scaled_mm
 def test_merge_requantizes_the_fp8_copy(offload_on_cpu):
     # Failing before: PEFT merges in place (same storage and version), so the fp8 cache kept the unmerged weight
     # while PEFT stopped adding the adapter: the merged model dropped the adapter.
@@ -920,6 +957,7 @@ def test_a_dora_adapter_restores_the_master_before_placement(offload_on_cpu, mon
     assert seen and not any(seen)
 
 
+@needs_cpu_scaled_mm
 def test_load_state_dict_requantizes_for_compiled_calls():
     # Failing before: refresh() is skipped while compiled, so new base weights kept the old fp8 copy.
     torch._dynamo.reset()
@@ -984,6 +1022,7 @@ def test_mamba_raw_weight_projections_keep_the_master(offload_on_cpu):
     assert mixer.in_proj.base_layer.__dict__["_unsloth_fp8_lora"].offloaded
 
 
+@needs_cpu_scaled_mm
 def test_legacy_scaled_mm_tuple_return(monkeypatch):
     # torch 2.4 returns (output, amax) from torch._scaled_mm; the fp8 path must take the output.
     real = torch._scaled_mm
@@ -1014,6 +1053,7 @@ def test_parents_reading_a_child_weight_keep_its_master(offload_on_cpu, arch):
     assert f8t._mamba_raw_weight_leaf(model, f"block.{leaf}")
 
 
+@needs_cpu_scaled_mm
 def test_refresh_under_inference_mode_builds_trainable_fp8_tensors():
     # Failing before: a merge / unmerge inside inference_mode rebuilt the cache as inference tensors, which the
     # next training step could not save for backward.
@@ -1162,6 +1202,7 @@ def test_a_variant_adapter_restores_the_master_before_placement(
     assert seen and not any(seen)
 
 
+@needs_cpu_scaled_mm
 def test_rowwise_fp16_without_float32_out_stays_finite(rowwise, monkeypatch):
     # Failing before: where rowwise _scaled_mm refuses float32 out (torch 2.8), the retry wrote bf16, which rounds
     # 65504 to 65536 and the fp16 cast made it inf. fp16 now takes the tensorwise GEMM there.
@@ -1222,6 +1263,7 @@ def test_vllm_server_merge_of_a_host_master_lands_on_the_adapter_device():
     assert _unsloth_vllm_merged_weight(module, weight).device.type == "cpu"
 
 
+@needs_cpu_scaled_mm
 def test_a_merge_under_inference_mode_leaves_a_trainable_master(offload_on_cpu, monkeypatch):
     # Failing before: restore() copied the host master to the device inside inference_mode, so the master became
     # an inference tensor and the next training forward raised "Inference tensors cannot be saved for backward".
