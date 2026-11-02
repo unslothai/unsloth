@@ -4947,7 +4947,9 @@ class BrowserPrefsPayload(BaseModel):
     showFullUrl: Optional[bool] = None
     bookmarksToolbar: Optional[Literal["always", "newtab", "never"]] = None
     showBookmarkEditor: Optional[bool] = None
-    hiddenSuggestions: Optional[list[Annotated[str, Field(max_length = 253)]]] = Field(None, max_length = 500)
+    hiddenSuggestions: Optional[list[Annotated[str, Field(max_length = 253)]]] = Field(
+        None, max_length = 500
+    )
     switchToNewTabs: Optional[bool] = None
     defaultZoom: Optional[float] = Field(None, ge = 0.25, le = 5)
     showSuggestedSites: Optional[bool] = None

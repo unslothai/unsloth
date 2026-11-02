@@ -24,14 +24,12 @@ def _now_ms() -> int:
 
 def _read(key: str) -> dict:
     from storage.studio_db import get_app_setting
-
     stored = get_app_setting(key, None)
     return stored if isinstance(stored, dict) else {}
 
 
 def _write(key: str, value: dict) -> dict:
     from storage.studio_db import upsert_app_settings
-
     upsert_app_settings({key: value}, read_back = False)
     return value
 
@@ -43,7 +41,11 @@ def get_client_preferences() -> dict:
 def update_client_preferences(changes: dict) -> dict:
     """Replace only the sections the client sent, so a scale change never drops browser prefs."""
     stored = get_client_preferences()
-    merged = {**stored, **{k: v for k, v in changes.items() if v is not None}, "updatedAt": _now_ms()}
+    merged = {
+        **stored,
+        **{k: v for k, v in changes.items() if v is not None},
+        "updatedAt": _now_ms(),
+    }
     return _write(CLIENT_PREFERENCES_KEY, merged)
 
 
@@ -53,7 +55,6 @@ def get_chat_background() -> dict:
 
 def background_image_path() -> Path:
     from utils.paths.storage_roots import account_path
-
     return account_path("appearance/chat-background")
 
 
@@ -96,7 +97,9 @@ def save_background_adjustments(adjustments: dict) -> dict:
     stored = get_chat_background()
     if not stored.get("image"):
         raise LookupError("No background image is saved.")
-    return _write(CHAT_BACKGROUND_KEY, {**stored, "adjustments": adjustments, "updatedAt": _now_ms()})
+    return _write(
+        CHAT_BACKGROUND_KEY, {**stored, "adjustments": adjustments, "updatedAt": _now_ms()}
+    )
 
 
 def clear_background() -> dict:

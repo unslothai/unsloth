@@ -26,7 +26,9 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "storage.studio_db.upsert_app_settings", lambda d, read_back = True: store.update(d)
     )
-    monkeypatch.setattr(sync, "background_image_path", lambda: tmp_path / "appearance" / "chat-background")
+    monkeypatch.setattr(
+        sync, "background_image_path", lambda: tmp_path / "appearance" / "chat-background"
+    )
     monkeypatch.setattr(settings_routes, "background_image_path", sync.background_image_path)
     app = FastAPI()
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
@@ -45,14 +47,19 @@ def test_client_preferences_start_unsaved_and_merge_by_section(client):
 
 
 def test_client_preferences_reject_out_of_range_values(client):
-    assert client.put("/api/settings/client-preferences", json = {"interfaceScale": 400}).status_code == 422
+    assert (
+        client.put("/api/settings/client-preferences", json = {"interfaceScale": 400}).status_code
+        == 422
+    )
     bad = {"browser": {"searchEngine": "javascript:alert(1)"}}
     assert client.put("/api/settings/client-preferences", json = bad).status_code == 422
 
 
 def test_background_image_round_trips_and_follows_its_own_bytes(client):
     assert client.get("/api/settings/chat-background").json()["saved"] is False
-    put = client.put("/api/settings/chat-background/image", content = PNG, headers = {"content-type": "text/html"})
+    put = client.put(
+        "/api/settings/chat-background/image", content = PNG, headers = {"content-type": "text/html"}
+    )
     assert put.status_code == 200
     meta = put.json()["image"]
     assert meta["type"] == "image/png" and meta["size"] == len(PNG)
