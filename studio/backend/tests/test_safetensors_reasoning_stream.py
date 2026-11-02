@@ -120,7 +120,6 @@ _STRICT_HISTORY_TPL = (
     "{% endif %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
     "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n\n</think>\n\n{% endif %}"
 )
-# LFM3-Omni: an assistant {% generation %} block, thinking off by default via an empty think block.
 _GENERATION_TAG_TPL = (
     "{% set enable_thinking = enable_thinking | default(false) %}"
     "{% for m in messages %}<|im_start|>{{ m['role'] }}\n"
@@ -170,20 +169,17 @@ def test_a_template_that_stamps_a_date_still_renders():
 def test_a_generation_tag_template_is_not_read_as_an_open_think():
     assert _sf_reasoning_prefill_mode(_ETHINK, None, _GENERATION_TAG_TPL) is False
     assert _sf_reasoning_prefill_mode(_ETHINK, False, _GENERATION_TAG_TPL) is False
-    # True only if the tag compiles: an unrenderable template now reads as not open.
     assert _sf_reasoning_prefill_mode(_ETHINK, True, _GENERATION_TAG_TPL) is True
 
 
 @pytest.mark.parametrize(
     "template",
     (
-        # An extension the probe does not register fails the compile.
         "{% unknown %}{% for m in messages %}{{ m['content'] }}{% endfor %}<think></think>",
-        # transformers renders this: it passes tools=None, while the probe leaves tools undefined.
         "{{ tools | tojson }}{% for m in messages %}{{ m['content'] }}{% endfor %}<think></think>",
     ),
 )
-def test_an_unrenderable_template_keeps_the_answer_visible(template):
+def test_closed_or_unrenderable_templates_keep_the_answer_visible(template):
     extractor = _ResponsesReasoningExtractor(
         parse_think_markers = _sf_parse_think_markers(_ETHINK),
         reasoning_prefilled = _sf_reasoning_prefill_mode(_ETHINK, None, template),
@@ -191,6 +187,22 @@ def test_an_unrenderable_template_keeps_the_answer_visible(template):
     reasoning, visible = extractor.feed("Four")
     tail_reasoning, tail_visible = extractor.finish()
     assert (reasoning + tail_reasoning, visible + tail_visible) == ("", "Four")
+
+
+@pytest.mark.parametrize("context_name", ("tools", "documents"))
+def test_default_render_context_preserves_prefilled_reasoning(context_name):
+    template = (
+        "{{ " + context_name + " | tojson }}"
+        "{% for m in messages %}{{ m['content'] }}{% endfor %}"
+        "{% if add_generation_prompt %}<|assistant|><think>{% endif %}"
+    )
+    extractor = _ResponsesReasoningExtractor(
+        parse_think_markers = True,
+        reasoning_prefilled = _sf_reasoning_prefill_mode(_ETHINK, None, template),
+    )
+    reasoning, visible = extractor.feed("Let me calculate.</think>Four")
+    tail_reasoning, tail_visible = extractor.finish()
+    assert (reasoning + tail_reasoning, visible + tail_visible) == ("Let me calculate.", "Four")
 
 
 def test_prefill_mode_off_without_think_markers():
@@ -689,6 +701,36 @@ def test_route_returns_the_answer_as_content_when_the_template_closes_its_block(
     message = _sf_route_message(monkeypatch, _TEMPLATE_DEFAULT_OFF_TPL, snapshots)
     assert message["content"] == "The capital of Japan is Tokyo."
     assert not message["reasoning_content"]
+
+
+@pytest.mark.parametrize("stream", (False, True))
+@pytest.mark.parametrize("is_mlx", (False, True))
+def test_route_generation_tag_keeps_the_answer_visible(monkeypatch, stream, is_mlx):
+    message = _sf_route_message(
+        monkeypatch, _GENERATION_TAG_TPL, ["Four"], stream = stream, is_mlx = is_mlx
+    )
+    assert message["content"] == "Four"
+    assert not message["reasoning_content"]
+
+
+@pytest.mark.parametrize("stream", (False, True))
+@pytest.mark.parametrize("is_mlx", (False, True))
+@pytest.mark.parametrize("context_name", ("tools", "documents"))
+def test_route_default_context_preserves_reasoning(monkeypatch, stream, is_mlx, context_name):
+    template = (
+        "{{ " + context_name + " | tojson }}"
+        "{% for m in messages %}{{ m['content'] }}{% endfor %}"
+        "{% if add_generation_prompt %}<|assistant|><think>{% endif %}"
+    )
+    message = _sf_route_message(
+        monkeypatch,
+        template,
+        ["Let me calculate.</think>Four"],
+        stream = stream,
+        is_mlx = is_mlx,
+    )
+    assert message["content"] == "Four"
+    assert message["reasoning_content"] == "Let me calculate."
 
 
 def test_route_keeps_literal_think_text_when_the_request_turns_thinking_off(monkeypatch):

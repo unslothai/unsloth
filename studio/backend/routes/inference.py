@@ -4374,7 +4374,6 @@ def _compile_generation_prompt_probe(template: str):
         def _raise_exception(message: str):
             raise RuntimeError(message)
 
-        # transformers registers {% generation %} (LFM3, SmolLM3), so those templates must compile here too.
         env = ImmutableSandboxedEnvironment(
             trim_blocks = True,
             lstrip_blocks = True,
@@ -4412,6 +4411,8 @@ def _render_generation_prompt_probe(
             add_generation_prompt = generation_prompt,
             bos_token = "",
             eos_token = "",
+            tools = None,
+            documents = None,
             **reasoning_kwargs,
         )
     except Exception:
@@ -4432,7 +4433,6 @@ def _generation_prompt_opens_think(
     if rendered is None and messages is not None:
         messages = None
         rendered = _render_generation_prompt_probe(*args)
-    # A wrong False leaks the thought beside the answer; a wrong True hides the whole answer as reasoning.
     if rendered is None:
         return False
     # Ignoring the flag gives an empty prefix, so nothing is prefilled; correct when no block opens.
