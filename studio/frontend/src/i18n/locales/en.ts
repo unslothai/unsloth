@@ -1940,7 +1940,7 @@ export const en = {
         idleError: "Enter 0 to keep the model loaded, or at least 60 seconds.",
         keepKv: "Keep chat context across unloads",
         keepKvDescription:
-          "Save the KV cache before an idle unload, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",
+          "Save the KV cache before a model is unloaded or switched, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",
         keepKvKeywords: "kv cache context swap resume image video",
         apiOnly: "Only unload models loaded by the API",
         apiOnlyDescription:

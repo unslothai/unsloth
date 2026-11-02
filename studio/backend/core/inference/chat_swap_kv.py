@@ -355,6 +355,44 @@ def _save_in_thread(save, should_abort, abort: threading.Event, loop, future) ->
         _delete(manifest)
 
 
+async def save_chat_kv_before_unload() -> None:
+    from core.inference.llama_keepwarm import stash_unload_kv
+
+    abort = threading.Event()
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    deadline = time.monotonic() + SWAP_KV_SAVE_BUDGET_S
+    try:
+        saver = _chat_saver()
+        if saver is None or saver[0][-1] == "mlx" or not _keep_kv():
+            return
+        if _chat_account() != _account_id() or _chat_busy():
+            return
+        threading.Thread(
+            target = _save_in_thread,
+            args = (
+                saver[1],
+                lambda: abort.is_set() or time.monotonic() >= deadline or _chat_busy(),
+                abort,
+                loop,
+                future,
+            ),
+            name = "chat-kv-unload-save",
+            daemon = True,
+        ).start()
+        manifest = await asyncio.wait_for(asyncio.shield(future), SWAP_KV_SAVE_BUDGET_S)
+        if manifest and _keep_kv():
+            stash_unload_kv(manifest)
+        else:
+            _delete(manifest)
+    except BaseException as exc:  # noqa: BLE001
+        abort.set()
+        future.cancel()
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        logger.debug("chat KV save before unload failed: %s", exc)
+
+
 async def save_chat_kv_before_swap(
     owner: str,
     media: str,

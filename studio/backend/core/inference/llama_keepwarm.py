@@ -51,6 +51,8 @@ _last_unloaded_model = None
 _last_unloaded_mlx = False
 # Slot KV manifest saved by the idle unload; whoever pops it owns deleting its files.
 _kv_resume = None
+# Slot saves of manually unloaded GGUFs, oldest first, until that GGUF loads again.
+_unload_kv: list = []
 # Process-wide, not per-loop: the backend slot is shared across every event loop.
 _lifecycle_lock = threading.Lock()
 
@@ -520,6 +522,11 @@ def note_model_loaded(backend = None) -> None:
     _note_activity()
     resume = take_kv_resume()
     _set_last_unloaded(None)
+    kept = _take_unload_kv(getattr(backend, "_gguf_path", None))
+    if kept is not None and (resume is None or resume.get("gguf") != kept.get("gguf")):
+        resume, kept = kept, resume
+    if kept:
+        _delete_resume_files(kept)
     if resume is None:
         return
     if backend is not None:
@@ -588,6 +595,37 @@ def take_kv_resume():
         return manifest
 
 
+def _resume_bytes(manifest) -> int:
+    total = 0
+    for entry in manifest.get("slots") or []:
+        with contextlib.suppress(OSError):
+            total += (Path(manifest.get("dir") or "") / str(entry.get("filename"))).stat().st_size
+    return total
+
+
+def stash_unload_kv(manifest) -> None:
+    from core.inference.llama_cpp import _SLOT_SAVE_MAX_BYTES
+
+    with _lock:
+        stale = [m for m in _unload_kv if m.get("gguf") == manifest.get("gguf")]
+        _unload_kv[:] = [m for m in _unload_kv if m.get("gguf") != manifest.get("gguf")]
+        _unload_kv.append(manifest)
+        while len(_unload_kv) > 1 and sum(map(_resume_bytes, _unload_kv)) > _SLOT_SAVE_MAX_BYTES:
+            stale.append(_unload_kv.pop(0))
+    for old in stale:
+        _delete_resume_files(old)
+
+
+def _take_unload_kv(gguf):
+    if not gguf:
+        return None
+    with _lock:
+        for index, manifest in enumerate(_unload_kv):
+            if manifest.get("gguf") == str(gguf):
+                return _unload_kv.pop(index)
+    return None
+
+
 def purge_kv_resume(*, origin: Optional[str] = None) -> None:
     """Drop the stash; with ``origin``, only one of that origin (an untagged stash is "idle")."""
     global _kv_resume
@@ -597,8 +635,13 @@ def purge_kv_resume(*, origin: Optional[str] = None) -> None:
             _kv_resume = None
         else:
             resume = None
+        unloaded = [] if origin is not None else _unload_kv[:]
+        if origin is None:
+            _unload_kv.clear()
     if resume:
         _delete_resume_files(resume)
+    for manifest in unloaded:
+        _delete_resume_files(manifest)
 
 
 def restore_kv_resume(backend, manifest) -> None:
