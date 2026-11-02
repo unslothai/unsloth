@@ -433,7 +433,13 @@ class _SlowPages:
         monkeypatch.setattr(tools, "_fetch_page_text", fetch)
 
 
-def _local_turn(monkeypatch, calls, cancel_event = None, wait_denies = False, **loop_kwargs):
+def _local_turn(
+    monkeypatch,
+    calls,
+    cancel_event = None,
+    wait_denies = False,
+    **loop_kwargs,
+):
     if wait_denies:
         monkeypatch.setattr(llama_cpp, "wait_tool_decision", lambda *a, **k: "deny", raising = False)
 
