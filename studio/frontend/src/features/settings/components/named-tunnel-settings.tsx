@@ -148,7 +148,7 @@ export function NamedTunnelSettings({
             autoCorrect="off"
             spellCheck={false}
             required={true}
-            className="w-64 max-w-full"
+            className="w-80 max-w-full"
           />
         </SettingsRow>
         {method === "token" ? (
@@ -170,7 +170,7 @@ export function NamedTunnelSettings({
                 autoComplete="off"
                 data-reload-snapshot-sensitive="true"
                 required={configuration?.method !== "token"}
-                className="w-64 max-w-full"
+                className="w-80 max-w-full"
               />
             </SettingsRow>
             <p className="mb-3 break-words text-xs text-muted-foreground">
@@ -230,7 +230,8 @@ export function NamedTunnelSettings({
           {method === "automatic" &&
           !setup?.active &&
           (setup?.error === "cloudflare_login_failed" ||
-            setup?.error === "cloudflare_login_required") ? (
+            setup?.error === "cloudflare_login_required" ||
+            setup?.error === "dns_hostname_mismatch") ? (
             <Button
               type="button"
               variant="outline"
@@ -245,6 +246,7 @@ export function NamedTunnelSettings({
           ) : null}
           <Button
             type="submit"
+            variant="dark"
             size="sm"
             disabled={
               disabled ||

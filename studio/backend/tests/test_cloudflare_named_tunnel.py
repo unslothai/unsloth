@@ -979,6 +979,56 @@ def test_wrong_certificate_zone_never_routes_or_offers_overwrite(named, provisio
     assert not any("dns" in command for command in commands)
 
 
+def test_reauthorization_corrects_zone_without_recreating_tunnel(named, provisioner, monkeypatch):
+    commands, command = provisioner
+    monkeypatch.setattr(
+        named,
+        "_zone_name",
+        lambda operation, bundle: "example.com"
+        if named._certificate_data(bundle["certificate"])["zoneID"] == "correct-zone"
+        else "other.example.net",
+    )
+    named.start_setup("studio.example.com")
+    assert wait_for_state(named, "error")["error"] == "dns_hostname_mismatch"
+    named._operation.thread.join(3)
+    original = named.load_bundle()
+    assert not any("dns" in args for args in commands)
+
+    def correct_zone(
+        operation,
+        binary,
+        args,
+        home,
+        timeout = 60,
+    ):
+        result = command(operation, binary, args, home, timeout)
+        if "login" in args:
+            data = named._certificate_data(_CERTIFICATE)
+            data["zoneID"] = "correct-zone"
+            (home / ".cloudflared" / "cert.pem").write_text(
+                "-----BEGIN ARGO TUNNEL TOKEN-----\n"
+                + base64.b64encode(json.dumps(data).encode()).decode()
+                + "\n-----END ARGO TUNNEL TOKEN-----\n"
+            )
+        return result
+
+    monkeypatch.setattr(named, "_run_command", correct_zone)
+    named.start_setup("studio.example.com")
+    assert wait_for_state(named, "error")["error"] == "dns_hostname_mismatch"
+    named._operation.thread.join(3)
+    named.start_setup("studio.example.com", reauthenticate = True)
+    wait_for_state(named, "ready")
+    named._operation.thread.join(3)
+    bundle = named.load_bundle()
+    assert bundle["configuration_id"] == original["configuration_id"]
+    assert bundle["tunnel_id"] == original["tunnel_id"]
+    assert named._certificate_data(bundle["certificate"])["zoneID"] == "correct-zone"
+    assert sum("login" in args for args in commands) == 2
+    assert sum("create" in args for args in commands) == 1
+    assert sum("dns" in args for args in commands) == 1
+    assert not any("--overwrite-dns" in args for args in commands)
+
+
 def test_runtime_snapshot_cannot_start_after_mode_changed(named):
     named.set_mode("named")
     named.save_token("studio.example.com", "token")
