@@ -2466,6 +2466,9 @@ export const sv = {
         standard: "Standard",
         moreThemes: "Fler teman",
       },
+      composer: {
+        title: "Inmatningsfältets utseende",
+      },
       code: {
         title: "Kod",
         fontDescription: "Kodblock i chatten, filförhandsvisningar och API-exempel.",

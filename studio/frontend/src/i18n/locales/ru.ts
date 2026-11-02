@@ -2350,6 +2350,9 @@ export const ru = {
         standard: "Стандартная",
         moreThemes: "Другие темы",
       },
+      composer: {
+        title: "Вид поля ввода",
+      },
       code: {
         title: "Код",
         fontDescription: "Блоки кода в чате, предпросмотр файлов и примеры API.",

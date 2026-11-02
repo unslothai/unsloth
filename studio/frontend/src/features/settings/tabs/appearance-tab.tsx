@@ -261,19 +261,6 @@ export function AppearanceTab() {
         </SettingsRow>
         <GreetingSettingsRows />
         <SettingsRow
-          label={t("settings.chat.composerAtBottom")}
-          description={t("settings.chat.composerAtBottomDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.composerAtBottom")}
-            checked={composerAtBottom}
-            onCheckedChange={setComposerAtBottom}
-          />
-        </SettingsRow>
-        <SettingsRow label={t("chatBackground.outline")}>
-          <ComposerOutlineSliderRow />
-        </SettingsRow>
-        <SettingsRow
           label={t("settings.appearance.custom.sentAttachments.label")}
           description={t(
             "settings.appearance.custom.sentAttachments.description",
@@ -302,6 +289,22 @@ export function AppearanceTab() {
           )}
         >
           <FontSmoothingSwitch />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.appearance.composer.title")}>
+        <SettingsRow
+          label={t("settings.chat.composerAtBottom")}
+          description={t("settings.chat.composerAtBottomDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.composerAtBottom")}
+            checked={composerAtBottom}
+            onCheckedChange={setComposerAtBottom}
+          />
+        </SettingsRow>
+        <SettingsRow label={t("chatBackground.outline")}>
+          <ComposerOutlineSliderRow />
         </SettingsRow>
       </SettingsSection>
 

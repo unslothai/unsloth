@@ -47,6 +47,7 @@ import {
 import {
   CODE_FONT_SIZE_RANGE,
   type CustomModeColors,
+  COMPOSER_OUTLINE_DEFAULT,
   DEFAULT_CUSTOMIZATION,
   MAX_IMPORTED_FONTS,
   MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH,
@@ -990,7 +991,7 @@ export function ComposerOutlineSliderRow() {
   const outline = useAppearanceCustomStore((s) => s.customization.composerOutline);
   const backgroundOutline = useBackgroundStore((s) => s.value?.outline);
   const patch = useAppearanceCustomStore((s) => s.patch);
-  const value = outline ?? backgroundOutline ?? 0;
+  const value = outline ?? backgroundOutline ?? COMPOSER_OUTLINE_DEFAULT;
   const set = (next: number) => patch({ composerOutline: next });
   return (
     <div className="flex w-64 items-center gap-3">

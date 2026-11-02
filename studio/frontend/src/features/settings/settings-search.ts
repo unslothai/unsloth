@@ -81,6 +81,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.chatFont.label",
     "settings.appearance.custom.chatWidth.label",
     "settings.profile.greetingSloth",
+    "settings.appearance.composer.title",
     "settings.chat.composerAtBottom",
     "chatBackground.outline",
     "settings.appearance.custom.sentAttachments.label",

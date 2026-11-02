@@ -2570,6 +2570,9 @@ export const pl = {
         standard: "Standardowy",
         moreThemes: "Więcej motywów",
       },
+      composer: {
+        title: "Wygląd pola wiadomości",
+      },
       code: {
         title: "Kod",
         fontDescription: "Bloki kodu na czacie, podglądy plików i przykłady API.",

@@ -2323,6 +2323,9 @@ export const ja = {
         standard: "スタンダード",
         moreThemes: "その他のテーマ",
       },
+      composer: {
+        title: "入力欄の外観",
+      },
       code: {
         title: "コード",
         fontDescription: "チャット内のコードブロック、ファイルのプレビュー、API の例。",

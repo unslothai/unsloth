@@ -2396,6 +2396,9 @@ export const he = {
         standard: "סטנדרטית",
         moreThemes: "ערכות נושא נוספות",
       },
+      composer: {
+        title: "מראה תיבת הכתיבה",
+      },
       code: {
         title: "קוד",
         fontDescription: "בלוקי קוד בצ׳אט, תצוגות מקדימות של קבצים ודוגמאות API.",

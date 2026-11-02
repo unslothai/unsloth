@@ -39,9 +39,21 @@ test("a set outline reaches every composer, and 0 keeps the theme shadow", () =>
   applyCustomizationToDocument({ ...DEFAULT_CUSTOMIZATION, composerOutline: 0 }, "light");
   assert.equal(vars.get("--composer-outline"), "0%");
   assert.ok(!attributes.has("data-composer-outline"));
+  // Unset: on by default, at 30% (or the background image's own outline over an image).
   applyCustomizationToDocument(DEFAULT_CUSTOMIZATION, "light");
   assert.ok(!vars.has("--composer-outline"));
+  assert.ok(attributes.has("data-composer-outline"));
   const css = readSrc("index.css");
   assert.match(css, /html\[data-composer-outline\] \.unsloth-composer-surface \{\s*--composer-shadow: inset 0 0 0 1px/);
   assert.match(css, /var\(--composer-outline, var\(--wallpaper-outline, 30%\)\)/);
+  assert.match(css, /html\[data-composer-outline\] \.unsloth-composer-surface \{\s*--composer-shadow: inset 0 0 0 1px color-mix\(in srgb, var\(--foreground\) var\(--composer-outline, 30%\)/);
+});
+
+test("the composer rows have their own Composer appearance section", () => {
+  const tab = readSrc("features/settings/tabs/appearance-tab.tsx");
+  const section = tab.slice(tab.indexOf('t("settings.appearance.composer.title")'));
+  assert.ok(section.indexOf("composerAtBottom") < section.indexOf("settings.appearance.code.title"));
+  assert.ok(section.indexOf("<ComposerOutlineSliderRow />") < section.indexOf("settings.appearance.code.title"));
+  const preferences = tab.slice(tab.indexOf("preferencesTitle"), tab.indexOf('t("settings.appearance.composer.title")'));
+  assert.doesNotMatch(preferences, /composerAtBottom|ComposerOutlineSliderRow/);
 });

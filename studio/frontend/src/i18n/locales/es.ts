@@ -2364,6 +2364,9 @@ export const es = {
         standard: "Estándar",
         moreThemes: "Más temas",
       },
+      composer: {
+        title: "Apariencia del editor",
+      },
       code: {
         title: "Código",
         fontDescription: "Bloques de código en el chat, vistas previas de archivos y ejemplos de la API.",

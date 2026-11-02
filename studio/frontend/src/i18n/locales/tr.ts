@@ -2530,6 +2530,9 @@ export const tr = {
         standard: "Standart",
         moreThemes: "Diğer temalar",
       },
+      composer: {
+        title: "Mesaj kutusu görünümü",
+      },
       code: {
         title: "Kod",
         fontDescription: "Sohbetteki kod blokları, dosya önizlemeleri ve API örnekleri.",

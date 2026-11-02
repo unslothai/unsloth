@@ -2542,6 +2542,9 @@ export const vi = {
         standard: "Tiêu chuẩn",
         moreThemes: "Thêm chủ đề",
       },
+      composer: {
+        title: "Giao diện khung soạn tin",
+      },
       code: {
         title: "Mã",
         fontDescription: "Khối mã trong trò chuyện, bản xem trước tệp và ví dụ API.",

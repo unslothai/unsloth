@@ -2369,6 +2369,9 @@ export const de = {
         standard: "Standard",
         moreThemes: "Weitere Designs",
       },
+      composer: {
+        title: "Darstellung des Eingabefelds",
+      },
       code: {
         title: "Code",
         fontDescription: "Codeblöcke im Chat, Dateivorschauen und API-Beispiele.",

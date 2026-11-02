@@ -2575,6 +2575,9 @@ export const nl = {
         standard: "Standaard",
         moreThemes: "Meer thema's",
       },
+      composer: {
+        title: "Weergave van het invoerveld",
+      },
       code: {
         title: "Code",
         fontDescription: "Codeblokken in de chat, bestandsvoorbeelden en API-voorbeelden.",
