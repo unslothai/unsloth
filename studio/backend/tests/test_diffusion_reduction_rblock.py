@@ -280,7 +280,6 @@ def test_opted_in_compile_carries_the_filter_and_leaves_the_process_knob(max_aut
 
 @_needs_filter
 def test_max_compile_with_the_filter_turns_coordinate_descent_off():
-    # Coordinate descent retunes the filtered config per process: 3 fresh Max processes, 3 different images on L4.
     kwargs = _compiled_kwargs(True, filter_reductions = True)
     assert kwargs["options"]["max_autotune"] is True
     assert kwargs["options"]["coordinate_descent_tuning"] is False

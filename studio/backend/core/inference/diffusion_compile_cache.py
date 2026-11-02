@@ -461,7 +461,6 @@ def model_fingerprint(
         dynamic_text = None
     if dynamic_text:
         fp["dynamic_text"] = dynamic_text
-    # Fingerprint pinned policies so portable bundles refresh when their compile recipe changes.
     from .diffusion_compile_config import reduction_blocks_pinned, reduction_config_filter_available
 
     if reduction_blocks_pinned():
