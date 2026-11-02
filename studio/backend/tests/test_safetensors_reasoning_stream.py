@@ -172,6 +172,23 @@ def test_a_generation_tag_template_is_not_read_as_an_open_think():
     assert _sf_reasoning_prefill_mode(_ETHINK, True, _GENERATION_TAG_TPL) is True
 
 
+@pytest.mark.parametrize("thinking", (False, True))
+def test_generation_block_assignments_stay_local(thinking):
+    from transformers.utils.chat_template_utils import _compile_jinja_template
+
+    template = (
+        "{% set thinking = " + str(thinking).lower() + " %}"
+        "{% generation %}{% set thinking = not thinking %}previous answer{% endgeneration %}"
+        "{% if add_generation_prompt %}<|assistant|>"
+        "{% if thinking %}<think>{% else %}<think></think>{% endif %}{% endif %}"
+    )
+    rendered = _compile_jinja_template(template).render(
+        messages = [{"role": "user", "content": "hi"}], add_generation_prompt = True
+    )
+    assert rendered.endswith("<think>" if thinking else "<think></think>")
+    assert _sf_reasoning_prefill_mode(_ETHINK, None, template) is thinking
+
+
 @pytest.mark.parametrize(
     "template",
     (

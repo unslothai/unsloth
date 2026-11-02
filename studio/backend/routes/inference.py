@@ -4365,25 +4365,8 @@ _PROBE_MESSAGES = ({"role": "user", "content": "hi"},)
 def _compile_generation_prompt_probe(template: str):
     """Cache the compiled template only: rendering is cheap, and messages must vary per request."""
     try:
-        from datetime import datetime
-
-        from jinja2.sandbox import ImmutableSandboxedEnvironment
-
-        from core.inference.template_capabilities import _Generation
-
-        def _raise_exception(message: str):
-            raise RuntimeError(message)
-
-        env = ImmutableSandboxedEnvironment(
-            trim_blocks = True,
-            lstrip_blocks = True,
-            extensions = ["jinja2.ext.loopcontrols", _Generation],
-        )
-        env.filters["tojson"] = lambda value, **kwargs: json.dumps(value, ensure_ascii = False)
-        env.globals["raise_exception"] = _raise_exception
-        # transformers exposes strftime_now to every template; without it date templates raise.
-        env.globals["strftime_now"] = lambda fmt: datetime.now().strftime(fmt)
-        return env.from_string(template)
+        from transformers.utils.chat_template_utils import _compile_jinja_template
+        return _compile_jinja_template(template)
     except Exception:
         return None
 
