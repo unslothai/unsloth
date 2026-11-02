@@ -140,10 +140,22 @@ def _find_file(file_id: str) -> Path:
     raise _bad_request(f"No such File object: {file_id}", 404)
 
 
-def _refuse_message_weights(path: Path, param: str) -> None:
+def _refuse_message_weights(
+    path: Path,
+    param: str,
+    config: Optional[dict[str, Any]] = None,
+) -> None:
     """Refuse context-only assistant turns that Studio's formatter would train on."""
-    if path.suffix.lower() != ".jsonl":
+    from utils.datasets.format_detection import detect_dataset_format
+
+    config = config or {}
+    if path.suffix.lower() != ".jsonl" or config.get("format_type") == "raw":
         return
+    mapping = config.get("custom_format_mapping")
+    if mapping:
+        from utils.datasets.dataset_utils import _TO_CHATML
+        if mapping.get("messages") not in _TO_CHATML:
+            return
     with open(path, "rb") as handle:
         for number, line in enumerate(handle, start = 1):
             # Fast path: a key only decodes to "weight" without the literal bytes via a \u escape.
@@ -153,7 +165,11 @@ def _refuse_message_weights(path: Path, param: str) -> None:
                 row = json.loads(line)
             except ValueError:
                 continue
-            messages = row.get("messages") if isinstance(row, dict) else None
+            if not isinstance(row, dict):
+                continue
+            if not mapping and detect_dataset_format([row])["chat_column"] != "messages":
+                continue
+            messages = row.get("messages")
             for message in messages if isinstance(messages, list) else ():
                 if (
                     isinstance(message, dict)
@@ -421,11 +437,11 @@ def _training_config(body: FineTuningJobCreate) -> dict[str, Any]:
 
     config["model_name"] = body.model
     training_path = _find_file(body.training_file)
-    _refuse_message_weights(training_path, "training_file")
+    _refuse_message_weights(training_path, "training_file", config)
     config["local_datasets"] = [str(training_path)]
     if body.validation_file:
         validation_path = _find_file(body.validation_file)
-        _refuse_message_weights(validation_path, "validation_file")
+        _refuse_message_weights(validation_path, "validation_file", config)
         config["local_eval_datasets"] = [str(validation_path)]
         # Studio evaluates only when eval_steps > 0; OpenAI always validates a given validation_file.
         config.setdefault("eval_steps", 0.1)

@@ -139,6 +139,49 @@ def _finished_run(
     return run_id
 
 
+@pytest.mark.parametrize("mode", ["mapped", "alpaca", "raw"])
+def test_unused_weighted_messages_do_not_block_other_training_data(studio, mode):
+    client, calls, _live = studio
+    row = {
+        "messages": [{"role": "assistant", "content": "CONTEXT_ONLY", "weight": 0}],
+        "question": "Question",
+        "answer": "TARGET",
+    }
+    extra = {}
+    if mode == "mapped":
+        extra["custom_format_mapping"] = {"question": "user", "answer": "assistant"}
+    elif mode == "alpaca":
+        row.update(instruction = "Question", output = "TARGET")
+    else:
+        row["text"] = "TARGET"
+        extra["format_type"] = "raw"
+
+    async def flow():
+        uploaded = await client.files.create(
+            file = ("rows.jsonl", (json.dumps(row) + "\n").encode()), purpose = "fine-tune"
+        )
+        return await _create(client, uploaded.id, extra_body = extra)
+
+    job = _run(flow())
+    assert job.status == "validating_files"
+    assert len(calls["start"]) == 1
+
+
+def test_a_mapping_that_selects_weighted_messages_is_still_refused(studio):
+    client, calls, _live = studio
+    rows = b'{"messages":[{"role":"assistant","content":"CONTEXT_ONLY","weight":0}]}\n'
+
+    async def flow():
+        uploaded = await client.files.create(file = ("rows.jsonl", rows), purpose = "fine-tune")
+        with pytest.raises(openai.BadRequestError):
+            await _create(
+                client, uploaded.id, extra_body = {"custom_format_mapping": {"messages": "assistant"}}
+            )
+
+    _run(flow())
+    assert calls["start"] == []
+
+
 def test_exported_unit_weight_messages_still_train(studio, tmp_path):
     from datasets import Dataset
 
