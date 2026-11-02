@@ -126,6 +126,7 @@ export function GlassControls() {
 	return (
 		<SettingsSection
 			title={t("chatBackground.glassTheme")}
+			badge={<Badge variant="accent">{t("shell.navigation.newBadge")}</Badge>}
 			action={
 				<Switch
 					aria-label={t("chatBackground.glassTheme")}
