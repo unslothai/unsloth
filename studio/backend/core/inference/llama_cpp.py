@@ -28036,10 +28036,13 @@ class LlamaCppBackend:
                                     **{
                                         **_fit_load_mode_kwargs,
                                         "model_size": max(
-                                            1, _fit_load_mode_kwargs["model_size"] - _moe_expert_bytes
+                                            1,
+                                            _fit_load_mode_kwargs["model_size"] - _moe_expert_bytes,
                                         ),
                                         "host_only_bytes": max(
-                                            0, _fit_load_mode_kwargs["host_only_bytes"] - _moe_table_bytes
+                                            0,
+                                            _fit_load_mode_kwargs["host_only_bytes"]
+                                            - _moe_table_bytes,
                                         )
                                         + _moe_expert_bytes
                                         + _moe_prompt_cache_bytes,
