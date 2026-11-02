@@ -540,7 +540,11 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
         };
       },
     };
-
+    if (!text.trim()) {
+      cancelImpl = () => {};
+      handleEnd("finished");
+      return res;
+    }
     if (
       ttsEngine !== "system" ||
       !StudioSpeechSynthesisAdapter.systemVoicesSupported()

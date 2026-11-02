@@ -114,3 +114,26 @@ test("HTML tags keep the word boundaries the page shows", () => {
   );
   assert.equal(markdownToSpeechText("<div>H<sub>2</sub>O</div>"), "H2O");
 });
+
+test("read-aloud skips emoji sequences but preserves surrounding words", () => {
+  const spoken = markdownToSpeechText(
+    "Japan 🇯🇵 developer 👩‍💻 thumbs 👍🏽 heart ❤️",
+  );
+
+  assert.match(spoken, /Japan\s+developer\s+thumbs\s+heart/);
+
+  for (const emoji of ["🇯🇵", "👩‍💻", "👍🏽", "❤️"]) {
+    assert.equal(spoken.includes(emoji), false);
+  }
+});
+
+test("read-aloud handles emoji-only messages", () => {
+  assert.equal(markdownToSpeechText("😀 👨‍💻 🇯🇵").trim(), "");
+});
+
+test("read-aloud preserves word boundaries around emojis", () => {
+  assert.equal(
+    markdownToSpeechText("Hello😀world"),
+    "Hello world",
+  );
+});

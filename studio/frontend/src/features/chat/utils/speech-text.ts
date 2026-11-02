@@ -11,6 +11,7 @@ import { math } from "micromark-extension-math";
 import { defaultRehypePlugins } from "streamdown";
 import { normalizeEscapedInlineMath } from "../../../lib/escaped-inline-math.ts";
 import { preprocessLaTeX } from "../../../lib/latex.ts";
+import emojiRegex from "emoji-regex";
 
 // Tags the chat renders; any other `<tag>` (`Vec<T>`, `<script>`) stays on the page as text.
 const SCHEMA_TAGS = new Set(
@@ -23,6 +24,27 @@ const LINE_TAGS = new Set(
     " ",
   ),
 );
+function removeTtsEmojis(text: string): string {
+  return text.replace(emojiRegex(), (emoji, offset, source) => {
+    // Preserve text-presentation symbols such as ©, ® and ™.
+    if (/^[©®™ℹ]$/.test(emoji)) return emoji;
+
+    const before = source.slice(0, offset).at(-1);
+    const after = source.slice(offset + emoji.length).at(0);
+
+    // Avoid merging words when an emoji separates them.
+    if (
+      before &&
+      after &&
+      /[\p{L}\p{N}]$/u.test(before) &&
+      /^[\p{L}\p{N}]/u.test(after)
+    ) {
+      return " ";
+    }
+
+    return "";
+  });
+}
 
 /** The words a markdown reply shows, for read-aloud: voices speak raw markup ("asterisk asterisk", #12547). */
 export function markdownToSpeechText(markdown: string): string {
@@ -34,7 +56,7 @@ export function markdownToSpeechText(markdown: string): string {
       mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()],
     });
   } catch {
-    return markdown;
+    return removeTtsEmojis(markdown);
   }
   const out: string[] = [];
   const notes: string[] = [];
@@ -46,7 +68,9 @@ export function markdownToSpeechText(markdown: string): string {
       false,
     );
   }
-  return [...out, ...notes].filter((block) => block.length > 0).join("\n");
+  return removeTtsEmojis(
+    [...out, ...notes].filter((block) => block.length > 0).join("\n"),
+  );
 }
 
 function collectBlocks(
