@@ -144,6 +144,7 @@ import {
   stopRecoveredRun,
   pythonToolRunsInStudio,
   withAttachmentOriginal,
+  priorPassTiming,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -7877,6 +7878,8 @@ function useContinuation() {
       ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
       ...providerCompactionContinuationFields(metadata),
     };
+    const priorTiming = priorPassTiming(metadata);
+    if (priorTiming) request.priorTiming = priorTiming;
     return aui.thread().startRun({
       parentId: parent,
       runConfig: {
