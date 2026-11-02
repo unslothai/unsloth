@@ -1196,6 +1196,8 @@ def _without_quant_state_entries(name, args, kwargs):
 
 
 def _in_backward():
+    if torch.compiler.is_compiling():
+        return False
     try:
         return torch._C._current_graph_task_id() != -1
     except Exception:

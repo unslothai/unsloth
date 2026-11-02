@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""dp 2 x tp 2 gloo: a TP param in FSDP2 ignored_params is averaged over dp; replicas match a single process.
-Also when every trainable param is ignored, so FSDP2 manages none."""
+"""Ignored TP trainables stay synchronized over DP, including empty FSDP2 groups."""
 
 import multiprocessing
 import os
@@ -97,15 +96,51 @@ def _case_tp_fsdp2_ignored(
 gloo.CASES["tp_fsdp2_ignored"] = _case_tp_fsdp2_ignored
 
 
-def _spawn(world, **kwargs):
-    """test_tp_native_gloo._spawn with this module's case registered in every spawned rank."""
+def _case_tp_fsdp2_ignored_compiled(rank, world, tmp):
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.tensor.parallel import ColwiseParallel, parallelize_module
+    from torch._dynamo.utils import counters
+    from test_fsdp2_native_units import _load_native
+    from unsloth.models import fsdp2_save as save
+
+    native = _load_native()
+    fully_shard = native._fsdp_api()[2]
+    if not native._supports_ignored_params(fully_shard):
+        return {"unsupported": True}
+    mesh = init_device_mesh("cpu", (2, world // 2), mesh_dim_names = ("dp", "tp"))
+    model = torch.nn.Linear(4, 4, bias = False)
+    parallelize_module(model, mesh["tp"], ColwiseParallel())
+    fully_shard(model, mesh = mesh["dp"], ignored_params = set(model.parameters()))
+    model._unsloth_fsdp2_mesh = mesh["dp"]
+    names = save.reduce_unsharded_trainable_grads(model)
+    compiled = torch.compile(model, backend = "eager", dynamic = True)
+    counters.clear()
+    for batch in (2, 3, 2):
+        x = torch.full((batch, 4), float(mesh["dp"].get_local_rank() + 1))
+        compiled(x).sum().backward()
+    return {
+        "names": names,
+        "grad": model.weight.grad.to_local().detach().clone(),
+        "graphs": counters["stats"]["unique_graphs"],
+        "breaks": list(counters["graph_break"]),
+    }
+
+
+gloo.CASES["tp_fsdp2_ignored_compiled"] = _case_tp_fsdp2_ignored_compiled
+
+
+def _spawn(
+    world,
+    case = "tp_fsdp2_ignored",
+    **kwargs,
+):
     import tempfile
 
     ctx = multiprocessing.get_context("spawn")
     port = gloo._free_port()
     with tempfile.TemporaryDirectory() as tmp:
         procs = [
-            ctx.Process(target = _worker, args = (r, world, port, "tp_fsdp2_ignored", tmp, kwargs))
+            ctx.Process(target = _worker, args = (r, world, port, case, tmp, kwargs))
             for r in range(world)
         ]
         for p in procs:
@@ -144,3 +179,16 @@ def test_tp_param_in_ignored_params_is_averaged_over_dp(ignore_all):
         )
         for n, ref in res["ref"].items():
             torch.testing.assert_close(res["full"][n], ref, rtol = 1e-4, atol = 1e-6, msg = n)
+
+
+def test_all_ignored_compiled_grad_sync_does_not_add_a_graph_break():
+    results = _spawn(4, case = "tp_fsdp2_ignored_compiled")
+    if results[0].get("unsupported"):
+        pytest.skip("torch < 2.7: no fully_shard(ignored_params)")
+    for res in results:
+        assert res["names"] == ["weight"]
+        assert res["graphs"] > 0
+        assert not any("_current_graph_task_id" in reason for reason in res["breaks"]), res[
+            "breaks"
+        ]
+        torch.testing.assert_close(res["grad"], torch.full_like(res["grad"], 1.5 * sum((2, 3, 2))))
