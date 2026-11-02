@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy
+import contextlib
 import types
 import warnings
 
@@ -714,6 +715,65 @@ def test_pool_bytes_count_only_the_target_card(monkeypatch):
     assert bg.pool_bytes(0) == 100 and bg.pool_bytes() == 1000
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_allocator_snapshot_avoids_tuple_arguments(monkeypatch, legacy):
+    calls = []
+    segments = [{"total_size": 123}]
+
+    def native(*args):
+        calls.append(args)
+        if legacy and args:
+            raise TypeError("takes no arguments")
+        return {"segments": segments}
+
+    fake = types.SimpleNamespace(_C = types.SimpleNamespace(_cuda_memorySnapshot = native))
+    monkeypatch.setattr(cg, "_torch", lambda: fake)
+    assert cg._allocator_segments() is segments
+    assert calls == ([(None,), ()] if legacy else [(None,)])
+
+
+def test_known_pool_is_counted_when_net_reservation_is_zero(monkeypatch):
+    shared = bg._Shared(0)
+    shared.pools.append((7, 1))
+    monkeypatch.setattr(bg, "_LIVE", {shared})
+    monkeypatch.setattr(
+        cg,
+        "_allocator_segments",
+        lambda: [{"device": 0, "segment_pool_id": (7, 1), "total_size": 200, "allocated_size": 80}],
+    )
+    assert shared.pool_bytes == 0
+    assert bg.pool_bytes(0) == 120
+
+
+def test_capture_reservation_precedes_deferred_cache_release(monkeypatch):
+    _cuda()
+    original = cg._capturing
+
+    @contextlib.contextmanager
+    def capturing():
+        with original():
+            yield
+            cg.release_when_capture_idle(torch.cuda.empty_cache)
+
+    monkeypatch.setattr(cg, "_capturing", capturing)
+    block = Block().cuda()
+    shared = bg._Shared(torch.cuda.current_device(), None)
+    graph = bg.BlockGraph(block, block.forward, shared)
+    x = torch.randn(8192, 64, device = "cuda")
+    try:
+        with torch.inference_mode():
+            graph(x)
+            idle = torch.empty(128 << 20, dtype = torch.uint8, device = "cuda")
+            del idle
+            graph(x)
+            assert graph.stats["captures"] == 1
+            assert shared.pool_bytes > 0
+            assert torch.equal(graph(x), block(x))
+    finally:
+        graph.reset()
+        shared.release()
+
+
 def test_live_segment_outputs_in_a_graph_pool_are_not_subtracted_twice(monkeypatch):
     mib = 1 << 20
     shared = bg._Shared(0)
@@ -730,7 +790,7 @@ def test_live_segment_outputs_in_a_graph_pool_are_not_subtracted_twice(monkeypat
         },
         {"device": 0, "segment_pool_id": (0, 0), "total_size": 100 * mib, "allocated_size": 0},
     ]
-    monkeypatch.setattr(torch.cuda, "memory_snapshot", lambda *a, **k: snapshot)
+    monkeypatch.setattr(cg, "_allocator_segments", lambda: snapshot)
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a, **k: 600 * mib)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a, **k: 500 * mib)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
@@ -739,7 +799,7 @@ def test_live_segment_outputs_in_a_graph_pool_are_not_subtracted_twice(monkeypat
     snapshot[0]["allocated_size"] = 250 * mib
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a, **k: 250 * mib)
     assert dm.cuda_reusable_cache_bytes(0) == 100 * mib
-    monkeypatch.setattr(torch.cuda, "memory_snapshot", lambda *a, **k: 1 / 0)
+    monkeypatch.setattr(cg, "_allocator_segments", lambda: 1 / 0)
     assert dm.cuda_reusable_cache_bytes(0) == 0
 
 

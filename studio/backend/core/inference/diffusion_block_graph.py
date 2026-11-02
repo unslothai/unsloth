@@ -260,7 +260,7 @@ def pool_bytes(device: Optional[int] = None) -> int:
             continue
         recorded = int(getattr(shared, "pool_bytes", 0) or 0)
         handles = getattr(shared, "pools", None)
-        if recorded > 0 and handles:
+        if handles:
             tracked += recorded
             pools.update(tuple(h) for h in handles)
         else:
@@ -269,7 +269,9 @@ def pool_bytes(device: Optional[int] = None) -> int:
         return total
     try:
         free = 0
-        for seg in _torch().cuda.memory_snapshot():
+        from .diffusion_cuda_graph import _allocator_segments
+
+        for seg in _allocator_segments():
             if device is not None and seg.get("device", device) != device:
                 continue
             if tuple(seg.get("segment_pool_id") or ()) in pools:
@@ -641,9 +643,10 @@ class BlockGraph:
                         if self.shared.pool == pool:
                             self.shared.pool = None
                         raise
+                    after = torch.cuda.memory_reserved()
                 del out, flat
             current.wait_stream(stream)
-            self.shared.pool_bytes += max(0, torch.cuda.memory_reserved() - before)
+            self.shared.pool_bytes += max(0, after - before)
         except CaptureRefused:
             # Refused before capture_begin: nothing recorded, the pool untouched. Eager now, record on a later call.
             self.seen[full] = (out_spec, metas)
@@ -1077,8 +1080,9 @@ class SegmentGraph:
                         if self.shared.pool == pool:
                             self.shared.pool = None
                         raise
+                    after = torch.cuda.memory_reserved()
             current.wait_stream(stream)
-            self.shared.pool_bytes += max(0, torch.cuda.memory_reserved() - before)
+            self.shared.pool_bytes += max(0, after - before)
         except CaptureRefused:
             self.seen[full] = rec
             self.stats["segment_refusals"] = self.stats.get("segment_refusals", 0) + 1
