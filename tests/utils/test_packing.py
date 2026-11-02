@@ -2167,7 +2167,12 @@ def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
     assert "UNSLOTH_RETURN_LOGITS" not in messages[0]
 
 
-def test_context_parallel_disables_eval_packing(monkeypatch):
+# Ring cannot keep packed rows apart, so it turns packing off. Ulysses keeps them, and 'auto' (the default
+# since #16407) resolves to Ulysses unless the heads cannot be split over cp.
+@pytest.mark.parametrize(
+    "backend, packs", [("ring", False), ("ulysses", True), ("auto", True), (None, True)]
+)
+def test_context_parallel_disables_eval_packing(monkeypatch, backend, packs):
     monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(
@@ -2176,13 +2181,14 @@ def test_context_parallel_disables_eval_packing(monkeypatch):
         padding_free = None,
         remove_unused_columns = True,
         context_parallel_size = 2,
+        context_parallel_backend = backend,
     )
     fake_trainer(
         model = _warn_text_model(),
         args = config,
         train_dataset = Dataset.from_dict({"text": ["sample"]}),
     )
-    assert config.packing is False and config.eval_packing is False
+    assert config.packing is packs and config.eval_packing is packs
 
 
 # Fused-CE paths shift internally, so they mask boundaries on unshifted labels.
