@@ -6,6 +6,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const ja = {
+  turns: {
+    label: "ターン {number}",
+    bookmarkedLabel: "ターン {number}（ブックマーク済み）",
+    bookmark: "ターンをブックマーク",
+    removeBookmark: "ブックマークを解除",
+    navigator: "ターン",
+  },
   chatBackground: {
     noBackground: "背景なし",
     sizing: "画像のサイズ調整",
@@ -32,6 +39,7 @@ export const ja = {
     halftone: "ハーフトーン",
     scanlines: "走査線",
     visibility: "表示強度",
+    conversationVisibility: "会話中の表示の強さ",
     blur: "画像のぼかし",
     position: "位置",
     horizontal: "水平位置",
@@ -41,8 +49,8 @@ export const ja = {
     scopeChats: "チャット",
     scopeAll: "すべてのページ",
     positionValue: "横 {x}%、縦 {y}%",
-    newChat: "新しいチャット",
-    conversation: "会話",
+    newChat: "新しいチャットのプレビュー",
+    conversation: "会話のプレビュー",
     prompt: "何を調べたいですか？",
     response: "背景があっても会話は読みやすく表示されます。",
     storageError: "背景を保存できませんでした。ブラウザーの空き容量を確認してください。",
@@ -50,6 +58,26 @@ export const ja = {
     dimensionsError: "4000万画素未満の画像を選択してください。",
     decodeError: "画像を読み込めませんでした。別のファイルを試してください。",
     effectError: "エフェクトを生成できませんでした。「なし」または別の画像を選択してください。",
+    material: "ガラス",
+    materialSolid: "オフ",
+    materialTransparent: "透明",
+    materialFrosted: "すりガラス",
+    materialBlurred: "ぼかし",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "macOS システムガラス",
+    materialMacosNote: "macOS の半透明ウインドウ素材を使うため、デスクトップが透けて見えます。",
+    materialNativeFailed: "このバージョンの Unsloth Desktop では macOS の素材を使用できません。オンにするにはアプリをアップデートしてください。",
+    glassTheme: "ガラステーマ",
+    materialStyle: "スタイル",
+    materialMenus: "ガラスのメニュー",
+    materialMenusDescription: "ドロップダウン、メニュー、ピッカーにもガラスを使用します。",
+    materialStrength: "ガラスの強さ",
+    lens: "ガラスレンズ",
+    lensDescription: "入力欄の下の画像を本物のガラスのように歪ませます。",
+    lensOff: "オフ",
+    lensMagnify: "拡大",
+    lensShrink: "縮小",
   },
 
   linkMenu: {
@@ -725,36 +753,6 @@ export const ja = {
     compactEmpty: "まだ圧縮する内容がありません",
     compactUnsupported: "会話の圧縮にはツール対応のGGUFまたはMLXモデルが必要です",
   },
-  halloween: {
-    navLabel: "トリック・オア・トリート…",
-    title: "トリック・オア・トリート？！",
-    description: "Unslothに少しだけ怖い仕掛けを用意しました。10月いっぱいお楽しみください。",
-    chooseTheme: "怖いテーマを選ぶ",
-    spookyGreetings: "怖いあいさつ",
-    spookyGreetingsDescription: "新しいチャットでナマケモノが驚かせます。",
-    decorations: "クモとコウモリ",
-    decorationsDescription:
-      "ハロウィンテーマの間、隅にクモの巣が張られ、ときどきクモやコウモリが現れます。",
-    surprise: "トリック・オア・トリート！",
-    surpriseDescription: "ナマケモノにテーマを選んでもらいましょう。",
-    themesTitle: "怖いテーマ",
-    back: "戻る",
-    footer: "Unslothは11月1日の午前0時に元に戻ります。",
-    removeNow: "今すぐ解除",
-    hideFromSidebar: "サイドバーから非表示",
-    greeting: {
-      pumpkins: "かぼちゃのランタンができました。次は何をしましょう？",
-      brewing: "さあ、魔法の薬を作ろう",
-      trickOrTreat: "トリック・オア・トリート？",
-      manor: "屋敷へようこそ",
-      manorName: "{name}さん、屋敷へようこそ",
-      happyHalloween: "ハッピーハロウィン",
-      happyHalloweenName: "{name}さん、ハッピーハロウィン",
-      spirits: "精霊たちが耳を澄ませています…",
-      mysteries: "今夜はどんな謎を解き明かしましょう？",
-      conjure: "どんな魔法をかけましょうか？",
-    },
-  },
   welcome: {
     goodToSeeYou: "お会いできてうれしいです",
     goodToSeeYouName: "{name}さん、お会いできてうれしいです",
@@ -978,7 +976,7 @@ export const ja = {
       deleteProjects: "プロジェクトを削除",
       deleteProjectsTitle: "プロジェクトを削除",
       deleteProjectsDescription:
-        "{count} 件のプロジェクトを削除しますか。含まれるチャットは完全に削除されます。",
+        "{count} 件のプロジェクトとそのすべてのチャットは完全に削除されます。この操作は取り消せません。",
       deleteProjectsFilesDescription:
         "各プロジェクトのワークスペースフォルダーがディスクから削除されます。",
       countSelected: "{count} 件選択中",
@@ -989,7 +987,7 @@ export const ja = {
       markRead: "既読にする",
       deleteChats: "チャットを削除",
       deleteTitle: "チャットを削除",
-      deleteDescription: "{count} 件のチャットを削除しますか。元に戻せません。",
+      deleteDescription: "{count} 件のチャットとそのメッセージは完全に削除されます。この操作は取り消せません。",
       deleteFilesDescription:
         "各チャット専用のサンドボックスフォルダーがディスクから削除されます。プロジェクト内で作成したファイルは、そのプロジェクトのワークスペースに残ります。",
       deleteFilesLabel: "ファイルとサンドボックスフォルダーを削除",
@@ -1037,7 +1035,7 @@ export const ja = {
     dialog: {
       deleteChat: {
         title: "チャットの削除",
-        description: "チャット「{name}」を削除してもよろしいですか？",
+        description: "チャット「{name}」とそのメッセージは完全に削除されます。この操作は取り消せません。",
       },
       deleteRun: {
         title: "トレーニング実行の削除",
@@ -2132,10 +2130,14 @@ export const ja = {
         label: "インストールの種類",
         description:
           "チャット専用 (GGUF)。フルインストールでは、トレーニング、エクスポート、動画、safetensors モデル、その他の画像生成機能が追加されます。",
+        descriptionCpu:
+          "チャット専用 (GGUF)。対応 GPU が見つからないため、フルインストールでは CPU でのトレーニングが追加されます。",
         action: "フルインストールにアップグレード",
         confirmTitle: "フルインストールにアップグレードしますか？",
         confirmDescription:
           "このチャット専用インストールは GGUF モデルを実行します。フルインストールでは、このマシンの GPU 向けの PyTorch が追加され、トレーニング、エクスポート、動画、safetensors モデル、その他の画像生成機能が使えるようになります。数 GB（5 GB 以上のディスク容量）をダウンロードしてサーバーを再起動します。チャット、モデル、設定は保持されます。数分かかる場合があります。",
+        confirmDescriptionCpu:
+          "このチャット専用インストールは GGUF モデルを実行します。このマシンには対応 GPU が見つからないため、フルインストールでは CPU 向けの PyTorch が追加され、CPU でのトレーニングが使えるようになります。CPU でのトレーニングは GPU よりも大幅に遅くなります。5 GB 以上のディスク容量が必要で、サーバーを再起動します。チャット、モデル、設定は保持されます。数分かかる場合があります。",
         confirmAction: "アップグレード",
         keywords:
           "full install upgrade インストールの種類 フルインストール アップグレード チャット専用 chat only gguf add training トレーニング 学習 train fine-tune pytorch torch エクスポート 動画 画像生成 safetensors",
@@ -2194,6 +2196,13 @@ export const ja = {
       avatarShapeRounded: "角丸",
       greetingSloth: "あいさつ",
       greetingSlothDescription: "新しいチャットにあいさつを表示します。",
+      greetingDefault: "デフォルト",
+      greetingCustom: "カスタム",
+      greetingImage: "画像",
+      greetingText: "あいさつのテキスト",
+      greetingTextDescription: "空欄にすると、組み込みのあいさつを使います。",
+      greetingFileError: "10 MB 未満の PNG、JPEG、WebP、GIF を選んでください。",
+      greetingImageError: "この画像は使用できませんでした。もっと小さい画像を試してください。",
       chooseSloth: "またはナマケモノのプロフィール画像を選択",
       noPicture: "プロフィール画像なし",
       noneLabel: "なし",
@@ -2312,15 +2321,7 @@ export const ja = {
         label: "テーマ",
         description: "Unsloth 全体で使用される配色。ライト・ダーク両対応。",
         standard: "スタンダード",
-        classic: "クラシック",
-        minimal: "ミニマル",
         moreThemes: "その他のテーマ",
-        halloween: "ハロウィン",
-      },
-      trickOrTreat: {
-        label: "トリック・オア・トリート",
-        description:
-          "11月1日まで、ハロウィンのテーマと怖いあいさつを楽しめます。",
       },
       code: {
         title: "コード",
@@ -2342,7 +2343,7 @@ export const ja = {
         chatWidth: {
           label: "チャットの幅",
           description: "メッセージと入力欄の幅です。",
-          standard: "標準",
+          standard: "デフォルト",
           wide: "広い",
           full: "全幅",
         },
@@ -2935,6 +2936,8 @@ export const ja = {
         "詳細 速度 トークン 統計 レイヤー オフロード verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "応答に応答の編集を表示",
       inlineEditResponseDescription: "応答の編集を「その他」メニューではなく、各応答に表示します。",
+      turnNavigation: "ターンナビゲーション",
+      turnNavigationDescription: "長いチャットの左端に自分のメッセージをレールとして表示します。ホバーでプレビュー、クリックでそのターンへ移動し、ブックマークで後から見つけられます。",
       composerAtBottom: "入力欄を下に表示",
       composerAtBottomDescription: "新しいチャットで入力欄を中央ではなくページ下部に表示します。",
       projectAttachments: "プロジェクト全体でファイルを共有",
@@ -3189,9 +3192,9 @@ export const ja = {
         movedChatsToRecents: "最近のチャットに移動したチャット：{count} 件",
         moveFailed: "チャットを移動できませんでした",
         deleteChatsTitle: "チャットを削除（{count} 件）",
-        deleteChatsWarning: "選択した {count} 件のチャットを削除しますか？この操作は取り消せません。",
+        deleteChatsWarning: "{count} 件のチャットとそのメッセージは完全に削除されます。この操作は取り消せません。",
         deleteArchivedTitle: "アーカイブ済みチャットを {count} 件削除",
-        deleteArchivedWarning: "選択した {count} 件のアーカイブ済みチャットを削除しますか？この操作は取り消せません。",
+        deleteArchivedWarning: "アーカイブ済みの {count} 件のチャットとそのメッセージは完全に削除されます。この操作は取り消せません。",
         deleting: "削除中...",
       },
       title: "データ",
@@ -3579,6 +3582,8 @@ export const ja = {
     imageTraining: "画像トレーニング",
     goToImageTraining: "画像 LoRA をトレーニング",
     routeTitle: "トレーニング",
+    cpuTrainingNotice:
+      "GPU が見つからないため、トレーニングは CPU で実行されます。GPU でのトレーニングよりも大幅に遅く、テキストモデル (LoRA またはフルファインチューニング) のみに対応しています。",
     wizard: {
       modelTitle: "モデル",
       modelDescription: "モデルとトレーニング方法を選択",
@@ -4649,7 +4654,7 @@ export const ja = {
       },
       dialog: {
         renameChat: "チャットの名前を変更",
-        deleteChatDescription: "このチャットは完全に削除されます。この操作は取り消せません。",
+        deleteChatDescription: "チャットとそのメッセージは完全に削除されます。この操作は取り消せません。",
         deleteProjectDescription: "プロジェクトとそのチャット（{count} 件）は完全に削除されます。この操作は取り消せません。",
         deleteFilesMany: "これらのチャットが作成したファイルとサンドボックスフォルダも削除します。",
         deleteProjectFilesLabel: "プロジェクトの作業フォルダを削除",
@@ -5106,14 +5111,14 @@ export const ja = {
     renameChat: "チャット名を変更",
     chatName: "チャット名",
     deleteChat: "チャットを削除",
-    deleteChatDescription: "{name} を削除してもよろしいですか？メッセージは完全に削除されます。",
+    deleteChatDescription: "チャット「{name}」とそのメッセージは完全に削除されます。この操作は取り消せません。",
     importChats: "チャットをインポート",
     importDestination: "{name} のインポート先を選択してください:",
     selectDestination: "インポート先を選択",
     recents: "最近の項目",
     import: "インポート",
     deleteProject: "プロジェクトを削除",
-    deleteProjectDescription: "{name} を削除してもよろしいですか？チャットは完全に削除されます。",
+    deleteProjectDescription: "プロジェクト「{name}」とそのすべてのチャットは完全に削除されます。この操作は取り消せません。",
     deleteProjectFiles: "プロジェクトの作業フォルダーはディスクから削除されます。",
     deleteAll: "すべて削除",
     projectFallback: "プロジェクト",

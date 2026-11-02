@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const zhTW = {
+  turns: {
+    label: "第 {number} 輪",
+    bookmarkedLabel: "第 {number} 輪，已加書籤",
+    bookmark: "為此輪加書籤",
+    removeBookmark: "移除書籤",
+    navigator: "輪次",
+  },
   chatBackground: {
     noBackground: "無背景",
     sizing: "圖片縮放方式",
@@ -31,6 +38,7 @@ export const zhTW = {
     halftone: "半色調",
     scanlines: "掃描線",
     visibility: "可見度",
+    conversationVisibility: "對話中的可見度",
     blur: "圖片模糊",
     position: "位置",
     horizontal: "水平位置",
@@ -40,8 +48,8 @@ export const zhTW = {
     scopeChats: "聊天",
     scopeAll: "所有頁面",
     positionValue: "水平 {x}%，垂直 {y}%",
-    newChat: "新對話",
-    conversation: "對話",
+    newChat: "新聊天預覽",
+    conversation: "對話預覽",
     prompt: "你想探索什麼？",
     response: "對話內容在背景上保持清晰。",
     storageError: "無法儲存背景。請檢查瀏覽器可用儲存空間。",
@@ -49,6 +57,26 @@ export const zhTW = {
     dimensionsError: "請選擇小於 4,000 萬像素的圖片。",
     decodeError: "無法解碼此圖片。請嘗試其他檔案。",
     effectError: "無法繪製效果。請選擇「無」或其他圖片。",
+    material: "玻璃",
+    materialSolid: "關閉",
+    materialTransparent: "透明",
+    materialFrosted: "霧面",
+    materialBlurred: "模糊",
+    materialLiquid: "液態玻璃",
+    materialLiquid3d: "液態玻璃 3D",
+    materialMacos: "macOS 系統玻璃",
+    materialMacosNote: "使用 macOS 半透明視窗材質，可透出你的桌面。",
+    materialNativeFailed: "此版本的 Unsloth Desktop 無法使用 macOS 材質。請更新應用程式以啟用。",
+    glassTheme: "玻璃主題",
+    materialStyle: "樣式",
+    materialMenus: "玻璃選單",
+    materialMenusDescription: "下拉式選單、選單和挑選器也使用玻璃效果。",
+    materialStrength: "玻璃強度",
+    lens: "玻璃透鏡",
+    lensDescription: "像真實玻璃一樣彎曲輸入框下方的影像。",
+    lensOff: "關閉",
+    lensMagnify: "放大",
+    lensShrink: "縮小",
   },
   linkMenu: {
     openInBrowser: "在 Unsloth 瀏覽器中開啟",
@@ -771,35 +799,6 @@ export const zhTW = {
     compactEmpty: "目前還沒有可壓縮的內容",
     compactUnsupported: "壓縮需要支援工具的 GGUF 或 MLX 模型",
   },
-  halloween: {
-    navLabel: "不給糖就搗蛋…",
-    title: "不給糖就搗蛋？！",
-    description: "我們為 Unsloth 熬煮了一些驚喜，整個十月都在這裡等您。",
-    chooseTheme: "選擇驚悚主題",
-    spookyGreetings: "陰森問候",
-    spookyGreetingsDescription: "樹懶會用驚嚇來迎接新聊天。",
-    decorations: "蜘蛛與蝙蝠",
-    decorationsDescription: "蜘蛛網，偶爾還有蜘蛛或蝙蝠出沒。",
-    surprise: "不給糖就搗蛋！",
-    surpriseDescription: "讓樹懶幫您挑選主題。",
-    themesTitle: "驚悚主題",
-    back: "返回",
-    footer: "Unsloth 會在 11 月 1 日午夜恢復原狀。",
-    removeNow: "立即移除",
-    hideFromSidebar: "從側邊欄隱藏",
-    greeting: {
-      pumpkins: "南瓜燈刻好了，接下來呢？",
-      brewing: "開始熬煮魔藥吧",
-      trickOrTreat: "不給糖就搗蛋？",
-      manor: "歡迎來到鬼屋莊園",
-      manorName: "歡迎來到鬼屋莊園，{name}",
-      happyHalloween: "萬聖節快樂",
-      happyHalloweenName: "萬聖節快樂，{name}",
-      spirits: "幽靈正在聆聽…",
-      mysteries: "今晚要揭開什麼謎團呢？",
-      conjure: "要我為您變出什麼呢？",
-    },
-  },
   welcome: {
     goodToSeeYou: "很高興見到您",
     goodToSeeYouName: "很高興見到您，{name}",
@@ -1024,7 +1023,7 @@ export const zhTW = {
       deleteProjects: "刪除專案",
       deleteProjectsTitle: "刪除專案",
       deleteProjectsDescription:
-        "要刪除 {count} 個專案嗎？其中的聊天將被永久刪除。",
+        "{count} 個專案及其所有聊天將被永久刪除。此動作無法復原。",
       deleteProjectsFilesDescription:
         "每個專案的工作區資料夾都會從磁碟中移除。",
       countSelected: "已選取 {count} 個",
@@ -1035,7 +1034,7 @@ export const zhTW = {
       markRead: "標示為已讀",
       deleteChats: "刪除聊天",
       deleteTitle: "刪除聊天",
-      deleteDescription: "要刪除 {count} 個聊天嗎？此動作無法復原。",
+      deleteDescription: "{count} 個聊天及其訊息將被永久刪除。此動作無法復原。",
       deleteFilesDescription:
         "每個聊天專屬的沙箱資料夾都會從磁碟中移除。它們在專案中寫入的檔案會保留在該專案的工作區。",
       deleteFilesLabel: "刪除檔案與沙箱資料夾",
@@ -1083,7 +1082,7 @@ export const zhTW = {
     dialog: {
       deleteChat: {
         title: "刪除聊天",
-        description: "確定要刪除聊天「{name}」嗎？",
+        description: "聊天「{name}」及其訊息將被永久刪除。此動作無法復原。",
       },
       deleteRun: {
         title: "刪除訓練執行作業",
@@ -2239,10 +2238,14 @@ export const zhTW = {
         label: "安裝類型",
         description:
           "僅聊天（GGUF）。完整安裝會加入訓練、匯出、影片、safetensors 模型及更多圖片生成功能。",
+        descriptionCpu:
+          "僅聊天（GGUF）。找不到支援的 GPU，因此完整安裝會加入 CPU 訓練。",
         action: "升級為完整安裝",
         confirmTitle: "要升級為完整安裝嗎？",
         confirmDescription:
           "此「僅聊天」安裝可執行 GGUF 模型。完整安裝會為這台電腦的 GPU 加入 PyTorch，以啟用訓練、匯出、影片、safetensors 模型及更多圖片生成功能。這會下載數 GB 的資料（至少需要 5 GB 磁碟空間）並重新啟動伺服器。聊天、模型和設定都會保留。此程序可能需要幾分鐘。",
+        confirmDescriptionCpu:
+          "此「僅聊天」安裝可執行 GGUF 模型。這台電腦找不到支援的 GPU，因此完整安裝會加入 CPU 版的 PyTorch，以啟用 CPU 訓練。CPU 訓練比 GPU 訓練慢得多。這需要至少 5 GB 磁碟空間，並會重新啟動伺服器。聊天、模型和設定都會保留。此程序可能需要幾分鐘。",
         confirmAction: "升級",
         keywords:
           "完整安裝 升級 安裝類型 僅聊天 gguf 加入訓練 訓練 微調 pytorch torch 匯出 影片 圖片生成 safetensors full install upgrade chat only training fine-tune export video image generation",
@@ -2287,6 +2290,13 @@ export const zhTW = {
       avatarShapeRounded: "圓角",
       greetingSloth: "問候語",
       greetingSlothDescription: "在新聊天中顯示問候語。",
+      greetingDefault: "預設",
+      greetingCustom: "自訂",
+      greetingImage: "圖片",
+      greetingText: "問候語文字",
+      greetingTextDescription: "留空則使用內建問候語。",
+      greetingFileError: "請選擇小於 10 MB 的 PNG、JPEG、WebP 或 GIF 圖片。",
+      greetingImageError: "無法使用此圖片，請換一張較小的圖片。",
       chooseSloth: "或選一隻樹懶",
       noPicture: "沒有大頭貼",
       noneLabel: "無",
@@ -2408,14 +2418,7 @@ export const zhTW = {
         label: "主題",
         description: "Unsloth 在淺色與深色模式中使用的色彩。",
         standard: "標準",
-        classic: "經典",
-        minimal: "極簡",
         moreThemes: "更多主題",
-        halloween: "萬聖節",
-      },
-      trickOrTreat: {
-        label: "不給糖就搗蛋",
-        description: "萬聖節主題與詭異問候語，持續到 11 月 1 日。",
       },
       code: {
         title: "程式碼",
@@ -2437,7 +2440,7 @@ export const zhTW = {
         chatWidth: {
           label: "聊天寬度",
           description: "訊息與輸入框的寬度。",
-          standard: "標準",
+          standard: "預設",
           wide: "寬",
           full: "全寬",
         },
@@ -3043,6 +3046,8 @@ export const zhTW = {
       inlineEditResponse: "在回應上顯示「編輯回應」",
       inlineEditResponseDescription:
         "在每則回應上保留「編輯回應」，而不是放在「更多」選單中。",
+      turnNavigation: "輪次導覽",
+      turnNavigationDescription: "在長對話的左側邊緣以導軌形式顯示你的訊息。懸停可預覽某一輪，點擊可跳轉，並可加書籤以便再次找到。",
       composerAtBottom: "輸入框置於底部",
       composerAtBottomDescription:
         "開始新聊天時，將輸入框放在頁面底部而非中間。",
@@ -3311,10 +3316,10 @@ export const zhTW = {
         movedChatsToRecents: "已移至「最近項目」的聊天：{count}",
         moveFailed: "無法移動聊天",
         deleteChatsTitle: "刪除聊天（{count}）",
-        deleteChatsWarning: "要刪除所選的聊天（{count}）嗎？此動作無法復原。",
+        deleteChatsWarning: "{count} 個聊天及其訊息將被永久刪除。此動作無法復原。",
         deleteArchivedTitle: "刪除 {count} 個已封存的聊天",
         deleteArchivedWarning:
-          "要刪除所選的已封存聊天（{count}）嗎？此動作無法復原。",
+          "{count} 個已封存聊天及其訊息將被永久刪除。此動作無法復原。",
         deleting: "正在刪除...",
       },
       title: "資料",
@@ -3711,6 +3716,8 @@ export const zhTW = {
   },
   studio: {
     routeTitle: "訓練",
+    cpuTrainingNotice:
+      "找不到 GPU，因此訓練會在 CPU 上執行。它比 GPU 訓練慢得多，且僅支援文字模型（LoRA 或完整微調）。",
     wizard: {
       modelTitle: "模型",
       modelDescription: "選取模型與訓練方法",
@@ -4774,9 +4781,9 @@ export const zhTW = {
       },
       dialog: {
         renameChat: "重新命名聊天",
-        deleteChatDescription: "此聊天將被永久刪除。此動作無法復原。",
+        deleteChatDescription: "此聊天及其訊息將被永久刪除。此動作無法復原。",
         deleteProjectDescription:
-          "此專案及其聊天（{count}）將被永久刪除。此動作無法復原。",
+          "此專案及其聊天（{count} 個）將被永久刪除。此動作無法復原。",
         deleteFilesMany: "同時移除這些聊天建立的檔案和沙箱資料夾。",
         deleteProjectFilesLabel: "刪除專案工作區資料夾",
         deleteProjectFiles: "專案工作區資料夾將從磁碟中移除。",
@@ -5244,14 +5251,14 @@ export const zhTW = {
     renameChat: "重新命名聊天",
     chatName: "聊天名稱",
     deleteChat: "刪除聊天",
-    deleteChatDescription: "確定要刪除 {name} 嗎？其訊息將被永久刪除。",
+    deleteChatDescription: "聊天「{name}」及其訊息將被永久刪除。此動作無法復原。",
     importChats: "匯入聊天",
     importDestination: "選擇要將 {name} 匯入至何處：",
     selectDestination: "選取目的地",
     recents: "最近項目",
     import: "匯入",
     deleteProject: "刪除專案",
-    deleteProjectDescription: "確定要刪除 {name} 嗎？其中的聊天將被永久刪除。",
+    deleteProjectDescription: "專案「{name}」及其所有聊天將被永久刪除。此動作無法復原。",
     deleteProjectFiles: "專案工作區資料夾將從磁碟中移除。",
     deleteAll: "全部刪除",
     projectFallback: "專案",

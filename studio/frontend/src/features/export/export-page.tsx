@@ -56,7 +56,7 @@ import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
-  AlertCircleIcon,
+  Alert02Icon,
   InformationCircleIcon,
   Key01Icon,
   PackageIcon,
@@ -290,6 +290,8 @@ export function ExportPage() {
     hardware.exportUnsupportedMessage,
     canUpgrade,
   );
+  // Only where the full install brings export: without a GPU it trains on CPU and still cannot export.
+  const offerFullInstall = canUpgrade && hardware.exportUnsupportedReason === "no_torch";
   const availableFormats = useMemo<MergedFormatOption[]>(
     () =>
       MERGED_FORMATS.filter((f) => {
@@ -1197,7 +1199,7 @@ export function ExportPage() {
 
         {checkpointError && (
           <div className="flex items-center gap-3 rounded-2xl border border-border/60 p-8 text-sm text-destructive">
-            <HugeiconsIcon icon={AlertCircleIcon} className="size-4 shrink-0" />
+            <HugeiconsIcon icon={Alert02Icon} className="size-4 shrink-0" />
             {checkpointError}
           </div>
         )}
@@ -1589,13 +1591,13 @@ export function ExportPage() {
                     {exportUnsupported && (
                       <Alert variant="destructive">
                         <HugeiconsIcon
-                          icon={AlertCircleIcon}
+                          icon={Alert02Icon}
                           className="size-4"
                         />
                         <AlertTitle>Export unavailable</AlertTitle>
                         <AlertDescription>
                           {exportUnsupportedMessage}
-                          {fullInstall && (
+                          {offerFullInstall && (
                             <div className="mt-2">
                               <Button
                                 size="xs"
@@ -1931,7 +1933,7 @@ export function ExportPage() {
                           {decisionIneligible ? (
                             <Alert variant="destructive">
                               <HugeiconsIcon
-                                icon={AlertCircleIcon}
+                                icon={Alert02Icon}
                                 className="size-4"
                               />
                               <AlertTitle>

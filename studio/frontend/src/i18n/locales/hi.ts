@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const hi = {
+  turns: {
+    label: "टर्न {number}",
+    bookmarkedLabel: "टर्न {number}, बुकमार्क किया गया",
+    bookmark: "टर्न बुकमार्क करें",
+    removeBookmark: "बुकमार्क हटाएँ",
+    navigator: "टर्न",
+  },
   chatBackground: {
     noBackground: "कोई पृष्ठभूमि नहीं",
     sizing: "छवि का आकार",
@@ -31,6 +38,7 @@ export const hi = {
     halftone: "हाफ़टोन",
     scanlines: "स्कैनलाइन",
     visibility: "दृश्यता",
+    conversationVisibility: "बातचीत में दृश्यता",
     blur: "छवि का धुंधलापन",
     position: "स्थिति",
     horizontal: "क्षैतिज स्थिति",
@@ -40,8 +48,8 @@ export const hi = {
     scopeChats: "चैट",
     scopeAll: "सभी पेज",
     positionValue: "क्षैतिज {x}%, लंबवत {y}%",
-    newChat: "नई चैट",
-    conversation: "बातचीत",
+    newChat: "नई चैट का पूर्वावलोकन",
+    conversation: "बातचीत का पूर्वावलोकन",
     prompt: "आप क्या जानना चाहेंगे?",
     response: "पृष्ठभूमि पर भी आपकी बातचीत स्पष्ट रहती है।",
     storageError: "पृष्ठभूमि सहेजी नहीं जा सकी। ब्राउज़र का संग्रहण जाँचें।",
@@ -49,6 +57,26 @@ export const hi = {
     dimensionsError: "40 मेगापिक्सेल से छोटी छवि चुनें।",
     decodeError: "छवि पढ़ी नहीं जा सकी। दूसरी फ़ाइल आज़माएँ।",
     effectError: "प्रभाव बनाया नहीं जा सका। कोई नहीं या दूसरी छवि चुनें।",
+    material: "ग्लास",
+    materialSolid: "बंद",
+    materialTransparent: "पारदर्शी",
+    materialFrosted: "फ़्रॉस्टेड",
+    materialBlurred: "धुंधला",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "macOS सिस्टम ग्लास",
+    materialMacosNote: "macOS की पारभासी विंडो सामग्री का उपयोग करता है, जिससे आपका डेस्कटॉप दिखाई देता है।",
+    materialNativeFailed: "Unsloth Desktop का यह संस्करण macOS सामग्री का उपयोग नहीं कर सकता। इसे चालू करने के लिए ऐप अपडेट करें।",
+    glassTheme: "ग्लास थीम",
+    materialStyle: "शैली",
+    materialMenus: "ग्लास मेनू",
+    materialMenusDescription: "ड्रॉपडाउन, मेनू और पिकर भी ग्लास का उपयोग करते हैं।",
+    materialStrength: "ग्लास की तीव्रता",
+    lens: "ग्लास लेंस",
+    lensDescription: "कंपोज़र के नीचे की इमेज को असली कांच की तरह मोड़ता है।",
+    lensOff: "बंद",
+    lensMagnify: "बड़ा करें",
+    lensShrink: "छोटा करें",
   },
 
   linkMenu: {
@@ -724,37 +752,6 @@ export const hi = {
     compactEmpty: "अभी कॉम्पैक्ट करने के लिए कुछ नहीं है",
     compactUnsupported: "कॉम्पैक्शन के लिए टूल सपोर्ट वाला GGUF या MLX मॉडल आवश्यक है",
   },
-  halloween: {
-    navLabel: "ट्रिक या ट्रीट…",
-    title: "ट्रिक या ट्रीट?!",
-    description:
-      "हमने Unsloth के लिए कुछ डरावनी चीज़ें तैयार की हैं, जो अक्टूबर के अंत तक रहेंगी।",
-    chooseTheme: "एक डरावनी थीम चुनें",
-    spookyGreetings: "डरावने अभिवादन",
-    spookyGreetingsDescription: "स्लॉथ नई चैट का स्वागत एक डर के साथ करता है।",
-    decorations: "मकड़ियाँ और चमगादड़",
-    decorationsDescription:
-      "हैलोवीन थीम पर कोनों में जाले, और कभी-कभी कोई मकड़ी या चमगादड़।",
-    surprise: "ट्रिक या ट्रीट!",
-    surpriseDescription: "स्लॉथ को आपके लिए थीम चुनने दें।",
-    themesTitle: "डरावनी थीम",
-    back: "वापस",
-    footer: "Unsloth 1 नवंबर की आधी रात को सामान्य हो जाएगा।",
-    removeNow: "अभी हटाएँ",
-    hideFromSidebar: "साइडबार से छिपाएं",
-    greeting: {
-      pumpkins: "कद्दू तराशे जा चुके हैं। आगे क्या?",
-      brewing: "चलो, कुछ जादू घोलें",
-      trickOrTreat: "ट्रिक या ट्रीट?",
-      manor: "हवेली में आपका स्वागत है",
-      manorName: "{name}, हवेली में आपका स्वागत है",
-      happyHalloween: "हैप्पी हैलोवीन",
-      happyHalloweenName: "हैप्पी हैलोवीन, {name}",
-      spirits: "आत्माएँ सुन रही हैं…",
-      mysteries: "आज रात हम कौन-से रहस्य खोलेंगे?",
-      conjure: "मैं आपके लिए क्या जादू करूँ?",
-    },
-  },
   welcome: {
     goodToSeeYou: "आपको देखकर अच्छा लगा",
     goodToSeeYouName: "{name}, आपको देखकर अच्छा लगा",
@@ -981,7 +978,7 @@ export const hi = {
       deleteProjects: "प्रोजेक्ट हटाएँ",
       deleteProjectsTitle: "प्रोजेक्ट हटाएँ",
       deleteProjectsDescription:
-        "{count} प्रोजेक्ट हटाएँ? उनकी चैट स्थायी रूप से हट जाएँगी।",
+        "{count} प्रोजेक्ट और उनकी सभी चैट स्थायी रूप से मिटा दी जाएँगी। इसे पूर्ववत नहीं किया जा सकता।",
       deleteProjectsFilesDescription:
         "हर प्रोजेक्ट का कार्यक्षेत्र फ़ोल्डर डिस्क से हटा दिया जाता है।",
       countSelected: "{count} चुने गए",
@@ -992,7 +989,7 @@ export const hi = {
       markRead: "पढ़ा हुआ चिह्नित करें",
       deleteChats: "चैट हटाएँ",
       deleteTitle: "चैट हटाएँ",
-      deleteDescription: "{count} चैट हटाएँ? इसे पूर्ववत नहीं किया जा सकता।",
+      deleteDescription: "{count} चैट और उनके संदेश स्थायी रूप से मिटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।",
       deleteFilesDescription:
         "हर चैट का अपना सैंडबॉक्स फ़ोल्डर डिस्क से हटा दिया जाता है। किसी प्रोजेक्ट के अंदर लिखी गई फ़ाइलें उस प्रोजेक्ट के कार्यक्षेत्र में बनी रहती हैं।",
       deleteFilesLabel: "फ़ाइलें और सैंडबॉक्स फ़ोल्डर हटाएं",
@@ -1040,7 +1037,7 @@ export const hi = {
     dialog: {
       deleteChat: {
         title: "चैट हटाएँ",
-        description: 'क्या आप वाकई इस चैट "{name}" को हटाना चाहते हैं?',
+        description: 'चैट "{name}" और उसके संदेश स्थायी रूप से मिटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।',
       },
       deleteRun: {
         title: "ट्रेनिंग रन हटाएँ",
@@ -2152,10 +2149,14 @@ export const hi = {
         label: "इंस्टॉल का प्रकार",
         description:
           "केवल चैट (GGUF)। पूरा इंस्टॉल ट्रेनिंग, एक्सपोर्ट, वीडियो, safetensors मॉडल और इमेज जनरेशन की अतिरिक्त सुविधाएं जोड़ता है।",
+        descriptionCpu:
+          "केवल चैट (GGUF)। कोई समर्थित GPU नहीं मिला, इसलिए पूरा इंस्टॉल CPU पर ट्रेनिंग जोड़ता है।",
         action: "पूरे इंस्टॉल में अपग्रेड करें",
         confirmTitle: "क्या पूरे इंस्टॉल में अपग्रेड करना है?",
         confirmDescription:
           "यह केवल-चैट इंस्टॉल GGUF मॉडल चलाता है। पूरा इंस्टॉल इस मशीन के GPU के लिए PyTorch जोड़ता है, जिससे ट्रेनिंग, एक्सपोर्ट, वीडियो, safetensors मॉडल और इमेज जनरेशन की अतिरिक्त सुविधाएं उपलब्ध हो जाते हैं। यह कई गीगाबाइट (कम से कम 5 GB डिस्क स्पेस) डाउनलोड करता है और सर्वर को रीस्टार्ट करता है। चैट, मॉडल और सेटिंग्स सुरक्षित रहती हैं। इसमें कई मिनट लग सकते हैं।",
+        confirmDescriptionCpu:
+          "यह केवल-चैट इंस्टॉल GGUF मॉडल चलाता है। इस मशीन पर कोई समर्थित GPU नहीं मिला, इसलिए पूरा इंस्टॉल CPU के लिए PyTorch जोड़ता है, जिससे CPU पर ट्रेनिंग उपलब्ध हो जाती है। CPU पर ट्रेनिंग GPU की तुलना में बहुत धीमी होती है। इसके लिए कम से कम 5 GB डिस्क स्पेस चाहिए और यह सर्वर को रीस्टार्ट करता है। चैट, मॉडल और सेटिंग्स बने रहते हैं। इसमें कुछ मिनट लग सकते हैं।",
         confirmAction: "अपग्रेड करें",
         keywords:
           "full install upgrade इंस्टॉल का प्रकार पूरा इंस्टॉल अपग्रेड केवल चैट chat only gguf add training ट्रेनिंग प्रशिक्षण train fine-tune pytorch torch एक्सपोर्ट वीडियो इमेज जनरेशन safetensors",
@@ -2230,6 +2231,13 @@ export const hi = {
       pictureOptions: "प्रोफ़ाइल फ़ोटो विकल्प",
       greetingSloth: "अभिवादन",
       greetingSlothDescription: "नई चैट में अभिवादन दिखाएँ।",
+      greetingDefault: "डिफ़ॉल्ट",
+      greetingCustom: "कस्टम",
+      greetingImage: "चित्र",
+      greetingText: "अभिवादन टेक्स्ट",
+      greetingTextDescription: "बिल्ट-इन अभिवादन इस्तेमाल करने के लिए खाली छोड़ें।",
+      greetingFileError: "10 MB से छोटी PNG, JPEG, WebP या GIF फ़ाइल चुनें।",
+      greetingImageError: "यह चित्र उपयोग नहीं हो सका। कोई छोटा चित्र आज़माएँ।",
       noPicture: "कोई प्रोफ़ाइल फ़ोटो नहीं",
       noneLabel: "कोई नहीं",
       stats: {
@@ -2336,15 +2344,7 @@ export const hi = {
         label: "थीम",
         description: "लाइट और डार्क मोड में पूरे Unsloth में दिखने वाले रंग।",
         standard: "मानक",
-        classic: "क्लासिक",
-        minimal: "मिनिमल",
         moreThemes: "और थीम",
-        halloween: "हैलोवीन",
-      },
-      trickOrTreat: {
-        label: "ट्रिक या ट्रीट",
-        description:
-          "1 नवंबर तक हैलोवीन थीम और डरावने अभिवादन।",
       },
       code: {
         title: "कोड",
@@ -2366,7 +2366,7 @@ export const hi = {
         chatWidth: {
           label: "चैट की चौड़ाई",
           description: "संदेशों और इनपुट बॉक्स की चौड़ाई।",
-          standard: "मानक",
+          standard: "डिफ़ॉल्ट",
           wide: "चौड़ा",
           full: "पूरी चौड़ाई",
         },
@@ -2959,6 +2959,8 @@ export const hi = {
         "विवरण गति टोकन आँकड़े परतें verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
       inlineEditResponseDescription: "जवाब संपादित करें को “और” मेन्यू के बजाय हर जवाब पर दिखाएँ।",
+      turnNavigation: "टर्न नेविगेशन",
+      turnNavigationDescription: "लंबी चैट के बाएँ किनारे पर आपके संदेशों की एक पट्टी दिखाएँ। किसी टर्न का प्रीव्यू देखने के लिए होवर करें, उस पर जाने के लिए क्लिक करें, और बाद में ढूँढने के लिए बुकमार्क करें।",
       composerAtBottom: "कंपोज़र नीचे",
       composerAtBottomDescription: "नई चैट में कंपोज़र को पेज के बीच के बजाय नीचे दिखाएँ।",
       projectAttachments: "प्रोजेक्ट भर में फ़ाइलें साझा करें",
@@ -3223,9 +3225,9 @@ export const hi = {
         movedChatsToRecents: "हाल के में स्थानांतरित चैट: {count}",
         moveFailed: "चैट स्थानांतरित नहीं हो सकीं",
         deleteChatsTitle: "चैट मिटाएँ ({count})",
-        deleteChatsWarning: "चुनी गई चैट ({count}) मिटाएँ? इसे पूर्ववत नहीं किया जा सकता।",
+        deleteChatsWarning: "{count} चैट और उनके संदेश स्थायी रूप से मिटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।",
         deleteArchivedTitle: "{count} संग्रहीत चैट मिटाएँ",
-        deleteArchivedWarning: "चुनी गई संग्रहीत चैट ({count}) मिटाएँ? इसे पूर्ववत नहीं किया जा सकता।",
+        deleteArchivedWarning: "{count} संग्रहीत चैट और उनके संदेश स्थायी रूप से मिटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।",
         deleting: "मिटाया जा रहा है...",
       },
       title: "डेटा",
@@ -3621,6 +3623,8 @@ export const hi = {
     imageTraining: "इमेज ट्रेनिंग",
     goToImageTraining: "इमेज LoRA ट्रेन करें",
     routeTitle: "ट्रेनिंग",
+    cpuTrainingNotice:
+      "कोई GPU नहीं मिला, इसलिए ट्रेनिंग CPU पर चलती है। यह GPU ट्रेनिंग से बहुत धीमी है और केवल टेक्स्ट मॉडल (LoRA या फुल फाइनट्यूनिंग) सपोर्ट करती है।",
     wizard: {
       modelTitle: "मॉडल",
       modelDescription: "मॉडल और ट्रेनिंग विधि चुनें",
@@ -4710,8 +4714,8 @@ export const hi = {
       },
       dialog: {
         renameChat: "चैट का नाम बदलें",
-        deleteChatDescription: "यह चैट हमेशा के लिए हटा दी जाएगी। इसे पूर्ववत नहीं किया जा सकता।",
-        deleteProjectDescription: "प्रोजेक्ट और उसकी चैट ({count}) हमेशा के लिए हटा दी जाएँगी। इसे पूर्ववत नहीं किया जा सकता।",
+        deleteChatDescription: "चैट और उसके संदेश स्थायी रूप से मिटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।",
+        deleteProjectDescription: "प्रोजेक्ट और उसकी चैट ({count}) स्थायी रूप से मिटा दी जाएँगी। इसे पूर्ववत नहीं किया जा सकता।",
         deleteFilesMany: "इन चैट द्वारा बनाई गई फ़ाइलें और सैंडबॉक्स फ़ोल्डर भी हटाएँ।",
         deleteProjectFilesLabel: "प्रोजेक्ट का वर्कस्पेस फ़ोल्डर हटाएँ",
         deleteProjectFiles: "प्रोजेक्ट का वर्कस्पेस फ़ोल्डर डिस्क से हटा दिया जाएगा।",
@@ -5167,14 +5171,14 @@ export const hi = {
     renameChat: "चैट का नाम बदलें",
     chatName: "चैट का नाम",
     deleteChat: "चैट हटाएँ",
-    deleteChatDescription: "क्या आप वाकई {name} को हटाना चाहते हैं? इसके संदेश स्थायी रूप से हट जाएँगे।",
+    deleteChatDescription: 'चैट "{name}" और उसके संदेश स्थायी रूप से मिटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।',
     importChats: "चैट इंपोर्ट करें",
     importDestination: "चुनें कि {name} को कहाँ इंपोर्ट करना है:",
     selectDestination: "गंतव्य चुनें",
     recents: "हाल के",
     import: "इंपोर्ट करें",
     deleteProject: "प्रोजेक्ट हटाएँ",
-    deleteProjectDescription: "क्या आप वाकई {name} को हटाना चाहते हैं? इसकी चैट स्थायी रूप से हट जाएँगी।",
+    deleteProjectDescription: 'प्रोजेक्ट "{name}" और उसकी सभी चैट स्थायी रूप से मिटा दी जाएँगी। इसे पूर्ववत नहीं किया जा सकता।',
     deleteProjectFiles: "प्रोजेक्ट का वर्कस्पेस फ़ोल्डर डिस्क से हटा दिया जाएगा।",
     deleteAll: "सब हटाएँ",
     projectFallback: "प्रोजेक्ट",

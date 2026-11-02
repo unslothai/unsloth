@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   Edit03Icon,
   FilterMailIcon,
   MoreHorizontalIcon,
@@ -318,7 +318,7 @@ function TaskRow({
               </DropdownMenuItem>
             )}
             <DropdownMenuItem variant="destructive" onSelect={onDelete}>
-              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
               {t("common.delete")}
             </DropdownMenuItem>
           </DropdownMenuContent>

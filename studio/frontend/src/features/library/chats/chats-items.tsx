@@ -35,16 +35,16 @@ import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
-import { MessageCircleIcon, Settings01Icon, StarPointedIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, Settings01Icon, StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
-  Archive03Icon,
+  ArchiveIcon,
   ArchiveRestoreIcon,
   Cancel01Icon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
   LayerIcon,
+  LayoutTwoColumnIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
   PinIcon,
@@ -62,7 +62,6 @@ import { ForkIcon } from "@/lib/fork-icon";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  Columns2Icon,
   GitBranchIcon,
 } from "lucide-react";
 import { type ReactNode, createContext, useContext } from "react";
@@ -541,13 +540,13 @@ function ChatMenu({
             />
           ) : (
             <MenuItem
-              icon={Archive03Icon}
+              icon={ArchiveIcon}
               label={t("settings.data.library.archive")}
               onSelect={() => actions.archive([chat])}
             />
           )}
           <MenuItem
-            icon={Delete02Icon}
+            icon={TrashIcon}
             label={t("common.delete")}
             destructive
             onSelect={() => actions.remove([chat])}
@@ -576,7 +575,7 @@ function ChatTile({
   const iconClass = bare ? CARD_ICON : TILE_ICON;
   const icon =
     chat.type === "compare" ? (
-      <Columns2Icon strokeWidth={1.75} className={iconClass} />
+      <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={1.75} className={iconClass} />
     ) : chat.isFork ? (
       <GitBranchIcon strokeWidth={1.75} className={iconClass} />
     ) : (
@@ -1390,7 +1389,7 @@ function ProjectMenu({
           />
           <DropdownMenuSeparator className="mx-3" />
           <MenuItem
-            icon={Delete02Icon}
+            icon={TrashIcon}
             label={t("library.chats.menu.deleteProject")}
             destructive
             onSelect={() => actions.deleteProject(project)}
@@ -1618,7 +1617,7 @@ export function SectionMenuItems({
       />
       <DropdownMenuSeparator className="mx-3" />
       <MenuItem
-        icon={Delete02Icon}
+        icon={TrashIcon}
         label={t("shell.sections.remove")}
         destructive
         onSelect={() => actions.removeSection(section)}
@@ -1814,7 +1813,7 @@ export function FavoriteChatTile({ chat }: { chat: SidebarItem }) {
   const actions = useChatsActions();
   const icon =
     chat.type === "compare" ? (
-      <Columns2Icon strokeWidth={1.5} className={FILE_CARD_ICON_CLASS} />
+      <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={1.5} className={FILE_CARD_ICON_CLASS} />
     ) : chat.isFork ? (
       <GitBranchIcon strokeWidth={1.5} className={FILE_CARD_ICON_CLASS} />
     ) : (

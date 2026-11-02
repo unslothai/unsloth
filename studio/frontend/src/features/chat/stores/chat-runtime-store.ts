@@ -2484,6 +2484,8 @@ type ChatRuntimeStore = {
   loadedMlxInt8PrefillRequested: boolean;
   mlxAnePrefill: boolean;
   loadedMlxAnePrefillRequested: boolean;
+  mlxFastVerify: boolean;
+  loadedMlxFastVerifyRequested: boolean;
   /** MLX offload knobs as chosen (null = Auto), as the resident load asked for them, the
    *  fraction it applied (null = none), and why a request was not applied. */
   mlxPleOffload: MlxOffload;
@@ -4272,6 +4274,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedMlxInt8PrefillRequested: false,
   mlxAnePrefill: false,
   loadedMlxAnePrefillRequested: false,
+  mlxFastVerify: false,
+  loadedMlxFastVerifyRequested: false,
   mlxPleOffload: null,
   mlxExpertOffload: null,
   loadedMlxPleOffloadRequested: null,
@@ -5209,6 +5213,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedMlxInt8PrefillRequested: false,
       mlxAnePrefill: false,
       loadedMlxAnePrefillRequested: false,
+      mlxFastVerify: false,
+      loadedMlxFastVerifyRequested: false,
       mlxPleOffload: null,
       mlxExpertOffload: null,
       loadedMlxPleOffloadRequested: null,

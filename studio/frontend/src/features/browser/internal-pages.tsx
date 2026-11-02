@@ -21,9 +21,9 @@ import { isTauri } from "@/lib/api-base";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Cancel01Icon,
-  Delete02Icon,
   Edit03Icon,
   FilterMailIcon,
   InternetIcon,
@@ -136,7 +136,7 @@ function Row({
       extra={
         <>
           {menu?.rows}
-          <MenuRow icon={Delete02Icon} onSelect={onRemove}>
+          <MenuRow icon={TrashIcon} onSelect={onRemove}>
             {t("browser.pages.remove")}
           </MenuRow>
         </>
@@ -250,7 +250,7 @@ function HistoryRow({
       tabId={tabId}
       extra={
         <MenuRow
-          icon={Delete02Icon}
+          icon={TrashIcon}
           onSelect={() => useBrowserHistoryStore.getState().removeVisit(item.id)}
         >
           {t("browser.pages.removeFromHistory")}
@@ -306,7 +306,7 @@ function HistoryRow({
               {t("browser.pages.openPage")}
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => useBrowserHistoryStore.getState().removeVisit(item.id)}>
-              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} />
               {t("browser.pages.removeFromHistory")}
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -702,7 +702,7 @@ function DownloadRow({
               {revealLabel}
             </MenuRow>
           ) : null}
-          <MenuRow icon={Delete02Icon} onSelect={remove}>
+          <MenuRow icon={TrashIcon} onSelect={remove}>
             {t("browser.pages.removeFromHistory")}
           </MenuRow>
         </>

@@ -15,10 +15,10 @@ import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Alert02Icon,
   CheckmarkCircle02Icon,
-  Delete02Icon,
   Download01Icon,
   MoreHorizontalIcon,
   ArrowUpRight01Icon,
@@ -165,7 +165,7 @@ function DownloadRow({
             </DropdownMenuItem>
           ) : null}
           <DropdownMenuItem onSelect={() => useBrowserHistoryStore.getState().removeDownload(item.id)}>
-            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
+            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-4" />
             {t("browser.pages.removeFromHistory")}
           </DropdownMenuItem>
         </DropdownMenuContent>

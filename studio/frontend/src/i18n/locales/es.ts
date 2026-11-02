@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const es = {
+  turns: {
+    label: "Turno {number}",
+    bookmarkedLabel: "Turno {number}, con marcador",
+    bookmark: "Marcar turno",
+    removeBookmark: "Quitar marcador",
+    navigator: "Turnos",
+  },
   chatBackground: {
     noBackground: "Sin fondo",
     sizing: "Tamaño de imagen",
@@ -31,6 +38,7 @@ export const es = {
     halftone: "Semitono",
     scanlines: "Líneas de barrido",
     visibility: "Visibilidad",
+    conversationVisibility: "Visibilidad en conversaciones",
     blur: "Desenfoque de imagen",
     position: "Posición",
     horizontal: "Posición horizontal",
@@ -40,8 +48,8 @@ export const es = {
     scopeChats: "Chats",
     scopeAll: "Todas las páginas",
     positionValue: "Horizontal {x} %, vertical {y} %",
-    newChat: "Nuevo chat",
-    conversation: "Conversación",
+    newChat: "Vista previa del chat nuevo",
+    conversation: "Vista previa de la conversación",
     prompt: "¿Qué te gustaría explorar?",
     response: "Tu conversación sigue siendo legible sobre el fondo.",
     storageError: "No se pudo guardar el fondo. Comprueba el almacenamiento del navegador.",
@@ -49,6 +57,26 @@ export const es = {
     dimensionsError: "Elige una imagen de menos de 40 megapíxeles.",
     decodeError: "No se pudo leer esta imagen. Prueba otro archivo.",
     effectError: "No se pudo generar el efecto. Elige Ninguno u otra imagen.",
+    material: "Vidrio",
+    materialSolid: "Desactivado",
+    materialTransparent: "Transparente",
+    materialFrosted: "Esmerilado",
+    materialBlurred: "Desenfocado",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "Vidrio del sistema macOS",
+    materialMacosNote: "Usa el material de ventana translúcido de macOS, así que se ve tu escritorio a través.",
+    materialNativeFailed: "Esta versión de Unsloth Desktop no puede usar el material de macOS. Actualiza la aplicación para activarlo.",
+    glassTheme: "Tema de cristal",
+    materialStyle: "Estilo",
+    materialMenus: "Menús de vidrio",
+    materialMenusDescription: "Los desplegables, menús y selectores también usan vidrio.",
+    materialStrength: "Intensidad del vidrio",
+    lens: "Lente de vidrio",
+    lensDescription: "Curva la imagen bajo el cuadro de texto como un vidrio real.",
+    lensOff: "Desactivado",
+    lensMagnify: "Ampliar",
+    lensShrink: "Reducir",
   },
 
   linkMenu: {
@@ -724,38 +752,6 @@ export const es = {
     compactEmpty: "Aún no hay nada que compactar",
     compactUnsupported: "La compactación requiere un modelo GGUF o MLX compatible con herramientas",
   },
-  halloween: {
-    navLabel: "Truco o trato…",
-    title: "¡¿Truco o trato?!",
-    description:
-      "Hemos preparado algunos sustos para Unsloth, disponibles hasta finales de octubre.",
-    chooseTheme: "Elige un tema terrorífico",
-    spookyGreetings: "Saludos terroríficos",
-    spookyGreetingsDescription:
-      "El perezoso recibe los chats nuevos con un susto.",
-    decorations: "Arañas y murciélagos",
-    decorationsDescription:
-      "Telarañas en las esquinas y alguna araña o murciélago de vez en cuando con un tema de Halloween.",
-    surprise: "¡Truco o trato!",
-    surpriseDescription: "Deja que el perezoso elija un tema por ti.",
-    themesTitle: "Temas terroríficos",
-    back: "Atrás",
-    footer: "Unsloth vuelve a la normalidad a medianoche del 1 de noviembre.",
-    removeNow: "Quitar ahora",
-    hideFromSidebar: "Ocultar de la barra lateral",
-    greeting: {
-      pumpkins: "Las calabazas ya están talladas. ¿Qué sigue?",
-      brewing: "¡A preparar la poción!",
-      trickOrTreat: "¿Truco o trato?",
-      manor: "Te damos la bienvenida a la mansión",
-      manorName: "Te damos la bienvenida a la mansión, {name}",
-      happyHalloween: "¡Feliz Halloween!",
-      happyHalloweenName: "¡Feliz Halloween, {name}!",
-      spirits: "Los espíritus están escuchando…",
-      mysteries: "¿Qué misterios descubriremos esta noche?",
-      conjure: "¿Qué puedo conjurar para ti?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Me alegra verte",
     goodToSeeYouName: "Me alegra verte, {name}",
@@ -981,7 +977,7 @@ export const es = {
       deleteProjects: "Eliminar proyectos",
       deleteProjectsTitle: "Eliminar proyectos",
       deleteProjectsDescription:
-        "¿Eliminar {count} proyectos? Sus chats se eliminan de forma permanente.",
+        "Se eliminarán permanentemente {count} proyectos y todos sus chats. Esta acción no se puede deshacer.",
       deleteProjectsFilesDescription:
         "La carpeta del espacio de trabajo de cada proyecto se elimina del disco.",
       countSelected: "{count} seleccionados",
@@ -992,7 +988,7 @@ export const es = {
       markRead: "Marcar como leído",
       deleteChats: "Eliminar chats",
       deleteTitle: "Eliminar chats",
-      deleteDescription: "¿Eliminar {count} chats? Esta acción no se puede deshacer.",
+      deleteDescription: "Se eliminarán permanentemente {count} chats y sus mensajes. Esta acción no se puede deshacer.",
       deleteFilesDescription:
         "Se elimina del disco la carpeta de entorno aislado de cada chat. Los archivos que hayan escrito dentro de un proyecto permanecen en el espacio de trabajo de ese proyecto.",
       deleteFilesLabel: "Eliminar archivos y carpeta de espacio aislado",
@@ -1040,7 +1036,7 @@ export const es = {
     dialog: {
       deleteChat: {
         title: "Eliminar chat",
-        description: '¿Seguro que quieres eliminar este chat "{name}"?',
+        description: 'Se eliminarán permanentemente el chat "{name}" y sus mensajes. Esta acción no se puede deshacer.',
       },
       deleteRun: {
         title: "Eliminar ejecución de entrenamiento",
@@ -2171,10 +2167,14 @@ export const es = {
         label: "Tipo de instalación",
         description:
           "Solo chat (GGUF). La instalación completa añade entrenamiento, exportación, vídeo, modelos safetensors y más funciones de generación de imágenes.",
+        descriptionCpu:
+          "Solo chat (GGUF). No se ha encontrado una GPU compatible, así que la instalación completa añade entrenamiento en la CPU.",
         action: "Actualizar a la instalación completa",
         confirmTitle: "¿Actualizar a la instalación completa?",
         confirmDescription:
           "Esta instalación de solo chat ejecuta modelos GGUF. La instalación completa añade PyTorch para la GPU de este equipo, lo que habilita el entrenamiento, la exportación, el vídeo, los modelos safetensors y más funciones de generación de imágenes. Descarga varios gigabytes (al menos 5 GB de espacio en disco) y reinicia el servidor. Se conservan las conversaciones, los modelos y los ajustes. Puede tardar varios minutos.",
+        confirmDescriptionCpu:
+          "Esta instalación de solo chat ejecuta modelos GGUF. No se ha encontrado una GPU compatible en este equipo, así que la instalación completa añade PyTorch para la CPU, lo que habilita el entrenamiento en la CPU. Entrenar en la CPU es mucho más lento que en una GPU. Necesita al menos 5 GB de espacio en disco y reinicia el servidor. Se conservan las conversaciones, los modelos y los ajustes. Puede tardar varios minutos.",
         confirmAction: "Actualizar",
         keywords:
           "full install upgrade tipo de instalación instalación completa actualizar solo chat chat only gguf add training entrenamiento entrenar train fine-tune pytorch torch exportar vídeo generación de imágenes safetensors",
@@ -2249,6 +2249,13 @@ export const es = {
       pictureOptions: "Opciones de la foto de perfil",
       greetingSloth: "Saludo",
       greetingSlothDescription: "Mostrar el saludo en los chats nuevos.",
+      greetingDefault: "Predeterminado",
+      greetingCustom: "Personalizado",
+      greetingImage: "Imagen",
+      greetingText: "Texto del saludo",
+      greetingTextDescription: "Déjalo vacío para usar los saludos integrados.",
+      greetingFileError: "Elige un PNG, JPEG, WebP o GIF de menos de 10 MB.",
+      greetingImageError: "No se pudo usar esta imagen. Prueba con una más pequeña.",
       noPicture: "Sin foto de perfil",
       noneLabel: "Ninguno",
       stats: {
@@ -2355,15 +2362,7 @@ export const es = {
         label: "Tema",
         description: "Colores usados en Unsloth, en modo claro y oscuro.",
         standard: "Estándar",
-        classic: "Clásica",
-        minimal: "Minimalista",
         moreThemes: "Más temas",
-        halloween: "Halloween",
-      },
-      trickOrTreat: {
-        label: "Truco o trato",
-        description:
-          "Temas de Halloween y saludos terroríficos, hasta el 1 de noviembre.",
       },
       code: {
         title: "Código",
@@ -2385,7 +2384,7 @@ export const es = {
         chatWidth: {
           label: "Ancho del chat",
           description: "Ancho de los mensajes y del cuadro de texto.",
-          standard: "Estándar",
+          standard: "Predeterminado",
           wide: "Amplio",
           full: "Ancho completo",
         },
@@ -2983,6 +2982,8 @@ export const es = {
         "detalles velocidad tokens estadísticas capas descarga verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Editar respuesta en las respuestas",
       inlineEditResponseDescription: "Mostrar Editar respuesta en cada respuesta, en lugar de en el menú Más.",
+      turnNavigation: "Navegación por turnos",
+      turnNavigationDescription: "Muestra tus mensajes como una barra en el borde izquierdo de los chats largos. Pasa el cursor para ver un turno, haz clic para ir a él y márcalo para encontrarlo después.",
       composerAtBottom: "Cuadro de texto abajo",
       composerAtBottomDescription: "Empieza los chats nuevos con el cuadro de texto abajo en lugar de en el centro.",
       projectAttachments: "Compartir archivos en todo el proyecto",
@@ -3251,9 +3252,9 @@ export const es = {
         movedChatsToRecents: "Chats movidos a Recientes: {count}",
         moveFailed: "No se pudieron mover los chats",
         deleteChatsTitle: "Eliminar chats ({count})",
-        deleteChatsWarning: "¿Eliminar los chats seleccionados ({count})? Esta acción no se puede deshacer.",
+        deleteChatsWarning: "Se eliminarán permanentemente {count} chats y sus mensajes. Esta acción no se puede deshacer.",
         deleteArchivedTitle: "Eliminar {count} chats archivados",
-        deleteArchivedWarning: "¿Eliminar los chats archivados seleccionados ({count})? Esta acción no se puede deshacer.",
+        deleteArchivedWarning: "Se eliminarán permanentemente {count} chats archivados y sus mensajes. Esta acción no se puede deshacer.",
         deleting: "Eliminando...",
       },
       title: "Datos",
@@ -3655,6 +3656,8 @@ export const es = {
     imageTraining: "Entrenamiento de imagen",
     goToImageTraining: "Entrenar LoRA de imagen",
     routeTitle: "Entrenar",
+    cpuTrainingNotice:
+      "No se ha encontrado ninguna GPU, así que el entrenamiento se ejecuta en la CPU. Es mucho más lento que en una GPU y solo admite modelos de texto (LoRA o ajuste fino completo).",
     wizard: {
       modelTitle: "Modelo",
       modelDescription: "Selecciona el modelo y el método de entrenamiento",
@@ -4773,8 +4776,8 @@ export const es = {
       },
       dialog: {
         renameChat: "Renombrar chat",
-        deleteChatDescription: "Este chat se eliminará de forma permanente. Esta acción no se puede deshacer.",
-        deleteProjectDescription: "El proyecto y sus chats ({count}) se eliminarán de forma permanente. Esta acción no se puede deshacer.",
+        deleteChatDescription: "Se eliminarán permanentemente el chat y sus mensajes. Esta acción no se puede deshacer.",
+        deleteProjectDescription: "Se eliminarán permanentemente el proyecto y sus chats ({count}). Esta acción no se puede deshacer.",
         deleteFilesMany: "Eliminar también los archivos y carpetas de sandbox que crearon estos chats.",
         deleteProjectFilesLabel: "Eliminar la carpeta de trabajo del proyecto",
         deleteProjectFiles: "La carpeta de trabajo del proyecto se eliminará del disco.",
@@ -5230,14 +5233,14 @@ export const es = {
     renameChat: "Renombrar chat",
     chatName: "Nombre del chat",
     deleteChat: "Eliminar chat",
-    deleteChatDescription: "¿Seguro que quieres eliminar {name}? Sus mensajes se eliminarán de forma permanente.",
+    deleteChatDescription: 'Se eliminarán permanentemente el chat "{name}" y sus mensajes. Esta acción no se puede deshacer.',
     importChats: "Importar chats",
     importDestination: "Elige dónde importar {name}:",
     selectDestination: "Seleccionar destino",
     recents: "Recientes",
     import: "Importar",
     deleteProject: "Eliminar proyecto",
-    deleteProjectDescription: "¿Seguro que quieres eliminar {name}? Sus chats se eliminarán de forma permanente.",
+    deleteProjectDescription: 'Se eliminarán permanentemente el proyecto "{name}" y todos sus chats. Esta acción no se puede deshacer.',
     deleteProjectFiles: "La carpeta de trabajo del proyecto se eliminará del disco.",
     deleteAll: "Eliminar todo",
     projectFallback: "proyecto",
