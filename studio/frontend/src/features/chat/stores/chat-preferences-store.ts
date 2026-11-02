@@ -73,6 +73,8 @@ export interface ChatPreferencesState {
   setNewChatComposerAtBottom: (value: boolean) => void;
   showTurnNavigation: boolean;
   setShowTurnNavigation: (value: boolean) => void;
+  richTextPaste: boolean;
+  setRichTextPaste: (value: boolean) => void;
 }
 
 // A stale stored value would leave the dropdown blank and unfixable.
@@ -137,6 +139,8 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set({ newChatComposerAtBottom }),
       showTurnNavigation: true,
       setShowTurnNavigation: (showTurnNavigation) => set({ showTurnNavigation }),
+      richTextPaste: true,
+      setRichTextPaste: (richTextPaste) => set({ richTextPaste }),
     }),
     {
       name: "unsloth_chat_preferences",
@@ -183,6 +187,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           notifyWhenReplyFinishes: saved?.notifyWhenReplyFinishes === true,
           filesPanelCollapsed: saved?.filesPanelCollapsed === true,
           showTurnNavigation: saved?.showTurnNavigation !== false,
+          richTextPaste: saved?.richTextPaste !== false,
           newChatComposerAtBottom: saved?.newChatComposerAtBottom === true,
         };
       },

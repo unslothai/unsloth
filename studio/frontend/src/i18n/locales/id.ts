@@ -734,6 +734,8 @@ export const id = {
     plainText: "Kolom pesan teks biasa",
     plainTextDescription:
       "Pertahankan kode, Markdown, dan tautan sebagai teks literal. Nonaktifkan untuk menampilkan pratinjau berformat.",
+    richPaste: "Tempel teks berformat",
+    richPasteDescription: "Menempel tautan, tabel, dan format sebagai Markdown. {shortcut} menempel teks biasa. Composer teks kaya lengkap segera hadir.",
     showContext: "Penggunaan jendela konteks",
     sendShortcut: "Pintasan kirim",
     sendMultiline: "{mod} + Enter untuk prompt multibaris",

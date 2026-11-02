@@ -737,6 +737,8 @@ export const cs = {
     plainText: "Pole zprávy s prostým textem",
     plainTextDescription:
       "Ponechá kód, Markdown a odkazy jako doslovný text. Po vypnutí se zobrazí formátovaný náhled.",
+    richPaste: "Vkládání formátovaného textu",
+    richPasteDescription: "Vkládá odkazy, tabulky a formátování jako Markdown. {shortcut} vloží prostý text. Plný editor formátovaného textu brzy.",
     showContext: "Využití kontextového okna",
     sendShortcut: "Zkratka pro odeslání",
     sendMultiline: "{mod} + Enter pro víceřádkové prompty",

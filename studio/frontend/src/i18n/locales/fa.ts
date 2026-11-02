@@ -733,6 +733,8 @@ export const fa = {
     plainText: "کادر نوشتن متن ساده",
     plainTextDescription:
       "کد، Markdown و پیوندها به‌صورت متن خام نگه داشته شوند. برای نمایش پیش‌نمایش قالب‌بندی‌شده، خاموش کنید.",
+    richPaste: "چسباندن متن قالب‌دار",
+    richPasteDescription: "پیوندها، جدول‌ها و قالب‌بندی را به‌صورت Markdown می‌چسباند. {shortcut} متن ساده می‌چسباند. ویرایشگر کامل متن غنی به‌زودی.",
     showContext: "میزان استفاده از پنجرهٔ زمینه",
     sendShortcut: "میان‌بر ارسال",
     sendMultiline: "{mod} + Enter برای پرامپت‌های چندخطی",

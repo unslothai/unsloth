@@ -652,6 +652,8 @@ export const ko = {
     title: "메시지 입력",
     plainText: "일반 텍스트 입력",
     plainTextDescription: "코드, Markdown, 링크를 원문 그대로 표시합니다. 끄면 서식 미리보기를 표시합니다.",
+    richPaste: "서식 있는 텍스트 붙여넣기",
+    richPasteDescription: "링크, 표, 서식을 Markdown으로 붙여넣습니다. {shortcut}는 일반 텍스트로 붙여넣습니다. 완전한 서식 입력창은 곧 제공됩니다.",
     showContext: "컨텍스트 창 사용량 표시",
     sendShortcut: "전송 단축키",
     sendMultiline: "여러 줄 메시지는 {mod} + Enter",

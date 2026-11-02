@@ -741,6 +741,8 @@ export const pl = {
     plainText: "Pole wiadomości z czystym tekstem",
     plainTextDescription:
       "Zachowuj kod, Markdown i linki jako zwykły tekst. Wyłącz, aby pokazywać sformatowany podgląd.",
+    richPaste: "Wklejanie sformatowanego tekstu",
+    richPasteDescription: "Wkleja linki, tabele i formatowanie jako Markdown. {shortcut} wkleja zwykły tekst. Pełny edytor tekstu sformatowanego wkrótce.",
     showContext: "Użycie okna kontekstu",
     sendShortcut: "Skrót wysyłania",
     sendMultiline: "{mod} + Enter dla promptów wielowierszowych",
