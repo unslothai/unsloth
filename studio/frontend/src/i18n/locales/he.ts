@@ -3028,6 +3028,8 @@ export const he = {
         "ההתראות חסומות. יש לאפשר אותן ל-Unsloth בהגדרות הדפדפן או המערכת ולנסות שוב.",
       replyNotificationKeywords:
         "notify notification alert done finished reply background minimized התראה הודעה הסתיים מוכן תשובה רקע ממוזער",
+      showLinkPreviews: "תצוגות מקדימות של קישורים",
+      showLinkPreviewsDescription: "הצגת תצוגות מקדימות במעבר העכבר מעל קישורי מקורות.",
       showResponseModel: "מודל המענה",
       showResponseModelDescription: "הצג פרטי מודל בתשובות העוזר.",
       showReplyTimes: "זמני תשובות",
