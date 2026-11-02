@@ -516,6 +516,7 @@ def test_gallery_records_generation_time_for_the_whole_batch(client, monkeypatch
     generate = backend.generate
 
     def _slow_generate(**kwargs):
+        """Delay the backend so the recorded elapsed time has an observable lower bound."""
         time.sleep(0.03)
         return generate(**kwargs)
 
