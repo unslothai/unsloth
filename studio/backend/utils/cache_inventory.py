@@ -1011,7 +1011,7 @@ def cache_breakdown(key: str) -> dict:
                 for entry in scan:
                     if entry.is_symlink() or _is_junction(entry.path):
                         continue
-                    if root not in nested and _safe_resolve(Path(entry.path)) in nested:
+                    if nested and root not in nested and _safe_resolve(Path(entry.path)) in nested:
                         continue
                     before = occupancy.bytes
                     if entry.is_dir(follow_symlinks = False):
