@@ -194,13 +194,16 @@ def test_dir_matches_the_eager_filter(lazy_all, dir_first):
     assert not {"__getattr__", "__dir__", "_unsloth_mlx_trl_all"} & set(vars(lazy))
 
 
-@pytest.mark.skipif(
+_needs_real_mlx = pytest.mark.skipif(
     platform.system() != "Darwin"
     or platform.machine() != "arm64"
     or importlib.util.find_spec("mlx") is None
     or importlib.util.find_spec("trl") is None,
     reason = "the real MLX import path needs Apple Silicon with mlx and trl",
 )
+
+
+@_needs_real_mlx
 def test_real_mlx_import_leaves_trl_all_unbuilt():
     probe = (
         "import sys, unsloth, trl\n"
@@ -221,3 +224,139 @@ def test_real_mlx_import_leaves_trl_all_unbuilt():
         timeout = 600,
     )
     assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-4000:]
+
+
+_SHIM_PROBE_PREAMBLE = """
+import unsloth, trl
+import mlx.nn as nn
+from unsloth_zoo.mlx import trainer as zoo
+assert unsloth.DEVICE_TYPE == "mlx"
+def refused(fn, *needles, kind=NotImplementedError):
+    try:
+        fn()
+    except kind as exc:
+        assert all(n in str(exc) for n in needles), str(exc)
+    else:
+        raise AssertionError(f"not refused: {needles}")
+model = nn.Linear(1, 1)
+model.max_seq_length = 96
+tok = object()
+"""
+
+
+def _run_shim_probe(body, before_unsloth = ""):
+    result = subprocess.run(
+        [sys.executable, "-c", before_unsloth + _SHIM_PROBE_PREAMBLE + body],
+        cwd = pathlib.Path(__file__).resolve().parents[1],
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+    assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-4000:]
+
+
+@_needs_real_mlx
+def test_trl_trainers_zoo_implements_are_mapped():
+    _run_shim_probe("""
+for stem in ("DPO", "ORPO", "KTO", "GRPO", "CPO"):
+    trainer, config = getattr(trl, stem + "Trainer"), getattr(trl, stem + "Config")
+    assert issubclass(trainer, getattr(zoo, f"MLX{stem}Trainer")), stem
+    assert issubclass(config, getattr(zoo, f"MLX{stem}Config")), stem
+    cfg = config(output_dir="o", optim="adamw_torch")
+    assert cfg.learning_rate == 1e-6 and cfg.per_device_train_batch_size == 8, stem
+    assert cfg.gradient_accumulation_steps == 1 and cfg.warmup_steps == 0, stem
+    assert cfg.weight_decay == 0.0 and cfg.num_train_epochs == 3, stem
+    assert cfg.optim == "adamw" and cfg.save_steps == 500, stem
+    assert config(max_steps=1, save_strategy="no").save_steps == 0, stem
+    assert config(learning_rate=0.5, max_steps=2).learning_rate == 0.5, stem
+for name in ("PatchDPOTrainer", "PatchKTOTrainer", "PatchFastRL"):
+    assert getattr(unsloth, name)() is None
+
+# TRL's own positional order, ref_model and a trainer-level config field.
+cfg = trl.DPOConfig(max_steps=1, max_length=512, max_prompt_length=64)
+t = trl.DPOTrainer(model, None, cfg, None, [], None, tok, beta=0.25)
+assert t.args.beta == 0.25 and cfg.beta == 0.1
+assert t.args.max_length == 512, t.args.max_length
+assert cfg.max_seq_length == zoo.MLXTrainingConfig.max_seq_length, "max_length is not the SFT alias here"
+assert t.args.max_seq_length == 96, "follows the loaded model"
+c = trl.DPOTrainer(model=model, args=cfg, train_dataset=[], processing_class=tok, max_seq_length=2048)
+assert (c.args.max_seq_length, c.args.max_length) == (2048, 512), "trainer context length keeps TRL's budget"
+assert t.args.dataset_order == "torch_randperm" and t.args.max_grad_norm == 1.0
+assert t.args.append_eos is True, "TRL appends EOS to completions"
+assert t.tokenizer is tok and t.ref_model is None
+ref = object()
+assert trl.DPOTrainer(model=model, ref_model=ref, args=cfg, train_dataset=[], processing_class=tok).ref_model is ref
+
+k = trl.KTOTrainer(model, ref, trl.KTOConfig(max_steps=1), [], None, tok, model_adapter_name="a")
+assert k.ref_model is ref and k.model_adapter_name == "a"
+assert k.args.dataset_order == "default", "each row's KL pair is its batch neighbor"
+o = trl.ORPOTrainer(model, trl.ORPOConfig(max_steps=1), None, [], None, tok)
+assert o.args.dataset_order == "torch_randperm"
+assert isinstance(trl.CPOTrainer(model, trl.CPOConfig(max_steps=1), None, [], None, tok).args, zoo.MLXCPOConfig)
+
+reward = lambda completions, **kw: [0.0] * len(completions)
+g_cfg = trl.GRPOConfig(max_steps=1, num_generations=2, per_device_train_batch_size=2, max_completion_length=8)
+g = trl.GRPOTrainer(model, [reward], g_cfg, [], None, tok)
+assert g.reward_funcs == [reward] and g.args.dataset_order == "default"
+refused(lambda: trl.GRPOTrainer(model, [reward], g_cfg, [], None, tok, beta=0.5), "GRPOConfig")
+
+# Trainer-level overrides are normalized like config arguments.
+o_cfg = trl.DPOConfig(max_steps=100, warmup_ratio=0.1)
+o = trl.DPOTrainer(model=model, args=o_cfg, train_dataset=[], loraplus_lr_ratio=16, warmup_steps=30, optim="adamw_torch")
+assert o.args.lora_plus_ratio == 16 and o.args.optim == "adamw"
+assert o.args.warmup_steps == 30 and o.args._unsloth_mlx_warmup_steps_explicit
+r = trl.DPOTrainer(model=model, args=o_cfg, train_dataset=[], max_steps=200)
+assert r.args.warmup_steps == 20, r.args.warmup_steps
+
+# Another config type carries its fields over, zoo's own config passes untouched.
+assert trl.DPOTrainer(model=model, args=trl.SFTConfig(max_steps=7, learning_rate=0.1), train_dataset=[], processing_class=tok).args.learning_rate == 0.1
+raw = zoo.MLXDPOConfig(max_steps=1, beta=0.3)
+assert trl.DPOTrainer(model=model, args=raw, train_dataset=[], processing_class=tok).args.beta == 0.3
+""")
+
+
+@_needs_real_mlx
+def test_trl_mappings_refuse_what_zoo_lacks():
+    _run_shim_probe("""
+# A TRL field at its inert value is accepted, any other value is refused by name.
+trl.DPOConfig(rpo_alpha=None, label_pad_token_id=-100, use_weighting=False)
+refused(lambda: trl.DPOConfig(rpo_alpha=0.1), "rpo_alpha")
+refused(lambda: trl.DPOConfig(use_weighting=True), "use_weighting")
+refused(lambda: trl.DPOConfig(no_such_field=1), "no_such_field")
+refused(
+    lambda: trl.DPOTrainer(model=model, args=trl.DPOConfig(max_steps=1), train_dataset=[], compute_metrics=print),
+    "DPOTrainer", "compute_metrics",
+)
+refused(lambda: trl.ORPOTrainer(model=model, train_dataset=[], peft_config=object()), "ORPOTrainer", "peft_config")
+refused(lambda: trl.DPOTrainer(model="org/repo", train_dataset=[]), "model")
+refused(lambda: trl.DPOTrainer(model=model, ref_model="org/repo", train_dataset=[]), "ref_model")
+for name in ("GKDTrainer", "PPOTrainer", "RewardTrainer"):
+    trainer = getattr(trl, name)
+    assert getattr(trainer, "_unsloth_mlx_unsupported", False), name
+    refused(trainer, name, "DPO", "GRPO", "SFT")
+""")
+
+
+@_needs_real_mlx
+def test_trl_configs_built_before_the_shim_keep_their_meaning():
+    _run_shim_probe(
+        """
+assert RealDPO is not trl.DPOConfig
+t = trl.DPOTrainer(model=model, args=RealDPO(output_dir="o", beta=0.3, max_length=99), train_dataset=[], processing_class=tok)
+assert isinstance(t.args, zoo.MLXDPOConfig) and (t.args.beta, t.args.max_length, t.args.learning_rate) == (0.3, 99, 1e-6)
+refused(lambda: trl.DPOTrainer(model=model, args=RealDPO(output_dir="o", rpo_alpha=1.0), train_dataset=[]), "rpo_alpha")
+refused(lambda: trl.DPOTrainer(model=model, args=RealDPO(output_dir="o", use_weighting=True), train_dataset=[]), "use_weighting")
+assert trl.DPOTrainer(model=model, args=RealDPO(output_dir="o", eval_strategy="epoch"), train_dataset=[]).args.eval_strategy == "epoch"
+refused(lambda: trl.DPOTrainer(model=model, args=RealDPO(output_dir="o", dataloader_drop_last=True), train_dataset=[]), "dataloader_drop_last")
+assert trl.DPOTrainer(model=model, args=RealDPO(output_dir="o", bf16=False, learning_rate=0.1, save_strategy="no", optim="adamw_torch"), train_dataset=[]).args.learning_rate == 0.1
+for stem, real in (("ORPO", RealORPO), ("KTO", RealKTO), ("CPO", RealCPO)):
+    config = getattr(trl, stem + "Config")
+    assert isinstance(unsloth._coerce_mlx_training_args(real(output_dir="o"), None, config), config), stem
+refused(lambda: trl.GRPOTrainer(model, [print], RealGRPO(output_dir="o"), [], None, tok), "GRPOConfig")
+""",
+        before_unsloth = (
+            "import trl\n"
+            "RealDPO = trl.DPOConfig\n"
+            "RealORPO, RealKTO, RealGRPO, RealCPO = trl.ORPOConfig, trl.KTOConfig, trl.GRPOConfig, trl.CPOConfig\n"
+        ),
+    )
