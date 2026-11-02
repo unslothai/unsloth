@@ -473,6 +473,7 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
   return contentParts.length > 0 ? [{ role: role as "user" | "system", content: contentParts }] : [];
 }
 
+// ShareGPT training JSONL (human/system/gpt turns).
 export async function exportConversationShareGPT(
   threadId: string,
   liveBranch?: string[] | null,
@@ -499,6 +500,7 @@ export async function exportConversationShareGPT(
   );
 }
 
+// OpenAI/ChatML JSONL: {"messages": [{"role","content"}, ...]} per conversation; Unsloth reads this as a ChatML dataset.
 export async function exportConversationRawJsonl(
   threadId: string,
   liveBranch?: string[] | null,
