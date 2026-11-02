@@ -166,7 +166,7 @@ jobs:
           else
             RESOLVED=''
             for attempt in 1 2 3; do
-              LS="$(git ls-remote https://github.com/unslothai/unsloth "$UNSLOTH_REF" || true)"
+              LS="$(git ls-remote https://github.com/unslothai/unsloth "$UNSLOTH_REF" "${UNSLOTH_REF}^{}" || true)"
               PEELED="$(printf '%s\n' "$LS" | grep '\^{}$' | head -n1 | cut -f1)"
               if [ -n "$PEELED" ]; then
                 RESOLVED="$PEELED"

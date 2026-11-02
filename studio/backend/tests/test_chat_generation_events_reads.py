@@ -73,6 +73,13 @@ def test_chunk_only_batches_do_not_parse_the_request(running_run, monkeypatch):
     monkeypatch.setattr(
         runs_db, "get_run", lambda *a, **k: full_reads.append(a) or original_get(*a, **k)
     )
+    frame_reads = []
+    original_frame = runs_db.get_run_frame
+    monkeypatch.setattr(
+        runs_db,
+        "get_run_frame",
+        lambda *a, **k: frame_reads.append(a) or original_frame(*a, **k),
+    )
 
     raw = asyncio.run(_stream())
 
@@ -85,8 +92,76 @@ def test_chunk_only_batches_do_not_parse_the_request(running_run, monkeypatch):
             assert "run" not in frame
         else:
             assert len(frame["run"]["requestPayload"]["messages"]) == 20
-    # Ownership + opening checks, plus one per run-event batch (3).
-    assert len(full_reads) == 5
+    # Ownership and opening checks read only the state; each run-event batch (3) splices the stored text.
+    assert full_reads == []
+    assert len(frame_reads) == 3
+
+
+def test_run_frames_match_encoding_the_parsed_run(running_run):
+    runs_db.append_events("run-1", running_run, [("tool.status", {"name": "web"})])
+    runs_db.finish_run("run-1", worker_token = running_run, status = "completed", finish_reason = "stop")
+    run = runs_db.get_run("run-1")
+    state, run_json = runs_db.get_run_frame("run-1")
+    assert run_json == json.dumps(run, ensure_ascii = False, separators = (",", ":"))
+    assert state == runs_db.get_run_state("run-1")
+    raw = asyncio.run(_stream())
+    frames = [line[6:] for line in raw.splitlines() if line.startswith("data: ")]
+    for event, frame in zip(runs_db.list_events("run-1"), frames, strict = True):
+        data = {key: event[key] for key in ("seq", "type", "payload", "createdAt")}
+        data["run"] = run
+        assert frame == json.dumps(data, ensure_ascii = False, separators = (",", ":"))
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"temperature": float("nan"), "top_p": float("inf"), "x": -0.0},
+        {"big": 2**70, "tiny": 5e-324, "e": 1e16, "neg": -(10**30)},
+        {"text": 'é你好😀 "q" \\ \n\t\u0000\x1f\u2028', "nested": [{"a": [None, True, {}]}]},
+    ],
+)
+def test_run_frame_matches_get_run_for_awkward_values(extra):
+    studio_db.upsert_chat_thread(
+        {"id": "thread-2", "title": "Chat", "modelType": "base", "modelId": "local", "createdAt": 1}
+    )
+    studio_db.upsert_chat_message(
+        {"id": "user-2", "threadId": "thread-2", "role": "user", "content": "hi", "createdAt": 2}
+    )
+    runs_db.create_run(
+        run_id = "run-2",
+        owner_subject = "alice",
+        thread_id = "thread-2",
+        user_message_id = "user-2",
+        assistant_message_id = "assistant-2",
+        request_payload = {"model": "local", "messages": [], **extra},
+    )
+    _, run_json = runs_db.get_run_frame("run-2")
+    assert run_json == json.dumps(
+        runs_db.get_run("run-2"), ensure_ascii = False, separators = (",", ":")
+    )
+
+
+@pytest.mark.parametrize(
+    "stored",
+    ["not json", '{"model":"local"', '{"model":\n"local"}', '{"model":"local"}\r'],
+)
+def test_run_frame_falls_back_for_a_stored_request_that_is_not_one_line_of_json(
+    running_run, stored
+):
+    conn = runs_db._connect()
+    try:
+        conn.execute("UPDATE chat_generation_runs SET request_json=? WHERE id='run-1'", (stored,))
+        conn.commit()
+    finally:
+        conn.close()
+    runs_db.append_events("run-1", running_run, [("tool.status", {"name": "web"})])
+    runs_db.finish_run("run-1", worker_token = running_run, status = "completed", finish_reason = "stop")
+    run = runs_db.get_run("run-1")
+    _, run_json = runs_db.get_run_frame("run-1")
+    assert run_json == json.dumps(run, ensure_ascii = False, separators = (",", ":"))
+    raw = asyncio.run(_stream())
+    frame = next(line[6:] for line in raw.splitlines() if line.startswith("data: "))
+    assert json.loads(frame)["run"] == run
 
 
 def test_caught_up_wait_reads_events_twice(running_run, monkeypatch):
@@ -172,3 +247,13 @@ def test_concurrent_followers_never_miss_a_commit(running_run, monkeypatch):
     assert not stalls
     assert all(not thread.is_alive() for thread in threads)
     assert seen == {i: [str(n) for n in range(total)] for i in range(6)}
+
+
+def test_run_frame_without_json1_encodes_the_parsed_run(running_run, monkeypatch):
+    monkeypatch.setattr(runs_db, "_SPLICE_OK_SQL", "json_valid_missing({0})")
+    state, run_json = runs_db.get_run_frame("run-1")
+    assert run_json == json.dumps(
+        runs_db.get_run("run-1"), ensure_ascii = False, separators = (",", ":")
+    )
+    assert state == runs_db.get_run_state("run-1")
+    assert runs_db._SPLICE_OK_SQL == "0"

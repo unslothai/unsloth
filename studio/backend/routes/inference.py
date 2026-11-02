@@ -1815,8 +1815,7 @@ _TEARDOWN_TASK_RECANCEL_S = 0.01
 _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
 # How often a UI stream looks for new prefill progress while the generator is silent.
 _LIVE_PROGRESS_POLL_S = 0.25
-# Minimum gap between two live decode frames: the client only redraws one line of text.
-_LIVE_DECODE_FRAME_INTERVAL_S = 1.0
+_LIVE_DECODE_FRAME_INTERVAL_S = 0.25
 _APPROVAL_CACHE_RECLAIM_POLL_S = 0.25
 
 
@@ -3466,6 +3465,8 @@ from models.inference import (
     Int8PrefillAvailabilityResponse,
     AnePrefillAvailabilityRequest,
     AnePrefillAvailabilityResponse,
+    FastVerifyAvailabilityRequest,
+    FastVerifyAvailabilityResponse,
     MlxDraftersRequest,
     MlxDraftersResponse,
     TransformersUpgradeInfo,
@@ -3660,6 +3661,7 @@ from core.inference.tool_call_parser import (
     _strip_function_xml_calls,
     _strip_gemma_wrapperless_calls,
     _strip_glm_calls,
+    _strip_minimax_calls,
     _strip_mistral_closed_calls,
 )
 from core.inference.tool_call_parser import TOOL_XML_SIGNALS as _PARSER_TOOL_SIGNALS
@@ -5632,6 +5634,35 @@ def _full_access_tip(code_tools: list[str]) -> str:
     )
 
 
+def _project_folder_tip(tool_names) -> str:
+    """The tool schemas say "sandbox" outside Full access, so models deny a chosen folder they can reach."""
+    readers = [name for name in ("terminal", "python") if name in tool_names]
+    if not readers:
+        return ""
+    # Named: told only "a tool call", small models list the folder and then web-search how to read a file.
+    reader = " or ".join(readers) + " tool"
+    web = "; web_search cannot see them" if "web_search" in tool_names else ""
+    return (
+        "This chat belongs to a project, and the current working directory is the folder the "
+        'user chose for it, so "my project" and "my files" mean the files there. When asked '
+        f"about the project or its files, list and read them with the {reader} first{web}. "
+        "Read them rather than asking the user to upload or paste them, and if a read fails or "
+        "is denied, say what failed instead of saying you have no access. Use relative paths."
+    )
+
+
+async def _tools_run_in_user_folder(payload, tools) -> bool:
+    session_id = getattr(payload, "session_id", None)
+    names = {
+        (tool.get("function") or {}).get("name") for tool in tools or () if isinstance(tool, dict)
+    }
+    if not session_id or not names.intersection({"terminal", "python"}):
+        return False
+    from core.inference.tools import session_runs_in_user_folder
+
+    return await asyncio.to_thread(session_runs_in_user_folder, session_id)
+
+
 # Avoid the word 'greetings': small models then greet instead of researching.
 _TOOL_RESEARCH_TIP = (
     "Deep Research is turned on for this conversation. For factual questions or requests "
@@ -5736,8 +5767,9 @@ def _build_tool_action_nudge(
     model_name: str,
     full_access: bool = False,
     full_access_only: bool = False,
+    user_folder: bool = False,
 ) -> str:
-    """full_access_only keeps just the Full access sentence and skills catalog, not the general guidance."""
+    """full_access_only keeps just the environment sentences (Full access, project folder) and skills catalog, not the general guidance."""
     tool_names = {
         (tool.get("function") or {}).get("name")
         for tool in tools
@@ -5765,10 +5797,13 @@ def _build_tool_action_nudge(
         can_run_scripts = bool({"python", "terminal"} & tool_names),
         compact = compact,
     )
+    folder_tip = _project_folder_tip(tool_names) if user_folder else ""
     if full_access_only:
         tips = []
         if full_access and has_code:
             tips.append(_full_access_tip(code_tools))
+        if folder_tip:
+            tips.append(folder_tip)
         if has_skills:
             tips.append(skill_tip)
         return " ".join(tip for tip in tips if tip)
@@ -5790,6 +5825,8 @@ def _build_tool_action_nudge(
         tool_tip_parts.append(_TOOL_CODE_TIP)
         if full_access:
             tool_tip_parts.append(_full_access_tip(code_tools))
+        if folder_tip:
+            tool_tip_parts.append(folder_tip)
     if has_artifact:
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
     if has_research:
@@ -6588,6 +6625,8 @@ def _strip_tool_xml_for_display(
     def _strip_segment(seg: str, is_last: bool) -> str:
         # Strips close at each call's real terminator, so a quoted </function> cannot truncate them.
         seg = _strip_mistral_closed_calls(seg)
+        # llama-server leaves MiniMax blocks in content when tool_choice is "none".
+        seg = _strip_minimax_calls(seg, final = is_last)
         seg = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
         if is_last:
             seg = _strip_gemma_wrapperless_calls(seg, enabled_tool_names)
@@ -6597,10 +6636,10 @@ def _strip_tool_xml_for_display(
             return _TOOL_XML_RE.sub(_keep_inactive_rehearsal, seg)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
 
-    # Mask blocked-call bodies (prose) so these passes do not edit them.
+    # Mask blocked-call bodies and lone backticked tags (prose) so these passes do not edit them.
     from core.inference.tool_call_parser import _mask_blocked_bodies, _unmask_blocked_bodies
 
-    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names)
+    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names, mentions = True)
     result = strip_outside_think(masked, _strip_segment)
     if not bodies:
         return result
@@ -6611,6 +6650,7 @@ def _strip_tool_xml_for_display(
 # Every literal some arm of ``_strip_tool_xml_for_display`` needs before it can edit text. Markerless Gemma has
 # none and is caught by ``_DISPLAY_GEMMA_CALL_RE``, a superset of ``_GEMMA_BARE_TC_RE``.
 _DISPLAY_STRIP_SENTINELS = (
+    "<minimax:tool_call>",
     "<tool_call",
     "</tool_call",
     "<|tool_call",
@@ -6627,6 +6667,55 @@ _DISPLAY_SENTINEL_OVERLAP = max(len(sentinel) for sentinel in _DISPLAY_STRIP_SEN
 _DISPLAY_GEMMA_CALL_RE = _re.compile(r"(?<!\w)call\s*:")
 # A trailing ``call`` (or a prefix of one) that later text could still turn into ``call:``.
 _DISPLAY_GEMMA_TAIL_RE = _re.compile(r"(?<!\w)c(?:a(?:l(?:l\s*)?)?)?\Z")
+
+
+# A backticked tool tag whose closing backticks have not arrived: it may still become a lone-tag mention (prose,
+# see ``tool_healing.tag_mention_spans``), so a stream must not show it and then take it back.
+_PENDING_MENTION_RE = _re.compile(
+    r"(?<!`)(``?)[ \t]*("
+    r"(?:<(?!/?think(?:ing)?>)[^<>`\n]*(?:>[\w.\-]*)?|\[/?[A-Z_]*(?:\][\w.\-]*)?)"
+    r"[ \t]*)(`*)\Z"
+)
+_PENDING_MENTION_MAX_CHARS = 256
+
+
+def _pending_mention_cut(text: str) -> int:
+    """Where to cut a cumulative stream so a still-open backticked tool tag is held back, else -1. The cut keeps
+    the backticks, so for a tag the strip would remove anyway the held display equals the full strip."""
+    lo = max(0, len(text) - _PENDING_MENTION_MAX_CHARS)
+    # The tag holds no backtick, so its opening run is the last one before any trailing closers.
+    end = len(text)
+    while end > lo and text[end - 1] == "`":
+        end -= 1
+    i = text.rfind("`", lo, end)
+    if i < 0:
+        return -1
+    while i > lo and text[i - 1] == "`":
+        i -= 1
+    m = _PENDING_MENTION_RE.match(text, i)
+    if m is None or len(m.group(3)) >= len(m.group(1)):
+        return -1
+    tag = m.group(2).rstrip(" \t")
+    if not any(tag.startswith(s) or s.startswith(tag) for s in _DISPLAY_STRIP_SENTINELS):
+        return -1
+    return m.start(2)
+
+
+def _hold_pending_mention(text: str, auto_heal_tool_calls: bool) -> str:
+    """A cumulative stream event with a still-open backticked tool tag held back; the strips only remove text
+    with Auto-Heal on, so only then can a shown tag be taken back."""
+    if not auto_heal_tool_calls:
+        return text
+    cut = _pending_mention_cut(text)
+    return text[:cut] if cut >= 0 else text
+
+
+def _held_mention_display(display_strip, raw_text: str, auto_heal_tool_calls: bool):
+    """The display a turn owes when it ends with ``_hold_pending_mention`` still holding a backticked tag, else None.
+    Its closing backticks never came, so it is not a mention: the full strip decides, as for a non-streaming reply."""
+    if not raw_text or not auto_heal_tool_calls or _pending_mention_cut(raw_text) < 0:
+        return None
+    return display_strip.strip(raw_text)
 
 
 # After the first sentinel: ``P + O + B`` with P free of ``<``, ``[``, ``{`` and ``call:``, O one of these openers.
@@ -6862,14 +6951,18 @@ class _ReasoningSpanGuard:
         auto_heal_tool_calls: bool,
         enabled_tool_names: Optional[set] = None,
         wrapped_so_far = None,
+        hold: bool = True,
     ) -> str:
+        """``hold=False`` is the end-of-turn strip: a backticked tag still open there is final text."""
         wrap = self._wrap_for(text, wrapped_so_far)
         display = self._display_strip(auto_heal_tool_calls, enabled_tool_names)
         if wrap is None:
-            return display.strip(text)
+            return display.strip(_hold_pending_mention(text, auto_heal_tool_calls and hold))
         # Clamp: mid-stream the close tag has not arrived yet, so the whole text is trace.
         end = min(len(self._OPEN) + int(wrap.get("len", 0)) + len(self._CLOSE), len(text))
-        return text[:end] + display.strip(text[end:])
+        return text[:end] + display.strip(
+            _hold_pending_mention(text[end:], auto_heal_tool_calls and hold)
+        )
 
     def _display_strip(
         self, auto_heal_tool_calls: bool, enabled_tool_names
@@ -7069,11 +7162,7 @@ def _live_rate(value: Any) -> Optional[float]:
 
 
 class _PrefillProgressSignal:
-    """Counts advancing ``prompt_progress`` so the stall loop can send ``: prefill-progress``.
-
-    Native GGUF generators yield nothing until the first token, and ``: keep-alive`` does not renew the lease.
-
-    With ``live`` it also feeds ``live_frame``, the chat UI's ``generation_progress`` frames."""
+    """Renew the lease during silent GGUF prefill and optionally report live generation figures."""
 
     def __init__(
         self,
@@ -7090,6 +7179,7 @@ class _PrefillProgressSignal:
         self._prefill_sent: Optional[dict] = None
         self._decode: Optional[dict] = None
         self._decode_sent_at = 0.0
+        self._decode_started = False
         self.wants_timings = inner is not None or live
 
     @property
@@ -7125,6 +7215,7 @@ class _PrefillProgressSignal:
         cached = _live_count(progress.get("cache"))
         # A new prompt pass (the next round of a tool loop): the last round's decode figures must not follow it.
         self._decode = None
+        self._decode_started = False
         self._prefill = {
             "type": "generation_progress",
             "phase": "prefill",
@@ -7132,17 +7223,26 @@ class _PrefillProgressSignal:
             "total": total,
             "cached": min(cached, processed) if cached is not None else None,
             "tok_per_s": _live_rate(rate),
+            # Server time avoids poll-arrival quantization.
+            "time_ms": _live_count(progress.get("time_ms")),
         }
 
     def _record_decode(self, sample: dict) -> None:
         tokens = _live_count(sample.get("predicted_n"))
         if not tokens:
             return
+        if not self._decode_started:
+            # The first token has no decode rate; allow a full interval for speculative timing to settle.
+            self._decode_started = True
+            self._decode_sent_at = time.monotonic()
+        rate = _live_rate(sample.get("predicted_per_second"))
+        if rate is None:
+            return
         frame = {
             "type": "generation_progress",
             "phase": "decode",
             "tokens": tokens,
-            "tok_per_s": _live_rate(sample.get("predicted_per_second")),
+            "tok_per_s": rate,
         }
         draft_n = _live_count(sample.get("draft_n"))
         draft_accepted = _live_count(sample.get("draft_n_accepted"))
@@ -8216,6 +8316,9 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_ane_prefill = None,
         mlx_ane_prefill_requested = None,
         mlx_ane_prefill_reason = None,
+        mlx_fast_verify = None,
+        mlx_fast_verify_requested = None,
+        mlx_fast_verify_reason = None,
         mlx_offload = None,
         mlx_context_budget = None,
         spec_draft_model = None,
@@ -17145,6 +17248,8 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         == bool(getattr(request, "mlx_int8_prefill", False))
         and bool(entry.get("mlx_ane_prefill_requested"))
         == bool(getattr(request, "mlx_ane_prefill", False))
+        and bool(entry.get("mlx_fast_verify_requested"))
+        == bool(getattr(request, "mlx_fast_verify", False))
         and all(
             normalize_mlx_offload(
                 ((entry.get("mlx_offload") or {}).get(part) or {}).get("requested")
@@ -18903,6 +19008,9 @@ async def _load_model_impl(
                     mlx_ane_prefill = _model_info.get("mlx_ane_prefill"),
                     mlx_ane_prefill_requested = _model_info.get("mlx_ane_prefill_requested"),
                     mlx_ane_prefill_reason = _model_info.get("mlx_ane_prefill_reason"),
+                    mlx_fast_verify = _model_info.get("mlx_fast_verify"),
+                    mlx_fast_verify_requested = _model_info.get("mlx_fast_verify_requested"),
+                    mlx_fast_verify_reason = _model_info.get("mlx_fast_verify_reason"),
                     mlx_offload = _model_info.get("mlx_offload"),
                     memory_warning = _mlx_offload_warning(_model_info),
                     # Requested, as /status reports it: a null override would read
@@ -19574,6 +19682,7 @@ async def _load_model_impl(
                 mlx_kv_quant = request.mlx_kv_quant,
                 mlx_int8_prefill = request.mlx_int8_prefill,
                 mlx_ane_prefill = request.mlx_ane_prefill,
+                mlx_fast_verify = request.mlx_fast_verify,
                 mlx_offload = (request.mlx_ple_offload, request.mlx_expert_offload),
                 speculative_type = request.speculative_type,
                 spec_draft_n_max = request.spec_draft_n_max,
@@ -19772,6 +19881,9 @@ async def _load_model_impl(
             mlx_ane_prefill = _model_info.get("mlx_ane_prefill"),
             mlx_ane_prefill_requested = _model_info.get("mlx_ane_prefill_requested"),
             mlx_ane_prefill_reason = _model_info.get("mlx_ane_prefill_reason"),
+            mlx_fast_verify = _model_info.get("mlx_fast_verify"),
+            mlx_fast_verify_requested = _model_info.get("mlx_fast_verify_requested"),
+            mlx_fast_verify_reason = _model_info.get("mlx_fast_verify_reason"),
             mlx_offload = _model_info.get("mlx_offload"),
             memory_warning = _mlx_offload_warning(_model_info),
             # Requested, as /status reports it: a null override would read as
@@ -20988,6 +21100,18 @@ async def ane_prefill_availability(
     from core.inference.mlx_inference import mlx_ane_prefill_checkpoint_status
     return await _mlx_prefill_option_availability(
         request, AnePrefillAvailabilityResponse, mlx_ane_prefill_checkpoint_status
+    )
+
+
+@router.post("/fast-verify-availability", response_model = FastVerifyAvailabilityResponse)
+async def fast_verify_availability(
+    request: FastVerifyAvailabilityRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Whether MLX Fast Verify could apply to this model, judged from its downloaded checkpoint
+    without loading it; whether a drafter attaches still decides at load."""
+    from core.inference.mlx_inference import mlx_fast_verify_checkpoint_status
+    return await _mlx_prefill_option_availability(
+        request, FastVerifyAvailabilityResponse, mlx_fast_verify_checkpoint_status
     )
 
 
@@ -22323,6 +22447,9 @@ async def _slot_status(current_subject: str):
             mlx_ane_prefill = model_info.get("mlx_ane_prefill"),
             mlx_ane_prefill_requested = model_info.get("mlx_ane_prefill_requested"),
             mlx_ane_prefill_reason = model_info.get("mlx_ane_prefill_reason"),
+            mlx_fast_verify = model_info.get("mlx_fast_verify"),
+            mlx_fast_verify_requested = model_info.get("mlx_fast_verify_requested"),
+            mlx_fast_verify_reason = model_info.get("mlx_fast_verify_reason"),
             mlx_offload = model_info.get("mlx_offload"),
             memory_warning = _mlx_offload_warning(model_info),
             chat_template_override = model_info.get("chat_template_override_requested"),
@@ -24583,6 +24710,7 @@ async def openai_audio_transcriptions(
     provider_id: Optional[str] = Form(None),
     encrypted_api_key: Optional[str] = Form(None),
     timestamp_granularities: Optional[list[str]] = Form(None, alias = "timestamp_granularities[]"),
+    device: Optional[Literal["auto", "cpu", "gpu"]] = Form(None),
     current_subject: str = Depends(get_current_subject),
 ):
     """OpenAI-compatible speech-to-text (POST /v1/audio/transcriptions).
@@ -24591,7 +24719,8 @@ async def openai_audio_transcriptions(
     Otherwise ``model`` maps to a sidecar model id, with ``whisper-1`` or nothing
     selecting the default. ``response_format`` supports ``json``, ``text`` and
     ``verbose_json``; an audio.cpp model also gives segments, words (``timestamp_granularities``)
-    and ``diarized_json``."""
+    and ``diarized_json``. Optional ``device`` (``auto``/``cpu``/``gpu``) places a cold
+    load; when omitted, Voice Settings "Load into" / ``UNSLOTH_AUDIO_DEVICE`` apply (#15280)."""
     fmt = (response_format or "json").strip().lower()
     if fmt not in ("json", "text", "verbose_json", "diarized_json"):
         raise HTTPException(
@@ -24700,6 +24829,7 @@ async def openai_audio_transcriptions(
                 fast = False,
                 engine = engine,
                 request = request,
+                device = device,
                 source_path = path,
                 timestamps = bool(granularities),
             )
@@ -24781,13 +24911,15 @@ async def openai_audio_translations(
     model: Optional[str] = Form(None),
     response_format: str = Form("json"),
     provider_id: Optional[str] = Form(None),
+    device: Optional[Literal["auto", "cpu", "gpu"]] = Form(None),
     current_subject: str = Depends(get_current_subject),
 ):
     """OpenAI-compatible speech translation to English (POST /v1/audio/translations).
 
     Runs on the local Whisper sidecar; ``whisper-1`` or nothing selects the default model.
     ``response_format`` supports ``json``, ``text`` and ``verbose_json``. ``prompt`` and
-    ``temperature`` are accepted and ignored."""
+    ``temperature`` are accepted and ignored. Optional ``device`` (``auto``/``cpu``/``gpu``)
+    matches Voice Settings "Load into" on a cold load (#15280)."""
     fmt = (response_format or "json").strip().lower()
     if fmt not in ("json", "text", "verbose_json"):
         _raise_unsupported_openai_parameter(
@@ -24822,7 +24954,13 @@ async def openai_audio_translations(
         subject = current_subject,
     ) as monitor_id:
         result = await _transcribe_audio_result(
-            raw, sidecar_model, None, fast = False, request = request, translate = True
+            raw,
+            sidecar_model,
+            None,
+            fast = False,
+            request = request,
+            device = device,
+            translate = True,
         )
         text = str(result.get("text", ""))
         _served_model = str(result.get("model") or "")
@@ -28155,8 +28293,8 @@ def _fit_external_context(
     branch: Optional[list[dict]] = None,
     tool_loop: bool = False,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
-    """``branch`` is the client's request when ``messages`` is a tool loop's conversation, so recall
-    queries the user's turn rather than a controller re-prompt the loop appended."""
+    """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
+    queries the user's turn, not a controller re-prompt, and still filters on the loop's turns."""
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
         estimate_messages_tokens_conservative,
@@ -28241,7 +28379,9 @@ def _fit_external_context(
         recall = _archive_and_recall(
             fitted,
             messages,
-            branch_messages = branch or messages,
+            # The loop's own conversation filters, or tool results this turn evicted are unrecallable.
+            branch_messages = messages,
+            query_messages = branch,
             thread_id = str(thread_id) if thread_id else None,
             style = "inline",
             recall_done = not truncation.get("fits", True),
@@ -28581,6 +28721,7 @@ async def _proxy_to_external_provider(
                 tools = studio_tool_payloads,
                 model_name = model,
                 full_access = bool(payload.bypass_permissions),
+                user_folder = await _tools_run_in_user_folder(payload, studio_tool_payloads),
                 full_access_only = True,
             )
             chat_messages = _append_to_codex_instructions(chat_messages, _codex_nudge)
@@ -28951,6 +29092,7 @@ async def _proxy_to_external_provider(
             tools = external_studio_tools,
             model_name = model,
             full_access = bool(payload.bypass_permissions),
+            user_folder = await _tools_run_in_user_folder(payload, external_studio_tools),
             full_access_only = True,
         )
         # The compaction nudge is not part of the general nudge: once the thread has an archive
@@ -30425,7 +30567,7 @@ async def _chat_completion_from_connection_stream(response: StreamingResponse, m
 
 async def _collect_chat_completion(lines, model: str):
     completion_id, created, finish, usage = None, int(time.time()), None, None
-    content, reasoning = "", ""
+    content, reasoning, refusal = "", "", ""
     calls: dict[int, dict] = {}
     async for line in lines:
         data = line[len("data:") :].strip() if line.startswith("data:") else ""
@@ -30453,6 +30595,7 @@ async def _collect_chat_completion(lines, model: str):
             delta = choice.get("delta") or {}
             content += delta.get("content") or ""
             reasoning += delta.get("reasoning_content") or ""
+            refusal += delta.get("refusal") or ""
             for part in delta.get("tool_calls") or []:
                 call = calls.setdefault(
                     part.get("index", len(calls)),
@@ -30468,6 +30611,8 @@ async def _collect_chat_completion(lines, model: str):
     message: dict = {"role": "assistant", "content": content or None}
     if reasoning:
         message["reasoning_content"] = reasoning
+    if refusal:
+        message["refusal"] = refusal
     if calls:
         message["tool_calls"] = [calls[index] for index in sorted(calls)]
     body = {
@@ -31814,6 +31959,7 @@ async def produce_openai_chat_completions(
                 tools = tools_to_use,
                 model_name = model_name,
                 full_access = bool(payload.bypass_permissions),
+                user_folder = await _tools_run_in_user_folder(payload, tools_to_use),
             )
 
             # Nudge the model to ground in attached documents instead of memory.
@@ -32117,10 +32263,37 @@ async def produce_openai_chat_completions(
                         enabled_tool_names = _gguf_display_tool_names,
                     )
                     reasoning_extractor = _new_chat_reasoning_extractor()
+                    _gguf_turn_raw = ""
                     _stream_usage = None
                     _stream_timings = None
                     _stream_finish = None
                     approval_flush_pending = False
+
+                    def _release_held_mention():
+                        nonlocal prev_text, _gguf_turn_raw
+                        clean = _held_mention_display(
+                            _gguf_display_strip, _gguf_turn_raw, _gguf_auto_heal_tool_calls
+                        )
+                        _gguf_turn_raw = ""
+                        if clean is None:
+                            return []
+                        new_text = clean[len(prev_text) :]
+                        prev_text = clean
+                        chunks = []
+                        if not new_text:
+                            return chunks
+                        reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
+                        if reasoning_delta:
+                            api_monitor.mark_first_token(monitor_id)
+                            chunks.append(
+                                _gguf_chat_delta_line(
+                                    ChoiceDelta(reasoning_content = reasoning_delta)
+                                )
+                            )
+                        if visible_delta:
+                            api_monitor.append_reply(monitor_id, visible_delta)
+                            chunks.append(_gguf_chat_delta_line(ChoiceDelta(content = visible_delta)))
+                        return chunks
 
                     def _flush_reasoning_extractor():
                         final_reasoning, final_visible = reasoning_extractor.finish()
@@ -32215,7 +32388,7 @@ async def produce_openai_chat_completions(
                         if event["type"] == "status":
                             # Empty status marks an iteration boundary; reset the cumulative cursor.
                             if not event["text"]:
-                                for chunk in _flush_reasoning_extractor():
+                                for chunk in _release_held_mention() + _flush_reasoning_extractor():
                                     yield chunk
                                 prev_text = ""
                                 reasoning_extractor = _new_chat_reasoning_extractor()
@@ -32238,7 +32411,7 @@ async def produce_openai_chat_completions(
                                 # see the card would otherwise report the tool run as its TTFT.
                                 if _ui_events:
                                     api_monitor.mark_first_token(monitor_id, decoded = False)
-                                for chunk in _flush_reasoning_extractor():
+                                for chunk in _release_held_mention() + _flush_reasoning_extractor():
                                     yield chunk
                                 prev_text = ""
                                 reasoning_extractor = _new_chat_reasoning_extractor()
@@ -32291,7 +32464,10 @@ async def produce_openai_chat_completions(
 
                         # Sanitize the full cumulative text then diff, so cross-chunk XML tags are handled.
                         raw_cumulative = event.get("text", "")
-                        clean_cumulative = _gguf_display_strip.strip(raw_cumulative)
+                        _gguf_turn_raw = raw_cumulative
+                        clean_cumulative = _gguf_display_strip.strip(
+                            _hold_pending_mention(raw_cumulative, _gguf_auto_heal_tool_calls)
+                        )
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
                         if not new_text:
@@ -32306,7 +32482,7 @@ async def produce_openai_chat_completions(
                             api_monitor.append_reply(monitor_id, visible_delta)
                             yield _gguf_chat_delta_line(ChoiceDelta(content = visible_delta))
 
-                    for chunk in _flush_reasoning_extractor():
+                    for chunk in _release_held_mention() + _flush_reasoning_extractor():
                         yield chunk
 
                     final_chunk = ChatCompletionChunk(
@@ -33819,6 +33995,7 @@ async def produce_openai_chat_completions(
             tools = _sf_tools_to_use,
             model_name = model_name,
             full_access = bool(payload.bypass_permissions),
+            user_folder = await _tools_run_in_user_folder(payload, _sf_tools_to_use),
         )
 
         # RAG nudge, mirroring the GGUF path.
@@ -33984,6 +34161,35 @@ async def produce_openai_chat_completions(
                 )
                 reasoning_extractor = _new_sf_reasoning_extractor()
                 approval_flush_pending = False
+                _sf_turn_raw = ""
+
+                def _sf_release_held_mention():
+                    nonlocal prev_text, _sf_turn_raw
+                    clean = _held_mention_display(
+                        _sf_display_strip, _sf_turn_raw, _sf_auto_heal_tool_calls
+                    )
+                    _sf_turn_raw = ""
+                    if clean is None:
+                        return []
+                    new_text = clean[len(prev_text) :]
+                    prev_text = clean
+                    out = []
+                    if not new_text:
+                        return out
+                    reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
+                    if reasoning_delta:
+                        api_monitor.mark_first_token(monitor_id)
+                        out.append(
+                            _chat_reasoning_chunk(
+                                completion_id, created, model_name, reasoning_delta
+                            )
+                        )
+                    if visible_delta:
+                        api_monitor.append_reply(monitor_id, visible_delta)
+                        out.append(
+                            _chat_content_chunk(completion_id, created, model_name, visible_delta)
+                        )
+                    return out
 
                 def _sf_flush_reasoning():
                     # Drain the extractor at turn/stream end (mirrors GGUF); only visible text hits the monitor.
@@ -34062,7 +34268,7 @@ async def produce_openai_chat_completions(
                     if event["type"] == "status":
                         if not event["text"]:
                             # Iteration boundary: flush reasoning, then a fresh prefilled extractor for the next turn.
-                            for _c in _sf_flush_reasoning():
+                            for _c in _sf_release_held_mention() + _sf_flush_reasoning():
                                 yield _c
                             prev_text = ""
                             reasoning_extractor = _new_sf_reasoning_extractor()
@@ -34091,7 +34297,7 @@ async def produce_openai_chat_completions(
                             if _ui_events:
                                 api_monitor.mark_first_token(monitor_id, decoded = False)
                             # Flush reasoning before tool_start so the thinking block closes ahead of the card.
-                            for _c in _sf_flush_reasoning():
+                            for _c in _sf_release_held_mention() + _sf_flush_reasoning():
                                 yield _c
                             prev_text = ""
                             reasoning_extractor = _new_sf_reasoning_extractor()
@@ -34112,7 +34318,10 @@ async def produce_openai_chat_completions(
 
                     # Diff cumulative cleaned text against last snapshot.
                     raw_cumulative = event.get("text", "")
-                    clean_cumulative = _sf_display_strip.strip(raw_cumulative)
+                    _sf_turn_raw = raw_cumulative
+                    clean_cumulative = _sf_display_strip.strip(
+                        _hold_pending_mention(raw_cumulative, _sf_auto_heal_tool_calls)
+                    )
                     new_text = clean_cumulative[len(prev_text) :]
                     prev_text = clean_cumulative
                     if not new_text:
@@ -34128,7 +34337,7 @@ async def produce_openai_chat_completions(
                         api_monitor.append_reply(monitor_id, visible_delta)
                         yield _chat_content_chunk(completion_id, created, model_name, visible_delta)
 
-                for _c in _sf_flush_reasoning():
+                for _c in _sf_release_held_mention() + _sf_flush_reasoning():
                     yield _c
                 # Request-scoped holder so concurrent streams cannot read each other's stats.
                 _stats = _sf_stats_holder.get("stats")
@@ -41639,6 +41848,7 @@ async def _mlx_count_chat_tokens(
                 tools = _tools_to_use,
                 model_name = public_model_id(active) or payload.model,
                 full_access = bool(payload.bypass_permissions),
+                user_folder = await _tools_run_in_user_folder(payload, _tools_to_use),
             ),
             _tools_to_use,
             rag_scope = payload.rag_scope,
@@ -42034,6 +42244,7 @@ async def chat_count_tokens(
                     tools = tools_to_use,
                     model_name = _llama_public_model_id(llama_backend, payload.model),
                     full_access = bool(payload.bypass_permissions),
+                    user_folder = await _tools_run_in_user_folder(payload, tools_to_use),
                 ),
                 tools_to_use,
                 rag_scope = payload.rag_scope,
@@ -42226,6 +42437,8 @@ async def _anthropic_in_process_count(
     fields = _anthropic_chat_fields(
         payload, reads_images = bool(entry.get("is_vision")), server_tools = server_tools
     )
+    # The completion sends it too (anthropic_messages builds its ChatCompletionRequest with it).
+    fields["session_id"] = payload.session_id
     return JSONResponse(
         content = {"input_tokens": await _anthropic_chat_count(fields, request, current_subject)}
     )
@@ -42809,6 +43022,7 @@ async def anthropic_count_tokens(
             tools = openai_tools,
             model_name = _llama_public_model_id(llama_backend, payload.model),
             full_access = _count_full_access,
+            user_folder = await _tools_run_in_user_folder(payload, openai_tools),
         )
         openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 
@@ -43978,6 +44192,7 @@ async def anthropic_messages(
             tools = openai_tools,
             model_name = model_name,
             full_access = _full_access,
+            user_folder = await _tools_run_in_user_folder(payload, openai_tools),
         )
 
         if _nudge:
@@ -44146,6 +44361,7 @@ class _AnthropicToolEventRules:
         self._tool_blocks_emitted = 0
         self._drop_until_tool_end = False
         self._span_guard = _ReasoningSpanGuard(think_provenance)
+        self._turn_raw = ""
         # Last drop-branch keepalive, seeded to stream start so a chatty tool busy past the
         # stall window still gets one though its events are dropped.
         self._last_drop_keepalive = time.monotonic()
@@ -44164,11 +44380,17 @@ class _AnthropicToolEventRules:
                 self._last_drop_keepalive = _now
                 return [_OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
             return []
+        # Released before the tool block opens (the emitter's cursor still holds the turn) and before a cursor reset.
+        released = (
+            self._release_held_mention()
+            if etype in ("tool_start", "tool_end") or (etype == "status" and not event.get("text"))
+            else []
+        )
         if self._drop_until_tool_end:
             # Skip through the dropped call's tool_end.
             if etype == "tool_end":
                 self._drop_until_tool_end = False
-            return []
+            return released
         if etype == "metadata":
             _fr = event.get("finish_reason")
             if _fr is not None:
@@ -44177,6 +44399,7 @@ class _AnthropicToolEventRules:
         # [TOOL_CALLS] prose, which a raw sub corrupts.
         if etype == "content":
             event = dict(event)
+            self._turn_raw = event["text"]
             event["text"] = self._span_guard.strip(
                 event["text"],
                 auto_heal_tool_calls = True,
@@ -44186,7 +44409,7 @@ class _AnthropicToolEventRules:
         if etype == "tool_start":
             if self._disable_parallel_tool_use and self._tool_blocks_emitted >= 1:
                 self._drop_until_tool_end = True
-                return []
+                return released
             self._ends_on_tool_use = True
         elif etype == "tool_end":
             self._tool_blocks_emitted += 1
@@ -44196,13 +44419,31 @@ class _AnthropicToolEventRules:
             self._ends_on_tool_use = False
         elif etype == "content" and event.get("text"):
             self._ends_on_tool_use = False
-        return self._emitter.feed(event)
+        return released + self._emitter.feed(event)
+
+    def _release_held_mention(self) -> list:
+        """A backticked tag still held when its turn ends never closed: emit what the full strip keeps."""
+        raw, self._turn_raw = self._turn_raw, ""
+        if not raw or _pending_mention_cut(raw) < 0:
+            return []
+        return self._emitter.feed(
+            {
+                "type": "content",
+                "text": self._span_guard.strip(
+                    raw,
+                    auto_heal_tool_calls = True,
+                    enabled_tool_names = self._display_names,
+                    hold = False,
+                ),
+            }
+        )
 
     def finish(self) -> list:
+        released = self._release_held_mention()
         stop_reason = openai_finish_to_anthropic_stop(
             self._finish_reason, had_tool_calls = self._ends_on_tool_use
         )
-        return self._emitter.finish(stop_reason = stop_reason, stop_sequence = None)
+        return released + self._emitter.finish(stop_reason = stop_reason, stop_sequence = None)
 
 
 async def _anthropic_tool_stream(
@@ -44548,31 +44789,56 @@ def _anthropic_tool_response_from_events(
     _span_guard = _ReasoningSpanGuard(think_provenance)
     # Key presence means genuine reasoning; the value may be None if only the count was recorded.
     _block_wrap: dict = {}
+    turn_event = None
+
+    def _add_text(clean: str) -> None:
+        nonlocal prev_text, ends_on_tool_use
+        new = clean[len(prev_text) :]
+        prev_text = clean
+        if new:
+            ends_on_tool_use = False
+            if content_blocks and isinstance(content_blocks[-1], AnthropicResponseTextBlock):
+                content_blocks[-1].text += new
+            else:
+                content_blocks.append(AnthropicResponseTextBlock(text = new))
+                # The wrap belongs to the block that OPENS this turn's span (a client tool_use can interrupt it).
+                if _span_guard.claimed and new.startswith("<think>"):
+                    _block_wrap[len(content_blocks) - 1] = _span_guard.claimed_wrap
+
+    def _release_held_mention() -> None:
+        nonlocal turn_event
+        last, turn_event = turn_event, None
+        if last is None or _pending_mention_cut(last["text"]) < 0:
+            return
+        _add_text(
+            _span_guard.strip(
+                last["text"],
+                auto_heal_tool_calls = True,
+                enabled_tool_names = _display_names,
+                wrapped_so_far = last.get(_WRAPPED_SO_FAR),
+                hold = False,
+            )
+        )
 
     for event in events:
         etype = event.get("type", "")
         if etype == "content":
+            turn_event = event
             # Strip leaked tool XML (protected helper keeps think rehearsal and trailing prose).
-            clean = _span_guard.strip(
-                event["text"],
-                auto_heal_tool_calls = True,
-                enabled_tool_names = _display_names,
-                wrapped_so_far = event.get(_WRAPPED_SO_FAR),
+            _add_text(
+                _span_guard.strip(
+                    event["text"],
+                    auto_heal_tool_calls = True,
+                    enabled_tool_names = _display_names,
+                    wrapped_so_far = event.get(_WRAPPED_SO_FAR),
+                )
             )
-            new = clean[len(prev_text) :]
-            prev_text = clean
-            if new:
-                ends_on_tool_use = False
-                if content_blocks and isinstance(content_blocks[-1], AnthropicResponseTextBlock):
-                    content_blocks[-1].text += new
-                else:
-                    content_blocks.append(AnthropicResponseTextBlock(text = new))
-                    # The wrap belongs to the block that OPENS this turn's span (a client tool_use can interrupt it).
-                    if _span_guard.claimed and new.startswith("<think>"):
-                        _block_wrap[len(content_blocks) - 1] = _span_guard.claimed_wrap
         elif etype == "status" and not event.get("text"):
+            _release_held_mention()
             prev_text = ""
         elif etype == "tool_start":
+            # Text ahead of the tool_use block, while prev_text still holds the turn.
+            _release_held_mention()
             tool_call_id = event["tool_call_id"]
             arguments = event.get("arguments", {})
             existing_tool_block = tool_blocks_by_id.get(tool_call_id) if tool_call_id else None
@@ -44597,6 +44863,7 @@ def _anthropic_tool_response_from_events(
                 content_blocks.append(tool_block)
             ends_on_tool_use = True
         elif etype == "tool_end":
+            _release_held_mention()
             prev_text = ""
             _span_guard.tool_end()
             # Text-parsed calls restart at call_0 each loop, so a later call may reuse this id; open a new block.
@@ -44617,6 +44884,7 @@ def _anthropic_tool_response_from_events(
             _fr = event.get("finish_reason")
             if _fr is not None:
                 captured_finish_reason = _fr
+    _release_held_mention()
 
     # With provenance use the span guard wrap for that turn, not a re-derived one; else leading-tag rule.
     if parse_think:
@@ -47830,6 +48098,73 @@ async def load_diffusion_model(
     )
 
 
+def _require_resolved_image_base_access(request, fam, kind: str, engine_name) -> None:
+    """A managed account must clear the base the predicted engine will publish as ``base_repo``, the same
+    ``require_model_access`` that /images/generate runs on it. Without it a cached gated base loads and every
+    generate then 404s. Refuses only when every base that engine could publish is refused (#16178)."""
+    if (
+        fam is None
+        or kind == "pipeline"
+        or engine_name is None
+        or not account_access.managed_account()
+    ):
+        return
+    from core.inference.diffusion import _resolve_base_repo
+    from core.inference.diffusion_families import named_variant_base, resolve_base_repo
+    from core.inference.sd_cpp_engine import ENGINE_MLX, ENGINE_SD_CPP
+
+    explicit = bool((request.base_repo or "").strip())
+
+    def _diffusers_base():
+        return _resolve_base_repo(
+            request.model_path, request.base_repo, fam, request.hf_token, request.gguf_filename
+        )
+
+    if engine_name == ENGINE_SD_CPP:
+        candidates = [resolve_base_repo(fam, request.base_repo)]
+        from core.inference.sd_cpp_backend import _SAMPLE_SIGMAS_FAMILIES
+        if not explicit and fam.name in _SAMPLE_SIGMAS_FAMILIES:
+            # With a sampling grid sd.cpp publishes the card's or the named variant's base instead.
+            candidates += [
+                _diffusers_base(),
+                named_variant_base(fam, request.model_path, request.gguf_filename),
+            ]
+    elif engine_name == ENGINE_MLX and not explicit:
+        from core.inference.mlx_diffusion_backend import resolve_variant_base
+        candidates = [
+            resolve_variant_base(
+                request.model_path,
+                fam,
+                request.hf_token,
+                request.gguf_filename,
+                fallback = resolve_base_repo(fam, None),
+            )
+        ]
+    else:
+        candidates = [_diffusers_base()]
+    candidates = [b for b in dict.fromkeys(candidates) if b and b != request.model_path]
+    refused = None
+    for base in candidates:
+        try:
+            account_access.require_model_access(base)
+            return
+        except HTTPException as exc:
+            refused = refused or (base, exc)
+    if refused is None:
+        return
+    base, exc = refused
+    if exc.status_code != 404:
+        raise exc
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            f"This image model loads its base components from {base}, which this account "
+            "cannot access. Download that repository with your own Hugging Face token first, "
+            "or pick a model whose base you can access."
+        ),
+    ) from exc
+
+
 async def load_diffusion_model_gated(
     request: DiffusionLoadRequest,
     current_subject: str,
@@ -48086,6 +48421,10 @@ async def load_diffusion_model_gated(
             request.gguf_filename,
             request.hf_token,
             user_initiated,
+        )
+        # The base a GGUF / single-file pick resolves to is what generate rechecks, so refuse it before any teardown.
+        await asyncio.to_thread(
+            _require_resolved_image_base_access, request, fam, kind, pending_name
         )
         preflighted = None
         if pending_name is not None and (needs_gpu or pending_name != active_engine_name()):

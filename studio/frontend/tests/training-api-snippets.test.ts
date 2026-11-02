@@ -363,7 +363,11 @@ test("the Train header leads its page links with the API button, which alone ope
   assert.match(page, /<div className="ml-auto flex items-center gap-2">\s*<TrainingApiButton \/>\s*<MediaPageLink\b[^]*?to="\/library"/);
   const button = readSrc("features/studio/training-api-button.tsx");
   assert.match(button, /className=\{HEADER_ICON_BUTTON\}/);
-  assert.match(button, /buildTrainingStartPayload\(config, null\)/);
+  // As Start sends it: the CPU training verdict drops a drafter the hidden section cannot untick.
+  assert.match(
+    button,
+    /buildTrainingStartPayload\(\s*config,\s*null,\s*null,\s*usePlatformStore\.getState\(\)\.isCpuTrainingHost\(\),\s*\)/,
+  );
   assert.match(button, /\.openTrainingApi\(/);
   const tabs = readSrc("features/settings/components/api-example-tabs.tsx");
   assert.match(tabs, /"api-keys-training-api": "training"/);

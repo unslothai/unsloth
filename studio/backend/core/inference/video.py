@@ -11306,7 +11306,11 @@ class VideoBackend:
                 umem_target, attention_backend, speed_active = effective_speed != SPEED_OFF
             )
             try:
-                h3_attn_backend = h3_attention_backend(h3_attn_backend, requested = attention_backend)
+                h3_attn_backend = h3_attention_backend(
+                    h3_attn_backend,
+                    requested = attention_backend,
+                    target = types.SimpleNamespace(device = device, dtype = dtype),
+                )
             except Exception:  # noqa: BLE001 -- keep the generic pick
                 pass
             attention_engaged = apply_attention_backend(

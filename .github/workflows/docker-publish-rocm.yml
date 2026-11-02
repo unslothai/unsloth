@@ -91,11 +91,12 @@ jobs:
               SHA="$REF"
           else
               # ls-remote exits 0 even with no match, so non-zero means the remote was unreachable.
-              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/unsloth "$REF")"; then
+              # Prefer the peeled ^{} line: an annotated tag's own sha is not a commit.
+              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/unsloth "$REF" "${REF}^{}")"; then
                   echo "::error::unslothai/unsloth unreachable; cannot freeze ref '${REF}' to a sha"
                   exit 1
               fi
-              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{print $1}')"
+              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{s=$1; r=$2} $2==r"^{}"{s=$1} END{print s}')"
               [ -n "$SHA" ] || SHA="$REF"
           fi
           echo "ref=${SHA}" >> "$GITHUB_OUTPUT"
@@ -126,11 +127,11 @@ jobs:
           if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
               SHA="$REF"
           else
-              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/unsloth-zoo "$REF")"; then
+              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/unsloth-zoo "$REF" "${REF}^{}")"; then
                   echo "::error::unslothai/unsloth-zoo unreachable; cannot freeze ref '${REF}' to a sha"
                   exit 1
               fi
-              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{print $1}')"
+              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{s=$1; r=$2} $2==r"^{}"{s=$1} END{print s}')"
               [ -n "$SHA" ] || SHA="$REF"
           fi
           echo "ref=${SHA}" >> "$GITHUB_OUTPUT"
@@ -146,11 +147,11 @@ jobs:
           if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
               SHA="$REF"
           else
-              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/notebooks "$REF")"; then
+              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/notebooks "$REF" "${REF}^{}")"; then
                   echo "::error::unslothai/notebooks unreachable; cannot freeze ref '${REF}' to a sha"
                   exit 1
               fi
-              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{print $1}')"
+              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{s=$1; r=$2} $2==r"^{}"{s=$1} END{print s}')"
               [ -n "$SHA" ] || SHA="$REF"
           fi
           echo "commit=${SHA}" >> "$GITHUB_OUTPUT"

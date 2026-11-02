@@ -65,12 +65,13 @@ def _new_cudagraph_state():
 
 
 # Auto mode: phase "probe" (graphs off, watching), "on" or "off" (final). first: the layer whose
-# call starts a forward pass; passes: forward passes seen, all with batch shape `shape`.
+# call starts a forward pass; passes: forward passes seen, all with batch shape `shape` on `device`.
 def _new_auto_state():
     return {
         "phase": "probe",
         "first": None,
         "shape": None,
+        "device": None,
         "passes": 0,
         "host": [],
         "gpu": [],
@@ -529,6 +530,10 @@ def _auto_call_reason(layer, hidden_states, args, kwargs):
     return None
 
 
+def _auto_block_device(hidden_states):
+    return hidden_states.device
+
+
 def _auto_observe(layer, hidden_states, args, kwargs):
     """Auto mode, per block call while undecided: "graphs", "plain", or "measure" (plain, timed)."""
     auto = _CUDAGRAPH_STATE["auto"]
@@ -546,9 +551,13 @@ def _auto_observe(layer, hidden_states, args, kwargs):
             return "plain"
         auto["first"] = weakref.ref(layer)
         auto["shape"] = tuple(hidden_states.shape)
+        auto["device"] = _auto_block_device(hidden_states)
     why = _auto_call_reason(layer, hidden_states, args, kwargs)
     if why is None and tuple(hidden_states.shape) != auto["shape"]:
         why = "batch shape changed"
+    if why is None and _auto_block_device(hidden_states) != auto["device"]:
+        # A device_map split: timing and free memory are only read on one device.
+        why = "blocks on several devices"
     if why is not None:
         _auto_off(auto, why)
         return "plain"
@@ -1843,6 +1852,47 @@ def _raise_cache_limit(kinds):
         setattr(config, name, need)
 
 
+def _install_router_capture_hooks(model):
+    """Install transformers' output capture hooks before any block compiles, for models that record
+    router_logits.
+
+    transformers installs them on the first forward that asks for an output (output_router_logits),
+    and Dynamo does not guard on module hooks (skip_nnmodule_hook_guards). A block compiled during an
+    earlier forward without them kept running without the router hook: no router logits, and the
+    aux loss raised IndexError. Installed up front, the hook body runs on every call and returns
+    early unless the collector asks for its key (a guarded dict lookup). Needs the zoo collector
+    mirror: the stock ContextVar.get graph-breaks every compiled block."""
+    try:
+        from transformers.utils import output_capturing
+    except Exception:
+        return 0
+    registry = getattr(output_capturing, "_CAN_RECORD_REGISTRY", None)
+    install = getattr(output_capturing, "maybe_install_capturing_hooks", None)
+    collector = getattr(output_capturing, "CompileableContextVar", None)
+    if (
+        not isinstance(registry, dict)
+        or install is None
+        or not getattr(collector, "_unsloth_eager_mirror", False)
+    ):
+        return 0
+    installed = 0
+    # Outermost first, as transformers would: an install recurses into nested models and flags them. Its
+    # recursion does not check that flag, so a module with an already hooked descendant (an earlier eager
+    # capturing forward) is skipped: installing it would hook that descendant twice (duplicated outputs).
+    for module in model.modules():
+        flags = registry.get(str(type(module))) or {}
+        if "router_logits" not in flags or any(
+            getattr(m, "_output_capturing_hooks_installed", False) for m in module.modules()
+        ):
+            continue
+        try:
+            install(module)
+            installed += 1
+        except Exception:
+            pass
+    return installed
+
+
 def patch_block_compile(model):
     """Compile every decoder-layer class of `model` as one region. Returns the classes wrapped."""
     # getattr: PeftModel delegates. The env fills only unstamped layers, so a re-patch keeps the stamp.
@@ -1883,6 +1933,7 @@ def patch_block_compile(model):
             layer.__dict__["_unsloth_block_moe_may_move"] = True
     if not classes:
         return []
+    _install_router_capture_hooks(model)
     inner = {type(m) for layer in compiled_layers for m in layer.modules()}
     for cls in inner:
         _rebind_class(cls)

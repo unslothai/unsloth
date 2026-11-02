@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-// Enable to restore wallpaper on every main workspace page. The sidebar stays solid.
-export const BACKGROUND_ON_ALL_PAGES = false;
+// On "all" the sidebar stays solid.
+export const SCOPES = ["newChat", "chats", "all"] as const;
+export type BackgroundScope = (typeof SCOPES)[number];
 
 export const EFFECTS = [
 	"None",
@@ -12,6 +13,73 @@ export const EFFECTS = [
 	"Scanlines",
 ] as const;
 export type BackgroundEffect = (typeof EFFECTS)[number];
+export const MATERIALS = [
+	"solid",
+	"transparent",
+	"frosted",
+	"blurred",
+	"liquid",
+	"liquid-3d",
+	"macos",
+] as const;
+export type WindowMaterial = (typeof MATERIALS)[number];
+export function sanitizeMaterial(value: unknown): WindowMaterial {
+	return MATERIALS.includes(value as WindowMaterial)
+		? (value as WindowMaterial)
+		: "solid";
+}
+export const LENS_MODES = ["off", "magnify", "shrink"] as const;
+export type LensMode = (typeof LENS_MODES)[number];
+export const LENS_SCALE: Record<LensMode, number> = {
+	off: 1,
+	magnify: 1.18,
+	shrink: 0.87,
+};
+export function sanitizeLens(value: unknown): LensMode {
+	return LENS_MODES.includes(value as LensMode) ? (value as LensMode) : "off";
+}
+export function sanitizeStrength(value: unknown, fallback = 50): number {
+	return typeof value === "number" && Number.isFinite(value)
+		? Math.max(0, Math.min(100, Math.round(value)))
+		: fallback;
+}
+export type GlassStrengths = { light: number; dark: number };
+export const DEFAULT_GLASS_STRENGTH: GlassStrengths = { light: 40, dark: 15 };
+export function sanitizeStrengths(value: unknown): GlassStrengths {
+	const stored =
+		value && typeof value === "object" ? (value as Partial<GlassStrengths>) : {};
+	return {
+		light: sanitizeStrength(stored.light, DEFAULT_GLASS_STRENGTH.light),
+		dark: sanitizeStrength(stored.dark, DEFAULT_GLASS_STRENGTH.dark),
+	};
+}
+export type ImageTone = { lo: number; mid: number; hi: number };
+export function toneOf(values: number[]): ImageTone {
+	const sorted = [...values].sort((a, b) => a - b);
+	const at = (q: number) =>
+		sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? 0;
+	return { lo: at(0.25), mid: at(0.5), hi: at(0.75) };
+}
+
+const clamp = (v: number, lo: number, hi: number) =>
+	Math.max(lo, Math.min(hi, v));
+
+/** Target pane luminance: under ~0.15 in dark mode, over ~0.72 in light mode (muted ink is mid-grey). */
+export function glassReadability(
+	tone: ImageTone,
+	dark: boolean,
+): { floor: number; shade: number } {
+	if (dark)
+		return {
+			floor: clamp(1 - 0.15 / Math.max(tone.hi, 1e-3), 0, 0.9),
+			shade: 0,
+		};
+	return {
+		floor:
+			tone.lo >= 0.72 ? 0 : clamp((0.72 - tone.lo) / (0.95 - tone.lo), 0, 0.88),
+		shade: clamp((tone.mid - 0.45) / 0.4, 0, 1) * 0.12,
+	};
+}
 export const IMAGE_SIZING = [
 	"cover",
 	"contain",
@@ -33,16 +101,33 @@ export const POSITIONS = [
 	"100% 100%",
 ] as const;
 export const DEFAULT_ADJUSTMENTS = {
+	scope: "chats" as BackgroundScope,
 	effect: "None" as BackgroundEffect,
 	visibility: 70,
+	// 0 keeps the readable wash over open conversations; 100 shows the image almost as on a new chat.
+	conversation: 0,
 	blur: 0,
 	fade: true,
 	outline: 30,
 	sizing: "cover" as ImageSizing,
 	zoom: 100,
 	position: "50% 50%",
+	// Glass-only, so toggling glass never changes the non-glass look.
+	glassLightVisibility: 70,
+	glassDarkVisibility: 40,
+	glassFade: false,
 };
 export type BackgroundAdjustments = typeof DEFAULT_ADJUSTMENTS;
+export function visibilityKey(
+	glass: boolean,
+	dark: boolean,
+): "visibility" | "glassLightVisibility" | "glassDarkVisibility" {
+	if (!glass) return "visibility";
+	return dark ? "glassDarkVisibility" : "glassLightVisibility";
+}
+export function fadeKey(glass: boolean): "fade" | "glassFade" {
+	return glass ? "glassFade" : "fade";
+}
 export type ChatBackgroundValue = BackgroundAdjustments & { blob: Blob };
 export type BackgroundError =
 	| "storage"
@@ -61,10 +146,14 @@ export function sanitizeAdjustments(
 			? Math.max(0, Math.min(max, Math.round(v)))
 			: fallback;
 	return {
+		scope: SCOPES.includes(input.scope as BackgroundScope)
+			? input.scope!
+			: "chats",
 		effect: EFFECTS.includes(input.effect as BackgroundEffect)
 			? input.effect!
 			: "None",
 		visibility: bounded(input.visibility, 100, 70),
+		conversation: bounded(input.conversation, 100, 0),
 		blur: bounded(input.blur, 20, 0),
 		fade: typeof input.fade === "boolean" ? input.fade : true,
 		// Booleans are the pre-slider saved shape.
@@ -79,6 +168,9 @@ export function sanitizeAdjustments(
 			: "cover",
 		zoom: Math.max(100, bounded(input.zoom, 300, 100)),
 		position: parsePosition(input.position) ? input.position! : "50% 50%",
+		glassLightVisibility: bounded(input.glassLightVisibility, 100, 70),
+		glassDarkVisibility: bounded(input.glassDarkVisibility, 100, 40),
+		glassFade: typeof input.glassFade === "boolean" ? input.glassFade : false,
 	};
 }
 export function parsePosition(value: unknown): [number, number] | null {

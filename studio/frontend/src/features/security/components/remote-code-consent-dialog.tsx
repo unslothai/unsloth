@@ -21,6 +21,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Fragment, type ReactNode } from "react";
+import { blockCopy } from "../lib/block-copy";
 import { severityTone } from "../lib/severity-tone";
 import { useRemoteCodeConsentDialogStore } from "../stores/remote-code-consent-dialog-store";
 import type {
@@ -183,13 +184,18 @@ export function RemoteCodeConsentDialog() {
   const resolve = useRemoteCodeConsentDialogStore((s) => s.resolve);
   const t = useT();
 
-  const displayName = modelDisplayName(scan?.modelName) ?? t("remoteCode.thisModel");
+  const displayName =
+    modelDisplayName(scan?.blockTarget ?? scan?.modelName) ?? t("remoteCode.thisModel");
   const provider = scan?.provider ?? null;
   const blocked = scan ? !scan.approvable : false;
   const findings = scan?.findings ?? [];
   const unsafeFiles = scan?.unsafeFiles ?? [];
-  const malware = unsafeFiles.length > 0;
+  const source = scan?.blockSource ?? "Hugging Face";
+  const block = blocked
+    ? blockCopy(scan?.blockCause ?? null, source, Boolean(provider))
+    : null;
   const slots = {
+    source,
     model: <span className="font-medium text-foreground">{displayName}</span>,
     provider: <span className="font-medium text-foreground">"{provider}"</span>,
   };
@@ -226,42 +232,37 @@ export function RemoteCodeConsentDialog() {
             <div className="min-w-0 flex-1 space-y-3">
               <div className="space-y-1">
                 <AlertDialogTitle>
-                  {malware
-                    ? t("remoteCode.unsafeTitle")
-                    : blocked
-                      ? t("remoteCode.blockedTitle")
-                      : t("remoteCode.enableTitle")}
+                  {block
+                    ? t(block.title, { source })
+                    : t("remoteCode.enableTitle")}
                 </AlertDialogTitle>
                 <AlertDialogDescription>
-                  {malware ? (
-                    fillSlots(
-                      provider
-                        ? t("remoteCode.unsafeBodyFromProvider")
-                        : t("remoteCode.unsafeBody"),
-                      slots,
-                    )
-                  ) : (
-                    fillSlots(
-                      provider
+                  {fillSlots(
+                    block
+                      ? t(block.body)
+                      : provider
                         ? t("remoteCode.customCodeFromProvider")
                         : t("remoteCode.customCode"),
-                      {
-                        ...slots,
-                        note: blocked
-                          ? t("remoteCode.blockedNote")
-                          : findings.length > 0
-                            ? t("remoteCode.reviewNote")
-                            : t("remoteCode.trustNote"),
-                      },
-                    )
+                    {
+                      ...slots,
+                      note: block
+                        ? block.note
+                          ? t(block.note)
+                          : ""
+                        : findings.length > 0
+                          ? t("remoteCode.reviewNote")
+                          : t("remoteCode.trustNote"),
+                    },
                   )}
                 </AlertDialogDescription>
               </div>
 
-              {malware ? (
+              {unsafeFiles.length > 0 ? (
                 <div className="min-w-0 space-y-2">
                   <p className="text-xs font-medium text-muted-foreground">
-                    {t("remoteCode.flaggedIntro")}
+                    {scan?.blockCause === "unsafe_files"
+                      ? t("remoteCode.flaggedIntro")
+                      : t("remoteCode.unscannedIntro")}
                   </p>
                   <div className="max-h-[calc(14rem*var(--ui-space-scale,1))] min-w-0 space-y-2 overflow-y-auto pr-1">
                     {unsafeFiles.map((f, i) => (
@@ -284,7 +285,7 @@ export function RemoteCodeConsentDialog() {
                 </div>
               ) : null}
 
-              {!malware && !blocked && findings.length === 0 ? (
+              {!blocked && findings.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
                   {t("remoteCode.nothingFlagged")}
                 </p>

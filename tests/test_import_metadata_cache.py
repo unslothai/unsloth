@@ -294,7 +294,7 @@ def test_unreadable_entries_do_not_break_it(cache_module, counted, monkeypatch):
 
 
 def test_helper_is_stdlib_only():
-    tree = ast.parse((_UNSLOTH / "_import_metadata_cache.py").read_text())
+    tree = ast.parse((_UNSLOTH / "_import_metadata_cache.py").read_text(encoding = "utf-8"))
     imported = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -306,7 +306,7 @@ def test_helper_is_stdlib_only():
 
 
 def test_init_installs_first_and_removes_last():
-    source = (_UNSLOTH / "__init__.py").read_text()
+    source = (_UNSLOTH / "__init__.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
     calls = [
         node.func.id

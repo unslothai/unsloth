@@ -54,15 +54,14 @@ import {
   useFileProjectInSection,
 } from "@/features/chat";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
-import { MessageCircleIcon, StarPointedIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Archive03Icon,
+  ArchiveIcon,
   ArchiveRestoreIcon,
   Cancel01Icon,
-  Delete02Icon,
   LayerIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
@@ -193,7 +192,7 @@ const SECTION_ICONS: Partial<Record<ChatsSection, IconSvgElement>> = {
   chats: MessageCircleIcon,
   projects: ProjectIcon,
   sections: LayerIcon,
-  archived: Archive03Icon,
+  archived: ArchiveIcon,
 };
 
 const SECTION_SORTS: SortChoice<SectionSortKey>[] = [
@@ -978,7 +977,7 @@ export function ChatsLibrary({
       if (archived) {
         return (
           <EmptyState
-            icon={Archive03Icon}
+            icon={ArchiveIcon}
             title={t("library.chats.empty.archivedTitle")}
             description={t("library.chats.empty.archivedDescription")}
           />
@@ -1528,7 +1527,7 @@ export function ChatsLibrary({
                     onClick={() => archiveChats(selectedChats)}
                     className={cn(BAR_PILL, BAR_OUTLINE)}
                   >
-                    <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-4" />
+                    <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-4" />
                     {t("settings.data.library.archive")}
                   </button>
                 </>
@@ -1541,7 +1540,7 @@ export function ChatsLibrary({
                   "bg-destructive/10 text-destructive transition-colors hover:bg-destructive/15",
                 )}
               >
-                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
+                <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-4" />
                 {t("common.delete")}
               </button>
               <DropdownMenu>

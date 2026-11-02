@@ -230,6 +230,7 @@ export function applyActiveModelStatusToStore(
   const incomingMlxKvQuant = normalizeMlxKvQuant(status.mlx_kv_quant_requested);
   const incomingMlxInt8Prefill = status.mlx_int8_prefill_requested === true;
   const incomingMlxAnePrefill = status.mlx_ane_prefill_requested === true;
+  const incomingMlxFastVerify = status.mlx_fast_verify_requested === true;
   const incomingMlxOffload = mlxOffloadStateFrom(status);
   const prevState = useChatRuntimeStore.getState();
   // A pin is one model's; clamp the chat's own level once the model is actually resident.
@@ -543,6 +544,7 @@ export function applyActiveModelStatusToStore(
             mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
             loadedMlxInt8PrefillRequested: incomingMlxInt8Prefill,
             loadedMlxAnePrefillRequested: incomingMlxAnePrefill,
+            loadedMlxFastVerifyRequested: incomingMlxFastVerify,
             ...incomingMlxOffload,
             ...((hydratingExistingModel ||
               (prevState.mlxPleOffload ?? null) ===
@@ -569,6 +571,11 @@ export function applyActiveModelStatusToStore(
                 prevState.loadedMlxAnePrefillRequested) && {
               mlxAnePrefill: incomingMlxAnePrefill,
             }),
+            ...((hydratingExistingModel ||
+              prevState.mlxFastVerify ===
+                prevState.loadedMlxFastVerifyRequested) && {
+              mlxFastVerify: incomingMlxFastVerify,
+            }),
           }
         : {
             loadedMlxKvQuantRequested: null,
@@ -577,6 +584,7 @@ export function applyActiveModelStatusToStore(
             mlxKvQuantNote: null,
             loadedMlxInt8PrefillRequested: false,
             loadedMlxAnePrefillRequested: false,
+            loadedMlxFastVerifyRequested: false,
             ...incomingMlxOffload,
           })),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank

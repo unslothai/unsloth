@@ -4,9 +4,6 @@
 import postcss from "postcss";
 import type { Plugin } from "vite";
 
-// KaTeX's @font-face rules list woff2, then woff, then ttf. Every engine Studio runs in
-// (WebView2, WKWebView, WebKitGTK 4.1, current Chromium / Firefox / Safari) takes woff2, the
-// first entry, so the 40 woff / ttf files were emitted into dist and never fetched.
 const KATEX_CSS = /[\\/]node_modules[\\/]katex[\\/]dist[\\/]katex(?:\.min)?\.css(?:$|\?)/;
 const WOFF2_SOURCE = /url\(\s*(?:"[^"]*"|'[^']*'|[^)"']*)\s*\)\s*format\(\s*["']?woff2["']?\s*\)/gi;
 
@@ -29,7 +26,7 @@ export function keepWoff2Sources(css: string): { css: string; rules: number } {
 export function katexWoff2Only(): Plugin {
   return {
     name: "katex-woff2-only",
-    // Before vite:css resolves url() entries, which is where the font files get emitted.
+    // Rewrite before vite:css emits font assets.
     enforce: "pre",
     transform: {
       filter: { id: KATEX_CSS, code: "@font-face" },
