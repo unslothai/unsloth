@@ -374,7 +374,7 @@ def _umbrella_variant_scope(target_repo, variant: str) -> tuple[frozenset[str], 
     )
     own: set[str] = set()
     protected: set[str] = set()
-    for candidate in model.variants:
+    for candidate in model.cache_variants:
         files = {f.path for f in candidate.files}
         if candidate.primary and gguf_variant_key(candidate.primary).lower() == variant.lower():
             own |= files if not sibling_active else {candidate.primary}

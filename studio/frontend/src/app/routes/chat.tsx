@@ -9,7 +9,7 @@ import { Route as rootRoute } from "./__root";
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/chat",
-  staticData: { title: "Chat" },
+  staticData: { titleKey: "routes.chat" },
   beforeLoad: () => requireAuth(),
   validateSearch: (search: Record<string, unknown>) => validateChatSearch(search),
   component: () => null,

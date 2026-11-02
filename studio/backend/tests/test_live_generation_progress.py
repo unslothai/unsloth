@@ -47,6 +47,7 @@ def test_prefill_samples_become_frames_once_each():
         "total": 5316,
         "cached": 0,
         "tok_per_s": 1365.3,
+        "time_ms": 1500,
     }
     # Sent once; the stall loop polls far more often than llama-server reports a batch.
     assert signal.live_frame() is None
@@ -64,6 +65,7 @@ def test_prefill_counts_are_clamped_and_bad_rates_dropped():
     assert frame["processed"] == 100
     assert frame["cached"] == 100
     assert frame["tok_per_s"] is None
+    assert frame["time_ms"] is None, "an older llama-server without time_ms"
 
 
 def test_decode_frames_are_throttled(monkeypatch):
@@ -72,6 +74,8 @@ def test_decode_frames_are_throttled(monkeypatch):
     signal = route._PrefillProgressSignal(None, live = True)
 
     signal({"predicted_n": 10, "predicted_per_second": 48.7})
+    assert signal.live_frame() is None, "the pass's first sample opens the interval"
+    clock["now"] += route._LIVE_DECODE_FRAME_INTERVAL_S
     assert _frame(signal.live_frame()) == {
         "type": "generation_progress",
         "phase": "decode",
@@ -85,6 +89,26 @@ def test_decode_frames_are_throttled(monkeypatch):
     assert signal.live_frame() is None, "the same sample twice"
 
 
+def test_the_first_frame_waits_an_interval_past_the_first_token(monkeypatch):
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(route.time, "monotonic", lambda: clock["now"])
+    signal = route._PrefillProgressSignal(None, live = True)
+    signal({"predicted_n": 1, "predicted_per_second": 0.0})
+    assert signal.live_frame() is None, "a lone '1 token' held the line for a whole interval"
+    clock["now"] += 0.01
+    signal({"predicted_n": 2, "predicted_per_second": 12.5})
+    assert signal.live_frame() is None, "one step's rate is noise"
+    clock["now"] += route._LIVE_DECODE_FRAME_INTERVAL_S
+    signal({"predicted_n": 31, "predicted_per_second": 118.0})
+    assert _frame(signal.live_frame())["tokens"] == 31
+    signal({"prompt_progress": {"total": 3000, "processed": 3000}})
+    signal.live_frame()
+    clock["now"] += route._LIVE_DECODE_FRAME_INTERVAL_S
+    signal({"predicted_n": 1, "predicted_per_second": 0.0})
+    signal({"predicted_n": 2, "predicted_per_second": 40.0})
+    assert signal.live_frame() is None
+
+
 def test_a_new_prompt_pass_drops_the_last_rounds_decode_figures():
     signal = route._PrefillProgressSignal(None, live = True)
     signal({"predicted_n": 50, "predicted_per_second": 40.0})
@@ -93,7 +117,8 @@ def test_a_new_prompt_pass_drops_the_last_rounds_decode_figures():
     assert signal.live_frame() is None, "round 1's decode frame must not follow round 2's prefill"
 
 
-def test_decode_frame_carries_draft_acceptance():
+def test_decode_frame_carries_draft_acceptance(monkeypatch):
+    monkeypatch.setattr(route, "_LIVE_DECODE_FRAME_INTERVAL_S", 0.0)
     signal = route._PrefillProgressSignal(None, live = True)
     signal({"predicted_n": 40, "predicted_per_second": 90.0, "draft_n": 23, "draft_n_accepted": 14})
     frame = _frame(signal.live_frame())
@@ -146,8 +171,9 @@ def test_stall_wait_sends_progress_while_the_generator_is_silent(monkeypatch):
     assert [_frame(line)["processed"] for line in lines] == [2048]
 
 
-def test_a_step_faster_than_the_poll_still_sends_what_it_recorded():
+def test_a_step_faster_than_the_poll_still_sends_what_it_recorded(monkeypatch):
     # Fast tokens (or tool-call markup stripped to no text) never reach the poll.
+    monkeypatch.setattr(route, "_LIVE_DECODE_FRAME_INTERVAL_S", 0.0)
     signal = route._PrefillProgressSignal(None, live = True)
 
     async def scenario():

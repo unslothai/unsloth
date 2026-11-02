@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  ChatBackground,
+  WindowMaterialMount,
+} from "@/features/chat-background";
 import { ImageViewer } from "@/components/image-viewer";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { LazyImportFailure } from "@/components/lazy-import-boundary";
 import { AppSidebar } from "@/components/app-sidebar";
 import { CommandPalette } from "@/components/command-palette";
-import { SpookyDecorations } from "@/features/halloween/spooky-decorations";
 import { Navbar } from "@/components/navbar";
 import { SidebarEdgeTrigger } from "@/components/sidebar-edge-trigger";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
@@ -55,7 +58,9 @@ import {
   useSettingsDialogStore,
   useShortcut,
   useShortcutAvailable,
+  useVoiceSettingsStore,
 } from "@/features/settings";
+import { reconcileSttDevicePreference } from "@/features/settings/api/stt-device";
 import { useLowDiskNotice } from "@/features/settings/hooks/use-low-disk-notice";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
@@ -98,7 +103,6 @@ import { hasAppMenus, useAppMenuActions } from "../use-app-menu-actions";
 
 declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
-    title?: string;
     titleKey?: TranslationKey;
     isAuthFlow?: boolean;
   }
@@ -243,6 +247,21 @@ function PersonalizationSyncMount() {
   return null;
 }
 
+// Voice Settings "Load into" kept in step with the server copy that device-less STT API loads read (#15280). Here,
+// not on store rehydrate: the store loads at startup, before the desktop backend port is known and before sign-in.
+function SttDeviceSyncMount() {
+  useRouterState({ select: (s) => s.location.pathname });
+  const settled = hasSettledAuthSession();
+  useEffect(() => {
+    if (!settled) return;
+    void reconcileSttDevicePreference(
+      useVoiceSettingsStore.getState().sttDevice,
+      (sttDevice) => useVoiceSettingsStore.setState({ sttDevice }),
+    );
+  }, [settled]);
+  return null;
+}
+
 // A full disk is not a training problem, so the warning cannot live on the
 // training route: it belongs to whichever route the user happens to be on when
 // space runs out. Mounted here it subscribes once for the session, and stays
@@ -357,8 +376,10 @@ function waitsOutUnknownVerdict(pathname: string): boolean {
   );
 }
 
-function isChatOnlyAllowed(pathname: string): boolean {
+function isChatOnlyAllowed(pathname: string, trainAvailable: boolean): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
+  if (trainAvailable && (pathname === "/studio" || pathname.startsWith("/studio/")))
+    return true;
   if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/"))
     return true;
   // Images runs on CPU/MPS via sd.cpp; chat-only is about training/export.
@@ -372,11 +393,11 @@ function isChatOnlyAllowed(pathname: string): boolean {
 export const Route = createRootRoute({
   beforeLoad: async ({ location }) => {
     await fetchDeviceType();
-    const { isChatOnly, capabilitiesUnknown } = usePlatformStore.getState();
+    const { isChatOnly, isTrainUnavailable, capabilitiesUnknown } = usePlatformStore.getState();
     const unmeasured = capabilitiesUnknown();
     if (
       isChatOnly() &&
-      !isChatOnlyAllowed(location.pathname) &&
+      !isChatOnlyAllowed(location.pathname, !isTrainUnavailable()) &&
       !(unmeasured && waitsOutUnknownVerdict(location.pathname))
     ) {
       throw redirect({ to: "/chat" });
@@ -409,12 +430,16 @@ function RootLayout() {
   const chatOnlyMeasured = usePlatformStore(
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
+  const trainBlocked = usePlatformStore(
+    (s) => s.isTrainUnavailable() && !s.capabilitiesUnknown(),
+  );
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   // Video is the other row the sidebar grays out, on the two verdicts its pipelines cannot run on
   // at all. Same hint the row reads, so the two cannot disagree about which hosts they are.
   const videoCpuOptIn = usePlatformStore((s) => s.videoCpuOptIn);
+  const cpuTraining = usePlatformStore((s) => s.cpuTraining);
   const videoDisabled =
-    videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn) !== undefined;
+    videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining) !== undefined;
   // Exact match: a prefix would treat /chatty as chat, hiding its not-found UI.
   const isChatRoute = pathname === "/chat";
   const { pinned, setPinned, togglePinned } = useSidebarPin();
@@ -492,9 +517,8 @@ function RootLayout() {
   const matchedTitle = useMatches({
     select: (matches) => {
       for (let i = matches.length - 1; i >= 0; i--) {
-        const { title, titleKey } = matches[i].staticData;
+        const { titleKey } = matches[i].staticData;
         if (titleKey) return t(titleKey);
-        if (title) return title;
       }
       return null;
     },
@@ -638,7 +662,7 @@ function RootLayout() {
     "go-projects": goAction(routeShortcutEnabled, goTo("/projects")),
     "go-library": goAction(routeShortcutEnabled, goTo("/library")),
     "go-hub": goAction(routeShortcutEnabled, goTo("/hub")),
-    "go-train": goAction(routeShortcutEnabled && !chatOnlyMeasured, goTo("/studio")),
+    "go-train": goAction(routeShortcutEnabled && !trainBlocked, goTo("/studio")),
     "go-recipes": goAction(routeShortcutEnabled, goTo("/data-recipes")),
     "go-images": goAction(routeShortcutEnabled, goTo("/images")),
     "go-video": goAction(routeShortcutEnabled && !videoDisabled, goTo("/video")),
@@ -661,7 +685,7 @@ function RootLayout() {
   });
   // Train's chord waits for a measured verdict, or it would bounce off /studio to /chat.
   useShortcut("switchToTrain", goTo("/studio"), {
-    enabled: routeShortcutEnabled && !chatOnlyMeasured,
+    enabled: routeShortcutEnabled && !trainBlocked,
   });
   useShortcut("switchToRecipes", goTo("/data-recipes"), {
     enabled: routeShortcutEnabled,
@@ -696,7 +720,9 @@ function RootLayout() {
   const content = (
     <>
       <PersonalizationSyncMount />
+      <SttDeviceSyncMount />
       <InterfaceZoom />
+      <WindowMaterialMount />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <LowDiskNoticeMount />}
@@ -711,7 +737,6 @@ function RootLayout() {
       <StopRunningChatsDialog />
       <ImageViewer />
       {!hideNavbar && <CommandPalette />}
-      {!hideNavbar && <SpookyDecorations />}
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
@@ -723,8 +748,11 @@ function RootLayout() {
           pinned={pinned}
           setPinned={setPinned}
           togglePinned={togglePinned}
-          className="!min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
+          data-wallpaper-workspace=""
+          data-wallpaper-route={isChatRoute ? "chat" : "page"}
+          className="relative !min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
+          <ChatBackground route={isChatRoute ? "chat" : "page"} backdrop />
           <AppSidebar />
           <SidebarEdgeTrigger />
           <SidebarInset

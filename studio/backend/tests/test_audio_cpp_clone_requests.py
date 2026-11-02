@@ -58,6 +58,10 @@ COSY_OPTIONS = ({
     "name": "template_name", "type": "enum", "description": "", "required": False, "default": None,
     "min": None, "max": None, "values": ["zero_shot", "cross_lingual", "instruct"],
 },)
+SPEED_OPTIONS = ({
+    "name": "speed", "type": "float", "description": "", "required": False, "default": 1.0,
+    "min": 0.5, "max": 2.0, "values": None,
+},)
 # fmt: on
 QWEN = "Qwen3-TTS-12Hz-0.6B-Base-GGUF"
 MODELS = {
@@ -70,6 +74,7 @@ MODELS = {
     "kokoro": lambda: _model("kokoro_tts", "Kokoro-82M-GGUF"),
     "vibevoice": lambda: _model("vibevoice", "VibeVoice-1.5B-GGUF"),
     "omnivoice": lambda: _model("omnivoice", "OmniVoice-GGUF"),
+    "omnivoice_speed": lambda: _model("omnivoice", "OmniVoice-GGUF", options = SPEED_OPTIONS),
     "dots": lambda: _model("dots_tts", "DotTTS-SOAR-GGUF"),
     "irodori": lambda: _model("irodori_tts", "Irodori-TTS-v4-Small-GGUF"),
 }
@@ -143,6 +148,9 @@ SPEECH, TASKS = "/v1/audio/speech", "/v1/tasks/run"
     ("f5", {"reference_text": T, "speed": 1.3}, {"speed": 1.3, "reference_text": T, "options": ABSENT}),
     ("f5", {"reference_text": T, "speed": 9}, {"speed": 2.0}),
     ("omnivoice", {"reference_text": T}, {**BASE, "reference_text": T}),
+    ("omnivoice_speed", {"reference_text": T, "speed": 1.7}, {"speed": ABSENT, "options": {"speed": "1.7"}}),
+    ("omnivoice_speed", {"reference_text": T, "speed": 1.7, "audio_options": {"speed": 0.8}},
+     {"options": {"speed": "0.8"}}),
     ("dots", {"reference_text": T}, {**BASE, "reference_text": T}),
     ("dots", {}, BASE),
     # Irodori refuses a transcript as an unknown option.
@@ -156,6 +164,13 @@ def test_clone_request_body(key, kwargs, expect):
     assert {k: body.get(k, ABSENT) for k in expect} == expect
     if "model" in expect:
         assert body.keys() == expect.keys()
+
+
+def test_a_top_level_speed_reaches_a_speak_model_as_its_speed_option():
+    backend, server = _backend(_model("kokoro_tts", "Kokoro-82M-GGUF", options = SPEED_OPTIONS))
+    backend.generate_audio_response(TEXT, seed = 7, speed = 1.5)
+    backend.generate_audio_response(TEXT, seed = 7)
+    assert [body["options"] for _, body in server.calls] == [{"speed": 1.5}, {"speed": 1.0}]
 
 
 def test_voxcpm2_speak_body_is_unchanged_by_clone_support():

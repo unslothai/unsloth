@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { resetChatBackground } from "@/features/chat-background";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,6 +12,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useChatRuntimeStore } from "@/features/chat";
 // From the keys module, not the barrel or the store: both are in an import cycle with this file,
@@ -34,13 +42,19 @@ import {
   type NotificationChannel,
 } from "@/hooks/use-notification-frequency";
 import { useHfTokenValidation } from "@/hooks";
-import { LOCALE_STORAGE_KEY, type TranslationKey, useT } from "@/i18n";
+import { LOCALE_STORAGE_KEY, getLocale, translate, type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import {
   SPELLCHECK_STORAGE_KEY,
   setSpellCheck,
   useSpellCheck,
 } from "@/lib/spellcheck";
+import {
+  TIME_FORMAT_STORAGE_KEY,
+  type TimeFormat,
+  setTimeFormat,
+  useTimeFormat,
+} from "@/lib/time-format";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useEffect, useRef, useState } from "react";
@@ -73,10 +87,7 @@ import {
 import { DesktopInstallTypeControl } from "../components/full-install-dialog";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
-import {
-  DesktopUpdateControl,
-  DesktopUpdateNote,
-} from "../components/desktop-update-control";
+import { DesktopUpdateControl } from "../components/desktop-update-control";
 import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
 import {
@@ -124,9 +135,11 @@ const PREFS_KEYS: string[] = [
   "theme",
   "palette",
   "unsloth_appearance_customization",
+  "unsloth_window_material",
   INTERFACE_SCALE_STORAGE_KEY,
   LOCALE_STORAGE_KEY,
   SPELLCHECK_STORAGE_KEY,
+  TIME_FORMAT_STORAGE_KEY,
   // UI state
   "sidebar_pinned",
   "sidebar_width",
@@ -199,7 +212,11 @@ const PREFS_KEYS: string[] = [
 // Set by resetAllPrefs so the unmount commit skips writing back the in-memory draft.
 let resetInProgress = false;
 
-function resetAllPrefs() {
+async function resetAllPrefs() {
+  if (!(await resetChatBackground())) {
+    toast.error(translate("chatBackground.storageError", {}, getLocale()));
+    return;
+  }
   resetInProgress = true;
   for (const key of PREFS_KEYS) {
     try {
@@ -223,6 +240,7 @@ export function GeneralTab() {
   const hfTokenIsPersisting = useHfTokenStore((s) => s.isPersisting);
   const showLoadedModels = useShowLoadedModels();
   const spellCheck = useSpellCheck();
+  const timeFormat = useTimeFormat();
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
   const [showToken, setShowToken] = useState(false);
@@ -515,7 +533,6 @@ export function GeneralTab() {
         {isTauri ? (
           <div data-settings-label={t("settings.about.updates")}>
             <DesktopUpdateControl />
-            <DesktopUpdateNote />
           </div>
         ) : null}
         <DesktopInstallTypeControl />
@@ -615,12 +632,40 @@ export function GeneralTab() {
         )}
       </SettingsSection>
 
-      <SettingsSection title={t("settings.appearance.language.title")}>
+      <SettingsSection title={t("settings.general.display.title")}>
         <SettingsRow
           label={t("settings.appearance.language.label")}
           description={t("settings.appearance.language.description")}
         >
           <LanguageSelect />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.display.timeFormat")}
+          description={t("settings.general.display.timeFormatDescription")}
+        >
+          <Select
+            value={timeFormat}
+            onValueChange={(next) => setTimeFormat(next as TimeFormat)}
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-48"
+              aria-label={t("settings.general.display.timeFormat")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value="system">
+                {t("settings.general.display.timeFormatSystem")}
+              </SelectItem>
+              <SelectItem value="12h">
+                {t("settings.general.display.timeFormat12")}
+              </SelectItem>
+              <SelectItem value="24h">
+                {t("settings.general.display.timeFormat24")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
         </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.language.spellCheck")}

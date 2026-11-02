@@ -45,6 +45,7 @@ from core.inference.diffusion_device import (
 from core.inference.diffusion_families import (
     krea2_raw_checkpoint,
     krea2_sd_cpp_flow_shift,
+    MOSS_IMAGE_FAMILY_NAME,
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
@@ -107,7 +108,10 @@ from core.inference.sd_cpp_server import SdCppServer
 from loggers import get_logger
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 from utils.account_context import account_thread, current_account_id
-from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs,
+    windows_loader_error_boxes_suppressed,
+)
 
 logger = get_logger(__name__)
 
@@ -440,13 +444,14 @@ def _server_binary_runnable(binary: str) -> bool:
     import subprocess
 
     try:
-        proc = subprocess.run(
-            [binary, "--help"],
-            capture_output = True,
-            timeout = 20,
-            env = runtime_env(binary),
-            **windows_hidden_subprocess_kwargs(),
-        )
+        with windows_loader_error_boxes_suppressed():
+            proc = subprocess.run(
+                [binary, "--help"],
+                capture_output = True,
+                timeout = 20,
+                env = runtime_env(binary),
+                **windows_hidden_subprocess_kwargs(),
+            )
     except OSError:
         return False  # cannot exec at all (wrong arch / no execute bit / missing loader)
     except Exception:  # noqa: BLE001 -- don't block on a flaky probe
@@ -484,16 +489,17 @@ def _sd_cpp_probe_output(binary: str, *args: str) -> Optional[str]:
     import subprocess
 
     try:
-        proc = subprocess.run(
-            [binary, *args],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 20,
-            env = runtime_env(binary),
-            **windows_hidden_subprocess_kwargs(),
-        )
+        with windows_loader_error_boxes_suppressed():
+            proc = subprocess.run(
+                [binary, *args],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 20,
+                env = runtime_env(binary),
+                **windows_hidden_subprocess_kwargs(),
+            )
     except Exception:  # noqa: BLE001 -- cannot exec / timeout: "cannot tell"
         return None
     if proc.returncode != 0:
@@ -2922,6 +2928,18 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
     return max(0.0, (total_steps - step) * per_step)
 
 
+def _request_extra_sample_args(state: Any) -> Optional[str]:
+    """Per-checkpoint ``extra_sample_args``: only MOSS-Image sends any (its negative-branch skip window)."""
+    if getattr(getattr(state, "family", None), "name", None) != MOSS_IMAGE_FAMILY_NAME:
+        return None
+    return sd_cpp_args_mod.moss_uncond_skip_sample_args(
+        getattr(state, "repo_id", None),
+        getattr(state, "display_repo_id", None),
+        getattr(state, "base_repo", None),
+        getattr(state, "gguf_filename", None),
+    )
+
+
 def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
     """The family's fixed ``--flow-shift``, except Krea 2 Raw, whose mu follows the output size."""
     if getattr(state.family, "name", None) == "krea-2" and krea2_raw_checkpoint(
@@ -4836,6 +4854,7 @@ class SdCppDiffusionBackend:
                     ],
                     qwen_image_layers = layers,
                     hires = hires_payload,
+                    extra_sample_args = _request_extra_sample_args(state),
                 )
                 try:
                     blobs = state.server.img_gen(
@@ -5145,6 +5164,9 @@ class SdCppDiffusionBackend:
         if state.sample_sigmas:
             sigmas = sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
             extra_args += ["--sigmas", ",".join(repr(float(x)) for x in sigmas)]
+        extra_sample_args = _request_extra_sample_args(state)
+        if extra_sample_args:
+            extra_args += ["--extra-sample-args", extra_sample_args]
 
         images = []
         seeds: list[int] = []
@@ -5420,6 +5442,9 @@ class SdCppDiffusionBackend:
                 "For transparent output on the native engine, raise Guidance above 1 (upstream uses 6)."
             )
         conditioning["notes"] = notes
+        lora_reason = diffusion_lora.lora_unavailable_reason(
+            engine = "sd_cpp", family = state.family.name, model_kind = "gguf", transformer_quant = None
+        )
 
         return {
             "loaded": True,
@@ -5449,12 +5474,8 @@ class SdCppDiffusionBackend:
             "transformer_cache": None,
             "resolved": state.resolved,
             "engine": "sd_cpp",
-            "supports_lora": diffusion_lora.supports_lora(
-                engine = "sd_cpp",
-                family = state.family.name,
-                model_kind = "gguf",
-                transformer_quant = None,
-            ),
+            "supports_lora": lora_reason is None,
+            "lora_unavailable_reason": lora_reason,
             "supports_controlnet": False,
             "supports_negative_prompt": state.family.name not in _EMBEDDED_GUIDANCE_FAMILIES,
             "negative_prompt_min_guidance": _negative_prompt_guidance_threshold(state.family),

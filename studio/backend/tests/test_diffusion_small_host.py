@@ -558,3 +558,203 @@ def test_small_host_fetch_only_for_an_online_unstaged_hub_load():
     assert dif._small_host_fetch(_Pipe, "org/model", kw, None, True) is None
     assert dif._small_host_fetch(_Pipe, "org/model", kw, "/staged", False) is None
     assert dif._small_host_fetch(object, "org/model", kw, None, False) is None
+
+
+def _header_only(
+    root,
+    name,
+    mib,
+    filename = "diffusion_pytorch_model.safetensors",
+):
+    sub = root / name
+    sub.mkdir(parents = True, exist_ok = True)
+    raw = json.dumps(
+        {
+            "weight": {
+                "dtype": "BF16",
+                "shape": [mib * 1024 * 1024 // 2],
+                "data_offsets": [0, mib * 1024 * 1024],
+            }
+        }
+    ).encode()
+    (sub / filename).write_bytes(struct.pack("<Q", len(raw)) + raw)
+
+
+@pytest.mark.parametrize("cached", ["configs_only", "vae_only", "one_dit_shard"])
+def test_a_partially_cached_snapshot_downloads_before_the_decision(tmp_path, monkeypatch, cached):
+    """An interrupted download leaves some weights cached; sizing them alone hides the large denoiser."""
+    from core.inference import diffusion as dif
+
+    monkeypatch.delenv(sh.DOWNLOAD_FIRST_ENV, raising = False)
+    partial, full = tmp_path / "partial", tmp_path / "full"
+    index = {
+        "_class_name": "Flux2KleinPipeline",
+        "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
+        "transformer": ["diffusers", "Flux2Transformer2DModel"],
+        "text_encoder": ["transformers", "Qwen3Model"],
+        "vae": ["diffusers", "AutoencoderKLFlux2"],
+    }
+    for root in (partial, full):
+        root.mkdir()
+        (root / "model_index.json").write_text(json.dumps(index))
+        (root / "scheduler").mkdir()
+        (root / "scheduler" / "scheduler_config.json").write_text("{}")
+    _header_only(full, "transformer", 17317)
+    _header_only(full, "text_encoder", 15623, "model.safetensors")
+    _header_only(full, "vae", 161)
+    if cached == "vae_only":
+        _header_only(partial, "vae", 161)
+    if cached == "one_dit_shard":
+        _header_only(
+            partial, "transformer", 4096, "diffusion_pytorch_model-00001-of-00005.safetensors"
+        )
+        (partial / "transformer" / "diffusion_pytorch_model.safetensors.index.json").write_text(
+            json.dumps(
+                {
+                    "weight_map": {
+                        f"w{i}": f"diffusion_pytorch_model-0000{i}-of-00005.safetensors"
+                        for i in range(1, 6)
+                    }
+                }
+            )
+        )
+    monkeypatch.setattr(dif, "host_ram_mib", lambda: (12977, 11161))
+    monkeypatch.setattr(dif, "host_commit_mib", lambda: None)
+    monkeypatch.setattr(dif, "pread_available", lambda: False)
+    monkeypatch.setattr(dif, "spill_capacity_mib", lambda: 204800)
+    calls = []
+
+    def fetch():
+        calls.append(1)
+        return str(full)
+
+    d = dif.DiffusionBackend()._small_host_decision(
+        str(partial),
+        {},
+        types.SimpleNamespace(device = "cuda"),
+        torch.float16,
+        lora_active = False,
+        fetch = fetch,
+    )
+    assert calls == [1]
+    assert d.engaged and d.int8_spill
+
+
+def test_a_complete_snapshot_with_a_supplied_component_skips_the_download(tmp_path):
+    index = {
+        "transformer": ["diffusers", "X"],
+        "vae": ["diffusers", "Y"],
+        "tokenizer": ["transformers", "T"],
+    }
+    (tmp_path / "model_index.json").write_text(json.dumps(index))
+    _header_only(tmp_path, "vae", 1)
+    (tmp_path / "tokenizer").mkdir()
+    (tmp_path / "tokenizer" / "tokenizer_config.json").write_text("{}")
+    assert sh.snapshot_weights_complete(tmp_path, skip = ("transformer",))
+    assert not sh.snapshot_weights_complete(tmp_path)
+
+
+def test_complete_fp16_twins_with_an_orphan_default_index_skip_the_download(tmp_path, monkeypatch):
+    # A cached fp16 load reads the twins: the absent default shards an orphan index lists are not owed.
+    from core.inference import diffusion as dif
+
+    monkeypatch.delenv(sh.DOWNLOAD_FIRST_ENV, raising = False)
+    index = {"transformer": ["diffusers", "X"], "vae": ["diffusers", "Y"]}
+    (tmp_path / "model_index.json").write_text(json.dumps(index))
+    _header_only(tmp_path, "transformer", 1, "diffusion_pytorch_model.fp16.safetensors")
+    _header_only(tmp_path, "vae", 1, "diffusion_pytorch_model.fp16.safetensors")
+    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "diffusion_pytorch_model-00001-of-00002.safetensors"}})
+    )
+    assert not sh.snapshot_weights_complete(tmp_path)
+    assert sh.snapshot_weights_complete(tmp_path, variant = "fp16")
+    monkeypatch.setattr(dif, "host_ram_mib", lambda: (64 * 1024, 60 * 1024))
+    monkeypatch.setattr(dif, "host_commit_mib", lambda: None)
+    monkeypatch.setattr(dif, "pread_available", lambda: False)
+    calls = []
+    dif.DiffusionBackend()._small_host_decision(
+        str(tmp_path),
+        {},
+        types.SimpleNamespace(device = "cuda"),
+        torch.float16,
+        lora_active = False,
+        fetch = lambda: calls.append(1),
+        variant = "fp16",
+    )
+    assert calls == []
+
+
+def test_twins_completed_by_a_supplied_component_skip_the_early_download(tmp_path, monkeypatch):
+    """A since-supplied component completes the twins: the early download must not fetch the default weights."""
+    import ast
+    import inspect
+
+    from core.inference import diffusion as dif
+    from core.inference import diffusion_fp16_variant as fp16
+    from core.inference.diffusion_fp16_variant import local_fp16_variant
+
+    monkeypatch.delenv(sh.DOWNLOAD_FIRST_ENV, raising = False)
+    # The fp32 pin needs diffusers importable to resolve the class; it is not what is under test.
+    monkeypatch.setattr(fp16, "_class_pins_fp32", lambda library, class_name: False)
+    index = {
+        "transformer": ["diffusers", "SD3Transformer2DModel"],
+        "text_encoder": ["transformers", "CLIPTextModel"],
+        "vae": ["diffusers", "AutoencoderKL"],
+    }
+    (tmp_path / "model_index.json").write_text(json.dumps(index))
+    _header_only(tmp_path, "transformer", 1, "diffusion_pytorch_model.fp16.safetensors")
+    _header_only(tmp_path, "text_encoder", 1, "model.fp16.safetensors")
+    _header_only(tmp_path, "vae", 1)  # default name only: no twin
+    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "diffusion_pytorch_model-00001-of-00002.safetensors"}})
+    )
+    pipe_kwargs = {"torch_dtype": torch.float16, "vae": object()}
+    assert (
+        local_fp16_variant(str(tmp_path), load_dtype = torch.float16, supplied = tuple(pipe_kwargs))
+        == "fp16"
+    )
+
+    src = inspect.getsource(dif)
+    tree = ast.parse(src)
+    call = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "attr", None) == "_small_host_decision"
+        and any(k.arg == "variant" for k in n.keywords)
+    )
+    arg = next(k.value for k in call.keywords if k.arg == "variant")
+    assert isinstance(arg, ast.Name)
+    assign = max(
+        (
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Assign)
+            and n.lineno < call.lineno
+            and any(isinstance(t, ast.Name) and t.id == arg.id for t in n.targets)
+        ),
+        key = lambda n: n.lineno,
+    )
+    env = {
+        "local_fp16_variant": local_fp16_variant,
+        "_variant_snapshot": str(tmp_path),
+        "dtype": torch.float16,
+        "pipe_kwargs": pipe_kwargs,
+        "_te_replaced": (),
+        "_fp16_variant_eligible": True,
+    }
+    variant = eval(compile(ast.Expression(assign.value), "<call site>", "eval"), env)
+    monkeypatch.setattr(dif, "host_ram_mib", lambda: (64 * 1024, 60 * 1024))
+    monkeypatch.setattr(dif, "host_commit_mib", lambda: None)
+    monkeypatch.setattr(dif, "pread_available", lambda: False)
+    calls = []
+    dif.DiffusionBackend()._small_host_decision(
+        str(tmp_path),
+        pipe_kwargs,
+        types.SimpleNamespace(device = "cuda"),
+        torch.float16,
+        lora_active = False,
+        fetch = lambda: calls.append(1),
+        variant = variant,
+    )
+    assert variant == "fp16" and calls == []

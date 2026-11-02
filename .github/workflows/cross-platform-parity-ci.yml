@@ -76,6 +76,7 @@ on:
       - 'tests/studio/test_torch_overrides_merge.ps1'
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
+      - 'tests/studio/test_rocm_triton_windows_pairing.ps1'
       - 'tests/studio/test_nvidia_library_inventory.ps1'
       - 'tests/studio/test_nvidia_smi_discovery.ps1'
       - 'tests/studio/test_nvidia_python_probe_parity.ps1'
@@ -179,6 +180,7 @@ on:
       - 'tests/studio/test_torch_overrides_merge.ps1'
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
+      - 'tests/studio/test_rocm_triton_windows_pairing.ps1'
       - 'tests/studio/test_nvidia_library_inventory.ps1'
       - 'tests/studio/test_nvidia_smi_discovery.ps1'
       - 'tests/studio/test_nvidia_python_probe_parity.ps1'
@@ -238,7 +240,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
       # The CLI import chain test_installer_profile_hardening.py pulls in; rich is imported directly
@@ -296,6 +298,13 @@ jobs:
       - name: AMD GPU-name arch table tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_amd_name_arch_r9700.ps1
+      - name: AMD ROCm triton-windows pairing tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_rocm_triton_windows_pairing.ps1
+      - name: AMD ROCm triton-windows pairing tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_rocm_triton_windows_pairing.ps1
       # The 5.1 leg compiles the P/Invoke helper with the .NET Framework compiler setup.ps1 uses.
       - name: NVIDIA driver-library inventory tests
         shell: pwsh

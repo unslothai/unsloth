@@ -13,6 +13,7 @@ import {
   UPDATE_NOTES_SURFACE_CLASS,
 } from "@/components/update/update-notes-layout";
 import { useReleaseNotes } from "@/hooks/use-release-notes";
+import { useT } from "@/i18n";
 import { resolveReleaseBodyLinks } from "@/lib/release-body-links";
 import { releaseNotesPreview } from "@/lib/release-notes-preview";
 import {
@@ -51,6 +52,7 @@ function NotesLink({
   href: string;
   isRelease: boolean;
 }): ReactElement {
+  const t = useT();
   return (
     <a
       href={href}
@@ -59,7 +61,7 @@ function NotesLink({
       className={UPDATE_NOTES_LINK_CLASS}
       data-testid="update-release-notes-link"
     >
-      {isRelease ? "Open release" : "Open changelog"}
+      {isRelease ? t("updateNotes.openRelease") : t("updateNotes.openChangelog")}
     </a>
   );
 }
@@ -69,6 +71,7 @@ export function ReleaseNotesPanel({
   open,
   releaseNotesUrl = null,
 }: ReleaseNotesPanelProps): ReactElement | null {
+  const t = useT();
   // Fetched with the popup: the collapsed preview needs the notes too.
   const { state, notes, retry } = useReleaseNotes({ version, enabled: true });
   const scrollRef = useRef<HTMLElement | null>(null);
@@ -129,7 +132,11 @@ export function ReleaseNotesPanel({
               ref={scrollRef}
               // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
               tabIndex={0}
-              aria-label={`Release notes for ${notes?.tag ?? `version ${version}`}`}
+              aria-label={
+                notes?.tag
+                  ? t("updateNotes.notesFor", { release: notes.tag })
+                  : t("updateNotes.notesForVersion", { version })
+              }
               // Long notes scroll here instead of pushing the buttons off screen.
               className={UPDATE_NOTES_EXPANDED_SCROLL_CLASS}
               data-testid="update-release-notes-scroll"
@@ -141,7 +148,7 @@ export function ReleaseNotesPanel({
               />
               {notes?.truncated ? (
                 <p className="mt-2 text-ui-10 text-muted-foreground/80">
-                  Notes truncated. See the full release notes.
+                  {t("updateNotes.notesTruncated")}
                 </p>
               ) : null}
             </section>
@@ -169,6 +176,7 @@ function ReleaseNotesSummary({
 }: {
   preview: ReturnType<typeof releaseNotesPreview> | null;
 }): ReactElement | null {
+  const t = useT();
   if (preview === null || preview.items.length === 0) {
     return null;
   }
@@ -180,7 +188,7 @@ function ReleaseNotesSummary({
       // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
       tabIndex={0}
       // Unversioned: the notes are the release's, not the offered version's.
-      aria-label="Release notes summary"
+      aria-label={t("updateNotes.summaryLabel")}
       className="hover-scrollbar min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain py-2 pr-1"
       data-testid="update-release-notes-summary"
     >
@@ -201,7 +209,7 @@ function ReleaseNotesSummary({
       ))}
       {remaining > 0 ? (
         <li className="pl-3 text-ui-10 text-muted-foreground/70">
-          +{remaining} more
+          {t("updateNotes.moreCount", { count: remaining })}
         </li>
       ) : null}
     </ul>
@@ -219,8 +227,9 @@ function NotesStatus({
   link: ReactNode;
   retry: () => void;
 }): ReactElement {
+  const t = useT();
   if (state === "loading" || state === "idle") {
-    return <NotesMessage>Loading release notes...</NotesMessage>;
+    return <NotesMessage>{t("updateNotes.loadingNotes")}</NotesMessage>;
   }
 
   if (state === "error") {
@@ -235,13 +244,13 @@ function NotesStatus({
               className={UPDATE_NOTES_LINK_CLASS}
               data-testid="update-release-notes-retry"
             >
-              Retry
+              {t("updateNotes.retry")}
             </button>
             {link}
           </span>
         }
       >
-        Could not load release notes.
+        {t("updateNotes.loadFailed")}
       </NotesMessage>
     );
   }
@@ -250,8 +259,8 @@ function NotesStatus({
   return (
     <NotesMessage action={link}>
       {release
-        ? `No release notes published for ${release} yet.`
-        : "No release notes published yet."}
+        ? t("updateNotes.noNotesFor", { release })
+        : t("updateNotes.noNotes")}
     </NotesMessage>
   );
 }

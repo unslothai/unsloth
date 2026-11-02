@@ -473,6 +473,29 @@ def _stateful_mixer_kind(module) -> Optional[str]:
     return None
 
 
+# Pool / recur over the whole row (V4 compressed entries numbered row-wide), ignoring position_ids.
+_PACKING_BOUNDARY_BLIND_MODULES = (
+    "DeepseekV4CSACompressor",
+    "DeepseekV4HCACompressor",
+    "ZayaCCAProjection",
+    "RecurrentGemmaRglru",
+)
+_PACKING_BOUNDARY_BLIND_MODEL_TYPES = ("deepseek_v4", "zaya", "recurrent_gemma")
+
+
+def packing_boundary_blocker(model, model_types = ()) -> Optional[str]:
+    modules = getattr(model, "modules", None)
+    if callable(modules) and not isinstance(model, str):
+        for module in modules():
+            name = type(module).__name__
+            if name in _PACKING_BOUNDARY_BLIND_MODULES:
+                return name
+    for model_type in model_types or ():
+        if model_type in _PACKING_BOUNDARY_BLIND_MODEL_TYPES:
+            return model_type
+    return None
+
+
 def _iter_stateful_mixers(model):
     """(module, kind) for every stateful mixer, outermost first; submodules of a gated-delta
     mixer (its own short convs) are owned by that mixer's shim."""
@@ -2146,4 +2169,5 @@ __all__ = [
     "mask_packed_sequence_boundaries",
     "mask_packed_boundary_labels",
     "clear_packed_caches",
+    "packing_boundary_blocker",
 ]

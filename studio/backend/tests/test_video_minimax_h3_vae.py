@@ -1313,3 +1313,91 @@ def test_the_h3_load_reserves_the_fused_decoder_before_the_speed_optims():
     for kw in ("speed_mode", "workflow"):
         got = {k.arg: ast.dump(k.value) for k in reserve.keywords}[kw]
         assert got == {k.arg: ast.dump(k.value) for k in apply_vae.keywords}[kw]
+
+
+def _rotated_bf16_linear(
+    k = 1024,
+    n = 512,
+    device = "cpu",
+):
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(k, n).to(device = device, dtype = torch.bfloat16)
+    ref = copy.deepcopy(lin)
+    holder = torch.nn.Module()
+    holder.transformer_blocks = torch.nn.ModuleList([torch.nn.ModuleDict({"l": lin})])
+    assert H._install_int8_decoder(types.SimpleNamespace(decoder = holder), keep_blocks = ()) > 0
+    assert lin._unsloth_rot.shape[0] == H.H3_VAE_INT8_ROT_GROUP
+    return lin, ref
+
+
+def test_the_fused_int8_path_hands_the_rotation_group_and_operands_to_the_dit_kernels(monkeypatch):
+    from core.inference import diffusion_convrot_quant as cq
+    from core.inference import diffusion_int8_gemm as gemm
+
+    lin, _ = _rotated_bf16_linear()
+    seen = {}
+
+    def act_quant(x2d, group, v2):
+        seen["quant"] = (tuple(x2d.shape), group, v2)
+        return torch.zeros(x2d.shape, dtype = torch.int8), torch.ones(x2d.shape[0])
+
+    def op(xq, wq, xs, ws, bias):
+        seen["gemm"] = (wq is lin._unsloth_wq, ws.dtype, bias is lin.bias, tuple(xs.shape))
+        return torch.full((xq.shape[0], wq.shape[0]), 2.0, dtype = torch.bfloat16)
+
+    monkeypatch.setattr(cq, "convrot_act_quant", act_quant)
+    monkeypatch.setattr(gemm, "_op", lambda: op)
+    monkeypatch.setitem(H._FUSED_DEVICES, None, True)
+    x = torch.randn(2, 20, 1024, dtype = torch.bfloat16)
+    wq, ws = lin._unsloth_int8
+    out = H._fused_int8_linear(lin, x.reshape(-1, 1024), wq, ws, torch.bfloat16, 256)
+    assert out is not None and out.shape == (40, 512) and bool((out == 2).all())
+    assert seen["quant"] == ((40, 1024), 256, True)
+    assert seen["gemm"] == (True, torch.float32, True, (40,))
+
+
+@pytest.mark.parametrize("case", ["fp16_out", "fp16_in", "not_probed", "fp32_bias", "ragged_k"])
+def test_the_fused_int8_path_declines_what_the_dit_kernels_do_not_cover(monkeypatch, case):
+    lin, _ = _rotated_bf16_linear()
+    wq, ws = lin._unsloth_int8
+    x2 = torch.randn(40, 1024, dtype = torch.bfloat16)
+    out_dtype = torch.bfloat16
+    monkeypatch.setitem(H._FUSED_DEVICES, None, case != "not_probed")
+    if case == "fp16_out":
+        out_dtype = torch.float16
+    elif case == "fp16_in":
+        x2 = x2.half()
+    elif case == "fp32_bias":
+        lin.bias = torch.nn.Parameter(lin.bias.float())
+    elif case == "ragged_k":
+        x2 = x2[:, :1000]
+    assert H._fused_int8_linear(lin, x2, wq, ws, out_dtype, 256) is None
+
+
+def test_the_fused_int8_kill_switch_keeps_the_unfused_path(monkeypatch):
+    monkeypatch.setenv(H.H3_VAE_INT8_FUSED_ENV, "0")
+    monkeypatch.delitem(H._FUSED_DEVICES, 7, raising = False)
+    assert H._fused_int8_ready(7) is False
+    assert 7 not in H._FUSED_DEVICES  # the switch is read per call, never cached
+
+
+@needs_cuda
+def test_the_fused_int8_path_matches_the_unfused_int8_path_on_cuda(monkeypatch):
+    from core.inference import diffusion_int8_gemm as gemm
+
+    lin, ref = _rotated_bf16_linear(k = 2048, n = 1024, device = "cuda")
+    x = torch.randn(4, 1024, 2048, device = "cuda", dtype = torch.bfloat16)
+    x[..., :8] *= 30  # outlier channels: what the rotation is for
+    with torch.no_grad():
+        dense = ref(x).float()
+        monkeypatch.setenv(H.H3_VAE_INT8_FUSED_ENV, "0")
+        unfused = lin(x).float()
+        monkeypatch.delenv(H.H3_VAE_INT8_FUSED_ENV)
+        if not H._fused_int8_ready(torch.cuda.current_device()):
+            pytest.skip("the DiT's ConvRot act quant / fused GEMM is not armed on this card")
+        calls = gemm.call_count()
+        fused = lin(x).float()
+    assert gemm.call_count() > calls, "the fused-dequant GEMM did not run"
+    rel = lambda a, b: float((a - b).norm() / b.norm())  # noqa: E731
+    assert rel(unfused, dense) < 0.02 and rel(fused, dense) < 0.02
+    assert rel(fused, unfused) < 0.01

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import itertools
 import json
 import re
 
@@ -200,6 +201,8 @@ _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 _GEMMA_QUOTE = '<|"|>'
 _PARAM_CLOSE_TAG = "</parameter>"
 _FUNC_CLOSE_TAG = "</function>"
+_WRAP_OPEN_RE = re.compile(r"<tool_call>\s*$")
+_WRAP_CLOSE_RE = re.compile(r"\s*</tool_call>")
 # A comma not followed by a key token is part of a bare Gemma value (New York, NY).
 _GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w.\-]*\s*:")
 
@@ -229,6 +232,77 @@ _CODE_SPAN_RE = re.compile(
     r"|``(?:[^`]|`(?!`))*?``|`[^`\n]*`",
     re.DOTALL | re.MULTILINE,
 )
+
+# A single tool tag (and at most a name) alone in an inline code span (`<tool_call>`, `[TOOL_CALLS]name`) names the
+# format: no call body fits inside. No lookahead past the closing run, so append-only growth never revokes a match.
+# Runs of three or more are fences; reasoning tags decide the think segmentation, not a call.
+_TAG_MENTION_RE = re.compile(
+    r"(?<!`)(``?)[ \t]*("
+    r"<(?!/?think(?:ing)?>)[^<>`\n]+>[\w.\-]*"
+    r"|\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\][\w.\-]*"
+    r")[ \t]*\1"
+)
+# Any tag still pairs its backticks above, but only tool-call families are returned: masking `<div>` changes no strip
+# output. A match never crosses a newline, so pairing restarts per line and only lines holding a tool tag are scanned.
+_TOOL_TAG_PREFIXES = (
+    "<tool",
+    "</tool",
+    "<function",
+    "</function",
+    "<param",
+    "</param",
+    "<arg_",
+    "</arg_",
+    "<minimax:",
+    "</minimax:",
+    "<|",
+    "<｜",
+    "[",
+)
+_TOOL_TAG_HINT_RE = re.compile(
+    r"</?(?:tool|function|param|arg_|minimax:)|<[|｜]|\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\]"
+)
+
+
+def tag_mention_spans(text: str) -> list[tuple[int, int]]:
+    """Ordered spans of the tag inside each lone-tag inline code span (backticks excluded)."""
+    if "`" not in text:
+        return []
+    spans = []
+    line_end = 0
+    for hint in _TOOL_TAG_HINT_RE.finditer(text):
+        if hint.start() < line_end:
+            continue
+        line_start = text.rfind("\n", 0, hint.start()) + 1
+        line_end = text.find("\n", hint.end())
+        if line_end < 0:
+            line_end = len(text)
+        spans.extend(
+            m.span(2)
+            for m in _TAG_MENTION_RE.finditer(text, line_start, line_end)
+            if m.group(2).startswith(_TOOL_TAG_PREFIXES)
+        )
+    if not spans:
+        return spans
+    # One inside a real call (found with the mentions blanked, so none reads as an opener) is that call's data:
+    # masking it would let the call's strip swallow a mask and drop every mention's protection.
+    parts, prev = [], 0
+    for start, end in spans:
+        parts.append(text[prev:start])
+        parts.append(" " * (end - start))
+        prev = end
+    parts.append(text[prev:])
+    calls = _tool_call_markup_spans("".join(parts))
+    if not calls:
+        return spans
+    return [s for s in spans if not any(cs <= s[0] < ce for cs, ce in calls)]
+
+
+def in_tag_mention(spans, pos: int) -> bool:
+    """Whether ``pos`` falls in one of ``tag_mention_spans`` (a span may start at ``pos``)."""
+    i = bisect.bisect_right(spans, (pos, float("inf"))) - 1
+    return i >= 0 and spans[i][0] <= pos < spans[i][1]
+
 
 # Above this size skip the balanced scan; the linear regex catch-all bounds pathological output.
 _MAX_BRACKET_SCAN_CHARS = 1_000_000
@@ -667,11 +741,100 @@ def _inside_open_parameter(
     return True
 
 
-def _func_close_index(content: str, body_start: int, body: str) -> int:
+# A few direct scans beat building an index on the per-token streaming strip; past them the index wins.
+_OPEN_PARAMETER_SCAN_LIMIT = 16
+
+
+class _OpenParameterIndex:
+    """``_inside_open_parameter`` for many offsets of one text by bisecting sorted tag offsets (per-call
+    scans were quadratic). Valid only for ``<parameter``/``<param`` openers, as the reverse search is."""
+
+    __slots__ = (
+        "_content",
+        "_param_start_re",
+        "_param_closer_tags",
+        "_func_closer_tags",
+        "_scans",
+        "_param_starts",
+        "_param_ends",
+        "_param_closers",
+        "_func_closers",
+    )
+
+    def __init__(
+        self,
+        content: str,
+        *,
+        param_start_re = None,
+        param_closers = (_PARAM_CLOSE_TAG,),
+        func_closers = (_FUNC_CLOSE_TAG,),
+    ):
+        self._content = content
+        self._param_start_re = _TC_PARAM_START_RE if param_start_re is None else param_start_re
+        self._param_closer_tags = param_closers
+        self._func_closer_tags = func_closers
+        self._scans = 0
+        self._param_starts = None
+
+    def _build(self) -> None:
+        content = self._content
+        starts = [m.start() for m in self._param_start_re.finditer(content)]
+        self._param_starts = starts
+        # Bounded at the tag's own ">", as the helper's endpos-limited match is.
+        self._param_ends = [content.index(">", start) + 1 for start in starts]
+        self._param_closers = self._positions(content, self._param_closer_tags)
+        self._func_closers = self._positions(content, self._func_closer_tags)
+
+    @staticmethod
+    def _positions(content: str, tags) -> list[int]:
+        found: list[int] = []
+        for tag in tags:
+            at = content.find(tag)
+            while at >= 0:
+                found.append(at)
+                at = content.find(tag, at + 1)
+        return sorted(found)
+
+    def inside(self, pos: int) -> bool:
+        if self._param_starts is None:
+            if self._scans < _OPEN_PARAMETER_SCAN_LIMIT:
+                self._scans += 1
+                return _inside_open_parameter(
+                    self._content,
+                    pos,
+                    param_start_re = self._param_start_re,
+                    param_closers = self._param_closer_tags,
+                    func_closers = self._func_closer_tags,
+                )
+            self._build()
+        idx = bisect.bisect_right(self._param_ends, pos) - 1
+        if idx < 0:
+            return False
+        last = self._param_starts[idx]
+        closers = self._param_closers
+        i = bisect.bisect_left(closers, last)
+        if i < len(closers) and closers[i] <= pos:
+            return False
+        if closers and closers[-1] > pos:
+            return True
+        closers = self._func_closers
+        i = bisect.bisect_left(closers, last)
+        return not (i < len(closers) and closers[i] <= pos)
+
+
+def _func_close_index(
+    content: str,
+    body_start: int,
+    body: str,
+    *,
+    inside = None,
+) -> int:
     """First close outside a parameter value; taking the last one swallowed prose after the real close."""
+    if inside is None:
+        inside = lambda pos: _inside_open_parameter(content, pos)  # noqa: E731
     idx = body.find(_FUNC_CLOSE_TAG)
     while idx >= 0:
-        if not _inside_open_parameter(content, body_start + idx):
+        if not inside(body_start + idx):
             return idx
         idx = body.find(_FUNC_CLOSE_TAG, idx + 1)
     return -1
@@ -686,6 +849,17 @@ def _trim_param_value(val: str) -> str:
     if val.endswith("\n"):
         val = val[:-1]
     return val
+
+
+def _json_object_body(body: str) -> dict | None:
+    """Arguments of a Hermes/XML mix ``<function=NAME>{json}</function>``; a heal, so Auto-Heal only."""
+    if not body.lstrip().startswith("{"):
+        return None
+    try:
+        value = json.loads(body)
+    except (ValueError, RecursionError):
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def _marker_coverage(content: str, markers) -> list[tuple[int, int]]:
@@ -748,8 +922,9 @@ def _build_markers(content: str):
     many_candidates = len(candidates) > 1
     has_parameter = "<parameter=" in content if many_candidates else True
     last_brace = content.rfind("}") if many_candidates else None
+    inside = _OpenParameterIndex(content).inside
     for m, gemma, kind in candidates:
-        if has_parameter and _inside_open_parameter(content, m.start()):
+        if has_parameter and inside(m.start()):
             continue
         brace_start = m.end() - 1
         brace_end = (
@@ -768,6 +943,79 @@ def marker_coverage(content: str) -> list[tuple[int, int]]:
     inside a marker's coverage (even a marker that failed to parse) as that call's
     data rather than a sibling call."""
     return _marker_coverage(content, _build_markers(content))
+
+
+def _is_strict_json(text: str) -> bool:
+    try:
+        json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    return True
+
+
+def _glued_call_objects(content: str, pos: int, end: int):
+    """Call objects glued after a parsed one inside the same ``<tool_call>``, up to its paired close at
+    ``end``: ``[(start, name, arguments_json)]``, or None unless every object between is a strict
+    ``{"name": .., "arguments"|"parameters": {..}}`` and only whitespace separates them and the close.
+    Braces are matched outside JSON strings, so a ``}{`` or closing tag inside an argument never splits
+    a call; the window is this marker's own coverage, so the scan stays linear."""
+    close_m = _TC_END_TAG_RE.search(content, pos, end)
+    if close_m is None or close_m.end() != end:
+        return None
+    window = content[pos : close_m.start()]
+    out = []
+    i = 0
+    n = len(window)
+    while True:
+        while i < n and window[i] in " \t\r\n":
+            i += 1
+        if i >= n:
+            break
+        if window[i] != "{":
+            return None
+        obj_end = _balanced_brace_end(window, i)
+        if obj_end is None:
+            return None
+        try:
+            obj = json.loads(window[i : obj_end + 1])
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(obj, dict):
+            return None
+        g_name = obj.get("name")
+        g_args = obj.get("arguments") if "arguments" in obj else obj.get("parameters")
+        if not isinstance(g_name, str) or not g_name or not isinstance(g_args, dict):
+            return None
+        out.append((pos + i, g_name, json.dumps(g_args)))
+        i = obj_end + 1
+    return out or None
+
+
+def _relaxed_allowed_at(content: str, pos: int) -> bool:
+    from core.inference.relaxed_json import relaxed_allowed_at  # noqa: PLC0415 -- cycle at import time
+    return relaxed_allowed_at(content, pos)
+
+
+def _relaxed_object_end(content: str, start: int):
+    from core.inference.relaxed_json import relaxed_object_end  # noqa: PLC0415 -- cycle at import time
+    return relaxed_object_end(content, start)
+
+
+def _loads_wrapped_call(text: str, *, relaxed: bool = True) -> dict:
+    """A wrapped call's JSON object; near-JSON a model sampled (single quotes, a trailing comma, True/None,
+    unquoted keys) is read only after strict JSON fails and only when healing is on. Raises ValueError
+    when neither reads an object."""
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        if not relaxed:
+            raise
+        from core.inference.relaxed_json import relaxed_json_object  # noqa: PLC0415 -- failure path only
+
+        obj = relaxed_json_object(text)
+        if obj is None:
+            raise
+        return obj
 
 
 def parse_tool_calls_from_text(
@@ -806,11 +1054,25 @@ def parse_tool_calls_from_text(
     ]
     coverage = _marker_coverage(content, markers)
     covered_until = -1
+    relaxed = allow_incomplete
     for idx, (start, brace_end, kind, m) in enumerate(markers):
         covered_by_earlier_marker = start < covered_until
         covered_until = max(covered_until, coverage[idx][1])
         if covered_by_earlier_marker:
             continue
+        relaxed_end = None
+        if relaxed and kind == "json" and not _relaxed_allowed_at(content, m.end() - 1):
+            relaxed = False
+        if relaxed and kind == "json":
+            # JSON brace matching ends a single-quoted argument at a brace inside it; markers in that
+            # argument are data. An object that never closes this way leaves the rest strict.
+            relaxed_end = _relaxed_object_end(content, m.end() - 1)
+            if relaxed_end is None:
+                relaxed = False
+            elif relaxed_end != brace_end:
+                brace_end = relaxed_end
+            else:
+                relaxed_end = None
         if brace_end < 0:
             continue
         if not allow_incomplete:
@@ -820,7 +1082,14 @@ def parse_tool_calls_from_text(
                 continue
         try:
             if kind == "json":
-                obj = json.loads(content[m.end() - 1 : brace_end + 1])
+                try:
+                    obj = _loads_wrapped_call(content[m.end() - 1 : brace_end + 1], relaxed = relaxed)
+                except ValueError:
+                    if relaxed_end is not None:
+                        relaxed = False
+                    raise
+                if relaxed_end is not None:
+                    covered_until = max(covered_until, relaxed_end + 1)
                 name = obj.get("name", "")
                 # Accept "parameters" (Llama-3.2) and "args" (TML Inkling) as aliases.
                 arguments = obj.get("arguments")
@@ -848,28 +1117,57 @@ def parse_tool_calls_from_text(
         close_m = close_re.match(content, span_end + ws)
         if close_m:
             span_end = close_m.end()
+        glued = None
+        if (
+            allow_incomplete
+            and kind == "json"
+            and close_m is None
+            and name
+            and _is_strict_json(content[m.end() - 1 : brace_end + 1])
+        ):
+            glued = _glued_call_objects(content, span_end, coverage[idx][1])
+        if glued:
+            # Heal: several call objects glued inside one closed tag; the spans tile up to the close.
+            parsed_items.append((start, glued[0][0], name, arguments))
+            for g_idx, (g_start, g_name, g_args) in enumerate(glued):
+                g_end = glued[g_idx + 1][0] if g_idx + 1 < len(glued) else coverage[idx][1]
+                parsed_items.append((g_start, g_end, g_name, g_args))
+            continue
         parsed_items.append((start, span_end, name, arguments))
 
+    inside = _OpenParameterIndex(content).inside
+    # Coverage is start-sorted: a running max of ends answers each opener by bisect.
+    coverage_starts = [s for s, _e in coverage]
+    coverage_max_ends = list(itertools.accumulate((e for _s, e in coverage), max))
+
+    def _covered(pos: int) -> bool:
+        i = bisect.bisect_right(coverage_starts, pos) - 1
+        return i >= 0 and pos < coverage_max_ends[i]
+
+    mention_spans = tag_mention_spans(content) if "<function" in content else []
     func_starts = [
         fm
         for fm in _TC_FUNC_START_RE.finditer(content)
-        if not _inside_open_parameter(content, fm.start())
+        if not inside(fm.start())
+        # `<function=NAME>` alone in backticks names the format; the display keeps it, so it must not run.
+        and not in_tag_mention(mention_spans, fm.start())
         and not _in_think(fm.start())
         and not _in_blocked(fm.start())
-        and not any(s <= fm.start() < e for s, e in coverage)
+        and not _covered(fm.start())
     ]
     for idx, fm in enumerate(func_starts):
         func_name = fm.group(1)
         body_start = fm.end()
         next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
-        end_tag = _TC_END_TAG_RE.search(content[body_start:])
+        # Bounded at the next opener, where body_end is capped anyway.
+        end_tag = _TC_END_TAG_RE.search(content, body_start, next_func)
         if end_tag:
-            body_end = body_start + end_tag.start()
+            body_end = end_tag.start()
         else:
             body_end = len(content)
         body_end = min(body_end, next_func)
         body = content[body_start:body_end]
-        close_idx = _func_close_index(content, body_start, body)
+        close_idx = _func_close_index(content, body_start, body, inside = inside)
         if close_idx >= 0:
             span_end = body_start + close_idx + len(_FUNC_CLOSE_TAG)
             body = body[:close_idx]
@@ -915,13 +1213,18 @@ def parse_tool_calls_from_text(
                 arguments[param_name] = _trim_param_value(val)
             if not valid_params:
                 continue
+        if allow_incomplete and not param_starts:
+            arguments = _json_object_body(body) or arguments
 
         span_start = fm.start()
-        wrap_open = re.search(r"<tool_call>\s*$", content[:span_start])
-        wrap_close = re.match(r"\s*</tool_call>", content[span_end:])
+        ws_start = span_start
+        while ws_start > 0 and content[ws_start - 1].isspace():
+            ws_start -= 1
+        wrap_open = _WRAP_OPEN_RE.search(content, max(0, ws_start - len("<tool_call>")), span_start)
+        wrap_close = _WRAP_CLOSE_RE.match(content, span_end)
         if wrap_open and wrap_close:
             span_start = wrap_open.start()
-            span_end += wrap_close.end()
+            span_end = wrap_close.end()
         parsed_items.append((span_start, span_end, func_name, json.dumps(arguments)))
 
     parsed_items.sort(key = lambda item: item[0])
@@ -1040,6 +1343,10 @@ def _tool_call_markup_spans(text: str) -> list[tuple[int, int]]:
             continue
         spans.extend(m.span() for m in pat.finditer(text, 0, scan_end))
     spans.extend((start, end) for start, end, _kind, _m in _iter_bracket_spans(text))
+    if "<minimax:tool_call>" in text:
+        # Parameter-aware block bounds, so a quoted closer cannot end the span; lazy, as that module imports this one.
+        from core.inference.tool_call_parser import _minimax_block_spans
+        spans.extend((start, end) for start, end, _closed in _minimax_block_spans(text))
     # An unclosed opener is a real incomplete call only outside closed/bracket spans.
     for pat in _TOOL_OPEN_XML_TAIL_PATS:
         for m in pat.finditer(text):
@@ -1070,7 +1377,20 @@ def _think_spans_outside_tool_markup(text: str) -> list[tuple[int, int]]:
         return think_spans
     if not call_spans:
         return think_spans
-    return [(s, e) for (s, e) in think_spans if not any(cs <= s < ce for cs, ce in call_spans)]
+    # Merged and bisected: a pairwise scan is quadratic on long output.
+    merged: list[list[int]] = []
+    for cs, ce in sorted(call_spans):
+        if merged and cs <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], ce)
+        else:
+            merged.append([cs, ce])
+    starts = [cs for cs, _ in merged]
+    kept = []
+    for s, e in think_spans:
+        i = bisect.bisect_right(starts, s) - 1
+        if i < 0 or s >= merged[i][1]:
+            kept.append((s, e))
+    return kept
 
 
 def strip_outside_think(text: str, strip_segment) -> str:
