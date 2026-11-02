@@ -20,17 +20,13 @@ import {
   bundledLanguagesInfo,
 } from "shiki/langs";
 
-// The only themes ever named: the defaults below, and Streamdown's own default (tool cells and
-// previews that pass no theme). Every other caller passes a theme object, which needs no entry.
-// shiki's full themes map is one lazy chunk per bundled theme, none of them reachable.
+// Keep named themes limited to Studio and Streamdown defaults; other callers pass objects.
 type NamedTheme = "github-light" | "github-dark";
 const NAMED_THEMES = {
   "github-light": () => import("@shikijs/themes/github-light"),
   "github-dark": () => import("@shikijs/themes/github-dark"),
 };
 
-// shiki's own createHighlighter, minus its default Oniguruma engine: every call below passes the
-// JavaScript engine, so the WASM engine never ran and only cost startup bytes.
 const createHighlighter = createBundledHighlighter<
   BundledLanguage,
   NamedTheme
@@ -82,32 +78,20 @@ const SUPPORTED_LANGUAGE_LIST = Array.from(
 ) as BundledLanguage[];
 const PLAIN_TEXT = "text" as BundledLanguage;
 
-/** Exported so per-grammar caches key on the same identity as `highlight`. */
 export const normalizeLanguage = (language: string): BundledLanguage => {
   const key = language.trim().toLowerCase();
   const alias = LANGUAGE_ALIAS_OVERRIDES[key] ?? SHIKI_LANGUAGE_ALIASES[key];
   return alias ?? (key as BundledLanguage);
 };
 
-// Past this size, cache completed lines and grammar state so a streaming fence tokenizes only new text.
 export const MIN_INCREMENTAL_CHARS = 2000;
 const REFRESH_MS = 250;
 const REFRESH_SLICE_MS = 8;
-// Shiki's own tokenizer guard is a wall clock: a line that takes longer than `tokenizeTimeLimit`
-// (default 500 ms) is abandoned part-way and the rest of it is emitted as one uncoloured token.
-// Dual themes are two passes with two separate budgets, and only the first pays to compile the
-// grammar's regexes, so a loaded machine drops the light theme to plain and keeps the dark one
-// correct -- for the same line, in the same result. Committed lines are never re-tokenized, so that
-// half-plain line is then cached for the life of the fence. Bound the work by line length instead:
-// same protection against a minified blob (~120 ms at this length, growing quadratically past it,
-// which is VS Code's `editor.maxTokenizationLineLength` default for the same reason), but the
-// output depends on the source rather than on the host.
+// A wall-clock limit can cache a half-plain theme; bound line length for deterministic dual-theme output.
 export const TOKENIZE_LIMITS = {
   tokenizeTimeLimit: 0,
   tokenizeMaxLineLength: 20_000,
 } as const;
-// An unvirtualized thread mounts every fence. Bound both their count and source
-// size; token data measured roughly 30 bytes per source character.
 export const MAX_FENCES = 512;
 export const MAX_CACHED_CHARACTERS = 512_000;
 
@@ -175,9 +159,6 @@ const shiftLine = (line: TokenLine, offset: number): TokenLine =>
   offset === 0
     ? line
     : line.map((token) => ({ ...token, offset: token.offset + offset }));
-
-// Adjacent-token coalescing measured zero (dual tokens 537013 -> merged 537013); Shiki already
-// coalesces. Reproduce with scripts/coal-span-census.mjs.
 
 // Markdown reports a closing fence as body until it recognizes it, so that line (possibly
 // a partial run) is all a fence can lose.
@@ -337,7 +318,6 @@ export function createCodePlugin(
     return anchor && reaches ? Math.min(anchor.length, code.length) : -1;
   };
 
-  /** The fence whose cached code reaches furthest into `code`. */
   const findFence = (key: string, code: string): Fence => {
     const exact = fencesByCode.get(codeKey(key, code));
     if (exact && exact.code === code) return promote(exact);

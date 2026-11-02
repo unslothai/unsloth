@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The highlighter registers only the theme names Studio passes; shiki's full map emitted one
- * unreachable lazy chunk per bundled theme. A newly named theme must be added to the map.
- */
+
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";

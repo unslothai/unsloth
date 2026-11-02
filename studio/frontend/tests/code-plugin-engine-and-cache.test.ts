@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The desktop CSP forbids WASM, so shiki must use the JS regex engine; also exercises the
- * character-budget eviction branch, unreachable from other fixtures.
- */
+
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -51,12 +48,9 @@ test("the highlighter uses the JavaScript regex engine, not the WASM one", () =>
   );
 });
 
-// A value import from "shiki" pulls its full bundle, whose factory carries the WASM engine.
 const RUNTIME_SHIKI_IMPORT = /^import\s+(?!type\b)[^;]*?\bfrom\s+"shiki";/m;
 
 test("the highlighter factory is built without shiki's default WASM engine", () => {
-  // The plugin always passes its own engine, so shiki's bundled Oniguruma factory only added
-  // startup bytes.
   assert.ok(
     !RUNTIME_SHIKI_IMPORT.test(PLUGIN_SOURCE),
     'code-plugin must take only types from "shiki"; build the factory from shiki/core',
