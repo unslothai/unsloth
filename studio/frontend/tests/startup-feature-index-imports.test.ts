@@ -5,7 +5,7 @@
 // startup bundle, so these indexes must stay out of main.tsx's static import graph.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, normalize, relative } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -31,7 +31,7 @@ function resolveSource(fromFile: string, specifier: string): string | null {
   else if (specifier.startsWith(".")) base = join(dirname(fromFile), specifier);
   else return null;
   for (const suffix of ["", ".ts", ".tsx", "/index.ts", "/index.tsx"]) {
-    const candidate = base + suffix;
+    const candidate = normalize(base + suffix);
     if (/\.(ts|tsx)$/.test(candidate) && existsSync(candidate)) return candidate;
   }
   return null;
@@ -61,6 +61,13 @@ function chain(parent: Map<string, string>, file: string): string {
   }
   return steps.join(" <- ");
 }
+
+test("directory imports use the same path spelling as graph boundaries", () => {
+  assert.equal(
+    resolveSource(join(SRC, "main.tsx"), "@/features/settings"),
+    join(SRC, "features/settings/index.ts"),
+  );
+});
 
 test("startup code imports lazy features' modules, not their indexes", () => {
   const parent = startupGraph();

@@ -54,7 +54,6 @@ function useMarkdownPreview(): {
 } {
   const [Preview, setPreview] = useState(() => loadedMarkdownPreview);
   const [failed, setFailed] = useState(false);
-  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (Preview || failed) return;
     let live = true;
@@ -69,10 +68,9 @@ function useMarkdownPreview(): {
     return () => {
       live = false;
     };
-  }, [Preview, failed, attempt]);
+  }, [Preview, failed]);
   const retry = useCallback(() => {
-    setFailed(false);
-    setAttempt((n) => n + 1);
+    window.location.reload();
   }, []);
   return { Preview, failed, retry };
 }
@@ -208,6 +206,7 @@ export function ReleaseNotesPanel({
                   release={notes?.tag ?? null}
                   link={link}
                   retry={renderer.retry}
+                  retryLabel={t("settings.dialog.panelReload")}
                 />
               )}
               {notes?.truncated ? (
@@ -285,11 +284,13 @@ function NotesStatus({
   release,
   link,
   retry,
+  retryLabel,
 }: {
   state: ReturnType<typeof useReleaseNotes>["state"];
   release: string | null;
   link: ReactNode;
   retry: () => void;
+  retryLabel?: string;
 }): ReactElement {
   const t = useT();
   if (state === "loading" || state === "idle") {
@@ -308,7 +309,7 @@ function NotesStatus({
               className={UPDATE_NOTES_LINK_CLASS}
               data-testid="update-release-notes-retry"
             >
-              {t("updateNotes.retry")}
+              {retryLabel ?? t("updateNotes.retry")}
             </button>
             {link}
           </span>
