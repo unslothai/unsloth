@@ -553,8 +553,10 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
 
     from auth.policy import installation_is_multi_user
 
-    # Until the owner replaces the unseen seeded password, only the shell can sign them in.
-    if installation_is_multi_user() and not storage.requires_password_change(username):
+    # Older shells cannot preserve managed sessions when the backend updates on its own.
+    if installation_is_multi_user() and (
+        not payload.seeded_owner_login or not storage.requires_password_change(username)
+    ):
         return Response(
             content = '{"login_required":true,"login_mode":"multi"}',
             media_type = "application/json",

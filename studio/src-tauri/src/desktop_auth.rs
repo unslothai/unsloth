@@ -58,6 +58,7 @@ pub enum MultiLoginMode {
 #[derive(Debug, Serialize, Deserialize)]
 struct DesktopAuthRequest {
     secret: String,
+    seeded_owner_login: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -271,6 +272,7 @@ async fn exchange_desktop_secret(
         .post(auth_url(port, "desktop-login"))
         .json(&DesktopAuthRequest {
             secret: secret.to_string(),
+            seeded_owner_login: true,
         })
         .send()
         .await
@@ -479,6 +481,60 @@ mod tests {
         });
 
         port
+    }
+
+    #[tokio::test]
+    async fn desktop_login_advertises_seeded_owner_support_over_http() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let captured = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            let (body_start, content_length) = loop {
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "request ended before its headers");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                    let headers = std::str::from_utf8(&request[..end]).unwrap();
+                    assert!(headers.starts_with("POST /api/auth/desktop-login HTTP/1.1\r\n"));
+                    let length = headers
+                        .lines()
+                        .filter_map(|line| line.split_once(':'))
+                        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                        .unwrap()
+                        .1
+                        .trim()
+                        .parse::<usize>()
+                        .unwrap();
+                    break (end + 4, length);
+                }
+            };
+            while request.len() < body_start + content_length {
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "request ended before its body");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let payload: serde_json::Value =
+                serde_json::from_slice(&request[body_start..body_start + content_length]).unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            payload
+        });
+
+        let response =
+            exchange_desktop_secret(&desktop_auth_client().unwrap(), port, "desktop-secret")
+                .await
+                .unwrap();
+        assert!(response.is_none());
+        assert_eq!(
+            captured.await.unwrap(),
+            serde_json::json!({"secret": "desktop-secret", "seeded_owner_login": true})
+        );
     }
 
     #[tokio::test]

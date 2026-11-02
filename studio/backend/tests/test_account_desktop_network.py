@@ -136,7 +136,9 @@ def test_desktop_multi_signs_the_owner_in_while_the_bootstrap_password_stands():
     add_managed()
     assert policy.installation_is_multi_user()
     with client() as http:
-        response = http.post("/api/auth/desktop-login", json = {"secret": raw})
+        response = http.post(
+            "/api/auth/desktop-login", json = {"secret": raw, "seeded_owner_login": True}
+        )
         assert response.status_code == 200
         tokens = response.json()
         assert tokens["account_id"] == "owner" and tokens["must_change_password"] is False
@@ -150,12 +152,29 @@ def test_desktop_multi_asks_for_a_login_once_the_owner_sets_a_password():
     raw = storage.create_desktop_secret()
     add_managed()
     with client() as http:
-        assert "access_token" in http.post("/api/auth/desktop-login", json = {"secret": raw}).json()
+        assert (
+            "access_token"
+            in http.post(
+                "/api/auth/desktop-login", json = {"secret": raw, "seeded_owner_login": True}
+            ).json()
+        )
         assert storage.update_password(
             storage.DEFAULT_ADMIN_USERNAME, "chosen-password", preserve_desktop_secret = True
         )
-        response = http.post("/api/auth/desktop-login", json = {"secret": raw})
+        response = http.post(
+            "/api/auth/desktop-login", json = {"secret": raw, "seeded_owner_login": True}
+        )
         assert response.json() == {"login_required": True, "login_mode": "multi"}
+
+
+def test_legacy_desktop_keeps_multi_login_required_with_a_seeded_owner():
+    seed_owner_on_bootstrap_password()
+    raw = storage.create_desktop_secret()
+    add_managed()
+    with client() as http:
+        for payload in ({"secret": raw}, {"secret": raw, "seeded_owner_login": False}):
+            response = http.post("/api/auth/desktop-login", json = payload)
+            assert response.content == b'{"login_required":true,"login_mode":"multi"}'
 
 
 @pytest.mark.parametrize("desktop", [False, True])
