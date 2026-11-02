@@ -10,7 +10,6 @@ export const TestTubeOutlineIcon = TestTube01Icon.slice(
   3,
 ) as typeof TestTube01Icon;
 
-// BubbleChatIcon's first path alone: an empty speech bubble.
 export const MessageCircleIcon = BubbleChatIcon.slice(
   0,
   1,
@@ -95,7 +94,7 @@ export const ShieldCheckIcon: IconSvgElement = [
   ["path", { d: "M8.15 12.3L10.075 14.225L15.85 8.175", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "1" }]
 ];
 
-// Hugeicons 4.1.1 drawings, kept over their 4.4.0 redraws.
+// 4.1.1 drawings; 4.4.0 redrew them.
 export const AiImageIcon: IconSvgElement = [
   ["circle", { cx: "7", cy: "8", r: "1.5", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "0" }],
   ["path", { d: "M20.9977 11C21 11.4701 21 11.9693 21 12.5C21 16.9783 21 19.2175 19.6088 20.6088C18.2175 22 15.9783 22 11.5 22C7.02166 22 4.78249 22 3.39124 20.6088C2 19.2175 2 16.9783 2 12.5C2 8.02166 2 5.78249 3.39124 4.39124C4.78249 3 7.02166 3 11.5 3C12.0307 3 12.5299 3 13 3.00231", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "1" }],
@@ -113,7 +112,6 @@ export const Album02Icon: IconSvgElement = [
   ["path", { d: "M13.125 7H13M13.25 7C13.25 7.13807 13.1381 7.25 13 7.25C12.8619 7.25 12.75 7.13807 12.75 7C12.75 6.86193 12.8619 6.75 13 6.75C13.1381 6.75 13.25 6.86193 13.25 7Z", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "3" }],
 ];
 
-// Text to Speech is ai-speech as drawn, sparkle included.
 export {
   AiSpeechIcon as TextToSpeechIcon,
   Bookmark01Icon as BookmarkIcon,
