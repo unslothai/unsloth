@@ -13282,6 +13282,7 @@ def execute_tool(
     tool_execution_mode: str = "auto",
     host_access_approved: bool = False,
     mcp_image = None,
+    started_read: "StartedUrlRead | None" = None,
 ) -> str:
     """Runs a tool by name; disable_sandbox skips python/terminal checks, blocklist and caps (secrets stay stripped); tool_execution_mode full is refused here."""
     from state.tool_policy import require_tool_access
@@ -13532,6 +13533,8 @@ def execute_tool(
         image_queries = arguments.get("image_queries") if isinstance(arguments, dict) else None
         if not query and not url and not _clean_image_queries(image_queries):
             return "No query provided."
+        if started_read is not None:
+            return _fit_result_to_room(started_read.result(), name)
         return _fit_result_to_room(
             _web_search(
                 query,
@@ -16675,6 +16678,40 @@ def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) ->
 
     cls.__init__, cls.request = __init__, request
     cls._unsloth_http1_retry = True
+
+
+class StartedUrlRead:
+    def __init__(self, url: str, timeout, cancel_event, website_policy) -> None:
+        self._done = threading.Event()
+        self._value = None
+        self._error: BaseException | None = None
+        context = contextvars.copy_context()
+        threading.Thread(
+            target = context.run,
+            args = (self._run, url, timeout, cancel_event, website_policy),
+            name = "web-url-read",
+            daemon = True,
+        ).start()
+
+    def _run(self, url, timeout, cancel_event, website_policy) -> None:
+        try:
+            self._value = _web_search(
+                "",
+                url = url,
+                timeout = timeout,
+                cancel_event = cancel_event,
+                website_policy = website_policy,
+            )
+        except BaseException as exc:  # noqa: BLE001 - re-raised to the caller by result()
+            self._error = exc
+        finally:
+            self._done.set()
+
+    def result(self) -> str:
+        self._done.wait()
+        if self._error is not None:
+            raise self._error
+        return self._value
 
 
 class _ImageSweep:
