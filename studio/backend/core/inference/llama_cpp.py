@@ -24187,7 +24187,6 @@ class LlamaCppBackend:
                 _moe_cache_candidate = False
                 _moe_cache_ram_ok = False
                 _moe_table_bytes = 0
-                # The cache admits only with the lookup table read lazily (see the RAM gate).
                 _moe_cache_lazy_table = False
                 _shared_gpus = frozenset()
                 _integrated_gpus = frozenset()
@@ -28026,10 +28025,7 @@ class LlamaCppBackend:
                             == self._FIT_LOAD_MODE
                         )
                         if not _moe_cache_ram_ok and _moe_table_bytes > 0 and _moe_expert_bytes > 0:
-                            # The resident lookup table is what crowds the experts out: reading it
-                            # lazily (no --lazy-mode off) leaves the RAM to pin them, and the cache
-                            # beats the --fit split by far (Flash-Next UD-IQ4_XS on a 94 GB host
-                            # and a 48 GB card: decode 38-50 -> 67-103 tok/s).
+                            # Reading the resident table lazily frees the RAM to pin the experts; the cache beats the --fit split.
                             _moe_cache_ram_ok = bool(
                                 _moe_prompt_cache_bytes is not None
                                 and self._fit_derived_load_mode(
