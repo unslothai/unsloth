@@ -5659,12 +5659,15 @@ def _video_ffmpeg_dir_flags(
         return [], None
     source = os.environ if env is None else env
     try:
-        chosen = _last_flag_value(extra_args, frozenset({"--video-ffmpeg-dir"}))
+        chosen = _last_flag_value(extra_args, frozenset({"--video-ffmpeg-dir"}), preserve_raw = True)
     except ValueError:
         chosen = None
     chosen = chosen or source.get(_VIDEO_FFMPEG_DIR_ENV_VAR) or None
     if chosen:
         return [], chosen
+    # CreateProcess searches the server's directory before PATH.
+    if sys.platform == "win32":
+        return [], None
     tools = video_tools()
     if tools is None:
         return [], None
@@ -5707,7 +5710,7 @@ def _video_tools_search(
 ) -> str:
     """Where the child looks for ffmpeg and ffprobe: a folder, or a PATH-style list. Raises on a bad flag."""
     source = os.environ if env is None else env
-    bin_dir = _last_flag_value(cmd, frozenset({"--video-ffmpeg-dir"}))
+    bin_dir = _last_flag_value(cmd, frozenset({"--video-ffmpeg-dir"}), preserve_raw = True)
     search = bin_dir or (source.get(_VIDEO_FFMPEG_DIR_ENV_VAR) if supports_ffmpeg_dir else None)
     if not search:
         search = source.get("PATH", os.defpath)
@@ -10136,7 +10139,7 @@ class LlamaCppBackend:
                 "supports_trace_verbosity": False,
                 "supports_video_fps": False,
                 "supports_video_timestamp_interval": False,
-                "supports_video_ffmpeg_dir": False,
+                "supports_video_ffmpeg_dir": None,
                 "supports_load_mode": False,
                 "supports_moe_cache": False,
                 "supports_moe_cache_auto": False,
@@ -10207,7 +10210,7 @@ class LlamaCppBackend:
         supports_no_mmproj_offload = False
         supports_video_fps = False
         supports_video_timestamp_interval = False
-        supports_video_ffmpeg_dir = False
+        supports_video_ffmpeg_dir = None
         supports_load_mode = False
         supports_moe_cache = False
         supports_moe_cache_auto = False
@@ -10417,7 +10420,9 @@ class LlamaCppBackend:
             supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
             supports_video_fps = _is_real("--video-fps")
             supports_video_timestamp_interval = _is_real("--video-timestamp-interval")
-            supports_video_ffmpeg_dir = _is_real("--video-ffmpeg-dir")
+            supports_video_ffmpeg_dir = (
+                _is_real("--video-ffmpeg-dir") if probe_ok and blocks else None
+            )
             # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
             # Pre-initialised above: a failed probe must fall back, not raise.
             supports_load_mode = _is_real("--load-mode")
@@ -32476,7 +32481,7 @@ class LlamaCppBackend:
                 # Use _extra_args_as_requested: the drafter-drop snapshot would restore the Metal zero-context strip.
                 self._reconcile_effective_ctx_with_server(ctx_override or 0)
                 if self._has_video_input:
-                    _supports_dir = bool(server_caps.get("supports_video_ffmpeg_dir"))
+                    _supports_dir = server_caps.get("supports_video_ffmpeg_dir") is not False
                     self._has_video_input = _video_tools_reachable(
                         _last_spawn_cmd, env, _spawn_cwd, supports_ffmpeg_dir = _supports_dir
                     )

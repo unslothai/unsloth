@@ -244,6 +244,7 @@ def test_a_video_model_without_ffmpeg_is_refused_naming_ffmpeg(monkeypatch, body
         response = client.post("/v1/chat/completions", json = body)
     assert response.status_code == 400
     assert "ffmpeg and ffprobe were not found" in _detail(response)
+    assert "--video-ffmpeg-dir" in _detail(response)
     assert backend.dispatched == []
 
 
@@ -791,6 +792,7 @@ def test_a_part_carried_clip_is_transcoded_like_the_legacy_field(monkeypatch):
         *,
         sampled_fps = None,
         ffmpeg_dir = None,
+        env = None,
     ):
         seen.append(clip)
         return "SHRUNK"

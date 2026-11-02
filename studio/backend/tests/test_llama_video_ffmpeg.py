@@ -5,10 +5,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,7 +29,7 @@ from core.inference.llama_cpp import LlamaCppBackend, _video_ffmpeg_dir_flags  #
 from core.inference.llama_video_input import video_tools  # noqa: E402
 
 from test_llama_flag_catalog import _probe_with_help  # noqa: E402
-from test_llama_video_frame_budget import _video_backend  # noqa: E402
+from test_llama_video_frame_budget import _clip, _probe, _video_backend, needs_ffmpeg  # noqa: E402
 from test_mmproj_placement_policy import _launch  # noqa: E402
 from test_video_needs_ffmpeg import _load_with_video_props, _tools_dir as _bin  # noqa: E402
 
@@ -52,6 +57,9 @@ def _no_tools(monkeypatch):
 
 def test_a_launch_pins_the_ffmpeg_studio_found(monkeypatch):
     _tools_at(monkeypatch, "/opt/bin/ffmpeg", "/opt/bin/ffprobe")
+    if sys.platform == "win32":
+        assert _video_ffmpeg_dir_flags(_CAPS, env = {}) == ([], None)
+        return
     assert _video_ffmpeg_dir_flags(_CAPS, env = {}) == (
         ["--video-ffmpeg-dir", "/opt/bin"],
         "/opt/bin",
@@ -92,6 +100,9 @@ def test_the_launch_command_carries_the_folder(tmp_path, monkeypatch):
     _tools_at(monkeypatch, "/opt/bin/ffmpeg", "/opt/bin/ffprobe")
     backend, gguf = _video_backend(tmp_path, supports_video_ffmpeg_dir = True)
     cmd = _launch(backend, gguf)["cmd"]
+    if sys.platform == "win32":
+        assert "--video-ffmpeg-dir" not in cmd
+        return
     assert cmd[cmd.index("--video-ffmpeg-dir") + 1] == "/opt/bin"
     assert backend._video_ffmpeg_dir == "/opt/bin"
 
@@ -125,7 +136,22 @@ def test_command_wrappers_do_not_hide_native_ffmpeg(tmp_path, monkeypatch):
     tools = video_tools()
     assert tools is not None
     assert all(Path(tool).parent == native for tool in tools)
-    assert _video_ffmpeg_dir_flags(_CAPS) == (["--video-ffmpeg-dir", str(native)], str(native))
+    assert _video_ffmpeg_dir_flags(_CAPS) == ([], None)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows application-directory search")
+def test_automatic_pinning_does_not_replace_server_local_tools(tmp_path, monkeypatch):
+    system = _bin(tmp_path / "system", "ffmpeg", "ffprobe")
+    bundled = _bin(tmp_path / "server", "ffmpeg", "ffprobe")
+    monkeypatch.setenv("PATH", str(system))
+    monkeypatch.delenv("LLAMA_ARG_VIDEO_FFMPEG_DIR", raising = False)
+    flags, _ = _video_ffmpeg_dir_flags(_CAPS)
+    search = llama_mod._video_tools_search(
+        [str(bundled / "llama-server.exe"), *flags], {"PATH": str(system)}, str(tmp_path)
+    )
+    tools = video_tools(search)
+    assert tools is not None
+    assert all(Path(tool).parent == bundled for tool in tools)
 
 
 def test_the_shrink_uses_the_same_folder(tmp_path, monkeypatch):
@@ -171,3 +197,111 @@ def test_the_child_search_follows_the_older_build_rule(tmp_path):
     search = llama_mod._video_tools_search(["llama-server"], env, supports_ffmpeg_dir = False)
     assert str(tmp_path / "path") in search.split(os.pathsep)
     assert str(tmp_path / "env") not in search.split(os.pathsep)
+
+
+@pytest.mark.parametrize("probe_result", ["timeout", "partial", "empty"])
+def test_an_inconclusive_probe_keeps_the_inherited_directory(tmp_path, monkeypatch, probe_result):
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"probe fixture")
+    binary.chmod(0o755)
+
+    def run_probe(*args, **kwargs):
+        if probe_result == "timeout":
+            raise subprocess.TimeoutExpired(args[0], 10)
+        return SimpleNamespace(
+            stdout = "--top-k N  top-k sampling\n" if probe_result == "partial" else "",
+            stderr = "",
+            returncode = 1 if probe_result == "partial" else 0,
+        )
+
+    with monkeypatch.context() as probe_patch:
+        probe_patch.setattr(llama_mod.subprocess, "run", run_probe)
+        caps = LlamaCppBackend.probe_server_capabilities(str(binary))
+    tools = _bin(tmp_path / "tools", "ffmpeg", "ffprobe")
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setenv("LLAMA_ARG_VIDEO_FFMPEG_DIR", str(tools))
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    backend, gguf = _video_backend(
+        model_dir, supports_video_ffmpeg_dir = caps["supports_video_ffmpeg_dir"]
+    )
+    backend._query_server_props = lambda: {
+        "modalities": {"vision": True, "video": True},
+        "default_generation_settings": {"n_ctx": 4096},
+    }
+    _launch(backend, gguf)
+    assert backend._has_video_input is True
+    assert caps["supports_video_ffmpeg_dir"] is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX directory ending in a space")
+@pytest.mark.parametrize("explicit", [False, True])
+def test_video_directory_whitespace_is_preserved(tmp_path, monkeypatch, explicit):
+    tools = _bin(tmp_path / "tools ", "ffmpeg", "ffprobe")
+    monkeypatch.setenv("PATH", str(tools))
+    monkeypatch.delenv("LLAMA_ARG_VIDEO_FFMPEG_DIR", raising = False)
+    args = ["--video-ffmpeg-dir", str(tools)] if explicit else []
+    flags, _ = _video_ffmpeg_dir_flags(_CAPS, extra_args = args)
+    assert llama_mod._video_tools_reachable(["llama-server", *flags, *args])
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "Linux ELF loader environment")
+@needs_ffmpeg
+def test_preprocessing_uses_the_running_servers_loader_environment(tmp_path):
+    from routes.inference import _shrink_clip_for_llama
+
+    compiler = shutil.which("cc")
+    if compiler is None:
+        pytest.skip("a C compiler is required for the shared-library fixture")
+    ffmpeg, ffprobe = video_tools()
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    marker = tmp_path / "marker.c"
+    marker.write_text("int fixture_marker(void) { return 734; }\n", encoding = "utf-8")
+    forward = tmp_path / "forward.c"
+    forward.write_text(
+        "#include <string.h>\n#include <unistd.h>\nextern int fixture_marker(void);\n"
+        "int main(int argc, char **argv) {\n"
+        "if (fixture_marker() != 734) return 7;\n"
+        'const char *tool = strstr(argv[0], "ffprobe") ? '
+        + json.dumps(ffprobe)
+        + " : "
+        + json.dumps(ffmpeg)
+        + ";\nargv[0] = (char *)tool; execv(tool, argv); return 9; }\n",
+        encoding = "utf-8",
+    )
+    subprocess.run(
+        [compiler, "-shared", "-fPIC", str(marker), "-o", str(tools / "libffmpeg_fixture.so")],
+        check = True,
+        capture_output = True,
+    )
+    subprocess.run(
+        [
+            compiler,
+            str(forward),
+            "-L" + str(tools),
+            "-lffmpeg_fixture",
+            "-o",
+            str(tools / "ffmpeg"),
+        ],
+        check = True,
+        capture_output = True,
+    )
+    shutil.copy2(tools / "ffmpeg", tools / "ffprobe")
+    (tools / "llama-server").write_bytes(b"fixture")
+    env = LlamaCppBackend._llama_server_env_for_binary(
+        str(tools / "llama-server"), use_system_rocm = False
+    )
+    clip = _clip(tmp_path, "input.mp4", "1280x720")
+    process = object()
+    backend = SimpleNamespace(
+        _process = process,
+        _process_env = (process, env),
+        _video_ffmpeg_dir = str(tools),
+        extra_args = None,
+    )
+    shrunk = asyncio.run(_shrink_clip_for_llama(clip, backend))
+    geometry = _probe(tmp_path, shrunk)
+    assert (geometry["width"], geometry["height"]) == (640, 360)
+    backend._process_env = (object(), env)
+    assert asyncio.run(_shrink_clip_for_llama(clip, backend)) == clip
