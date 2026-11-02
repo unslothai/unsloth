@@ -428,7 +428,7 @@ export type LoadedPlacement = {
 };
 /** Least-squares sums over a pass's timed samples, x in thousands of tokens past the cached prefix
  *  and y in seconds of llama-server's clock: n, then the sums of x, x^2, x^3, x^4, y, x*y and x^2*y. */
-export type LivePrefillFit = { done: number; sums: readonly number[] };
+export type LivePrefillFit = { first: number; done: number; sums: readonly number[] };
 export type LivePrefillProgress = {
   processed: number;
   total: number | null;

@@ -88,6 +88,7 @@ export function formatPrefillDetails(
 
 const MIN_TOKENS_FOR_PREFILL_RATE = 512;
 const MIN_SAMPLES_FOR_PREFILL_FIT = 4;
+const FIT_FULL_AT_READ = 0.3;
 const PREFILL_LABEL_MIN_SECONDS = 2;
 
 function samePrefillPass(
@@ -124,7 +125,7 @@ export function withPrefillFit(
   const y = now.elapsedMs / 1000;
   const terms = [1, x, x * x, x ** 3, x ** 4, y, x * y, x * x * y];
   const sums = terms.map((term, i) => (kept?.sums[i] ?? 0) + term);
-  return { ...prefill, fit: { done: now.done, sums } };
+  return { ...prefill, fit: { first: kept?.first ?? now.done, done: now.done, sums } };
 }
 
 function det3(m: number[][]): number {
@@ -137,8 +138,9 @@ function det3(m: number[][]): number {
 
 /** Seconds of prefill from `from` to `to` thousand tokens, by the pass's samples so far: elapsed time
  *  fit as c + a*x + b*x^2 (each prompt token attends to all before it, so later ones cost more), or a
- *  straight line when the curve bends the wrong way. Null before MIN_SAMPLES_FOR_PREFILL_FIT samples,
- *  where one slow batch (warm-up) could swing the estimate up by half, or without a slope. */
+ *  straight line when the curve bends the wrong way. The cost per token grows only across as many
+ *  tokens again as the samples span, then holds: a few samples cannot tell one slow batch from a
+ *  trend, and extrapolating its curve over a far longer prompt read minutes for seconds. */
 function fittedSeconds(fit: LivePrefillFit, from: number, to: number): number | null {
   const [n, sx, sx2, sx3, sx4, sy, sxy, sx2y] = fit.sums;
   if (n < MIN_SAMPLES_FOR_PREFILL_FIT) return null;
@@ -153,7 +155,11 @@ function fittedSeconds(fit: LivePrefillFit, from: number, to: number): number | 
       det3(normal.map((row, i) => row.map((v, j) => (j === column ? [sy, sxy, sx2y][i] : v))));
     const a = withColumn(1) / d;
     const b = withColumn(2) / d;
-    if (b > 0 && a + 2 * b * from > 0) return a * (to - from) + b * (to * to - from * from);
+    if (b > 0 && a + 2 * b * from > 0) {
+      const cap = Math.min(to, from + (from - fit.first / 1000));
+      const grown = a * (cap - from) + b * (cap * cap - from * from);
+      return grown + (a + 2 * b * cap) * (to - cap);
+    }
   }
   const slope = (n * sxy - sx * sy) / (n * sx2 - sx * sx);
   return Number.isFinite(slope) && slope > 0 ? slope * (to - from) : null;
@@ -161,18 +167,27 @@ function fittedSeconds(fit: LivePrefillFit, from: number, to: number): number | 
 
 /** Seconds left, or null while llama.cpp's first sample is all there is, since its rate is noise.
  *  The rate so far assumes every token costs the same, so it always ran short (~40% on a 30K-token
- *  prompt); from the pass's fourth timed sample the fit above replaces it. */
+ *  prompt). From the pass's fourth timed sample the fit above takes over, fully once the pass has
+ *  six samples and 30% of the prompt read: before that one slow batch weighs too much. */
 export function prefillSecondsLeft(prefill: LivePrefillProgress): number | null {
   if (!prefill.total) return null;
   const cached = prefill.cached ?? 0;
   const now = timedSample(prefill);
+  const rateSoFar =
+    prefill.tokPerS !== null && prefill.processed - cached >= MIN_TOKENS_FOR_PREFILL_RATE
+      ? (prefill.total - prefill.processed) / prefill.tokPerS
+      : null;
   if (now !== null && prefill.fit !== null) {
-    const left = fittedSeconds(prefill.fit, now.done / 1000, (prefill.total - cached) / 1000);
-    if (left !== null) return left;
+    const todo = prefill.total - cached;
+    const fitted = fittedSeconds(prefill.fit, now.done / 1000, todo / 1000);
+    if (fitted !== null) {
+      if (rateSoFar === null) return fitted;
+      const samples = prefill.fit.sums[0];
+      const weight = Math.min(1, now.done / todo / FIT_FULL_AT_READ, (samples - 3) / 3);
+      return rateSoFar + weight * (fitted - rateSoFar);
+    }
   }
-  if (prefill.tokPerS === null) return null;
-  if (prefill.processed - cached < MIN_TOKENS_FOR_PREFILL_RATE) return null;
-  return (prefill.total - prefill.processed) / prefill.tokPerS;
+  return rateSoFar;
 }
 
 /** Whether "Processing prompt" shows after this sample. Only a pass expected to keep it up for
