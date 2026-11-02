@@ -268,9 +268,7 @@ pub async fn desktop_preflight_result() -> DesktopPreflightResult {
 pub async fn desktop_preflight_result_with_state(
     state: &crate::process::BackendState,
 ) -> Result<(DesktopPreflightResult, Option<(u64, bool)>), String> {
-    // A state-owned backend answers through `owned_backend_snapshot` below, which discards the
-    // owner-file probe; then only its file half runs here (same removals), and its HTTP half is
-    // run later only if the snapshot is gone by then.
+    // Keep metadata side effects; defer HTTP until no state-owned backend remains.
     let state_owns_backend = matches!(crate::process::owned_backend_snapshot(state), Ok(Some(_)));
     let (managed, backend, owned) = tokio::join!(
         probe_managed_install(),

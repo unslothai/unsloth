@@ -1041,11 +1041,7 @@ async fn probe_owned_backend_state_on_ports(
     let mut verified = Vec::new();
     // Set only by a complete parsed answer naming someone else, so silence never reads as a takeover.
     let mut answered_with_a_different_owner = false;
-    // Liveness GETs are read-only, so every candidate is asked at once (a refused loopback port can
-    // take about a second on Windows); answers are still walked in port order below, and the login
-    // probes with auth-log side effects stay sequential.
-    // Wrapped so an early return (or a dropped caller) aborts the probes still in flight instead of
-    // leaving them holding sockets until their own timeout.
+    // Preserve port order and sequential auth; abort unread liveness tasks when the scan ends.
     let mut pending = Vec::with_capacity(ports.len());
     for port in ports {
         let task = tokio::spawn(fetch_liveness(port, timeout));
@@ -1125,7 +1121,6 @@ async fn probe_owned_backend_state_on_ports(
     })
 }
 
-/// Aborts the spawned task when dropped, so unread answers do not outlive the scan.
 struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
 
 impl<T> Drop for AbortOnDrop<T> {
@@ -1156,8 +1151,6 @@ async fn probe_verified_owned_backend_at_path_with_expected(
         .await
 }
 
-/// The metadata half of `probe_verified_owned_backend`: the owner file read, the malformed-file
-/// removal and the previous-app checks, with the HTTP probe left for `finish`.
 pub(crate) enum VerifiedOwnedBackendMetadata {
     Decided(OwnedBackendProbe),
     NeedsProbe {
@@ -1893,7 +1886,6 @@ mod tests {
         }
     }
 
-    /// Accepts connections and never answers, so each request runs out its timeout.
     async fn silent_port() -> (u16, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -1908,7 +1900,6 @@ mod tests {
         (port, task)
     }
 
-    /// Answers every request with `body` after `delay`.
     async fn delayed_json_port(
         delay: Duration,
         body: &'static str,
@@ -1942,7 +1933,6 @@ mod tests {
         (port, task)
     }
 
-    /// Owner-matching liveness without a desktop protocol version: the probe stops at that port.
     const OWNED_BUT_INCOMPATIBLE: &str = r#"{"status":"alive","service":"Unsloth UI Backend","studio_root_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","desktop_owner":{"kind":"tauri","token_sha256":"943501cb7d1feb2aa8cde1bf09b80092c25b95dbafaca9ccc12d6785b229a6fd"}}"#;
 
     #[tokio::test]
@@ -1971,7 +1961,6 @@ mod tests {
             probe,
             OwnedBackendProbe::NotVerified { ref reason } if reason == "owned_backend_not_found"
         ));
-        // Asked one after another, five silent ports take at least 5 x 600 ms.
         assert!(
             elapsed < timeout * 3,
             "silent ports were probed one after another: {elapsed:?}"
@@ -2008,7 +1997,6 @@ mod tests {
     #[tokio::test]
     async fn an_early_answer_aborts_the_liveness_probes_still_in_flight() {
         use tokio::io::AsyncReadExt;
-        // The delay lets the silent port's request connect before the scan decides.
         let (first, first_server) =
             delayed_json_port(Duration::from_millis(300), OWNED_BUT_INCOMPATIBLE).await;
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -2034,7 +2022,6 @@ mod tests {
         )
         .await;
         assert!(matches!(probe, OwnedBackendProbe::Unmanageable { port, .. } if port == first));
-        // The silent port's request must be dropped with the scan, not held for its 30 s timeout.
         tokio::time::timeout(Duration::from_secs(5), closed_rx)
             .await
             .expect("a liveness probe outlived the scan that no longer reads it")
@@ -2045,8 +2032,6 @@ mod tests {
 
     #[tokio::test]
     async fn owner_metadata_then_probe_matches_the_one_shot_probe() {
-        // Preflight runs the metadata half alone while the state owns a backend; finishing it
-        // later must give the same answer and the same file removals as the one-shot probe.
         let path = temp_metadata_path("split");
         let (live, live_server) = delayed_json_port(Duration::ZERO, OWNED_BUT_INCOMPATIBLE).await;
         let dead = dead_child_pid();
