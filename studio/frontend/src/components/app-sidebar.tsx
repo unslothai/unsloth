@@ -56,6 +56,7 @@ import {
   watchApprovalWaiting,
 } from "@/features/chat/utils/approval-waiting";
 import { keepOpenedChats, touchOpenedChat } from "@/features/chat/utils/opened-chats";
+import { liveThreadBranch } from "@/features/chat/utils/live-thread-head";
 import { isAssistantLocalThreadId } from "@/features/chat/utils/thread-ids";
 import {
   HELP_GROUPS,
@@ -106,7 +107,7 @@ import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useHoverFlyout } from "@/hooks/use-hover-flyout";
 import { NAV_FLYOUT_INTENT, NAV_TOOLTIP_INTENT } from "@/lib/hover-intent";
 import {
-  Archive03Icon,
+  ArchiveIcon,
   Cancel01Icon,
   BadgeInfoIcon,
   ChefHatIcon,
@@ -118,7 +119,7 @@ import {
   Edit03Icon,
   FlimSlateIcon,
   HelpCircleIcon,
-  Image01Icon,
+  ImageIcon,
   InformationCircleIcon,
   LibrariesIcon,
   Logout05Icon,
@@ -166,41 +167,58 @@ import {
 } from "@tanstack/react-router";
 import {
   archiveChatItem,
-  ChatSearchDialog,
+  deleteChatItem,
+  renameChatItem,
+  type SidebarItem,
+} from "@/features/chat/hooks/use-chat-sidebar-items";
+import { ChatSearchDialog } from "@/features/chat/components/chat-search-dialog";
+import {
   canForkChatRow,
-  EditProjectDialog,
   forkChatRow,
+  getSidebarItemThreadIds,
+  sandboxSessionIdsHolding,
+} from "@/features/chat/components/chat-row-menu";
+import { EditProjectDialog } from "@/features/chat/components/edit-project-dialog";
+import {
   showForkCreatedToast,
   showForkFailedToast,
-  getSidebarItemThreadIds,
-  useForkInFlight,
-  sandboxSessionIdsHolding,
+} from "@/features/chat/utils/fork-toast";
+import { useForkInFlight } from "@/features/chat/utils/fork-in-flight";
+import {
   deleteChatProject,
-  deleteChatItem,
   moveChatItemToProject,
-  notifyChatHistoryUpdated,
-  renameChatItem,
-  useChatRuntimeStore,
   useChatProjects,
-  useChatSearchStore,
-  useSidebarRowPages,
-  fetchSidebarRowPage,
+} from "@/features/chat/hooks/use-chat-projects";
+import {
+  notifyChatHistoryUpdated,
   CHAT_HISTORY_UPDATED_EVENT,
   fetchSidebarThreadRows,
+} from "@/features/chat/api/chat-api";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useChatSearchStore } from "@/features/chat/stores/chat-search-store";
+import {
+  useSidebarRowPages,
+  fetchSidebarRowPage,
   readAllSidebarRowIds,
   readAllSidebarRows,
   type SidebarRowSlot,
+} from "@/features/chat/hooks/use-sidebar-row-pages";
+import {
   sidebarRowQuery,
   holdRowsPastLoadedChats,
   mergeManualOrderTail,
   settledManualOrder,
   SIDEBAR_PAGE_SIZE,
-  usePinnedChatsStore,
-  usePinnedProjectsStore,
+} from "@/features/chat/utils/sidebar-row-query";
+import { usePinnedChatsStore } from "@/features/chat/stores/pinned-chats-store";
+import { usePinnedProjectsStore } from "@/features/chat/stores/pinned-projects-store";
+import {
   rangeBetween,
   toggleSelected,
-  useChatPreferencesStore,
-  usePromptQueueUI,
+} from "@/features/chat/utils/row-selection";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+import { usePromptQueueUI } from "@/features/chat/stores/prompt-queue-ui-store";
+import {
   useSidebarOrganizationStore,
   applyManualOrder,
   showsInRecents,
@@ -220,8 +238,9 @@ import {
   type SidebarCustomSection,
   type SidebarOrganizeBy,
   type SidebarProjectSort,
-  type ProjectRecord,
-  type SidebarItem,
+} from "@/features/chat/stores/sidebar-organization-store";
+import type { ProjectRecord } from "@/features/chat/types";
+import {
   type ChatNavigationState,
   adjacentChatItem,
   countUnreadRows,
@@ -229,12 +248,14 @@ import {
   openChatItemById,
   recentChatItemAtSlot,
   useChatNavigationStore,
-  SectionNameDialog,
-  removeCustomSectionWithUndo,
+} from "@/features/chat/stores/chat-navigation-store";
+import { SectionNameDialog } from "@/features/chat/components/section-name-dialog";
+import { removeCustomSectionWithUndo } from "@/features/chat/stores/remove-custom-section";
+import {
   sectionKeyLanding,
   useSectionDrag,
-  prefetchChatPage,
-} from "@/features/chat";
+} from "@/features/chat/hooks/use-section-drag";
+import { prefetchChatPage } from "@/features/chat/load-chat-page";
 import {
   imeOwnsInputKeydown,
   inputImeHandlers,
@@ -246,15 +267,17 @@ import { NewProjectDialog } from "@/features/chat/components/new-project-dialog"
 import {
   sidebarNavRowPinned,
   useAppearanceCustomStore,
-  useSettingsDialogStore,
+  prefersReducedMotion,
+} from "@/features/settings/stores/appearance-custom-store";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import {
   isSurfaceBackgrounded,
   useShortcutLabel,
-  Shortcut,
-  type ShortcutId,
   useShortcut,
-  prefersReducedMotion,
-  FullInstallDialog,
-} from "@/features/settings";
+} from "@/features/settings/hooks/use-shortcut";
+import { Shortcut } from "@/features/settings/components/shortcut";
+import type { ShortcutId } from "@/features/settings/lib/keyboard-shortcuts";
+import { FullInstallDialog } from "@/features/settings/components/full-install-dialog";
 import type {
   SidebarNavItemId,
   SidebarNavItemPref,
@@ -275,17 +298,21 @@ import {
 import { TOUR_OPEN_EVENT, getTourId, useTourAvailable } from "@/features/tour";
 import {
   deleteTrainingRun,
+  renameTrainingRun,
+} from "@/features/training/api/history-api";
+import {
   emitTrainingRunDeleted,
   emitTrainingRunUpdated,
-  getTrainingRunDisplayTitle,
+} from "@/features/training/events";
+import { getTrainingRunDisplayTitle } from "@/features/training/lib/run-display";
+import {
   isTrainingStartPending,
-  removeTrainingUnloadGuard,
-  renameTrainingRun,
-  useDuplicateTrainingRun,
-  useTrainingCompletionWatch,
-  useTrainingHistorySidebarItems,
   useTrainingRuntimeStore,
-} from "@/features/training";
+} from "@/features/training/stores/training-runtime-store";
+import { removeTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
+import { useDuplicateTrainingRun } from "@/features/training/hooks/use-duplicate-training-run";
+import { useTrainingCompletionWatch } from "@/features/training/hooks/use-training-completion-watch";
+import { useTrainingHistorySidebarItems } from "@/features/training/hooks/use-training-history-sidebar";
 import type { TrainingRunSummary } from "@/features/training";
 import { useExportRuntimeStore } from "@/features/export";
 import {
@@ -303,17 +330,18 @@ import { toast } from "@/lib/toast";
 import {
   folderRingKey,
   sectionRingKey,
-  DROP_CUE_CLASS,
   SIDEBAR_TAIL_SCOPE,
-  useSidebarDrag,
   type SidebarDragItem,
   type SidebarDropContext,
   type SidebarDropEffects,
   type SidebarDropPlan,
   type SidebarSection,
-} from "@/features/chat";
+} from "@/features/chat/lib/sidebar-drag";
+import {
+  DROP_CUE_CLASS,
+  useSidebarDrag,
+} from "@/features/chat/hooks/use-sidebar-drag";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
-import { buildChatItemMarkdown } from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import { useActiveChatMenuStore } from "@/features/chat/stores/active-chat-menu-store";
 import { type PinnedPage, PinnedPageRow, usePinnedPages } from "@/features/browser";
 import { useUnseenScheduledRuns } from "@/features/scheduled-tasks";
@@ -3354,7 +3382,7 @@ export function AppSidebar() {
       },
     },
     images: {
-      icon: Image01Icon,
+      icon: ImageIcon,
       label: t("shell.navigation.images"),
       active: pathname === "/images" || pathname.startsWith("/images/"),
       onClick: () => {
@@ -3924,10 +3952,14 @@ export function AppSidebar() {
   }
 
   async function copyChatItemAsMarkdown(item: SidebarItem) {
+    const liveBranch = item.type === "single" ? liveThreadBranch(item.id) : undefined;
     const empty = { value: false };
     // Read inside the write: Safari drops the gesture across an await.
     const copied = await copyToClipboardFrom(async () => {
-      const markdown = await buildChatItemMarkdown(item);
+      const { buildChatItemMarkdown } = await import(
+        "@/features/chat/prompt-storage/prompt-storage-dialog"
+      );
+      const markdown = await buildChatItemMarkdown(item, liveBranch);
       if (!markdown) {
         empty.value = true;
         throw new Error("nothing to copy");
@@ -4529,7 +4561,7 @@ export function AppSidebar() {
             disabled={chats.length === 0}
             onSelect={() => void archiveSection().catch(() => undefined)}
           >
-            <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
             <span>{t("shell.selection.archiveChats")}</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -5144,7 +5176,7 @@ export function AppSidebar() {
           selectedChatItems.map((selected) => selected.id),
         )}
         <ContextMenuItem onSelect={() => void archiveSelected()}>
-          <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.selection.archiveChats")}</span>
         </ContextMenuItem>
         <ContextMenuItem
@@ -5284,7 +5316,7 @@ export function AppSidebar() {
             </P.Sub>
             <P.Separator />
             <P.Item onSelect={() => void handleArchiveThread(item)}>
-              <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
               <span>Archive</span>
             </P.Item>
             <P.Item
@@ -5650,7 +5682,7 @@ export function AppSidebar() {
             anyFiled: !pinnedProjectIdSet.has(project.id) && Boolean(sectionByProjectId[project.id]),
           })}
           <P.Item onSelect={() => void archiveProjectChats()}>
-            <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
             <span>Archive chats</span>
           </P.Item>
           <P.Separator />

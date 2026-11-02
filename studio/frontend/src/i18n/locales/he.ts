@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const he = {
+  turns: {
+    label: "סבב {number}",
+    bookmarkedLabel: "סבב {number}, מסומן",
+    bookmark: "סימון הסבב",
+    removeBookmark: "הסרת הסימון",
+    navigator: "סבבים",
+  },
   chatBackground: {
     noBackground: "ללא רקע",
     sizing: "התאמת גודל תמונה",
@@ -679,6 +686,8 @@ export const he = {
     plainText: "עורך טקסט פשוט",
     plainTextDescription:
       "שמור קוד, Markdown וקישורים כטקסט מילולי. כבה כדי להציג תצוגה מקדימה מעוצבת.",
+    richPaste: "הדבקת טקסט מעוצב",
+    richPasteDescription: "מדביק קישורים, טבלאות ועיצוב כ-Markdown. {shortcut} מדביק טקסט פשוט. עורך טקסט עשיר מלא בקרוב.",
     showContext: "שימוש בחלון ההקשר",
     sendShortcut: "קיצור שליחה",
     sendMultiline: "{mod} + Enter להנחיות מרובות שורות",
@@ -2038,6 +2047,14 @@ export const he = {
           full: "מריץ כל קריאה לכלי בלי לשאול ומכבה את ארגז החול של הקוד, כך שקוד Python ו-Terminal יכול לקרוא ולשנות כל קובץ שהחשבון שלך יכול לגשת אליו.",
         },
       },
+      display: {
+        title: "תצוגה",
+        timeFormat: "תבנית שעה",
+        timeFormatDescription: "הצגת שעות בתבנית של 12 או 24 שעות.",
+        timeFormatSystem: "ברירת המחדל של המערכת",
+        timeFormat12: "12 שעות",
+        timeFormat24: "24 שעות",
+      },
       notifications: {
         sectionTitle: "התראות",
         showLoadedModels: "כרטיס מודלים טעונים",
@@ -2388,6 +2405,9 @@ export const he = {
         description: "הצבעים שבשימוש בכל רחבי Unsloth, במצב בהיר וכהה.",
         standard: "סטנדרטית",
         moreThemes: "ערכות נושא נוספות",
+      },
+      composer: {
+        title: "תיבת הכתיבה",
       },
       code: {
         title: "קוד",
@@ -3010,6 +3030,8 @@ export const he = {
         "ההתראות חסומות. יש לאפשר אותן ל-Unsloth בהגדרות הדפדפן או המערכת ולנסות שוב.",
       replyNotificationKeywords:
         "notify notification alert done finished reply background minimized התראה הודעה הסתיים מוכן תשובה רקע ממוזער",
+      showLinkPreviews: "תצוגות מקדימות של קישורים",
+      showLinkPreviewsDescription: "הצגת תצוגות מקדימות במעבר העכבר מעל קישורי מקורות.",
       showResponseModel: "מודל המענה",
       showResponseModelDescription: "הצג פרטי מודל בתשובות העוזר.",
       showReplyTimes: "זמני תשובות",
@@ -3024,6 +3046,8 @@ export const he = {
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
+      turnNavigation: "ניווט בין סבבים",
+      turnNavigationDescription: "הצגת ההודעות שלך כפס בקצה השמאלי של צ׳אטים ארוכים. רחפו לתצוגה מקדימה של סבב, לחצו כדי לקפוץ אליו וסמנו סבבים כדי למצוא אותם שוב.",
       composerAtBottom: "תיבת הכתיבה למטה",
       composerAtBottomDescription: "התחלת צ'אטים חדשים עם תיבת הכתיבה בתחתית הדף במקום באמצע.",
       projectAttachments: "שתף קבצים בכל הפרויקט",
@@ -3644,8 +3668,6 @@ export const he = {
         repoCheckoutFallback:
           "אם עותק המאגר עדיין ברשותך, הרץ מתוכו את תוכנית ההתקנה המקומית:",
         restartAfterUpdate: "הפעל מחדש את Unsloth לאחר העדכון.",
-        desktopManaged:
-          "אפליקציית שולחן העבודה בודקת עדכונים באופן אוטומטי. תוכל גם לבדוק או לעדכן כאן בכל עת.",
         desktopReady: "עדכוני אפליקציית שולחן עבודה",
         desktopReadyDescription:
           "בדוק האם קיימת גרסה חדשה יותר של אפליקציית שולחן העבודה.",
@@ -5533,5 +5555,60 @@ export const he = {
     later: "מאוחר יותר",
     update: "עדכן",
     undo: "ביטול פעולה",
+  },
+  generationStats: {
+    working: "מעבד...",
+    processingPrompt: "עיבוד הפרומפט {percent}%",
+    timeLeft: "נותרו {eta}",
+    tokensOne: "{count} טוקן",
+    tokens: "{count} טוקנים",
+    tokensOf: "{done} / {total} טוקנים",
+    draftAccepted: "טיוטה: {accepted}/{drafted} התקבלו ({percent}%)",
+    timing: {
+      trigger: "תזמון ההודעה",
+      firstToken: "טוקן ראשון",
+      speedInStep: "מהירות (בתוך שלב)",
+      effective: "אפקטיבית",
+      output: "פלט",
+      denoising: "הסרת רעש",
+      stepsOne: "{count} שלב",
+      steps: "{count} שלבים",
+      blocksOne: "{count} בלוק",
+      blocks: "{count} בלוקים",
+      canvas: "קנבס",
+      generation: "יצירה",
+      answerTokens: "טוקני תשובה",
+      prompt: "פרומפט",
+      total: "סה״כ",
+      chunks: "מקטעים",
+      promptEval: "הערכת פרומפט",
+      promptSpeed: "מהירות פרומפט",
+      speed: "מהירות",
+      tokens: "טוקנים",
+      draftAccepted: "טיוטה שהתקבלה",
+      denoisingSteps: "שלבי הסרת רעש",
+      blocksLabel: "בלוקים",
+      cacheHits: "פגיעות במטמון",
+      cacheWrites: "כתיבות למטמון",
+      stopReason: "סיבת עצירה",
+      stoppedByYou: "נעצר על ידך",
+      endOfTurn: "סוף התור",
+      lengthLimit: "מגבלת אורך",
+      toolCall: "קריאה לכלי",
+      contentFilter: "מסנן תוכן",
+    },
+    placement: {
+      title: "מיקום המשקולות",
+      allOnCpu: "כל {total} השכבות על ה-CPU",
+      split: "{gpu} מתוך {total} שכבות על ה-GPU, {cpu} על ה-CPU",
+      allOnGpu: "כל {total} השכבות על ה-GPU",
+      expertCache: "כל {total} השכבות על ה-GPU, כל המומחים ב-RAM (מטמון מומחים של {amount} על ה-GPU)",
+      expertSpillOne: "כל {total} השכבות על ה-GPU, משקולות המומחים של {count} שכבה ב-RAM",
+      expertSpill: "כל {total} השכבות על ה-GPU, משקולות המומחים של {count} שכבות ב-RAM",
+      inUnifiedMemory: "{amount} בזיכרון מאוחד",
+      inSharedMemory: "{amount} בזיכרון משותף",
+      inVram: "{amount} ב-VRAM",
+      inRam: "{amount} ב-RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const ru = {
+  turns: {
+    label: "Ход {number}",
+    bookmarkedLabel: "Ход {number}, в закладках",
+    bookmark: "Добавить ход в закладки",
+    removeBookmark: "Убрать закладку",
+    navigator: "Ходы",
+  },
   chatBackground: {
     noBackground: "Без фона",
     sizing: "Масштабирование изображения",
@@ -645,6 +652,8 @@ export const ru = {
     title: "Ввод сообщений",
     plainText: "Обычный текст",
     plainTextDescription: "Показывать код, Markdown и ссылки как обычный текст. Отключите для предпросмотра форматирования.",
+    richPaste: "Вставка форматированного текста",
+    richPasteDescription: "Вставляет ссылки, таблицы и форматирование как Markdown. {shortcut} вставляет обычный текст. Полноценный редактор форматированного текста скоро.",
     showContext: "Показывать использование контекстного окна",
     sendShortcut: "Клавиши отправки",
     sendMultiline: "{mod} + Enter для многострочных сообщений",
@@ -1973,6 +1982,14 @@ export const ru = {
         saveError:
           "Не удалось сохранить настройки подключений управляемых учётных записей.",
       },
+      display: {
+        title: "Отображение",
+        timeFormat: "Формат времени",
+        timeFormatDescription: "Показывать время в 12- или 24-часовом формате.",
+        timeFormatSystem: "Как в системе",
+        timeFormat12: "12-часовой",
+        timeFormat24: "24-часовой",
+      },
       notifications: {
         sectionTitle: "Уведомления",
         showLoadedModels: "Карточка загруженных моделей",
@@ -2342,6 +2359,9 @@ export const ru = {
         description: "Цвета, используемые в Unsloth в светлой и тёмной теме.",
         standard: "Стандартная",
         moreThemes: "Другие темы",
+      },
+      composer: {
+        title: "Поле ввода",
       },
       code: {
         title: "Код",
@@ -2942,6 +2962,8 @@ export const ru = {
         "Уведомления заблокированы. Разрешите их для Unsloth в настройках браузера или системы и попробуйте снова.",
       replyNotificationKeywords:
         "уведомление оповещение готово завершено ответ фон свернут notify notification alert done finished reply background",
+      showLinkPreviews: "Предпросмотр ссылок",
+      showLinkPreviewsDescription: "Показывать предпросмотр при наведении на ссылки на источники.",
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",
@@ -2956,6 +2978,8 @@ export const ru = {
         "подробности скорость токены статистика слои выгрузка verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
+      turnNavigation: "Навигация по ходам",
+      turnNavigationDescription: "Показывает ваши сообщения полосой у левого края длинных чатов. Наведите, чтобы увидеть ход, нажмите, чтобы перейти к нему, и добавляйте закладки, чтобы быстро находить ходы.",
       composerAtBottom: "Поле ввода внизу",
       composerAtBottomDescription: "Начинать новые чаты с полем ввода внизу страницы, а не посередине.",
       projectAttachments: "Общий доступ к файлам в проекте",
@@ -3573,8 +3597,6 @@ export const ru = {
         repoCheckoutFallback:
           "Если рабочая копия репозитория сохранилась, запустите из неё локальный установщик:",
         restartAfterUpdate: "После обновления перезапустите Unsloth.",
-        desktopManaged:
-          "Настольное приложение автоматически проверяет наличие новых версий. Здесь также можно в любое время проверить наличие обновлений или установить их.",
         desktopReady: "Обновления настольного приложения",
         desktopReadyDescription:
           "Проверьте, доступна ли более новая версия настольного приложения.",
@@ -5463,5 +5485,60 @@ export const ru = {
     later: "Позже",
     update: "Обновить",
     undo: "Отменить",
+  },
+  generationStats: {
+    working: "Обработка...",
+    processingPrompt: "Обработка промпта {percent}%",
+    timeLeft: "осталось {eta}",
+    tokensOne: "токены: {count}",
+    tokens: "токены: {count}",
+    tokensOf: "токены: {done} / {total}",
+    draftAccepted: "черновик: принято {accepted}/{drafted} ({percent}%)",
+    timing: {
+      trigger: "Время генерации сообщения",
+      firstToken: "Первый токен",
+      speedInStep: "Скорость (в шаге)",
+      effective: "Эффективная",
+      output: "Вывод",
+      denoising: "Удаление шума",
+      stepsOne: "шаги: {count}",
+      steps: "шаги: {count}",
+      blocksOne: "блоки: {count}",
+      blocks: "блоки: {count}",
+      canvas: "Холст",
+      generation: "Генерация",
+      answerTokens: "Токены ответа",
+      prompt: "Промпт",
+      total: "Всего",
+      chunks: "Фрагменты",
+      promptEval: "Обработка промпта",
+      promptSpeed: "Скорость промпта",
+      speed: "Скорость",
+      tokens: "Токены",
+      draftAccepted: "Принято из черновика",
+      denoisingSteps: "Шаги удаления шума",
+      blocksLabel: "Блоки",
+      cacheHits: "Попадания в кеш",
+      cacheWrites: "Записи в кеш",
+      stopReason: "Причина остановки",
+      stoppedByYou: "Остановлено вами",
+      endOfTurn: "Конец ответа",
+      lengthLimit: "Лимит длины",
+      toolCall: "Вызов инструмента",
+      contentFilter: "Фильтр контента",
+    },
+    placement: {
+      title: "Размещение весов",
+      allOnCpu: "Все слои ({total}) на CPU",
+      split: "Слои: {gpu} из {total} на GPU, {cpu} на CPU",
+      allOnGpu: "Все слои ({total}) на GPU",
+      expertCache: "Все слои ({total}) на GPU, все эксперты в RAM (кеш экспертов {amount} на GPU)",
+      expertSpillOne: "Все слои ({total}) на GPU, веса экспертов {count} слоя в RAM",
+      expertSpill: "Все слои ({total}) на GPU, веса экспертов в RAM, слоёв: {count}",
+      inUnifiedMemory: "{amount} в единой памяти",
+      inSharedMemory: "{amount} в общей памяти",
+      inVram: "{amount} в VRAM",
+      inRam: "{amount} в RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const uk = {
+  turns: {
+    label: "Хід {number}",
+    bookmarkedLabel: "Хід {number}, у закладках",
+    bookmark: "Додати хід у закладки",
+    removeBookmark: "Прибрати закладку",
+    navigator: "Ходи",
+  },
   chatBackground: {
     noBackground: "Без тла",
     sizing: "Масштабування зображення",
@@ -735,6 +742,8 @@ export const uk = {
     plainText: "Поле введення простого тексту",
     plainTextDescription:
       "Залишати код, Markdown і посилання звичайним текстом. Вимкніть, щоб показувати відформатований попередній перегляд.",
+    richPaste: "Вставлення форматованого тексту",
+    richPasteDescription: "Вставляє посилання, таблиці й форматування як Markdown. {shortcut} вставляє звичайний текст. Повноцінний редактор форматованого тексту незабаром.",
     showContext: "Використання контекстного вікна",
     sendShortcut: "Сполучення клавіш для надсилання",
     sendMultiline: "{mod} + Enter для багаторядкових запитів",
@@ -2182,6 +2191,14 @@ export const uk = {
           full: "Виконує кожен виклик інструмента без запиту та вимикає пісочницю коду, тож код Python і термінала може читати й змінювати будь-який файл, доступний вашому обліковому запису.",
         },
       },
+      display: {
+        title: "Відображення",
+        timeFormat: "Формат часу",
+        timeFormatDescription: "Показувати час у 12- або 24-годинному форматі.",
+        timeFormatSystem: "Як у системі",
+        timeFormat12: "12-годинний",
+        timeFormat24: "24-годинний",
+      },
       notifications: {
         sectionTitle: "Сповіщення",
         showLoadedModels: "Картка завантажених моделей",
@@ -2554,6 +2571,9 @@ export const uk = {
           "Кольори, що використовуються в Unsloth у світлому й темному режимах.",
         standard: "Стандартна",
         moreThemes: "Інші теми",
+      },
+      composer: {
+        title: "Поле введення",
       },
       code: {
         title: "Код",
@@ -3202,6 +3222,8 @@ export const uk = {
         "Сповіщення заблоковано. Дозвольте їх для Unsloth у налаштуваннях браузера або системи, а потім повторіть спробу.",
       replyNotificationKeywords:
         "сповіщення сповістити оповіщення готово завершено виконано відповідь фон згорнуто робочий стіл звук notification",
+      showLinkPreviews: "Попередній перегляд посилань",
+      showLinkPreviewsDescription: "Показувати попередній перегляд під час наведення на посилання на джерела.",
       showResponseModel: "Модель відповіді",
       showResponseModelDescription:
         "Показувати відомості про модель у відповідях асистента.",
@@ -3218,6 +3240,8 @@ export const uk = {
       inlineEditResponse: "Редагування відповіді на відповідях",
       inlineEditResponseDescription:
         "Показувати «Редагувати відповідь» на кожній відповіді, а не в меню «Більше».",
+      turnNavigation: "Навігація ходами",
+      turnNavigationDescription: "Показує ваші повідомлення смугою біля лівого краю довгих чатів. Наведіть, щоб переглянути хід, натисніть, щоб перейти до нього, і додавайте закладки, щоб знаходити ходи.",
       composerAtBottom: "Поле введення внизу",
       composerAtBottomDescription:
         "Починати нові чати з полем введення внизу сторінки, а не посередині.",
@@ -3890,8 +3914,6 @@ export const uk = {
         repoCheckoutFallback:
           "Якщо у вас досі є checkout репозиторію, запустіть із нього локальний інсталятор:",
         restartAfterUpdate: "Після оновлення перезапустіть Unsloth.",
-        desktopManaged:
-          "Застосунок для комп’ютера автоматично перевіряє наявність нових версій. Ви також можете будь-коли перевірити або оновити його тут.",
         desktopReady: "Оновлення застосунку для комп’ютера",
         desktopReadyDescription:
           "Перевірте, чи доступна новіша версія застосунку для комп’ютера.",
@@ -5888,5 +5910,60 @@ export const uk = {
     later: "Пізніше",
     update: "Оновити",
     undo: "Скасувати",
+  },
+  generationStats: {
+    working: "Виконання...",
+    processingPrompt: "Обробка запиту {percent}%",
+    timeLeft: "залишилось {eta}",
+    tokensOne: "токени: {count}",
+    tokens: "токени: {count}",
+    tokensOf: "токени: {done} / {total}",
+    draftAccepted: "чернетка: прийнято {accepted}/{drafted} ({percent}%)",
+    timing: {
+      trigger: "Час генерування повідомлення",
+      firstToken: "Перший токен",
+      speedInStep: "Швидкість (у кроці)",
+      effective: "Ефективна",
+      output: "Вивід",
+      denoising: "Знешумлення",
+      stepsOne: "кроки: {count}",
+      steps: "кроки: {count}",
+      blocksOne: "блоки: {count}",
+      blocks: "блоки: {count}",
+      canvas: "Полотно",
+      generation: "Генерування",
+      answerTokens: "Токени відповіді",
+      prompt: "Запит",
+      total: "Усього",
+      chunks: "Фрагменти",
+      promptEval: "Обробка запиту",
+      promptSpeed: "Швидкість запиту",
+      speed: "Швидкість",
+      tokens: "Токени",
+      draftAccepted: "Прийнято з чернетки",
+      denoisingSteps: "Кроки знешумлення",
+      blocksLabel: "Блоки",
+      cacheHits: "Влучання в кеш",
+      cacheWrites: "Записи в кеш",
+      stopReason: "Причина зупинки",
+      stoppedByYou: "Зупинено вами",
+      endOfTurn: "Кінець відповіді",
+      lengthLimit: "Ліміт довжини",
+      toolCall: "Виклик інструмента",
+      contentFilter: "Фільтр вмісту",
+    },
+    placement: {
+      title: "Розміщення ваг",
+      allOnCpu: "Усі шари ({total}) на CPU",
+      split: "Шари: {gpu} з {total} на GPU, {cpu} на CPU",
+      allOnGpu: "Усі шари ({total}) на GPU",
+      expertCache: "Усі шари ({total}) на GPU, усі експерти в RAM (кеш експертів {amount} на GPU)",
+      expertSpillOne: "Усі шари ({total}) на GPU, ваги експертів {count} шару в RAM",
+      expertSpill: "Усі шари ({total}) на GPU, ваги експертів у RAM, шарів: {count}",
+      inUnifiedMemory: "{amount} в уніфікованій пам’яті",
+      inSharedMemory: "{amount} у спільній пам’яті",
+      inVram: "{amount} у VRAM",
+      inRam: "{amount} у RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

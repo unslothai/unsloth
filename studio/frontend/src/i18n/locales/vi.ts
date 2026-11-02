@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const vi = {
+  turns: {
+    label: "Lượt {number}",
+    bookmarkedLabel: "Lượt {number}, đã đánh dấu",
+    bookmark: "Đánh dấu lượt",
+    removeBookmark: "Bỏ đánh dấu",
+    navigator: "Các lượt",
+  },
   chatBackground: {
     noBackground: "Không có nền",
     sizing: "Kích thước ảnh",
@@ -730,6 +737,8 @@ export const vi = {
     plainText: "Khung soạn thảo văn bản thuần",
     plainTextDescription:
       "Giữ mã, Markdown và liên kết dưới dạng văn bản nguyên bản. Tắt để hiển thị bản xem trước có định dạng.",
+    richPaste: "Dán văn bản có định dạng",
+    richPasteDescription: "Dán liên kết, bảng và định dạng dưới dạng Markdown. {shortcut} dán văn bản thuần. Trình soạn văn bản định dạng đầy đủ sắp ra mắt.",
     showContext: "Mức sử dụng cửa sổ ngữ cảnh",
     sendShortcut: "Phím tắt gửi",
     sendMultiline: "{mod} + Enter cho lời nhắc nhiều dòng",
@@ -2167,6 +2176,14 @@ export const vi = {
           full: "Chạy mọi lệnh gọi công cụ mà không hỏi và tắt sandbox mã, nên mã Python và terminal có thể đọc và thay đổi bất kỳ tệp nào mà tài khoản của bạn có quyền truy cập.",
         },
       },
+      display: {
+        title: "Hiển thị",
+        timeFormat: "Định dạng giờ",
+        timeFormatDescription: "Hiển thị giờ theo định dạng 12 giờ hoặc 24 giờ.",
+        timeFormatSystem: "Mặc định hệ thống",
+        timeFormat12: "12 giờ",
+        timeFormat24: "24 giờ",
+      },
       notifications: {
         sectionTitle: "Thông báo",
         showLoadedModels: "Thẻ mô hình đã nạp",
@@ -2534,6 +2551,9 @@ export const vi = {
           "Màu sắc dùng trong toàn bộ Unsloth, ở chế độ sáng và tối.",
         standard: "Tiêu chuẩn",
         moreThemes: "Thêm chủ đề",
+      },
+      composer: {
+        title: "Khung soạn tin",
       },
       code: {
         title: "Mã",
@@ -3176,6 +3196,8 @@ export const vi = {
         "Thông báo đang bị chặn. Hãy cho phép thông báo của Unsloth trong cài đặt trình duyệt hoặc hệ thống, rồi thử lại.",
       replyNotificationKeywords:
         "notify notification alert done finished complete ready response reply background minimized desktop sound thông báo cảnh báo xong hoàn tất sẵn sàng trả lời chạy nền thu nhỏ âm thanh",
+      showLinkPreviews: "Xem trước liên kết",
+      showLinkPreviewsDescription: "Hiển thị bản xem trước khi di chuột qua liên kết nguồn.",
       showResponseModel: "Mô hình trả lời",
       showResponseModelDescription:
         "Hiển thị thông tin mô hình trong câu trả lời của trợ lý.",
@@ -3192,6 +3214,8 @@ export const vi = {
       inlineEditResponse: "Nút Sửa câu trả lời trên câu trả lời",
       inlineEditResponseDescription:
         "Giữ nút Sửa câu trả lời trên mọi câu trả lời, thay vì trong menu Thêm.",
+      turnNavigation: "Điều hướng lượt",
+      turnNavigationDescription: "Hiển thị tin nhắn của bạn thành một thanh ở mép trái các cuộc trò chuyện dài. Di chuột để xem trước, nhấp để chuyển đến lượt đó và đánh dấu để tìm lại.",
       composerAtBottom: "Khung soạn thảo ở dưới cùng",
       composerAtBottomDescription:
         "Bắt đầu cuộc trò chuyện mới với khung soạn thảo ở cuối trang thay vì ở giữa.",
@@ -3861,8 +3885,6 @@ export const vi = {
         repoCheckoutFallback:
           "Nếu bạn vẫn còn bản checkout của kho mã, hãy chạy trình cài đặt cục bộ từ đó:",
         restartAfterUpdate: "Khởi động lại Unsloth sau khi cập nhật.",
-        desktopManaged:
-          "Ứng dụng máy tính tự động kiểm tra phiên bản mới. Bạn cũng có thể kiểm tra hoặc cập nhật tại đây bất cứ lúc nào.",
         desktopReady: "Cập nhật ứng dụng máy tính",
         desktopReadyDescription:
           "Kiểm tra xem có phiên bản ứng dụng máy tính mới hơn không.",
@@ -5844,5 +5866,60 @@ export const vi = {
     later: "Để sau",
     update: "Cập nhật",
     undo: "Hoàn tác",
+  },
+  generationStats: {
+    working: "Đang xử lý...",
+    processingPrompt: "Đang xử lý lời nhắc {percent}%",
+    timeLeft: "còn {eta}",
+    tokensOne: "{count} token",
+    tokens: "{count} token",
+    tokensOf: "{done} / {total} token",
+    draftAccepted: "bản nháp được chấp nhận {accepted}/{drafted} ({percent}%)",
+    timing: {
+      trigger: "Thời gian của tin nhắn",
+      firstToken: "Token đầu tiên",
+      speedInStep: "Tốc độ (trong bước)",
+      effective: "Hiệu dụng",
+      output: "Đầu ra",
+      denoising: "Khử nhiễu",
+      stepsOne: "{count} bước",
+      steps: "{count} bước",
+      blocksOne: "{count} khối",
+      blocks: "{count} khối",
+      canvas: "Khung vẽ",
+      generation: "Quá trình tạo",
+      answerTokens: "Token câu trả lời",
+      prompt: "Lời nhắc",
+      total: "Tổng",
+      chunks: "Đoạn",
+      promptEval: "Xử lý lời nhắc",
+      promptSpeed: "Tốc độ lời nhắc",
+      speed: "Tốc độ",
+      tokens: "Token",
+      draftAccepted: "Bản nháp được chấp nhận",
+      denoisingSteps: "Bước khử nhiễu",
+      blocksLabel: "Khối",
+      cacheHits: "Lượt dùng bộ nhớ đệm",
+      cacheWrites: "Lượt ghi bộ nhớ đệm",
+      stopReason: "Lý do dừng",
+      stoppedByYou: "Bạn đã dừng",
+      endOfTurn: "Kết thúc lượt",
+      lengthLimit: "Giới hạn độ dài",
+      toolCall: "Lệnh gọi công cụ",
+      contentFilter: "Bộ lọc nội dung",
+    },
+    placement: {
+      title: "Vị trí trọng số",
+      allOnCpu: "Cả {total} lớp trên CPU",
+      split: "{gpu} trong {total} lớp trên GPU, {cpu} trên CPU",
+      allOnGpu: "Cả {total} lớp trên GPU",
+      expertCache: "Cả {total} lớp trên GPU, mọi expert trong RAM ({amount} bộ nhớ đệm expert trên GPU)",
+      expertSpillOne: "Cả {total} lớp trên GPU, trọng số expert của {count} lớp trong RAM",
+      expertSpill: "Cả {total} lớp trên GPU, trọng số expert của {count} lớp trong RAM",
+      inUnifiedMemory: "{amount} trong bộ nhớ hợp nhất",
+      inSharedMemory: "{amount} trong bộ nhớ dùng chung",
+      inVram: "{amount} trong VRAM",
+      inRam: "{amount} trong RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

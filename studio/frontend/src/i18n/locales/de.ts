@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const de = {
+  turns: {
+    label: "Runde {number}",
+    bookmarkedLabel: "Runde {number}, mit Lesezeichen",
+    bookmark: "Lesezeichen für Runde setzen",
+    removeBookmark: "Lesezeichen entfernen",
+    navigator: "Runden",
+  },
   chatBackground: {
     noBackground: "Kein Hintergrund",
     sizing: "Bildskalierung",
@@ -645,6 +652,8 @@ export const de = {
     title: "Nachrichteneingabe",
     plainText: "Eingabe als Klartext",
     plainTextDescription: "Code, Markdown und Links als wörtlichen Text anzeigen. Ausschalten, um eine formatierte Vorschau zu sehen.",
+    richPaste: "Formatiert einfügen",
+    richPasteDescription: "Fügt Links, Tabellen und Formatierung als Markdown ein. {shortcut} fügt reinen Text ein. Vollständiger Rich-Text-Editor folgt bald.",
     showContext: "Auslastung des Kontextfensters anzeigen",
     sendShortcut: "Tastenkürzel zum Senden",
     sendMultiline: "{mod} + Enter bei mehrzeiligen Nachrichten",
@@ -1988,6 +1997,14 @@ export const de = {
         saveError:
           "Verbindungseinstellungen für verwaltete Konten konnten nicht gespeichert werden.",
       },
+      display: {
+        title: "Anzeige",
+        timeFormat: "Zeitformat",
+        timeFormatDescription: "Uhrzeiten im 12- oder 24-Stunden-Format anzeigen.",
+        timeFormatSystem: "Systemstandard",
+        timeFormat12: "12-Stunden",
+        timeFormat24: "24-Stunden",
+      },
       notifications: {
         sectionTitle: "Benachrichtigungen",
         showLoadedModels: "Karte geladener Modelle",
@@ -2361,6 +2378,9 @@ export const de = {
         description: "Farben, die in Unsloth im hellen und dunklen Modus verwendet werden.",
         standard: "Standard",
         moreThemes: "Weitere Designs",
+      },
+      composer: {
+        title: "Eingabefeld",
       },
       code: {
         title: "Code",
@@ -2970,6 +2990,8 @@ export const de = {
         "Benachrichtigungen sind blockiert. Erlaube sie für Unsloth in den Browser- oder Systemeinstellungen und versuche es erneut.",
       replyNotificationKeywords:
         "Benachrichtigung benachrichtigen Hinweis fertig abgeschlossen bereit Antwort Hintergrund minimiert notify notification alert done finished reply background",
+      showLinkPreviews: "Linkvorschauen",
+      showLinkPreviewsDescription: "Vorschauen beim Bewegen des Mauszeigers über Quellenlinks anzeigen.",
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",
@@ -2984,6 +3006,8 @@ export const de = {
         "Details Geschwindigkeit Token Statistik Schichten Auslagerung verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Antwort bearbeiten bei Antworten",
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
+      turnNavigation: "Rundennavigation",
+      turnNavigationDescription: "Zeigt deine Eingaben als Leiste am linken Rand langer Chats. Zeige auf eine Runde für eine Vorschau, klicke, um hinzuspringen, und setze Lesezeichen, um Runden wiederzufinden.",
       composerAtBottom: "Eingabefeld unten",
       composerAtBottomDescription: "Neue Chats mit dem Eingabefeld unten auf der Seite statt in der Mitte beginnen.",
       projectAttachments: "Dateien projektweit teilen",
@@ -3606,8 +3630,6 @@ export const de = {
         repoCheckoutFallback:
           "Wenn Sie den Repository-Checkout noch haben, führen Sie den lokalen Installer daraus aus:",
         restartAfterUpdate: "Starten Sie Unsloth nach dem Update neu.",
-        desktopManaged:
-          "Die Desktop-App sucht automatisch nach neuen App-Versionen. Sie können hier auch jederzeit nach Updates suchen oder ein Update durchführen.",
         desktopReady: "Updates für die Desktop-App",
         desktopReadyDescription:
           "Prüfen Sie, ob eine neuere Version der Desktop-App verfügbar ist.",
@@ -5509,5 +5531,60 @@ export const de = {
     later: "Später",
     update: "Aktualisieren",
     undo: "Rückgängig",
+  },
+  generationStats: {
+    working: "Wird bearbeitet...",
+    processingPrompt: "Prompt-Verarbeitung {percent}%",
+    timeLeft: "noch {eta}",
+    tokensOne: "{count} Token",
+    tokens: "{count} Tokens",
+    tokensOf: "{done} / {total} Tokens",
+    draftAccepted: "Draft {accepted}/{drafted} akzeptiert ({percent}%)",
+    timing: {
+      trigger: "Zeitstatistik der Nachricht",
+      firstToken: "Erstes Token",
+      speedInStep: "Geschwindigkeit (pro Schritt)",
+      effective: "Effektiv",
+      output: "Ausgabe",
+      denoising: "Denoising",
+      stepsOne: "{count} Schritt",
+      steps: "{count} Schritte",
+      blocksOne: "{count} Block",
+      blocks: "{count} Blöcke",
+      canvas: "Canvas",
+      generation: "Generierung",
+      answerTokens: "Antwort-Tokens",
+      prompt: "Prompt",
+      total: "Gesamt",
+      chunks: "Chunks",
+      promptEval: "Prompt-Auswertung",
+      promptSpeed: "Prompt-Geschwindigkeit",
+      speed: "Geschwindigkeit",
+      tokens: "Tokens",
+      draftAccepted: "Draft akzeptiert",
+      denoisingSteps: "Denoising-Schritte",
+      blocksLabel: "Blöcke",
+      cacheHits: "Cache-Treffer",
+      cacheWrites: "Cache-Schreibvorgänge",
+      stopReason: "Stoppgrund",
+      stoppedByYou: "Von dir gestoppt",
+      endOfTurn: "Ende der Antwort",
+      lengthLimit: "Längenlimit",
+      toolCall: "Tool-Aufruf",
+      contentFilter: "Inhaltsfilter",
+    },
+    placement: {
+      title: "Platzierung der Gewichte",
+      allOnCpu: "Alle {total} Schichten auf der CPU",
+      split: "{gpu} von {total} Schichten auf der GPU, {cpu} auf der CPU",
+      allOnGpu: "Alle {total} Schichten auf der GPU",
+      expertCache: "Alle {total} Schichten auf der GPU, alle Experten im RAM ({amount} Experten-Cache auf der GPU)",
+      expertSpillOne: "Alle {total} Schichten auf der GPU, Expertengewichte von {count} Schicht im RAM",
+      expertSpill: "Alle {total} Schichten auf der GPU, Expertengewichte von {count} Schichten im RAM",
+      inUnifiedMemory: "{amount} im Unified Memory",
+      inSharedMemory: "{amount} im gemeinsamen Speicher",
+      inVram: "{amount} im VRAM",
+      inRam: "{amount} im RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;
