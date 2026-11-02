@@ -986,7 +986,7 @@ def _preserve_tokenizer_eos_token(
 
 
 def _source_tokenizer_class(tokenizer, token = None):
-    """The tokenizer_class the checkpoint this tokenizer was loaded from ships, read from its local folder or cached Hub snapshot (no network). Call before saving: an in-place save overwrites the source file."""
+    """Read before an in-place save overwrites the source config; never fetch it."""
     if tokenizer is None:
         return None
     source_tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
@@ -1023,7 +1023,7 @@ def _restore_source_tokenizer_class(
     token = None,
     source_class = None,
 ):
-    """transformers 5.2-5.5 save a fast tokenizer as the generic TokenizersBackend, which transformers 4.x (vLLM 0.17 and older) cannot load. Write back the class the source checkpoint ships. Never fails the save."""
+    """Replace generic TokenizersBackend metadata for Transformers 4.x readers."""
     if tokenizer is None or save_directory is None:
         return
     tokenizer_config_name = (

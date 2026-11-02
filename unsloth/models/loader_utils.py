@@ -4731,12 +4731,15 @@ _LOADED_CACHE_DIR_ATTR = "_unsloth_loaded_cache_dir"
 _LOADED_REVISION_ATTR = "_unsloth_loaded_revision"
 
 
-def _mark_loaded_revision(result, revision):
-    """Stamp the ref a tokenizer/processor was loaded at onto the returned objects."""
-    if revision is None:
+def _mark_loaded_revision(
+    result,
+    revision,
+    cache_dir = None,
+):
+    """Retain the source ref and cache for tokenizer saving."""
+    if revision is None and not cache_dir:
         return result
     for obj in result if isinstance(result, (tuple, list)) else (result,):
-        # Objects that reject new attributes (__slots__) are skipped.
         try:
             targets = (obj, getattr(obj, "tokenizer", None))
         except Exception:
@@ -4745,7 +4748,10 @@ def _mark_loaded_revision(result, revision):
             if target is None:
                 continue
             try:
-                setattr(target, _LOADED_REVISION_ATTR, str(revision))
+                if revision is not None:
+                    setattr(target, _LOADED_REVISION_ATTR, str(revision))
+                if cache_dir:
+                    setattr(target, _LOADED_CACHE_DIR_ATTR, str(cache_dir))
             except Exception:
                 pass
     return result
@@ -5076,7 +5082,9 @@ def _offline_aware_load(fn):
                 return _mark_loaded_local_files_only(fn(*args, **kwargs), kwargs.get("cache_dir"))
         _pb_were_disabled = _progress_bars_were_disabled()
         try:
-            return fn(*args, **kwargs)
+            return _mark_loaded_revision(
+                fn(*args, **kwargs), None, cache_dir = kwargs.get("cache_dir")
+            )
         except Exception as e:
             # Skip if not network-related, or already retried by a nested decorator (else outer layers reload the whole model again).
             if not _is_offline_related_error(e) or getattr(e, "_unsloth_offline_retried", False):
