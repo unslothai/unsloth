@@ -11,8 +11,9 @@ export interface PasteNode {
 
 type Ctx = { pre: boolean; bold: boolean; italic: boolean };
 
+// Everything convert() can turn into Markdown, styled spans included.
 const STRUCTURE =
-  /<a\s[^>]*\bhref|<(?:table|ul|ol|h[1-6]|blockquote|strong|em|del|s|b|i)[\s>]/i;
+  /<a\s[^>]*\bhref|<(?:table|ul|ol|h[1-6]|blockquote|pre|strong|em|del|s|b|i)[\s>]|font-weight:\s*(?:bold|[6-9]00)|font-style:\s*italic/i;
 const SKIP = new Set([
   "SCRIPT", "STYLE", "HEAD", "TITLE", "META", "LINK", "NOSCRIPT", "TEMPLATE",
   "SVG", "BUTTON", "INPUT", "SELECT", "TEXTAREA", "IMG", "PICTURE", "VIDEO",
