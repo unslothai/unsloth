@@ -2350,6 +2350,8 @@ def _decide(
         if checkpoint.layout == "clef":
             return _decide_clef(checkpoint, agent, state, questions)
         laya_questions = {name: _to_laya(q) for name, q in questions.items()}
+        for name, question in laya_questions.items():
+            question["instructions"] = question["instructions"] or str(name)
         try:
             if isinstance(agent, LayaWorker):
                 result, truncated = agent.predict(state, laya_questions)
