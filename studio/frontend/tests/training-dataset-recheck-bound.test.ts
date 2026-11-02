@@ -28,10 +28,7 @@ function usabilityIdentity(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/**
-* Replays the decision sequence in training-config-store.ts runDatasetCheck: begin a validation,
-* let an inventory poll land while it is in flight, then either settle or re-fire. Drives the
-* real tracker and the real retry budget. */
+/** Replays runDatasetCheck's decision sequence in training-config-store.ts. */
 function driveStoreRetryLoop(
   churn: boolean,
   maxIterations = 500,
@@ -55,7 +52,6 @@ function driveStoreRetryLoop(
     partialTransport: null,
   });
 
-  // The generation only advances once a prior inventory row has been seen, the steady state.
   tracker.observe(identity, poll());
 
   for (let i = 0; i < maxIterations; i += 1) {
@@ -66,7 +62,6 @@ function driveStoreRetryLoop(
     if (tracker.rejectValidation(token)) {
       return { requests, terminated: true };
     }
-    // Stale generation: the store re-fires only while the budget allows it, else it falls through.
     if (!claimDatasetCacheRecheck(key)) {
       return { requests, terminated: true };
     }
@@ -84,8 +79,7 @@ test("a settled cache inventory terminates the dataset re-check promptly", () =>
 });
 
 test("a churning cache inventory cannot drive unbounded dataset re-checks", () => {
-  // Regression guard for unslothai/unsloth#7853: while a dataset downloads sizeBytes changes on
-  // every poll, so without a bound the store re-fires forever (measured 480 requests in 60s).
+  // sizeBytes changes on every poll while downloading, so without a bound the store re-fires forever.
   const { requests, terminated } = driveStoreRetryLoop(true);
   assert.ok(
     terminated,
@@ -107,10 +101,9 @@ function selection(overrides: Record<string, unknown> = {}) {
   } as Parameters<typeof datasetCacheRecheckKey>[0];
 }
 
-/** Drain the budget for `key`, returning how many claims it granted. */
 function drain(key: string): number {
   let drained = 0;
-  // Bounded so an unbounded budget fails the assertion instead of hanging the suite.
+  // Bounded so an unbounded budget fails instead of hanging the suite.
   while (drained < 50 && claimDatasetCacheRecheck(key)) {
     drained += 1;
   }
@@ -131,8 +124,7 @@ test("switching dataset selection starts a fresh re-check budget", () => {
   );
 });
 
-// Regression guard: the budget key originally used only dataset + split, so changing either
-// other user-chosen dimension silently inherited an exhausted budget.
+// The budget key must include every user-chosen dimension, not just dataset + split.
 for (const [label, override] of [
   ["subset", { subset: "fr" }],
   ["streaming mode", { streaming: true }],
@@ -149,8 +141,7 @@ for (const [label, override] of [
 }
 
 test("a moving cache path does NOT refresh the budget", () => {
-  // The inverse guard. cachePath is derived state that advances while a dataset downloads; if it
-  // fed the key, every poll would mint a fresh budget and re-arm the #7853 loop.
+  // cachePath advances during a download; keying on it would mint a fresh budget every poll.
   resetDatasetCacheRecheckBudget();
   const key = datasetCacheRecheckKey(selection());
   drain(key);

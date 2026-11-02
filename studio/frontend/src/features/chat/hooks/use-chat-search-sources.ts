@@ -17,16 +17,13 @@ export interface LibrarySearchEntry {
 }
 
 export interface ChatSearchSources {
-  /** The Library has loaded once, so empty lists are really empty. */
   ready: boolean;
   files: LibrarySearchEntry[];
-  /** Fine-tuned models live in the Library, not the Hub. */
   fineTunes: LibrarySearchEntry[];
 }
 
 const EMPTY: ChatSearchSources = { ready: false, files: [], fineTunes: [] };
 
-/** Library items for search. The store loads on first open, not with the app. */
 export function useChatSearchSources(open: boolean): ChatSearchSources {
   const [sources, setSources] = useState<ChatSearchSources>(EMPTY);
 
@@ -83,7 +80,6 @@ export function useChatSearchSources(open: boolean): ChatSearchSources {
 
 const isSettled = (status: string) => status === "ready" || status === "error";
 
-/** Last opened or changed. */
 export function libraryTime(item: LibraryItem): number {
   return Math.max(item.openedAt ?? 0, item.updatedAt);
 }

@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// `archivedRequested` and `scrollTarget` are one-shot deep-link requests, cleared only by
-// the panel that performs the jump. Panels load on first view, so a navigation can move
-// before the chunk arrives: clearing too widely loses a deep-link still being served,
-// too narrowly replays a stale one. Both live while the dialog is open on their tab.
+// One-shot deep-link requests; panels lazy-load, so clearing too widely or narrowly breaks.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -54,7 +51,6 @@ test("an ordinary open does not inherit an abandoned deep-open", () => {
 });
 
 test("reselecting Data navigates nowhere, so the deep-open still stands", () => {
-  // The nav button fires on the active tab too, and the panel is still on the wire.
   reset();
   store.getState().openArchivedChats();
   store.getState().setActiveTab("data");

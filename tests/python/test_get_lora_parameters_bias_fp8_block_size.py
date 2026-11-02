@@ -2,7 +2,7 @@ import ast
 from pathlib import Path
 
 
-_HELPERS = ("_packed_base", "_is_packed_state")
+_HELPERS = ("_packed_base", "_is_packed_state", "_base_quant_state")
 
 
 def _load_function(name):
@@ -15,7 +15,7 @@ def _load_function(name):
         if isinstance(node, ast.FunctionDef) and node.name in (name, *_HELPERS)
     ]
     assert [f.name for f in funcs].count(name) == 1, (name, funcs)
-    namespace = {"getattr": getattr, "_FP8_WEIGHT_DTYPES": ()}
+    namespace = {"getattr": getattr, "_FP8_WEIGHT_DTYPES": (), "_FSDP2_QLORA_PREPARED": True}
     module = ast.Module(body = funcs, type_ignores = [])
     ast.fix_missing_locations(module)
     exec(compile(module, str(source), "exec"), namespace)

@@ -46,7 +46,6 @@ _SPLIT_AXIS_ABORT = (
     "#3 ggml_backend_sched_split_graph ()"
 )
 
-# Same reserve frames, different assert.
 _CUDA_OOM_ABORT = "\n".join(
     [
         "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 23810.00 MiB on device 0: "
@@ -59,7 +58,6 @@ _CUDA_OOM_ABORT = "\n".join(
         "#6  llama_context::sched_reserve() () from libllama.so",
     ]
 )
-# Other aborts inside split_graph (ggml-backend.cpp) share its frame.
 _CONTEXT_INIT_ABORT = (
     "ggml/src/ggml-backend.cpp:1082: ggml_backend_sched_split_graph: failed to initialize context\n"
     "#2  ggml_abort ()\n#3  ggml_backend_sched_split_graph ()"
@@ -102,7 +100,7 @@ def test_classifier_surfaces_actionable_message():
     )
     assert msg == LlamaCppBackend._sched_reserve_abort_message()
     assert "cur_backend_id" in msg
-    assert "failed to start" not in msg  # not the generic fallback
+    assert "failed to start" not in msg
 
 
 def test_classifier_generic_fallback_unchanged_for_unknown_crash():
@@ -145,7 +143,7 @@ def test_memo_invalidated_by_binary_mtime_change(tmp_path):
 def test_memo_safe_with_missing_binary_or_model():
     assert not LlamaCppBackend._sched_reserve_aborts(None, "m")
     assert not LlamaCppBackend._sched_reserve_aborts("/x", None)
-    LlamaCppBackend._record_sched_reserve_abort(None, None)  # no-op, no raise
+    LlamaCppBackend._record_sched_reserve_abort(None, None)
 
 
 _REAL_POPEN = subprocess.Popen
@@ -188,7 +186,6 @@ class _Crashing:
         b._apply_detected_audio = lambda _detected: True
 
         def crashed(timeout, **_kw):
-            # As the real wait does on exit: let the drain thread collect the tail.
             if b._stdout_thread is not None:
                 b._stdout_thread.join(timeout = 2)
             return False
@@ -197,8 +194,8 @@ class _Crashing:
         self.backend = b
         self.gguf = _write_gguf(tmp_path / "model.gguf")
         self.spawns = 0
-        self.outputs = None  # per-spawn output override, consumed in order
-        self.projector_fails = False  # --mmproj spawns fail without the abort
+        self.outputs = None
+        self.projector_fails = False
 
     def load(self, **load_kwargs) -> str:
         def fake_popen(cmd, **kwargs):

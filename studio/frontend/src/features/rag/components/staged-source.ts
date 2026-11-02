@@ -3,8 +3,6 @@
 
 import type { NativeIntent } from "@/features/native-intents";
 
-/** A source picked before the project exists, held until create commits. A
- * desktop drop has no File, only a path token the backend redeems at upload. */
 export interface StagedSource {
   id: string;
   name: string;
@@ -14,7 +12,7 @@ export interface StagedSource {
   upload: File | { nativeToken: string; expiresAtMs: number };
 }
 
-// Client-side dedup key; backend dedups authoritatively by content hash.
+// Client-side dedup key; the backend dedups authoritatively by content hash.
 export function sourceSignature(entry: StagedSource): string {
   return entry.dedupKey;
 }
@@ -42,8 +40,7 @@ export function stagedFromIntent(intent: NativeIntent): StagedSource {
     name: displayLabel,
     size: sizeBytes ?? 0,
     modifiedMs: modifiedMs ?? 0,
-    // Coercing absent metadata to 0 would collapse every same-named file into
-    // one key, so fall back to the token, which is unique per registration.
+    // Absent metadata as 0 would collapse same-named files, so fall back to the unique token.
     dedupKey:
       sizeBytes == null || modifiedMs == null
         ? `token:${token}`
@@ -52,9 +49,7 @@ export function stagedFromIntent(intent: NativeIntent): StagedSource {
   };
 }
 
-/** Native path tokens are pruned on a fixed TTL, so a staged desktop drop can
- * go stale while the dialog sits open. Treat a token about to lapse as already
- * gone rather than redeeming it and failing after the project exists. */
+/** Treat a native path token about to lapse as already gone. */
 export const EXPIRY_GRACE_MS = 30_000;
 
 export function nativeExpiryMs(entry: StagedSource): number | null {
@@ -66,8 +61,6 @@ export function isExpired(entry: StagedSource, now: number): boolean {
   return expiry !== null && expiry - EXPIRY_GRACE_MS <= now;
 }
 
-/** Merge a selection into the staged list, reporting what it would not take so
- * the caller can say so once instead of dropping it silently. */
 export function addStagedSources(
   staged: StagedSource[],
   incoming: StagedSource[],

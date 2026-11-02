@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
+import { SegmentedPill } from "@/components/segmented-control";
 import {
   Select,
   SelectContent,
@@ -23,11 +24,11 @@ import { SettingsSection } from "./settings-section";
 
 export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
   const t = useT();
+  const pillId = useId();
   const prefs = useChatPreferencesStore();
   const ref = useRef<HTMLDivElement>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const labels = composerShortcutLabels(prefs.sendShortcut, isMacPlatform());
-  // The multiline mode's chord changes once the prompt has a line break.
   const multiline = composerShortcutLabels(prefs.sendShortcut, isMacPlatform(), "\n");
   const oppositeShortcut =
     labels.opposite === multiline.opposite
@@ -61,7 +62,7 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
           className={
             embedded
               ? ""
-              : "mt-2 divide-y divide-border/60 rounded-2xl border border-border/60 bg-muted/20 px-4"
+              : "mt-2 divide-y divide-border/60 rounded-xl border border-border/60 bg-muted/20 px-4"
           }
         >
           <SettingsRow
@@ -102,7 +103,6 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
             })}
             hint={t("composerSettings.steerDescription")}
           >
-            {/* Shared track + pill selector, as on the API key expiry row. */}
             <div
               className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
               role="group"
@@ -115,12 +115,15 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
                   aria-pressed={prefs.followUpBehavior === behavior}
                   onClick={() => prefs.setFollowUpBehavior(behavior)}
                   className={cn(
-                    "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                    "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                     prefs.followUpBehavior === behavior
-                      ? "hub-tab-toggle-pill text-foreground"
+                      ? "text-foreground"
                       : "text-muted-foreground hover:text-foreground",
                   )}
                 >
+                  {prefs.followUpBehavior === behavior && (
+                    <SegmentedPill group={`${pillId}-follow-up`} />
+                  )}
                   {t(
                     behavior === "queue"
                       ? "composerSettings.queue"

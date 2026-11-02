@@ -26,8 +26,14 @@ import {
 } from "@/features/chat";
 import { translate, useLocale, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { Delete02Icon } from "@hugeicons/core-free-icons";
-import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { TrashIcon } from "@/lib/hugeicons-derived";
+import { MoreHorizontalIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -223,13 +229,13 @@ export function ArchivedChatsView() {
             : t("settings.data.library.unarchiveAll")}
         </Button>
         <Button
-          variant="ghost"
+          variant="destructive"
           size="sm"
           className="text-destructive hover:bg-destructive/10 hover:text-destructive"
           disabled={busy || filtered.length === 0}
           onClick={() => requestDelete(filtered, true)}
         >
-          <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-4" />
+          <HugeiconsIcon icon={TrashIcon} className="mr-1.5 size-4" />
           {narrowed
             ? t("settings.data.library.deleteResults")
             : t("settings.data.deleteAllAction")}
@@ -245,6 +251,47 @@ export function ArchivedChatsView() {
         <ChatLibraryGroups
           items={filtered.slice(0, visibleCount)}
           projects={projectNames}
+          groupActions={(group) => {
+            // Every match in the group, not only the rows shown so far.
+            const groupItems = filtered.filter(
+              (item) => (item.projectId ?? "") === group.id,
+            );
+            return (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild={true}>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    disabled={busy}
+                    className="shrink-0 rounded-full text-muted-foreground"
+                    aria-label={t("settings.data.library.groupActions", {
+                      group: group.name,
+                    })}
+                  >
+                    <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    onSelect={() => void run(groupItems, "restore")}
+                  >
+                    {group.id
+                      ? t("settings.data.library.unarchiveAllInProject")
+                      : t("settings.data.library.unarchiveAll")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onSelect={() => requestDelete(groupItems, true)}
+                  >
+                    <HugeiconsIcon icon={TrashIcon} className="size-4" />
+                    {group.id
+                      ? t("settings.data.library.deleteAllInProject")
+                      : t("settings.data.deleteAllAction")}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            );
+          }}
         >
           {(item) => (
             <LibraryRow
@@ -253,12 +300,6 @@ export function ArchivedChatsView() {
                 filters.sort === "updated" ? item.updatedAt : item.createdAt
               }
               onOpen={() => openChat(item)}
-              leading={
-                <HugeiconsIcon
-                  icon={MessageCircleIcon}
-                  className="size-4 shrink-0 text-muted-foreground"
-                />
-              }
               actions={
                 <>
                   <Button
@@ -272,7 +313,7 @@ export function ArchivedChatsView() {
                     title={t("shell.dialog.deleteChat.title")}
                     className="text-muted-foreground hover:text-destructive"
                   >
-                    <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                    <HugeiconsIcon icon={TrashIcon} className="size-4" />
                   </Button>
                   <Button
                     variant="ghost"
@@ -282,7 +323,7 @@ export function ArchivedChatsView() {
                     aria-label={t("settings.data.library.unarchiveItem", {
                       title: item.title,
                     })}
-                    className="rounded-xl bg-muted/60 hover:bg-muted"
+                    className="rounded-full bg-muted/60 hover:bg-muted"
                   >
                     {t("settings.data.library.unarchive")}
                   </Button>
@@ -327,12 +368,13 @@ export function ArchivedChatsView() {
                   })}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {confirmingDelete.length === 1 && (
-                <>{confirmingDelete[0]?.title}. </>
-              )}
-              {t("settings.data.library.deleteArchivedWarning", {
-                count: confirmingDelete.length,
-              })}
+              {confirmingDelete.length === 1
+                ? t("shell.dialog.deleteChat.description", {
+                    name: confirmingDelete[0]?.title ?? "",
+                  })
+                : t("settings.data.library.deleteArchivedWarning", {
+                    count: confirmingDelete.length,
+                  })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <fieldset disabled={busy}>

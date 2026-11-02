@@ -221,11 +221,9 @@ def test_a_saved_voice_clones_on_speak_and_an_edit_never_clones(started, monkeyp
     backend.generate_audio_response("Hi.", workflow = "speak", audio_inputs = {"reference": REF})
     ((path, body),) = backend._server.calls
     assert path == "/v1/audio/speech" and body["voice_ref"] == REF
-    # A model that cannot edit refuses before any call.
     with pytest.raises(RuntimeError, match = "cannot edit speech"):
         _edit(backend, {"mode": "words"})
     assert len(backend._server.calls) == 1 and started == []
-    # An edit carries audio_inputs too; that must not make it a clone.
     no_clone = staticmethod(lambda *_a, **_k: pytest.fail("an edit took the clone path"))
     monkeypatch.setattr(acb.AudioCppBackend, "_generate_clone", no_clone)
     for family, edit in (
@@ -256,7 +254,6 @@ def test_markup_sides_and_check_markup():
     assert audio_edit.markup_sides(MARKUP) == (ORIGINAL, EDITED)
     assert audio_edit.markup_sides("what you <del>just</del> heard <ins>really</ins> wasn't") == (
         "what you just heard wasn't", "what you heard really wasn't")
-    # Anything but the three tags, or a tag left open, is refused.
     for bad in ("a <b>human</b> voice", 'a <sub targ="robot">human voice', 'a <sub targ="x" onload="y">human</sub>', "a > b"):
         assert audio_edit.markup_sides(bad) is None
         assert audio_edit.check_markup(bad, ORIGINAL, EDITED) == audio_edit.MISMATCH
@@ -282,7 +279,6 @@ def test_check_instructions():
         (["replace 'human' with 'robot'."], EDITED, unknown),
         (["Speak faster."], EDITED, unknown),
         (["Replace 'human' with 'robot'. Replace 'Cemo' with 'Sam'.x"], EDITED, unknown),
-        # Words that are not in the transcripts.
         (["Replace 'alien' with 'robot'."], EDITED, mismatch),
         (["Replace 'human' with 'cat'."], EDITED, mismatch),
         (["Replace 'Cemo' with 'human'."],

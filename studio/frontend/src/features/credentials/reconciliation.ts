@@ -47,8 +47,7 @@ export async function reconcileLegacyHfToken<T extends HfCredentialStatus>(
   try {
     migrated = await dependencies.saveLegacyToken(legacyToken);
   } catch (error) {
-    // Keep upgraded users working from their retained legacy token while the
-    // backend is unavailable. The caller still sees the failure and can retry.
+    // Keep the legacy token working while the backend is unavailable.
     dependencies.applyToken(legacyToken);
     throw error;
   }
@@ -126,7 +125,6 @@ export interface CredentialBootstrapDependencies<T> {
   isCurrent?: () => boolean;
 }
 
-/** Wait for both server-first reconciliations before releasing app content. */
 export async function runCredentialBootstrap<T>(
   dependencies: CredentialBootstrapDependencies<T>,
 ): Promise<void> {

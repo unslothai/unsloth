@@ -27,8 +27,6 @@ test("the first measured byte is determinate", () => {
 });
 
 test("a nonzero fraction alone is determinate too", () => {
-  // resolveProgressUpdate keeps GGUF fractions monotonic, so a fraction can
-  // lead the byte counter; that is a measurement, not a stall.
   assert.equal(
     isIndeterminateProgress({ downloadedBytes: 0, fraction: 0.4 }),
     false,
@@ -36,8 +34,6 @@ test("a nonzero fraction alone is determinate too", () => {
 });
 
 test("a pending cancellation is not transfer activity", () => {
-  // The row still renders the bar while cancelling, above a "Cancelling..."
-  // status; an animated "Transferring..." there would contradict it.
   assert.equal(
     isIndeterminateProgress({ downloadedBytes: 0, fraction: 0 }, true),
     false,

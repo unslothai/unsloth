@@ -14,14 +14,12 @@ const rows = ["a", "b", "c", "d"];
 
 test("shift click takes the block between anchor and row, either way round", () => {
   assert.deepEqual(rangeBetween(rows, "b", "d"), ["b", "c", "d"]);
-  // Dragging the selection upward covers the same rows.
   assert.deepEqual(rangeBetween(rows, "d", "b"), ["b", "c", "d"]);
   assert.deepEqual(rangeBetween(rows, "c", "c"), ["c"]);
 });
 
 test("a lost anchor selects only the clicked row", () => {
-  // The anchored chat was deleted or moved to another list; selecting a block
-  // from nothing would grab rows the user never pointed at.
+  // Selecting from a missing anchor would grab rows the user never pointed at.
   assert.deepEqual(rangeBetween(rows, "gone", "c"), ["c"]);
   assert.deepEqual(rangeBetween(rows, "a", "gone"), []);
 });
@@ -43,7 +41,6 @@ test("pinning a selection leads with the new pins and keeps the rest", () => {
   usePinnedChatsStore.getState().setPinned(["a", "b"], true);
   assert.deepEqual(usePinnedChatsStore.getState().pinnedIds, ["a", "b", "old"]);
 
-  // Pinning again must not duplicate, and must not reshuffle.
   usePinnedChatsStore.getState().setPinned(["a", "old"], true);
   assert.deepEqual(usePinnedChatsStore.getState().pinnedIds, ["a", "b", "old"]);
 

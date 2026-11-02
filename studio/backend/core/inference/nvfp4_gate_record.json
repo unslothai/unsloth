@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "comment": "Reviewed NVFP4 accuracy-gate verdicts, one entry per (family, base_repo, policy_id, policy_version, checkpoint_sha256). One entry says that ONE published checkpoint rendered the gate's prompt/resolution pairs within the recorded thresholds of its dense reference, on the backend, GPU and toolchain the entry names. Read by core/inference/diffusion_nvfp4_gate.py, which re-derives the verdict rather than trusting it as stored. Entries are measured out of band and committed after review; nothing writes this file at run time. Empty means no checkpoint has been gated yet, which keeps nvfp4 out of the auto ladder for every family.",
+  "comment": "Reviewed NVFP4 accuracy-gate verdicts, one entry per (family, base_repo, policy_id, policy_version, checkpoint_sha256). One entry says that ONE published checkpoint rendered the gate's prompt/resolution pairs within the recorded thresholds of its dense reference, on the backend, GPU and toolchain the entry names. Read by core/inference/diffusion_nvfp4_gate.py, which re-derives the verdict rather than trusting it as stored. Entries are measured out of band and committed after review; nothing writes this file at run time. Empty means no checkpoint has been gated yet, which keeps nvfp4 out of the auto ladder for every family. versions.flashinfer is the version a record was measured on; versions.flashinfer_bit_identical lists versions whose NVFP4 quantize + GEMM outputs were shown bit-identical on the gated checkpoints' own layers (0.6.6 vs 0.6.18.post1, B200: 144 of 144 layer / M cases, 36 on each of the four gated checkpoints). On any other installed flashinfer, or one whose version cannot be read, auto does not take a gated nvfp4 head, and an explicit nvfp4 load that moves layers onto flashinfer logs one warning.",
   "records": [
     {
       "family": "z-image",
@@ -44,7 +44,10 @@
         "torch": "2.12.1+cu130",
         "torchao": "0.18.0",
         "diffusers": "0.41.0.dev0",
-        "flashinfer": "0.6.18.post1"
+        "flashinfer": "0.6.18.post1",
+        "flashinfer_bit_identical": [
+         "0.6.6"
+        ]
       },
       "gate_script_sha256": "d0b423658874f8430b1508f839cbc7fe39b1ee04d73931ffe4f24c444b11d3b5",
       "run_date": "2026-09-24",
@@ -121,7 +124,10 @@
         "torch": "2.12.1+cu130",
         "torchao": "0.18.0",
         "diffusers": "0.41.0.dev0",
-        "flashinfer": "0.6.18.post1"
+        "flashinfer": "0.6.18.post1",
+        "flashinfer_bit_identical": [
+         "0.6.6"
+        ]
       },
       "gate_script_sha256": "d0b423658874f8430b1508f839cbc7fe39b1ee04d73931ffe4f24c444b11d3b5",
       "run_date": "2026-09-24",
@@ -198,7 +204,10 @@
         "torch": "2.12.1+cu130",
         "torchao": "0.18.0",
         "diffusers": "0.41.0.dev0",
-        "flashinfer": "0.6.18.post1"
+        "flashinfer": "0.6.18.post1",
+        "flashinfer_bit_identical": [
+         "0.6.6"
+        ]
       },
       "gate_script_sha256": "d0b423658874f8430b1508f839cbc7fe39b1ee04d73931ffe4f24c444b11d3b5",
       "run_date": "2026-09-24",
@@ -275,7 +284,10 @@
         "torch": "2.12.1+cu130",
         "torchao": "0.18.0",
         "diffusers": "0.41.0.dev0",
-        "flashinfer": "0.6.18.post1"
+        "flashinfer": "0.6.18.post1",
+        "flashinfer_bit_identical": [
+         "0.6.6"
+        ]
       },
       "gate_script_sha256": "d0b423658874f8430b1508f839cbc7fe39b1ee04d73931ffe4f24c444b11d3b5",
       "run_date": "2026-09-24",

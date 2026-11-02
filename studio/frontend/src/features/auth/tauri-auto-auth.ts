@@ -11,7 +11,7 @@ import {
   setMustChangePassword,
   storeAuthTokens,
 } from "./session";
-import { refreshSession } from "./api";
+import { refreshSession, refreshSessionOutcome } from "./api";
 import { sessionAccount } from "./account-session";
 import { fetchAuthStatus } from "./login-client";
 import {
@@ -21,20 +21,32 @@ import {
 
 type DesktopAuthResponse =
   | { access_token: string; refresh_token: string }
-  | { login_required: true; login_mode: "multi" };
+  | { login_required: true; login_mode: "multi" }
+  | { signed_out: true };
 
 type TauriAutoAuthOptions = {
   force?: boolean;
 };
 
-// Concurrency guard: multiple route guards can call tauriAutoAuth at once;
-// without this the first-launch password-change could race with itself.
+// Route guards can call this concurrently; dedupe so first-launch password change cannot race.
 let pending: { promise: Promise<boolean>; force: boolean } | null = null;
 let lastTauriAuthFailure: string | null = null;
 let tauriLoginRequired = false;
 
 export function isTauriLoginRequired(): boolean {
   return tauriLoginRequired;
+}
+
+// A shell marker file, not localStorage: WebView2 writes lazily, so a quick quit lost the sign-out.
+export async function markDesktopSignedOut(): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("desktop_mark_signed_out");
+  tauriLoginRequired = true;
+}
+
+export async function clearDesktopSignedOut(): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("desktop_clear_signed_out");
 }
 
 const TAURI_AUTH_FAILURE_FALLBACK =
@@ -73,7 +85,6 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
     return true;
   }
 
-  // Try refreshing an existing session.
   if (!options.force && hasRefreshToken()) {
     const refreshed = await refreshSession();
     if (refreshed && hasAuthToken() && !mustChangePassword()) {
@@ -85,16 +96,32 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const tokens = await invoke<DesktopAuthResponse>("desktop_auth");
+    if ("signed_out" in tokens) {
+      tauriLoginRequired = true;
+      clearAuthTokens();
+      clearTauriAuthFailure();
+      const { router } = await import("@/app/router");
+      await router.navigate({ to: "/login", replace: true });
+      return options.force === true;
+    }
     if ("login_required" in tokens) {
       tauriLoginRequired = true;
       // A managed account signs in in the document; do not discard the session it holds.
-      if (hasRefreshToken() && (await refreshSession()) && hasAuthToken()) {
+      const outcome = hasRefreshToken()
+        ? await refreshSessionOutcome()
+        : "rejected";
+      if (outcome === "ok" && hasAuthToken()) {
         clearTauriAuthFailure();
         if (mustChangePassword()) {
           const { router } = await import("@/app/router");
           await router.navigate({ to: "/change-password", replace: true });
         }
         return true;
+      }
+      // Keep the session; the forced startup probe still releases the startup screen.
+      if (outcome === "unavailable") {
+        clearTauriAuthFailure();
+        return options.force === true;
       }
       clearAuthTokens();
       clearTauriAuthFailure();
@@ -104,29 +131,31 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
       return options.force === true;
     }
     tauriLoginRequired = false;
-    // The secret answers for the shell, not for whoever signed in to the document: a managed
-    // session that still refreshes keeps the webview, as it does on the login_required path.
     if (
       sessionAccount(getAuthToken())?.isOwner === false &&
-      hasRefreshToken() &&
-      (await refreshSession()) &&
-      hasAuthToken()
+      hasRefreshToken()
     ) {
-      tauriLoginRequired = true;
-      clearTauriAuthFailure();
-      if (mustChangePassword()) {
-        const { router } = await import("@/app/router");
-        await router.navigate({ to: "/change-password", replace: true });
+      const outcome = await refreshSessionOutcome();
+      if (outcome === "unavailable") {
+        tauriLoginRequired = true;
+        clearTauriAuthFailure();
+        return options.force === true;
       }
-      return true;
+      if (outcome === "ok" && hasAuthToken()) {
+        tauriLoginRequired = true;
+        clearTauriAuthFailure();
+        if (mustChangePassword()) {
+          const { router } = await import("@/app/router");
+          await router.navigate({ to: "/change-password", replace: true });
+        }
+        return true;
+      }
     }
     // Owner tokens after the last managed account is deleted must not inherit its browser data.
     await transitionBrowserAccount(OWNER_BROWSER_ACCOUNT, "/chat", () => {
       storeAuthTokens(tokens.access_token, tokens.refresh_token);
       setMustChangePassword(false);
     });
-    // Owner tokens no longer imply a one-account install: the owner keeps signing in while the
-    // bootstrap password stands, so the login mode has to come from the server.
     await fetchAuthStatus().catch(() => undefined);
     clearTauriAuthFailure();
     return true;
@@ -157,4 +186,10 @@ export function tauriAutoAuth(
     );
   }
   return pending.promise;
+}
+
+export async function continueAsDesktopOwner(): Promise<boolean> {
+  await clearDesktopSignedOut();
+  await tauriAutoAuth({ force: true });
+  return !tauriLoginRequired && hasAuthToken();
 }

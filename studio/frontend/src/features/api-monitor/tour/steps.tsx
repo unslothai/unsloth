@@ -11,19 +11,21 @@ export const apiMonitorTourSteps: TourStep[] = [
     body: (
       <>
         Unsloth serves an OpenAI-compatible API. Point any client at this base
-        URL, keep the model name the same, and it works. Status and queue slots
-        sit beside it.
+        URL and send the model name shown below it. Context and queue slots sit
+        beside the model.
       </>
     ),
   },
   {
     id: "toolbar",
     target: "api-toolbar",
-    title: "Controls",
+    title: "Model controls",
     body: (
       <>
-        Pause the live feed to read a request without it scrolling away. Unload
-        frees the model's VRAM. API settings is where you create keys.
+        Load or switch the model the API serves, reload the last one, or eject
+        it to free memory. Each model's row below opens its run settings and an
+        API example. Keys and other API options are under API settings at the
+        top.
       </>
     ),
   },
@@ -33,9 +35,9 @@ export const apiMonitorTourSteps: TourStep[] = [
     title: "Request log",
     body: (
       <>
-        Pick a request on the left to see its prompt, reply, token counts and
-        any error on the right. Search and the status filter above narrow it
-        down.
+        Pick a request to see its prompt, reply, token counts and any error.
+        Search and the status filter narrow the list, and Live pauses the feed
+        so a request does not scroll away.
       </>
     ),
   },

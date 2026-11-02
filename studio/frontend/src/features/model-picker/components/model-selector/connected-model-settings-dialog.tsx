@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One connected model's own settings. The system prompt and output cap are not a new store: Chat
-// has remembered both per model for as long as "Remember settings per model" has been on, under
-// the same checkpoint id. This just makes that memory visible and editable from the row.
-//
-// Reasoning effort is the one new value here; the chat's own is a single global level.
+// System prompt and output cap reuse Chat's per-model memory under the same checkpoint id.
 
 import { Button } from "@/components/ui/button";
 import {
@@ -45,7 +41,7 @@ import {
 import { useState, useSyncExternalStore } from "react";
 import { useModelReasoningEffortStore } from "./model-reasoning-effort";
 
-/** Follows the chat's own level. A Select cannot carry an empty value, so absence needs a name. */
+/** A Select cannot carry an empty value, so absence needs a name. */
 const FOLLOW_CHAT = "__follow_chat__";
 
 export function ConnectedModelSettingsDialog({
@@ -66,12 +62,10 @@ export function ConnectedModelSettingsDialog({
   /** The `external::` id, which is what both memories key on. */
   checkpointId: string;
   displayName: string;
-  /** The provider's own id, for the catalogue lookup. */
   modelId: string;
   providerType: string;
   apiType?: ProviderApiType;
   baseUrl?: string | null;
-  /** A vLLM connection flagged as serving a reasoning model. */
   isReasoningProvider?: boolean;
   reasoningConfig?: CustomReasoningConfig;
   /** The connection's own output cap, which lowers the model's documented one. */
@@ -86,10 +80,8 @@ export function ConnectedModelSettingsDialog({
   const setRememberedParamsForModel = useChatRuntimeStore(
     (state) => state.setRememberedParamsForModel,
   );
-  // The chat's own cap, which is what a model with none of its own runs at.
   const chatMaxTokens = useChatRuntimeStore((state) => state.params.maxTokens);
-  // Whether this is the model currently loaded, which decides whether an edit has to reach the
-  // live settings as well as the memory.
+  // A live model's edits must reach the live settings as well as the memory.
   const isLiveModel = useChatRuntimeStore(
     (state) => state.params.checkpoint === checkpointId,
   );
@@ -100,26 +92,20 @@ export function ConnectedModelSettingsDialog({
     (state) => state.setModelReasoningEffort,
   );
 
-  // The resolver behind the composer's own Thinking control, not the catalogue alone, so the
-  // levels offered here are the ones the provider actually accepts. "none" is the off switch.
   const reasoning = getExternalReasoningCapabilities(providerType, modelId, {
     isReasoningProvider,
     reasoningConfig,
     baseUrl,
     apiType,
   });
-  // Offered only where a level is actually sent: the default low/medium/high ladder is present
-  // even for a model whose style carries a bare thinking on/off, so gating on supportsReasoning
-  // alone let a pin be set on Kimi that no request could ever carry.
+  // Only where a level is actually sent: the default ladder exists even for on/off-only styles.
   const efforts = externalReasoningTakesEffort(reasoning)
     ? reasoning.reasoningEffortLevels.filter((level) => level !== "none")
     : [];
 
-  // An OpenRouter cap comes from the live catalogue, which can land after this renders, and the
-  // bounds below are read from it.
+  // The OpenRouter cap comes from the live catalogue, which can land after this renders.
   useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
-  // The bounds the chat's own Max Tokens control uses and the adapter clamps every request to, so
-  // a value stored here cannot differ from the one the provider is actually sent.
+  // Same bounds the adapter clamps every request to.
   const minCap = getExternalMinOutputTokens(providerType);
   const maxCap = getExternalMaxOutputTokens(
     providerType,
@@ -129,18 +115,13 @@ export function ConnectedModelSettingsDialog({
   const clampCap = (value: number) =>
     Math.min(Math.max(value, minCap), maxCap);
 
-  // null is untouched, so an untouched field keeps reading the store and Save writes nothing for
-  // it. The dialog can open before chat settings hydrate, and a useState seeded from the empty
-  // store then held that emptiness after the response landed, so Save put it back over the prompt
-  // the server had. A pin another tab changes while this is open reads the same way.
+  // null means untouched: keeps reading the store and Save writes nothing, so a pre-hydration
+  // open or another tab's change is not overwritten.
   const [promptDraft, setPromptDraft] = useState<string | null>(null);
   const [capDraft, setCapDraft] = useState<string | null>(null);
   const [effortDraft, setEffortDraft] = useState<string | null>(null);
   const systemPrompt = promptDraft ?? remembered?.systemPrompt ?? "";
-  // Against the ladder as it stands now, since the catalogue subscription below can withdraw a
-  // level while this is open. A draft the model no longer offers reverts to what is stored and
-  // Save leaves the pin alone, rather than writing a level every resolver then refuses. A stored
-  // pin the ladder dropped reads as Follow chat for the same reason: that is what it now does.
+  // A level the ladder dropped reverts to stored / reads as Follow chat, so Save never writes it.
   const offered = (level: string): boolean =>
     (efforts as readonly string[]).includes(level);
   const liveEffortDraft =
@@ -150,29 +131,21 @@ export function ConnectedModelSettingsDialog({
   const effort =
     liveEffortDraft ??
     (pinnedEffort && offered(pinnedEffort) ? pinnedEffort : FOLLOW_CHAT);
-  // Always a real number. A blank would have to mean "forget the cap", and nothing can express
-  // that: paramsByModel merges per key here and the settings row deep-merges on the server, so an
-  // omitted key keeps the old value and the clear would be dropped without saying so.
+  // Always a real number: per-key merges cannot express clearing the cap.
   const maxTokens =
     capDraft ?? String(clampCap(remembered?.maxTokens ?? chatMaxTokens));
 
   function save() {
-    // Number, not parseInt: a number field accepts scientific notation, and parseInt stops at the
-    // "e", so 1e5 read as 1 and was saved clamped to the provider minimum. Rounded because the
-    // cap is a token count and the field admits a decimal.
+    // Number, not parseInt: parseInt reads 1e5 as 1.
     const typedCap = Math.round(Number(maxTokens.trim()));
-    // Only what the user actually touched: this is a patch, and writing an untouched field would
-    // put whatever the dialog happened to be showing over the stored value.
+    // Patch only touched fields.
     setRememberedParamsForModel(checkpointId, {
       ...(promptDraft !== null ? { systemPrompt: promptDraft } : {}),
-      // A blank or junk field leaves the cap alone rather than sending a zero as the limit.
       ...(capDraft !== null && Number.isFinite(typedCap) && typedCap > 0
         ? { maxTokens: clampCap(typedCap) }
         : {}),
     });
-    // Untouched writes nothing at all: another tab can change this pin while the dialog is open,
-    // and a save of an unrelated field would otherwise put the value this select opened with back
-    // over it. It would also reset the composer's own Think level for no reason.
+    // Untouched writes nothing, so another tab's pin is not overwritten.
     if (liveEffortDraft !== null) {
       const pinned = liveEffortDraft === FOLLOW_CHAT ? null : liveEffortDraft;
       setModelReasoningEffort(checkpointId, pinned);

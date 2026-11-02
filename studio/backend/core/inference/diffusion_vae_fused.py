@@ -1,20 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Triton-fused GroupNorm / channel RMS norm for eagerly decoded image and video VAEs.
-
-CUDA GroupNorm has no channels-last kernel, so every norm copies NHWC <-> NCHW; these kernels read any layout,
-write channels-last with fp32 statistics. ``install(vae)`` patches instances (never classes), each falling back
-to stock on a new exception. NVIDIA CUDA + Triton >= 3.3 only; ``UNSLOTH_VAE_FUSED=0`` disables.
-"""
+"""Triton GroupNorm/RMS norm for eager VAE decode (NVIDIA CUDA, Triton>=3.3); patches instances
+never classes; falls back to stock on new exception; UNSLOTH_VAE_FUSED=0 off"""
 
 from __future__ import annotations
 
 import os
 import sys
+import threading
 import types
 from functools import lru_cache
 from typing import Any, Optional
+
+from .rocm_bf16 import is_rocm_torch
 
 VAE_FUSED_ENV = "UNSLOTH_VAE_FUSED"
 _FALSE = ("0", "false", "no", "off")
@@ -50,8 +49,7 @@ def _toolchain_ok() -> bool:
         return True
 
 
-# Loop-bound-only args are not specialized (else ~70 JIT variants on a tiled Wan decode); strides and C stay
-# specialized so channel-contiguous loads vectorize.
+# Loop-bound args not specialized (avoids ~70 JIT variants); strides and C stay specialized so channel-contiguous loads vectorize.
 _SHAPE_ARGS = {
     "_rms_act": ("T", "H", "W", "Ho", "Wo", "ph", "pw", "To", "front", "n_cache"),
     "_bias_residual": ("P", "T", "HW", "W"),
@@ -453,7 +451,7 @@ def runtime_ok() -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+    if not torch.cuda.is_available() or is_rocm_torch(torch):
         return False
     return _triton_version_ok() and _toolchain_ok() and _kernels() is not None
 
@@ -504,17 +502,29 @@ def _torch():
     return torch
 
 
+def _stock_in(t: Any) -> Any:
+    """A kernel input as the kernel may read it."""
+    cls = globals().get("_FusedActCls")
+    if cls is None or type(t) is not cls:
+        return t
+    if t.__dict__.get("_unsloth_is_stock", False):
+        return _plain(t)
+    t._unsloth_abort()
+
+
 def group_norm_act(
     x: Any,
     norm: Any,
     act: bool = True,
     in_bias: Any = None,
+    on_kernel: Any = None,
 ) -> Any:
-    """``silu?(group_norm(x + in_bias))`` for 3/4/5-D ``x``; channels-last output; 5-D stats span T like nn.GroupNorm."""
+    """``silu?(group_norm(x + in_bias))`` for 3/4/5-D ``x``; channels-last output; 5-D stats span T like nn.GroupNorm.
+    ``on_kernel``: called once the Triton kernels completed for this call (not on a stock fallback)."""
     torch = _torch()
+    x, in_bias = _stock_in(x), _stock_in(in_bias)
     if not _gn_fusable(x, norm):
         return group_norm_reference(x, norm, act, in_bias)
-    k = _kernels()
     ndim = x.dim()
     x5, _ = _as5d(x)
     b, c, t, h, w = x5.shape
@@ -527,6 +537,7 @@ def group_norm_act(
             b, c, t, h, w = x5.shape
         else:
             return group_norm_reference(x, norm, act, in_bias)
+    k = _kernels()
     g = int(norm.num_groups)
     cpg = c // g
     hw = h * w
@@ -556,6 +567,8 @@ def group_norm_act(
         CPG = cpg, ACT = bool(act), HAS_IN_BIAS = in_bias is not None, BLOCK_P = block_p2, BLOCK_C = block_c,
         num_warps = 4,
     )  # fmt: skip
+    if on_kernel is not None and not torch.compiler.is_compiling():
+        on_kernel()  # read by the structural calibration: only a completed Triton launch counts
     out = out.permute(0, 4, 1, 2, 3)  # B, C, T', H', W'
     shape = x.shape
     if ndim == 5:
@@ -637,6 +650,7 @@ def rms_norm_act(
 
     ``replicate_pad=(ph, pw)``: HunyuanVideo-1.5 replicate padding instead (``cache`` must be None); ``back`` repeats the
     last frame (LTX-2)."""
+    x, in_bias = _stock_in(x), _stock_in(in_bias)
     torch = _torch()
     if replicate_pad is not None and cache is not None:
         raise ValueError("replicate padding takes no cache")
@@ -884,9 +898,7 @@ def _fast_wan_attention(block: Any) -> Any:
     def fast(x: Any) -> Any:
         identity = x
         b, c, t, h, w = x.shape
-        y = rms_norm_act(
-            x, block.norm, False
-        )  # (b, c, t, h, w) channels-last_3d: (b, t, h, w, c) in memory
+        y = rms_norm_act(x, block.norm, False)
         y = y.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)  # a channels-last view, no copy
         qkv = F.conv2d(y, block.to_qkv.weight, block.to_qkv.bias)
         qkv = qkv.permute(0, 2, 3, 1).reshape(b * t, h * w, 3 * c)
@@ -975,10 +987,7 @@ def _guard(
     logger: Any,
     oom_stock: bool = False,
 ) -> None:
-    """``module.forward = fast`` until it raises something ``stock`` does not; then stock for good.
-
-    Causal-cache state is snapshotted and restored before the stock retry so a half-failed fast path cannot desync
-    the decode. ``oom_stock``: an OOM retries stock for that call only."""
+    """Falls back to stock for good once fast raises what stock does not; causal-cache state is restored before the stock retry; OOM retries stock once."""
 
     def forward(*args, **kwargs):
         if getattr(module, "_unsloth_vae_fused_failed", False):
@@ -988,6 +997,8 @@ def _guard(
         try:
             return fast(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, FusedActivationRead):
+                raise
             for a, saved in zip(lists, snap):
                 a[:] = saved
             if not _is_oom(exc):
@@ -1058,14 +1069,18 @@ def _fast_norm(norm: Any, act: bool) -> Any:
     return fast
 
 
-def install_group_norm_vae(vae: Any, logger: Any = None) -> int:
+def install_group_norm_vae(
+    vae: Any,
+    logger: Any = None,
+    encoder: bool = True,
+) -> int:
     """Patch every eligible ResnetBlock2D / GroupNorm of a 2-D (AutoencoderKL-family) VAE. Returns patch count."""
     torch = _torch()
     if vae is None or not runtime_ok():
         return 0
     n = 0
     fused_act_norms = set()
-    for part_name in ("encoder", "decoder"):
+    for part_name in ("encoder", "decoder") if encoder else ("decoder",):
         part = getattr(vae, part_name, None)
         if part is None:
             continue
@@ -1105,7 +1120,21 @@ def install_group_norm_vae(vae: Any, logger: Any = None) -> int:
     return n
 
 
+_STRUCTURAL_LAYER = "vae_fused_structural"
+
+
+def _restore_structural_decode(vae: Any) -> None:
+    """Remove the structural calibrator's ``_decode`` layer: exactly what it replaced comes back when it is outermost
+    (an instance-bound override included); under a later layer (the OOM retry) it becomes a pass-through."""
+    from . import decode_layers  # noqa: PLC0415
+    decode_layers.unwrap(decode_layers.find(vae, "_decode", _STRUCTURAL_LAYER))
+
+
 def uninstall(vae: Any) -> None:
+    _restore_structural_decode(vae)
+    _restore_contiguous_layout(vae)
+    vae.__dict__.pop("_unsloth_vae_structural", None)
+    vae.__dict__.pop("_unsloth_vae_fused_structural", None)
     vae.__dict__.pop("_unsloth_vae_fused_installed", None)
     vae.__dict__.pop("_unsloth_vae_fused_cl_weights", None)
     for m in vae.modules():
@@ -1128,7 +1157,6 @@ def uninstall(vae: Any) -> None:
 
 
 _WAN_VAES = frozenset({"AutoencoderKLWan", "AutoencoderKLQwenImage", "AutoencoderKLQwenImage21"})
-_CACHE_T = 2
 
 
 def _is_rms(norm: Any) -> bool:
@@ -1342,13 +1370,17 @@ def _fast_wan_residual_up(block: Any) -> Any:
     return fast
 
 
-def install_wan_vae(vae: Any, logger: Any = None) -> int:
+def install_wan_vae(
+    vae: Any,
+    logger: Any = None,
+    encoder: bool = True,
+) -> int:
     """Patch the residual blocks, causal convs and output heads of a Wan-lineage VAE. Returns patch count."""
     torch = _torch()
     if vae is None or not runtime_ok():
         return 0
     n = 0
-    for part_name in ("encoder", "decoder"):
+    for part_name in ("encoder", "decoder") if encoder else ("decoder",):
         part = getattr(vae, part_name, None)
         if part is None:
             continue
@@ -1451,12 +1483,15 @@ _TILE_PEAK_FACTOR = 24
 
 
 def _tile_batch_cap(vae: Any, z: Any) -> int:
-    """Tiles per decoder call: env override, else what half the free VRAM holds, at most 4."""
+    """Tiles per decoder call."""
     raw = os.environ.get(TILE_BATCH_ENV, "").strip()
     if raw.isdigit() and int(raw) > 0:
         return int(raw)
     try:
-        free, _ = _torch().cuda.mem_get_info(z.device)
+        from .diffusion_memory import user_budget_reserve_bytes
+
+        free, total = _torch().cuda.mem_get_info(z.device)
+        free = max(0, int(free) - user_budget_reserve_bytes(z.device, total))
         norm_out = getattr(getattr(vae, "decoder", None), "norm_out", None)
         c_last = int(norm_out.gamma.numel()) if norm_out is not None else 128
         px = int(vae.tile_sample_min_height) * int(vae.tile_sample_min_width)
@@ -1584,9 +1619,7 @@ def _wan_batched_tiled_decode(
     if patch is not None:
         from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
         dec = unpatchify(dec, patch_size = patch)
-    if (
-        clamp
-    ):  # as the class's stock tiled_decode: Wan and Qwen-Image-2.1 clamp, Qwen-Image does not
+    if clamp:  # as stock tiled_decode: Wan and Qwen-Image-2.1 clamp, Qwen-Image does not
         dec = torch.clamp(dec, min = -1.0, max = 1.0)
     if not return_dict:
         return (dec,)
@@ -1777,12 +1810,16 @@ def _hv_causal_mask(
     return mask
 
 
-def install_hv15_vae(vae: Any, logger: Any = None) -> int:
+def install_hv15_vae(
+    vae: Any,
+    logger: Any = None,
+    encoder: bool = True,
+) -> int:
     torch = _torch()
     if vae is None or not runtime_ok():
         return 0
     n = 0
-    for part_name in ("encoder", "decoder"):
+    for part_name in ("encoder", "decoder") if encoder else ("decoder",):
         part = getattr(vae, part_name, None)
         if part is None:
             continue
@@ -2062,11 +2099,17 @@ SUPPORTED_VAES = frozenset(
 
 
 def will_install(vae: Any) -> bool:
-    """Whether :func:`install` would engage on ``vae`` here (class covered, NVIDIA CUDA, usable Triton, not disabled)."""
+    """Whether :func:`install` would engage on ``vae`` here (class covered or matched by structure, NVIDIA CUDA,
+    usable Triton, not disabled)."""
     return (
         vae is not None
-        and type(vae).__name__ in SUPPORTED_VAES
-        and (type(vae).__name__ != "AutoencoderKLLTX2Video" or _ltx2_convs_fusable(vae))
+        and (
+            (
+                type(vae).__name__ in SUPPORTED_VAES
+                and (type(vae).__name__ != "AutoencoderKLLTX2Video" or _ltx2_convs_fusable(vae))
+            )
+            or structural_candidate(vae)
+        )
         and runtime_ok()
     )
 
@@ -2075,14 +2118,22 @@ def install(
     vae: Any,
     logger: Any = None,
     level: str = "fused",
+    encoder: bool = True,
 ) -> int:
-    """Install every fused path that applies to ``vae``'s class. Returns the number of patched modules."""
+    """Install every fused path that applies to ``vae``'s class. Returns the number of patched modules.
+
+    ``encoder=False`` patches the decoder only, for a family whose denoising attends to the encoded conditioning clip at
+    every step, which amplifies the fused passes' rounding into a different sample (video_families.vae_fused_encoder)."""
     if vae is None or not will_install(vae):
         return 0
     done = getattr(vae, "_unsloth_vae_fused_installed", 0)
     if done:
         return done  # idempotent: a dual-DiT family runs the speed layer once per expert over the same VAE
-    n = _install(vae, logger)
+    n = _install(vae, logger, encoder)
+    if not n and type(vae).__name__ not in SUPPORTED_VAES:
+        n = install_structural(vae, logger)  # decoder only, so it honours encoder=False as is
+        if n:
+            vae._unsloth_vae_fused_structural = True
     # Only where measured faster, and only when a fused pass feeds a conv (relaid weights alone slow LTX-2's decode).
     if (
         n
@@ -2099,16 +2150,20 @@ def install(
     return n
 
 
-def _install(vae: Any, logger: Any = None) -> int:
+def _install(
+    vae: Any,
+    logger: Any = None,
+    encoder: bool = True,
+) -> int:
     name = type(vae).__name__
     if name in ("AutoencoderKL", "AutoencoderKLFlux2"):
-        n = install_group_norm_vae(vae, logger)
+        n = install_group_norm_vae(vae, logger, encoder)
         return n + (install_vectorised_blend(vae) if n else 0)
     if name in _WAN_VAES:
-        n = install_wan_vae(vae, logger)
+        n = install_wan_vae(vae, logger, encoder)
         return n + (install_vectorised_blend(vae) if n else 0)
     if name == "AutoencoderKLHunyuanVideo15":
-        n = install_hv15_vae(vae, logger)
+        n = install_hv15_vae(vae, logger, encoder)
         return n + (install_vectorised_blend(vae) if n else 0)
     if name == "AutoencoderKLLTX2Video":
         if not _ltx2_convs_fusable(vae):
@@ -2116,3 +2171,781 @@ def _install(vae: Any, logger: Any = None) -> int:
         n = install_ltx2_vae(vae, logger)
         return n + (install_vectorised_blend(vae) if n else 0)
     return 0
+
+
+# Structural path for unmeasured VAEs: a GroupNorm pairs with SiLU only if every output fed an nn.SiLU (hook trace of
+# one tiny decode); the fused decode must match stock within tolerance or the patch is removed.
+# Kill switch ``UNSLOTH_VAE_FUSED_STRUCTURAL=0``.
+STRUCTURAL_ENV = "UNSLOTH_VAE_FUSED_STRUCTURAL"
+# The calibration crop. The trace marks only the norm outputs (cheap at any size), so the crop is sized for the
+# kernels instead: 16 latents keeps every spatial extent a multiple of 16, the same Triton specialisations a full
+# decode uses, so calibrating compiles nothing the real decode would not (an 8-latent crop measured +1.5 to 2 s
+# of extra compiles on a cold Triton cache).
+_PROBE_LATENTS = 16
+_PROBE_FRAMES = 2
+# Calibration verdicts are kept on disk per (class, config, decoder layout, torch, triton, device capability), so a
+# later process skips the trace and the checks. Off: UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE=0.
+STRUCTURAL_CACHE_ENV = "UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE"
+_STRUCTURAL_CACHE_VERSION = 3
+_PROBE_MAX_ABS = 0.125
+_PROBE_MEAN_ABS = 0.01
+
+
+def structural_disabled() -> bool:
+    return os.environ.get(STRUCTURAL_ENV, "").strip().lower() in _FALSE
+
+
+def _plain_group_norms(part: Any) -> list:
+    torch = _torch()
+    return [
+        m
+        for m in part.modules()
+        if isinstance(m, torch.nn.GroupNorm)
+        and type(m).forward is torch.nn.GroupNorm.forward
+        and "forward" not in m.__dict__
+    ]
+
+
+def _plain_silus(part: Any) -> list:
+    torch = _torch()
+    return [
+        m
+        for m in part.modules()
+        if isinstance(m, torch.nn.SiLU)
+        and type(m).forward is torch.nn.SiLU.forward
+        and "forward" not in m.__dict__
+    ]
+
+
+def structural_candidate(vae: Any) -> bool:
+    """A VAE outside the measured set whose decoder holds plain nn.GroupNorm modules, reached through ``_decode``."""
+    if vae is None or structural_disabled() or type(vae).__name__ in SUPPORTED_VAES:
+        return False
+    if getattr(vae, "_unsloth_decode_blocks_bypassed", False):
+        return False
+    decoder = getattr(vae, "decoder", None)
+    if decoder is None or not callable(getattr(vae, "_decode", None)):
+        return False
+    try:
+        return bool(_plain_group_norms(decoder))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _decoded_tensor(out: Any) -> Any:
+    if isinstance(out, (tuple, list)):
+        return out[0]
+    return getattr(out, "sample", out)
+
+
+def _probe_latent(z: Any) -> Any:
+    sl = [slice(None)] * z.dim()
+    sl[-1] = slice(0, min(_PROBE_LATENTS, z.shape[-1]))
+    sl[-2] = slice(0, min(_PROBE_LATENTS, z.shape[-2]))
+    if z.dim() == 5:
+        sl[2] = slice(0, min(_PROBE_FRAMES, z.shape[2]))
+    return z[tuple(sl)].contiguous()
+
+
+def structural_cache_disabled() -> bool:
+    return (os.environ.get(STRUCTURAL_CACHE_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _structural_cache_dir() -> Any:
+    from pathlib import Path
+    try:
+        from .diffusion_compile_cache import cache_root
+        return Path(cache_root()) / "vae_structural"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _vae_config_json(vae: Any) -> str:
+    import json
+
+    cfg = getattr(vae, "config", None)
+    try:
+        data = dict(cfg) if cfg is not None else {}
+    except Exception:  # noqa: BLE001
+        data = dict(getattr(cfg, "__dict__", {}) or {})
+    return json.dumps(
+        {k: data[k] for k in sorted(data) if not str(k).startswith("_")},
+        sort_keys = True,
+        default = str,
+    )
+
+
+_FINGERPRINT_ELEMS = 64
+
+
+def _decoder_fingerprint(decoder: Any) -> Optional[str]:
+    """The checkpoint's identity, cheaply: every decoder tensor's name, shape and dtype, plus its first
+    ``_FINGERPRINT_ELEMS`` values (one device-to-host copy). Another checkpoint of the same config (a fine-tune, a
+    different dtype) is another fingerprint. None when the values cannot be read (meta / offloaded weights)."""
+    import hashlib
+
+    torch = _torch()
+    try:
+        named = [*decoder.named_parameters(), *decoder.named_buffers()]
+        if any(getattr(t, "is_meta", False) for _, t in named):
+            return None
+        h = hashlib.sha256(
+            repr([(n, tuple(t.shape), str(t.dtype), str(t.device.type)) for n, t in named]).encode()
+        )
+        with torch.no_grad():
+            heads = [
+                t.detach().reshape(-1)[:_FINGERPRINT_ELEMS].float() for _, t in named if t.numel()
+            ]
+            if heads:
+                by_device: dict = {}
+                for t in heads:
+                    by_device.setdefault(t.device, []).append(t)
+                for dev in sorted(by_device, key = str):
+                    h.update(torch.cat(by_device[dev]).cpu().numpy().tobytes())
+        return h.hexdigest()[:32]
+    except Exception:  # noqa: BLE001 - no identity: the caller does not use the cache
+        return None
+
+
+def structural_cache_key(vae: Any, norms: list, silus: list, device: Any) -> Optional[str]:
+    """Key of a calibration verdict: everything the pairing and the kernels' numerics depend on. Any change (another
+    class, config, decoder layout, checkpoint weights or dtype, hooks, torch, triton or device capability) is a new
+    key, so it is traced and checked again. None (no cache) when the weights' identity cannot be read."""
+    import hashlib
+
+    torch = _torch()
+    try:
+        import triton
+        triton_version = getattr(triton, "__version__", "?")
+    except Exception:  # noqa: BLE001
+        triton_version = None
+    try:
+        cap = (
+            tuple(torch.cuda.get_device_capability(device))
+            if getattr(device, "type", None) == "cuda"
+            else None
+        )
+    except Exception:  # noqa: BLE001
+        cap = None
+    fingerprint = _decoder_fingerprint(vae.decoder)
+    if fingerprint is None:
+        return None  # no cheap identity for these weights: no cached verdict, trace and check every process
+    names = {id(m): n for n, m in vae.decoder.named_modules()}
+    layout = [
+        (
+            names.get(id(m), "?"),
+            type(m).__name__,
+            int(getattr(m, "num_groups", 0)),
+            int(getattr(m, "num_channels", 0)),
+        )
+        for m in norms
+    ] + [(names.get(id(m), "?"), type(m).__name__) for m in silus]
+    blob = repr((
+        _STRUCTURAL_CACHE_VERSION, f"{type(vae).__module__}.{type(vae).__qualname__}", _vae_config_json(vae), layout,
+        str(torch.__version__), triton_version, cap, _PROBE_LATENTS, _PROBE_MAX_ABS, _PROBE_MEAN_ABS, fingerprint,
+        _global_module_hooks(), [_has_user_hooks(m) for m in (*norms, *silus)],
+    ))  # fmt: skip
+    return hashlib.sha256(blob.encode()).hexdigest()[:32]
+
+
+def _load_pairing(key: Optional[str], n_norms: int) -> Optional[dict]:
+    import json
+
+    root = _structural_cache_dir()
+    if key is None or root is None or structural_cache_disabled():
+        return None
+    try:
+        data = json.loads((root / f"{key}.json").read_text(encoding = "utf-8"))
+    except Exception:  # noqa: BLE001 - absent or unreadable: calibrate
+        return None
+    paired = data.get("paired")
+    if data.get("key") != key or data.get("status") not in ("ok", "rejected", "no_match"):
+        return None
+    if (
+        not isinstance(paired, list)
+        or len(paired) != n_norms
+        or any(p not in (None, True, False) for p in paired)
+    ):
+        return None
+    consumers = data.get("consumers")
+    if data["status"] == "ok" and (
+        not isinstance(consumers, list) or len(consumers) != n_norms
+        or any(not isinstance(c, list) or any(not isinstance(j, int) for j in c) for c in consumers)
+    ):  # fmt: skip
+        return None
+    return data
+
+
+def _save_pairing(key: Optional[str], record: dict) -> None:
+    import json
+
+    root = _structural_cache_dir()
+    if key is None or root is None or structural_cache_disabled():
+        return
+    try:
+        root.mkdir(parents = True, exist_ok = True)
+        tmp = root / f".{key}.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps({**record, "key": key}, default = str), encoding = "utf-8")
+        os.replace(tmp, root / f"{key}.json")
+    except Exception:  # noqa: BLE001 - a cache that cannot be written only costs the next process a calibration
+        pass
+
+
+def _has_user_hooks(module: Any) -> bool:
+    for name in ("_forward_hooks", "_forward_pre_hooks", "_backward_hooks", "_backward_pre_hooks"):
+        if getattr(module, name, None):
+            return True
+    return False
+
+
+def _global_module_hooks() -> bool:
+    try:
+        from torch.nn.modules import module as mm
+    except Exception:  # noqa: BLE001
+        return True
+    return any(
+        getattr(mm, name, None)
+        for name in ("_global_forward_hooks", "_global_forward_pre_hooks", "_global_backward_hooks")
+    )
+
+
+# Tensor methods that only read metadata: not a reader of the values.
+_META_FUNCS = frozenset((
+    "__get__", "dim", "size", "stride", "numel", "nelement", "ndimension", "element_size", "is_contiguous",
+    "storage_offset", "is_floating_point", "is_complex", "get_device", "__len__", "data_ptr",
+))  # fmt: skip
+
+
+# The reader callback of the structural trace is per thread, and traces run one at a time (once per VAE per process):
+# two first decodes on two threads can neither clear nor overwrite each other's callback.
+_TRACE_LOCAL = threading.local()
+_TRACE_LOCK = threading.RLock()
+
+
+def _tracked_tensor_class() -> Any:
+    """A tensor subclass marking a norm's output: every torch function that touches it reports in, and its results
+    come back as plain tensors, so only the direct readers of a norm output are seen (cheap: no per-op hook on the
+    rest of the decoder)."""
+    torch = _torch()
+    cls = globals().get("_TrackedCls")
+    if cls is not None:
+        return cls
+    from torch.utils._pytree import tree_leaves
+
+    class _Tracked(torch.Tensor):
+        @classmethod
+        def __torch_function__(
+            cls,
+            func,
+            types_,
+            args = (),
+            kwargs = None,
+        ):
+            kwargs = kwargs or {}
+            # this thread's trace only: a concurrent trace (another VAE, another thread) has its own callback
+            trace = getattr(_TRACE_LOCAL, "read", None)
+            if trace is not None and getattr(func, "__name__", "") not in _META_FUNCS:
+                for leaf in tree_leaves((args, kwargs)):
+                    if isinstance(leaf, _Tracked):
+                        trace(leaf)
+            with torch._C.DisableTorchFunctionSubclass():
+                return func(*args, **kwargs)
+
+    globals()["_TrackedCls"] = _Tracked
+    return _Tracked
+
+
+def _trace_group_norm_silu(norms: list, silus: list, run: Any) -> tuple:
+    """(calls per norm, outputs of each norm consumed ONLY by an nn.SiLU, run output, info) over one ``run()``.
+
+    A norm's output counts as consumed by the SiLU only when the trace proves the SiLU is its sole reader: the output
+    is marked (a tensor subclass), every torch function reading it (a view, an in-place update, a residual add) is
+    recorded, and any such read outside the SiLU call marks it shared. ``info["shared"]``: per norm, reads elsewhere.
+    Norms or SiLUs carrying hooks of their own, global module hooks, or no subclass support: nothing counts as
+    exclusively consumed."""
+    n = len(norms)
+    calls, consumed, shared = [0] * n, [0] * n, [0] * n
+    produced: dict = {}
+    keep: list = []
+    handles = []
+    in_silu: list = []
+    hooked = _global_module_hooks() or any(_has_user_hooks(m) for m in (*norms, *silus))
+    try:
+        tracked = _tracked_tensor_class()
+    except Exception:  # noqa: BLE001 - no way to see every reader: fuse GroupNorm alone
+        tracked = None
+
+    def norm_hook(idx: int):
+        def hook(_m, _inp, out):
+            calls[idx] += 1
+            if tracked is None or type(out) is not _torch().Tensor:
+                return None
+            marked = out.as_subclass(tracked)
+            produced[id(marked)] = idx
+            keep.append(marked)
+            return marked
+
+        return hook
+
+    silu_index = {id(m): j for j, m in enumerate(silus)}
+    readers: list = [set() for _ in range(n)]
+
+    def silu_pre(m, inp):
+        idx = produced.get(id(inp[0])) if inp else None
+        if idx is not None:
+            consumed[idx] += 1
+            readers[idx].add(silu_index.get(id(m), -1))
+        in_silu.append(idx)
+
+    def silu_post(_m, _inp, _out):
+        if in_silu:
+            in_silu.pop()
+
+    def read(t: Any) -> None:
+        idx = produced.get(id(t))
+        if idx is not None and not (in_silu and in_silu[-1] == idx):
+            shared[idx] += 1
+
+    with _TRACE_LOCK:
+        previous = getattr(_TRACE_LOCAL, "read", None)
+        try:
+            for i, m in enumerate(norms):
+                handles.append(m.register_forward_hook(norm_hook(i)))
+            for m in silus:
+                handles.append(m.register_forward_pre_hook(silu_pre))
+                handles.append(m.register_forward_hook(silu_post))
+            if tracked is not None:
+                _TRACE_LOCAL.read = read
+            out = run()
+        finally:
+            _TRACE_LOCAL.read = previous
+            for h in handles:
+                h.remove()
+            keep.clear()
+    if hooked or tracked is None:
+        consumed = [0] * n
+    else:
+        consumed = [k if sh == 0 else 0 for k, sh in zip(consumed, shared)]
+    if out is not None and tracked is not None and isinstance(out, tracked):
+        out = out.as_subclass(_torch().Tensor)
+    return calls, consumed, out, {"shared": shared, "consumers": [sorted(r) for r in readers]}
+
+
+def _site_hooks(norms: list, paired: list) -> tuple:
+    """Forward hooks comparing each fused site with stock on the input it is given, during the crop decode itself
+    (one pass: no extra kernel specialisations). Returns (handles, worst) where worst is [max abs, mean abs, sites]."""
+    torch = _torch()
+    worst = [0.0, 0.0, 0]
+    handles = []
+    for norm, act in zip(norms, paired):
+        if act is None:
+            continue
+
+        def hook(
+            m,
+            inp,
+            out,
+            act = act,
+        ):
+            out = _plain(out)
+            ref = _stock_forward(m)(inp[0])
+            if act:
+                ref = torch.nn.functional.silu(ref)
+            err = (out.float() - ref.float()).abs()
+            worst[0] = max(worst[0], float(err.max()))
+            worst[1] = max(worst[1], float(err.mean()))
+            worst[2] += 1
+
+        handles.append(norm.register_forward_hook(hook))
+    return handles, worst
+
+
+# Tensor properties that are metadata only (a read of these is not a read of the values).
+_META_PROPS = frozenset((
+    "shape", "dtype", "device", "is_cuda", "layout", "ndim", "requires_grad", "is_leaf", "grad_fn", "names",
+    "is_sparse", "is_quantized", "is_meta", "is_mkldnn", "is_nested", "itemsize", "nbytes",
+))  # fmt: skip
+
+
+_RAW_READS = frozenset(("data_ptr", "untyped_storage", "storage", "_typed_storage"))
+
+
+def _is_meta_read(func: Any) -> bool:
+    name = getattr(func, "__name__", "")
+    if name == "__get__":
+        return getattr(getattr(func, "__self__", None), "__name__", "") in _META_PROPS
+    return name in _META_FUNCS and name not in _RAW_READS
+
+
+class FusedActivationRead(RuntimeError):
+    """A fused GroupNorm+SiLU output was read by something other than its paired SiLU. It holds only the activated
+    values: the stock GroupNorm value such a reader needs was never materialised, and recomputing it later from the
+    norm's input is not exact (the decoder may have written to that input in place since, and inference tensors,
+    which Studio renders with, keep no version counter to tell). So that decode stops here; the structural decode
+    layer turns activation fusion off for this VAE (GroupNorm stays fused), records that, and decodes again."""
+
+
+def _fused_act_class() -> Any:
+    """The output of a fused GroupNorm+SiLU: it holds the ACTIVATED values, which only the SiLU module(s) the trace
+    paired with it may read (once: the first consumes the mark). Any other read of the values (a residual, another
+    norm, a view, an in-place write, a raw pointer, a SiLU after the mark was consumed), whatever the shape or
+    dataflow of the decode that does it, raises FusedActivationRead: the decode is redone without activation fusion,
+    so a wrong value is never returned and nothing aliases the norm's (mutable) input. After an in-place paired SiLU
+    the storage IS the stock tensor's (silu_ overwrote it), so reads then see it as a plain tensor."""
+    cls = globals().get("_FusedActCls")
+    if cls is not None:
+        return cls
+    torch = _torch()
+    from torch.utils._pytree import tree_leaves
+
+    class _FusedAct(torch.Tensor):
+        @classmethod
+        def __torch_function__(
+            cls,
+            func,
+            types_,
+            args = (),
+            kwargs = None,
+        ):
+            kwargs = kwargs or {}
+            if not _is_meta_read(func):
+                for leaf in tree_leaves((args, kwargs)):
+                    if isinstance(leaf, _FusedAct) and not leaf.__dict__.get(
+                        "_unsloth_is_stock", False
+                    ):
+                        leaf._unsloth_abort(func)
+            with torch._C.DisableTorchFunctionSubclass():
+                return func(*args, **kwargs)
+
+        def _unsloth_abort(self, func: Any = None) -> None:
+            state = self.__dict__.get("_unsloth_state")
+            if state is not None:
+                state.foreign_reads = getattr(state, "foreign_reads", 0) + 1
+            raise FusedActivationRead(
+                f"fused GroupNorm+SiLU output read by {getattr(func, '__name__', 'a kernel')} before / instead of its "
+                "paired SiLU"
+            )
+
+    globals()["_FusedActCls"] = _FusedAct
+    return _FusedAct
+
+
+def _plain(t: Any) -> Any:
+    """``t`` as a plain tensor: a fused GroupNorm+SiLU output's activated values (no recompute)."""
+    cls = globals().get("_FusedActCls")
+    if cls is None or type(t) is not cls:
+        return t
+    torch = _torch()
+    with torch._C.DisableTorchFunctionSubclass():
+        return t.as_subclass(torch.Tensor)
+
+
+def _compiling() -> bool:
+    try:
+        return bool(_torch().compiler.is_compiling())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _fast_gn_maybe_act(
+    norm: Any,
+    act: bool,
+    state: Any,
+    silus: Any = None,
+) -> Any:
+    """The fused GroupNorm(+SiLU) forward. A fused activation's output is a _FusedAct bound to exactly the SiLU
+    module(s) the trace saw consume it (``silus``; None: any one SiLU): the first of those to read it gets the
+    activated values and consumes the mark; every other reader gets the stock GroupNorm output. Under torch.compile
+    (no tensor subclass in the graph) the activation is left to the SiLU, which inductor fuses itself."""
+    token = "any" if silus is None else frozenset(id(m) for m in silus)
+    fused_cls = _fused_act_class() if act else None
+    torch = _torch()
+
+    def fast(x: Any) -> Any:
+        # any patched norm (fused activation or GroupNorm only) reading a fused output reads its stock value: the
+        # kernel reads raw memory
+        x = _stock_in(x)
+        fuse = act and not _compiling()
+        ran: list = []
+        y = group_norm_act(x, norm, act = fuse, on_kernel = lambda: ran.append(1))
+        if ran:
+            state.kernel_calls += 1
+            probe = getattr(getattr(state, "local", None), "kernel_runs", None)
+            if probe is not None:
+                probe.append(1)
+        state.calls += 1
+        if fuse:
+            with torch._C.DisableTorchFunctionSubclass():
+                y = y.as_subclass(fused_cls)
+            y._unsloth_state, y._unsloth_silu_for = state, token
+        return y
+
+    return fast
+
+
+def _silu_passthrough(silu: Any) -> Any:
+    torch = _torch()
+    fused_cls = _fused_act_class()
+    inplace = bool(getattr(silu, "inplace", False))
+
+    def forward(x: Any) -> Any:
+        token = getattr(x, "_unsloth_silu_for", None) if type(x) is fused_cls else None
+        if token is not None and (token == "any" or id(silu) in token):
+            x._unsloth_silu_for = None
+            if inplace:
+                x._unsloth_is_stock = (
+                    True  # stock silu_ overwrote the norm output: its storage is now exactly that
+                )
+            return _plain(x)
+        return torch.nn.functional.silu(x, inplace = inplace)
+
+    forward._unsloth_vae_fused = True
+    return forward
+
+
+def _structural_patch(
+    norms: list,
+    paired: list,
+    silus: list,
+    state: Any,
+    logger: Any,
+    consumers: Optional[list] = None,
+) -> int:
+    """``consumers``: per norm, the indices into ``silus`` of the SiLU module(s) the trace saw read its output; only
+    those SiLUs consume its fused-activation mark (None: any SiLU, once)."""
+    n = 0
+    patched_silus: list = []
+    for i, (norm, act) in enumerate(zip(norms, paired)):
+        if act is None:
+            continue
+        mine = None
+        if act and consumers is not None:
+            mine = [silus[j] for j in consumers[i] if 0 <= j < len(silus)]
+            patched_silus += mine
+        _guard(
+            norm,
+            _fast_gn_maybe_act(norm, act, state, mine),
+            _stock_forward(norm),
+            "GroupNorm+SiLU" if act else "GroupNorm",
+            logger,
+        )
+        n += 1
+    if any(paired):
+        targets = silus if consumers is None else patched_silus
+        for silu in {id(m): m for m in targets}.values():
+            silu.forward = _silu_passthrough(silu)
+    return n
+
+
+def _structural_unpatch(
+    norms: list,
+    silus: list,
+    vae: Any = None,
+) -> None:
+    for m in (*norms, *silus):
+        m.__dict__.pop("forward", None)
+        m.__dict__.pop("_unsloth_vae_fused_failed", None)
+    if vae is not None:
+        _restore_contiguous_layout(vae)
+
+
+def _restore_contiguous_layout(vae: Any) -> int:
+    """Undo the channels_last(_3d) relayout the speed layer applied because fusion was planned: without the fused
+    passes that layout decodes slower. Only the conv weights it recorded are touched."""
+    modules = vae.__dict__.pop("_unsloth_channels_last_modules", None) or ()
+    n = 0
+    for module in modules:
+        weight = getattr(module, "weight", None)
+        if weight is not None and not weight.is_contiguous():
+            weight.data = weight.data.contiguous()
+            n += 1
+    return n
+
+
+def _clear_decoder_cache(vae: Any) -> None:
+    """Reset a causal decoder's frame / feature cache (Wan, Qwen-Image, LTX-2, HunyuanVideo expose clear_cache)."""
+    clear = getattr(vae, "clear_cache", None)
+    if callable(clear):
+        try:
+            clear()
+        except Exception:  # noqa: BLE001 - a VAE without a usable cache has nothing to reset
+            pass
+
+
+def install_structural(vae: Any, logger: Any = None) -> int:
+    """Arm the dataflow-matched fused GroupNorm(+SiLU) path on ``vae``'s decoder; it is calibrated (paired, checked
+    against stock) on the first CUDA decode and removed if the check fails. Returns the plain GroupNorm count."""
+    if not structural_candidate(vae) or not runtime_ok():
+        return 0
+    if getattr(vae, "_unsloth_vae_structural", None) is not None:
+        return vae._unsloth_vae_structural.norms
+    decoder = vae.decoder
+    norms = _plain_group_norms(decoder)
+    silus = _plain_silus(decoder)
+    state = types.SimpleNamespace(
+        status = "pending", norms = len(norms), gn_silu = 0, gn = 0, calls = 0, kernel_calls = 0,
+        max_abs = None, mean_abs = None, site_max_abs = None, site_mean_abs = None, local = threading.local(),
+        paired = None, consumers = None, cached = False, key = None, act_off = False, foreign_reads = 0,
+    )  # fmt: skip
+    inner = vae._decode
+    torch = _torch()
+
+    def _fresh(fn: Any) -> Any:
+        def call(*a: Any, **k: Any) -> Any:
+            _clear_decoder_cache(vae)
+            return fn(*a, **k)
+
+        return call
+
+    def calibrate(z: Any, args: tuple, kwargs: dict) -> None:
+        key = state.key = structural_cache_key(vae, norms, silus, getattr(z, "device", None))
+        cached = _load_pairing(key, len(norms))
+        if cached is not None:
+            # a verdict for this exact class / config / layout / torch / triton / device: no trace, no checks
+            state.cached = True
+            if cached["status"] != "ok":
+                state.status = cached["status"]
+                _structural_unpatch(norms, silus, vae)
+                return
+            paired = state.paired = cached["paired"]
+            state.consumers = cached["consumers"]
+            _structural_patch(norms, paired, silus, state, logger, cached["consumers"])
+            state.status = "ok"
+            state.gn_silu = sum(1 for p in paired if p)
+            state.gn = sum(1 for p in paired if p is False)
+            state.max_abs, state.mean_abs = cached.get("max_abs"), cached.get("mean_abs")
+            state.site_max_abs, state.site_mean_abs = (
+                cached.get("site_max_abs"),
+                cached.get("site_mean_abs"),
+            )
+            state.calls = 0
+            return
+        _calibrate(z, args, kwargs)
+        if state.status in ("ok", "rejected", "no_match"):
+            _save_pairing(key, {
+                "status": state.status, "paired": state.paired, "consumers": state.consumers,
+                "max_abs": state.max_abs, "mean_abs": state.mean_abs,
+                "site_max_abs": state.site_max_abs, "site_mean_abs": state.site_mean_abs,
+            })  # fmt: skip
+
+    def _calibrate(z: Any, args: tuple, kwargs: dict) -> None:
+        tiny = _probe_latent(z)
+        with torch.no_grad():
+            calls, consumed, ref, info = _trace_group_norm_silu(
+                norms, silus, lambda: _decoded_tensor(_fresh(inner)(tiny, *args, **kwargs))
+            )
+            # fused with its SiLU only when that SiLU is the output's sole reader; otherwise GroupNorm alone
+            paired = [None if c == 0 else (c == k) for c, k in zip(calls, consumed)]
+            state.paired, state.consumers = paired, info["consumers"]
+            n = _structural_patch(norms, paired, silus, state, logger, info["consumers"])
+            if n == 0:
+                state.status = "no_match"
+                _structural_unpatch(norms, silus, vae)
+                return
+            state.local.kernel_runs = []
+            handles, worst = _site_hooks(norms, paired)
+            try:
+                out = _decoded_tensor(_fresh(inner)(tiny, *args, **kwargs))
+                fused_ran = bool(state.local.kernel_runs)
+            finally:
+                state.local.kernel_runs = None
+                for h in handles:
+                    h.remove()
+            site = (worst[0], worst[1]) if worst[2] else None
+            err = (out.float() - ref.float()).abs()
+            state.max_abs, state.mean_abs = float(err.max()), float(err.mean())
+            state.site_max_abs, state.site_mean_abs = site if site is not None else (None, None)
+        sites_ok = site is not None and site[0] <= _PROBE_MAX_ABS and site[1] <= _PROBE_MEAN_ABS
+        if (
+            fused_ran
+            and sites_ok
+            and state.max_abs <= _PROBE_MAX_ABS
+            and state.mean_abs <= _PROBE_MEAN_ABS
+        ):
+            state.status = "ok"
+            state.gn_silu = sum(1 for p in paired if p)
+            state.gn = sum(1 for p in paired if p is False)
+            state.calls = 0
+            if logger is not None:
+                logger.info(
+                    "diffusion.vae_fused: %s matched by structure: %d GroupNorm+SiLU, %d GroupNorm fused "
+                    "(probe max |d| %.4f, mean |d| %.5f)",
+                    type(vae).__name__, state.gn_silu, state.gn, state.max_abs, state.mean_abs,
+                )  # fmt: skip
+        else:
+            state.status = "rejected"
+            _structural_unpatch(norms, silus, vae)
+            if logger is not None:
+                logger.warning(
+                    "diffusion.vae_fused: %s structural fusion rejected (probe max |d| %s, mean |d| %s)",
+                    type(vae).__name__, state.max_abs, state.mean_abs,
+                )  # fmt: skip
+
+    def _decode(z: Any, *args: Any, **kwargs: Any) -> Any:
+        if state.status == "pending" and getattr(z, "is_cuda", False):
+            with _TRACE_LOCK:
+                if state.status == "pending":
+                    try:
+                        calibrate(z, args, kwargs)
+                    except Exception as exc:  # noqa: BLE001 - never fail a decode over the probe
+                        state.status = "rejected"
+                        _structural_unpatch(norms, silus, vae)
+                        if logger is not None:
+                            logger.warning("diffusion.vae_fused: structural probe failed: %s", exc)
+                    _clear_decoder_cache(
+                        vae
+                    )  # the real decode must not see the probe's causal cache
+        aborted = False
+        try:
+            return inner(z, *args, **kwargs)
+        except FusedActivationRead:
+            if state.status != "ok":
+                raise
+            aborted = True
+        if aborted:
+            _activation_fusion_off()
+            _clear_decoder_cache(vae)
+            return inner(z, *args, **kwargs)
+
+    def _activation_fusion_off() -> None:
+        """A fused activation was read out of turn at this decode's shape / dataflow: from now on (and in later
+        processes: the cached verdict is downgraded) this VAE fuses GroupNorm only and every SiLU runs stock."""
+        with _TRACE_LOCK:
+            if not any(state.paired or ()):
+                return
+            paired = [False if p else p for p in state.paired]
+            _structural_unpatch(norms, silus)
+            _structural_patch(norms, paired, silus, state, logger)
+            state.paired, state.consumers = paired, [[] for _ in norms]
+            state.gn += state.gn_silu
+            state.gn_silu = 0
+            state.act_off = True
+            if logger is not None:
+                logger.warning(
+                    "diffusion.vae_fused: %s read a fused GroupNorm+SiLU output out of turn; decoding again with "
+                    "GroupNorm fused alone", type(vae).__name__,
+                )  # fmt: skip
+            _save_pairing(getattr(state, "key", None), {
+                "status": "ok", "paired": paired, "consumers": state.consumers,
+                "max_abs": state.max_abs, "mean_abs": state.mean_abs,
+                "site_max_abs": state.site_max_abs, "site_mean_abs": state.site_mean_abs,
+            })  # fmt: skip
+
+    _decode._unsloth_vae_fused = True
+    vae._unsloth_vae_structural = state
+    from . import decode_layers  # noqa: PLC0415
+
+    decode_layers.wrap(vae, "_decode", _STRUCTURAL_LAYER, lambda _inner, _layer: _decode)
+    if logger is not None:
+        logger.info(
+            "diffusion.vae_fused: %s is outside the measured set; %d GroupNorms will be matched by structure "
+            "on the first decode",
+            type(vae).__name__,
+            len(norms),
+        )
+    return len(norms)

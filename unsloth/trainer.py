@@ -27,13 +27,24 @@ from trl import SFTTrainer
 
 # Bypass the partially-initialised unsloth namespace during the _gpu_init load.
 from .models._utils import is_bfloat16_supported
+from unsloth.optimizers.flash_adamw import (
+    _FLASH_ADAMW_PLACEHOLDER,
+    is_flash_adamw,
+    is_flash_adamw_marked,
+    mark_flash_adamw,
+    unmark_flash_adamw,
+)
 from unsloth.utils import (
     configure_padding_free,
     configure_sample_packing,
     enable_padding_free_metadata,
     enable_sample_packing,
 )
-from unsloth.utils.packing import _stateful_mixer_kind, patch_hybrid_linear_attention_varlen
+from unsloth.utils.packing import (
+    _stateful_mixer_kind,
+    packing_boundary_blocker,
+    patch_hybrid_linear_attention_varlen,
+)
 from unsloth.utils.token_budget import install_token_budget
 from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
@@ -191,9 +202,8 @@ PADDING_FREE_BLOCKLIST = {
     "gemma2",  # - gemma2:  Uses slow_attention_softcapping which has torch.compile issues
     "gpt_oss",  # - gpt_oss: Uses Flex Attention which doesn't handle padding_free correctly
 }
-# Hybrid linear-attention / state-space models (Qwen3.5, Qwen3-Next) carry a recurrent gated-delta
-# state plus a causal conv1d that leak across sequence boundaries once packing flattens the batch.
-# Detected structurally by _is_hybrid_linear_attention_model, not by model name.
+# Hybrid linear-attention / SSM models leak recurrent and conv1d state across packed sequences;
+# detected structurally by _is_hybrid_linear_attention_model.
 
 
 def _should_pack(config) -> bool:
@@ -202,10 +212,44 @@ def _should_pack(config) -> bool:
     return not getattr(config, "_unsloth_disable_auto_packing", False)
 
 
+def _pipeline_parallel_env_requested() -> bool:
+    try:
+        return int(os.environ.get("UNSLOTH_PP_SIZE", "1").strip() or 1) > 1
+    except ValueError:
+        return False
+
+
+def _cp_x_tp_env_requested() -> bool:
+    """UNSLOTH_CP_SIZE and UNSLOTH_TP_SIZE above 1 (UNSLOTH_PARALLEL writes both): packed rows are refused there."""
+    try:
+        cp = int(os.environ.get("UNSLOTH_CP_SIZE", "1").strip() or 1)
+        tp = int(os.environ.get("UNSLOTH_TP_SIZE", "1").strip() or 1)
+    except ValueError:
+        return False
+    return cp > 1 and tp > 1
+
+
 def _should_auto_padding_free(config) -> bool:
     if config is None or _AUTO_PADDING_FREE_ENV_DISABLED or getattr(config, "packing", False):
         return False
     return getattr(config, "padding_free", None) is None
+
+
+def _auto_padding_choice(
+    original_init, model, config, train_dataset, processing_class, args, kwargs
+):
+    """(use_padding_free, reason) for an unset `padding_free` (unsloth/utils/padding_choice.py)."""
+    try:
+        from unsloth.utils.padding_choice import decide_auto_padding_free
+        try:
+            bound = inspect.signature(original_init).bind_partial(None, *args, **kwargs).arguments
+        except Exception:
+            bound = kwargs
+        return decide_auto_padding_free(
+            model, config, train_dataset, processing_class, bound.get("formatting_func")
+        )
+    except Exception as exc:
+        return True, f"padding choice skipped ({type(exc).__name__})"
 
 
 def _disable_sample_packing(config):
@@ -599,13 +643,10 @@ def _forward_accepts_packing_kwargs(model, name = "packed_seq_lengths") -> bool:
     """
     if model is None or isinstance(model, str):
         return True
-    # Adapter wrappers only: they forward **kwargs through, so the wrapper always
-    # answers yes while the checkpoint underneath is the one that raises. Stop there,
-    # since the inner decoder may take **kwargs and answer for a model that does not.
+    # Adapter wrappers forward **kwargs, so stop at the checkpoint underneath, not the inner decoder.
     target = model
     for _ in range(4):
-        # Delegating wrappers (DataParallel, DDP, FSDP, torch.compile) first. Exact
-        # isinstance, so nothing else carrying the same attribute name is followed.
+        # Exact isinstance, so nothing else with the same attribute name is followed.
         inner = next(
             (
                 held
@@ -619,8 +660,7 @@ def _forward_accepts_packing_kwargs(model, name = "packed_seq_lengths") -> bool:
         if inner is not None:
             target = inner
             continue
-        # `PeftMixedModel` next: no `get_base_model`, so the unwrap below would stop on
-        # a variadic forward that merely delegates.
+        # PeftMixedModel lacks get_base_model, so the unwrap below would stop on a delegating forward
         mixed = next(
             (
                 held
@@ -634,9 +674,7 @@ def _forward_accepts_packing_kwargs(model, name = "packed_seq_lengths") -> bool:
         if mixed is not None:
             target = mixed
             continue
-        # PEFT's own unwrap only: `PreTrainedModel.base_model` is a property returning
-        # the inner decoder, which usually does take **kwargs, so it answers for the
-        # wrong module.
+        # PEFT own unwrap only: base_model is the inner decoder, which may take kwargs and misanswer
         unwrap = getattr(target, "get_base_model", None)
         if not callable(unwrap):
             break
@@ -679,8 +717,7 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     if not isinstance(model_name, str) or model_config is None:
         return None
 
-    # In-tree first, which is also TRL's order: `create_model_from_path` does
-    # `getattr(transformers, config.architectures[0])` and never consults `auto_map`.
+    # In-tree first, TRL's order: create_model_from_path never consults `auto_map`.
     for architecture in getattr(model_config, "architectures", None) or ():
         try:
             import transformers
@@ -725,10 +762,7 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     auto_map = getattr(model_config, "auto_map", None) or {}
     if not trust_remote_code or not isinstance(auto_map, dict):
         return None
-    # The same auth keys the config fetch forwards, `use_auth_token` included:
-    # transformers honours it as a deprecated alias for `token` across the supported
-    # range (dynamic_module_utils.py:584 in 4.57.6), so dropping it would authenticate
-    # one fetch and not the other.
+    # Same auth keys as the config fetch, including the deprecated `use_auth_token` alias.
     forward = {
         key: init_kwargs[key]
         for key in (
@@ -828,9 +862,7 @@ def _resolve_string_model_config(model_name, config_arg):
         from transformers import AutoConfig
 
         init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
-        # Forward auth and cache args too: dropping token/use_auth_token made a private hybrid fail to
-        # load (resolving as None), so it was treated as non-hybrid and packing was enabled without the
-        # shim.
+        # Forward auth and cache args, or a private hybrid resolves as None and skips the shim.
         forward = {
             key: init_kwargs[key]
             for key in (
@@ -844,9 +876,7 @@ def _resolve_string_model_config(model_name, config_arg):
             )
             if key in init_kwargs
         }
-        # TRL merges top-level args.trust_remote_code into the load via setdefault before
-        # create_model_from_path, so honor it here (model_init_kwargs wins), else a remote-code hybrid
-        # resolves as None and skips the guard.
+        # Honour top-level trust_remote_code as TRL setdefault does, or a remote hybrid skips the guard
         top_level_trust_remote_code = getattr(config_arg, "trust_remote_code", None)
         if top_level_trust_remote_code is not None:
             forward.setdefault("trust_remote_code", top_level_trust_remote_code)
@@ -925,6 +955,8 @@ class QGaloreConfig:
 
 
 class UnslothTrainingArguments(TrainingArguments):
+    _unsloth_accepts_adamw_flash = True
+
     def __init__(
         self,
         embedding_learning_rate: float = None,
@@ -941,10 +973,22 @@ class UnslothTrainingArguments(TrainingArguments):
         self.q_galore_config = q_galore_config
         self.embedding_learning_rate = embedding_learning_rate
         self.loraplus_lr_ratio = loraplus_lr_ratio
+        # Imported here too: tests exec this class body in a namespace without the module imports.
+        from unsloth.optimizers.flash_adamw import (
+            _FLASH_ADAMW_PLACEHOLDER,
+            is_flash_adamw,
+            is_flash_adamw_marked,
+            mark_flash_adamw,
+            unmark_flash_adamw,
+        )
+
+        flash_adamw = is_flash_adamw(kwargs.get("optim", None))
+        if flash_adamw:
+            kwargs["optim"] = _FLASH_ADAMW_PLACEHOLDER
         # Not fields of the pristine SFTConfig captured at import.
         context_parallel = {
             "context_parallel_size": kwargs.pop("context_parallel_size", 1),
-            "context_parallel_backend": kwargs.pop("context_parallel_backend", "ring"),
+            "context_parallel_backend": kwargs.pop("context_parallel_backend", "auto"),
             "context_parallel_rotate_method": kwargs.pop(
                 "context_parallel_rotate_method", "allgather"
             ),
@@ -954,6 +998,10 @@ class UnslothTrainingArguments(TrainingArguments):
         super().__init__(*args, **kwargs)
         for key, value in context_parallel.items():
             setattr(self, key, value)
+        if flash_adamw or is_flash_adamw_marked(self):
+            mark_flash_adamw(self)
+        else:
+            unmark_flash_adamw(self)
         self.embedding_learning_rate = embedding_learning_rate
         self.loraplus_lr_ratio = loraplus_lr_ratio
         if self.eval_steps is not None and self.eval_strategy != "steps":
@@ -1049,11 +1097,8 @@ def _create_unsloth_optimizer(
         )
 
     if require_embedding_match and not param_groups["embeddings"]:
-        # Only checked on the delayed path, where the model has been through
-        # accelerator.prepare. FSDP1 renames parameters to _fsdp_wrapped_module._flat_param,
-        # so the modules_to_save match above finds nothing and embedding_learning_rate would
-        # be dropped without a word. Off the delayed path an empty group is ordinary: plenty
-        # of models simply do not train their embeddings.
+        # FSDP1 renames parameters, so modules_to_save matches nothing and the embedding lr would be dropped.
+        # Only on the delayed path: elsewhere an empty group is ordinary.
         raise ValueError(
             "Unsloth: embedding_learning_rate was requested but no embedding parameter "
             "matched after the model was wrapped, so the embeddings would train at the "
@@ -1168,8 +1213,7 @@ def _migrate_legacy_optimizer_state(
     cursor, migrated_groups = 0, []
     for group, role in zip(optimizer.param_groups, group_roles):
         size = len(group["params"])
-        # Saved group as the base so per-group optimizer state survives (schedule-free
-        # keeps k, weight_sum, lr_max there); only params and weight_decay are overridden.
+        # Saved group as the base so per-group optimizer state survives.
         migrated = {key: value for key, value in group.items() if key != "params"}
         migrated.update(
             {key: value for key, value in saved_of_role[role].items() if key != "params"}
@@ -1263,9 +1307,8 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
     if getattr(base, "_unsloth_legacy_resume", False):
         return scheduler
 
-    # On a per-instance subclass, NOT the instance: a scheduler's state_dict is its __dict__
-    # minus the optimizer, so an instance attribute puts this closure in every checkpoint and
-    # torch.save cannot pickle it, failing the first save even with no resume.
+    # On a per-instance subclass, not the instance: an instance attribute lands in state_dict and
+    # torch.save cannot pickle it.
     def load_state_dict(self, state_dict):
         state_dict = dict(state_dict)
         if getattr(built, "_unsloth_loaded_previous", False):
@@ -1510,8 +1553,7 @@ class UnslothTrainer(SFTTrainer):
                 group_size = config.weight_group_size,
                 stochastic = config.stochastic_round,
             )
-            # Pre-hooks dequantize INT8 weights to float before each forward, letting the optimizer free float
-            # weight memory between steps.
+            # Pre-hooks dequantize INT8 before each forward, so the optimizer frees float memory between steps
             install_weight_quant_hooks(model)
 
         n_galore = sum(len(g["params"]) for g in param_groups if "rank" in g)
@@ -1634,8 +1676,7 @@ def _route_unknown_trainer_kwargs(
             rename_value_is_unset,
         )
     except Exception:
-        # tests/ AST-load this function into a bare namespace with no package to
-        # import from, and supply the classifier through globals() instead.
+        # tests/ AST-load this function into a bare namespace and supply the classifier through globals().
         classify_config_kwarg = globals().get("classify_config_kwarg")
         rename_source = globals().get("rename_source", lambda key: "TRL")
         removal_source = globals().get("removal_source", lambda key: "TRL")
@@ -1660,8 +1701,7 @@ def _route_unknown_trainer_kwargs(
         if verdict == "accepted":
             to_config[key] = value
         elif verdict == "rename":
-            # A legacy Optional forwarded at its `None` default says nothing, so
-            # it must not replace a real value. Same rule as the config path.
+            # A legacy Optional at its `None` default says nothing, so it must not replace a real value.
             if rename_value_is_unset(config_class, detail, value):
                 continue
             if already_supplied and detail in already_supplied:
@@ -1687,6 +1727,18 @@ def _route_unknown_trainer_kwargs(
     return to_config, to_trainer
 
 
+def _config_family(config_class):
+    # Plus the pristine TRL config it displaced: rebuilding one re-raises GRPOConfig's post-init checks.
+    family = [config_class]
+    cls = config_class
+    while (
+        "_unsloth_patched_rl_config" in cls.__dict__ or cls.__name__.startswith("Unsloth")
+    ) and cls.__bases__:
+        cls = cls.__bases__[0]
+        family.append(cls)
+    return tuple(family)
+
+
 def _backwards_compatible_trainer(trainer_class, config_class):
     original_init = trainer_class.__init__
 
@@ -1701,8 +1753,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
         if ("args" in kwargs) and (Version(trl) >= Version("0.13.0.dev0")):
             training_args = kwargs.pop("args", None)
 
-            # `discard`, not `remove`: a trainer naming its config something other
-            # than `args` would otherwise die with a bare KeyError here.
+            # `discard`, not `remove`: a trainer may name its config something other than `args`.
             trainer_params.discard("self")
             trainer_params.discard("args")
 
@@ -1748,13 +1799,17 @@ def _backwards_compatible_trainer(trainer_class, config_class):
 
             config_dict.update(additional_config_kwargs)
 
-            # Only build the config if the previous init was not TrainingArguments: reinitialising it would re-
-            # trigger the mutually-exclusive param checks (trl grpo_config.py#L499-L502).
+            # Reinitialising TrainingArguments would re-trigger the mutually-exclusive param checks.
             if not isinstance(training_args, TrainingArguments):
                 config = config_class(**config_dict)
+            elif not isinstance(training_args, _config_family(config_class)):
+                # Plain TrainingArguments: trl rebuilds via to_dict(), dropping setattr'd kwargs, so rebuild here as trl does.
+                dict_args = training_args.to_dict()
+                dict_args["hub_token"] = training_args.hub_token
+                dict_args.pop("push_to_hub_token", None)
+                config = config_class(**{**dict_args, **additional_config_kwargs})
             else:
-                # Every trl config subclasses TrainingArguments, so this is the branch real calls take and
-                # config_dict was going nowhere: set the moved values on the caller's config rather than rebuild it.
+                # Every trl config subclasses TrainingArguments: set moved values on the caller's config.
                 config = training_args
                 for key, value in additional_config_kwargs.items():
                     # `migrated` keys are already known to be accepted here.
@@ -1766,6 +1821,12 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             kwargs["args"] = config
         _ensure_warnings_issued(args[0] if args else kwargs.get("model"))
         original_init(self, *args, **kwargs)
+        if os.environ.get("UNSLOTH_LOG_MFU", "0") == "1":
+            try:
+                from .utils.mfu import add_mfu_callback
+                add_mfu_callback(self)
+            except Exception as exc:
+                logger.warning(f"Unsloth: could not enable MFU logging ({exc}).")
 
     return new_init
 
@@ -1789,6 +1850,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         model = args[0] if len(args) >= 1 else kwargs.get("model")
         model_config = None
+        model_types = ()
         is_vlm = False
         is_unsupported_model = False
         is_hybrid = False
@@ -1847,9 +1909,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
         # Disable padding-free for VLMs / custom collators / blocklisted models
         forward_rejects_packing = not _forward_accepts_packing_kwargs(model)
         _packing_gate_deferred = model is None or isinstance(model, str)
-        # Resolve the class a string names, so that case is an ordinary silent block like
-        # every other reason: after __init__ the only move left is to refuse, the collator
-        # and transformed datasets having been built from the flags by then.
+        # Resolve the class a string names so it is a silent block like the rest; after __init__ only refuse.
         _resolved_class = None
         if _packing_gate_deferred and isinstance(model, str):
             try:
@@ -1864,16 +1924,38 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 # several classes, so a "yes" from the resolved one is not proof about the
                 # instance. A correct "no" has already turned both flags off, which is the
                 # condition the post-init check skips on, so leaving it armed is free.
-        is_ring_context_parallel = (getattr(config_arg, "context_parallel_size", 1) or 1) > 1 and (
-            getattr(config_arg, "context_parallel_backend", None) or "ring"
-        ) == "ring"
+        cp_size = getattr(config_arg, "context_parallel_size", 1) or 1
+        is_ring_context_parallel = False
+        if isinstance(cp_size, int) and cp_size > 1:
+            from .context_parallel import resolve_cp_backend
+
+            # 'auto' (the default) is Ulysses unless the heads cannot be split, so packing stays on.
+            cp_backend = resolve_cp_backend(
+                getattr(config_arg, "context_parallel_backend", None),
+                cp_size,
+                model if not isinstance(model, str) else None,
+            )
+            # Ring cannot keep packed rows apart: packing goes off below, as before 'auto' existed.
+            is_ring_context_parallel = cp_backend == "ring"
+        boundary_blocker = packing_boundary_blocker(model, model_types)
         # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
         eval_logits_wanted = os.environ.get(
             "UNSLOTH_RETURN_LOGITS", "0"
         ) == "1" or _wants_eval_logits(original_init, args, kwargs)
+        # UNSLOTH_PP_SIZE: packed rows are not carried between pipeline stages yet (models/pp_env.py).
+        is_pipeline_parallel_env = _pipeline_parallel_env_requested()
+        # cp x tp refuses packed rows: never turn them on automatically there. An explicit packing /
+        # padding_free = True stays, so the capability check refuses it with the alternative.
+        auto_off_cp_tp = (
+            _cp_x_tp_env_requested()
+            and not getattr(config_arg, "packing", False)
+            and getattr(config_arg, "padding_free", None) is not True
+        )
         blocked = (
             (data_collator is not None)
             or is_ring_context_parallel
+            or is_pipeline_parallel_env
+            or auto_off_cp_tp
             or (is_processor and not processor_text_only)
             or is_auto_processor_vlm
             or is_vision_dataset
@@ -1884,13 +1966,29 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or forward_rejects_packing
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
+        if boundary_blocker is not None:
+            if (
+                not blocked
+                and not requested_pack
+                and (
+                    getattr(config_arg, "padding_free", None) is True
+                    or _should_auto_padding_free(config_arg)
+                )
+            ):
+                print(
+                    f"Unsloth: Padding-free batching off: {boundary_blocker} mixes tokens across "
+                    "packed documents."
+                )
+            blocked = True
         if blocked:
             if hasattr(config_arg, "packing"):
                 setattr(config_arg, "packing", False)
             if hasattr(config_arg, "padding_free"):
                 setattr(config_arg, "padding_free", False)
         # TRL resolves eval_packing on its own; packed eval batches would hit ring attention's varlen refusal.
-        if is_ring_context_parallel and getattr(config_arg, "eval_packing", None):
+        if (
+            is_ring_context_parallel or is_pipeline_parallel_env or boundary_blocker is not None
+        ) and getattr(config_arg, "eval_packing", None):
             setattr(config_arg, "eval_packing", False)
 
         if blocked and requested_pack:
@@ -1908,11 +2006,18 @@ def _patch_sft_trainer_auto_packing(trl_module):
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
             elif is_ring_context_parallel:
-                reason = "ring context parallelism"
+                reason = (
+                    "ring context parallelism ('auto' chose ring: the attention heads cannot be split over "
+                    f"{cp_size} ranks)"
+                    if getattr(config_arg, "_unsloth_cp_backend_auto", False)
+                    else "ring context parallelism; context_parallel_backend = 'ulysses' keeps it"
+                )
+            elif is_pipeline_parallel_env:
+                reason = "pipeline parallel (UNSLOTH_PP_SIZE)"
+            elif boundary_blocker is not None:
+                reason = f"{boundary_blocker} mixes tokens across packed documents"
             elif forward_rejects_packing:
-                # Name the real blocker, else this falls through to the
-                # UNSLOTH_RETURN_LOGITS branch and points at an unset flag. For a string
-                # `model=` that is the resolved class, not `str`.
+                # Name the real blocker (for a string `model=`, the resolved class).
                 blocker = (
                     _resolved_class.__name__
                     if _resolved_class is not None
@@ -1920,8 +2025,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 )
                 reason = f"{blocker}.forward() does not accept packed_seq_lengths"
             elif data_collator is None:
-                # compute_metrics, preprocess_logits_for_metrics, for_inference() and the user can all set it, so
-                # name the flag and not a setter.
+                # Several places can set it, so name the flag, not a setter.
                 reason = "UNSLOTH_RETURN_LOGITS=1"
             logger.warning(f"Unsloth: packing=True ignored ({reason}).")
 
@@ -1938,9 +2042,21 @@ def _patch_sft_trainer_auto_packing(trl_module):
             if padding_free_requested:
                 configure_padding_free(config_arg)
             elif _should_auto_padding_free(config_arg):
-                configure_padding_free(config_arg)
-                auto_padding_free_active = True
-                logger.info("Unsloth: Padding-free batching auto-enabled for SFTTrainer instance.")
+                use_padding_free, choice_reason = _auto_padding_choice(
+                    original_init, model, config_arg, train_dataset, processing_class, args, kwargs
+                )
+                if use_padding_free:
+                    configure_padding_free(config_arg)
+                    auto_padding_free_active = True
+                    logger.info(
+                        "Unsloth: Padding-free batching auto-enabled for SFTTrainer instance."
+                    )
+                else:
+                    # Left unset (None), exactly as UNSLOTH_DISABLE_AUTO_PADDING_FREE=1 leaves it.
+                    print(
+                        f"Unsloth: Padded batches + per-block compile chosen over padding-free "
+                        f"({choice_reason}). Set UNSLOTH_PADDING_CHOICE=padding_free to override."
+                    )
 
         try:
             original_init(self, *args, **kwargs)
@@ -1983,13 +2099,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             else:
                 raise
 
-        # Backstop for the deferred cases: a `model_init=`, or a string whose class could
-        # not be resolved. It refuses rather than undoing the flags, because TRL has built
-        # its collator from them and (under packing) transformed the datasets, so clearing
-        # them would leave batches flattened with nothing naming the sequence boundaries --
-        # attention and loss crossing examples silently, worse than the TypeError. Re-running
-        # `__init__` would rebuild them but materialize the checkpoint twice, an OOM in
-        # exactly the large-model case this is for.
+        # Backstop for deferred cases: refuse rather than clear the flags, since TRL already built its
+        # collator and datasets from them; clearing would silently cross example boundaries.
         if _packing_gate_deferred and not _forward_accepts_packing_kwargs(
             getattr(self, "model", None)
         ):
@@ -2080,8 +2191,8 @@ def _patch_trl_trainer():
     trl_configs = set(x[: -len("Config")] for x in trl_classes if x.endswith("Config"))
     trl_classes = list(trl_trainers & trl_configs)
 
-    # Auto-packing wraps first so it lands INSIDE the backwards-compatible wrapper: a moved `packing`
-    # kwarg must reach the config before packing is decided, else the block is undone right after.
+    # Auto-packing wraps first, inside the backwards-compatible wrapper, so a moved `packing` kwarg
+    # reaches the config before packing is decided.
     try:
         _patch_sft_trainer_auto_packing(trl)
     except Exception as exc:

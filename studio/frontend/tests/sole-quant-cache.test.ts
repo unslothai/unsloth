@@ -33,8 +33,7 @@ test("a sole Hub quant collapses only after dependency-aware verification", () =
   );
 });
 
-// The shape a real cached repo has: a Hub answer lists every published quant while one is on
-// disk. Counting listed quants instead made the collapse unreachable.
+// A Hub answer lists every published quant while only one is on disk.
 test("one quant on disk collapses even when the repo publishes many", () => {
   const quants = [
     "Q2_K",
@@ -64,7 +63,6 @@ test("a second quant on disk keeps the expander", () => {
   assert.equal(verifiedSoleHubVariant(variants, false, true), null);
 });
 
-// Resume lives in the expander, so a torn quant keeps it even beside a clean sibling.
 test("a torn quant beside a complete one keeps the expander", () => {
   const variants = [
     { quant: "Q4_K_M", downloaded: true },
@@ -73,8 +71,7 @@ test("a torn quant beside a complete one keeps the expander", () => {
   assert.equal(verifiedSoleHubVariant(variants, false, true), null);
 });
 
-// Only GgufVariantExpander wires onUpdateVariant; the collapsed row's menu is pin and delete
-// only, so collapsing an updateable quant would drop the update action from the default view.
+// The collapsed row's menu has no update action, so updateable quants keep the expander.
 test("an updateable quant keeps the expander", () => {
   const variants = [
     { quant: "Q4_K_M", downloaded: true, update_available: true },
@@ -82,7 +79,6 @@ test("an updateable quant keeps the expander", () => {
   ];
   assert.equal(verifiedSoleHubVariant(variants, false, true), null);
 
-  // No update pending still collapses.
   assert.equal(
     verifiedSoleHubVariant(
       [
@@ -96,7 +92,6 @@ test("an updateable quant keeps the expander", () => {
   );
 });
 
-// The companion concern behind the dependency gate, checked where it is answerable.
 test("a cached main GGUF still awaiting its drafter keeps the expander", () => {
   const variants = [
     {
@@ -108,7 +103,6 @@ test("a cached main GGUF still awaiting its drafter keeps the expander", () => {
   ];
   assert.equal(verifiedSoleHubVariant(variants, false, true), null);
 
-  // Null/absent means nothing is pending, which must still collapse.
   assert.equal(
     verifiedSoleHubVariant(
       [
@@ -122,7 +116,6 @@ test("a cached main GGUF still awaiting its drafter keeps the expander", () => {
   );
 });
 
-/** Two listed repos, each at its own cache version. */
 const targetsAt = (versionA: string, versionB: string): SoleQuantTarget[] => [
   {
     repoId: A,
@@ -167,7 +160,6 @@ test("resolved repos are rows, unread repos are pending", () => {
 test("one repo's invalidation leaves the other repo's row alone", () => {
   const before = targetsAt("1:0", "1:0");
   const entries = settled(before, ["Q4_K_M", "Q8_0"]);
-  // B is downloaded into, so only B's version moves.
   const after = targetsAt("1:0", "1:7");
 
   const { quants, pending, stale } = partitionSoleQuants(after, entries, {
@@ -203,7 +195,6 @@ test("a repo pointed at another directory is re-read", () => {
 
 test("a repo with no single quant is settled, not pending", () => {
   const targets = targetsAt("1:0", "1:0");
-  // A holds two quants, or could not be read: either way no row, no re-read.
   const { quants, pending, stale } = partitionSoleQuants(
     targets,
     settled(targets, [null, "Q8_0"]),
@@ -237,7 +228,6 @@ test("a global invalidation moves every repo's key", () => {
   assert.deepEqual([...pending], [A, B]);
 });
 
-/** A read whose completion the test controls. */
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((r) => {
@@ -268,13 +258,11 @@ test("a superseded read never overwrites the fresher result", async () => {
     commit: (target, quant) => committed.push([target.key, quant]),
   });
 
-  // First read is still running when the repo is invalidated.
   reader.start([targetAt(A, "v1")]);
   await flush();
   reader.start([targetAt(A, "v2")]);
   await flush();
 
-  // The newer read lands first, then the stale one.
   reads.get("v2")?.resolve("Q8_0");
   await flush();
   reads.get("v1")?.resolve("Q4_K_M");
@@ -364,7 +352,6 @@ test("bytes changing on disk moves the key, so the repo is read again", () => {
   };
   const entries = new Map([[A, { key: before.key, quant: "Q4_K_M" }]]);
 
-  // Another tab replaced the quant: same cache version, different bytes.
   const afterPrint = soleQuantFingerprint({
     size_bytes: 250,
     last_modified: 99,
@@ -426,8 +413,6 @@ test("first sight records without asking for an invalidation", () => {
 test("a version bump alone does not count as drift", () => {
   const seen = new Map<string, string>();
   takeDriftedRepos([targetWith(A, "100:10", "1:0")], seen);
-  // Dropping a listing bumps the version, which moves the key. Reacting to
-  // that would invalidate on its own effect forever.
   assert.deepEqual(
     takeDriftedRepos([targetWith(A, "100:10", "1:9")], seen),
     [],
@@ -440,7 +425,6 @@ test("changed bytes drift once, not on every pass", () => {
   assert.deepEqual(takeDriftedRepos([targetWith(A, "250:99", "1:0")], seen), [
     A,
   ]);
-  // The bump that follows the invalidation must not drift again.
   assert.deepEqual(
     takeDriftedRepos([targetWith(A, "250:99", "1:9")], seen),
     [],
@@ -456,8 +440,6 @@ test("only the repo whose bytes moved drifts", () => {
 });
 
 test("a cancelled sibling moves the key even though bytes do not", () => {
-  // Another tab cancelled a sibling before any file landed: same bytes, same
-  // mtime, and the repo's own partial flag stays false while a quant is clean.
   const disk = { size_bytes: 256, last_modified: 10 };
   const before = soleQuantFingerprint(disk);
   const after = soleQuantFingerprint({ ...disk, has_variant_state: true });

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Speech-to-text checkpoints the Transformers dictation engine runs through mlx-audio (Apple Silicon,
-which gets mlx-audio with mlx-vlm). Chosen by config model_type: mlx-audio loads both mlx-community
-quants and the original safetensors. Whisper keeps its Transformers path."""
+"""mlx-audio STT checkpoints chosen by config model_type; Whisper stays on Transformers."""
 
 from __future__ import annotations
 

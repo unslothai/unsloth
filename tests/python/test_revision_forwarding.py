@@ -126,6 +126,12 @@ def test_vision_loads_forward_revision(callee, minimum):
     calls = [
         c for c in _calls(function, "from_pretrained") if ast.unparse(c.func).startswith(callee)
     ]
+    # Processor loads go through the padding_side retry, which forwards its kwargs.
+    calls += [
+        c
+        for c in _calls(function, "_from_pretrained_left_padded")
+        if c.args and ast.unparse(c.args[0]) == callee
+    ]
     assert len(calls) >= minimum, f"expected >= {minimum} {callee} loads, found {len(calls)}"
     for call in calls:
         assert _revision_kwarg(call) is not None, f"{callee} at line {call.lineno} drops revision"

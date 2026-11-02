@@ -41,20 +41,12 @@ import os
 import sys
 import zipfile
 
-# The CUDA major that every wheel here is built against, and the only one. It is the local
-# version segment upstream writes (cu13), not the toolkit patch level: upstream normalises
-# 13.x to "13" in get_wheel_url(), and a wheel built with 13.0 and one built with 13.2 are
-# interchangeable for the purpose the tag serves, which is "do not install this on cu12".
+# Local version segment (cu13), not the toolkit patch level.
 CUDA_TAG = "13"
 
-# The toolkit actually installed on the runner. Separate from CUDA_TAG because this one is a
-# real apt package version and is reported in the notes, where "cu13" alone would be vague.
 CUDA_TOOLKIT = "13.0"
 
-# torch 2.7 and newer ship pip wheels built with _GLIBCXX_USE_CXX11_ABI=1, so there is no
-# abiFALSE variant to build for 2.13 or 2.14 -- upstream's own matrix excludes it from 2.7 on.
-# The tag is still in the filename because it is in every upstream filename, and a resolver
-# that pattern-matches upstream names has to find it here too.
+# torch 2.7+ wheels are cxx11 ABI only; the tag stays to match upstream filenames.
 CXX11_ABI = "TRUE"
 
 # Device code is most of every wheel. Upstream flash-attn 2.8.1 compressed all of it; the commit
@@ -73,7 +65,26 @@ NVCC_APPEND_FLAGS = "-Xfatbin -compress-all --compress-mode=size"
 # ccache hashes the nvcc command line, not NVCC_APPEND_FLAGS, and the Linux runners' ccache (4.5)
 # has no namespaces, so the flags' identity goes into the actions/cache key instead: a cache
 # saved before them would otherwise hand back uncompressed objects.
-CCACHE_TAG = "fatbin-size"
+CCACHE_TAG = "fatbin-size-sass"
+
+# SASS targets per package (patch_cuda_targets.py trims each setup.py to these). causal-conv1d's
+# and mamba-ssm's own list also builds sm_87 (Jetson Orin), sm_110 (Jetson Thor) and sm_121 (GB10 /
+# DGX Spark, N1X), which are integrated Arm GPUs: no x86 host can have one, so the x86 wheels drop
+# them and the Arm wheels keep the full list. Every GPU a platform can reach keeps SASS compiled
+# for its own arch (ptxas schedules 87 / 103 / 121 differently from 80 / 100 / 120), so nothing
+# falls back to a sibling's cubin. flash-attn keeps its list in its SPECS env
+# (FLASH_ATTN_CUDA_ARCHS); the patch only drops the PTX its setup.py adds for the newest arch.
+SSM_SASS = "75;80;90;100;103;120"
+SSM_SASS_ARM = "75;80;87;90;100;103;110;120;121"
+SSM_SASS_BY_PLATFORM = {"linux_aarch64": SSM_SASS_ARM, "win_arm64": SSM_SASS_ARM}
+
+
+def cuda_archs(package: str, platform: str) -> str:
+    """The SASS targets one cell must contain, ';'-separated, as the gate checks them."""
+    if package == "flash-attn":
+        return SPECS[package]["env"]["FLASH_ATTN_CUDA_ARCHS"]
+    return SSM_SASS_BY_PLATFORM.get(platform, SSM_SASS)
+
 
 # The Linux tag. The wheel is tagged linux_x86_64 rather than manylinux_*, exactly as upstream
 # tags its own, so pip installs it on any glibc without a floor check; the practical floor is the
@@ -93,6 +104,11 @@ PLATFORMS = {
         "abi": "TRUE",
         "label": "",
         "pytorch_nvcc": "ccache /usr/local/cuda-13.0/bin/nvcc",
+        # Upstream's torch2.10 causal-conv1d / mamba-ssm wheels (205 / 351 MB, reused on 2.11 and
+        # 2.12) carry -lineinfo and every arch; ours are ~30 / ~55 MB. Upstream flash-attn 2.8.1 is
+        # already smaller than ours there (125 MB, no PTX), so it is not built for these torches.
+        "extra_torches": ("2.10.0", "2.11.0", "2.12.0"),
+        "extra_torch_packages": ("causal-conv1d", "mamba-ssm"),
     },
     "win_amd64": {
         "os": "windows",
@@ -113,6 +129,9 @@ PLATFORMS = {
         "abi": "TRUE",
         "label": " / linux_aarch64",
         "pytorch_nvcc": "ccache /usr/local/cuda-13.0/bin/nvcc",
+        # Same as linux_x86_64 for the older torches.
+        "extra_torches": ("2.10.0", "2.11.0", "2.12.0"),
+        "extra_torch_packages": ("causal-conv1d", "mamba-ssm"),
     },
     # NVIDIA publishes flash-attn for Windows on ARM itself (studio resolves it), so only the other
     # two are built here, against the only CUDA torch that exists for it: NVIDIA's 2.14.0+cu134,
@@ -134,6 +153,7 @@ PLATFORMS = {
 _PLATFORM_DEFAULTS = {
     "torches": None,  # every TORCH_VERSIONS entry
     "packages": None,  # every SPECS entry
+    "extra_torch_packages": None,  # packages built for `extra_torches` (None = `packages`)
     "torch_local": "",
     "torch_index_args": "--index-url https://download.pytorch.org/whl/cu130",
 }
@@ -177,30 +197,23 @@ SPECS = {
         "repo": "Dao-AILab/flash-attention",
         "ref": "edb5c76ee329b18ed95d1f7ea9aa522a1331ab7d",
         "submodules": True,
-        # The build is one nvcc invocation per (kernel, arch) and the kernels are large. On a
-        # 4-core, 16 GB hosted runner nvcc 13 goes OOM above one job; this is upstream's own
-        # value for the cu13 legs of its publish matrix, arrived at the same way.
+        # nvcc 13 OOMs above one job on a 16 GB hosted runner.
         "max_jobs": "1",
         "nvcc_threads": "2",
         "env": {
             "FLASH_ATTENTION_FORCE_BUILD": "TRUE",
             "FLASH_ATTENTION_FORCE_CXX11_ABI": CXX11_ABI,
-            # Upstream's default is "80;90;100;110;120". 110 (Thor) is dropped because nothing
-            # Unsloth targets runs it and each arch is a full pass over every kernel. 86 and 89
-            # are absent for a different reason: they are not needed. A cubin is compatible
-            # forward across the minor versions of its major, so sm_80 code runs on sm_86 and
-            # sm_89 hardware, and setup.py additionally emits PTX for the newest arch so an
-            # unlisted future card JITs rather than failing.
+            # sm_86/89 run sm_80 cubins and PTX covers future cards; 110 is not targeted.
             "FLASH_ATTN_CUDA_ARCHS": "80;90;100;120",
         },
-        # Split the 6-8 hour compile across jobs to stay below GitHub's 6-hour limit.
+        # Shard the compile to stay below GitHub's 6-hour job limit.
         "shards": 8,
         # Leave time to upload partial caches after a build timeout.
         "build_timeout": "300m",
         "import_names": ["flash_attn", "flash_attn_2_cuda"],
-        # Largest CUDA extension the size gate lets through, in MB. Compressed it is ~280; the
-        # uncompressed build that prompted the gate was 1,488.
-        "max_extension_mb": 450,
+        # Largest CUDA extension the size gate lets through, in MB. SASS only and compressed it is
+        # ~176 (PTX was 23% of each measured TU); with the PTX ~229, uncompressed 1,488.
+        "max_extension_mb": 230,
     },
     "causal-conv1d": {
         "dist": "causal_conv1d",
@@ -215,8 +228,8 @@ SPECS = {
         },
         "build_timeout": "120m",
         "import_names": ["causal_conv1d", "causal_conv1d_cuda"],
-        # ~105 with these flags, 263 in default mode.
-        "max_extension_mb": 160,
+        # x86 ~31 trimmed without -lineinfo (Arm ~53), 117 before, 263 in default mode.
+        "max_extension_mb": 80,
     },
     "mamba-ssm": {
         "dist": "mamba_ssm",
@@ -228,24 +241,19 @@ SPECS = {
         "nvcc_threads": "2",
         "env": {
             "MAMBA_FORCE_BUILD": "TRUE",
-            # Mamba-1's selective-scan CUDA kernels are opt-in upstream. They are the reason
-            # this wheel is worth building: without them mamba_ssm falls back to the reference
-            # path, and selective_scan_cuda -- the extension whose missing symbols are the
-            # whole ABI problem -- is not in the wheel at all.
+            # Mamba-1's selective-scan kernels are opt-in upstream and are the reason for this wheel.
             "MAMBA_KEEP_CUDA_BUILD": "TRUE",
         },
-        # The one source edit in this workflow. See patch_mamba_cxx20.py.
+        # See patch_mamba_cxx20.py.
         "patch": "cxx20",
         "build_timeout": "180m",
         "import_names": ["mamba_ssm", "selective_scan_cuda"],
-        # ~230 with these flags, 358 in default mode: the gate only catches flags that never
-        # reached nvcc.
-        "max_extension_mb": 300,
+        # x86 ~62 trimmed without -lineinfo (Arm ~88), 241 before, 358 in default mode: the gate
+        # catches flags or a trim that never reached nvcc.
+        "max_extension_mb": 130,
     },
 }
 
-# torch minors, not patch levels, are what the ABI is keyed on, but the build needs an exact
-# version to pip install, so the table is keyed by the full version and the minor is derived.
 TORCH_VERSIONS = ("2.13.0", "2.14.0")
 
 
@@ -257,8 +265,16 @@ def _platform_torches(platform: str) -> tuple[str, ...]:
     )
 
 
-# Accepted from a dispatch; each platform builds only its own subset (2.10.0, 2.11.0 and 2.12.0
-# are win_amd64 only).
+def _platform_packages(platform: str, torch_version: str) -> tuple[str, ...]:
+    """Packages a platform builds for one torch: `extra_torch_packages` for its `extra_torches`."""
+    packages = _platform(platform, "packages") or tuple(SPECS)
+    if torch_version in (_platform(platform, "extra_torches") or ()):
+        packages = _platform(platform, "extra_torch_packages") or packages
+    return packages
+
+
+# Accepted from a dispatch; each platform builds only its own subset (2.10.0, 2.11.0 and 2.12.0:
+# every package on win_amd64, causal-conv1d and mamba-ssm on Linux).
 ALLOWED_TORCH = tuple(
     sorted(
         {torch for platform in PLATFORMS for torch in _platform_torches(platform)},
@@ -379,11 +395,11 @@ def build_matrix(
     for platform in chosen_platforms:
         target = PLATFORMS[platform]
         torches = _platform_torches(platform)
-        packages_here = _platform(platform, "packages") or tuple(SPECS)
         local = _platform(platform, "torch_local")
         for torch_version in chosen_torch:
             if torch_version not in torches:
                 continue
+            packages_here = _platform_packages(platform, torch_version)
             for python_version in chosen_python:
                 for package in chosen_packages:
                     if package not in packages_here:
@@ -412,6 +428,7 @@ def build_matrix(
                             "build_env": _build_env(spec, platform),
                             "nvcc_append_flags": NVCC_APPEND_FLAGS,
                             "ccache_tag": CCACHE_TAG,
+                            "cuda_archs": cuda_archs(package, platform),
                             "max_extension_mb": spec["max_extension_mb"],
                             "import_names": " ".join(spec["import_names"]),
                             "wheel_name": wheel_name(
@@ -435,8 +452,8 @@ def build_matrix(
     if not include:
         raise SystemExit(
             "no cells: none of the chosen platforms builds that package / torch combination "
-            "(torch 2.10.0 to 2.12.0 are win_amd64 only; win_arm64 builds causal-conv1d and "
-            "mamba-ssm for torch 2.14.0 only)."
+            "(torch 2.10.0 to 2.12.0 build flash-attn on win_amd64 only; win_arm64 builds "
+            "causal-conv1d and mamba-ssm for torch 2.14.0 only)."
         )
     return include
 
@@ -444,6 +461,78 @@ def build_matrix(
 def gpu_matrix(include: list[dict]) -> list[dict]:
     """Cells the (x86_64 Linux) self-hosted GPU runner can load."""
     return [cell for cell in include if cell["platform"] == "linux_x86_64"]
+
+
+# mamba-ssm without its CUDA extension. Since 2.3.2.post1 its setup.py builds selective_scan_cuda
+# only with MAMBA_KEEP_CUDA_BUILD=TRUE, and the Mamba-2 hybrids (Nemotron-H, Falcon-H1, Granite-4.0-H,
+# Bamba, Zamba2, Mamba2) never call it on transformers 5: they need mamba_ssm's Triton ops plus a
+# causal conv, which unsloth-zoo supplies in Triton. One py3-none-any wheel (about 224 KB) then serves
+# every torch, Python and OS, instead of a 230 to 594 MB CUDA wheel per cell. Built from the same pin
+# as the CUDA wheel and published beside it whenever a run builds mamba-ssm.
+PURE_PACKAGE = "mamba-ssm"
+PURE_SMOKE_TORCH = "2.13.0"
+# Import smoke only (no GPU on these runners). triton / triton-windows match that torch's Triton.
+PURE_SMOKE_TRITON = {"linux": "triton==3.7.1", "windows": "triton-windows==3.7.1.post27"}
+# What `import mamba_ssm` pulls in besides torch and Triton: mixer_seq_simple imports
+# huggingface_hub and transformers.generation. tilelang / quack-kernels (Mamba-3) are optional.
+PURE_SMOKE_DEPS = ("einops", "packaging", "huggingface_hub", "transformers")
+PURE_IMPORTS = (
+    "import mamba_ssm",
+    "from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined",
+    "from mamba_ssm.ops.triton.selective_state_update import selective_state_update",
+)
+
+
+def pure_wheel_name() -> str:
+    return f"{SPECS[PURE_PACKAGE]['dist']}-{SPECS[PURE_PACKAGE]['version']}-py3-none-any.whl"
+
+
+def pure_matrix(packages: str = "") -> list[dict]:
+    """The extension-free mamba-ssm build: one cell when the run builds mamba-ssm, else none."""
+    chosen = _resolve(packages, DEFAULT_PACKAGES, DEFAULT_PACKAGES, "package")
+    if PURE_PACKAGE not in chosen:
+        return []
+    spec = SPECS[PURE_PACKAGE]
+    return [
+        {
+            "package": PURE_PACKAGE,
+            "dist": spec["dist"],
+            "version": spec["version"],
+            "repo": spec["repo"],
+            "ref": spec["ref"],
+            "wheel_name": pure_wheel_name(),
+            "smoke_torch": PURE_SMOKE_TORCH,
+            "smoke_triton_linux": PURE_SMOKE_TRITON["linux"],
+            "smoke_triton_windows": PURE_SMOKE_TRITON["windows"],
+            "smoke_deps": " ".join(PURE_SMOKE_DEPS),
+            "smoke_imports": "; ".join(PURE_IMPORTS),
+        }
+    ]
+
+
+def check_pure_wheel(wheel: str) -> list[str]:
+    """Problems with the extension-free wheel: its exact name, no compiled code, a pure tag."""
+    problems = []
+    name = os.path.basename(wheel)
+    if name != pure_wheel_name():
+        problems.append(f"{name}: expected {pure_wheel_name()}")
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+        compiled = [n for n in names if n.endswith((".so", ".pyd", ".dll", ".dylib"))]
+        if compiled:
+            problems.append(f"{name}: carries compiled code: {', '.join(compiled)}")
+        dist = SPECS[PURE_PACKAGE]["dist"]
+        for required in (f"{dist}/__init__.py", f"{dist}/ops/triton/ssd_combined.py"):
+            if required not in names:
+                problems.append(f"{name}: {required} is missing")
+        wheel_meta = [n for n in names if n.endswith(".dist-info/WHEEL")]
+        if len(wheel_meta) != 1:
+            problems.append(f"{name}: expected one .dist-info/WHEEL, found {len(wheel_meta)}")
+        else:
+            meta = archive.read(wheel_meta[0]).decode("utf-8", "replace").splitlines()
+            if "Root-Is-Purelib: true" not in meta or "Tag: py3-none-any" not in meta:
+                problems.append(f"{name}: WHEEL metadata is not pure py3-none-any")
+    return problems
 
 
 def warm_matrix(include: list[dict]) -> list[dict]:
@@ -543,6 +632,19 @@ def _packages(rows: list[dict]) -> str:
     return _join([f"{package} {version}" for package, version in pairs])
 
 
+def _built(rows: list[dict]) -> str:
+    """`flash-attn 2.8.4, built for PyTorch ...`, split by package where coverage differs (Linux
+    builds causal-conv1d and mamba-ssm for torch 2.10 to 2.12 but flash-attn only for 2.13+)."""
+    by_coverage: dict[str, list[dict]] = {}
+    for package in SPECS:
+        package_rows = [row for row in rows if row["package"] == package]
+        if package_rows:
+            by_coverage.setdefault(_coverage(package_rows), []).extend(package_rows)
+    return "; ".join(
+        f"{_packages(group)}, built for {coverage}" for coverage, group in by_coverage.items()
+    )
+
+
 def render_notes(entries: list[tuple[str, str]], tag: str, repo: str) -> str:
     """One-sentence release body from `(sha256, filename)` pairs.
 
@@ -550,21 +652,28 @@ def render_notes(entries: list[tuple[str, str]], tag: str, repo: str) -> str:
     torch minor or one platform still describes everything attached.
     """
     parsed = [row for row in (parse_wheel_name(name) for _, name in entries) if row is not None]
+    pure = any(name == pure_wheel_name() for _, name in entries)
+    tail = (
+        f" Also {PURE_PACKAGE} {SPECS[PURE_PACKAGE]['version']} without its CUDA extension "
+        f"({pure_wheel_name()}), for Mamba-2 models whose causal conv runs on Triton.\n"
+        if pure
+        else "\n"
+    )
     if not parsed:
-        return "No wheels are attached to this release yet.\n"
+        return tail.lstrip() if pure else "No wheels are attached to this release yet.\n"
     platforms = [tag for tag in PLATFORMS if any(row["platform"] == tag for row in parsed)]
     if len(platforms) == 1:
         return (
             f"Prebuilt {PLATFORM_NAMES[platforms[0]]} CUDA {CUDA_TAG} wheels for "
-            f"{_packages(parsed)}, built for {_coverage(parsed)}.\n"
+            f"{_built(parsed)}.{tail}"
         )
     # Per platform: separate runs need not cover the same packages or torch minors.
     per_platform = " ".join(
-        f"{PLATFORM_NAMES[platform]}: {_packages(rows)}, built for {_coverage(rows)}."
+        f"{PLATFORM_NAMES[platform]}: {_built(rows)}."
         for platform in platforms
         for rows in [[row for row in parsed if row["platform"] == platform]]
     )
-    return f"Prebuilt CUDA {CUDA_TAG} wheels. {per_platform}\n"
+    return f"Prebuilt CUDA {CUDA_TAG} wheels. {per_platform}{tail}"
 
 
 def render_sums(entries: list[tuple[str, str]]) -> str:
@@ -599,10 +708,10 @@ def _cmd_matrix(args: argparse.Namespace) -> int:
     matrix = json.dumps({"include": include}, separators = (",", ":"))
     warm = warm_matrix(include)
     gpu = gpu_matrix(include)
+    pure = pure_matrix(os.environ.get("UW_PACKAGES", ""))
     print(matrix)
 
-    # Writing the step output here rather than echoing it in YAML keeps the JSON -- which is
-    # full of quotes and braces -- out of a shell round trip entirely.
+    # Written here to keep quote-heavy JSON out of a shell round trip.
     if args.github:
         output = os.environ.get("GITHUB_OUTPUT")
         if output:
@@ -615,11 +724,14 @@ def _cmd_matrix(args: argparse.Namespace) -> int:
                 gpu_json = json.dumps({"include": gpu}, separators = (",", ":"))
                 handle.write(f"gpu_matrix={gpu_json}\n")
                 handle.write(f"gpu_count={len(gpu)}\n")
+                pure_json = json.dumps({"include": pure}, separators = (",", ":"))
+                handle.write(f"pure_matrix={pure_json}\n")
+                handle.write(f"pure_count={len(pure)}\n")
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary:
-            listing = "\n".join(f"- `{cell['wheel_name']}`" for cell in include)
+            listing = "\n".join(f"- `{cell['wheel_name']}`" for cell in include + pure)
             with open(summary, "a", encoding = "utf-8") as handle:
-                handle.write(f"### Build plan\n\n{len(include)} cells:\n\n{listing}\n")
+                handle.write(f"### Build plan\n\n{len(include) + len(pure)} cells:\n\n{listing}\n")
     return 0
 
 
@@ -635,6 +747,8 @@ def _cmd_wheel_name(args: argparse.Namespace) -> int:
     # The same cells build_matrix accepts: no name for a wheel nothing builds.
     if args.torch not in _platform_torches(args.platform):
         raise SystemExit(f"torch {args.torch} is not built for {args.platform}")
+    if args.package not in _platform_packages(args.platform, args.torch):
+        raise SystemExit(f"{args.package} for torch {args.torch} is not built for {args.platform}")
     print(wheel_name(args.package, args.torch, args.python, args.platform))
     return 0
 
@@ -684,6 +798,98 @@ def _cmd_size_gate(args: argparse.Namespace) -> int:
     return 0
 
 
+# A fatbin container: magic, version 1, a 16-byte header and the size of the entries after it.
+# Each entry's header starts with kind (1 PTX, 2 ELF), its own header size, the payload size,
+# and the target arch at byte 28. Read straight from the file rather than through cuobjdump,
+# which only reads its host's object format (a Linux cuobjdump says a Windows .pyd "does not
+# contain device code") and names PTX entries sm_XX.ptx, easy to miss with a pattern.
+_FATBIN_MAGIC = (0xBA55ED50).to_bytes(4, "little")
+_FATBIN_PTX, _FATBIN_ELF = 1, 2
+
+
+def device_targets(data: bytes) -> tuple[set[str], set[str]]:
+    """(SASS archs, PTX archs) of every fatbin embedded in an ELF .so or PE .pyd."""
+    sass, ptx = set(), set()
+    pos = data.find(_FATBIN_MAGIC)
+    while pos >= 0:
+        version = int.from_bytes(data[pos + 4 : pos + 6], "little")
+        header = int.from_bytes(data[pos + 6 : pos + 8], "little")
+        size = int.from_bytes(data[pos + 8 : pos + 16], "little")
+        end = pos + 16 + size
+        if version != 1 or header != 16 or size <= 0 or end > len(data):
+            pos = data.find(_FATBIN_MAGIC, pos + 4)
+            continue
+        entry = pos + 16
+        while entry + 32 <= end:
+            kind = int.from_bytes(data[entry : entry + 2], "little")
+            entry_header = int.from_bytes(data[entry + 4 : entry + 8], "little")
+            payload = int.from_bytes(data[entry + 8 : entry + 16], "little")
+            arch = str(int.from_bytes(data[entry + 28 : entry + 32], "little"))
+            if kind not in (_FATBIN_PTX, _FATBIN_ELF) or entry_header < 32:
+                break
+            if entry + entry_header + payload > end:
+                break
+            (ptx if kind == _FATBIN_PTX else sass).add(arch)
+            entry += entry_header + payload
+        pos = data.find(_FATBIN_MAGIC, end)
+    return sass, ptx
+
+
+def _archs(prefix: str, archs: set[str]) -> str:
+    return ", ".join(f"{prefix}_{arch}" for arch in sorted(archs, key = int))
+
+
+def check_targets(name: str, sass: set[str], ptx: set[str], want: set[str]) -> list[str]:
+    """Problems with one extension's device code: every wanted SASS present, nothing else."""
+    problems = []
+    if missing := want - sass:
+        problems.append(f"{name}: no SASS for {_archs('sm', missing)}")
+    if extra := sass - want:
+        problems.append(f"{name}: SASS for {_archs('sm', extra)} was not asked for")
+    if ptx:
+        problems.append(f"{name}: carries PTX for {_archs('compute', ptx)}")
+    return problems
+
+
+def _cmd_targets_gate(args: argparse.Namespace) -> int:
+    want = {arch for arch in args.archs.split(";") if arch}
+    if not want:
+        raise SystemExit("--archs is empty")
+    problems, checked = [], 0
+    with zipfile.ZipFile(args.wheel) as archive:
+        members = [n for n in archive.namelist() if n.endswith((".so", ".pyd"))]
+        if not members:
+            raise SystemExit(f"{args.wheel}: no compiled extension in the wheel")
+        for member in members:
+            sass, ptx = device_targets(archive.read(member))
+            # A host-only helper module has no device code at all; only a CUDA one is checked.
+            if not sass and not ptx:
+                print(f"{member}: no device code")
+                continue
+            checked += 1
+            print(
+                f"{member}: SASS sm_{';'.join(sorted(sass, key = int))}"
+                + (f", PTX compute_{';'.join(sorted(ptx, key = int))}" if ptx else ", no PTX")
+            )
+            problems += check_targets(member, sass, ptx, want)
+    if not checked:
+        # Every package here is a CUDA extension; none with device code means the scan found
+        # nothing, not that there was nothing to check.
+        problems.append(f"{args.wheel}: no extension with device code")
+    for problem in problems:
+        print(f"::error::{problem}")
+    return 1 if problems else 0
+
+
+def _cmd_pure_gate(args: argparse.Namespace) -> int:
+    problems = check_pure_wheel(args.wheel)
+    for problem in problems:
+        print(f"::error::{problem}")
+    if not problems:
+        print(f"{os.path.basename(args.wheel)}: pure py3-none-any, no compiled code")
+    return 1 if problems else 0
+
+
 def _cmd_notes(args: argparse.Namespace) -> int:
     sys.stdout.write(render_notes(_read_digest_lines(), tag = args.tag, repo = args.repo))
     return 0
@@ -702,8 +908,8 @@ def main(argv: list[str] | None = None) -> int:
     matrix_parser.add_argument(
         "--github",
         action = "store_true",
-        help = "also append matrix/count, warm_matrix/warm_count and gpu_matrix/gpu_count to "
-        "$GITHUB_OUTPUT and a listing to $GITHUB_STEP_SUMMARY",
+        help = "also append matrix/count, warm_matrix/warm_count, gpu_matrix/gpu_count and "
+        "pure_matrix/pure_count to $GITHUB_OUTPUT and a listing to $GITHUB_STEP_SUMMARY",
     )
     matrix_parser.set_defaults(func = _cmd_matrix)
 
@@ -726,6 +932,19 @@ def main(argv: list[str] | None = None) -> int:
     gate_parser.add_argument("--package", required = True)
     gate_parser.add_argument("wheel")
     gate_parser.set_defaults(func = _cmd_size_gate)
+
+    targets_parser = sub.add_parser(
+        "targets-gate", help = "fail unless the wheel's device code is exactly --archs SASS"
+    )
+    targets_parser.add_argument("--archs", required = True)
+    targets_parser.add_argument("wheel")
+    targets_parser.set_defaults(func = _cmd_targets_gate)
+
+    pure_parser = sub.add_parser(
+        "pure-gate", help = "fail unless the wheel is the extension-free mamba-ssm build"
+    )
+    pure_parser.add_argument("wheel")
+    pure_parser.set_defaults(func = _cmd_pure_gate)
 
     args = parser.parse_args(argv)
     return args.func(args)

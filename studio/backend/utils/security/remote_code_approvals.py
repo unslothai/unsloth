@@ -1,21 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persistent, per-user trust_remote_code approval cache.
-
-Remembers a user's explicit approval so the consent gate can skip only the DIALOG on a
-later load of the SAME unchanged code. The gate ALWAYS re-scans (the cache never skips the
-scan), so CRITICAL is hard-blocked every time and a hand-edited store cannot auto-approve
-malicious code. Keyed per subject; honored only when the content fingerprint matches AND
-the scanner-rules version matches AND (when resolvable) the commit SHA matches. CRITICAL is
-never stored or honored, and any store/SHA error degrades to "ask again", never auto-approve.
-"""
+"""Per-user approval cache skips only the dialog, honored only on matching fingerprint, rules
+version and SHA; gate always re-scans, never stores CRITICAL; errors mean ask again, never auto-
+approve."""
 
 from __future__ import annotations
 
 import contextlib
 import json
 import os
+import pathlib
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -75,8 +70,7 @@ def _load() -> dict:
     try:
         with open(_store_path(), encoding = "utf-8-sig") as f:
             data = json.load(f)
-        # Validate the shape, not just the version: a hand-edited ``subjects`` that is not a dict would
-        # crash lookup/record instead of failing safe.
+        # Validate the shape too: a hand-edited non-dict ``subjects`` must fail safe, not crash.
         if (
             isinstance(data, dict)
             and data.get("version") == _SCHEMA_VERSION
@@ -113,11 +107,7 @@ def _save(data: dict) -> None:
 
 @contextlib.contextmanager
 def _file_lock():
-    """Best-effort cross-process exclusive lock over the store. Inference/export/training
-    record approvals from separate subprocesses, so the in-process RLock is not enough: two
-    processes could each read the same JSON and clobber the other's entry on ``os.replace``.
-    Holding this around the read-modify-write serializes them. Degrades to a no-op if OS
-    locking is unavailable (the consequence is only an occasional extra prompt)."""
+    """Cross-process lock around the read-modify-write, since two processes could clobber an entry written by the other; a no-op when OS locking is unavailable."""
     path = _store_path()
     try:
         storage_roots.ensure_dir(path.parent)
@@ -170,6 +160,49 @@ def lookup(subject: str, target_key: str) -> Optional[StoredApproval]:
         approved_at = entry.get("approved_at", ""),
         scanner_version = entry.get("scanner_version", 0),
     )
+
+
+def approved_local_fingerprint(subject: str, approved_as, load_dir: str) -> Optional[str]:
+    """The consent fingerprint of *load_dir*'s remote code when *subject* approved that exact
+    code under any id in *approved_as* (one id or several) with the current ruleset, else None.
+    Only an external auto_map repo is fetched; the rest is read from disk."""
+    from utils.paths import is_local_path
+    from utils.security.consent import _fingerprint_target_key
+    from utils.security.remote_code_scan import (
+        RemoteCodeUnscannable,
+        remote_code_fingerprint,
+        repo_remote_code_files,
+    )
+
+    ids = [approved_as] if isinstance(approved_as, str) else list(dict.fromkeys(approved_as))
+    approvals = [
+        (target, stored)
+        for target in ids
+        if target
+        and (stored := lookup(subject, approval_target_key([target]))) is not None
+        and stored.scanner_version == SCANNER_VERSION
+    ]
+    if not approvals:
+        return None
+    try:
+        files = repo_remote_code_files(load_dir)
+    except RemoteCodeUnscannable:
+        return None
+    if not files:
+        return None
+
+    def keyed(target, name_of = str):
+        key = _fingerprint_target_key(target)
+        return remote_code_fingerprint(
+            {f"{key}\0{name_of(name)}": body for name, body in files.items()}
+        )
+
+    for target, stored in approvals:
+        # A Hub approval fingerprinted "a/b.py"; a local one, like the worker, "a\\b.py" on Windows.
+        name_of = str if is_local_path(target) else (lambda n: pathlib.PurePath(n).as_posix())
+        if keyed(target, name_of) == stored.fingerprint:
+            return keyed(load_dir)
+    return None
 
 
 def record(
@@ -225,10 +258,7 @@ def clear() -> None:
 
 
 def resolve_commit_sha(target: str, hf_token: Optional[str] = None) -> Optional[str]:
-    """Current HF commit SHA for *target*, or None (local path / offline / error). Resolved
-    fresh every call: the default branch is mutable, so a cached SHA could mask a moved repo
-    and reuse stale consent. None falls back to the authoritative fingerprint (never fail-open).
-    """
+    """Not cached: a moved branch would reuse stale consent. None means fall back, never fail open."""
     hf_token = account_access.account_hf_token(hf_token)
     from utils.paths import is_local_path
 

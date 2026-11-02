@@ -131,8 +131,6 @@ def seed_owner_on_bootstrap_password():
 
 
 def test_desktop_multi_signs_the_owner_in_while_the_bootstrap_password_stands():
-    """A managed account alone must not lock the desktop owner out: until the owner sets a password
-    no credential could complete the login the multi-account refusal asks for."""
     seed_owner_on_bootstrap_password()
     raw = storage.create_desktop_secret()
     add_managed()

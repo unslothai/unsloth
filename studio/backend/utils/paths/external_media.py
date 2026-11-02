@@ -21,15 +21,8 @@ from utils.paths.sensitive import (
 
 
 def is_local_filesystem_root(path: str, *, _pathmod = os.path) -> bool:
-    """True for a bare local filesystem root -- POSIX ``/``, a drive root ``C:\\``,
-    or a device-namespace volume root like ``\\\\?\\C:\\`` or
-    ``\\\\?\\Volume{GUID}\\`` -- which sit above denied system dirs, but NOT a UNC
-    share root (``\\\\server\\share`` or its ``\\\\?\\UNC\\...`` form), which has
-    none under it and was registerable before this guard. ``splitdrive`` is empty
-    on POSIX servers, so this reduces to the plain ``dirname == self`` test there.
-    ``_pathmod`` lets tests drive ``ntpath`` semantics on a POSIX CI.
-    """
-    # Resolve the Windows device / extended-length namespace, where the local-volume spellings are all bare LOCAL volume roots (rejected) while only the UNC form is a UNC share, handled like a plain server share.
+    """Bare drive, volume or POSIX roots, which sit above denied system dirs; UNC share roots are not."""
+    # \\?\ and \\.\ local-volume spellings are bare volume roots (rejected); only UNC is a share.
     if path[:4].lower() in ("\\\\?\\", "\\\\.\\"):
         rest = path[4:]
         if rest[:4].lower() == "unc\\":
@@ -304,16 +297,7 @@ def _readable_dir_within(path: str, timeout: float) -> bool:
 
 
 def windows_drive_roots(drive_letters: Iterable[str] = string.ascii_uppercase) -> list[Path]:
-    """Readable logical drive roots (``C:\\``, ``D:\\`` ...) for the folder browser; the Windows analog of :func:`linux_run_media_mount_roots`.
-
-    Without it the allowlist and chips only reach the home drive, so a user
-    cannot navigate from ``C:`` to ``D:``/``E:``. ``GetLogicalDrives`` drops
-    unmapped letters; the rest are probed concurrently under a single timeout
-    and kept only if readable in time. A disconnected mapped drive stays active
-    in the bitmask and its ``os.path.isdir`` can hang for tens of seconds, so
-    parallel probing bounds the added delay at ~one timeout rather than one per
-    drive. Returns ``[]`` off Windows.
-    """
+    """Probes drives concurrently under one timeout, since a disconnected mapped drive can stall."""
     if platform.system() != "Windows":
         return []
 

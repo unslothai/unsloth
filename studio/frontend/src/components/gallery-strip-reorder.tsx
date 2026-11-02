@@ -4,7 +4,6 @@
 import type { StripDropCue } from "@/hooks/use-strip-reorder";
 import { cn } from "@/lib/utils";
 
-/** Insertion line beside a tile, centred in the strip's gap. `axis="y"` draws it across a list row. */
 export function StripDropLine({
   edge,
   axis = "x",

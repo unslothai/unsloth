@@ -2,11 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Moon, Sun } from "lucide-react"
+import { Moon02Icon, Sun03Icon } from "@hugeicons/core-free-icons"
+import { HugeiconsIcon } from "@hugeicons/react"
 import { flushSync } from "react-dom"
 
 import { cn } from "@/lib/utils"
 import { prefersReducedMotion, setTheme } from "@/features/settings"
+import { isWebKitGTK } from "./theme-view-transition"
 
 interface AnimatedThemeTogglerProps extends React.ComponentPropsWithoutRef<"button"> {
   duration?: number
@@ -31,25 +33,26 @@ export function useAnimatedThemeToggle(duration = 400) {
   }, [])
 
   const toggleTheme = useCallback(async () => {
-    // One toggle per animation. Clicks during a slow view transition would
-    // otherwise queue up and land as invisible back-and-forth flips, so the
-    // theme looks stuck until an odd number of clicks gets through.
+    // One toggle per animation, or clicks mid-transition queue up as invisible flips.
     if (inFlightRef.current) return
     const anchorRect = anchorRef.current?.getBoundingClientRect() ?? null
 
     const applyTheme = () => {
       flushSync(() => {
-        // Read the live class instead of React state, which can lag the DOM
-        // while a transition is being captured.
+        // Read the live class: React state can lag the DOM during a transition capture.
         const nextDark = !document.documentElement.classList.contains("dark")
         setIsDark(nextDark)
         setTheme(nextDark ? "dark" : "light")
       })
     }
 
-    // Skip the view transition (its clip-path runs via the Web Animations API,
-    // which CSS force-reduced-motion cannot reach) when reduced motion is set.
-    if (!document.startViewTransition || prefersReducedMotion()) {
+    // Reduced motion cannot reach the view transition's Web Animations clip-path, so skip it.
+    // WebKitGTK skips it too: the call itself can crash the page.
+    if (
+      !document.startViewTransition ||
+      prefersReducedMotion() ||
+      isWebKitGTK(navigator.platform, navigator.userAgent)
+    ) {
       applyTheme()
       return
     }
@@ -108,7 +111,7 @@ export const AnimatedThemeToggler = ({
       className={cn(className)}
       {...props}
     >
-      {isDark ? <Sun /> : <Moon />}
+      {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={2} /> : <HugeiconsIcon icon={Moon02Icon} strokeWidth={2} />}
       <span className="sr-only">Toggle theme</span>
     </button>
   )

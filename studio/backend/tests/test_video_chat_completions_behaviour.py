@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What a client gets back when it attaches a clip, by status code and wire shape.
-
-The other video tests assert a line is present in ``routes/inference.py``, which is how the
-non-GGUF regression went unnoticed: the source assertion passed while the request 400'd. These
-take the ``messages`` kwarg of ``generate_chat_completion`` as the JSON llama-server receives.
-
-Invariant, asserted per route: a ``video_url`` part and the legacy ``video_base64`` field behave
-identically, so picking a spelling cannot pick a different set of refusals.
-
-Wire shapes follow llama.cpp ``handle_media``: ``input_video`` is ``data`` else ``url``, remote
-downloads cap at 10 MB.
-"""
+"""Tests clip refusals on the wire, since video_url and video_base64 must refuse identically."""
 
 from __future__ import annotations
 
@@ -110,11 +99,7 @@ def _field_body(
 
 
 def _detail(response) -> str:
-    """The human message, from a bare detail or an OpenAI error body.
-
-    Falls back to raw text, since a request that gets past the refusals answers with SSE or an
-    empty body and a test asserting a refusal is *absent* must read those too.
-    """
+    """Extracts the message from a detail or error body; falls back to raw text, e.g. SSE."""
     try:
         body = response.json()
     except ValueError:
@@ -152,10 +137,9 @@ def _sent_media(backend):
     "url, expected",
     [
         (_DATA_URI, {"data": _CLIP_B64}),
-        # The header is not payload; llama.cpp's own base64 decoder takes the body alone.
+        # llama.cpp's base64 decoder takes the body alone, not the header.
         (f"DATA:video/mp4;BASE64,{_CLIP_B64}", {"data": _CLIP_B64}),
         ("data:video/webm;base64,REVG", {"data": "REVG"}),
-        # Bare base64 with no header: handle_media's final fallback treats it as payload.
         (_CLIP_B64, {"data": _CLIP_B64}),
     ],
 )
@@ -183,8 +167,6 @@ def test_the_text_of_the_turn_survives_translation(monkeypatch):
     with _client(monkeypatch, backend) as client:
         client.post("/v1/chat/completions", json = _part_body(_DATA_URI, text = "what colour?"))
     texts = [p["text"] for p in _sent_parts(backend) if p.get("type") == "text"]
-    # The only rewrite allowed is the date note #12382 puts at the head of a chat's first
-    # message when the date setting is on and there is no system prompt.
     assert any(
         re.fullmatch(r"(\[Current date: \d{4}-\d{2}-\d{2}\]\n\n)?what colour\?", t) for t in texts
     ), texts
@@ -217,7 +199,6 @@ def test_a_clip_in_an_older_turn_is_translated_too(monkeypatch):
     }
     with _client(monkeypatch, backend) as client:
         client.post("/v1/chat/completions", json = body)
-    # Translated in place, on the turn that carried it.
     assert _sent_parts(backend, 0)[0]["type"] == "input_video"
     assert len(_sent_media(backend)) == 1
 
@@ -252,15 +233,12 @@ def test_a_gguf_without_a_video_projector_refuses_either_spelling(monkeypatch, b
 
 @pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
 def test_a_non_gguf_backend_is_offered_the_clip_rather_than_refused_outright(monkeypatch, body):
-    """The regression guard. A blanket 'not using_gguf' refusal ahead of _local_video_clip
-    refuses video on transformers and MLX for BOTH spellings, including the legacy field the
-    frontend sends, breaking working MLX video on macOS.
-    """
+    """A blanket not using_gguf refusal would break working MLX and transformers video on macOS."""
     reached: list[dict] = []
 
     def _gate(payload, model_info):
         reached.append(model_info)
-        return _CLIP_B64
+        return [_CLIP_B64]
 
     monkeypatch.setattr(
         inference_route,
@@ -270,27 +248,26 @@ def test_a_non_gguf_backend_is_offered_the_clip_rather_than_refused_outright(mon
             models = {"mlx-model": {"is_vision": True, "has_video_input": True}},
         ),
     )
-    monkeypatch.setattr(inference_route, "_local_video_clip", _gate)
+    monkeypatch.setattr(inference_route, "_local_video_clips", _gate)
     with _client(monkeypatch, None) as client:
         response = client.post("/v1/chat/completions", json = body)
 
-    # Reached-the-gate alone cannot tell the regression from the fix: a blanket refusal placed
-    # after the gate still lets the gate run.
+    # A blanket refusal placed after the gate still lets the gate run.
     assert reached == [{"is_vision": True, "has_video_input": True}]
     assert "only supported on a local GGUF model" not in _detail(response)
     assert inference_route._VIDEO_INPUT_REFUSAL not in _detail(response)
 
 
 def test_the_non_gguf_gate_reads_both_spellings(monkeypatch):
-    """_local_video_clip predates the part, so left reading payload.video_base64 alone it would
+    """_local_video_clips predates the part, so left reading payload.video_base64 alone it would
     hand an MLX model nothing while the legacy field worked."""
     from models.inference import ChatCompletionRequest
 
     info = {"is_vision": True, "has_video_input": True}
     field = ChatCompletionRequest(model = "m", messages = [], video_base64 = _DATA_URI)
     part = ChatCompletionRequest.model_validate(_part_body(_DATA_URI))
-    assert inference_route._local_video_clip(field, info) == _CLIP_B64
-    assert inference_route._local_video_clip(part, info) == _CLIP_B64
+    assert inference_route._local_video_clips(field, info) == [_CLIP_B64]
+    assert inference_route._local_video_clips(part, info) == [_CLIP_B64]
 
 
 def test_a_non_gguf_backend_without_video_refuses_by_name():
@@ -299,37 +276,42 @@ def test_a_non_gguf_backend_without_video_refuses_by_name():
 
     payload = ChatCompletionRequest.model_validate(_part_body(_DATA_URI))
     with pytest.raises(HTTPException) as exc:
-        inference_route._local_video_clip(payload, {"is_vision": True})
+        inference_route._local_video_clips(payload, {"is_vision": True})
     assert exc.value.status_code == 400
     assert exc.value.detail == inference_route._VIDEO_INPUT_REFUSAL
-    # The refusal names MLX: that backend serves video, so a GGUF-only message misinforms.
     assert "MLX" in inference_route._VIDEO_INPUT_REFUSAL
 
 
-def test_a_second_clip_is_refused_rather_than_dropped_on_a_non_gguf_backend():
-    """Generation takes one video kwarg. Taking clips[0] silently changed the prompt by
-    backend: GGUF forwards every clip, so the same request meant two different things."""
+def test_every_clip_is_served_in_request_order_on_a_non_gguf_backend():
+    """GGUF forwards every clip, so the non-GGUF path must too rather than serve one; the
+    request-wide count and size caps still apply, since the pre-switch check may not have run."""
     from fastapi import HTTPException
     from models.inference import ChatCompletionRequest
 
     info = {"is_vision": True, "has_video_input": True}
-    two = ChatCompletionRequest.model_validate(_part_body(_DATA_URI, _DATA_URI))
-    with pytest.raises(HTTPException) as exc:
-        inference_route._local_video_clip(two, info)
-    assert exc.value.status_code == 400
-    assert "Only one video" in exc.value.detail
+    second = "BBBBGGZ0eXBtcDQy"
+    two = ChatCompletionRequest.model_validate(
+        _part_body(_DATA_URI, f"data:video/mp4;base64,{second}")
+    )
+    assert inference_route._local_video_clips(two, info) == [_CLIP_B64, second]
 
-    # The legacy field beside a part is the same two-clip request in a different spelling.
     both = ChatCompletionRequest.model_validate(
-        _part_body(_DATA_URI, **{"video_base64": _DATA_URI})
+        _part_body(f"data:video/mp4;base64,{second}", **{"video_base64": _DATA_URI})
+    )
+    assert inference_route._local_video_clips(both, info) == [_CLIP_B64, second]
+
+    too_many = ChatCompletionRequest.model_validate(
+        _part_body(*[_DATA_URI] * (inference_route._MAX_VIDEO_CLIPS_PER_REQUEST + 1))
     )
     with pytest.raises(HTTPException) as exc:
-        inference_route._local_video_clip(both, info)
-    assert exc.value.status_code == 400
+        inference_route._local_video_clips(too_many, info)
+    assert exc.value.status_code == 400 and "Too many videos" in exc.value.detail
 
-    # One clip still serves, so the guard did not swallow the ordinary case.
-    one = ChatCompletionRequest.model_validate(_part_body(_DATA_URI))
-    assert inference_route._local_video_clip(one, info) == _CLIP_B64
+    half = "data:video/mp4;base64," + "A" * (inference_route._MAX_VIDEO_B64_CHARS // 2 + 10)
+    oversized = ChatCompletionRequest.model_validate(_part_body(half, half))
+    with pytest.raises(HTTPException) as exc:
+        inference_route._local_video_clips(oversized, info)
+    assert exc.value.status_code == 413
 
 
 def test_an_unsupported_scheme_is_refused_on_the_non_gguf_path_too():
@@ -340,7 +322,7 @@ def test_an_unsupported_scheme_is_refused_on_the_non_gguf_path_too():
 
     payload = ChatCompletionRequest.model_validate(_part_body("file:///etc/passwd"))
     with pytest.raises(HTTPException) as exc:
-        inference_route._local_video_clip(payload, {"is_vision": True, "has_video_input": True})
+        inference_route._local_video_clips(payload, {"is_vision": True, "has_video_input": True})
     assert exc.value.status_code == 400
     assert "Unsupported video URL scheme" in exc.value.detail
 
@@ -367,7 +349,6 @@ def test_admission_compacts_a_clip_after_translation_too():
     after, _ = inference_route._openai_llama_admission_messages_for_estimate(translated)
 
     assert "A" * 40_000 not in str(after)
-    # Both spellings compact to about the same size; the clip is a marker, not prompt text.
     assert abs(len(str(after)) - len(str(before))) < 200
 
 
@@ -379,7 +360,7 @@ def test_a_remote_clip_is_refused_on_a_non_gguf_backend():
 
     payload = ChatCompletionRequest.model_validate(_part_body(_REMOTE))
     with pytest.raises(HTTPException) as exc:
-        inference_route._local_video_clip(payload, {"is_vision": True, "has_video_input": True})
+        inference_route._local_video_clips(payload, {"is_vision": True, "has_video_input": True})
     assert exc.value.status_code == 400
     assert "Remote video URLs are not supported" in exc.value.detail
 
@@ -394,10 +375,7 @@ def test_a_remote_clip_is_refused_on_a_non_gguf_backend():
     ],
 )
 def test_an_unsupported_scheme_is_refused_by_name(monkeypatch, url):
-    """handle_media reads input_video as data-or-url and treats the one string it finds the
-    same way, honouring file:// under --media-path. Forwarding the clip as opaque payload does
-    not neutralise the scheme, so refuse it here.
-    """
+    """Refuse unsupported URL schemes here: handle_media honours file:// under --media-path."""
     with _client(monkeypatch, _VideoGguf()) as client:
         response = client.post("/v1/chat/completions", json = _part_body(url))
     assert response.status_code == 400
@@ -407,7 +385,6 @@ def test_an_unsupported_scheme_is_refused_by_name(monkeypatch, url):
 def test_a_bare_path_is_refused_without_naming_a_scheme(monkeypatch):
     with _client(monkeypatch, _VideoGguf()) as client:
         response = client.post("/v1/chat/completions", json = _part_body("/tmp/clip.mp4"))
-    # No colon: indistinguishable from base64 payload, so llama-server owns the verdict.
     assert response.status_code == 200
 
 
@@ -696,14 +673,14 @@ def _older_turn_body(clip = _DATA_URI):
 
 def test_a_clip_on_an_older_turn_is_refused_on_a_non_gguf_backend():
     """GGUF keeps the part on the turn that carried it; the non-GGUF path flattens the parts and
-    hands generation one video kwarg, which MLX attaches to the newest turn. Refusing keeps the
+    hands generation the clips alone, which MLX attaches to the newest turn. Refusing keeps the
     two backends from reading the same request as different conversations."""
     from fastapi import HTTPException
     from models.inference import ChatCompletionRequest
 
     payload = ChatCompletionRequest.model_validate(_older_turn_body())
     with pytest.raises(HTTPException) as exc:
-        inference_route._local_video_clip(payload, {"is_vision": True, "has_video_input": True})
+        inference_route._local_video_clips(payload, {"is_vision": True, "has_video_input": True})
     assert exc.value.status_code == 400
     assert "attached to the latest message" in exc.value.detail
 
@@ -711,10 +688,9 @@ def test_a_clip_on_an_older_turn_is_refused_on_a_non_gguf_backend():
 def test_a_clip_on_the_latest_turn_is_still_served_on_a_non_gguf_backend():
     from models.inference import ChatCompletionRequest
     payload = ChatCompletionRequest.model_validate(_part_body(_DATA_URI))
-    assert (
-        inference_route._local_video_clip(payload, {"is_vision": True, "has_video_input": True})
-        == _CLIP_B64
-    )
+    assert inference_route._local_video_clips(
+        payload, {"is_vision": True, "has_video_input": True}
+    ) == [_CLIP_B64]
 
 
 def test_the_legacy_field_is_not_treated_as_an_older_turn():
@@ -723,10 +699,9 @@ def test_the_legacy_field_is_not_treated_as_an_older_turn():
 
     payload = ChatCompletionRequest.model_validate(_field_body())
     assert inference_route._video_is_on_an_older_turn(payload) is False
-    assert (
-        inference_route._local_video_clip(payload, {"is_vision": True, "has_video_input": True})
-        == _CLIP_B64
-    )
+    assert inference_route._local_video_clips(
+        payload, {"is_vision": True, "has_video_input": True}
+    ) == [_CLIP_B64]
 
 
 def test_gguf_still_keeps_a_clip_on_the_turn_that_carried_it(monkeypatch):

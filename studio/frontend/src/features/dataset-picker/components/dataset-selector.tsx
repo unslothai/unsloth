@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { resolveDevicePickerItem } from "@/components/resource-picker/device-item-match";
 import {
   hubResourceIdsEqual,
@@ -41,9 +42,6 @@ import { cn } from "@/lib/utils";
 import {
   Database02Icon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronDownIcon,
-} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
@@ -395,7 +393,8 @@ export function DatasetSelector() {
               {display ?? t("studio.datasetPicker.selectDataset")}
             </span>
           </span>
-          <ChevronDownIcon
+          <HugeiconsIcon
+            icon={ChevronDownStandardIcon}
             strokeWidth={1.25}
             className="size-3.5 shrink-0 text-muted-foreground"
           />

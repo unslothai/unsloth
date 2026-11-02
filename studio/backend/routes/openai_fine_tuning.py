@@ -1,0 +1,1373 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""OpenAI-compatible fine-tuning API (``/v1/files`` and ``/v1/fine_tuning/jobs``) over Studio's own training.
+
+A thin translation layer: uploads land where ``/api/hub/datasets/upload`` puts them, jobs start through the
+same ``start_training`` handler as ``/api/train/start`` (every guard and refusal included), and job state is
+read back from the training history, so a job is just a Studio training run under another name. Nothing here
+grants a capability an API key does not already have through ``/api/train``.
+
+A job created while the GPU is busy waits in a first-in-first-out queue and starts, as its own account, once
+training is idle. The queue lives in this process: queued jobs do not survive a Studio restart.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib.util
+import json
+import os
+import re
+import secrets
+import weakref
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Literal, Optional
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from pydantic import BaseModel, ConfigDict
+
+from auth.authentication import authenticated_via_api_key, get_current_subject
+from hub.services.datasets import local as local_datasets
+from hub.utils.host_paths import host_paths_visible, redact_host_paths, redact_paths_in_text
+from loggers import get_logger
+from models.training import TrainingStartRequest
+from storage.studio_db import get_connection, get_run, list_runs
+from utils.account_context import AccountContext, arun_as, current_account, current_account_id
+from utils.training_runs import drop_non_finite
+
+logger = get_logger(__name__)
+
+router = APIRouter()
+
+FILE_PREFIX = "file-"
+JOB_PREFIX = "ft"  # "job_20261021_101500_ab12cd34" -> "ftjob_20261021_101500_ab12cd34"
+# OpenAI scales its own default; Studio's default learning rate is the base the multiplier scales.
+BASE_LEARNING_RATE = 2e-4
+_UPLOAD_ID = re.compile(r"^[0-9a-f]{32}$")
+# Set by this layer from the OpenAI fields; extra_body may not override them.
+_MANAGED_FIELDS = frozenset(
+    {"model_name", "local_datasets", "local_eval_datasets", "start_request_id", "project_name"}
+)
+_RUN_STATUS = {
+    "running": "running",
+    "completed": "succeeded",
+    "stopped": "cancelled",
+    "error": "failed",
+}
+_PHASE_STATUS = {
+    "idle": "validating_files",
+    "loading_model": "validating_files",
+    "loading_dataset": "validating_files",
+    "configuring": "queued",
+    "training": "running",
+    "training_drafter": "running",
+    "finalizing": "running",
+    "completed": "succeeded",
+    "stopped": "cancelled",
+    "error": "failed",
+}
+
+
+class FineTuningJobCreate(BaseModel):
+    # Unknown keys are Studio training settings sent through the SDK's extra_body.
+    model_config = ConfigDict(extra = "allow")
+
+    model: str
+    training_file: str
+    validation_file: Optional[str] = None
+    hyperparameters: Optional[dict[str, Any]] = None
+    method: Optional[dict[str, Any]] = None
+    suffix: Optional[str] = None
+    seed: Optional[int] = None
+    integrations: Optional[list[Any]] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+def _bad_request(message: str, status_code: int = 400) -> HTTPException:
+    return HTTPException(status_code = status_code, detail = message)
+
+
+def _unix(value: Any) -> Optional[int]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo = timezone.utc)
+    return int(parsed.timestamp())
+
+
+# Files
+
+
+def _upload_id(name: str) -> Optional[str]:
+    prefix, sep, _rest = name.partition("_")
+    return prefix if sep and _UPLOAD_ID.match(prefix) else None
+
+
+def _file_object(path: Path) -> dict[str, Any]:
+    stat = path.stat()
+    return {
+        "id": f"{FILE_PREFIX}{_upload_id(path.name)}",
+        "object": "file",
+        "bytes": stat.st_size,
+        "created_at": int(stat.st_mtime),
+        "filename": local_datasets._display_uploaded_dataset_name(path),
+        "purpose": "fine-tune",
+        "status": "processed",
+        "status_details": None,
+    }
+
+
+def _uploaded_files() -> list[Path]:
+    """This account's dataset uploads, newest first, as the Studio dataset picker lists them."""
+    items = local_datasets.list_local_datasets_response().datasets
+    paths = [Path(item.path) for item in items if item.source == "upload"]
+    return [path for path in paths if _upload_id(path.name)]
+
+
+def _find_file(file_id: str) -> Path:
+    upload_id = file_id[len(FILE_PREFIX) :] if file_id.startswith(FILE_PREFIX) else ""
+    if _UPLOAD_ID.match(upload_id):
+        for path in _uploaded_files():
+            if _upload_id(path.name) == upload_id:
+                return path
+    raise _bad_request(f"No such File object: {file_id}", 404)
+
+
+def _file_id_for(path: Any) -> Optional[str]:
+    upload_id = _upload_id(Path(str(path)).name) if path else None
+    return f"{FILE_PREFIX}{upload_id}" if upload_id else None
+
+
+@router.post("/files")
+async def create_file(
+    file: UploadFile = File(...),
+    purpose: str = Form(...),
+    current_subject: str = Depends(get_current_subject),
+):
+    if purpose != "fine-tune":
+        raise _bad_request(
+            f"Unsloth Studio stores files for fine-tuning only; got purpose '{purpose}'."
+        )
+    saved = await local_datasets.upload_dataset_response(file)
+    return await asyncio.to_thread(_file_object, Path(saved.stored_path))
+
+
+@router.get("/files")
+async def list_files(
+    after: Optional[str] = None,
+    limit: int = Query(10000, ge = 1, le = 10000),
+    order: Literal["asc", "desc"] = "desc",
+    current_subject: str = Depends(get_current_subject),
+):
+    files = await asyncio.to_thread(lambda: [_file_object(path) for path in _uploaded_files()])
+    return _paged(files if order == "desc" else files[::-1], after, limit)
+
+
+@router.get("/files/{file_id}")
+async def retrieve_file(file_id: str, current_subject: str = Depends(get_current_subject)):
+    return await asyncio.to_thread(lambda: _file_object(_find_file(file_id)))
+
+
+# Jobs
+
+
+def _job_id(run_id: str) -> str:
+    return f"{JOB_PREFIX}{run_id}"
+
+
+def _run_id(job_id: str) -> str:
+    return job_id[len(JOB_PREFIX) :] if job_id.startswith(f"{JOB_PREFIX}job_") else job_id
+
+
+def _hyperparameters(config: dict[str, Any]) -> dict[str, Any]:
+    try:
+        multiplier = round(float(config.get("learning_rate")) / BASE_LEARNING_RATE, 6)
+    except (TypeError, ValueError):
+        multiplier = "auto"
+    return {
+        "n_epochs": config.get("num_epochs") or "auto",
+        "batch_size": config.get("batch_size") or "auto",
+        "learning_rate_multiplier": multiplier,
+    }
+
+
+def _job_object(
+    run_id: str,
+    *,
+    status: str,
+    config: dict[str, Any],
+    created_at: Optional[int],
+    finished_at: Optional[int] = None,
+    error: Optional[str] = None,
+    fine_tuned_model: Optional[str] = None,
+    trained_tokens: Optional[int] = None,
+) -> dict[str, Any]:
+    hyperparameters = _hyperparameters(config)
+    datasets = config.get("local_datasets") or []
+    eval_datasets = config.get("local_eval_datasets") or []
+    alias = _RUN_ALIAS.get(run_id)
+    return {
+        "id": alias or _job_id(run_id),
+        "object": "fine_tuning.job",
+        "created_at": _ALIAS_CREATED.get(alias)
+        or created_at
+        or int(datetime.now(timezone.utc).timestamp()),
+        "error": {"code": "training_failed", "message": error, "param": None} if error else None,
+        "fine_tuned_model": fine_tuned_model,
+        "finished_at": finished_at,
+        "hyperparameters": hyperparameters,
+        "model": config.get("model_name"),
+        "organization_id": "unsloth-studio",
+        "result_files": [],
+        "seed": config.get("random_seed"),
+        "status": status,
+        "trained_tokens": trained_tokens,
+        "training_file": _file_id_for(datasets[0]) if datasets else config.get("hf_dataset"),
+        "validation_file": _file_id_for(eval_datasets[0]) if eval_datasets else None,
+        "method": {"type": "supervised", "supervised": {"hyperparameters": hyperparameters}},
+        "suffix": config.get("project_name"),
+        "metadata": None,
+    }
+
+
+def _run_config(run: dict[str, Any]) -> dict[str, Any]:
+    try:
+        # An older install may have stored Infinity / NaN, which the JSON response cannot carry.
+        config = drop_non_finite(json.loads(run.get("config_json") or "{}"))
+    except (TypeError, ValueError):
+        config = {}
+    return config if isinstance(config, dict) else {}
+
+
+def _trained_tokens(run_id: str) -> Optional[int]:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT MAX(num_tokens) FROM training_metrics WHERE run_id = ?", (run_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row and row[0] is not None else None
+
+
+def _job_from_run(run: dict[str, Any]) -> dict[str, Any]:
+    status = _RUN_STATUS.get(run.get("status"), "running")
+    if status != "running":
+        _CANCELLING.discard(run["id"])
+    elif run["id"] in _CANCELLING:
+        status = "cancelled"
+    output_dir = run.get("output_dir")
+    return _job_object(
+        run["id"],
+        status = status,
+        config = _run_config(run),
+        created_at = _unix(run.get("started_at")),
+        finished_at = _unix(run.get("ended_at")) if status != "running" else None,
+        error = (run.get("error_message") or "Training failed") if status == "failed" else None,
+        # The run folder: the name Studio's chat, export and checkpoint lists show for this model.
+        fine_tuned_model = Path(output_dir).name if status == "succeeded" and output_dir else None,
+        trained_tokens = _trained_tokens(run["id"]),
+    )
+
+
+# Jobs started here, until their history row exists: a retrieve right after create keeps the job's fields.
+_STARTED: dict[str, tuple[dict[str, Any], int]] = {}
+_STARTED_LIMIT = 16
+# Cancelled here while the worker finishes its step: the run row reads "running" until it stops.
+_CANCELLING: set[str] = set()
+# Multi-LoRA batches started here: member run id -> batch job id, batch job id -> member run ids.
+_BATCH_OF: dict[str, str] = {}
+_BATCHES: dict[str, list[str]] = {}
+
+
+def _remember_start(run_id: str, config: dict[str, Any], created_at: int) -> None:
+    _STARTED[run_id] = (config, created_at)
+    while len(_STARTED) > _STARTED_LIMIT:
+        _STARTED.pop(next(iter(_STARTED)))
+
+
+def _remember_batch(batch_id: str, run_ids: list[str]) -> None:
+    _BATCHES[batch_id] = list(run_ids)
+    _BATCH_OF.update({run_id: batch_id for run_id in run_ids})
+    while len(_BATCHES) > _STARTED_LIMIT:
+        for run_id in _BATCHES.pop(next(iter(_BATCHES))):
+            _BATCH_OF.pop(run_id, None)
+
+
+def _for_caller(job: dict[str, Any], via_api_key: bool) -> dict[str, Any]:
+    """An API key never sees host paths: a local model becomes its handle, an error loses its paths."""
+    if host_paths_visible(via_api_key):
+        return job
+    model = redact_host_paths({"model_name": job["model"]}, via_api_key = via_api_key)
+    job = {**job, "model": model["model_name"]}
+    if job["error"]:
+        job["error"] = {**job["error"], "message": redact_paths_in_text(job["error"]["message"])}
+    return job
+
+
+def _status_field(status: Any, name: str) -> Any:
+    # The status route hands back a model, or its redacted dump for an API key.
+    return status.get(name) if isinstance(status, dict) else getattr(status, name, None)
+
+
+async def _current_status(current_subject: str, via_api_key: bool) -> Any:
+    from routes import training as training_routes
+    try:
+        return await training_routes.get_training_status(
+            current_subject = current_subject, via_api_key = via_api_key
+        )
+    except HTTPException:
+        return None
+
+
+async def _job(run_id: str, current_subject: str, via_api_key: bool) -> dict[str, Any]:
+    run = await asyncio.to_thread(get_run, run_id)
+    if run is not None:
+        return _for_caller(await asyncio.to_thread(_job_from_run, run), via_api_key)
+    # A started job has no history row until its worker is up; the live status still knows it.
+    status = await _current_status(current_subject, via_api_key)
+    if status is not None and _status_field(status, "job_id") == _BATCH_OF.get(run_id, run_id):
+        phase = _status_field(status, "phase")
+        failed = _status_field(status, "start_request_state") == "rejected" or phase == "error"
+        message = _status_field(status, "error") or _status_field(status, "message")
+        config, created_at = _STARTED.get(run_id, ({}, None))
+        state = _PHASE_STATUS.get(phase, "queued")
+        if run_id in _BATCH_OF and state in ("queued", "running"):
+            # A member's row appears with its first step; until then the batch's phase (read from its
+            # setup messages) would flip it between running and validating_files.
+            state = "validating_files"
+        if failed:
+            state = "failed"
+        elif run_id in _CANCELLING:
+            state = "cancelled"
+        return _for_caller(
+            _job_object(
+                run_id,
+                status = state,
+                config = config,
+                created_at = created_at,
+                error = (message or "Training failed") if failed else None,
+            ),
+            via_api_key,
+        )
+    raise _bad_request(f"No such fine-tuning job: {_job_id(run_id)}", 404)
+
+
+def _object(value: Any, name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise _bad_request(f"{name} must be an object.")
+    return value
+
+
+def _training_config(body: FineTuningJobCreate) -> dict[str, Any]:
+    method = _object(body.method, "method")
+    method_type = method.get("type", "supervised")
+    if method_type != "supervised":
+        raise _bad_request(
+            f"Fine-tuning method '{method_type}' is not supported yet; use 'supervised'."
+        )
+    supervised = _object(method.get("supervised"), "method.supervised")
+    hyperparameters = dict(_object(body.hyperparameters, "hyperparameters"))
+    hyperparameters.update(
+        _object(supervised.get("hyperparameters"), "method.supervised.hyperparameters")
+    )
+
+    config: dict[str, Any] = {"training_type": "LoRA/QLoRA", "format_type": "auto"}
+    extra = body.model_extra or {}
+    unknown = sorted(
+        key
+        for key in extra
+        if key not in TrainingStartRequest.model_fields or key in _MANAGED_FIELDS
+    )
+    if unknown:
+        raise _bad_request(f"Unknown parameter(s): {', '.join(unknown)}")
+    config.update(extra)
+
+    config["model_name"] = body.model
+    config["local_datasets"] = [str(_find_file(body.training_file))]
+    if body.validation_file:
+        config["local_eval_datasets"] = [str(_find_file(body.validation_file))]
+        # Studio evaluates only when eval_steps > 0; OpenAI always validates a given validation_file.
+        config.setdefault("eval_steps", 0.1)
+    if body.suffix:
+        config["project_name"] = body.suffix
+    for integration in body.integrations or []:
+        integration = _object(integration, "integrations[]")
+        if integration.get("type") != "wandb":
+            raise _bad_request(
+                f"Integration '{integration.get('type')}' is not supported; use 'wandb'."
+            )
+        wandb = _object(integration.get("wandb"), "integrations[].wandb")
+        # The W&B key is the server's WANDB_API_KEY, or wandb_token through extra_body.
+        config.setdefault("enable_wandb", True)
+        if wandb.get("project"):
+            config.setdefault("wandb_project", wandb["project"])
+    if body.seed is not None:
+        config["random_seed"] = body.seed
+    try:
+        n_epochs = hyperparameters.get("n_epochs", "auto")
+        if n_epochs != "auto":
+            config["num_epochs"] = int(n_epochs)
+        batch_size = hyperparameters.get("batch_size", "auto")
+        if batch_size != "auto":
+            config["batch_size"] = int(batch_size)
+        multiplier = hyperparameters.get("learning_rate_multiplier", "auto")
+        if multiplier != "auto":
+            config["learning_rate"] = f"{BASE_LEARNING_RATE * float(multiplier):g}"
+    except (TypeError, ValueError):
+        raise _bad_request(
+            "n_epochs and batch_size take an integer or 'auto', learning_rate_multiplier a number or 'auto'."
+        ) from None
+    return config
+
+
+QUEUE_POLL_S = 5.0
+# A 409 with training idle is a conflict that will not clear by waiting (resume, offline state): give up.
+QUEUE_IDLE_CONFLICTS = 12
+_TERMINAL_KEEP = 256
+_BUSY_ERRORS = ("Training already active", "Diffusion training already active")
+# 409s that clear by themselves (a chat request in flight, a transformers install): never give up on these.
+_TRANSIENT_CONFLICTS = (
+    "inference request is in progress",
+    "installation is in progress",
+    "is replacing the latest sidecar",
+)
+_ALIAS_TABLE = "openai_fine_tuning_aliases"
+# Jobs that may differ only in these train as one multi-LoRA batch; every other training setting must match.
+_BATCH_MEMBER_FIELDS = frozenset(
+    {
+        "local_datasets",
+        "learning_rate",
+        "num_epochs",
+        "batch_size",
+        "lora_r",
+        "lora_alpha",
+        "random_seed",
+        "project_name",
+        "max_steps",
+        # Each member has its own optimizer group and scheduler, so these stay per job too.
+        "weight_decay",
+        "warmup_steps",
+        "warmup_ratio",
+        "packing",
+    }
+)
+_BATCH_OPTIMIZERS = ("adamw_8bit", "adamw_torch")
+_BATCH_MAX_DEFAULT = 4
+
+
+@dataclass
+class _Queued:
+    alias: str
+    account: AccountContext
+    subject: str
+    via_api_key: bool
+    request: TrainingStartRequest
+    created_at: int
+    status: str = "queued"  # queued, starting, started, failed, cancelled
+    error: Optional[str] = None
+    finished_at: Optional[int] = None
+    idle_conflicts: int = 0
+    cancel_requested: bool = False
+
+
+_QUEUE: list[_Queued] = []
+# Jobs that have not started (waiting, or ended before starting). A started job's id lives in the database.
+_ALIASES: dict[str, _Queued] = {}
+_ALIAS_RUN: dict[str, tuple[str, Optional[str]]] = {}
+_RUN_ALIAS: dict[str, str] = {}
+# A queued job keeps the creation time it was given, not the later time its run started.
+_ALIAS_CREATED: dict[str, int] = {}
+# Each account has its own database, so its ids load the first time that account asks.
+_aliases_loaded: set[Optional[str]] = set()
+_drainer: Optional[asyncio.Task] = None
+_start_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _now() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
+
+
+def _start_lock() -> asyncio.Lock:
+    # One start decision at a time, so two idle creates (or a create and the drainer) never race.
+    loop = asyncio.get_running_loop()
+    lock = _start_locks.get(loop)
+    if lock is None:
+        lock = _start_locks[loop] = asyncio.Lock()
+    return lock
+
+
+def _alias_db():
+    conn = get_connection()
+    conn.execute(
+        f"CREATE TABLE IF NOT EXISTS {_ALIAS_TABLE} "
+        "(alias TEXT PRIMARY KEY, run_id TEXT NOT NULL, account_id TEXT, created_at INTEGER)"
+    )
+    return conn
+
+
+def _load_aliases() -> None:
+    account_id = current_account_id()
+    if account_id in _aliases_loaded:
+        return
+    conn = _alias_db()
+    try:
+        rows = conn.execute(
+            f"SELECT alias, run_id, account_id, created_at FROM {_ALIAS_TABLE}"
+        ).fetchall()
+    finally:
+        conn.close()
+    for alias, run_id, account_id, created_at in rows:
+        _ALIAS_RUN[alias] = (run_id, account_id)
+        _RUN_ALIAS[run_id] = alias
+        if created_at:
+            _ALIAS_CREATED[alias] = created_at
+    _aliases_loaded.add(account_id)
+
+
+def _save_alias(alias: str, run_id: str, account_id: Optional[str], created_at: int) -> None:
+    _ALIAS_RUN[alias] = (run_id, account_id)
+    _RUN_ALIAS[run_id] = alias
+    _ALIAS_CREATED[alias] = created_at
+    try:
+        conn = _alias_db()
+        try:
+            conn.execute(
+                f"INSERT OR REPLACE INTO {_ALIAS_TABLE} (alias, run_id, account_id, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (alias, run_id, account_id, created_at),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        # The run is already training: keep it reachable by its id in this process rather than fail it.
+        logger.exception("Could not persist fine-tuning job id %s", alias)
+
+
+def _transient(exc: HTTPException) -> bool:
+    return exc.status_code == 409 and any(text in str(exc.detail) for text in _TRANSIENT_CONFLICTS)
+
+
+def _training_busy() -> bool:
+    from core.training import get_training_backend
+    from routes import training as training_routes
+    return bool(
+        get_training_backend().is_training_active() or training_routes._diffusion_training_active()
+    )
+
+
+def _queued_job(entry: _Queued) -> dict[str, Any]:
+    job = _job_object(
+        entry.alias,
+        status = "cancelled"
+        if entry.cancel_requested
+        else entry.status.replace("starting", "queued"),
+        config = entry.request.model_dump(),
+        created_at = entry.created_at,
+        finished_at = entry.finished_at,
+        error = entry.error,
+    )
+    return {**job, "id": entry.alias}
+
+
+def _batch_max() -> int:
+    try:
+        return max(1, int(os.environ.get("UNSLOTH_STUDIO_FT_BATCH_MAX", _BATCH_MAX_DEFAULT)))
+    except ValueError:
+        return _BATCH_MAX_DEFAULT
+
+
+_multi_lora: Optional[bool] = None
+
+
+def _multi_lora_available() -> bool:
+    """Whether the installed Unsloth ships the multi-LoRA kernels; looked up on disk, so torch is not imported."""
+    global _multi_lora
+    if _multi_lora is None:
+        try:
+            spec = importlib.util.find_spec("unsloth")
+            roots = list(spec.submodule_search_locations or []) if spec is not None else []
+        except (ImportError, ValueError):
+            roots = []
+        _multi_lora = any(
+            (Path(root) / "kernels" / "multi_lora.py").is_file()
+            or (Path(root) / "kernels" / "multi_lora" / "__init__.py").is_file()
+            for root in roots
+        )
+    return _multi_lora
+
+
+_multi_lora_experts: Optional[bool] = None
+
+
+def _multi_lora_experts_available() -> bool:
+    """Whether the installed multi-LoRA kernels train fused MoE experts (inject_multi_lora_experts)."""
+    global _multi_lora_experts
+    if _multi_lora_experts is None:
+        try:
+            spec = importlib.util.find_spec("unsloth")
+            roots = list(spec.submodule_search_locations or []) if spec is not None else []
+        except (ImportError, ValueError):
+            roots = []
+        _multi_lora_experts = any(
+            "def inject_multi_lora_experts"
+            in (Path(root) / "kernels" / "multi_lora.py").read_text(
+                encoding = "utf-8", errors = "replace"
+            )
+            for root in roots
+            if (Path(root) / "kernels" / "multi_lora.py").is_file()
+        )
+    return _multi_lora_experts
+
+
+def _batchable(request: TrainingStartRequest) -> bool:
+    """Text LoRA/QLoRA on local files with nothing the batched trainer does not run; the rest trains alone."""
+    from core.training.eval_dataset import evaluation_enabled
+    from core.training.training import should_use_mlx_training_backend
+
+    return (
+        not should_use_mlx_training_backend()
+        and request.training_type == "LoRA/QLoRA"
+        and request.use_lora
+        and bool(request.local_datasets)
+        and not (request.hf_dataset or request.dataset_streaming or request.s3_config is not None)
+        and not (request.resume_from_checkpoint or request.start_request_id)
+        and not (request.local_eval_datasets or evaluation_enabled(request.eval_steps))
+        and request.lora_dropout == 0
+        and not (request.use_dora or request.use_loftq)
+        and not (
+            request.enable_wandb or request.enable_tensorboard or request.early_stopping_patience
+        )
+        and request.lr_scheduler_type != "reduce_lr_on_plateau"
+        and not request.offload_layers
+        and not (
+            request.is_dataset_image
+            or request.is_dataset_audio
+            or request.is_embedding
+            or request.is_decision
+            or request.finetune_vision_layers
+        )
+        and not (request.drafter is not None and request.drafter.enabled)
+        and request.optim in _BATCH_OPTIMIZERS
+        and len(request.gpu_ids or []) <= 1
+    )
+
+
+def _batch_key(entry: _Queued) -> Optional[tuple]:
+    if not _batchable(entry.request):
+        return None
+    shared = entry.request.model_dump(mode = "json", exclude = set(_BATCH_MEMBER_FIELDS))
+    return (
+        entry.account.account_id,
+        entry.subject,
+        entry.via_api_key,
+        json.dumps(shared, sort_keys = True),
+    )
+
+
+_MOE_COUNT_KEYS = ("num_experts", "n_routed_experts", "num_local_experts")
+# multi_lora_trainer.BATCHED_MOE_MODEL_TYPES.
+_BATCHED_MOE_TYPES = frozenset({"qwen3_moe", "qwen3_5_moe", "qwen3_5_moe_text"})
+# Recurrent / conv state is not checked batched; Gated DeltaNet ("linear_attention") is, and is not matched here.
+_SSM_MODEL_TYPES = frozenset(
+    {
+        "mamba",
+        "mamba2",
+        "falcon_mamba",
+        "falcon_h1",
+        "jamba",
+        "zamba",
+        "zamba2",
+        "nemotron_h",
+        "bamba",
+        "granitemoehybrid",
+        "lfm2",
+        "lfm2_moe",
+        "lfm2_vl",
+        "plamo2",
+        "hymba",
+        "mamba_ssm",
+    }
+)
+_SSM_LAYER_TYPES = ("mamba", "ssm", "conv", "mamba2")
+_SSM_KEYS = (
+    "ssm_state_size",
+    "mamba_d_state",
+    "mamba_n_heads",
+    "mamba_d_conv",
+    "state_size",
+    "conv_L_cache",
+)
+
+
+def _configs(config: dict) -> list[dict]:
+    return [c for c in (config, config.get("text_config") or {}) if isinstance(c, dict) and c]
+
+
+def _moe_config(config: dict) -> bool:
+    for cfg in _configs(config):
+        count = next((cfg[k] for k in _MOE_COUNT_KEYS if cfg.get(k) is not None), None)
+        if count is not None:
+            return isinstance(count, int) and count > 0
+    return False
+
+
+def _moe_batches(config: dict, request: TrainingStartRequest) -> bool:
+    from utils.transformers_version import get_transformers_tier
+    configs = _configs(config)
+    return (
+        any(c.get("model_type") in _BATCHED_MOE_TYPES for c in configs)
+        and not any(c.get("output_router_logits") for c in configs)
+        and _multi_lora_experts_available()
+        # The worker's transformers: 4.57 holds experts as per-expert Linears, which train alone.
+        and get_transformers_tier(request.model_name, request.hf_token, probe = False) != "457"
+    )
+
+
+def _ssm_config(config: dict) -> bool:
+    for cfg in _configs(config):
+        if cfg.get("model_type") in _SSM_MODEL_TYPES:
+            return True
+        kinds = (
+            cfg.get("layer_types")
+            or cfg.get("layers_block_type")
+            or cfg.get("hybrid_override_pattern")
+        )
+        if isinstance(kinds, str):
+            kinds = [kinds]
+        if isinstance(kinds, (list, tuple)) and any(
+            isinstance(k, str) and any(tag in k.lower() for tag in _SSM_LAYER_TYPES) for k in kinds
+        ):
+            return True
+        if any(cfg.get(k) is not None for k in _SSM_KEYS):
+            return True
+    return False
+
+
+async def _trains_alone(request: TrainingStartRequest) -> bool:
+    """Outside what the batched trainer runs: text-diffusion models (own denoising objective), saved LoRA
+    adapters (continued in place alone), state-space / conv mixers, and MoE layouts it has no expert LoRA for."""
+    from utils.models.diffusion_lm import diffusion_lm_profile_for_model
+    from utils.models.model_config import _read_raw_config_json, get_base_model_from_lora_identifier
+
+    def probe() -> bool:
+        from core.training.account_jobs import account_path
+
+        # Path guard first: a managed account's share path must not be touched (SMB sign-in); start_training refuses it.
+        try:
+            account_path(request.model_name, reference = True)
+        except HTTPException:
+            return True
+        if diffusion_lm_profile_for_model(request.model_name, request.hf_token):
+            return True
+        if get_base_model_from_lora_identifier(request.model_name, request.hf_token) is not None:
+            return True
+        try:
+            config = _read_raw_config_json(request.model_name, request.hf_token)
+        except Exception:
+            return True
+        if config is None or _ssm_config(config):
+            return True
+        return _moe_config(config) and not _moe_batches(config, request)
+
+    return await asyncio.to_thread(probe)
+
+
+def _batch_for(head: _Queued) -> list[_Queued]:
+    """The queue head plus the compatible jobs waiting behind it, in queue order, up to the cap."""
+    cap = _batch_max()
+    key = _batch_key(head) if cap > 1 and not head.cancel_requested else None
+    if key is None:
+        return [head]
+    group = [head]
+    for entry in _QUEUE:
+        if len(group) >= cap:
+            break
+        if entry is head or entry.status != "queued" or entry.cancel_requested:
+            continue
+        if _batch_key(entry) == key:
+            group.append(entry)
+    if len(group) > 1 and not _multi_lora_available():
+        return [head]
+    return group
+
+
+def _finish(
+    entry: _Queued,
+    status: str,
+    error: Optional[str] = None,
+) -> None:
+    entry.status, entry.error, entry.finished_at = status, error, _now()
+    if entry in _QUEUE:
+        _QUEUE.remove(entry)
+    if status == "started":
+        _ALIASES.pop(entry.alias, None)
+    done = [e for e in _ALIASES.values() if e.status in ("failed", "cancelled")]
+    for old in done[: max(0, len(done) - _TERMINAL_KEEP)]:
+        _ALIASES.pop(old.alias, None)
+
+
+async def _start_queued(entry: _Queued) -> bool:
+    """Start the queue head as its own account; False while the GPU is still taken."""
+    from routes import training as training_routes
+
+    async with _start_lock():
+        if entry.status != "queued":
+            return True
+        if _training_busy():
+            return False
+        group = _batch_for(entry)
+        if len(group) > 1 and await arun_as(entry.account, _trains_alone(entry.request)):
+            group = [entry]
+        if len(group) > 1:
+            outcome = await _start_batch(group)
+            if outcome is not None:
+                return outcome
+        entry.status = "starting"
+        try:
+            started = await arun_as(
+                entry.account,
+                training_routes.start_training(
+                    entry.request, current_subject = entry.subject, via_api_key = entry.via_api_key
+                ),
+            )
+        except HTTPException as exc:
+            entry.status = "queued"
+            if entry.cancel_requested:
+                _finish(entry, "cancelled")
+                return True
+            transient = _transient(exc) or _training_busy()
+            entry.idle_conflicts += 0 if transient else 1
+            if transient or (
+                exc.status_code == 409 and entry.idle_conflicts < QUEUE_IDLE_CONFLICTS
+            ):
+                return False
+            _finish(entry, "failed", str(exc.detail))
+            return True
+        if started.status == "error" or not started.job_id:
+            entry.status = "queued"
+            if entry.cancel_requested:
+                _finish(entry, "cancelled")
+                return True
+            # Busy, or another start (a UI run) took the GPU while this one was admitted: keep waiting.
+            if started.error in _BUSY_ERRORS or _training_busy():
+                return False
+            _finish(entry, "failed", started.message or started.error or "Training did not start")
+            return True
+        # In the job's own account database: the drainer may carry whichever account started it.
+        await arun_as(
+            entry.account,
+            asyncio.to_thread(
+                _save_alias, entry.alias, started.job_id, entry.account.account_id, entry.created_at
+            ),
+        )
+        _remember_start(started.job_id, entry.request.model_dump(), entry.created_at)
+        _finish(entry, "started")
+    if entry.cancel_requested:
+        # Cancelled while its start was in flight: stop it as a cancel of the running job would.
+        await arun_as(entry.account, _stop_run(started.job_id, entry.subject))
+    return True
+
+
+async def _start_batch(group: list[_Queued]) -> Optional[bool]:
+    """Start ``group`` as one multi-LoRA run, each job with its own run. None: start the head alone instead,
+    which reports any refusal exactly as an unbatched start does; False: training is busy."""
+    from core.training import get_training_backend
+    from routes import training as training_routes
+
+    head = group[0]
+    for member in group:
+        member.status = "starting"
+    try:
+        started = await arun_as(
+            head.account,
+            training_routes.start_training_batch(
+                [member.request for member in group],
+                current_subject = head.subject,
+                via_api_key = head.via_api_key,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Fine-tuning batch did not start (%s); starting %s alone", exc, head.alias)
+        started = None
+    if started is None or any(r.status == "error" or not r.job_id for r in started):
+        for member in group:
+            member.status = "queued"
+            if member.cancel_requested and member is not head:
+                _finish(member, "cancelled")
+        if started is not None and (started[0].error in _BUSY_ERRORS or _training_busy()):
+            if head.cancel_requested:
+                _finish(head, "cancelled")
+                return True
+            return False
+        return None
+    run_ids = [r.job_id for r in started]
+    batch_id = getattr(get_training_backend(), "current_job_id", None)
+    if batch_id:
+        _remember_batch(batch_id, run_ids)
+    for member, run_id in zip(group, run_ids):
+        await arun_as(
+            member.account,
+            asyncio.to_thread(
+                _save_alias, member.alias, run_id, member.account.account_id, member.created_at
+            ),
+        )
+        _remember_start(run_id, member.request.model_dump(), member.created_at)
+        _finish(member, "started")
+    for member, run_id in zip(group, run_ids):
+        if member.cancel_requested:
+            await arun_as(member.account, _cancel_run(run_id, member.subject))
+    return True
+
+
+async def _drain_once() -> None:
+    if not _QUEUE:
+        return
+    entry = _QUEUE[0]
+    try:
+        await _start_queued(entry)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Could not start queued fine-tuning job %s", entry.alias)
+        if entry.cancel_requested:
+            _finish(entry, "cancelled")
+        else:
+            _finish(entry, "failed", f"Training did not start: {type(exc).__name__}")
+
+
+async def _drain() -> None:
+    while _QUEUE:
+        head = _QUEUE[0]
+        await _drain_once()
+        if _QUEUE and _QUEUE[0] is head:
+            await asyncio.sleep(QUEUE_POLL_S)
+
+
+def _ensure_drainer() -> None:
+    global _drainer
+    if _drainer is None or _drainer.done():
+        _drainer = asyncio.get_running_loop().create_task(_drain())
+
+
+def _enqueue(request: TrainingStartRequest, current_subject: str, via_api_key: bool) -> _Queued:
+    entry = _Queued(
+        alias = f"ftjob_q{secrets.token_hex(8)}",
+        account = current_account(),
+        subject = current_subject,
+        via_api_key = via_api_key,
+        request = request,
+        created_at = _now(),
+    )
+    _QUEUE.append(entry)
+    _ALIASES[entry.alias] = entry
+    _ensure_drainer()
+    return entry
+
+
+def _own_alias(job_id: str) -> Optional[_Queued]:
+    entry = _ALIASES.get(job_id)
+    return entry if entry is not None and entry.account.account_id == current_account_id() else None
+
+
+async def _resolve(job_id: str) -> str:
+    """The run behind a job id: a queue id once its job started, else the id itself."""
+    await asyncio.to_thread(_load_aliases)
+    record = _ALIAS_RUN.get(job_id)
+    if record is not None and record[1] == current_account_id():
+        return record[0]
+    return _run_id(job_id)
+
+
+async def _stop_run(run_id: str, current_subject: str) -> Any:
+    from routes import training as training_routes
+
+    stopped = await training_routes.stop_training(
+        training_routes.TrainingStopRequest(save = True, expected_job_id = run_id),
+        current_subject = current_subject,
+    )
+    if stopped.status != "idle":
+        # The worker stops at its next safe step; the job reads "cancelled" from then on.
+        _CANCELLING.add(run_id)
+    return stopped
+
+
+async def _cancel_run(run_id: str, current_subject: str) -> Any:
+    """A job training in a batch beside others still running stops alone; otherwise the whole run stops."""
+    batch_id = _BATCH_OF.get(run_id)
+    if batch_id is None:
+        return await _stop_run(run_id, current_subject)
+    from core.training import get_training_backend
+    from core.training.account_jobs import require_job_owner
+    from models.responses import TrainingStopResponse
+
+    backend = get_training_backend()
+    require_job_owner(backend)
+    running = await asyncio.to_thread(backend.batch_member_ids)
+    if run_id in running and len(running) > 1:
+        if await asyncio.to_thread(backend.stop_member, run_id):
+            _CANCELLING.add(run_id)
+            return TrainingStopResponse(
+                status = "stopped",
+                message = "Stop requested. This job will stop at the next safe step.",
+            )
+        running = await asyncio.to_thread(backend.batch_member_ids)
+    if run_id not in running:
+        return await _stop_run(run_id, current_subject)
+    stopped = await _stop_run(batch_id, current_subject)
+    if stopped.status != "idle":
+        _CANCELLING.add(run_id)
+    return stopped
+
+
+@router.post("/fine_tuning/jobs")
+async def create_fine_tuning_job(
+    body: FineTuningJobCreate,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    from pydantic import ValidationError
+
+    from routes import training as training_routes
+
+    config = await asyncio.to_thread(_training_config, body)
+    try:
+        request = TrainingStartRequest.model_validate(config)
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        field = ".".join(str(part) for part in first.get("loc", ()))
+        raise _bad_request(f"Invalid parameter {field}: {first.get('msg')}") from None
+    async with _start_lock():
+        # First come, first served: with jobs already waiting, a new one joins the back of the queue.
+        if _QUEUE or _training_busy():
+            return _for_caller(
+                _queued_job(_enqueue(request, current_subject, via_api_key)), via_api_key
+            )
+        try:
+            started = await training_routes.start_training(
+                request, current_subject = current_subject, via_api_key = via_api_key
+            )
+        except HTTPException as exc:
+            if not (_transient(exc) or _training_busy()):
+                raise
+            return _for_caller(
+                _queued_job(_enqueue(request, current_subject, via_api_key)), via_api_key
+            )
+        if started.error in _BUSY_ERRORS or (started.status == "error" and _training_busy()):
+            return _for_caller(
+                _queued_job(_enqueue(request, current_subject, via_api_key)), via_api_key
+            )
+    if started.status == "error" or not started.job_id:
+        message = started.message or started.error or "Training did not start"
+        raise _bad_request(
+            message if host_paths_visible(via_api_key) else redact_paths_in_text(message), 409
+        )
+    created_at = int(datetime.now(timezone.utc).timestamp())
+    _remember_start(started.job_id, request.model_dump(), created_at)
+    return _for_caller(
+        _job_object(
+            started.job_id,
+            status = "validating_files",
+            config = request.model_dump(),
+            created_at = created_at,
+        ),
+        via_api_key,
+    )
+
+
+def _paged(rows: list[dict[str, Any]], after: Optional[str], limit: int) -> dict[str, Any]:
+    if after:
+        ids = [row["id"] for row in rows]
+        rows = rows[ids.index(after) + 1 :] if after in ids else []
+    return {"object": "list", "data": rows[:limit], "has_more": len(rows) > limit}
+
+
+def _runs_after(after: Optional[str], count: int) -> list[dict[str, Any]]:
+    """Up to ``count`` runs older than ``after`` (newest first), paging through the whole history."""
+    runs: list[dict[str, Any]] = []
+    found, offset = after is None, 0
+    while len(runs) < count:
+        batch = list_runs(200, offset)["runs"]
+        if not batch:
+            break
+        for run in batch:
+            if found:
+                runs.append(run)
+            found = found or run["id"] == after
+        offset += len(batch)
+    return runs[:count]
+
+
+@router.get("/fine_tuning/jobs")
+async def list_fine_tuning_jobs(
+    after: Optional[str] = None,
+    limit: int = Query(20, ge = 1, le = 100),
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    await asyncio.to_thread(_load_aliases)
+    own = [e for e in _ALIASES.values() if _own_alias(e.alias)]
+    # Newest first, as the history lists runs; insertion order breaks same-second ties.
+    pending = [(e, _for_caller(_queued_job(e), via_api_key)) for e in reversed(own)]
+    pending_ids = [job["id"] for _, job in pending]
+    if after in pending_ids:
+        pending, after = pending[pending_ids.index(after) + 1 :], None
+    elif after:
+        pending = []
+    after_run = await _resolve(after) if after else None
+    runs = await asyncio.to_thread(_runs_after, after_run, limit + 1)
+    status = await _current_status(current_subject, via_api_key)
+    live_id = _status_field(status, "job_id") if status is not None else None
+    # Live jobs without a history row yet (a batch's members while it sets up) are listed first.
+    live = []
+    if live_id and _status_field(status, "phase") != "idle":
+        live = [
+            r
+            for r in reversed(_BATCHES.get(live_id, [live_id]))
+            if await asyncio.to_thread(get_run, r) is None
+        ]
+    if after_run in live:
+        # The history follows the live jobs, so a cursor on one continues with the rest of them.
+        live = live[live.index(after_run) + 1 :]
+        runs = await asyncio.to_thread(_runs_after, None, limit + 1)
+    elif after_run:
+        live = []
+    jobs = [_for_caller(await asyncio.to_thread(_job_from_run, run), via_api_key) for run in runs]
+    jobs = [await _job(r, current_subject, via_api_key) for r in live] + jobs
+    # A job that ended before it started sorts by its creation; once a newer job ran, it is only retrievable.
+    newest = max((job["created_at"] for job in jobs), default = 0)
+    jobs = [
+        job
+        for e, job in pending
+        if e.status in ("queued", "starting") or job["created_at"] > newest
+    ] + jobs
+    return {"object": "list", "data": jobs[:limit], "has_more": len(jobs) > limit}
+
+
+@router.get("/fine_tuning/jobs/{job_id}")
+async def retrieve_fine_tuning_job(
+    job_id: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    entry = _own_alias(job_id)
+    if entry is not None:
+        return _for_caller(_queued_job(entry), via_api_key)
+    return await _job(await _resolve(job_id), current_subject, via_api_key)
+
+
+def _events(run: dict[str, Any], via_api_key: bool) -> list[dict[str, Any]]:
+    """Newest first: one metrics event per logged step, framed by the start and the outcome."""
+    run_id = run["id"]
+    started = _unix(run.get("started_at")) or 0
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT step, loss, learning_rate, grad_norm, eval_loss, epoch, elapsed_seconds "
+            "FROM training_metrics WHERE run_id = ? AND step > 0 ORDER BY step",
+            (run_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    total = run.get("total_steps")
+
+    def event(
+        key: str,
+        created_at: int,
+        message: str,
+        level: str = "info",
+        data: Any = None,
+    ):
+        return {
+            "id": f"ftevent_{run_id}_{key}",
+            "object": "fine_tuning.job.event",
+            "created_at": created_at,
+            "level": level,
+            "message": message,
+            "data": data,
+            "type": "metrics" if data else "message",
+        }
+
+    events = [event("start", started, "Fine-tuning job started")]
+    # An fp16 overflow logs an inf grad norm, which the JSON response cannot carry.
+    for step, loss, lr, grad_norm, eval_loss, epoch, elapsed in drop_non_finite(
+        [tuple(row) for row in rows]
+    ):
+        data = {
+            "step": step,
+            "total_steps": total,
+            "train_loss": loss,
+            "learning_rate": lr,
+            "grad_norm": grad_norm,
+            "valid_loss": eval_loss,
+            "epoch": epoch,
+        }
+        loss_text = f"training loss={loss:.4f}" if loss is not None else "no loss logged"
+        events.append(
+            event(
+                f"step{step}",
+                started + int(elapsed or 0),
+                f"Step {step}/{total or '?'}: {loss_text}",
+                data = data,
+            )
+        )
+    status = _RUN_STATUS.get(run.get("status"), "running")
+    ended = _unix(run.get("ended_at")) or started
+    if status == "succeeded":
+        events.append(event("end", ended, "The job has successfully completed"))
+    elif status == "cancelled":
+        events.append(event("end", ended, "The job was cancelled"))
+    elif status == "failed":
+        message = run.get("error_message") or "Training failed"
+        if not host_paths_visible(via_api_key):
+            message = redact_paths_in_text(message)
+        events.append(event("end", ended, message, level = "error"))
+    events.reverse()
+    return events
+
+
+def _queue_event(entry: _Queued, via_api_key: bool) -> dict[str, Any]:
+    if entry.status == "cancelled" or entry.cancel_requested:
+        message = "The job was cancelled before it started"
+    elif entry.status in ("queued", "starting"):
+        message = f"Waiting for the GPU: position {_QUEUE.index(entry) + 1} in the queue"
+    else:
+        message = entry.error or "Training did not start"
+        if not host_paths_visible(via_api_key):
+            message = redact_paths_in_text(message)
+    return {
+        "id": f"ftevent_{entry.alias}_{entry.status}",
+        "object": "fine_tuning.job.event",
+        "created_at": entry.finished_at or entry.created_at,
+        "level": "error" if entry.status == "failed" else "info",
+        "message": message,
+        "data": None,
+        "type": "message",
+    }
+
+
+@router.get("/fine_tuning/jobs/{job_id}/events")
+async def list_fine_tuning_events(
+    job_id: str,
+    after: Optional[str] = None,
+    limit: int = Query(20, ge = 1, le = 1000),
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    entry = _own_alias(job_id)
+    if entry is not None:
+        return _paged([_queue_event(entry, via_api_key)], after, limit)
+    run_id = await _resolve(job_id)
+    run = await asyncio.to_thread(get_run, run_id)
+    if run is None:
+        # Known but not started yet: no events, rather than a 404 a polling client would give up on.
+        await _job(run_id, current_subject, via_api_key)
+        return {"object": "list", "data": [], "has_more": False}
+    return _paged(await asyncio.to_thread(_events, run, via_api_key), after, limit)
+
+
+def _checkpoints(run: dict[str, Any]) -> list[dict[str, Any]]:
+    output_dir = run.get("output_dir")
+    if not output_dir or not Path(output_dir).is_dir():
+        return []
+    run_id = run["id"]
+    started = _unix(run.get("started_at")) or 0
+    conn = get_connection()
+    try:
+        metrics = {
+            step: (loss, eval_loss)
+            for step, loss, eval_loss in drop_non_finite(
+                [
+                    tuple(row)
+                    for row in conn.execute(
+                        "SELECT step, loss, eval_loss FROM training_metrics WHERE run_id = ?",
+                        (run_id,),
+                    ).fetchall()
+                ]
+            )
+        }
+    finally:
+        conn.close()
+    checkpoints = []
+    for path in Path(output_dir).glob("checkpoint-*"):
+        step_text = path.name.rpartition("-")[2]
+        if not path.is_dir() or not step_text.isdigit():
+            continue
+        step = int(step_text)
+        loss, eval_loss = metrics.get(step, (None, None))
+        checkpoints.append(
+            {
+                "id": f"ftckpt_{run_id}_{step}",
+                "object": "fine_tuning.job.checkpoint",
+                "created_at": int(path.stat().st_mtime) or started,
+                # The "<run folder>/<checkpoint>" name Studio loads and exports a checkpoint by.
+                "fine_tuned_model_checkpoint": f"{Path(output_dir).name}/{path.name}",
+                "fine_tuning_job_id": _RUN_ALIAS.get(run_id) or _job_id(run_id),
+                "metrics": {"step": step, "train_loss": loss, "valid_loss": eval_loss},
+                "step_number": step,
+            }
+        )
+    checkpoints.sort(key = lambda checkpoint: checkpoint["step_number"], reverse = True)
+    return checkpoints
+
+
+@router.get("/fine_tuning/jobs/{job_id}/checkpoints")
+async def list_fine_tuning_checkpoints(
+    job_id: str,
+    after: Optional[str] = None,
+    limit: int = Query(10, ge = 1, le = 100),
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    if _own_alias(job_id) is not None:
+        return {"object": "list", "data": [], "has_more": False}
+    run_id = await _resolve(job_id)
+    run = await asyncio.to_thread(get_run, run_id)
+    if run is None:
+        await _job(run_id, current_subject, via_api_key)
+        return {"object": "list", "data": [], "has_more": False}
+    return _paged(await asyncio.to_thread(_checkpoints, run), after, limit)
+
+
+@router.post("/fine_tuning/jobs/{job_id}/cancel")
+async def cancel_fine_tuning_job(
+    job_id: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    entry = _own_alias(job_id)
+    if entry is not None and entry.status == "queued":
+        _finish(entry, "cancelled")
+        return _for_caller(_queued_job(entry), via_api_key)
+    if entry is not None and entry.status == "starting":
+        # Its start is in flight: the starter stops the run as soon as it exists.
+        entry.cancel_requested = True
+        return _for_caller(_queued_job(entry), via_api_key)
+    if entry is not None:
+        raise _bad_request(f"Job {entry.alias} has already {entry.status}.")
+    run_id = await _resolve(job_id)
+    job = await _job(run_id, current_subject, via_api_key)
+    if job["status"] in ("succeeded", "failed", "cancelled"):
+        raise _bad_request(f"Job {job['id']} has already {job['status']}.")
+    stopped = await _cancel_run(run_id, current_subject)
+    if stopped.status == "idle":
+        raise _bad_request(f"Job {job['id']} is not running.", 409)
+    return {**job, "status": "cancelled"}
+
+
+@router.post("/fine_tuning/jobs/{job_id}/pause")
+@router.post("/fine_tuning/jobs/{job_id}/resume")
+async def pause_or_resume_fine_tuning_job(
+    job_id: str, current_subject: str = Depends(get_current_subject)
+):
+    raise _bad_request("Pausing and resuming fine-tuning jobs is not supported; use cancel.")
