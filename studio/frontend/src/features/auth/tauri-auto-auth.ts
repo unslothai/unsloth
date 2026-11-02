@@ -4,7 +4,6 @@
 import { isTauri } from "@/lib/api-base";
 import {
   clearAuthTokens,
-  getAuthToken,
   hasAuthToken,
   hasRefreshToken,
   mustChangePassword,
@@ -12,11 +11,9 @@ import {
   storeAuthTokens,
 } from "./session";
 import { refreshSession, refreshSessionOutcome } from "./api";
-import { sessionAccount } from "./account-session";
-import { fetchAuthStatus } from "./login-client";
+import { setLoginMode } from "./login-client";
 import {
   OWNER_BROWSER_ACCOUNT,
-  browserAccountKey,
   transitionBrowserAccount,
 } from "@/lib/account-transition";
 
@@ -131,49 +128,13 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
       await router.navigate({ to: "/login", replace: true });
       return options.force === true;
     }
-    if (
-      sessionAccount(getAuthToken())?.isOwner === false &&
-      hasRefreshToken()
-    ) {
-      const outcome = await refreshSessionOutcome();
-      if (outcome === "unavailable") {
-        tauriLoginRequired = true;
-        clearTauriAuthFailure();
-        return options.force === true;
-      }
-      if (outcome === "ok" && hasAuthToken()) {
-        tauriLoginRequired = true;
-        clearTauriAuthFailure();
-        if (mustChangePassword()) {
-          const { router } = await import("@/app/router");
-          await router.navigate({ to: "/change-password", replace: true });
-        }
-        return true;
-      }
-    }
-    // API recovery clears rejected tokens; the account marker survives that clear.
-    if (
-      sessionAccount(getAuthToken())?.isOwner === false ||
-      browserAccountKey() !== "owner"
-    ) {
-      tauriLoginRequired = true;
-      const status = await fetchAuthStatus().catch(() => undefined);
-      clearTauriAuthFailure();
-      if (!status) return options.force === true;
-      if (status.login_mode === "multi") {
-        clearAuthTokens();
-        const { router } = await import("@/app/router");
-        await router.navigate({ to: "/login", replace: true });
-        return options.force === true;
-      }
-    }
     tauriLoginRequired = false;
     // Owner tokens after the last managed account is deleted must not inherit its browser data.
     await transitionBrowserAccount(OWNER_BROWSER_ACCOUNT, "/chat", () => {
       storeAuthTokens(tokens.access_token, tokens.refresh_token);
       setMustChangePassword(false);
+      setLoginMode("single");
     });
-    await fetchAuthStatus().catch(() => undefined);
     clearTauriAuthFailure();
     return true;
   } catch (error) {

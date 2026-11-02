@@ -25,7 +25,6 @@ class DesktopLoginRequest(BaseModel):
     """Desktop-only local secret exchange payload."""
 
     secret: str = Field(..., description = "Desktop local auth secret")
-    seeded_owner_login: bool = False
 
 
 class RefreshTokenRequest(BaseModel):

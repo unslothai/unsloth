@@ -46,7 +46,6 @@ function fixture(
   let access: string | null = null;
   let refresh: string | null = null;
   let passwordChange = false;
-  let browserAccount = "owner";
   let response: unknown = { access_token: "owner-access", refresh_token: "owner-refresh" };
   let invokeCalls = 0;
   const invokes: unknown[][] = [];
@@ -62,16 +61,11 @@ function fixture(
   } = { initialized: true, requires_password_change: false, login_mode: "single" };
   const navigations: unknown[] = [];
   const session = {
-    getAuthToken: () => access,
     hasAuthToken: () => !!access,
     hasRefreshToken: () => !!refresh,
     mustChangePassword: () => passwordChange,
     setMustChangePassword: (value: boolean) => { passwordChange = value; },
-    storeAuthTokens: (a: string, r: string) => {
-      access = a; refresh = r;
-      if (a.startsWith("alice")) browserAccount = "alice";
-      if (a.includes("owner")) browserAccount = "owner";
-    },
+    storeAuthTokens: (a: string, r: string) => { access = a; refresh = r; },
     clearAuthTokens: () => { access = null; refresh = null; passwordChange = false; },
     getPostAuthRoute: () => tauri ? "/chat" : passwordChange ? "/change-password" : "/chat",
     refreshSession: async () => {
@@ -96,22 +90,13 @@ function fixture(
     "@/lib/api-base": apiBase,
     "./session": session,
     "./api": session,
-    "./account-session": {
-      sessionAccount: (token: string | null) =>
-        token ? { username: token.startsWith("alice") ? "alice" : "unsloth", isOwner: !token.startsWith("alice") } : null,
-    },
     "./login-client": {
-      fetchAuthStatus: async () => {
-        const response = await globalThis.fetch("/api/auth/status");
-        if (!response.ok) throw new Error("Failed to load auth status.");
-        const result = await response.json();
-        loginModes.push([result.login_mode ?? "single", result.full_access]);
-        return result;
+      setLoginMode: (mode: string, fullAccess?: boolean) => {
+        loginModes.push([mode, fullAccess]);
       },
     },
     "@/lib/account-transition": {
       OWNER_BROWSER_ACCOUNT: "unsloth",
-      browserAccountKey: () => browserAccount,
       transitionBrowserAccount: async (
         account: unknown,
         route: string,
@@ -261,26 +246,7 @@ test("returning to one account restores desktop auto-login and guard shortcuts",
   assert.equal(f.access, "restored-owner");
   await f.guards.requireAuth();
   await assert.rejects(f.guards.requireGuest(), { to: "/chat" });
-  assert.equal(f.statusCalls, 1);
-  assert.deepEqual(f.loginModes, [["single", undefined]]);
-});
-
-test("a multi-account install signs the owner in while the bootstrap password stands", async (t) => {
-  const f = fixture(t);
-  f.setStatus({
-    initialized: true,
-    requires_password_change: true,
-    login_mode: "multi",
-    full_access: false,
-  });
-  assert.equal(await f.auth.tauriAutoAuth({ force: true }), true);
-  assert.equal(f.auth.isTauriLoginRequired(), false);
-  assert.equal(f.access, "owner-access");
-  assert.deepEqual(f.navigations, []);
-  assert.deepEqual(f.transitions, [{ account: "unsloth", route: "/chat" }]);
-  assert.deepEqual(f.loginModes, [["multi", false]]);
-  await f.guards.requireAuth();
-  await assert.rejects(f.guards.requireGuest(), { to: "/chat" });
+  assert.equal(f.statusCalls, 0);
 });
 
 for (const passwordChange of [false, true]) {
@@ -300,62 +266,6 @@ for (const passwordChange of [false, true]) {
     if (!passwordChange) await f.guards.requireAuth();
   });
 }
-
-for (const passwordChange of [false, true]) {
-  test(`owner tokens while the bootstrap password stands keep a managed session that still refreshes, password change ${passwordChange}`, async (t) => {
-    const f = fixture(t);
-    f.setStatus({ initialized: true, requires_password_change: true, login_mode: "multi", full_access: false });
-    f.session.storeAuthTokens("alice-access", "alice-refresh");
-    f.session.setMustChangePassword(passwordChange);
-    f.setRefreshSucceeds(true);
-    assert.equal(await f.auth.tauriAutoAuth({ force: true }), true);
-    assert.equal(f.access, "refreshed-access");
-    assert.equal(f.refreshCalls, 1);
-    assert.deepEqual(f.transitions, []);
-    assert.equal(f.auth.isTauriLoginRequired(), true);
-    assert.deepEqual(
-      f.navigations,
-      passwordChange ? [{ to: "/change-password", replace: true }] : [],
-    );
-    if (!passwordChange) await f.guards.requireAuth();
-  });
-}
-
-for (const force of [false, true]) {
-  test(`an unavailable managed refresh never switches to the owner, forced ${force}`, async (t) => {
-    const f = fixture(t);
-    f.session.storeAuthTokens("alice-access", "alice-refresh");
-    f.session.setMustChangePassword(true);
-    f.setRefreshOutcome("unavailable");
-    assert.equal(await f.auth.tauriAutoAuth({ force }), force);
-    assert.equal(f.access, "alice-access");
-    assert.deepEqual(f.transitions, []);
-    assert.deepEqual(f.navigations, []);
-    assert.equal(f.auth.isTauriLoginRequired(), true);
-  });
-}
-
-for (const cleared of [false, true]) {
-  test(`a rejected managed session requires sign-in in multi mode, tokens cleared ${cleared}`, async (t) => {
-    const f = fixture(t);
-    f.setStatus({ initialized: true, requires_password_change: true, login_mode: "multi", full_access: false });
-    f.session.storeAuthTokens("alice-access", "alice-refresh");
-    if (cleared) f.session.clearAuthTokens();
-    assert.equal(await f.auth.tauriAutoAuth({ force: true }), true);
-    assert.equal(f.access, null);
-    assert.deepEqual(f.transitions, []);
-    assert.deepEqual(f.navigations, [{ to: "/login", replace: true }]);
-    assert.equal(f.auth.isTauriLoginRequired(), true);
-  });
-}
-
-test("deleting the last managed account restores owner recovery after its session expires", async (t) => {
-  const f = fixture(t);
-  f.session.storeAuthTokens("alice-access", "alice-refresh");
-  assert.equal(await f.auth.tauriAutoAuth({ force: true }), true);
-  assert.equal(f.access, "owner-access");
-  assert.deepEqual(f.transitions, [{ account: "unsloth", route: "/chat" }]);
-});
 
 test("owner tokens after the last managed account is deleted clear that account's browser data", async (t) => {
   const f = fixture(t);

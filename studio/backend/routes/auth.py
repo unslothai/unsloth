@@ -553,10 +553,8 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
 
     from auth.policy import installation_is_multi_user
 
-    # Older shells cannot preserve managed sessions when the backend updates on its own.
-    if installation_is_multi_user() and (
-        not payload.seeded_owner_login or not storage.requires_password_change(username)
-    ):
+    if installation_is_multi_user():
+        # The secret proves the shell owns the backend, not which account is using it.
         return Response(
             content = '{"login_required":true,"login_mode":"multi"}',
             media_type = "application/json",

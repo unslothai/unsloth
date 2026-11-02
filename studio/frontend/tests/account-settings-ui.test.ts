@@ -48,6 +48,7 @@ type TabOptions = {
   // What the sidebar footer shows: the local profile store.
   localProfile?: { displayName: string; avatarDataUrl: string | null };
   ownerPasswordPending?: boolean;
+  statusError?: boolean;
 };
 function tab(
   owner = true,
@@ -99,7 +100,13 @@ function tab(
         effects.push(effect);
       },
     },
-    "@/features/auth": { useIsAccountOwner: () => owner },
+    "@/features/auth": {
+      useIsAccountOwner: () => owner,
+      fetchAuthStatus: async () => {
+        if (options.statusError) throw new Error("Status unavailable");
+        return { requires_password_change: options.ownerPasswordPending ?? false };
+      },
+    },
     "@/features/profile": {
       UserAvatar: "UserAvatar",
       useUserProfileStore: (select: (state: unknown) => unknown) =>
@@ -312,6 +319,38 @@ test("create shows a copyable expiring setup code once and regeneration replaces
   await confirm(ui.render());
   assert.ok(ui.calls.includes("regenerate:alice-id"));
   assert.match(content(ui.render()), /regenerated-secret/);
+});
+
+test("creating an account completes the existing initial-password dialog first", async () => {
+  const ui = tab(true, null, { ownerPasswordPending: true });
+  let tree = await ui.initialize();
+  await click(tree, "Create account");
+  tree = ui.render();
+  const password = nodes(tree).find((node) => node.type === "ChangePasswordDialog");
+  assert.equal(password?.props.open, true);
+  assert.equal(password?.props.initial, true);
+  assert.equal(nodes(tree).find((node) => node.type === "Dialog")?.props.open, false);
+  assert.ok(!ui.calls.some((call) => call.startsWith("create:")));
+  (password?.props.onOpenChange as (open: boolean) => void)(false);
+  assert.equal(nodes(ui.render()).find((node) => node.type === "Dialog")?.props.open, false);
+  await click(ui.render(), "Create account");
+  const retry = nodes(ui.render()).find((node) => node.type === "ChangePasswordDialog");
+  (retry?.props.onOpenChange as (open: boolean) => void)(false);
+  (retry?.props.onDone as () => void)();
+  assert.equal(nodes(ui.render()).find((node) => node.type === "Dialog")?.props.open, true);
+  assert.ok(!ui.calls.some((call) => call.startsWith("create:")));
+});
+
+test("unavailable password status leaves account creation closed and retryable", async () => {
+  const ui = tab(true, null, { statusError: true });
+  await ui.initialize();
+  for (let i = 0; i < 2; i++) {
+    await click(ui.render(), "Create account");
+    const tree = ui.render();
+    assert.equal(nodes(tree).find((node) => node.type === "Dialog")?.props.open, false);
+    assert.match(content(tree), /Status unavailable/);
+    assert.ok(!ui.calls.some((call) => call.startsWith("create:")));
+  }
 });
 
 test("regenerating a setup code names what it destroys before it runs", async () => {
