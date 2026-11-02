@@ -2086,7 +2086,6 @@ class _VideoCreateInputs:
     size: Optional[tuple[int, int]]
     seconds: Optional[float]
     reference_audios: Optional[list[str]]
-    # This request's readability decodes, for its own render only; a queued job drops them.
     decoded_images: Optional[Any] = _dc_field(default = None, compare = False, repr = False)
 
 
@@ -2134,8 +2133,7 @@ async def _validated_video_inputs(
     for param, image in images:
         if image is None:
             continue
-        # Check readability before a model switch. The conditioning path applies its own
-        # keyframe or Ref2VA limit later, so this uses the broadest bounded source policy.
+        # Validate before switching; task-specific limits apply during resolution.
         from core.inference.diffusion import decode_b64_image_sized
         from core.inference.video_minimax_h3 import (
             H3_REF_IMAGE_SOURCE_MAX_PIXELS,
@@ -2297,7 +2295,7 @@ async def _start_openai_video(
         from core.inference.media_model_index import expected_partition
         from core.inference.video import _detect_load_family
 
-        # A model switch is about to load: do not hold the decoded images through it.
+        # Release pixels before loading another model.
         inputs.decoded_images = None
         fam = _detect_load_family(pick.model_path, pick.gguf_filename, None)
         if fam is None:
@@ -2677,7 +2675,6 @@ async def _create_or_queue_openai_video(
         except Exception as exc:
             if _video_wait(exc) != "busy":
                 raise
-    # A queued job keeps no decoded pixels; its render decodes when it starts.
     inputs.decoded_images = None
     await asyncio.to_thread(_refuse_unreadable_audio, inputs.reference_audios)
     model, size, seconds = await asyncio.to_thread(_queued_job_display, body, reference, inputs)

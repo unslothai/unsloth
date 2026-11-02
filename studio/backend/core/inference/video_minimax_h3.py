@@ -989,24 +989,18 @@ class DecodedReferenceAudios:
 
 @dataclass(frozen = True)
 class DecodedReferenceImages:
-    """The route's readability decodes: ``(source, stored_size, image)`` per input image, in request order.
-
-    Each image is ``decode_b64_image(source, mode="RGB")`` at the H3 source limits. Any other limits
-    give the same pixels or the same size refusal, so the engine re-runs only the size guard."""
+    """One RGB image and its pre-EXIF dimensions per input slot."""
 
     entries: tuple = ()
 
     def pool(self) -> list:
-        """A fresh per-resolution copy; each entry serves one input slot."""
         return list(self.entries)
 
 
 def take_decoded_image(
     pool: Optional[list], source: str, *, max_side: int, max_pixels: Optional[int]
 ) -> Any:
-    """``decode_b64_image(source, mode="RGB", ...)``, reusing (and removing) the first pool entry for it."""
     from .diffusion import decode_b64_image, refuse_oversized_image
-
     if pool:
         for index, (known, size, image) in enumerate(pool):
             if known is source or known == source:

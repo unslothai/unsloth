@@ -11829,7 +11829,6 @@ class VideoBackend:
                     resolved_reference_images = [input_reference]
                 else:
                     resolved_first_frame = input_reference
-            # The route's readability decodes, one input slot each, in the order decoded below.
             image_kwargs = (
                 {"decoded_images": decoded_reference_images.pool()}
                 if decoded_reference_images is not None
@@ -13096,7 +13095,7 @@ class VideoBackend:
         if first_frame or last_frame:
             from .video_minimax_h3 import take_decoded_image
 
-            limits = dict(max_side = 4096, max_pixels = None)  # decode_b64_image's defaults
+            limits = dict(max_side = 4096, max_pixels = None)
             first = (
                 take_decoded_image(decoded_images, first_frame, **limits) if first_frame else None
             )

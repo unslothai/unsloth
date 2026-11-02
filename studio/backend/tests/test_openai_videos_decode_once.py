@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Bounded request-local reuse of /v1/videos conditioning image decodes."""
-
 from __future__ import annotations
 
 import asyncio
@@ -191,7 +189,6 @@ def test_the_same_image_as_first_and_last_frame_stays_two_images():
 def test_a_reused_keyframe_over_the_keyframe_limit_is_refused_with_the_same_message(
     monkeypatch, orientation
 ):
-    """The route's limit is 8192 px; a keyframe's is 4096, judged on the stored (pre-rotation) size."""
     h3 = detect_video_family("", override = "minimax-h3")
     wide = _data_url((4100, 64), orientation = orientation)
     with pytest.raises(ValueError) as fresh:
@@ -218,7 +215,7 @@ def test_an_input_the_route_did_not_decode_is_decoded_as_before(monkeypatch):
     first, *_ = VideoBackend._resolve_keyframes(
         h3, None, other, None, 256, 256, decoded_images = _route_decodes(known).pool()
     )
-    assert len(opened) == 2  # the route-side decode of ``known`` plus a fresh decode of ``other``
+    assert len(opened) == 2
     assert first.getpixel((10, 10)) == (1, 2, 3)
 
 

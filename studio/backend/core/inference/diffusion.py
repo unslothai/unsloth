@@ -1022,7 +1022,6 @@ def decode_b64_image(
 
 
 def refuse_oversized_image(w: int, h: int, max_side: int, max_pixels: Optional[int]) -> None:
-    """decode_b64_image's header size guard, on the file's stored (pre-EXIF-transpose) size."""
     if w > max_side or h > max_side:
         raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_side}px per side.")
     if max_pixels is not None and w * h > max_pixels:
@@ -1036,7 +1035,6 @@ def decode_b64_image_sized(
     max_side: int = 4096,
     max_pixels: Optional[int] = None,
 ) -> tuple[Any, tuple[int, int]]:
-    """decode_b64_image, plus the stored size its guard judged, so a later guard can be re-run without decoding."""
     import base64
     import binascii
     import io
