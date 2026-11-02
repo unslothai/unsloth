@@ -275,7 +275,6 @@ if _IS_MLX:
         from unsloth_zoo.mlx.trainer import (
             MLXTrainer,
             MLXTrainingConfig,
-            _is_vlm_model,
             _normalize_mlx_optimizer_name,
         )
         from unsloth_zoo.mlx import trainer as _mlx_zoo_trainer
@@ -408,15 +407,15 @@ if _IS_MLX:
         def for_inference(*args, **kwargs):
             return args[0] if args else None
 
+        @staticmethod
+        def for_training(*args, **kwargs):
+            return args[0] if args else None
+
     class FastVisionModel(FastLanguageModel):
         @staticmethod
         def from_pretrained(*args, **kwargs):
             kwargs.setdefault("text_only", False)
             return _mlx_from_pretrained(*args, **kwargs)
-
-        @staticmethod
-        def for_training(*args, **kwargs):
-            return args[0] if args else None
 
     FastTextModel = FastLanguageModel
     FastModel = FastLanguageModel
@@ -677,6 +676,7 @@ if _IS_MLX:
     _MLX_TRAINING_ARGUMENT_ALIASES = {
         "max_length": "max_seq_length",
         "loraplus_lr_ratio": "lora_plus_ratio",
+        "evaluation_strategy": "eval_strategy",
     }
     _MLX_COMPAT_EXTRA_ARGUMENTS = frozenset(
         (
@@ -686,40 +686,34 @@ if _IS_MLX:
             "dataset_kwargs",
             "ddp_find_unused_parameters",
             "disable_tqdm",
-            "eval_strategy",
-            "evaluation_strategy",
             "fp16",
             "full_determinism",
             "gradient_checkpointing_kwargs",
             "hub_model_id",
             "hub_token",
             "log_level",
-            "logging_strategy",
-            "neftune_noise_alpha",
-            "optim_args",
             "padding_free",
             "push_to_hub",
             "remove_unused_columns",
             "save_on_each_node",
             "save_safetensors",
-            "save_strategy",
             "torch_compile",
         )
     )
     _MLX_IMPLEMENTED_EXTRA_ARGUMENTS = frozenset(
         (
+            "eval_delay",
+            "eval_strategy",
             "image_size",
+            "include_num_input_tokens_seen",
+            "logging_first_step",
+            "logging_strategy",
             "preserve_dataset_order",
+            "save_strategy",
             "warmup_ratio",
         )
     )
     _MLX_ALLOWED_EXTRA_ARGUMENTS = _MLX_COMPAT_EXTRA_ARGUMENTS | _MLX_IMPLEMENTED_EXTRA_ARGUMENTS
-    _MLX_UNSUPPORTED_TASK_ARGUMENTS = frozenset(
-        (
-            "assistant_only_loss",
-            "completion_only_loss",
-        )
-    )
 
     def _is_mlx_no_save_strategy(value):
         if hasattr(value, "value"):
@@ -787,17 +781,6 @@ if _IS_MLX:
         for name in _MLX_ALLOWED_EXTRA_ARGUMENTS:
             if hasattr(args, name):
                 values[name] = getattr(args, name)
-        for name in _MLX_UNSUPPORTED_TASK_ARGUMENTS:
-            if hasattr(args, name):
-                value = getattr(args, name)
-                if (
-                    name == "completion_only_loss"
-                    and value is not None
-                    and name in _MLX_TRAINING_CONFIG_FIELDS
-                ):
-                    values[name] = value
-                elif value is not None and value is not False:
-                    values[name] = value
         # A real TRL config (built before this shim installed): its own fields are translated or refused too.
         trl_arguments = getattr(config_class, "_unsloth_mlx_trl_arguments", None)
         if trl_arguments is not None:
@@ -1042,16 +1025,6 @@ if _IS_MLX:
                 if key != target and target in kwargs:
                     continue
                 value = _normalize_mlx_training_value(target, value)
-                if target in _MLX_UNSUPPORTED_TASK_ARGUMENTS:
-                    if (
-                        target == "completion_only_loss"
-                        and value is not None
-                        and target in config_fields
-                    ):
-                        filtered_kwargs[target] = value
-                    elif _is_meaningful_mlx_extra_value(value):
-                        extra_kwargs[key] = value
-                    continue
                 if target in config_fields:
                     filtered_kwargs[target] = value
                 else:
@@ -1265,7 +1238,9 @@ if _IS_MLX:
         # Under its canonical name, or the copied canonical value would win over the alias. max_length keeps its own rules.
         values.update(
             {
-                (key if key == "max_length" else _MLX_TRAINING_ARGUMENT_ALIASES.get(key, key)): value
+                (
+                    key if key == "max_length" else _MLX_TRAINING_ARGUMENT_ALIASES.get(key, key)
+                ): value
                 for key, value in overrides.items()
             }
         )
@@ -1559,22 +1534,6 @@ if _IS_MLX:
                 trainer_kwargs.get("args"),
                 config_kwargs,
             )
-            if getattr(
-                trainer_kwargs["args"], "completion_only_loss", None
-            ) is True and not _is_vlm_model(trainer_kwargs.get("model")):
-                raise NotImplementedError(
-                    "Unsloth MLX: completion_only_loss=True is only supported "
-                    "for VLM training. For text SFT, call train_on_responses_only "
-                    "after constructing the trainer."
-                )
-            if getattr(
-                trainer_kwargs["args"], "train_on_completions", None
-            ) is True and not _is_vlm_model(trainer_kwargs.get("model")):
-                raise NotImplementedError(
-                    "Unsloth MLX: train_on_completions=True is only supported "
-                    "for VLM training. For text SFT, call train_on_responses_only "
-                    "after constructing the trainer."
-                )
             trainer_kwargs["args"] = self._unsloth_mlx_apply_defaults(
                 trainer_kwargs["args"],
                 trainer_kwargs.get("model"),

@@ -338,6 +338,46 @@ for name in ("GKDTrainer", "PPOTrainer", "RewardTrainer"):
 
 
 @_needs_real_mlx
+def test_sft_shim_forwards_what_zoo_honors():
+    _run_shim_probe("""
+import warnings
+with warnings.catch_warnings():
+    warnings.simplefilter("error", RuntimeWarning)
+    args = trl.SFTConfig(
+        max_steps=1,
+        assistant_only_loss=True,
+        logging_first_step=True,
+        eval_delay=3,
+        include_num_input_tokens_seen="all",
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        logging_strategy="epoch",
+    )
+assert args.assistant_only_loss is True and args.logging_first_step is True
+assert args.eval_delay == 3 and args.include_num_input_tokens_seen == "all"
+assert (args.eval_strategy, args.save_strategy, args.logging_strategy) == ("epoch",) * 3
+assert trl.SFTConfig(max_steps=1, evaluation_strategy="epoch").eval_strategy == "epoch"
+assert trl.SFTConfig(max_steps=1, completion_only_loss=False).completion_only_loss is False
+
+# Text models train on completions: zoo masks prompt/completion rows.
+for key in ("completion_only_loss", "train_on_completions"):
+    t = trl.SFTTrainer(model, trl.SFTConfig(max_steps=1, **{key: True}), None, [], None, tok)
+    assert getattr(t.args, key) is True
+
+# Rebuilding the config for a trainer-level override keeps them.
+t = trl.SFTTrainer(model=model, args=args, train_dataset=[], processing_class=tok, packing=False, seed=9)
+assert t.args.seed == 9 and t.args.assistant_only_loss is True and t.args.logging_first_step is True
+
+t = trl.SFTTrainer(model=model, args=args, train_dataset=[], processing_class=tok, loraplus_lr_ratio=16)
+assert t.args.lora_plus_ratio == 16
+
+refused(lambda: trl.SFTConfig(dataloader_drop_last=True), "dataloader_drop_last")
+for fast in (unsloth.FastLanguageModel, unsloth.FastModel, unsloth.FastVisionModel):
+    assert fast.for_training(model) is model
+""")
+
+
+@_needs_real_mlx
 def test_trl_configs_built_before_the_shim_keep_their_meaning():
     _run_shim_probe(
         """
