@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import atexit
 import collections
+import functools
 import os
 import re
 import sys
@@ -25,6 +26,7 @@ __all__ = [
     "install_worker_stderr_mirror",
     "mark_log_record_continuations",
     "stderr_tail_from_bytes",
+    "stop_worker_stderr_mirror",
     "unexpected_exit_message",
 ]
 
@@ -583,6 +585,9 @@ def _stop_mirror(
         pass
 
 
+_MIRROR_STOPPER = None
+
+
 def install_worker_stderr_mirror(
     path: "str | None", cap_bytes: int = MIRROR_FILE_CAP_BYTES
 ) -> bool:
@@ -636,8 +641,19 @@ def install_worker_stderr_mirror(
         daemon = True,
     )
     pump.start()
-    atexit.register(_stop_mirror, inherited, pump, stop, relay, rebound)
+    global _MIRROR_STOPPER
+    _MIRROR_STOPPER = functools.partial(_stop_mirror, inherited, pump, stop, relay, rebound)
+    atexit.register(_MIRROR_STOPPER)
     return True
+
+
+def stop_worker_stderr_mirror() -> None:
+    """The atexit drain, for a worker leaving through os._exit."""
+    global _MIRROR_STOPPER
+    stopper, _MIRROR_STOPPER = _MIRROR_STOPPER, None
+    if stopper is not None:
+        atexit.unregister(stopper)
+        stopper()
 
 
 _PREFIX_FORMATTER_CLASS = None

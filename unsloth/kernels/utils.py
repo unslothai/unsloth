@@ -1848,13 +1848,13 @@ def fast_linear_forward(
             # Without out=, mv / mm follow a different autocast dtype; the in-place update does not.
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
-            out.addmv_(B, temp_lora, alpha = lora_S)
+            out = out.addmv_(B, temp_lora, alpha = lora_S)
         else:
             out = out.view(bsz, out_dim)
             temp_lora = torch_mm(X.view(bsz, in_dim), A.t(), out = temp_lora)
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
-            out.addmm_(temp_lora, B.t(), alpha = lora_S)
+            out = out.addmm_(temp_lora, B.t(), alpha = lora_S)
         out = out.view(bsz, 1, out_dim)
 
     if bias is not None:
@@ -1863,21 +1863,29 @@ def fast_linear_forward(
     return out
 
 
+_is_functorch_wrapped_tensor = getattr(torch._C._functorch, "is_functorch_wrapped_tensor", None)
+
+
 def _functorch_wrapped(*tensors):
     # vmap / grad transforms wrap tensors; an in-place write from them into a plain buffer is not allowed.
-    check = getattr(torch._C._functorch, "is_functorch_wrapped_tensor", None)
+    check = _is_functorch_wrapped_tensor
     return check is not None and any(check(t) for t in tensors)
 
 
 def _lora_first_addmm(X, Wt, XA, Bt, alpha):
     # alpha * XA @ Bt into a fresh buffer (beta 0 never reads it), then the base GEMM accumulates onto it.
-    if _functorch_wrapped(X, Wt, XA, Bt):
+    # Wrapped tensors only exist inside an active torch.func transform.
+    if _functorch_active() and _functorch_wrapped(X, Wt, XA, Bt):
         out = torch.addmm(XA.new_zeros(1), XA, Bt, beta = 0, alpha = alpha)
         return torch.addmm(out, X, Wt)
     out = torch.empty((X.shape[0], Wt.shape[1]), dtype = X.dtype, device = X.device)
-    out.addmm_(XA, Bt, alpha = alpha, beta = 0)
-    out.addmm_(X, Wt)
-    return out
+    # Both updates mutate the plain buffer; a subclass operand's returned type is kept for the result.
+    return _accumulated(out.addmm_(XA, Bt, alpha = alpha, beta = 0), out.addmm_(X, Wt))
+
+
+def _accumulated(lora_out, base_out):
+    # The more derived of the two returned types, else the base GEMM's.
+    return lora_out if isinstance(lora_out, type(base_out)) else base_out
 
 
 # Traced, x.addmm_ copies x first; this op stays in place. No derivative: grad off only.
@@ -1941,6 +1949,20 @@ if _HAS_ADDMM_OP:
             _HAS_LORA_FIRST_OP = False
 
 
+# Tracing infrastructure (make_fx, export) wraps plain tensors; those are not user subclasses.
+_LORA_PLAIN_TYPES = (torch.Tensor, torch.nn.Parameter)
+try:
+    from torch._subclasses.fake_tensor import FakeTensor as _FakeTensor
+    from torch._subclasses.functional_tensor import FunctionalTensor as _FunctionalTensor
+    _LORA_PLAIN_TYPES += (_FakeTensor, _FunctionalTensor)
+except Exception:
+    pass
+
+
+def _lora_subclass(*tensors):
+    return any(t is not None and type(t) not in _LORA_PLAIN_TYPES for t in tensors)
+
+
 def addmm_(
     out,
     A,
@@ -1953,6 +1975,8 @@ def addmm_(
         and torch.compiler.is_compiling()
         and not torch.is_grad_enabled()
         and type(alpha) in (int, float)
+        # The op returns nothing, so a subclass operand takes the method below, which returns its type.
+        and not _lora_subclass(out, A, B)
     ):
         torch.ops.unsloth.addmm_(out, A, B, alpha, beta)
         return out
@@ -2037,10 +2061,12 @@ def matmul_lora(
     use_global_buffer = True,
     XA = None,
     fused = True,
+    fused_checked = None,
 ):
     # XA: X @ A.t() already computed by the caller (shared across projections reading the same X).
     # fused = False: the caller's module needs the base-then-LoRA order (dropout, lora_bias, a weight
     # converted before this call); _lora_fused_ok decides the rest.
+    # fused_checked: the dtype the caller already ran _lora_fused_ok(W, W_quant, dtype) for, True.
     dtype = X.dtype
 
     if X.dim() == 3:
@@ -2077,8 +2103,13 @@ def matmul_lora(
         # batching rule, and a traced beta=0 addmm under jvp crashes, so keep the base-then-LoRA order there.
         and not (_is_compiling() and (_functorch_active() or _forward_ad_active()))
         # A DTensor operand's placements would be lost in the plain accumulator (W is checked below).
-        and not any(isinstance(t, _LORA_DTENSOR) for t in (X, A, B, XA))
-        and _lora_fused_ok(W, W_quant, dtype)
+        and not (
+            isinstance(X, _LORA_DTENSOR)
+            or isinstance(A, _LORA_DTENSOR)
+            or isinstance(B, _LORA_DTENSOR)
+            or isinstance(XA, _LORA_DTENSOR)
+        )
+        and (fused_checked is dtype or _lora_fused_ok(W, W_quant, dtype))
         # A caller's buffer must already be the output and must not share storage with a base operand.
         and (
             out is None
@@ -2090,16 +2121,18 @@ def matmul_lora(
         )
     ):
         if XA is None:
-            XA = torch_matmul(X, A.t().to(dtype))
-        B = B.t().to(dtype)
+            XA = torch_matmul(X, A.t() if A.dtype is dtype else A.t().to(dtype))
+        B = B.t() if B.dtype is dtype else B.t().to(dtype)
         if out is not None:
             # Eager only: a traced caller buffer cannot be checked for aliasing (_shares_storage). Dequantize
             # first: the caller's buffer may share storage with the quant state (absmax, code, ...).
-            W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
-            addmm_(out, XA, B, alpha = s, beta = 0)
-            out.addmm_(X, W.t())
+            if W_quant is not None:
+                W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+            out = _accumulated(addmm_(out, XA, B, alpha = s, beta = 0), out.addmm_(X, W.t()))
         else:
-            W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+            # Unquantized, fast_dequantize returns W as is (FP8 never takes this branch).
+            if W_quant is not None:
+                W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
             if not _is_compiling():
                 out = _lora_first_addmm(X, W.t(), XA, B, s)
             elif (
@@ -2125,6 +2158,6 @@ def matmul_lora(
         A, B = A.t(), B.t()
         if XA is None:
             XA = torch_matmul(X, A.to(dtype))
-        addmm_(out, XA, B.to(dtype), alpha = s)
+        out = addmm_(out, XA, B.to(dtype), alpha = s)
 
     return out.view(batch, seq_len, -1) if reshape else out

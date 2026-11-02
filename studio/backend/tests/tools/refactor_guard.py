@@ -183,6 +183,9 @@ _FRAGMENTS = (
     '<|tool_call_argument_begin|>{"city": "Paris"}<|tool_call_end|>'
     "<|tool_calls_section_end|>",
     "<tool_call>get_weather\n<arg_key>city</arg_key>\n<arg_value>Paris</arg_value>\n</tool_call>",
+    '<minimax:tool_call>\n<invoke name="get_weather">\n<parameter name="city">Paris</parameter>\n'
+    "</invoke>\n</minimax:tool_call>",
+    '<minimax:tool_call>\n<invoke name="get_weather">\n<parameter name="city">Par',
     # Cross-format markup, so an arm swap inside strip_segment is visible.
     "<function=x><tool_call> txt <arg_key>c</arg_key></function><parameter=p>",
     '<tool_call>{"name": "search", "arguments": {"q": "<function=get_weather>"}}</tool_call>',
@@ -273,7 +276,11 @@ _VARIANTS_KEY = "@variants"
 
 _BOTH_WAYS = ("final", "seg_final", "with_spans", "allow_incomplete", "gemma_quotes")
 
-_TEXT_ADAPTERS = {"_gemma_arguments_to_json": lambda text: _gemma_argument_body(text)}
+_TEXT_ADAPTERS = {
+    "_gemma_arguments_to_json": lambda text: _gemma_argument_body(text),
+    # The corpus holds no backticked tags; backtick each one so the spans vary with the text.
+    "tag_mention_spans": lambda text: re.sub(r"<[^<>`\n]+>|\[/?TOOL_CALLS\]", r"`\g<0>`", text),
+}
 
 
 def _sweep_offsets(text: str):

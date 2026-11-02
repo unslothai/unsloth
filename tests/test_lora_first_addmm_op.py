@@ -343,9 +343,25 @@ print("HAS_OP", KU._HAS_LORA_FIRST_OP)
 """
 
 
+def _skip_without_triton():
+    # A fresh interpreter imports unsloth.kernels without this process's test stubs, so it needs triton.
+    import importlib.util
+
+    try:
+        spec = importlib.util.find_spec("triton")
+    except ValueError:
+        # A stub module in sys.modules with no spec.
+        spec = None
+    # unsloth_zoo's stand-in, while its finder is installed, is not a real triton either.
+    found = spec is not None and spec.origin != "triton_stub"
+    if not found:
+        pytest.skip("triton is not installed")
+
+
 def test_a_partly_registered_op_is_not_used():
     # Registration fails after the schema exists (autograd here): the op must stay disabled rather than be
     # enabled because its name resolves. A fresh interpreter, since this process registered it already.
+    _skip_without_triton()
     import os
     import subprocess
     import sys
@@ -389,6 +405,7 @@ print("REREGISTERED", len(calls), "HAS_OP", KU._HAS_LORA_FIRST_OP)
 def test_a_reexecuted_module_reuses_the_completed_registration():
     # Re-registering over a working op could leave it half replaced if a later step failed; a re-executed
     # module must reuse the ready op instead of defining it again.
+    _skip_without_triton()
     import os
     import subprocess
     import sys
