@@ -239,7 +239,6 @@ def test_a_gguf_without_a_video_projector_refuses_either_spelling(monkeypatch, b
 
 @pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
 def test_a_video_model_without_ffmpeg_is_refused_naming_ffmpeg(monkeypatch, body):
-    """Without the check llama-server answered "Failed to load image or audio file"."""
     backend = _VideoGguf(has_video = False, needs_ffmpeg = True)
     with _client(monkeypatch, backend) as client:
         response = client.post("/v1/chat/completions", json = body)

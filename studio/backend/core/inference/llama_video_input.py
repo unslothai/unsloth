@@ -11,6 +11,7 @@ import json
 import logging
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -31,12 +32,12 @@ _SHRINK_TIMEOUT_S = 300
 
 
 def video_tools(ffmpeg_dir: Optional[str] = None) -> Optional[tuple[str, str]]:
-    """``(ffmpeg, ffprobe)`` where llama-server looks for them: ``ffmpeg_dir`` (a folder or a
-    PATH-style list) when set, else PATH."""
+    """Resolve the native FFmpeg pair on llama-server's search path."""
+    names = ("ffmpeg.exe", "ffprobe.exe") if sys.platform == "win32" else ("ffmpeg", "ffprobe")
     if ffmpeg_dir:
-        found = [shutil.which(name, path = ffmpeg_dir) for name in ("ffmpeg", "ffprobe")]
+        found = [shutil.which(name, path = ffmpeg_dir) for name in names]
     else:
-        found = [shutil.which(name) for name in ("ffmpeg", "ffprobe")]
+        found = [shutil.which(name) for name in names]
     return (found[0], found[1]) if found[0] and found[1] else None
 
 

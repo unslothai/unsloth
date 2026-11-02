@@ -112,6 +112,22 @@ def test_video_tools_needs_both_binaries_in_the_folder(tmp_path):
     assert Path(ffmpeg).parent == folder == Path(ffprobe).parent
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows PATHEXT lookup")
+def test_command_wrappers_do_not_hide_native_ffmpeg(tmp_path, monkeypatch):
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    for name in ("ffmpeg", "ffprobe"):
+        (shims / f"{name}.cmd").write_text("@exit /b 0\n", encoding = "utf-8")
+    native = _tool_dir(tmp_path, "ffmpeg", "ffprobe")
+    monkeypatch.setenv("PATH", os.pathsep.join((str(shims), str(native))))
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    monkeypatch.delenv("LLAMA_ARG_VIDEO_FFMPEG_DIR", raising = False)
+    tools = video_tools()
+    assert tools is not None
+    assert all(Path(tool).parent == native for tool in tools)
+    assert _video_ffmpeg_dir_flags(_CAPS) == (["--video-ffmpeg-dir", str(native)], str(native))
+
+
 def test_the_shrink_uses_the_same_folder(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(llama_video_input, "video_tools", lambda d = None: seen.append(d))

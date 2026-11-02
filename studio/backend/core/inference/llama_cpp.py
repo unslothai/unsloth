@@ -5654,9 +5654,7 @@ def _video_ffmpeg_dir_flags(
     env: Optional[Mapping[str, str]] = None,
     extra_args: Optional[Sequence[str]] = None,
 ) -> tuple[list[str], Optional[str]]:
-    """Flags pinning llama-server to the ffmpeg/ffprobe Studio checked, and the directory the
-    child will search (None for PATH). A user's own --video-ffmpeg-dir or env value is kept."""
-    # A build without the option ignores its env twin too, and searches PATH.
+    """Pin the native FFmpeg pair unless the user selected a directory."""
     if not server_caps.get("supports_video_ffmpeg_dir"):
         return [], None
     source = os.environ if env is None else env
@@ -5710,7 +5708,6 @@ def _video_tools_search(
     """Where the child looks for ffmpeg and ffprobe: a folder, or a PATH-style list. Raises on a bad flag."""
     source = os.environ if env is None else env
     bin_dir = _last_flag_value(cmd, frozenset({"--video-ffmpeg-dir"}))
-    # A build without --video-ffmpeg-dir ignores its env twin and searches PATH.
     search = bin_dir or (source.get(_VIDEO_FFMPEG_DIR_ENV_VAR) if supports_ffmpeg_dir else None)
     if not search:
         search = source.get("PATH", os.defpath)
@@ -8408,7 +8405,6 @@ class LlamaCppBackend:
         self._has_audio_input: bool = False
         # Needs mmproj, build and ffmpeg to align; the GGUF alone cannot tell.
         self._has_video_input: bool = False
-        # /props said video but llama-server would find no ffmpeg/ffprobe to decode it.
         self._video_needs_ffmpeg: bool = False
         self._video_ffmpeg_dir: Optional[str] = None
         self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
@@ -32486,7 +32482,6 @@ class LlamaCppBackend:
                     )
                     self._video_needs_ffmpeg = not self._has_video_input
                     if self._has_video_input:
-                        # The clip shrink runs the same ffmpeg the child found, e.g. one beside llama-server.exe.
                         try:
                             self._video_ffmpeg_dir = _video_tools_search(
                                 _last_spawn_cmd, env, _spawn_cwd, supports_ffmpeg_dir = _supports_dir
