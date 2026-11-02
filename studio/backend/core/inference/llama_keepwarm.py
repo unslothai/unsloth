@@ -605,7 +605,6 @@ def _resume_bytes(manifest) -> int:
 
 def stash_unload_kv(manifest) -> None:
     from core.inference.llama_cpp import _SLOT_SAVE_MAX_BYTES
-
     with _lock:
         stale = [m for m in _unload_kv if m.get("gguf") == manifest.get("gguf")]
         _unload_kv[:] = [m for m in _unload_kv if m.get("gguf") != manifest.get("gguf")]

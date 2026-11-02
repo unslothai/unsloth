@@ -976,7 +976,8 @@ def test_an_idle_save_of_another_model_does_not_cost_the_loading_models_slots(
 
 
 @pytest.mark.parametrize(
-    "guard, value", [("_chat_busy", lambda counted = False: True), ("_chat_account", lambda: "someone-else")]
+    "guard, value",
+    [("_chat_busy", lambda counted = False: True), ("_chat_account", lambda: "someone-else")],
 )
 def test_a_manual_unload_leaves_a_busy_or_foreign_chat_unsaved(env, monkeypatch, guard, value):
     monkeypatch.setattr(kw, "_unload_kv", [], raising = False)
