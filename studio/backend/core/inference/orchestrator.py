@@ -996,6 +996,49 @@ class InferenceOrchestrator:
             previous = current
         return not expected_free_gb
 
+    @staticmethod
+    def _describe_vram_shortfall(expected_free_gb: dict[int, float]) -> str:
+        """The measured shortfall, e.g. "free 1.7 GiB of the 3.9 GiB needed on cuda:0".
+
+        The settle check only knows free VRAM, so the caller must not attribute the wait to any one
+        holder; this reports what was actually seen. Empty when telemetry cannot be read.
+        """
+        try:
+            from utils.hardware import get_visible_gpu_utilization, gpu_query
+
+            with gpu_query.fresh_reads():
+                devices = get_visible_gpu_utilization().get("devices", [])
+        except Exception:
+            # A diagnostic that raises would replace the real error with its own.
+            return ""
+        parts = []
+        for device in devices:
+            try:
+                index = int(device["index"])
+                needed = expected_free_gb.get(index)
+                if needed is None:
+                    continue
+                free = max(float(device["vram_total_gb"]) - float(device["vram_used_gb"]), 0.0)
+                parts.append(f"free {free:.1f} GiB of the {float(needed):.1f} GiB needed on cuda:{index}")
+            except (KeyError, TypeError, ValueError):
+                continue
+        return "; ".join(parts)
+
+    @staticmethod
+    def _vram_wait_message(expected_free_gb: dict[int, float]) -> str:
+        """The error raised when free VRAM has not reached the expected level in time.
+
+        Reports the measurement and both likely holders: this branch cannot tell a slow release
+        from a reply that is still finishing or another app on the card (#16436).
+        """
+        shortfall = InferenceOrchestrator._describe_vram_shortfall(expected_free_gb)
+        detail = f" ({shortfall})" if shortfall else ""
+        return (
+            "GPU memory has not freed up yet; not starting the replacement model"
+            f"{detail}. A reply may still be finishing, or another app may be "
+            "holding the GPU. Retry shortly."
+        )
+
     def _reset_worker_scoped_state(self) -> None:
         """Drop bookkeeping that only means anything for the worker that just died."""
         with self._active_cancel_lock:
@@ -2181,10 +2224,7 @@ class InferenceOrchestrator:
                     expected_free_gb = expected_free_gb,
                 )
                 if expected_free_gb is not None and not settled:
-                    raise RuntimeError(
-                        "GPU memory from the previous inference worker was not released; "
-                        "not starting the replacement model. Retry shortly."
-                    )
+                    raise RuntimeError(self._vram_wait_message(expected_free_gb))
 
             # Previous worker gone, VRAM back: the last moment before a long download.
             if on_prior_worker_released is not None:
