@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withTimeFormat } from "@/lib/time-format";
 import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import {
   AlertDialog,
@@ -60,13 +61,16 @@ type PendingDelete =
 type SortOrder = "newest" | "oldest" | "az";
 
 function formatDictationDate(ms: number): string {
-  return new Date(ms).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return new Date(ms).toLocaleString(
+    undefined,
+    withTimeFormat({
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }),
+  );
 }
 
 export function RecentDictationsView({

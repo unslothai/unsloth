@@ -3,6 +3,7 @@
 
 "use client";
 
+import { withTimeFormat } from "@/lib/time-format";
 import {
   Sheet,
   SheetCloseButton,
@@ -85,10 +86,10 @@ function formatDate(value: Date | number | string | undefined): string | null {
   if (value == null) return null;
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "medium",
-  }).format(date);
+  return new Intl.DateTimeFormat(
+    undefined,
+    withTimeFormat({ dateStyle: "medium", timeStyle: "medium" }),
+  ).format(date);
 }
 
 const TOOL_CATEGORY_LABELS: Record<string, string> = {
