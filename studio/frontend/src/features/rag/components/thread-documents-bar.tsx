@@ -15,7 +15,7 @@ import {
 } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  AttachmentIcon,
+  Attachment01Icon,
   PlusSignIcon,
   Cancel01Icon,
 } from "@hugeicons/core-free-icons";
@@ -890,7 +890,7 @@ const ATTACHMENT_TARGETS: {
   },
   {
     value: "thread",
-    icon: AttachmentIcon,
+    icon: Attachment01Icon,
     title: "This chat only",
     description: "Other chats in the project won't see them",
   },

@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChevronLeftStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
   Upload01Icon,
@@ -379,7 +379,7 @@ export function KnowledgeBaseDialog({
                         onClick={() => setConfirmingDelete(kb)}
                         aria-label="Delete knowledge base"
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                       </Button>
                     </div>
                   </li>

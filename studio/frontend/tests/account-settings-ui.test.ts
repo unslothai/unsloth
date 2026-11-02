@@ -110,6 +110,7 @@ function tab(
       useOwnPasswordPending: () => [options.ownerPasswordPending ?? false, () => {}],
     },
     "@hugeicons/core-free-icons": {},
+    "@/lib/hugeicons-derived": {},
     "@/lib/folder-icons": {},
     "@hugeicons/react": { HugeiconsIcon: "Icon" },
     "@/lib/tick-icon": {},

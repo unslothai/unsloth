@@ -77,6 +77,8 @@ def main() -> None:
         expect(first).to_be_focused()
         page.keyboard.press("ArrowRight")
         expect(second).to_be_focused()
+        expect(second).to_have_attribute("aria-pressed", "true")
+        expect(first).to_have_attribute("aria-pressed", "false")
         expect(second.locator("span.pointer-events-none")).to_have_count(1)
         page.keyboard.press("ArrowRight")
         expect(third).to_be_focused()

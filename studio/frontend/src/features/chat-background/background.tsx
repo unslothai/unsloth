@@ -9,15 +9,31 @@ import {
 import { useChatBackground, setBackgroundError } from "./storage";
 import { acquireRender } from "./render";
 import { safeArtworkOpacity, type RGB } from "./contrast";
-import type { ChatBackgroundValue } from "./model";
+import {
+	type ChatBackgroundValue,
+	type ImageSizing,
+	fadeKey,
+	visibilityKey,
+} from "./model";
+import { useMaterialStore } from "./material";
+import { ComposerGlassLenses } from "./lens";
+import { type ImageTone, glassReadability, measureTone } from "./tone";
 
 type Frame = { url: string; value: ChatBackgroundValue };
+const BACKGROUND_SIZE: Record<ImageSizing, string> = {
+	cover: "cover",
+	contain: "contain",
+	width: "100% auto",
+	height: "auto 100%",
+	stretch: "100% 100%",
+	original: "auto",
+};
 // The window titlebar sits outside the wallpaper's subtree, so a ready wallpaper marks the root
 // rather than having CSS ask html:has(), which re-matches on every DOM change.
-const ROOT_READY = "data-chat-wallpaper-ready";
-const ROOT_WORKSPACE_READY = "data-chat-wallpaper-workspace-ready";
+export const ROOT_READY = "data-chat-wallpaper-ready";
+export const ROOT_WORKSPACE_READY = "data-chat-wallpaper-workspace-ready";
 const rootMarks = new Map<string, number>();
-function markRoot(names: string[]): () => void {
+export function markRoot(names: string[]): () => void {
 	const root = document.documentElement;
 	for (const name of names) {
 		rootMarks.set(name, (rootMarks.get(name) ?? 0) + 1);
@@ -107,6 +123,25 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 			parent.style.removeProperty("--wallpaper-safe");
 		};
 	}, [skin.safe, enabled, active]);
+	const outline = value?.outline;
+	useEffect(() => {
+		// The composer is a sibling subtree of the wallpaper, so the ring strength goes on the shared parent.
+		const parent = host.current?.parentElement;
+		if (!parent || !active || outline === undefined) return;
+		parent.style.setProperty("--wallpaper-outline", `${outline}%`);
+		return () => {
+			parent.style.removeProperty("--wallpaper-outline");
+		};
+	}, [outline, active]);
+	const conversation = value?.conversation;
+	useEffect(() => {
+		const parent = host.current?.parentElement;
+		if (!parent || !active || conversation === undefined) return;
+		parent.style.setProperty("--wallpaper-conversation", String(conversation / 100));
+		return () => {
+			parent.style.removeProperty("--wallpaper-conversation");
+		};
+	}, [conversation, active]);
 	const adoptFrame = useEffectEvent((url: string) => {
 		urls.current.add(url);
 		clearTimeout(timer.current);
@@ -182,13 +217,66 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 		[],
 	);
 	const shownReady = Boolean(value && active && frames.current);
+	const glass = useMaterialStore((s) => s.material !== "solid");
+	const [appWallpaper, setAppWallpaper] = useState<HTMLDivElement | null>(null);
+	const [tone, setTone] = useState<ImageTone | null>(null);
+	const frameUrl = frames.current?.url;
+	useEffect(() => {
+		if (!(frameUrl && glass)) return;
+		let cancelled = false;
+		measureTone(frameUrl)
+			.then((next) => {
+				if (!cancelled) setTone(next);
+			})
+			.catch(() => undefined);
+		return () => {
+			cancelled = true;
+		};
+	}, [frameUrl, glass]);
+	useEffect(() => {
+		if (!(appWallpaper && tone && glass)) return;
+		const root = document.documentElement;
+		const { floor, shade } = glassReadability(tone, !skin.light);
+		root.style.setProperty("--glass-read-floor", `${Math.round(floor * 100)}%`);
+		root.style.setProperty("--glass-shade", `${Math.round(shade * 100)}%`);
+		return () => {
+			root.style.removeProperty("--glass-read-floor");
+			root.style.removeProperty("--glass-shade");
+		};
+	}, [appWallpaper, tone, skin.light, glass]);
+	useEffect(() => {
+		// Firefox can keep a backdrop-filter's snapshot from before the image painted (a dark box until
+		// something repaints), so nudge every glass blur once the frame has faded in.
+		if (!(appWallpaper && glass && frameUrl)) return;
+		const root = document.documentElement;
+		let frame = 0;
+		const timer = setTimeout(() => {
+			root.style.setProperty("--glass-repaint", "1");
+			frame = requestAnimationFrame(() =>
+				root.style.removeProperty("--glass-repaint"),
+			);
+		}, 250);
+		return () => {
+			clearTimeout(timer);
+			cancelAnimationFrame(frame);
+			root.style.removeProperty("--glass-repaint");
+		};
+	}, [appWallpaper, glass, frameUrl]);
 	useEffect(() => {
 		// Only the app's own wallpaper drives the titlebar; a settings preview never marks the root.
 		const parent = host.current?.parentElement;
 		if (!shownReady || !parent) return;
 		const workspace = parent.hasAttribute("data-wallpaper-workspace");
+		if (workspace || parent.hasAttribute("data-auth-wallpaper"))
+			setAppWallpaper(host.current);
 		if (!workspace && !parent.hasAttribute("data-chat-content-root")) return;
-		return markRoot(workspace ? [ROOT_READY, ROOT_WORKSPACE_READY] : [ROOT_READY]);
+		const unmark = markRoot(
+			workspace ? [ROOT_READY, ROOT_WORKSPACE_READY] : [ROOT_READY],
+		);
+		return () => {
+			unmark();
+			setAppWallpaper(null);
+		};
 	}, [shownReady]);
 	if (!value || !active) return null;
 	return (
@@ -198,7 +286,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 			className="chat-wallpaper"
 			data-ready={Boolean(frames.current) || undefined}
 			data-reduced={skin.reduced || undefined}
-			data-outline={value.outline}
+			data-outline={value.outline > 0}
 			style={{ "--wallpaper-safe": skin.safe } as CSSProperties}
 		>
 			{[frames.previous, frames.current].map((frame, i) => {
@@ -214,22 +302,21 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 						data-entering={(i === 1 && Boolean(frames.previous)) || undefined}
 						style={
 							{
-								"--wallpaper-visibility": adjustment.visibility / 100,
+								"--wallpaper-visibility":
+									adjustment[visibilityKey(glass, !skin.light)] / 100,
 							} as CSSProperties
 						}
 					>
-						<div className="chat-wallpaper-image" data-fade={adjustment.fade}>
+						<div
+							className="chat-wallpaper-image"
+							data-fade={adjustment[fadeKey(glass)]}
+						>
 							<div
 								className="chat-wallpaper-artwork"
 								style={{
 									backgroundImage: `url("${frame.url}")`,
 									backgroundPosition: adjustment.position,
-									backgroundSize:
-										adjustment.sizing === "original"
-											? "auto"
-											: adjustment.sizing === "stretch"
-												? "100% 100%"
-												: adjustment.sizing,
+									backgroundSize: BACKGROUND_SIZE[adjustment.sizing],
 									transform: `scale(${adjustment.zoom / 100})`,
 									transformOrigin: adjustment.position,
 									filter: adjustment.blur
@@ -241,6 +328,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 					</div>
 				);
 			})}
+			<ComposerGlassLenses wallpaper={appWallpaper} />
 		</div>
 	);
 }
