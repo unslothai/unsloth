@@ -78,6 +78,7 @@ _SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _GEMINI_MAX_MODEL_PAGES = 20
+_GEMINI_RESTRICTED_GENERATION = re.compile(r"^gemini-(?:3\.[78]-flash|4-argon)(?:-|$)")
 _served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
@@ -4442,7 +4443,8 @@ class ExternalProviderClient:
         if system_text_parts:
             body["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_text_parts)}]}
 
-        # Frontend capability matrix limits Gemini sliders to temperature, topP, topK and maxOutputTokens.
+        model_lc = model.lower()
+        restricted_generation = bool(_GEMINI_RESTRICTED_GENERATION.match(model_lc))
         gen_config: dict[str, Any] = {}
         if temperature is not None:
             gen_config["temperature"] = temperature
@@ -4450,14 +4452,16 @@ class ExternalProviderClient:
             gen_config["topP"] = top_p
         if top_k is not None and top_k > 0:
             gen_config["topK"] = top_k
-        # presencePenalty shares the OpenAI sign convention: positive values discourage repetition.
-        if presence_penalty:
+        if presence_penalty and not restricted_generation:
             gen_config["presencePenalty"] = presence_penalty
         if max_tokens is not None:
-            gen_config["maxOutputTokens"] = max_tokens
+            gen_config["maxOutputTokens"] = (
+                min(max_tokens, 4096)
+                if model_lc.startswith("gemini-3.1-flash-lite-image")
+                else max_tokens
+            )
 
         # Only image-capable models accept TEXT+IMAGE modalities; text models 400.
-        model_lc = model.lower()
         is_image_picker_model = "-image" in model_lc or "nano-banana" in model_lc
         # tool_choice none or forced-function also suppresses implicit image generation, which still bills.
         _tool_choice_disabled = (
@@ -4530,6 +4534,8 @@ class ExternalProviderClient:
                 level = "high"
             elif enable_thinking is False:
                 level = "low" if is_gemini3_pro else "minimal"
+            if level == "minimal" and restricted_generation:
+                level = "low"
             if level is not None:
                 gen_config["thinkingConfig"] = {"thinkingLevel": level}
         elif not is_image_model_strict:
@@ -4571,6 +4577,7 @@ class ExternalProviderClient:
                 or _m.startswith("gemini-3.1-flash-image")
                 or _m.startswith("nano-banana-pro")
                 or _m.startswith("nano-banana-2")
+                or _m.startswith("gemini-nano-banana-2")
             )
 
         google_search_allowed = (

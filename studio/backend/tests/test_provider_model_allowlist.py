@@ -35,7 +35,6 @@ def test_current_generation_model_ids_reach_the_picker():
             "gemini-nano-banana-2.1",
             "nano-banana-pro-preview",
             "gemini-flash-latest",
-            "gemini-omni-1.1-flash",
         ],
     }
     for provider, model_ids in live.items():
@@ -80,6 +79,8 @@ def test_gemini_picker_hides_non_chat_retired_and_dated_ids():
         "gemini-exp-1206",
         "gemini-2.5-flash-preview-09-2025",
         "gemini-2.5-pro-preview-06-05",
+        "gemini-omni-1.1-flash",
+        "gemini-omni-flash-preview",
     ):
         assert gemini["model_id_denylist"].search(model_id), model_id
     for model_id in (

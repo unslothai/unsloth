@@ -164,7 +164,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "model_id_deny_exact": ("gemini-3-pro-preview",),
         "model_id_allowlist": re.compile(r"^(?:gemini|nano-banana)-"),
         "model_id_denylist": re.compile(
-            r"(?:^|-)(?:tts|transcribe|embedding|live|native-audio|robotics|computer-use|aqa)(?:-|$)"
+            r"(?:^|-)(?:tts|transcribe|embedding|live|native-audio|robotics|computer-use|aqa|omni)(?:-|$)"
             r"|^gemini-(?:1\.\d|2\.0|exp)(?:-|$)"
             r"|-\d{2}-(?:\d{2}|\d{4})$"
         ),
