@@ -3747,8 +3747,6 @@ export const sv = {
         repoCheckoutFallback:
           "Om du fortfarande har arkivets checkout kör du det lokala installationsprogrammet därifrån:",
         restartAfterUpdate: "Starta om Unsloth efter uppdateringen.",
-        desktopManaged:
-          "Skrivbordsappen kontrollerar automatiskt nya appversioner. Du kan också kontrollera eller uppdatera här när som helst.",
         desktopReady: "Uppdateringar för skrivbordsappen",
         desktopReadyDescription:
           "Kontrollera om en nyare version av skrivbordsappen är tillgänglig.",

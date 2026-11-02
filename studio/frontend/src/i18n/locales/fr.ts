@@ -3607,8 +3607,6 @@ export const fr = {
         repoCheckoutFallback:
           "Si vous avez encore le checkout du dépôt, lancez l'installateur local depuis celui-ci :",
         restartAfterUpdate: "Redémarrez Unsloth après la mise à jour.",
-        desktopManaged:
-          "L’application de bureau recherche automatiquement les nouvelles versions. Vous pouvez également rechercher ou installer une mise à jour ici à tout moment.",
         desktopReady: "Mises à jour de l’application de bureau",
         desktopReadyDescription:
           "Vérifiez si une version plus récente de l’application de bureau est disponible.",

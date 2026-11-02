@@ -3549,8 +3549,6 @@ export const ko = {
         repoCheckoutFallback:
           "저장소 체크아웃이 아직 있다면 거기에서 로컬 설치 프로그램을 실행하세요:",
         restartAfterUpdate: "업데이트 후 Unsloth를 다시 시작하세요.",
-        desktopManaged:
-          "데스크톱 앱은 새 앱 버전을 자동으로 확인합니다. 여기서 언제든지 업데이트를 확인하거나 설치할 수도 있습니다.",
         desktopReady: "데스크톱 앱 업데이트",
         desktopReadyDescription:
           "새로운 데스크톱 앱 버전이 있는지 확인합니다.",

@@ -3856,8 +3856,6 @@ export const tr = {
         repoCheckoutFallback:
           "Depo checkout'u hâlâ duruyorsa yerel yükleyiciyi oradan çalıştırın:",
         restartAfterUpdate: "Güncellemeden sonra Unsloth'u yeniden başlatın.",
-        desktopManaged:
-          "Masaüstü uygulaması yeni uygulama sürümlerini otomatik olarak denetler. Ayrıca istediğiniz zaman buradan denetleyebilir veya güncelleyebilirsiniz.",
         desktopReady: "Masaüstü uygulaması güncellemeleri",
         desktopReadyDescription:
           "Daha yeni bir masaüstü uygulaması sürümü olup olmadığını denetleyin.",

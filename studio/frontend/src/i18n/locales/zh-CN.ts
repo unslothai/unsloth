@@ -3503,8 +3503,6 @@ export const zhCN = {
         repoCheckoutFallback:
           "如果仍保留仓库的代码检出目录，请在该目录中运行本地安装器：",
         restartAfterUpdate: "更新后请重启 Unsloth。",
-        desktopManaged:
-          "桌面应用会自动检查新版本。你也可以随时在此检查或更新。",
         desktopReady: "桌面应用更新",
         desktopReadyDescription: "检查是否有更新的桌面应用版本。",
         desktopChecking: "正在检查更新",

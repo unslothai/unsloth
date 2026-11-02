@@ -3877,8 +3877,6 @@ export const cs = {
         repoCheckoutFallback:
           "Pokud stále máte klon repozitáře, spusťte z něj místní instalátor:",
         restartAfterUpdate: "Po aktualizaci Unsloth restartujte.",
-        desktopManaged:
-          "Desktopová aplikace kontroluje nové verze automaticky. Kontrolu nebo aktualizaci můžete kdykoli spustit i zde.",
         desktopReady: "Aktualizace desktopové aplikace",
         desktopReadyDescription:
           "Zkontrolujte, zda je k dispozici novější verze desktopové aplikace.",

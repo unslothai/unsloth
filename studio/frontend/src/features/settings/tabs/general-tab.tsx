@@ -87,10 +87,7 @@ import {
 import { DesktopInstallTypeControl } from "../components/full-install-dialog";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
-import {
-  DesktopUpdateControl,
-  DesktopUpdateNote,
-} from "../components/desktop-update-control";
+import { DesktopUpdateControl } from "../components/desktop-update-control";
 import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
 import {
@@ -536,7 +533,6 @@ export function GeneralTab() {
         {isTauri ? (
           <div data-settings-label={t("settings.about.updates")}>
             <DesktopUpdateControl />
-            <DesktopUpdateNote />
           </div>
         ) : null}
         <DesktopInstallTypeControl />

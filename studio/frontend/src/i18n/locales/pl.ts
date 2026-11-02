@@ -3906,8 +3906,6 @@ export const pl = {
         repoCheckoutFallback:
           "Jeśli nadal masz kopię repozytorium, uruchom z niej lokalny instalator:",
         restartAfterUpdate: "Po aktualizacji uruchom ponownie Unsloth.",
-        desktopManaged:
-          "Aplikacja komputerowa automatycznie sprawdza dostępność nowych wersji. W każdej chwili możesz też sprawdzić lub zaktualizować tutaj.",
         desktopReady: "Aktualizacje aplikacji komputerowej",
         desktopReadyDescription:
           "Sprawdź, czy dostępna jest nowsza wersja aplikacji komputerowej.",

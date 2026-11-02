@@ -3606,8 +3606,6 @@ export const de = {
         repoCheckoutFallback:
           "Wenn Sie den Repository-Checkout noch haben, führen Sie den lokalen Installer daraus aus:",
         restartAfterUpdate: "Starten Sie Unsloth nach dem Update neu.",
-        desktopManaged:
-          "Die Desktop-App sucht automatisch nach neuen App-Versionen. Sie können hier auch jederzeit nach Updates suchen oder ein Update durchführen.",
         desktopReady: "Updates für die Desktop-App",
         desktopReadyDescription:
           "Prüfen Sie, ob eine neuere Version der Desktop-App verfügbar ist.",

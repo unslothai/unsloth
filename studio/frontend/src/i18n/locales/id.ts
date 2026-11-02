@@ -3858,8 +3858,6 @@ export const id = {
         repoCheckoutFallback:
           "Jika Anda masih memiliki checkout repo, jalankan penginstal lokal dari sana:",
         restartAfterUpdate: "Mulai ulang Unsloth setelah memperbarui.",
-        desktopManaged:
-          "Aplikasi desktop memeriksa versi aplikasi baru secara otomatis. Anda juga dapat memeriksa atau memperbarui di sini kapan saja.",
         desktopReady: "Pembaruan aplikasi desktop",
         desktopReadyDescription:
           "Periksa apakah versi aplikasi desktop yang lebih baru tersedia.",

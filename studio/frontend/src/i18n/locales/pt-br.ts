@@ -3575,8 +3575,6 @@ export const ptBR = {
         repoCheckoutFallback:
           "Se você ainda tiver a cópia local do repositório, execute o instalador local a partir dela:",
         restartAfterUpdate: "Reinicie o Unsloth após a atualização.",
-        desktopManaged:
-          "O aplicativo de desktop verifica automaticamente se há novas versões. Você também pode verificar ou atualizar aqui a qualquer momento.",
         desktopReady: "Atualizações do aplicativo de desktop",
         desktopReadyDescription:
           "Verifique se há uma versão mais recente do aplicativo de desktop.",

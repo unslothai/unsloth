@@ -3861,8 +3861,6 @@ export const vi = {
         repoCheckoutFallback:
           "Nếu bạn vẫn còn bản checkout của kho mã, hãy chạy trình cài đặt cục bộ từ đó:",
         restartAfterUpdate: "Khởi động lại Unsloth sau khi cập nhật.",
-        desktopManaged:
-          "Ứng dụng máy tính tự động kiểm tra phiên bản mới. Bạn cũng có thể kiểm tra hoặc cập nhật tại đây bất cứ lúc nào.",
         desktopReady: "Cập nhật ứng dụng máy tính",
         desktopReadyDescription:
           "Kiểm tra xem có phiên bản ứng dụng máy tính mới hơn không.",

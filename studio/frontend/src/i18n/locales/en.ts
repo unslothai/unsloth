@@ -3579,8 +3579,6 @@ export const en = {
         repoCheckoutFallback:
           "If you still have the repo checkout, run the local installer from it:",
         restartAfterUpdate: "Restart Unsloth after updating.",
-        desktopManaged:
-          "The desktop app checks for new app versions automatically. You can also check or update here at any time.",
         desktopReady: "Desktop app updates",
         desktopReadyDescription:
           "Check whether a newer desktop app version is available.",

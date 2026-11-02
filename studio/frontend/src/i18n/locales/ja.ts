@@ -3528,8 +3528,6 @@ export const ja = {
           "ソースまたは VCS パッケージからのインストールが検出されました。元のローカルパスまたは Git URL から再インストールしてください。",
         repoCheckoutFallback: "リポジトリが手元に残っている場合は、そこからローカルインストーラーを実行してください:",
         restartAfterUpdate: "アップデート後に Unsloth を再起動してください。",
-        desktopManaged:
-          "デスクトップアプリは新しいバージョンを自動的に確認します。ここからいつでも手動で確認またはアップデートできます。",
         desktopReady: "デスクトップアプリのアップデート",
         desktopReadyDescription:
           "新しいバージョンのデスクトップアプリが利用可能か確認します。",

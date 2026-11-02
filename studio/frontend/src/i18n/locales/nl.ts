@@ -3906,8 +3906,6 @@ export const nl = {
         repoCheckoutFallback:
           "Als je de repository-checkout nog hebt, voer je daaruit het lokale installatieprogramma uit:",
         restartAfterUpdate: "Start Unsloth opnieuw na het bijwerken.",
-        desktopManaged:
-          "De desktop-app controleert automatisch op nieuwe app-versies. Je kunt hier ook op elk moment controleren of bijwerken.",
         desktopReady: "Updates van de desktop-app",
         desktopReadyDescription:
           "Controleren of er een nieuwere versie van de desktop-app beschikbaar is.",
