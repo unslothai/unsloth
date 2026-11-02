@@ -767,6 +767,8 @@ def _walk_into(
     stack: list,
     ledger: LinkLedger,
     occupancy: Optional[_OccupancyLedger] = None,
+    *,
+    excluded_roots: Optional[set[Path]] = None,
 ) -> int:
     """Sizes every directory on the stack and below it; returns the entries seen.
 
@@ -781,6 +783,8 @@ def _walk_into(
     try:
         while stack:
             current = pop()
+            if excluded_roots and Path(current) in excluded_roots:
+                continue
             try:
                 with os.scandir(current) as entries:
                     for entry in entries:
@@ -824,6 +828,7 @@ def _measure_root(
     patterns: Optional[Iterable[str]] = None,
     ledger: Optional[LinkLedger] = None,
     occupancy: Optional[_OccupancyLedger] = None,
+    excluded_roots: Optional[set[Path]] = None,
 ) -> tuple[int, int]:
     ledger = LinkLedger() if ledger is None else ledger
     entries = 0
@@ -850,7 +855,7 @@ def _measure_root(
     except OSError as exc:
         logger.debug(f"Could not size {root}: {exc}")
     subdirs.reverse()
-    _walk_into(subdirs, ledger, occupancy)
+    _walk_into(subdirs, ledger, occupancy, excluded_roots = excluded_roots)
     return ledger.freeable_bytes(), entries
 
 
@@ -999,6 +1004,7 @@ def cache_breakdown(key: str) -> dict:
     definition = definition_for(key)
     measured = _measurement_roots(definition)
     nested = _nested_active_roots(definition, measured)
+    excluded_roots = set(nested)
     for root in nested + measured:
         try:
             with os.scandir(root) as scan:
@@ -1009,7 +1015,11 @@ def cache_breakdown(key: str) -> dict:
                         continue
                     before = occupancy.bytes
                     if entry.is_dir(follow_symlinks = False):
-                        _measure_root(Path(entry.path), occupancy = occupancy)
+                        _measure_root(
+                            Path(entry.path),
+                            occupancy = occupancy,
+                            excluded_roots = excluded_roots if root not in nested else None,
+                        )
                     else:
                         info = (
                             os.stat(entry.path, follow_symlinks = False)
@@ -1092,7 +1102,7 @@ def describe_cache(definition: CacheDefinition) -> dict:
             )
             clear_entries += count
         total = occupancy.bytes
-        clear_size = clear_ledger.freeable_bytes()
+        clear_size = min(total, clear_ledger.freeable_bytes())
         system_disk_bytes = _system_disk_occupancy(occupancy)
     else:
         if definition.custom_measure is not None:

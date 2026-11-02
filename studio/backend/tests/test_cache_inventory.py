@@ -461,6 +461,62 @@ def test_an_active_hub_nested_in_a_remembered_hub_stays_clearable(
     assert old_blob.exists()
 
 
+@pytest.mark.parametrize("depth", [1, 3])
+def test_a_nested_hub_breakdown_walks_each_active_directory_once(
+    monkeypatch, isolated_caches, depth
+):
+    from utils import hf_cache_settings
+
+    old_hub = isolated_caches / "hub"
+    active = old_hub.joinpath(*(["nested"] * depth))
+    blob = _write(active / "models--test--active" / "blobs" / "weights", "a" * 128)
+    paths = hf_cache_settings.HuggingFaceCachePaths(
+        active, active, isolated_caches / "xet", "environment", "HF_HUB_CACHE"
+    )
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: paths)
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [active, old_hub])
+    scandir = os.scandir
+    visits = []
+
+    def tracked_scandir(path):
+        visits.append(Path(path))
+        return scandir(path)
+
+    monkeypatch.setattr(cache_inventory.os, "scandir", tracked_scandir)
+    rows = cache_inventory.cache_breakdown("hf_hub")["entries"]
+    assert visits.count(blob.parent) == 1
+    assert sum(row["size_bytes"] for row in rows) == 128
+    assert any(row.get("repo_id") == "test/active" for row in rows)
+
+
+def test_a_growing_nested_hub_does_not_offer_more_bytes_than_it_measured(
+    monkeypatch, isolated_caches
+):
+    from utils import hf_cache_settings
+
+    old_hub = isolated_caches / "hub"
+    active = old_hub / "new-downloads"
+    _write(old_hub / "models--test--old" / "blobs" / "weights", "o" * 256)
+    active_blob = _write(active / "models--test--active" / "blobs" / "weights", "a" * 128)
+    paths = hf_cache_settings.HuggingFaceCachePaths(
+        active, active, isolated_caches / "xet", "environment", "HF_HUB_CACHE"
+    )
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: paths)
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [active, old_hub])
+    measure = cache_inventory._measure_root
+
+    def grow_after_measure(root, **kwargs):
+        result = measure(root, **kwargs)
+        if root == old_hub:
+            active_blob.write_text("a" * 1024, encoding = "utf-8")
+        return result
+
+    monkeypatch.setattr(cache_inventory, "_measure_root", grow_after_measure)
+    described = describe_cache(definition_for("hf_hub"))
+    assert described["size_bytes"] == 384
+    assert 0 < described["clear_size_bytes"] <= described["size_bytes"]
+
+
 def test_the_inductor_cache_follows_the_account_name_torch_uses(
     tmp_path, monkeypatch, isolated_caches
 ):
