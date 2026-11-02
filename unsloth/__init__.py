@@ -1909,6 +1909,8 @@ if _IS_MLX:
                 {"_unsloth_mlx_argument_aliases": aliases},
             )
             built[f"{stem}Config"] = config_class
+            # Pickle finds a class by module and name; importing unsloth also installs the trl shim.
+            globals()[f"{stem}Config"] = config_class
             built[f"{stem}Trainer"] = type(
                 f"{stem}Trainer",
                 (_MLXTRLPolicyTrainer, zoo_trainer),

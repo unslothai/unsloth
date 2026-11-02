@@ -227,7 +227,7 @@ def test_real_mlx_import_leaves_trl_all_unbuilt():
 
 
 _SHIM_PROBE_PREAMBLE = """
-import unsloth, trl
+import pickle, unsloth, trl
 import mlx.nn as nn
 from unsloth_zoo.mlx import trainer as zoo
 assert unsloth.DEVICE_TYPE == "mlx"
@@ -269,6 +269,7 @@ for stem in ("DPO", "ORPO", "KTO", "GRPO", "CPO"):
     assert cfg.optim == "adamw" and cfg.save_steps == 500, stem
     assert config(max_steps=1, save_strategy="no").save_steps == 0, stem
     assert config(learning_rate=0.5, max_steps=2).learning_rate == 0.5, stem
+    assert type(pickle.loads(pickle.dumps(cfg))) is config, stem
 for name in ("PatchDPOTrainer", "PatchKTOTrainer", "PatchFastRL"):
     assert getattr(unsloth, name)() is None
 
