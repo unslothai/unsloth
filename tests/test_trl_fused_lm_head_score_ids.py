@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""_UnslothFusedLinearHead against TRL >= 1.17's kernel slot, which takes score_ids after support_ids and returns a
-sixth output (score_log_probs). CPU only: the adapter is lifted from rl.py via ast, the zoo kernel is a fake."""
-
 from __future__ import annotations
 
 import ast
@@ -110,7 +107,6 @@ def _args(chunk_size = 1 << 20):
 
 
 def test_score_ids_slot_is_accepted_and_served_by_the_zoo_kernel(fake_zoo):
-    # TRL 1.17 always passes both id tensors, None included, and unpacks six outputs.
     kernel, trl_calls = _kernel(with_score_ids = True)
     head = _adapter_class()(kernel)
     out = head.apply(*_args(), None, None)
@@ -155,14 +151,12 @@ def test_real_trl_fused_head_runs_through_the_adapter(monkeypatch):
     add_fused_lm_head = getattr(trl_utils, "add_fused_lm_head", None)
     if kernel is None or add_fused_lm_head is None:
         pytest.skip("this TRL has no fused LM head")
-    # An installed unsloth may already have wrapped it.
     while "function" in getattr(kernel, "__dict__", {}):
         kernel = kernel.function
     if "score_ids" not in inspect.signature(kernel.forward).parameters:
         pytest.skip("this TRL's kernel takes no score_ids")
     from transformers import LlamaConfig, LlamaForCausalLM
 
-    # No zoo kernel: the adapter serves the call from TRL's own kernel.
     monkeypatch.setitem(sys.modules, "unsloth_zoo.fused_losses.fused_linear", None)
     monkeypatch.setattr(trl_utils, "_ChunkedLogProbFunction", _adapter_class()(kernel))
     torch.manual_seed(0)

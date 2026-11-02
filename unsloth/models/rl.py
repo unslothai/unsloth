@@ -4663,7 +4663,6 @@ class _UnslothFusedLinearHead:
             forward = getattr(function, "forward", None)
             params = inspect.signature(forward).parameters if forward is not None else {}
             self._legacy = forward is not None and "outputs" not in params
-            # TRL >= 1.17 passes score_ids after support_ids and unpacks a sixth output, score_log_probs.
             self._score_ids = "score_ids" in params
         except (TypeError, ValueError):
             self._legacy = False
@@ -4768,7 +4767,6 @@ class _UnslothFusedLinearHead:
                 logit_scale,
                 outputs,
             )
-        # support_ids (TRL > 1.16, per-row kept set), score_ids and a late UNSLOTH_FUSED_LINEAR=0 go to TRL's kernel.
         if self._score_ids:
             if support_ids is not None or score_ids is not None:
                 return self.function.apply(*args, support_ids, score_ids)
