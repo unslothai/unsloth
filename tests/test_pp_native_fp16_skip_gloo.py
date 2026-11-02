@@ -22,7 +22,8 @@ import torch  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_pp_native_gloo import LLAMA, _free_port, _torch_pipelining_error, batch, build, ppn  # noqa: E402
 
-RECIPES = ("pp_unscale", "scaler_unscale", "scaler_step_only")
+# fused_step_only: a fused optimizer (adamw_torch_fused), whose scaler.step checks infs without unscale_.
+RECIPES = ("pp_unscale", "scaler_unscale", "scaler_step_only", "fused_step_only")
 
 
 def _one_step(rank, world, recipe, inf_rank):
@@ -33,8 +34,12 @@ def _one_step(rank, world, recipe, inf_rank):
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))
     pp = ppn.apply_pipeline_parallel(model, mesh["pp"], n_microbatches = 2)
     scaler = torch.amp.GradScaler("cpu", init_scale = 1024.0)
-    opt = torch.optim.SGD(pp.parameters(), lr = 1.0)
+    if recipe == "fused_step_only":
+        opt = torch.optim.AdamW(pp.parameters(), lr = 1.0, fused = True)
+    else:
+        opt = torch.optim.SGD(pp.parameters(), lr = 1.0)
     pp.step(ids, labels, scaler = scaler)
+    trained = len(pp.__dict__.get("_unsloth_trained_names", ()))
     if rank == inf_rank:
         pp.parameters()[0].grad.view(-1)[0] = float("inf")
     before = [p.detach().clone() for p in pp.parameters()]
@@ -56,6 +61,7 @@ def _one_step(rank, world, recipe, inf_rank):
         "unchanged": all(torch.equal(a, b) for a, b in zip(before, after)),
         "scale": float(scaler.get_scale()),
         "picklable": picklable,
+        "trained": trained,
     }
 
 
@@ -175,6 +181,8 @@ def test_pp2_finite_step_updates_every_stage(recipe):
     results = _spawn("step", recipe = recipe, inf_rank = -1)
     assert [r["unchanged"] for r in results] == [False, False], (recipe, results)
     assert [r["scale"] for r in results] == [1024.0, 1024.0], (recipe, results)
+    # Native steps record what each stage trains, so a later requires_grad_(False) still syncs it.
+    assert all(r["trained"] > 0 for r in results), results
 
 
 def test_pp2_clip_before_unscale_is_refused():

@@ -63,6 +63,7 @@ function mlxStatus(over: Record<string, unknown>) {
     chat_template_override_reason: null,
     mlx_int8_prefill_requested: false,
     mlx_ane_prefill_requested: false,
+    mlx_fast_verify_requested: false,
     ...over,
   };
 }
@@ -160,6 +161,19 @@ test("a same-model MLX reload keeps a value this tab staged but advances the bas
   const s = useChatRuntimeStore.getState();
   assert.equal(s.mlxKvQuant, "4");
   assert.equal(s.loadedMlxKvQuantRequested, null);
+});
+
+test("a same-model MLX reload moves a clean Fast Verify both ways, and a poll leaves a staged one alone", () => {
+  useChatRuntimeStore.setState({ activeGgufVariant: null });
+  hydrate(mlxStatus({}), MLX);
+  const pair = ({ mlxFastVerify: on, loadedMlxFastVerifyRequested: loaded } = useChatRuntimeStore.getState()) => [on, loaded];
+  reload(mlxStatus({ mlx_fast_verify_requested: true }), MLX);
+  assert.deepEqual(pair(), [true, true]);
+  reload(mlxStatus({ mlx_fast_verify_requested: false }), MLX);
+  assert.deepEqual(pair(), [false, false]);
+  useChatRuntimeStore.setState({ mlxFastVerify: true });
+  reload(mlxStatus({ mlx_fast_verify_requested: false }), MLX);
+  assert.deepEqual(pair(), [true, false]);
 });
 
 for (const staged of ["int8", "ane"] as const) {
