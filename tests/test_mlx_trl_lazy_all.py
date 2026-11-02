@@ -377,12 +377,24 @@ assert trl.DPOConfig(output_dir="o", eval_strategy="steps").eval_steps == 10
 assert trl.DPOConfig(output_dir="o", eval_strategy="steps", logging_steps=7).eval_steps == 7
 assert trl.DPOConfig(output_dir="o", eval_steps=1).eval_strategy == "no"
 assert trl.DPOConfig(output_dir="o").logging_steps == 10
+assert unsloth.UnslothTrainingArguments(output_dir="o", eval_strategy="steps").eval_steps == 10
+assert trl.DPOTrainer(model=model, args=trl.DPOConfig(output_dir="o"), train_dataset=[], eval_strategy="steps").args.eval_steps == 10
+sft = trl.SFTTrainer(model=model, args=trl.SFTConfig(output_dir="o"), train_dataset=[], eval_strategy="steps")
+assert sft.args.eval_steps == 10 and sft.args.logging_steps == 1
+assert trl.SFTTrainer(model=model, args=trl.SFTConfig(output_dir="o", logging_steps=1), train_dataset=[], eval_strategy="steps").args.eval_steps == 1
 
 from packaging.version import Version
 modern = Version(trl.__version__) >= Version("0.29.0")
 assert trl.DPOConfig(output_dir="o").truncation_mode == ("keep_start" if modern else "keep_end")
 assert trl.DPOConfig(output_dir="o", truncation_mode="keep_end").truncation_mode == "keep_end"
 assert trl.ORPOConfig(output_dir="o").truncation_mode == "keep_end"
+grpo = trl.GRPOConfig(output_dir="o", num_generations=2, per_device_train_batch_size=2)
+assert grpo.max_completion_length == (512 if Version(trl.__version__) >= Version("1.10.0") else 256)
+
+over = trl.DPOTrainer(model=model, args=trl.DPOConfig(output_dir="o"), train_dataset=[], max_grad_norm=0, dataset_order="default").args
+assert (over.max_grad_norm, over.dataset_order) == (0, "default")
+warm = trl.SFTConfig(output_dir="o", num_train_epochs=1, warmup_steps=0, warmup_ratio=0.1)
+assert trl.SFTTrainer(model=model, args=warm, train_dataset=[], warmup_ratio=0.0).args.warmup_steps == 0
 """)
 
 
@@ -394,6 +406,7 @@ for trainer in (trl.DPOTrainer(model=model, train_dataset=[]), trl.SFTTrainer(mo
     assert trainer.tokenizer is tok and trainer.processing_class is tok
 other = object()
 assert trl.DPOTrainer(model=model, train_dataset=[], processing_class=other).tokenizer is other
+assert trl.SFTTrainer(model=model, train_dataset=[], data_collator=unsloth.UnslothVisionDataCollator(model, other)).processing_class is other
 """)
 
 
@@ -420,6 +433,14 @@ for stem, extra in (("DPO", {}), ("ORPO", {}), ("KTO", {}), ("CPO", {}), ("GRPO"
 explicit = parsed(trl.DPOConfig, "--learning_rate", "0.0002", "--max_steps", "60", "--loss_type", "ipo")
 assert (explicit.learning_rate, explicit.max_steps, explicit.loss_type) == (0.0002, 60, ["ipo"])
 assert parsed(trl.DPOConfig, "--max_grad_norm", "0.5")._unsloth_mlx_grad_clip_explicit is True
+assert parsed(trl.DPOConfig, "--num_train_epochs", "0.5").num_train_epochs == 0.5
+
+off = parsed(trl.DPOConfig, "--max_grad_norm", "0")
+assert trl.DPOTrainer(model=model, args=off, train_dataset=[]).args.max_grad_norm == 0
+kept = dataclasses.replace(trl.DPOConfig(output_dir="o", max_grad_norm=0.0), beta=0.3)
+assert trl.DPOTrainer(model=model, args=kept, train_dataset=[]).args.max_grad_norm == 0
+assert trl.DPOConfig(output_dir="o", max_grad_value=0.0).max_grad_norm == 0
+assert trl.DPOConfig(output_dir="o").max_grad_norm == 1.0
 assert parsed(trl.GRPOConfig, "--num_generations", "2", "--per_device_train_batch_size", "2", "--scale_rewards", "batch").scale_rewards == "batch"
 assert pickle.loads(pickle.dumps(parsed(trl.DPOConfig))).learning_rate == 1e-6
 """)

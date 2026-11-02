@@ -789,12 +789,8 @@ if _IS_MLX:
                     values[name] = getattr(args, name)
             # Anything else set is refused. Compare to a fresh config: TrainingArguments rewrites fields at init.
             if not isinstance(args, MLXTrainingConfig) and _dataclasses.is_dataclass(args):
-                precision = {
-                    field.name: False
-                    for field in _dataclasses.fields(args)
-                    if field.name in ("bf16", "fp16")
-                }
-                # bf16 stays off: TRL defaults it on, and older transformers refuses that on a Mac.
+                # TRL defaults bf16 on, and older transformers refuses that on a Mac.
+                precision = {"bf16": False} if hasattr(args, "bf16") else {}
                 fresh = type(args)(output_dir = args.output_dir, **precision)
                 for field in _dataclasses.fields(args):
                     if (
@@ -974,7 +970,6 @@ if _IS_MLX:
         """MLX-compatible public training arguments for Unsloth notebooks."""
 
         _unsloth_mlx_argument_aliases = _MLX_TRAINING_ARGUMENT_ALIASES
-        _unsloth_mlx_upstream_logging_steps = 500
 
         def __init__(self, *args, **kwargs):
             if len(args) == 1 and isinstance(args[0], dict):
@@ -1068,13 +1063,12 @@ if _IS_MLX:
             for key, value in extra_kwargs.items():
                 setattr(self, key, value)
             _warn_ignored_mlx_training_args(extra_kwargs)
-            # Like TrainingArguments: zoo's eval_steps=0 would silently never evaluate. Zoo's logging_steps
-            # default of 1 is not the one that fallback means, so an unset one stays upstream's.
+            self._unsloth_mlx_logging_steps_explicit = "logging_steps" in kwargs
+            # Like TrainingArguments: zoo's eval_steps=0 would silently never evaluate. That fallback
+            # means TRL's logging_steps default of 10, not zoo's 1.
             eval_strategy = getattr(self, "eval_strategy", None)
             if getattr(eval_strategy, "value", eval_strategy) == "steps" and not self.eval_steps:
-                self.eval_steps = (
-                    kwargs.get("logging_steps") or self._unsloth_mlx_upstream_logging_steps
-                )
+                self.eval_steps = kwargs.get("logging_steps") or 10
 
     def _resolve_mlx_cuda_style_max_seq_length(args, model = None):
         model_max_seq_length = _positive_mlx_context_length(
@@ -1245,7 +1239,12 @@ if _IS_MLX:
                 values.get("warmup_ratio")
                 and getattr(args, "_unsloth_mlx_warmup_steps_explicit", True) is False
             ):
-                values.pop("warmup_steps", None)
+                if overrides.get("warmup_ratio", values["warmup_ratio"]):
+                    values.pop("warmup_steps", None)
+                else:
+                    values["warmup_steps"] = 0
+            if getattr(args, "_unsloth_mlx_logging_steps_explicit", True) is False:
+                values.pop("logging_steps", None)
         values.update(
             {
                 (
@@ -1254,6 +1253,8 @@ if _IS_MLX:
                 for key, value in overrides.items()
             }
         )
+        if hasattr(config_class, "_unsloth_mlx_trl_arguments"):
+            values["_unsloth_mlx_config_copy"] = True
         coerced = config_class(**values)
         if (
             dataset_order_explicit is not None
@@ -1461,8 +1462,9 @@ if _IS_MLX:
                 processing_class is None
                 and kwargs.get("tokenizer") is None
                 and kwargs.get("processor") is None
+                and not isinstance(kwargs.get("data_collator"), UnslothVisionDataCollator)
             ):
-                # TRL falls back to the model's own tokenizer too.
+                # TRL falls back to the model's own tokenizer too; a vision collator brings its own.
                 processing_class = getattr(kwargs.get("model"), "_tokenizer", None)
             processor_from_processing_class = False
             if processing_class is not None:
@@ -1693,8 +1695,6 @@ if _IS_MLX:
         max_steps nor num_train_epochs is given (epoch mode is MLX-supported).
         """
 
-        _unsloth_mlx_upstream_logging_steps = 10
-
         def __init__(self, *args, **kwargs):
             keys = set(kwargs)
             if len(args) == 1 and isinstance(args[0], dict):
@@ -1709,6 +1709,7 @@ if _IS_MLX:
         "gradient_accumulation_steps": 1,
         "learning_rate": 1e-6,
         "logging_steps": 10,
+        "max_grad_norm": 1.0,
         "max_steps": -1,
         "num_train_epochs": 3,
         "per_device_train_batch_size": 8,
@@ -1716,6 +1717,13 @@ if _IS_MLX:
         "warmup_steps": 0,
         "weight_decay": 0.0,
     }
+    # Defaults TRL changed: stem -> first release, field, value.
+    _MLX_TRL_VERSIONED_DEFAULTS = {
+        "DPO": ("0.29.0", "truncation_mode", "keep_start"),
+        "GRPO": ("1.10.0", "max_completion_length", 512),
+    }
+    # What HfArgumentParser needs where zoo's own annotation is missing, too narrow or refused.
+    _MLX_TRL_CONFIG_TYPES = {"eval_strategy": str, "num_train_epochs": float, "scale_rewards": str}
     _MLX_TRL_INERT_CONFIG_VALUES = {
         "base_model_attribute_name": "model",
         "cache_implementation": None,
@@ -1746,10 +1754,13 @@ if _IS_MLX:
             fields = _dataclasses.fields(type(self))
             config_fields = {field.name for field in fields}
             # HfArgumentParser passes every field: an untouched default is not the caller's choice.
-            if config_fields <= set(kwargs):
+            if not kwargs.pop("_unsloth_mlx_config_copy", False) and config_fields <= set(kwargs):
                 for field in fields:
                     if kwargs[field.name] == field.default:
                         del kwargs[field.name]
+            # Another clip was chosen, so TRL's default max_grad_norm must not clip as well.
+            if "max_grad_value" in kwargs or "max_grad_leaf_norm" in kwargs:
+                kwargs.setdefault("max_grad_norm", 0.0)
             divergence = kwargs.get("f_divergence_type", "reverse_kl")
             # Only alpha_divergence reads it, and its default differs across TRL releases.
             if getattr(divergence, "value", divergence) == "reverse_kl":
@@ -1923,41 +1934,24 @@ if _IS_MLX:
     def _mlx_trl_config_fields(stem, zoo_config):
         zoo_fields = {field.name: field for field in _dataclasses.fields(zoo_config)}
         defaults = dict(_MLX_TRL_CONFIG_DEFAULTS)
-        if stem == "DPO":
+        if stem in _MLX_TRL_VERSIONED_DEFAULTS:
+            since, name, value = _MLX_TRL_VERSIONED_DEFAULTS[stem]
             # Read the install, not trl.__version__: touching the module can pull torch.
             try:
-                if _Version(_package_version("trl")) >= _Version("0.29.0"):
-                    defaults["truncation_mode"] = "keep_start"
+                if _Version(_package_version("trl")) >= _Version(since):
+                    defaults[name] = value
             except _PackageNotFoundError:
                 pass
+        if "scale_rewards" in zoo_fields:
+            defaults["scale_rewards"] = zoo_fields["scale_rewards"].default
         fields = [
-            (
-                name,
-                zoo_fields[name].type if name in zoo_fields else str,
-                _dataclasses.field(
-                    default = value,
-                    kw_only = zoo_fields[name].kw_only if name in zoo_fields else True,
-                ),
-            )
+            (name, _MLX_TRL_CONFIG_TYPES.get(name) or zoo_fields[name].type, value)
             for name, value in defaults.items()
         ]
         if stem == "DPO":
             # HfArgumentParser drops a plain default on a list field, and TRL types this one list[str].
             fields.append(
-                (
-                    "loss_type",
-                    list[str],
-                    _dataclasses.field(default_factory = lambda: ["sigmoid"], kw_only = True),
-                )
-            )
-        if "scale_rewards" in zoo_fields:
-            # HfArgumentParser refuses zoo's str | bool | None, and TRL types it str.
-            fields.append(
-                (
-                    "scale_rewards",
-                    str,
-                    _dataclasses.field(default = zoo_fields["scale_rewards"].default, kw_only = True),
-                )
+                ("loss_type", list[str], _dataclasses.field(default_factory = lambda: ["sigmoid"]))
             )
         return fields
 
