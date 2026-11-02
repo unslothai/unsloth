@@ -4,11 +4,11 @@
 import { ChevronDownStandardIcon, ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Cancel01Icon,
   Clock01Icon,
   StarIcon,
-  Delete02Icon,
   Download01Icon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
@@ -352,7 +352,7 @@ export function NewTabPage({ tabId }: { tabId: string }) {
               tabId={tabId}
               extra={
                 <MenuRow
-                  icon={Delete02Icon}
+                  icon={TrashIcon}
                   onSelect={() => removeFromHistory(item.url)}
                 >
                   {t("browser.pages.removeFromHistory")}

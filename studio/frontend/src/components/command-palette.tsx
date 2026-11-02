@@ -34,20 +34,19 @@ import {
   ChefHatIcon,
   DashboardCircleIcon,
   FlimSlateIcon,
-  Image01Icon,
+  ImageIcon,
   LibrariesIcon,
   Message01Icon,
   Moon02Icon,
   PencilEdit02Icon,
   Search01Icon,
-  Settings02Icon,
   Sun03Icon,
   TestTube01Icon,
   ApiIcon,
   Clock01Icon,
   Download01Icon,
 } from "@hugeicons/core-free-icons";
-import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, Settings01Icon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
@@ -116,7 +115,7 @@ const WORKSPACES: {
   },
   {
     id: "switchToImages",
-    icon: Image01Icon,
+    icon: ImageIcon,
     labelKey: "shell.navigation.images",
     aliases: ["generate"],
   },
@@ -317,7 +316,7 @@ function PaletteContent() {
             <span>{t("shell.navigation.api")}</span>
           </PaletteItem>
           <PaletteItem onSelect={openSettings()} keywords={["preferences"]}>
-            <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
+            <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} />
             <span>{t("shell.navigation.settings")}</span>
             {settingsLabel && (
               <PaletteShortcut>{settingsLabel}</PaletteShortcut>
@@ -389,7 +388,7 @@ function PaletteContent() {
                   )}
                   onSelect={openSettings(tab)}
                 >
-                  <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
+                  <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} />
                   <span className="text-muted-foreground">
                     {t("shell.navigation.settings")}
                   </span>

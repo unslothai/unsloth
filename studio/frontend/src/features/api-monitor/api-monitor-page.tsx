@@ -44,7 +44,6 @@ import {
 import { AudioApiExamples } from "@/features/settings/components/audio-api-examples";
 import { DecisionApiSection } from "@/features/settings/components/decision-api-section";
 import { MediaApiExamples } from "@/features/settings/components/media-api-examples";
-import { TrainingApiExamples } from "@/features/settings/components/training-api-examples";
 import { useApiTunnelPref } from "@/features/settings/components/usage-examples";
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
@@ -58,18 +57,16 @@ import {
   Clock01Icon,
   CodeIcon,
   ComputerTerminal01Icon,
-  Delete02Icon,
   FileSearchIcon,
   PlusSignIcon,
   Refresh01Icon,
   RemoveCircleIcon,
   Search01Icon,
-  Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { PauseIcon } from "@/lib/media-control-icons";
 import { ReloadIcon } from "@/lib/reload-icon";
-import { SpeedMeterIcon } from "@/lib/hugeicons-derived";
+import { Settings01Icon, SpeedMeterIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   type CSSProperties,
@@ -968,12 +965,6 @@ function QuickStart({
               useTunnel={useTunnel}
               showHeading={false}
             />
-          ) : kind === "training" ? (
-            <TrainingApiExamples
-              apiKey={freshKey}
-              useTunnel={useTunnel}
-              showHeading={false}
-            />
           ) : (
             <DecisionApiSection showHeading={false} />
           )}
@@ -1323,7 +1314,7 @@ export function ApiMonitorPage(): ReactElement {
         className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground dark:hover:bg-chat-icon-bg-hover"
       >
         <HugeiconsIcon
-          icon={Settings02Icon}
+          icon={Settings01Icon}
           strokeWidth={1.75}
           className="size-3.5"
         />
@@ -1559,7 +1550,7 @@ export function ApiMonitorPage(): ReactElement {
               className="size-8 rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(14%*var(--contrast-wash-gain,1)),transparent)]"
             >
               <HugeiconsIcon
-                icon={Settings02Icon}
+                icon={Settings01Icon}
                 strokeWidth={1.75}
                 className="size-[calc(18px*var(--ui-space-scale,1))]"
               />
@@ -1915,7 +1906,7 @@ export function ApiMonitorPage(): ReactElement {
                   className="rounded-full text-red-500/80 hover:text-red-500 dark:text-red-400/80 dark:hover:text-red-400"
                 >
                   <HugeiconsIcon
-                    icon={Delete02Icon}
+                    icon={TrashIcon}
                     strokeWidth={1.75}
                     className="size-4"
                   />

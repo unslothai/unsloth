@@ -78,6 +78,7 @@ from .models.loader_utils import (
     _tokenizer_wants_local_only,
 )
 from .models._utils import (
+    _is_unsloth_pipeline_parallel,
     _is_unsloth_tensor_parallel,
     _refuse_model_parallel_export,
     _convert_torchao_model,
@@ -1377,9 +1378,12 @@ def _model_parallel_refuses_save(method):
             model = args[0] if args else kwargs.get("model", kwargs.get("self"))
             import inspect
 
-            save_method = (
-                inspect.signature(fn).bind_partial(*args, **kwargs).arguments.get("save_method")
-            )
+            try:
+                save_method = (
+                    inspect.signature(fn).bind_partial(*args, **kwargs).arguments.get("save_method")
+                )
+            except (TypeError, ValueError):
+                save_method = kwargs.get("save_method")
             if (
                 model is not None
                 and isinstance(save_method, str)
@@ -1387,6 +1391,13 @@ def _model_parallel_refuses_save(method):
             ):
                 from .exllama.quant_linear import refuse_exl3_inplace_merge
                 refuse_exl3_inplace_merge(model)
+            if model is not None and _is_unsloth_pipeline_parallel(model):
+                # UNSLOTH_PP_SIZE: the whole model back on every rank, rank 0 exports (refused otherwise).
+                _refuse_model_parallel_export(model, method)
+                from .models.pp_env import pp_collective
+
+                _refuse_tp_in_place_merge(fn, method, args, kwargs)
+                return pp_collective(model, method, lambda: fn(*args, **kwargs))
             if model is not None and _is_unsloth_tensor_parallel(model):
                 from .models.tp_replica import collective_applies, tp_collective
                 if collective_applies(model):
@@ -6937,7 +6948,18 @@ def _tp_collective_save(method):
     def decorate(fn):
         @functools.wraps(fn)
         def wrapper(self, *args, **kwargs):
-            if isinstance(self, torch.nn.Module) and _is_unsloth_tensor_parallel(self):
+            if isinstance(self, torch.nn.Module) and _is_unsloth_pipeline_parallel(self):
+                from .models import tp_replica
+                arguments = _fsdp2_save_arguments(fn, self, args, kwargs)
+                if not tp_replica._ACTIVE and arguments.get("state_dict") is None:
+                    from .models.pp_env import pp_collective, pp_save_adapter
+
+                    if method == "save_pretrained" and isinstance(self, PeftModel):
+                        # The LoRA weights of every stage, the 1-GPU adapter written by rank 0.
+                        return pp_save_adapter(self, args, kwargs)
+                    _refuse_model_parallel_export(self, method)
+                    return pp_collective(self, method, lambda: fn(self, *args, **kwargs))
+            elif isinstance(self, torch.nn.Module) and _is_unsloth_tensor_parallel(self):
                 from .models.tp_replica import collective_applies, tp_collective
                 arguments = _fsdp2_save_arguments(fn, self, args, kwargs)
                 if arguments.get("state_dict") is None and collective_applies(self):
