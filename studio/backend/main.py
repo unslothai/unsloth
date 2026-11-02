@@ -438,6 +438,7 @@ from routes.prompts import router as prompts_router
 from routes.scheduled_tasks import router as scheduled_tasks_router
 from routes.library import router as library_router
 from routes.profile_stats import router as profile_stats_router
+from routes.token_limit import router as token_limit_router
 from auth import policy as auth_policy, storage
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from hub.utils.host_paths import redact_inventory_host_paths
@@ -1945,6 +1946,7 @@ app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(scheduled_tasks_router, prefix = "/api/scheduled-tasks", tags = ["scheduled-tasks"])
 app.include_router(library_router, prefix = "/api/library", tags = ["library"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
+app.include_router(token_limit_router, prefix = "/api/token-limit", tags = ["token-limit"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])

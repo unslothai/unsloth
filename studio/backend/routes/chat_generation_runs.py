@@ -355,8 +355,11 @@ async def create_chat_generation_run(
     current_subject: str = Depends(get_current_subject),
 ):
     sanitized = _sanitize_request(payload)
-    from routes.inference import _request_used_api_key
+    from routes.inference import _enforce_token_limit, _request_used_api_key
 
+    # A retried POST for a run that already exists is not a new request.
+    if await asyncio.to_thread(db.get_run_state, payload.runId) is None:
+        await _enforce_token_limit(request, external = False)
     sanitized[db.API_MONITOR_ORIGIN_FIELD] = _request_used_api_key(request)
     if timezone_headers := _timezone_headers(request):
         sanitized[db.TIMEZONE_HEADERS_FIELD] = timezone_headers

@@ -3630,6 +3630,15 @@ def _request_used_api_key(request: Any) -> bool:
         return False
 
 
+async def _enforce_token_limit(request: Any, *, external: bool) -> None:
+    """Refuse a new request once the token usage limit is reached (429). Checked once per incoming
+    request, before generation, so the reply that crosses the cap still finishes."""
+    from core.inference import token_limit
+
+    api = external or _request_used_api_key(request)
+    await asyncio.to_thread(token_limit.enforce, api = api)
+
+
 from state.tool_approvals import (
     resolve_tool_decision,
     tool_decision_grants_host_access,
@@ -30657,6 +30666,9 @@ async def openai_chat_completions(
             status_code = 403,
             detail = "External providers can only be used from the Unsloth UI or with an API key.",
         )
+    await _enforce_token_limit(
+        request, external = bool(payload.provider_id or payload.provider_type)
+    )
     response = await produce_openai_chat_completions(
         payload,
         request,
@@ -37507,6 +37519,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     """
     from utils.hardware import DeviceType, get_device
 
+    await _enforce_token_limit(request, external = False)
     try:
         _pre = await request.json()
     except (json.JSONDecodeError, ValueError):
@@ -40861,6 +40874,7 @@ async def openai_responses(
     """
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
+    await _enforce_token_limit(request, external = connection is not None)
     for history_param in ("previous_response_id", "conversation"):
         if getattr(payload, history_param, None) is not None:
             raise HTTPException(
@@ -43498,6 +43512,7 @@ async def anthropic_messages(
     """
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
+    await _enforce_token_limit(request, external = connection is not None)
     if connection is not None:
         return await _anthropic_messages_via_connection(
             payload, request, current_subject, *connection

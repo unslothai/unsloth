@@ -1200,6 +1200,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         END
         """
     )
+    from storage.token_usage_ledger import ensure_token_usage_ledger
+
+    ensure_token_usage_ledger(conn)
     inventory_state = conn.execute(
         """
         SELECT inventory_version, dirty
