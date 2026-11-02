@@ -370,6 +370,62 @@ refused(lambda: trl.DPOConfig(output_dir="o", f_divergence_type="alpha_divergenc
 
 
 @_needs_real_mlx
+def test_trl_config_defaults_match_trl():
+    _run_shim_probe("""
+assert trl.SFTConfig(output_dir="o", eval_strategy="steps").eval_steps == 10
+assert trl.DPOConfig(output_dir="o", eval_strategy="steps").eval_steps == 10
+assert trl.DPOConfig(output_dir="o", eval_strategy="steps", logging_steps=7).eval_steps == 7
+assert trl.DPOConfig(output_dir="o", eval_steps=1).eval_strategy == "no"
+assert trl.DPOConfig(output_dir="o").logging_steps == 10
+
+from packaging.version import Version
+modern = Version(trl.__version__) >= Version("0.29.0")
+assert trl.DPOConfig(output_dir="o").truncation_mode == ("keep_start" if modern else "keep_end")
+assert trl.DPOConfig(output_dir="o", truncation_mode="keep_end").truncation_mode == "keep_end"
+assert trl.ORPOConfig(output_dir="o").truncation_mode == "keep_end"
+""")
+
+
+@_needs_real_mlx
+def test_trainers_fall_back_to_the_models_tokenizer():
+    _run_shim_probe("""
+model._tokenizer = tok
+for trainer in (trl.DPOTrainer(model=model, train_dataset=[]), trl.SFTTrainer(model=model, train_dataset=[])):
+    assert trainer.tokenizer is tok and trainer.processing_class is tok
+other = object()
+assert trl.DPOTrainer(model=model, train_dataset=[], processing_class=other).tokenizer is other
+""")
+
+
+@_needs_real_mlx
+def test_hf_argument_parser_builds_the_same_trl_configs():
+    pytest.importorskip("transformers")
+    _run_shim_probe("""
+import dataclasses
+from transformers import HfArgumentParser
+
+def parsed(config, *flags):
+    return HfArgumentParser(config).parse_args_into_dataclasses(args=["--output_dir", "o", *flags])[0]
+
+for stem, extra in (("DPO", {}), ("ORPO", {}), ("KTO", {}), ("CPO", {}), ("GRPO", {"num_generations": 2, "per_device_train_batch_size": 2})):
+    config = getattr(trl, stem + "Config")
+    flags = [text for key, value in extra.items() for text in ("--" + key, str(value))]
+    built, direct = parsed(config, *flags), config(output_dir="o", **extra)
+    for field in dataclasses.fields(config):
+        assert getattr(built, field.name) == getattr(direct, field.name), (stem, field.name)
+    for name, value in vars(direct).items():
+        if name.startswith("_unsloth"):
+            assert getattr(built, name) == value, (stem, name)
+
+explicit = parsed(trl.DPOConfig, "--learning_rate", "0.0002", "--max_steps", "60", "--loss_type", "ipo")
+assert (explicit.learning_rate, explicit.max_steps, explicit.loss_type) == (0.0002, 60, ["ipo"])
+assert parsed(trl.DPOConfig, "--max_grad_norm", "0.5")._unsloth_mlx_grad_clip_explicit is True
+assert parsed(trl.GRPOConfig, "--num_generations", "2", "--per_device_train_batch_size", "2", "--scale_rewards", "batch").scale_rewards == "batch"
+assert pickle.loads(pickle.dumps(parsed(trl.DPOConfig))).learning_rate == 1e-6
+""")
+
+
+@_needs_real_mlx
 def test_sft_shim_forwards_what_zoo_honors():
     _run_shim_probe("""
 import warnings
@@ -431,6 +487,12 @@ for stem, real in RealConfigs.items():
     config = getattr(trl, stem + "Config")
     assert isinstance(unsloth._coerce_mlx_training_args(real(output_dir="o"), None, config), config), stem
 refused(lambda: trl.GRPOTrainer(model, [print], RealGRPO(output_dir="o"), [], None, tok), "GRPOConfig")
+
+class RefusesBf16(RealDPO):
+    def __post_init__(self):
+        assert self.bf16 is False, "Your setup doesn't support bf16/gpu."
+        super().__post_init__()
+assert trl.DPOTrainer(model=model, args=RefusesBf16(output_dir="o", bf16=False), train_dataset=[]).args.beta == 0.1
 """,
         before_unsloth = (
             "import trl\n"

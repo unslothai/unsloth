@@ -789,7 +789,13 @@ if _IS_MLX:
                     values[name] = getattr(args, name)
             # Anything else set is refused. Compare to a fresh config: TrainingArguments rewrites fields at init.
             if not isinstance(args, MLXTrainingConfig) and _dataclasses.is_dataclass(args):
-                fresh = type(args)(output_dir = args.output_dir)
+                precision = {
+                    field.name: False
+                    for field in _dataclasses.fields(args)
+                    if field.name in ("bf16", "fp16")
+                }
+                # bf16 stays off: TRL defaults it on, and older transformers refuses that on a Mac.
+                fresh = type(args)(output_dir = args.output_dir, **precision)
                 for field in _dataclasses.fields(args):
                     if (
                         field.init
@@ -968,6 +974,7 @@ if _IS_MLX:
         """MLX-compatible public training arguments for Unsloth notebooks."""
 
         _unsloth_mlx_argument_aliases = _MLX_TRAINING_ARGUMENT_ALIASES
+        _unsloth_mlx_upstream_logging_steps = 500
 
         def __init__(self, *args, **kwargs):
             if len(args) == 1 and isinstance(args[0], dict):
@@ -1061,10 +1068,13 @@ if _IS_MLX:
             for key, value in extra_kwargs.items():
                 setattr(self, key, value)
             _warn_ignored_mlx_training_args(extra_kwargs)
-            # Like TrainingArguments: zoo's eval_steps=0 would silently never evaluate.
+            # Like TrainingArguments: zoo's eval_steps=0 would silently never evaluate. Zoo's logging_steps
+            # default of 1 is not the one that fallback means, so an unset one stays upstream's.
             eval_strategy = getattr(self, "eval_strategy", None)
             if getattr(eval_strategy, "value", eval_strategy) == "steps" and not self.eval_steps:
-                self.eval_steps = self.logging_steps
+                self.eval_steps = (
+                    kwargs.get("logging_steps") or self._unsloth_mlx_upstream_logging_steps
+                )
 
     def _resolve_mlx_cuda_style_max_seq_length(args, model = None):
         model_max_seq_length = _positive_mlx_context_length(
@@ -1447,6 +1457,13 @@ if _IS_MLX:
                 self._unsloth_mlx_positional_kwargs,
             )
             processing_class = kwargs.pop("processing_class", None)
+            if (
+                processing_class is None
+                and kwargs.get("tokenizer") is None
+                and kwargs.get("processor") is None
+            ):
+                # TRL falls back to the model's own tokenizer too.
+                processing_class = getattr(kwargs.get("model"), "_tokenizer", None)
             processor_from_processing_class = False
             if processing_class is not None:
                 if kwargs.get("processor", None) is None:
@@ -1676,6 +1693,8 @@ if _IS_MLX:
         max_steps nor num_train_epochs is given (epoch mode is MLX-supported).
         """
 
+        _unsloth_mlx_upstream_logging_steps = 10
+
         def __init__(self, *args, **kwargs):
             keys = set(kwargs)
             if len(args) == 1 and isinstance(args[0], dict):
@@ -1686,9 +1705,13 @@ if _IS_MLX:
 
     # TRL's own defaults: zoo's base config would run DPO at 200x the learning rate with no signal.
     _MLX_TRL_CONFIG_DEFAULTS = {
-        "learning_rate": 1e-6,
-        "per_device_train_batch_size": 8,
+        "eval_strategy": "no",
         "gradient_accumulation_steps": 1,
+        "learning_rate": 1e-6,
+        "logging_steps": 10,
+        "max_steps": -1,
+        "num_train_epochs": 3,
+        "per_device_train_batch_size": 8,
         "save_steps": 500,
         "warmup_steps": 0,
         "weight_decay": 0.0,
@@ -1720,7 +1743,13 @@ if _IS_MLX:
             if len(args) == 1 and isinstance(args[0], dict):
                 kwargs = {**args[0], **kwargs}
                 args = ()
-            config_fields = {field.name for field in _dataclasses.fields(type(self))}
+            fields = _dataclasses.fields(type(self))
+            config_fields = {field.name for field in fields}
+            # HfArgumentParser passes every field: an untouched default is not the caller's choice.
+            if config_fields <= set(kwargs):
+                for field in fields:
+                    if kwargs[field.name] == field.default:
+                        del kwargs[field.name]
             divergence = kwargs.get("f_divergence_type", "reverse_kl")
             # Only alpha_divergence reads it, and its default differs across TRL releases.
             if getattr(divergence, "value", divergence) == "reverse_kl":
@@ -1730,8 +1759,6 @@ if _IS_MLX:
                     # None: some TRL releases default these fields to it.
                     if getattr(kwargs[key], "value", kwargs[key]) in (value, None):
                         del kwargs[key]
-            for key, value in _MLX_TRL_CONFIG_DEFAULTS.items():
-                kwargs.setdefault(key, value)
             super().__init__(*args, **kwargs)
 
     class _MLXTRLPolicyTrainer(UnslothTrainer):
@@ -1893,6 +1920,47 @@ if _IS_MLX:
         ),
     )
 
+    def _mlx_trl_config_fields(stem, zoo_config):
+        zoo_fields = {field.name: field for field in _dataclasses.fields(zoo_config)}
+        defaults = dict(_MLX_TRL_CONFIG_DEFAULTS)
+        if stem == "DPO":
+            # Read the install, not trl.__version__: touching the module can pull torch.
+            try:
+                if _Version(_package_version("trl")) >= _Version("0.29.0"):
+                    defaults["truncation_mode"] = "keep_start"
+            except _PackageNotFoundError:
+                pass
+        fields = [
+            (
+                name,
+                zoo_fields[name].type if name in zoo_fields else str,
+                _dataclasses.field(
+                    default = value,
+                    kw_only = zoo_fields[name].kw_only if name in zoo_fields else True,
+                ),
+            )
+            for name, value in defaults.items()
+        ]
+        if stem == "DPO":
+            # HfArgumentParser drops a plain default on a list field, and TRL types this one list[str].
+            fields.append(
+                (
+                    "loss_type",
+                    list[str],
+                    _dataclasses.field(default_factory = lambda: ["sigmoid"], kw_only = True),
+                )
+            )
+        if "scale_rewards" in zoo_fields:
+            # HfArgumentParser refuses zoo's str | bool | None, and TRL types it str.
+            fields.append(
+                (
+                    "scale_rewards",
+                    str,
+                    _dataclasses.field(default = zoo_fields["scale_rewards"].default, kw_only = True),
+                )
+            )
+        return fields
+
     def _build_mlx_trl_policy_trainers():
         aliases = {
             key: value
@@ -1905,10 +1973,13 @@ if _IS_MLX:
             zoo_config = getattr(_mlx_zoo_trainer, config, None)
             if zoo_trainer is None or zoo_config is None:
                 continue
-            config_class = type(
+            # Real field defaults, since HfArgumentParser reads them instead of calling the config bare.
+            config_class = _dataclasses.make_dataclass(
                 f"{stem}Config",
-                (_MLXTRLConfig, zoo_config),
-                {"_unsloth_mlx_argument_aliases": aliases},
+                _mlx_trl_config_fields(stem, zoo_config),
+                bases = (_MLXTRLConfig, zoo_config),
+                init = False,
+                namespace = {"__module__": __name__, "_unsloth_mlx_argument_aliases": aliases},
             )
             built[f"{stem}Config"] = config_class
             # Pickle finds a class by module and name; importing unsloth also installs the trl shim.
@@ -1925,6 +1996,11 @@ if _IS_MLX:
                 },
             )
         return built
+
+    from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+    from importlib.metadata import version as _package_version
+
+    from packaging.version import Version as _Version
 
     from ._mlx_trl_all import (
         install_lazy_trl_all as _install_lazy_trl_all,
