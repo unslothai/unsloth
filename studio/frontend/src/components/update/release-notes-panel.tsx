@@ -28,7 +28,6 @@ import {
 type MarkdownPreviewComponent =
   typeof import("@/components/markdown/markdown-preview")["MarkdownPreview"];
 
-// Streamdown, KaTeX and Shiki load with the panel, beside the notes, not at startup.
 let markdownPreviewModule: Promise<MarkdownPreviewComponent> | null = null;
 let loadedMarkdownPreview: MarkdownPreviewComponent | null = null;
 
@@ -40,7 +39,6 @@ function loadMarkdownPreview(): Promise<MarkdownPreviewComponent> {
         return module.MarkdownPreview;
       },
       (error: unknown) => {
-        // Dropped so a retry fetches again.
         markdownPreviewModule = null;
         throw error;
       },
@@ -205,7 +203,6 @@ export function ReleaseNotesPanel({
                   className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-11 [&_[data-streamdown=link-safety-modal]>*]:max-w-md [&_img]:h-auto [&_img]:max-w-full [&>*:first-child]:mt-0 [&>*>*:first-child]:mt-0 [&_code]:text-[0.92em] [&_h1]:mt-4 [&_h1]:font-heading [&_h1]:text-ui-13 [&_h2]:mt-4 [&_h2]:font-heading [&_h2]:text-ui-13 [&_h3]:mt-4 [&_h3]:font-heading [&_h3]:text-ui-11 [&_pre]:text-[0.92em] [&_td]:break-words [&_th]:break-words"
                 />
               ) : (
-                // Only if expanded before the renderer arrives: the notes' own loading and error rows.
                 <NotesStatus
                   state={renderer.failed ? "error" : "loading"}
                   release={notes?.tag ?? null}

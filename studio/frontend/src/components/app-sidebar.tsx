@@ -3954,7 +3954,6 @@ export function AppSidebar() {
     const empty = { value: false };
     // Read inside the write: Safari drops the gesture across an await.
     const copied = await copyToClipboardFrom(async () => {
-      // The exporters load with the chat page; usually already in memory by the time a menu opens.
       const { buildChatItemMarkdown } = await import(
         "@/features/chat/prompt-storage/prompt-storage-dialog"
       );
