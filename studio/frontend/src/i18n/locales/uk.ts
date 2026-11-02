@@ -2570,6 +2570,9 @@ export const uk = {
         standard: "Стандартна",
         moreThemes: "Інші теми",
       },
+      composer: {
+        title: "Поле введення",
+      },
       code: {
         title: "Код",
         fontDescription: "Блоки коду в чаті, попередній перегляд файлів і приклади API.",

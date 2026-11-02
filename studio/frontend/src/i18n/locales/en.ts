@@ -2362,6 +2362,9 @@ export const en = {
         standard: "Standard",
         moreThemes: "More themes",
       },
+      composer: {
+        title: "Composer",
+      },
       code: {
         title: "Code",
         fontDescription: "Code blocks in chat, file previews and API examples.",

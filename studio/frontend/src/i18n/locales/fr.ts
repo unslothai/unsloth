@@ -2375,6 +2375,9 @@ export const fr = {
         standard: "Standard",
         moreThemes: "Plus de thèmes",
       },
+      composer: {
+        title: "Zone de saisie",
+      },
       code: {
         title: "Code",
         fontDescription: "Blocs de code dans le chat, aperçus de fichiers et exemples d’API.",

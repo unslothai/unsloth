@@ -2546,6 +2546,9 @@ export const id = {
         standard: "Standar",
         moreThemes: "Tema lainnya",
       },
+      composer: {
+        title: "Penyusun pesan",
+      },
       code: {
         title: "Kode",
         fontDescription: "Blok kode di chat, pratinjau file, dan contoh API.",

@@ -2342,6 +2342,9 @@ export const ko = {
         standard: "표준",
         moreThemes: "더 많은 테마",
       },
+      composer: {
+        title: "입력창",
+      },
       code: {
         title: "코드",
         fontDescription: "채팅의 코드 블록, 파일 미리보기, API 예시.",

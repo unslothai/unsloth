@@ -2363,6 +2363,9 @@ export const ptBR = {
         standard: "Padrão",
         moreThemes: "Mais temas",
       },
+      composer: {
+        title: "Editor",
+      },
       code: {
         title: "Código",
         fontDescription: "Blocos de código no chat, prévias de arquivos e exemplos da API.",

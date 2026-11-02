@@ -2277,6 +2277,9 @@ export const it = {
         standard: "Standard",
         moreThemes: "Altri temi",
       },
+      composer: {
+        title: "Editor",
+      },
       code: {
         title: "Codice",
         fontDescription: "Blocchi di codice nella chat, anteprime dei file ed esempi API.",

@@ -6,6 +6,7 @@ import {
 	useState,
 	type CSSProperties,
 } from "react";
+import { useAppearanceCustomStore } from "@/features/settings/stores/appearance-custom-store";
 import { useChatBackground, setBackgroundError } from "./storage";
 import { acquireRender } from "./render";
 import { safeArtworkOpacity, type RGB } from "./contrast";
@@ -124,6 +125,9 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 		};
 	}, [skin.safe, enabled, active]);
 	const outline = value?.outline;
+	const composerOutline = useAppearanceCustomStore(
+		(s) => s.customization.composerOutline,
+	);
 	useEffect(() => {
 		// The composer is a sibling subtree of the wallpaper, so the ring strength goes on the shared parent.
 		const parent = host.current?.parentElement;
@@ -286,7 +290,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 			className="chat-wallpaper"
 			data-ready={Boolean(frames.current) || undefined}
 			data-reduced={skin.reduced || undefined}
-			data-outline={value.outline > 0}
+			data-outline={(composerOutline ?? value.outline) > 0}
 			style={{ "--wallpaper-safe": skin.safe } as CSSProperties}
 		>
 			{[frames.previous, frames.current].map((frame, i) => {

@@ -2578,6 +2578,9 @@ export const pl = {
         standard: "Standardowy",
         moreThemes: "Więcej motywów",
       },
+      composer: {
+        title: "Pole wiadomości",
+      },
       code: {
         title: "Kod",
         fontDescription: "Bloki kodu na czacie, podglądy plików i przykłady API.",

@@ -2535,6 +2535,9 @@ export const fa = {
         standard: "استاندارد",
         moreThemes: "پوسته‌های بیشتر",
       },
+      composer: {
+        title: "ویرایشگر پیام",
+      },
       code: {
         title: "کد",
         fontDescription: "بلوک‌های کد در گفتگو، پیش‌نمایش فایل‌ها و نمونه‌های API.",

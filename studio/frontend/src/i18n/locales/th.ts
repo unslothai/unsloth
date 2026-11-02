@@ -2441,6 +2441,9 @@ export const th = {
         standard: "มาตรฐาน",
         moreThemes: "ธีมเพิ่มเติม",
       },
+      composer: {
+        title: "ช่องพิมพ์ข้อความ",
+      },
       code: {
         title: "โค้ด",
         fontDescription: "บล็อกโค้ดในแชท ตัวอย่างไฟล์ และตัวอย่าง API",

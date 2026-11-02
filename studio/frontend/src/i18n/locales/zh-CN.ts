@@ -2334,6 +2334,9 @@ export const zhCN = {
         standard: "标准",
         moreThemes: "更多主题",
       },
+      composer: {
+        title: "输入框",
+      },
       code: {
         title: "代码",
         fontDescription: "聊天中的代码块、文件预览和 API 示例。",

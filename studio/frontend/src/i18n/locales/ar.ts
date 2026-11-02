@@ -2348,6 +2348,9 @@ export const ar = {
         standard: "قياسية",
         moreThemes: "المزيد من السمات",
       },
+      composer: {
+        title: "محرر الرسائل",
+      },
       code: {
         title: "الشيفرة",
         fontDescription: "كتل الشيفرة في المحادثة ومعاينات الملفات وأمثلة API.",

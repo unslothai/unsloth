@@ -2354,6 +2354,9 @@ export const hi = {
         standard: "मानक",
         moreThemes: "और थीम",
       },
+      composer: {
+        title: "कंपोज़र",
+      },
       code: {
         title: "कोड",
         fontDescription: "चैट में कोड ब्लॉक, फ़ाइल प्रीव्यू और API उदाहरण।",

@@ -2563,6 +2563,9 @@ export const cs = {
         standard: "Standardní",
         moreThemes: "Další motivy",
       },
+      composer: {
+        title: "Editor zpráv",
+      },
       code: {
         title: "Kód",
         fontDescription: "Bloky kódu v chatu, náhledy souborů a příklady API.",
