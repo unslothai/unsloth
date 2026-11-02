@@ -119,6 +119,16 @@ def apply() -> None:
     for (module_name, attr), value in knobs:
         cfg = _module(module_name)
         if cfg is not None:
+            if (module_name, attr) == ("torch.compiler.config", "cache_key_tag"):
+                current = getattr(cfg, attr, "")
+                value = ";".join(
+                    [
+                        p
+                        for p in current.split(";")
+                        if p and not p.startswith(_STUDIO_CACHE_TAG_PREFIXES)
+                    ]
+                    + [p for p in value.split(";") if p.startswith(_STUDIO_CACHE_TAG_PREFIXES)]
+                )
             _write(cfg, attr, value)
     _applied.set(generation)
 
@@ -154,8 +164,7 @@ def canonical_compile_cache_tag(current: str, prefix: str, tag: str | None) -> s
 
 
 def set_compile_cache_tag(prefix: str, tag: str | None) -> None:
-    """Set ``prefix``'s cache_key_tag token and record it, so contexts that ``apply()`` (renders, background
-    compiles) key on it too."""
+    """Record Studio's cache token for render and compile contexts."""
     cfg = _module("torch.compiler.config")
     if cfg is None:
         return

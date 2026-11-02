@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The FP8 / NVFP4 cache tags reach every context that compiles (#15055 follow-up).
-
-torch 2.12+ keeps ``torch.compiler.config`` overrides in a ContextVar: a tag set on the load thread is invisible to the
-render thread and the background compile thread unless it is recorded for ``diffusion_compile_config.apply()``.
-"""
+"""FP8 / NVFP4 cache tags reach render and compile contexts (#15055)."""
 
 from __future__ import annotations
 
@@ -76,8 +72,23 @@ def test_fp8_and_nvfp4_tags_set_on_the_load_thread_reach_the_render_thread():
 
 def test_reset_on_a_later_load_reaches_the_render_thread():
     _in_thread(lambda: nvfp4._set_compile_cache_tag(nvfp4._TAG_OFF))
+    assert _render_context_tag() == "unsloth_nvfp4_act_quant=0"
     _in_thread(nvfp4.reset_compile_cache_tag)
     assert _render_context_tag() == ""
+
+
+def test_render_context_keeps_its_foreign_cache_tokens():
+    def load():
+        cc.cache_key_tag = "loader-owned"
+        fp8._set_compile_cache_tag("256")
+
+    def render():
+        cc.cache_key_tag = "render-owned"
+        compile_config.apply()
+        return cc.cache_key_tag
+
+    _in_thread(load)
+    assert _in_thread(render) == "render-owned;unsloth_fp8_unit_scale=256"
 
 
 def test_nvfp4_reset_in_a_fresh_context_keeps_the_recorded_fp8_tag():
