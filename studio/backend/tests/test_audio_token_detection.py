@@ -598,7 +598,6 @@ def test_a_marker_written_as_an_escape_is_still_found(monkeypatch, tmp_path):
     assert reads == [], "and the snapshot still answers it without a fetch"
 
 
-# LFM3-Omni-2B as published: a transformers 5 tokenizer_config with no added_tokens_decoder.
 _LFM3_OMNI_TOKENIZER_CONFIG = {
     "backend": "tokenizers",
     "image_token": "<|image|>",
