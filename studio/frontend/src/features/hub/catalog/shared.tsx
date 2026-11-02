@@ -11,13 +11,12 @@ import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { WrenchIcon } from "@/lib/wrench-icon";
 import {
-  Chat01Icon,
+  Comment01Icon,
   CodeIcon,
   FlimSlateIcon,
   GlobeIcon,
   ImageIcon,
   LayoutTable02Icon,
-  LockIcon,
   LockKeyIcon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
@@ -37,7 +36,7 @@ const CAPABILITY_ICON: Record<
   embedding: LayoutTable02Icon,
   diffusion: ImageIcon,
   multilingual: GlobeIcon,
-  conversational: Chat01Icon,
+  conversational: Comment01Icon,
 };
 
 // Video gen shares the diffusion key, so it takes the sidebar's Video icon by label.
@@ -126,7 +125,7 @@ export function AccessGlyphs({
     <>
       {isPrivate && (
         <AccessGlyph
-          icon={LockIcon}
+          icon={LockKeyIcon}
           label="Private"
           tooltip={tooltip}
           className="text-muted-foreground/70"

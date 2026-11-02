@@ -1,5 +1,6 @@
+import { HugeiconsIcon } from "@hugeicons/react";
+import { FileUploadIcon } from "@hugeicons/core-free-icons";
 import { cn } from "@/lib/utils";
-import { FileUpIcon } from "lucide-react";
 import type { NativeModelDropState } from "../use-native-drop";
 
 function overlayCopy(state: NativeModelDropState): { title: string; description: string } {
@@ -57,7 +58,7 @@ export function NativeModelDropOverlay({ state }: { state: NativeModelDropState 
                 : "border-border bg-muted text-muted-foreground",
           )}
         >
-          <FileUpIcon className="size-4" aria-hidden="true" />
+          <HugeiconsIcon icon={FileUploadIcon} className="size-4" aria-hidden="true" />
         </div>
         <div className="min-w-0 flex-1">
           <div className="truncate text-xs font-medium text-foreground">

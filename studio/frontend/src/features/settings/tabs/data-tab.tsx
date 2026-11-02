@@ -80,7 +80,7 @@ import {
   ArchiveIcon,
   Download01Icon,
   FlimSlateIcon,
-  Image03Icon,
+  ImageIcon,
   LibrariesIcon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon, MessageCircleIcon, TrashIcon } from "@/lib/hugeicons-derived";
@@ -819,7 +819,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                 "archived-images",
                 "archivedImages",
                 "shell.navigation.images",
-                Image03Icon,
+                ImageIcon,
               ],
               [
                 "archived-videos",
