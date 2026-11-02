@@ -178,7 +178,7 @@ def test_eager_growth_does_not_replay_a_retained_graph(monkeypatch):
                 ids.device,
                 G._autocast_state(),
                 torch.is_inference_mode_enabled(),
-            ) == prime_key
+            ) == prime_key[:4]
             # The next slot is outside the valid past and must be overwritten before attention.
             for layer in model.model.layers:
                 layer.self_attn.paged_attention[seq_len].fill_(float("nan"))
