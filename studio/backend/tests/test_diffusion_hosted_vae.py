@@ -294,7 +294,6 @@ def test_the_backend_plans_through_the_load_target(fam, monkeypatch):
 
 
 def test_an_anonymous_token_reaches_every_hub_call_as_false(fam, monkeypatch, tmp_path):
-    # token=None makes huggingface_hub send the cached login; False is the explicit anonymous request.
     import huggingface_hub
 
     seen = []
