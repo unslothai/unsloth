@@ -6,6 +6,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const ja = {
+  turns: {
+    label: "ターン {number}",
+    bookmarkedLabel: "ターン {number}（ブックマーク済み）",
+    bookmark: "ターンをブックマーク",
+    removeBookmark: "ブックマークを解除",
+    navigator: "ターン",
+  },
   chatBackground: {
     noBackground: "背景なし",
     sizing: "画像のサイズ調整",
@@ -1958,6 +1965,14 @@ export const ja = {
         loadError: "管理対象アカウントの接続設定を読み込めませんでした。",
         saveError: "管理対象アカウントの接続設定を保存できませんでした。",
       },
+      display: {
+        title: "表示",
+        timeFormat: "時刻の形式",
+        timeFormatDescription: "時刻を12時間制または24時間制で表示します。",
+        timeFormatSystem: "システムのデフォルト",
+        timeFormat12: "12時間制",
+        timeFormat24: "24時間制",
+      },
       notifications: {
         sectionTitle: "通知",
         showLoadedModels: "読み込み済みモデルのカード",
@@ -2929,6 +2944,8 @@ export const ja = {
         "詳細 速度 トークン 統計 レイヤー オフロード verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "応答に応答の編集を表示",
       inlineEditResponseDescription: "応答の編集を「その他」メニューではなく、各応答に表示します。",
+      turnNavigation: "ターンナビゲーション",
+      turnNavigationDescription: "長いチャットの左端に自分のメッセージをレールとして表示します。ホバーでプレビュー、クリックでそのターンへ移動し、ブックマークで後から見つけられます。",
       composerAtBottom: "入力欄を下に表示",
       composerAtBottomDescription: "新しいチャットで入力欄を中央ではなくページ下部に表示します。",
       projectAttachments: "プロジェクト全体でファイルを共有",
@@ -3528,8 +3545,6 @@ export const ja = {
           "ソースまたは VCS パッケージからのインストールが検出されました。元のローカルパスまたは Git URL から再インストールしてください。",
         repoCheckoutFallback: "リポジトリが手元に残っている場合は、そこからローカルインストーラーを実行してください:",
         restartAfterUpdate: "アップデート後に Unsloth を再起動してください。",
-        desktopManaged:
-          "デスクトップアプリは新しいバージョンを自動的に確認します。ここからいつでも手動で確認またはアップデートできます。",
         desktopReady: "デスクトップアプリのアップデート",
         desktopReadyDescription:
           "新しいバージョンのデスクトップアプリが利用可能か確認します。",

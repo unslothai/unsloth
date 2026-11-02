@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import {
   FilterMailIcon,
   LayerIcon,
+  LayoutTwoColumnIcon,
   PencilEdit02Icon,
   PinIcon,
   Search01Icon,
@@ -23,7 +24,7 @@ import {
 import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
-import { Columns2Icon, GitBranchIcon } from "lucide-react";
+import { GitBranchIcon } from "lucide-react";
 import { SortIcon } from "@/lib/sort-icon";
 import type { ReactNode } from "react";
 import { ROUND_BUTTON, SortRadio, ToolbarTip, VIEW_OPTIONS } from "../components/library-toolbar";
@@ -61,7 +62,7 @@ const FLAG_OPTIONS: { value: ChatFlag; label: TranslationKey; icon: ReactNode }[
   {
     value: "compare",
     label: "library.chats.toolbar.comparisons",
-    icon: <Columns2Icon strokeWidth={1.75} className={ICON} />,
+    icon: <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={1.75} className={ICON} />,
   },
 ];
 

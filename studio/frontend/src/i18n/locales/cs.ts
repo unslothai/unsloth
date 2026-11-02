@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const cs = {
+  turns: {
+    label: "Kolo {number}",
+    bookmarkedLabel: "Kolo {number}, se záložkou",
+    bookmark: "Přidat záložku ke kolu",
+    removeBookmark: "Odebrat záložku",
+    navigator: "Kola",
+  },
   chatBackground: {
     noBackground: "Bez pozadí",
     sizing: "Velikost obrázku",
@@ -2177,6 +2184,14 @@ export const cs = {
           full: "Provádí každé volání nástroje bez ptaní a vypne sandbox pro kód, takže kód v Pythonu a terminálu může číst a měnit jakýkoli soubor, ke kterému má váš účet přístup.",
         },
       },
+      display: {
+        title: "Zobrazení",
+        timeFormat: "Formát času",
+        timeFormatDescription: "Zobrazovat čas ve 12hodinovém nebo 24hodinovém formátu.",
+        timeFormatSystem: "Podle systému",
+        timeFormat12: "12hodinový",
+        timeFormat24: "24hodinový",
+      },
       notifications: {
         sectionTitle: "Oznámení",
         showLoadedModels: "Karta načtených modelů",
@@ -3209,6 +3224,8 @@ export const cs = {
       inlineEditResponse: "Upravit odpověď přímo u odpovědí",
       inlineEditResponseDescription:
         "Zobrazovat Upravit odpověď u každé odpovědi místo v nabídce Další.",
+      turnNavigation: "Navigace v kolech",
+      turnNavigationDescription: "Zobrazí vaše zprávy jako lištu u levého okraje dlouhých chatů. Najetím zobrazíte náhled kola, kliknutím na něj přejdete a záložkami si kola označíte.",
       composerAtBottom: "Pole zprávy dole",
       composerAtBottomDescription:
         "Zahajovat nové chaty s polem zprávy v dolní části stránky místo uprostřed.",
@@ -3877,8 +3894,6 @@ export const cs = {
         repoCheckoutFallback:
           "Pokud stále máte klon repozitáře, spusťte z něj místní instalátor:",
         restartAfterUpdate: "Po aktualizaci Unsloth restartujte.",
-        desktopManaged:
-          "Desktopová aplikace kontroluje nové verze automaticky. Kontrolu nebo aktualizaci můžete kdykoli spustit i zde.",
         desktopReady: "Aktualizace desktopové aplikace",
         desktopReadyDescription:
           "Zkontrolujte, zda je k dispozici novější verze desktopové aplikace.",

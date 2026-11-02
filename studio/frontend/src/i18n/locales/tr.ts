@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const tr = {
+  turns: {
+    label: "Tur {number}",
+    bookmarkedLabel: "Tur {number}, yer imli",
+    bookmark: "Turu yer imlerine ekle",
+    removeBookmark: "Yer imini kaldır",
+    navigator: "Turlar",
+  },
   chatBackground: {
     noBackground: "Arka plan yok",
     sizing: "Görüntü boyutlandırma",
@@ -2156,6 +2163,14 @@ export const tr = {
           full: "Her araç çağrısını sormadan çalıştırır ve kod korumalı alanını kapatır; böylece Python ve terminal kodu, hesabınızın erişebildiği her dosyayı okuyabilir ve değiştirebilir.",
         },
       },
+      display: {
+        title: "Görünüm",
+        timeFormat: "Saat biçimi",
+        timeFormatDescription: "Saatleri 12 veya 24 saat biçiminde göster.",
+        timeFormatSystem: "Sistem varsayılanı",
+        timeFormat12: "12 saat",
+        timeFormat24: "24 saat",
+      },
       notifications: {
         sectionTitle: "Bildirimler",
         showLoadedModels: "Yüklü modeller kartı",
@@ -3190,6 +3205,8 @@ export const tr = {
       inlineEditResponse: "Yanıtlarda Yanıtı düzenle",
       inlineEditResponseDescription:
         "Yanıtı düzenle seçeneğini Diğer menüsü yerine her yanıtta tutun.",
+      turnNavigation: "Tur gezinmesi",
+      turnNavigationDescription: "Uzun sohbetlerin sol kenarında mesajlarınızı bir şerit olarak gösterir. Önizlemek için üzerine gelin, gitmek için tıklayın ve yeniden bulmak için yer imi ekleyin.",
       composerAtBottom: "Yazma alanı altta",
       composerAtBottomDescription:
         "Yeni sohbetleri, yazma alanı sayfanın ortası yerine altında olacak şekilde başlatın.",
@@ -3856,8 +3873,6 @@ export const tr = {
         repoCheckoutFallback:
           "Depo checkout'u hâlâ duruyorsa yerel yükleyiciyi oradan çalıştırın:",
         restartAfterUpdate: "Güncellemeden sonra Unsloth'u yeniden başlatın.",
-        desktopManaged:
-          "Masaüstü uygulaması yeni uygulama sürümlerini otomatik olarak denetler. Ayrıca istediğiniz zaman buradan denetleyebilir veya güncelleyebilirsiniz.",
         desktopReady: "Masaüstü uygulaması güncellemeleri",
         desktopReadyDescription:
           "Daha yeni bir masaüstü uygulaması sürümü olup olmadığını denetleyin.",

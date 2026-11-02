@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const ar = {
+  turns: {
+    label: "الجولة {number}",
+    bookmarkedLabel: "الجولة {number}، عليها إشارة مرجعية",
+    bookmark: "إضافة إشارة مرجعية للجولة",
+    removeBookmark: "إزالة الإشارة المرجعية",
+    navigator: "الجولات",
+  },
   chatBackground: {
     noBackground: "بدون خلفية",
     sizing: "تحجيم الصورة",
@@ -1967,6 +1974,14 @@ export const ar = {
         loadError: "تعذّر تحميل إعدادات اتصال الحسابات المُدارة.",
         saveError: "تعذّر حفظ إعدادات اتصال الحسابات المُدارة.",
       },
+      display: {
+        title: "العرض",
+        timeFormat: "تنسيق الوقت",
+        timeFormatDescription: "اعرض الأوقات بنظام 12 ساعة أو 24 ساعة.",
+        timeFormatSystem: "افتراضي النظام",
+        timeFormat12: "12 ساعة",
+        timeFormat24: "24 ساعة",
+      },
       notifications: {
         sectionTitle: "الإشعارات",
         showLoadedModels: "بطاقة النماذج المحمّلة",
@@ -2943,6 +2958,8 @@ export const ar = {
         "تفاصيل سرعة رموز إحصاءات طبقات ذاكرة verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "تعديل الرد في الردود",
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
+      turnNavigation: "التنقل بين الجولات",
+      turnNavigationDescription: "اعرض رسائلك كشريط على الحافة اليسرى للمحادثات الطويلة. مرّر المؤشر لمعاينة جولة، وانقر للانتقال إليها، وأضف إشارات مرجعية للعثور عليها لاحقًا.",
       composerAtBottom: "حقل الكتابة في الأسفل",
       composerAtBottomDescription: "ابدأ المحادثات الجديدة وحقل الكتابة أسفل الصفحة بدلًا من منتصفها.",
       projectAttachments: "مشاركة الملفات عبر المشروع",
@@ -3559,8 +3576,6 @@ export const ar = {
         repoCheckoutFallback:
           "إذا كانت لا تزال لديك نسخة المستودع، شغّل المثبّت المحلي منها:",
         restartAfterUpdate: "أعد تشغيل Unsloth بعد التحديث.",
-        desktopManaged:
-          "يتحقق تطبيق سطح المكتب تلقائيًا من توفر إصدارات جديدة. ويمكنك أيضًا التحقق من وجود تحديثات أو تثبيتها هنا في أي وقت.",
         desktopReady: "تحديثات تطبيق سطح المكتب",
         desktopReadyDescription:
           "تحقق مما إذا كان يتوفر إصدار أحدث من تطبيق سطح المكتب.",

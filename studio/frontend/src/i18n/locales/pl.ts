@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const pl = {
+  turns: {
+    label: "Tura {number}",
+    bookmarkedLabel: "Tura {number}, z zakładką",
+    bookmark: "Dodaj zakładkę do tury",
+    removeBookmark: "Usuń zakładkę",
+    navigator: "Tury",
+  },
   chatBackground: {
     noBackground: "Brak tła",
     sizing: "Skalowanie obrazu",
@@ -2187,6 +2194,14 @@ export const pl = {
           full: "Wykonuje każde wywołanie narzędzia bez pytania i wyłącza piaskownicę kodu, więc kod w Pythonie i terminalu może odczytywać i zmieniać każdy plik dostępny dla Twojego konta.",
         },
       },
+      display: {
+        title: "Wyświetlanie",
+        timeFormat: "Format godziny",
+        timeFormatDescription: "Pokazuj godziny w formacie 12- lub 24-godzinnym.",
+        timeFormatSystem: "Domyślny systemowy",
+        timeFormat12: "12-godzinny",
+        timeFormat24: "24-godzinny",
+      },
       notifications: {
         sectionTitle: "Powiadomienia",
         showLoadedModels: "Karta wczytanych modeli",
@@ -3228,6 +3243,8 @@ export const pl = {
       inlineEditResponse: "Edycja odpowiedzi przy odpowiedziach",
       inlineEditResponseDescription:
         "Pokazuj opcję Edytuj odpowiedź przy każdej odpowiedzi zamiast w menu Więcej.",
+      turnNavigation: "Nawigacja po turach",
+      turnNavigationDescription: "Pokazuje Twoje wiadomości jako pasek przy lewej krawędzi długich czatów. Najedź, aby zobaczyć podgląd tury, kliknij, aby do niej przejść, i dodaj zakładkę, aby łatwo ją znaleźć.",
       composerAtBottom: "Pole wiadomości na dole",
       composerAtBottomDescription:
         "Rozpoczynaj nowe czaty z polem wiadomości na dole strony zamiast na środku.",
@@ -3906,8 +3923,6 @@ export const pl = {
         repoCheckoutFallback:
           "Jeśli nadal masz kopię repozytorium, uruchom z niej lokalny instalator:",
         restartAfterUpdate: "Po aktualizacji uruchom ponownie Unsloth.",
-        desktopManaged:
-          "Aplikacja komputerowa automatycznie sprawdza dostępność nowych wersji. W każdej chwili możesz też sprawdzić lub zaktualizować tutaj.",
         desktopReady: "Aktualizacje aplikacji komputerowej",
         desktopReadyDescription:
           "Sprawdź, czy dostępna jest nowsza wersja aplikacji komputerowej.",

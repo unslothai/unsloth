@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const he = {
+  turns: {
+    label: "סבב {number}",
+    bookmarkedLabel: "סבב {number}, מסומן",
+    bookmark: "סימון הסבב",
+    removeBookmark: "הסרת הסימון",
+    navigator: "סבבים",
+  },
   chatBackground: {
     noBackground: "ללא רקע",
     sizing: "התאמת גודל תמונה",
@@ -2038,6 +2045,14 @@ export const he = {
           full: "מריץ כל קריאה לכלי בלי לשאול ומכבה את ארגז החול של הקוד, כך שקוד Python ו-Terminal יכול לקרוא ולשנות כל קובץ שהחשבון שלך יכול לגשת אליו.",
         },
       },
+      display: {
+        title: "תצוגה",
+        timeFormat: "תבנית שעה",
+        timeFormatDescription: "הצגת שעות בתבנית של 12 או 24 שעות.",
+        timeFormatSystem: "ברירת המחדל של המערכת",
+        timeFormat12: "12 שעות",
+        timeFormat24: "24 שעות",
+      },
       notifications: {
         sectionTitle: "התראות",
         showLoadedModels: "כרטיס מודלים טעונים",
@@ -3024,6 +3039,8 @@ export const he = {
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
+      turnNavigation: "ניווט בין סבבים",
+      turnNavigationDescription: "הצגת ההודעות שלך כפס בקצה השמאלי של צ׳אטים ארוכים. רחפו לתצוגה מקדימה של סבב, לחצו כדי לקפוץ אליו וסמנו סבבים כדי למצוא אותם שוב.",
       composerAtBottom: "תיבת הכתיבה למטה",
       composerAtBottomDescription: "התחלת צ'אטים חדשים עם תיבת הכתיבה בתחתית הדף במקום באמצע.",
       projectAttachments: "שתף קבצים בכל הפרויקט",
@@ -3644,8 +3661,6 @@ export const he = {
         repoCheckoutFallback:
           "אם עותק המאגר עדיין ברשותך, הרץ מתוכו את תוכנית ההתקנה המקומית:",
         restartAfterUpdate: "הפעל מחדש את Unsloth לאחר העדכון.",
-        desktopManaged:
-          "אפליקציית שולחן העבודה בודקת עדכונים באופן אוטומטי. תוכל גם לבדוק או לעדכן כאן בכל עת.",
         desktopReady: "עדכוני אפליקציית שולחן עבודה",
         desktopReadyDescription:
           "בדוק האם קיימת גרסה חדשה יותר של אפליקציית שולחן העבודה.",

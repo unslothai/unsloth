@@ -10,13 +10,12 @@ import {
 } from "@/components/ui/popover";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import { TrashIcon } from "@/lib/hugeicons-derived";
+import { BookmarkIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import {
   ClipboardPasteIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Bookmark } from "lucide-react";
 import { Fragment, useState } from "react";
 import { DEFAULT_PRESET_NAME } from "./preset-policy";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -116,7 +115,7 @@ export function MediaGenerationPresetControl({
           )}
           data-testid={`${kind}-generation-presets`}
         >
-          <Bookmark className="size-3.5 shrink-0 text-muted-foreground" />
+          <HugeiconsIcon icon={BookmarkIcon} strokeWidth={1.75} className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="hidden min-w-0 truncate sm:block">
             {activePreset}
           </span>

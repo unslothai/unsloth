@@ -147,6 +147,11 @@ import {
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
+  BookmarkTurnButton,
+  BookmarkTurnMenuItem,
+  TurnNavigator,
+} from "@/components/assistant-ui/turn-navigation";
+import {
   IntentAwareScrollProvider,
   useDetachThreadFromBottom,
   useIntentAwareAutoScroll,
@@ -356,6 +361,7 @@ import {
   showForkFailedToast,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
+  useBookmarkedTurnsStore,
   writeComposerDraft,
   normalizeChatImage,
 } from "@/features/chat";
@@ -431,7 +437,8 @@ import {
   CodeIcon,
   Download01Icon,
   Edit03Icon,
-  Image03Icon,
+  ImageIcon,
+  LayoutTwoColumnIcon,
   McpServerIcon,
   Refresh01Icon,
   Scroll01Icon,
@@ -455,7 +462,6 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  Columns2Icon,
   Loader2Icon,
   TerminalIcon,
 } from "lucide-react";
@@ -2312,6 +2318,8 @@ export const Thread: FC<{
               <ThreadWelcome hideComposer={hideComposer} threadId={threadId} />
             </AuiIf>
           )}
+
+          <TurnNavigator viewportRef={viewportElRef} />
 
           {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
           the tail and mounts the rest over the following frames. Nothing unmounts and the
@@ -6622,7 +6630,7 @@ const ImagesToggle: FC = () => {
       }
     >
       <PillGlyph>
-        <HugeiconsIcon icon={Image03Icon} className="size-3.5" strokeWidth={2} />
+        <HugeiconsIcon icon={ImageIcon} className="size-3.5" strokeWidth={2} />
       </PillGlyph>
       <span>Images</span>
     </button>
@@ -7065,7 +7073,7 @@ const ComposerToolsMenu: FC<{
     ),
     compareChat: (
       <DropdownMenuItem onSelect={() => startCompare()}>
-        <Columns2Icon />
+        <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={2} />
         Compare chat
       </DropdownMenuItem>
     ),
@@ -7267,7 +7275,7 @@ const ComposerToolsMenu: FC<{
             }
             onSelect={() => setImageToolsEnabled(!imageToolsEnabled)}
           >
-            <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
+            <HugeiconsIcon icon={ImageIcon} strokeWidth={2} />
             Images
             {imageToolsEnabled && !imageDisabled ? (
               <HugeiconsIcon
@@ -8521,6 +8529,9 @@ function useDeleteMessage() {
         messageId,
         remoteId,
       });
+      if (remoteId) {
+        useBookmarkedTurnsStore.getState().forgetTurns(remoteId, [messageId]);
+      }
     } catch (error) {
       console.error("Failed to delete message", error);
       toast.error("Failed to delete message");
@@ -8864,6 +8875,7 @@ const AssistantActionBar: FC = () => {
                   Save to project sources
                 </ActionBarMorePrimitive.Item>
               )}
+              <BookmarkTurnMenuItem className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground" />
             </div>
           </ActionBarMorePrimitive.Content>
         </ActionBarMorePrimitive.Root>
@@ -8996,6 +9008,7 @@ const UserActionBar: FC = () => {
           </TooltipIconButton>
         </ActionBarPrimitive.Edit>
       )}
+      <BookmarkTurnButton />
       <RewindMessageButton />
       <ForkCountBadge />
       <ForkMessageButton />

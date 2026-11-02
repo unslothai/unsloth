@@ -111,13 +111,13 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
-  Columns2Icon,
 } from "lucide-react";
 import {
   Attachment01Icon,
   CodeIcon,
   Download01Icon,
-  Image03Icon,
+  ImageIcon,
+  LayoutTwoColumnIcon,
   McpServerIcon,
   Scroll01Icon,
   MoreHorizontalIcon,
@@ -2563,7 +2563,7 @@ export function SharedComposer({
         className="text-primary font-medium"
         onSelect={handleExitCompare}
       >
-        <Columns2Icon />
+        <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={2} />
         Compare chat
         <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
       </DropdownMenuItem>
@@ -2865,7 +2865,7 @@ export function SharedComposer({
                     }
                     onSelect={() => setImageToolsEnabled(!imageToolsEnabled)}
                   >
-                    <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
+                    <HugeiconsIcon icon={ImageIcon} strokeWidth={2} />
                     Images
                     {imageToolsEnabled && !imageDisabled ? (
                       <HugeiconsIcon
@@ -2913,7 +2913,7 @@ export function SharedComposer({
               aria-label="Exit compare chat"
             >
               <PillGlyph>
-                <Columns2Icon className="size-[calc(14px*var(--ui-space-scale,1))]" />
+                <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={2} className="size-[calc(14px*var(--ui-space-scale,1))]" />
               </PillGlyph>
               <span>Compare</span>
             </button>
@@ -2986,7 +2986,7 @@ export function SharedComposer({
               >
                 <PillGlyph>
                   <HugeiconsIcon
-                    icon={Image03Icon}
+                    icon={ImageIcon}
                     className="size-3.5"
                     strokeWidth={2}
                   />

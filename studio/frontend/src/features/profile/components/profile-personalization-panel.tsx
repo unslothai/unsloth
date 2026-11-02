@@ -18,7 +18,7 @@ import { toastError, toastSuccess } from "@/shared/toast";
 import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Edit03Icon,
-  Image01Icon,
+  ImageIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -223,7 +223,7 @@ export function ProfilePersonalizationPanel() {
             />
             <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/45 opacity-0 any-pointer-coarse:opacity-100 transition-opacity group-hover:opacity-100">
               <HugeiconsIcon
-                icon={Image01Icon}
+                icon={ImageIcon}
                 className="size-8 text-white"
                 strokeWidth={2}
               />
