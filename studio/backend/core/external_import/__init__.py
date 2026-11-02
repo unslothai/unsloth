@@ -287,7 +287,10 @@ def _import_session(source: Source, path: Path, project_id: str, summary: Import
 
     existing = studio_db.get_chat_thread(thread_id) or {}
     try:
-        studio_db.upsert_chat_thread(_thread_row(transcript, existing, project_id))
+        studio_db.upsert_chat_thread(
+            _thread_row(transcript, existing, project_id),
+            external_import_session = (source.key, session_id) if not existing else None,
+        )
     except studio_db.ChatThreadDeletedError:
         summary.skipped += 1
         return False

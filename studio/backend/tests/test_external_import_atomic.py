@@ -155,3 +155,34 @@ def test_checkpoint_only_failure_keeps_existing_import_intact(source_path):
     assert run_import(claude.SOURCE).messages == 0
     assert _messages() == before
     assert _mark() == (1, "")
+
+
+def test_recreated_chat_drops_its_deleted_incarnations_checkpoint(source_path):
+    assert run_import(claude.SOURCE).messages == 1
+    studio_db.delete_chat_threads([thread_id_for(claude.SOURCE, "s1")])
+    assert _mark() == (1, "")
+
+    with (
+        _reject_checkpoint(),
+        pytest.raises(sqlite3.IntegrityError, match = "checkpoint write failed"),
+    ):
+        run_import(claude.SOURCE)
+
+    assert _messages() == []
+    assert _mark() is None
+    _write(source_path, [_turn("user", "u2", "second", parent = "u1", second = 1)], mode = "a")
+    assert run_import(claude.SOURCE).messages == 2
+    rows = _messages()
+    assert _texts(rows) == ["first", "second"]
+    assert rows[1]["parentId"] == rows[0]["id"]
+    assert _mark() == (2, "")
+    assert run_import(claude.SOURCE).messages == 0
+    assert _messages() == rows
+
+
+def test_empty_existing_chat_keeps_intentional_message_deletions(source_path):
+    assert run_import(claude.SOURCE).messages == 1
+    studio_db.sync_chat_messages(thread_id_for(claude.SOURCE, "s1"), [], prune_missing = True)
+    assert run_import(claude.SOURCE).messages == 0
+    assert _messages() == []
+    assert _mark() == (1, "")

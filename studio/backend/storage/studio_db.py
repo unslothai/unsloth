@@ -2219,11 +2219,19 @@ def _raise_if_chat_thread_deleted(conn: sqlite3.Connection, thread_id: str) -> N
         raise ChatThreadDeletedError(thread_id)
 
 
-def upsert_chat_thread(thread: dict) -> dict:
+def upsert_chat_thread(
+    thread: dict, *, external_import_session: Optional[tuple[str, str]] = None
+) -> dict:
     conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
         conn.execute("BEGIN IMMEDIATE")
         _raise_if_chat_thread_deleted(conn, thread["id"])
+        if external_import_session is not None:
+            conn.execute(
+                "DELETE FROM external_import_sessions WHERE source = ? AND session_id = ? "
+                "AND NOT EXISTS (SELECT 1 FROM chat_threads WHERE id = ?)",
+                (*external_import_session, thread["id"]),
+            )
         conn.execute(
             """
             INSERT INTO chat_threads
