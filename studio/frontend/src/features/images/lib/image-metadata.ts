@@ -1029,6 +1029,8 @@ export const INFO_RECIPE_KEYS = [
   "controlnet_guidance",
   "batch_index",
   "created_at",
+  "generation_seconds",
+  "generation_count",
   "engine",
   "generator",
   "schema_version",

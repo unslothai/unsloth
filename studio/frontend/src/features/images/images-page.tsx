@@ -1288,21 +1288,25 @@ async function buildOutpaint(
   return { image: ic.toDataURL("image/png"), mask: mc.toDataURL("image/png") };
 }
 
+/** Display one saved recipe value, optionally explaining it on hover. */
 function RecipeRow({
   label,
   value,
   wrap,
   mono,
+  title,
 }: {
   label: string;
   value: string;
   wrap?: boolean;
   mono?: boolean;
+  title?: string;
 }) {
   return (
     <div className={cn("grid grid-cols-[72px_1fr] gap-2", wrap ? "items-start" : "items-center")}>
       <span className="text-muted-foreground">{label}</span>
       <span
+        title={title}
         className={cn(
           "min-w-0 text-foreground",
           wrap ? "whitespace-pre-wrap break-words" : "truncate",
@@ -1315,6 +1319,7 @@ function RecipeRow({
   );
 }
 
+/** Show the selected image's recorded generation details and restore action. */
 function RecipePopover({
   image,
   onRestore,
@@ -1427,6 +1432,13 @@ function RecipePopover({
             />
           ) : null}
           <RecipeRow label="Size" value={`${image.width} × ${image.height}`} />
+          {image.generation_seconds != null ? (
+            <RecipeRow
+              label="Time"
+              value={`${image.generation_seconds.toFixed(image.generation_seconds < 1 ? 2 : 1)} s${(image.generation_count ?? 1) > 1 ? ` (batch of ${image.generation_count})` : ""}`}
+              title="Elapsed time until images are ready to save; may include waiting and processing"
+            />
+          ) : null}
           {!viaConnection && <RecipeRow label="Steps" value={String(image.steps)} />}
           {!viaConnection && <RecipeRow label="Guidance" value={String(image.guidance)} />}
           {samplerRecipeLabel(image.sampler, image.schedule_type) ? (
