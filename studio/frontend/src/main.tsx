@@ -20,7 +20,12 @@ import {
 } from "./components/assistant-ui/reasoning-row-containment";
 import { fetchDeviceType } from "./config/env";
 import { refreshSession } from "./features/auth/api";
-import { getPostAuthRoute, hasAuthToken } from "./features/auth/session";
+import {
+  getPostAuthRoute,
+  hasAuthToken,
+  hasSettledAuthSession,
+} from "./features/auth/session";
+import { startStartupCredentialBootstrap } from "./features/credentials/bootstrap";
 import { loadChatPage, prefetchChatPage } from "./features/chat/load-chat-page";
 import {
   applyInterfaceScaleBeforeFirstPaint,
@@ -39,7 +44,6 @@ import { watchTimeFormat } from "./lib/time-format";
 markAppSessionStart();
 setHubSessionRefresh(refreshSession);
 
-// Signed-in sessions land on Chat, so fetch it with the startup bundle and wait for it.
 const startPath = window.location.pathname;
 const chatPageAtStart =
   startPath === "/chat" ||
@@ -60,21 +64,17 @@ if (isTauri) {
   document.documentElement.classList.add("tauri");
 }
 
-// Rasterization follows the browser OS, not the possibly remote server.
-// Calibrated for desktop Linux, so Android is excluded.
 const uaLower = navigator.userAgent.toLowerCase();
 if (uaLower.includes("linux") && !uaLower.includes("android")) {
   document.documentElement.classList.add("render-linux");
 }
 
-// index.css keys off this to restore ::-webkit-scrollbar styling on Windows.
 if (uaLower.includes("windows")) {
   document.documentElement.classList.add("client-windows");
 }
 
 // Must run before the first render: arming the containment rule late relayouts the first thread.
 applyMathBlockContainment();
-// Reapply when the devtools override `__UNSLOTH_MATH_BLOCK_CONTAINMENT__` flips.
 watchMathBlockContainmentOverride();
 applyCodeBlockContainment();
 watchCodeBlockContainmentOverride();
@@ -84,7 +84,6 @@ watchReasoningRowContainmentOverride();
 watchOverlayScrollbarGutter(window);
 watchInputModality(window);
 
-// Before the first render, so a disabled spell check never flashes underlines.
 watchSpellCheck(window);
 watchTimeFormat(window);
 
@@ -102,7 +101,6 @@ function renderApp(): void {
       <App />
     </StrictMode>,
   );
-  // Otherwise prefetch Chat once the first screen is up, not during its first frame.
   if (!chatPageAtStart) {
     const prefetchOnce = () => {
       window.removeEventListener(APP_SHELL_READY_EVENT, afterReady);
@@ -132,3 +130,13 @@ if (typeof localeInitialization !== "string" || isTauri || chatPageAtStart) {
 }
 
 fetchDeviceType().catch(() => undefined);
+
+// Desktop signs in after its backend starts, so its gate owns reconciliation.
+if (
+  !isTauri &&
+  hasSettledAuthSession() &&
+  startPath !== "/login" &&
+  startPath !== "/change-password"
+) {
+  startStartupCredentialBootstrap();
+}

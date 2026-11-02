@@ -809,6 +809,19 @@ def _tokenize_prompt(
     return tokenizer(prompt, return_tensors = "pt", add_special_tokens = add_special_tokens)
 
 
+_MAPPED_TEMPLATE_LOCK = threading.Lock()
+
+
+def _mapped_template_tokenizer(model_info, tokenizer, template_name):
+    with _MAPPED_TEMPLATE_LOCK:
+        cached = model_info.get("_mapped_template_tokenizer")
+        if cached is not None and cached[0] is tokenizer and cached[1] == template_name:
+            return cached[2]
+        remapped = get_chat_template(tokenizer, chat_template = template_name)
+        model_info["_mapped_template_tokenizer"] = (tokenizer, template_name, remapped)
+        return remapped
+
+
 _MISSING = object()
 
 
@@ -1894,10 +1907,7 @@ class InferenceBackend:
                     f"Applying chat template '{template_name}' for {self.active_model_name}"
                 )
 
-                tokenizer = get_chat_template(
-                    tokenizer,
-                    chat_template = template_name,
-                )
+                tokenizer = _mapped_template_tokenizer(model_info, tokenizer, template_name)
                 # The mapper installs the template only at generate time: UNION into the load-time cache.
                 # Take marker strings from the mapped template but resolve ids on the original tokenizer.
                 try:

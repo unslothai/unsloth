@@ -2232,7 +2232,13 @@ async def _health_subject(request: Request) -> Optional[str]:
 
 @app.get("/api/health")
 async def health_check(request: Request, detect_hardware: bool = False):
-    """Health stays cold unless startup warmup or an authenticated feature request needs hardware."""
+    """Liveness plus launcher capability bits; host fingerprint gated on authentication.
+
+    Unauthenticated callers get non-sensitive fields (service, studio_root_id,
+    chat_only, desktop_*, native_path_leases_supported) to re-adopt a sibling
+    backend and gate UI before a token exists. version / studio_version /
+    device_type require authentication, including a valid desktop secret.
+    """
     global _hardware_detection_requested
     subject = None
     if detect_hardware:
