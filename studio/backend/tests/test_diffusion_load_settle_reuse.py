@@ -176,6 +176,9 @@ def test_delayed_release_preserves_resident_denoiser_by_default(
     if reuse:
         monkeypatch.setenv("UNSLOTH_DIFFUSION_REUSE_SETTLED_MEMORY", "1")
     monkeypatch.setenv("UNSLOTH_SETTLE_DELAY_S", "1")
+    monkeypatch.setenv(mem.GROUP_OFFLOAD_PIN_ENV, "1")
+    monkeypatch.setattr(mem, "_installed_diffusers_version", lambda: (0, 39))
+    monkeypatch.setattr(mem, "_installed_torchao_version", lambda: (0, 18))
     backend = dmod.DiffusionBackend()
     quantizations = _stub_pipeline_dense_quant(backend, monkeypatch)
     clock = [0]
