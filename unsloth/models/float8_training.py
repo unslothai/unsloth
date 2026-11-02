@@ -413,7 +413,7 @@ def convert_model_to_float8_training(
     return converted
 
 
-# ---- FP8 LoRA: fp8 forward + input gradient on the frozen 16-bit base (kernels/fp8_lora.py) ------------------
+# FP8 LoRA: fp8 forward + input gradient on the frozen 16-bit base (kernels/fp8_lora.py).
 FP8_LORA_RECIPE = "fp8_lora_tensorwise"
 # float8_training values that mean the frozen-base recipe when the model trains LoRA. True / "tensorwise" run
 # only where the recipe is named (measured faster at equal loss); "fp8_lora" runs wherever the GPU can.
@@ -687,7 +687,6 @@ def enable_fp8_lora(
     except Exception:
         is_hp = lambda module, fqn: False
     converted, skipped = [], {}
-    # How many modules hold each Parameter (tied weights).
     uses = {}
     for _, p in model.named_parameters(remove_duplicate = False):
         uses[id(p)] = uses.get(id(p), 0) + 1
@@ -728,7 +727,6 @@ def enable_fp8_lora(
         _restore_master_before_merge(module)
         converted.append(name)
     if offloaded and torch.cuda.is_available():
-        # Return the freed 16-bit blocks to the driver (they are 2 bytes per converted weight).
         torch.cuda.empty_cache()
     detail = {"skipped": len(skipped)} if skipped else {}
     if offloaded:

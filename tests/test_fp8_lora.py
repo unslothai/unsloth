@@ -106,8 +106,6 @@ def test_scaled_mm_counted_and_fp16_never_written_by_the_fp8_gemm(monkeypatch):
         y = state.matmul(torch.randn(32, 256).half(), W)
         state.dgrad(torch.randn(32, 384).half(), W)
     assert counts["_scaled_mm"] == 2
-    # survey8 risk: fp16 output of an fp8 GEMM overflows; the GEMM writes float32 (bf16 rounding can still
-    # overflow the cast back) and the result is cast.
     assert seen == [torch.float32, torch.float32]
     assert y.dtype == torch.float16 and torch.isfinite(y).all()
 
@@ -355,7 +353,6 @@ def test_enable_fp8_lora_on_a_peft_model():
     for name, g in grads.items():
         assert g.dtype == grads_ref[name].dtype
         assert _cos(g, grads_ref[name]) > 0.98, (name, _cos(g, grads_ref[name]))
-    # Quantized once per layer however many steps run.
     _loss_and_grads(model)
     assert FL.FP8_LORA_STATS["quantize"] == 14
 
@@ -724,7 +721,6 @@ def test_save_and_merge_exact_with_host_master(offload_on_cpu):
     assert P.engaged(model)[f8t.FP8_LORA_RECIPE]["detail"]["master_offloaded"] == 14
     memory = FL.fp8_lora_memory(model)
     assert len(memory["layers"]) == 14 and memory["total"]["master_device"] == 0
-    # Train a few steps: LoRA moves, the frozen base must not.
     opt = torch.optim.SGD([p for p in model.parameters() if p.requires_grad], lr = 0.1)
     for _ in range(3):
         _loss_and_grads_keep(model)
@@ -795,7 +791,6 @@ def test_square_tile_transpose_kernel_byte_exact_under_the_triton_interpreter():
         [sys.executable, "-c", code], capture_output = True, text = True, env = env, timeout = 600
     )
     assert "TRANSPOSE_OK" in p.stdout, p.stdout[-2000:] + p.stderr[-4000:]
-    # One BLOCK constexpr for both tile sides: non-square tiles miscompile fp8 transposed stores on sm89.
     import inspect
 
     src = inspect.getsource(FL.fp8_transpose)

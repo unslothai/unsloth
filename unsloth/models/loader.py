@@ -1345,7 +1345,6 @@ class FastLanguageModel(FastLlamaModel):
         fp8_lora = None
         fp8_request = kwargs.get("float8_training", None)
         if kwargs.get("float8_training", None) not in (None, False) and not full_finetuning:
-            # LoRA: fp8 forward + input gradient on the frozen 16-bit base (kernels/fp8_lora.py).
             fp8_lora = resolve_fp8_lora(
                 kwargs.pop("float8_training"),
                 dtype = dtype,
@@ -2280,7 +2279,6 @@ class FastModel(FastBaseModel):
         user_config = kwargs.pop("config", None)
         fp8_lora = None
         if not full_finetuning and kwargs.get("float8_training", None) not in (None, False):
-            # LoRA: fp8 forward + input gradient on the frozen 16-bit base (kernels/fp8_lora.py).
             fp8_lora = resolve_fp8_lora(
                 kwargs.pop("float8_training"),
                 dtype = dtype,

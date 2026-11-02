@@ -30,9 +30,7 @@ dgrad, distributed runs and shared Parameters; UNSLOTH_FP8_LORA_OFFLOAD_MASTER=0
 Scales (UNSLOTH_FP8_LORA_SCALING): tensor = activations e4m3 / output gradients e5m2, one scale per tensor;
 row = one e4m3 scale per token for both. auto picks row on compute capability 12.x and tensor elsewhere (L4's
 rowwise _scaled_mm is slower than bf16). UNSLOTH_FP8_LORA_DGRAD=0 keeps the input gradient in 16 bit. The fp8
-GEMM writes bfloat16 for float16 activations (then casts), never float16 directly.
-
-Only torch and (optionally) triton are imported here, so the module loads standalone."""
+GEMM writes bfloat16 for float16 activations (then casts), never float16 directly."""
 
 from __future__ import annotations
 
@@ -62,8 +60,7 @@ __all__ = [
 E4M3 = torch.float8_e4m3fn
 E5M2 = torch.float8_e5m2
 _FP8_MAX = {E4M3: 448.0, E5M2: 57344.0}
-# Engagement: fp8 GEMM calls and weight quantizations (eager counters, also counted inside compiled graphs since
-# the ops are opaque there).
+# Engagement counters (also counted inside compiled graphs: the ops are opaque there).
 FP8_LORA_STATS = {"fwd": 0, "dgrad": 0, "dgrad_16bit": 0, "fwd_16bit": 0, "quantize": 0}
 
 
@@ -72,10 +69,8 @@ def reset_fp8_lora_stats():
         FP8_LORA_STATS[key] = 0
 
 
-# tensor: one scale per activation / gradient tensor (torchao tensorwise); row: one per token (row), the weight
-# keeping its tensorwise scale broadcast over the output columns. auto (default): row on compute capability 12.x
-# (RTX PRO 6000: 1.24x vs tensorwise 1.17x at Qwen3-1.7B), tensor elsewhere (L4: rowwise _scaled_mm is slower
-# than bf16, tensorwise 1.29x).
+# auto: row on sm12x (RTX PRO 6000: 1.24x vs tensorwise 1.17x at Qwen3-1.7B), tensor elsewhere (L4: rowwise
+# _scaled_mm is slower than bf16, tensorwise 1.29x).
 _SCALING = os.environ.get("UNSLOTH_FP8_LORA_SCALING", "auto").strip().lower()
 _SCALING = {"rowwise": "row", "tensorwise": "tensor"}.get(_SCALING, _SCALING)
 if _SCALING not in ("auto", "row", "tensor"):
@@ -110,13 +105,11 @@ def _env_dgrad():
 _DGRAD_DTYPE = _env_dgrad()
 _FWD_FAST_ACCUM = os.environ.get("UNSLOTH_FP8_LORA_FWD_FAST_ACCUM", "1") != "0"
 _DGRAD_FAST_ACCUM = os.environ.get("UNSLOTH_FP8_LORA_DGRAD_FAST_ACCUM", "0") == "1"
-# 1 keeps a transposed fp8 copy for dgrad (+1 byte / weight); default 0 transposes per backward inside the
-# opaque op: 1% slower tensorwise (L4, RTX PRO 6000), 7% slower rowwise at Qwen3-1.7B (RTX PRO 6000), and
-# 0.4 / 1.3 GB less peak memory at Qwen3-0.6B / 1.7B.
+# Default 0 (transpose per backward): 1% slower tensorwise, 7% rowwise at Qwen3-1.7B, 0.4 / 1.3 GB less peak
+# memory at Qwen3-0.6B / 1.7B than caching the transposed copy.
 _CACHE_T = os.environ.get("UNSLOTH_FP8_LORA_CACHE_T", "0") == "1"
-# 1: the 16-bit master lives in host RAM once quantized (see the module docstring).
 _OFFLOAD_MASTER = os.environ.get("UNSLOTH_FP8_LORA_OFFLOAD_MASTER", "1") != "0"
-# Tests only: offload a CPU-resident weight too (to a separate host copy), so the logic runs without a GPU.
+# Tests only: offload CPU-resident weights too.
 _OFFLOAD_CPU_WEIGHTS = False
 # Fewer rows than this (decode) use the 16-bit weight: an fp8 GEMM there is launch bound and less exact.
 _MIN_ROWS = int(os.environ.get("UNSLOTH_FP8_LORA_MIN_ROWS", "16"))
@@ -279,9 +272,7 @@ if triton is not None:
 
     @triton.jit
     def _transpose_u8_kernel(x_ptr, y_ptr, R, C, BLOCK: tl.constexpr):
-        # x [R, C] -> y [C, R], both row-major bytes. One BLOCK for both tile sides on purpose: Triton writes
-        # corrupt bytes for 2D fp8 transposed stores from non-square tiles on sm89 (L4, triton 3.x), square tiles
-        # are byte exact there.
+        # Square tiles on purpose: non-square 2D fp8 transposed stores write corrupt bytes on sm89 (L4, triton 3.x).
         rows = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
         cols = tl.program_id(1).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
         mask = (rows[:, None] < R) & (cols[None, :] < C)
@@ -351,7 +342,6 @@ def _scaled_mm(a, b, scale_a, scale_b, out_dtype, fast_accum):
         out_dtype = out_dtype,
         use_fast_accum = fast_accum,
     )
-    # torch 2.4 returns (output, amax).
     return out[0] if isinstance(out, tuple) else out
 
 
@@ -360,8 +350,7 @@ _library = None
 
 
 def _opaque_under_compile(name, fake):
-    # Eager calls run the plain function; under torch.compile the call becomes one registered op, so the Triton
-    # cast and _scaled_mm stay out of the graph (no graph break, no retrace of the launcher).
+    # Under torch.compile the call is one opaque registered op: no graph break, no retrace of the launcher.
     def decorator(fn):
         global _library
         substitute_in_graph = getattr(torch._dynamo, "substitute_in_graph", None)
@@ -462,7 +451,6 @@ class Fp8LoRABaseState:
         self.quantizations = 0
         self.refresh(weight)
 
-    # ---- cache ---------------------------------------------------------------------------------------
     @staticmethod
     def _weight_key(weight):
         return (
@@ -507,10 +495,8 @@ class Fp8LoRABaseState:
         """(fp8 weight, is it the K-major copy) for fp8_lora_dgrad."""
         return (self.w8t, True) if self.w8t is not None else (self.w8, False)
 
-    # ---- host master -----------------------------------------------------------------------------------
     def offload(self, module):
-        """Move module.weight (the 16-bit master) to host RAM, keeping the Parameter object. The fp8 copy
-        stays; the GPU no longer holds 16-bit bytes for this layer."""
+        """Move module.weight (the 16-bit master) to host RAM, keeping the Parameter object."""
         weight = module.weight
         if self.offloaded or (weight.device.type == "cpu" and not _OFFLOAD_CPU_WEIGHTS):
             return False
@@ -532,7 +518,7 @@ class Fp8LoRABaseState:
         return True
 
     def restore(self, module):
-        """Bring the exact 16-bit master back to the compute device (merge, other devices / dtypes)."""
+        """Bring the exact 16-bit master back to the compute device."""
         if not self.offloaded:
             return False
         weight = module.weight
@@ -541,7 +527,6 @@ class Fp8LoRABaseState:
         with torch.inference_mode(False), torch.no_grad():
             weight.data = weight.data.to(self.device, copy = True)
         self.offloaded = False
-        # Same values, so the fp8 copy is still valid.
         self._key = self._weight_key(weight)
         return True
 
@@ -555,8 +540,7 @@ class Fp8LoRABaseState:
         return dense.t() if W is not None and _is_transposed(W) else dense
 
     def resident_bytes(self, module = None):
-        """{'fp8': fp8 copies + scales on the compute device, 'master_device': 16-bit master bytes on the
-        compute device, 'master_host': master bytes in host RAM}."""
+        """{'fp8', 'master_device', 'master_host'} bytes."""
         fp8 = sum(
             t.numel() * t.element_size()
             for t in {
@@ -575,7 +559,6 @@ class Fp8LoRABaseState:
                 out["master_device"] = nbytes
         return out
 
-    # ---- kernels.utils packed-state protocol ------------------------------------------------------------
     def dequantize(
         self,
         W = None,
@@ -598,8 +581,7 @@ class Fp8LoRABaseState:
         W,
         out = None,
     ):
-        """``X @ W.t()`` as matmul_lora computes it: the forward when W is the stored weight, the input
-        gradient when W is its transposed view."""
+        """``X @ W.t()``: the forward for the stored W, the input gradient for its transposed view."""
         shape = X.shape
         X2 = X.reshape(-1, shape[-1])
         if not self._use_fp8(X2):
@@ -801,8 +783,7 @@ def detach_fp8_lora_base(module):
 
 
 def fp8_lora_memory(model) -> dict:
-    """Bytes per converted base layer and in total: fp8 copies on the compute device, the 16-bit master on the
-    compute device (0 when offloaded) and in host RAM."""
+    """fp8 / device-master / host-master bytes per converted base layer and in total."""
     layers, total = {}, {"fp8": 0, "master_device": 0, "master_host": 0}
     for name, module in model.named_modules():
         state = module.__dict__.get("_unsloth_fp8_lora")
