@@ -199,6 +199,10 @@ function generalTab(initialToken: string) {
       LIBRARY_SETTINGS_STORAGE_KEY: "library-settings",
       LIBRARY_VIEW_STORAGE_KEY: "library-view",
     },
+    "../lib/client-prefs-pending": {
+      readPending: () => ({ scale: false, browser: false }),
+      writePending: () => undefined,
+    },
     "../components/full-install-dialog": componentStub,
     "../components/change-password-dialog": componentStub,
     "../components/desktop-repair-control": componentStub,
