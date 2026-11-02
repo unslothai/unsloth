@@ -100,6 +100,20 @@ def test_setter_preserves_appended_correctness_tag():
     assert cc.cache_key_tag == "unsloth/inductor-rand4x-off;unsloth_fp8_unit_scale=256"
 
 
+def test_bundle_fingerprint_uses_the_render_context_tag(monkeypatch):
+    from core.inference import diffusion_compile_cache as cache
+
+    monkeypatch.setattr(cache, "_triton_version", lambda: None)
+    monkeypatch.setattr(cache, "_diffusers_version", lambda: None)
+    _in_thread(lambda: fp8._set_compile_cache_tag("256"))
+
+    def request():
+        cc.cache_key_tag = "render-owned"
+        return cache.environment_fingerprint().get("torch_cache_key_tag")
+
+    assert _in_thread(request) == "render-owned;unsloth_fp8_unit_scale=256"
+
+
 def test_nvfp4_reset_in_a_fresh_context_keeps_the_recorded_fp8_tag():
     _in_thread(lambda: (fp8._set_compile_cache_tag("256"), nvfp4._set_compile_cache_tag("1")))
     _in_thread(nvfp4.reset_compile_cache_tag)
