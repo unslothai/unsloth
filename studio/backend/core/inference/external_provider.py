@@ -7161,6 +7161,13 @@ class ExternalProviderClient:
             "input": text,
             "response_format": response_format,
         }
+        mai_pcm = (
+            self.provider_type == "openrouter"
+            and model.strip().lower().startswith("microsoft/mai-voice-")
+            and response_format.strip().lower() == "wav"
+        )
+        if mai_pcm:
+            body["response_format"] = "pcm"
         if voice:
             body["voice"] = voice
         if speed is not None:
@@ -7176,6 +7183,19 @@ class ExternalProviderClient:
         response.raise_for_status()
         media_type = (response.headers.get("content-type") or "").split(";")[0].strip()
         audio = response.content
+        if mai_pcm:
+            if media_type.lower() not in ("audio/pcm", "application/octet-stream", ""):
+                raise httpx.DecodingError("OpenRouter MAI-Voice did not return PCM audio.")
+            if not audio or len(audio) % 2:
+                raise httpx.DecodingError("OpenRouter MAI-Voice returned malformed PCM audio.")
+            # https://openrouter.ai/docs/guides/overview/multimodal/tts#azure-mai-voice
+            output = io.BytesIO()
+            with wave.open(output, "wb") as writer:
+                writer.setnchannels(1)
+                writer.setsampwidth(2)
+                writer.setframerate(24_000)
+                writer.writeframes(audio)
+            return output.getvalue(), "audio/wav"
         if response_format.strip().lower() == "wav":
             merge_cancelled = threading.Event()
             merge_task = asyncio.create_task(
