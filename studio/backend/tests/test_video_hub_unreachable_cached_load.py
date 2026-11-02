@@ -197,6 +197,8 @@ def test_the_encoder_worker_flags_a_cache_miss_across_the_process_boundary(monke
 @pytest.mark.parametrize("missing, expected", [(True, True), (False, False)])
 def test_hosted_encoder_cache_miss_survives_dense_memory_refusal(monkeypatch, missing, expected):
     import queue
+    import sys
+    import types
     import transformers
 
     from huggingface_hub.errors import LocalEntryNotFoundError
@@ -216,17 +218,19 @@ def test_hosted_encoder_cache_miss_survives_dense_memory_refusal(monkeypatch, mi
     monkeypatch.setattr(worker, "_load_hosted", _hosted)
     monkeypatch.setattr(worker, "_available_host_bytes", lambda: 16 * 1000**3)
     replies = queue.Queue()
-    worker.run_text_encoder_worker(
-        cmd_queue = queue.Queue(),
-        resp_queue = replies,
-        config = {
-            "repo": "org/cached-base",
-            "local_files_only": True,
-            "te_quant": "int8",
-            "te_prequant": {"repo": "org/encoder"},
-            "dense_te_gb": 23.9,
-        },
-    )
+    with monkeypatch.context() as imports:
+        imports.setitem(sys.modules, "torch", types.SimpleNamespace(bfloat16 = "bfloat16"))
+        worker.run_text_encoder_worker(
+            cmd_queue = queue.Queue(),
+            resp_queue = replies,
+            config = {
+                "repo": "org/cached-base",
+                "local_files_only": True,
+                "te_quant": "int8",
+                "te_prequant": {"repo": "org/encoder"},
+                "dense_te_gb": 23.9,
+            },
+        )
     reply = replies.get_nowait()
     assert reply["type"] == "error"
     assert "24 GB of free memory (16 GB free)" in reply["error"]
