@@ -998,12 +998,9 @@ def _without_runtime_truncation(
     truncation = getattr(backend, "truncation", None)
     padding = getattr(backend, "padding", None)
     init_kwargs = getattr(source_tokenizer, "init_kwargs", {})
-    runtime_limit = (
-        truncation["max_length"] if truncation else padding.get("length") if padding else None
-    )
     loaded_limit = getattr(source_tokenizer, "_unsloth_loaded_runtime_max_length", None)
     max_length = init_kwargs.get("max_length")
-    remove_max_length = max_length is not None and max_length in (runtime_limit, loaded_limit)
+    remove_max_length = loaded_limit is not None and max_length == loaded_limit
     if truncation is None and padding is None and not remove_max_length:
         yield
         return
