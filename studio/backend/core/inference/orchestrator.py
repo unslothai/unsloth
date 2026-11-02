@@ -1005,7 +1005,6 @@ class InferenceOrchestrator:
         """
         try:
             from utils.hardware import get_visible_gpu_utilization, gpu_query
-
             with gpu_query.fresh_reads():
                 devices = get_visible_gpu_utilization().get("devices", [])
         except Exception:
@@ -1019,7 +1018,9 @@ class InferenceOrchestrator:
                 if needed is None:
                     continue
                 free = max(float(device["vram_total_gb"]) - float(device["vram_used_gb"]), 0.0)
-                parts.append(f"free {free:.1f} GiB of the {float(needed):.1f} GiB needed on cuda:{index}")
+                parts.append(
+                    f"free {free:.1f} GiB of the {float(needed):.1f} GiB needed on cuda:{index}"
+                )
             except (KeyError, TypeError, ValueError):
                 continue
         return "; ".join(parts)
