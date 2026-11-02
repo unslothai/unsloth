@@ -636,22 +636,13 @@ export function GeneralTab() {
         )}
       </SettingsSection>
 
-      <SettingsSection title={t("settings.appearance.language.title")}>
+      <SettingsSection title={t("settings.general.display.title")}>
         <SettingsRow
           label={t("settings.appearance.language.label")}
           description={t("settings.appearance.language.description")}
         >
           <LanguageSelect />
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.language.spellCheck")}
-          description={t("settings.appearance.language.spellCheckDescription")}
-        >
-          <Switch checked={spellCheck} onCheckedChange={setSpellCheck} />
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.general.display.title")}>
         <SettingsRow
           label={t("settings.general.display.timeFormat")}
           description={t("settings.general.display.timeFormatDescription")}
@@ -679,6 +670,12 @@ export function GeneralTab() {
               </SelectItem>
             </SelectContent>
           </Select>
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.language.spellCheck")}
+          description={t("settings.appearance.language.spellCheckDescription")}
+        >
+          <Switch checked={spellCheck} onCheckedChange={setSpellCheck} />
         </SettingsRow>
       </SettingsSection>
 
