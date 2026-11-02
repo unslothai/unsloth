@@ -22,12 +22,12 @@ def _noop(*args, **kwargs):
 
 def _load_save_helpers():
     source = Path(__file__).parents[2] / "unsloth" / "save.py"
-    tree = ast.parse(source.read_text(encoding="utf-8"))
+    tree = ast.parse(source.read_text(encoding = "utf-8"))
     wanted = {"_without_runtime_truncation", "_unsloth_tokenizer_save_pretrained"}
     nodes = [
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
     ]
-    module = ast.Module(body=nodes, type_ignores=[])
+    module = ast.Module(body = nodes, type_ignores = [])
     ast.fix_missing_locations(module)
     namespace = {
         "contextmanager": contextmanager,
@@ -44,12 +44,12 @@ def _load_save_helpers():
 
 def _trained_tokenizer():
     vocab = {"[PAD]": 0, "[UNK]": 1, **{w: i + 2 for i, w in enumerate("abcdefgh")}}
-    backend = Tokenizer(models.WordLevel(vocab, unk_token="[UNK]"))
+    backend = Tokenizer(models.WordLevel(vocab, unk_token = "[UNK]"))
     backend.pre_tokenizer = pre_tokenizers.Whitespace()
     tokenizer = PreTrainedTokenizerFast(
-        tokenizer_object=backend, pad_token="[PAD]", unk_token="[UNK]"
+        tokenizer_object = backend, pad_token = "[PAD]", unk_token = "[UNK]"
     )
-    tokenizer(["a b c d e f g h"], truncation=True, max_length=3, padding="max_length")
+    tokenizer(["a b c d e f g h"], truncation = True, max_length = 3, padding = "max_length")
     assert tokenizer._tokenizer.truncation["max_length"] == 3
     tokenizer.original_save_pretrained = tokenizer.save_pretrained
     return tokenizer
@@ -61,7 +61,7 @@ def test_saved_tokenizer_json_has_no_training_truncation(tmp_path):
 
     save(tokenizer, str(tmp_path))
 
-    saved = json.loads((tmp_path / "tokenizer.json").read_text(encoding="utf-8"))
+    saved = json.loads((tmp_path / "tokenizer.json").read_text(encoding = "utf-8"))
     assert saved["truncation"] is None
     assert saved["padding"] is None
     reloaded = PreTrainedTokenizerFast.from_pretrained(str(tmp_path))
@@ -82,13 +82,13 @@ def test_processor_wrapper_clears_inner_tokenizer_truncation(tmp_path):
     save = _load_save_helpers()
     tokenizer = _trained_tokenizer()
     processor = types.SimpleNamespace(
-        tokenizer=tokenizer,
-        original_save_pretrained=lambda path, **kwargs: tokenizer.save_pretrained(path),
+        tokenizer = tokenizer,
+        original_save_pretrained = lambda path, **kwargs: tokenizer.save_pretrained(path),
     )
 
     save(processor, str(tmp_path))
 
-    saved = json.loads((tmp_path / "tokenizer.json").read_text(encoding="utf-8"))
+    saved = json.loads((tmp_path / "tokenizer.json").read_text(encoding = "utf-8"))
     assert saved["truncation"] is None
     assert tokenizer._tokenizer.truncation["max_length"] == 3
 
@@ -104,7 +104,7 @@ def test_resaving_a_truncated_checkpoint_drops_leaked_max_length(tmp_path):
     fixed = tmp_path / "fixed"
     save(reloaded, str(fixed))
 
-    config = json.loads((fixed / "tokenizer_config.json").read_text(encoding="utf-8"))
+    config = json.loads((fixed / "tokenizer_config.json").read_text(encoding = "utf-8"))
     assert config.get("max_length") is None
     assert (
         len(PreTrainedTokenizerFast.from_pretrained(str(fixed))("a b c d e f g h")["input_ids"])
@@ -128,8 +128,8 @@ def test_partial_clear_failure_still_restores_truncation(tmp_path):
     tokenizer = _trained_tokenizer()
     inner = tokenizer._tokenizer
     processor = types.SimpleNamespace(
-        tokenizer=types.SimpleNamespace(_tokenizer=_PaddingClearFails(tokenizer)),
-        original_save_pretrained=lambda path, **kwargs: None,
+        tokenizer = types.SimpleNamespace(_tokenizer = _PaddingClearFails(tokenizer)),
+        original_save_pretrained = lambda path, **kwargs: None,
     )
 
     save(processor, str(tmp_path))
@@ -151,14 +151,14 @@ def test_nested_save_cleans_limit_before_upload(tmp_path, padding_only):
     before = dict(tokenizer.init_kwargs)
 
     def inspect_upload(repo_id, **kwargs):
-        config = json.loads((tmp_path / "fixed/tokenizer_config.json").read_text(encoding="utf-8"))
+        config = json.loads((tmp_path / "fixed/tokenizer_config.json").read_text(encoding = "utf-8"))
         assert "max_length" not in config
 
     tokenizer.push_to_hub = inspect_upload
     processor = types.SimpleNamespace(
-        tokenizer=tokenizer,
-        original_save_pretrained=lambda path, **kwargs: tokenizer.save_pretrained(
-            path, push_to_hub=True
+        tokenizer = tokenizer,
+        original_save_pretrained = lambda path, **kwargs: tokenizer.save_pretrained(
+            path, push_to_hub = True
         ),
     )
     save(processor, tmp_path / "fixed")
@@ -176,7 +176,7 @@ def test_failed_save_restores_serialization_limit(tmp_path):
         raise ValueError("save failed")
 
     tokenizer.original_save_pretrained = fail
-    with pytest.raises(ValueError, match="save failed"):
+    with pytest.raises(ValueError, match = "save failed"):
         save(tokenizer, tmp_path)
     assert tokenizer.init_kwargs["max_length"] == 3
     assert tokenizer._tokenizer.truncation["max_length"] == 3
