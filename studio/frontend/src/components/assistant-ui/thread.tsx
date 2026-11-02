@@ -3154,13 +3154,14 @@ const Composer: FC<{
       if (markdown !== null) {
         event.preventDefault();
         if (pastedYoutubeUrl) setYoutubeLink(pastedYoutubeUrl);
+        // Before inserting: execCommand's input event is not a paste, so the guard would refuse a resend.
+        if (justSentRef.current?.draftKey === draftKeyRef.current) {
+          justSentRef.current = null;
+        }
         insertAtCaret(input, markdown, (next, caret) => {
           aui.composer().setText(next);
           requestAnimationFrame(() => input.setSelectionRange(caret, caret));
         });
-        if (justSentRef.current?.draftKey === draftKeyRef.current) {
-          justSentRef.current = null;
-        }
         return;
       }
       if (pastedYoutubeUrl) {
