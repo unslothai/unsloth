@@ -28,18 +28,30 @@ def _jobs() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"]
 
 
-def _selections(job_name: str) -> list[str]:
+def _entries(job_name: str) -> list[dict]:
     """Entries without a `selection` are skipped, since the floor spot-check leg names its files
     directly."""
     job = _jobs()[job_name]
     include = job.get("strategy", {}).get("matrix", {}).get("include", [])
-    return [" ".join(entry["selection"].split()) for entry in include if "selection" in entry]
+    return [entry for entry in include if "selection" in entry]
+
+
+def _selections(job_name: str) -> list[str]:
+    return [" ".join(entry["selection"].split()) for entry in _entries(job_name)]
+
+
+_WORKERS = re.compile(r"\$\{\{ matrix\.workers \|\| (\d+) \}\}")
+
+
+def _expand(line: str, entry: dict) -> str:
+    """One shard's command: its selection, and its `workers` or the expression's default."""
+    line = line.replace("${{ matrix.selection }}", " ".join(entry["selection"].split()))
+    return _WORKERS.sub(lambda match: str(entry.get("workers", match.group(1))), line)
 
 
 def _commands_in(job_name: str) -> list[str]:
     """Expands `${{ matrix.selection }}` from this job's own matrix, not the other parallel job's."""
     job = _jobs()[job_name]
-    selections = _selections(job_name)
     commands = []
     for step in job.get("steps", []):
         joined = re.sub(r"\\\s*\n\s*", " ", str(step.get("run", "")))
@@ -48,9 +60,7 @@ def _commands_in(job_name: str) -> list[str]:
             if "python -m pytest" not in line or line.startswith("#"):
                 continue
             if "${{ matrix.selection }}" in line:
-                commands.extend(
-                    line.replace("${{ matrix.selection }}", selection) for selection in selections
-                )
+                commands.extend(_expand(line, entry) for entry in _entries(job_name))
             else:
                 commands.append(line)
     return commands
