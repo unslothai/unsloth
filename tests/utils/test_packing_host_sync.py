@@ -478,6 +478,28 @@ def test_compiled_cache_checks_replaced_tensor_provenance(backend):
         torch._dynamo.reset()
 
 
+@pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+@pytest.mark.parametrize("mode", [torch.no_grad, torch.inference_mode])
+def test_compiled_cache_created_and_consumed_in_one_graph(backend, mode):
+    device = torch.device("cpu")
+
+    def train(x, seq):
+        with mode():
+            packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, device)
+        saved = packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, device)[1]
+        return (x * saved).sum()
+
+    torch._dynamo.reset()
+    try:
+        x = torch.ones(3, requires_grad = True)
+        seq = torch.tensor([3, 5], dtype = torch.int32)
+        with torch._dynamo.config.patch(capture_scalar_outputs = True):
+            torch.compile(train, backend = backend, fullgraph = True, dynamic = True)(x, seq).backward()
+        torch.testing.assert_close(x.grad, torch.tensor([0.0, 3.0, 8.0]))
+    finally:
+        torch._dynamo.reset()
+
+
 def test_xformers_mask_lru_keeps_inference_masks_out_of_training(monkeypatch):
     class _Mask:
         @classmethod

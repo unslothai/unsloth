@@ -1782,14 +1782,22 @@ def _built_in_inference_mode():
 
 
 @torch.compiler.assume_constant_result
-def _cached_tensor_is_inference(tensor) -> bool:
-    # Tensor provenance is immutable; Dynamo guards the cached tensor's dispatch keys.
-    return torch.is_inference(tensor)
+def _cached_tensor_is_unsafe(tensor) -> bool:
+    # Constant evaluation loses inference context for intermediates created in this trace.
+    if torch.is_inference(tensor):
+        return True
+    for cache in (_PACKED_INFO_CACHE, _PADDED_CU_SEQLENS_CACHE, _SDPA_MASK_CACHE):
+        for entry in cache.values():
+            value = entry.get("result", entry.get("mask"))
+            values = value if isinstance(value, (tuple, list)) else (value,)
+            if any(tensor is item for item in values):
+                return False
+    return True
 
 
 def _holds_inference_tensor(value) -> bool:
     if isinstance(value, torch.Tensor):
-        return _cached_tensor_is_inference(value)
+        return _cached_tensor_is_unsafe(value) if _is_compiling() else torch.is_inference(value)
     if isinstance(value, (tuple, list)):
         return any(_holds_inference_tensor(item) for item in value)
     # Opaque objects (an xformers mask) cannot be checked: rebuild them.
