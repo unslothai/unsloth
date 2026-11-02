@@ -2437,7 +2437,6 @@ class UnslothTrainer:
         dataset,
         custom_format_mapping = None,
     ):
-        """Format audio, optional images and transcript into chat messages."""
         from datasets import Audio
 
         resolved = self._resolve_audio_columns(dataset, custom_format_mapping)
@@ -2495,7 +2494,6 @@ class UnslothTrainer:
                     None,
                 )
                 shape = np.asarray(value).shape if value is not None else ()
-                # Numeric HxW/HxWxC cells are one image, not one image per pixel row.
                 if value is None or len(shape) == 2 or (len(shape) == 3 and shape[-1] in (1, 3, 4)):
                     inner = None
 
@@ -3121,7 +3119,6 @@ class UnslothTrainer:
             return None
 
     def _format_audio_vlm_eval_split(self, eval_dataset, custom_format_mapping):
-        """Keep eval columns aligned with the shared train/eval collator."""
         if eval_dataset is None:
             return None
         train_audio_col = getattr(self, "_audio_vlm_audio_col", None)
