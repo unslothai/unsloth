@@ -9,7 +9,6 @@ import type {
 import { formatEta } from "../utils/format-transfer";
 import type { InterpolationValues, TranslationKey } from "@/i18n";
 
-/** useT()'s function: these formatters are plain so the store-free tests can call them. */
 export type Translate = (key: TranslationKey, values?: InterpolationValues) => string;
 
 function tokenCount(count: number, t: Translate, locale?: string): string {

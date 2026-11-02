@@ -166,7 +166,6 @@ function describeLayers(p: LoadedPlacement, t: Translate): string | null {
   return t("generationStats.placement.allOnGpu", { total });
 }
 
-/** One memory pool for the GPU and the CPU: Apple's unified memory, or another shared one. */
 export type PlacementPool = "unified" | "shared";
 
 /** Both figures are shown: token embeddings stay in RAM even when every layer is on the GPU. On a machine whose
