@@ -3405,6 +3405,9 @@ export const he = {
     connections: {
       title: "חיבורים",
       description: "נהל ספקים וחיבורים חיצוניים.",
+      useSiteIcon: "השתמש בסמל האתר",
+      fetchingSiteIcon: "מביא…",
+      removeSiteIcon: "הסר את סמל האתר",
     },
     remoteLan: {
       title: "שליטה מרחוק ורשת מקומית",

@@ -143,6 +143,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN reasoning_config_json TEXT")
     if "shared" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN shared INTEGER NOT NULL DEFAULT 0")
+    if "favicon_data_url" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN favicon_data_url TEXT")
     # ALTER TABLE persists independently in SQLite, but its one-time data migration does not.
     conn.commit()
 
@@ -201,6 +203,7 @@ def create_provider(
     max_output_tokens: Optional[int] = None,
     api_type: str = "chat_completions",
     reasoning_config: Optional[dict] = None,
+    favicon_data_url: Optional[str] = None,
     shared: bool = False,
 ) -> None:
     """Insert a new provider configuration."""
@@ -213,9 +216,9 @@ def create_provider(
             INSERT INTO llm_providers (
                 id, provider_type, display_name, base_url,
                 models_json, available_models_json, max_output_tokens, api_type,
-                reasoning_config_json, shared, created_at, updated_at
+                reasoning_config_json, shared, favicon_data_url, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -228,6 +231,7 @@ def create_provider(
                 api_type,
                 reasoning_json,
                 1 if shared else 0,
+                favicon_data_url,
                 now,
                 now,
             ),
@@ -249,6 +253,7 @@ def update_provider(
     connection: sqlite3.Connection | None = None,
     api_type: str | None = None,
     reasoning_config: dict | None | object = _UNSET,
+    favicon_data_url: str | None | object = _UNSET,
     shared: bool | None = None,
 ) -> bool:
     """Update fields on an existing provider. Returns True if a row was updated."""
@@ -278,6 +283,9 @@ def update_provider(
     if reasoning_config is not _UNSET:
         updates.append("reasoning_config_json = ?")
         params.append(_encode_reasoning_config(reasoning_config))
+    if favicon_data_url is not _UNSET:
+        updates.append("favicon_data_url = ?")
+        params.append(favicon_data_url)
     if shared is not None:
         updates.append("shared = ?")
         params.append(1 if shared else 0)

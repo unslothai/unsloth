@@ -33,6 +33,8 @@ export interface ExternalModelOption extends ModelOption {
   providerId: string;
   providerName: string;
   providerType: string;
+  /** Opt-in site icon (backend-validated data URL) for the provider connection. */
+  faviconDataUrl?: string;
 }
 
 export interface ModelSelectorChangeMeta {

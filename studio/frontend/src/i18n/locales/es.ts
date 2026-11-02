@@ -3362,6 +3362,9 @@ export const es = {
     connections: {
       title: "Conexiones",
       description: "Gestiona proveedores y conexiones externas.",
+      useSiteIcon: "Usar icono del sitio",
+      fetchingSiteIcon: "Obteniendo…",
+      removeSiteIcon: "Quitar icono del sitio",
     },
     remoteLan: {
       title: "Remoto y LAN",

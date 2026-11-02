@@ -26,6 +26,8 @@ export interface ExternalProviderConfig {
   /** The type as the backend stores it (may differ from providerType). Absent means unknown. */
   backendProviderType?: string;
   maxOutputTokens?: number;
+  /** Opt-in site icon as a backend-validated image data URL; absent means the generic mark. */
+  faviconDataUrl?: string;
 
   hasApiKey?: boolean;
   shared?: boolean;
@@ -519,6 +521,13 @@ export function toExternalBackendProviderType(
     : providerType;
 }
 
+const PROVIDER_FAVICON_DATA_URL =
+  /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/;
+
+export function isProviderFaviconDataUrl(value: unknown): value is string {
+  return typeof value === "string" && PROVIDER_FAVICON_DATA_URL.test(value);
+}
+
 const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
 const EXTERNAL_PROVIDER_KEYS_KEY = "unsloth_chat_external_provider_keys";
 const CONNECTIONS_ENABLED_KEY = "unsloth_chat_connections_enabled";
@@ -598,6 +607,9 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
         ? raw.backendProviderType.trim()
         : undefined,
     maxOutputTokens: normalizeProviderMaxOutputTokens(raw.maxOutputTokens),
+    faviconDataUrl: isProviderFaviconDataUrl(raw.faviconDataUrl)
+      ? raw.faviconDataUrl
+      : undefined,
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? raw.enablePromptCaching !== false
       : undefined,

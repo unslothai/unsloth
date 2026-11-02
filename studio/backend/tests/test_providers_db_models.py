@@ -71,6 +71,22 @@ def test_update_provider_models(isolated_providers_db: Path):
     ]
 
 
+def test_provider_favicon_round_trip_and_clear(isolated_providers_db: Path):
+    providers_db.create_provider(
+        id = "custom-icon1",
+        provider_type = "custom",
+        display_name = "Custom",
+        base_url = "https://example.com/v1",
+        favicon_data_url = "data:image/png;base64,AAAA",
+    )
+
+    assert providers_db.get_provider("custom-icon1")["favicon_data_url"] == (
+        "data:image/png;base64,AAAA"
+    )
+    assert providers_db.update_provider(id = "custom-icon1", favicon_data_url = None)
+    assert providers_db.get_provider("custom-icon1")["favicon_data_url"] is None
+
+
 def test_custom_max_output_tokens_round_trip_and_clear(isolated_providers_db: Path):
     providers_db.create_provider(
         id = "custom1",
@@ -110,3 +126,4 @@ def test_existing_provider_rows_migrate_to_unset_override(isolated_providers_db:
     row = providers_db.get_provider("existing")
     assert row is not None
     assert row["max_output_tokens"] is None
+    assert row["favicon_data_url"] is None

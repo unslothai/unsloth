@@ -302,6 +302,7 @@ export async function syncExternalProvidersFromBackend(
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
         maxOutputTokens: config.max_output_tokens ?? undefined,
+        faviconDataUrl: config.favicon_data_url ?? undefined,
         reasoningConfig:
           config.provider_type === "custom" &&
           config.api_type !== "responses" && config.api_type !== "systemone"

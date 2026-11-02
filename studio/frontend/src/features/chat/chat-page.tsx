@@ -4293,6 +4293,7 @@ export function ChatPage({
               providerId: provider.id,
               providerName: provider.name,
               providerType: provider.providerType,
+              faviconDataUrl: provider.faviconDataUrl,
             };
           }),
         ),
