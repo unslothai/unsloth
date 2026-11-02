@@ -144,14 +144,28 @@ def test_placement_refusal_lists_variants_that_fit(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "family, fits",
-    [("voxtral_tts", True), ("chatterbox", True), ("qwen3_tts", False), ("vibevoice", False)],
+    "family, size_gb, free_gb, fits",
+    [
+        # 7.3 GB free is an 8 GB card under a desktop session.
+        ("voxtral_tts", 3, 7.3, True),
+        ("chatterbox", 3, 7.3, True),
+        ("qwen3_tts", 3, 7.3, False),
+        ("vibevoice", 3, 7.3, False),
+        # Families whose measured peak is above the generic formula are refused where it fit.
+        ("voxcpm2", 2.75, 9.5, False),
+        ("qwen3_tts", 2.75, 9.5, True),
+        ("kokoro_tts", 0.18, 3.0, False),
+    ],
 )
-def test_placement_on_an_8gb_card_uses_the_family_estimate(monkeypatch, family, fits):
-    # A 3 GB package with 7.3 GB free, as on an 8 GB card under a desktop session.
+def test_placement_uses_the_family_estimate(monkeypatch, family, size_gb, free_gb, fits):
     monkeypatch.setattr(af, "offload_options", lambda model: [])
-    model = dataclasses.replace(_model(sizes = (3,)), family = family)
-    availability = ri._NativeAudioAvailability({0: 7.3}, {0: 0.0})
+    size = int(size_gb * 1024**3)
+    base = _model(sizes = (3,))
+    variant = dataclasses.replace(
+        base.variant, files = (dataclasses.replace(base.variant.files[0], size = size),)
+    )
+    model = dataclasses.replace(base, family = family, variant = variant, variants = (variant,))
+    availability = ri._NativeAudioAvailability({0: free_gb}, {0: 0.0})
     prepared = ([0], {"selection_mode": "fallback_all"})
     if not fits:
         with pytest.raises(HTTPException) as raised:
@@ -160,7 +174,7 @@ def test_placement_on_an_8gb_card_uses_the_family_estimate(monkeypatch, family, 
         return
     placement = _preflight(None, availability = availability, prepared = prepared, model = model)
     assert placement.resolved_gpu_ids == [0]
-    assert placement.native_required_gb == af.estimate_resident_gb(3 * 1024**3, family) < 7.3
+    assert placement.native_required_gb == af.estimate_resident_gb(size, family) < free_gb
 
 
 def test_generation_crash_oom_maps_to_out_of_memory(monkeypatch):
