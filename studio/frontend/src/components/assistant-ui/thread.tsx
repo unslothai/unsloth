@@ -427,7 +427,7 @@ import {
 } from "@assistant-ui/react";
 import { flushResourcesSync } from "@assistant-ui/tap";
 import {
-  AttachmentIcon,
+  Attachment01Icon,
   CodeIcon,
   Download01Icon,
   Edit03Icon,
@@ -5855,7 +5855,7 @@ const Composer: FC<{
       )}
     >
       <HugeiconsIcon
-        icon={AttachmentIcon}
+        icon={Attachment01Icon}
         strokeWidth={2}
         className="size-6 text-primary"
       />
@@ -7202,7 +7202,7 @@ const ComposerToolsMenu: FC<{
           disabled={!composerCanAddAttachments}
           onSelect={() => pickAttachment()}
         >
-          <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
+          <HugeiconsIcon icon={Attachment01Icon} strokeWidth={2} />
           Add photos &amp; files
         </DropdownMenuItem>
         <DropdownMenuItem

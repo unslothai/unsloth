@@ -114,7 +114,7 @@ import {
   Columns2Icon,
 } from "lucide-react";
 import {
-  AttachmentIcon,
+  Attachment01Icon,
   CodeIcon,
   Download01Icon,
   Image03Icon,
@@ -2686,7 +2686,7 @@ export function SharedComposer({
           className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100" : "opacity-0"}`}
         >
           <HugeiconsIcon
-            icon={AttachmentIcon}
+            icon={Attachment01Icon}
             strokeWidth={2}
             className="size-6 text-primary"
           />
@@ -2793,7 +2793,7 @@ export function SharedComposer({
                 onCloseAutoFocus={(event) => event.preventDefault()}
               >
                 <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
-                  <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
+                  <HugeiconsIcon icon={Attachment01Icon} strokeWidth={2} />
                   Add photos &amp; files
                 </DropdownMenuItem>
                 {activeModel?.hasAudioInput && (

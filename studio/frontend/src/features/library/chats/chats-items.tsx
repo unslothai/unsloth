@@ -38,7 +38,7 @@ import {
 import { MessageCircleIcon, Settings01Icon, StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
-  Archive03Icon,
+  ArchiveIcon,
   ArchiveRestoreIcon,
   Cancel01Icon,
   Download01Icon,
@@ -540,7 +540,7 @@ function ChatMenu({
             />
           ) : (
             <MenuItem
-              icon={Archive03Icon}
+              icon={ArchiveIcon}
               label={t("settings.data.library.archive")}
               onSelect={() => actions.archive([chat])}
             />
