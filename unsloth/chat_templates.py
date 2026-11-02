@@ -2897,9 +2897,17 @@ def to_sharegpt(
     conversation_extension = 1,         Combines this many convos into 1
     """
     if "conversations" in dataset.column_names:
-        convo = dataset[0]["conversations"]
-        if type(convo) is list:
+        # Probing row 0 of an empty dataset raises IndexError instead of answering the
+        # "is this already ShareGPT?" question.
+        if len(dataset) != 0 and type(dataset[0]["conversations"]) is list:
             raise TypeError("Unsloth: Your dataset is probably already in ShareGPT format!")
+
+    if output_column_name not in dataset.column_names:
+        raise KeyError(
+            f"Unsloth: `to_sharegpt` needs an output column named '{output_column_name}', "
+            f"but the dataset has {dataset.column_names}. Pass `output_column_name` to "
+            "name the existing output column, or rename it before calling `to_sharegpt`."
+        )
 
     if merged_prompt:
         possible_columns, final_optional_prompts = _parse_combined_prompt(merged_prompt, dataset)
