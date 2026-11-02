@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LFM3-Omni's custom generate raises on logits_processor and stopping_criteria (#16054)."""
-
 import ast
 import inspect
 import types
 from pathlib import Path
+
+import pytest
+import torch
 
 # Loaded from source: importing core.inference.inference needs unsloth, which the backend matrix lacks.
 _SRC = Path(__file__).resolve().parents[1] / "core" / "inference" / "inference.py"
@@ -18,8 +19,9 @@ _WANTED = {
     "_HaltingStreamer",
     "_generate_supported",
     "_refuse_without_generate",
+    "_think_tag_ids",
 }
-_NS = {"inspect": inspect}
+_NS = {"inspect": inspect, "torch": torch}
 exec(
     compile(
         ast.Module(
@@ -55,9 +57,10 @@ def test_regular_model_keeps_all_kwargs():
     assert _supported_generate_kwargs(types.SimpleNamespace(), _KWARGS) is _KWARGS
 
 
-def test_omni_chat_requests_text_instead_of_unstreamed_speech():
+@pytest.mark.parametrize("model_type", ["lfm3_omni", "lfm3_audio"])
+def test_audio_chat_requests_text_instead_of_unstreamed_speech(model_type):
     model = types.SimpleNamespace(
-        config = types.SimpleNamespace(model_type = "lfm3_omni"),
+        config = types.SimpleNamespace(model_type = model_type),
         _generation_fields_unsupported = {},
     )
     assert _supported_generate_kwargs(model, _KWARGS)["generation_mode"] == "text"
@@ -111,8 +114,6 @@ class _Recorder:
 
 
 class _CustomGenerate:
-    """LFM3-style: rejects stopping_criteria, streams each token, ends its streamers on any exit."""
-
     _generation_fields_unsupported = {"cache_implementation": None}
 
     def __init__(self, on_step = None):
@@ -182,8 +183,6 @@ def test_an_uncancelled_custom_generate_returns_its_sequences():
 
 
 def test_a_text_load_without_generate_is_refused_by_name():
-    import pytest
-
     class Lfm3AudioModel:
         pass
 
@@ -200,15 +199,12 @@ _THINK_TOKENIZER = types.SimpleNamespace(
 
 
 class _ScriptedGenerate:
-    """Streams a fixed reply as LFM3's generate does: the prompt, then one (1, 1) tensor per token."""
-
     _generation_fields_unsupported = {"cache_implementation": None}
 
     def __init__(self, reply):
         self.reply, self.steps = reply, 0
 
     def generate(self, *, input_ids, streamer, **kwargs):
-        import torch
         try:
             streamer.put(input_ids)
             for token in self.reply:
@@ -220,9 +216,6 @@ class _ScriptedGenerate:
 
 
 def _scripted(reply, **extra):
-    import torch
-    from core.inference.inference import _generate_supported
-
     model, streamer = _ScriptedGenerate(reply), _Recorder()
     kwargs = {
         "input_ids": torch.tensor([[1, 2]]),
@@ -235,7 +228,6 @@ def _scripted(reply, **extra):
 
 
 def test_a_second_think_close_ends_the_reply_before_its_restatement():
-    # LFM3-Audio-2B: "<think>R</think>\nFour\n</think>\nFour<|im_end|>" showed "Four" twice.
     model, streamed, out = _scripted([_OPEN, 10, _CLOSE, 11, _CLOSE, 11, _EOS])
     assert streamed == [_OPEN, 10, _CLOSE, 11]
     assert model.steps == 5

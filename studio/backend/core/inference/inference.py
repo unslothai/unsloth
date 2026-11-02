@@ -799,7 +799,7 @@ def _supported_generate_kwargs(
     if not isinstance(getattr(model, "_generation_fields_unsupported", None), dict):
         return generation_kwargs
     kept = {k: v for k, v in generation_kwargs.items() if k not in _CUSTOM_GENERATE_REJECTED_KWARGS}
-    if getattr(getattr(model, "config", None), "model_type", None) == "lfm3_omni":
+    if getattr(getattr(model, "config", None), "model_type", None) in {"lfm3_omni", "lfm3_audio"}:
         kept["generation_mode"] = "text"
     events = [
         c.ev
