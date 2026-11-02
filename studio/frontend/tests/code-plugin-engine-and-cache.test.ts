@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import type {
@@ -35,7 +33,6 @@ const highlightOnce = (
   });
 
 test("the highlighter uses the JavaScript regex engine, not the WASM one", () => {
-  // assert.match prints the whole subject, burying the message, so assert a boolean.
   assert.ok(
     /createJavaScriptRegexEngine/.test(PLUGIN_SOURCE),
     "code-plugin must build its highlighter with shiki's JavaScript regex engine",
@@ -78,7 +75,6 @@ const stillCached = async (
   (await highlightOnce(plugin, { code, language, themes: THEMES })) === previous;
 
 test("the character budget evicts even while the fence count is under its limit", async () => {
-  // ~600 KB over 100 fences exceeds MAX_CACHED_CHARACTERS but not MAX_FENCES.
   const plugin = createCodePlugin({ themes: THEMES });
   const first = sourceOfSize(0, 6_000);
   const held = await highlightOnce(plugin, {

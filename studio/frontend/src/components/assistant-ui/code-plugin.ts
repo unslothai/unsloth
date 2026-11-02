@@ -36,7 +36,6 @@ const createHighlighter = createBundledHighlighter<
   engine: () => createJavaScriptRegexEngine({ forgiving: true }),
 });
 
-// Fence tags shiki does not alias: lower-cased input to canonical shiki id.
 const LANGUAGE_ALIAS_OVERRIDES: Record<string, BundledLanguage> = {
   objectivec: "objective-c",
   "obj-c": "objective-c",
@@ -162,6 +161,7 @@ const shiftLine = (line: TokenLine, offset: number): TokenLine =>
 
 // Markdown reports a closing fence as body until it recognizes it, so that line (possibly
 // a partial run) is all a fence can lose.
+// Shiki already coalesces (537013 -> merged 537013); reproduce with scripts/coal-span-census.mjs.
 const CLOSING_FENCE = /^ {0,3}(?:`+|~+)[ \t]*$/;
 
 const shedsClosingRun = (shorter: string, longer: string): boolean =>
@@ -222,7 +222,6 @@ export function createCodePlugin(
       : { forgiving: true },
   );
   const highlighters = new Map<string, { highlighter: Highlighter | null }>();
-  // Most recently used first.
   const fences: Fence[] = [];
   const fencesByCode = new Map<string, Fence>();
   let cachedCharacters = 0;
@@ -231,7 +230,6 @@ export function createCodePlugin(
   const codeKey = (key: string, code: string): string =>
     `${key}\n${code.length}\n${code.slice(0, 32)}\n${code.slice(-32)}`;
 
-  // Identical fences can share an index key.
   const dropCodeIndex = (fence: Fence): void => {
     const indexKey = codeKey(fence.key, fence.code);
     if (fencesByCode.get(indexKey) === fence) fencesByCode.delete(indexKey);
@@ -275,7 +273,6 @@ export function createCodePlugin(
       fences.length > MAX_FENCES ||
       (cachedCharacters > MAX_CACHED_CHARACTERS && fences.length > 1)
     ) {
-      // Keep pending callbacks until their grammar resolves.
       let dropIndex = fences.length - 1;
       while (dropIndex >= 0 && fences[dropIndex].pending !== null) {
         dropIndex -= 1;
