@@ -1,29 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Choose between padding-free and padded batches for SFT when the user left `padding_free` unset.
-
-Padding-free removes pad tokens, but its varlen batches skip the per-block compile, so each step
-launches more kernels from Python. Padded batches pay for their pad tokens on the GPU but run the
-compiled blocks. Which one is faster depends on whether a micro batch is bound by the host or by the
-GPU: measured on A100, L4 and T4 with Qwen3 0.6B / 4B LoRA (16 bit and 4 bit), padded + block
-compile was 10-17% faster only when a padded micro batch costs the GPU well under the ~0.25-0.4 s
-the host spends launching it, and up to 57% slower once the GPU is the bottleneck.
-
-Rule (all estimates, every unknown keeps padding-free, the old default):
-    padded GPU time  = (linear FLOPs per token * padded tokens + attention FLOPs per pair * pairs)
-                       / (datasheet 16 bit peak * _EFFICIENCY)
-    pick padded iff  padded GPU time < _MAX_PADDED_GPU_S
-                 and the run has enough micro batches to repay the extra block compile
-                     (about 25 s in 16 bit, 100 s in 4 bit) at ~_SAVED_S_PER_MICROBATCH each.
-
-Only Linux + NVIDIA CUDA is ever switched: ROCm / HIP, Windows, XPU, MPS and CPU keep padding-free
-(no measurements there yet), unless `UNSLOTH_PADDING_CHOICE=padded` is set explicitly.
-
-`UNSLOTH_PADDING_CHOICE=padding_free` restores the previous behaviour (always padding-free),
-`=padded` forces padded batches, `=auto` (default) applies the rule. An explicit
-`padding_free=True/False` on the config always wins.
-"""
+"""Unset padding_free: padded only on Linux CUDA with a measured capability; explicit padding_free
+always wins; UNSLOTH_PADDING_CHOICE sets the mode."""
 
 import logging
 import math
@@ -44,6 +23,17 @@ _EFFICIENCY = (
     0.5  # fraction of the datasheet peak a LoRA step reaches when GPU bound (A100 measured 0.5)
 )
 _MAX_PADDED_GPU_S = 0.10  # padded micro batch GPU estimate below which the host dominates
+# Per compute capability, only where measured (padded + block compile vs padding-free, Qwen3 0.6B /
+# 4B LoRA r16, 16 and 4 bit, 3 interleaved reps). A capability missing here keeps padding-free.
+#   sm75 T4, sm80 A100, sm89 L4 (torch 2.14.1): 0.10 s.
+#   sm120 RTX PRO 6000 Blackwell (Colab G4, torch 2.14.1 and 2.10.0): padded lost 24-29% at a
+#   ~92 ms estimate on torch 2.14.1 and won (+5% on 2.14.1, +15-64% on 2.10.0) at <= 45 ms.
+_MAX_PADDED_GPU_S_BY_CAPABILITY = {
+    (7, 5): 0.10,
+    (8, 0): 0.10,
+    (8, 9): 0.10,
+    (12, 0): 0.06,
+}
 _SAVED_S_PER_MICROBATCH = 0.04  # host time block compile saved per micro batch where it won
 _EXTRA_COMPILE_S_16BIT = 25.0
 _EXTRA_COMPILE_S_4BIT = 100.0
@@ -96,15 +86,25 @@ def choose_padding(
     peak_tflops,
     total_microbatches = None,
     load_in_4bit = False,
+    capability = None,
 ):
-    """Pure rule. Returns (use_padding_free: bool, reason: str, padded_gpu_s: float | None)."""
+    """Pure rule. Returns (use_padding_free: bool, reason: str, padded_gpu_s: float | None).
+
+    `capability` is the CUDA (major, minor); one that was never measured keeps padding-free.
+    None applies the default threshold (callers that know the device always pass it)."""
     if not peak_tflops or peak_tflops <= 0 or not linear_flops_per_token or not padded_tokens:
         return True, "no estimate", None
+    max_gpu_s = _MAX_PADDED_GPU_S
+    if capability is not None:
+        capability = tuple(int(x) for x in capability)
+        max_gpu_s = _MAX_PADDED_GPU_S_BY_CAPABILITY.get(capability)
+        if max_gpu_s is None:
+            return True, f"sm{capability[0]}{capability[1]} not measured", None
     flops = linear_flops_per_token * padded_tokens + (attention_flops_per_pair or 0) * (
         padded_pairs or 0
     )
     gpu_s = flops / (peak_tflops * 1e12 * _EFFICIENCY)
-    if gpu_s >= _MAX_PADDED_GPU_S:
+    if gpu_s >= max_gpu_s:
         return True, f"GPU bound (padded micro batch ~{gpu_s * 1e3:.0f} ms of GPU work)", gpu_s
     extra = _EXTRA_COMPILE_S_4BIT if load_in_4bit else _EXTRA_COMPILE_S_16BIT
     needed = math.ceil(_REPAY_FACTOR * extra / _SAVED_S_PER_MICROBATCH)
@@ -313,6 +313,7 @@ def _decide(model, config, train_dataset, processing_class, formatting_func):
     dtype = torch.bfloat16 if getattr(config, "bf16", False) else torch.float16
     device = next((p.device for p in model.parameters() if p.device.type == "cuda"), None)
     peak = get_peak_tflops(device, dtype)
+    capability = torch.cuda.get_device_capability(device)
     try:
         n_rows = len(train_dataset)
     except Exception:
@@ -325,5 +326,6 @@ def _decide(model, config, train_dataset, processing_class, formatting_func):
         peak,
         total_microbatches = _total_microbatches(config, n_rows),
         load_in_4bit = _is_4bit(model),
+        capability = capability,
     )
     return use_pf, reason

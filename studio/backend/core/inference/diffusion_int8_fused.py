@@ -1,31 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fused int8 activation path between two torchao int8 GEMMs of a DiT feed-forward: one Triton kernel
-reads the int32 ``_int_mm`` output, applies dequant + GELU(tanh) / SwiGLU and writes int8 + the fp32 row scale.
-
-NUMERICS: bit-identical to EAGER torchao + ATen (every bf16 rounding kept, ATen's GELU(tanh) formula op for op (equal
-on every bf16 input), fp contraction off so
-``y * w_scale + bias`` rounds twice, row scale ``bf16(amax / 127.5)`` clamped at fp32 eps, quantizer multiplies by
-the correctly rounded reciprocal). The compiled stock path is NOT eager-exact (Inductor keeps fp32 chains).
-Activation-scale contract follows the incoming scale's dtype: fp32 on torchao >= 0.18; bf16 on <= 0.17, where
-``int32 * bf16`` rounds twice (int32 -> fp32 -> bf16) and ``1 / s`` and ``x * (1 / s)`` round to bf16.
-
-Anything but a plain dynamic symmetric per-row ``Int8Tensor`` on CUDA + Triton >= 3.2 keeps the stock path.
-
-ConvRot (Z-Image int8 default): w1 and w3 rotate the same input, so the SwiGLU's fused in-projection is a ConvRotLinear
-(one rotation + one activation quant for both halves). A rotated w2 needs its input rotated BEFORE the quant, which the
-kernel's fused quant cannot do, so that MLP computes the bf16 SiLU product with the stock epilogue ops and hands it to
-w2's own (rotating) forward. Same ops on the same values as the three stock rotated Linears.
-
-``int8_linear`` (also used by Z-Image's fused attention) runs a plain or rotated Int8Tensor Linear as torchao's act
-quant + ``_int_mm`` + epilogue without torchao 0.17's always-on zero-point pass, and the act quant itself as one probed
-Triton kernel (``int8_act_quant_rows``, bit-identical to torchao 0.17 and 0.18): Inductor's codegen of the same per-row
-quant ran 2-3x slower on B200 (Z-Image shapes, M 4224: K 3840 24-32 -> 11 us, K 10240 53-70 -> 32 us).
-A rotated input (ConvRot) is rotated and quantized by one kernel (``_rotated_act_quant``: ``rotq_h16`` of
-``diffusion_convrot_quant``) on an unlisted-arch card it was armed for, else rotation GEMM + act quant.
-Kill switch: ``UNSLOTH_DIFFUSION_INT8_FUSED=0`` (all of the above).
-"""
+"""Fused int8 FFN activation kernel, bit-identical to eager; only a plain dynamic symmetric per-row
+Int8Tensor on CUDA with Triton 3.2 or newer takes it, else stock path;
+UNSLOTH_DIFFUSION_INT8_FUSED=0 disables."""
 
 from __future__ import annotations
 
@@ -136,8 +114,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         FP32_SCALE: tl.constexpr,
         PIN_RN: tl.constexpr,
     ):
-        # torchao Int8Tensor linear epilogue: (int32 * x_scale).to(bf16) * w_scale (+ bias), then .to(bf16).
-        # FINAL_ROUND=False leaves the last rounding to the caller (it commutes with a row max).
+        # Epilogue as torchao: (int32 * x_scale) to bf16, * w_scale, + bias, then bf16; FINAL_ROUND=False defers the last round (it commutes with row max).
         c = tl.load(c_ptr + offs, mask = mask, other = 0, eviction_policy = EVICT)
         if FP32_SCALE:
             c = c.to(tl.float32)
@@ -380,9 +357,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         PIN_RN: tl.constexpr,
         CHUNK: tl.constexpr,
     ):
-        # c row = the fused GEMM output; the gate half starts at column G0, the value half at V0 (both N wide).
-        # Two int32 rows per output row make recomputing in pass 2 ALU-bound, so pass 1 parks the bf16 product in a
-        # scratch row (still in L2 when pass 2 reads it back).
+        # Pass 1 parks the bf16 product in a scratch row: recomputing two int32 rows is ALU-bound.
         row = tl.program_id(0).to(tl.int64)
         xs = tl.load(xs_ptr + row).to(tl.float32)
         base = tl.arange(0, CHUNK)
@@ -442,9 +417,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         ONE_PASS: tl.constexpr,
         FP32_SCALE: tl.constexpr,
     ):
-        # torchao Int8Tensor.from_hp(x, PerRow()), symmetric: s = bf16(max(bf16(amax / 127.5), fp32 eps)); torchao
-        # <= 0.17 keeps s in bf16 and rounds 1 / s and x * (1 / s) to bf16, >= 0.18 stores s as fp32 and keeps both
-        # in fp32 (FP32_SCALE). q = clamp(rint(x * (1 / s)), -128, 127).
+        # Matches torchao from_hp PerRow: torchao <=0.17 rounds s, 1/s and x*(1/s) to bf16; >=0.18 keeps them fp32; q = clamp(rint, -128, 127).
         row = tl.program_id(0).to(tl.int64)
         offs = tl.arange(0, BLOCK)
         xrow = x_ptr + row * stride_x
@@ -678,8 +651,7 @@ def _op() -> Any:
     if custom_op is None:  # torch < 2.4
         return None
     try:
-        # Explicit schema: this module's annotations are strings (``from __future__ import annotations``) and torch is
-        # imported lazily, so schema inference from them would not resolve.
+        # Explicit schema: string annotations + lazy torch import break schema inference.
         @custom_op(
             qualname,
             mutates_args = (),
@@ -1231,8 +1203,7 @@ def _split_spec(module: Any) -> Optional[tuple]:
     return None
 
 
-# SwiGLU kernel is bit-exact vs eager but moved FLUX.2-klein / Qwen-Image-2.1 compiled renders further from eager bf16
-# (LPIPS) than the stock path: Z-Image only until understood.
+# Off: bit-exact, but moved FLUX.2 / Qwen-Image compiled renders further from eager (LPIPS).
 _SWIGLU_ALL_LAYOUTS = False
 
 
@@ -1270,13 +1241,7 @@ def _torchao_epilogue(c: Any, xs: Any, ws: Any, bias: Any, out_dtype: Any) -> An
 
 
 def int8_linear(module: Any, x: Any) -> Any:
-    """``module(x)`` for a plain ``nn.Linear`` or ``ConvRotLinear`` holding a plain per-row ``Int8Tensor``: the module's
-    own input rotation, torchao's act quant, ``_int_mm`` and torchao's epilogue, minus one term. torchao 0.17 applies
-    the ASYMMETRIC zero-point correction whenever the activation carries a zero point, which its symmetric quant always
-    does (zeros): a row sum of the int8 weight and a full-output ``- 0`` on every call (~4 ms per Z-Image 1024px step
-    on B200). 0.18 skips it for symmetric activations, as this does; the values are the same (``y - 0 == y``).
-    Anything else (LoRA wrappers, legacy tensors, small M, CPU, a Linear running diffusion_int8_gemm's fused GEMM) is
-    ``module(x)``."""
+    """Skips the torchao 0.17 zero-point correction (a no-op for symmetric int8 activations); LoRA, legacy, small-M, CPU and other cases stay module(x)."""
     from torch import nn
 
     from .diffusion_convrot import is_rotated_linear
@@ -1592,8 +1557,7 @@ def run_on_first_call(module: Any, key: str, fn: Any) -> None:
         try:
             import torch
 
-            # Studio renders under inference_mode, where detaching / viewing a torchao weight subclass raises
-            # "Cannot set version_counter for inference tensor" and the fused SwiGLU / QKV silently stayed off.
+            # Under inference_mode, detaching torchao weight subclasses raises and fusion silently stays off.
             with torch.inference_mode(False), torch.no_grad():
                 fn(mod)
         except Exception:  # noqa: BLE001 - an optimisation: the stock path stays
@@ -1781,8 +1745,7 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
             bound = types.MethodType(fn, module)
             slot = _hooked_forward_slot(module)
             if slot is not None:
-                # A step cache (FBCache / MagCache) engaged before the speed layer: its hook owns the instance forward,
-                # so the swap goes under it. Overwriting the wrapper would drop the skip logic and the tail residuals.
+                # A step cache hook owns the instance forward: swap under it so its skip logic survives.
                 ref, attr = slot
                 stock_inner = _drop_compiled_inner(module)
                 module.__dict__[_MARK] = (

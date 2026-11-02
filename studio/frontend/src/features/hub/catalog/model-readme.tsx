@@ -22,6 +22,8 @@ import {
 } from "@/components/assistant-ui/markdown-table";
 import { codePlugin } from "@/components/assistant-ui/shared-code-plugin";
 import { math as streamdownMath } from "@streamdown/math";
+// Its own: the chat renderers that also import this are not loaded before the Hub.
+import "katex/dist/katex.min.css";
 import { mermaid as streamdownMermaid } from "@/components/assistant-ui/mermaid-plugin";
 import {
   createContext,
@@ -463,8 +465,7 @@ export function ModelReadme({
   }, [repoId, kind, hfToken, stateKey, online]);
 
   useEffect(() => {
-    // Plugin assembly is synchronous, so it runs regardless of connectivity: a
-    // body served from the README cache while offline still clears the preparing gate.
+    // Runs offline too: a cached README body must still clear the preparing gate.
     if (!current.body || current.loading || current.error || current.plugins) {
       return;
     }

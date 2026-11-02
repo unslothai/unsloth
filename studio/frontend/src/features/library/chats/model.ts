@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Chats tab data model. Reads chat history, so chats never enter the Library item list.
-
 export const CHATS_SECTIONS = ["all", "chats", "projects", "sections", "archived"] as const;
 export type ChatsSection = (typeof CHATS_SECTIONS)[number];
 
@@ -15,7 +13,6 @@ export interface ChatEntry {
   updatedAt: number;
   isFork?: boolean;
   projectId?: string | null;
-  /** Last rename, move or archive, when later than `updatedAt`. */
   modifiedAt?: number;
 }
 
@@ -34,7 +31,6 @@ export type ChatSortKey = "name" | DateField;
 export type ChatSort = { key: ChatSortKey; desc: boolean };
 export type ProjectSortKey = "name" | DateField | "chats";
 export type ProjectSort = { key: ProjectSortKey; desc: boolean };
-/** "updated" is a section's latest chat; "chats" is how many it holds. */
 export type SectionSortKey = "name" | DateField | "chats";
 export type SectionSort = { key: SectionSortKey; desc: boolean };
 export type ChatGroupBy = "none" | "project" | "section" | "date";
@@ -91,7 +87,6 @@ export interface ChatContext {
   sectionNames?: ReadonlyMap<string, string>;
 }
 
-/** Flags must all match; projects, sections and models each match any ticked value. */
 export function filterChats<T extends ChatEntry>(
   chats: readonly T[],
   query: string,
@@ -127,7 +122,6 @@ export function chatTime(chat: ChatEntry, field: DateField): number {
   return chat.updatedAt;
 }
 
-/** "updated" is the latest chat in it; "modified" the project's own last edit. */
 export function projectTime(
   project: ProjectEntry,
   stats: ProjectStats | undefined,
@@ -153,7 +147,6 @@ export function compareChats(
   };
 }
 
-/** Pinned chats sort first whatever the order, as in the sidebar. */
 export function sortChats<T extends ChatEntry>(
   chats: readonly T[],
   sort: ChatSort,
@@ -225,8 +218,6 @@ export type MixedEntry<C, P, S> =
   | { kind: "project"; item: P }
   | { kind: "section"; item: S };
 
-/** All: chats, projects and sections as one list on the chat sort. Pinned chats and projects
- *  lead when `pinnedFirst`. */
 export function mixEntries<
   C extends ChatEntry,
   P extends ProjectEntry,
@@ -313,7 +304,6 @@ export interface SectionEntry {
   modifiedAt?: number;
 }
 
-/** "updated" is its latest chat; "modified" its own last edit, or that chat if later. */
 export function sectionTime(
   section: SectionEntry,
   stats: SectionStats | undefined,
@@ -382,8 +372,6 @@ export interface ChatGroup<T> {
   pinned?: boolean;
 }
 
-/** Keeps input order within groups. Date groups run newest first (or `oldestFirst`) regardless
- *  of sort; other groups follow their first chat, "none" last. `pinned` adds a leading group. */
 export function groupChats<T extends ChatEntry>(
   chats: readonly T[],
   by: ChatGroupBy,
@@ -454,7 +442,6 @@ export function modelFacets(
     .sort((a, b) => b.count - a.count || a.model.localeCompare(b.model));
 }
 
-/** Model ids per chat row; a compare pair is keyed by its pair id. */
 export function modelsByChat(
   chats: readonly { id: string; modelIds?: readonly string[] }[],
 ): Map<string, string[]> {
@@ -473,7 +460,6 @@ export interface ChatContents {
   messages: number;
 }
 
-/** Messages along the shown branch: from the newest message back through its parents. */
 export function summarizeChatMessages(
   messages: readonly {
     id: string;

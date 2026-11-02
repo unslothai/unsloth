@@ -18,8 +18,9 @@ from .llama import (
     _gqa_decode_values,
     _LazyDeviceScratch,
 )
+from .._gc_passes import collect_garbage
 from ._utils import __version__
-from ._utils import move_to_device, per_layer_device, DEVICE_TYPE
+from ._utils import move_to_device, per_layer_device, refresh_moved_layer_devices, DEVICE_TYPE
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import get_packed_info_from_kwargs
@@ -233,8 +234,7 @@ def Gemma2Attention_fast_forward(
             },
         )
 
-        # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse (KV cache /
-        # padding mask) raises. None means the byte-identical default.
+        # PrefixGrouper seg table rides in kwargs; None is the default path, and KV cache or padding mask misuse raises
         _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
         context = AttentionContext(
             bsz = bsz,
@@ -407,10 +407,8 @@ def Gemma2Attention_fast_forward_inference(
             device = device,
         )
 
-        # Gemma 9b should use 256, not hidden_size // num_attention_heads (224); 27b uses the derived value,
-        # so default to the config. See google/gemma_pytorch commit 03e6575.
+        # Gemma 9b uses query_pre_attn_scalar 256, not hidden_size // heads (224).
         self.scalar = 1.0 / math_sqrt(self.config.query_pre_attn_scalar)
-        # self.scalar = 1.0 / math_sqrt(self.config.hidden_size // self.config.num_attention_heads)
         self.half_head_dim = head_dim // 2
         self.t = self.config.attn_logit_softcapping
         self.reciprocal_t = 1.0 / self.config.attn_logit_softcapping
@@ -494,15 +492,13 @@ def Gemma2Attention_fast_forward_inference(
 
     _, _, cached_len, _ = Knn.shape
 
-    # Gemma2 uses manual matmul for all batch sizes since SDPA lacks softcapping (tanh logit scaling);
-    # if PyTorch adds a softcap param, consider SDPA for bsz > 1 to match llama/qwen3.
+    # Manual matmul: SDPA has no softcapping.
     Qn *= self.scalar
     # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805 (comment 2153349963).
     # Grouped query attention: the KV heads are read in place, not repeated per query head.
     A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
 
-    # Softcapping must happen BEFORE the mask is applied; see google-deepmind/gemma _modules.py and
-    # transformers gemma2 eager_attention_forward.
+    # Softcapping must happen BEFORE the mask is applied.
     A *= self.reciprocal_t
     A.tanh_()
     A *= self.t
@@ -584,6 +580,7 @@ def Gemma2Model_fast_forward_inference(
     )
     next_decoder_cache = []
     block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
+    refresh_moved_layer_devices(self.model.layers, block_swap)
     for idx, decoder_layer in enumerate(self.model.layers):
         if block_swap is not None:
             block_swap.enter(idx)
@@ -672,8 +669,7 @@ class FastGemma2Model(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(Gemma2ForCausalLM)
 
-        # Static KV Cache landed in 4.38.0 and made training much slower (#168,
-        # huggingface/transformers#27931), so the old rotary embeddings are retained.
+        # Static KV cache (4.38.0) made training slower, so the old rotary embeddings are kept.
         import transformers.models.gemma2.modeling_gemma2
 
         transformers.models.gemma2.modeling_gemma2.Gemma2RotaryEmbedding = GemmaFixedRotaryEmbedding
@@ -702,14 +698,9 @@ class FastGemma2Model(FastLlamaModel):
 
         for name, module in model.named_modules():
             if isinstance(module, Gemma2RMSNorm):
-                # Must be in float32 (keras-nlp gemma/rms_normalization.py#L36); the +1 is left to the Triton kernel
-                # itself.
+                # Must be float32; the Triton kernel applies the +1 itself.
                 if not hasattr(module, "variance_epsilon"):
                     module.variance_epsilon = module.eps  # Gemma doesn't use variance_epsilon
 
-        import gc
-
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         return model, tokenizer

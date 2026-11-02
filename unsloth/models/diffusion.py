@@ -8,14 +8,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-FastDiffusionModel: a transformers-only slow path for text-diffusion models (e.g. DiffusionGemma).
-
-These models use a block-diffusion sampling loop (custom generate) and a novel backbone, so we skip
-Unsloth's autoregressive kernel/compile patching and load the unmodified HF model (outputs stay
-bit-identical to transformers), keeping only the safe conveniences: 4bit/8bit loading, PEFT LoRA, the
-(model, tokenizer) API, and for_inference/for_training. Extend DIFFUSION_MODEL_TYPES as more land.
-"""
+"""FastDiffusionModel: unpatched HF text-diffusion models; outputs bit-identical to transformers."""
 
 import os
 import re
@@ -26,6 +19,7 @@ from unsloth_zoo.hf_utils import add_dtype_kwargs
 from ._utils import (
     _mark_requested_float32,
     _requested_float32,
+    check_mixed_gpu_placement,
     is_bfloat16_supported,
     maybe_prefetch_hf_snapshot,
 )
@@ -58,8 +52,7 @@ __all__ = [
 # transformers model_type strings routed to this slow path.
 DIFFUSION_MODEL_TYPES = ("diffusion_gemma", "diffusion_gemma4")
 
-# Default LoRA targets are the standard nn.Linear modules in the shared Gemma-4 backbone: the 128
-# MoE experts are fused 3D Parameters, not nn.Linear, so PEFT LoRA cannot target them.
+# The fused 3D MoE experts are not nn.Linear, so PEFT LoRA cannot target them.
 DIFFUSION_LORA_TARGETS = [
     "q_proj",
     "k_proj",
@@ -211,8 +204,7 @@ def _load_diffusion_config(
         from transformers import DiffusionGemma4Config
 
         aliased = DiffusionGemma4Config.from_dict(cd)
-        # Only this object knows the rewrite happened: the checkpoint on disk still says diffusion_gemma,
-        # so anything rebuilding the config from model_name hits the AutoConfig failure just caught.
+        # The checkpoint still says diffusion_gemma, so a rebuild from model_name would fail.
         aliased._unsloth_legacy_alias = True
         return aliased
 
@@ -318,8 +310,7 @@ class FastDiffusionModel:
         else:
             model_cls = _resolve_diffusion_model_class(config)
 
-        # Prefetch the whole repo root so the weight load is a cache hit. No subfolder: the pipeline loads
-        # every component subfolder, so narrowing would leave unet/vae/text_encoder to Xet.
+        # No subfolder: the pipeline loads every component; narrowing would leave unet, vae and text_encoder to Xet
         maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -379,8 +370,7 @@ class FastDiffusionModel:
                 device_map_planner_kwargs,
                 kwargs,
             ),
-            # This leaf popped local_files_only off kwargs above, so the helper gets the resolved value rather
-            # than the caller's raw mapping.
+            # local_files_only was popped from kwargs above, so planner_hub_kwargs gets the resolved value, not the raw mapping.
             **planner_hub_kwargs(
                 {
                     "cache_dir": cache_dir,
@@ -432,6 +422,7 @@ class FastDiffusionModel:
         )
 
         model = model_cls.from_pretrained(model_name, config = config, **load_kwargs).eval()
+        check_mixed_gpu_placement(model, dtype)
         model._unsloth_full_finetuning = bool(full_finetuning)
         if trust_remote_code:
             # 4.x remote code builds RoPE inv_freq in __init__; transformers 5 leaves it uninitialised.

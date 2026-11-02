@@ -200,12 +200,7 @@ def _windows_commit_headroom() -> Optional[int]:
 
 
 def configure_cpu_threads(env: Optional[MutableMapping[str, str]] = None) -> None:
-    """Apply ``UNSLOTH_CPU_THREADS`` to native CPU pools when configured, else cap OpenBLAS at a few threads.
-
-    Must run before importing libraries that initialize an OpenMP or BLAS
-    pool. Library-specific vars are left untouched so users can override a
-    single runtime independently.
-    """
+    """Applies UNSLOTH_CPU_THREADS to CPU pools when set, else caps OpenBLAS; must run before OpenMP or BLAS imports."""
     environ = os.environ if env is None else env
     configured = environ.get("UNSLOTH_CPU_THREADS", "").strip()
     if not configured:

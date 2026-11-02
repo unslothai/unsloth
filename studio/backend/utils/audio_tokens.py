@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tokenizer-based audio_type classification.
-
-Directly under ``utils`` so the cache scanner can classify a snapshot without
-dragging in ``utils/models/__init__.py`` and the model-config stack.
-"""
+"""Tokenizer-based audio_type; lives in utils so the cache scanner avoids importing utils/models"""
 
 from __future__ import annotations
 
 import json
+import os
+import stat
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
@@ -51,8 +51,7 @@ def _count_prefix_exceeds(tokens, prefix: str, threshold: int) -> bool:
     return False
 
 
-# ORDER MATTERS: first match wins, so codec fingerprints precede the generic audio_vlm marker. Orpheus carries 28k
-# <custom_token_N> SNAC codes AND a stray <|audio|>, and audio_vlm first typed it as audio-input.
+# ORDER MATTERS: first match wins, so codec fingerprints precede audio_vlm; Orpheus has a stray <|audio|> and would be typed audio-input.
 AUDIO_TOKEN_PATTERNS = {
     "csm": lambda tokens: "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens,
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
@@ -68,10 +67,7 @@ AUDIO_TOKEN_PATTERNS = {
     "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
 }
 
-# Every substring a pattern needs, so text holding none is settled without a parse. The patterns are lambdas, so a codec
-# added there without its marker here silently stops being detected.
-# json.loads of an ordinary large tokenizer_config was the bulk of a cold /loras scan, and test_audio_token_detection.py
-# fails when the two drift.
+# Every substring a pattern needs so text with none skips parsing; a codec missing its marker here goes undetected (test_audio_token_detection.py).
 AUDIO_TOKEN_MARKERS = (
     "<|AUDIO|>",
     "<|startoftranscript|>",
@@ -172,14 +168,47 @@ def detect_local_tts_audio_type(directory) -> Optional[str]:
     for tok_path in AUDIO_TOKENIZER_CONFIG_PATHS:
         tok_file = root / tok_path
         try:
-            if not tok_file.is_file() or tok_file.stat().st_size > _MAX_TOKENIZER_CONFIG_BYTES:
+            st = tok_file.stat()
+            if not stat.S_ISREG(st.st_mode) or st.st_size > _MAX_TOKENIZER_CONFIG_BYTES:
                 continue
-            raw = tok_file.read_text(encoding = "utf-8-sig")
-            if not may_hold_audio_tokens(raw):
-                continue
-            audio_type = classify_audio_tokens(json.loads(raw))
         except Exception:
             continue
+        audio_type = _tokenizer_config_audio_type(tok_file, st)
         if is_tts_audio_type(audio_type):
             return audio_type
     return None
+
+
+# Kept per file version: a rewrite moves mtime/ctime/size/inode and misses.
+_TOKENIZER_AUDIO_TYPE_CACHE: "OrderedDict[tuple, Optional[str]]" = OrderedDict()
+_TOKENIZER_AUDIO_TYPE_CACHE_MAX = 4096
+_TOKENIZER_AUDIO_TYPE_LOCK = threading.Lock()
+
+
+def _tokenizer_config_audio_type(tok_file: Path, st: os.stat_result) -> Optional[str]:
+    key = (
+        os.fspath(tok_file),
+        st.st_dev,
+        st.st_ino,
+        st.st_size,
+        st.st_mtime_ns,
+        st.st_ctime_ns,
+    )
+    with _TOKENIZER_AUDIO_TYPE_LOCK:
+        if key in _TOKENIZER_AUDIO_TYPE_CACHE:
+            _TOKENIZER_AUDIO_TYPE_CACHE.move_to_end(key)
+            return _TOKENIZER_AUDIO_TYPE_CACHE[key]
+    try:
+        raw = tok_file.read_text(encoding = "utf-8-sig")
+        audio_type = classify_audio_tokens(json.loads(raw)) if may_hold_audio_tokens(raw) else None
+    except OSError:
+        # Not cached: a failed read (EMFILE, EIO, a Windows sharing lock) can clear with no change to the file's stat.
+        return None
+    except Exception:
+        # Cached too: a writer that finishes the file moves its mtime or size, so this key misses.
+        audio_type = None
+    with _TOKENIZER_AUDIO_TYPE_LOCK:
+        _TOKENIZER_AUDIO_TYPE_CACHE[key] = audio_type
+        while len(_TOKENIZER_AUDIO_TYPE_CACHE) > _TOKENIZER_AUDIO_TYPE_CACHE_MAX:
+            _TOKENIZER_AUDIO_TYPE_CACHE.popitem(last = False)
+    return audio_type

@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
 HUB_README = REPO_ROOT / "docker" / "DOCKERHUB.md"
 REPO_README = REPO_ROOT / "README.md"
+TOOLKIT_INSTALLER = REPO_ROOT / "docker" / "install_nvidia_toolkit.sh"
 
 DEFAULT_SECRET = "not-a-secret"
 
@@ -114,13 +115,23 @@ def _docker_runs(text: str) -> list[list[str]]:
 def test_every_studio_run_keeps_the_studio_volume():
     studio_images = {"unsloth/unsloth", "unsloth/unsloth:latest", "unsloth/unsloth:studio"}
     checked = 0
-    for doc in (HUB_README, REPO_README):
-        for argv in _docker_runs(doc.read_text(encoding = "utf-8")):
-            if not studio_images.intersection(argv):
-                continue
-            checked += 1
+    for doc in (HUB_README, REPO_README, TOOLKIT_INSTALLER):
+        runs = [
+            argv
+            for argv in _docker_runs(doc.read_text(encoding = "utf-8"))
+            if studio_images.intersection(argv)
+        ]
+        assert runs, f"{doc.name} does not give a full docker run command for the image"
+        for argv in runs:
             assert "unsloth-studio:/opt/unsloth-studio" in argv, f"{doc.name}: {' '.join(argv)}"
-    assert checked >= 3
+        checked += len(runs)
+    assert checked >= 4
+
+
+def test_the_toolkit_installer_ends_with_the_hub_quick_start():
+    hub = HUB_README.read_text(encoding = "utf-8")
+    hub_run = _docker_runs(hub[hub.index("## Quick start") : hub.index("### Before that")])
+    assert _docker_runs(TOOLKIT_INSTALLER.read_text(encoding = "utf-8")) == hub_run
 
 
 def _docker_sections(text: str) -> list[str]:

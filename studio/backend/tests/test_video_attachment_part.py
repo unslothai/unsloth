@@ -162,19 +162,19 @@ def _model_info(**fields):
 def test_a_video_backend_is_handed_the_bare_clip():
     from fastapi import HTTPException
     from models.inference import ChatCompletionRequest
-    from routes.inference import _VIDEO_INPUT_REFUSAL, _local_video_clip
+    from routes.inference import _VIDEO_INPUT_REFUSAL, _local_video_clips
 
     payload = ChatCompletionRequest(model = "m", messages = [], video_base64 = _DATA_URI)
-    assert _local_video_clip(payload, _model_info(has_video_input = True)) == _CLIP_B64
+    assert _local_video_clips(payload, _model_info(has_video_input = True)) == [_CLIP_B64]
     payload = ChatCompletionRequest(model = "m", messages = [], video_base64 = _CLIP_B64)
-    assert _local_video_clip(payload, _model_info(has_video_input = True)) == _CLIP_B64
+    assert _local_video_clips(payload, _model_info(has_video_input = True)) == [_CLIP_B64]
 
     with pytest.raises(HTTPException) as exc:
-        _local_video_clip(payload, _model_info())
+        _local_video_clips(payload, _model_info())
     assert exc.value.status_code == 400 and exc.value.detail == _VIDEO_INPUT_REFUSAL
     payload = ChatCompletionRequest(model = "m", messages = [], video_base64 = "data:video/mp4;base64,")
     with pytest.raises(HTTPException) as exc:
-        _local_video_clip(payload, _model_info(has_video_input = True))
+        _local_video_clips(payload, _model_info(has_video_input = True))
     assert exc.value.status_code == 400
 
 
@@ -182,15 +182,15 @@ def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_genera
     """The gate precedes the early-returning dispatches, and the clip rides the generation kwargs."""
     source = _inference_source()
     handler = source.index("using_gguf = llama_backend.is_loaded")
-    gate = source.index("_video_clip = _local_video_clip(payload, model_info)", handler)
+    gate = source.index("_video_clips = _local_video_clips(payload, model_info)", handler)
     speech = source.index("return await _monitored_generate_audio(model_name)", handler)
     audio_input = source.index("# ── Audio INPUT path", handler)
     assert gate < speech and gate < audio_input
-    assert 'gen_kwargs["video"] = _video_clip' in source
+    assert 'gen_kwargs["videos"] = _video_clips' in source
     use_tools = source.index("_sf_use_tools = (", handler)
     tools_block = source[use_tools : source.index("\n    )", use_tools)]
     tools_block = "\n".join(line.split("#")[0] for line in tools_block.splitlines())
-    assert "and _video_clip is None" in tools_block
+    assert "and not _video_clips" in tools_block
     # Structural, not literal: #10970 widened the image half to `_sf_has_image`.
     client_tools = source.index("_sf_client_tools = (", handler)
     block = source[client_tools : source.index("\n    )", client_tools)]
@@ -200,7 +200,7 @@ def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_genera
     assert "and not _sf_use_tools" in escape, escape
     # Image and clip must be ALTERNATIVES, each read positively, in either order.
     image = r"(?:\bimage is not None\b|\b_sf_has_(?:any_)?image\b)"
-    clip = r"\b_video_clip is not None\b"
+    clip = r"\bbool\(_video_clips\)"
     assert re.search(rf"{image}\s+or\s+{clip}|{clip}\s+or\s+{image}", escape), escape
     assert not re.search(r"\bimage is None\b|\bnot\s+_sf_has_(?:any_)?image\b", escape), escape
     # Settled at the gate: a model without audio input never enters the audio-input path.
@@ -208,7 +208,9 @@ def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_genera
     assert conflict < speech
     assert "_AUDIO_VIDEO_INPUT_DETAIL" in source[conflict : conflict + 200]
     # The gate reads both spellings, so a video_url part reaches MLX exactly as the field does.
-    assert "if _request_has_video(payload):\n            _video_clip = _local_video_clip(" in source
+    assert (
+        "if _request_has_video(payload):\n            _video_clips = _local_video_clips(" in source
+    )
 
 
 def test_token_counting_refuses_video_like_image_and_audio():
@@ -222,10 +224,10 @@ def test_token_counting_refuses_video_like_image_and_audio():
 
 
 def test_both_video_checks_share_one_rule():
-    """Two size checks that drift let the pre-switch one pass what the post-load
-    one refuses, which is the model load this was meant to avoid."""
+    """Size checks that drift let the pre-switch one pass what a post-load one
+    refuses, which is the model load this was meant to avoid."""
     source = _inference_source()
-    assert source.count("= _request_video_rejection(payload)") == 2
+    assert source.count("= _request_video_rejection(payload)") == 3
 
 
 def _video_url_request(

@@ -70,6 +70,25 @@ def _wide_tiles_enabled() -> bool:
     return os.environ.get(WIDE_TILES_ENV, "").strip().lower() not in ("0", "false", "no", "off")
 
 
+# (longest tile, edge tile) latents a family's wide tiles keep; Cosmos3: the Wan@16x seam audit floor.
+_WIDE_TILE_FLOOR = {"cosmos3-nano": (16, 8), "cosmos3-edge": (16, 8)}
+
+
+def _wide_axis(
+    length: int, n: int, overlap: int, floor: Optional[tuple]
+) -> Optional[tuple[int, int]]:
+    """(tile, stride) latents for ``n`` tiles over ``length``, or None when ``floor`` rules the count out."""
+    if n == 1:
+        return length, length
+    stride = -(-length // n)
+    if floor is None:
+        return min(length, stride + overlap), stride
+    tile_floor, edge_floor = floor
+    if -(-length // stride) != n or length - (n - 1) * stride < edge_floor:
+        return None
+    return min(length, max(stride + overlap, tile_floor)), stride
+
+
 def wide_tile_plan(
     family: str,
     latent_shape: tuple,
@@ -93,10 +112,11 @@ def wide_tile_plan(
         for n_w in range(1, width + 1):
             if n_h * n_w > max_tiles or (n_h == 1 and n_w == 1):
                 continue
-            stride_h = -(-height // n_h)
-            stride_w = -(-width // n_w)
-            tile_h = height if n_h == 1 else min(height, stride_h + overlap)
-            tile_w = width if n_w == 1 else min(width, stride_w + overlap)
+            axis_h = _wide_axis(height, n_h, overlap, _WIDE_TILE_FLOOR.get(family))
+            axis_w = _wide_axis(width, n_w, overlap, _WIDE_TILE_FLOOR.get(family))
+            if axis_h is None or axis_w is None:
+                continue
+            (tile_h, stride_h), (tile_w, stride_w) = axis_h, axis_w
             need = coef * itemsize / 2 * max(1, batch) * tile_h * tile_w + out_bytes
             if need * _MARGIN + _MARGIN_BYTES > free:
                 continue
@@ -158,6 +178,50 @@ def _in_chain(fn: Any, target: Any) -> bool:
 
         fn = next_layer(fn)
     return False
+
+
+# Under model CPU offload the denoiser is still on the card until the VAE's hook runs inside decode. "0" = old behaviour.
+FREE_AFTER_OFFLOAD_ENV = "UNSLOTH_VIDEO_VAE_FREE_AFTER_OFFLOAD"
+
+
+def _free_after_offload_enabled() -> bool:
+    return os.environ.get(FREE_AFTER_OFFLOAD_ENV, "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _on_device(module: Any) -> bool:
+    try:
+        first = next(iter(module.parameters()), None)
+    except Exception:  # noqa: BLE001
+        return False
+    return first is not None and first.device.type != "cpu"
+
+
+def run_offload_hook_first(vae: Any, logger: Any = None) -> bool:
+    """Run the VAE's offload pre-hook before the fit check so it sees the decode's free memory (the decode's own hook
+    call then moves nothing). True when the hook ran."""
+    if not _free_after_offload_enabled():
+        return False
+    hook = getattr(vae, "_hf_hook", None)
+    if hook is None or "CpuOffload" not in type(hook).__name__:
+        return False
+    pre_forward = getattr(hook, "pre_forward", None)
+    if not callable(pre_forward):
+        return False
+    prev_model = getattr(getattr(hook, "prev_module_hook", None), "model", None)
+    if not (prev_model is not None and _on_device(prev_model)) and _on_device(vae):
+        return False
+    try:
+        pre_forward(vae)
+    except Exception as exc:  # noqa: BLE001 - the decode's own hook call still moves them
+        if logger is not None:
+            logger.debug("video.vae_untiled: offload hook before the fit check failed (%s)", exc)
+        return False
+    return True
 
 
 def _decode_device(vae: Any, z: Any) -> Any:
@@ -317,6 +381,7 @@ def install_untiled_decode(
 
     def untiled_when_fits(*args: Any, **kwargs: Any) -> Any:
         try:
+            run_offload_hook_first(vae, logger)
             return gated(*args, **kwargs)
         finally:
             # A failed VAE compile restores its eager decode into this slot; the guarded inner call already runs eager.

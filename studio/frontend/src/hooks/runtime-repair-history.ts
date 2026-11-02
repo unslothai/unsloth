@@ -17,7 +17,7 @@ export function recordRuntimeRepair(
       JSON.stringify({ reason, repairedAt: now }),
     );
   } catch {
-    // Storage can be disabled; a failed write must not fail the repair.
+    // A failed write must not fail the repair.
   }
 }
 

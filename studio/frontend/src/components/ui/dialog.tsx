@@ -117,10 +117,8 @@ function DialogContent({
             // z-70, and fill the screen at phone width instead of floating on a sliver of backdrop.
             // Both are viewport-sized, so neither applies to a dialog portaled into a container.
             position === "fixed"
-              // translate-none, not translate-x-0: a zero translate is still not `none`, so it
-              // keeps making this a containing block and the close button below stops being fixed.
-              // The phone branch starts below the chrome too, since a desktop window can reach
-              // this breakpoint in CSS px under Windows text scaling. On web the var is 0px.
+              // translate-none, not translate-x-0: any translate makes this the close button's
+              // containing block.
               ? "fixed top-[calc(50%+var(--studio-window-chrome-top,0px)/2)] max-sm:top-[var(--studio-window-chrome-top,0px)] max-sm:left-0 max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:max-h-none max-sm:max-w-none max-sm:translate-none max-sm:rounded-none max-sm:ring-0"
               : "absolute",
             className,
@@ -141,11 +139,7 @@ function DialogContent({
             <DialogPrimitive.Close data-slot="dialog-close" asChild>
               <Button
                 variant="ghost"
-                // fixed on phones so the close stays put while a full-screen dialog scrolls; a
-                // container-portaled dialog is not full screen, so it keeps the absolute corner.
-                // Once fixed it is viewport-relative, so it needs the same chrome offset the
-                // dialog above takes: at top-5 alone it lands under the z-70 desktop titlebar,
-                // and its top-right corner sits on the window's own close button. 0px on web.
+                // Fixed on phones so the close stays put while scrolling; offset below the titlebar.
                 className={cn(
                   "absolute top-5 right-5 z-10",
                   position === "fixed" &&

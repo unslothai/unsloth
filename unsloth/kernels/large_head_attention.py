@@ -887,6 +887,10 @@ def _make_router(original):
             and not dropout
             # The kernel only reads the mask's structure, so a trainable mask would get no grad.
             and not (torch.is_tensor(attention_mask) and attention_mask.requires_grad)
+            # transformers 4.x pairs is_causal with a mask (SDPA applies both); intervals carry only the mask.
+            and not (
+                attention_mask is not None and is_causal is not None and is_causal is not False
+            )
             and kwargs.get("position_bias", None) is None
             and kwargs.get("softcap", None) is None
             and not kwargs.get("output_attentions", False)
@@ -913,7 +917,11 @@ def _make_router(original):
                 # Reading a mask's structure needs a host sync; compiled graphs keep SDPA. Inference
                 # masks cannot cache the verdict, so they are rescanned per layer: one sync each, only
                 # at prefill (decode never qualifies), cheaper than SDPA's repeated KV heads and mask.
-                intervals = intervals_from_mask(attention_mask, B, S)
+                try:
+                    intervals = intervals_from_mask(attention_mask, B, S)
+                except torch.cuda.OutOfMemoryError:
+                    # The mask scan allocates row chunks; near capacity, SDPA below decides as before.
+                    LARGE_HEAD_ENGAGED["fallback"] += 1
             if compiling or capturing:
                 checked = _SELF_CHECK.get((str(query.device), query.dtype), False)
             elif intervals is not None:

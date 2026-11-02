@@ -26,7 +26,28 @@ import torch
 transformers = pytest.importorskip("transformers")
 trl = pytest.importorskip("trl")
 
-from transformers import LlamaConfig, LlamaForCausalLM
+from transformers import LlamaConfig
+
+
+def _pristine_llama_for_causal_lm():
+    """transformers' own LlamaForCausalLM, loaded fresh from its file. Once a GPU test in the same
+    process loads a model through unsloth, unsloth's patches (CUDA rotary caches, fast forwards) sit
+    on the shared Llama classes, and this file's float64 CPU model would run through them."""
+    import importlib.util
+    import sys
+
+    import transformers.models.llama.modeling_llama as installed
+
+    name = "transformers.models.llama._pristine_modeling_llama"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, installed.__file__)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name].LlamaForCausalLM
+
+
+LlamaForCausalLM = _pristine_llama_for_causal_lm()
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -37,6 +58,47 @@ def _load(name, path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+_TRL_TRAINER_MODULES = {
+    "DPOTrainer": ("trl.trainer.dpo_trainer",),
+    "ORPOTrainer": ("trl.experimental.orpo.orpo_trainer", "trl.trainer.orpo_trainer"),
+    "CPOTrainer": ("trl.experimental.cpo.cpo_trainer", "trl.trainer.cpo_trainer"),
+}
+
+
+def _trl_trainer(name):
+    """TRL's own trainer class, loaded from its file.
+
+    Unsloth's RL patch rebinds ``trl.<name>`` and the defining module's attribute to its generated
+    ``Unsloth<name>``, whose concatenated_forward already takes the fused path, so importing the
+    name hands back the code under test as its own reference once anything has patched TRL.
+    """
+    for module_name in _TRL_TRAINER_MODULES[name]:
+        try:
+            spec = importlib.util.find_spec(module_name)
+        except ModuleNotFoundError:
+            continue
+        if spec is None or spec.origin is None:
+            continue
+        # Same package, so TRL's relative imports resolve; a private name, so nothing patched reuses it.
+        pristine_name = f"{module_name}_trl_reference_under_test"
+        module = sys.modules.get(pristine_name)
+        if module is None:
+            module = importlib.util.module_from_spec(
+                importlib.util.spec_from_file_location(pristine_name, spec.origin)
+            )
+            sys.modules[pristine_name] = module
+            try:
+                module.__spec__.loader.exec_module(module)
+            except BaseException:
+                sys.modules.pop(pristine_name, None)
+                raise
+        trainer = getattr(module, name, None)
+        if trainer is not None:
+            assert not trainer.__name__.startswith("Unsloth"), trainer
+            return trainer
+    pytest.skip(f"this TRL has no {name}")
 
 
 def _zoo_preference_loss():
@@ -176,7 +238,7 @@ def _dpo_batch(seed, n = 3):
 
 
 def _dpo_trainer(module, model, ref_model, fused, **overrides):
-    from trl import DPOTrainer
+    DPOTrainer = _trl_trainer("DPOTrainer")
 
     if not hasattr(DPOTrainer, "concatenated_forward"):
         pytest.skip("TRL >= 0.29 DPOTrainer has no concatenated_forward")
@@ -409,16 +471,7 @@ def _orpo_batch(seed, n = 3):
 
 
 def _orpo_trainer(module, model, method, fused, **overrides):
-    if method == "orpo":
-        try:
-            from trl import ORPOTrainer as Trainer
-        except ImportError:
-            from trl.experimental.orpo import ORPOTrainer as Trainer
-    else:
-        try:
-            from trl import CPOTrainer as Trainer
-        except ImportError:
-            from trl.experimental.cpo import CPOTrainer as Trainer
+    Trainer = _trl_trainer("ORPOTrainer" if method == "orpo" else "CPOTrainer")
 
     class Stub:
         concatenated_inputs = staticmethod(Trainer.concatenated_inputs)

@@ -6,7 +6,7 @@ import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 
@@ -29,7 +29,7 @@ export function KeyRevealCard({
   const [copied, setCopied] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Preselected so Ctrl+C works even where the copy button cannot.
+  // Preselected so Ctrl+C works where the copy button cannot.
   useEffect(() => {
     selectToken(inputRef.current);
   }, []);
@@ -44,23 +44,17 @@ export function KeyRevealCard({
   };
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
+    <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
       <div className="flex items-center gap-1.5">
         <HugeiconsIcon
           icon={Tick02Icon}
           className="size-3.5 text-emerald-600 dark:text-emerald-500"
         />
-        <span className="text-xs font-medium text-emerald-700 dark:text-emerald-500">
+        <span className="text-sm font-medium text-foreground">
           {t("settings.apiKeys.newTokenCreated")}
         </span>
       </div>
-      <div
-        className={cn(
-          "flex w-full items-center gap-3 rounded-full border border-border bg-muted/40 px-3 py-2.5 font-mono text-sm transition-colors",
-          "has-[input:focus-visible]:ring-1 has-[input:focus-visible]:ring-ring",
-          copied && "border-emerald-500/40 bg-emerald-500/10",
-        )}
-      >
+      <div className="flex h-control w-full items-center gap-3 rounded-full border border-border bg-background pr-2 pl-4 font-mono text-sm dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
         <input
           ref={inputRef}
           type="text"
@@ -77,8 +71,9 @@ export function KeyRevealCard({
           size="icon-xs"
           onClick={handleCopy}
           className={cn(
-            "-my-1 shrink-0",
-            copied && "text-emerald-600 hover:text-emerald-600",
+            "shrink-0",
+            copied &&
+              "text-emerald-600 hover:text-emerald-600 dark:text-emerald-500",
           )}
           aria-label={
             copied
@@ -92,12 +87,13 @@ export function KeyRevealCard({
           />
         </Button>
       </div>
-      <div className="flex items-center justify-between gap-3 pt-0.5">
+      <div className="flex items-center justify-between gap-3">
         <p className="text-ui-11 text-muted-foreground">
           {t("settings.apiKeys.copyNow")}
         </p>
         <Button
           type="button"
+          variant="dark"
           size="sm"
           onClick={onDone}
           className="focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"

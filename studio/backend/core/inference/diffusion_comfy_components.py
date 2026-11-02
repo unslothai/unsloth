@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate text-encoder / VAE files (ComfyUI ``models/text_encoders``, ``models/vae``) beside a single-file DiT.
-
-Each file is classified from its header, assigned to the base pipeline slot whose class it fits, renamed under a
-rule that loads strictly, and built from the base repo's config (which still supplies configs and tokenizers).
-fp8, nvfp4 and mxfp8 dequantize, int8 ConvRot stays int8, every other ComfyUI quant format is refused by name.
-"""
+"""ComfyUI text-encoder and VAE files beside a single-file DiT; fp8, nvfp4 and mxfp8 dequantize,
+int8 ConvRot stays int8, other ComfyUI quant formats are refused by name"""
 
 from __future__ import annotations
 
@@ -142,10 +138,7 @@ def parse_component_file(
     trusted_repo: Optional[Callable[[str], bool]] = None,
     what: str = "text_encoder_file",
 ) -> ComponentFileRef:
-    """Validate one spec without touching the network. Local: an existing ``.safetensors`` file (a relative or
-    bare name resolves against a local ``model_path`` directory, so a ComfyUI ``models/`` tree works with
-    ``../text_encoders/x.safetensors``). Hub: ``owner/repo/path.safetensors`` held to ``trusted_repo``, the
-    same bar a single-file DiT clears."""
+    """Network-free check: local files resolve against model_path; Hub specs must be in trusted_repo."""
     spec = (spec or "").strip()
     if not spec:
         raise ComponentFileError(f"{what} is empty")
@@ -357,10 +350,7 @@ def match_keys(
     tied_missing: Iterable[str] = (),
     rules: Sequence[tuple[str, Callable[[str], Optional[str]]]] = KEY_RULES,
 ) -> KeyMapping:
-    """The first rename rule under which ``file_shapes`` loads STRICTLY into ``expected``: every expected
-    tensor present with the same shape, nothing extra except the known-dead tensors. ``tied_missing``
-    names model tensors the class re-ties after loading (an ``lm_head`` tied to the embedding).
-    Raises ``ComponentFileError`` with the closest rule's diagnostics."""
+    """First rename rule that loads the file strictly; tied_missing names tensors re-tied after loading."""
     tied = set(tied_missing)
     best: Optional[tuple[int, str, list, list, list]] = None
     for name, rule in rules:

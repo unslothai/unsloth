@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Windows media loads read converted safetensors shards with safetensors' ``pread`` backend instead of mmap (#9977,
-#14513).
-
-torch maps a shard copy-on-write and Windows charges the whole view to commit while transformers holds every shard
-open, so a converting load commits the stored bytes next to the converted copy: LTX-2's 48.7 GB fp32 Gemma3 loaded at
-bf16 needs ~73 GB, a 16.7 GB bf16 Qwen-Image encoder loaded at fp16 ~38 GB, and torch's unchecked ``MapViewOfFile``
-NULL is an access violation. ``pread`` reads each tensor into its own buffer, freed once converted (what
-transformers >= 5.17 does on Windows, huggingface/transformers#48341; ComfyUI and llama.cpp map read-only instead).
-A shard loaded at its stored dtype keeps mmap: its mapping is the loaded weight, and the small-host route keeps it
-paged from disk. ``UNSLOTH_SAFETENSORS_PREAD=0|1`` disables / forces it on any OS.
-"""
+"""Windows converting loads use pread instead of mmap to save commit; UNSLOTH_SAFETENSORS_PREAD=0|1."""
 
 from __future__ import annotations
 

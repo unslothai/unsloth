@@ -100,7 +100,6 @@ export function cloneBlocker(
   if (input.referenceExpired) {
     return {
       kind: "reference-expired",
-      // The "Add it again" action follows the reason under Generate.
       reason: "This reference expired.",
     };
   }

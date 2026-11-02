@@ -1,16 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Run FLUX.3 Klein Base's conditioning-only work (text and reference-image mode blocks at timestep 0) once per render.
-
-Nothing there reads the latent or the step's timestep, so ComfyUI also runs it once (``comfy/ldm/flux3/model.py``
-``preprocess_conds``). A flow-map checkpoint (distilled Klein) feeds the target time into those modulations, so it
-keeps the per-step path. A forward pre-hook caches the states per branch, keyed by the identity of the pipeline's
-conditioning tensors; it runs before the forward, so a whole-step CUDA graph copies them into its static buffers on
-every replay and never bakes a stale tensor. The cache is cleared at the start and end of every pipeline call, so a
-LoRA or weight change never meets an old entry. Bit-identical output. Kill switch ``UNSLOTH_DIFFUSION_COND_BLOCKS=0``;
-installed only when the diffusers forward source hash matches, else the stock forward.
-"""
+"""FLUX.3 Klein Base conditioning blocks run once per render, bit-identical; cache cleared at start
+and end of each pipeline call; installed only on matching diffusers forward hash, else stock;
+UNSLOTH_DIFFUSION_COND_BLOCKS=0 disables"""
 
 from __future__ import annotations
 
@@ -23,7 +16,7 @@ from typing import Any, Optional
 COND_BLOCKS_ENV = "UNSLOTH_DIFFUSION_COND_BLOCKS"
 COND_KWARG = "unsloth_cond"
 
-# sha256[:16] of inspect.getsource(Flux3Transformer2DModel.forward) the replacement mirrors (diffusers 0.41.0.dev0).
+# sha256[:16] of inspect.getsource(Flux3Transformer2DModel.forward) the replacement mirrors (d42ebf9c and 0.42.1).
 _FLUX3_FORWARD_SHA = frozenset({"f2f7c836416cfd58"})
 
 _PATCHED: dict[type, Any] = {}

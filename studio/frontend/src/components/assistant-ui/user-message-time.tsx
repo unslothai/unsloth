@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { useLocale, useT } from "@/i18n";
 import { formatMessageDate } from "@/lib/format-message-date";
 import { messageTimestamp } from "@/lib/message-timestamp";
@@ -12,19 +13,19 @@ import {
 import { useAuiState } from "@assistant-ui/react";
 import type { FC } from "react";
 
-/** Mounted only while the prompt's actions are revealed, with no clock subscription. */
 export const UserMessageTime: FC = () => {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const createdAt = useAuiState(({ message }) => messageTimestamp(message));
   if (createdAt === undefined) {
     return null;
   }
   const date = new Date(createdAt);
-  const fullDate = date.toLocaleString(locale, {
-    dateStyle: "full",
-    timeStyle: "short",
-  });
+  const fullDate = date.toLocaleString(
+    locale,
+    withTimeFormat({ dateStyle: "full", timeStyle: "short" }, locale),
+  );
   // A button only so the keyboard reaches the tooltip. Clicking does nothing, so the
   // cursor stays an arrow, even with pointer cursors on.
   // The spacer takes the slack, so the tooltip opens only over the time itself.

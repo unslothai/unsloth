@@ -13,7 +13,6 @@ export type ForgetModelOverrideDeps = {
     overrides: Readonly<Record<string, unknown>>;
     removedKeys: readonly string[];
   }>;
-  /** False when a record was left behind. */
   removeLocal: (overrideKeys: readonly string[]) => boolean;
   reload: () => Promise<void>;
   onError: (message: string) => void;
@@ -45,8 +44,7 @@ export async function forgetModelOverride(
     );
     return;
   }
-  // A backend that predates removed_keys is read off the map it returns. A copy left
-  // here is reported, not swallowed: the picker applies it and the next save mirrors it.
+  // Older backends lack removed_keys; a leftover copy is reported since the next save mirrors it.
   const cleared =
     result.removedKeys.length > 0
       ? result.removedKeys

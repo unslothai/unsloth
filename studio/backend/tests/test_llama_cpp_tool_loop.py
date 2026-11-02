@@ -189,7 +189,9 @@ def _make_backend(
         stream = streams.pop(0)
         if isinstance(stream, BaseException):
             raise stream
-        yield type("FakeResponse", (), {"status_code": 200, "chunks": stream})()
+        yield type(
+            "FakeResponse", (), {"status_code": 200, "chunks": stream, "close": lambda self: None}
+        )()
 
     def fake_iter_text_cancellable(
         response,
@@ -3641,6 +3643,64 @@ def test_media_compaction_recall_recount_uses_the_stripped_view(monkeypatch, wit
     assert payloads[0]["messages"][-1] == audio_turn
 
 
+def test_recall_searches_the_users_question_not_the_loops_own_notices(monkeypatch):
+    """Repeated calls leave user-role notices at the end of the loop; the compacting final pass
+    must still search the archive for what the user asked (#16187)."""
+    from core.rag import conversation_archive
+
+    rounds = 4
+    payloads: list[dict] = []
+    streams = [
+        [
+            _tool_call_sse("web_search", {"query": "a"}, f"c{r}a", index = 0),
+            _tool_call_sse("web_search", {"query": "b"}, f"c{r}b", index = 1),
+            _finish("tool_calls"),
+            _done(),
+        ]
+        for r in range(rounds)
+    ] + [[_sse({"content": "answer"}), _finish("stop"), _done()]]
+    backend = _make_backend(monkeypatch, streams, payloads)
+    backend._effective_context_length = 4000
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_args, **_kwargs: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        ),
+    )
+    _record_tool_calls(monkeypatch, "R" * 500)
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+    monkeypatch.setattr(conversation_archive, "archive_turns", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(conversation_archive, "note_branch", lambda *_args, **_kwargs: None)
+    queries: list[str] = []
+
+    def fake_recall(_thread_id, query, **_kwargs):
+        queries.append(query)
+        return None
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+    question = "what did the VULPINE search find"
+
+    events = _run_tool_loop(
+        backend,
+        [
+            {"role": "user", "content": "u" * 1200},
+            {"role": "assistant", "content": "a" * 1200},
+            {"role": "user", "content": question},
+        ],
+        [_web_search_tool()],
+        max_tool_iterations = rounds,
+        max_tokens = 200,
+        context_overflow = "truncate_oldest",
+        thread_id = "recall-query",
+    )
+
+    assert any(event.get("type") == "context_truncated" for event in events)
+    final = payloads[-1]["messages"]
+    assert final[-1]["role"] == "user" and question not in final[-1]["content"]
+    assert queries and set(queries) == {question}
+
+
 def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monkeypatch):
     """A rescued respawn refit archives its evictions and emits metadata."""
     # Captured once: the second pass would otherwise wrap the first pass's spy.
@@ -6646,6 +6706,9 @@ def test_repeated_note_on_an_mcp_image_keeps_the_base64_out_of_the_tool_text(mon
     ]
     payloads: list[dict] = []
     backend = _vision_backend(monkeypatch, streams, payloads, vision = True)
+    # Images are charged in the fit (#14968): with no projector each one costs the ~4.2k
+    # admission ceiling, more than this 4096 window, so price the 6 px screenshot by size.
+    backend._mmproj_projector_type = "qwen3vl_merger"
     monkeypatch.setattr(
         "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: fitted
     )

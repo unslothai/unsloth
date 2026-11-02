@@ -93,6 +93,36 @@ def test_honour_rules(capsys):
     assert foreign.gradient_checkpointing is True
 
 
+def test_assignment_after_construction_is_explicit():
+    import dataclasses
+
+    module = _load_module()
+
+    @dataclasses.dataclass
+    class Config:
+        output_dir: str = None
+        gradient_checkpointing: bool = True
+
+        def __post_init__(self):
+            self.gradient_checkpointing = (
+                self.gradient_checkpointing
+            )  # assignments inside __init__ do not count
+
+    assert module.track_explicit_gradient_checkpointing(Config)
+    assert Config().__dict__[module.EXPLICIT_FLAG] is False
+
+    assigned = Config()
+    assigned.gradient_checkpointing = True
+    assert assigned.__dict__[module.EXPLICIT_FLAG] is True
+    assert not module.honour_gradient_checkpointing_off(assigned, _Model(False))
+    assert assigned.gradient_checkpointing is True
+
+    other = Config()
+    other.output_dir = "y"
+    assert module.honour_gradient_checkpointing_off(other, _Model(False))
+    assert other.gradient_checkpointing is False
+
+
 _E2E = textwrap.dedent(
     r"""
     import json, os, sys, types
@@ -133,6 +163,7 @@ _E2E = textwrap.dedent(
         for layer in layers:
             layer.register_forward_pre_hook(lambda m, i: calls.__setitem__("fwd", calls["fwd"] + 1))
         dataset = Dataset.from_dict({"text": [f"hello world this is sentence number {i}" for i in range(8)]})
+        assign_gc = config_kwargs.pop("_assign_gc", None)
         kwargs = dict(output_dir = os.environ["E2E_OUT"], per_device_train_batch_size = 2, max_steps = 2,
                       report_to = "none", use_cpu = True, save_strategy = "no", bf16 = False, fp16 = False,
                       dataset_text_field = "text", **config_kwargs)
@@ -140,6 +171,8 @@ _E2E = textwrap.dedent(
             args = SFTConfig(max_length = 64, **kwargs)
         except TypeError:
             args = SFTConfig(max_seq_length = 64, **kwargs)
+        if assign_gc is not None:
+            args.gradient_checkpointing = assign_gc
         key = "processing_class" if "processing_class" in SFTTrainer.__init__.__code__.co_varnames else "tokenizer"
         trainer = SFTTrainer(model = model, args = args, train_dataset = dataset, **{key: tokenizer})
         assert type(trainer).__name__.startswith("Unsloth"), type(trainer)
@@ -153,6 +186,7 @@ _E2E = textwrap.dedent(
     results = {
         "off_default": run(False, {}),
         "off_explicit_on": run(False, {"gradient_checkpointing": True}),
+        "off_assigned_on": run(False, {"_assign_gc": True}),
         "unsloth_default": run("unsloth", {}),
         "on_default": run(True, {}),
     }
@@ -206,6 +240,13 @@ def test_explicit_config_true_still_checkpoints(e2e_results):
     assert on["ckpt"] > 0
     # Every checkpointed layer forward is recomputed in the backward.
     assert on["fwd"] == 2 * off["fwd"], (on, off)
+
+
+def test_config_true_assigned_after_construction_still_checkpoints(e2e_results):
+    results, _ = e2e_results
+    assigned = results["off_assigned_on"]
+    assert assigned["args_gc"] is True
+    assert assigned["ckpt"] > 0
 
 
 @pytest.mark.parametrize("case", ["unsloth_default", "on_default"])

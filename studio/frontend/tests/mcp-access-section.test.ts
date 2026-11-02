@@ -30,10 +30,14 @@ const TUNNEL_PREF = readSrc(
 
 const LOCALES = { ar, de, en, es, fr, he, hi, it, ja, ko, ptBR, ru, sv, zhCN };
 
-test("only the owner sees it, after the Decision API section, and settings search finds it", () => {
+test("only the owner sees it, in the access group, and settings search finds it", () => {
   assert.match(
     API_TAB,
-    /\{isOwner \? <DecisionApiSection \/> : null\}\s*\{isOwner \? <McpAccessSection apiKey=\{revealed\} \/> : null\}/,
+    /\{isOwner \? <McpAccessSection apiKey=\{freshKey\} \/> : null\}/,
+  );
+  assert.match(
+    API_TAB,
+    /\{isOwner \? <KeylessApiAccessLink \/> : null\}/,
   );
   assert.doesNotMatch(SECTION, /useIsAccountOwner/);
   assert.match(

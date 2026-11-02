@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""What Unsloth adds around accelerate's `fsdp2_prepare_model` (which already wraps per block,
-keeps the [norm, lm_head] tail gathered, groups tied embeddings). `UNSLOTH_FSDP2_ACCELERATE_DEFAULTS=1`
-skips the mixed precision fill and the last-block setting. bitsandbytes 4-bit (QLoRA) weights are
-sharded too, keeping their QuantState (`fsdp2_qlora.py`).
-"""
+"""Unsloth extras on accelerate's FSDP2; UNSLOTH_FSDP2_ACCELERATE_DEFAULTS=1 skips mixed precision."""
 
 import contextlib
 import dataclasses

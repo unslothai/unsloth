@@ -58,10 +58,19 @@ test("family options follow the backend registry, deduplicated, and every backen
     ["flux.1", "FLUX.1"],
   ]);
   const root = new URL("../../backend/core/inference/", import.meta.url);
-  const names = ["diffusion_families.py", "video_families.py"].flatMap((f) =>
-    [...readFileSync(new URL(f, root), "utf8").matchAll(/^\s+name = "([^"]+)"/gm)].map((m) => m[1]),
-  );
+  const names = ["diffusion_families.py", "video_families.py"].flatMap((f) => {
+    const source = readFileSync(new URL(f, root), "utf8");
+    const constant = (key: string) => {
+      const value = source.match(new RegExp(`^${key} = "([^"]+)"$`, "m"));
+      assert.ok(value, `${f}: ${key} is not a family-name string constant`);
+      return value[1];
+    };
+    return [
+      ...source.matchAll(/^\s+name = (?:"([^"]+)"|([A-Z][A-Z0-9_]*),$)/gm),
+    ].map(([, literal, key]) => literal ?? constant(key));
+  });
   assert.ok(names.includes("flux.1") && names.includes("ltx-2"));
+  assert.ok(names.includes("cosmos3-nano") && names.includes("cosmos3-edge"));
   const unlabeled = familyOverrideOptions(names).slice(1).filter(([value, label]) => value === label);
   assert.deepEqual(unlabeled, []);
 });
@@ -92,6 +101,15 @@ test("a pinned cache snapshot loads by path, plans by its Hub id, and stages onl
   assert.deepEqual(
     diffusionStagingEntries(plan, "MiniMaxAI/MiniMax-H3", {}).map((e) => [e.repoId, e.checkpoint]),
     [["MiniMaxAI/MiniMax-H3", true], ["external/quant", false]],
+  );
+
+  const withDenoiser = [
+    { ...entry("MiniMaxAI/MiniMax-H3", true), hosted_denoiser: false },
+    { ...entry("unsloth/fp8", true), hosted_denoiser: true },
+  ];
+  assert.deepEqual(
+    diffusionStagingEntries(withDenoiser, pinned.repoId, { displayRepoId: pinned.displayRepoId }).map((e) => [e.repoId, e.checkpoint]),
+    [["unsloth/fp8", true]],
   );
 });
 

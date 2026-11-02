@@ -347,6 +347,7 @@ def test_larger_decode_batches_still_dequantize(monkeypatch):
 def test_rows_or_dequantize_is_fixed_per_architecture(monkeypatch, arch, env, wins):
     utils = _utils_with_kernels()
     monkeypatch.setattr(utils, "_GEMV_ROWS_CAP", {})
+    monkeypatch.setattr(utils, "_GEMV_ROWS_BNB_FROM", {})
     if env is None:
         monkeypatch.delenv("UNSLOTH_GEMV_MAX_ROWS", raising = False)
     else:
@@ -377,6 +378,7 @@ def test_rows_above_the_cap_skip_straight_to_dequantize(monkeypatch):
 def test_rocm_never_takes_the_rows_gemv_by_default(monkeypatch):
     utils = _utils_with_kernels()
     monkeypatch.setattr(utils, "_GEMV_ROWS_CAP", {})
+    monkeypatch.setattr(utils, "_GEMV_ROWS_BNB_FROM", {})
     monkeypatch.delenv("UNSLOTH_GEMV_MAX_ROWS", raising = False)
     monkeypatch.setattr(torch.version, "hip", "6.4")
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 0))
@@ -423,7 +425,7 @@ def _bnb_gemm_utils():
     return utils
 
 
-@pytest.mark.parametrize("bsz", [5, 8, 16])
+@pytest.mark.parametrize("bsz", [4, 5, 8, 16])
 def test_decode_rows_above_the_gemv_cap_use_the_bnb_gemm(bsz, monkeypatch):
     utils = _bnb_gemm_utils()
     proj = _linear4bit(1024, 4096, dtype = torch.float16)
@@ -433,9 +435,13 @@ def test_decode_rows_above_the_gemv_cap_use_the_bnb_gemm(bsz, monkeypatch):
         @ F.dequantize_4bit(proj.weight.data, proj.weight.quant_state).float().t()
     )
     monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
+    monkeypatch.setattr(utils, "_GEMV_ROWS_BNB_FROM", {X.device.index: 4})
     monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", True)
     monkeypatch.setattr(utils, "_bnb_gemm_4bit_device_ok", lambda device: True)
     monkeypatch.setattr(utils, "fast_dequantize", lambda *a, **k: pytest.fail("dequantized"))
+    calls = []
+    real = utils.bnb.matmul_4bit
+    monkeypatch.setattr(utils.bnb, "matmul_4bit", lambda *a, **k: calls.append(1) or real(*a, **k))
     with torch.no_grad():
         first = utils.fast_linear_forward(proj, X)
         assert first.shape == (bsz, 1, 1024)
@@ -443,6 +449,7 @@ def test_decode_rows_above_the_gemv_cap_use_the_bnb_gemm(bsz, monkeypatch):
         out = torch.empty(bsz, 1, 1024, dtype = torch.float16, device = "cuda")
         assert utils.fast_linear_forward(proj, X, out = out) is out
         assert torch.equal(out, first)
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize(
@@ -455,6 +462,9 @@ def test_decode_rows_above_the_gemv_cap_use_the_bnb_gemm(bsz, monkeypatch):
         "bf16",
         "weight_elsewhere",
         "unaligned_k",
+        "misaligned_x",
+        "scalar_offset",
+        "list_state2",
     ],
 )
 def test_the_bnb_gemm_is_skipped_where_it_does_not_apply(case, monkeypatch):
@@ -474,6 +484,13 @@ def test_the_bnb_gemm_is_skipped_where_it_does_not_apply(case, monkeypatch):
         # K not a multiple of the 64 blocksize.
         proj = _linear4bit(1024, 4128, dtype = dtype)
         X = torch.randn(bsz, 1, 4128, dtype = dtype, device = "cuda")
+    if case == "misaligned_x":
+        X = torch.randn(bsz * 4096 + 1, dtype = dtype, device = "cuda")[1:].view(bsz, 1, 4096)
+    if case == "scalar_offset":
+        proj.weight.quant_state.offset = proj.weight.quant_state.offset.item()
+    if case == "list_state2":
+        s2 = proj.weight.quant_state.state2
+        proj.weight.quant_state.state2 = [s2.absmax, s2.code, s2.blocksize]
     if case == "weight_elsewhere":
         assert not utils._bnb_gemm_4bit_ok(
             X.view(bsz, -1), proj.weight.data.cpu(), proj.weight.quant_state
@@ -485,6 +502,64 @@ def test_the_bnb_gemm_is_skipped_where_it_does_not_apply(case, monkeypatch):
     with torch.set_grad_enabled(case == "grad"):
         utils.fast_linear_forward(proj, X)
     assert calls, case
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "eligible",
+        "switch_off",
+        "grad",
+        "bf16",
+        "compiling",
+        "env_override",
+        "other_arch",
+        "misaligned_x",
+        "scalar_offset",
+        "list_state2",
+    ],
+)
+def test_t4_batch_4_leaves_the_gemv_only_for_a_bnb_gemm_that_runs(case, monkeypatch):
+    utils = _utils_with_kernels()
+    _bnb_gemm_utils()
+    monkeypatch.setattr(utils, "_GEMV_ROWS_CAP", {})
+    monkeypatch.setattr(utils, "_GEMV_ROWS_BNB_FROM", {})
+    monkeypatch.setattr(utils, "_GEMV_MAX_ROWS", 4)
+    if case == "env_override":
+        monkeypatch.setenv("UNSLOTH_GEMV_MAX_ROWS", "4")
+    else:
+        monkeypatch.delenv("UNSLOTH_GEMV_MAX_ROWS", raising = False)
+    # Only the routing cache sees the faked architecture; Triton must still compile for the real GPU.
+    with monkeypatch.context() as routing:
+        routing.setattr(torch.version, "hip", None)
+        arch = (8, 0) if case == "other_arch" else (7, 5)
+        routing.setattr(torch.cuda, "get_device_capability", lambda *a: arch)
+        utils._gemv_rows_cap(torch.device("cuda", torch.cuda.current_device()))
+    monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", case != "switch_off")
+    monkeypatch.setattr(utils, "_bnb_gemm_4bit_device_ok", lambda device: True)
+    if case == "compiling":
+        monkeypatch.setattr(utils, "_is_compiling", lambda: True)
+    dtype = torch.bfloat16 if case == "bf16" else torch.float16
+    proj = _linear4bit(1024, 4096, dtype = dtype)
+    W, W_quant = utils.get_lora_parameters_bias(proj)[:2]
+    assert W_quant.nested
+    if case == "scalar_offset":
+        W_quant.offset = W_quant.offset.item()
+    if case == "list_state2":
+        s2 = W_quant.state2
+        W_quant.state2 = [s2.absmax, s2.code, s2.blocksize]
+
+    def x(bsz):
+        if case == "misaligned_x":
+            return torch.randn(bsz * 4096 + 1, dtype = dtype, device = "cuda")[1:].view(bsz, 1, 4096)
+        return torch.randn(bsz, 1, 4096, dtype = dtype, device = "cuda")
+
+    with torch.set_grad_enabled(case == "grad"):
+        rows = {bsz: utils._gemv_rows(x(bsz), W, W_quant, None) is not None for bsz in (2, 3, 4)}
+    if case == "other_arch":
+        assert rows == {2: True, 3: False, 4: False}
+    else:
+        assert rows == {2: True, 3: True, 4: case != "eligible"}, case
 
 
 @pytest.mark.parametrize("env", [None, "0", "1"])
@@ -557,6 +632,7 @@ def test_rocm_batch_1_decode_takes_the_triton_gemv(monkeypatch, env):
     monkeypatch.delenv("UNSLOTH_GEMV_MAX_ROWS", raising = False)
     monkeypatch.setattr(utils, "_TRITON_GEMV_EAGER", nf4_gemv.triton_gemv_eager())
     monkeypatch.setattr(utils, "_GEMV_ROWS_CAP", {})
+    monkeypatch.setattr(utils, "_GEMV_ROWS_BNB_FROM", {})
     calls = []
     for name in ("_fast_gemv_ctypes", "gemv_nf4_planned", "gemv_nf4"):
         real = getattr(utils, name)

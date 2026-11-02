@@ -775,6 +775,7 @@ def _launch_grouped_gemm_dW(
         BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages = _fit_tiles_to_operand_device(
             "dW", X, X.dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
         )
+        legacy_stages = num_stages
         per_expert_stages = (
             _per_expert_dW_stages(
                 X.device,
@@ -912,12 +913,31 @@ def _launch_grouped_gemm_dW(
                 tiles = fit_args[3:]
                 fitted = _fit_dW_tiles_to_card(*fit_args)
                 if fitted == tiles:
-                    raise
-                logger.info(
-                    f"Unsloth: MoE dW tile (M, N, K, stages) {tiles} is over the shared memory of "
-                    f"cuda:{_device_index(X.device)}; using {fitted}."
-                )
-                _set_dW_tiles(kernel_args, fitted)
+                    if not per_expert:
+                        raise
+                    # No smaller tile known for this card (ROCm has no shared memory model here: the
+                    # heuristic 64x64x256 4-stage tile needs ~80 KiB of LDS on gfx1151's 64 KiB): run the
+                    # legacy kernel, which launched this tile before the per-expert kernel, and remember.
+                    logger.info(
+                        f"Unsloth: MoE per-expert dW tile (M, N, K, stages) {tiles} is over the shared "
+                        f"memory of {X.device}; using the legacy dW kernel."
+                    )
+                    _PER_EXPERT_DW_FITS[
+                        (_device_index(X.device), X.element_size(), *tiles[:3], legacy_stages,
+                         not (permute_x or permute_y))
+                    ] = None  # fmt: skip
+                    per_expert = False  # read by grid()
+                    kernel = _grouped_gemm_dW_kernel
+                    kernel_args.pop("EXPERTS_POW2", None)
+                    kernel_args["num_stages"] = legacy_stages
+                    if not accumulate:
+                        dW.zero_()  # the legacy kernel skips empty experts
+                else:
+                    logger.info(
+                        f"Unsloth: MoE dW tile (M, N, K, stages) {tiles} is over the shared memory of "
+                        f"cuda:{_device_index(X.device)}; using {fitted}."
+                    )
+                    _set_dW_tiles(kernel_args, fitted)
                 compiled_kernel = kernel[grid](**kernel_args, enable_fp_fusion = True)
 
         if autotune:

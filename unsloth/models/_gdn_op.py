@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""fla's chunk_gated_delta_rule as an opaque op with a registered backward (training case only),
-checked bit-equal to ChunkGatedDeltaRuleFunction before use, so a Gated DeltaNet layer compiles
-as one graph."""
+"""fla chunk_gated_delta_rule as opaque op (training backward) so DeltaNet compiles as one graph."""
 
 import inspect
 from typing import Optional

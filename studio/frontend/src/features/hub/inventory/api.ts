@@ -54,11 +54,10 @@ export interface CachedGgufRepo {
   capabilities?: BackendModelCapabilities | null;
   size_bytes: number;
   cache_path?: string;
-  /** epoch seconds; inventory view models normalize this to milliseconds. */
+  /** Epoch seconds; inventory view models normalize this to milliseconds. */
   last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
-  /** This partial can be continued byte for byte. */
   partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
@@ -80,11 +79,10 @@ export interface CachedModelRepo {
   capabilities?: BackendModelCapabilities | null;
   size_bytes: number;
   cache_path?: string;
-  /** epoch seconds; inventory view models normalize this to milliseconds. */
+  /** Epoch seconds; inventory view models normalize this to milliseconds. */
   last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
-  /** This partial can be continued byte for byte. */
   partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
@@ -121,7 +119,6 @@ export interface LocalModelInfo {
   updated_at?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
-  /** This partial can be continued byte for byte. */
   partial_resumable?: boolean;
   /** Pipeline repo holding only a GGUF load's VAE / text encoder: not a download to continue. */
   companion_prefetch?: boolean;
@@ -155,13 +152,12 @@ export interface LocalModelListResponse {
 export interface CachedDatasetRepo {
   repo_id: string;
   size_bytes: number;
-  /** epoch seconds; absent when no cache path has a readable mtime. */
+  /** Epoch seconds; absent when no cache path has a readable mtime. */
   last_modified?: number | null;
   cache_path?: string;
   load_cache_path?: string;
   partial?: boolean;
   partial_transport?: string | null;
-  /** This partial can be continued byte for byte. */
   partial_resumable?: boolean;
 }
 
@@ -189,36 +185,32 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
-  /** Sub-folders are scanned too. Absent on older backends. */
   recursive?: boolean;
-  /** Result of the last scan. Absent on older backends, which means "ok". */
+  /** Absent on older backends, which means "ok". */
   status?: ScanFolderStatus;
 }
 
 export interface GgufVariantDetail {
   context_length?: number | null;
   cache_path?: string | null;
-  /** Opaque stand-in for `cache_path` under host-path redaction; the only name an
-   *  API-key caller has for one specific copy. */
+  /** Opaque stand-in for `cache_path` under host-path redaction. */
   cache_ref?: string | null;
   filename: string;
   quant: string;
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
-  /** The only missing artifact when the main GGUF is already cached. */
+  /** Streamed lookup-table bytes inside `size_bytes`; 0 when none or on an older backend. */
+  lookup_table_bytes?: number;
   pending_drafter_filename?: string | null;
   pending_drafter_size_bytes?: number;
-  /** Bytes a resume still has to fetch. Set only on a partial variant. */
   download_remaining_bytes?: number | null;
   downloaded?: boolean;
   update_available?: boolean;
   partial?: boolean;
   partial_transport?: string | null;
-  /** This partial can be continued byte for byte. */
   partial_resumable?: boolean;
-  /** Variants sharing this key share one companion download footprint, so a
-   *  footprint resolved for one of them is correct for all of them. */
+  /** Variants sharing this key share one companion download footprint. */
   dependency_key?: string | null;
 }
 
@@ -227,7 +219,6 @@ export interface GgufVariantsResponse {
   variants: GgufVariantDetail[];
   has_vision: boolean;
   default_variant: string | null;
-  /** True when Hub metadata or a complete cached download plan proves companion readiness. */
   dependencies_resolved?: boolean;
   /** "mlx" for precision folders of an MLX repo. */
   variant_format?: string | null;
@@ -421,12 +412,10 @@ export async function deleteCachedModel(
   if (variant) {
     payload.variant = variant;
   }
-  // Scope the delete to this row's cache so copies in other caches survive.
   if (cachePath) {
     payload.cache_path = cachePath;
   }
-  // Free up space acts on a list that can be minutes old. The server re-derives the orphan
-  // condition just before unlinking and 409s if a download turned the row into a real model.
+  // The server re-checks the orphan condition before unlinking and 409s if it changed.
   if (onlyIfOrphan) {
     payload.only_if_orphan = true;
   }

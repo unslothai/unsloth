@@ -31,16 +31,15 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
-  Copy01Icon,
   Download01Icon,
-  FolderOpenIcon,
   InformationCircleIcon,
   Refresh01Icon,
   Search01Icon,
   Shield01Icon,
   TextWrapIcon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderOpenIcon } from "@/lib/folder-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDownIcon } from "lucide-react";
 import {
@@ -72,11 +71,13 @@ import {
   REQUEST_TIMEOUT_MS,
   type RefreshMode,
   applyLogChunk,
+  clearSelectionInside,
   isPageStale,
   nextDroppedState,
   parseRefreshMode,
   isRequestTimeout,
   pollDelayMs,
+  selectionInside,
   withRequestTimeout,
 } from "../lib/debug-log-buffer";
 import { isAbort, isLogSourceGone } from "../lib/debug-log-error";
@@ -85,14 +86,12 @@ import {
   pendingLogRequestKey,
   useSettingsDialogStore,
 } from "../stores/settings-dialog-store";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 const MODES: RefreshMode[] = ["live", "3s", "manual"];
 
-// Rescan cadence for log files that did not exist when the tab was opened.
-// Slower than the poll: a directory walk rather than a tail read.
 const SOURCE_RESCAN_MS = 10_000;
 
-// how close to the bottom the pane must be scrolled for auto-follow to stay on
 const FOLLOW_THRESHOLD_PX = 40;
 
 const PANE_HEIGHT_STORAGE_KEY = "unsloth_debug_log_pane_height";
@@ -179,35 +178,22 @@ export function DebuggingTab() {
   const [mode, setMode] = useState<RefreshMode>(readStoredMode);
   const [buffer, setBuffer] = useState<LogBufferState>(EMPTY_BUFFER);
   const [realpath, setRealpath] = useState<string | null>(null);
-  // the logs directory the backend resolved, opened by the folder button
   const [logRoot, setLogRoot] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dropped, setDropped] = useState(false);
-  // A burst larger than one response continues on the next poll, which in
-  // manual mode never comes unless the user knows to ask for it.
   const [morePending, setMorePending] = useState(false);
-  // File logging is off and an older session's log is still on disk, so the pane shows real content
-  // that will never grow. Unsaid, a stale log is indistinguishable from a live one.
   const [staleSession, setStaleSession] = useState(false);
-  // Each button tracks only its own request: the export takes seconds and must
-  // not lock out "Show in folder", which is how the user reaches the result.
   const [exporting, setExporting] = useState(false);
   const [revealing, setRevealing] = useState(false);
   const [filter, setFilter] = useState("");
   const [wrap, setWrap] = useState(true);
-  // mirrors pinnedRef for the jump-to-latest button; the ref stays the source of
-  // truth so the scroll handler does not re-render the pane on every line
   const [following, setFollowing] = useState(true);
   const { copied, copy } = useCopyFeedback();
   const { copied: pathCopied, copy: copyPath } = useCopyFeedback();
 
-  // In a ref as well as state: the poll loop must not restart per line arrived.
   const cursorRef = useRef<string | null>(null);
-  // Counts source changes, so an in-flight request can tell its view moved.
   const selectionRef = useRef(0);
-  // The selection in flight, not a bare flag: a poll for the newly picked source
-  // must not be swallowed by a slow read of the one the user just left, or the
-  // new pane stays empty (in manual mode, for good).
+  // The selection in flight, not a flag, so a slow read of the old source cannot swallow the new poll.
   const inFlightRef = useRef<number | null>(null);
   const paneRef = useRef<HTMLPreElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -221,11 +207,9 @@ export function DebuggingTab() {
     try {
       window.localStorage.setItem(REFRESH_MODE_STORAGE_KEY, mode);
     } catch {
-      // A blocked localStorage must not stop the viewer working.
     }
   }, [mode]);
 
-  // Selection order: a response older than the last one that selected never overrides it.
   const sourceFetchSeqRef = useRef(0);
   const appliedSourceFetchRef = useRef(0);
 
@@ -233,8 +217,6 @@ export function DebuggingTab() {
     async (options: { signal?: AbortSignal; reselect?: boolean } = {}) => {
       const seq = ++sourceFetchSeqRef.current;
       try {
-        // Bounded like the tail read: the poll loop and its failure recovery
-        // both await this, so an unanswered /sources would freeze both.
         const requestedFor = pendingLogRequestKey(
           useSettingsDialogStore.getState(),
         );
@@ -260,7 +242,6 @@ export function DebuggingTab() {
           (requested
             ? result.sources.find((source) => source.family === requested)
             : undefined);
-        // Only the request this fetch was made for.
         const stillTheSameRequest =
           pendingLogRequestKey(dialog) === requestedFor;
         if (fromFailure && stillTheSameRequest)
@@ -275,7 +256,6 @@ export function DebuggingTab() {
               : (current ?? result.defaultSourceId),
         );
       } catch {
-        // The log read reports the real reason; this just leaves the picker empty.
       }
     },
     [],
@@ -287,7 +267,6 @@ export function DebuggingTab() {
     return () => controller.abort();
   }, [refreshSources]);
 
-  // A request that arrives while this panel is ALREADY mounted.
   const pendingLogRequest = useSettingsDialogStore(pendingLogRequestKey);
   useEffect(() => {
     if (pendingLogRequest === NO_PENDING_LOG_REQUEST) return;
@@ -300,16 +279,11 @@ export function DebuggingTab() {
     async (error: unknown, signal?: AbortSignal) => {
       if (isAbort(error)) return;
       if (isRequestTimeout(error)) {
-        // Not the raw message: the backstop duration is an internal number, and
-        // the user needs the consequence.
         setNotice(t("settings.debugging.timeout"));
         return;
       }
       if (isLogSourceGone(error)) {
-        // The id we hold is no longer enumerated (file removed, or pushed out of the per-family
-        // window). The backend sends 404 so the picker rebuilds; without this the loop re-polls a
-        // dead id forever. Reselecting the server's default terminates: it comes from the same
-        // walk, and "nothing at all" is a 200 with a status, not another 404.
+        // Default reselection terminates: an empty source list returns 200, not another 404.
         cursorRef.current = null;
         await refreshSources({ signal, reselect: true });
         return;
@@ -319,8 +293,6 @@ export function DebuggingTab() {
     [refreshSources, t],
   );
 
-  // The llama runner writes a NEW file per load attempt, so a list fetched at mount goes stale
-  // exactly when it matters: fail a load with the tab open and that failure's log is not offered.
   const rescanSourcesIfStale = useCallback(
     async (signal?: AbortSignal) => {
       if (Date.now() - lastSourceScanRef.current < SOURCE_RESCAN_MS) return;
@@ -335,9 +307,6 @@ export function DebuggingTab() {
       const selection = selectionRef.current;
       if (inFlightRef.current === selection) return;
       inFlightRef.current = selection;
-      // Without the timeout a request that never settles pins inFlightRef
-      // forever: every poll returns at the guard above and the pane freezes with
-      // no error, since the catch never runs. A dropped tunnel does it.
       try {
         const page = await withRequestTimeout(
           (requestSignal) =>
@@ -349,8 +318,6 @@ export function DebuggingTab() {
           REQUEST_TIMEOUT_MS,
           signal,
         );
-        // A manual refresh carries no abort signal, so one in flight across a
-        // source switch would land the old file's lines under the new pick.
         if (
           isPageStale({
             requestSelection: selection,
@@ -381,22 +348,18 @@ export function DebuggingTab() {
         if (selection === selectionRef.current)
           await onPollFailed(error, signal);
       } finally {
-        // Only if a poll for a newer selection has not taken the slot.
         if (inFlightRef.current === selection) inFlightRef.current = null;
       }
     },
     [onPollFailed, sourceId, t],
   );
 
-  // Switching source starts a fresh read rather than appending to the old file.
   useEffect(() => {
+    clearSelectionInside(document.getSelection(), paneRef.current);
     selectionRef.current += 1;
     cursorRef.current = null;
     setBuffer(EMPTY_BUFFER);
     setRealpath(null);
-    // Every notice below describes the file being left, so all of them go with it. Clearing only
-    // `dropped` let a failed first read on the new source keep claiming the OLD one's state, and in
-    // manual mode nothing retries: the pane sat there calling a live log a frozen session.
     setDropped(false);
     setMorePending(false);
     setStaleSession(false);
@@ -408,8 +371,6 @@ export function DebuggingTab() {
     let timer: number | undefined;
     let stopped = false;
 
-    // A self-scheduling timeout, not setInterval: the next poll is queued only
-    // once the previous settled, so a slow link builds no backlog.
     const tick = async () => {
       if (stopped) return;
       if (
@@ -432,7 +393,6 @@ export function DebuggingTab() {
     };
   }, [mode, poll, rescanSourcesIfStale]);
 
-  // stripped once per line so the filter matches exactly what the pane shows
   const plainLines = useMemo(() => buffer.lines.map(stripAnsi), [buffer.lines]);
   const trimmedFilter = filter.trim().toLowerCase();
   const visibleLines = useMemo(
@@ -447,19 +407,65 @@ export function DebuggingTab() {
 
   const text = useMemo(() => visibleLines.join("\n"), [visibleLines]);
 
+  // Keep presses in a ref: rendering before the drag's first selection collapses it in Chromium.
+  const [holding, setHolding] = useState(false);
+  const pointerDownRef = useRef(false);
+  const textRef = useRef(text);
+  textRef.current = text;
+  const [shownText, setShownText] = useState(text);
+  if (!holding && !pointerDownRef.current && shownText !== text)
+    setShownText(text);
+
+  useEffect(() => {
+    const inside = () =>
+      selectionInside(document.getSelection(), paneRef.current);
+    const update = () => {
+      const held = inside();
+      if (pointerDownRef.current && !held) return;
+      setHolding(held);
+    };
+    const release = () => {
+      if (!pointerDownRef.current) return;
+      pointerDownRef.current = false;
+      const held = inside();
+      setHolding(held);
+      if (!held) setShownText(textRef.current);
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.buttons === 0) release();
+    };
+    document.addEventListener("selectionchange", update);
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+    // A native context menu or text drag can swallow the pointerup.
+    window.addEventListener("contextmenu", release);
+    window.addEventListener("dragend", release);
+    window.addEventListener("drop", release);
+    return () => {
+      document.removeEventListener("selectionchange", update);
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+      window.removeEventListener("contextmenu", release);
+      window.removeEventListener("dragend", release);
+      window.removeEventListener("drop", release);
+    };
+  }, []);
+
   const scrollToBottom = useCallback(() => {
     const pane = paneRef.current;
     if (!pane) return;
+    clearSelectionInside(document.getSelection(), pane);
     pane.scrollTop = pane.scrollHeight;
     pinnedRef.current = true;
     setFollowing(true);
   }, []);
 
-  // wrap and a resize change the scroll height without changing the text, so they re-pin too
   useEffect(() => {
     const pane = paneRef.current;
     if (pane && pinnedRef.current) pane.scrollTop = pane.scrollHeight;
-  }, [text, wrap, paneHeight]);
+  }, [shownText, wrap, paneHeight]);
 
   const resizePane = useCallback((next: number | null) => {
     const height =
@@ -476,7 +482,6 @@ export function DebuggingTab() {
         window.localStorage.setItem(PANE_HEIGHT_STORAGE_KEY, String(height));
       }
     } catch {
-      // storage unavailable: the height still applies this visit
     }
   }, []);
 
@@ -529,8 +534,6 @@ export function DebuggingTab() {
   const onScroll = useCallback(() => {
     const pane = paneRef.current;
     if (!pane) return;
-    // Stop chasing the bottom once the user scrolls up, so a traceback stays
-    // readable while the app keeps logging.
     const pinned =
       pane.scrollHeight - pane.scrollTop - pane.clientHeight <
       FOLLOW_THRESHOLD_PX;
@@ -557,15 +560,12 @@ export function DebuggingTab() {
     setExporting(true);
     try {
       const savedPath = await exportAllLogs();
-      // A path only comes back on desktop. In a browser the file is wherever
-      // that browser puts downloads, which we cannot name.
       if (savedPath) {
         toast.success(
           t("settings.debugging.downloadedTo", { path: savedPath }),
           {
             action: {
               label: t("settings.debugging.showInFolder"),
-              // The folder the archive went to, not the one the logs came from.
               onClick: () => {
                 void revealSavedArchive(savedPath).catch((error: unknown) => {
                   toast.error(t("settings.debugging.openLogsFolderFailed"), {
@@ -597,7 +597,6 @@ export function DebuggingTab() {
   }, [t]);
 
   const groupedSources = useMemo(() => groupByFamily(sources), [sources]);
-  // the selected file's path, else the log root the footer falls back to showing
   const shownPath = realpath ?? logRoot;
   const modeLabel = (candidate: RefreshMode) =>
     t(
@@ -610,11 +609,20 @@ export function DebuggingTab() {
 
   return (
     <div className="settings-page">
+      <header className="flex min-w-0 flex-col gap-1 pr-6">
+        <h1 className="text-xl font-semibold font-heading">
+          {t("settings.tabs.debugging")}
+        </h1>
+        <p className="text-xs text-muted-foreground">
+          {t("settings.debugging.description")}
+        </p>
+      </header>
+
       <SettingsSection
         title={t("settings.debugging.logSection")}
         description={t("settings.debugging.sourceHint")}
       >
-        <SettingsRow label={t("settings.debugging.source")}>
+        <SettingsRow label={t("settings.debugging.source")} wideControl={true}>
           <Select
             value={sourceId ?? ""}
             onValueChange={(value) => setSourceId(value || null)}
@@ -658,7 +666,7 @@ export function DebuggingTab() {
             </SelectContent>
           </Select>
         </SettingsRow>
-        <SettingsRow label={t("settings.debugging.mode")}>
+        <SettingsRow label={t("settings.debugging.mode")} wideControl={true}>
           <div className="flex items-center gap-2">
             <div
               role="radiogroup"
@@ -695,6 +703,7 @@ export function DebuggingTab() {
               variant="outline"
               disabled={mode !== "manual"}
               onClick={() => {
+                clearSelectionInside(document.getSelection(), paneRef.current);
                 void refreshSources();
                 void poll();
               }}
@@ -743,14 +752,13 @@ export function DebuggingTab() {
                     count: buffer.lines.length,
                   })}
             </span>
-            {/* a failed read is explained by the notice below; a live chip beside it would contradict it */}
             {notice ? null : (
               <span
                 className={cn(
                   "inline-flex h-5 items-center gap-1.5 rounded-full px-2 text-xs font-medium",
                   staleSession
                     ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
-                    : mode === "manual"
+                    : mode === "manual" || holding
                       ? "bg-muted text-muted-foreground"
                       : "bg-primary/10 text-primary",
                 )}
@@ -760,12 +768,13 @@ export function DebuggingTab() {
                     "size-1.5 rounded-full bg-current",
                     !staleSession &&
                       mode !== "manual" &&
+                      !holding &&
                       "motion-safe:animate-pulse",
                   )}
                 />
                 {staleSession
                   ? t("settings.debugging.statusStale")
-                  : mode === "manual"
+                  : mode === "manual" || holding
                     ? t("settings.debugging.statusPaused")
                     : t("settings.debugging.statusLive")}
               </span>
@@ -799,7 +808,6 @@ export function DebuggingTab() {
         ) : null}
 
         <div className="relative">
-          {/* Border on the frame, scrolling inside it: keeps the scrollbar off the rounded corners. */}
           <div
             ref={frameRef}
             style={paneHeight === null ? undefined : { height: paneHeight }}
@@ -808,19 +816,21 @@ export function DebuggingTab() {
               paneHeight === null && "h-[min(26rem,45vh)]",
             )}
           >
-            {/* One text surface, not an element per line: this repaints on every
-                poll and 1000 nodes per tick is what makes a log pane feel broken. */}
+              {/* Keep one text node; per-line nodes make frequent polls expensive. */}
             <pre
               ref={paneRef}
               onScroll={onScroll}
+              onPointerDown={() => {
+                pointerDownRef.current = true;
+              }}
               data-testid="debug-log-pane"
               className={cn(
                 "h-full w-full overflow-auto [overflow-anchor:none] scroll-rounded rounded-md py-2 pr-11 pl-2.5 font-mono text-ui-11 leading-[1.55] text-foreground/90",
                 wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
-                !text && "text-muted-foreground",
+                !shownText && "text-muted-foreground",
               )}
             >
-              {text ||
+              {shownText ||
                 (trimmedFilter && buffer.lines.length > 0
                   ? t("settings.debugging.noMatches")
                   : t("settings.debugging.empty"))}
@@ -845,7 +855,7 @@ export function DebuggingTab() {
             </TooltipTrigger>
             <TooltipContent>{t("settings.debugging.wrapLines")}</TooltipContent>
           </Tooltip>
-          {!following && text ? (
+          {!following && shownText ? (
             <Button
               size="xs"
               variant="dark"
@@ -909,8 +919,8 @@ export function DebuggingTab() {
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => copy(text)}
-              disabled={!text}
+              onClick={() => copy(shownText)}
+              disabled={!shownText}
             >
               <HugeiconsIcon
                 strokeWidth={1.75}

@@ -13,19 +13,21 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { useIsAccountOwner } from "@/features/auth";
-import { useChatSearchStore } from "@/features/chat";
+import { useChatSearchStore } from "@/features/chat/stores/chat-search-store";
+import { DIALOG_SETTINGS_SEARCH_INDEX } from "@/features/settings/dialog-search-index";
 import {
-  DIALOG_SETTINGS_SEARCH_INDEX,
   SETTINGS_TABS,
   type SettingsTab,
-  type ShortcutId,
-  settingsTabVisible,
-  triggerShortcut,
   useSettingsDialogStore,
+} from "@/features/settings/stores/settings-dialog-store";
+import type { ShortcutId } from "@/features/settings/lib/keyboard-shortcuts";
+import { settingsTabVisible } from "@/features/settings/settings-tab-visibility";
+import {
+  triggerShortcut,
   useShortcut,
   useShortcutAvailable,
   useShortcutLabel,
-} from "@/features/settings";
+} from "@/features/settings/hooks/use-shortcut";
 import { useT, type TranslationKey } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useCommandPaletteStore } from "@/stores/command-palette";
@@ -33,24 +35,24 @@ import {
   Cancel01Icon,
   ChefHatIcon,
   DashboardCircleIcon,
-  DownloadSquare01Icon,
   FlimSlateIcon,
-  Folder01Icon,
-  Image03Icon,
+  ImageIcon,
   LibrariesIcon,
   Message01Icon,
+  Moon02Icon,
   PencilEdit02Icon,
   Search01Icon,
-  Settings02Icon,
   Sun03Icon,
   TestTube01Icon,
   ApiIcon,
+  Clock01Icon,
+  Download01Icon,
 } from "@hugeicons/core-free-icons";
-import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, Settings01Icon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
-import { Moon } from "lucide-react";
 import { type ComponentProps, useEffect, useState } from "react";
 
 // Surface, header and rows follow chat search (chat-search-dialog.tsx).
@@ -76,7 +78,6 @@ function PaletteShortcut({
   );
 }
 
-// matches sidebar: drop interior bubble paths
 const TestTubeOutlineIcon = TestTube01Icon.slice(0, 3) as typeof TestTube01Icon;
 
 // Through the root's workspace shortcuts: gated (Train, Video) and landing (Chat keeps its thread) as the chords do.
@@ -93,7 +94,7 @@ const WORKSPACES: {
   },
   {
     id: "switchToProjects",
-    icon: Folder01Icon,
+    icon: ProjectIcon,
     labelKey: "shell.navigation.projects",
   },
   {
@@ -116,7 +117,7 @@ const WORKSPACES: {
   },
   {
     id: "switchToImages",
-    icon: Image03Icon,
+    icon: ImageIcon,
     labelKey: "shell.navigation.images",
     aliases: ["generate"],
   },
@@ -134,7 +135,7 @@ const WORKSPACES: {
   },
   {
     id: "switchToExport",
-    icon: DownloadSquare01Icon,
+    icon: Download01Icon,
     labelKey: "shell.navigation.export",
     aliases: ["gguf", "checkpoint"],
   },
@@ -303,6 +304,13 @@ function PaletteContent() {
             <span>{t("shell.navigation.library")}</span>
           </PaletteItem>
           <PaletteItem
+            onSelect={runAndClose(() => void navigate({ to: "/tasks" }))}
+            keywords={["scheduled", "schedule", "tasks", "reminders"]}
+          >
+            <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.tasks")}</span>
+          </PaletteItem>
+          <PaletteItem
             onSelect={runAndClose(() => void navigate({ to: "/api-monitor" }))}
             keywords={["api", "monitor", "requests"]}
           >
@@ -310,7 +318,7 @@ function PaletteContent() {
             <span>{t("shell.navigation.api")}</span>
           </PaletteItem>
           <PaletteItem onSelect={openSettings()} keywords={["preferences"]}>
-            <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
+            <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} />
             <span>{t("shell.navigation.settings")}</span>
             {settingsLabel && (
               <PaletteShortcut>{settingsLabel}</PaletteShortcut>
@@ -352,7 +360,11 @@ function PaletteContent() {
             {isDark ? (
               <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} />
             ) : (
-              <Moon strokeWidth={1.75} className="size-4" />
+              <HugeiconsIcon
+                icon={Moon02Icon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
             )}
             <span>
               {isDark
@@ -361,7 +373,6 @@ function PaletteContent() {
             </span>
           </PaletteItem>
         </CommandGroup>
-        {/* Settings pages only once the user types. */}
         {hasQuery && (
           <>
             <CommandSeparator />
@@ -379,7 +390,7 @@ function PaletteContent() {
                   )}
                   onSelect={openSettings(tab)}
                 >
-                  <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
+                  <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} />
                   <span className="text-muted-foreground">
                     {t("shell.navigation.settings")}
                   </span>

@@ -18,8 +18,8 @@ const STUDIO_PAGE = new URL(
   "../src/features/studio/studio-page.tsx",
   import.meta.url,
 );
-const TRAINING_WIZARD = new URL(
-  "../src/features/studio/wizard/training-wizard.tsx",
+const SECTION_BOX = new URL(
+  "../src/components/section-box.tsx",
   import.meta.url,
 );
 const STUDIO_CSS = new URL("../src/index.css", import.meta.url);
@@ -112,7 +112,7 @@ async function smallestTrainSectionTier(
 test("the run preview column reaches a laptop window without dropping the wizard below @md/train-section", async () => {
   const { containers, spacing } = await tailwindScales();
   const page = await readFile(STUDIO_PAGE, "utf8");
-  const wizard = await readFile(TRAINING_WIZARD, "utf8");
+  const wizard = await readFile(SECTION_BOX, "utf8");
 
   // Every tier below is inert unless the named containers are still declared.
   classNameContaining(page, "@container/train-configure");

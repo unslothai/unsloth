@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Read a SAFETENSORS pre-quant checkpoint's ``format`` + ``metadata`` without reading its weights.
-
-A ``.pt`` (pickle) is never opened. Readers never raise and fail open (None = unknown).
-"""
+"""Reads a safetensors checkpoint's format and metadata, never its weights; never opens .pt; never
+raises, fails open with None if unknown"""
 
 from __future__ import annotations
 

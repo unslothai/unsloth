@@ -119,7 +119,8 @@ def prebuilt_wheel_torch_mm(torch_mm: str) -> str:
 
 
 # ── Wheels we build ourselves ─────────────────────────────────────────────────
-# Upstream stops at torch 2.11 and the reuse window above stops at 2.12, because torch 2.13 broke the extension ABI again -- it changed c10::impl::cow::materialize_cow_storage and the signature of c10::cuda::c10_cuda_check_implementation, so an upstream wheel raises "undefined symbol" at import -- and 2.14 changed it once more. There is no upstream asset to point at and no older one that loads, so from 2.13 on we build the wheels and resolve to our own release. Built by .github/workflows/prebuilt-cuda-wheels.yml, one per (package, torch minor, interpreter), Sigstore-signed, on the tag below.
+# torch 2.13+ broke the extension ABI again, so we build these wheels ourselves
+# (.github/workflows/prebuilt-cuda-wheels.yml) and resolve to our own release.
 UNSLOTH_PREBUILT_RELEASE_BASE_URL = "https://github.com/unslothai/unsloth/releases/download"
 UNSLOTH_PREBUILT_RELEASE_TAG = "prebuilt-wheels-cu13"
 
@@ -365,7 +366,7 @@ def direct_wheel_url(
     return f"{release_base_url}/{release_tag}/{filename}"
 
 
-# xformers/_C is linked against ONE exact (torch, CUDA) pair, and a mismatch its declared torch requirement allows is only a log warning, so the import "succeeds" with memory-efficient attention silently gone. PyPI publishes one win_amd64 flavour whose CUDA family churns across releases, which is why this resolves an exact download.pytorch.org URL instead of pinning a version. Keyed on the `torch` field of cpp_lib.json, not `cuda`, which is the NVCC toolkit version and does not separate flavours. Rows are exact, never interpolated: the extension ABI does not survive a torch minor bump, and an unlisted pair means "install nothing", the safe answer. cu118/cu121/cu124 are absent because they stop before the cp39-abi3 switch at 0.0.31, so one filename template cannot name them. The PyPI win wheel has been cu124 (0.0.29.post2), cu126 (0.0.30), cu128 (0.0.32), cu130 (0.0.33) and cu128 again (0.0.33.post1 onward); download.pytorch.org's cu126 0.0.34 also reports 1208, so only the `torch` field ("2.10.0+cu128") separates flavours. Every row was HEAD-verified live, e.g. cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl reports {"torch": "2.10.0+cu130"}. Keying on the CUDA MINOR is stricter than the ABI needs (cu126 and cu128 both link libcudart.so.12; only a major bump changes it), but it names a real directory, so torch 2.10.0+cu129 on Linux resolves to nothing. torch 2.11+ maps to 0.0.35, compiled against 2.10.0 and compatible with any later version since xFormers moved to the stable API/ABI in 0.0.34. Keep in step with $script:XformersWheelVersions in install.ps1 and the matrix in tests/python/test_windows_xformers_wheel_match.py.
+# xformers/_C links one exact (torch, CUDA) pair; a mismatch silently drops attention. Key on cpp_lib.json torch, not cuda; rows never interpolated.
 # ── xFormers ──────────────────────────────────────────────────────────────────
 PYTORCH_WHEEL_INDEX_BASE_URL = "https://download.pytorch.org/whl"
 

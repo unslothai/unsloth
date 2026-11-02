@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.3 Image Klein: a classic pipeline face over Diffusers' modular FLUX.3 blocks.
-
-Diffusers ships FLUX.3 only as a Modular Diffusers workflow (``Flux3DistilledAutoBlocks`` for the
-16-step flow-map checkpoint, ``Flux3AutoBlocks`` for the undistilled base), and the repos carry a
-``modular_model_index.json`` instead of a ``model_index.json``. The image backend drives every
-other family through a ``DiffusionPipeline``: placement (``to`` / model and group offload), the
-step callback (progress, cancel), the decode-phase hook and the scheduler swap all address
-``pipe.<component>``. ``Flux3KleinPipeline`` is that face: it registers the same component
-objects the blocks run, so offload hooks, compiled or quantised replacements and a swapped
-scheduler reach the blocks unchanged, and its ``__call__`` takes the keywords the generate path
-passes.
-
-The component objects are loaded per subfolder (``text_encoder`` also carries the Qwen3-VL
-processor), so only ``transformer/``, ``text_encoder/`` and ``vae/`` are ever read; the repo-root
-BFL single file and ``ae.safetensors`` and the ``variants/`` quantised packages are not.
-"""
+"""FLUX.3 pipeline facade over Modular Diffusers blocks; reads only transformer/, text_encoder/, vae/."""
 
 from __future__ import annotations
 
@@ -190,9 +175,8 @@ class _Flux3Interrupted(Exception):
 
 
 # Each reference is scaled to this area before the VAE, aspect kept, Lanczos: ComfyUI's
-# ``ReferenceMultiLatent`` with the templates' ``["resize", 1]`` (1.0 megapixels), and the BFL
-# reference's multi-reference rule (each <= 1 MiP). Diffusers alone only downsizes above 16 MiP, so
-# a phone photo would otherwise be encoded at full size. The 16-px grid crop stays with the blocks.
+# ``ReferenceMultiLatent`` ``["resize", 1]`` and BFL's multi-reference rule. Diffusers alone keeps a
+# single reference up to 4 MiP (16 MiP before 0.42.0); the 16-px grid fit stays with the blocks.
 REFERENCE_AREA = 1024 * 1024
 
 

@@ -14,9 +14,9 @@ import {
 } from "@/components/ui/tooltip";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { ExpandArrowsIcon } from "@/lib/expand-icons";
 import { cn } from "@/lib/utils";
 import {
-  ArrowExpand01Icon,
   ArrowLeft02Icon,
   ArrowRight02Icon,
   BubbleChatIcon,
@@ -31,7 +31,6 @@ import { useBrowserStore } from "./store";
 const WASH =
   "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]";
 
-/** Full-view chat bar: minimize, title (toggles the conversation), split menu. */
 export function FullViewChatBar({ title }: { title: string | undefined }) {
   const t = useT();
   const dock = useBrowserStore((state) => state.chatDock);
@@ -135,7 +134,7 @@ export function FullViewChatBar({ title }: { title: string | undefined }) {
             >
               <DropdownMenuItem onSelect={closePanel}>
                 <HugeiconsIcon
-                  icon={ArrowExpand01Icon}
+                  icon={ExpandArrowsIcon}
                   strokeWidth={1.75}
                   className="size-4.5"
                 />

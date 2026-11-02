@@ -33,8 +33,7 @@ pub(super) enum ManagedProbe {
     Missing,
     Ready { bin: PathBuf },
     Stale { bin: PathBuf, reason: String },
-    /// The install could not be looked at, rather than found wanting: no binary
-    /// path to report and nothing to repair until the profile is back.
+    /// The install could not be inspected, not found wanting: nothing to repair until the profile is back.
     Unavailable { reason: String },
 }
 
@@ -44,10 +43,7 @@ pub(super) enum BackendProbe {
     Ready { port: u16 },
     Old { port: u16, reason: String },
     ExternalConflict { port: u16, reason: String },
-    /// A backend answered here, but it is not adoptable and not provably ours:
-    /// it reports no install id, so it may be a remote Unsloth behind a tunnel or
-    /// an install that predates the id. Launching skips the port; a mutation
-    /// refuses only when a live local process is attributable to this install,
-    /// which is the one thing a health probe cannot tell us.
+    /// Answered but reports no install id: maybe a tunnelled remote or a pre-id install. Launch
+    /// skips the port; a mutation refuses only if a live local process is attributable to us.
     Unrelated { port: u16, reason: String },
 }

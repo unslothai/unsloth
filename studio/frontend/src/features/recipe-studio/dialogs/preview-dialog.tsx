@@ -19,7 +19,7 @@ import { Switch } from "@/components/ui/switch";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
-  AlertCircleIcon,
+  Alert02Icon,
   CheckmarkCircle02Icon,
   CookBookIcon,
   TestTube01Icon,
@@ -221,7 +221,7 @@ function ValidationResultPanel({
         >
           <HugeiconsIcon
             icon={
-              validateResult.valid ? CheckmarkCircle02Icon : AlertCircleIcon
+              validateResult.valid ? CheckmarkCircle02Icon : Alert02Icon
             }
             className="size-4"
           />
@@ -430,7 +430,7 @@ function RunDialogBody({
               title="Batching"
               description="Use batches when you want to split a larger run into smaller pieces."
             >
-              <div className="flex items-center justify-between gap-3 text-sm">
+              <div className="flex items-start justify-between gap-3 text-sm">
                 <div className="space-y-0.5">
                   <span className="font-medium">Enable batching</span>
                   <p className="text-xs text-muted-foreground">
@@ -438,6 +438,7 @@ function RunDialogBody({
                   </p>
                 </div>
                 <Switch
+                  className="mt-[var(--ui-title-cap-inset)]"
                   checked={settings.batchEnabled}
                   onCheckedChange={(checked) =>
                     onSettingsChange({ batchEnabled: Boolean(checked) })
@@ -523,7 +524,7 @@ function RunDialogBody({
                       )
                     }
                   />
-                  <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-sm text-foreground">
+                  <div className="flex items-start justify-between gap-3 rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-sm text-foreground">
                     <div className="space-y-0.5">
                       <p className="font-medium">Merge batches into one file</p>
                       <p className="text-xs text-muted-foreground">
@@ -531,6 +532,7 @@ function RunDialogBody({
                       </p>
                     </div>
                     <Switch
+                      className="mt-[var(--ui-title-cap-inset)]"
                       checked={settings.mergeBatches}
                       onCheckedChange={(checked) =>
                         onSettingsChange({ mergeBatches: Boolean(checked) })
@@ -622,7 +624,7 @@ function RunDialogBody({
                   )
                 }
               />
-              <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-sm text-foreground md:col-span-2">
+              <div className="flex items-start justify-between gap-3 rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-sm text-foreground md:col-span-2">
                 <div className="space-y-0.5">
                   <p className="font-medium">Keep running through failures</p>
                   <p className="text-xs text-muted-foreground">
@@ -631,6 +633,7 @@ function RunDialogBody({
                   </p>
                 </div>
                 <Switch
+                  className="mt-[var(--ui-title-cap-inset)]"
                   checked={settings.disableEarlyShutdown}
                   onCheckedChange={(checked) =>
                     onSettingsChange({
@@ -651,7 +654,7 @@ function RunDialogBody({
           <div className="max-h-38 space-y-2 overflow-y-auto px-4 py-1">
             <div className="flex items-center gap-2">
               <HugeiconsIcon
-                icon={AlertCircleIcon}
+                icon={Alert02Icon}
                 className="size-4 text-destructive"
               />
               <Badge

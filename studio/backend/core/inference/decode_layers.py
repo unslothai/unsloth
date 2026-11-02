@@ -1,13 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Install and remove one wrapper layer on an object's method slot (a VAE's ``decode`` / ``_decode``), exactly.
-
-``wrap`` records what the slot held on that object (an instance-dict entry, possibly an instance-bound override, or
-nothing, so the class method showed through) and puts the layer in the instance dict. ``unwrap`` puts back exactly
-that when the layer is still outermost. When later wrappers captured it (they hold it in their closures), the layer
-cannot be cut out: it turns into a pass-through to what it wrapped, and the ``__wrapped__`` chain skips it.
-"""
+"""Installs and removes one wrapper on an instance's method slot (e.g. VAE decode) exactly: wrap
+records the prior instance-dict entry or none, unwrap restores it if still outermost; if a later
+wrapper captured it, it becomes a pass-through skipped by __wrapped__."""
 
 from __future__ import annotations
 

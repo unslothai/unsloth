@@ -332,3 +332,147 @@ def test_direct_helper_with_grad_keeps_the_out_contract(sm75, bias):
     got.float().sum().backward()
     want_x, _ = _grad_oracle(x, packed, scale, b, False)
     _assert_grad_close(x.grad, want_x)
+
+
+def test_t4_backward_fits_in_64mib_headroom(sm75):
+    # dX = dY @ W decoded the whole 112 MiB weight even where the forward ran in chunks.
+    device = sm75
+    N, K = 14336, 4096
+    packed, scale = _weight(N, K, device, seed = 12)
+    x = torch.randn(1, K, dtype = torch.float16, device = device).requires_grad_()
+    mcl.mxfp4_packed_matmul(x.detach(), packed, scale)  # warm kernels and their self-checks
+    with _headroom(64, device):
+        start = torch.cuda.memory_allocated(device)
+        torch.cuda.reset_peak_memory_stats(device)
+        mcl.mxfp4_packed_matmul(x, packed, scale).float().sum().backward()
+        torch.cuda.synchronize(device)
+        peak = torch.cuda.max_memory_allocated(device) - start
+    assert peak < 64 * 2**20
+    want, _ = _grad_oracle(x, packed, scale, None, False)
+    _assert_grad_close(x.grad, want)
+
+
+_COLD_COMPILED_BACKWARD = """
+import torch
+import unsloth  # noqa: F401
+import unsloth.models.mxfp4_compressed_linear as mcl
+import unsloth_zoo.mxfp4_dequant as md
+device = torch.device("cuda", torch.cuda.current_device())
+g = torch.Generator(device = device).manual_seed(10)
+packed = torch.randint(0, 256, (512, 128), dtype = torch.uint8, device = device, generator = g)
+scale = torch.randint(118, 128, (512, 8), dtype = torch.uint8, device = device, generator = g)
+x = torch.randn(3, 256, dtype = torch.float16, device = device).requires_grad_()
+md._KERNEL_VERIFIED.clear()  # nothing decoded eagerly yet
+f = torch.compile(lambda a: mcl.mxfp4_packed_matmul(a, packed, scale), fullgraph = True)
+f(x).float().sum().backward()
+w = mcl.dequantize_mxfp4_packed(packed, scale, torch.float32).double()
+want = torch.ones(3, 512, dtype = torch.float64, device = device) @ w
+err = (x.grad.double() - want).norm() / want.norm()
+assert err.item() < 1e-2, err.item()
+print("OK")
+"""
+
+
+def test_cold_compiled_direct_helper_backward():
+    # The first decode of a process can be the one traced in a compiled backward: no warm self-check to lean on.
+    import os
+    import subprocess
+    import sys
+
+    try:
+        import unsloth_zoo.mxfp4_dequant  # noqa: F401
+    except Exception:
+        pytest.skip("needs unsloth_zoo.mxfp4_dequant")
+    result = subprocess.run(
+        [sys.executable, "-c", _COLD_COMPILED_BACKWARD],
+        env = dict(os.environ),
+        capture_output = True,
+        text = True,
+        timeout = 900,
+    )
+    if result.returncode != 0 or "OK" not in result.stdout:
+        pytest.fail(result.stdout[-2000:] + "\n" + result.stderr[-4000:], pytrace = False)
+
+
+def test_chunked_dx_does_not_overflow_in_a_16bit_chunk_product():
+    # 256 rows all decoding to 6.0, two 128-row chunks with dY = +100 then -100: each fp16 chunk
+    # product is 76800 (> 65504) but the full reduction is exactly 0.
+    device = torch.device("cuda", torch.cuda.current_device())
+    N, K = 256, 64
+    packed = torch.full((N, K // 2), 0x77, dtype = torch.uint8, device = device)
+    scale = torch.full((N, K // 32), 127, dtype = torch.uint8, device = device)
+    x = torch.cat([torch.full((1, 128), 100.0), torch.full((1, 128), -100.0)], dim = 1)
+    x = x.to(device = device, dtype = torch.float16)
+    saved = mcl._DENSE_BUDGET.get(device.index)
+    mcl._DENSE_BUDGET[device.index] = [
+        128 * K * (x.element_size() + 4),
+        1 << 20,
+    ]  # decode + fp32 copy per row
+
+    def _no_tile(*a, **k):
+        raise AssertionError("tile kernel taken: the two 128-row chunks must run")
+
+    real_tile, mcl._zoo_mxfp4_matmul = mcl._zoo_mxfp4_matmul, _no_tile
+    try:
+        y = mcl._bounded_dense_matmul_t_eager(x, packed, scale)
+    finally:
+        mcl._zoo_mxfp4_matmul = real_tile
+        if saved is None:
+            mcl._DENSE_BUDGET.pop(device.index, None)
+        else:
+            mcl._DENSE_BUDGET[device.index] = saved
+    assert torch.isfinite(y).all()
+    assert torch.equal(y, torch.zeros_like(y))
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+def test_chunked_dx_stays_inside_its_own_budget(monkeypatch):
+    """Each dX chunk row holds its 16-bit decode and the fp32 copy the fp32 product reads."""
+    import unsloth  # noqa: F401
+    import unsloth.models.mxfp4_compressed_linear as mcl
+    import unsloth_zoo.mxfp4_gemm as mg
+
+    if not hasattr(mcl, "_bounded_dense_matmul_t_eager"):
+        pytest.fail("no bounded dX on this tree")
+    dev = torch.device("cuda", torch.cuda.current_device())
+    for dt in (torch.float16, torch.bfloat16):
+        if not mg.mxfp4_grouped_gemv_available(dev, dt):
+            pytest.skip("MXFP4 kernel does not self-check here")
+        monkeypatch.setitem(mg._AVAILABLE_DTYPE, (str(dev), dt, "tiles"), False)
+    monkeypatch.setattr(mcl, "_DENSE_BUDGET", {})
+    budgets = []
+    real_free = mcl._free_bytes
+    monkeypatch.setattr(
+        mcl, "_free_bytes", lambda d: budgets.append(real_free(d) // 2) or real_free(d)
+    )
+    monkeypatch.setattr(
+        mcl, "_zoo_mxfp4_matmul", lambda *a, **k: pytest.fail("tile kernel taken: chunks must fit")
+    )
+    N, K = 14336, 4096
+    g = torch.Generator(device = dev).manual_seed(12)
+    packed = torch.randint(0, 256, (N, K // 2), dtype = torch.uint8, device = dev, generator = g)
+    scale = torch.randint(118, 128, (N, K // 32), dtype = torch.uint8, device = dev, generator = g)
+    x = torch.randn(1, N, dtype = torch.float16, device = dev)
+    gc.collect()
+    torch.cuda.synchronize(dev)
+    torch.cuda.empty_cache()
+    start = torch.cuda.memory_allocated(dev)
+    total = torch.cuda.get_device_properties(dev).total_memory
+    torch.cuda.set_per_process_memory_fraction((start + 64 * 2**20) / total, dev)
+    try:
+        torch.cuda.reset_peak_memory_stats(dev)
+        y = mcl._bounded_dense_matmul_t_eager(x, packed, scale)
+        torch.cuda.synchronize(dev)
+        peak = torch.cuda.max_memory_allocated(dev) - start
+    finally:
+        torch.cuda.set_per_process_memory_fraction(1.0, dev)
+        torch.cuda.empty_cache()
+    assert len(budgets) == 1, budgets
+    state = mcl._DENSE_BUDGET[dev.index]
+    assert (
+        state[0] == budgets[0]
+    ), f"a chunk attempt overran the budget and was retried: {budgets[0]} -> {state[0]}"
+    assert peak <= budgets[0] + 2 * 2**20, (peak, budgets[0])
+    w = mcl.dequantize_mxfp4_packed(packed, scale, torch.float32).double()
+    want = x.double() @ w
+    assert ((y.double() - want).norm() / want.norm()).item() < 1e-3

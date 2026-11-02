@@ -50,9 +50,14 @@ function chatApi(body: Record<string, unknown>) {
         notifyChatHistoryUpdated: () => {},
         isCoalescedHistoryEvent: () => false,
       },
+      "../utils/openapi-support": { readAdvertisedPatchGuards: () => null },
       "../utils/load-warning-toast": {
         showLoadWarning: (warning: string | null | undefined) => shown.push(warning),
       },
+      "../lib/load-request": loadWithStubs(
+        new URL("../src/features/chat/lib/load-request.ts", import.meta.url),
+        { "./server-tuning-fields": {} },
+      ),
       "./generation-length.ts": {},
       "./gguf-variants-request": {},
       "./padded-response": { assertCompletedPaddedBody: () => {} },

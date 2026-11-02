@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One process-wide gate around every Studio SQLite connection open and close.
-
-SQLite 3.51.0-3.51.1 deadlocks when one thread's WAL close (unixIsSharingShmNode) races another
-thread's open or close of the same file: they take the VFS and inode mutexes in opposite order
-(fixed in 3.51.2, #10022). The VFS mutex is process-wide, so one wedged file hangs every database
-(#9008): studio.db, auth.db and rag.db all open through here. Gating only close() still deadlocks.
-"""
+"""Serializes every open and close: SQLite 3.51.0-3.51.1 deadlocks when a WAL close races another open"""
 
 from __future__ import annotations
 

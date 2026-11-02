@@ -620,6 +620,10 @@ class TestTheSpillStaysInsideTheSandbox:
         assert "saved to" not in out
         assert (target / f"{digest}.txt").is_symlink()
 
+    @pytest.mark.skipif(
+        os.utime not in os.supports_follow_symlinks,
+        reason = "cannot date a symlink itself here (Windows), so it cannot be made the oldest",
+    )
     def test_pruning_does_not_follow_symlinks_either(self, tmp_path):
         target = _own(tmp_path)
         victim = tmp_path / "victim.txt"
@@ -1150,7 +1154,10 @@ class TestConcurrentSpillsKeepTheirRecords:
 
         root = tmp_path / tools._SPILL_DIR
         recorded = set(tools._spill_manifest(str(root)))
-        on_disk = {str(p.relative_to(root)) for p in root.rglob("*.txt") if p.name != "victim.txt"}
+        # The manifest keys are "/"-joined on every OS.
+        on_disk = {
+            p.relative_to(root).as_posix() for p in root.rglob("*.txt") if p.name != "victim.txt"
+        }
         assert on_disk, results[:1]
         assert on_disk <= recorded, "a spill on disk that the manifest does not record"
 
@@ -1450,6 +1457,39 @@ class TestReadingASpillCannotBeRedirected:
 
         assert tools._file_digest(str(link)) is None
 
+    def test_without_o_nofollow_a_symlink_is_still_refused(self, tmp_path, monkeypatch):
+        """Windows has no O_NOFOLLOW, so the guard above cannot rest on the open flag alone."""
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising = False)
+        elsewhere = tmp_path / "elsewhere.txt"
+        elsewhere.write_text("someone else's file")
+        link = tmp_path / "abcdef123456.txt"
+        link.symlink_to(elsewhere)
+        plain = tmp_path / "fedcba654321.txt"
+        plain.write_text("a spill")
+
+        assert tools._file_digest(str(link)) is None
+        assert tools._file_digest(str(plain)) == hashlib.sha256(b"a spill").hexdigest()
+
+    def test_without_o_nofollow_a_link_swapped_in_before_the_open_is_refused(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising = False)
+        elsewhere = tmp_path / "elsewhere.txt"
+        elsewhere.write_text("someone else's file")
+        name = tmp_path / "abcdef123456.txt"
+        name.write_text("a spill")
+        real_open = os.open
+
+        def _swap_then_open(path, *args, **kwargs):
+            if os.fspath(path) == str(name):
+                os.unlink(name)
+                name.symlink_to(elsewhere)
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", _swap_then_open)
+        assert tools._file_digest(str(name)) is None
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "no FIFOs on this OS")
     def test_a_fifo_is_refused_rather_than_read(self, tmp_path):
         fifo = tmp_path / "abcdef123456.txt"
         os.mkfifo(fifo)
@@ -1515,6 +1555,7 @@ class TestPruningNeverMovesSomethingItCannotPutBack:
         assert open(os.path.join(spill, "receipts.csv")).read() == "the user's own data"
         assert not self._private_names(root)
 
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "no FIFOs on this OS")
     def test_a_fifo_left_at_the_name_is_not_moved(self, tmp_path, monkeypatch):
         root, spill, owned = self._a_recorded_spill(tmp_path)
         os.unlink(spill)
@@ -2089,3 +2130,78 @@ class TestTheResultIsFittedAsItIsReplayed:
         # At most: the head stops on a line boundary.
         assert len(head) <= int(re.match(r"(\d+) chars", notice).group(1)), len(head)
         assert head == tools._defuse_sentinels(head)
+
+
+class TestAPruneReadsTheRecordOnce:
+    def test_the_rewrite_reuses_the_identity_it_already_read(self, tmp_path, monkeypatch):
+        for n in range(tools._SPILL_KEEP + 5):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        record = tools._spill_record_path(str(root))
+        before = open(record, encoding = "utf-8").read().splitlines()[0]
+        reads = []
+        real = tools._spill_record
+
+        def _counting(path):
+            reads.append(path)
+            return real(path)
+
+        monkeypatch.setattr(tools, "_spill_record", _counting)
+        monkeypatch.setattr(tools, "_SPILL_KEEP", 5)
+
+        tools._prune_spills(str(root))
+
+        assert len(reads) == 1, reads
+        assert open(record, encoding = "utf-8").read().splitlines()[0] == before
+        assert len(_spills(root)) == 5
+
+    def test_a_record_forgotten_during_the_prune_does_not_get_its_identity_back(
+        self, tmp_path, monkeypatch
+    ):
+        """Sandbox removal drops the record without the spill lock; a recreated directory must not inherit it."""
+        for n in range(tools._SPILL_KEEP + 5):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        record = tools._spill_record_path(str(root))
+        real = tools._unlink_verified_spill
+
+        def _forget_first(*args, **kwargs):
+            tools._forget_spill_record(record)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(tools, "_unlink_verified_spill", _forget_first)
+        monkeypatch.setattr(tools, "_SPILL_KEEP", 5)
+
+        tools._prune_spills(str(root))
+
+        assert tools._spill_record(str(root))[0] is None
+
+    def test_kept_spills_are_not_hashed_again(self, tmp_path, monkeypatch):
+        for n in range(tools._SPILL_KEEP):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        hashed = []
+        real = tools._file_digest
+        monkeypatch.setattr(
+            tools, "_file_digest", lambda *a, **k: hashed.append(a) or real(*a, **k)
+        )
+
+        tools._prune_spills(str(root))
+
+        assert hashed == []
+        assert len(_spills(root)) == tools._SPILL_KEEP
+
+    def test_a_spill_whose_content_no_longer_matches_is_not_deleted(self, tmp_path, monkeypatch):
+        for n in range(tools._SPILL_KEEP + 1):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        identity, owned = tools._spill_record(str(root))
+        oldest = min(_spills(root), key = os.path.getmtime)
+        name = os.path.relpath(oldest, root).replace(os.sep, "/")
+        owned[name] = (owned[name][0], "0" * 64)
+        tools._write_spill_manifest(str(root), owned, identity = identity)
+        monkeypatch.setattr(tools, "_SPILL_KEEP", tools._SPILL_KEEP - 1)
+
+        tools._prune_spills(str(root))
+
+        assert os.path.exists(oldest)

@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.3 Image Klein prompt upsampling through a llama.cpp sidecar.
-
-FLUX.3 was trained on ~250-word captions, and a short request ("a gymnast doing a backflip") renders broken
-anatomy. BFL ships a prompt upsampler (a Qwen3.5-9B fine-tune) that rewrites the request into such a caption;
-ComfyUI's FLUX.3 templates run it by default. Studio runs a GGUF of it in one ``llama-server`` on an ephemeral
-127.0.0.1 port, loaded on demand and unloaded after the dictation keep-alive (or right after the call when VRAM is
-tight, so the DiT and text encoder never denoise next to it). The diffusers graph's own ``prompt_upsampler`` step
-stays dropped (``diffusion_flux3.flux3_blocks``); this replaces it.
-
-Prompts and sampling follow ComfyUI's FLUX.3 templates. The system prompts are BFL's ``system_prompts.json``
-(black-forest-labs/flux-3-image-klein-pup at commit 8b069751), byte-identical to ``SYSTEM_PROMPTS`` in diffusers'
-``modular_pipelines/flux3/prompt_upsampler.py`` at d42ebf9c6e (huggingface/diffusers#15058). The reference
-preparation is adapted from that file's ``get_reference_size`` / ``prepare_reference`` (Apache-2.0).
-
-Weights only ever come from the unsloth GGUF repo below or a local override; nothing is fetched implicitly by a
-generate call, the UI drives the download. Any failure leaves the prompt as typed.
-"""
+"""FLUX.3 prompt upsampler via llama-server; weights never fetched by generate, failures keep prompt"""
 
 from __future__ import annotations
 
@@ -54,11 +38,13 @@ UPSAMPLER_MODEL_FILES = {
 # divergence than the imatrix Q4_K_M for 6% more bytes, at the same speed.
 UPSAMPLER_DEFAULT_QUANT = "UD-Q4_K_XL"
 UPSAMPLER_MODEL_FILE = UPSAMPLER_MODEL_FILES[UPSAMPLER_DEFAULT_QUANT]
-# Cached earlier defaults, best first, used when UPSAMPLER_MODEL_FILE is absent (fresh installs still download it).
+# What a run reads, best first: an install holding Q4_K_M (the default until UD-Q4_K_XL) keeps enhancing offline.
 UPSAMPLER_CACHED_FALLBACK_QUANTS = ("Q8_0", "Q4_K_M")
 UPSAMPLER_MODEL_FILE_PREFERENCE = (UPSAMPLER_MODEL_FILE,) + tuple(
     UPSAMPLER_MODEL_FILES[quant] for quant in UPSAMPLER_CACHED_FALLBACK_QUANTS
 )
+# Q8_0 is closer to BF16 than the default: a complete Q8_0 pair is not offered a smaller download "for better captions".
+UPSAMPLER_SUPERSEDED_FILES = frozenset((UPSAMPLER_MODEL_FILES["Q4_K_M"],))
 # Vision projector, needed only for edits (reference images).
 UPSAMPLER_MMPROJ_FILE = "mmproj-F16.gguf"
 # Expected sizes of the files as built, for the UI before the download starts (the download reads the real ones).
@@ -729,14 +715,17 @@ def _cached_at_any_revision(filename: str, hub_cache: Optional[Path] = None) -> 
     return None
 
 
-def _cached_pair(hub_cache: Optional[Path] = None) -> tuple[Optional[str], Optional[str]]:
+def _cached_pair(
+    hub_cache: Optional[Path] = None, model_files: tuple = UPSAMPLER_MODEL_FILE_PREFERENCE
+) -> tuple[Optional[str], Optional[str]]:
     """The model and projector from ONE revision (the recorded one first), as the downloader pins them; a model
-    with no projector at its revision when no revision holds both. Files tried in UPSAMPLER_MODEL_FILE_PREFERENCE order."""
+    with no projector at its revision when no revision holds both. A complete pair of any ``model_files`` beats a
+    model alone, so an interrupted default download does not cost edits their reference images."""
     revisions = _candidate_revisions(hub_cache)
     model_only = None
-    for filename in UPSAMPLER_MODEL_FILE_PREFERENCE:
+    for model_file in model_files:
         for revision in revisions:
-            model = _cached_file(filename, hub_cache = hub_cache, revision = revision)
+            model = _cached_file(model_file, hub_cache = hub_cache, revision = revision)
             if model is None:
                 continue
             mmproj = _cached_file(UPSAMPLER_MMPROJ_FILE, hub_cache = hub_cache, revision = revision)
@@ -840,6 +829,23 @@ def status() -> dict:
     if model:
         with suppress(OSError):
             size = os.path.getsize(model)
+    overridden = _overridden()
+    # Not the unpinned _cached_download_paths: any cached quant completes that one.
+    current_downloaded = (
+        overridden
+        or None not in _cached_pair(model_files = (UPSAMPLER_MODEL_FILE,))
+        or (mmproj is not None and model_name not in UPSAMPLER_SUPERSEDED_FILES)
+    )
+    # Bytes still to fetch: a file already cached at any revision is a blob the hub cache reuses.
+    missing = (
+        []
+        if current_downloaded
+        else [
+            name
+            for name in (UPSAMPLER_MODEL_FILE, UPSAMPLER_MMPROJ_FILE)
+            if _cached_at_any_revision(name) is None
+        ]
+    )
     return {
         "supported": find_llama_server_binary() is not None,
         "downloaded": model is not None,
@@ -852,8 +858,11 @@ def status() -> dict:
         "mmproj_filename": UPSAMPLER_MMPROJ_FILE,
         "mmproj_size_bytes": UPSAMPLER_FILE_SIZES.get(UPSAMPLER_MMPROJ_FILE),
         "mmproj_downloaded": mmproj is not None,
+        "current_filename": UPSAMPLER_MODEL_FILE,
+        "current_downloaded": current_downloaded,
+        "current_missing_bytes": sum(UPSAMPLER_FILE_SIZES.get(name, 0) for name in missing),
         # Local files from the env overrides: the repo download is not offered beside them.
-        "override": _overridden(),
+        "override": overridden,
         "download": download_status(),
     }
 

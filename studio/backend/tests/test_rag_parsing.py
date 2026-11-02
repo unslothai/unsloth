@@ -165,6 +165,134 @@ def test_pdf_markdown_off_uses_plain_text(tmp_path, monkeypatch):
     assert "#" not in text and "|" not in text
 
 
+@pytest.mark.parametrize("markdown", [True, False])
+def test_pdf_form_keeps_which_boxes_are_ticked(tmp_path, monkeypatch, markdown):
+    if markdown:
+        pytest.importorskip("pymupdf4llm")
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", markdown)
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((40, 60), "Smoker:")
+    for x, answer, ticked in ((120, "Yes", False), (180, "No", True)):
+        widget = pymupdf.Widget()
+        widget.field_type = pymupdf.PDF_WIDGET_TYPE_CHECKBOX
+        widget.field_name = f"smoker_{answer.lower()}"
+        widget.field_label = f"Smoker {answer}"
+        widget.rect = pymupdf.Rect(x, 50, x + 12, 62)
+        widget.field_value = ticked
+        page.add_widget(widget)
+        page.insert_text((x + 16, 60), answer)
+    pdf = tmp_path / "form.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    text = "\n".join(p.text for p in parsers.parse(str(pdf)))
+    assert "Smoker No: Yes" in text
+    assert "Smoker Yes" not in text
+
+
+@pytest.mark.parametrize("shared_field", [True, False])
+def test_pdf_form_names_the_ticked_box_when_boxes_share_a_name_or_tooltip(tmp_path, shared_field):
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    refs = []
+    for x, answer in ((120, "Yes"), (210, "No")):
+        widget = pymupdf.Widget()
+        widget.field_type = pymupdf.PDF_WIDGET_TYPE_CHECKBOX
+        widget.field_name = f"smoker_{answer.lower()}"
+        widget.field_label = f"Smoker {answer}" if shared_field else "Smoker"
+        widget.field_value = answer == ("Yes" if shared_field else "No")
+        widget.rect = pymupdf.Rect(x, 50, x + 12, 62)
+        refs.append(page.add_widget(widget).xref)
+    if shared_field:
+        # One /Btn field, two kids with export values Yes / No; both inherit /V /Yes.
+        parent = doc.get_new_xref()
+        doc.update_object(
+            parent, f"<< /FT /Btn /T (smoker) /V /Yes /Kids [{refs[0]} 0 R {refs[1]} 0 R] >>"
+        )
+        for ref in refs:
+            doc.xref_set_key(ref, "Parent", f"{parent} 0 R")
+            for key in ("T", "FT", "V"):
+                doc.xref_set_key(ref, key, "null")
+        _, on = doc.xref_get_key(refs[1], "AP/N/Yes")
+        _, off = doc.xref_get_key(refs[1], "AP/N/Off")
+        doc.xref_set_key(refs[1], "AP/N", f"<< /Off {off} /No {on} >>")
+        doc.xref_set_key(doc.pdf_catalog(), "AcroForm/Fields", f"[{parent} 0 R]")
+    pdf = tmp_path / "form.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    with pymupdf.open(str(pdf)) as reopened:
+        lines = parsers._pdf_form_field_lines(reopened[0])
+    if shared_field:
+        # pymupdf 2.x labels the kid with its parent field ("smoker: Yes").
+        assert len(lines) == 1 and lines[0].endswith(": Yes") and "No" not in lines[0]
+    else:
+        assert lines == ["Smoker (smoker_no): Yes"]
+
+
+@pytest.mark.parametrize("flag", [1, 2, 32])
+def test_pdf_form_skips_invisible_hidden_and_noview_fields(tmp_path, flag):
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for name, y in (("shown", 80), ("masked", 120)):
+        widget = pymupdf.Widget()
+        widget.field_type = pymupdf.PDF_WIDGET_TYPE_TEXT
+        widget.field_name = name
+        widget.field_value = f"{name} value"
+        widget.rect = pymupdf.Rect(40, y, 240, y + 20)
+        xref = page.add_widget(widget).xref
+    doc.xref_set_key(xref, "F", str(flag))
+    pdf = tmp_path / "form.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    with pymupdf.open(str(pdf)) as reopened:
+        assert parsers._pdf_form_field_lines(reopened[0]) == ["shown: shown value"]
+
+
+# PyMuPDF raises while loading either widget; main never read widgets, so it parsed these.
+@pytest.mark.parametrize("key, value", [("DA", "(garbage Tf)"), ("Parent", "self")])
+@pytest.mark.parametrize("markdown", [True, False])
+def test_pdf_with_a_malformed_form_field_still_reads_its_text(
+    tmp_path, monkeypatch, markdown, key, value
+):
+    if markdown:
+        pytest.importorskip("pymupdf4llm")
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", markdown)
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((40, 60), "Budget: 4200")
+    widget = pymupdf.Widget()
+    widget.field_type = pymupdf.PDF_WIDGET_TYPE_TEXT
+    widget.field_name = "notes"
+    widget.field_value = "x"
+    widget.rect = pymupdf.Rect(40, 80, 240, 100)
+    xref = page.add_widget(widget).xref
+    doc.xref_set_key(xref, key, f"{xref} 0 R" if value == "self" else value)
+    pdf = tmp_path / "damaged.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    assert "Budget: 4200" in "\n".join(p.text for p in parsers.parse(str(pdf)))
+
+
 def test_pdf_bytes_use_same_extraction_path(tmp_path, monkeypatch):
     from core.rag import config, parsers
 
@@ -1104,6 +1232,16 @@ def test_html_ordered_lists_keep_their_numbers(tmp_path):
     assert text == (
         "1. Unplug\n2. Wait\nNote\n4. Plug in\na. Left\ne. Right\n3. Three\n2. Two\n1. One"
     )
+
+
+def test_html_check_boxes_keep_their_ticked_state(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<ul><li><input type="checkbox" checked> Ship</li><li><input type="checkbox"> Docs</li></ul>'
+        '<ol><li><input type="checkbox" checked disabled />Test</ol>'
+        '<p>Smoker:<input type="radio" checked> Yes <input type="radio"> No <input type="text"> Age</p>',
+    )
+    assert text == "☒ Ship\n☐ Docs\n1. ☒ Test\nSmoker: ☒ Yes ☐ No Age"
 
 
 def test_html_list_numbers_stay_in_their_cell(tmp_path):

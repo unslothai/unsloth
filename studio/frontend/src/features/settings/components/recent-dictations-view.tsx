@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import {
   AlertDialog,
@@ -36,12 +37,11 @@ import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import {
-  Copy01Icon,
-  Delete02Icon,
   Search01Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
-import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { MessageCircleIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
@@ -51,7 +51,6 @@ import {
 } from "../stores/voice-settings-store";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
-/** Dictations shown per page; "Show more" reveals the next page. */
 const PAGE_SIZE = 20;
 
 type PendingDelete =
@@ -62,13 +61,16 @@ type PendingDelete =
 type SortOrder = "newest" | "oldest" | "az";
 
 function formatDictationDate(ms: number): string {
-  return new Date(ms).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return new Date(ms).toLocaleString(
+    undefined,
+    withTimeFormat({
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }),
+  );
 }
 
 export function RecentDictationsView({
@@ -81,6 +83,7 @@ export function RecentDictationsView({
   onBack: () => void;
 }) {
   const t = useT();
+  useTimeFormat();
   const recentDictations = useVoiceSettingsStore((s) => s.recentDictations);
   const removeRecentDictation = useVoiceSettingsStore(
     (s) => s.removeRecentDictation,
@@ -89,13 +92,11 @@ export function RecentDictationsView({
     (s) => s.clearRecentDictations,
   );
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null);
-  // Only "Delete chat and dictation" removes a chat, so only that path shows
-  // the switch. Preselected from the preference, off for this one if asked.
+  // Only "Delete chat and dictation" removes a chat, so only that path shows the switch.
   const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
   const [search, setSearch] = useState("");
   const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
-  // Pagination is keyed to the search/sort inputs so changing either restarts
-  // from the first page without an effect.
+  // Keyed on the inputs so a change restarts from page one without an effect.
   const pageKey = `${sortOrder}::${search}`;
   const [page, setPage] = useState({ key: pageKey, count: PAGE_SIZE });
   const visibleCount = page.key === pageKey ? page.count : PAGE_SIZE;
@@ -152,7 +153,6 @@ export function RecentDictationsView({
     }
   }
 
-  // Delete a linked dictation together with the chat it was used in.
   async function confirmDeleteWithChat(deleteFiles: boolean) {
     if (pendingDelete?.kind !== "one") {
       return;
@@ -172,7 +172,6 @@ export function RecentDictationsView({
           item,
           useChatRuntimeStore.getState().activeThreadId ?? undefined,
           () => {
-            // The deleted chat was open; leave the user on a fresh chat.
             void navigate({
               to: "/chat",
               search: { new: crypto.randomUUID() },
@@ -268,7 +267,7 @@ export function RecentDictationsView({
               }
               className="text-destructive hover:text-destructive"
             >
-              <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="mr-1.5 size-3.5" />
               {t("settings.voice.recents.delete")}
             </Button>
           </div>
@@ -280,7 +279,7 @@ export function RecentDictationsView({
       ) : (
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-2">
-            <InputGroup className="h-8 flex-1">
+            <InputGroup className="h-control flex-1">
               <InputGroupAddon align="inline-start">
                 <HugeiconsIcon
                   icon={Search01Icon}
@@ -301,8 +300,7 @@ export function RecentDictationsView({
               onValueChange={(value) => setSortOrder(value as SortOrder)}
             >
               <SelectTrigger
-                size="sm"
-                className="w-36 shrink-0"
+                className="w-36 shrink-0 data-[size=default]:h-control"
                 aria-label={t("settings.voice.recents.sortLabel")}
               >
                 <SelectValue />
@@ -325,7 +323,7 @@ export function RecentDictationsView({
               onClick={() => setPendingDelete({ kind: "all" })}
               className="shrink-0 text-destructive hover:text-destructive"
             >
-              <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="mr-1.5 size-3.5" />
               {t("settings.voice.recents.clear")}
             </Button>
           </div>
@@ -442,7 +440,7 @@ export function RecentDictationsView({
                       className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <HugeiconsIcon
-                        icon={Delete02Icon}
+                        icon={TrashIcon}
                         strokeWidth={1.75}
                         className="size-4"
                       />
@@ -495,7 +493,6 @@ export function RecentDictationsView({
                   : t("settings.voice.recents.deleteDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {/* Only the linked case offers a chat delete, so only it can remove files. */}
           {pendingDelete?.kind === "one" && pendingDelete.dictation.chatId ? (
             <DeleteChatFilesSwitch
               id="dictation-delete-files"
@@ -510,8 +507,7 @@ export function RecentDictationsView({
                 variant="destructive"
                 className="text-destructive hover:text-destructive"
                 onClick={(event) => {
-                  // Close only through state so the dismissal can't race a
-                  // click on whatever ends up under the pointer.
+                  // Close only through state so dismissal cannot race a click underneath.
                   event.preventDefault();
                   void confirmDeleteWithChat(deleteFilesOnDelete);
                 }}

@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""NVIDIA inventory read from the driver's own libraries, for a host nvidia-smi cannot answer for.
-
-An absent, stale or hanging nvidia-smi read as a CPU host, which is fatal to the install.
-Ollama, Jan and lemonade ask NVML or the CUDA driver API instead, which ship with the driver.
-
-* NVML (`libnvidia-ml.so.1` / `nvml.dll`): the PHYSICAL inventory, unmasked like nvidia-smi;
-  the caller applies CUDA_VISIBLE_DEVICES.
-* the CUDA driver API (`libcuda.so.1` / `nvcuda.dll`): honours the mask; used when NVML is
-  unavailable.
-
-Always a child process with a deadline: these libraries block in-process in the states that
-hang nvidia-smi. Failing both, `/proc/driver/nvidia/version` names the driver, and the driver
-major bounds the CUDA major (13 needs R580+, 12 R525+, 11 R450+).
-"""
+"""NVIDIA inventory from driver libraries when nvidia-smi is absent or hangs. NVML gives physical
+devices (caller applies CUDA_VISIBLE_DEVICES); the CUDA driver API honours the mask. Always a
+child with a deadline; last resort /proc/driver/nvidia/version, whose major bounds the CUDA
+major."""
 
 from __future__ import annotations
 
@@ -24,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import uuid as uuid_lib
 from dataclasses import dataclass, field
 
 
@@ -32,7 +23,7 @@ class NvidiaLibraryInventory:
     source: str  # "nvml" or "cuda"
     cuda_driver_version: tuple[int, int] | None
     driver_version: str
-    # index, uuid, name, compute_cap ("8.9"); NVML order is physical and unmasked.
+    # NVML order is physical and unmasked.
     devices: list[dict[str, str]] = field(default_factory = list)
 
 
@@ -64,14 +55,13 @@ def _load(kind: str) -> ctypes.CDLL | None:
 
 
 def _split_cuda_version(packed: int) -> tuple[int, int] | None:
-    # 13010 -> (13, 1), as CUDA packs it.
     if packed <= 0:
         return None
     return packed // 1000, (packed % 1000) // 10
 
 
 class _NvmlMemory(ctypes.Structure):
-    # nvmlMemory_t (v1): bytes, in this order.
+    # nvmlMemory_t (v1) field order.
     _fields_ = [
         ("total", ctypes.c_ulonglong),
         ("free", ctypes.c_ulonglong),
@@ -164,8 +154,7 @@ def _probe_nvml() -> dict | None:
                     "memory_free_mib": str(memory.free // (1024 * 1024)),
                 }
             )
-            # MIG slices, so a CUDA_VISIBLE_DEVICES=MIG-... assignment can be named: same
-            # parent index and capability, their own uuid and memory, marked "mig".
+            # MIG slices, so a CUDA_VISIBLE_DEVICES=MIG-... assignment can be named.
             for mig, mig_uuid, mig_memory in _mig_children(nvml, handle):
                 devices.append(
                     {
@@ -178,7 +167,16 @@ def _probe_nvml() -> dict | None:
                         "mig": "1",
                     }
                 )
+        # R570+ enumerates one CI per GI: read CUDA's UUID order here (cuInit, no context).
+        cuda_devices = None
+        if sys.platform == "linux" and any(r.get("mig") for r in devices):
+            match = re.match(r"(\d+)\.", version)
+            if match and int(match[1]) >= 570:
+                enumerated = _probe_cuda_driver(strict = True)
+                if enumerated is not None and all(r.get("uuid") for r in enumerated["devices"]):
+                    cuda_devices = enumerated["devices"]
         return {
+            "cuda_devices": cuda_devices,
             "source": "nvml",
             "cuda_driver_version": list(cuda) if cuda else None,
             "driver_version": version,
@@ -191,7 +189,8 @@ def _probe_nvml() -> dict | None:
             pass
 
 
-def _probe_cuda_driver() -> dict | None:
+def _probe_cuda_driver(strict: bool = False) -> dict | None:
+    """``strict``: None when any device cannot be read, so a MIG ordinal map is never partial."""
     cuda = _load("cuda")
     if cuda is None or cuda.cuInit(0) != 0:
         return None
@@ -201,11 +200,15 @@ def _probe_cuda_driver() -> dict | None:
         version = _split_cuda_version(packed.value)
     count = ctypes.c_int(0)
     if cuda.cuDeviceGetCount(ctypes.byref(count)) != 0:
+        if strict:
+            return None
         count.value = 0
     devices = []
     for index in range(count.value):
         device = ctypes.c_int(0)
         if cuda.cuDeviceGet(ctypes.byref(device), index) != 0:
+            if strict:
+                return None
             continue
         name = ctypes.create_string_buffer(96)
         cuda.cuDeviceGetName(name, 96, device)
@@ -213,10 +216,17 @@ def _probe_cuda_driver() -> dict | None:
         # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
         ok = cuda.cuDeviceGetAttribute(ctypes.byref(major), 75, device) == 0
         ok = ok and cuda.cuDeviceGetAttribute(ctypes.byref(minor), 76, device) == 0
+        device_uuid = ""
+        # The instance's MIG UUID on a MIG device (CUDA 11.4+).
+        get_uuid = getattr(cuda, "cuDeviceGetUuid_v2", None) if strict else None
+        if get_uuid is not None:
+            raw_uuid = (ctypes.c_ubyte * 16)()
+            if get_uuid(ctypes.byref(raw_uuid), device) == 0:
+                device_uuid = str(uuid_lib.UUID(bytes = bytes(raw_uuid)))
         devices.append(
             {
                 "index": str(index),
-                "uuid": "",
+                "uuid": device_uuid,
                 "name": name.value.decode("utf-8", "replace"),
                 "compute_cap": f"{major.value}.{minor.value}" if ok else "",
                 # Memory needs a context, which this probe never creates.

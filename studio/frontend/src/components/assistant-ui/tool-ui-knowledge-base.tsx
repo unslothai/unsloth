@@ -133,8 +133,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   const hasText = useAuiState(({ message }) =>
     partsHaveNonEmptyText(message.content),
   );
-  // Ask permission gates every local tool call, and what is being approved
-  // lives inside the content while Allow/Deny render outside it.
+  // What is being approved lives inside the content, while Allow/Deny render outside it.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 

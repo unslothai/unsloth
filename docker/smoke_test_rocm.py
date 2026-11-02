@@ -32,8 +32,6 @@ def check_torch() -> None:
     banner("torch ROCm build")
     import torch
 
-    # torch.version.hip is the canonical indicator of a ROCm wheel.
-    # It is None for CUDA builds.
     if torch.version.hip is None:
         sys.exit(
             f"FAIL: this is not a ROCm torch build ({torch.__version__}). "
@@ -52,19 +50,13 @@ def check_torch() -> None:
     for i in range(n):
         name = torch.cuda.get_device_name(i)
         props = torch.cuda.get_device_properties(i)
-        # PyTorch ROCm surfaces the gfx code in gcnArchName (e.g.
-        # "gfx1100:sramecc+"); strip the feature suffix for readability.
+        # gcnArchName looks like "gfx1100:sramecc+"; strip the feature suffix.
         arch = getattr(props, "gcnArchName", "").split(":")[0]
         bf16 = torch.cuda.is_bf16_supported()
         print(f"device {i}    {name}  arch={arch}  bf16={bf16}")
     print()
-    # ROCm does not expose a reliable sm_X.Y compute capability the way NVIDIA
-    # does -- the values from get_device_properties() vary by ROCm version and
-    # don't map cleanly to gfx codes. Which arches the wheels carry is decided
-    # by the ROCm version and index the image was built with (Dockerfile.rocm);
-    # the entrypoint already printed the arch note for this card.
-    # A device the runtime lists but cannot run a kernel on shows up here, not
-    # in device_count().
+    # ROCm compute capability does not map cleanly to gfx codes, so run a real kernel; a
+    # listed but unusable device fails here.
     x = torch.ones(64, 64, device = "cuda", dtype = torch.float16)
     y = (x @ x).float().sum().item()
     assert y == 64 * 64 * 64, f"FAIL: fp16 matmul on the GPU returned {y}, expected {64 * 64 * 64}"
@@ -73,9 +65,7 @@ def check_torch() -> None:
 
 def check_imports() -> None:
     banner("dep imports")
-    # unsloth must be imported before transformers/trl/peft so its
-    # monkey-patches land, and before unsloth_zoo so it sees
-    # UNSLOTH_IS_PRESENT. Import order matches the CUDA smoke test.
+    # Import unsloth before transformers/trl/peft and unsloth_zoo, as in the CUDA smoke test.
     import unsloth
 
     print(f"unsloth     {unsloth.__version__}")

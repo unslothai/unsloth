@@ -27,8 +27,7 @@ router = APIRouter()
 
 class TranscriptRequest(BaseModel):
     url: str = Field(max_length = 2048)
-    # Caption languages to prefer, best first. The UI forwards navigator.languages, so the per-tag cap has to
-    # clear a fully extended BCP 47 tag rather than reject the request.
+    # Per-tag cap must fit a fully extended BCP 47 tag from navigator.languages.
     languages: list[Annotated[str, Field(max_length = 64)]] = Field(
         default_factory = list,
         max_length = 8,

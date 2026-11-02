@@ -245,3 +245,139 @@ def test_non_blocking_batches_only_for_pinned_cuda_loaders(monkeypatch):
     t, config = trainer()
     assert _unsloth_non_blocking_batches(t) is False and config.non_blocking is False
     assert _unsloth_non_blocking_batches(SimpleNamespace()) is False
+
+
+def _compile_over_segment_counts(dynamic):
+    import torch._dynamo as dynamo
+    from torch._dynamo.utils import counters
+
+    def step(x, lengths):
+        packing.clear_packed_caches()
+        _, cu_seqlens, max_seqlen = packing.get_packed_info_from_kwargs(
+            {"packed_seq_lengths": lengths}, x.device
+        )
+        return x * max_seqlen + cu_seqlens[-1]
+
+    dynamo.reset()
+    counters.clear()
+    compiled = torch.compile(step, backend = "eager", dynamic = dynamic)
+    for n in range(3, 15):
+        lengths = torch.full((n,), 4, dtype = torch.int32)
+        out = compiled(torch.ones(4), lengths)
+        assert torch.equal(out, torch.ones(4) * 4 + 4 * n)
+    graphs = counters["stats"]["unique_graphs"]
+    dynamo.reset()
+    return graphs
+
+
+def test_compiled_dynamic_does_not_specialize_on_segment_count():
+    # 12 segment counts: the tensor path traces a handful of graphs; a host tuple of lengths
+    # would trace one per count and hit the recompile limit.
+    assert _compile_over_segment_counts(dynamic = True) <= 4
+
+
+def test_compiling_takes_tensor_path(monkeypatch):
+    monkeypatch.setattr(packing, "_is_compiling", lambda: True)
+    seq = torch.tensor([3, 5, 2], dtype = torch.int64)
+    lengths, cu, max_seqlen = packing.get_packed_info_from_kwargs(
+        {"packed_seq_lengths": seq}, "cpu"
+    )
+    old = _old_packed_info(seq, "cpu")
+    _same(lengths, old[0])
+    _same(cu, old[1])
+    assert max_seqlen == old[2]
+    # No host tuple recorded: downstream helpers take their own (traceable) route.
+    assert packing._cached_host_lengths(lengths) is None
+
+
+def test_pinned_to_device_falls_back_to_pageable(monkeypatch):
+    t = torch.arange(5, dtype = torch.int32)
+
+    def refuse(self, *args, **kwargs):
+        raise RuntimeError("cudaHostAlloc failed: out of pinned memory")
+
+    monkeypatch.setattr(torch.Tensor, "pin_memory", refuse)
+    _same(packing._pinned_to_device(t, "cpu"), t)
+
+
+class _SaveForBackward(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, saved):
+        ctx.save_for_backward(saved)
+        return x * 2
+
+    @staticmethod
+    def backward(ctx, grad):
+        return grad * 2, None
+
+
+def _survives_backward(saved):
+    x = torch.randn(4, requires_grad = True)
+    _SaveForBackward.apply(x, saved).sum().backward()
+
+
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+def test_inference_mode_metadata_is_not_served_to_a_training_step(dtype):
+    """inference_mode forward then a training forward on the same batch: no inference tensors."""
+    cpu = torch.device("cpu")
+    kwargs = {"packed_seq_lengths": torch.tensor([3, 5], dtype = dtype)}
+    with torch.inference_mode():
+        info = packing.get_packed_info_from_kwargs(kwargs, cpu)
+        padded = packing.cover_padded_cu_seqlens(info, 10)
+        mask = packing.build_sdpa_packed_attention_mask(info, dtype = torch.float32, device = cpu)
+    assert torch.is_inference(info[1])
+    train = packing.get_packed_info_from_kwargs(kwargs, cpu)
+    assert train is not info and not torch.is_inference(train[1])
+    assert train[1].tolist() == [0, 3, 8] and train[2] == 5
+    _survives_backward(train[1])
+    train_padded = packing.cover_padded_cu_seqlens(train, 10)
+    assert not torch.is_inference(train_padded[0]) and train_padded[0].tolist() == [0, 3, 8, 10]
+    _survives_backward(train_padded[0])
+    train_mask = packing.build_sdpa_packed_attention_mask(train, dtype = torch.float32, device = cpu)
+    assert not torch.is_inference(train_mask)
+    torch.testing.assert_close(train_mask, mask.clone())
+    _survives_backward(train_mask)
+    assert packing.get_packed_info_from_kwargs(kwargs, cpu) is train
+    assert packing.cover_padded_cu_seqlens(train, 10) is train_padded
+    assert (
+        packing.build_sdpa_packed_attention_mask(train, dtype = torch.float32, device = cpu)
+        is train_mask
+    )
+
+
+def test_xformers_mask_lru_keeps_inference_masks_out_of_training(monkeypatch):
+    class _Mask:
+        @classmethod
+        def from_seqlens(cls, lengths):
+            return cls()
+
+    monkeypatch.setattr(packing, "_XFormersBlockMask", _Mask)
+    monkeypatch.setattr(packing, "move_xformers_attention_bias", lambda mask, device: mask)
+    packing._XFORMERS_MASK_CACHE.clear()
+    cpu = torch.device("cpu")
+    with torch.inference_mode():
+        evaluated = packing._get_cached_block_mask((3, 5), None, cpu)
+        assert packing._get_cached_block_mask((3, 5), None, cpu) is evaluated
+    trained = packing._get_cached_block_mask((3, 5), None, cpu)
+    assert trained is not evaluated
+    assert packing._get_cached_block_mask((3, 5), None, cpu) is trained
+    # A training-built mask serves inference_mode too: no second entry per lengths tuple.
+    packing._XFORMERS_MASK_CACHE.clear()
+    trained = packing._get_cached_block_mask((2, 2), None, cpu)
+    with torch.inference_mode():
+        assert packing._get_cached_block_mask((2, 2), None, cpu) is trained
+    assert len(packing._XFORMERS_MASK_CACHE) == 1
+    packing._XFORMERS_MASK_CACHE.clear()
+
+
+def test_training_metadata_is_reused_under_inference_mode():
+    cpu = torch.device("cpu")
+    kwargs = {"packed_seq_lengths": torch.tensor([3, 5], dtype = torch.int32)}
+    train = packing.get_packed_info_from_kwargs(kwargs, cpu)
+    with torch.inference_mode():
+        assert packing.get_packed_info_from_kwargs(kwargs, cpu) is train
+        other = {"packed_seq_lengths": torch.tensor([2, 2], dtype = torch.int32)}
+        info = packing.get_packed_info_from_kwargs(other, cpu)
+        assert packing.get_packed_info_from_kwargs(other, cpu) is info
+    assert packing.get_packed_info_from_kwargs(kwargs, cpu) is not train
+    _survives_backward(packing.get_packed_info_from_kwargs(kwargs, cpu)[1])

@@ -930,8 +930,11 @@ def test_native_cpu_restart_restages_the_model_upscaler(tmp_path, monkeypatch):
         target = (96, 96),
         refine_steps = 4,
     )
+    state = _State(family = _fam("sdxl"), server = _Server(old_dir, fail = True))
+    # The replacement is published only while the backend still holds the server it replaces.
+    b._state = state
     images, _ = b._generate_server(
-        _State(family = _fam("sdxl"), server = _Server(old_dir, fail = True)),
+        state,
         prompt = "p",
         negative_prompt = None,
         width = 64,
@@ -953,6 +956,7 @@ def test_native_cpu_restart_restages_the_model_upscaler(tmp_path, monkeypatch):
         new_dir,
     ]  # staged again in the new server's dir
     assert not any(p.exists() for p in staged_paths)  # both removed after
+    assert b._state.server is new_server
 
 
 def test_diffusers_status_names_why_hires_is_hidden():
@@ -1545,3 +1549,33 @@ def test_generation_log_line_takes_a_latent_base_pass():
         {"images": [torch.zeros(1, 4, 8, 8)], "workflow": "txt2img"}, engine = "diffusers"
     )
     assert "images=1" in line and "size=" not in line
+
+
+@pytest.mark.parametrize("strength", [0.3, 0.5, 0.6, 0.75, 0.99])
+def test_img2img_never_schedules_zero_steps_on_a_floor_pipeline(strength):
+    n = hires.min_inference_steps(1, strength, hires.RULE_FLOOR)
+    assert hires.steps_run(n, strength, hires.RULE_FLOOR) == 1
+    assert hires.steps_run(n - 1, strength, hires.RULE_FLOOR) == 0
+
+
+def test_min_inference_steps_keeps_counts_that_already_denoise():
+    assert hires.min_inference_steps(3, 0.6, hires.RULE_FLOOR) == 3
+    assert hires.min_inference_steps(1, 0.6, hires.RULE_FLOW) == 1
+    assert hires.min_inference_steps(1, 1.0, hires.RULE_FLOOR) == 1
+
+
+def test_img2img_inpaint_and_upscale_raise_steps_before_the_call():
+    import core.inference.diffusion as diffusion
+
+    src = inspect.getsource(diffusion)
+    guard = src.index("diffusion_hires.min_inference_steps(")
+    assert 'workflow in ("img2img", "inpaint", "upscale")' in src[guard - 600 : guard]
+    assert src.index('"num_inference_steps": steps,', guard) > guard
+
+
+def test_upscale_default_strength_keeps_one_step_and_hires_refine_is_untouched():
+    # The standalone Upscale default strength is 0.35; the Hires refine already schedules >= 1 step.
+    n = hires.min_inference_steps(1, 0.35, hires.RULE_FLOOR)
+    assert n == 3 and hires.steps_run(n, 0.35, hires.RULE_FLOOR) == 1
+    refine = hires.refine_inference_steps(1, 0.35, hires.RULE_FLOOR)
+    assert hires.min_inference_steps(refine, 0.35, hires.RULE_FLOOR) == refine

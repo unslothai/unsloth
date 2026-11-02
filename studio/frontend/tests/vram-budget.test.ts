@@ -344,7 +344,7 @@ test("Reload is reachable when only the server-wide budget changed", () => {
   // The budget is on no per-model field, so the page baseline never changes.
   assert.match(
     pageSource.replace(/\s+/g, " "),
-    /isActiveModel && atBaseline && !rememberChanged && !budgetReloadRequired/,
+    /isActiveModel && atBaseline && !budgetReloadRequired/,
   );
   assert.match(
     pageSource.replace(/\s+/g, " "),

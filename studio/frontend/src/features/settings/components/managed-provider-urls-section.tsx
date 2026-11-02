@@ -21,7 +21,6 @@ export function ManagedProviderUrlsSection() {
   );
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  // A backend that does not serve the route has no such setting to show.
   const [absent, setAbsent] = useState(false);
 
   useEffect(() => {

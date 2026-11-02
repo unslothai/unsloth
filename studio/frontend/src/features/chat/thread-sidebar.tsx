@@ -37,10 +37,10 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   BookOpen02Icon,
   ColumnInsertIcon,
-  Delete02Icon,
   Download01Icon,
   MoreHorizontalIcon,
   NewReleasesIcon,
@@ -213,7 +213,6 @@ export function ThreadSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup className="flex-1 px-4">
-          {/* Recents label with export-all menu */}
           <div className="flex items-center justify-between px-2 py-1.5">
             <span className="text-xs font-medium text-muted-foreground/80">Recents</span>
             <DropdownMenu>
@@ -319,7 +318,7 @@ export function ThreadSidebar({
                         className="text-destructive focus:text-destructive"
                         onSelect={() => void handleDelete(item)}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="mr-2 size-4" />
+                        <HugeiconsIcon icon={TrashIcon} className="mr-2 size-4" />
                         Delete
                       </DropdownMenuItem>
                     </DropdownMenuContent>
@@ -356,7 +355,6 @@ export function ThreadSidebar({
         </a>
       </SidebarFooter>
 
-      {/* Rename dialog */}
       <Dialog open={renamingItem !== null} onOpenChange={(open) => { if (!open) setRenamingItem(null); }}>
         <DialogContent
           className="corner-squircle dialog-soft-surface sm:max-w-sm"

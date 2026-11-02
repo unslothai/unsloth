@@ -193,7 +193,7 @@ class TestFilterRequirements:
         req = self._write_req(
             tmp_path,
             """\
-            git+https://github.com/meta-pytorch/OpenEnv.git
+            git+https://github.com/openenv/OpenEnv.git
             numpy
         """,
         )

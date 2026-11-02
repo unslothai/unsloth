@@ -3,7 +3,6 @@
 
 """Model loading and streaming shared by `inference` and `chat`."""
 
-import asyncio
 import json
 import os
 import re
@@ -14,9 +13,7 @@ from typing import List, Literal, Optional
 
 import typer
 
-# Canonical speculative-decoding modes, mirroring the backend's _CANONICAL_SPEC_MODES. Named once
-# so the CLI's option annotations, the HTTP payload builders and the in-process loader cannot
-# drift apart; typer reads it at runtime to validate --speculative-type.
+# Mirrors the backend's _CANONICAL_SPEC_MODES; typer validates --speculative-type with it.
 SpeculativeType = Literal[
     "auto", "mtp", "dspark", "dflash", "ngram", "mtp+ngram", "off", "ngram-simple"
 ]
@@ -25,8 +22,7 @@ _THINK_OPEN = "<think>"
 _THINK_BLOCK = re.compile(rf"{re.escape(_THINK_OPEN)}.*?</think>", re.DOTALL)
 _STREAMED_ERROR_PREFIX = "Error: "
 
-# Cloudflare (in front of remote Unsloth proxies like RunPod) 403s the default
-# "Python-urllib/X.Y" User-Agent as a bot; send a real one on every request.
+# Cloudflare 403s the default urllib User-Agent as a bot.
 _USER_AGENT = "unsloth-cli"
 _MPI_ENV_PAIRS = (
     ("OMPI_COMM_WORLD_RANK", "OMPI_COMM_WORLD_SIZE"),
@@ -74,10 +70,7 @@ def urlopen_local(request, timeout):
     return _opener(True, True).open(request, timeout = timeout)
 
 
-# /api/inference/load and /unload pad their body so a proxy cannot time a slow load out,
-# committing the 200 before the work finishes. A failure found after that travels only in-band
-# under this key, so a client that treats any 200 as success reports a failed load as a
-# successful one.
+# load and unload pad the body and commit 200 early, so a late failure rides only in-band under this key; a bare 200 reads as success.
 _DEFERRED_ERROR_KEY = "_deferred_error"
 
 
@@ -186,8 +179,7 @@ def ensure_studio_backend_path(*, seed_cache_env: bool = True) -> None:
 def configure_quiet_logging() -> None:
     import logging
 
-    # The CLI never configures structlog, so without this every backend INFO line prints. LOG_LEVEL
-    # is exported so the worker subprocess inherits it.
+    # The CLI never configures structlog; LOG_LEVEL is exported so the worker inherits it.
     level_name = os.environ.setdefault("LOG_LEVEL", "WARNING").upper()
     level = getattr(logging, level_name, logging.WARNING)
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
@@ -325,8 +317,7 @@ def visible_text(
 
 
 def stream_to_stdout(stream, show_thinking: bool) -> str:
-    # Backends yield the full text-so-far on each step (llama.cpp ends with a metadata dict,
-    # skipped); print the growing tail, return the raw text.
+    # Backends yield the full text-so-far each step (llama.cpp ends with a metadata dict, skipped).
     raw = ""
     shown = ""
     for chunk in stream:
@@ -374,8 +365,7 @@ def collect_stream(stream, show_thinking: bool) -> str:
 
 
 def raise_on_streamed_error(stream):
-    # Match real backend errors by type (GenStreamError), not the "Error:" text prefix, so a
-    # completion whose text opens with "Error:" is not misread as a backend failure.
+    # Match backend errors by GenStreamError type, not the Error: text prefix, so completion text opening with Error: is not misread.
     try:
         ensure_studio_backend_path()
         from core.inference.orchestrator import GenStreamError
@@ -416,6 +406,102 @@ def stats_hit_token_limit(stats) -> bool:
     return bool(stats.get("truncated")) or stats.get("finish_reason") == "length"
 
 
+_IMAGE_MIME_TYPES = {
+    "BMP": "image/bmp",
+    "GIF": "image/gif",
+    "JPEG": "image/jpeg",
+    "MPO": "image/jpeg",
+    "PNG": "image/png",
+    "TIFF": "image/tiff",
+    "WEBP": "image/webp",
+}
+
+
+def image_part(path) -> dict:
+    """An OpenAI image_url part carrying the file as a data URL, the shape Studio's chat sends."""
+    import base64
+    import io
+
+    file = Path(path).expanduser()
+    try:
+        data = file.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"can't read image {file}: {exc.strerror or exc}") from None
+    # Without Pillow nothing could tell a real picture from a renamed text file.
+    try:
+        from PIL import Image
+    except ImportError:
+        raise ValueError("reading images needs Pillow: pip install pillow") from None
+    try:
+        with Image.open(io.BytesIO(data)) as picture:
+            image_format = picture.format
+            picture.verify()
+    except Exception:
+        raise ValueError(f"{file} is not an image file Unsloth can read") from None
+    mime = _IMAGE_MIME_TYPES.get(image_format) or Image.MIME.get(image_format, "image/png")
+    encoded = base64.b64encode(data).decode("ascii")
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}}
+
+
+def user_turn(text: str, images: Optional[list] = None) -> dict:
+    """A user message; attached images go ahead of the text, as Studio orders them."""
+    if not images:
+        return {"role": "user", "content": text}
+    return {"role": "user", "content": [*images, {"type": "text", "text": text}]}
+
+
+def _image_payload(part) -> Optional[str]:
+    if not isinstance(part, dict) or part.get("type") != "image_url":
+        return None
+    url = (part.get("image_url") or {}).get("url") or ""
+    if not url.startswith("data:"):
+        return None
+    return url.partition(",")[2] or None
+
+
+def _local_image_request(messages: list, several: bool):
+    """Studio's local route shape: an image marker where each image stood, plus the payloads in order.
+
+    A model that reads one image per conversation gets only the newest turn's, like the app.
+    """
+    owners = []  # (message index, user ordinal, payloads)
+    ordinal = 0
+    for index, message in enumerate(messages):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            payloads = [p for p in map(_image_payload, content) if p]
+            if payloads:
+                owners.append((index, ordinal, payloads))
+        ordinal += 1
+    if not owners:
+        return messages, None, None
+    if not several:
+        if len(owners[-1][2]) > 1:
+            raise ValueError("this model reads one image per message; attach one image at a time")
+        owners = owners[-1:]
+    kept = {index: len(payloads) for index, _, payloads in owners}
+    rebuilt = []
+    for index, message in enumerate(messages):
+        content = message.get("content")
+        if not isinstance(content, list):
+            rebuilt.append(message)
+            continue
+        text = "\n".join(
+            part.get("text") or ""
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+        if index in kept:
+            markers = [{"type": "image"} for _ in range(kept[index])]
+            rebuilt.append({**message, "content": [*markers, {"type": "text", "text": text}]})
+        else:
+            rebuilt.append({**message, "content": text})
+    images = [payload for _, _, payloads in owners for payload in payloads]
+    return rebuilt, images, owners[-1][1]
+
+
 class ChatBackend:
     """Uniform stream()/close() over the llama-server and Unsloth backends."""
 
@@ -423,6 +509,18 @@ class ChatBackend:
         self._kind = kind  # "gguf" | "unsloth"
         self._backend = backend
         self.reply_hit_token_limit = False
+
+    def _model_entry(self) -> dict:
+        backend = self._backend
+        return (getattr(backend, "models", None) or {}).get(
+            getattr(backend, "active_model_name", None)
+        ) or {}
+
+    @property
+    def supports_images(self) -> bool:
+        if self._kind == "gguf":
+            return bool(getattr(self._backend, "is_vision", False))
+        return bool(self._model_entry().get("is_vision"))
 
     def stream(
         self,
@@ -500,6 +598,10 @@ class ChatBackend:
                 )
             )
         holder: dict = {}
+        several = bool(
+            (self._model_entry().get("chat_template_info") or {}).get("accepts_multiple_images")
+        )
+        messages, images, image_ordinal = _local_image_request(messages, several)
         gen_kwargs = dict(
             messages = messages,
             system_prompt = system_prompt,
@@ -508,6 +610,8 @@ class ChatBackend:
             stats_holder = holder,
             **sampling,
         )
+        if images:
+            gen_kwargs.update(images = images, image_ordinal = image_ordinal)
         if use_adapter is not None:
             stream = self._backend.generate_with_adapter_control(
                 use_adapter = use_adapter, **gen_kwargs
@@ -529,8 +633,7 @@ class ChatBackend:
         self.reply_hit_token_limit = stats_hit_token_limit(holder.get("stats"))
 
     def close(self) -> None:
-        # Shut the worker down directly: the graceful unload_model waits for an ack that compare mode can
-        # swallow, hanging exit for minutes.
+        # Kill the worker directly: unload_model waits for an ack compare mode can swallow.
         try:
             if self._kind == "gguf":
                 self._backend.unload_model()
@@ -620,6 +723,8 @@ def _load_gguf_backend(
                 extra_args = attempt_extra_args,
             )
         )
+
+    import asyncio
 
     loaded = asyncio.run(
         load_with_tensor_fallback(
@@ -864,9 +969,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
     parsed = urlparse(base)
     host = parsed.hostname or ""
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    # Resolve to one concrete address and talk to *that* address, then bind the proof to (address,
-    # port). A name like localhost can resolve to a squatter on ::1 while the real Unsloth is on
-    # 127.0.0.1.
+    # Resolve once and talk to that concrete address, binding the proof to (address, port): localhost may hit a squatter on ::1.
     try:
         ip = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)[0][4][0]
     except Exception:
@@ -879,8 +982,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
         headers = {"User-Agent": _USER_AGENT, "Host": parsed.netloc},
     )
     try:
-        # No redirects: a 302 could relay a real Unsloth's proof (see urlopen_no_redirect). Cap the read:
-        # the server is still unverified.
+        # No redirects: a 302 could relay a real Unsloth's proof. Cap the read: still unverified.
         with urlopen_no_redirect(request, timeout = timeout) as response:
             proof = json.loads(response.read(65536).decode() or "{}").get("proof")
     except Exception:
@@ -928,6 +1030,7 @@ class HttpChatBackend:
         self._token = token
         self.reply_hit_token_limit = False
         self.gguf_variant: Optional[str] = None
+        self.supports_images = False
 
     def _request(
         self,
@@ -984,15 +1087,15 @@ class HttpChatBackend:
             payload["gguf_variant"] = resident_variant
         self.gguf_variant = resident_variant
         try:
-            # Read the body, don't close at the headers: a slow load commits its 200 early and pads until
-            # done, so closing here would generate mid-load and discard the only report of a late failure.
-            read_json_checking_deferred_error(
+            # Read the whole body, not just headers: closing early discards the only in-band report of a late load failure.
+            loaded = read_json_checking_deferred_error(
                 self._base + "/api/inference/load",
                 self._request("POST", "/api/inference/load", payload),
             )
         except Exception as exc:
             typer.echo(f"Model load failed: {exc}", err = True)
             raise typer.Exit(code = 1)
+        self.supports_images = isinstance(loaded, dict) and bool(loaded.get("is_vision"))
 
     def _resident_gguf_variant(self, model: str) -> Optional[str]:
         if model.lower().endswith(".gguf"):
@@ -1058,8 +1161,7 @@ class HttpChatBackend:
         self.reply_hit_token_limit = False
 
         def cumulative():
-            # Accumulate SSE deltas into the full-text-so-far convention the stream helpers expect.
-            # The server splits reasoning into delta.reasoning_content: re-wrap it in <think> for visible_text.
+            # Accumulate SSE deltas into the full-text-so-far form; re-wrap delta.reasoning_content in think tags for visible_text.
             text = ""
             thinking = False
             with resp:
@@ -1101,8 +1203,7 @@ class HttpChatBackend:
                     if not (reasoning or delta):
                         continue
                     text += delta or ""
-                    # An emoji can arrive split across two deltas as lone surrogate halves: hold back a trailing
-                    # half, merge pairs.
+                    # An emoji can arrive as lone surrogate halves across deltas.
                     visible = text
                     if "\ud800" <= visible[-1] <= "\udbff":
                         visible = visible[:-1]
@@ -1138,8 +1239,7 @@ def connect_studio_server(
     if not base_url:
         return None
 
-    # Explicit server (UNSLOTH_STUDIO_URL) we can't safely attach to means fail loudly; opportunistic
-    # local discovery just falls back to a local load.
+    # Explicit UNSLOTH_STUDIO_URL we cannot safely attach to fails loudly; local discovery falls back.
     explicit = bool(os.environ.get("UNSLOTH_STUDIO_URL"))
 
     def _refuse(reason: str):
@@ -1152,8 +1252,7 @@ def connect_studio_server(
         )
         raise typer.Exit(code = 1)
 
-    # Only hand the self-issued JWT (signed with the local secret) to loopback: a remote URL is
-    # unverified and a real remote Unsloth would reject it anyway.
+    # Only hand the self-issued JWT to loopback: a remote URL is unverified.
     if not is_loopback_url(base_url):
         return _refuse(
             "it isn't a local Unsloth, so a self-issued token can't "

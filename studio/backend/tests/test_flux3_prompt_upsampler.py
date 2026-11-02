@@ -11,6 +11,7 @@ import hashlib
 import io
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -1413,6 +1414,142 @@ def test_model_and_projector_come_from_one_revision(monkeypatch):
     assert pup._cached_download_paths(pup.UPSAMPLER_ID) is None
 
 
+_OLD_REV = "1" * 40
+_NEW_REV = "2" * 40
+
+
+@pytest.fixture
+def offline_upsampler_cache(monkeypatch, tmp_path):
+    """An offline HF cache holding what an install made before the UD-Q4_K_XL default has: Q4_K_M + projector."""
+    from core.inference import stt_sidecar
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(stt_sidecar, "_active_hf_hub_cache", lambda: tmp_path)
+    monkeypatch.setattr(stt_sidecar, "_read_revision_record", lambda repo: None)
+    repo = tmp_path / f"models--{pup.UPSAMPLER_REPO.replace('/', '--')}"
+
+    def put(revision, name):
+        path = repo / "snapshots" / revision / name
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(b"gguf")
+        (repo / "refs").mkdir(parents = True, exist_ok = True)
+        (repo / "refs" / "main").write_text(revision)
+        return str(path)
+
+    put(_OLD_REV, pup.UPSAMPLER_MMPROJ_FILE)
+    old = put(_OLD_REV, pup.UPSAMPLER_MODEL_FILES["Q4_K_M"])
+    return put, old
+
+
+def test_an_install_holding_only_the_earlier_q4_k_m_keeps_enhancing_offline(
+    monkeypatch, offline_upsampler_cache
+):
+    _put, old = offline_upsampler_cache
+    assert pup.UPSAMPLER_MODEL_FILE != pup.UPSAMPLER_MODEL_FILES["Q4_K_M"]
+    assert pup.model_path() == old
+    assert pup.mmproj_path().endswith(pup.UPSAMPLER_MMPROJ_FILE)
+    status = pup.status()
+    assert status["downloaded"] and status["filename"] == pup.UPSAMPLER_MODEL_FILES["Q4_K_M"]
+    # The download still fetches the current default: the earlier file does not complete it.
+    assert status["current_downloaded"] is False
+    assert pup._cached_download_paths(pup.UPSAMPLER_ID, revision = _OLD_REV) is None
+
+    sidecar = _FakeSidecar(reply = "An enhanced caption.")
+    monkeypatch.setattr(pup, "find_llama_server_binary", lambda: "/bin/llama-server")
+    monkeypatch.setattr(pup, "get_sidecar", lambda: sidecar)
+    out = pup.enhance_for_generation(["a cat"], family_name = "flux.3-klein", enhance_prompt = None)
+    assert out.status == "applied" and out.encoded("a cat") == "An enhanced caption."
+    assert [call["model"] for call in sidecar.calls] == [old]
+
+
+def test_the_default_quant_wins_once_it_is_downloaded(offline_upsampler_cache):
+    put, _old = offline_upsampler_cache
+    put(_NEW_REV, pup.UPSAMPLER_MMPROJ_FILE)
+    new = put(_NEW_REV, pup.UPSAMPLER_MODEL_FILE)
+    assert pup.model_path() == new
+    assert pup.status()["filename"] == pup.UPSAMPLER_MODEL_FILE
+    assert pup._cached_download_paths(pup.UPSAMPLER_ID) == (
+        new,
+        new.replace(pup.UPSAMPLER_MODEL_FILE, pup.UPSAMPLER_MMPROJ_FILE),
+    )
+
+
+def test_a_complete_earlier_pair_beats_a_default_model_with_no_projector(offline_upsampler_cache):
+    """An interrupted default download (model, no projector) must not hide a complete earlier quant + projector:
+    edits would otherwise drop their reference images."""
+    put, old = offline_upsampler_cache
+    put(_NEW_REV, pup.UPSAMPLER_MODEL_FILE)
+    put(_OLD_REV, pup.UPSAMPLER_MODEL_FILES["Q4_K_M"])  # refs/main back on the complete revision
+    assert pup.model_path() == old
+    assert pup.mmproj_path() == old.replace(
+        pup.UPSAMPLER_MODEL_FILES["Q4_K_M"], pup.UPSAMPLER_MMPROJ_FILE
+    )
+    status = pup.status()
+    assert status["downloaded"] and status["mmproj_downloaded"]
+    # The default is still not complete at one revision, so the control stays offered; both blobs are on disk.
+    assert status["current_downloaded"] is False and status["current_missing_bytes"] == 0
+
+
+def test_a_default_model_alone_still_runs_text_only(offline_upsampler_cache):
+    """No complete pair anywhere: the default model (no projector) still wins over an earlier model alone."""
+    put, old = offline_upsampler_cache
+    Path(old.replace(pup.UPSAMPLER_MODEL_FILES["Q4_K_M"], pup.UPSAMPLER_MMPROJ_FILE)).unlink()
+    new = put(_NEW_REV, pup.UPSAMPLER_MODEL_FILE)
+    assert pup.model_path() == new and pup.mmproj_path() is None
+
+
+def test_an_earlier_quant_serving_still_offers_the_default_download(offline_upsampler_cache):
+    """Run availability (downloaded / mmproj_downloaded) is not download completion: the current default stays
+    offered while an earlier quant serves."""
+    status = pup.status()
+    assert status["downloaded"] and status["mmproj_downloaded"]
+    assert status["current_downloaded"] is False
+    assert status["current_filename"] == pup.UPSAMPLER_MODEL_FILE
+    assert status["current_missing_bytes"] == pup.UPSAMPLER_FILE_SIZES[pup.UPSAMPLER_MODEL_FILE]
+    put, _old = offline_upsampler_cache
+    put(_NEW_REV, pup.UPSAMPLER_MMPROJ_FILE)
+    put(_NEW_REV, pup.UPSAMPLER_MODEL_FILE)
+    status = pup.status()
+    assert status["current_downloaded"] is True and status["current_missing_bytes"] == 0
+
+
+def test_a_q8_0_pair_is_not_offered_the_smaller_default(offline_upsampler_cache):
+    """Q8_0 is closer to BF16 than the default: serving it, the panel offers no download "for better captions"."""
+    put, _old = offline_upsampler_cache
+    put(_NEW_REV, pup.UPSAMPLER_MMPROJ_FILE)
+    put(_NEW_REV, pup.UPSAMPLER_MODEL_FILES["Q8_0"])
+    status = pup.status()
+    assert status["filename"] == pup.UPSAMPLER_MODEL_FILES["Q8_0"] and status["mmproj_downloaded"]
+    assert status["current_downloaded"] is True and status["current_missing_bytes"] == 0
+
+
+def test_an_earlier_model_alone_reports_the_whole_default_download(offline_upsampler_cache):
+    """An earlier quant with no projector serves text-only prompts, but the Download fetches the default model AND the
+    projector: the status names the earlier file and prices both, which the panel reads instead of the projector size."""
+    _put, old = offline_upsampler_cache
+    Path(old.replace(pup.UPSAMPLER_MODEL_FILES["Q4_K_M"], pup.UPSAMPLER_MMPROJ_FILE)).unlink()
+    status = pup.status()
+    assert status["downloaded"] and not status["mmproj_downloaded"]
+    assert status["filename"] == pup.UPSAMPLER_MODEL_FILES["Q4_K_M"] != status["current_filename"]
+    assert status["current_downloaded"] is False
+    assert status["current_missing_bytes"] == (
+        pup.UPSAMPLER_FILE_SIZES[pup.UPSAMPLER_MODEL_FILE]
+        + pup.UPSAMPLER_FILE_SIZES[pup.UPSAMPLER_MMPROJ_FILE]
+    )
+
+
+def test_nothing_downloaded_is_still_unavailable(monkeypatch, tmp_path):
+    from core.inference import stt_sidecar
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(stt_sidecar, "_active_hf_hub_cache", lambda: tmp_path)
+    monkeypatch.setattr(stt_sidecar, "_read_revision_record", lambda repo: None)
+    monkeypatch.setattr(pup, "find_llama_server_binary", lambda: "/bin/llama-server")
+    assert pup.model_path() is None and pup.status()["filename"] == pup.UPSAMPLER_MODEL_FILE
+    out = pup.enhance_for_generation(["a cat"], family_name = "flux.3-klein", enhance_prompt = None)
+    assert out.status == pup.STATUS_UNAVAILABLE
+
+
 # ── an earlier default quant already in the cache ───────────────────────────────────────────────────────────────────
 _REV_A = "a" * 40
 _REV_B = "b" * 40
@@ -1457,10 +1594,11 @@ def test_a_cached_earlier_quant_is_used_when_the_default_is_missing(fake_hub):
         str(snapshot / pup.UPSAMPLER_MMPROJ_FILE),
     )
     out = pup.status()
-    # Ready: the UI offers no download beside it.
+    # Ready to enhance; the current default is still offered beside it (current_downloaded).
     assert (
         out["supported"] is True and out["downloaded"] is True and out["mmproj_downloaded"] is True
     )
+    assert out["current_downloaded"] is False
     assert out["override"] is False
     assert out["filename"] == q4 and out["size_bytes"] == len(q4.encode())
 

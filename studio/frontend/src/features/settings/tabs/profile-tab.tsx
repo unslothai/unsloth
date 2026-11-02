@@ -6,6 +6,8 @@ import {
   ProfileStatsPanel,
 } from "@/features/profile";
 import { useT } from "@/i18n";
+import { AccountPasswordDialog } from "../components/change-password-dialog";
+import { SettingsRow } from "../components/settings-row";
 
 export function ProfileTab() {
   const t = useT();
@@ -28,6 +30,12 @@ export function ProfileTab() {
       </header>
 
       <ProfilePersonalizationPanel />
+      <SettingsRow
+        label={t("settings.general.password")}
+        description={t("settings.general.passwordDescription")}
+      >
+        <AccountPasswordDialog />
+      </SettingsRow>
       <ProfileStatsPanel />
     </div>
   );

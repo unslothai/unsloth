@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import forge from "node-forge";
+import type forge from "node-forge";
 import { authFetch } from "@/features/auth/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type { ModelCatalogSnapshotEntry } from "../model-catalog-snapshot";
@@ -126,6 +126,11 @@ export function isProviderKeyRotationError(error: unknown): boolean {
   );
 }
 
+// node-forge (~270 KB) loads with the first key encryption, not with the app.
+function loadForge(): Promise<typeof forge> {
+  return import("node-forge").then((module) => module.default);
+}
+
 let cachedPublicKeyPem: string | null = null;
 let cachedForgeKey: forge.pki.rsa.PublicKey | null = null;
 
@@ -149,7 +154,8 @@ async function importProviderPublicKey(
   if (!forceRefresh && cachedPublicKeyPem === publicKeyPem && cachedForgeKey) {
     return cachedForgeKey;
   }
-  const forgeKey = forge.pki.publicKeyFromPem(publicKeyPem);
+  const { pki } = await loadForge();
+  const forgeKey = pki.publicKeyFromPem(publicKeyPem);
   cachedPublicKeyPem = publicKeyPem;
   cachedForgeKey = forgeKey;
   return forgeKey;
@@ -172,6 +178,7 @@ export async function encryptProviderApiKey(
   forceRefresh = false,
 ): Promise<string> {
   const key = await importProviderPublicKey(forceRefresh);
+  const forge = await loadForge();
   const aesKey = randomBinaryString(AES_KEY_BYTES);
   const nonce = randomBinaryString(NONCE_BYTES);
 
@@ -196,9 +203,8 @@ export async function encryptProviderApiKey(
 }
 
 export async function listProviderRegistry(): Promise<ProviderRegistryEntry[]> {
-  // include_hidden asks for the backend-only entries (the self-hosted presets), which carry the
-  // studio-tools capability the composer gates on. An older backend ignores the parameter and
-  // returns the visible entries, so the capability reads as unknown and the pills stay closed.
+  // include_hidden returns the self-hosted presets carrying the studio-tools capability; older
+  // backends ignore it, leaving the capability unknown.
   const response = await authFetch(
     "/api/providers/registry?include_hidden=true&include_oauth=true",
   );
@@ -251,8 +257,7 @@ export async function deleteProviderConfig(providerId: string): Promise<void> {
   const response = await authFetch(`/api/providers/${providerId}`, {
     method: "DELETE",
   });
-  // Treat 404 as success: another tab already deleted this provider, so pruning the stale cache is
-  // correct. Otherwise the caller throws and the user is stuck with an entry they cannot remove.
+  // 404 means another tab deleted it; prune the cache instead of throwing.
   if (response.status === 404) {
     return;
   }

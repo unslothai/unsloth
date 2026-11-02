@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Encode a Wan or MiniMax-H3 clip while its VAE is still decoding.
-
-The streamed mp4 is used only when its frames equal the final frames bit for bit, else the clip is encoded as
-before. H3 declares its audio stream up front as ``encode_x264`` does and muxes the soundtrack at the end.
-``UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE=0`` turns it off.
-"""
+"""Encodes a Wan or MiniMax-H3 clip while its VAE decodes; the streamed mp4 is used only if its
+frames equal the final frames bit for bit, else re-encoded; H3 declares audio up front (as
+encode_x264) and muxes it last; UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE=0 disables."""
 
 from __future__ import annotations
 
@@ -22,14 +19,54 @@ from typing import Any, Iterator, Optional
 from .host_pinning import host_pinning_allowed
 
 STREAM_ENCODE_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE"
+# Kill switch: "0" hides the decode below the session's wrapper from chain walkers again (as before).
+STREAM_CHAIN_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE_CHAIN"
 QUEUE_DEPTH = 8
 _STOP = object()
+# "0" = old whole-chunk np.array_equal compare.
+STREAM_COMPARE_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_COMPARE_SLICED"
+# 128 KiB bool scratch stays under numpy's 4 MiB hugepage madvise threshold.
+_COMPARE_WORDS = 1 << 17
 
 STATS = {"streamed": 0, "fallback": 0, "last": ""}
 
 
 def stream_encode_enabled() -> bool:
     return os.environ.get(STREAM_ENCODE_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _sliced_compare_enabled() -> bool:
+    return os.environ.get(STREAM_COMPARE_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _frames_equal(a: Any, b: Any, scratch: Any) -> bool:
+    """Sliced ``np.array_equal`` for uint8 arrays: a chunk-sized hugepage bool temp stalled 115-152 s on fragmented hosts."""
+    import numpy as np
+
+    if a.shape != b.shape or a.dtype != b.dtype:
+        return False
+    if not (a.flags.c_contiguous and b.flags.c_contiguous):
+        return bool(np.array_equal(a, b))
+    a = a.reshape(-1)
+    b = b.reshape(-1)
+    words = a.size // 8
+    if words:
+        a64 = a[: words * 8].view(np.uint64)
+        b64 = b[: words * 8].view(np.uint64)
+        for start in range(0, words, _COMPARE_WORDS):
+            stop = min(words, start + _COMPARE_WORDS)
+            out = scratch[: stop - start]
+            np.equal(a64[start:stop], b64[start:stop], out = out)
+            if not out.all():
+                return False
+    return bool(np.array_equal(a[words * 8 :], b[words * 8 :]))
+
+
+def _expose_inner(wrapper: Any, original: Any) -> Any:
+    """Set ``__wrapped__`` so diffusion_vae_oom's chain walkers see the untiled gate below this wrapper."""
+    if os.environ.get(STREAM_CHAIN_ENV, "").strip().lower() not in ("0", "false", "no", "off"):
+        wrapper.__wrapped__ = original
+    return wrapper
 
 
 def _note(outcome: str, reason: str, logger: Any) -> None:
@@ -178,7 +215,7 @@ class StreamEncode:
                     self._decoding = False
                     self._decoded = True
 
-            return decode
+            return _expose_inner(decode, original)
 
         def _tiled_wrapper(original: Any) -> Any:
             def tiled_decode(*args: Any, **kwargs: Any) -> Any:
@@ -233,11 +270,9 @@ class StreamEncode:
                 frames = host.numpy()
                 if container is None:
                     container = av.open(self.path, mode = "w", format = "mp4")
-                    stream = container.add_stream("libx264", rate = self.fps)
-                    stream.width = int(frames.shape[2])
-                    stream.height = int(frames.shape[1])
-                    stream.pix_fmt = "yuv420p"
-                    stream.codec_context.thread_type = "FRAME"
+                    from .video_encode import add_x264_stream
+
+                    stream = add_x264_stream(container, self.fps, frames.shape[2], frames.shape[1])
                     if self.audio_sample_rate is not None:
                         from diffusers.utils.export_utils import _prepare_audio_stream
                         self._audio_stream = _prepare_audio_stream(
@@ -297,10 +332,17 @@ class StreamEncode:
         import numpy as np
 
         final = video_frames.numpy()
+        scratch = np.empty(_COMPARE_WORDS, dtype = np.bool_) if _sliced_compare_enabled() else None
         start = 0
         for host in streamed:
             # numpy, not torch.equal: torch's parallel compare costs seconds on a loaded many-core host.
-            if not np.array_equal(host.numpy(), final[start : start + len(host)]):
+            ours, theirs = host.numpy(), final[start : start + len(host)]
+            same = (
+                np.array_equal(ours, theirs)
+                if scratch is None
+                else _frames_equal(ours, theirs, scratch)
+            )
+            if not same:
                 self.invalidate("frames differ")
                 return False
             start += len(host)
@@ -464,7 +506,7 @@ class H3StreamEncode(StreamEncode):
                     self._decoding = False
                     self._decoded = True
 
-            return decode
+            return _expose_inner(decode, original)
 
         def _inner_wrapper(original: Any) -> Any:
             def _decode(*args: Any, **kwargs: Any) -> Any:
