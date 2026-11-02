@@ -2397,7 +2397,7 @@ export const he = {
         moreThemes: "ערכות נושא נוספות",
       },
       composer: {
-        title: "מראה תיבת הכתיבה",
+        title: "תיבת הכתיבה",
       },
       code: {
         title: "קוד",

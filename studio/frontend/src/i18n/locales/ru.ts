@@ -2351,7 +2351,7 @@ export const ru = {
         moreThemes: "Другие темы",
       },
       composer: {
-        title: "Вид поля ввода",
+        title: "Поле ввода",
       },
       code: {
         title: "Код",

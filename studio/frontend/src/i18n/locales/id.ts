@@ -2539,7 +2539,7 @@ export const id = {
         moreThemes: "Tema lainnya",
       },
       composer: {
-        title: "Tampilan penyusun pesan",
+        title: "Penyusun pesan",
       },
       code: {
         title: "Kode",

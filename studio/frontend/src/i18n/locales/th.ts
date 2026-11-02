@@ -2434,7 +2434,7 @@ export const th = {
         moreThemes: "ธีมเพิ่มเติม",
       },
       composer: {
-        title: "ลักษณะช่องพิมพ์ข้อความ",
+        title: "ช่องพิมพ์ข้อความ",
       },
       code: {
         title: "โค้ด",

@@ -2467,7 +2467,7 @@ export const sv = {
         moreThemes: "Fler teman",
       },
       composer: {
-        title: "Inmatningsfältets utseende",
+        title: "Inmatningsfält",
       },
       code: {
         title: "Kod",

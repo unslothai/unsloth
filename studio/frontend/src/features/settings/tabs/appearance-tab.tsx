@@ -253,21 +253,7 @@ export function AppearanceTab() {
         >
           <InterfaceScaleRow />
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.chatWidth.label")}
-          description={t("settings.appearance.custom.chatWidth.description")}
-        >
-          <ChatWidthSelect />
-        </SettingsRow>
         <GreetingSettingsRows />
-        <SettingsRow
-          label={t("settings.appearance.custom.sentAttachments.label")}
-          description={t(
-            "settings.appearance.custom.sentAttachments.description",
-          )}
-        >
-          <SentAttachmentsSelect />
-        </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.custom.pointerCursors.label")}
           description={t(
@@ -294,6 +280,12 @@ export function AppearanceTab() {
 
       <SettingsSection title={t("settings.appearance.composer.title")}>
         <SettingsRow
+          label={t("settings.appearance.custom.chatWidth.label")}
+          description={t("settings.appearance.custom.chatWidth.description")}
+        >
+          <ChatWidthSelect />
+        </SettingsRow>
+        <SettingsRow
           label={t("settings.chat.composerAtBottom")}
           description={t("settings.chat.composerAtBottomDescription")}
         >
@@ -305,6 +297,14 @@ export function AppearanceTab() {
         </SettingsRow>
         <SettingsRow label={t("chatBackground.outline")}>
           <ComposerOutlineSliderRow />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.sentAttachments.label")}
+          description={t(
+            "settings.appearance.custom.sentAttachments.description",
+          )}
+        >
+          <SentAttachmentsSelect />
         </SettingsRow>
       </SettingsSection>
 

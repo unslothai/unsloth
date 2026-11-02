@@ -2528,7 +2528,7 @@ export const fa = {
         moreThemes: "پوسته‌های بیشتر",
       },
       composer: {
-        title: "ظاهر ویرایشگر پیام",
+        title: "ویرایشگر پیام",
       },
       code: {
         title: "کد",

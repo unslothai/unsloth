@@ -2341,7 +2341,7 @@ export const ar = {
         moreThemes: "المزيد من السمات",
       },
       composer: {
-        title: "مظهر محرر الرسائل",
+        title: "محرر الرسائل",
       },
       code: {
         title: "الشيفرة",

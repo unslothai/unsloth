@@ -2571,7 +2571,7 @@ export const pl = {
         moreThemes: "Więcej motywów",
       },
       composer: {
-        title: "Wygląd pola wiadomości",
+        title: "Pole wiadomości",
       },
       code: {
         title: "Kod",

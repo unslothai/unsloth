@@ -2327,7 +2327,7 @@ export const zhCN = {
         moreThemes: "更多主题",
       },
       composer: {
-        title: "输入框外观",
+        title: "输入框",
       },
       code: {
         title: "代码",

@@ -2324,7 +2324,7 @@ export const ja = {
         moreThemes: "その他のテーマ",
       },
       composer: {
-        title: "入力欄の外観",
+        title: "入力欄",
       },
       code: {
         title: "コード",

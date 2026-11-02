@@ -2421,7 +2421,7 @@ export const zhTW = {
         moreThemes: "更多主題",
       },
       composer: {
-        title: "輸入框外觀",
+        title: "輸入框",
       },
       code: {
         title: "程式碼",

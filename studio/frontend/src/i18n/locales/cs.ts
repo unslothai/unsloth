@@ -2556,7 +2556,7 @@ export const cs = {
         moreThemes: "Další motivy",
       },
       composer: {
-        title: "Vzhled editoru zpráv",
+        title: "Editor zpráv",
       },
       code: {
         title: "Kód",

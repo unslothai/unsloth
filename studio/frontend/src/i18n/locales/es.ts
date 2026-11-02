@@ -2365,7 +2365,7 @@ export const es = {
         moreThemes: "Más temas",
       },
       composer: {
-        title: "Apariencia del editor",
+        title: "Editor",
       },
       code: {
         title: "Código",

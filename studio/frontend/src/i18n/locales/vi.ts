@@ -2543,7 +2543,7 @@ export const vi = {
         moreThemes: "Thêm chủ đề",
       },
       composer: {
-        title: "Giao diện khung soạn tin",
+        title: "Khung soạn tin",
       },
       code: {
         title: "Mã",

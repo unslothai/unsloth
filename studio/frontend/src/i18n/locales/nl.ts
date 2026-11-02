@@ -2576,7 +2576,7 @@ export const nl = {
         moreThemes: "Meer thema's",
       },
       composer: {
-        title: "Weergave van het invoerveld",
+        title: "Invoerveld",
       },
       code: {
         title: "Code",

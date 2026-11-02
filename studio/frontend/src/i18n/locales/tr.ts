@@ -2531,7 +2531,7 @@ export const tr = {
         moreThemes: "Diğer temalar",
       },
       composer: {
-        title: "Mesaj kutusu görünümü",
+        title: "Mesaj kutusu",
       },
       code: {
         title: "Kod",

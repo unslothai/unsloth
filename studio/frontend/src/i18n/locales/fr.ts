@@ -2368,7 +2368,7 @@ export const fr = {
         moreThemes: "Plus de thèmes",
       },
       composer: {
-        title: "Apparence de la zone de saisie",
+        title: "Zone de saisie",
       },
       code: {
         title: "Code",

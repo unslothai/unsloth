@@ -2347,7 +2347,7 @@ export const hi = {
         moreThemes: "और थीम",
       },
       composer: {
-        title: "कंपोज़र का रूप",
+        title: "कंपोज़र",
       },
       code: {
         title: "कोड",

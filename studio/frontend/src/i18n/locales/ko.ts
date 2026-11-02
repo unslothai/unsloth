@@ -2335,7 +2335,7 @@ export const ko = {
         moreThemes: "더 많은 테마",
       },
       composer: {
-        title: "입력창 모양",
+        title: "입력창",
       },
       code: {
         title: "코드",

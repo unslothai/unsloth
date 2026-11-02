@@ -215,9 +215,6 @@ export const MAX_IMPORTED_FONT_DATA_URL_LENGTH = 2_200_000;
 /** Keeps the persisted store under typical ~5M-unit localStorage quotas. */
 export const MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH = 4_400_000;
 
-/** The composer outline, in %, until one is chosen. */
-export const COMPOSER_OUTLINE_DEFAULT = 30;
-
 export type AppearanceCustomization = {
   colors: { light: CustomModeColors; dark: CustomModeColors };
   uiFont: string | null;
@@ -233,7 +230,7 @@ export type AppearanceCustomization = {
   codeFontSize: number | null;
   /** 0–100; 50 is neutral. */
   contrast: number;
-  /** 0–100; null = the background image's own outline, or COMPOSER_OUTLINE_DEFAULT without one. */
+  /** 0–100; null = the background image's own outline, or none without one. */
   composerOutline: number | null;
   pointerCursors: boolean;
   reduceMotion: ReduceMotionSetting;
@@ -1048,7 +1045,7 @@ export function applyCustomizationToDocument(
     ["data-code-line-numbers", c.codeLineNumbers],
     ["data-code-wrap", c.codeWordWrap],
     ["data-code-no-ligatures", !c.codeLigatures],
-    ["data-composer-outline", (c.composerOutline ?? COMPOSER_OUTLINE_DEFAULT) > 0],
+    ["data-composer-outline", (c.composerOutline ?? 0) > 0],
   ] as const) {
     if (on) el.setAttribute(name, "");
     else el.removeAttribute(name);

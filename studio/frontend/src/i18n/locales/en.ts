@@ -2355,7 +2355,7 @@ export const en = {
         moreThemes: "More themes",
       },
       composer: {
-        title: "Composer appearance",
+        title: "Composer",
       },
       code: {
         title: "Code",

@@ -2270,7 +2270,7 @@ export const it = {
         moreThemes: "Altri temi",
       },
       composer: {
-        title: "Aspetto dell'editor",
+        title: "Editor",
       },
       code: {
         title: "Codice",

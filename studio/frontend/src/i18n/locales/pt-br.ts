@@ -2356,7 +2356,7 @@ export const ptBR = {
         moreThemes: "Mais temas",
       },
       composer: {
-        title: "Aparência do editor",
+        title: "Editor",
       },
       code: {
         title: "Código",

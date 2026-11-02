@@ -2370,7 +2370,7 @@ export const de = {
         moreThemes: "Weitere Designs",
       },
       composer: {
-        title: "Darstellung des Eingabefelds",
+        title: "Eingabefeld",
       },
       code: {
         title: "Code",

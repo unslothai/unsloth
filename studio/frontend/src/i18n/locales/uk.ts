@@ -2563,7 +2563,7 @@ export const uk = {
         moreThemes: "Інші теми",
       },
       composer: {
-        title: "Вигляд поля введення",
+        title: "Поле введення",
       },
       code: {
         title: "Код",
