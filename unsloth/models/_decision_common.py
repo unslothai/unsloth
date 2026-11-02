@@ -278,6 +278,10 @@ def _internal(question) -> dict:
     laya_question = {"type": kind, "instructions": question.get("instructions") or ""}
     if criteria is not None:
         laya_question["criteria"] = criteria
+    if not isinstance(laya_question["instructions"], str):
+        laya_question["instructions"] = json.dumps(
+            laya_question["instructions"], ensure_ascii = False
+        )
     return _laya().agent.Agent._to_internal(laya_question)
 
 

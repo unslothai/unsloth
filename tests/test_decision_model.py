@@ -1430,6 +1430,11 @@ def test_a_failed_save_leaves_the_previous_clef_checkpoint_loadable(
     FastDecisionModel.from_pretrained(str(out), max_seq_length = 512)
 
 
+def test_structured_instructions_train_as_written():
+    question = {"type": "noul", "instructions": {"ask": "これは緊急ですか"}}
+    assert "これは緊急ですか" in _decision_common._internal(question)["ins"]
+
+
 def test_kl_regularization_needs_a_lora_clef(clef_checkpoint, tmp_path):
     model, processor = FastDecisionModel.from_pretrained(
         str(clef_checkpoint), max_seq_length = 512, full_finetuning = True
