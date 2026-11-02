@@ -1018,6 +1018,25 @@ def decode_b64_image(
     max_pixels: Optional[int] = None,
 ) -> Any:
     """Decode a base64 or data: URL image; masks decode as single-channel L, source images as RGB."""
+    return decode_b64_image_sized(data, mode = mode, max_side = max_side, max_pixels = max_pixels)[0]
+
+
+def refuse_oversized_image(w: int, h: int, max_side: int, max_pixels: Optional[int]) -> None:
+    """decode_b64_image's header size guard, on the file's stored (pre-EXIF-transpose) size."""
+    if w > max_side or h > max_side:
+        raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_side}px per side.")
+    if max_pixels is not None and w * h > max_pixels:
+        raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_pixels:,} source pixels.")
+
+
+def decode_b64_image_sized(
+    data: str,
+    *,
+    mode: str = "RGB",
+    max_side: int = 4096,
+    max_pixels: Optional[int] = None,
+) -> tuple[Any, tuple[int, int]]:
+    """decode_b64_image, plus the stored size its guard judged, so a later guard can be re-run without decoding."""
     import base64
     import binascii
     import io
@@ -1035,12 +1054,7 @@ def decode_b64_image(
         img = Image.open(io.BytesIO(blob))
         # Reject from the header before img.load() so a huge-dimension file cannot spike memory
         w, h = img.size
-        if w > max_side or h > max_side:
-            raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_side}px per side.")
-        if max_pixels is not None and w * h > max_pixels:
-            raise ValueError(
-                f"Image is too large ({w}x{h}); maximum is {max_pixels:,} source pixels."
-            )
+        refuse_oversized_image(w, h, max_side, max_pixels)
         img.load()
         # Below the size guard because the transpose needs the pixels the guard exists to not read.
         img = exif_upright(img)
@@ -1048,7 +1062,7 @@ def decode_b64_image(
         raise  # the size guard's own message; don't wrap it as a decode error
     except Exception as exc:  # noqa: BLE001 - surfaced as a 400 to the client
         raise ValueError(f"Could not decode image: {exc}") from exc
-    return flattened_rgb(img) if mode == "RGB" else img.convert(mode)
+    return (flattened_rgb(img) if mode == "RGB" else img.convert(mode)), (w, h)
 
 
 def _snap_to_multiple(img: Any, multiple: int = 16) -> Any:
