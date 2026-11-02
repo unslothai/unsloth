@@ -23,7 +23,12 @@ def _noop(*args, **kwargs):
 def _load_save_helpers():
     source = Path(__file__).parents[2] / "unsloth" / "save.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
-    wanted = {"_without_runtime_truncation", "_unsloth_tokenizer_save_pretrained"}
+    wanted = {
+        "_without_runtime_truncation",
+        "_unsloth_tokenizer_save_pretrained",
+        "_source_tokenizer_class",
+        "_restore_source_tokenizer_class",
+    }
     nodes = [
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
     ]
@@ -34,6 +39,9 @@ def _load_save_helpers():
         "json": json,
         "os": os,
         "logger": _Logger(),
+        "_resolve_hub_repo_cached_file": lambda *args, **kwargs: None,
+        "_tokenizer_cache_dir": lambda tokenizer: None,
+        "_tokenizer_revision": lambda tokenizer: None,
         "_preserve_sentencepiece_tokenizer_assets": _noop,
         "_preserve_tokenizer_eos_token": _noop,
         "_preserve_repaired_tokenizer_class": _noop,
