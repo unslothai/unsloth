@@ -189,7 +189,9 @@ def _make_backend(
         stream = streams.pop(0)
         if isinstance(stream, BaseException):
             raise stream
-        yield type("FakeResponse", (), {"status_code": 200, "chunks": stream})()
+        yield type(
+            "FakeResponse", (), {"status_code": 200, "chunks": stream, "close": lambda self: None}
+        )()
 
     def fake_iter_text_cancellable(
         response,
@@ -3136,6 +3138,45 @@ def test_only_an_approved_call_is_marked_approved(monkeypatch, verdict):
     assert seen == ([True] if verdict == "allow" else [])
 
 
+@pytest.mark.parametrize("verdict", ["allow", "deny"])
+def test_an_allowed_call_tells_every_follower_before_tool_end(monkeypatch, verdict):
+    """Only the client that answered clears its own prompt; other tabs learn it from tool_approved."""
+    first_stream = _streamed_structured_tool_call("python", {"code": "print(1)"}, "call_gated")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda name, arguments, **_k: "OK")
+    monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: verdict)
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "run it"}],
+        [{"type": "function", "function": {"name": "python"}}],
+        confirm_tool_calls = True,
+        permission_mode = "ask",
+    )
+
+    gated = [e for e in events if e.get("type") == "tool_start" and e.get("awaiting_confirmation")]
+    approved = [e for e in events if e.get("type") == "tool_approved"]
+    ends = [e for e in events if e.get("type") == "tool_end"]
+    assert len(gated) == 1 and len(ends) == 1, events
+    if verdict == "deny":
+        # A refusal ends the card at once; there is no run to wait through.
+        assert approved == []
+        return
+    assert approved == [
+        {
+            "type": "tool_approved",
+            "tool_name": "python",
+            "tool_call_id": gated[0]["tool_call_id"],
+            "approval_id": gated[0]["approval_id"],
+        }
+    ]
+    assert events.index(gated[0]) < events.index(approved[0]) < events.index(ends[0])
+    # Before the running status: the route waits for the model slot on that frame, and other tabs must not.
+    between = events[events.index(gated[0]) + 1 : events.index(approved[0])]
+    assert [e for e in between if e.get("type") == "status"] == [], between
+
+
 def test_auto_mode_render_html_suppresses_provisional_card_under_confirm(monkeypatch):
     """Confirm under permission_mode=auto hides the render_html provisional card; full tool_start fires."""
     args = {"code": "<html>" + "x" * 80 + "</html>"}
@@ -3600,6 +3641,64 @@ def test_media_compaction_recall_recount_uses_the_stripped_view(monkeypatch, wit
         if isinstance(part, dict)
     )
     assert payloads[0]["messages"][-1] == audio_turn
+
+
+def test_recall_searches_the_users_question_not_the_loops_own_notices(monkeypatch):
+    """Repeated calls leave user-role notices at the end of the loop; the compacting final pass
+    must still search the archive for what the user asked (#16187)."""
+    from core.rag import conversation_archive
+
+    rounds = 4
+    payloads: list[dict] = []
+    streams = [
+        [
+            _tool_call_sse("web_search", {"query": "a"}, f"c{r}a", index = 0),
+            _tool_call_sse("web_search", {"query": "b"}, f"c{r}b", index = 1),
+            _finish("tool_calls"),
+            _done(),
+        ]
+        for r in range(rounds)
+    ] + [[_sse({"content": "answer"}), _finish("stop"), _done()]]
+    backend = _make_backend(monkeypatch, streams, payloads)
+    backend._effective_context_length = 4000
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_args, **_kwargs: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        ),
+    )
+    _record_tool_calls(monkeypatch, "R" * 500)
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+    monkeypatch.setattr(conversation_archive, "archive_turns", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(conversation_archive, "note_branch", lambda *_args, **_kwargs: None)
+    queries: list[str] = []
+
+    def fake_recall(_thread_id, query, **_kwargs):
+        queries.append(query)
+        return None
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+    question = "what did the VULPINE search find"
+
+    events = _run_tool_loop(
+        backend,
+        [
+            {"role": "user", "content": "u" * 1200},
+            {"role": "assistant", "content": "a" * 1200},
+            {"role": "user", "content": question},
+        ],
+        [_web_search_tool()],
+        max_tool_iterations = rounds,
+        max_tokens = 200,
+        context_overflow = "truncate_oldest",
+        thread_id = "recall-query",
+    )
+
+    assert any(event.get("type") == "context_truncated" for event in events)
+    final = payloads[-1]["messages"]
+    assert final[-1]["role"] == "user" and question not in final[-1]["content"]
+    assert queries and set(queries) == {question}
 
 
 def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monkeypatch):
@@ -6607,6 +6706,9 @@ def test_repeated_note_on_an_mcp_image_keeps_the_base64_out_of_the_tool_text(mon
     ]
     payloads: list[dict] = []
     backend = _vision_backend(monkeypatch, streams, payloads, vision = True)
+    # Images are charged in the fit (#14968): with no projector each one costs the ~4.2k
+    # admission ceiling, more than this 4096 window, so price the 6 px screenshot by size.
+    backend._mmproj_projector_type = "qwen3vl_merger"
     monkeypatch.setattr(
         "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: fitted
     )

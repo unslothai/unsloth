@@ -886,6 +886,94 @@ def test_mps_answers_from_the_torch_build_not_an_execution_probe(version, env, f
     assert att.sdpa_math_only(target) is not fused
 
 
+def _mps_tensor(
+    shape,
+    dtype,
+    requires_grad = False,
+):
+    return types.SimpleNamespace(
+        device = types.SimpleNamespace(type = "mps"),
+        shape = shape,
+        dtype = dtype,
+        requires_grad = requires_grad,
+    )
+
+
+@pytest.mark.parametrize(
+    "change, prefill",
+    [
+        ({}, True),
+        ({"q_len": 9}, True),
+        ({"q_len": 8}, False),
+        ({"head_dim": 72}, True),
+        ({"head_dim": 48}, False),
+        ({"head_dim": 160}, False),
+        ({"v_dim": 64}, False),
+        ({"dtype": "float32"}, True),
+        ({"dtype": "float64"}, False),
+        ({"mask": "bool"}, True),
+        ({"mask": "bfloat16"}, True),
+        ({"mask": "float32"}, False),
+        ({"grad": True}, False),
+        ({"device": "cpu"}, False),
+        ({"version": "2.12.1"}, False),
+    ],
+)
+def test_mps_prefill_attention_follows_the_torch_dispatch(change, prefill, monkeypatch):
+    # The rule torch 2.13-2.15 applies in _scaled_dot_product_attention_math_mps: anything else builds the scores.
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch, "__version__", change.get("version", "2.14.1"))
+    monkeypatch.delenv(att.MPS_PREFILL_ATTENTION_OFF_ENV, raising = False)
+    dtype = getattr(torch, change.get("dtype", "bfloat16"))
+    head_dim = change.get("head_dim", 128)
+    q = _mps_tensor((1, 24, change.get("q_len", 4096), head_dim), dtype, change.get("grad", False))
+    k = _mps_tensor((1, 24, 4096, head_dim), dtype)
+    v = _mps_tensor((1, 24, 4096, change.get("v_dim", head_dim)), dtype)
+    if "device" in change:
+        q.device = types.SimpleNamespace(type = change["device"])
+    mask = (
+        _mps_tensor((1, 1, 1, 4096), getattr(torch, change["mask"])) if "mask" in change else None
+    )
+    with torch.enable_grad():
+        assert att.mps_prefill_attention(q, k, v, mask) is prefill
+    q.shape = (q.shape[0], q.shape[2], q.shape[1], q.shape[3])
+    k.shape = (k.shape[0], k.shape[2], k.shape[1], k.shape[3])
+    with torch.enable_grad():
+        assert att.mps_prefill_attention(q, k, v, mask, seq_dim = 1) is prefill
+
+
+@pytest.mark.parametrize(
+    "device, version, head_dims, math_only",
+    [
+        ("mps", "2.14.1", None, False),
+        ("mps", "2.14.1", {128}, False),
+        ("mps", "2.14.1", {64, 128}, False),
+        ("mps", "2.14.1", {128, 160}, True),
+        ("mps", "2.12.1", {128}, True),
+        ("cuda", "2.14.1", {160}, False),
+    ],
+)
+def test_family_head_dims_narrow_the_mps_answer(device, version, head_dims, math_only, monkeypatch):
+    # A family whose head dim has no prefill instance builds the scores on every call, whatever the torch build.
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch, "__version__", version)
+    monkeypatch.delenv(att.MPS_PREFILL_ATTENTION_OFF_ENV, raising = False)
+    if device == "cuda":
+        _stub_probe(monkeypatch, ("flash", "math"))
+    target = _target(device)
+    assert att.sdpa_math_only(target, head_dims) is math_only
+    assert att.sdpa_subquadratic_confirmed(target, head_dims) is not math_only
+    records = []
+    logger = types.SimpleNamespace(warning = lambda *a: records.append(a))
+    config = {"attention_head_dim": sorted(head_dims or ())}
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace(config = config))
+    att._configure_native_attention(pipe, target, logger)
+    assert any("math_only" in record[0] for record in records) is math_only
+    from core.inference.diffusion import _quadratic_attention
+
+    assert _quadratic_attention(target, None, pipe) is math_only
+
+
 def test_an_unanswerable_probe_is_not_a_math_only_verdict(monkeypatch):
     _stub_probe(monkeypatch, ())
     assert att.sdpa_math_only(_target()) is False

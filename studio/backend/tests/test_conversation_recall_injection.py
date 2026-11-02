@@ -165,6 +165,28 @@ def test_archive_and_recall_skips_recall_once_already_done(archived):
     assert "recalled_chunks" not in result["counts"]
 
 
+@pytest.mark.parametrize("stopped", [False, True])
+def test_a_stopped_request_skips_the_automatic_recall(archived, monkeypatch, stopped):
+    """Recall embeds the query; a Stopped request must not pay for it (#14519)."""
+    recalls = []
+    monkeypatch.setattr(tools_mod, "build_conversation_recall", lambda *_a, **_k: recalls.append(1))
+    before = _conversation() + [{"role": "user", "content": "evicted turn"}]
+    after = _conversation()
+
+    result = llama_cpp._archive_and_recall(
+        after,
+        before,
+        thread_id = THREAD,
+        style = "tool",
+        recall_done = False,
+        recall_budget_tokens = 100_000,
+        cancel_check = lambda: stopped,
+    )
+
+    assert recalls == ([] if stopped else [1])
+    assert result["recalled"] is False
+
+
 def test_a_refused_fit_still_archives_what_it_evicted(archived):
     """`recall_done` skips recall without skipping the archive write."""
     before = _conversation() + [{"role": "user", "content": "a turn only the fit saw"}]
@@ -922,7 +944,7 @@ def test_conversation_search_refuses_a_result_the_budget_cannot_hold(archived, m
         {"thread_id": THREAD, "budget_tokens": rag_config.CHUNK_TOKENS * 4},
     )
 
-    assert asked == [4, 2, 1]
+    assert asked == [4, 3, 2, 1]
     assert "no room" in answer.lower()
 
 
@@ -947,6 +969,41 @@ def test_conversation_search_returns_what_the_budget_does_hold(archived, monkeyp
     )
 
     assert "an earlier turn" in answer
+
+
+def test_conversation_search_prices_only_what_the_model_reads(archived, monkeypatch):
+    from core.inference.tool_loop_controller import strip_result_for_model
+    from core.rag import config as rag_config
+    from core.rag import tool as rag_tool
+
+    def fake_recall(
+        thread_id,
+        query,
+        *,
+        top_k = None,
+        branch_messages = None,
+    ):
+        sources = [
+            {"filename": "conversation", "text": "y" * 4 * rag_config.CHUNK_TOKENS, "turn": n}
+            for n in range(1, top_k + 1)
+        ]
+        return rag_tool.render_conversation_sources(sources), sources
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+
+    def model_chunks(budget, top_k):
+        answer = tools_mod._search_conversation(
+            {"query": "pelicans", "top_k": top_k},
+            {"thread_id": THREAD, "budget_tokens": budget, "token_counter": lambda t: len(t) // 4},
+        )
+        # The source card still receives the citation data the model does not read.
+        assert tools_mod.RAG_SOURCES_SENTINEL in answer
+        return strip_result_for_model(answer, "search_conversation").count("<chunk ")
+
+    assert model_chunks(rag_config.CHUNK_TOKENS * 5, 4) == 4
+    assert model_chunks(rag_config.CHUNK_TOKENS * 3 // 2, 1) == 1
+    # Markup pushes four full chunks past four chunks of room; three still fit.
+    assert model_chunks(rag_config.CHUNK_TOKENS * 4, 8) == 3
 
 
 def test_the_conversation_tool_survives_studios_explicit_allowlist(monkeypatch):
@@ -1056,6 +1113,58 @@ def test_the_forced_recall_searches_for_the_USERS_question(archived, monkeypatch
     )
 
     assert seen["query"] == "what was the VULPINE code from earlier"
+
+
+def test_the_forced_recall_skips_notices_a_tool_loop_added_to_its_branch(archived, monkeypatch):
+    """A tool loop's live branch ends on its own user-role notices; query_messages names the
+    user's question so the final pass does not search for the budget nudge (#16187)."""
+    seen = {}
+
+    def fake_recall(thread_id, query, **kwargs):
+        seen["query"] = query
+        seen["branch_messages"] = kwargs.get("branch_messages")
+        return ("earlier turn", [{"id": "1"}])
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+    request = [{"role": "user", "content": "what was the VULPINE code from earlier"}]
+    live = request + [
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "content": "result", "tool_call_id": "c1"},
+        {"role": "user", "content": "You have used all available tool calls. Answer now."},
+    ]
+
+    tools_mod.build_conversation_recall(
+        live, THREAD, style = "inline", branch_messages = live, query_messages = request
+    )
+
+    assert seen["query"] == "what was the VULPINE code from earlier"
+    assert seen["branch_messages"] is live
+
+
+def test_archive_and_recall_hands_query_messages_to_the_recall(archived, monkeypatch):
+    seen = {}
+
+    def build(_conversation, _thread_id, **kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(tools_mod, "build_conversation_recall", build)
+    request = [{"role": "user", "content": "the question"}]
+    live = request + [{"role": "user", "content": "a loop notice"}]
+
+    llama_cpp._archive_and_recall(
+        live,
+        live,
+        thread_id = THREAD,
+        style = "inline",
+        recall_done = False,
+        recall_budget_tokens = 100_000,
+        branch_messages = live,
+        query_messages = request,
+    )
+
+    assert seen["query_messages"] is request
+    assert seen["branch_messages"] is live
 
 
 def test_a_model_initiated_search_is_filtered_to_the_request_branch(archived, monkeypatch):

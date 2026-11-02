@@ -902,8 +902,8 @@ test("every drop cue is drawn inside its row", () => {
     "${DROP_CUE_BASE} before:bottom-px",
     "before:inset-x-1 before:inset-y-0 ",
     // Borders snap to whole device pixels, so every cue keeps one thickness.
-    "before:h-0 before:border-t-[1.5px] before:border-primary",
-    "before:border-[1.5px] before:border-primary",
+    "before:h-0 before:border-t-[1.5px] before:border-foreground",
+    "before:border-[1.5px] before:border-foreground",
   ]) {
     assert.ok(APP_SIDEBAR.includes(cue), `no cue is drawn at ${cue}`);
   }

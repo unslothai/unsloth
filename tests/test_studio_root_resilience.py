@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import textwrap
+import types
 from pathlib import Path
 from unittest import mock
 
@@ -22,7 +23,21 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 
-def _load(name: str, path: Path):
+def _backend_imports(monkeypatch):
+    """storage_roots imports the backend's `loggers` and `utils` by bare name. Another test can leave a
+    different `utils` in sys.modules (tests/utils, once a test module put tests/ on sys.path), and that
+    one then answers `from utils.native_path_leases import ...`. Drop the foreign ones for this test."""
+    monkeypatch.syspath_prepend(str(_BACKEND))
+    for name in list(sys.modules):
+        if name.split(".")[0] not in ("utils", "loggers"):
+            continue
+        file = getattr(sys.modules[name], "__file__", None)
+        if not file or not Path(file).resolve().is_relative_to(_BACKEND.resolve()):
+            monkeypatch.delitem(sys.modules, name)
+
+
+def _load(name: str, path: Path, monkeypatch):
+    _backend_imports(monkeypatch)
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
@@ -31,13 +46,30 @@ def _load(name: str, path: Path):
     return mod
 
 
+def test_a_foreign_utils_left_by_another_test_does_not_answer(tmp_path, monkeypatch):
+    # The xdist worker state behind #15159's red: tests/utils registered as the top-level `utils`.
+    foreign = tmp_path / "utils"
+    foreign.mkdir()
+    (foreign / "__init__.py").write_text("", encoding = "utf-8")
+    stale = types.ModuleType("utils")
+    stale.__file__ = str(foreign / "__init__.py")
+    stale.__path__ = [str(foreign)]
+    for name in [n for n in sys.modules if n.split(".")[0] in ("utils", "loggers")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setitem(sys.modules, "utils", stale)
+    sys.modules.pop("sr_foreign", None)
+    mod = _load("sr_foreign", STORAGE_ROOTS, monkeypatch)
+    assert callable(mod._infer_studio_home_from_venv)
+    assert sys.modules["utils"] is not stale
+
+
 def test_infer_studio_home_swallows_permission_error(tmp_path, monkeypatch):
     candidate = tmp_path / "fake_root"
     venv = candidate / "unsloth_studio"
     venv.mkdir(parents = True)
     monkeypatch.setattr(sys, "prefix", str(venv))
     sys.modules.pop("sr_perm", None)
-    mod = _load("sr_perm", STORAGE_ROOTS)
+    mod = _load("sr_perm", STORAGE_ROOTS, monkeypatch)
     with mock.patch.object(Path, "is_file", side_effect = PermissionError("denied")):
         assert mod._infer_studio_home_from_venv() is None
 
@@ -54,7 +86,7 @@ def test_infer_studio_home_refuses_the_docker_app_dir(tmp_path, monkeypatch):
     (home / "unsloth_studio").symlink_to(venv)
     monkeypatch.setattr(sys, "prefix", str(home / "unsloth_studio"))
     sys.modules.pop("sr_app_dir", None)
-    mod = _load("sr_app_dir", STORAGE_ROOTS)
+    mod = _load("sr_app_dir", STORAGE_ROOTS, monkeypatch)
     monkeypatch.delenv("UNSLOTH_STUDIO_APP", raising = False)
     assert mod._infer_studio_home_from_venv() == app, "sentinel-gated inference broke"
     monkeypatch.setenv("UNSLOTH_STUDIO_APP", str(app))
@@ -73,7 +105,7 @@ def test_studio_root_does_not_crash_on_permission_error(tmp_path, monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
     monkeypatch.delenv("STUDIO_HOME", raising = False)
     sys.modules.pop("sr_studio_perm", None)
-    mod = _load("sr_studio_perm", STORAGE_ROOTS)
+    mod = _load("sr_studio_perm", STORAGE_ROOTS, monkeypatch)
     with mock.patch.object(Path, "is_file", side_effect = OSError("ebusy")):
         result = mod.studio_root()
     assert result == Path.home() / ".unsloth" / "studio"

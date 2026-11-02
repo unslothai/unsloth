@@ -12,9 +12,11 @@ import {
   deleteStoredChatProject,
   isExpectedBackgroundChatStorageError,
   listStoredChatProjects,
+  listStoredChatThreads,
   moveStoredChatItemToProject,
   updateStoredChatProject,
 } from "../utils/chat-history-storage";
+import { useBookmarkedTurnsStore } from "../stores/bookmarked-turns-store";
 import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import type { SidebarItem } from "./use-chat-sidebar-items";
 import { readFullListProjectActivity } from "./use-sidebar-row-pages";
@@ -193,10 +195,11 @@ export async function deleteChatProject(
   projectId: string,
   args: { deleteFiles?: boolean } = {},
 ): Promise<void> {
+  // A failed lookup only leaves stale bookmarks; it must not block the delete.
+  const members = await listStoredChatThreads({ projectId }).catch(() => []);
   const kept = await deleteStoredChatProject(projectId, args);
-  // The member chats went with the project, so their own sandboxes are reachable from nothing: the
-  // same offer an ordinary chat delete makes, and a sandbox the backend could not remove is kept
-  // even when asked to go.
+  useBookmarkedTurnsStore.getState().forgetThreads(members.map((thread) => thread.id));
+  // Member chats went with the project, so offer to delete their kept sandboxes.
   offerToDeleteKeptSandboxes(kept);
 }
 

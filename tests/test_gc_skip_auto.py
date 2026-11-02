@@ -604,3 +604,48 @@ def test_counts_apply_only_to_checkpointable_layers():
     for i in (1, 3, 5):
         model.model.layers[i] = torch.nn.Linear(4, 4)
     assert ns["skip_checkpointing"](model, 3) == [0, 2, 4]
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.parametrize("mode", ["fullgraph", "dynamic"])
+def test_auto_planner_stays_out_of_compiled_regions(mode):
+    # TrainingArguments(torch_compile = True) compiles the whole model; the planner must stay out of it.
+    from torch._dynamo.utils import counters
+
+    class Wrapped(torch.nn.Module):
+        def __init__(self, base):
+            super().__init__()
+            self.base = base
+            self.config = base.config
+            self.max_seq_length = base.max_seq_length
+
+        def forward(self, input_ids):
+            hidden = self.base.model(input_ids = input_ids, use_cache = False).last_hidden_state
+            return self.base.lm_head(hidden).float().logsumexp(-1).mean()
+
+    ns, _ = _load()
+    base = _model(layers = 4, device = "cuda")
+    model = Wrapped(base)
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    torch._dynamo.reset()
+    counters.clear()
+    compiled = torch.compile(
+        model,
+        backend = "aot_eager",
+        fullgraph = mode == "fullgraph",
+        dynamic = True if mode == "dynamic" else None,
+    )
+    try:
+        for seq in (8, 12, 16) if mode == "dynamic" else (8, 8, 8):
+            ids = torch.randint(0, 128, (2, seq), device = "cuda")
+            if mode == "dynamic":
+                torch._dynamo.mark_dynamic(ids, 1)
+            compiled(ids).backward()
+            model.zero_grad(set_to_none = True)
+        assert sum(counters["graph_break"].values()) == 0, dict(counters["graph_break"])
+        assert planner.started is None and planner.kept is None
+        assert _checkpointed(base) == [True] * 4
+    finally:
+        planner.remove()
+        torch._dynamo.reset()

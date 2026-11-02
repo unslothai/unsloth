@@ -83,6 +83,21 @@ def test_no_hook_when_nothing_moved_off_the_load_dtype():
     assert cast_mixed_linear_inputs(model, torch.float16) == 0
 
 
+def test_float8_weight_linears_get_no_hook():
+    class _Fp8Linear(torch.nn.Linear):
+        pass
+
+    model = _falcon_like()
+    model.fp8 = _Fp8Linear(8, 4, bias = False)
+    model.fp8.weight = torch.nn.Parameter(
+        model.fp8.weight.data.to(torch.float8_e4m3fn), requires_grad = False
+    )
+    assert cast_mixed_linear_inputs(model, torch.float32) == 1  # only the float16 q_proj
+    assert not getattr(model.fp8, "_unsloth_casts_input_dtype", False)
+    assert not model.fp8._forward_pre_hooks
+    assert model.q_proj._unsloth_casts_input_dtype
+
+
 def test_vision_loader_hooks_after_the_custom_dtype_code():
     tree = ast.parse(VISION.read_text(encoding = "utf-8"))
     for node in ast.walk(tree):

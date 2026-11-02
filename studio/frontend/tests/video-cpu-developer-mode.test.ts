@@ -77,13 +77,10 @@ test("the confirm dialog carries the issue's warning text verbatim", () => {
   assert.match(section, /disabled=\{!settings \|\| saving \|\| envForced !== null\}/);
 });
 
-test("the section is rendered for the owner only", () => {
-  const tab = readSrc("features/settings/tabs/general-tab.tsx");
-  const ownerBlock = tab.indexOf("{isOwner ? (");
-  const section = tab.indexOf("<DeveloperModeSection />");
-  assert.ok(ownerBlock >= 0 && section > ownerBlock, "DeveloperModeSection outside the owner block");
-  const close = tab.indexOf(") : null}", ownerBlock);
-  assert.ok(section < close, "DeveloperModeSection outside the owner block");
+test("the section is rendered for the owner only, on the System tab", () => {
+  const tab = readSrc("features/settings/tabs/resources-tab.tsx");
+  assert.match(tab, /\{isOwner \? <DeveloperModeSection \/> : null\}/);
+  assert.doesNotMatch(readSrc("features/settings/tabs/general-tab.tsx"), /DeveloperModeSection/);
 });
 
 test("the Video page keeps a CPU (experimental) warning up while the opt-in is in effect", () => {
@@ -106,7 +103,7 @@ test("the health verdict carries the opt-in into the platform store", () => {
   for (const file of ["components/app-sidebar.tsx", "app/routes/__root.tsx"]) {
     assert.match(
       readSrc(file),
-      /videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn\)/,
+      /videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining\)/,
       file,
     );
   }

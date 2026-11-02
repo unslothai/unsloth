@@ -10,6 +10,7 @@ import re
 import shlex
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -74,6 +75,10 @@ def test_profile_is_deny_default(profile):
     assert lines[0] == "(version 1)"
     assert lines[1] == "(deny default)"
     assert "(allow default)" not in profile
+
+
+def test_the_fd_directory_is_listable_so_spawning_never_brute_forces_closes(profile):
+    assert '(allow file-read* (literal "/dev/fd"))' in profile.splitlines()
 
 
 def test_every_rule_is_a_balanced_s_expression(profile):
@@ -233,13 +238,138 @@ def test_process_substitution_descriptors_are_readable(profile):
     assert '(allow file-write* (regex #"^/dev/fd/[0-9]+$"))' in profile
 
 
-def test_pip_gets_a_writable_target_inside_the_workdir():
+def test_pip_gets_a_writable_prefix_inside_the_workdir():
     env = backend._sandbox_environment(
         {"PATH": "/usr/bin", "PYTHONPATH": "/shim"}, _WORKDIR, _PRIVATE_TMP
     )
     packages = f"{_WORKDIR}/{backend.SESSION_PACKAGES_RELPATH}"
-    assert env["PIP_TARGET"] == packages
-    assert env["PYTHONPATH"].split(os.pathsep) == ["/shim", packages]
+    assert env["PIP_PREFIX"] == packages
+    assert "PIP_TARGET" not in env
+    pythonpath = env["PYTHONPATH"].split(os.pathsep)
+    assert pythonpath[0] == "/shim"
+    assert pythonpath[-1] == packages
+    assert all(entry.startswith(packages) for entry in pythonpath[1:])
+
+
+def _console_script_wheel(directory: Path, name: str) -> None:
+    info = f"{name}-1.0.dist-info"
+    files = {
+        f"shared/{name}.py": "def main():\n    print('ok')\n",
+        f"{info}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n",
+        f"{info}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        f"{info}/entry_points.txt": f"[console_scripts]\n{name} = shared.{name}:main\n",
+    }
+    with zipfile.ZipFile(directory / f"{name}-1.0-py3-none-any.whl", "w") as wheel:
+        for path, text in files.items():
+            wheel.writestr(path, text)
+        wheel.writestr(
+            f"{info}/RECORD", "".join(f"{path},,\n" for path in [*files, f"{info}/RECORD"])
+        )
+
+
+def test_a_second_pip_install_keeps_its_commands_and_namespace_modules(tmp_path):
+    if subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output = True).returncode:
+        pytest.skip(
+            reason = "pip is not installed in this interpreter, so there is no install to run"
+        )
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    for name in ("alpha", "beta"):
+        _console_script_wheel(wheels, name)
+    workdir = tmp_path / "session"
+    private_tmp = tmp_path / "tmp"
+    workdir.mkdir()
+    private_tmp.mkdir()
+    env = backend._sandbox_environment(
+        {"PATH": os.environ["PATH"], "PIP_DISABLE_PIP_VERSION_CHECK": "1"},
+        str(workdir),
+        str(private_tmp),
+    )
+    for name in ("alpha", "beta"):
+        installed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                "--find-links",
+                str(wheels),
+                name,
+            ],
+            env = env,
+            capture_output = True,
+            text = True,
+        )
+        assert installed.returncode == 0, installed.stdout + installed.stderr
+
+    bin_dir = workdir / backend.SESSION_PACKAGES_RELPATH / "bin"
+    assert (bin_dir / "alpha").exists()
+    assert (bin_dir / "beta").exists()
+    imported = subprocess.run(
+        [sys.executable, "-c", "import shared.alpha, shared.beta"],
+        env = env,
+        capture_output = True,
+        text = True,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_reinstalling_another_version_leaves_one_version_installed(tmp_path):
+    if subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output = True).returncode:
+        pytest.skip(
+            reason = "pip is not installed in this interpreter, so there is no install to run"
+        )
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    for version in ("1.0", "2.0"):
+        info = f"vpkg-{version}.dist-info"
+        files = {
+            "vpkg.py": f"VERSION = {version!r}\n",
+            f"{info}/METADATA": f"Metadata-Version: 2.1\nName: vpkg\nVersion: {version}\n",
+            f"{info}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        }
+        with zipfile.ZipFile(wheels / f"vpkg-{version}-py3-none-any.whl", "w") as wheel:
+            for path, text in files.items():
+                wheel.writestr(path, text)
+            wheel.writestr(
+                f"{info}/RECORD", "".join(f"{p},,\n" for p in [*files, f"{info}/RECORD"])
+            )
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    shim = Path(backend.__file__).with_name("sandbox_site")
+    env = backend._sandbox_environment(
+        {
+            "PATH": os.environ["PATH"],
+            "PYTHONPATH": str(shim),
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        },
+        str(workdir),
+        str(tmp_path),
+    )
+    probe = "import vpkg, importlib.metadata as m; print(vpkg.VERSION, m.version('vpkg'))"
+    for version in ("1.0", "2.0", "1.0"):
+        installed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                "--find-links",
+                str(wheels),
+                f"vpkg=={version}",
+            ],
+            env = env,
+            capture_output = True,
+            text = True,
+        )
+        assert installed.returncode == 0, installed.stdout + installed.stderr
+        seen = subprocess.run(
+            [sys.executable, "-c", probe], env = env, capture_output = True, text = True
+        )
+        assert seen.stdout.split() == [version, version], seen.stdout + seen.stderr
+    assert len(list(workdir.glob(f"{backend.SESSION_PACKAGES_RELPATH}/**/vpkg-*.dist-info"))) == 1
 
 
 def test_openmp_can_write_its_registration_segment(profile):
@@ -409,6 +539,60 @@ def test_profile_compiles_under_sandbox_exec(tmp_path):
         assert result.returncode == 0, result.stderr
     finally:
         prepared.cleanup()
+
+
+@_darwin_only
+def test_a_child_spawns_promptly_under_an_unlimited_fd_limit(tmp_path):
+    """Before /dev/fd was listable, this spawn spun forever at 100% CPU, unkillable by its parent's timeout."""
+    import resource
+    import signal
+
+    _soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard != resource.RLIM_INFINITY:
+        pytest.skip("needs an unlimited hard RLIMIT_NOFILE to raise the soft limit to")
+
+    def unlimited():
+        resource.setrlimit(resource.RLIMIT_NOFILE, (resource.RLIM_INFINITY, hard))
+
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    spawn = (
+        "import subprocess, time\n"
+        "start = time.monotonic()\n"
+        "subprocess.run(['/usr/bin/true'], check = True)\n"
+        "print(time.monotonic() - start)\n"
+    )
+    prepared = backend.prepare(
+        ToolLaunchPlan(
+            argv = (sys.executable, "-I", "-S", "-c", spawn),
+            workdir = str(workdir),
+            env = {"PATH": "/usr/bin:/bin"},
+            preexec_fn = unlimited,
+        )
+    )
+    proc = subprocess.Popen(
+        prepared.argv,
+        env = prepared.env,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
+        text = True,
+        preexec_fn = prepared.preexec_fn,
+        start_new_session = True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout = 30)
+    except subprocess.TimeoutExpired:
+        pytest.fail("spawning a child inside the sandbox did not finish within 30s")
+    finally:
+        if proc.returncode is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        proc.wait()
+        prepared.cleanup()
+    assert proc.returncode == 0, stderr
+    assert float(stdout.strip()) < 5.0
 
 
 @_darwin_only

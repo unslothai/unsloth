@@ -16,7 +16,7 @@ import { FolderBrowser } from "@/features/model-picker";
 import { pickHuggingFaceCacheDir } from "@/features/native-intents";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
-import { Folder02Icon } from "@hugeicons/core-free-icons";
+import { Folder02Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { setDownloadDir, useDownloadDir } from "../download-manager";
@@ -72,7 +72,7 @@ export function DownloadLocationPicker() {
             type="button"
             aria-label={`Download to: ${dir ?? "Models folder"}`}
             title={`Download to: ${dir ?? "Models folder"}`}
-            className="hub-tag-soft inline-flex h-[calc(26px*var(--ui-space-scale,1))] max-w-[calc(160px*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center gap-1 rounded-full border-0 px-2 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground"
+            className={`hub-tag-soft inline-flex h-[calc(26px*var(--ui-space-scale,1))] max-w-[calc(160px*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center justify-center gap-1 rounded-full border-0 ${dir ? "px-2" : "w-[calc(26px*var(--ui-space-scale,1))]"} text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground`}
           >
             <HugeiconsIcon
               icon={Folder02Icon}

@@ -140,10 +140,11 @@ def _same(a, b) -> bool:
     if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
         if a.dtype != b.dtype or tuple(a.shape) != tuple(b.shape):
             return False
-        # Raw bytes, not torch.equal: -0.0 == 0.0 and NaN != NaN would otherwise decide.
+        # Raw bytes, not torch.equal: -0.0 == 0.0 and NaN != NaN would otherwise decide. Flattened first:
+        # a 0-dim tensor (nvfp4's per-tensor scale) cannot be viewed as bytes of another element size.
         return a.numel() == 0 or torch.equal(
-            a.detach().contiguous().cpu().view(torch.uint8),
-            b.detach().contiguous().cpu().view(torch.uint8),
+            a.detach().contiguous().cpu().reshape(-1).view(torch.uint8),
+            b.detach().contiguous().cpu().reshape(-1).view(torch.uint8),
         )
     if isinstance(a, tuple) and isinstance(b, tuple):
         return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b, strict = True))
@@ -274,7 +275,7 @@ def convert(
         pass
     source["converter_torch"] = torch.__version__
 
-    # Read exactly as Studio does (allowlisted weights_only); on torchao >= 0.18 v1 int8 comes back as Int8Tensor.
+    # Read as Studio does (allowlisted weights_only); on torchao >= 0.18 v1 int8 loads as Int8Tensor.
     facts: list = []
     restore = _record_v1_facts(facts)
     try:
@@ -322,7 +323,6 @@ def convert(
                 )
             int8_source = INT8_SOURCE_V1
         layout = quant_layout_header(flat_sd, int8_source = int8_source)
-        # save_prequant_safetensors writes torchao's flattened layout plus our two keys; add the layout and source.
         from safetensors.torch import save_file
 
         helpers = ps._torchao_helpers()
@@ -348,7 +348,7 @@ def convert(
             header[ps.UNSLOTH_ROOT_KEYS_KEY] = json.dumps([str(k) for k in roots])
         save_file(_untie(dict(flat)), dst, metadata = header)
         back = ps.load_prequant_safetensors(dst, mmap = True)
-    # Bit-identity against the .pt as THIS install reads it (v1 on <= 0.17 via the native v1 rebuild).
+    # Bit-identity against the .pt as this install reads it.
     bad = compare_state_dicts(state_dict, back["state_dict"])
     if bad:
         raise AssertionError(f"{dst}: {len(bad)} tensors differ from {src}, e.g. {bad[:3]}")

@@ -331,7 +331,7 @@ export function ShareRunConfigDialog({
                 />
               </label>
               <Button
-                className="shrink-0 px-4"
+                className="shrink-0"
                 disabled={!link || copying}
                 onClick={async () => {
                   setCopying(true);

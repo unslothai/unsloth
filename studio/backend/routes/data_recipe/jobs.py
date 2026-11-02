@@ -72,9 +72,7 @@ from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_err
 logger = get_logger(__name__)
 router = APIRouter()
 
-# Fetched without an Authorization header, so the link carries an HMAC capability rather than the
-# session token, which download history would keep. Same shape as the signed video links.
-# The native save dialog opens before the request, so this outlasts a user sitting on it.
+# Fetched without auth, so the link carries an HMAC capability, not the session token (download history keeps it); TTL outlasts save dialog.
 _DOWNLOAD_LINK_TTL = 30 * 60
 _DOWNLOAD_LINK_SECRET = secrets.token_bytes(32)
 
@@ -87,12 +85,7 @@ def _download_link_payload(
     filename: str | None,
     account_id: str,
 ) -> str:
-    # Every parameter the export reads, or the holder could swap artifact_path for another run's,
-    # plus the account whose roots it will be read from: recipe roots are derived from the account
-    # ContextVar, so the tenant is part of the object this capability names.
-    # Length-prefixed, because a bare separator join is not injective: artifact_path "a" with
-    # filename "b\x1fc" and artifact_path "a\x1fb" with filename "c" share one payload, so one
-    # signature would authorize both.
+    # Sign every export param so a holder cannot swap artifact_path, and the account (selects roots); length-prefix: a separator join is not injective.
     parts = [account_id, job_id, export_format, artifact_path or "", filename or ""]
     return "\x1f".join(f"{len(part)}:{part}" for part in parts)
 
@@ -107,20 +100,14 @@ def _sign_download_link(**parts: Any) -> str:
 
 
 def _download_link_account(token: str, **parts: Any) -> AccountContext | None:
-    """The account this link was minted for, or None once it is invalid or deactivated.
-
-    Same shape as the signed RAG document link: expiry, account id, signature, with an empty
-    account id meaning the owner.
-    """
+    """Empty account id in the link means the owner; None once it is invalid or deactivated."""
     try:
         expires_at, account_id, signature = token.split(".", 2)
     except ValueError:
         return None
     if "." in signature:
         return None
-    # Compare as bytes: compare_digest on two str raises TypeError for a non-ASCII signature, which
-    # a %-encoded query value can carry, and that is a 500 where an invalid token owes a 401. The
-    # preview share link guards the same way.
+    # Compare bytes: compare_digest raises TypeError on non-ASCII str (500 instead of 401).
     try:
         provided = signature.encode("ascii")
     except UnicodeEncodeError:
@@ -153,9 +140,7 @@ async def _authorize_dataset_download(
 ):
     """A signed link for exactly this export, or the ordinary Authorization header for an API
     client. The session bearer is deliberately not read from the query."""
-    # In a threadpool: get_account_by_id is synchronous SQLite under a 5s busy timeout, and this
-    # dependency is async, so on the loop a contended auth database would stall every other request.
-    # The sibling RAG link gets this for free by being a sync def, which FastAPI offloads itself.
+    # Threadpool: sync SQLite with 5s busy timeout would stall the event loop.
     account = (
         await run_in_threadpool(
             _download_link_account,
@@ -169,8 +154,7 @@ async def _authorize_dataset_download(
         else None
     )
     if account is not None:
-        # This route has no auth dependency behind the link, so without this bind every read
-        # resolves under the owner's recipe root rather than the minter's.
+        # No auth dependency here, so bind the account or reads resolve under the wrong root.
         marker = bind_account(account)
         try:
             yield
@@ -186,8 +170,7 @@ download_router = APIRouter(dependencies = [Depends(_authorize_dataset_download)
 # Keepalive cadence, well inside the ~100s a quick tunnel allows between body bytes.
 _KEEPALIVE_EVERY_S = 15.0
 
-# A stdio provider is a command this host would run, so only a UI session may supply one. Annotated, not a
-# Depends default, so a direct call gets False.
+# Only UI sessions may supply stdio commands, since this host would run them; Annotated so direct calls get False.
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 
@@ -334,11 +317,7 @@ def _ensure_selected_local_model_loaded(
 def _inject_local_structured_response_format(
     recipe: dict[str, Any], local_provider_names: set[str]
 ) -> None:
-    """Inject an OpenAI ``response_format`` for each local llm-structured column. Clones the
-    model_config and repoints the column at the clone so llm-text / llm-judge columns sharing the
-    alias keep free-form sampling. Without this, data_designer only adds a prompt-level "return
-    JSON" hint, which small GGUFs often break. Forwarding ``response_format`` lets llama-server
-    apply grammar-constrained sampling, guaranteeing parseable output."""
+    """Clone each llm-structured column model config so llama-server grammar-constrains only it; prompt-only JSON breaks small GGUFs."""
     columns = recipe.get("columns")
     model_configs = recipe.get("model_configs")
     if not isinstance(columns, list) or not isinstance(model_configs, list):
@@ -355,8 +334,7 @@ def _inject_local_structured_response_format(
     if not alias_to_local_mc:
         return
 
-    # Clone per (alias, column) so each llm-structured column gets its own schema without leaking
-    # response_format onto other columns sharing the base alias.
+    # Clone per (alias, column) so response_format doesn't leak to other columns.
     seen_clone_aliases: set[str] = {
         mc.get("alias") for mc in model_configs if isinstance(mc.get("alias"), str)
     }
@@ -388,9 +366,7 @@ def _inject_local_structured_response_format(
         if not isinstance(params, dict):
             params = {}
             clone["inference_parameters"] = params
-        # BaseInferenceParams is extra="forbid", so response_format rides `extra_body`; llama-server reads the schema
-        # directly under it, not nested in a json_schema object. Per tools/server/README.md the schema sits directly
-        # under response_format and is converted to a GBNF grammar for sampling.
+        # BaseInferenceParams forbids extras, so response_format rides extra_body; llama-server reads the schema directly under it, not in json_schema.
         extra_body = params.get("extra_body")
         if not isinstance(extra_body, dict):
             extra_body = {}
@@ -398,9 +374,7 @@ def _inject_local_structured_response_format(
             "type": "json_schema",
             "schema": output_format,
         }
-        # Internal opt-in that re-enables the ```json fence data_designer's structured-output parser expects, which
-        # the spec-compliant default now omits. The flag rides through the OpenAI SDK's extra_body passthrough
-        # alongside response_format.
+        # Re-enables the ```json fence data_designer's structured-output parser expects.
         extra_body["_unsloth_guided_fence"] = True
         params["extra_body"] = extra_body
         new_configs.append(clone)
@@ -422,8 +396,7 @@ def _inject_local_providers(
     if not providers:
         return None
 
-    # Strict `is True` so malformed payloads (1, "true") do not trigger the loopback rewrite.
-    # Collect local providers and pop is_local from ALL dicts.
+    # Strict `is True` so malformed values (1, "true") don't trigger the loopback rewrite.
     local_indices: list[int] = []
     for i, provider in enumerate(providers):
         if not isinstance(provider, dict):
@@ -437,8 +410,7 @@ def _inject_local_providers(
 
     endpoint = _resolve_local_v1_endpoint(request)
 
-    # Gate on model-loaded only for a local provider reachable from an LLM column: orphan
-    # model_config nodes never reach /v1 and must not block runs.
+    # Orphan model_config nodes never reach /v1, so they must not block runs.
     local_names = {providers[i].get("name") for i in local_indices if providers[i].get("name")}
     used_aliases = _used_llm_model_aliases(recipe)
     referenced_providers = {
@@ -450,14 +422,12 @@ def _inject_local_providers(
     token = ""
     internal_key_id: Optional[int] = None
     if local_names & referenced_providers:
-        # Verify the selected local model is loaded before minting a key. Still a point-in-time check (TOCTOU); the
-        # /v1 endpoint returns a clear 400 if the model is unloaded or swapped before the subprocess calls it.
+        # Point-in-time check; /v1 still returns a clear 400 if the model changes later.
         _ensure_selected_local_model_loaded(recipe, local_names)
 
         from auth import storage
 
-        # Mint an internal sk-unsloth-* key scoped to this run via the unified API-key path. Marked internal so it's
-        # hidden from the user's key list; the caller revokes it when the job terminates.
+        # Internal key, hidden from the user's list; revoked when the job ends.
         expires_at = (datetime.now(timezone.utc) + timedelta(hours = 24)).isoformat()
         token, row = storage.create_api_key(
             username = current_account().username,
@@ -468,8 +438,7 @@ def _inject_local_providers(
         )
         internal_key_id = int(row["id"])
 
-    # Strip stale external-only fields (extra_headers/extra_body/api_key_env): a provider
-    # flipped external -> local would carry invalid JSON or rogue auth headers into /v1.
+    # A provider flipped external -> local must not carry stale headers/auth into /v1.
     for i in local_indices:
         providers[i]["endpoint"] = endpoint
         providers[i]["api_key"] = token
@@ -478,18 +447,13 @@ def _inject_local_providers(
         providers[i].pop("extra_headers", None)
         providers[i].pop("extra_body", None)
 
-    # llama-server's /v1/models can differ from the selected id (cache aliases, GGUF variants), and a loaded
-    # backend was already gated on, so the health check only mis-rejects. Force skip_health_check on local
-    # model_configs.
+    # llama-server's /v1/models ids can differ from the selection, so skip the health check.
     for mc in recipe.get("model_configs", []):
         if not isinstance(mc, dict):
             continue
         if mc.get("provider") in local_names:
             mc["skip_health_check"] = True
-            # Disable thinking for local recipe inference: the <think> preamble roughly doubles tokens per row and
-            # pushes answers past data_designer's json-fence regex. Forwarded as chat_template_kwargs={enable_thinking:
-            # False} via extra_body so llama-server renders the template without it: llm-text columns get the latency
-            # cut, structured columns stop leaking think tags.
+            # Disable thinking: <think> doubles tokens and breaks data_designer's json-fence regex.
             params = mc.get("inference_parameters")
             if not isinstance(params, dict):
                 params = {}
@@ -504,8 +468,7 @@ def _inject_local_providers(
             extra_body["chat_template_kwargs"] = tpl_kwargs
             params["extra_body"] = extra_body
 
-    # Only llama.cpp carries a grammar engine; /v1 refuses response_format on every other local
-    # backend, so those fall back to the prompt-level JSON llm-judge columns already rely on.
+    # Only llama.cpp has a grammar engine; other backends refuse response_format.
     if _local_chat_serves_gguf():
         _inject_local_structured_response_format(recipe, local_names)
 
@@ -600,8 +563,7 @@ def create_job(
     try:
         internal_api_key_id = _inject_local_providers(recipe, request, credential[1])
     except CredentialRotated as exc:
-        # A reset-password landed after this request authenticated; the workflow key
-        # is refused, so answer like any other revoked credential rather than 500.
+        # A password reset revoked the workflow key; answer 401, not 500.
         raise HTTPException(status_code = 401, detail = "Invalid or expired token") from exc
     except ValueError as exc:
         raise log_and_http_error(
@@ -612,8 +574,7 @@ def create_job(
             log = logger,
         ) from exc
 
-    # One try over get_job_manager() AND mgr.start(), so an unexpected exception cannot leave
-    # a minted key alive for its full 24h TTL.
+    # One try over both so a failure can't leave a 24h key alive.
     try:
         mgr = get_job_manager()
         job_id = mgr.start(
@@ -971,8 +932,7 @@ def publish_job_dataset(
             description = description,
             hf_token = hf_token or None,
             private = payload.private,
-            # client_ip, not the socket peer: through the managed tunnel the peer
-            # is the local cloudflared process, not the visitor.
+            # client_ip: behind the tunnel the socket peer is cloudflared.
             link_endpoint = client_reachable_endpoint(client_ip(request)),
         )
     except RecipeDatasetPublishError as exc:

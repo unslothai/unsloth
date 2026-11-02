@@ -33,6 +33,7 @@ import {
 import { Waveform } from "./waveform";
 import { secondsBeyondEnd } from "./waveform-range";
 import { WaveformRangeSelect } from "./waveform-range-select";
+import { FieldLabel } from "./field";
 
 export { musicEditProblem } from "../music/music-edit-rules";
 
@@ -232,14 +233,14 @@ export function MusicEditInputs({
 
       {action ? (
         <div className="grid gap-1.5">
-          <label
+          <FieldLabel
             htmlFor={PROMPT_ID}
             className="text-ui-13 font-medium text-foreground"
           >
             {editUsesStrength(action)
               ? "What should it sound like?"
               : "What should the new part sound like?"}
-          </label>
+          </FieldLabel>
           <Textarea
             id={PROMPT_ID}
             value={draft.prompt}
@@ -250,7 +251,7 @@ export function MusicEditInputs({
                 ? "Lo-fi jazz, warm piano, brushed drums…"
                 : "A soaring guitar solo over the same groove…"
             }
-            className="min-h-20 rounded-lg"
+            className="min-h-20"
           />
         </div>
       ) : null}

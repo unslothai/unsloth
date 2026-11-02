@@ -1,21 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Serialization and bookkeeping for media model switches.
-
-One switch at a time per backend, so two requests cannot race the single pipeline slot, plus a
-single cross-backend lock every GPU-taking switch queues on. Without the latter two switchers
-each see the other as work they would interrupt and refuse each other; queueing makes the second
-a waiter instead.
-
-The counters exist because the request that is switching is itself tracked by the middleware.
-A request parked on a switch lock holds no work, and a request performing a switch is not using
-the backend it is counted against, so both are discounted when a switch asks whether anything
-else is running.
-
-The locks are per running loop, like ``_auto_switch_lock`` in ``routes.inference``: a
-module-level ``asyncio.Lock`` binds to the loop that first awaited it and hangs a second one.
-"""
+"""Serializes switches: one at a time per backend, plus one cross-backend GPU lock every GPU-taking
+switch queues on; locks are per event loop, since a module-level asyncio.Lock hangs a second
+loop."""
 
 from __future__ import annotations
 

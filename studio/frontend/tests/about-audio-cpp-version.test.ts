@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Settings > About lists the installed llama.cpp, whisper.cpp and audio.cpp releases in its Engines section.
+// Settings lists llama.cpp, whisper.cpp, audio.cpp and MLX in Engines, and mlx-lm / mlx-vlm in Environment.
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -43,6 +43,36 @@ test("the Engines section lists llama.cpp, whisper.cpp and audio.cpp", () => {
   );
 });
 
+test("the Engines section shows MLX only where it is installed", () => {
+  assert.match(
+    read("hooks/use-hardware-info.ts"),
+    /mlx: data\?\.versions\?\.mlx \?\? null,/,
+  );
+  const section = read(
+    "features/settings/components/engine-versions-section.tsx",
+  );
+  assert.match(section, /key: "mlx",[^}]*installed: hw\.mlx,\s*offer: null,/);
+  assert.match(section, /row\.key !== "mlx" \|\| row\.installed != null/);
+});
+
+test("the Environment section lists mlx-lm and mlx-vlm only where installed", () => {
+  const env = read("features/settings/tabs/resources-tab.tsx");
+  for (const [pkg, key] of [
+    ["mlx_lm", "mlxLm"],
+    ["mlx_vlm", "mlxVlm"],
+  ]) {
+    assert.match(
+      env,
+      new RegExp(
+        `\\{systemInfo\\.ml_packages\\.${pkg} \\? \\(\\s*<InfoRow\\s*` +
+          `label=\\{t\\("settings\\.resources\\.environment\\.${key}"\\)\\}\\s*` +
+          `value=\\{hostReading\\(systemInfo\\.ml_packages\\.${pkg}\\)\\}`,
+      ),
+      pkg,
+    );
+  }
+});
+
 test("only the owner gets the engine Update button, which the update route requires", () => {
   const section = read(
     "features/settings/components/engine-versions-section.tsx",
@@ -63,7 +93,7 @@ test("a self-managed llama.cpp still lets Update install an offered audio.cpp re
   assert.doesNotMatch(section, /!supported/);
 });
 
-test("every locale labels the audio.cpp row", () => {
+test("every locale labels the audio.cpp, MLX, mlx-lm and mlx-vlm rows", () => {
   const locales = readdirSync(new URL("i18n/locales/", SRC)).filter((name) =>
     name.endsWith(".ts"),
   );
@@ -72,6 +102,16 @@ test("every locale labels the audio.cpp row", () => {
     assert.match(
       read(`i18n/locales/${name}`),
       /audioCppVersion: "[^"\n]*audio\.cpp[^"\n]*",/,
+      name,
+    );
+    assert.match(
+      read(`i18n/locales/${name}`),
+      /mlxVersion: "[^"\n]*MLX[^"\n]*",/,
+      name,
+    );
+    assert.match(
+      read(`i18n/locales/${name}`),
+      /mlxLm: "mlx-lm",\s*mlxVlm: "mlx-vlm",/,
       name,
     );
   }

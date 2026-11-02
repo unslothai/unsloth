@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in MLX (mflux) image engine for Apple Silicon (``UNSLOTH_DIFFUSION_MLX=1``) on Studio's GGUF.
+"""MLX (mflux) image engine for Apple Silicon on Studio's GGUF.
 
 Same duck-typed surface as the other image engines; selected only by ``diffusion_engine_router``.
 """
@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
 
+from core.inference.inference_gate import holds_inference, pauses_background_embedding
 from core.inference.diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -40,6 +41,7 @@ from core.inference.diffusion_families import (
     supported_family_names,
 )
 from core.inference import mlx_diffusion_convert as convert
+from core.inference.mlx_diffusion_routing import mlx_capabilities
 from core.inference.diffusion_batched import SEED_MASK
 from loggers import get_logger
 from utils.account_context import account_thread, current_account_id
@@ -55,6 +57,8 @@ BASE_ALLOW_PATTERNS = (
     "tokenizer/*",
     "vae/*.safetensors",
     "vae/*.json",
+    "scheduler/*.json",
+    "model_index.json",
 )
 _LINKED_SUBDIRS = ("text_encoder", "tokenizer", "vae")
 _TE_GROUP_SIZE = 64
@@ -418,6 +422,48 @@ class MfluxRuntime:
         mx.eval(model.parameters())
         return model
 
+    def apply_loras(self, model: Any, loras: list[tuple[str, float]]) -> None:
+        """Swap in ``loras`` ((path, scale) pairs) unbaked, since baking requantizes; [] restores the base layers."""
+        import mlx.core as mx
+        from mflux.models.common.lora.mapping.lora_loader import LoRALoader
+        from mflux.models.z_image.weights.z_image_lora_mapping import ZImageLoRAMapping
+
+        self.strip_loras(model)
+        if not loras:
+            return
+        try:
+            LoRALoader.load_and_apply_lora(
+                lora_mapping = ZImageLoRAMapping.get_mapping(),
+                transformer = model.transformer,
+                lora_paths = [path for path, _scale in loras],
+                lora_scales = [float(scale) for _path, scale in loras],
+                bake_lora = False,
+            )
+            mx.eval(model.transformer.parameters())
+        except BaseException:
+            self.strip_loras(model)
+            raise
+
+    def strip_loras(self, model: Any) -> None:
+        from mflux.models.common.lora.layer.fused_linear_lora_layer import FusedLoRALinear
+        from mflux.models.common.lora.layer.linear_lokr_layer import LoKrLinear
+        from mflux.models.common.lora.layer.linear_lora_layer import LoRALinear
+        from mflux.models.common.lora.mapping.lora_loader import LoRALoader
+
+        transformer = model.transformer
+        wrapped = [
+            name
+            for name, module in transformer.named_modules()
+            if isinstance(module, (LoRALinear, LoKrLinear, FusedLoRALinear))
+        ]
+        # A fused layer lists its adapters as children: restore only the outermost wrapper.
+        for name in wrapped:
+            if any(name.startswith(outer + ".") for outer in wrapped):
+                continue
+            module = LoRALoader._get_target_module(transformer, name)
+            base = module.base_linear if isinstance(module, FusedLoRALinear) else module.linear
+            LoRALoader._replace_target_module(transformer, name, base)
+
     def generate(
         self,
         model: Any,
@@ -477,7 +523,7 @@ class MfluxRuntime:
         return image
 
     def free_working_set_bytes(self) -> Optional[int]:
-        """Metal's recommended working set minus what MLX holds live now (the resident model), or None."""
+        """Metal working set minus live MLX, capped by system headroom less a chat worker's reserved growth."""
         import mlx.core as mx
 
         try:
@@ -487,13 +533,26 @@ class MfluxRuntime:
             return None
         if budget <= 0:
             return None
-        return budget - int(mx.get_active_memory())
+        free = budget - int(mx.get_active_memory())
+        try:
+            from core.inference.gpu_residency import shared_metal_headroom_bytes
+            shared = shared_metal_headroom_bytes()
+        except Exception:  # noqa: BLE001 -- this process's reading alone, as before
+            shared = None
+        return free if shared is None else min(free, shared)
 
     def _plan_vae_tiling(self, model: Any, width: int, height: int) -> None:
         from mflux.models.common.vae.tiling_config import TilingConfig
 
+        try:
+            from core.inference.gpu_residency import metal_media_priced
+
+            # Price reserved the tiled decode; a chat model may join mid-generation on it.
+            priced = metal_media_priced()
+        except Exception:  # noqa: BLE001
+            priced = False
         tiled = TilingConfig.may_tile_implicitly(model) and vae_tiling_needed(
-            width, height, self.free_working_set_bytes()
+            width, height, 0 if priced else self.free_working_set_bytes()
         )
         model.tiling_config = TilingConfig() if tiled else None
         self.last_vae_tiled = tiled
@@ -549,6 +608,9 @@ class _MlxState:
     dense_bits: int
     convert_dir: str
     timings: dict = field(default_factory = dict)
+    gguf_path: Optional[str] = None
+    hf_token: Optional[str] = None
+    loras: tuple = ()
 
 
 @dataclass
@@ -880,6 +942,7 @@ class MlxDiffusionBackend:
 
     # ── Load ─────────────────────────────────────────────────────────────────
 
+    @pauses_background_embedding
     def begin_load(
         self,
         repo_id: str,
@@ -927,8 +990,10 @@ class MlxDiffusionBackend:
         convertible, why = convert.quant_convertible(gguf_filename)
         if not convertible:
             raise ValueError(why or "This GGUF quant is not convertible to MLX.")
-        if loras:
-            raise ValueError("LoRA adapters are not supported on the MLX engine yet.")
+        if loras and not mlx_capabilities(fam.name).loras:
+            raise ValueError(
+                f"LoRA adapters are not supported on the MLX engine for {fam.name} yet."
+            )
         base = resolve_base_repo(fam, base_repo)
         named = _named_mlx_base(fam, base) if _is_local_path(base) else None
         model_config = mlx_model_config_for(fam, named or base)
@@ -1118,6 +1183,8 @@ class MlxDiffusionBackend:
                 dense_bits = bits,
                 convert_dir = str(out_dir),
                 timings = timings,
+                gguf_path = str(gguf_path),
+                hf_token = hf_token,
             )
             with self._lock:
                 if self._load_token != _load_token:
@@ -1235,6 +1302,7 @@ class MlxDiffusionBackend:
 
     # ── Generate ─────────────────────────────────────────────────────────────
 
+    @holds_inference
     def generate(
         self,
         *,
@@ -1275,8 +1343,8 @@ class MlxDiffusionBackend:
             or (upscale is not None and upscale > 1)
         ):
             raise ValueError(
-                "The MLX engine runs text-to-image only; unset UNSLOTH_DIFFUSION_MLX for "
-                "img2img / inpaint / edit / reference / upscale."
+                "The MLX engine runs text-to-image only; unset UNSLOTH_DIFFUSION_MLX (or set it to "
+                "auto) for img2img / inpaint / edit / reference / upscale."
             )
         if prompts is not None or seeds is not None:
             raise ValueError(
@@ -1284,8 +1352,7 @@ class MlxDiffusionBackend:
             )
         if controlnet is not None and controlnet[3] not in (None, 0, 0.0):
             raise ValueError("ControlNet is not supported on the MLX engine.")
-        if loras:
-            raise ValueError("LoRA adapters are not supported on the MLX engine yet.")
+        specs = [(i, w) for (i, w) in (loras or []) if w != 0]
         steps = int(steps)
         if steps < 1:
             raise ValueError("steps must be at least 1")
@@ -1317,6 +1384,7 @@ class MlxDiffusionBackend:
                 self._gen = _MlxGen(total_steps = steps * batch)
             try:
                 runtime = self._rt()
+                self._apply_loras(runtime, state, specs, cancel)
                 cfg = float(guidance or 0.0) if runtime.supports_guidance(state.model) else None
                 images = []
                 seeds_out = []
@@ -1419,6 +1487,35 @@ class MlxDiffusionBackend:
                         self._active_generate_cancel = None
                         self._active_generate_account = None
 
+    @staticmethod
+    def _apply_loras(
+        runtime: Any, state: _MlxState, specs: list[tuple[str, float]], cancel: threading.Event
+    ) -> None:
+        from core.inference import diffusion_lora
+
+        if specs and not mlx_capabilities(state.family.name).loras:
+            raise ValueError(
+                f"LoRA adapters are not supported on the MLX engine for {state.family.name} yet."
+            )
+        resolved = diffusion_lora.resolve_specs(
+            specs, family = state.family.name, hf_token = state.hf_token, cancel_event = cancel
+        )
+        bad = [r.id for r in resolved if r.fmt != "safetensors"]
+        if bad:
+            raise ValueError(
+                "GGUF LoRA adapters are not supported on the MLX engine "
+                f"({', '.join(bad)}); use a .safetensors adapter, or the native engine."
+            )
+        desired = tuple((r.path, float(r.weight)) for r in resolved)
+        if desired == state.loras:
+            return
+        state.loras = ()
+        try:
+            runtime.apply_loras(state.model, list(desired))
+        except Exception as exc:  # noqa: BLE001 -- surface as a clean 400; the base layers are restored
+            raise ValueError(f"Failed to apply LoRA: {exc}") from exc
+        state.loras = desired
+
     def generate_progress(self) -> dict[str, Any]:
         gen = self._gen
         if gen is None or gen.total_steps <= 0:
@@ -1453,8 +1550,16 @@ class MlxDiffusionBackend:
     # ── Unload / status ──────────────────────────────────────────────────────
 
     @_invalidates_gpu_memory("mlx diffusion unload")
-    def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
+    def unload(
+        self,
+        *,
+        expected_account: Optional[str] = None,
+        only_if: Optional[Callable[[], bool]] = None,
+    ) -> Optional[dict[str, Any]]:
         with self._lock:
+            # Rechecked under the load worker's lock, so a load that ended since costs nothing.
+            if only_if is not None and not only_if():
+                return None
             if expected_account is not None:
                 from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
                 from hub.services.models.account_access import require_resident_control
@@ -1545,6 +1650,7 @@ class MlxDiffusionBackend:
                 "conditioning": None,
             }
         from core.inference.diffusion_conditioning import conditioning_capabilities
+        from core.inference.diffusion_lora import lora_unavailable_reason
         from hub.utils.gguf import extract_quant_token
 
         conditioning = conditioning_capabilities(state.family, ["txt2img"])
@@ -1554,6 +1660,9 @@ class MlxDiffusionBackend:
             guided = bool(self._rt().supports_guidance(state.model))
         except Exception:  # noqa: BLE001
             guided = False
+        lora_reason = lora_unavailable_reason(
+            engine = ENGINE_NAME, family = state.family.name, model_kind = "gguf", transformer_quant = None
+        )
         return {
             "loaded": True,
             "repo_id": state.repo_id,
@@ -1586,7 +1695,8 @@ class MlxDiffusionBackend:
                 "dense_bits": state.dense_bits,
                 "timings": dict(state.timings),
             },
-            "supports_lora": False,
+            "supports_lora": lora_reason is None,
+            "lora_unavailable_reason": lora_reason,
             "supports_controlnet": False,
             "supports_negative_prompt": guided,
             # CFG, and with it the negative prompt, engages only above guidance 1 (cache_text_encodings, generate).

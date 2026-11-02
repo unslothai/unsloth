@@ -2648,6 +2648,27 @@ def test_krea2_gguf_is_an_image_model_not_chat(monkeypatch):
     assert models_route._arch_to_task("qwen_image", ("org/Qwen-Image-GGUF",)) == "text-to-image"
 
 
+@pytest.mark.parametrize("arch", ["moss_image", "MOSS_IMAGE"])
+@pytest.mark.parametrize(
+    "hints",
+    [(), ("custom/renamed-Q4_K_M.gguf",), ("unsloth/MOSS-Image-SFT-GGUF",)],
+)
+@pytest.mark.parametrize("buildable", [True, False])
+def test_moss_image_gguf_inventory_uses_native_family_support(monkeypatch, arch, hints, buildable):
+    from core.inference import diffusion_engine_router as router
+
+    seen = []
+
+    def can_build(fam, *, model_kind):
+        seen.append((fam.name, model_kind))
+        return buildable
+
+    monkeypatch.setattr(router, "family_buildable_here", can_build)
+    expected = "text-to-image" if buildable else models_route._UNSUPPORTED_DIFFUSION_TASK
+    assert models_route._arch_to_task(arch, hints) == expected
+    assert seen == [("moss-image", "gguf")]
+
+
 def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert models_route._arch_to_task("flux") == "text-to-image"
     assert models_route._arch_to_task("z_image") == "text-to-image"
@@ -4780,6 +4801,40 @@ def test_cached_gguf_task_comes_from_the_snapshot_the_row_loads(monkeypatch, tmp
         assert "load_id" not in row
     else:
         assert row["load_id"] == str(selected)
+
+
+@pytest.mark.parametrize("variant", ["SFT", "Base"])
+def test_cached_moss_gguf_is_listed_for_images(monkeypatch, tmp_path, variant):
+    from core.inference import diffusion_engine_router as router
+    from hub.services.models import cache_inventory
+
+    monkeypatch.setattr(router, "family_buildable_here", lambda fam, **kw: fam.name == "moss-image")
+    active = tmp_path / "hub"
+    repo_id = f"unsloth/MOSS-Image-{variant}-GGUF"
+    repo_dir = active / ("models--" + repo_id.replace("/", "--"))
+    snapshot = repo_dir / "snapshots" / "main-rev"
+    model = _arch_gguf(snapshot / f"MOSS-Image-{variant}-UD-Q4_K_XL.gguf", "moss_image")
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("main-rev")
+    repo = _snapshot_repo(repo_id, repo_dir, snapshot, [_file(model.name, model.stat().st_size)])
+    [row] = cache_inventory._scan_cached_gguf(
+        cache_scans = [SimpleNamespace(repos = [repo])], active_hub_cache = active
+    )
+    assert row["repo_id"] == repo_id
+    assert row["task"] == "text-to-image"
+    assert row["partial"] is False
+
+
+@pytest.mark.parametrize(
+    ("arch", "family"), [("moss_image", "moss-image"), ("krea2", "krea-2"), ("llama", None)]
+)
+def test_renamed_local_gguf_loads_as_the_family_its_arch_names(tmp_path, arch, family):
+    """The listing offers a renamed family-naming GGUF on Images from its arch alone; the loader must agree."""
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    model = _arch_gguf(tmp_path / "custom" / "renamed-Q4_K_M.gguf", arch)
+    assert getattr(detect_family_for_pick(str(model)), "name", None) == family
+    assert getattr(detect_family_for_pick(str(model.parent), model.name), "name", None) == family
 
 
 def test_a_mixed_local_gguf_folder_classifies_the_same_in_either_walk_order(tmp_path, monkeypatch):

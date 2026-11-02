@@ -152,9 +152,10 @@ def test_batched_steps_match_two_calls_and_engage(monkeypatch):
     pipe, router = _armed(model, monkeypatch)
     got, _ = _flux_loop(model)
     torch.testing.assert_close(got, ref)
-    assert router.stats["batched_steps"] == 4 and router.stats["hits"] == 4
-    assert model.calls[-2:] == [2, 2]
-    assert cb.cfg_batch_status(pipe)["batched_steps"] == 4
+    # offloaded: no timing trial, step 1 records the second call, steps 2-6 run doubled
+    assert router.stats["batched_steps"] == 5 and router.stats["hits"] == 5
+    assert model.calls == [1, 1] + [2] * 5
+    assert cb.cfg_batch_status(pipe)["batched_steps"] == 5
     cb.end_cfg_batch_render(pipe)
     assert cb.cfg_batch_status(pipe)["plain_pair_s"] is None
     assert cb.cfg_batch_status(pipe)["shape_off"] is None
@@ -162,6 +163,7 @@ def test_batched_steps_match_two_calls_and_engage(monkeypatch):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device timer")
 def test_cuda_latents_time_the_step_two_pair_and_keep_the_image(monkeypatch):
+    monkeypatch.setenv(cb.CFG_BATCH_ENV, "timed")
     ref, _ = _flux_loop(_offloaded(Flux2Transformer2DModel()).cuda(), device = "cuda")
     model = Flux2Transformer2DModel().cuda()
     pipe, router = _armed(model, monkeypatch)
@@ -196,7 +198,7 @@ def test_wan_expanded_timesteps_serve_the_second_branch(monkeypatch):
     model = Flux2Transformer2DModel()
     _pipe, router = _armed(model, monkeypatch)
     torch.testing.assert_close(loop(model), ref)
-    assert router.stats["hits"] == 4 and router.stats["misses"] == 0, router.describe()
+    assert router.stats["hits"] == 5 and router.stats["misses"] == 0, router.describe()
     assert router.shape.off is None
 
 
@@ -232,7 +234,7 @@ def test_qwen_unequal_prompt_lengths_and_img_shapes_batch(monkeypatch):
     model = QwenImageTransformer2DModel()
     _pipe, router = _armed(model, monkeypatch)
     torch.testing.assert_close(loop(model), ref)
-    assert router.stats["batched_steps"] == 4, router.describe()
+    assert router.stats["batched_steps"] == 5, router.describe()
 
 
 def test_a_changed_second_branch_reruns_plain_and_stops_after_three_misses(monkeypatch):
@@ -248,7 +250,7 @@ def test_a_changed_second_branch_reruns_plain_and_stops_after_three_misses(monke
     _pipe, router = _armed(model, monkeypatch)
     got, _ = _flux_loop(model, steps = 8, neg = torch.zeros(1, 5, 8), between = between)
     torch.testing.assert_close(got, ref, rtol = 0, atol = 0)
-    assert router.stats["misses"] == 3 and router.stats["hits"] == 1
+    assert router.stats["misses"] == 3 and router.stats["hits"] == 2
     assert router.shape.off is not None and "3 consecutive misses" in router.shape.off
 
 
@@ -295,6 +297,18 @@ def test_install_uninstall_restores_the_forward_slot(monkeypatch):
     assert "forward" not in model.__dict__ and model.forward == wrapper
     cb.end_cfg_batch_render(pipe)  # no router: nothing to do
     assert cb.cfg_batch_status(pipe) is None
+
+
+def test_the_router_keeps_the_forward_signature(monkeypatch):
+    # FLUX.3's modular denoise step passes only the kwargs named in transformer.forward's signature (img_ids)
+    import inspect
+
+    model = Flux2Transformer2DModel()
+    _, router = _armed(model, monkeypatch)
+    assert model.forward is router
+    params = inspect.signature(model.forward).parameters
+    assert {"hidden_states", "img_ids", "txt_ids", "return_dict"} <= set(params)
+    assert "self" not in params
 
 
 def test_switches_are_independent_of_multi_gpu(monkeypatch):
@@ -355,6 +369,8 @@ class _Clock:
 
 
 def _timed(monkeypatch, cost):
+    # the opt-in timing trial (the default batches with no trial)
+    monkeypatch.setenv(cb.CFG_BATCH_ENV, "timed")
     clock = _Clock(cost)
     monkeypatch.setattr(cb.time, "perf_counter", clock)
     monkeypatch.setattr(cb, "_RESIDENT_MAX_PAIR_S", 1e9)
@@ -478,18 +494,41 @@ def test_a_compile_on_a_resident_denoiser_after_install_keeps_every_render_plain
     assert cb.cfg_batch_status(pipe)["render_off"] == "the denoiser is compiled and resident"
 
 
-def test_an_offloaded_shape_judged_before_a_compile_stays_plain_after_it(monkeypatch):
+def test_an_offloaded_shape_judged_before_a_compile_rejudges_in_the_compile_render(monkeypatch):
     model = Flux2Transformer2DModel()
     pipe, router = _armed(model, monkeypatch)
-    _flux_loop(model)  # eager render: trial on step 1, steps 2-6 batched
+    _flux_loop(model)  # eager render: step 1 plain, steps 2-6 batched
     cb.end_cfg_batch_render(pipe)
-    assert router.stats["batched_steps"] == 4
+    assert router.stats["batched_steps"] == 5
     model._unsloth_regional_compile_kwargs = {
         "dynamic": False
-    }  # compiled below the offload hooks afterwards
+    }  # compiled below the offload hooks afterwards (the deferred profile)
+    del model.calls[:]
+    graphs = iter(range(1000))
+    monkeypatch.setattr(cb, "_graph_count", lambda: next(graphs))  # every doubled call "compiles"
+    _flux_loop(model)
+    # the compile render is the shape's warm-up again: step 1 plain, then doubled (its batch-2 graph compiles here)
+    assert model.calls == [1, 1] + [2] * 5
+    assert router.last_shape.off is None and router.last_shape.compiled_at_trial
+    cb.end_cfg_batch_render(pipe)
+    assert router.disabled is None
+    monkeypatch.setattr(
+        cb, "_graph_count", lambda: 7
+    )  # warm: nothing compiles on a follow-up prompt
     del model.calls[:]
     _flux_loop(model)
-    assert model.calls == [1] * 12  # no doubled call reaches the new compile on a follow-up prompt
+    assert model.calls == [1, 1] + [2] * 5 and router.disabled is None
+
+
+def test_the_timed_mode_keeps_a_shape_judged_before_a_compile_plain(monkeypatch):
+    model = Flux2Transformer2DModel()
+    pipe, router = _armed(model, monkeypatch, mode = "timed")
+    _flux_loop(model)
+    cb.end_cfg_batch_render(pipe)
+    model._unsloth_regional_compile_kwargs = {"dynamic": False}
+    del model.calls[:]
+    _flux_loop(model)
+    assert model.calls == [1] * 12
     assert "compiled after this shape's trial" in router.last_shape.off
 
 
@@ -500,7 +539,7 @@ def test_an_offloaded_compiled_denoiser_batches_from_its_trial_render(monkeypatc
     for _ in range(2):
         _flux_loop(model)
         cb.end_cfg_batch_render(pipe)
-    assert router.stats["batched_steps"] == 8 and router.disabled is None
+    assert router.stats["batched_steps"] == 10 and router.disabled is None
     assert router.last_shape.compiled_at_trial and router.last_shape.trial_render == 0
 
 
@@ -517,7 +556,7 @@ def test_a_doubled_call_compiling_on_a_follow_up_render_ends_batching_after_that
     )  # every doubled call "compiles" from now on
     del model.calls[:]
     _flux_loop(model)
-    assert model.calls == [1, 1, 1, 1] + [2] * 4  # render 2 stays on its one path
+    assert model.calls == [1, 1] + [2] * 5  # render 2 stays on its one path
     cb.end_cfg_batch_render(pipe)
     assert "after its warm-up render" in router.disabled
     del model.calls[:]
@@ -612,8 +651,16 @@ def test_declines(monkeypatch):
         pass
 
     ZImageTransformer2DModel.__module__ = "diffusers.models.fake"
-    assert "not on the stateless-forward list" in cb.cfg_batch_decline(
+    assert "the pipeline batches the branches" in cb.cfg_batch_decline(
         _Pipe(_offloaded(ZImageTransformer2DModel())), offload_policy = "group"
+    )
+
+    class SomeNewTransformer2DModel(Flux2Transformer2DModel):
+        pass
+
+    SomeNewTransformer2DModel.__module__ = "diffusers.models.fake"
+    assert "not on the stateless-forward list" in cb.cfg_batch_decline(
+        _Pipe(_offloaded(SomeNewTransformer2DModel())), offload_policy = "group"
     )
 
     class ComfyNVFP4DynamicLinear(torch.nn.Linear):
@@ -798,7 +845,7 @@ def _switchable(
     the verdict store in ``tmp_path``. ``raising = False``: main has no store, so the behaviour is what fails there."""
     cost = {"batched": 1.2}
     model = _timed(monkeypatch, lambda b: 1.0 if b == 1 else cost["batched"])
-    monkeypatch.setenv(cb.CFG_BATCH_ENV, "auto")
+    monkeypatch.setenv(cb.CFG_BATCH_ENV, "timed")
     monkeypatch.setenv("UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS_FILE", str(tmp_path / "verdicts.json"))
     monkeypatch.setattr(cb, "_card_name", lambda latent: card, raising = False)
     return model, cost
@@ -892,3 +939,138 @@ def test_the_verdict_store_is_keyed_on_the_card_and_skipped_off_cuda(monkeypatch
     pipe3, model3 = _fresh_load(type(model))
     assert _render(pipe3, model3)[4:10] == _TRIAL
     assert (tmp_path / "verdicts.json").read_text() == before
+
+
+def test_usable_free_does_not_count_graph_held_cache(monkeypatch):
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (1000 * 2**20, 0))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 600 * 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(dm, "_user_budget_reserve_mib", lambda total_mib: 0)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 500 * 2**20)
+    monkeypatch.setattr(cb, "_torch", lambda: torch)
+    assert cb._usable_free_mib(torch.device("cuda", 0)) == 1100
+
+
+class _QuantDen(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.config = {"num_layers": 2, "hidden": 64}
+        torch.manual_seed(0)
+        self.a = torch.nn.Linear(64, 64, dtype = torch.bfloat16)
+        self.b = torch.nn.Linear(64, 64, dtype = torch.bfloat16)
+
+
+def _torchao_loads():
+    import copy
+
+    tq = pytest.importorskip("torchao.quantization")
+    base = _QuantDen()
+    loads = {"bf16": base}
+    int8 = copy.deepcopy(base)
+    tq.quantize_(int8, tq.Int8DynamicActivationInt8WeightConfig())
+    loads["int8"] = int8
+    try:
+        from torchao.float8.inference import Float8MMConfig
+        for fast in (True, False):
+            fp8 = copy.deepcopy(base)
+            tq.quantize_(
+                fp8,
+                tq.Float8DynamicActivationFloat8WeightConfig(
+                    granularity = tq.PerRow(), mm_config = Float8MMConfig(use_fast_accum = fast)
+                ),
+            )
+            loads[f"fp8_fast{int(fast)}"] = fp8
+    except Exception:  # noqa: BLE001
+        pass
+    assert {str(m.a.weight.dtype) for m in loads.values()} == {"torch.bfloat16"}
+    return loads
+
+
+def test_the_verdict_key_tells_bf16_from_torchao_int8_and_fp8_loads():
+    loads = _torchao_loads()
+    keys = {name: cb._load_identity(m, "none", None) for name, m in loads.items()}
+    assert None not in keys.values()
+    assert len(set(keys.values())) == len(keys), keys
+
+
+def test_the_verdict_key_includes_the_engaged_transformer_quant():
+    model = _QuantDen()
+    keys = {q: cb._load_identity(model, "none", None, q) for q in (None, "int8", "fp8", "nvfp4")}
+    assert len(set(keys.values())) == len(keys)
+
+
+def test_the_same_load_gives_a_stable_verdict_key():
+    loads = _torchao_loads()
+    import copy
+
+    for name, model in loads.items():
+        again = copy.deepcopy(model)
+        assert cb._load_identity(model, "none", "default", "int8") == cb._load_identity(
+            again, "none", "default", "int8"
+        ), name
+    assert cb._load_identity(_QuantDen(), "none", None) == cb._load_identity(
+        _QuantDen(), "none", None
+    )
+
+
+def test_install_keys_the_router_on_the_engaged_quant(monkeypatch):
+    monkeypatch.setenv(cb.CFG_BATCH_ENV, "auto")
+    ids = set()
+    for quant in (None, "int8"):
+        pipe = _Pipe(_quiet_flux())
+        assert cb.install_cfg_batch(pipe, offload_policy = "none", transformer_quant = quant) is None
+        ids.add(cb.router_for(pipe).identity)
+    assert len(ids) == 2 and None not in ids
+
+
+def test_the_verdict_key_follows_the_live_attention_backend(monkeypatch):
+    monkeypatch.setenv(cb.CFG_BATCH_ENV, "auto")
+    monkeypatch.setattr(cb, "_card_name", lambda latent: "card")
+    pipe = _Pipe(_quiet_flux())
+    assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
+    router = cb.router_for(pipe)
+    shape = cb._Shape("s")
+    keys = set()
+    for backend in (None, "native", "flash"):
+        pipe.transformer._unsloth_attention_backend = backend
+        keys.add(router._verdict_key(shape, None))
+    assert len(keys) == 3 and None not in keys
+
+
+def test_a_version_1_verdict_store_is_not_read(monkeypatch, tmp_path):
+    import json
+
+    from core.inference import diffusion_measured_peaks as peaks
+
+    path = tmp_path / "verdicts.json"
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS_FILE", str(path))
+    entry = {"k": {"verdict": "plain", "reason": "old key"}}
+    path.write_text(json.dumps({"version": 1, "runtime": peaks.runtime_stamp(), "entries": entry}))
+    assert cb.stored_verdict("k") is None
+    path.write_text(
+        json.dumps(
+            {"version": cb._VERDICTS_VERSION, "runtime": peaks.runtime_stamp(), "entries": entry}
+        )
+    )
+    assert cb.stored_verdict("k") == entry["k"]
+
+
+@pytest.mark.parametrize("batched_cost, wins", [(1.2, True), (2.0, False)])
+def test_the_default_times_a_resident_eager_load_and_skips_the_trial_offloaded(
+    monkeypatch, batched_cost, wins
+):
+    model = _timed(monkeypatch, lambda b: 1.0 if b == 1 else batched_cost)
+    monkeypatch.delenv(cb.CFG_BATCH_ENV, raising = False)
+    pipe = _Pipe(model)
+    assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
+    calls = _render(pipe, model)
+    assert calls[4:10] == _TRIAL  # resident eager: the trial still prices the shape
+    assert calls[10:] == ([2] * 4 if wins else [1] * 8)
+    off = _timed(monkeypatch, lambda b: 1.0 if b == 1 else 2.0)  # slower batched, but offloaded
+    monkeypatch.delenv(cb.CFG_BATCH_ENV, raising = False)
+    opipe = _Pipe(_offloaded(off))
+    assert cb.install_cfg_batch(opipe, offload_policy = "group") is None
+    assert _render(opipe, off) == [1, 1] + [2] * 5  # no trial: batched from step 2

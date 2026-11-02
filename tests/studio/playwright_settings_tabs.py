@@ -348,13 +348,20 @@ def run_lan_address_actions(page) -> None:
         if address.count() != 1:
             fail(f"LAN address {url}: expected one visible row, found {address.count()}")
             continue
+        # The row is the widest ancestor that still names only this address, not the text's
+        # parent: the copy button now sits inside the URL pill and the QR button beside it.
         labels = address.evaluate(
-            """(node) => [...node.parentElement.querySelectorAll('button')]
-                .map((button) => button.getAttribute('aria-label'))"""
+            """(node, urls) => {
+                const names = (el) => urls.filter((u) => el.textContent.includes(u)).length;
+                let row = node.parentElement;
+                while (row.parentElement && names(row.parentElement) === 1) row = row.parentElement;
+                return [...row.querySelectorAll('button')].map((b) => b.getAttribute('aria-label'));
+            }""",
+            LAN_URLS,
         )
         rows[url] = labels
         expected = [f"Show QR code for {url}", f"Copy {url}"]
-        if labels != expected:
+        if sorted(labels) != sorted(expected):
             fail(f"LAN address {url}: row actions {labels}, expected {expected}")
 
     if len(rows) != len(LAN_URLS):
@@ -566,8 +573,11 @@ def run_shortcut_recorder(page) -> None:
 
     click_forced(chord, timeout = 15000)
     box.wait_for(state = "visible", timeout = 5000)
+    # Hold the box before the key: Backspace closes the recorder in the same render (#14896), so
+    # resolving the locator afterwards waits 30 s for an input that is already gone.
+    recorder = box.element_handle()
     page.keyboard.press("Backspace")
-    until(page, "el => el && !el.isConnected", arg = box.element_handle())
+    until(page, "el => el && !el.isConnected", arg = recorder)
     state["cleared"] = {"shown": chord.inner_text(), "stored": page.evaluate(stored_js)}
 
     click_forced(page.get_by_role("button", name = "Restore defaults"), timeout = 15000)

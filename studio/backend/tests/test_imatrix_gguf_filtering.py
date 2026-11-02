@@ -36,6 +36,14 @@ IMATRIX_NAMES = [
     "Qwen3.8-27B.imatrix",
     "Qwen3.8-27B-imatrix.gguf",
     "quants/imatrix_unsloth.gguf",
+    "imatrix-fp16.gguf",
+    "z-combined-imatrix.gguf",
+    "Qwen3.5-9B-NEO-IMATRIX-MAX-MTP.imatrix.gguf",
+    # A float label is no quant: llama.cpp has no imatrix-weighted F16.
+    "Qwen3-8B-BF16-imatrix.gguf",
+    # mradermacher's calibration file, even when the model name carries a quant-like token.
+    "GPT-oss-20B-RoleplaySFT-mxfp4.imatrix.gguf",
+    "gemma-4-12B-it-qat-q4_0-unquantized-uncensored-heretic-v3.imatrix.gguf",
 ]
 
 MODEL_NAMES = [
@@ -44,6 +52,11 @@ MODEL_NAMES = [
     # The word inside a name is not the file: only a leading or trailing token is.
     "Qwen3-Imatrix-Tuned-Q4_K_M.gguf",
     "imatrixed-model-Q8_0.gguf",
+    # Imatrix-weighted quants named for it (#14695): a quant label before the trailing token.
+    "Kunocchini-7b-128k-test-Q4_K_M-imatrix.gguf",
+    "Qwen3.5-4B-heretic-IQ4_NL-imatrix.gguf",
+    "DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf",
+    "Ornith-1.5-35B-A3B-MXFP4_MOE_Q8_0-Imatrix.gguf",
 ]
 
 
@@ -80,6 +93,24 @@ def test_remote_listing_drops_the_imatrix_row(monkeypatch):
 
     variants, _has_vision, _siblings = list_gguf_variants("unsloth/Qwen3.8-27B-GGUF")
     assert [v.quant for v in variants] == ["UD-Q4_K_XL"]
+
+
+def test_remote_listing_keeps_imatrix_weighted_quants(monkeypatch):
+    info = SimpleNamespace(
+        siblings = [
+            SimpleNamespace(rfilename = "Kunocchini-7b-Q4_K_M-imatrix.gguf", size = 4_368_438_976),
+            SimpleNamespace(rfilename = "Kunocchini-7b-Q8_0-imatrix.gguf", size = 7_695_857_856),
+            SimpleNamespace(rfilename = "imatrix-fp16.gguf", size = 7_100_000),
+        ]
+    )
+    api = SimpleNamespace(model_info = lambda *a, **k: info)
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda token = None: api)
+
+    variants, _has_vision, _siblings = list_gguf_variants("Lewdiculous/Kunocchini-7b-GGUF-Imatrix")
+    assert sorted(v.filename for v in variants) == [
+        "Kunocchini-7b-Q4_K_M-imatrix.gguf",
+        "Kunocchini-7b-Q8_0-imatrix.gguf",
+    ]
 
 
 def test_the_imatrix_is_neither_planned_nor_downloaded():

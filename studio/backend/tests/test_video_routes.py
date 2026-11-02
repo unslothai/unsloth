@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 
@@ -308,8 +309,14 @@ def test_load_happy_path_and_arbiter_acquired(client, monkeypatch):
     devmod = _shared_setup_3(monkeypatch)
     acquired: list = []
 
-    def _fake_acquire(role, register = None):
+    def _fake_acquire(
+        role,
+        register = None,
+        admit = None,
+    ):
         acquired.append(role)
+        if admit is not None:
+            admit()
         return register() if register is not None else None
 
     monkeypatch.setattr(gpu_arbiter, "acquire_for", _fake_acquire)
@@ -339,7 +346,9 @@ def test_load_forwards_the_gpu_selection(client, monkeypatch):
         devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
     )
     monkeypatch.setattr(devmod, "resolve_selected_cuda_ordinal", lambda ids: max(ids))
-    monkeypatch.setattr(gpu_arbiter, "acquire_for", lambda role, register = None: register())
+    monkeypatch.setattr(
+        gpu_arbiter, "acquire_for", lambda role, register = None, admit = None: register()
+    )
     resp = client.post(
         "/api/inference/video/load",
         json = {
@@ -1113,6 +1122,37 @@ def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
     assert seen["hf_token"] == "hf_secret"
 
 
+def test_video_download_plan_validates_with_the_encoder_precision(client, monkeypatch):
+    backend = video_module.get_video_backend()
+    seen: dict = {}
+
+    def _validate(model_path, **kwargs):
+        seen.update(kwargs)
+        raise ValueError("refused at validation")
+
+    monkeypatch.setattr(backend, "validate_load_request", _validate, raising = False)
+    planned: list = []
+    monkeypatch.setattr(
+        backend,
+        "download_plan",
+        lambda *a, **k: planned.append(k) or {"entries": []},
+        raising = False,
+    )
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "nvidia/Cosmos3-Edge",
+            "model_kind": "pipeline",
+            "text_encoder_quant": "fp8",
+        },
+    )
+
+    assert seen.get("text_encoder_quant") == "fp8"
+    assert 400 <= resp.status_code < 500, resp.text
+    assert planned == []
+
+
 def test_the_video_plan_refuses_an_impossible_precision_before_anything_is_staged(
     client, monkeypatch
 ):
@@ -1781,3 +1821,154 @@ def test_video_download_plan_still_refuses_a_bad_gpu_while_training_holds_the_ca
     )
     assert resp.status_code == 400
     assert seen == {"ids": [7], "allow_ranking": False}
+
+
+@pytest.fixture
+def token_client(client, monkeypatch):
+    """The client, with begin_load and unload moving the load epoch as the real backend's do."""
+    from core.inference import media_load_ids
+
+    media_load_ids._reset_for_tests()
+    backend = video_module.get_video_backend()
+    begin, unload = backend.begin_load, backend.unload
+    backend.unloads = 0
+
+    def begin_load(model_path, **kwargs):
+        backend._load_token += 1
+        return begin(model_path, **kwargs)
+
+    def counted_unload(**kwargs):
+        only_if = kwargs.get("only_if")
+        if only_if is not None and not only_if():
+            return None
+        backend.unloads += 1
+        backend._load_token += 1
+        return unload()
+
+    monkeypatch.setattr(backend, "begin_load", begin_load)
+    monkeypatch.setattr(backend, "unload", counted_unload)
+    yield client, backend
+    media_load_ids._reset_for_tests()
+
+
+def _load_with(client, token):
+    body = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"}
+    return client.post(
+        "/api/inference/video/load", json = {**body, **({"load_token": token} if token else {})}
+    )
+
+
+def test_an_unload_naming_the_load_token_unloads_that_load(token_client):
+    client, backend = token_client
+    assert _load_with(client, "t1").status_code == 200
+    resp = client.post("/api/inference/video/unload", json = {"expected_load_id": "t1"})
+    assert resp.status_code == 200
+    assert (resp.json()["outcome"], resp.json()["unloaded"], resp.json()["loaded"]) == (
+        "unloaded",
+        True,
+        False,
+    )
+    assert backend.unloads == 1
+
+
+@pytest.mark.parametrize("newer", [None, "t2"])
+def test_an_unload_naming_a_stale_token_leaves_the_newer_load_alone(token_client, newer):
+    client, backend = token_client
+    assert _load_with(client, "t1").status_code == 200
+    assert _load_with(client, newer).status_code == 200
+    resp = client.post("/api/inference/video/unload", json = {"expected_load_id": "t1"})
+    assert resp.status_code == 200
+    assert resp.json() == {"unloaded": False, "outcome": "superseded"}
+    assert backend.unloads == 0 and backend.loaded
+
+
+def test_an_unload_naming_a_load_not_started_yet_refuses_that_load(token_client):
+    client, backend = token_client
+    resp = client.post("/api/inference/video/unload", json = {"expected_load_id": "t1"})
+    assert resp.json() == {"unloaded": False, "outcome": "cancelled"}
+    refused = _load_with(client, "t1")
+    assert refused.status_code == 409
+    assert "cancelled" in refused.json()["detail"]
+    assert backend.unloads == 0 and not backend.loaded
+    assert _load_with(client, None).status_code == 200 and backend.loaded
+
+
+def test_an_unload_without_a_body_unloads_whatever_is_loaded(token_client):
+    client, backend = token_client
+    assert _load_with(client, "t1").status_code == 200
+    resp = client.post("/api/inference/video/unload")
+    assert resp.status_code == 200 and "outcome" not in resp.json()
+    assert backend.unloads == 1 and not backend.loaded
+
+
+def test_status_names_the_load_an_unload_can_name(token_client):
+    client, backend = token_client
+    assert client.get("/api/inference/video/status").json()["load_id"] is None
+    assert _load_with(client, None).status_code == 200
+    made = client.get("/api/inference/video/status").json()["load_id"]
+    assert made.startswith("studio-")
+    resp = client.post("/api/inference/video/unload", json = {"expected_load_id": made})
+    assert resp.json()["outcome"] == "unloaded" and backend.unloads == 1
+
+
+def test_status_and_load_id_name_the_same_load(token_client):
+    # A load admitted while status reads the backend makes it read again, so the id in the answer
+    # never names a load the answer does not show.
+    from core.inference import media_load_ids
+    from hub.services.models import account_access
+
+    client, backend = token_client
+    assert _load_with(client, "t1").status_code == 200
+    read = backend.status
+    admitted = []
+
+    def newer_load():
+        with account_access.media_load_lock:
+            prior = media_load_ids.admitting("video", backend, "t2")
+            backend._load_token += 1
+            backend.loading = ("unsloth/LTX-2.3-GGUF",)
+            media_load_ids.admitted("video", backend, "t2", prior)
+            admitted.append(True)
+
+    reads = []
+
+    def racing_status():
+        # The first read is slow and a load is admitted meanwhile, which it does not hold up.
+        reads.append(True)
+        if len(reads) == 1:
+            worker = threading.Thread(target = newer_load)
+            worker.start()
+            worker.join(5)
+            assert not worker.is_alive()
+        return read()
+
+    backend.status = racing_status
+    try:
+        answer = client.get("/api/inference/video/status").json()
+    finally:
+        backend.status = read
+    deadline = time.monotonic() + 5
+    while not admitted and time.monotonic() < deadline:
+        time.sleep(0.01)
+    # The read that straddled the admission was read again, so the id is that of the state it shows.
+    assert answer["load_id"] == "t2" and len(reads) == 2
+    assert admitted == [True]
+    backend.loading = ()
+
+
+def test_the_unload_answers_are_declared_in_the_schema(token_client):
+    client, backend = token_client
+    schema = client.app.openapi()
+    answer = schema["paths"]["/api/inference/video/unload"]["post"]["responses"]["200"]
+    refs = json.dumps(answer)
+    for model in ("VideoLoadUnloadedResponse", "MediaUnloadOutcome", "VideoStatusResponse"):
+        assert f"#/components/schemas/{model}" in refs
+    outcome = schema["components"]["schemas"]["MediaUnloadOutcome"]
+    assert set(outcome["required"]) == {"unloaded", "outcome"}
+    assert _load_with(client, "t1").status_code == 200
+    plain = client.post("/api/inference/video/unload").json()
+    assert set(plain) == set(video_routes.VideoStatusResponse.model_fields)
+    assert _load_with(client, "t2").status_code == 200
+    named = client.post("/api/inference/video/unload", json = {"expected_load_id": "t2"}).json()
+    assert set(named) == set(plain) | {"unloaded", "outcome"}
+    assert (named["unloaded"], named["outcome"]) == (True, "unloaded")

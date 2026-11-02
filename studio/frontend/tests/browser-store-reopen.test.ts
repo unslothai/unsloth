@@ -184,6 +184,22 @@ test("a duplicated form result asks before posting again; a duplicated page just
   assert.equal(sentPosts.has(currentEntry(pageTab)), false);
 });
 
+test("a duplicated tab opens the page its links reached, not the one its entry started on", () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://a.example/", { newTab: true });
+  const tab = useBrowserStore.getState().tabs.at(-1);
+  assert.ok(tab);
+  store.updateTab(tab.id, { displayUrl: "https://a.example/deep" });
+  store.duplicateTab(tab.id);
+  const tabs = useBrowserStore.getState().tabs;
+  const copy = tabs[tabs.findIndex((candidate) => candidate.id === tab.id) + 1];
+  assert.ok(copy);
+  const entry = currentEntry(copy);
+  assert.equal(entry.kind === "web" && entry.url, "https://a.example/deep");
+  const original = currentEntry(useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id) ?? copy);
+  assert.equal(original.kind === "web" && original.url, "https://a.example/");
+});
+
 test("a form result pushed out of the cache still asks before posting again", () => {
   const store = useBrowserStore.getState();
   store.openUrl("https://example.com/pay", { method: "POST", body: "card=1" });

@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""End-to-end smoke for the native stable-diffusion.cpp engine.
-
-Drives the real ``SdCppEngine`` over a built ``sd-cli`` and a set of split GGUF
-assets (the same the diffusers path consumes), running one txt2img generation
-and reporting wall time. This is the GPU/native analogue of
-``scripts/diffusion_bench.py``: it proves the engine wiring (finder -> command
-builder -> subprocess -> output PNG) works against real weights.
-
-Example (Z-Image-Turbo on one GPU):
-
-    SD_CLI_PATH=.../sd-cli CUDA_VISIBLE_DEVICES=6 python scripts/sd_cpp_smoke.py \\
-        --family z-image \\
-        --diffusion-model .../z-image-turbo-Q4_K_M.gguf \\
-        --vae .../ae.safetensors \\
-        --llm .../Qwen3-4B-Instruct-2507-Q4_K_M.gguf \\
-        --memory-mode balanced --steps 8 --cfg-scale 1.0 --width 512 --height 512
-"""
+"""Real-weights txt2img smoke for SdCppEngine and sd-cli; needs a GPU and split GGUF assets."""
 
 from __future__ import annotations
 
@@ -46,7 +30,6 @@ from core.inference.sd_cpp_args import (  # noqa: E402
 )
 from core.inference.sd_cpp_engine import SdCppEngine, find_sd_cpp_binary  # noqa: E402
 
-# memory mode -> sd.cpp offload policy, matching the diffusers planner
 _MODE_TO_POLICY = {
     MEMORY_MODE_FAST: OFFLOAD_NONE,
     MEMORY_MODE_BALANCED: OFFLOAD_GROUP,
@@ -60,7 +43,6 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--binary", default = None, help = "sd-cli path (else env / finder)")
     p.add_argument("--family", default = "z-image")
     p.add_argument("--diffusion-model", default = None)
-    # img2img + upscale inputs
     p.add_argument("--init-img", default = None)
     p.add_argument("--strength", type = float, default = 0.6)
     p.add_argument("--upscale-model", default = None)

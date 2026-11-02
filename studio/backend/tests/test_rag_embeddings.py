@@ -432,8 +432,12 @@ def test_st_unload_waits_for_encode_admitted_before_model_lookup(monkeypatch):
     closer.start()
     assert unload_done.wait(timeout = 0.05) is False
     finish_lookup.set()
-    worker.join(timeout = 2)
-    closer.join(timeout = 2)
+    # The release runs gc.collect() and, once a device is detected, a GPU cache clear: late in
+    # a busy xdist worker that took over 2s and the old join returned before "unload" landed.
+    worker.join(timeout = 30)
+    closer.join(timeout = 30)
+    assert not worker.is_alive(), "the encode never finished"
+    assert not closer.is_alive(), "the unload never finished"
 
     assert errors == []
     assert order == ["encode", "unload"]

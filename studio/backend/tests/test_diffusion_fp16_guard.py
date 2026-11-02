@@ -56,7 +56,7 @@ def test_video_families_declare_only_native():
 
 
 def test_video_capability_flags():
-    for name in ("wan2.2-ti2v-5b", "hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
+    for name in ("wan2.2-ti2v-5b", "wan2.1-t2v-1.3b", "hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
         assert guard.fp16_promotes_to_fp32(_video(name)) is False, name
     # unmeasured families, and A14B (fp16 drifts from fp32 as far as bf16 does), keep the blanket promotion
     for name in ("ltx-2", "minimax-h3", "wan2.2-t2v-a14b"):

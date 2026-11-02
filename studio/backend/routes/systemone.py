@@ -10,6 +10,7 @@ import base64
 import binascii
 import json
 import math
+import threading
 import time
 from typing import Any, Optional, Union
 from uuid import uuid4
@@ -18,9 +19,6 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
-from fastmcp import FastMCP
-from fastmcp.exceptions import ToolError
-from fastmcp.server.middleware import Middleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from auth.authentication import get_current_subject, security
@@ -340,8 +338,7 @@ async def _decide(
 async def _connection_decide(
     connection: catalog.Connection, state: JSONContent, questions: dict[str, dict[str, Any]]
 ) -> dict:
-    # The connection and its key are the owner's; the URL check and the request run as the caller,
-    # so a managed account keeps its egress policy.
+    # Connection and key are the owner's; the URL check and request run as the caller (egress policy).
     provider_id = connection.provider_id
     config = await asyncio.to_thread(run_as, OWNER, providers_db.get_provider, provider_id)
     if config is None or catalog.decision_models(config) is None:
@@ -472,18 +469,6 @@ def _upstream_error(name: str, response: httpx.Response) -> HTTPException:
     return _error(502, "api_error", message)
 
 
-class DecisionsAvailability(Middleware):
-    async def on_list_tools(self, context, call_next):
-        if not await asyncio.to_thread(systemone_settings.get_enabled):
-            return []
-        return await call_next(context)
-
-
-decisions_mcp = FastMCP("Unsloth Decisions")
-decisions_mcp.add_middleware(DecisionsAvailability())
-
-
-@decisions_mcp.tool
 async def decide(state: JSONContent, questions: dict[str, QuestionIn]) -> dict[str, Any]:
     """Ask Unsloth's decision model typed questions about a state (text or JSON).
     questions maps a name you pick to {"type", "instructions", "criteria"}, for example
@@ -497,7 +482,38 @@ async def decide(state: JSONContent, questions: dict[str, QuestionIn]) -> dict[s
         result.pop("_backend", None)
         return result
     except HTTPException as exc:
+        from fastmcp.exceptions import ToolError
         raise ToolError(exc.detail["message"]) from None
+
+
+def _build_decisions_mcp():
+    from fastmcp import FastMCP
+    from fastmcp.server.middleware import Middleware
+
+    class DecisionsAvailability(Middleware):
+        async def on_list_tools(self, context, call_next):
+            if not await asyncio.to_thread(systemone_settings.get_enabled):
+                return []
+            return await call_next(context)
+
+    mcp = FastMCP("Unsloth Decisions")
+    mcp.add_middleware(DecisionsAvailability())
+    mcp.tool(decide)
+    return mcp
+
+
+_decisions_mcp_lock = threading.Lock()
+
+
+def __getattr__(name: str) -> Any:
+    if name != "decisions_mcp":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    with _decisions_mcp_lock:
+        mcp = globals().get("decisions_mcp")
+        if mcp is None:
+            mcp = _build_decisions_mcp()
+            globals()["decisions_mcp"] = mcp
+    return mcp
 
 
 class RequireStudioAuth:

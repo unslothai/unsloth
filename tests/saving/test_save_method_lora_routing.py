@@ -39,6 +39,8 @@ def _load(*names, **env):
     namespace = {
         "raise_if_merging_mistral_format_view": lambda model, save_method: None,
         "lora_relative_to_original_base": lambda model: contextlib.nullcontext(),
+        # Unmerges FSDP2 streamed layers when a save raises; these fixtures never stream.
+        "_unmerge_flags_on_error": lambda streamed: contextlib.nullcontext(),
         "nullcontext": contextlib.nullcontext,
         # Full saves add bare Params4bit quant state (fused 4-bit experts); none in these fixtures.
         "PeftModel": type("PeftModel", (), {}),
@@ -216,6 +218,9 @@ _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
         "_internal_mtp_save",
         "_stitch_mtp_head",
         "_mtp_head_tensor_names",
+        "_unmerge_flags_on_error",
+        # Decorator factory; _load strips decorators.
+        "_model_parallel_refuses_save",
     }
 )
 
@@ -233,6 +238,7 @@ def _routing_environment(monkeypatch, model):
 
     namespace = _load(
         *_GENERIC_SAVE_REAL_HELPERS,
+        "_collect_garbage",
         "unsloth_generic_save",
         os = os,
         json = json,
@@ -257,7 +263,7 @@ def _routing_environment(monkeypatch, model):
             calls["convert"].append(model) or contextlib.nullcontext()
         ),
         logger = types.SimpleNamespace(warning_once = lambda *a, **k: None),
-        gc = types.SimpleNamespace(collect = lambda: None),
+        gc = types.SimpleNamespace(collect = lambda: None, get_stats = lambda: [{}, {}, {}]),
         torch = types.SimpleNamespace(
             bfloat16 = "bfloat16",
             float16 = "float16",
@@ -406,6 +412,7 @@ def _adapter_save_environment(monkeypatch):
     return _load(
         "_normalize_safe_serialization",
         "_filter_push_to_hub_kwargs",
+        "_collect_garbage",
         "unsloth_save_model",
         PreTrainedTokenizerBase = type("Tokenizer", (), {}),
         ProcessorMixin = type("Processor", (), {}),
@@ -413,7 +420,7 @@ def _adapter_save_environment(monkeypatch):
         get_token = lambda: "fixture-token",
         upload_to_huggingface = upload_to_huggingface,
         logger = types.SimpleNamespace(warning_once = lambda *a, **k: None),
-        gc = types.SimpleNamespace(collect = lambda: None),
+        gc = types.SimpleNamespace(collect = lambda: None, get_stats = lambda: [{}, {}, {}]),
         psutil = types.SimpleNamespace(cpu_count = lambda logical = True: 8),
         torch = types.SimpleNamespace(
             save = lambda *args, **kwargs: None,

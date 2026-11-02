@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""bitsandbytes NF4 ``Linear4bit.forward`` on Unsloth's NF4 kernels: Triton dequantize + F.linear
-(bit-exact to bitsandbytes' dequantize) and ``fast_gemv`` for one decode row; dX recomputes the
-weight as bitsandbytes does. From bitsandbytes 0.50, shapes its fused 4-bit GEMM takes stay with it.
-Default on before bitsandbytes 0.50, and from 0.50 only on sm100 / sm120 (A100 / T4 batched decode
-measured 2-3% slower). UNSLOTH_BNB_NF4_LINEAR=1/0 forces it; UNSLOTH_BNB_TRITON=0 disables it."""
+"""Replaces bitsandbytes NF4 Linear4bit.forward with Unsloth's Triton dequant + F.linear and
+fast_gemv; from bnb 0.50 fused 4-bit GEMM shapes stay with bnb. On before 0.50, and from 0.50
+only on sm100/sm120; UNSLOTH_BNB_NF4_LINEAR=1/0 forces it, UNSLOTH_BNB_TRITON=0 disables it."""
 
 import os
 

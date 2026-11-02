@@ -15,6 +15,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from dataclasses import dataclass, field
@@ -35,6 +36,40 @@ PROFILE_VERSION = "unsloth-sandbox-v1"
 SESSION_PACKAGES_RELPATH = ".unsloth-packages"
 
 
+def _pip_prefix_dirs() -> "tuple[tuple[str, ...], str]":
+    if sys.version_info >= (3, 10):
+        scheme = sysconfig.get_preferred_scheme("prefix")
+        # pip's own remap: the framework scheme's purelib is absolute, never under a --prefix.
+        if scheme == "osx_framework_library":
+            scheme = "posix_prefix"
+    else:
+        scheme = "nt" if os.name == "nt" else "posix_prefix"
+    # A bare separator base turns nt's "{base}/Lib" into a UNC path that relpath rejects.
+    base = os.path.join(os.path.abspath(os.sep), "prefix")
+    paths = sysconfig.get_paths(scheme, vars = {"base": base, "platbase": base})
+    # Only these: nt's stdlib/include sit on the install drive, where relpath raises.
+    purelib, platlib, scripts = (
+        os.path.relpath(paths[key], base) for key in ("purelib", "platlib", "scripts")
+    )
+    return tuple(dict.fromkeys((purelib, platlib))), scripts
+
+
+_PIP_PREFIX_LIB_DIRS, _PIP_PREFIX_SCRIPTS_DIR = _pip_prefix_dirs()
+
+
+def session_package_paths(packages: str) -> list[str]:
+    # The bare folder keeps packages from chats that installed with pip --target importable.
+    return [*(os.path.join(packages, path) for path in _PIP_PREFIX_LIB_DIRS), packages]
+
+
+def session_script_dirs(packages: str) -> list[str]:
+    # Debian's posix_local scheme puts scripts in local/bin; the bare folder serves pip --target chats.
+    legacy = "Scripts" if os.name == "nt" else "bin"
+    return list(
+        dict.fromkeys(os.path.join(packages, path) for path in (_PIP_PREFIX_SCRIPTS_DIR, legacy))
+    )
+
+
 def with_session_packages(env: dict, workdir: str) -> dict:
     """Reuse existing session packages without letting their binaries shadow PATH."""
     packages = os.path.join(workdir, SESSION_PACKAGES_RELPATH)
@@ -43,11 +78,9 @@ def with_session_packages(env: dict, workdir: str) -> dict:
     updated = dict(env)
     # Block a planted usercustomize.py; in safe mode the trusted sitecustomize shim stays first on PYTHONPATH.
     updated["PYTHONNOUSERSITE"] = "1"
-    # pip --target puts console scripts in Scripts on Windows and bin elsewhere.
-    scripts = "Scripts" if os.name == "nt" else "bin"
     for key, value in (
-        ("PYTHONPATH", packages),
-        ("PATH", os.path.join(packages, scripts)),
+        ("PYTHONPATH", os.pathsep.join(session_package_paths(packages))),
+        ("PATH", os.pathsep.join(session_script_dirs(packages))),
     ):
         updated[key] = os.pathsep.join(part for part in (updated.get(key, ""), value) if part)
     return updated
@@ -298,12 +331,25 @@ def _walk_for_host_channels(
     # Only an unaccounted hard link leads outside; cp -al, git clone --local and pip make nlink > 1.
     links: dict[tuple[int, int], list] = {}
     unreadable: list[str] = []
+    # POSIX: each directory's stat as its parent saw it (the root via stat, as scandir follows it). While still current
+    # when walked, it stands in for the path/.. stat ismount reads; a missing or swapped one takes the ismount calls.
+    listed: dict[str, os.stat_result] = {}
+    if not _NT_PATHS:
+        try:
+            listed[root] = os.stat(root)
+        except OSError:
+            pass
 
     for base, dirs, names in os.walk(
         root, followlinks = False, onerror = lambda exc: unreadable.append(exc.filename or root)
     ):
+        parent = listed.pop(base, None)
+        signature = directory_signature(base) if witness is not None or parent is not None else None
+        if parent is not None and signature[1:3] != (parent.st_dev, parent.st_ino):
+            # Swapped since its parent listed it.
+            parent = None
         if witness is not None:
-            witness.append(directory_signature(base))
+            witness.append(signature)
         if unreadable:
             return f"{unreadable[0]} cannot be fully inspected"
         for name in (*dirs, *names):
@@ -326,8 +372,16 @@ def _walk_for_host_channels(
             if stat.S_ISDIR(info.st_mode):
                 # Misses a same-filesystem bind mount; Linux also asks the mount table. A Windows mounted folder is a
                 # reparse point, refused above, and ntpath.ismount calls a directory named nul the \\.\nul device root.
-                if not _NT_PATHS and os.path.ismount(path):
-                    return f"contains a nested host mount: {path}"
+                if not _NT_PATHS:
+                    # path/.. is this parent: same device and another inode is exactly where ismount says no.
+                    if (
+                        parent is None
+                        or info.st_dev != parent.st_dev
+                        or info.st_ino == parent.st_ino
+                    ):
+                        if os.path.ismount(path):
+                            return f"contains a nested host mount: {path}"
+                    listed[path] = info
                 continue
             if not stat.S_ISREG(info.st_mode):
                 return f"contains a device or IPC node: {path}"
@@ -1045,14 +1099,12 @@ def capability_snapshot(
     )
 
 
-# Last answer per tool; the "off" permission gate reads it on every call without probing.
-_TOOL_ISOLATION_TTL_SECONDS = 60.0
+# Last answer per tool, read by the "off" gate; a reset, a real launch or a new _host_key() replaces it.
 ISOLATED_TOOLS = ("python", "terminal")
 _tool_isolation_lock = threading.Lock()
-_tool_isolation: dict[str, tuple[float, bool, str, str]] = {}
+_tool_isolation: dict[str, tuple[bool, str, str, str]] = {}
 _tool_isolation_refreshing: set[str] = set()
-# Every check takes a number when it starts; a reset raises the floor. An answer from a check that
-# started before the reset, or before the one already recorded for that tool, is dropped.
+# A reset raises the generation floor; answers from older checks are dropped.
 _tool_isolation_generation = 0
 _tool_isolation_floor = 0
 _tool_isolation_noted: dict[str, int] = {}
@@ -1089,6 +1141,10 @@ def note_tool_isolation(
     global _tool_isolation_generation
     if tool not in ISOLATED_TOOLS:
         return
+    from .sandbox_probe import UndecidedReason
+
+    # Host resource exhaustion is not a verdict: an empty key makes the next read check again.
+    key = "" if isinstance(reason, UndecidedReason) else _host_key()
     with _tool_isolation_lock:
         if generation is None:
             _tool_isolation_generation += 1
@@ -1096,7 +1152,7 @@ def note_tool_isolation(
         elif generation < _tool_isolation_floor or generation < _tool_isolation_noted.get(tool, 0):
             return
         _tool_isolation_noted[tool] = generation
-        _tool_isolation[tool] = (time.monotonic(), bool(available), backend, reason)
+        _tool_isolation[tool] = (bool(available), backend, reason, key)
 
 
 def tool_isolation_generation() -> int:
@@ -1155,15 +1211,27 @@ def cached_tool_isolation(tool: str) -> bool | None:
     return None if cached is None else cached[0]
 
 
+def _host_key() -> str:
+    """Stat-only (no bwrap preflight): moves when the venv is swapped or bwrap installed."""
+    key = os.path.realpath(sys.executable)
+    if sys.platform == "linux":
+        from . import sandbox_linux
+        try:
+            key += repr(sandbox_linux._bwrap_file_identity(sandbox_linux._trusted_bwrap_path()))
+        except Exception as exc:  # noqa: BLE001 - no trusted bwrap is a key too
+            key += type(exc).__name__
+    return key
+
+
 def cached_tool_capability(tool: str) -> tuple[bool, str, str] | None:
-    """Never blocks: last (available, backend, reason) or None; stale starts a background refresh."""
-    now = time.monotonic()
+    """Never blocks: last (available, backend, reason) or None; a missing or other-key answer starts one check."""
+    key = _host_key()
     with _tool_isolation_lock:
         entry = _tool_isolation.get(tool)
         start = (
             tool in ISOLATED_TOOLS
             and not _background_probes_disabled()
-            and (entry is None or now - entry[0] >= _TOOL_ISOLATION_TTL_SECONDS)
+            and (entry is None or entry[3] != key)
             and tool not in _tool_isolation_refreshing
         )
         if start:
@@ -1179,7 +1247,7 @@ def cached_tool_capability(tool: str) -> tuple[bool, str, str] | None:
         except RuntimeError:
             with _tool_isolation_lock:
                 _tool_isolation_refreshing.discard(tool)
-    return None if entry is None else (entry[1], entry[2], entry[3])
+    return None if entry is None else entry[:3]
 
 
 def warm_tool_isolation() -> None:
@@ -1367,8 +1435,7 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     except (WorkdirUnsafeError, SandboxBuildError):
         raise  # can be tool-induced; says nothing about the backend itself
     except SandboxUnavailableError:
-        # The cached pass is stale (bwrap removed or no longer trusted): the next call checks again,
-        # so "off" asks instead of skipping the prompt and failing until the cache expires.
+        # Cached pass is stale: reset so "off" asks instead of failing on it until a Refresh.
         from .sandbox_probe import reset_probe_cache
         reset_probe_cache()
         raise

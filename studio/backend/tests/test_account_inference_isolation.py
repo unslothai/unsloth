@@ -717,6 +717,12 @@ def test_every_model_load_worker_is_pinned_to_its_account():
 
     from core.inference import diffusion, sd_cpp_backend, video as video_backend
 
+    def _is_run_load(value):
+        # A target may be wrapped (carry_load_budget(self._run_load)); the worker is still _run_load.
+        if isinstance(value, ast.Call) and value.args:
+            value = value.args[0]
+        return isinstance(value, ast.Attribute) and value.attr == "_run_load"
+
     for module in (diffusion, sd_cpp_backend, video_backend):
         tree = ast.parse(inspect.getsource(module))
         starters = [
@@ -724,10 +730,7 @@ def test_every_model_load_worker_is_pinned_to_its_account():
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and any(
-                keyword.arg == "target"
-                and isinstance(keyword.value, ast.Attribute)
-                and keyword.value.attr == "_run_load"
-                for keyword in node.keywords
+                keyword.arg == "target" and _is_run_load(keyword.value) for keyword in node.keywords
             )
         ]
         assert starters, module.__name__

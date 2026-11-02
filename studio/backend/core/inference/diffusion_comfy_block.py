@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ComfyUI ``nvfp4`` / ``mxfp8`` layers: decode, dequantize, and the runtimes that keep them.
-
-Layout measured on Comfy-Org's files: nvfp4 ``.weight`` uint8 ``[N, K/2]`` with the EVEN column in the HIGH nibble,
-e4m3 block scales (per 16 columns) in the cuBLAS 128x4 tiled layout, ``.weight_scale_2`` per-tensor,
-``.input_scale`` = activation ``amax / (448 * 6)``, optional ``.pre_quant_scale`` input smoothing. mxfp8 ``.weight``
-e4m3 ``[N, K]`` with e8m0 exponents (per 32 columns) in the same tiled layout. Decoded layers are row-major so the
-row-tag mapping in ``diffusion_comfy_quant`` splits and concatenates them as for int8 / fp8.
-"""
+"""ComfyUI nvfp4/mxfp8 layer decode; nvfp4 stores the EVEN column in the HIGH nibble."""
 
 from __future__ import annotations
 
@@ -368,8 +361,11 @@ def mxfp8_runtime_reason(target: Any) -> Optional[str]:
         if index not in _MX_PROBE:
             try:
                 with torch.cuda.device(index):
-                    x = torch.randn(128, 64, device = "cuda", dtype = torch.bfloat16)
-                    w = torch.randn(32, 64, device = "cuda", dtype = torch.bfloat16)
+                    # An explicit CPU generator: up to torch 2.11 a default-generator draw raises while another thread
+                    # records, and a CPU draw moved to the device needs no CUDA generator (absent on a spoofed / CPU-only torch).
+                    gen = torch.Generator().manual_seed(0)
+                    x = torch.randn(128, 64, dtype = torch.bfloat16, generator = gen).to("cuda")
+                    w = torch.randn(32, 64, dtype = torch.bfloat16, generator = gen).to("cuda")
                     wq, wsf = mx_quantize_activation(w)
                     linear = mxfp8_linear_class()(64, 32, codes = wq, tiled_scale = wsf)
                     y = linear(x).float()

@@ -27,7 +27,6 @@ type ResidentState = Pick<
   | "mmprojFallbackReason"
 >;
 
-/** Editable controls can already describe the next load. */
 export function selectResidentEstimateSettings(state: ResidentState) {
   if (
     state.modelLoading ||
@@ -91,7 +90,6 @@ export function resolveResidentEstimateRequest(
     ggufVariant: source.ggufVariant,
     hfToken: source.hfToken,
     nativePathToken: source.nativePathToken,
-    // An MLX load records none of the llama.cpp settings the selector requires.
     ...(settings ?? {}),
     nCtx: Math.floor(context),
     ...(mlx

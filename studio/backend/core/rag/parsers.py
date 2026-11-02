@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Document parsing -> list[Page], one dispatch with lazy optional deps.
-
-PDFs keep per-page boundaries (``page_number``); txt/md/docx/html return a single
-page. ``parse(path, want_images=True)`` also returns embedded images. Heavy imports
-are lazy, so importing this module never fails on a missing dep.
-"""
+"""Document parsing to list[Page]; PDFs keep per-page page_number, txt/md/docx/html give one page;
+deps are lazy so importing never fails on a missing one."""
 
 from __future__ import annotations
 
@@ -16,6 +12,7 @@ import os
 import re
 import secrets
 import struct
+import threading
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -273,6 +270,8 @@ class _Stripper(HTMLParser):
                 self._lists[-1][2].append(item)
                 self._label = f"\ue000{self.nonce}.{len(self.labels)}\ue001 "
                 self.labels.append("")
+        elif tag == "input" and (dict(attrs).get("type") or "").lower() in ("checkbox", "radio"):
+            self.handle_data(" ☒ " if "checked" in dict(attrs) else " ☐ ")
         elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
             self._line.append(" ")
         elif tag == "tspan" and not self._skip and any(k in ("x", "y") for k, _ in attrs):
@@ -375,10 +374,7 @@ _SCAN_IMAGE_MIN_PIXELS = 1_000_000
 
 
 def _image_covers_a_corner(doc, number: int) -> bool:
-    """True when a scan-sized raster image overlaps one of the 10pt page corners pymupdf4llm
-    renders to guess the background colour. That render decodes the whole image in one C call
-    holding the GIL (~2 s per JPEG2000 scan page), starving the server's event loop until the
-    desktop watchdog kills it (#13094)."""
+    """True when a scan-sized image covers a corner pymupdf4llm samples, since that render holds the GIL."""
     try:
         import fitz
 
@@ -401,6 +397,159 @@ def _image_covers_a_corner(doc, number: int) -> bool:
     return any(box.intersects(corner) for box in boxes for corner in corners)
 
 
+# PyMuPDF releases whose lines_strict table finder _no_lined_table_possible was checked against.
+_TABLE_GUARD_PYMUPDF = ("1.27.2.3", "1.28.2")
+_TABLE_SNAP = 3  # pymupdf.table.DEFAULT_SNAP_TOLERANCE
+_TABLE_GUARD_MAX_RECTS = 1000
+
+
+def _table_guard_enabled(pymupdf4llm) -> bool:
+    """Legacy pymupdf4llm on a checked PyMuPDF, no layout analyzer."""
+    try:
+        import inspect
+
+        import fitz
+
+        to_markdown = pymupdf4llm.to_markdown
+        params = inspect.signature(to_markdown).parameters
+        return (
+            to_markdown.__module__ == "pymupdf4llm.helpers.pymupdf_rag"
+            and params["table_strategy"].default == "lines_strict"
+            and "hdr_info" in params
+            and fitz.__version__ in _TABLE_GUARD_PYMUPDF
+            and getattr(fitz, "_get_layout", None) is None
+        )
+    except Exception:
+        return False
+
+
+def _graphics_bboxes(rects: list) -> list:
+    """make_edges' clean_graphics clusters (before its has-text check), copied verbatim."""
+    import fitz
+
+    snap_x = snap_y = _TABLE_SNAP
+
+    def are_neighbors(r1, r2):
+        if (
+            r2.x0 - snap_x <= r1.x0 <= r2.x1 + snap_x or r2.x0 - snap_x <= r1.x1 <= r2.x1 + snap_x
+        ) and (
+            r2.y0 - snap_y <= r1.y0 <= r2.y1 + snap_y or r2.y0 - snap_y <= r1.y1 <= r2.y1 + snap_y
+        ):
+            return True
+        if (
+            r1.x0 - snap_x <= r2.x0 <= r1.x1 + snap_x or r1.x0 - snap_x <= r2.x1 <= r1.x1 + snap_x
+        ) and (
+            r1.y0 - snap_y <= r2.y0 <= r1.y1 + snap_y or r1.y0 - snap_y <= r2.y1 <= r1.y1 + snap_y
+        ):
+            return True
+        return False
+
+    prects = sorted(set(fitz.Rect(r) for r in rects), key = lambda r: (r.y1, r.x0))
+    boxes = []
+    while prects:
+        prect0 = prects[0]
+        repeat = True
+        while repeat:
+            repeat = False
+            for i in range(len(prects) - 1, 0, -1):
+                if are_neighbors(prect0, prects[i]):
+                    prect0 |= prects[i].tl
+                    prect0 |= prects[i].br
+                    del prects[i]
+                    repeat = True
+        boxes.append(prect0)
+        del prects[0]
+    return boxes
+
+
+def _no_lined_table_possible(page) -> bool:
+    """True when find_tables(strategy="lines_strict") provably keeps no 2x2+ table: that needs
+    3+ vertical and 3+ horizontal base edges (length >= 1) from l/re/qu items of non-large-fill
+    paths plus cluster borders; this counts an upper bound of each."""
+    if page.rotation != 0:
+        return False
+    v = h = 0
+
+    def line(a, b):
+        nonlocal v, h
+        if abs(b[1] - a[1]) >= 1:
+            v += 1
+        if abs(b[0] - a[0]) >= 1:
+            h += 1
+
+    rects = []
+    for path in page.get_cdrawings():
+        x0, y0, x1, y1 = path["rect"]
+        if path["type"] == "f" and x1 - x0 > _TABLE_SNAP and y1 - y0 > _TABLE_SNAP:
+            continue
+        rects.append(path["rect"])
+        items = path["items"]
+        for item in items:
+            if item[0] == "l":
+                line(item[1], item[2])
+            elif item[0] == "re":
+                rx0, ry0, rx1, ry1 = item[1]
+                if abs(ry1 - ry0) >= 1:
+                    v += 2
+                if abs(rx1 - rx0) >= 1:
+                    h += 2
+            elif item[0] == "qu":
+                ul, ur, ll, lr = item[1]
+                for a, b in ((ul, ll), (ll, lr), (lr, ur), (ur, ul)):
+                    line(a, b)
+        if path.get("closePath", True) and items and items[0][0] == "l" and items[-1][0] == "l":
+            line(items[-1][2], items[0][1])
+        if v >= 3 and h >= 3:
+            return False
+    if len(rects) > _TABLE_GUARD_MAX_RECTS:
+        return False
+    for box in _graphics_bboxes(rects):
+        if box.y1 - box.y0 >= 1:
+            v += 2
+        if box.x1 - box.x0 >= 1:
+            h += 2
+    return v < 3 or h < 3
+
+
+def _skips_table_search(doc, number: int) -> bool:
+    try:
+        return _no_lined_table_possible(doc[number])
+    except Exception:  # noqa: BLE001 - an unreadable page keeps the full table search
+        return False
+
+
+def _pdf_markdown_skipping_tables(pymupdf4llm, doc, indices, calls, kwargs) -> list | None:
+    """The plain path's to_markdown calls, each split into table-search and no-search pages
+    sharing one header table."""
+    # Bake as to_markdown would, so the guard sees the same page.
+    if doc.is_form_pdf or (doc.is_pdf and doc.has_annots()):
+        doc.bake()
+    by_page = {}
+    for group, detect in calls:
+        if not group:
+            continue
+        headers = pymupdf4llm.IdentifyHeaders(doc)
+        skip = {i for i in group if _skips_table_search(doc, i)}
+        for part_pages, extra in (
+            ([i for i in group if i not in skip], {}),
+            ([i for i in group if i in skip], {"table_strategy": None}),
+        ):
+            if not part_pages:
+                continue
+            part = pymupdf4llm.to_markdown(
+                doc,
+                pages = part_pages,
+                hdr_info = headers,
+                detect_bg_color = detect,
+                **extra,
+                **kwargs,
+            )
+            if not isinstance(part, list) or len(part) != len(part_pages):
+                return None
+            by_page.update(zip(part_pages, part))
+    return [by_page[i] for i in indices]
+
+
 def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
     """Per-page layout-aware Markdown (tables, headings, lists) via pymupdf4llm; index
     i maps to page i+1. Returns None when the lib is missing, extraction fails, or the
@@ -413,7 +562,17 @@ def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
         kwargs = {"page_chunks": True, "show_progress": False, "ignore_images": True}
         indices = list(range(doc.page_count) if pages is None else pages)
         scans = {i for i in indices if _image_covers_a_corner(doc, i)}
-        if not scans:
+        if _table_guard_enabled(pymupdf4llm):
+            calls = [(indices, True)]
+            if scans:
+                calls = [
+                    ([i for i in indices if i not in scans], True),
+                    ([i for i in indices if i in scans], False),
+                ]
+            chunks = _pdf_markdown_skipping_tables(pymupdf4llm, doc, indices, calls, kwargs)
+            if chunks is None:
+                return None
+        elif not scans:
             if pages is not None:
                 kwargs["pages"] = indices
             chunks = pymupdf4llm.to_markdown(doc, **kwargs)
@@ -441,6 +600,51 @@ def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
     return [str(c.get("text") or "") for c in chunks]
 
 
+def _pdf_form_field_lines(page) -> list[str]:
+    import fitz
+
+    try:
+        widgets = list(page.widgets())
+    except Exception as exc:  # noqa: BLE001 - a malformed field must not fail the whole PDF
+        logger.warning("skipping form fields on PDF page %d: %s", page.number + 1, exc)
+        return []
+    tooltip_owners: dict[str, set[str]] = {}
+    for widget in widgets:
+        tooltip = " ".join((widget.field_label or "").split())
+        tooltip_owners.setdefault(tooltip, set()).add(widget.field_name)
+    fields = {}
+    for widget in widgets:
+        shown = dict(c for c in widget.choice_values or [] if isinstance(c, (list, tuple)))
+        value = widget.field_value
+        value = ", ".join(
+            shown.get(part, part)
+            for part in (value if isinstance(value, list) else [value])
+            if isinstance(part, str)
+        )
+        radio = widget.field_type == fitz.PDF_WIDGET_TYPE_RADIOBUTTON
+        # Kids of one field share its /V; the widget's own /AS says which kid is ticked.
+        unchecked = (radio or widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX) and (
+            value == "Off" or page.parent.xref_get_key(widget.xref, "AS") == ("name", "/Off")
+        )
+        password = (
+            widget.field_type == fitz.PDF_WIDGET_TYPE_TEXT
+            and widget.field_flags & fitz.PDF_TX_FIELD_IS_PASSWORD
+        )
+        _, flags = page.parent.xref_get_key(widget.xref, "F")
+        hidden = widget.field_display in (1, 3) or (
+            flags.isdigit() and int(flags) & fitz.PDF_ANNOT_IS_INVISIBLE
+        )
+        if not widget.field_name or not value.strip() or unchecked or password or hidden:
+            continue
+        # A radio widget's /TU tooltip names one option, not the group's selected value.
+        tooltip = "" if radio else " ".join((widget.field_label or "").split())
+        label = tooltip or widget.field_name
+        if tooltip and len(tooltip_owners[tooltip]) > 1:
+            label = f"{tooltip} ({widget.field_name})"
+        fields[widget.field_name] = f"{label}: {value}"
+    return list(fields.values())
+
+
 def _pdf(
     source: str | bytes,
     want_images: bool,
@@ -458,6 +662,10 @@ def _pdf(
             raise ValueError("encrypted PDF requires a password")
         total_pages = doc.page_count
         page_numbers = range(total_pages if max_pages is None else min(total_pages, max_pages))
+        # Read before pymupdf4llm, which bakes the widgets into page content.
+        form_fields = (
+            {n: _pdf_form_field_lines(doc[n]) for n in page_numbers} if doc.is_form_pdf else {}
+        )
         if not config.PDF_MARKDOWN:
             md = None
         elif max_pages is None:
@@ -468,9 +676,7 @@ def _pdf(
             page = doc[page_number]
             plain = page.get_text("text") or ""
             candidate = md[i] if md else ""
-            # Prefer layout-aware Markdown (keeps tables/headings legible for retrieval), but drop to PyMuPDF's
-            # logical-order text when Markdown is off/empty or when pymupdf4llm mangled it (RTL/Indic) or
-            # dropped most of the page.
+            # Prefer Markdown; use PyMuPDF text if Markdown is empty, mangles RTL/Indic, or loses most text.
             if (
                 candidate
                 and not _markdown_corrupted(candidate)
@@ -479,8 +685,7 @@ def _pdf(
                 text = candidate
             else:
                 text = plain
-            # Markdown may contain image placeholders even when there is no text layer.
-            # Record scanned pages from the PDF itself; blank separator pages need no OCR.
+            # Scan detection uses the PDF, not Markdown: Markdown placeholders appear even without a text layer.
             images_on_page = page.get_image_info()
             needs_ocr = bool(images_on_page) and not plain.strip()
             for info in images_on_page:
@@ -499,6 +704,7 @@ def _pdf(
                     break
             if needs_ocr:
                 text = plain
+            text = "\n".join(filter(None, [text, *form_fields.get(page_number, [])]))
             pages.append(Page(text, page_number + 1, len(text), needs_ocr = needs_ocr))
             if want_images:
                 for img in page.get_images(full = True):
@@ -523,10 +729,7 @@ def _pdf(
 
 
 def parse_pdf_bytes(data: bytes, *, max_pages: int | None = None) -> tuple[list[Page], int]:
-    """Extract PDF pages from an in-memory download using the ingestion parser.
-
-    Returns the (capped) pages plus the document's full page count, so a caller
-    that set ``max_pages`` can tell a fully-read short PDF from a truncated one."""
+    """Returns capped pages plus the full page count, so a max_pages cut differs from a short PDF."""
     pages, _images, total_pages = _pdf(data, want_images = False, max_pages = max_pages)
     return pages, total_pages
 
@@ -605,10 +808,7 @@ def pages_with_figures(
     min_side: float = 40.0,
     exclude_pages: set[int] | None = None,
 ) -> list[int]:
-    """1-based page numbers with a qualifying figure region, capped at ``max_pages``;
-    drives figure tiling. ``exclude_pages`` (1-based) are skipped: those are the pages
-    OCR already transcribed whole, so tiling them would duplicate the vision work. Any
-    failure yields []."""
+    """1-based pages with a figure region, for tiling; exclude_pages, already OCR'd whole, are skipped."""
     exclude = exclude_pages or set()
     try:
         import pymupdf
@@ -708,10 +908,7 @@ def render_pdf_pages(
     *,
     dpi: int = 150,
 ) -> dict[int, bytes]:
-    """Render whole PDF pages (given as 1-based numbers) to PNG bytes, keyed by
-    page number. Backs scanned-page OCR. Any failure yields ``{}`` (or skips that
-    page), never an exception.
-    """
+    """Renders whole 1-based pages to PNG for scanned-page OCR; failures skip the page, never raise."""
     wanted = {int(n) for n in page_numbers}
     if not wanted:
         return {}
@@ -953,18 +1150,25 @@ def _docx_symbol(sym) -> str:
     return chr(code) if 0 <= code <= 0x10FFFF and chr(code).isprintable() else ""
 
 
+_docx_xpath = threading.local()
+
+
 def _docx_run_text(run) -> str:
-    if run.find(f"{_W}fldChar/{_W}ffData/{_W}checkBox") is None and run.find(_W + "sym") is None:
-        return run.text
+    # Per thread: run.xpath() recompiles per call; lxml locks an evaluator shared across threads.
+    parts = getattr(_docx_xpath, "run_parts", None)
+    if parts is None:
+        from lxml import etree
+        parts = _docx_xpath.run_parts = etree.XPath(
+            "w:br | w:cr | w:noBreakHyphen | w:ptab | w:t | w:tab | w:fldChar | w:sym",
+            namespaces = {"w": _W[1:-1]},
+        )
     return "".join(
         _docx_checkbox(e)
         if e.tag == _W + "fldChar"
         else _docx_symbol(e)
         if e.tag == _W + "sym"
         else str(e)
-        for e in run.xpath(
-            "w:br | w:cr | w:noBreakHyphen | w:ptab | w:t | w:tab | w:fldChar | w:sym"
-        )
+        for e in parts(run)
     )
 
 
@@ -1032,17 +1236,26 @@ def _docx_number_lists(document) -> None:
     abstracts = {a.get(_W + "abstractNumId"): a for a in numbering.iterchildren(_W + "abstractNum")}
     nums = {n.get(_W + "numId"): n for n in numbering.iterchildren(_W + "num")}
 
+    style_nums = {}
+
     # numId and ilvl inherit through basedOn independently, like any other paragraph property.
     def style_num(
         style_id,
         name,
         depth = 0,
     ):
+        if depth == 0 and (style_id, name) in style_nums:
+            return style_nums[style_id, name]
         style = style_by_id.get(style_id)
         if style is None or depth > 20:
-            return None
-        value = val(style.find(f"{_W}pPr/{_W}numPr"), name)
-        return style_num(val(style, "basedOn"), name, depth + 1) if value is None else value
+            value = None
+        else:
+            value = val(style.find(f"{_W}pPr/{_W}numPr"), name)
+            if value is None:
+                value = style_num(val(style, "basedOn"), name, depth + 1)
+        if depth == 0:
+            style_nums[style_id, name] = value
+        return value
 
     def linked(abstract_id, depth = 0):
         num_id = style_num(val(abstracts.get(abstract_id), "numStyleLink"), "numId")
@@ -1187,10 +1400,7 @@ def _docx_number_lists(document) -> None:
 
 
 def _docx_table_rows(table) -> list[str]:
-    """Each row as pipe-joined cell text (the locator splits anchors on pipes).
-    Columns stay aligned to the layout grid (merged cells fill their spanned slots,
-    skipped leading/trailing grid columns become empty fields). Cells are walked in
-    document order so a nested table, and any text after it, flattens in place."""
+    """Cells joined by pipes, aligned to the layout grid; the locator splits anchors on pipes."""
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
@@ -1200,14 +1410,12 @@ def _docx_table_rows(table) -> list[str]:
         cells: list[str] = [""] * getattr(row, "grid_cols_before", 0)
         trailing: list[str] = []
         for cell in row.cells:
-            # A merged cell shares one <w:tc> across its span: emit its text once, then placeholders, so columns
-            # and rows stay aligned.
+            # Merged cells share one <w:tc>: emit text once, then placeholders to keep alignment.
             if cell._tc in seen:
                 cells.append("")
                 continue
             seen.add(cell._tc)
-            # Paragraph text before the first nested table is the aligned field; the nested table and anything
-            # after it flatten below the row.
+            # Text before a nested table is the aligned field; the table and anything after it flatten below.
             field: list[str] = []
             after_table = False
             for item in _docx_blocks(cell._tc, cell):
@@ -1453,9 +1661,7 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
         match = results.best()
         if match is not None:
             guess = str(match)
-            # A tie is ambiguous ("ÜÖÄ" is also Cyrillic); a single-byte page decodes anything, so it needs
-            # language evidence and high-byte words, not lone accents ("À É È"); a CJK guess that paired
-            # no bytes is half-width katakana ("° ± µ").
+            # Ties are ambiguous; need high-byte words, not lone accents; unpaired CJK bytes mean katakana.
             tied = any(
                 other is not match
                 and (other.chaos, other.coherence) == (match.chaos, match.coherence)
@@ -1500,8 +1706,7 @@ def parse(path: str, *, want_images: bool = False):
         is_html = ext in (".html", ".htm")
         with open(path, "rb") as f:
             raw = _decode_text(f.read(), html = is_html)
-        # NUL never occurs in source text; a binary under a source extension (Fortran .mod, binary .plist) would
-        # otherwise embed as mojibake.
+        # NUL never appears in source text; catches binaries under source extensions.
         if ext in config.SOURCE_TEXT_EXTS and "\x00" in raw:
             raise ValueError(f"unsupported binary content in text file: {os.path.basename(path)}")
         # Universal newlines, as text-mode open() gave: the chunker splits on "\n\n".

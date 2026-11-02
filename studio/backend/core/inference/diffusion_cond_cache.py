@@ -1,34 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persistent prompt-conditioning cache for the diffusion INFERENCE path.
-
-The inference sibling of the trainers' ``cond_cache_dir`` (see
-``diffusion_train_common.DiffusionLoraConfig``), reusing the SAME on-disk store
-(``diffusion_train_extras.PersistentConditioningCache``): one safetensors file
-per encoded prompt, keyed by content hash + family. Enabled by pointing
-``UNSLOTH_DIFFUSION_COND_CACHE_DIR`` at a directory -- unset/blank means off,
-exactly like the trainer knob, so the default render path stays untouched.
-
-When enabled, the loaded pipeline's ``encode_prompt`` is wrapped per-instance:
-a repeated prompt returns the stored embeddings and never runs the text-encoder
-forward, so under an offload policy the multi-GB encoders stay OFF the GPU for
-warm prompts entirely. Verified bit-identical on the 32-image eval suites
-(FLUX.1-schnell / FLUX.2-klein / Qwen-Image-2512): renders from cached
-embeddings match inline-encoded renders exactly, and warm runs load the whole
-pipeline with no text encoder resident (8-18s load, ~7B-VL VRAM saved on
-Qwen-Image).
-
-Safety gates: the wrapper only caches calls whose arguments are all plain
-JSON-safe values (a tensor argument such as pre-supplied ``prompt_embeds``
-passes straight through), keys on everything that changes the embedding
-numerics (family, checkpoint repo, the companion base repo that supplies the
-text encoders, dtype, text-encoder quant, diffusers version, and the full
-argument set minus device/generator), and bypasses entirely while LoRA
-adapters are attached (an adapter may target the text encoders). Best-effort
-throughout: any cache failure falls back to the real encode. torch is imported
-lazily so this stays importable in a no-torch runtime.
-"""
+"""Prompt-embedding cache, off unless UNSLOTH_DIFFUSION_COND_CACHE_DIR is set; bypassed while LoRA
+adapters are attached; best-effort, any cache failure falls back to the real encode; torch
+imported lazily"""
 
 from __future__ import annotations
 
@@ -40,8 +15,7 @@ from typing import Any, Optional
 
 _ENV_DIR = "UNSLOTH_DIFFUSION_COND_CACHE_DIR"
 
-# Bound arguments that never change the returned embeddings: device is a placement detail (the hit is moved there) and
-# no encode path draws RNG.
+# Never change the embeddings: device is placement only and no encode path draws RNG.
 _KEY_EXCLUDED_ARGS = frozenset({"device", "generator"})
 
 
@@ -60,8 +34,7 @@ def _json_safe(value: Any) -> bool:
     return False
 
 
-# Per-slot layout codes for _flatten/_unflatten (the leading int64 tensor): -1 = None, -2 = a bare tensor, n >= 0 = a
-# LIST of n tensors.
+# Diffusers quant schemes that cannot host ControlNet cleanly (torchao tensor subclasses); gated off like LoRA, with GGUF-via-diffusers
 _SLOT_NONE = -1
 _SLOT_TENSOR = -2
 
@@ -121,11 +94,8 @@ def install(
     te_quant: Any = None,
     logger: Any = None,
 ) -> bool:
-    """Wrap ``pipe.encode_prompt`` with the persistent cache. No-op (False) when
-    the env knob is unset, the pipe has no ``encode_prompt``, or setup fails.
-
-    Instance-level assignment only: the wrapper dies with the pipe on unload and
-    never mutates the pipeline class."""
+    """Instance-level wrapper of pipe.encode_prompt, so it dies with the pipe and never mutates the
+    class."""
     root = cache_dir()
     if root is None:
         return False
@@ -142,9 +112,7 @@ def install(
             logger.warning("diffusion.cond_cache: install failed: %s", exc)
         return False
 
-    # Everything beyond the call arguments that changes the embedding numerics. A GGUF/single-file checkpoint takes
-    # its TEXT ENCODERS from the companion base repo, so the base identity keys the cache too; both carry a revision
-    # marker, so an advanced commit or an edited dir misses.
+    # GGUF checkpoints take text encoders from the base repo, so it keys the cache too.
     base_ref = base_repo if base_repo else repo_id
     load_fp = {
         "repo": str(repo_id),
@@ -228,11 +196,7 @@ def _diffusers_version() -> Optional[str]:
 
 
 def _source_revision(ref: Any) -> str:
-    """Revision marker for a checkpoint reference (see the shared helper for why).
-
-    Delegates to ``diffusion_train_extras.source_revision`` so the trainer's cache
-    namespace and this wrapper cannot drift apart on what counts as the same source.
-    """
+    """Delegates to the trainer's source_revision so both caches agree on what counts as the same source."""
     try:
         from core.training.diffusion_train_extras import source_revision  # noqa: PLC0415
         return source_revision(ref)

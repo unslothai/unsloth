@@ -18,12 +18,9 @@ from types import SimpleNamespace
 from . import mxc_adapter, mxc_drive_alias, mxc_policy, mxc_read_grants, mxc_runtime
 
 _lock = threading.Lock()
-_cache: dict[tuple, tuple[float, bool, str]] = {}
+# No TTL, as sandbox_probe: the key and invalidate_cache() decide; a timer only re-ran the container.
+_cache: dict[tuple, tuple[bool, str]] = {}
 _inflight: dict[tuple, threading.Event] = {}
-POSITIVE_TTL = 300.0
-NEGATIVE_TTL = 30.0
-# Re-probing a shell that cannot start costs ~15s of DACL-tier launches; the key changes with the runtime or the shell.
-INCOMPATIBLE_TTL = 6 * 3600.0
 MSYS_NAMESPACE_REASON = (
     "Git Bash (MSYS2) cannot start in the MXC container, which denies the global named-object "
     "directory it creates (microsoft/mxc#1061)."
@@ -33,13 +30,17 @@ NO_BUILTIN_CONTAINER_REASON = (
 )
 
 
-_host_prep_cache: dict[str, tuple[float, str | None]] = {}
+_host_prep_cache: dict[str, str | None] = {}
+# Bumped by invalidate_cache(): a check started before it must not publish.
+_generation = 0
 
 
 def invalidate_cache() -> None:
+    global _generation
     with _lock:
         _cache.clear()
         _host_prep_cache.clear()
+        _generation += 1
     # Only when already loaded: the MXC child paths import this module without the tool stack.
     os_sandbox = sys.modules.get(f"{__package__}.os_sandbox")
     if os_sandbox is not None:
@@ -64,9 +65,9 @@ def host_prep_remediation() -> str | None:
     except Exception:  # noqa: BLE001 - no runtime, nothing to prepare
         return None
     with _lock:
-        cached = _host_prep_cache.get(identity)
-        if cached is not None and time.monotonic() < cached[0]:
-            return cached[1]
+        if identity in _host_prep_cache:
+            return _host_prep_cache[identity]
+        generation = _generation
     steps = mxc_runtime.probe_host_prep_steps(env = mxc_adapter._control_environment())
     advice = None
     if steps:
@@ -82,7 +83,9 @@ def host_prep_remediation() -> str | None:
             "Prepare this PC."
         )
     with _lock:
-        _host_prep_cache[identity] = (time.monotonic() + NEGATIVE_TTL, advice)
+        # None = wxc-exec could not tell: asked again next time rather than kept as "nothing missing".
+        if generation == _generation and steps is not None:
+            _host_prep_cache[identity] = advice
     return advice
 
 
@@ -94,8 +97,7 @@ def _terminal_probe(selected_executable: str, workdir: Path, canary: Path, outsi
     name = Path(selected_executable).name.casefold()
     read_capture = workdir / "outside-read.txt"
     if _is_cmd(selected_executable):
-        # The quoted redirect is the positive control for quoting: a command line that mangles quotes
-        # also fails the denied read and write below, which would otherwise pass without isolation.
+        # Quoted redirect is the quoting positive control, else denied read/write pass vacuously
         command = (
             "echo ok>inside.txt"
             ' & echo ok>"inside quoted.txt"'
@@ -375,12 +377,13 @@ def probe(
     while True:
         with _lock:
             cached = _cache.get(key)
-            if cached is not None and not force and time.monotonic() < cached[0]:
-                return cached[1], cached[2]
+            if cached is not None and not force:
+                return cached
             flight = _inflight.get(key)
             if flight is None:
                 flight = threading.Event()
                 _inflight[key] = flight
+                generation = _generation
                 break
         while not flight.wait(0.05):
             if cancel_event is not None and cancel_event.is_set():
@@ -389,11 +392,8 @@ def probe(
     try:
         result = _probe(selected_executable, execution_kind, cancel_event)
         with _lock:
-            if cancel_event is None or not cancel_event.is_set():
-                ttl = POSITIVE_TTL if result[0] else NEGATIVE_TTL
-                if result[1] == MSYS_NAMESPACE_REASON:
-                    ttl = INCOMPATIBLE_TTL
-                _cache[key] = (time.monotonic() + ttl, *result)
+            if generation == _generation and (cancel_event is None or not cancel_event.is_set()):
+                _cache[key] = result
         return result
     finally:
         with _lock:

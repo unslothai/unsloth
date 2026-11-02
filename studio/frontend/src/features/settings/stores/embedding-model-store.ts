@@ -7,51 +7,32 @@ import {
   loadEmbeddingModelSettings,
 } from "../api/embedding-model";
 
-/**
- * One copy of the embedding model setting for both surfaces that edit it
- * (General and Data). Component state would let a save made on one tab finish
- * after the other has mounted and read the old value, leaving the tab on
- * screen showing a model the toast just said was replaced.
- */
+/** Shared by General and Data so a save on one tab cannot leave the other showing the old model. */
 interface EmbeddingModelState {
   settings: EmbeddingModelSettings | null;
   loadError: string | null;
   /** Bumped by every committed mutation, so a slower read cannot undo it. */
   revision: number;
   applySettings: (settings: EmbeddingModelSettings) => void;
-  /** Reserve mutation order before an async preflight such as model resolution. */
   beginSave: () => number;
   isSaveCurrent: (reservation: number) => boolean;
-  /**
-   * Run a write and commit its answer. Returns false when a later write
-   * started first, so the caller leaves the field to that one.
-   */
+  /** False when a later write started first. */
   save: (
     request: () => Promise<EmbeddingModelSettings>,
     reservation?: number,
   ) => Promise<boolean>;
-  /**
-   * Run a write that changes residency rather than the selection, such as
-   * unloading. It claims no place in save order: doing so retired the
-   * reservation a selection still running its preflight on the other surface
-   * was holding, and that selection then returned without ever persisting.
-   */
+  /** Takes no save-order slot, or it would retire another surface's in-flight selection. */
   applyResidency: (
     request: () => Promise<EmbeddingModelSettings>,
   ) => Promise<void>;
   load: () => Promise<void>;
 }
 
-// Both surfaces read on mount, so two reads overlap with no save between them
-// to bump the revision. Only the newest may commit, or a slow one lands last
-// and shows an error, or an older model, over what the newer one just read.
+// Both surfaces read on mount; only the newest read may commit.
 let latestLoad = 0;
 
-// Each surface keeps its own pending flag, so the one the user switches to can write while the
-// first write is still out. Request order is the best guess at which one the user meant, but not
-// proof of what the backend ended on: the later one can fail verification, or persist first. So the
-// newest answer wins the moment it lands, and once every overlapping write has settled the store
-// re-reads instead of trusting the guess.
+// Request order is only a guess at the backend's final state: newest answer wins, then the store
+// re-reads once every overlapping write has settled.
 let latestSave = 0;
 let savesInFlight = 0;
 let saveWasSuperseded = false;
@@ -71,8 +52,7 @@ export const useEmbeddingModelStore = create<EmbeddingModelState>(
     isSaveCurrent: (reservation) => reservation === latestSave,
     save: async (request, reservation) => {
       const save = reservation ?? ++latestSave;
-      // Resolution belonging to an older cross-surface selection must never
-      // become a newer write merely because its preflight finished last.
+      // An older selection must not become the newest write because its preflight finished last.
       if (save !== latestSave) return false;
       savesInFlight += 1;
       try {
@@ -84,8 +64,7 @@ export const useEmbeddingModelStore = create<EmbeddingModelState>(
         get().applySettings(settings);
         return true;
       } catch (error) {
-        // A failed write leaves the backend on whatever the others wrote, so
-        // an overlap has to be settled by a read, not by request order.
+        // After a failed overlapped write, settle by a read, not by request order.
         if (save !== latestSave) {
           saveWasSuperseded = true;
           return false;
@@ -104,9 +83,7 @@ export const useEmbeddingModelStore = create<EmbeddingModelState>(
       savesInFlight += 1;
       try {
         const settings = await request();
-        // A selection is still out, and this answer was formed before whatever
-        // it persists. Applying it would show the old model; let the settling
-        // re-read below carry the residency change instead.
+        // A selection is still out; let the settling re-read carry the residency change.
         if (savesInFlight > 1) {
           saveWasSuperseded = true;
           return;
@@ -126,7 +103,6 @@ export const useEmbeddingModelStore = create<EmbeddingModelState>(
       const stale = () => get().revision !== revision || load !== latestLoad;
       try {
         const settings = await loadEmbeddingModelSettings();
-        // A save committed, or a later read started, while this was in flight.
         if (stale()) return;
         set({ settings, loadError: null });
       } catch (error) {

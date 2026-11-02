@@ -15,8 +15,11 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from core.inference.engine_transport import engine_messages, engine_request_timeout
+from core.inference.inference_gate import gated_async_client
+from core.inference.managed_engine import fold_reasoning_into_answer
 from core.inference.http_stream import closing_response_lines
 from core.inference.studio_tool_loop import ToolLoopPolicy, ToolLoopRun, stream_with_studio_tools
+from utils.api_errors import openai_error_body
 
 
 class ManagedToolTransport:
@@ -31,8 +34,10 @@ class ManagedToolTransport:
         *,
         preserve_thinking = None,
         message_fitter = None,
+        continuing = False,
     ):
         self.client, self.engine, self.body = client, engine, body
+        self._continuing = continuing
         self._preserve_thinking = preserve_thinking
         self._message_fitter = message_fitter
         # The tool loop keeps a turn's reasoning_content on the assistant message only when asked.
@@ -54,6 +59,9 @@ class ManagedToolTransport:
         }
         if max_tokens:
             body["max_tokens"] = max_tokens
+        continuing = self._continuing and messages[-1].get("role") == "assistant"
+        if continuing:
+            self.engine.continue_final_message(body)
         if truncation_line:
             yield truncation_line
         if tools:
@@ -79,9 +87,20 @@ class ManagedToolTransport:
                     if cancel_event.is_set():
                         return
                     if line.startswith("data:"):
-                        yield _with_reasoning_content(line)
+                        yield _as_answer(line) if continuing else _with_reasoning_content(line)
             finally:
                 await lines.aclose()
+
+
+def _as_answer(line: str) -> str:
+    try:
+        event = json.loads(line[5:])
+    except ValueError:
+        return line
+    for choice in event.get("choices") or () if isinstance(event, dict) else ():
+        if isinstance(choice, dict) and isinstance(choice.get("delta"), dict):
+            fold_reasoning_into_answer(choice["delta"])
+    return "data: " + json.dumps(event)
 
 
 def _with_reasoning_content(line: str) -> str:
@@ -103,12 +122,18 @@ def _with_reasoning_content(line: str) -> str:
     return "data: " + json.dumps(event) if changed else line
 
 
-def _message_fitter(payload, engine, public, tools):
-    """Auto-compact to the vLLM engine's window; the exact count refuses tools, so this estimates."""
+def _message_fitter(
+    payload,
+    engine,
+    public,
+    tools,
+    studio_loop = False,
+):
+    """Auto-compact to the managed engine's window; the exact count refuses tools, so this estimates."""
     from routes import inference as api
 
     if (
-        getattr(engine, "engine", None) != "vllm"
+        getattr(engine, "engine", None) not in ("vllm", "sglang")
         or api._rolling_context_policy(payload) is None
         or not engine.context
     ):
@@ -123,16 +148,31 @@ def _message_fitter(payload, engine, public, tools):
         }
     )
 
+    # The first fit sees the client's branch; later ones see the loop's conversation, which can end
+    # on a controller re-prompt that recall must not query for.
+    branch: list = []
+    tool_loop = studio_loop and not api._tool_calls_are_disabled(payload)
+    # An uncapped reply is sized by the engine; a cap from the estimate can push the prompt over.
+    limit = api._effective_max_tokens(payload)
+    capped = bool(limit) and limit < engine.context
+
     async def fit(messages):
+        if not branch:
+            branch.extend(messages)
         fitted, truncation, max_tokens = await asyncio.to_thread(
-            api._fit_external_context, messages, fit_payload, tools = tools
+            api._fit_external_context,
+            messages,
+            fit_payload,
+            tools = tools,
+            branch = branch,
+            tool_loop = tool_loop,
         )
         line = None
         if truncation and truncation.get("dropped_messages"):
             line = api._context_truncated_sse_chunk(
                 "chatcmpl-" + uuid.uuid4().hex[:12], public, truncation
             ).rstrip("\n")
-        return fitted, max_tokens, line
+        return fitted, max_tokens if capped else None, line
 
     return fit
 
@@ -167,6 +207,10 @@ async def managed_tool_chat(
     tools_on = bool(api._effective_enable_tools(payload))
     ui_events = api._ui_stream_events_enabled(request)
     if tools_on and not api._launcher_tool_default_applies(payload, ui_events):
+        tools_on = False
+    if api._response_format_constrains_decoding(
+        payload
+    ) and not api._explicit_studio_tool_loop_requested(payload):
         tools_on = False
     if payload.tool_choice == "none":
         tools_on = False
@@ -205,6 +249,19 @@ async def managed_tool_chat(
     )
     if tools and api._wants_multiple_choices(payload):
         raise reject("Multiple choices are unavailable when Unsloth executes tools.")
+    if tools and api._response_format_constrains_decoding(payload):
+        # The tool loop never forwards response_format; refuse rather than violate it (as GGUF does).
+        message = (
+            "response_format is not supported with Unsloth tool execution; send the request "
+            "without enable_tools or mcp_enabled to use guided decoding."
+        )
+        api.api_monitor.fail(monitor_id, message)
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                message, status = 400, code = "unsupported_parameter", param = "response_format"
+            ),
+        )
     if tools:
         api._reject_confirm_gate_without_channel(
             payload, ui_events, monitor_id, api._catalog_names(tools)
@@ -223,6 +280,8 @@ async def managed_tool_chat(
             full_access = bool(payload.bypass_permissions),
         )
         nudge = await api._apply_rag_nudge(nudge, tools, rag_scope = payload.rag_scope)
+        if not api._tool_calls_are_disabled(payload):
+            nudge = api._apply_compaction_nudge(nudge, tools, payload = payload)
         if nudge:
             messages = api._append_to_system_message(messages, nudge)
     try:
@@ -230,8 +289,7 @@ async def managed_tool_chat(
     except ValueError as exc:
         raise reject(str(exc)) from exc
     engine = backend._managed_engine
-    # The engine serves config.identifier (a local path for directory loads); clients get the
-    # same public id as every other chat path.
+    # Serves config.identifier (a local path for directory loads); clients get the same public id.
     public = api._orchestrator_public_model_id(backend) or engine.model
     messages = engine.replay_reasoning(messages, payload.preserve_thinking)
     body = {
@@ -267,6 +325,10 @@ async def managed_tool_chat(
         body["tools"] = payload.tools
     if payload.tool_choice is not None and not tools:
         body["tool_choice"] = payload.tool_choice
+    response_format = api._response_format_beside_tools(payload, tools or payload.tools)
+    if response_format is not None:
+        body["response_format"] = response_format
+    continuing = api._continue_final_message(payload)
 
     cancel = api._chat_cancel_event(request)
     completion_id = "chatcmpl-" + uuid.uuid4().hex[:12]
@@ -276,7 +338,7 @@ async def managed_tool_chat(
     tracker.__enter__()
 
     async def events():
-        client = httpx.AsyncClient(trust_env = False, timeout = engine_request_timeout())
+        client = gated_async_client(trust_env = False, timeout = engine_request_timeout())
         watcher = asyncio.create_task(
             api._await_cancel_or_disconnect_then_close_client(
                 cancel_event = cancel, request = request, client = client
@@ -287,7 +349,10 @@ async def managed_tool_chat(
             engine,
             body,
             preserve_thinking = payload.preserve_thinking,
-            message_fitter = _message_fitter(payload, engine, public, tools or payload.tools),
+            message_fitter = _message_fitter(
+                payload, engine, public, tools or payload.tools, studio_loop = bool(tools)
+            ),
+            continuing = continuing,
         )
         stripper = api.ServerToolCallStripper()
         stream = None
@@ -304,6 +369,7 @@ async def managed_tool_chat(
                         tool_choice = payload.tool_choice,
                         supports_vision = bool(info.get("is_vision")),
                         promoted_image_parts = promoted_image_parts,
+                        continue_final_message = continuing,
                     ),
                     policy = ToolLoopPolicy(
                         tools = tools,
@@ -336,6 +402,8 @@ async def managed_tool_chat(
                     )
                     if max_tokens:
                         request_body["max_tokens"] = max_tokens
+                if continuing:
+                    engine.continue_final_message(request_body)
                 response = await client.post(
                     engine.base_url + "/v1/chat/completions",
                     headers = engine.headers,
@@ -348,6 +416,8 @@ async def managed_tool_chat(
                     data["model"] = public
                 for choice in data.get("choices") or () if isinstance(data, dict) else ():
                     message = choice.get("message") if isinstance(choice, dict) else None
+                    if continuing and isinstance(message, dict):
+                        fold_reasoning_into_answer(message)
                     if isinstance(message, dict) and "reasoning" in message:
                         reasoning = message.pop("reasoning")
                         if reasoning and not message.get("reasoning_content"):
@@ -504,7 +574,7 @@ async def managed_engine_completions(request, current_subject, backend, body):
     cancel = threading.Event()
     tracker = api._TrackedCancel(cancel, model = public, kind = "completions")
     tracker.__enter__()
-    client = httpx.AsyncClient(trust_env = False, timeout = engine_request_timeout())
+    client = gated_async_client(trust_env = False, timeout = engine_request_timeout())
     watcher = asyncio.create_task(
         api._await_cancel_or_disconnect_then_close_client(
             cancel_event = cancel, request = request, client = client

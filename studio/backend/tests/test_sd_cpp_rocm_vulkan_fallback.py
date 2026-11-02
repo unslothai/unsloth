@@ -1972,6 +1972,8 @@ def test_a_build_that_cannot_launch_at_all_is_counted(fake_settings, monkeypatch
     """0xC0000135 arrives as a large POSITIVE exit code, so the probe accepts it; a missing execute bit fails identically, so it is only counted."""
     from core.inference import sd_cpp_backend
 
+    # Runtime loads, so the failed launch stays ambiguous.
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: True)
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
     sd_cpp_backend.note_unlaunchable_accelerator_build("/opt/sd/rocm/sd-server")
     assert _recorded_strikes(fake_settings) == 1
@@ -2006,6 +2008,7 @@ def test_a_resident_server_does_not_cost_the_reload_its_native_engine(fake_setti
     from core.inference import diffusion_engine_router as router
     from core.inference import sd_cpp_backend
 
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: True)
     monkeypatch.setattr(router, "_install_allowed", lambda: True)
     monkeypatch.setattr(router, "ensure_sd_server_binary", lambda **_k: "/opt/sd/rocm/sd-server")
     monkeypatch.setattr(router, "ensure_sd_cpp_binary", lambda **_k: "/opt/sd/rocm/sd-cli")
@@ -2047,6 +2050,7 @@ def test_the_router_counts_a_binary_it_rejects_for_not_launching(fake_settings, 
     from core.inference import diffusion_engine_router as router
     from core.inference import sd_cpp_backend
 
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: True)
     monkeypatch.setattr(router, "_install_allowed", lambda: True)
     monkeypatch.setattr(router, "ensure_sd_server_binary", lambda **_k: "/opt/sd/rocm/sd-server")
     monkeypatch.setattr(router, "ensure_sd_cpp_binary", lambda **_k: "/opt/sd/rocm/sd-cli")
@@ -2497,35 +2501,22 @@ class TestRocmRuntimePreflight:
     """The ROCm prebuilt needs host HIP/BLAS; preflight runs before the 244 MB download."""
 
     @staticmethod
-    def _sonames_that(fail: set) -> object:
-        import ctypes
-
-        real = ctypes.CDLL
-
-        def _fake(name, *a, **k):
-            if name in fail:
-                raise OSError(f"{name}: cannot open shared object file: No such file or directory")
-            if name in sd_backend._ROCM_RUNTIME_SONAMES:
-                return object()
-            return real(name, *a, **k)
-
-        return _fake
-
-    def test_a_host_missing_hipblas_is_diverted_without_downloading(self, monkeypatch):
-        import ctypes
-
+    def _sonames_that(monkeypatch, fail: set) -> None:
         monkeypatch.setattr(sd_backend.os, "name", "posix")
         monkeypatch.setattr(sd_backend.sys, "platform", "linux")
-        monkeypatch.setattr(ctypes, "CDLL", self._sonames_that({"libhipblas.so.3"}))
+        monkeypatch.setattr(
+            sd_backend,
+            "_rocm_missing_memo",
+            ([s for s in sd_backend._ROCM_RUNTIME_SONAMES if s in fail],),
+        )
+
+    def test_a_host_missing_hipblas_is_diverted_without_downloading(self, monkeypatch):
+        self._sonames_that(monkeypatch, {"libhipblas.so.3"})
         assert sd_backend.rocm_runtime_resolvable() is False
         assert sd_backend.accelerator_probe_failure_is_decisive("rocm") is True
 
     def test_a_host_with_rocm_keeps_rocm(self, monkeypatch):
-        import ctypes
-
-        monkeypatch.setattr(sd_backend.os, "name", "posix")
-        monkeypatch.setattr(sd_backend.sys, "platform", "linux")
-        monkeypatch.setattr(ctypes, "CDLL", self._sonames_that(set()))
+        self._sonames_that(monkeypatch, set())
         assert sd_backend.rocm_runtime_resolvable() is True
         assert sd_backend.accelerator_probe_failure_is_decisive("rocm") is False
 
@@ -2553,12 +2544,8 @@ class TestRocmRuntimePreflight:
 
     def test_the_off_switch_beats_the_preflight(self, monkeypatch):
         """UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK=0 means see the ROCm failure, including this one."""
-        import ctypes
-
         monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK", "0")
-        monkeypatch.setattr(sd_backend.os, "name", "posix")
-        monkeypatch.setattr(sd_backend.sys, "platform", "linux")
-        monkeypatch.setattr(ctypes, "CDLL", self._sonames_that({"libhipblas.so.3"}))
+        self._sonames_that(monkeypatch, {"libhipblas.so.3"})
         assert sd_backend.accelerator_probe_failure_is_decisive("rocm") is False
 
 
@@ -2998,6 +2985,7 @@ def test_a_damaged_cli_beside_a_healthy_server_is_not_a_strike(fake_settings, mo
     from core.inference import diffusion_engine_router as router
     from core.inference import sd_cpp_backend
 
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: True)
     monkeypatch.setattr(router, "_install_allowed", lambda: True)
     monkeypatch.setattr(router, "ensure_sd_server_binary", lambda **_k: "/opt/sd/rocm/sd-server")
     monkeypatch.setattr(router, "ensure_sd_cpp_binary", lambda **_k: "/opt/sd/rocm/sd-cli")
@@ -3051,3 +3039,139 @@ def test_trademark_marks_do_not_split_a_card_name():
     ) == sd_cpp_backend._normalized_card_name("Intel Arc B580")
     # Only the marks go: a model letter R or TM inside a word stays.
     assert sd_cpp_backend._normalized_card_name("Radeon R9") == "radeonr9"
+
+
+def test_an_unlaunchable_rocm_build_without_its_runtime_is_proven_at_once(
+    fake_settings, monkeypatch
+):
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: False)
+    sd_cpp_backend.note_unlaunchable_accelerator_build("/opt/sd/rocm/sd-server")
+    assert _noted_accelerators(fake_settings) == [
+        "rocm"
+    ], "exit 127 with the runtime missing is not ambiguous"
+
+
+def test_the_rocm_runtime_is_probed_in_a_fresh_process(monkeypatch):
+    import subprocess
+
+    from core.inference import sd_cpp_backend
+
+    if sd_cpp_backend.os.name != "posix" or sd_cpp_backend.sys.platform == "darwin":
+        pytest.skip("POSIX non-macOS only")
+    calls = []
+
+    def _run(cmd, **_kw):
+        calls.append(cmd)
+        return types.SimpleNamespace(returncode = 0, stdout = "libhipblas.so.3\nlibrocblas.so.5\n")
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    monkeypatch.setattr(sd_cpp_backend, "_rocm_missing_memo", None)
+    assert sd_cpp_backend.rocm_runtime_missing_sonames() == ["libhipblas.so.3", "librocblas.so.5"]
+    assert sd_cpp_backend.rocm_runtime_resolvable() is False
+    assert len(calls) == 1 and "-I" in calls[0], "one isolated probe, memoised"
+
+
+@pytest.mark.parametrize("ensure", ["ensure_sd_cpp_binary", "ensure_sd_server_binary"])
+def test_an_unloadable_rocm_runtime_installs_vulkan_without_fetching_rocm(
+    fake_settings, monkeypatch, ensure
+):
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: False)
+    monkeypatch.setattr(sd_cpp_backend, "find_sd_cpp_binary", lambda: None)
+    monkeypatch.setattr(sd_cpp_backend, "find_sd_server_binary", lambda: None)
+    installed = []
+
+    class _Installer:
+        DEFAULT_REPO, DEFAULT_TAG = "unslothai/stable-diffusion.cpp", "pinned"
+        _repo = staticmethod(lambda: "unslothai/stable-diffusion.cpp")
+        _pinned_tag = staticmethod(lambda: "pinned")
+
+        @staticmethod
+        def install(**kw):
+            installed.append(kw["accelerator"])
+            return Path("/opt/sd/vulkan/sd-cli")
+
+    monkeypatch.setattr(sd_cpp_backend, "_installer_module", lambda: _Installer)
+    monkeypatch.setattr(sd_cpp_backend, "_install_kwargs", lambda accel: {"accelerator": accel})
+    getattr(sd_cpp_backend, ensure)(allow_install = True, accelerator = "rocm")
+    assert installed == ["vulkan"]
+    assert _noted_accelerators(fake_settings) == ["rocm"]
+
+
+def test_a_loadable_rocm_runtime_still_installs_rocm(fake_settings, monkeypatch):
+    from core.inference import sd_cpp_backend
+
+    for verdict in (True, None):
+        monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda v = verdict: v)
+        assert sd_cpp_backend._skip_unloadable_rocm("rocm") == "rocm"
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: False)
+    assert sd_cpp_backend._skip_unloadable_rocm("vulkan") == "vulkan"
+    assert _noted_accelerators(fake_settings) == []
+
+
+def test_clearing_the_record_reprobes_the_rocm_runtime(fake_settings, monkeypatch):
+    """The clear hint says fix the runtime, then clear: a memoised 'missing' must not re-convict ROCm."""
+    import subprocess
+
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(sd_cpp_backend.os, "name", "posix")
+    monkeypatch.setattr(sd_cpp_backend.sys, "platform", "linux")
+    missing = ["libhipblas.so.3"]
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(returncode = 0, stdout = "\n".join(missing)),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_rocm_missing_memo", None)
+    assert sd_cpp_backend._skip_unloadable_rocm("rocm") == "vulkan"
+    missing.clear()
+    sd_cpp_backend.clear_accelerator_runtime_failures()
+    assert sd_cpp_backend._skip_unloadable_rocm("rocm") == "rocm"
+    assert _noted_accelerators(fake_settings) == []
+
+
+@pytest.mark.parametrize(
+    "ensure, finder",
+    [
+        ("ensure_sd_cpp_binary", "find_sd_cpp_binary"),
+        ("ensure_sd_server_binary", "find_sd_server_binary"),
+    ],
+)
+def test_an_installed_rocm_build_is_kept_without_the_preflight(
+    fake_settings, monkeypatch, ensure, finder
+):
+    """A current ROCm install may carry its runtime beside the binary, which the bare-host probe cannot see."""
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: False)
+    monkeypatch.setattr(sd_cpp_backend, finder, lambda: "/opt/sd/rocm/sd-bin")
+    monkeypatch.setattr(sd_cpp_backend, "_usable_or_discard_managed", lambda _b: True)
+    monkeypatch.setattr(sd_cpp_backend, "_needs_reinstall", lambda _b, accel: accel != "rocm")
+    monkeypatch.setattr(sd_cpp_backend, "_superseded_legacy_server", lambda *_a: False)
+    monkeypatch.setattr(
+        sd_cpp_backend, "_installer_module", lambda: pytest.fail("no install expected")
+    )
+    for allow_install in (True, False):
+        got = getattr(sd_cpp_backend, ensure)(allow_install = allow_install, accelerator = "rocm")
+        assert got == "/opt/sd/rocm/sd-bin"
+    assert _noted_accelerators(fake_settings) == []
+
+
+@pytest.mark.parametrize(
+    "env",
+    [{"UNSLOTH_SD_CPP_REPO": "someone/sd-rocm-bundled"}, {"UNSLOTH_SD_CPP_TAG": "master-999-abc"}],
+)
+def test_an_overridden_release_skips_the_preflight(fake_settings, monkeypatch, env):
+    """A custom repo or tag may bundle the ROCm runtime; its own start check decides."""
+    from core.inference import sd_cpp_backend
+
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: False)
+    assert sd_cpp_backend._skip_unloadable_rocm("rocm") == "rocm"
+    assert _noted_accelerators(fake_settings) == []

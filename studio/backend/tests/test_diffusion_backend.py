@@ -1131,6 +1131,7 @@ def test_speed_auto_compile_reports_that_a_reload_brings_lora_back(
     backend = DiffusionBackend()
     status = _load_into(backend, tmp_path, **load)
     assert (status["supports_lora"], status["lora_after_reload"]) == (True, False)
+    assert status["lora_unavailable_reason"] is None
     for p in ("one", "two", "three"):
         backend.generate(prompt = p)
     status = backend.status()
@@ -1143,13 +1144,60 @@ def test_speed_auto_compile_reports_that_a_reload_brings_lora_back(
     status = _load_into(backend, tmp_path, **load)
     assert (status["supports_lora"], status["lora_after_reload"]) == (True, False)
 
-    # An explicit compiled tier compiles at load: a reload would not help, so no hint.
+    # An explicit compiled tier compiles at load: a reload would not help, so no hint, only the reason.
     backend.unload()
     status = _load_into(backend, tmp_path, speed_mode = "default", **load)
     assert "compiled" in status["speed_optims"]
     assert (status["supports_lora"], status["lora_after_reload"]) == (False, False)
+    assert "Speed" in DiffusionStatusResponse(**status).lora_unavailable_reason
     backend.unload()
     assert backend.status()["lora_after_reload"] is False
+
+
+def test_a_gguf_on_diffusers_applies_loras_unfused(fake_runtime, tmp_path, monkeypatch):
+    backend = _loaded_backend(tmp_path)
+    status = backend.status()
+    assert (status["model_kind"], status["transformer_quant"]) == ("gguf", None)
+    assert status["supports_lora"] is True and status["lora_unavailable_reason"] is None
+    applied: list = []
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_lora_set",
+        lambda self, specs, **kw: (("style", "/loras/style.safetensors", 0.7),),
+    )
+    monkeypatch.setattr(
+        _FakePipe,
+        "load_lora_weights",
+        lambda self, path, adapter_name = None: applied.append((path, adapter_name)),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        _FakePipe,
+        "set_adapters",
+        lambda self, names, adapter_weights = None: applied.append((names, adapter_weights)),
+        raising = False,
+    )
+    monkeypatch.setattr(_FakePipe, "unload_lora_weights", lambda self: None, raising = False)
+    backend.generate(prompt = "a fox", loras = [("style", 0.7)])
+    assert applied == [("/loras/style.safetensors", "style"), (["style"], [0.7])]
+    assert getattr(backend._state.pipe, "_unsloth_loras_baked", False) is False
+    backend.unload()
+
+
+def test_a_load_that_cannot_carry_adapters_reports_why(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion as dmod
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    _load_into(backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image")
+    monkeypatch.setattr(dmod, "_small_host_int8", lambda pipe: True)
+    status = backend.status()
+    assert status["supports_lora"] is False
+    assert "small-host route" in status["lora_unavailable_reason"]
+    with pytest.raises(ValueError) as raised:
+        backend.generate(prompt = "a fox", loras = [("adapter", 1.0)])
+    assert str(raised.value) == status["lora_unavailable_reason"]
+    backend.unload()
 
 
 def test_deferred_speed_stays_off_when_only_an_explicit_tier_may_compile(
@@ -1204,6 +1252,35 @@ def test_deferred_speed_skips_when_lora_requested(fake_runtime, tmp_path, monkey
     assert engaged == []
     backend.generate(prompt = "four")
     assert len(engaged) == 1
+
+
+def test_detailer_passes_neither_count_nor_engage_deferred_speed(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_bg_compile as bg
+
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    engaged: list = []
+
+    def fake_engage(self, state):
+        engaged.append(state.generation_count)
+        state.speed_deferred = False
+
+    monkeypatch.setattr(DiffusionBackend, "_engage_deferred_speed", fake_engage)
+
+    backend = _loaded_backend(
+        tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
+    )
+    backend.generate(prompt = "one")
+    backend.generate(prompt = "two")
+    with bg.auxiliary_pass():
+        for _ in range(3):
+            backend.generate(prompt = "face")
+    assert engaged == [], "a Detailer crop engaged the compile mid-pass"
+    assert backend._state.generation_count == 2
+    backend.generate(prompt = "three")
+    assert engaged == [2]
 
 
 def test_deferred_speed_skips_while_adapter_attached(fake_runtime, tmp_path, monkeypatch):
@@ -2236,7 +2313,7 @@ def test_validate_accepts_custom_local_components(fake_runtime, tmp_path):
 
 
 def test_resolve_local_single_file(tmp_path):
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion_local_files import resolve_local_single_file
 
     d = tmp_path / "solo"
     d.mkdir()
@@ -4688,6 +4765,52 @@ def _run_te_load(monkeypatch, on_load, **run_kwargs):
     backend._load_token = 7
     backend._run_load(_load_token = 7, **run_kwargs)
     return backend
+
+
+def _forced_offline_load(monkeypatch, *, caller_offline):
+    from core.inference import diffusion as dmod
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    _stub_te_run_load(
+        monkeypatch, base = "Qwen/Qwen-Image-2.1", base_bytes = 0, cache = {}, file_bytes = {}
+    )
+    monkeypatch.setattr(dmod, "_pick_cached_while_hub_unreachable", lambda *a, **k: True)
+    prefetched, loaded = [], []
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_prefetch_files",
+        lambda self, *a, **k: prefetched.append(k["local_files_only"]),
+    )
+
+    def load(self, **kw):
+        loaded.append(kw["local_files_only"])
+        if kw["local_files_only"]:
+            raise LocalEntryNotFoundError("transformer shard not in the cache")
+
+    monkeypatch.setattr(DiffusionBackend, "load_pipeline", load)
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(repo_id = "Qwen/Qwen-Image-2.1", base_repo = None)
+    backend._load_token = 7
+    backend._run_load(
+        _load_token = 7,
+        repo_id = "Qwen/Qwen-Image-2.1",
+        model_kind = "pipeline",
+        local_files_only = caller_offline,
+    )
+    return backend, prefetched, loaded
+
+
+def test_a_partly_cached_load_forced_offline_retries_online(monkeypatch):
+    # Manifest cached, a shard missing (interrupted download), Hub down moments ago: the online load still runs.
+    backend, prefetched, loaded = _forced_offline_load(monkeypatch, caller_offline = False)
+    assert prefetched == [True, False] and loaded == [True, False]
+    assert backend.load_progress()["phase"] != "error"
+
+
+def test_a_caller_offline_load_is_not_retried_online(monkeypatch):
+    backend, prefetched, loaded = _forced_offline_load(monkeypatch, caller_offline = True)
+    assert prefetched == [True] and loaded == [True]
+    assert backend.load_progress()["phase"] == "error"
 
 
 def test_run_load_reports_the_pre_cast_encoder_download_as_downloading(monkeypatch):
@@ -8691,6 +8814,11 @@ def test_download_plan_counts_the_hosted_prequant_in_the_required_footprint(monk
     assert plan["required_bytes"] - baseline["required_bytes"] == 6 * GB
     prequant = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/Z-Image-Turbo-FP8")
     assert prequant["checkpoint"] is False
+    assert prequant["hosted_denoiser"] is False
+    selected = [entry for entry in plan["entries"] if entry["checkpoint"]]
+    assert len(selected) == 1
+    assert selected[0]["repo_id"] == "unsloth/Z-Image-GGUF"
+    assert selected[0]["files"] == ["Z-Image-Turbo-Q4_K_M.gguf"]
 
 
 def test_download_plan_counts_a_cached_lower_auto_prequant(monkeypatch):
@@ -10269,6 +10397,9 @@ def test_download_plan_drops_a_repo_the_fallback_root_holds_whole(monkeypatch, t
         },
     )
     monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: base)
+    # The speech-pick revision HEAD is not part of this rule; unstubbed it fails to connect, and that failure would
+    # (correctly) stand for the whole endpoint and skip the stubbed listings below.
+    monkeypatch.setattr("core.inference.diffusion_compat._hub_revision", lambda *a, **k: None)
     _no_dense_prefetch(monkeypatch)
     _all_cached(monkeypatch)
     for name, size in _FLUX_BASE_SIBLINGS_BY_NAME.items():
@@ -11110,7 +11241,7 @@ def test_generate_upscale_refuses_when_the_vae_tiling_does_not_engage(
 def test_quadratic_attention_follows_the_engaged_backend(monkeypatch):
     from core.inference import diffusion as dmod
 
-    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target, *_: True)
     assert dmod._quadratic_attention(object()) is True
     assert dmod._quadratic_attention(object(), None) is True
     assert dmod._quadratic_attention(object(), "native") is True
@@ -11124,7 +11255,7 @@ def test_generate_upscale_with_an_engaged_backend_on_a_math_only_device_runs_til
     from core.inference import diffusion as dmod
 
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
-    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target, *_: True)
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
     with pytest.raises(ValueError, match = "2048x2048"):

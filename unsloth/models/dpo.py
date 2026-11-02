@@ -13,6 +13,7 @@ __all__ = [
     "PatchDPOTrainer",
     "PatchKTOTrainer",
     "fused_preference_loss_enabled",
+    "unsloth_fused_dpo_compute_loss_v1",
     "unsloth_fused_dpo_concatenated_forward",
     "unsloth_fused_orpo_concatenated_forward",
 ]
@@ -512,3 +513,448 @@ def unsloth_fused_orpo_concatenated_forward(
     chosen_logits = mean_logits[:len_chosen]
     rejected_logits = mean_logits[len_chosen:]
     return (chosen_logps, rejected_logps, chosen_logits, rejected_logits, nll_loss)
+
+
+# TRL >= 1.0 DPOTrainer._compute_loss scores [chosen; rejected] from full batch x seq x vocab logits;
+# under UNSLOTH_FUSED_PREFERENCE_LOSS=1 the replacement below reproduces it from hidden states.
+_DPO_V1_INPUT_KEYS = frozenset(
+    (
+        "input_ids",
+        "attention_mask",
+        "completion_mask",
+        "ref_chosen_logps",
+        "ref_rejected_logps",
+    )
+)
+_DPO_V1_LOSS_TYPES = frozenset(
+    (
+        "sigmoid",
+        "hinge",
+        "ipo",
+        "exo_pair",
+        "nca_pair",
+        "robust",
+        "bco_pair",
+        "sppo_hard",
+        "aot",
+        "aot_unpaired",
+        "apo_zero",
+        "apo_down",
+        "discopop",
+        "sft",
+        "sigmoid_norm",
+    )
+)
+
+
+def _metric_rows(n_rows, vocab_size):
+    # One float32 logits chunk plus its log_softmax and exp: keep each near 256 MB.
+    rows = (256 * 1024 * 1024) // max(3 * 4 * vocab_size, 1)
+    return max(1, min(int(rows), max(n_rows, 1)))
+
+
+@torch.no_grad()
+def _entropy_and_argmax(hidden_or_logits, is_hidden, head, transforms, mask):
+    """Per-position entropy and argmax of the (transformed) logits on ``mask`` rows only,
+    one chunk of rows at a time. Positions off ``mask`` are 0 / -1."""
+    import torch.nn.functional as F
+
+    flat = hidden_or_logits.reshape(-1, hidden_or_logits.shape[-1])
+    flat_mask = mask.reshape(-1).to(device = flat.device, dtype = torch.bool)
+    index = flat_mask.nonzero(as_tuple = True)[0]
+    # float32 at least, float64 kept (TRL computes its metrics in the logits dtype).
+    stat_dtype = torch.promote_types(flat.dtype, torch.float32)
+    entropy = torch.zeros(flat_mask.shape[0], dtype = stat_dtype, device = flat.device)
+    argmax = torch.full((flat_mask.shape[0],), -1, dtype = torch.long, device = flat.device)
+    if index.numel() == 0:
+        return entropy.reshape(mask.shape), argmax.reshape(mask.shape)
+    weight, bias = head
+    vocab_size = weight.shape[0] if is_hidden else flat.shape[-1]
+    rows = _metric_rows(index.numel(), vocab_size)
+    scale_multiply, scale_divide, softcapping = transforms
+    with torch.autocast(device_type = flat.device.type, enabled = False):
+        for start in range(0, index.numel(), rows):
+            idx = index[start : start + rows]
+            if is_hidden:
+                chunk = flat[idx].to(device = weight.device, dtype = weight.dtype)
+                logits = F.linear(chunk, weight, bias).to(stat_dtype)
+                if scale_multiply != 0.0:
+                    logits = logits * scale_multiply
+                if scale_divide != 0.0:
+                    logits = logits / scale_divide
+                if softcapping != 0.0:
+                    logits = softcapping * torch.tanh(logits / softcapping)
+            else:
+                logits = flat[idx].to(stat_dtype)
+            logps = torch.log_softmax(logits, dim = -1)
+            entropy[idx] = (-(torch.exp(logps) * logps).sum(-1)).to(entropy.device)
+            argmax[idx] = logits.argmax(dim = -1).to(argmax.device)
+            del logits, logps
+    return entropy.reshape(mask.shape), argmax.reshape(mask.shape)
+
+
+def _dpo_v1_supported(trainer, model, inputs, return_outputs, trl_semantics):
+    if not isinstance(trl_semantics, dict):
+        return False
+    if not fused_preference_loss_enabled() or _zoo_kernels() is None:
+        return False
+    if return_outputs:
+        # prediction_step wants the real logits back in `outputs`.
+        return False
+    if getattr(trainer, "use_liger_kernel", False) or getattr(trainer, "aux_loss_enabled", False):
+        return False
+    if getattr(trainer, "is_encoder_decoder", False) or getattr(trainer, "is_vision_model", False):
+        return False
+    args = getattr(trainer, "args", None)
+    if getattr(args, "padding_free", False):
+        return False
+    if not set(inputs).issubset(_DPO_V1_INPUT_KEYS):
+        return False
+    if "input_ids" not in inputs or "completion_mask" not in inputs:
+        return False
+    # alpha_divergence clamps by the logps dtype, which is float32 here and half in TRL.
+    f_divergence_types = ("reverse_kl", "forward_kl", "js_divergence")
+    if trl_semantics.get("legacy_fdiv", True):
+        # Before TRL 1.10 these scores drop their constants and replace the log ratios in some
+        # losses; only reverse_kl, where the score is the log ratio, is the same everywhere.
+        f_divergence_types = ("reverse_kl",)
+    if getattr(trainer, "f_divergence_type", None) not in f_divergence_types:
+        return False
+    loss_types = getattr(trainer, "loss_types", None)
+    loss_weights = getattr(trainer, "loss_weights", None)
+    if not loss_types or loss_weights is None or len(loss_types) != len(loss_weights):
+        return False
+    if not set(loss_types).issubset(_DPO_V1_LOSS_TYPES):
+        return False
+    return True
+
+
+def _dpo_v1_heads(trainer, model):
+    """(unwrapped, head, transforms) for the policy, and the same for a separate reference model
+    (``None`` when the reference is the policy with its adapter disabled or precomputed)."""
+    unwrapped, head = _output_head(trainer, model)
+    if head is None:
+        return None
+    transforms = _logit_transforms(unwrapped)
+    if transforms is None:
+        return None
+    ref = None
+    if not trainer.precompute_ref_logps:
+        try:
+            from accelerate.utils import is_peft_model
+        except Exception:
+            return None
+        if not (is_peft_model(model) and trainer.ref_model is None):
+            if trainer.ref_model is None:
+                return None
+            ref_unwrapped, ref_head = _output_head(trainer, trainer.ref_model)
+            if ref_head is None:
+                return None
+            ref_transforms = _logit_transforms(ref_unwrapped)
+            if ref_transforms is None:
+                return None
+            ref = (ref_unwrapped, ref_head, ref_transforms)
+    return (unwrapped, head, transforms), ref
+
+
+def unsloth_fused_dpo_compute_loss_v1(
+    trainer,
+    model,
+    inputs,
+    return_outputs = False,
+    trl_semantics = None,
+):
+    """TRL 1.x ``DPOTrainer._compute_loss`` for text-only decoder models, scored from hidden
+    states in row chunks. Returns ``None`` (run TRL's own) whenever the inputs leave that case.
+
+    ``trl_semantics`` is what rl_replacements read from the installed TRL's source: legacy_fdiv
+    (pre-1.10 f-divergence scores), entropy_mean (pre-1.3 entropy metric) and tp_size (1.13+
+    divides the token count by the tensor-parallel size)."""
+    if not _dpo_v1_supported(trainer, model, inputs, return_outputs, trl_semantics):
+        return None
+    heads = _dpo_v1_heads(trainer, model)
+    if heads is None:
+        return None
+    (unwrapped, head, transforms), ref = heads
+
+    import math
+    import torch.nn.functional as F
+    from trl.trainer.dpo_trainer import disable_gradient_checkpointing, use_adapter
+    from accelerate.utils import is_peft_model
+
+    self = trainer
+    mode = "train" if self.model.training else "eval"
+    device = self.accelerator.device
+
+    _non_model_keys = {"completion_mask", "ref_chosen_logps", "ref_rejected_logps"}
+    model_kwargs = {k: v for k, v in inputs.items() if k not in _non_model_keys}
+    model_kwargs["use_cache"] = False
+
+    input_ids = inputs["input_ids"]
+    completion_mask = inputs["completion_mask"]
+    shift_labels = input_ids[..., 1:]
+    shift_completion_mask = completion_mask[..., 1:]
+    score_mask = shift_completion_mask.bool()
+    use_weighting = bool(getattr(self, "use_weighting", False))
+
+    hidden, is_hidden = _forward_hidden_states(model, unwrapped, head[0], (), model_kwargs)
+    shift_hidden = hidden[..., :-1, :]
+    per_token_logps, mean_logits, log_sum_sq_probs = _token_logps(
+        shift_hidden,
+        is_hidden,
+        head,
+        transforms,
+        shift_labels,
+        score_mask,
+        want_lssp = use_weighting,
+    )
+    per_token_entropy, predictions = _entropy_and_argmax(
+        shift_hidden.detach(), is_hidden, head, transforms, score_mask
+    )
+    del hidden, shift_hidden
+
+    if self.ld_alpha is None:
+        logps = per_token_logps.sum(dim = 1)
+    else:
+        comp_pos = shift_completion_mask.cumsum(dim = 1)
+        comp_lens = shift_completion_mask.sum(dim = 1).long()
+        chosen_lens, rejected_lens = comp_lens.chunk(2, dim = 0)
+        shared_lens = torch.minimum(chosen_lens, rejected_lens)
+        shared_lens = torch.cat([shared_lens, shared_lens], dim = 0).to(device)
+        shared_mask = (comp_pos > 0) & (comp_pos <= shared_lens.unsqueeze(1))
+        tail_mask = comp_pos > shared_lens.unsqueeze(1)
+        shared_logps = (per_token_logps * shared_mask).sum(dim = 1)
+        tail_logps = (per_token_logps * tail_mask).sum(dim = 1)
+        logps = shared_logps + self.ld_alpha * tail_logps
+    chosen_logps, rejected_logps = logps.chunk(2, dim = 0)
+
+    if self.precompute_ref_logps:
+        ref_chosen_logps, ref_rejected_logps = (
+            inputs["ref_chosen_logps"],
+            inputs["ref_rejected_logps"],
+        )
+    else:
+        ref_model_kwargs = dict(model_kwargs)
+        with (
+            torch.no_grad(),
+            disable_gradient_checkpointing(self.model, self.args.gradient_checkpointing_kwargs),
+        ):
+            if ref is None:
+                peft_model = self.accelerator.unwrap_model(model)
+                with use_adapter(
+                    peft_model, adapter_name = "ref" if "ref" in peft_model.peft_config else None
+                ):
+                    ref_hidden, ref_is_hidden = _forward_hidden_states(
+                        self.model, unwrapped, head[0], (), ref_model_kwargs
+                    )
+                ref_head, ref_transforms = head, transforms
+            else:
+                ref_unwrapped, ref_head, ref_transforms = ref
+                ref_hidden, ref_is_hidden = _forward_hidden_states(
+                    self.ref_model, ref_unwrapped, ref_head[0], (), ref_model_kwargs
+                )
+            ref_per_token_logps, _, _ = _token_logps(
+                ref_hidden[..., :-1, :],
+                ref_is_hidden,
+                ref_head,
+                ref_transforms,
+                shift_labels,
+                score_mask,
+            )
+            del ref_hidden
+        if self.ld_alpha is None:
+            ref_logps = ref_per_token_logps.sum(dim = 1)
+        else:
+            ref_shared_logps = (ref_per_token_logps * shared_mask).sum(dim = 1)
+            ref_tail_logps = (ref_per_token_logps * tail_mask).sum(dim = 1)
+            ref_logps = ref_shared_logps + self.ld_alpha * ref_tail_logps
+        ref_chosen_logps, ref_rejected_logps = ref_logps.chunk(2, dim = 0)
+
+    chosen_logratios = chosen_logps - ref_chosen_logps
+    rejected_logratios = rejected_logps - ref_rejected_logps
+
+    if self.f_divergence_type == "reverse_kl":
+        chosen_scores = chosen_logratios
+        rejected_scores = rejected_logratios
+    elif self.f_divergence_type == "forward_kl":
+        chosen_scores = 1 - torch.exp(-chosen_logratios)
+        rejected_scores = 1 - torch.exp(-rejected_logratios)
+    else:  # js_divergence
+        chosen_scores = math.log(2) + F.logsigmoid(chosen_logratios)
+        rejected_scores = math.log(2) + F.logsigmoid(rejected_logratios)
+
+    delta_score = chosen_scores - rejected_scores
+
+    loss = 0.0
+    for loss_type, loss_weight in zip(self.loss_types, self.loss_weights):
+        if loss_type == "sigmoid":
+            per_sequence_loss = -F.logsigmoid(self.beta * delta_score)
+        elif loss_type == "hinge":
+            per_sequence_loss = torch.relu(1 - self.beta * delta_score)
+        elif loss_type == "ipo":
+            chosen_mask, rejected_mask = completion_mask.chunk(2, dim = 0)
+            chosen_avg_score = chosen_scores / chosen_mask.sum(dim = 1).clamp(min = 1.0)
+            rejected_avg_score = rejected_scores / rejected_mask.sum(dim = 1).clamp(min = 1.0)
+            ipo_delta = chosen_avg_score - rejected_avg_score
+            per_sequence_loss = (ipo_delta - 1 / (2 * self.beta)) ** 2
+        elif loss_type == "exo_pair":
+            epsilon = torch.tensor(self.label_smoothing, device = device)
+            qw = torch.sigmoid(self.beta * delta_score)
+            log_qw = F.logsigmoid(self.beta * delta_score)
+            log_pw = torch.log1p(-epsilon)
+            ql = torch.sigmoid(-self.beta * delta_score)
+            log_ql = F.logsigmoid(-self.beta * delta_score)
+            log_pl = torch.log(epsilon)
+            per_sequence_loss = qw * (log_qw - log_pw) + ql * (log_ql - log_pl)
+        elif loss_type == "nca_pair":
+            chosen_rewards = self.beta * chosen_logratios
+            rejected_rewards = self.beta * rejected_logratios
+            per_sequence_loss = (
+                -F.logsigmoid(chosen_rewards)
+                - 0.5 * F.logsigmoid(-chosen_rewards)
+                - 0.5 * F.logsigmoid(-rejected_rewards)
+            )
+        elif loss_type == "robust":
+            clean_loss_term = -(1 - self.label_smoothing) * F.logsigmoid(self.beta * delta_score)
+            flipped_loss_term = -self.label_smoothing * F.logsigmoid(-self.beta * delta_score)
+            per_sequence_loss = (clean_loss_term - flipped_loss_term) / (
+                1 - 2 * self.label_smoothing
+            )
+        elif loss_type == "bco_pair":
+            chosen_rewards = self.beta * chosen_logratios
+            rejected_rewards = self.beta * rejected_logratios
+            per_sequence_loss = -F.logsigmoid(chosen_rewards) - F.logsigmoid(-rejected_rewards)
+        elif loss_type == "sppo_hard":
+            winner_margin_error = (chosen_logratios - 0.5 / self.beta) ** 2
+            loser_margin_error = (rejected_logratios + 0.5 / self.beta) ** 2
+            per_sequence_loss = winner_margin_error + loser_margin_error
+        elif loss_type == "aot":
+            logratios = chosen_logps - rejected_logps
+            ref_logratios = ref_chosen_logps - ref_rejected_logps
+            logratios_sorted, _ = torch.sort(logratios, dim = 0)
+            ref_logratios_sorted, _ = torch.sort(ref_logratios, dim = 0)
+            delta = logratios_sorted - ref_logratios_sorted
+            per_sequence_loss = (
+                -F.logsigmoid(self.beta * delta) * (1 - self.label_smoothing)
+                - F.logsigmoid(-self.beta * delta) * self.label_smoothing
+            )
+        elif loss_type == "aot_unpaired":
+            chosen_logratios_sorted, _ = torch.sort(chosen_logratios, dim = 0)
+            rejected_logratios_sorted, _ = torch.sort(rejected_logratios, dim = 0)
+            delta = chosen_logratios_sorted - rejected_logratios_sorted
+            per_sequence_loss = (
+                -F.logsigmoid(self.beta * delta) * (1 - self.label_smoothing)
+                - F.logsigmoid(-self.beta * delta) * self.label_smoothing
+            )
+        elif loss_type == "apo_zero":
+            losses_chosen = 1 - torch.sigmoid(self.beta * chosen_logratios)
+            losses_rejected = torch.sigmoid(self.beta * rejected_logratios)
+            per_sequence_loss = losses_chosen + losses_rejected
+        elif loss_type == "apo_down":
+            losses_chosen = torch.sigmoid(self.beta * chosen_logratios)
+            losses_rejected = 1 - torch.sigmoid(self.beta * (chosen_logratios - rejected_logratios))
+            per_sequence_loss = losses_chosen + losses_rejected
+        elif loss_type == "discopop":
+            logits = delta_score * self.beta
+            log_ratio_modulation = torch.sigmoid(logits / self.args.discopop_tau)
+            logistic_component = -F.logsigmoid(logits)
+            exp_component = torch.exp(-logits)
+            per_sequence_loss = (
+                logistic_component * (1 - log_ratio_modulation)
+                + exp_component * log_ratio_modulation
+            )
+        elif loss_type == "sft":
+            # F.cross_entropy over the chosen completion tokens == -mean of their logps.
+            chosen_token_logps, _ = per_token_logps.chunk(2, dim = 0)
+            chosen_mask, _ = score_mask.chunk(2, dim = 0)
+            batch_loss = -chosen_token_logps[chosen_mask].mean()
+            per_sequence_loss = batch_loss.expand(chosen_token_logps.size(0))
+        else:  # sigmoid_norm
+            chosen_mask, rejected_mask = completion_mask.chunk(2, dim = 0)
+            chosen_avg_score = chosen_scores / chosen_mask.sum(dim = 1).clamp(min = 1.0)
+            rejected_avg_score = rejected_scores / rejected_mask.sum(dim = 1).clamp(min = 1.0)
+            delta = chosen_avg_score - rejected_avg_score
+            per_sequence_loss = -F.logsigmoid(self.beta * delta)
+
+        if use_weighting:
+            completion_lengths = shift_completion_mask.sum(dim = 1).clamp_min(1)
+            with torch.no_grad():
+                # log_sum_sq_probs = logsumexp(2 l) - 2 logsumexp(l), TRL's log_denom.
+                aligned_logps = (per_token_logps - log_sum_sq_probs) * shift_completion_mask
+            mean_logps = aligned_logps.sum(dim = 1) / completion_lengths
+            weights = torch.exp(mean_logps)
+            chosen_weights, rejected_weights = weights.chunk(2, dim = 0)
+            per_sequence_loss *= chosen_weights * rejected_weights
+
+        loss += per_sequence_loss.mean() * loss_weight
+
+    # Metrics, as TRL logs them, from the chunked statistics.
+    mask = shift_completion_mask
+    if trl_semantics.get("entropy_mean", False):
+        entropy = per_token_entropy[mask.bool()].mean()
+        entropy = self.accelerator.gather_for_metrics(entropy).mean().item()
+    else:
+        entropy_sum = (per_token_entropy * mask).sum()
+        total_tokens = mask.sum()
+        entropy_sum = self.accelerator.gather_for_metrics(entropy_sum).sum()
+        total_tokens = self.accelerator.gather_for_metrics(total_tokens).sum()
+        entropy = (entropy_sum / total_tokens).item() if total_tokens > 0 else 0.0
+    self._metrics[mode]["entropy"].append(entropy)
+
+    if mode == "train":
+        num_tokens_in_batch = (
+            self.accelerator.gather_for_metrics(inputs["attention_mask"].sum()).sum().item()
+        )
+        if trl_semantics.get("tp_size", False):
+            num_tokens_in_batch = num_tokens_in_batch // self._tp_size
+        self._total_train_tokens += num_tokens_in_batch
+    self._metrics[mode]["num_tokens"] = [self._total_train_tokens]
+
+    chosen_means, rejected_means = mean_logits.detach().chunk(2, dim = 0)
+    chosen_mask, rejected_mask = shift_completion_mask.chunk(2, dim = 0)
+    total_chosen_logits = chosen_means[chosen_mask.bool()].sum()
+    total_chosen_tokens = chosen_mask.sum()
+    total_rejected_logits = rejected_means[rejected_mask.bool()].sum()
+    total_rejected_tokens = rejected_mask.sum()
+    total_chosen_logits = self.accelerator.gather_for_metrics(total_chosen_logits).sum().item()
+    total_chosen_tokens = self.accelerator.gather_for_metrics(total_chosen_tokens).sum().item()
+    total_rejected_logits = self.accelerator.gather_for_metrics(total_rejected_logits).sum().item()
+    total_rejected_tokens = self.accelerator.gather_for_metrics(total_rejected_tokens).sum().item()
+    avg_chosen_logits = (
+        total_chosen_logits / total_chosen_tokens if total_chosen_tokens > 0 else 0.0
+    )
+    avg_rejected_logits = (
+        total_rejected_logits / total_rejected_tokens if total_rejected_tokens > 0 else 0.0
+    )
+    self._metrics[mode]["logits/chosen"].append(avg_chosen_logits)
+    self._metrics[mode]["logits/rejected"].append(avg_rejected_logits)
+
+    half = len(shift_completion_mask) // 2
+    chosen_bool = shift_completion_mask[:half].bool()
+    chosen_labels = shift_labels[:half]
+    correct_predictions = (predictions[:half] == chosen_labels) & chosen_bool
+    total_tokens = chosen_bool.sum()
+    correct_tokens = correct_predictions.sum()
+    correct_tokens = self.accelerator.gather_for_metrics(correct_tokens)
+    total_tokens = self.accelerator.gather_for_metrics(total_tokens)
+    total_sum = total_tokens.sum()
+    accuracy = (correct_tokens.sum() / total_sum).item() if total_sum > 0 else 0.0
+    self._metrics[mode]["mean_token_accuracy"].append(accuracy)
+
+    chosen_rewards = self.beta * chosen_logratios.detach()
+    rejected_rewards = self.beta * rejected_logratios.detach()
+    agg_chosen_rewards = self.accelerator.gather(chosen_rewards)
+    agg_rejected_rewards = self.accelerator.gather(rejected_rewards)
+    self._metrics[mode]["rewards/chosen"].append(agg_chosen_rewards.mean().item())
+    self._metrics[mode]["rewards/rejected"].append(agg_rejected_rewards.mean().item())
+    reward_accuracies = (chosen_rewards > rejected_rewards).float()
+    agg_reward_accuracies = self.accelerator.gather(reward_accuracies)
+    self._metrics[mode]["rewards/accuracies"].append(agg_reward_accuracies.mean().item())
+    margins = chosen_rewards - rejected_rewards
+    agg_margins = self.accelerator.gather(margins)
+    self._metrics[mode]["rewards/margins"].append(agg_margins.mean().item())
+    self._metrics[mode]["logps/chosen"].append(self.accelerator.gather(chosen_logps).mean().item())
+    self._metrics[mode]["logps/rejected"].append(
+        self.accelerator.gather(rejected_logps).mean().item()
+    )
+    return loss

@@ -1,21 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-S3 dataset loader.
-
-Downloads dataset files (parquet / json / jsonl / csv) from an AWS S3 bucket
-to a local temp directory so the existing local-file dataset path can consume
-them. boto3 is an optional dependency installed on the first S3 load if missing.
-
-Audio keys download too, keeping their prefix-relative layout, and audio values in
-JSON/JSONL/CSV manifests are rewritten to the local paths (``datasets.Audio`` opens path
-strings verbatim). Parquet manifests are not rewritten: their paths must already resolve.
-
-The S3 config dict mirrors ``models.training.S3Config.model_dump()`` (snake_case
-keys): bucket, region, prefix, access_key_id, secret_access_key, use_iam_role.
-Credentials are read once to build the client and never logged or persisted.
-"""
+"""S3 dataset download to a local temp dir; boto3 is optional and installed on first S3 load if
+missing; audio paths in JSON/JSONL/CSV manifests rewritten to local; parquet paths must already
+resolve; credentials never logged or persisted"""
 
 from __future__ import annotations
 
@@ -77,11 +65,7 @@ def boto3_available() -> bool:
 
 
 def _build_s3_client(s3_config: dict):
-    """Create a boto3 S3 client from the config dict.
-
-    Uses explicit access keys when provided, otherwise falls back to the
-    default credential chain (IAM role / instance profile / env / shared creds).
-    """
+    """Explicit keys win; otherwise the default credential chain (IAM role, env, shared files)."""
     require_explicit_credentials({"s3_dataset": s3_config})
     import boto3
 
@@ -118,9 +102,7 @@ def _list_dataset_keys(client, bucket: str, prefix: Optional[str]) -> list[str]:
                 continue
             if key.lower().endswith(SUPPORTED_EXTENSIONS + _AUDIO_EXTENSIONS):
                 keys.append(key)
-    # A Mac sync uploads Finder metadata under the shard's own extension and
-    # _validate_single_extension_family cannot see it, so a key is dropped only when the object it
-    # would describe is in the same listing.
+    # Drop an AppleDouble key only when the object it describes is in the same listing.
     return drop_shadowed_appledouble_names(keys)
 
 

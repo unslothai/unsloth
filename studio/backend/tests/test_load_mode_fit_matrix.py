@@ -54,6 +54,7 @@ class _Stub:
         return self._is_apu
 
     _fits_without_paging = LlamaCppBackend._fits_without_paging
+    _unified_pool_gpu_ids = LlamaCppBackend._unified_pool_gpu_ids
     _FIT_LOAD_MODE = LlamaCppBackend._FIT_LOAD_MODE
 
 

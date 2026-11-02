@@ -1,30 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in model auto-switch for the image and video generation APIs.
-
-The chat twin lives in ``local_model_resolver`` + ``routes.inference``: a ``/v1`` request
-naming a downloaded GGUF loads it before serving. Media had no equivalent, so
-``POST /v1/images/generations`` answered 503 unless someone had already picked a model on the
-Images page, and ``model`` was documented as informational. This resolves that name against
-the downloaded image/video models, drains what the backend is doing, and runs the load the
-picker would run.
-
-Off by default (``media_api_auto_switch_model``), so existing clients see no change.
-
-Only downloaded models resolve, and an unknown name is refused rather than answered by
-whatever is resident. Nothing here starts a download: the media equivalent of the chat
-auto-download setting would let one API key spend tens of GB, which is its own decision.
-
-Both waits are bounded, because Unsloth's secure-mode tunnel caps an origin response near 100
-seconds. Exceeding a bound leaves the work running and asks the caller to retry, the contract
-``begin_load`` already gives the UI.
-
-This module is the orchestration. The pieces it drives live next to it: ``media_model_index``
-resolves a name and recognises the resident model, ``media_locality`` proves a pick is already
-downloaded, ``media_switch_backends`` waits out work a switch would interrupt,
-``media_switch_locks`` serializes switches, and ``media_switch_errors`` holds the refusals.
-"""
+"""Opt-in media auto-switch (media_api_auto_switch_model); never downloads; refuses unknown names;
+waits are bounded near the ~100 s tunnel cap, and exceeding one leaves work running and asks
+retry."""
 
 from __future__ import annotations
 
@@ -89,13 +68,7 @@ _SETUP_GRACE_S = 120.0
 
 
 def _resident_answers_exactly(resident: dict[str, Any], name: str) -> bool:
-    """Whether the resident model is this exact name, needing no discovery at all.
-
-    A scan that failed or skipped an entry would otherwise 404 the very model that is loaded,
-    for as long as the empty index stays cached. Never true for a resident GGUF: a bare repo id
-    means the preferred quant, which this comparison cannot see, so it would serve whichever
-    quant happens to be up.
-    """
+    """Never true for a resident GGUF: a bare repo id means the preferred quant, which this cannot see."""
     return (
         bool(resident.get("loaded"))
         and not resident_is_gguf(resident)
@@ -141,14 +114,20 @@ def _resolve_pick(owner: str, name: str, task: str) -> Optional[MediaModelPick]:
 def _retired_copy_as_base(pick: MediaModelPick) -> MediaModelPick:
     """A downloaded retired FLUX.3 full copy as the load will read it: the pick of the base it copies, which
     ``DiffusionLoadRequest`` redirects it to. So locality is proven for the files that load fetches (the -FP8 mirror's),
-    not the copy's snapshot, and the resident match compares the id the status publishes."""
-    from core.inference.diffusion_families import retired_full_copy_base
+    not the copy's snapshot, and the resident match compares the id the status publishes. A copy complete on disk stays
+    itself, as the load route keeps it (``retired_copy_loads_from_disk``)."""
+    from core.inference.diffusion_families import (
+        retired_copy_loads_from_disk,
+        retired_full_copy_base,
+    )
 
     base = retired_full_copy_base(pick.model_id)
     if base is None:
         return pick
     single = (pick.gguf_filename or "").replace("\\", "/")
     if single and single != "model.safetensors":
+        return pick
+    if retired_copy_loads_from_disk(pick.model_path):
         return pick
     return MediaModelPick(base, base, None, "pipeline")
 
@@ -162,11 +141,7 @@ async def _require_local(
     openai_errors: bool,
     hf_token: Optional[str],
 ) -> None:
-    """Refuse unless *pick* is provably downloaded in full.
-
-    Bounded inside the switch budget, and free of side effects, so a planner that stalls can
-    safely give back whatever locks and gates the caller is holding while it runs.
-    """
+    """Refuses unless the pick is fully downloaded; no side effects, so a stalled planner can drop locks."""
     missing = await bounded(
         asyncio.to_thread(missing_download_bytes, owner, pick, hf_token),
         deadline,
@@ -190,11 +165,8 @@ async def _require_local(
 
 
 async def _acquire_all(locks: list, deadline: float, *, kind: str, openai_errors: bool) -> None:
-    """Take every lock within the budget, releasing what was taken if one cannot be had.
-
-    A request that spent most of its budget resolving would otherwise queue behind another full
-    switch and blow past the response window before any of the inner waits could notice.
-    """
+    """Takes every lock within the budget or releases them all, so a queued switch cannot blow the
+    window."""
     acquired: list = []
     try:
         for held in locks:
@@ -207,13 +179,7 @@ async def _acquire_all(locks: list, deadline: float, *, kind: str, openai_errors
 
 
 def _consume_detached_error(task: "asyncio.Task") -> None:
-    """Retrieve a handed-over task's exception, since the caller may have stopped awaiting it.
-
-    ``_gated_start_load`` refuses on ordinary paths (a backend still busy at the in-gate drain,
-    a cache deletion during it), and once the budget expires nothing awaits the task again. An
-    unretrieved exception is reported by the loop at collection time, so a routine slow switch
-    would log a traceback for a refusal that was handled correctly.
-    """
+    """Retrieves a detached task's exception so a handled refusal is not logged as unretrieved."""
     if task.cancelled():
         return
     exc = task.exception()
@@ -230,16 +196,7 @@ async def _await_loaded(
     kind: str,
     openai_errors: bool,
 ) -> bool:
-    """Poll the background load until the REQUESTED model is resident; False if still going.
-
-    Checked against the pick, not merely "something is loaded": a user load accepted between
-    two polls supersedes this one, and returning success there would generate on the
-    replacement while reporting the requested model.
-
-    The probes are bounded like every other wait here: ``load_progress`` walks cache directories
-    to count bytes, so on a slow or stalled filesystem a single poll can outlive the budget that
-    the check at the bottom of the loop is meant to enforce.
-    """
+    """Checks the requested model, not any load; probes are bounded since load_progress walks cache dirs."""
     probe = functools.partial(bounded, deadline = deadline, kind = kind, openai_errors = openai_errors)
     while True:
         progress = await probe(asyncio.to_thread(backend.load_progress)) or {}
@@ -267,6 +224,7 @@ async def _start_load(
     """Run the load its own route would run, as an API load rather than a user one."""
     partition = expected_partition(pick)
     if owner == DIFFUSION:
+        from core.inference.diffusion_families import retired_copy_loads_from_disk
         from core.inference.media_locality import flux3_seeded_cache_repo, seeded_family_override
         from models.inference import DiffusionLoadRequest
         from routes.inference import load_diffusion_model_gated
@@ -276,6 +234,9 @@ async def _start_load(
         model_path = pick.model_path
         family_override = None
         seeded_repo = None if pick.gguf_filename else flux3_seeded_cache_repo(pick.model_path)
+        # By id only the active cache is searched: a complete retired copy in an earlier Models folder keeps its path.
+        if seeded_repo and retired_copy_loads_from_disk(pick.model_path):
+            seeded_repo = None
         if seeded_repo:
             model_path = seeded_repo
             # The listing named the family from the snapshot's modular_model_index.json; an opaquely named repo id
@@ -324,40 +285,7 @@ async def _gated_start_load(
     hf_token: Optional[str],
     takes_the_gpu: bool,
 ) -> bool:
-    """Run the final checks and start the load, owning the gates and *locks* throughout.
-
-    Returns True when the resident model already answers the request, so the caller can stop.
-
-    Ownership is the point. The caller shields this and may stop waiting on it, and the work
-    from the last drain observation through ``begin_load`` must not be interruptible: engine
-    activation unloads the resident pipeline on its way, so anything admitted before
-    registration would be cut short by a load that no longer has a request behind it.
-
-    Ownership is bounded all the same: a load that has not registered within ``_SETUP_GRACE_S``
-    gives the gates back and carries on without them, since an installer running for minutes
-    behind them costs more than the race they close.
-
-    The gates held are the ones this load could evict behind, entered in a fixed order so two
-    switches cannot deadlock, and one at a time under the budget: a stalled holder elsewhere
-    would otherwise pin this task, and with it the switch lock, indefinitely. Cancelling during
-    that acquisition is free, and the stack releases whatever was already entered; nothing past
-    it may be interrupted.
-
-    Chat's lifecycle gate is the FIRST of them, not the last. Every media generation route is
-    counted on chat's in-flight counter as well as its own, and the middleware takes chat's gate
-    and releases it before it parks on the media one. With the media gates taken first, a request
-    arriving in between passed the still-open chat gate, incremented chat's ``_inflight``, and
-    only then blocked on the held media gate: the in-gate drain discounts it on the media side
-    (``count_pending=False``) but ``chat_busy(count_pending=False)`` still read it as running chat
-    work, and an otherwise idle switch answered 409 without loading anything. Taking chat's gate
-    first parks such a request in ``_note_pending`` instead, where both counters ignore it, and
-    the middleware never holds a media gate while it waits for chat's, so the order is safe.
-
-    A load that does not take the GPU holds its own backend's gate only. It cannot evict chat or
-    the other media backend, so waiting on their gates would let an unrelated chat teardown time
-    the switch out, and holding them would block new chat and video requests for as long as the
-    re-plan and the load registration take.
-    """
+    """Chat gate first, then media gates in fixed order; the load must not be interruptible"""
     from fastapi import HTTPException
     from core.inference import gpu_arbiter, gpu_residency
     from core.inference.media_keepwarm import admission_gate
@@ -417,9 +345,7 @@ async def _gated_start_load(
                 openai_errors = openai_errors,
                 hf_token = hf_token,
             )
-            # Given its own task and waited on with a cap: a first-run native install runs for minutes before
-            # begin_load, and holding both media gates and chat's that long blocks every unrelated request. On expiry
-            # the load keeps going without them.
+            # Own task with a cap: a first-run native install can hold the gates for minutes
             setup = asyncio.ensure_future(_start_load(owner, pick, current_subject, hf_token))
             media_locality._PLANNED_ORDINAL.reset(planned)  # the task copied the context
             setup.add_done_callback(_consume_detached_error)
@@ -464,18 +390,7 @@ async def maybe_auto_switch_media_model(
     hf_token: Optional[str] = None,
     before_switch: Optional[Callable[[MediaModelPick], None]] = None,
 ) -> None:
-    """Load the image or video model a generation request names, if it is not resident.
-
-    No-op when the setting is off or nothing was named, so ``model`` keeps its old
-    informational meaning for every existing client. With the setting on, a name that resolves
-    to no downloaded model is refused: answering it would return one model's output under
-    another's name.
-
-    ``before_switch`` is the caller's last say on the resolved pick, run only when a switch is
-    actually going to happen. It exists so a request the target model cannot serve is refused
-    while the resident one is still loaded, rather than after a multi-minute load; a request the
-    resident model already answers skips it, since the generate route judges that one anyway.
-    """
+    """No-op unless the setting is on; then refuses a name resolving to no downloaded model."""
     from utils.openai_auto_switch_settings import get_media_auto_switch_enabled
 
     if not isinstance(requested_model, str) or not requested_model.strip():

@@ -2602,6 +2602,40 @@ def test_a_downloaded_retired_flux3_copy_switches_to_the_base_it_copies(
     assert len(loads) == 1
 
 
+def test_a_complete_downloaded_retired_flux3_copy_switches_to_itself(
+    catalog, enabled, backend, loads, tmp_path
+):
+    # A copy complete on disk loads from disk (the load route keeps it too): its base's mirror may not be cached, and
+    # offline it could not be fetched, so the switch neither plans nor waits for it.
+    snapshot = tmp_path / "models--unsloth--flux-3-image-klein" / "snapshots" / "abc"
+    for name, data in {
+        "modular_model_index.json": '{"_class_name": "Flux3ModularPipeline"}',
+        "text_encoder/config.json": "{}",
+        "text_encoder/model.safetensors": "x",
+        "text_encoder/processor_config.json": "{}",
+        "text_encoder/tokenizer.json": "{}",
+        "transformer/config.json": "{}",
+        "transformer/diffusion_pytorch_model.safetensors": "x",
+        "vae/config.json": "{}",
+        "vae/diffusion_pytorch_model.safetensors": "x",
+    }.items():
+        (snapshot / name).parent.mkdir(parents = True, exist_ok = True)
+        (snapshot / name).write_text(data)
+    catalog.append(_info("unsloth/flux-3-image-klein", snapshot, task = mas.IMAGE_TASK))
+    planned: list = []
+
+    def _plan(model_path, **kwargs):
+        planned.append(model_path)
+        return {"total_bytes": 5_000}
+
+    backend.download_plan = _plan
+    _switch("unsloth/flux-3-image-klein")
+    assert [(p.model_id, p.model_path) for _owner, p in loads] == [
+        ("unsloth/flux-3-image-klein", str(snapshot))
+    ]
+    assert "black-forest-labs/flux-3-image-klein" not in planned
+
+
 def test_a_retired_flux3_copy_name_reloads_the_mirror_that_replaced_it(
     catalog, enabled, backend, loads, tmp_path
 ):

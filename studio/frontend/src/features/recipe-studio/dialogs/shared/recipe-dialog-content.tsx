@@ -7,8 +7,7 @@ import { DialogContent } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { focusRecipeDialogOnOpen } from "./recipe-dialog-focus";
 
-/** A recipe dialog over the canvas. The overlay is clear, so the shadow is its edge: Firefox's
- *  .scroll-rounded clip would cut it, so an inner viewport scrolls instead of the shadowed box. */
+/** Firefox's .scroll-rounded clip would cut the edge shadow, so an inner viewport scrolls. */
 export function RecipeDialogContent({
   className,
   viewportClassName,
@@ -33,7 +32,7 @@ export function RecipeDialogContent({
       <div
         data-slot="recipe-dialog-viewport"
         className={cn(
-          "grid min-h-0 gap-6 overflow-y-auto overflow-x-hidden scroll-rounded rounded-4xl px-7 pt-8 pb-7",
+          "grid min-h-0 gap-6 overflow-y-auto overflow-x-hidden scroll-rounded rounded-3xl px-7 pt-8 pb-7",
           viewportClassName,
         )}
       >

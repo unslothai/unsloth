@@ -363,8 +363,8 @@ def _converter_dir(print_output = False) -> Path:
     tag = os.environ.get("UNSLOTH_LLAMA_CPP_CONVERTER_TAG", "").strip() or DECISION_LLAMA_CPP_TAG
     stage = None
     try:
-        from unsloth_zoo.llama_cpp import _stage_converter_sources
-        stage = _stage_converter_sources(tag)
+        from unsloth_zoo.llama_cpp import _fork_release_tag_for, _stage_converter_sources
+        stage = _stage_converter_sources(_fork_release_tag_for(tag))
     except Exception as error:
         if print_output:
             print(f"Unsloth: could not stage llama.cpp {tag} converter sources: {error}")

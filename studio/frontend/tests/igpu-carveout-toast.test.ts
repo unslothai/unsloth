@@ -66,7 +66,7 @@ test("the action is styled down from sonner's filled default", () => {
     ?.actionButton;
   assert.equal(classes, IGPU_CARVEOUT_ACTION_CLASS);
   assert.match(classes ?? "", /!justify-self-end/);
-  assert.match(classes ?? "", /!bg-transparent/);
+  assert.match(classes ?? "", /!border-0/);
 });
 
 test("a second load replaces the notice rather than stacking one over it", () => {

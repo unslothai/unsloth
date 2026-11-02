@@ -7,10 +7,12 @@ run on the event loop thread (an unreachable Hub parked the loop and /api/livene
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from types import SimpleNamespace
 
 import routes.inference as inference_routes
+from models.inference import LoadRequest
 
 
 def _backend(active = "unsloth/Qwen3-8B", info = None):
@@ -121,3 +123,85 @@ def test_no_loaded_model_reads_nothing(monkeypatch):
 
     assert not called
     assert response.requires_trust_remote_code is False
+
+
+class _LoadingBackend:
+    def __init__(self):
+        self.active_model_name = None
+        self.models = {}
+        self.loading_models = set()
+
+    def load_model(self, *, config, **_kwargs):
+        self.active_model_name = config.identifier
+        self.models[config.identifier] = {}
+        return True
+
+    def set_parallel_slots(self, _n):
+        pass
+
+
+def test_a_finished_load_resolves_trust_remote_code_off_the_event_loop_thread(
+    monkeypatch, tmp_path
+):
+    model = tmp_path / "tiny"
+    model.mkdir()
+    (model / "config.json").write_text(json.dumps({"model_type": "llama"}))
+    (model / "model.safetensors").write_bytes(b"x")
+    backend = _LoadingBackend()
+    threads: list[int] = []
+
+    def _auto_map(*_args, **_kwargs):
+        threads.append(threading.get_ident())
+        return True
+
+    monkeypatch.setattr(inference_routes, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(inference_routes, "_peek_inference_backend", lambda *a, **k: backend)
+    monkeypatch.setattr(inference_routes, "_auto_map_trust_remote_code", _auto_map)
+
+    async def _load():
+        scope = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)))
+        response = await inference_routes._load_model_impl(
+            LoadRequest(model_path = str(model)), scope, current_subject = "t"
+        )
+        return threading.get_ident(), response
+
+    loop_thread, response = _run(_load())
+
+    assert response.status == "loaded"
+    assert threads and loop_thread not in threads
+    assert response.requires_trust_remote_code is True
+    assert backend.models[response.model]["requires_trust_remote_code"] is True
+
+
+def test_an_already_loaded_model_resolves_trust_remote_code_off_the_event_loop_thread(
+    monkeypatch, tmp_path
+):
+    model = tmp_path / "tiny"
+    model.mkdir()
+    (model / "config.json").write_text(json.dumps({"model_type": "llama"}))
+    (model / "model.safetensors").write_bytes(b"x")
+    backend = _LoadingBackend()
+    threads: list[int] = []
+
+    def _auto_map(*_args, **_kwargs):
+        threads.append(threading.get_ident())
+        return True
+
+    monkeypatch.setattr(inference_routes, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(inference_routes, "_peek_inference_backend", lambda *a, **k: backend)
+    monkeypatch.setattr(inference_routes, "_auto_map_trust_remote_code", _auto_map)
+    scope = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)))
+
+    async def _load():
+        return threading.get_ident(), await inference_routes._load_model_impl(
+            LoadRequest(model_path = str(model)), scope, current_subject = "t"
+        )
+
+    _run(_load())
+    backend.models[backend.active_model_name].pop("requires_trust_remote_code")
+    threads.clear()
+    loop_thread, response = _run(_load())
+
+    assert response.status == "already_loaded"
+    assert threads and loop_thread not in threads
+    assert response.requires_trust_remote_code is True

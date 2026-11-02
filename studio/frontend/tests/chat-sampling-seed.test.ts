@@ -153,6 +153,19 @@ test("a seed reaches only the backends that read one", () => {
   );
 });
 
+test("a model served by vLLM reads the seed", () => {
+  assert.ok(modelReadsSamplingSeed(row({}), "vllm"));
+  assert.ok(!modelReadsSamplingSeed(row({}), "sglang"));
+  assert.ok(!modelReadsSamplingSeed(row({}), "auto"));
+  assert.ok(!modelReadsSamplingSeed(null, "vllm"));
+  assert.ok(
+    !modelReadsSamplingSeed(
+      row({ isAudio: true, hasAudioInput: false }),
+      "vllm",
+    ),
+  );
+});
+
 test("the panel offers the seed only where the backend reads it", () => {
   const sheet = readText("../src/features/chat/chat-settings-sheet.tsx");
   assert.match(sheet, /const showSeed = modelReadsSamplingSeed\(/);
@@ -175,11 +188,11 @@ test("the panel and the request body gate on the same argument", () => {
     );
   assert.deepEqual(
     gateArguments(readText("../src/features/chat/chat-settings-sheet.tsx")),
-    ["activeModel"],
+    ["activeModel, loadedEngine"],
   );
   assert.deepEqual(
     gateArguments(readText("../src/features/chat/api/chat-adapter.ts")),
-    ["activeModel"],
+    ["activeModel, runtime.loadedEngine"],
   );
 });
 
@@ -240,7 +253,10 @@ test("the stored seed is range-checked, not just the keystroke", () => {
 test("the request drops a seed the loaded model cannot use", () => {
   const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   assert.match(adapter, /!modelReadsSamplingSeed\(/);
-  assert.match(adapter, /modelReadsSamplingSeed\(activeModel\)/);
+  assert.match(
+    adapter,
+    /modelReadsSamplingSeed\(activeModel, runtime\.loadedEngine\)/,
+  );
 });
 
 test("the seed belongs to the chat, not the installation", () => {

@@ -317,6 +317,68 @@ def test_the_real_evict_chat_promotes_the_identity_read_before_unload(env, monke
     assert kw._kv_resume["identity"] == IDENTITY and env.files[0].exists()
 
 
+class _FakeMlxOrchestrator:
+    loading_models = ()
+    _managed_engine = None
+    _openai_advertised_id = None
+
+    def __init__(self, tmp_path):
+        self.root, self.active_model_name, self.restores = tmp_path, "unsloth/A-MLX", []
+
+    def _serves_mlx(self):
+        return self.active_model_name is not None
+
+    def save_prompt_cache_for_resume(self, should_abort):
+        directory = self.root / "resume-mlx"
+        directory.mkdir()
+        (directory / "text-0.safetensors").write_bytes(b"kv")
+        slot = {"filename": "text-0.safetensors", "store": "text"}
+        return {"engine": "mlx", "dir": str(directory), "fingerprint": (), "slots": [slot]}
+
+    def restore_prompt_cache_for_resume(self, manifest):
+        self.restores.append(manifest)
+        return 1
+
+    def unload_model(self, name):
+        self.active_model_name = None
+
+    def _shutdown_subprocess(self, timeout):
+        return True
+
+
+@pytest.mark.parametrize("reload", ["mlx", "gguf"])
+def test_an_mlx_chat_keeps_its_prompt_cache_across_the_swap(env, monkeypatch, tmp_path, reload):
+    import core.inference as inference_pkg
+    import core.inference.llama_cpp as llama_cpp_mod
+    import core.inference.model_slots as model_slots
+    import core.inference.orchestrator as orchestrator_mod
+    from hub.services.models import account_access
+
+    orch = _FakeMlxOrchestrator(tmp_path)
+    env.unload_model()
+    env._wait_for_vram_settle = lambda **k: None
+    monkeypatch.setattr(model_slots, "unload_extra_models", lambda **k: None)
+    monkeypatch.setattr(inference_pkg, "get_inference_backend", lambda: orch)
+    monkeypatch.setattr(orchestrator_mod, "peek_inference_backend", lambda: orch)
+    monkeypatch.setattr(llama_cpp_mod, "chat_load_active", lambda: False)
+    monkeypatch.setattr(account_access, "clear_resident", lambda owner: None)
+    monkeypatch.setitem(arb._EVICTORS, arb.CHAT, arb._evict_chat)
+    _load()
+    stash = kw._kv_resume
+    assert stash["identity"] == ("unsloth/A-MLX", None, "unsloth/A-MLX", "mlx")
+    assert orch.active_model_name is None and Path(stash["dir"]).is_dir()
+    assert [(r["event"], r["reason"]) for r in env.rows] == [("unload", "swap")]
+
+    if reload == "mlx":
+        orch.active_model_name = "unsloth/A-MLX"
+        kw.note_model_loaded(orch)
+    else:
+        env.reload()
+        kw.note_model_loaded(env)
+    assert orch.restores == ([stash] if reload == "mlx" else []) and env.restores == []
+    assert kw._kv_resume is None and not Path(stash["dir"]).exists()
+
+
 @pytest.mark.parametrize(
     "case",
     ["generating", "keep_kv_off", "chat_not_resident", "not_gguf", "other_account", "chat_target"],
@@ -491,3 +553,366 @@ def test_load_progress_is_unchanged_without_a_save(client, env, monkeypatch, cas
         "error": None,
         "error_code": None,
     }
+
+
+@pytest.mark.parametrize("saved", [True, False])
+@pytest.mark.parametrize("raises", [False, True])
+def test_the_saving_phase_lasts_until_the_acquire_registers_the_load(
+    env, monkeypatch, saved, raises
+):
+    if not saved:
+        monkeypatch.setattr(env, "save_slots_for_resume", lambda should_abort: None)
+    seen = []
+
+    def acquire():
+        seen.append(cs.saving_progress("image"))
+        arb.acquire_for(arb.DIFFUSION)
+        seen.append(cs.saving_progress("image"))
+        if raises:
+            raise arb.GpuBusyForAnotherAccountError(arb.CHAT, 1)
+
+    try:
+        _load(acquire = acquire)
+    except arb.GpuBusyForAnotherAccountError:
+        assert raises
+    assert seen == [{"phase": cs.SAVING_CHAT_CONTEXT}] * 2
+    assert cs.saving_progress("image") is None and cs._saving == {}
+
+
+def test_load_progress_reads_in_flight_through_the_load_preflight(
+    client,
+    env,
+    monkeypatch,
+    healthy_diffusers,  # noqa: F811
+):
+    import core.inference.diffusion_hub_evidence as evidence
+
+    _cuda(monkeypatch)
+    base, body = _LOADS["image"]
+    assert client.post(f"{base}/load", json = body).status_code == 200
+    assert client.get(f"{base}/load-progress").json()["phase"] == "ready"
+    entered, gate = threading.Event(), threading.Event()
+
+    def _slow_prefetch(*args, **kwargs):
+        entered.set()
+        gate.wait(10)
+
+    monkeypatch.setattr(evidence, "prefetch_for_pick", _slow_prefetch)
+    monkeypatch.setattr(cs, "_preparing", {}, raising = False)
+    answer: dict = {}
+    poster = threading.Thread(
+        target = lambda: answer.setdefault("resp", client.post(f"{base}/load", json = body))
+    )
+    poster.start()
+    try:
+        assert entered.wait(5)
+        during = client.get(f"{base}/load-progress").json()
+    finally:
+        gate.set()
+    poster.join(10)
+    assert during["phase"] in ("downloading", "finalizing", "saving_chat_context")
+    assert answer["resp"].status_code == 200
+    assert getattr(cs, "_preparing", {}) == {}
+    assert client.get(f"{base}/load-progress").json()["phase"] == "ready"
+
+
+@pytest.mark.parametrize("phase", ["evidence", "chat_save"])
+def test_an_unload_during_the_preflight_cancels_the_load(
+    client,
+    env,
+    monkeypatch,
+    healthy_diffusers,
+    phase,  # noqa: F811
+):
+    import core.inference.diffusion_hub_evidence as evidence
+
+    _cuda(monkeypatch)
+    base, body = _LOADS["image"]
+    monkeypatch.setattr(cs, "_preparing", {})
+    gate = threading.Event()
+    if phase == "evidence":
+        entered = threading.Event()
+
+        def _slow_prefetch(*args, **kwargs):
+            entered.set()
+            gate.wait(10)
+
+        monkeypatch.setattr(evidence, "prefetch_for_pick", _slow_prefetch)
+    else:
+        env.gate, entered = gate, env.entered
+    answer: dict = {}
+    poster = threading.Thread(
+        target = lambda: answer.setdefault("resp", client.post(f"{base}/load", json = body))
+    )
+    poster.start()
+    try:
+        assert entered.wait(5)
+        during = client.get(f"{base}/load-progress").json()["phase"]
+        stopped = client.post(f"{base}/unload")
+        after = client.get(f"{base}/load-progress").json()["phase"]
+    finally:
+        gate.set()
+    poster.join(10)
+    assert not poster.is_alive()
+    assert during == ("downloading" if phase == "evidence" else cs.SAVING_CHAT_CONTEXT)
+    assert stopped.status_code == 200
+    assert after not in ("downloading", "finalizing")
+    resp = answer["resp"]
+    assert resp.status_code == 409 and resp.json()["detail"] == "Diffusion load was cancelled."
+    assert client.get(f"{base}/status").json()["loaded"] is False
+    assert env.calls == [] and env.is_loaded and arb._owner == arb.CHAT
+    assert cs._pending is None and kw._kv_resume is None and _no_files(env)
+    assert cs._preparing == {} and cs._saving == {}
+
+
+def test_a_cancelled_preflight_stops_before_the_native_video_unload():
+    import inspect
+
+    import routes.inference as routes
+
+    src = inspect.getsource(routes.load_diffusion_model_gated)
+    assert src.index("raise_if_load_cancelled(") < src.index(
+        "_unload_native_video_sharing_the_sd_cpp_tree"
+    )
+
+
+def test_an_unload_while_the_acquire_waits_never_evicts_chat(
+    client, env, monkeypatch, healthy_diffusers
+):
+    _cuda(monkeypatch)
+    base, body = _LOADS["image"]
+    monkeypatch.setattr(cs, "_preparing", {})
+    entered, gate = threading.Event(), threading.Event()
+    real_acquire_for = arb.acquire_for
+
+    def _waiting_acquire_for(*args, **kwargs):
+        if args and args[0] == arb.DIFFUSION:
+            entered.set()
+            gate.wait(10)
+        return real_acquire_for(*args, **kwargs)
+
+    monkeypatch.setattr(arb, "acquire_for", _waiting_acquire_for)
+    answer: dict = {}
+    poster = threading.Thread(
+        target = lambda: answer.setdefault("resp", client.post(f"{base}/load", json = body))
+    )
+    poster.start()
+    try:
+        assert entered.wait(5)
+        stopped = client.post(f"{base}/unload")
+    finally:
+        gate.set()
+    poster.join(10)
+    assert not poster.is_alive()
+    assert stopped.status_code == 200
+    resp = answer["resp"]
+    assert resp.status_code == 409 and resp.json()["detail"] == "Diffusion load was cancelled."
+    assert client.get(f"{base}/status").json()["loaded"] is False
+    assert (
+        not [c for c in env.calls if c[0] == "evict-chat"]
+        and env.is_loaded
+        and arb._owner == arb.CHAT
+    )
+    assert cs._preparing == {}
+
+
+def _post_in_thread(client, url, body):
+    answer: dict = {}
+    poster = threading.Thread(target = lambda: answer.setdefault("resp", client.post(url, json = body)))
+    poster.start()
+    return poster, answer
+
+
+@pytest.mark.parametrize("media", ["image", "video"])
+def test_a_token_unload_while_the_acquire_waits_stops_that_load_before_the_eviction(
+    client,
+    env,
+    monkeypatch,
+    healthy_diffusers,
+    media,  # noqa: F811
+):
+    from core.inference import media_load_ids
+
+    _cuda(monkeypatch)
+    if media == "video":
+        client = _video_client(monkeypatch)
+    base, body = _LOADS[media]
+    owner = arb.DIFFUSION if media == "image" else arb.VIDEO
+    media_load_ids._reset_for_tests()
+    monkeypatch.setattr(cs, "_preparing", {})
+    entered, gate = threading.Event(), threading.Event()
+    real_acquire_for = arb.acquire_for
+
+    def _waiting_acquire_for(*args, **kwargs):
+        if args and args[0] == owner:
+            entered.set()
+            gate.wait(10)
+        return real_acquire_for(*args, **kwargs)
+
+    monkeypatch.setattr(arb, "acquire_for", _waiting_acquire_for)
+    poster, answer = _post_in_thread(client, f"{base}/load", {**body, "load_token": "t1"})
+    try:
+        assert entered.wait(5)
+        stopped = client.post(f"{base}/unload", json = {"expected_load_id": "t1"})
+    finally:
+        gate.set()
+    poster.join(10)
+    assert not poster.is_alive()
+    assert stopped.json() == {"unloaded": False, "outcome": "cancelled"}
+    resp = answer["resp"]
+    assert resp.status_code == 409 and "cancelled" in resp.json()["detail"]
+    # The resident chat model was never evicted for a load its unload had already cancelled.
+    assert not [c for c in env.calls if c[0] == "evict-chat"]
+    assert env.is_loaded and arb._owner == arb.CHAT
+    assert client.get(f"{base}/status").json()["loaded"] is False
+    assert cs._preparing == {}
+    media_load_ids._reset_for_tests()
+
+
+@pytest.mark.parametrize("media", ["image", "video"])
+def test_a_token_unload_leaves_a_preparing_load_with_another_token_alone(
+    client,
+    env,
+    monkeypatch,
+    healthy_diffusers,
+    media,  # noqa: F811
+):
+    from core.inference import media_load_ids
+
+    _cuda(monkeypatch)
+    if media == "video":
+        client = _video_client(monkeypatch)
+    base, body = _LOADS[media]
+    owner = arb.DIFFUSION if media == "image" else arb.VIDEO
+    media_load_ids._reset_for_tests()
+    monkeypatch.setattr(cs, "_preparing", {})
+    entered, gate = threading.Event(), threading.Event()
+    real_acquire_for = arb.acquire_for
+
+    def _waiting_acquire_for(*args, **kwargs):
+        if args and args[0] == owner:
+            entered.set()
+            gate.wait(10)
+        return real_acquire_for(*args, **kwargs)
+
+    monkeypatch.setattr(arb, "acquire_for", _waiting_acquire_for)
+    poster, answer = _post_in_thread(client, f"{base}/load", {**body, "load_token": "t1"})
+    try:
+        assert entered.wait(5)
+        other = client.post(f"{base}/unload", json = {"expected_load_id": "t2"})
+    finally:
+        gate.set()
+    poster.join(10)
+    assert not poster.is_alive()
+    assert other.json() == {"unloaded": False, "outcome": "cancelled"}
+    assert answer["resp"].status_code == 200
+    assert [c[0] for c in env.calls] == ["evict-chat"]
+    assert media_load_ids._current["diffusion" if media == "image" else "video"].token == "t1"
+    media_load_ids._reset_for_tests()
+
+
+def test_a_token_unload_during_the_image_preflight_stops_it_before_the_engine_switch(
+    client,
+    env,
+    monkeypatch,
+    healthy_diffusers,  # noqa: F811
+):
+    import core.inference.diffusion_engine_router as router
+    import core.inference.diffusion_hub_evidence as evidence
+    from core.inference import media_load_ids
+
+    _cuda(monkeypatch)
+    base, body = _LOADS["image"]
+    media_load_ids._reset_for_tests()
+    monkeypatch.setattr(cs, "_preparing", {})
+    entered, gate = threading.Event(), threading.Event()
+
+    def _slow_prefetch(*args, **kwargs):
+        entered.set()
+        gate.wait(10)
+
+    switched = []
+    real_select = router.select_and_activate_engine
+
+    def _select(*args, **kwargs):
+        switched.append(True)
+        return real_select(*args, **kwargs)
+
+    monkeypatch.setattr(evidence, "prefetch_for_pick", _slow_prefetch)
+    monkeypatch.setattr(router, "select_and_activate_engine", _select)
+    poster, answer = _post_in_thread(client, f"{base}/load", {**body, "load_token": "t1"})
+    try:
+        assert entered.wait(5)
+        stopped = client.post(f"{base}/unload", json = {"expected_load_id": "t1"})
+    finally:
+        gate.set()
+    poster.join(10)
+    assert not poster.is_alive()
+    assert stopped.json() == {"unloaded": False, "outcome": "cancelled"}
+    assert answer["resp"].status_code == 409
+    assert switched == [] and not [c for c in env.calls if c[0] == "evict-chat"]
+    assert cs._preparing == {}
+    media_load_ids._reset_for_tests()
+
+
+def test_an_engine_switch_waits_for_a_cancel_or_refuses_after_it(monkeypatch):
+    import routes.inference as routes
+
+    calls = []
+    with cs.preparing_load("image", "t1") as preflight:
+        assert (
+            routes._activate_unless_cancelled(preflight, None, lambda: calls.append(1) or "e")
+            == "e"
+        )
+        cs.cancel_preparing_loads("image", current_account_id(), load_token = "t2")
+        assert not preflight.cancelled
+        cs.cancel_preparing_loads("image", current_account_id(), load_token = "t1")
+        assert preflight.cancelled
+
+        def _switching():
+            from core.inference.diffusion_engine_router import before_engine_switch
+            before_engine_switch.get()()
+            calls.append(2)
+
+        with pytest.raises(RuntimeError, match = "cancelled"):
+            routes._activate_unless_cancelled(preflight, None, _switching)
+    assert calls == [1]
+
+
+def test_a_cancelled_video_preflight_never_unloads_the_image_model():
+    with cs.preparing_load("video", "t1"):
+        cs.cancel_preparing_loads("video", current_account_id(), load_token = "t1")
+        unloaded = []
+        with pytest.raises(RuntimeError, match = "Video load was cancelled"):
+            cs.run_unless_load_cancelled("Video load was cancelled.", unloaded.append, 1)
+    assert unloaded == []
+
+
+def test_a_token_unload_names_the_engine_the_preflight_settled_on(client, env, monkeypatch):
+    # The named POST finishes switching engines while its preflight is being cancelled: the unload
+    # must check the load on the engine it registered on, not the one active before the cancel.
+    import types
+
+    import core.inference.diffusion_engine_router as router
+    from core.inference import media_load_ids
+
+    old = types.SimpleNamespace(name = "old", unload = None)
+    new = types.SimpleNamespace(name = "new", unload = None)
+    active = {"engine": old}
+    monkeypatch.setattr(router, "get_active_diffusion_engine", lambda: active["engine"])
+
+    def _cancel(*args, **kwargs):
+        active["engine"] = new  # the switch completed and the load registered before the cancel ran
+        return 0
+
+    monkeypatch.setattr(cs, "cancel_preparing_loads", _cancel)
+    seen = []
+
+    def _unload_if_current(modality, engine, token, unload):
+        seen.append(engine.name)
+        return "superseded", None
+
+    monkeypatch.setattr(media_load_ids, "unload_if_current", _unload_if_current)
+    resp = client.post(f"{_LOADS['image'][0]}/unload", json = {"expected_load_id": "t1"})
+    assert resp.status_code == 200, resp.text
+    assert seen == ["new"]

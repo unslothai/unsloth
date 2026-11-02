@@ -33,10 +33,10 @@ test("every composer send arrow uses the shared sizing class", () => {
   for (const arrow of arrows) assert.match(arrow, /unsloth-send-icon/);
 });
 
-test("every isolated composer stop square keeps its size-3 glyph", () => {
+test("every isolated composer stop square draws at size-3.5, about a third of its circle", () => {
   const stops = componentSources
-    .flatMap((source) => tags(source, "SquareIcon"))
-    .filter((tag) => /\bsize-3\b/.test(tag));
+    .flatMap((source) => tags(source, "HugeiconsIcon"))
+    .filter((tag) => /icon=\{StopIcon\}/.test(tag) && /\bsize-3\.5(?![\w.-])/.test(tag));
 
   assert.equal(stops.length, 6);
 });

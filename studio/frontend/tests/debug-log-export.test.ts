@@ -190,14 +190,17 @@ function makeWorld(options: {
     "@/features/hub": { formatBytes: (bytes: number) => `${bytes} B` },
     "@/i18n": { useT: () => t },
     "@/lib/api-base": apiStubs["@/lib/api-base"],
-    "@/lib/chevron-icons": { ChevronDownDoubleStandardIcon: [] },
     "@/lib/strip-ansi": { stripAnsi: (value: string) => value },
     "@/lib/toast": { toast },
     "@/lib/utils": {
       cn: (...parts: unknown[]) => parts.filter(Boolean).join(" "),
     },
     "@hugeicons/core-free-icons": new Proxy({}, { get: () => ({}) }),
+    "@/lib/folder-icons": new Proxy({}, { get: () => ({}) }),
     "@hugeicons/react": { HugeiconsIcon: () => null },
+    "@/lib/tick-icon": { Tick02Icon: {} },
+    "@/lib/copy-icon": { Copy01Icon: {} },
+    "lucide-react": { ArrowDownIcon: () => null },
     "../api/debug-logs": api,
     "../components/settings-row": {
       SettingsRow: (props: { label: string; children?: React.ReactNode }) =>

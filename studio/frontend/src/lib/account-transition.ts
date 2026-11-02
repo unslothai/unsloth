@@ -6,20 +6,51 @@ import { USER_STOPPED_KEY } from "../hooks/server-stop-intent.ts";
 import { clearNativeBrowsingData } from "./native-browser-clear.ts";
 
 export const BROWSER_ACCOUNT_KEY = "unsloth.browser-account.v1";
-/** Written before a switch publishes new tokens, so peer tabs stop sending requests until the
- * marker lands and they reload. */
+/** Written before a switch publishes new tokens, so peer tabs stop sending until the marker lands. */
 export const BROWSER_ACCOUNT_FENCE_KEY = "unsloth.browser-account.fence.v1";
-/** A peer tab holds the marker for at most this long before reloading on its own. */
 export const ACCOUNT_FENCE_TIMEOUT_MS = 10_000;
 
 let transitionPending = false;
-/** True in a peer tab between another tab's fence and its marker: requests must not go out. */
 export function accountTransitionPending(): boolean {
   return transitionPending;
 }
 export const OWNER_BROWSER_ACCOUNT = "unsloth";
 
 export const APPEARANCE_KEY = "unsloth_appearance_customization";
+
+const CHAT_PREFERENCES_KEY = "unsloth_chat_preferences";
+// Only chat UI preferences survive here, never credentials, drafts or chat content.
+const ACCOUNT_CHAT_PREFERENCES_PREFIX = "unsloth.account-chat-preferences.v1:";
+
+function chatPreferencesKey(account: MarkedAccount): string {
+  const identity = isOwnerAccount(account)
+    ? ["id", "owner"]
+    : account.accountId
+      ? ["id", account.accountId]
+      : ["username", account.username];
+  return ACCOUNT_CHAT_PREFERENCES_PREFIX + JSON.stringify(identity);
+}
+
+/** Keep the active key compatible with the preference store, migrations and Reset preferences. */
+function switchChatPreferences(
+  storage: Storage,
+  previous: MarkedAccount,
+  next: MarkedAccount,
+): void {
+  try {
+    const current = storage.getItem(CHAT_PREFERENCES_KEY);
+    const saved = storage.getItem(chatPreferencesKey(next));
+    if (current === null) {
+      if (storage.getItem(chatPreferencesKey(previous)) !== null)
+        storage.removeItem(chatPreferencesKey(previous));
+    } else storage.setItem(chatPreferencesKey(previous), current);
+    if (saved === null && current !== null) storage.removeItem(CHAT_PREFERENCES_KEY);
+    else if (saved !== null) storage.setItem(CHAT_PREFERENCES_KEY, saved);
+  } catch {
+    // Optional, so a full storage never fails a sign-in; defaults beat the previous account's.
+    storage.removeItem(CHAT_PREFERENCES_KEY);
+  }
+}
 
 /** Browser chrome only. Never add credentials, content, model choices or profile data. */
 export const ACCOUNT_CHROME_KEYS = new Set([
@@ -36,13 +67,19 @@ export const ACCOUNT_CHROME_KEYS = new Set([
   "unsloth_loaded_models_collapsed",
   "unsloth_loaded_models_dismissed",
   "unsloth-rag-preview-width",
+  "unsloth_window_material",
 ]);
 export const ACCOUNT_CHROME_PREFIXES = [
   "unsloth_web_update_dismissed:",
 ] as const;
+/** Per-account bookkeeping records kept across sign-ins; never content, credentials or cross-account data. */
+export const ACCOUNT_KEYED_PREFIXES = [
+  "unsloth_scheduled_tasks_seen:",
+  "unsloth_scheduled_tasks_unseen:",
+] as const;
 /** Per-tab flags about the browser session, not the account. Never add content. */
 export const ACCOUNT_SESSION_CHROME_KEYS = new Set([USER_STOPPED_KEY]);
-/** Purged on an account change. Durable stores are named per account (`accountDatabaseName`). */
+/** Purged on an account change; durable stores are named per account (`accountDatabaseName`). */
 export const ACCOUNT_DATABASES = [
   // Legacy store: its one-shot import would push these threads into the next account.
   "unsloth-chat",
@@ -57,7 +94,7 @@ export type BrowserAccount = { username: string; accountId?: string | null };
 
 const ACCOUNT_ID_MARKER_PREFIX = "account:";
 
-/** Must match what `auth/storage.py` stores: casefolded `[a-z0-9_-]{3,32}`. */
+/** Must match `auth/storage.py`: casefolded `[a-z0-9_-]{3,32}`. */
 export function normalizeAccountUsername(username: string): string {
   return username.trim().toLowerCase();
 }
@@ -72,9 +109,8 @@ export function browserAccountMarker(account: BrowserAccount | string): string {
     : username;
 }
 
-/** The owner keeps the historical name; a managed account gets its own store. */
-export function accountDatabaseName(
-  name: string,
+/** The account as `owner` or a managed account's id, never a reusable username alone where the id is known. */
+export function browserAccountKey(
   storage: Pick<Storage, "getItem"> | null = typeof window === "undefined"
     ? null
     : window.localStorage,
@@ -82,13 +118,27 @@ export function accountDatabaseName(
   const account = parseAccountMarker(
     storage?.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT,
   );
-  const owner =
-    account.accountId === "owner" ||
-    (!account.accountId && account.username === OWNER_BROWSER_ACCOUNT);
-  return owner ? name : `${name}:${account.accountId ?? account.username}`;
+  return isOwnerAccount(account) ? "owner" : (account.accountId ?? account.username);
+}
+
+/** The owner keeps the historical name; a managed account gets its own store. */
+export function accountDatabaseName(
+  name: string,
+  storage: Pick<Storage, "getItem"> | null = typeof window === "undefined"
+    ? null
+    : window.localStorage,
+): string {
+  const account = browserAccountKey(storage);
+  return account === "owner" ? name : `${name}:${account}`;
 }
 
 type MarkedAccount = { accountId: string | null; username: string };
+function isOwnerAccount(account: MarkedAccount): boolean {
+  return (
+    account.accountId === "owner" ||
+    (!account.accountId && account.username === OWNER_BROWSER_ACCOUNT)
+  );
+}
 function parseAccountMarker(marker: string): MarkedAccount {
   const legacy = {
     accountId: null,
@@ -104,7 +154,7 @@ function parseAccountMarker(marker: string): MarkedAccount {
   };
 }
 
-/** May the browser data carry over? The username fallback cannot tell a recreated account apart. */
+/** The username fallback cannot tell a recreated account apart. */
 function isSameAccount(previous: MarkedAccount, next: MarkedAccount): boolean {
   if (previous.accountId && next.accountId)
     return previous.accountId === next.accountId;
@@ -124,7 +174,7 @@ const IMPORTED_FONT_SELECTIONS = [
   "codeFont",
 ] as const;
 
-/** An imported font is uploaded file bytes, not chrome: strip it and any selection naming it. */
+/** An imported font is uploaded file bytes, not chrome. */
 function purgeImportedFonts(storage: Storage): void {
   const raw = storage.getItem(APPEARANCE_KEY);
   if (!raw?.includes("importedFonts")) return;
@@ -135,7 +185,6 @@ function purgeImportedFonts(storage: Storage): void {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    // Unreadable, so worthless to the store, and it still holds font bytes.
     storage.removeItem(APPEARANCE_KEY);
     return;
   }
@@ -185,31 +234,24 @@ function deleteAccountDatabase(
   });
 }
 
-/** The desktop browser panel's cookies live outside this origin's storage. A shell without the
- * panel answers neither command, so only a failed clear fails the switch. */
-
-
-/** Run before publishing new tokens; the marker is published last so other tabs reload only
- * once the new session is ready. */
+/** Run before publishing tokens: only a failed clear fails the switch; the marker is published last. */
 export async function transitionBrowserAccount(
   account: BrowserAccount | string,
   postAuthRoute: string,
   commitSession: () => void,
   browser: AccountTransitionBrowser = window,
-  // The browser's own clear: it closes the open pages first and keeps them closed while it runs,
-  // so none writes the previous account's data back.
+  // Closes the open pages first and keeps them closed, so none writes old data back.
   clearSiteData: () => Promise<void> = clearNativeBrowsingData,
 ): Promise<boolean> {
   const marker = browserAccountMarker(account);
   const storage = browser.localStorage;
-  const changed = !isSameAccount(
-    parseAccountMarker(
-      storage.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT,
-    ),
-    parseAccountMarker(marker),
+  const previous = parseAccountMarker(
+    storage.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT,
   );
+  const next = parseAccountMarker(marker);
+  const changed = !isSameAccount(previous, next);
   if (changed) {
-    // First, as it can fail: a failure then leaves this account's data in place, not half purged.
+    // First, since it can fail: a failure then leaves this account's data intact.
     await clearSiteData();
     const keys = Array.from({ length: storage.length }, (_, index) =>
       storage.key(index),
@@ -218,10 +260,13 @@ export async function transitionBrowserAccount(
       if (
         !key ||
         key === BROWSER_ACCOUNT_KEY ||
+        key === CHAT_PREFERENCES_KEY ||
+        key.startsWith(ACCOUNT_CHAT_PREFERENCES_PREFIX) ||
         ACCOUNT_CHROME_KEYS.has(key) ||
-        // About this machine's install, not the account signed in to it.
+        // About this machine's install, not the account.
         key === RUNTIME_REPAIR_KEY ||
-        ACCOUNT_CHROME_PREFIXES.some((prefix) => key.startsWith(prefix))
+        ACCOUNT_CHROME_PREFIXES.some((prefix) => key.startsWith(prefix)) ||
+        ACCOUNT_KEYED_PREFIXES.some((prefix) => key.startsWith(prefix))
       )
         continue;
       if (key.startsWith("unsloth") || key.startsWith("chat-draft"))
@@ -235,12 +280,13 @@ export async function transitionBrowserAccount(
       ),
     );
   }
-  // Fence first: peers see it before the tokens, so nothing of the previous account goes out
-  // under the new credentials while their reload is pending.
+  // Fence before tokens so peers send nothing under the new credentials.
   if (changed) storage.setItem(BROWSER_ACCOUNT_FENCE_KEY, marker);
   commitSession();
   if (storage.getItem(BROWSER_ACCOUNT_KEY) !== marker)
     storage.setItem(BROWSER_ACCOUNT_KEY, marker);
+  // After the marker: until then the active preferences stay the account it names, so a retry is safe.
+  if (changed) switchChatPreferences(storage, previous, next);
   if (changed) storage.removeItem(BROWSER_ACCOUNT_FENCE_KEY);
   if (changed) browser.location.replace(postAuthRoute);
   return changed;

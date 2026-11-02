@@ -71,7 +71,7 @@ def test_xformers_eager_choice_is_unchanged(monkeypatch):
 
 def test_rerouted_xformers_keeps_the_fp32_downcast(monkeypatch):
     # DoRA fp32 Q/K/V on a GPU whose xformers op rejects fp32: the SDPA reroute must downcast like xformers.
-    monkeypatch.setattr(ad, "_XFORMERS_FP32_UNSUPPORTED", True)
+    monkeypatch.setattr(ad, "_xformers_rejects_fp32", lambda device: True)
     monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", True)
     torch._dynamo.reset()
     compiled = torch.compile(_run(ad.XFORMERS), fullgraph = True, backend = "eager", dynamic = True)

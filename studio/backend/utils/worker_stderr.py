@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import atexit
 import collections
+import functools
 import os
 import re
 import sys
@@ -14,7 +15,6 @@ import tempfile
 import threading
 
 # `logging` is deliberately NOT imported here; see _prefix_formatter_class().
-
 __all__ = [
     "LOG_RECORD_CONTINUATION_PREFIX",
     "LOG_RECORD_START_MARK",
@@ -26,6 +26,7 @@ __all__ = [
     "install_worker_stderr_mirror",
     "mark_log_record_continuations",
     "stderr_tail_from_bytes",
+    "stop_worker_stderr_mirror",
     "unexpected_exit_message",
 ]
 
@@ -65,12 +66,6 @@ def _utf8_edge_bounds(data: bytes, *, trim_end: bool = True) -> "tuple[int, int]
                 end -= back
             break
     return start, end
-
-
-def _without_partial_utf8_edges(data: bytes, *, trim_end: bool = True) -> bytes:
-    """``trim_end`` is off at EOF, where a trailing 0xC0+ byte is a complete cp1252 character, not a severed one."""
-    start, end = _utf8_edge_bounds(data, trim_end = trim_end)
-    return data[start:end]
 
 
 def decode_worker_stderr(data: bytes, *, ends_at_eof: bool = True) -> str:
@@ -188,8 +183,7 @@ def _is_crash_marker(line: str) -> bool:
 
 
 def first_crash_line(text: str) -> str:
-    """The reason in the terminal crash block, else empty (a SIGKILL leaves the exit code alone)."""
-    # Marked log records (a recovered `logger.exception`) are never the cause.
+    """Marked log records (a recovered logger.exception) are never the cause, so skip them."""
     lines = [
         line.strip()
         for line in (text or "").splitlines()
@@ -393,10 +387,7 @@ def _compact_sink(
     reader = None,
     emit = None,
 ) -> int:
-    """Rewrite *sink* to roughly its last *cap_bytes* bytes.
-
-    fd 2 is ``O_APPEND`` on it, so a plain read-rewrite-truncate loses concurrent appends.
-    """
+    """Trims to about the last cap_bytes; fd 2 is O_APPEND, so read-rewrite-truncate would lose appends."""
     if reader is not None and emit is not None:
         while True:
             try:
@@ -532,16 +523,41 @@ def _tail_sink_to_stderr(
         pass
 
 
+def _is_windows_console(stream) -> bool:
+    """A console stream calls WriteConsoleW on whatever fd 2 is now, so on the sink every write fails with WinError 6 (#15583)."""
+    buffer = getattr(stream, "buffer", None)
+    # Under -u / PYTHONUNBUFFERED the buffer IS the raw console object.
+    raw = getattr(buffer, "raw", buffer)
+    return type(raw).__name__ == "_WindowsConsoleIO"
+
+
+def _rebind_console_stderr():
+    console = sys.stderr
+    if not _is_windows_console(console):
+        return None
+    try:
+        replacement = open(
+            2,
+            "w",
+            buffering = 1,
+            encoding = "utf-8",
+            errors = "backslashreplace",
+            closefd = False,
+        )
+    except OSError:
+        return None
+    sys.stderr = replacement
+    return console, replacement
+
+
 def _stop_mirror(
     inherited_fd: int,
     pump: threading.Thread,
     stop = None,
     relay = None,
+    rebound = None,
 ) -> None:
-    """The pump must be a daemon or ``BaseProcess._bootstrap`` waits on it for ever.
-
-    ``multiprocessing`` prints the traceback before atexit, so draining here still catches it.
-    """
+    """The pump must be a daemon or BaseProcess._bootstrap waits forever; multiprocessing prints tracebacks before atexit, so drain here still catches them."""
     try:
         sys.stderr.flush()
     except Exception:
@@ -550,6 +566,9 @@ def _stop_mirror(
         os.dup2(inherited_fd, 2)
     except OSError:
         pass
+    else:
+        if rebound is not None and sys.stderr is rebound[1]:
+            sys.stderr = rebound[0]
     if stop is not None:
         # fd 2 no longer points at the sink, so the next empty read is the end, not a pause.
         stop.set()
@@ -564,6 +583,9 @@ def _stop_mirror(
         os.close(inherited_fd)
     except OSError:
         pass
+
+
+_MIRROR_STOPPER = None
 
 
 def install_worker_stderr_mirror(
@@ -609,6 +631,7 @@ def install_worker_stderr_mirror(
         sink.close()
         return False
     os.close(writer_fd)
+    rebound = _rebind_console_stderr()
     stop = threading.Event()
     relay = _MirrorRelay(inherited, _MIRROR_RELAY_CHUNKS)
     pump = threading.Thread(
@@ -618,13 +641,23 @@ def install_worker_stderr_mirror(
         daemon = True,
     )
     pump.start()
-    atexit.register(_stop_mirror, inherited, pump, stop, relay)
+    global _MIRROR_STOPPER
+    _MIRROR_STOPPER = functools.partial(_stop_mirror, inherited, pump, stop, relay, rebound)
+    atexit.register(_MIRROR_STOPPER)
     return True
 
 
+def stop_worker_stderr_mirror() -> None:
+    """The atexit drain, for a worker leaving through os._exit."""
+    global _MIRROR_STOPPER
+    stopper, _MIRROR_STOPPER = _MIRROR_STOPPER, None
+    if stopper is not None:
+        atexit.unregister(stopper)
+        stopper()
+
+
 _PREFIX_FORMATTER_CLASS = None
-# On the formatter, not the class: built lazily, so two threads racing the first call make two
-# classes, `isinstance` is false across the pair, and the handler gets wrapped twice.
+# Marked on the formatter, not via a class: a first-call race builds two classes and double-wraps.
 _MARKS_CONTINUATIONS = "_unsloth_marks_continuations"
 
 
@@ -633,11 +666,7 @@ def _formatter_marks_continuations(formatter) -> bool:
 
 
 def _prefix_formatter_class():
-    """Built on first use, so importing this module does not import ``logging``.
-
-    Every spawned worker imports this module before its entrypoint runs and a fresh spawn
-    child has no ``logging`` yet, which was 4.2ms of the 5.3ms this file cost each spawn.
-    """
+    """Built lazily: importing this module in every spawned worker must not import logging."""
     global _PREFIX_FORMATTER_CLASS
     if _PREFIX_FORMATTER_CLASS is not None:
         return _PREFIX_FORMATTER_CLASS

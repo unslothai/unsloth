@@ -69,7 +69,7 @@ export function WorkingFolderPicker({
       <p className="text-ui-13 text-muted-foreground">
         Where code and file tools run for every chat in this project.
       </p>
-      <div className="flex min-w-0 items-center gap-2 rounded-[16px] border border-border px-3 py-2">
+      <div className="flex min-w-0 items-center gap-2 rounded-full border border-border py-2 pr-2 pl-5">
         <span
           className="min-w-0 flex-1 truncate text-sm"
           title={value ?? undefined}
@@ -81,6 +81,7 @@ export function WorkingFolderPicker({
             type="button"
             variant="ghost"
             size="sm"
+            className="shrink-0"
             disabled={disabled || picking}
             onClick={() => void change(false)}
           >
@@ -89,12 +90,13 @@ export function WorkingFolderPicker({
         )}
         <Button
           type="button"
-          variant="outline"
+          variant="dark"
           size="sm"
+          className="shrink-0"
           disabled={!available || disabled || picking}
           onClick={() => void change(true)}
         >
-          {picking ? "Choosing…" : value ? "Change…" : "Choose folder…"}
+          {picking ? "Choosing…" : value ? "Change folder" : "Choose folder"}
         </Button>
       </div>
       {(needsReselect || !available) && (

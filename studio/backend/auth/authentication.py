@@ -50,12 +50,7 @@ def is_keyless(credentials: Optional[HTTPAuthorizationCredentials]) -> bool:
 
 
 def _names_a_session(token: str) -> bool:
-    """Whether this bearer claims an Unsloth sign-in this install actually knows. A session token stays
-    authoritative even under keyless API access: letting an expired one through would leave the app running as
-    the admin instead of prompting for a sign-in. The subject is confirmed against storage because the claim
-    itself is unverified here, so a token merely shaped like a JWT -- which is a legal value for the ``api_key``
-    the OpenAI SDKs always send -- is treated as the credential it is.
-    """
+    """Subject is checked in storage (claim unverified). Expired session must not fall to keyless admin."""
     subject = _decode_subject_without_verification(token)
     return subject is not None and get_user_and_secret(subject) is not None
 
@@ -66,10 +61,7 @@ def bearer_names_a_session(token: str) -> bool:
 
 
 def bearer_is_valid_api_key(token: str) -> bool:
-    """Whether this bearer is an sk-unsloth key this install still accepts. Such a key authenticates as itself
-    even while keyless API access is on, so the callers below must not treat it as a credential the setting had
-    to stand in for. Asked ahead of the real validation, so it leaves ``last_used_at`` to that one.
-    """
+    """Callers must not treat an sk-unsloth key as a keyless stand-in; touch=False defers last_used_at."""
     return (
         token.startswith(API_KEY_PREFIX)
         and validate_api_key_with_credential(token, touch = False) is not None
@@ -77,10 +69,7 @@ def bearer_is_valid_api_key(token: str) -> bool:
 
 
 def admitted_without_credential(credentials: Optional[HTTPAuthorizationCredentials]) -> bool:
-    """True when the keyless setting alone let this caller in. Narrower than ``is_keyless``, which also covers a
-    working API key that happened to arrive while the setting was on. Routes whose effect outlives the setting
-    need this stricter form: turning keyless access back off has to undo what it allowed.
-    """
+    """Keyless setting alone let this caller in; routes that outlive the setting need this stricter form."""
     if credentials is None:
         return False
     if credentials.scheme == KEYLESS_SCHEME:
@@ -338,10 +327,7 @@ async def get_current_credential(
 async def authenticated_via_api_key(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> bool:
-    """True when the caller used an sk-unsloth API key, not a UI session JWT. Lets routes treat
-    programmatic API callers differently from the Unsloth UI (e.g. refuse a teardown the UI would
-    allow). A keyless caller counts as an API caller too: it is the same programmatic surface, only
-    without the key, so every guard an API key faces still applies to it."""
+    """True for sk-unsloth keys and keyless callers, so every API-key guard also covers keyless access."""
     if is_keyless(credentials):
         return True
     return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))
@@ -350,10 +336,7 @@ async def authenticated_via_api_key(
 async def credentials_for_token(
     request: Any, token: Optional[str]
 ) -> Optional[HTTPAuthorizationCredentials]:
-    """What ``security`` would resolve for a bearer the route read for itself. Routes that take the
-    token from somewhere the dependency cannot see, such as the ``?token=`` query param an ``<img
-    src>`` has to use, would otherwise miss keyless API access entirely and answer 401 on a scope
-    that covers them. None means no usable credential and no setting to stand in for one."""
+    """Keyless applies to ?token= bearers the route reads; None means no credential, no keyless stand-in."""
     from utils.keyless_api_access import APPROVED_DUMMY_BEARERS, keyless_request_allowed
 
     if token is not None and not token.strip():
@@ -394,10 +377,7 @@ async def authenticated_without_credential(
 
 
 def require_ui_session_for_local_commands(via_api_key: bool) -> None:
-    """Refuse an sk-unsloth API key that asks to define a local (stdio) MCP command. stdio MCP runs a command on
-    this host as the backend user, outside the python/terminal sandbox, so only a UI session may choose what
-    runs. API keys keep http(s) MCP, and stdio servers the owner already configured.
-    """
+    """stdio MCP runs a command on the host outside the sandbox, so only a UI session may define one."""
     if via_api_key:
         raise HTTPException(
             status_code = status.HTTP_403_FORBIDDEN,
@@ -407,11 +387,7 @@ def require_ui_session_for_local_commands(via_api_key: bool) -> None:
 
 
 async def allow_ambient_hf_token(via_api_key: bool = Depends(authenticated_via_api_key)) -> bool:
-    """Whether a download this caller starts may fall back to the backend's own HF_TOKEN. A UI session already
-    gets the saved token from Settings, so the ambient one grants it nothing new. ``require_ui_session`` refuses
-    an sk-unsloth API key that same token, so it must not reach private repos by naming one in a download
-    instead; it sends its own token in ``X-Unsloth-HF-Token``.
-    """
+    """API keys get no ambient HF_TOKEN fallback, so they must send their own in X-Unsloth-HF-Token."""
     return not via_api_key
 
 
@@ -465,10 +441,7 @@ def _admin_credential() -> Tuple[str, Optional[str]]:
 async def _get_current_credential(
     credentials: HTTPAuthorizationCredentials, *, allow_password_change: bool
 ) -> Tuple[str, Optional[str]]:
-    """Validate the bearer and return ``(subject, credential generation)``. The generation is the
-    credential version this request actually authenticated against; routes that persist new
-    credentials must bind their write to it, or a reset landing mid-request would bless what it just
-    revoked. Credential reads run in the threadpool so stalled SQLite cannot block the event loop."""
+    """Routes that persist credentials must bind to this generation, or a reset mid-request blesses them."""
     if credentials.scheme == KEYLESS_SCHEME:
         _bind_owner(via_api_key = True)
         return await run_in_threadpool(_admin_credential)

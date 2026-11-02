@@ -83,9 +83,19 @@ def test_client_ip_uses_rightmost_forwarded_when_trusted(monkeypatch):
     assert client_ip(req) == "198.51.100.7"
 
 
-def test_client_ip_uses_cf_connecting_ip_on_loopback(monkeypatch):
+def test_client_ip_uses_cf_connecting_ip_only_through_the_managed_tunnel(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
     req = _Req("127.0.0.1", {"cf-connecting-ip": "198.51.100.7"})
+    assert client_ip(req) == "relayed:127.0.0.1"
+    req.scope = {
+        "headers": [
+            (b"host", b"live.trycloudflare.com"),
+            (b"cf-connecting-ip", b"198.51.100.7"),
+        ]
+    }
+    req.app = _types.SimpleNamespace(
+        state = _types.SimpleNamespace(cloudflare_url = "https://live.trycloudflare.com")
+    )
     assert client_ip(req) == "198.51.100.7"
 
 

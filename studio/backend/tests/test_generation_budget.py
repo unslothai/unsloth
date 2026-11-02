@@ -108,14 +108,36 @@ class _FakeTokenizer:
         return _FakeEncoding(input_ids = _FakeTensor(_PROMPT_LEN))
 
 
+class _FastDecoder:
+    def forward(self):
+        pass
+
+
+_FastDecoder.forward.__name__ = "LlamaModel_fast_forward"
+
+
+class _StockDecoder:
+    def forward(self):
+        pass
+
+
 class _FakeModel:
     """Carries the one guard unsloth_fast_generate applies before generating."""
 
-    def __init__(self, window):
+    def __init__(
+        self,
+        window,
+        decoder = _FastDecoder,
+        native = None,
+    ):
         self.max_seq_length = window
-        self.config = SimpleNamespace(max_position_embeddings = window)
+        self.config = SimpleNamespace(max_position_embeddings = native or window)
         self.device = "cpu"
         self.calls = []
+        self._decoder = decoder()
+
+    def modules(self):
+        return iter((self, self._decoder))
 
     def generate(self, **kwargs):
         ids, budget = kwargs.get("input_ids"), kwargs.get("max_new_tokens")
@@ -141,7 +163,11 @@ class _EmptyStreamer:
         pass
 
 
-def _streaming_backend(monkeypatch, window = _WINDOW):
+def _streaming_backend(
+    monkeypatch,
+    window = _WINDOW,
+    **model_kwargs,
+):
     try:
         from core.inference.inference import InferenceBackend
     except (ImportError, RuntimeError) as exc:  # pragma: no cover - env-dependent
@@ -152,7 +178,7 @@ def _streaming_backend(monkeypatch, window = _WINDOW):
     backend.active_model_name = "unsloth/tinyllama-chat-bnb-4bit"
     backend.last_generation_stats = None
     backend._generation_lock = threading.Lock()
-    model = _FakeModel(window)
+    model = _FakeModel(window, **model_kwargs)
     backend.models = {
         backend.active_model_name: {
             "model": model,
@@ -193,6 +219,31 @@ def test_generate_stream_passes_a_fitting_budget_through(monkeypatch):
     _run(backend, 512)
 
     assert model.calls[0]["max_new_tokens"] == 512
+
+
+def test_generate_stream_refuses_a_prompt_longer_than_the_window(monkeypatch):
+    from core.inference.context_refusal import ContextBudgetExceeded
+
+    backend, model = _streaming_backend(monkeypatch, window = _PROMPT_LEN - 1)
+
+    with pytest.raises(ContextBudgetExceeded) as refused:
+        _run(backend, 64)
+
+    assert (refused.value.request_tokens, refused.value.context_tokens) == (
+        _PROMPT_LEN,
+        _PROMPT_LEN - 1,
+    )
+    assert not model.calls
+
+
+def test_generate_stream_lets_a_stock_forward_model_run_past_the_window(monkeypatch):
+    backend, model = _streaming_backend(
+        monkeypatch, window = _PROMPT_LEN - 1, decoder = _StockDecoder, native = 8192
+    )
+
+    _run(backend, 64)
+
+    assert model.calls[0]["max_new_tokens"] == 64
 
 
 def _vision_backend(monkeypatch, window = _WINDOW):

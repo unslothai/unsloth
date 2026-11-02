@@ -1121,3 +1121,55 @@ def test_a_failed_studio_update_puts_the_previous_install_back(tmp_path: Path):
     assert res.returncode != 0, "a broken update must not report success"
     assert "previous install was restored" in res.stdout, res.stdout
     assert "not restarted" in res.stdout, res.stdout
+
+
+def _managed_node(
+    tmp_path: Path,
+    env,
+    installer_exit: int = 0,
+    kept: bool = False,
+) -> None:
+    """The image's managed Node (installer metadata) and a recording installer in the package."""
+    (Path(env["UNSLOTH_STUDIO_HOME"]) / "node" / "UNSLOTH_NODE_PREBUILT_INFO.json").write_text("{}")
+    (tmp_path / "site" / "studio" / "install_node_prebuilt.py").write_text(
+        "import os, sys\n"
+        "with open(os.environ['STUB_LOG'], 'a') as f:\n"
+        "    f.write('STUB-NODE ' + ' '.join(sys.argv[1:]) + '\\n')\n"
+        + ("print('Node download failed (x); keeping existing isolated Node')\n" if kept else "")
+        + f"sys.exit({installer_exit})\n"
+    )
+
+
+def test_studio_update_moves_the_managed_node_to_the_new_pin(tmp_path: Path):
+    env = _studio_env(tmp_path)
+    _managed_node(tmp_path, env)
+    res = _run(STUDIO_UPDATE, [], env)
+    assert res.returncode == 0, res.stderr + res.stdout
+    node_dir = Path(env["UNSLOTH_STUDIO_HOME"]) / "node"
+    assert f"STUB-NODE --install-dir {node_dir}" in _calls(env), _calls(env)
+    assert "STUB-SUPERVISORCTL restart studio" in _calls(env), _calls(env)
+
+
+@pytest.mark.parametrize("installer_exit, kept", [(1, False), (0, True)])
+def test_studio_update_keeps_the_current_node_when_the_new_pin_cannot_install(
+    tmp_path: Path, installer_exit: int, kept: bool
+):
+    env = _studio_env(tmp_path)
+    _managed_node(tmp_path, env, installer_exit = installer_exit, kept = kept)
+    res = _run(STUDIO_UPDATE, [], env)
+    assert res.returncode == 0, res.stderr + res.stdout
+    assert "keeping the current one" in res.stdout, res.stdout
+    assert "matches the new pin" not in res.stdout, res.stdout
+    assert "STUB-SUPERVISORCTL restart studio" in _calls(env), _calls(env)
+
+
+@pytest.mark.parametrize("skip", ["0", "1"])
+def test_studio_update_leaves_a_node_it_does_not_manage(tmp_path: Path, skip: str):
+    env = _studio_env(tmp_path)
+    _managed_node(tmp_path, env)
+    env["UNSLOTH_SKIP_NODE_INSTALL"] = skip
+    if skip == "0":
+        (Path(env["UNSLOTH_STUDIO_HOME"]) / "node" / "UNSLOTH_NODE_PREBUILT_INFO.json").unlink()
+    res = _run(STUDIO_UPDATE, [], env)
+    assert res.returncode == 0, res.stderr + res.stdout
+    assert "STUB-NODE" not in _calls(env), _calls(env)

@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Diffusion GGUF -> mflux pre-quantized transformer layout (numpy + gguf only, streamed per tensor).
-
-Q4_0 / Q4_1 / Q8_0 map exactly onto MLX affine group-32 (dequant = q * scale + bias):
-  Q4_0: scale d, bias -8d;  Q4_1: scale d, bias m;  Q8_0: q = qs + 128, scale d, bias -128d.
-Q5_0 / Q5_1 likewise onto 5-bit (Q5_0: bias -16d; Q5_1: bias m), the fifth bit coming from the block's qh word.
-Q4_K / Q5_K keep their codes too: each 32-wide sub-block is affine with scale d * sc and bias -dmin * m, so they land
-on MLX 4 / 5-bit group-32; only the scale product is rounded to the 16-bit scale dtype, as the d of Q4_0 already is.
-Q6_K uses 16-wide groups, which MLX does not have: its exact dequantized values are re-quantized to 8-bit group-32,
-whose step is at most a quarter of Q6_K's own. Q2_K / Q3_K (16-wide, 2-3 bits) are refused.
-"""
+"""Diffusion GGUF to mflux layout (numpy and gguf only, streamed per tensor); Q2_K and Q3_K refused;
+Q6_K re-quantized to 8-bit; others map onto MLX group-32."""
 
 from __future__ import annotations
 
