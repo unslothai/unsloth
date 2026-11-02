@@ -121,3 +121,33 @@ test("a choice made while the sign-in read is in flight is not undone", async ()
     assert.equal(state.device, saved ? "cpu" : "auto");
   }
 });
+
+test("a delayed migration adopts a newer choice saved by another browser", async () => {
+  const state = { device: "auto", saved: false };
+  let release: () => void = () => {};
+  let adopted: string | null = null;
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    if ((init?.method ?? "GET") === "GET") {
+      const snapshot = JSON.stringify(state);
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return new Response(snapshot, { status: 200 });
+    }
+    const { device, only_if_unset } = JSON.parse(String(init?.body));
+    if (!only_if_unset || !state.saved) {
+      Object.assign(state, { device, saved: true });
+    }
+    return new Response(JSON.stringify(state), { status: 200 });
+  }) as typeof fetch;
+  const migration = reconcileSttDevicePreference("cpu", (device) => {
+    adopted = device;
+  });
+  await settle();
+  Object.assign(state, { device: "auto", saved: true });
+  release();
+  await migration;
+  await settle();
+  assert.equal(state.device, "auto");
+  assert.equal(adopted, "auto");
+});

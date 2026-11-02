@@ -59,7 +59,7 @@ test("Load into is synced to the server for cold API STT loads", () => {
   assert.match(root, /useVoiceSettingsStore\.setState\(\{ sttDevice \}\)/);
   assert.match(
     sttDeviceApi,
-    /if \(state\.saved\) \{\s*adopt\([\s\S]*?else if \(local !== "auto"\) \{\s*syncSttDevicePreference\(local\)/,
+    /if \(state\.saved\) \{\s*adopt\([\s\S]*?else if \(local !== "auto"\) \{\s*syncSttDevicePreference\(local[,)]/,
   );
   assert.match(root, /<SttDeviceSyncMount \/>/);
 });

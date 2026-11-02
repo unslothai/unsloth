@@ -12,16 +12,29 @@ let pending: Promise<unknown> = Promise.resolve();
 // Bumped per save, so a read that started before one is not applied after it.
 let revision = 0;
 
-export function syncSttDevicePreference(device: SttDevice): void {
-  revision += 1;
+export function syncSttDevicePreference(
+  device: SttDevice,
+  onlyIfUnset = false,
+  adopt?: (device: SttDevice) => void,
+): void {
+  const saving = ++revision;
   pending = pending
-    .then(() =>
-      authFetch("/api/settings/stt-device", {
+    .then(async () => {
+      const response = await authFetch("/api/settings/stt-device", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ device }),
-      }),
-    )
+        body: JSON.stringify({
+          device,
+          ...(onlyIfUnset ? { only_if_unset: true } : {}),
+        }),
+      });
+      if (onlyIfUnset && response.ok) {
+        const state = (await response.json()) as SttDeviceState;
+        if (revision === saving && state.device !== device) {
+          adopt?.(state.device === "cpu" ? "cpu" : "auto");
+        }
+      }
+    })
     .catch(() => undefined);
 }
 
@@ -44,7 +57,7 @@ export async function reconcileSttDevicePreference(
     if (state.saved) {
       adopt(state.device === "cpu" ? "cpu" : "auto");
     } else if (local !== "auto") {
-      syncSttDevicePreference(local);
+      syncSttDevicePreference(local, true, adopt);
     }
   } catch {
     // Offline or not the owner: the local choice still drives this browser's own loads.

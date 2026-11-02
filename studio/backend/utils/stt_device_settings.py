@@ -29,6 +29,7 @@ def _stored_stt_device() -> Optional[str]:
     token = bind_account(OWNER)
     try:
         from storage.studio_db import get_app_setting
+
         value = get_app_setting(STT_DEVICE_SETTING_KEY, None)
     except Exception:  # noqa: BLE001 - store unavailable: hardware default
         value = None
@@ -58,19 +59,21 @@ def forget_cached_stt_device() -> None:
         _device_generation += 1
 
 
-def set_stt_device(device: str) -> bool:
+def set_stt_device(device: str, *, only_if_unset: bool = False) -> bool:
     """Persist placement; returns whether it changed."""
     if device not in STT_DEVICE_CHOICES:
         raise ValueError("Device must be auto, cpu or gpu.")
     forget_cached_stt_device()
     if _stored_stt_device() == device:
         return False
-    from storage.studio_db import upsert_app_settings
+    from storage.studio_db import compare_and_set_app_setting, upsert_app_settings
     from utils.account_context import OWNER, bind_account, reset_account
 
     token = bind_account(OWNER)
     try:
-        upsert_app_settings({STT_DEVICE_SETTING_KEY: device}, read_back = False)
+        if only_if_unset:
+            return compare_and_set_app_setting(STT_DEVICE_SETTING_KEY, None, device)
+        upsert_app_settings({STT_DEVICE_SETTING_KEY: device}, read_back=False)
     finally:
         reset_account(token)
         forget_cached_stt_device()

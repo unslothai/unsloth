@@ -3043,6 +3043,7 @@ class EmbeddingDevicePayload(BaseModel):
 
 class SttDevicePayload(BaseModel):
     device: Literal["auto", "cpu", "gpu"]
+    only_if_unset: bool = False
 
 
 class SttDeviceResponse(BaseModel):
@@ -4029,7 +4030,7 @@ def update_stt_device_setting(
         raise HTTPException(
             status_code = 409, detail = "The STT device is set by UNSLOTH_AUDIO_DEVICE."
         )
-    set_stt_device(payload.device)
+    set_stt_device(payload.device, only_if_unset = payload.only_if_unset)
     logger.info("settings.stt_device_updated subject=%s device=%s", current_subject, payload.device)
     return _stt_device_response()
 
