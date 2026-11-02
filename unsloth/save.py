@@ -992,7 +992,6 @@ def _without_runtime_truncation(
     save_directory = None,
     filename_prefix = None,
 ):
-    """Keep runtime limits out of saved files, including nested processor saves."""
     source_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
     backend = getattr(source_tokenizer, "_tokenizer", None)
     truncation = getattr(backend, "truncation", None)

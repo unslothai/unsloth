@@ -84,6 +84,7 @@ import {
   LIBRARY_SETTINGS_STORAGE_KEY,
   LIBRARY_VIEW_STORAGE_KEY,
 } from "@/features/library";
+import { readPending, writePending } from "../lib/client-prefs-pending";
 import { DesktopInstallTypeControl } from "../components/full-install-dialog";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
@@ -225,6 +226,8 @@ async function resetAllPrefs() {
       // ignore
     }
   }
+  // The account keeps its own scale: mark the reset default as an unsent edit so it wins after the reload.
+  writePending({ ...readPending(), scale: true });
   window.location.reload();
 }
 

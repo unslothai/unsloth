@@ -131,6 +131,8 @@ import {
   pasteLongTextAsFile,
   isPlainPasteChord,
   plainPasteStillCounts,
+  insertAtCaret,
+  richPasteMarkdown,
   currentDictationEntryMode,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
@@ -3033,6 +3035,7 @@ const Composer: FC<{
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
   );
+  const richTextPaste = useChatPreferencesStore((s) => s.richTextPaste);
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
   const submitIntentRef = useRef<ComposerSubmitIntent>("default");
   const submitOnKey = useCallback(
@@ -3147,6 +3150,21 @@ const Composer: FC<{
           }),
       );
       if (event.defaultPrevented) return;
+      const markdown =
+        richTextPaste && !plainPaste ? richPasteMarkdown(event.clipboardData) : null;
+      if (markdown !== null) {
+        event.preventDefault();
+        if (pastedYoutubeUrl) setYoutubeLink(pastedYoutubeUrl);
+        // Before inserting: execCommand's input event is not a paste, so the guard would refuse a resend.
+        if (justSentRef.current?.draftKey === draftKeyRef.current) {
+          justSentRef.current = null;
+        }
+        insertAtCaret(input, markdown, (next, caret) => {
+          aui.composer().setText(next);
+          requestAnimationFrame(() => input.setSelectionRange(caret, caret));
+        });
+        return;
+      }
       if (pastedYoutubeUrl) {
         setYoutubeLink(pastedYoutubeUrl);
         if (!pastedText.includes(pastedYoutubeUrl)) {
@@ -3179,7 +3197,7 @@ const Composer: FC<{
         justSentRef.current = null;
       }
     },
-    [aui, overlay, pastedTextMinChars],
+    [aui, overlay, pastedTextMinChars, richTextPaste],
   );
 
   const composerText = useAuiState(({ composer }) => composer.text);
