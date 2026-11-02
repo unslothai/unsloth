@@ -593,7 +593,12 @@ async function submitFreshTrainingRun(
     return attempt.cancel(translate(validation.errorKey));
   }
 
-  const payload = buildTrainingStartPayload(attempt.config, hfToken, getCachedSystemInfo());
+  const payload = buildTrainingStartPayload(
+    attempt.config,
+    hfToken,
+    getCachedSystemInfo(),
+    usePlatformStore.getState().isCpuTrainingHost(),
+  );
   if (!attempt.enterTransport()) {
     return false;
   }

@@ -1054,7 +1054,8 @@ def test_unsloth_shutting_down_stops_a_clef_worker_still_loading(monkeypatch):
 def _running(pid):
     try:
         with open(f"/proc/{pid}/stat", encoding = "utf-8") as stat:
-            return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
+            # X (EXIT_DEAD) shows for an instant while init reaps the zombie, so it is dead too.
+            return stat.read().rsplit(")", 1)[1].split()[0] not in ("Z", "X", "x")
     except OSError:
         return False
 
@@ -1104,7 +1105,11 @@ def test_a_loading_clef_worker_dies_with_unsloth(tmp_path):
         unsloth.kill()
         unsloth.wait()
         if worker is not None and _running(worker):
-            os.kill(worker, signal.SIGKILL)
+            # It can finish dying after the check; a cleanup error must not hide the real failure.
+            try:
+                os.kill(worker, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 def test_shutdown_ends_a_clef_worker(home, client, clef):

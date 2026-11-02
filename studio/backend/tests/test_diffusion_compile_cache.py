@@ -223,6 +223,60 @@ def test_auto_mode_saves_by_default(monkeypatch, tmp_path, fake_megacache):
     assert ctx2.bundle.stat().st_mtime_ns == before
 
 
+@pytest.mark.parametrize(
+    "mode,filtered,available,kill_switch,rebuild",
+    [
+        ("max-autotune", True, True, False, True),
+        ("max-autotune-no-cudagraphs", True, True, False, True),
+        ("default", True, True, False, False),
+        ("max-autotune", False, True, False, False),
+        ("max-autotune", True, False, False, False),
+        ("max-autotune", True, True, True, False),
+    ],
+)
+def test_compile_policy_upgrade_preserves_static_bundle_lifecycle(
+    monkeypatch, tmp_path, fake_megacache, request, mode, filtered, available, kill_switch, rebuild
+):
+    from core.inference import diffusion_compile_config as cfg
+
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    monkeypatch.delenv(cc._ENV_SAVE, raising = False)
+    monkeypatch.setenv(cfg.DYNAMIC_SCALE_RBLOCK_ENV, "1" if kill_switch else "0")
+    monkeypatch.setattr(cfg, "reduction_config_filter_available", lambda: available)
+    kwargs = {
+        **_BEGIN_KW,
+        "compile_kwargs": {"fullgraph": True, "dynamic": False, "mode": mode},
+        "reduction_filter": filtered,
+    }
+    fingerprint = cc.model_fingerprint
+
+    def previous_policy(**kw):
+        fp = fingerprint(**kw)
+        fp.get("inductor", {}).pop("coordinate_descent_tuning", None)
+        return fp
+
+    with monkeypatch.context() as previous:
+        previous.setattr(cc, "model_fingerprint", previous_policy)
+        seeded = cc.begin(transformer = _transformer(), **kwargs)
+        request.addfinalizer(lambda: cc.restore(seeded))
+        cc.register_shape(seeded, (1024, 1024, 1), static = True)
+        assert cc.save(seeded)
+
+    upgraded = cc.begin(transformer = _transformer(), **kwargs)
+    request.addfinalizer(lambda: cc.restore(upgraded))
+    assert (upgraded.key != seeded.key) is rebuild
+    assert upgraded.hit is (not rebuild)
+    cc.register_shape(upgraded, (1024, 1024, 1), static = True)
+    assert cc.save(upgraded) is rebuild
+
+    warmed = cc.begin(transformer = _transformer(), **kwargs)
+    request.addfinalizer(lambda: cc.restore(warmed))
+    assert warmed.hit and warmed.saved
+    cc.register_shape(warmed, (1024, 1024, 1), static = True)
+    assert cc.save(warmed) is False
+
+
 def test_save_env_zero_disables_auto_save(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_MODE, "auto")
     monkeypatch.setenv(cc._ENV_SAVE, "0")
