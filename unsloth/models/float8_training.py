@@ -49,6 +49,9 @@ __all__ = [
     "resolve_float8_training",
     "float8_training_filter",
     "convert_model_to_float8_training",
+    "resolve_fp8_lora",
+    "mark_fp8_lora",
+    "enable_fp8_lora",
 ]
 
 # Names and gates come from the precision registry (unsloth/precision/recipes.py).
@@ -407,4 +410,334 @@ def convert_model_to_float8_training(
         model._unsloth_float8_linears = converted
     except Exception:
         pass
+    return converted
+
+
+# FP8 LoRA: fp8 forward + input gradient on the frozen 16-bit base (kernels/fp8_lora.py).
+FP8_LORA_RECIPE = "fp8_lora_tensorwise"
+# float8_training values that mean the frozen-base recipe when the model trains LoRA. True / "tensorwise" run
+# only where the recipe is named (measured faster at equal loss); "fp8_lora" runs wherever the GPU can.
+_FP8_LORA_BY_NAME = ("tensorwise",)
+_FP8_LORA_EXPLICIT = ("fp8_lora", FP8_LORA_RECIPE)
+
+
+def resolve_fp8_lora(
+    float8_training,
+    *,
+    dtype = None,
+    load_in_4bit = False,
+    load_in_8bit = False,
+    load_in_fp8 = False,
+    qat_scheme = None,
+    gpu = "current",
+):
+    """`float8_training` with LoRA / QLoRA -> FP8_LORA_RECIPE or None; refuses (PrecisionRefused, a ValueError)
+    before anything loads. `gpu` is a registry GPU class ('sm89', ...); 'current' reads the CUDA device."""
+    if float8_training is None or float8_training is False:
+        return None
+    refused = _precision.PrecisionRefused
+    if float8_training is True:
+        explicit = False
+    elif isinstance(float8_training, str) and float8_training.strip().lower() in (
+        _FP8_LORA_BY_NAME + _FP8_LORA_EXPLICIT
+    ):
+        explicit = float8_training.strip().lower() in _FP8_LORA_EXPLICIT
+    else:
+        raise ValueError(
+            f"Unsloth: float8_training = {float8_training!r} is a full finetuning recipe "
+            "(`full_finetuning = True`). With LoRA, float8_training = 'fp8_lora' (or True where it is "
+            "measured faster) runs the frozen base's forward and input gradient in fp8."
+        )
+    if load_in_4bit or load_in_8bit or (load_in_fp8 not in (False, None)):
+        raise refused(
+            "Unsloth: float8_training with LoRA quantizes a 16-bit base to fp8 itself; pass "
+            "load_in_4bit = False (and no load_in_8bit / load_in_fp8). QLoRA bases are already 4 / 8 bit."
+        )
+    if qat_scheme is not None:
+        raise refused(
+            "Unsloth: float8_training with LoRA and qat_scheme cannot be combined: QAT fake-quantizes the "
+            "base weight that fp8 LoRA would quantize."
+        )
+    if gpu == "current":
+        gpu = _precision.current_gpu_class()
+    if gpu is None:
+        raise refused(
+            "Unsloth: float8_training with LoRA needs an NVIDIA GPU with compute capability 8.9+ "
+            "(L4, RTX 40 / 50, RTX PRO 6000, H100, B200); no CUDA device is visible."
+        )
+    recipe = fp8_lora_recipe_for(gpu)
+    gate = _check_precision_recipe(recipe, gpu = gpu, input_dtype = dtype, mode = "lora")
+    if not explicit and gate.status != "named":
+        raise refused(
+            f"Unsloth: float8_training = {float8_training!r} with LoRA has not been measured faster than "
+            f"bfloat16 LoRA on {gpu} ({gate.status}), so it is not enabled by name there. Pass "
+            "float8_training = 'fp8_lora' to run the fp8 frozen base anyway."
+        )
+    if gate.status == "unprobed":
+        print(f"Unsloth: fp8 LoRA has not been tested on {gpu}; running it as requested.")
+    return recipe
+
+
+def fp8_lora_recipe_for(gpu):
+    """The frozen-base recipe the kernels run on this GPU class: per-token scales on sm120, tensorwise
+    elsewhere (UNSLOTH_FP8_LORA_SCALING overrides; kernels/fp8_lora.scaling_for_class is the one rule)."""
+    scaling = _load_fp8_lora_kernels().scaling_for_class(gpu)
+    return "fp8_lora_rowwise" if scaling == "row" else FP8_LORA_RECIPE
+
+
+def mark_fp8_lora(model, recipe):
+    """Remember the request on the loaded model; get_peft_model converts the LoRA bases. A model that is
+    already a PeftModel (an adapter repo was loaded, so get_peft_model is skipped) is converted now."""
+    if recipe is not None and model is not None:
+        try:
+            model._unsloth_fp8_lora_recipe = recipe
+        except Exception:
+            pass
+        if getattr(model, "peft_config", None):
+            enable_fp8_lora(model, recipe)
+    return model
+
+
+def _fp8_lora_request(model):
+    # PeftModel / LoraModel forward attribute reads to the wrapped model; walk explicitly as well.
+    stack, seen = [model], set()
+    while stack and len(seen) < 8:
+        m = stack.pop()
+        if m is None or id(m) in seen:
+            continue
+        seen.add(id(m))
+        recipe = getattr(m, "_unsloth_fp8_lora_recipe", None)
+        if isinstance(recipe, str):
+            return recipe
+        stack.extend(getattr(m, attr, None) for attr in ("base_model", "model"))
+    return None
+
+
+def _load_fp8_lora_kernels():
+    try:
+        from ..kernels import fp8_lora
+        return fp8_lora
+    except ImportError:
+        import importlib.util
+        import os
+        import sys
+
+        name = "_unsloth_fp8_lora_standalone"
+        if name in sys.modules:
+            return sys.modules[name]
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kernels", "fp8_lora.py"
+        )
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+
+
+def _merge_with_master(
+    self,
+    *args,
+    _unsloth_method = "merge",
+    **kwargs,
+):
+    # Resolved from self (not captured), so a deepcopy of the model merges its own layers.
+    base = getattr(self, "base_layer", None)
+    if base is not None:
+        _load_fp8_lora_kernels().restore_fp8_lora_master(base)
+    out = getattr(type(self), _unsloth_method)(self, *args, **kwargs)
+    state = base.__dict__.get("_unsloth_fp8_lora") if base is not None else None
+    if state is not None:
+        # PEFT adds the delta into weight.data in place (same storage and version): requantize now, so the
+        # next forward (compiled ones too) uses the merged weight.
+        state._key = None
+        state.refresh(base.weight)
+    return out
+
+
+def _has_variant(lora_module, adapter_name = None) -> bool:
+    """A PEFT LoRA variant (DoRA, BD-LoRA, VeLoRA, ...): DoRA reads the base weight in its forward, and variant
+    init (after the adapter is placed) allocates its own tensors on base_layer.weight's device."""
+    dora = getattr(lora_module, "use_dora", {}) or {}
+    variants = getattr(lora_module, "lora_variant", {}) or {}
+    if adapter_name is not None:
+        return bool(dora.get(adapter_name, False)) or adapter_name in variants
+    return any(dora.values()) or bool(variants)
+
+
+def _move_adapter_with_master(self, adapter_name, *args, **kwargs):
+    """PEFT puts a new adapter on base_layer.weight's device, which is the host for an offloaded master: place it
+    on the fp8 compute device. A variant adapter (DoRA, BD-LoRA, VeLoRA) brings the master back to that device
+    first, so PEFT places it and whatever its variant init builds there."""
+    base = getattr(self, "base_layer", None)
+    state = base.__dict__.get("_unsloth_fp8_lora") if base is not None else None
+    if state is not None and state.offloaded and _has_variant(self, adapter_name):
+        _load_fp8_lora_kernels().restore_fp8_lora_master(base)
+    out = type(self)._move_adapter_to_device_of_base_layer(self, adapter_name, *args, **kwargs)
+    if state is None:
+        return out
+    # Adapter init can rewrite the base weight (PiSSA / OLoRA keep the residual): requantize now, not at the next
+    # eager forward, so compiled calls see it.
+    state._key = None
+    state.refresh(base.weight)
+    if not state.offloaded:
+        return out
+    for name in tuple(getattr(self, "adapter_layer_names", ())) + tuple(
+        getattr(self, "other_param_names", ())
+    ):
+        layer = getattr(self, name, None)
+        if (
+            not isinstance(layer, (torch.nn.ModuleDict, torch.nn.ParameterDict))
+            or adapter_name not in layer
+        ):
+            continue
+        entry = layer[adapter_name]
+        tensors = list(entry.parameters()) if isinstance(entry, torch.nn.Module) else [entry]
+        if any(t.device.type == "meta" for t in tensors):
+            # low_cpu_mem_usage: PEFT leaves meta parameters for the checkpoint loader to materialize.
+            continue
+        if isinstance(entry, torch.nn.Module):
+            layer[adapter_name] = entry.to(state.device)
+        else:
+            layer[adapter_name] = torch.nn.Parameter(
+                entry.data.to(state.device), requires_grad = entry.requires_grad
+            )
+    return out
+
+
+def _restore_master_before_merge(lora_module):
+    """PEFT merge / unmerge add to base.weight.data on the LoRA device: bring a host master back first."""
+    import functools
+    import types
+
+    for method in ("merge", "unmerge"):
+        if method in lora_module.__dict__ or not callable(getattr(type(lora_module), method, None)):
+            continue
+        fn = functools.partial(_merge_with_master, _unsloth_method = method)
+        object.__setattr__(lora_module, method, types.MethodType(fn, lora_module))
+    move = "_move_adapter_to_device_of_base_layer"
+    if move not in lora_module.__dict__ and callable(getattr(type(lora_module), move, None)):
+        object.__setattr__(
+            lora_module, move, types.MethodType(_move_adapter_with_master, lora_module)
+        )
+
+
+_RAW_READS = {}
+
+
+def _reads_raw_weight(parent, leaf) -> bool:
+    """The parent's class source reads `<leaf>.weight` directly (fused Mamba / Falcon-H1 kernels, WavLM's
+    F.multi_head_attention_forward) instead of calling the child: that tensor must stay on the compute device."""
+    import inspect
+    import re
+
+    key = (type(parent), leaf)
+    if key not in _RAW_READS:
+        try:
+            source = inspect.getsource(type(parent))
+        except (OSError, TypeError):
+            source = ""
+        _RAW_READS[key] = re.search(rf"\b{re.escape(leaf)}\.weight\b", source) is not None
+    return _RAW_READS[key]
+
+
+def _mamba_raw_weight_leaf(model, name) -> bool:
+    parent_name, _, leaf = name.rpartition(".")
+    try:
+        parent = model.get_submodule(parent_name) if parent_name else model
+    except AttributeError:
+        return False
+    if _reads_raw_weight(parent, leaf):
+        return True
+    try:
+        from ._mamba_lora import _RAW_WEIGHT_LEAVES, _is_mamba_mixer
+    except Exception:
+        return False
+    # Unsloth's fused Mamba LoRA path builds W + delta from these leaves of any Mamba-style mixer.
+    return leaf in _RAW_WEIGHT_LEAVES and _is_mamba_mixer(parent)
+
+
+def _block_swapped_modules(model) -> set:
+    """ids of every module inside a decoder layer managed by block swap (install_block_swap)."""
+    out = set()
+    for module in model.modules():
+        swapper = module.__dict__.get("_unsloth_block_swap")
+        if swapper is None or not isinstance(module, torch.nn.ModuleList):
+            continue
+        for index in getattr(swapper, "indices", ()) or ():
+            if 0 <= index < len(module):
+                out.update(id(m) for m in module[index].modules())
+    return out
+
+
+def enable_fp8_lora(
+    model,
+    recipe = None,
+    allow_cpu = False,
+):
+    """Attach the fp8 frozen-base state to every LoRA base nn.Linear (frozen, 16-bit, dims % 16, not a
+    high-precision layer). Returns the converted names. A no-op unless the model was loaded with it."""
+    recipe = recipe or _fp8_lora_request(model)
+    if recipe is None:
+        return []
+    kernels = _load_fp8_lora_kernels()
+    policy = _precision.get_recipe(recipe).hp_layers
+    try:
+        is_hp = _precision.hp_filter(model, policy)
+    except Exception:
+        is_hp = lambda module, fqn: False
+    converted, skipped = [], {}
+    uses = {}
+    for _, p in model.named_parameters(remove_duplicate = False):
+        uses[id(p)] = uses.get(id(p), 0) + 1
+    swapped = _block_swapped_modules(model)
+    offload = kernels.offload_supported()
+    offloaded = 0
+    for name, module in model.named_modules():
+        base = getattr(module, "base_layer", None)
+        if base is None or not hasattr(module, "lora_A") or not isinstance(base, torch.nn.Module):
+            continue
+        if is_hp(base, name + ".base_layer") or is_hp(module, name):
+            skipped[name] = "high precision layer"
+            continue
+        why = kernels.eligible_base(base)
+        if why is None and not allow_cpu:
+            device = base.weight.device
+            if device.type != "cuda" or torch.version.hip is not None:
+                why = f"weight on {device}"
+            elif torch.cuda.get_device_capability(device) < (8, 9):
+                why = "compute capability below 8.9"
+        if why is None and id(base) in swapped:
+            # Block swap (offload_layers) streams these weights in and out and leaves empty placeholders: no fp8
+            # copy of a weight that is not there.
+            why = "block-swapped layer"
+        if why is None and uses.get(id(base.weight), 0) > 1:
+            # A Parameter shared by two modules (tied weights): a merge through one reader would leave the other's
+            # fp8 copy stale (same storage and version), so it stays a 16-bit base.
+            why = "weight shared with another module"
+        if why is not None:
+            skipped[name] = why
+            continue
+        # LoRA variants (DoRA's column norm, BD-LoRA / VeLoRA tensors built by base weight device) and parents
+        # that read a child's weight directly (fused Mamba / Falcon-H1 kernels, WavLM attention) keep the master
+        # on the device.
+        reads_raw = _has_variant(module) or _mamba_raw_weight_leaf(model, name)
+        state = kernels.attach_fp8_lora_base(base, offload = offload and not reads_raw)
+        offloaded += int(state.offloaded)
+        _restore_master_before_merge(module)
+        converted.append(name)
+    if offloaded and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    detail = {"skipped": len(skipped)} if skipped else {}
+    if offloaded:
+        detail["master_offloaded"] = offloaded
+    _record_engagement(model, recipe, len(converted), detail = detail or None)
+    if not _require_engagement(recipe, len(converted), "no frozen 16-bit LoRA base Linear layers"):
+        print(
+            "Unsloth: float8_training with LoRA found no eligible base layers"
+            + (f" ({next(iter(skipped.values()))})" if skipped else "")
+            + "; training stays in 16 bit."
+        )
+    else:
+        print(f"Unsloth: fp8 LoRA base on {len(converted)} Linear layers.")
     return converted

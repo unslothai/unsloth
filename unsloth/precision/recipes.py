@@ -512,6 +512,83 @@ _add(
     )
 )
 
+_FP8_LORA_RUNS = (
+    "Qwen3 LoRA r=16, seq 2048, bs 2, 200 steps on alpaca-cleaned, eval every 50 steps on 32 held-out "
+    "rows, 2 seeds, vs bf16 LoRA in the same Colab VM"
+)
+_add(
+    Recipe(
+        name = "fp8_lora_tensorwise",
+        kind = "frozen_base",
+        modes = ("lora",),
+        fwd = GemmPolicy(_op(E4M3, "tensor"), _op(E4M3, "tensor")),
+        dgrad = GemmPolicy(_op(E5M2, "tensor"), _op(E4M3, "tensor")),
+        hp_layers = _HP_FP8,
+        input_dtypes = ("bf16", "fp16"),
+        grad_scaler = "per_dtype",
+        compile = "opaque",
+        backend = "unsloth.kernels.fp8_lora (float8_training with LoRA on a 16-bit base)",
+        gates = {
+            "sm75": _NO_FP8_HW,
+            "sm80": _NO_FP8_HW,
+            "sm89": Gate(
+                "explicit",
+                evidence = "L4, 16-bit master in host RAM (default): step 1.15x bf16 at Qwen3-0.6B (A/A 1.0%), "
+                "1.30x at 1.7B (A/A 0.05%); peak memory -11% / -33% vs bf16 LoRA. Eval loss (fp8 forward) "
+                "+0.53-0.64% at 0.6B, +0.39-0.55% at 1.7B (bf16 seed band 0.03%); the trained adapter on the "
+                "exact 16-bit base +0.07-0.17%. Explicit, not named: the fp8-forward eval gap passes "
+                "jobs/compare.py (rtol 5%) but not the 0.5% bar at 0.6B. Saved and merged weights bitwise equal "
+                "to the checkpoint. " + _FP8_LORA_RUNS,
+            ),
+            "sm90": Gate("unprobed", "H100 is not available to test on"),
+            "sm100": Gate("unprobed"),
+            "sm120": Gate(
+                "explicit",
+                evidence = "RTX PRO 6000: 1.08-1.10x at Qwen3-0.6B, 1.17x at 1.7B; rowwise "
+                "(fp8_lora_rowwise) is faster there. " + _FP8_LORA_RUNS,
+            ),
+            "rocm": Gate("refused", "ROCm fp8 (fnuz) GEMMs are not wired for the frozen base"),
+        },
+        notes = "base GEMMs fp8, LoRA branch 16-bit (Megatron-Bridge TEFusedLoRALinear split); weight "
+        "quantized once; the fp8 GEMM writes bf16 for fp16 activations",
+    )
+)
+_add(
+    Recipe(
+        name = "fp8_lora_rowwise",
+        kind = "frozen_base",
+        modes = ("lora",),
+        fwd = GemmPolicy(_op(E4M3, "row"), _op(E4M3, "tensor")),
+        dgrad = GemmPolicy(_op(E4M3, "row"), _op(E4M3, "tensor")),
+        hp_layers = _HP_FP8,
+        input_dtypes = ("bf16", "fp16"),
+        grad_scaler = "per_dtype",
+        compile = "opaque",
+        backend = "unsloth.kernels.fp8_lora (UNSLOTH_FP8_LORA_SCALING=row; the default on sm120)",
+        gates = {
+            "sm75": _NO_FP8_HW,
+            "sm80": _NO_FP8_HW,
+            "sm89": Gate(
+                "explicit",
+                evidence = "L4: rowwise _scaled_mm 0.55-0.90x bf16 at op level, no faster than bf16 LoRA "
+                "end to end; use fp8_lora_tensorwise there. " + _FP8_LORA_RUNS,
+            ),
+            "sm90": Gate("unprobed", "H100 is not available to test on"),
+            "sm100": Gate("unprobed"),
+            "sm120": Gate(
+                "explicit",
+                evidence = "RTX PRO 6000, 16-bit master in host RAM (default): step 1.16x bf16 at Qwen3-0.6B "
+                "(A/A 0.02%), 1.22x at 1.7B (A/A 0.17%); peak memory -12% / -33% vs bf16 LoRA. Eval loss "
+                "(fp8 forward) +0.48-0.56% at 0.6B, +0.32-0.54% at 1.7B (bf16 seed band 0.02%); the trained "
+                "adapter on the exact 16-bit base +0.06-0.12%. Explicit, not named: the fp8-forward eval gap "
+                "passes jobs/compare.py (rtol 5%) but not the 0.5% bar at 0.6B. " + _FP8_LORA_RUNS,
+            ),
+            "rocm": Gate("refused", "ROCm fp8 (fnuz) GEMMs are not wired for the frozen base"),
+        },
+        notes = "per-token activation / gradient scales, the weight's tensorwise scale broadcast per column",
+    )
+)
+
 
 def get_recipe(name: str) -> Recipe:
     try:
