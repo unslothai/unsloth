@@ -207,13 +207,23 @@ class _LoadCancelled(Exception):
 _CTX = mp.get_context("spawn")
 
 
+def _is_dispatcher_wake(resp) -> bool:
+    return isinstance(resp, dict) and resp.get("type") == _DISPATCHER_WAKE
+
+
 _DISPATCH_READ_TIMEOUT = 30.0
 
 _STOP_NOTICE_INTERVAL = 0.1
 _DISPATCH_POLL_INTERVAL = 0.5
+# Parent-sent reply that only wakes a dispatcher parked in its poll; no request_id, every reader skips it.
+_DISPATCHER_WAKE = "_dispatcher_wake"
 _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
 _CANCELLED_ROWS_GRACE = 5.0
+_SHUTDOWN_CANCEL_GRACE_S = 0.5
+_SHUTDOWN_JOIN_SLICE_S = 0.05
+_SHUTDOWN_READER_IDLE_S = 0.8
+_SHUTDOWN_READER_MAX_S = 5.0
 
 # Transformers TTS only; generous since _ensure_subprocess_alive already catches dead workers.
 _AUDIO_GENERATION_TIMEOUT = 900.0
@@ -445,6 +455,8 @@ class InferenceOrchestrator:
     """Inference backend orchestrator, subprocess-based. Same API surface as InferenceBackend (so
     routes/inference.py needs minimal changes); all heavy ML work happens in a persistent
     subprocess."""
+
+    _replies_read = 0
 
     _load_download_keys: Sequence[str] = ()
 
@@ -855,24 +867,22 @@ class InferenceOrchestrator:
             # Already gone: a nonzero status is an unwaited crash and keeps its replay.
             exitcode = getattr(self._proc, "exitcode", 0) if self._proc is not None else 0
             self._worker_stopped_deliberately = exitcode == 0
+            self._stop_shutdown_drainer()
             self._proc = None
             return True
 
         self._teardown_going_out()
+        if self._drain_event is not None:
+            self._drain_event.set()
         self._cancel_generation()
-        time.sleep(0.5)
-
-        self._drain_queue()
+        self._drain_unread_replies()
 
         try:
             self._cmd_queue.put({"type": "shutdown"})
         except (OSError, ValueError):
             self._teardown_not_sent()
 
-        try:
-            self._proc.join(timeout = timeout)
-        except Exception:
-            pass
+        self._join_worker_draining(timeout + _SHUTDOWN_CANCEL_GRACE_S)
 
         if self._proc is not None and self._proc.is_alive():
             logger.warning("Inference subprocess did not exit gracefully, terminating")
@@ -905,6 +915,10 @@ class InferenceOrchestrator:
             )
             return False
 
+        # Termination can leave a partial queue frame that blocks even get_nowait().
+        if self._proc is not None and self._proc.exitcode == 0:
+            self._let_readers_finish()
+        self._stop_shutdown_drainer()
         # Without this flag every model switch replayed a healthy worker's stderr at ERROR.
         self._worker_stopped_deliberately = True
         self._proc = None
@@ -918,6 +932,155 @@ class InferenceOrchestrator:
         logger.info("Inference subprocess shut down")
         return True
 
+    def _join_worker_draining(self, timeout: float) -> None:
+        """Join while draining replies: a child exits only once its queue feeder flushes."""
+        proc = self._proc
+        try:
+            if getattr(proc, "sentinel", None) is None:
+                proc.join(timeout = timeout)
+                return
+            now = time.monotonic()
+            deadline = now + max(timeout, 0.0)
+            reader_hard_deadline = now + _SHUTDOWN_READER_MAX_S
+            reader_idle_deadline = now + _SHUTDOWN_READER_IDLE_S
+            seen = self._replies_read
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                proc.join(timeout = min(_SHUTDOWN_JOIN_SLICE_S, remaining))
+                now = time.monotonic()
+                if self._replies_read != seen:
+                    seen = self._replies_read
+                    reader_idle_deadline = now + _SHUTDOWN_READER_IDLE_S
+                abandoned = False
+                if now >= min(reader_hard_deadline, reader_idle_deadline):
+                    with self._mailbox_lock:
+                        for rid, mailbox in tuple(self._direct_mailboxes.items()):
+                            owner = self._request_cancel_events.get(rid)
+                            if owner is None:
+                                continue
+                            owner.set()
+                            self._request_cancel_events.pop(rid, None)
+                            mailbox.put({"type": "gen_done", "request_id": rid})
+                            mailbox.put(
+                                {
+                                    "type": "audio_error",
+                                    "request_id": rid,
+                                    "cancelled": True,
+                                    "error": "Audio generation cancelled",
+                                }
+                            )
+                            self._direct_mailboxes.pop(rid, None)
+                            abandoned = True
+                self._drain_unread_replies()
+                if abandoned:
+                    proc.join(timeout = _SHUTDOWN_JOIN_SLICE_S)
+                if not proc.is_alive():
+                    break
+        except Exception:
+            pass
+
+    def _drain_unread_replies(self) -> None:
+        """Route pending replies unless a direct reader owns the queue."""
+        with self._mailbox_lock:
+            if self._direct_mailboxes:
+                return
+        resp_queue, worker = self._resp_queue, self._proc
+        if resp_queue is None:
+            return
+        state = getattr(self, "_shutdown_drainer", None)
+        if state is not None and state[0] is resp_queue and state[1].is_alive():
+            return
+        stop = threading.Event()
+
+        def drain():
+            try:
+                while not stop.is_set():
+                    with self._mailbox_lock:
+                        if (
+                            self._direct_mailboxes
+                            or self._resp_queue is not resp_queue
+                            or self._proc is not worker
+                        ):
+                            return
+                    try:
+                        resp = resp_queue.get(timeout = _SHUTDOWN_JOIN_SLICE_S)
+                    except queue.Empty:
+                        continue
+                    except (EOFError, OSError, ValueError):
+                        return
+                    rid = resp.get("request_id") if isinstance(resp, dict) else None
+                    with self._mailbox_lock:
+                        if self._resp_queue is not resp_queue or self._proc is not worker:
+                            return
+                        mbox = self._mailboxes.get(rid) if rid else None
+                        if mbox is not None:
+                            mbox.put(resp)
+            finally:
+                if stop.is_set():
+                    reader = getattr(resp_queue, "_reader", None)
+                    if reader is not None:
+                        reader.close()
+
+        thread = threading.Thread(target = drain, daemon = True, name = "inference-shutdown-drain")
+        self._shutdown_drainer = (resp_queue, thread, stop)
+        thread.start()
+
+    def _stop_shutdown_drainer(self) -> None:
+        state = getattr(self, "_shutdown_drainer", None)
+        if state is None:
+            return
+        resp_queue, thread, stop = state
+        stop.set()
+        # A dead producer can leave a partial frame; its parent's writer otherwise prevents EOF.
+        writer = getattr(resp_queue, "_writer", None)
+        if writer is not None:
+            writer.close()
+        thread.join(timeout = _SHUTDOWN_JOIN_SLICE_S * 2)
+        if not thread.is_alive():
+            reader = getattr(resp_queue, "_reader", None)
+            if reader is not None:
+                reader.close()
+        self._shutdown_drainer = None
+
+    def _let_readers_finish(self) -> None:
+        """A stream reports a worker crash once the handle swaps, so let it read its tail first."""
+        now = time.monotonic()
+        hard_deadline = now + _SHUTDOWN_READER_MAX_S
+        idle_deadline = now + _SHUTDOWN_READER_IDLE_S
+        seen = self._replies_read
+        while now < min(hard_deadline, idle_deadline):
+            with self._mailbox_lock:
+                if not self._mailboxes and not self._direct_mailboxes:
+                    return
+            self._drain_unread_replies()
+            time.sleep(0.02)
+            now = time.monotonic()
+            if self._replies_read != seen:
+                seen = self._replies_read
+                idle_deadline = now + _SHUTDOWN_READER_IDLE_S
+
+    @staticmethod
+    def _free_vram_mib() -> Optional[dict[int, int]]:
+        """Free MiB per visible device from fresh live telemetry, or None when unreadable."""
+        from utils.hardware import get_visible_gpu_utilization
+        try:
+            from utils.hardware import gpu_query
+
+            result: dict[int, int] = {}
+            # Consecutive samples are compared: a cached one would read as settled.
+            with gpu_query.fresh_reads():
+                devices = get_visible_gpu_utilization().get("devices", [])
+            for device in devices:
+                index = int(device["index"])
+                total = float(device["vram_total_gb"])
+                used = float(device["vram_used_gb"])
+                result[index] = max(int((total - used) * 1024), 0)
+            return result or None
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+
     @staticmethod
     def _wait_for_worker_vram_settle(
         since_kill: float,
@@ -926,10 +1089,9 @@ class InferenceOrchestrator:
         max_wait: float = 2.0,
         interval: float = 0.25,
         tolerance_mib: int = 256,
+        before_kill_free_mib: Optional[dict[int, int]] = None,
     ) -> bool:
         """Poll cross-platform live telemetry until dead-worker VRAM stabilises."""
-        from utils.hardware import get_visible_gpu_utilization
-
         if since_kill <= 0:
             return not expected_free_gb
         deadline = time.monotonic() + max(max_wait, 0.0)
@@ -937,21 +1099,14 @@ class InferenceOrchestrator:
         def _probe() -> Optional[dict[int, int]]:
             if time.monotonic() >= deadline:
                 return None
-            try:
-                from utils.hardware import gpu_query
+            return InferenceOrchestrator._free_vram_mib()
 
-                result: dict[int, int] = {}
-                # Consecutive samples are compared: a cached one would read as settled.
-                with gpu_query.fresh_reads():
-                    devices = get_visible_gpu_utilization().get("devices", [])
-                for device in devices:
-                    index = int(device["index"])
-                    total = float(device["vram_total_gb"])
-                    used = float(device["vram_used_gb"])
-                    result[index] = max(int((total - used) * 1024), 0)
-                return result or None
-            except (KeyError, TypeError, ValueError, OverflowError):
-                return None
+        def _released(after: dict[int, int], before: dict[int, int]) -> bool:
+            return any(
+                after[index] - before[index]
+                >= max(tolerance_mib, int(max(after[index], before[index]) * 0.02))
+                for index in after
+            )
 
         previous = _probe()
         if not previous:
@@ -968,7 +1123,16 @@ class InferenceOrchestrator:
 
         if _threshold_reached(previous):
             return True
-        observed_reclaim = False
+        # A release that landed before the first poll is still a release: without the pre-kill
+        # sample it read as stable-but-unreleased and the wait ran to its deadline.
+        observed_reclaim = bool(
+            before_kill_free_mib
+            and before_kill_free_mib.keys() == previous.keys()
+            and _released(previous, before_kill_free_mib)
+        )
+        # A release seen only against the pre-kill sample may be partial: ask for two stable polls.
+        stable_needed = 2 if observed_reclaim else 1
+        stable_run = 0
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -977,12 +1141,9 @@ class InferenceOrchestrator:
             current = _probe()
             if not current or current.keys() != previous.keys():
                 return not expected_free_gb
-            if any(
-                current[index] - previous[index]
-                >= max(tolerance_mib, int(max(current[index], previous[index]) * 0.02))
-                for index in current
-            ):
+            if _released(current, previous):
                 observed_reclaim = True
+                stable_needed = 1
             if _threshold_reached(current):
                 return True
             stable = all(
@@ -990,8 +1151,9 @@ class InferenceOrchestrator:
                 < max(tolerance_mib, int(max(current[index], previous[index]) * 0.02))
                 for index in current
             )
+            stable_run = stable_run + 1 if stable else 0
             # Stable low samples can precede delayed driver reclaim; trust stability only after a release.
-            if stable and observed_reclaim and not expected_mib:
+            if stable and observed_reclaim and not expected_mib and stable_run >= stable_needed:
                 return True
             previous = current
         return not expected_free_gb
@@ -1130,6 +1292,7 @@ class InferenceOrchestrator:
 
     def _observe_response(self, resp, worker):
         """Retire ``worker`` if its Metal queue is dead; nothing else reaps it."""
+        self._replies_read += 1
         detail = resp.get("error") or ""
         if worker is None or not is_metal_queue_dead(detail):
             return resp
@@ -1233,8 +1396,12 @@ class InferenceOrchestrator:
         resp_queue = self._resp_queue
         if resp_queue is None:
             return None
+        started = time.monotonic()
         try:
             resp = resp_queue.get(timeout = timeout)
+            while _is_dispatcher_wake(resp):
+                left = None if timeout is None else max(started + timeout - time.monotonic(), 0.0)
+                resp = resp_queue.get(timeout = left)
             return self._observe_response(resp, worker) if observe else resp
         except queue.Empty:
             return None
@@ -1311,11 +1478,13 @@ class InferenceOrchestrator:
             return events
         while True:
             try:
-                events.append(self._resp_queue.get_nowait())
+                resp = self._resp_queue.get_nowait()
             except queue.Empty:
                 return events
             except (EOFError, OSError, ValueError):
                 return events
+            if not _is_dispatcher_wake(resp):
+                events.append(resp)
 
     def _direct_reader(
         self,
@@ -1655,9 +1824,30 @@ class InferenceOrchestrator:
             if thread is not None and self._dispatcher_thread is not thread:
                 return
             self._dispatcher_stop.set()
+            if self._dispatcher_thread.is_alive():
+                self._wake_dispatcher()
             self._dispatcher_thread.join(timeout = _DISPATCH_STOP_TIMEOUT)
             self._dispatcher_thread = None
             logger.debug("Dispatcher thread stopped")
+
+    def _wake_dispatcher(self) -> None:
+        """Best effort: on failure the dispatcher still stops on its next poll timeout."""
+        resp_queue = self._resp_queue
+        if resp_queue is None:
+            return
+        try:
+            # Pending data already wakes the reader; a dead writer may still hold the feeder lock.
+            if not resp_queue.empty():
+                return
+            # Interpreter exit must not wait on this put over a full or dead pipe.
+            cancel_join = getattr(resp_queue, "cancel_join_thread", None)
+            if cancel_join is not None:
+                cancel_join()
+            resp_queue.put_nowait({"type": _DISPATCHER_WAKE})
+        except Exception:
+            logger.debug(
+                "Dispatcher wake-up put failed; stopping on the poll timeout", exc_info = True
+            )
 
     def _dispatcher_loop(self) -> None:
         """Background loop: read resp_queue and route to mailboxes by request_id."""
@@ -1672,6 +1862,8 @@ class InferenceOrchestrator:
                 continue
             except (EOFError, OSError, ValueError):
                 break
+            if _is_dispatcher_wake(resp):
+                continue  # loop condition rechecks the stop flag
 
             # Sole consumer of the response queue; never let routing kill it, or every in-flight stream hangs.
             try:
@@ -2186,9 +2378,20 @@ class InferenceOrchestrator:
             # Always spawn fresh: unsloth patches torch internals, breaking getsource on reuse.
             had_worker_handle = self._proc is not None
             worker_shutdown_at = 0.0
+            before_kill_free_mib = None
             if self._ensure_subprocess_alive():
                 self._cancel_generation()
-                time.sleep(0.3)
+                if post_handoff_expected_free_gb is None and not (
+                    len(resolved_gpu_ids or ()) == 1
+                    and isinstance(gpu_selection, dict)
+                    and gpu_selection.get("required_gb") is not None
+                ):
+                    # No free-VRAM target for the settle wait below: sample the live worker's
+                    # footprint so a release already finished by the first poll is recognised.
+                    try:
+                        before_kill_free_mib = self._free_vram_mib()
+                    except Exception:  # noqa: BLE001 - an unreadable sample keeps the plain settle wait
+                        before_kill_free_mib = None
                 if self._shutdown_subprocess() is False:
                     # Worker survived kill (wedged CUDA syscall); do not spawn a second over its GPU memory.
                     raise RuntimeError(
@@ -2214,6 +2417,7 @@ class InferenceOrchestrator:
                 settled = self._wait_for_worker_vram_settle(
                     worker_shutdown_at or time.monotonic(),
                     expected_free_gb = expected_free_gb,
+                    before_kill_free_mib = before_kill_free_mib,
                 )
                 if expected_free_gb is not None and not settled:
                     raise RuntimeError(self._vram_wait_message(expected_free_gb))
