@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Budget for JavaScript fetched and run before the first screen: Vite's entry plus modulepreload
- * links (static import closure) plus parser-blocking classic scripts such as public/theme-boot.js.
- */
-
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,17 +9,14 @@ import { gzipSync } from "node:zlib";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = resolve(HERE, "..", "dist");
 
-/** Measured plus headroom. Transfer = wire bytes; raw = bytes the main thread parses. */
 export const BUDGET = {
   // Keep the prior headroom when measured startup imports move out of the entry graph.
-  // by that.
   transferBytes: 1_271_720,
   rawBytes: 3_971_182,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.
 
-/** Lowercased tag name and attributes; a valueless attribute has value "". */
 type StartTag = { name: string; attrs: Map<string, string> };
 
 /** ASCII whitespace; CR is defensive since the HTML preprocessor turns CR into LF. */
@@ -114,10 +106,7 @@ function endOfScriptBody(html: string, start: number): number {
 
 const TAG_NAME_START = /[a-z]/i;
 
-/**
- * Every start tag in order, skipping comments and script bodies as the browser does.
- * Escaped `<!-- <script` bodies may over-count a chunk, never miss one (checked vs parse5).
- */
+// Escaped `<!-- <script` bodies may over-count a chunk, never miss one (checked vs parse5).
 function* startTags(html: string): Generator<StartTag> {
   let i = 0;
   while (i < html.length) {
@@ -156,9 +145,7 @@ function relTokens(tag: StartTag): string[] {
   return (attr(tag, "rel") ?? "").toLowerCase().split(/\s+/).filter(Boolean);
 }
 
-/**
- * blocking="render" delays first render for any external script, async included (HTML spec).
- */
+// blocking="render" delays first render even for async scripts (HTML spec).
 function blocksRender(tag: StartTag): boolean {
   return (attr(tag, "blocking") ?? "")
     .toLowerCase()
@@ -166,10 +153,7 @@ function blocksRender(tag: StartTag): boolean {
     .includes("render");
 }
 
-/**
- * Eager set relative to dist/. entry and preloads stay separate so missing preload links are
- * detectable; `blocking` holds parser-blocking classic scripts like public/theme-boot.js.
- */
+// Separate entry/preloads so a missing preload closure cannot pass the budget.
 export type EagerSet = {
   entry: string[];
   preloads: string[];
@@ -244,14 +228,9 @@ export function eagerChunksFromHtml(html: string): string[] {
   return [...blocking, ...entry, ...preloads];
 }
 
-/**
- * Text that marks React-preview runtime code. The preview libraries and the bootstrap that imports
- * them are only ever fetched when a preview opens, so either string in a startup chunk means that
- * code was pulled onto the startup path: a static import where a lazy one was meant.
- */
+// Preview runtime markers must stay outside the startup graph.
 export const LAZY_ONLY_NEEDLES = ["__unslothModules", "__vite_ssr_import__"];
 
-/** Every (chunk, needle) pair where an eager chunk contains a needle. A chunk that cannot be read is skipped. */
 export function eagerChunksContaining(
   distDir: string,
   chunks: string[],
@@ -290,7 +269,6 @@ function measure(names: string[]): Measured[] | string {
     try {
       bytes = readFileSync(join(DIST, name));
     } catch {
-      // Report it: concluding the budget is fine must never be reachable here.
       return `dist/index.html references ${name}, which is not in the build`;
     }
     out.push({

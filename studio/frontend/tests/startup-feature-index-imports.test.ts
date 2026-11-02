@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Importing a feature index from startup code makes every module it re-exports part of the
-// startup bundle, so these indexes must stay out of main.tsx's static import graph.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, normalize, relative } from "node:path";
