@@ -999,7 +999,6 @@ def cache_breakdown(key: str) -> dict:
     definition = definition_for(key)
     measured = _measurement_roots(definition)
     nested = _nested_active_roots(definition, measured)
-    # Nested active roots go first so their copies are listed (and sized) under the active root.
     for root in nested + measured:
         try:
             with os.scandir(root) as scan:
@@ -1084,12 +1083,13 @@ def describe_cache(definition: CacheDefinition) -> dict:
             entries += count
             if clearable:
                 clear_entries += count
-        # An active root nested inside a remembered one was folded into its ancestor's walk.
         measured_keys = {_safe_resolve(root) for root in measured_paths}
         for root in measurable if purgeable else []:
             if _safe_resolve(root) in measured_keys:
                 continue
-            _, count = _measure_root(root, patterns = patterns, ledger = clear_ledger)
+            _, count = _measure_root(
+                root, patterns = patterns, ledger = clear_ledger, occupancy = occupancy
+            )
             clear_entries += count
         total = occupancy.bytes
         clear_size = clear_ledger.freeable_bytes()
