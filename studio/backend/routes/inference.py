@@ -27027,6 +27027,11 @@ def _llama_passthrough_audio(raw: bytes) -> Optional[tuple[str, float]]:
 _VIDEO_INPUT_REFUSAL = (
     "Video input is only supported on a local GGUF or MLX model with video support."
 )
+_VIDEO_NEEDS_FFMPEG_DETAIL = (
+    "This model takes video, but ffmpeg and ffprobe were not found in llama-server's search path. "
+    "Install FFmpeg so both are on PATH, or correct --video-ffmpeg-dir / "
+    "LLAMA_ARG_VIDEO_FFMPEG_DIR if configured. Then restart Unsloth and reload the model."
+)
 
 
 def _local_video_clips(payload, model_info) -> list[str]:
@@ -27298,12 +27303,20 @@ def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
 
 async def _shrink_clip_for_llama(video_b64: str, llama_backend) -> str:
     """Transcodes before llama-server samples frames, so the explicit rate must reach the transcode."""
+    process_env = getattr(llama_backend, "_process_env", None)
+    child_env = (
+        process_env[1]
+        if process_env is not None and process_env[0] is getattr(llama_backend, "_process", None)
+        else None
+    )
     try:
         return await asyncio.to_thread(
             shrink_video_for_llama,
             video_b64,
             _MAX_VIDEO_BYTES,
             sampled_fps = requested_video_fps(getattr(llama_backend, "extra_args", None)),
+            ffmpeg_dir = getattr(llama_backend, "_video_ffmpeg_dir", None),
+            env = child_env,
         )
     except Exception as e:
         # The helper absorbs ffmpeg errors, so a raw 500 would leak the monitor row; reject with a 400.
@@ -31780,6 +31793,8 @@ async def produce_openai_chat_completions(
         video_b64 = None
         if _request_has_video(payload):
             if not getattr(llama_backend, "_has_video_input", False):
+                if getattr(llama_backend, "_video_needs_ffmpeg", False):
+                    raise _reject(400, _VIDEO_NEEDS_FFMPEG_DETAIL)
                 raise _reject(
                     400,
                     "Video provided but the current GGUF model cannot take video input. "
