@@ -171,7 +171,6 @@ def _qk_norm_case(
 @pytest.mark.parametrize("dynamic", [False, True], ids = ["static", "dynamic"])
 @pytest.mark.parametrize("dim", [64, 128])
 def test_multirow_compiled_matches_one_row_eager(multirow, gemma, dynamic, dim):
-    """Under torch.compile (fullgraph, no graph break) the bytes match the one-row eager kernel."""
     if not getattr(torch.library, "triton_op", None):
         pytest.skip("needs torch.library.triton_op")
     dtype = torch.bfloat16 if rms_layernorm._BF16_TRACEABLE else torch.float16

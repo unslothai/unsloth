@@ -61,7 +61,6 @@ def test_an_int_width_still_uses_the_cache(module):
 
 
 def test_multirow_self_check_gets_a_concrete_width(monkeypatch):
-    # Hashing a symbolic launch argument disables multirow for the whole process.
     seen = []
 
     def self_check(device, dtype, W_dtype, n_cols, eps, gemma, multirow):
