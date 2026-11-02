@@ -20,6 +20,8 @@ let database: Dexie | undefined;
 let account = "";
 let revision = 0;
 let committed: ChatBackgroundValue | null = null;
+// Kept with the image it describes: another tab can replace the stored one while this one still shows its own.
+let committedSha: string | null = null;
 let writes: Promise<unknown> = Promise.resolve();
 let hydration: Promise<void> | undefined;
 /** `dirty`: a local edit the server has not seen. */
@@ -38,15 +40,35 @@ export function setBackgroundChangeListener(listener: (() => void) | null) {
 	onLocalChange = listener;
 }
 export async function readBackgroundSync(): Promise<BackgroundSyncState> {
-	const row = await currentDatabase().table("backgrounds").get("sync");
-	return { ...CLEAN_SYNC, ...(row?.state ?? {}) };
+	const table = currentDatabase().table("backgrounds");
+	const [row, current] = await Promise.all([table.get("sync"), table.get("current")]);
+	return {
+		...CLEAN_SYNC,
+		...(row?.state ?? {}),
+		sha256: typeof current?.sha256 === "string" ? current.sha256 : null,
+	};
 }
 export async function writeBackgroundSync(
-	patch: Partial<BackgroundSyncState>,
+	patch: Partial<Omit<BackgroundSyncState, "sha256">>,
+): Promise<void> {
+	const table = currentDatabase().table("backgrounds");
+	const row = await table.get("sync");
+	const { sha256: _sha, ...state } = { ...CLEAN_SYNC, ...(row?.state ?? {}), ...patch };
+	await table.put({ id: "sync", state });
+}
+/** Records the account's hash for `blob`, only while this tab still holds that image. */
+export async function recordUploadedImage(
+	blob: Blob,
+	sha256: string | null,
 ): Promise<void> {
 	const db = currentDatabase();
-	const state = { ...(await readBackgroundSync()), ...patch };
-	await db.table("backgrounds").put({ id: "sync", state });
+	const write = writes.then(async () => {
+		if (committed?.blob !== blob) return;
+		await db.table("backgrounds").put({ id: "current", value: committed, sha256 });
+		if (db === database) committedSha = sha256;
+	});
+	writes = write.catch(() => undefined);
+	await write;
 }
 function currentDatabase() {
 	const name = accountDatabaseName("unsloth-chat-background");
@@ -58,6 +80,7 @@ function currentDatabase() {
 		database.version(1).stores({ backgrounds: "id" });
 		hydration = undefined;
 		committed = null;
+		committedSha = null;
 		writes = Promise.resolve();
 		useBackgroundStore.setState({
 			value: null,
@@ -81,6 +104,8 @@ export function hydrateBackground(): Promise<void> {
 					row?.value?.blob instanceof Blob
 						? { ...sanitizeAdjustments(row.value), blob: row.value.blob }
 						: null;
+				committedSha =
+					committed && typeof row?.sha256 === "string" ? row.sha256 : null;
 				useBackgroundStore.setState({ value: committed, ready: true });
 			})
 			.catch(() => {
@@ -109,15 +134,17 @@ async function persist(
 	if (optimistic) useBackgroundStore.setState({ value, error: null });
 	const write = writes.then(async () => {
 		const sameImage = Boolean(value && committed && value.blob === committed.blob);
-		if (value) await db.table("backgrounds").put({ id: "current", value });
+		const sha256 = fromServer ? (fromServer.sha256 ?? null) : sameImage ? committedSha : null;
+		if (value) await db.table("backgrounds").put({ id: "current", value, sha256 });
 		else await db.table("backgrounds").delete("current");
-		if (db === database) committed = value;
+		if (db === database) {
+			committed = value;
+			committedSha = value ? sha256 : null;
+		}
 		await writeBackgroundSync(
 			fromServer
-				? { ...fromServer, dirty: false }
-				: sameImage
-					? { dirty: true }
-					: { dirty: true, sha256: null },
+				? { updatedAt: fromServer.updatedAt ?? null, dirty: false }
+				: { dirty: true },
 		);
 	});
 	writes = write.catch(() => undefined);

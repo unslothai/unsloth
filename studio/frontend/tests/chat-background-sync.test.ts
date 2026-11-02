@@ -50,3 +50,11 @@ test("adjustments saved against another browser's newer image re-upload this bro
   const sync = readSrc("features/chat-background/sync.ts");
   assert.match(sync, /if \(record\.image\?\.sha256 !== sha256\) \{\n[^}]*saveChatBackgroundImage\(value\.blob\)[^}]*record = await save\(\);/);
 });
+
+test("the uploaded hash is stored with its image, so a stale tab cannot keep another tab's", () => {
+  const storage = readSrc("features/chat-background/storage.ts");
+  assert.match(storage, /const sha256 = fromServer \? \(fromServer\.sha256 \?\? null\) : sameImage \? committedSha : null;/);
+  assert.match(storage, /put\(\{ id: "current", value, sha256 \}\)/);
+  assert.match(storage, /if \(committed\?\.blob !== blob\) return;/);
+  assert.doesNotMatch(readSrc("features/chat-background/sync.ts"), /writeBackgroundSync\(\{[^}]*sha256/);
+});

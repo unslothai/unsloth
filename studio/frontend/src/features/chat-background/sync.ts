@@ -14,6 +14,7 @@ import {
 	applyServerBackground,
 	hydrateBackground,
 	readBackgroundSync,
+	recordUploadedImage,
 	setBackgroundChangeListener,
 	useBackgroundStore,
 	writeBackgroundSync,
@@ -36,21 +37,20 @@ async function push() {
 	if (!value) {
 		const record = await clearChatBackground();
 		if (changes === started)
-			await writeBackgroundSync({ dirty: false, updatedAt: record.updatedAt, sha256: null });
+			await writeBackgroundSync({ dirty: false, updatedAt: record.updatedAt });
 		return;
 	}
 	let { sha256 } = await readBackgroundSync();
 	if (!sha256) {
 		sha256 = (await saveChatBackgroundImage(value.blob)).image?.sha256 ?? null;
 		// The image is the account's now even if adjustments moved meanwhile.
-		if (useBackgroundStore.getState().value?.blob === value.blob)
-			await writeBackgroundSync({ sha256 });
+		await recordUploadedImage(value.blob, sha256);
 	}
 	const { blob: _blob, ...adjustments } = value;
 	const save = () =>
 		saveChatBackgroundAdjustments(adjustments).catch(async (error: unknown) => {
 			// Another browser removed the image in between: upload it again next time.
-			await writeBackgroundSync({ sha256: null });
+			await recordUploadedImage(value.blob, null);
 			throw error;
 		});
 	let record = await save();
@@ -59,8 +59,9 @@ async function push() {
 		sha256 = (await saveChatBackgroundImage(value.blob)).image?.sha256 ?? null;
 		record = await save();
 	}
+	await recordUploadedImage(value.blob, sha256);
 	if (changes === started)
-		await writeBackgroundSync({ dirty: false, updatedAt: record.updatedAt, sha256 });
+		await writeBackgroundSync({ dirty: false, updatedAt: record.updatedAt });
 }
 
 async function pull() {
