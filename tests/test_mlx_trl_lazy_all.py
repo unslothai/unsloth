@@ -395,6 +395,13 @@ over = trl.DPOTrainer(model=model, args=trl.DPOConfig(output_dir="o"), train_dat
 assert (over.max_grad_norm, over.dataset_order) == (0, "default")
 warm = trl.SFTConfig(output_dir="o", num_train_epochs=1, warmup_steps=0, warmup_ratio=0.1)
 assert trl.SFTTrainer(model=model, args=warm, train_dataset=[], warmup_ratio=0.0).args.warmup_steps == 0
+
+edited = trl.SFTConfig(output_dir="o", max_steps=100, warmup_ratio=0.1)
+edited.warmup_steps, edited.logging_steps = 30, 7
+rebuilt = trl.SFTTrainer(model=model, args=edited, train_dataset=[], learning_rate=1e-4).args
+assert (rebuilt.warmup_steps, rebuilt.logging_steps) == (30, 7)
+untouched = trl.SFTConfig(output_dir="o", max_steps=100, warmup_ratio=0.1)
+assert trl.SFTTrainer(model=model, args=untouched, train_dataset=[], max_steps=200).args.warmup_steps == 20
 """)
 
 
@@ -440,6 +447,14 @@ assert trl.DPOTrainer(model=model, args=off, train_dataset=[]).args.max_grad_nor
 kept = dataclasses.replace(trl.DPOConfig(output_dir="o", max_grad_norm=0.0), beta=0.3)
 assert trl.DPOTrainer(model=model, args=kept, train_dataset=[]).args.max_grad_norm == 0
 assert trl.DPOConfig(output_dir="o", max_grad_value=0.0).max_grad_norm == 0
+assert trl.DPOConfig(output_dir="o", max_grad_value=None).max_grad_norm == 1.0
+assert zoo._resolve_mlx_grad_clipping(trl.DPOConfig(output_dir="o", max_grad_value=None))[-1] == "global_norm"
+assert zoo._resolve_mlx_grad_clipping(trl.DPOConfig(output_dir="o", max_grad_value=0.0))[-1] == "none"
+for stem in ("DPO", "ORPO", "KTO", "CPO", "GRPO"):
+    extra = {"num_generations": 2, "per_device_train_batch_size": 2} if stem == "GRPO" else {}
+    config = getattr(trl, stem + "Config")
+    for norm in (0, None):
+        assert zoo._resolve_mlx_grad_clipping(config(output_dir="o", max_grad_norm=norm, **extra))[-1] == "none", stem
 assert trl.DPOConfig(output_dir="o").max_grad_norm == 1.0
 assert parsed(trl.GRPOConfig, "--num_generations", "2", "--per_device_train_batch_size", "2", "--scale_rewards", "batch").scale_rewards == "batch"
 assert pickle.loads(pickle.dumps(parsed(trl.DPOConfig))).learning_rate == 1e-6

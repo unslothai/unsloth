@@ -1064,6 +1064,8 @@ if _IS_MLX:
                 setattr(self, key, value)
             _warn_ignored_mlx_training_args(extra_kwargs)
             self._unsloth_mlx_logging_steps_explicit = "logging_steps" in kwargs
+            self._unsloth_mlx_initial_logging_steps = self.logging_steps
+            self._unsloth_mlx_initial_warmup_steps = self.warmup_steps
             # Like TrainingArguments: zoo's eval_steps=0 would silently never evaluate. That fallback
             # means TRL's logging_steps default of 10, not zoo's 1.
             eval_strategy = getattr(self, "eval_strategy", None)
@@ -1238,12 +1240,16 @@ if _IS_MLX:
             if (
                 values.get("warmup_ratio")
                 and getattr(args, "_unsloth_mlx_warmup_steps_explicit", True) is False
+                and values.get("warmup_steps")
+                == getattr(args, "_unsloth_mlx_initial_warmup_steps", values.get("warmup_steps"))
             ):
                 if overrides.get("warmup_ratio", values["warmup_ratio"]):
                     values.pop("warmup_steps", None)
                 else:
                     values["warmup_steps"] = 0
-            if getattr(args, "_unsloth_mlx_logging_steps_explicit", True) is False:
+            if getattr(args, "_unsloth_mlx_logging_steps_explicit", True) is False and values.get(
+                "logging_steps"
+            ) == getattr(args, "_unsloth_mlx_initial_logging_steps", None):
                 values.pop("logging_steps", None)
         values.update(
             {
@@ -1758,8 +1764,11 @@ if _IS_MLX:
                 for field in fields:
                     if kwargs[field.name] == field.default:
                         del kwargs[field.name]
-            # Another clip was chosen, so TRL's default max_grad_norm must not clip as well.
-            if "max_grad_value" in kwargs or "max_grad_leaf_norm" in kwargs:
+            # A value set on either other knob decides the clip, so TRL's default norm must stay out of it.
+            if (
+                kwargs.get("max_grad_value") is not None
+                or kwargs.get("max_grad_leaf_norm") is not None
+            ):
                 kwargs.setdefault("max_grad_norm", 0.0)
             divergence = kwargs.get("f_divergence_type", "reverse_kl")
             # Only alpha_divergence reads it, and its default differs across TRL releases.
@@ -1771,6 +1780,13 @@ if _IS_MLX:
                     if getattr(kwargs[key], "value", kwargs[key]) in (value, None):
                         del kwargs[key]
             super().__init__(*args, **kwargs)
+            # TRL reads an unset norm as no clipping; zoo would fall back to leaf clipping at 1.0.
+            if (
+                not self.max_grad_norm
+                and self.max_grad_value is None
+                and self.max_grad_leaf_norm is None
+            ):
+                self.max_grad_leaf_norm = 0.0
 
     class _MLXTRLPolicyTrainer(UnslothTrainer):
         _unsloth_mlx_keep_dataset_order = False
