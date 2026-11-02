@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import {
   AlertDialog,
@@ -36,12 +37,11 @@ import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import {
-  Delete02Icon,
   Search01Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
-import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
@@ -61,13 +61,16 @@ type PendingDelete =
 type SortOrder = "newest" | "oldest" | "az";
 
 function formatDictationDate(ms: number): string {
-  return new Date(ms).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return new Date(ms).toLocaleString(
+    undefined,
+    withTimeFormat({
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }),
+  );
 }
 
 export function RecentDictationsView({
@@ -80,6 +83,7 @@ export function RecentDictationsView({
   onBack: () => void;
 }) {
   const t = useT();
+  useTimeFormat();
   const recentDictations = useVoiceSettingsStore((s) => s.recentDictations);
   const removeRecentDictation = useVoiceSettingsStore(
     (s) => s.removeRecentDictation,
@@ -263,7 +267,7 @@ export function RecentDictationsView({
               }
               className="text-destructive hover:text-destructive"
             >
-              <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="mr-1.5 size-3.5" />
               {t("settings.voice.recents.delete")}
             </Button>
           </div>
@@ -319,7 +323,7 @@ export function RecentDictationsView({
               onClick={() => setPendingDelete({ kind: "all" })}
               className="shrink-0 text-destructive hover:text-destructive"
             >
-              <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="mr-1.5 size-3.5" />
               {t("settings.voice.recents.clear")}
             </Button>
           </div>
@@ -436,7 +440,7 @@ export function RecentDictationsView({
                       className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <HugeiconsIcon
-                        icon={Delete02Icon}
+                        icon={TrashIcon}
                         strokeWidth={1.75}
                         className="size-4"
                       />

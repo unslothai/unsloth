@@ -557,7 +557,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         base_repo = "MiniMaxAI/MiniMax-H3",
         aliases = ("minimax_h3", "minimaxh3", "h3"),
         has_audio = True,
-        default_steps = 30,
+        # The t2v template's non-LoRA path: 20 steps, BasicGuider (CFG 1); the turbo LoRA path is the PDD row.
+        default_steps = 20,
         default_guidance = 1.0,
         default_num_frames = 124,
         default_fps = 24,
@@ -1159,6 +1160,36 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
+    memo = _detect_video_family_memo()
+    try:
+        return memo[repo_id]
+    except (KeyError, TypeError):
+        pass
+    family = _detect_video_family_by_name(repo_id)
+    try:
+        if len(memo) >= _DETECT_VIDEO_FAMILY_MEMO_MAX:
+            memo.clear()
+        memo[repo_id] = family
+    except TypeError:
+        pass
+    return family
+
+
+_DETECT_VIDEO_FAMILY_MEMO_MAX = 8192
+# Paired with the tables it was filled from: replacing either starts an empty memo.
+_detect_video_family_memo_state: tuple[object, object, dict] = ((), (), {})
+
+
+def _detect_video_family_memo() -> dict:
+    global _detect_video_family_memo_state
+    families, unsupported, memo = _detect_video_family_memo_state
+    if families is not _FAMILIES or unsupported is not _UNSUPPORTED_VIDEO_CHECKPOINTS:
+        memo = {}
+        _detect_video_family_memo_state = (_FAMILIES, _UNSUPPORTED_VIDEO_CHECKPOINTS, memo)
+    return memo
+
+
+def _detect_video_family_by_name(repo_id: str) -> Optional[VideoFamily]:
     # I2V / VACE / FastWan names can carry a T2V token (Wan2.1_T2V_14B_FusionX_VACE): no T2V pipeline over those weights.
     if unsupported_video_checkpoint_reason(repo_id):
         return None

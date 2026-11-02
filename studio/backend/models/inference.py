@@ -224,6 +224,15 @@ class LoadRequest(BaseModel):
             "measured faster here; the status reports the reason otherwise."
         ),
     )
+    mlx_fast_verify: bool = Field(
+        False,
+        description = (
+            "Experimental, MLX only: verify a drafter's tokens on faster kernels during speculative "
+            "decoding. Changes decode output slightly against plain greedy decoding, repeatably. "
+            "Applied only when the load attaches a drafter and the model supports it; the status "
+            "reports the reason otherwise. Decided at load: changing it reloads the model."
+        ),
+    )
     mlx_ple_offload: MlxOffload = Field(
         None,
         description = (
@@ -1211,6 +1220,27 @@ class AnePrefillAvailabilityResponse(BaseModel):
     )
 
 
+class FastVerifyAvailabilityRequest(BaseModel):
+    """A model whose run settings may offer MLX Fast Verify."""
+
+    model_path: str = Field(..., description = "Model identifier or local path")
+    hf_token: Optional[str] = Field(None, description = "Token for gated repositories")
+
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
+
+
+class FastVerifyAvailabilityResponse(BaseModel):
+    """Whether a load of this model could run MLX Fast Verify, judged from its downloaded files."""
+
+    available: bool
+    reason: Optional[str] = Field(
+        None,
+        description = "Cause when available is false: 'not_downloaded', 'unsupported_model', "
+        "'unsupported_zoo', or unsloth_zoo's own reason ('no_lane_kernel', "
+        "'no_eligible_projections', 'probe_failed').",
+    )
+
+
 class MlxDraftersRequest(BaseModel):
     model_path: str = Field(..., description = "Model identifier or local path of the target")
 
@@ -1676,6 +1706,10 @@ class _InferenceRuntimeFields(BaseModel):
     audio_convert_route: Optional[str] = Field(
         None, description = "Seed-VC route the running server was started with."
     )
+    audio_clone: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Clone rules (transcript, emotion clip, voice description); None when it does not clone.",
+    )
 
     @model_validator(mode = "after")
     def derive_audio_workflows(self):
@@ -1872,6 +1906,16 @@ class _InferenceRuntimeFields(BaseModel):
         None,
         description = "Why requested Neural Engine prefill is not active, as unsloth_zoo reports it "
         "(for example no_neural_engine, no_eligible_mlps, no_gain, not_enough_memory or released)",
+    )
+    mlx_fast_verify: Optional[bool] = Field(
+        None, description = "Whether MLX Fast Verify is active for the loaded model"
+    )
+    mlx_fast_verify_requested: Optional[bool] = Field(
+        None, description = "Whether the load asked for MLX Fast Verify"
+    )
+    mlx_fast_verify_reason: Optional[str] = Field(
+        None,
+        description = "Why requested Fast Verify is not active: no_drafter, unsupported_zoo, or unsloth_zoo's reason",
     )
     mlx_offload: Optional[MlxOffloadStatus] = Field(None, description = "MLX: weights read from disk")
     chat_template: Optional[str] = Field(
@@ -2801,7 +2845,9 @@ class SandboxAttachment(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    """Accept unknown fields so future OpenAI fields are not dropped before route code runs. Mirrors AnthropicMessagesRequest and ResponsesRequest."""
+    """OpenAI-compatible chat completion request.
+
+    Non-OpenAI extension fields are marked with 'x-unsloth'."""
 
     model_config = {"extra": "allow"}
     # "off" with the client's own confirm_tool_calls=false: no prompt at all, even without OS isolation.
@@ -3549,6 +3595,13 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
             "[x-unsloth] The thread being counted. A thread with a conversation archive puts "
             "search_conversation and its compaction nudge in the prompt, so the count needs "
             "the same id the completion sends to price them."
+        ),
+    )
+    session_id: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] The tool session the completion sends. A project's chosen working "
+            "folder adds a sentence to the tool nudge, so the count needs it to price that."
         ),
     )
     rag_scope: Optional[dict] = Field(
@@ -5904,6 +5957,11 @@ class DiffusionDownloadPlanEntry(BaseModel):
         "planner has to say so: a gated base is staged from its ungated mirror, so the entry's "
         "repo id is not the id the caller picked and the role cannot be recovered downstream.",
     )
+    hosted_denoiser: bool = Field(
+        False,
+        description = "This checkpoint entry holds a hosted denoiser replacing the pipeline's "
+        "dense weights, which a pinned snapshot of that pipeline does not contain.",
+    )
 
 
 class DiffusionDownloadPlanResponse(BaseModel):
@@ -6117,7 +6175,12 @@ class DiffusionStatusResponse(BaseModel):
         "LoRA picker's enabled state). torchao int8/fp8 builds support LoRA via the load-time "
         "bake: select the adapters when loading; weight changes apply live, a different adapter "
         "set needs a reload. False on unsupported families/quant (e.g. nvfp4/mxfp8, "
-        "GGUF-via-diffusers, or Qwen-Image on the native engine).",
+        "a whole-pipeline SDXL GGUF, or Qwen-Image on the native engine).",
+    )
+    lora_unavailable_reason: Optional[str] = Field(
+        None,
+        description = "Why the loaded model cannot apply LoRA adapters on its current engine, shown on the "
+        "Images page in place of the LoRA picker. Null when supports_lora is true or nothing is loaded.",
     )
     supports_controlnet: bool = Field(
         False,

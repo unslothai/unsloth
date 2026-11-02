@@ -927,6 +927,36 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
         # 10 + 10*0.85 = 18.5GB
         self.assertAlmostEqual(metadata["usable_gb"], 18.5, places = 3)
 
+    def test_auto_select_gpu_ids_max_gpus_stops_pooling(self):
+        fake_devices = {
+            "devices": [
+                {"index": 0, "vram_total_gb": 16.0, "vram_used_gb": 4.0},
+                {"index": 1, "vram_total_gb": 16.0, "vram_used_gb": 6.0},
+                {"index": 2, "vram_total_gb": 16.0, "vram_used_gb": 7.0},
+            ]
+        }
+
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch(
+                "utils.hardware.hardware.get_visible_gpu_utilization",
+                return_value = fake_devices,
+            ),
+        ):
+            pooled, _ = auto_select_gpu_ids("unsloth/test", required_override_gb = 14.0)
+            capped, metadata = auto_select_gpu_ids(
+                "unsloth/test", required_override_gb = 14.0, max_gpus = 1
+            )
+            fits, fits_metadata = auto_select_gpu_ids(
+                "unsloth/test", required_override_gb = 11.0, max_gpus = 1
+            )
+
+        self.assertEqual(pooled, [0, 1])
+        self.assertEqual(capped, [0, 1, 2])
+        self.assertEqual(metadata["selection_mode"], "fallback_all")
+        self.assertAlmostEqual(metadata["usable_gb"], 12.0, places = 3)
+        self.assertEqual((fits, fits_metadata["selection_mode"]), ([0], "auto"))
+
     def test_prepare_gpu_selection_preserves_explicit_ids_without_auto_selection(self):
         with (
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),

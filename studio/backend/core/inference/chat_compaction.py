@@ -886,8 +886,10 @@ def _archive_and_recall(
     branch_messages: Optional[list[dict]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
     background: bool = False,
+    query_messages: Optional[list[dict]] = None,
 ) -> dict:
-    """Never raises: any failure falls back to the plain fitted messages. Recall runs at most once per request or refits stack recall blocks."""
+    """Never raises: any failure falls back to the plain fitted messages. Recall runs at most once per request or refits stack recall blocks.
+    ``query_messages`` is the client's transcript: a tool loop's live branch ends on its own notices, not the user's question."""
     result = {
         "conversation": conversation,
         "events": [],
@@ -948,6 +950,9 @@ def _archive_and_recall(
                 break
             attempt_k = max(1, attempt_k // 2)
 
+        recall_kwargs = {"branch_messages": branch_messages}
+        if query_messages is not None:
+            recall_kwargs["query_messages"] = query_messages
         # Retries re-ask the same queries: encode each once and reuse lexical passes and branch checks.
         with query_vector_memo(), conversation_archive.recall_session():
             for index, k in enumerate(attempts):
@@ -956,7 +961,7 @@ def _archive_and_recall(
                     thread_id,
                     style = style,
                     top_k = k,
-                    branch_messages = branch_messages,
+                    **recall_kwargs,
                 )
                 if not recall:
                     result["counts"] = counts

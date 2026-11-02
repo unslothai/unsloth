@@ -65,6 +65,8 @@ def _stub_inference_scopes(module):
         ane_prefill = None,
         on_error = None,
         _modules = None,
+        # Newer zoo keywords (fast_verify), unnamed so Studio's signature probe still reads this stub as an older zoo.
+        **_newer,
     ):
         # The call-shape replay below passes placeholders; anything but a tuple serves every scope.
         traits = set(call) if isinstance(call, tuple) else None
@@ -128,7 +130,14 @@ def _fusion_modules(model, modules):
 
 
 # Plain-function helpers zoo's generate.py imports; the neutral scope cannot stand in for them.
-PLAIN_HELPERS = {"_fusion_modules": _fusion_modules}
+PLAIN_HELPERS = {
+    "_fusion_modules": _fusion_modules,
+    # Private names zoo's speculative.py imports (unsloth_zoo #2330); only their presence matters here.
+    "_SparseDrafter": type(
+        "_SparseDrafter", (), {"__init__": lambda self, *_args, **_kwargs: None}
+    ),
+    "_VERIFY_GDN_MAX_ROWS": 16,
+}
 
 
 def _fused_drafter_ops(model, *_args, **_kwargs):
@@ -138,7 +147,15 @@ def _fused_drafter_ops(model, *_args, **_kwargs):
 
 
 # Plain calls whose zoo body cannot run here, so the stub returns their do-nothing answer instead.
-NEUTRAL_PLAIN_HELPERS = {"fused_drafter_ops": _fused_drafter_ops}
+def _unless_failed_buffer(error):
+    """zoo re-raises a failed Metal command buffer (unsloth_zoo #2333); the stub has none to fail."""
+
+
+NEUTRAL_PLAIN_HELPERS = {
+    "fused_drafter_ops": _fused_drafter_ops,
+    "fused_drafter_layers": _fused_drafter_ops,
+    "_unless_failed_buffer": _unless_failed_buffer,
+}
 
 
 def _neutral_zoo_helper(name):
@@ -5796,6 +5813,133 @@ def test_ane_prefill_is_pinned_inside_int8_released_on_unload_and_reloads_on_cha
         pytest.fail("the Neural Engine scope's error was swallowed")
 
 
+def _fast_verify_zoo(module, *verdict):
+    """Zoo's pin over the stub: `calls` holds what Zoo calls were told, with a refusal recorded as raised."""
+    calls, pinned = [], {}
+    inner = module.inference_scopes
+    available, reason = verdict or (True, "")
+
+    def pin_fast_verify(model, fast_verify = None):
+        if pinned.setdefault(id(model), fast_verify) != fast_verify:
+            raise ValueError("pinned the other way")
+
+    @contextmanager
+    def inference_scopes(model, call, *, fast_verify, **others):
+        calls.append(("scopes", fast_verify))
+        if pinned.get(id(model), fast_verify) != fast_verify:
+            calls.append("refused")
+            raise ValueError("pinned the other way")
+        with inner(model, call, **others):
+            yield model
+
+    module.inference_scopes = inference_scopes
+    module.pin_fast_verify = pin_fast_verify
+    module.fast_verify_available = lambda m: SimpleNamespace(available = available, reason = reason)
+    module.warm_inference = lambda m, fast_verify, **_: calls.append(("warm", fast_verify))
+    return calls, pinned
+
+
+def _load_for_fast_verify(monkeypatch, drafter, requested, mode, build):
+    from core.inference import mlx_speculative
+
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+    told = []
+
+    def build_draft(target, resolution, **kwargs):
+        told.append(kwargs.get("fast_verify"))
+        if build is not None:
+            build(target, kwargs.get("fast_verify"))
+        draft = None if drafter is None else SimpleNamespace(drafter = drafter)
+        return draft, "dflash" if drafter else None, None, None
+
+    monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **k: None)
+    resolved = lambda m, *a, **k: mlx_speculative.SpecResolution(m)
+    monkeypatch.setattr(mlx_speculative, "resolve_speculation", resolved)
+    monkeypatch.setattr(mlx_speculative, "build_draft", build_draft)
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+    assert backend.load_model(config, speculative_type = mode, fast_verify = requested) is True
+    return backend, told, backend.models["fake/text"]
+
+
+def test_fast_verify_reloads_on_change_and_reports_why_it_is_off(mlx_inference_patches):
+    from core.inference import mlx_inference, orchestrator
+    from models.inference import LoadRequest
+    from routes.inference import _mlx_runtime_settings_match
+
+    req = lambda **knobs: LoadRequest(model = "m", model_path = "m", **knobs)
+    entry = {"mlx_kv_quant_requested": "auto", "mlx_fast_verify_requested": False}
+    be = SimpleNamespace(active_model_name = "m", models = {"m": entry})
+    assert _mlx_runtime_settings_match(be, req())
+    assert not _mlx_runtime_settings_match(be, req(mlx_fast_verify = True))
+    entry["mlx_fast_verify_requested"] = True
+    assert _mlx_runtime_settings_match(be, req(mlx_fast_verify = True))
+    assert not _mlx_runtime_settings_match(be, req())
+    assert "mlx_fast_verify_requested" in orchestrator._MLX_RUNTIME_MIRROR_FIELDS
+
+    status = lambda *a: mlx_inference._fast_verify_status(*a)["reason"]
+    assert status(True, object()) == "unsupported_zoo"
+    _fast_verify_zoo(mlx_inference_patches)
+    mlx_inference_patches.fast_verify_available = None  # raises inside the check
+    assert status(True, object()) == "probe_failed"
+
+
+@pytest.mark.parametrize(
+    "requested,available,drafter,mode,active,reason,told",
+    [
+        (True, True, object(), "dflash", True, "", [True]),
+        (False, True, object(), "dflash", False, "", [False]),
+        (True, False, object(), "dflash", False, "no_lane_kernel", [False]),
+        (True, True, None, "dflash", False, "no_drafter", [True]),  # built for it, nothing attached
+        (True, True, None, "off", False, "no_drafter", []),
+    ],
+)
+def test_a_load_tells_every_zoo_call_one_fast_verify_decision(
+    monkeypatch, mlx_inference_patches, requested, available, drafter, mode, active, reason, told
+):
+    calls, pinned = _fast_verify_zoo(
+        mlx_inference_patches, available, "" if available else "no_lane_kernel"
+    )
+    backend, heard, entry = _load_for_fast_verify(monkeypatch, drafter, requested, mode, None)
+    assert (entry["mlx_fast_verify"], entry["mlx_fast_verify_reason"]) == (active, reason)
+    assert entry["mlx_fast_verify_requested"] is requested
+    assert heard == told and pinned == {id(backend._model): active}
+    assert calls == [("warm", active)]
+    for call in ((), ("batch",), ("vision", "speculative")):
+        with backend._generation_scopes(*call):
+            pass
+    assert calls[1:] == [("scopes", active)] * 3
+    assert backend.unload_model("fake/text") and not backend._fast_verify["requested"]
+
+
+def test_a_drafter_that_failed_after_pinning_keeps_fast_verify_on(
+    monkeypatch, mlx_inference_patches
+):
+    calls, pinned = _fast_verify_zoo(mlx_inference_patches)
+    pin = mlx_inference_patches.pin_fast_verify
+    backend, _, entry = _load_for_fast_verify(monkeypatch, None, True, "dflash", pin)
+    assert (entry["mlx_fast_verify"], entry["mlx_fast_verify_reason"]) == (True, "")
+    assert pinned == {id(backend._model): True}
+    with backend._generation_scopes():
+        pass
+    assert calls[-1] == ("scopes", True) and "refused" not in calls
+
+
+def test_a_zoo_without_fast_verify_is_never_told_of_it(monkeypatch, mlx_inference_patches):
+    from core.inference import mlx_inference
+
+    warmed = []
+    mlx_inference_patches.warm_inference = lambda m, int8_prefill = None: warmed.append(int8_prefill)
+    backend, told, entry = _load_for_fast_verify(monkeypatch, object(), True, "dflash", None)
+    assert (entry["mlx_fast_verify"], entry["mlx_fast_verify_reason"]) == (False, "unsupported_zoo")
+    assert told == [None] and warmed == [False]
+    refused = _capture_rng_warnings(monkeypatch, mlx_inference)
+    with backend._generation_scopes():
+        pass
+    assert not refused and backend._fast_verify_decision() is None
+
+
 def test_a_batch_session_holds_int8_prefill_for_its_whole_life(monkeypatch, mlx_inference_patches):
     from core.inference import mlx_inference
 
@@ -8444,6 +8588,7 @@ def _open_vision_session(rows):
     session._rows = {row.handle: row for row in rows}
     session._by_row, session._settled = {row.row: row for row in rows}, {}
     session._speculative, session._decodes_ids = None, False
+    session._retires_rows, session._leaving = False, set()
     return session
 
 
@@ -8518,6 +8663,51 @@ def test_a_resident_vision_tool_row_decodes_its_ids_and_keeps_the_stop_that_clos
     assert list(session.step())[-2:] == [("r", "".join(pieces)), ("r", None)]
 
 
+def test_rows_ending_in_one_step_are_never_alone_until_it_ends(monkeypatch):
+    """The speculative stream frees the caches of rows it reported finished only as its step ends."""
+    from core.inference import mlx_inference
+
+    backend = _vlm_backend(monkeypatch, markers = None)
+    session = _open_vision_session(
+        [
+            mlx_inference._VisionBatchRow(
+                handle = handle,
+                plan = SimpleNamespace(stream = _vlm_row(backend), streamed = None),
+                row = number,
+            )
+            for number, handle in enumerate("ab")
+        ]
+    )
+    alone, seen = session._alone("a"), []
+    result = SimpleNamespace(finish_reason = "length", prompt_token_count = 3, token_ids = [1])
+
+    def step():
+        for index in (0, 1):
+            yield SimpleNamespace(index = index, delta = "", result = result)
+        seen.append(alone())
+
+    session.stream = SimpleNamespace(step = step)
+    list(session.step())
+    assert seen == [False] and not session._rows and alone()
+
+
+def _store_holding_over_budget():
+    from core.inference import mlx_inference
+
+    store = mlx_inference.VLMPromptSnapshotStore(max_bytes = 10**9)
+    store._entries[("m", (1,))], store._held._entries[("m", (1, 2))] = ([], 0), ([], 0)
+    return store
+
+
+def test_a_vision_reply_without_a_prompt_cache_session_frees_what_is_held(monkeypatch):
+    from core.inference import mlx_inference
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._vlm_snapshot_store = store = _store_holding_over_budget()
+    _drive_vlm_generation(backend, monkeypatch)
+    assert not store._held and len(store) == 1
+
+
 def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypatch):
     engine = _batch_engine(monkeypatch)
     monkeypatch.setattr(engine, "GenerationRequest", SimpleNamespace, raising = False)
@@ -8553,8 +8743,11 @@ def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypat
     monkeypatch.setattr(engine, "stream_batch", stream_batch, raising = False)
     monkeypatch.setattr(engine, "GenerationDefaults", SimpleNamespace, raising = False)
     backend._reads_vision, backend._generation_lock = False, threading.Lock()
+    backend._vlm_snapshot_store = store = _store_holding_over_budget()
     with pytest.raises(LookupError):
         next(backend._generate_vlm_batch([{}]))
+    # Its rows look nothing up, so what is held over the budget would sit beside them.
+    assert not store._held and len(store) == 1
     from dataclasses import make_dataclass
 
     fields = (
@@ -8726,11 +8919,15 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     added = []
     session.stream = SimpleNamespace(add = lambda request: added.append(request) or len(added) - 1)
 
+    session._retires_rows = True
     session.admit({}, "text")
     assert added[0].prompt_cache_state._store is store and len(store) == 2
+    alone = added[0].prompt_cache_state._alone
+    assert alone()
     backend._model = SimpleNamespace(config = SimpleNamespace(image_token_id = 9))
+    store._held._entries[("m|img", (1, 2))] = ([], 0)
     session.admit({"images": [object()]}, "image")
-    assert list(store._entries) == [("m|img", (1,))]
+    assert list(store._entries) == [("m|img", (1,))] and not store._held and not alone()
     assert added[1].prompt_cache_state._store is store
     backend._model.config.use_bidirectional_attention = "vision"
     session.admit({"images": [object()]}, "block")
@@ -8747,12 +8944,22 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     session.stream.withdraw = lambda row: result
     list(session.withdraw(["image"]))
     assert session.take_stats("image")["usage"]["prompt_tokens_details"]["cached_tokens"] == 6
+    # A row already reported finished is alone while no other row is in flight.
+    assert not alone()
+    block = session._rows.pop("block")
+    assert alone()
+    session._rows["block"] = block
 
     store._entries[("m|img", (1,))] = ([], 0)
     monkeypatch.setattr(engine, "row_prompt_cache_unavailable_reason", lambda: "old zoo")
     session._resumes_rows = mlx_inference._row_prompt_cache_gap() is None
     session.admit({"images": [object()]}, "old")
     assert not hasattr(added[3], "prompt_cache_state") and len(store) == 0
+    # A text row that looks nothing up still frees what is held over the budget.
+    store._entries[("m", (1,))] = ([], 0)
+    store._held._entries[("m", (1, 2))] = ([], 0)
+    session.admit({}, "old text")
+    assert not store._held and len(store) == 1
 
     backend._kv_quant = {"kv_bits": 4}
     with pytest.raises(mlx_inference.RowRefused):
@@ -8760,7 +8967,7 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     session._resumes_rows = True
     backend._vlm_prompt_cache_store = lambda: None
     session.admit({"images": [object()]}, "quantized")
-    assert added[4].prompt_cache_state._store is None
+    assert added[5].prompt_cache_state._store is None
 
 
 def _batch_engine(monkeypatch):
@@ -8946,6 +9153,34 @@ def test_a_turboquant_vision_batch_quantizes_rows_as_the_single_path_does(monkey
     )
     backend._kv_quant, backend._turboquant = {"kv_bits": 4}, False
     assert not hasattr(mlx_inference._VisionBatchSession(backend, width = 2).stream, "kv_bits")
+
+
+def test_a_vision_row_holds_its_snapshot_only_where_its_cache_is_handed_back(monkeypatch):
+    from core.inference import mlx_inference
+
+    engine = _batch_engine(monkeypatch)
+    monkeypatch.setattr(engine, "GenerationDefaults", SimpleNamespace, raising = False)
+    monkeypatch.setattr(engine, "BatchStream", lambda *a, **k: None, raising = False)
+    monkeypatch.setattr(engine, "row_prompt_cache_unavailable_reason", lambda: None, raising = False)
+    backend = mlx_inference.MLXInferenceBackend.__new__(mlx_inference.MLXInferenceBackend)
+    backend._model = backend._processor = object()
+    backend._kv_quant, backend._turboquant = {}, False
+    held = []
+    for resumes, gap, draft in (
+        (None, None, None),
+        (None, None, object()),
+        (None, "old mlx-vlm", None),
+        ("old zoo", None, None),
+        (None, ImportError, None),
+    ):
+        monkeypatch.setattr(engine, "row_prompt_cache_unavailable_reason", lambda: resumes)
+        if gap is ImportError:
+            monkeypatch.delattr(engine, "row_retire_unavailable_reason")
+        else:
+            monkeypatch.setattr(engine, "row_retire_unavailable_reason", lambda: gap, raising = False)
+        backend._speculative_draft = draft
+        held.append(mlx_inference._VisionBatchSession(backend, width = 2)._retires_rows)
+    assert held == [True, True, False, False, False]
 
 
 def test_a_batched_vision_row_keeps_to_the_context_budget(monkeypatch):

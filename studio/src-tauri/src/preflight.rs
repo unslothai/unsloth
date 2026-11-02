@@ -274,10 +274,19 @@ pub async fn desktop_preflight_result() -> DesktopPreflightResult {
 pub async fn desktop_preflight_result_with_state(
     state: &crate::process::BackendState,
 ) -> Result<(DesktopPreflightResult, Option<(u64, bool)>), String> {
+    let state_owns_backend = matches!(crate::process::owned_backend_snapshot(state), Ok(Some(_)));
     let (managed, backend, owned) = tokio::join!(
         probe_managed_install(),
         probe_existing_backends(&[]),
-        crate::desktop_backend_owner::probe_verified_owned_backend()
+        async {
+            if state_owns_backend {
+                crate::desktop_backend_owner::verified_owned_backend_metadata()
+            } else {
+                crate::desktop_backend_owner::probe_verified_owned_backend()
+                    .await
+                    .map(crate::desktop_backend_owner::VerifiedOwnedBackendMetadata::Decided)
+            }
+        }
     );
 
     if let Some(snapshot) = crate::process::owned_backend_snapshot(state)? {
@@ -353,6 +362,10 @@ pub async fn desktop_preflight_result_with_state(
         }
     }
 
+    let owned = match owned {
+        Ok(metadata) => metadata.finish().await,
+        Err(error) => Err(error),
+    };
     let owned = match owned {
         Ok(owned) => owned,
         Err(error) => {

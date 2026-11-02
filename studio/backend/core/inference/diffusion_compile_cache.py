@@ -225,6 +225,11 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_DIFFUSION_INT8_ROTQUANT": "auto",
     "UNSLOTH_DIFFUSION_INT8_ROTQUANT_UNLISTED": "auto",
     "UNSLOTH_DIFFUSION_INT8_FUSED": "on",
+    "UNSLOTH_DIFFUSION_INT8_TEXT_STREAM": "on",
+    "UNSLOTH_DIFFUSION_INT8_MODULATION": "on",
+    # Keyed on the clamped count the reader uses (0 = none).
+    "UNSLOTH_DIFFUSION_INT8_MOD_OUTLIERS": "count:8",
+    "UNSLOTH_DIFFUSION_INT8_GEMV": "on",
     "UNSLOTH_DIFFUSION_ZIMAGE_FUSED": "on",
     "UNSLOTH_DIFFUSION_Q21_REAL_ROPE": "on",
     "UNSLOTH_DIFFUSION_QWEN_REAL_ROPE": "on",
@@ -257,6 +262,12 @@ def _switch_value(name: str, default: str) -> Optional[str]:
         except ValueError:
             return None
         return None if rows == default.partition(":")[2] else rows
+    if default.startswith("count:"):
+        try:
+            count = str(max(0, min(16, int(raw))))
+        except ValueError:
+            return None
+        return None if count == default.partition(":")[2] else count
     if default.startswith("raw"):
         return None if raw in _OFF_WORDS or raw == default.partition(":")[2] else raw
     value = "off" if raw in _OFF_WORDS else "on" if raw in _ON_WORDS else None
@@ -450,14 +461,14 @@ def model_fingerprint(
         dynamic_text = None
     if dynamic_text:
         fp["dynamic_text"] = dynamic_text
-    # Inductor keys graphs on dynamic_scale_rblock: an old bundle would hit, miss every graph, and never be rewritten.
     from .diffusion_compile_config import reduction_blocks_pinned, reduction_config_filter_available
 
     if reduction_blocks_pinned():
         fp["inductor"] = {"dynamic_scale_rblock": False}
-        # Only for a family whose compile pins the reduction-config filter, so every other bundle keeps its key.
         if reduction_filter and reduction_config_filter_available():
             fp["inductor"]["force_filter_reduction_configs"] = True
+            if compile_kwargs.get("mode") in ("max-autotune", "max-autotune-no-cudagraphs"):
+                fp["inductor"]["coordinate_descent_tuning"] = False
     return fp
 
 

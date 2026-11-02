@@ -41,17 +41,17 @@ import {
 } from "@/lib/gguf-fit";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Refresh01Icon,
-  Delete02Icon,
   Download01Icon,
-  Folder01Icon,
   HelpCircleIcon,
   InformationCircleIcon,
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -535,7 +535,7 @@ export function QuantOptionsMenu({
               }}
             >
               <HugeiconsIcon
-                icon={Delete02Icon}
+                icon={TrashIcon}
                 strokeWidth={1.75}
                 className="size-icon"
               />

@@ -3517,17 +3517,23 @@ def test_the_image_unload_answers_are_declared_in_the_schema(token_client):
     assert stale == {"unloaded": False, "outcome": "superseded"}
 
 
-def test_zero_weight_loras_neither_refuse_mlx_nor_route_away_from_it():
+def test_zero_weight_loras_neither_refuse_mlx_nor_route_away_from_it(monkeypatch):
     # Weight 0 disables an adapter and every loader drops it, so an all-zero list is no LoRA load.
     from fastapi import HTTPException
+    from core.inference import mlx_diffusion_routing as routing
+    from core.inference.diffusion_families import detect_family
     from models.inference import DiffusionLoadRequest, LoraSpec
 
+    z_image = detect_family("z-image")
     off = DiffusionLoadRequest(model_path = "x/y", loras = [LoraSpec(id = "a", weight = 0.0)])
-    inference_routes._refuse_mlx_loras(off)
-    assert inference_routes._has_active_loras(off.loras) is False
     on = DiffusionLoadRequest(
         model_path = "x/y", loras = [LoraSpec(id = "a", weight = 0.0), LoraSpec(id = "b", weight = 0.5)]
     )
+    assert inference_routes._has_active_loras(off.loras) is False
     assert inference_routes._has_active_loras(on.loras) is True
+    inference_routes._refuse_mlx_loras(off, z_image)
+    inference_routes._refuse_mlx_loras(on, z_image)
+    monkeypatch.setitem(routing.MLX_CAPABILITIES, "z-image", routing.MlxCapabilities(loras = False))
+    inference_routes._refuse_mlx_loras(off, z_image)
     with pytest.raises(HTTPException):
-        inference_routes._refuse_mlx_loras(on)
+        inference_routes._refuse_mlx_loras(on, z_image)

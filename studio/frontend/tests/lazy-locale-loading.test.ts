@@ -424,18 +424,28 @@ const { LanguageSelect } = loadWithStubs<{ LanguageSelect: () => StubElement }>(
   ),
   {
     "react/jsx-runtime": stubJsxRuntime(),
-    "@/components/ui/select": {
-      Select: "Select",
-      SelectContent: "SelectContent",
-      SelectItem: "SelectItem",
-      SelectTrigger: "SelectTrigger",
-      SelectValue: "SelectValue",
+    react: { useState: (initial: unknown) => [initial, () => undefined] },
+    "@/components/ui/command": {
+      Command: "Command",
+      CommandEmpty: "CommandEmpty",
+      CommandInput: "CommandInput",
+      CommandItem: "CommandItem",
+      CommandList: "CommandList",
+    },
+    "@/components/ui/popover": {
+      Popover: "Popover",
+      PopoverContent: "PopoverContent",
+      PopoverTrigger: "PopoverTrigger",
     },
     "@/components/ui/spinner": { Spinner: "Spinner" },
+    "@/lib/chevron-icons": { ChevronDownStandardIcon: "ChevronDownStandardIcon" },
+    "@/lib/utils": { cn: (...classes: unknown[]) => classes.filter(Boolean).join(" ") },
+    "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
     "@/i18n": {
       AUTO_LOCALE: localeStore.AUTO_LOCALE,
       LOCALES: messagesModule.LOCALES,
       isLocalePreference: localeStore.isLocalePreference,
+      isSupportedLocale: messagesModule.isSupportedLocale,
       setLocale: localeStore.setLocale,
       useLocale: localeStore.getLocale,
       useLocaleCatalogFailed: localeStore.getLocaleCatalogFailed,
@@ -446,13 +456,26 @@ const { LanguageSelect } = loadWithStubs<{ LanguageSelect: () => StubElement }>(
   },
 );
 
-function shownLanguage(): unknown {
-  return LanguageSelect().props.value;
+function items(node: unknown): StubElement[] {
+  if (Array.isArray(node)) {
+    return node.flatMap(items);
+  }
+  if (node === null || typeof node !== "object") {
+    return [];
+  }
+  const element = node as StubElement;
+  const own = element.type === "CommandItem" ? [element] : [];
+  return [...own, ...items(element.props?.children)];
 }
 
-/** Radix's controlled Select only fires onValueChange for a value differing from the shown one. */
+/** The checked entry, or "" when none is checked. */
+function shownLanguage(): unknown {
+  return items(LanguageSelect()).find((item) => item.props["data-checked"])?.props.value ?? "";
+}
+
+/** Picking the checked entry is a no-op, so only an unchecked entry can change the language. */
 function canPick(value: string): boolean {
-  return shownLanguage() !== value;
+  return items(LanguageSelect()).some((item) => item.props.value === value) && shownLanguage() !== value;
 }
 
 function findStub(node: unknown, type: string): StubElement | null {
@@ -470,7 +493,12 @@ function findStub(node: unknown, type: string): StubElement | null {
 }
 
 function shownLabel(): unknown {
-  return findStub(LanguageSelect(), "SelectValue")?.props.placeholder;
+  const trigger = findStub(LanguageSelect(), "PopoverTrigger");
+  const button = trigger?.props.children as StubElement | undefined;
+  const label = (button?.props.children as StubElement[] | undefined)?.find(
+    (child) => child?.props?.["data-language-label"],
+  );
+  return label?.props.children;
 }
 
 test("the language menu shows the language in effect after a catalog failure", async () => {
@@ -767,4 +795,14 @@ test("a timed out startup catalog is evicted so the first pick asks for it again
     2,
     "the pick was handed the timed out startup load instead of requesting the catalog again",
   );
+});
+
+test("the language menu lists Auto detect first, then languages alphabetically by English name", () => {
+  const entries = items(LanguageSelect());
+  assert.equal(entries[0]?.props.value, localeStore.AUTO_LOCALE);
+  const names = entries.slice(1).map((item) => (item.props.keywords as string[])[1]);
+  assert.deepEqual(names, [...names].sort((a, b) => a.localeCompare(b, "en")));
+  assert.equal(names.length, Object.keys(messagesModule.LOCALES).length);
+  const japanese = entries.find((item) => item.props.value === "ja");
+  assert.deepEqual(japanese?.props.keywords, ["日本語", "Japanese"]);
 });

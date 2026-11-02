@@ -8,10 +8,10 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Folder01Icon } from "@hugeicons/core-free-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { type ReactElement, useMemo, useState } from "react";
 import { sortProjectsByActivity } from "../hooks/use-chat-projects";
 import { useChatActive } from "../runtime-provider";
@@ -71,7 +71,7 @@ export function ProjectSwitcher({
           className="-mx-1 flex h-[calc(34px*var(--ui-space-scale,1))] shrink-0 items-center gap-2 rounded-[10px] pl-3 pr-2.5 transition-colors hover:bg-nav-surface-hover data-[state=open]:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <HugeiconsIcon
-            icon={Folder01Icon}
+            icon={ProjectIcon}
             strokeWidth={1.75}
             className="size-icon shrink-0 text-foreground/70"
           />
@@ -118,7 +118,7 @@ export function ProjectSwitcher({
             >
               <span className="flex min-w-0 items-center gap-2">
                 <HugeiconsIcon
-                  icon={Folder01Icon}
+                  icon={ProjectIcon}
                   strokeWidth={1.75}
                   className="size-icon shrink-0 text-foreground/70"
                 />

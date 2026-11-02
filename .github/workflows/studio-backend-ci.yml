@@ -157,7 +157,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '${{ matrix.python }}'
 
@@ -256,6 +256,7 @@ jobs:
             --ignore=tests/test_profile_stats.py \
             --ignore=tests/test_media_auto_switch.py \
             --ignore=tests/test_pr5624_regressions.py \
+            --ignore=tests/test_web_tools_overlap.py \
             -k 'not llama_cpp_load_progress_live'
 
       - name: Backend tests that cannot share a worker
@@ -277,7 +278,8 @@ jobs:
             tests/test_anthropic_messages.py \
             tests/test_profile_stats.py \
             tests/test_media_auto_switch.py \
-            tests/test_pr5624_regressions.py
+            tests/test_pr5624_regressions.py \
+            tests/test_web_tools_overlap.py
 
       - name: Decision model training tests
         # Their worker imports unsloth, so unsloth_zoo is installed here, after the suite above ran
@@ -396,8 +398,20 @@ jobs:
             selection: >-
               tests/test_[!fpt]*gloo*.py
               tests/test_f[!s]*gloo*.py
-              tests/test_p[!p]*gloo*.py
+              tests/test_parallel_[!c]*gloo*.py
               tests/test_tp_[!n]*gloo*.py
+          # #16407 grew test_parallel_cp_compose_gloo.py to about a third of the gloo shard's time
+          # (1143 of 3605 test-seconds measured per file), which took the shard to 1922 s of the
+          # 2100 s cap on main and over it on a slower runner. gloo-tp-pp has no room for it either
+          # (1397 s), so test_parallel_c*gloo* runs on its own. A *gloo* file named test_p[!ap]*
+          # would match no shard; tests/test_ci_repo_cpu_shards.py reports it as dropped.
+          # Its tests spawn 2 to 8 gloo ranks each: four at once peaked at about 20 GB (summed PSS,
+          # measured locally) and the 16 GB runner was shut down mid-run, twice. Two at once peak
+          # at about 12 GB.
+          - shard: gloo-cp
+            workers: 2
+            selection: >-
+              tests/test_parallel_c*gloo*.py
           # The gloo shard then ran 1331 to 2058 s of the same cap on 2026-10-29. Measured per
           # file, native tensor parallel plus pipeline parallel are about 51% of it, everything
           # else about 49%. A *gloo* file named test_t[!p]* or test_tp[!_]* would match neither
@@ -411,7 +425,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
@@ -479,7 +493,7 @@ jobs:
         # globals. The outer timeout must fire before the job cap.
         run: |
           timeout --signal=INT --kill-after=60 2100 \
-          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n 4 --dist loadgroup --timeout=330 \
+          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n ${{ matrix.workers || 4 }} --dist loadgroup --timeout=330 \
             -m 'not server and not e2e'
 
       - name: Hardware-spoof tests (state-sensitive, run in isolation)
@@ -535,7 +549,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
