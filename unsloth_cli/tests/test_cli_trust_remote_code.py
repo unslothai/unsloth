@@ -86,13 +86,21 @@ def test_local_load_defaults_to_refusing_remote_code(monkeypatch):
 def _capture_server_payload(monkeypatch):
     captured: dict = {}
 
-    def fake_request(self, method, path, payload = None, timeout = None):
+    def fake_request(
+        self,
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
         if method == "POST" and path.endswith("/load"):
             captured["payload"] = payload
         return object()
 
     monkeypatch.setattr(inference.HttpChatBackend, "_request", fake_request)
-    monkeypatch.setattr(inference.HttpChatBackend, "_resident_gguf_variant", lambda self, model: None)
+    monkeypatch.setattr(
+        inference.HttpChatBackend, "_resident_gguf_variant", lambda self, model: None
+    )
     monkeypatch.setattr(
         inference, "read_json_checking_deferred_error", lambda url, response: {"is_vision": False}
     )
