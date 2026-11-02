@@ -610,7 +610,6 @@ class BlockGraph:
                 dst.copy_(src)
             static_args, static_kwargs = _unwalk(key, iter(entry.static_in))
             if slot not in self.shared.warmed:
-                # Any guard the static buffers trip recompiles here, never inside the recording.
                 self.compute(*static_args, **static_kwargs)
                 self.shared.warmed.add(slot)
                 self.stats["warmups"] += 1
@@ -622,7 +621,6 @@ class BlockGraph:
             pool = self.shared.graph_pool()
             with torch.cuda.stream(stream):
                 with _capturing():
-                    # read after the entry, which first hands back any retired graph pool
                     before = torch.cuda.memory_reserved()
                     try:
                         # Inside the try: a capture_begin that raised after taking the pool is abandoned too.
@@ -1067,7 +1065,6 @@ class SegmentGraph:
             pool = self.shared.graph_pool()
             with torch.cuda.stream(stream):
                 with _capturing():
-                    # read after the entry, which first hands back any retired graph pool
                     before = torch.cuda.memory_reserved()
                     try:
                         graph.capture_begin(pool = pool, capture_error_mode = "thread_local")

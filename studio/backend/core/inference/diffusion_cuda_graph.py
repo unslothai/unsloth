@@ -1025,7 +1025,7 @@ def live_pool_free_bytes() -> int:
     try:
         free = 0
         cuda = _torch().cuda
-        device = cuda.current_device()  # the snapshot spans every card
+        device = cuda.current_device()
         for seg in _allocator_segments():
             if seg.get("device", device) != device:
                 continue
