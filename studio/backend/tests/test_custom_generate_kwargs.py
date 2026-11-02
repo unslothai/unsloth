@@ -256,8 +256,13 @@ _THINK_TOKENIZER = types.SimpleNamespace(
 class _ScriptedGenerate:
     _generation_fields_unsupported = {"cache_implementation": None}
 
-    def __init__(self, reply):
+    def __init__(
+        self,
+        reply,
+        model_type = "lfm3_audio",
+    ):
         self.reply, self.steps = reply, 0
+        self.config = types.SimpleNamespace(model_type = model_type)
 
     def generate(self, *, input_ids, streamer, **kwargs):
         try:
@@ -270,8 +275,12 @@ class _ScriptedGenerate:
         return torch.cat((input_ids, torch.tensor([self.reply])), 1)
 
 
-def _scripted(reply, **extra):
-    model, streamer = _ScriptedGenerate(reply), _Recorder()
+def _scripted(
+    reply,
+    model_type = "lfm3_audio",
+    **extra,
+):
+    model, streamer = _ScriptedGenerate(reply, model_type), _Recorder()
     kwargs = {
         "input_ids": torch.tensor([[1, 2]]),
         "streamer": streamer,
@@ -287,6 +296,20 @@ def test_a_second_think_close_ends_the_reply_before_its_restatement():
     assert streamed == [_OPEN, 10, _CLOSE, 11]
     assert model.steps == 5
     assert out.tolist() == [[1, 2, _OPEN, 10, _CLOSE, 11, _EOS]]
+
+
+@pytest.mark.parametrize("model_type", ["lfm3_omni", "other_custom_model"])
+def test_existing_custom_models_keep_repeated_think_closers(model_type):
+    import threading
+
+    reply = [_OPEN, 10, _CLOSE, 11, _CLOSE, 12, _EOS]
+    model, streamed, out = _scripted(
+        reply,
+        model_type = model_type,
+        stopping_criteria = _criteria(threading.Event()),
+    )
+    assert streamed == reply and out.tolist() == [[1, 2, *reply]]
+    assert model.steps == len(reply)
 
 
 def test_one_think_block_and_a_prefilled_close_stream_untouched():

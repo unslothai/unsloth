@@ -799,14 +799,17 @@ def _supported_generate_kwargs(
     if not isinstance(getattr(model, "_generation_fields_unsupported", None), dict):
         return generation_kwargs
     kept = {k: v for k, v in generation_kwargs.items() if k not in _CUSTOM_GENERATE_REJECTED_KWARGS}
-    if getattr(getattr(model, "config", None), "model_type", None) in {"lfm3_omni", "lfm3_audio"}:
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type in {"lfm3_omni", "lfm3_audio"}:
         kept["generation_mode"] = "text"
     events = [
         c.ev
         for c in (generation_kwargs.get("stopping_criteria") or ())
         if getattr(c, "ev", None) is not None
     ]
-    think_ids = _think_tag_ids(tokenizer) if tokenizer is not None else None
+    think_ids = (
+        _think_tag_ids(tokenizer) if tokenizer is not None and model_type == "lfm3_audio" else None
+    )
     if (events or think_ids) and kept.get("streamer") is not None:
         kept["streamer"] = _HaltingStreamer(kept["streamer"], events, think_ids)
     return kept
