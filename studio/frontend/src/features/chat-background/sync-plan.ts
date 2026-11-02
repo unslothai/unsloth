@@ -10,7 +10,6 @@ export function planBackgroundPull(
 	sync: { updatedAt: number | null; sha256: string | null; dirty: boolean },
 	hasLocal: boolean,
 ): PullPlan {
-	// Unsent local edits win; an account with nothing yet adopts this browser's copy.
 	if (sync.dirty || (!remote.saved && hasLocal)) return "push";
 	if (!remote.saved || remote.updatedAt === sync.updatedAt) return "keep";
 	if (!remote.image) return hasLocal ? "clear" : "keep";

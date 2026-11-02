@@ -5003,7 +5003,6 @@ class ChatBackgroundImageMeta(BaseModel):
 
 
 class ChatBackgroundAdjustmentsPayload(BaseModel):
-    # The client sanitizes these on read, so only the shape and size are checked here.
     adjustments: dict[str, Union[str, int, float, bool, None]] = Field(max_length = 32)
 
 

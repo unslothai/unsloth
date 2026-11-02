@@ -22,10 +22,8 @@ function prefsOf(state: object): BrowserPrefs {
 }
 
 const browserPrefs = () => prefsOf(useBrowserPrefsStore.getState());
-// Defaults from before the store read this browser's saved copy.
 const DEFAULT_BROWSER_PREFS = prefsOf(useBrowserPrefsStore.getInitialState());
 
-/** Keeps only known fields whose type matches the default, so a stale record cannot break the store. */
 export function browserPrefsFromRemote(remote: BrowserPrefs): BrowserPrefs {
   return Object.fromEntries(
     Object.entries(remote).filter(([key, value]) => {
@@ -60,7 +58,6 @@ export function useDeviceSettingsSync(enabled: boolean): void {
       writePending(touched);
     };
 
-    // One save at a time, sending only sections edited here: no slow or stale write can win.
     let saving: Promise<void> = Promise.resolve();
     const pushAll = () => {
       clearTimeout(timer);
@@ -104,7 +101,6 @@ export function useDeviceSettingsSync(enabled: boolean): void {
         if (cancelled) return;
         loaded = true;
         applying = true;
-        // An unconfirmed edit, from this load or an earlier one, is newer than the account's copy.
         if (remote.interfaceScale !== null && !touched.scale)
           useInterfaceScaleStore.getState().setScale(remote.interfaceScale);
         if (remote.browser && !touched.browser)

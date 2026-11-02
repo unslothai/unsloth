@@ -6,7 +6,6 @@ import { accountDatabaseName } from "../../../lib/account-transition.ts";
 
 export type Pending = { scale: boolean; browser: boolean };
 
-// Edits the server has not confirmed: a reload or a failed save must not let its older copy win.
 const pendingKey = () => accountDatabaseName("unsloth_client_prefs_pending");
 
 export function readPending(): Pending {
@@ -26,6 +25,5 @@ export function writePending(pending: Pending): void {
       localStorage.removeItem(pendingKey());
     }
   } catch {
-    // Storage off: pending edits last only this session.
   }
 }
