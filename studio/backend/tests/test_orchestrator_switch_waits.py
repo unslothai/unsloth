@@ -3,6 +3,7 @@
 
 import inspect
 import multiprocessing as mp
+import os
 import queue
 import threading
 import time
@@ -299,7 +300,7 @@ def _shutdown_interrupted_writer():
     o._proc.start()
     proc = o._proc
     o._mailboxes["r1"] = orch_mod._WorkerMailbox(proc)
-    drain = o._drain_queue
+    drain = o._drain_unread_replies
     calls = 0
 
     def enqueue_after_drain():
@@ -312,7 +313,7 @@ def _shutdown_interrupted_writer():
             time.sleep(orch_mod._SHUTDOWN_CANCEL_GRACE_S + 0.1)
         return replies
 
-    o._drain_queue = enqueue_after_drain
+    o._drain_unread_replies = enqueue_after_drain
     try:
         assert o._shutdown_subprocess(timeout = 0.01) is True
         assert o._proc is None and not proc.is_alive()
@@ -333,3 +334,86 @@ def test_forced_shutdown_does_not_read_an_interrupted_queue_frame():
         if runner.is_alive():
             runner.kill()
         runner.join(5)
+
+
+def _crash_during_frame(replies, send):
+    send.wait()
+    replies.put({"type": "diffusion_frame", "request_id": "r1", "image": "x" * 1048576})
+    assert replies._reader.poll(30)
+    os._exit(1)
+
+
+def _shutdown_crashed_writer():
+    ctx = mp.get_context("spawn")
+    o = InferenceOrchestrator()
+    o._cmd_queue, o._resp_queue = ctx.Queue(), ctx.Queue()
+    o._cancel_event = ctx.Event()
+    send = ctx.Event()
+    proc = ctx.Process(target = _crash_during_frame, args = (o._resp_queue, send))
+    o._proc = proc
+    proc.start()
+    o._mailboxes["r1"] = orch_mod._WorkerMailbox(proc)
+    drain = o._drain_unread_replies
+    calls = 0
+
+    def crash_after_drain():
+        nonlocal calls
+        replies = drain()
+        calls += 1
+        if calls == 1:
+            send.set()
+            proc.join(30)
+            assert proc.exitcode == 1
+        return replies
+
+    o._drain_unread_replies = crash_after_drain
+    try:
+        assert o._shutdown_subprocess(timeout = 0.01) is True
+        assert o._proc is None and not proc.is_alive()
+    finally:
+        if proc.is_alive():
+            proc.kill()
+        proc.join(5)
+
+
+def test_worker_crash_mid_frame_cannot_block_the_shutdown_deadline():
+    runner = mp.get_context("spawn").Process(target = _shutdown_crashed_writer)
+    runner.start()
+    try:
+        runner.join(40)
+        assert not runner.is_alive(), "join loop blocked on the crashed writer's partial frame"
+        assert runner.exitcode == 0
+    finally:
+        if runner.is_alive():
+            runner.kill()
+        runner.join(5)
+
+
+def _speech_then_shutdown(commands, replies):
+    replies.put({"type": "speech", "request_id": "r1", "speech": "x" * 1048576})
+    replies.put({"type": "gen_done", "request_id": "r1"})
+    assert commands.get(timeout = 30) == {"type": "shutdown"}
+
+
+def test_paused_direct_reader_cannot_force_termination_of_a_finished_worker(monkeypatch):
+    rec = _Recorder(monkeypatch)
+    ctx = mp.get_context("spawn")
+    o = InferenceOrchestrator()
+    o._cmd_queue, o._resp_queue = ctx.Queue(), ctx.Queue()
+    o._cancel_event = ctx.Event()
+    proc = ctx.Process(target = _speech_then_shutdown, args = (o._cmd_queue, o._resp_queue))
+    o._proc = proc
+    owner = threading.Event()
+    _, _, release = o._direct_reader("r1", owner)
+    proc.start()
+    try:
+        assert o._resp_queue._reader.poll(30)
+        assert o._shutdown_subprocess(timeout = 2) is True
+        assert proc.exitcode == 0, "the paused reader prevented a clean worker exit"
+        assert rec.terminated == []
+        assert owner.is_set()
+    finally:
+        release()
+        if proc.is_alive():
+            proc.kill()
+        proc.join(5)
