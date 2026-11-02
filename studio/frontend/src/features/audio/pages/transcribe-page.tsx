@@ -55,6 +55,10 @@ import type { TranscriptExportFormat } from "../transcript-export";
 import { formatTimestamp } from "../transcript-model";
 import type { TranscriptProgress } from "../transcript-stream";
 import {
+  AUDIO_ACTION_BUTTON,
+  AUDIO_GO_BUTTON,
+  AUDIO_NOTE_SLOT,
+  AUDIO_STOP_BUTTON,
   BlockerNote,
   GenerateActions,
   type GenerateBlocker,
@@ -481,10 +485,13 @@ export function TranscribeFooter({
       ) : null}
       <div className="flex flex-wrap items-center justify-center gap-2">
         <Button
-          className="relative z-10 mx-auto text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+          className={cn(
+            AUDIO_ACTION_BUTTON,
+            running ? AUDIO_STOP_BUTTON : AUDIO_GO_BUTTON,
+          )}
           onClick={running ? onStop : onTranscribe}
           disabled={running ? stopping : busy !== null || blocker !== null}
-          variant={running ? "destructive" : "dark"}
+          variant={running ? "outline" : "primary"}
           aria-describedby={
             blocker
               ? "transcribe-blocker"
@@ -507,16 +514,18 @@ export function TranscribeFooter({
           )}
         </Button>
       </div>
-      {blocker && !running ? (
-        <BlockerNote id="transcribe-blocker" blocker={blocker} />
-      ) : notice && !running ? (
-        <p
-          id="transcribe-notice"
-          className="text-center text-ui-11p5 leading-snug text-muted-foreground"
-        >
-          {notice}
-        </p>
-      ) : null}
+      <div className={AUDIO_NOTE_SLOT}>
+        {blocker && !running ? (
+          <BlockerNote id="transcribe-blocker" blocker={blocker} />
+        ) : notice && !running ? (
+          <p
+            id="transcribe-notice"
+            className="text-center text-ui-11p5 leading-snug text-muted-foreground"
+          >
+            {notice}
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }

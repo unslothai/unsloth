@@ -325,6 +325,7 @@ del _guard_dataset_media
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 # Studio decides training / export / chat-only from its own hardware detection, so keep
 # `import unsloth` refusing on a GPU-less host here instead of loading the CPU training backend.
+# A training worker on a host Studio trains on CPU opts back in (core/training/worker.py).
 os.environ.setdefault("UNSLOTH_DISABLE_CPU_FALLBACK", "1")
 
 # Must not import unsloth here (pulls torch/GPU); before transformers reads sentencepiece.
@@ -2159,7 +2160,13 @@ async def _desktop_shell_subject(request: Request) -> Optional[str]:
 
 @app.get("/api/health")
 async def health_check(request: Request):
-    """Waits for detection so a GPU host does not grey out Train/Export, but only up to a budget; the snapshot below decides the reply."""
+    """Liveness plus launcher capability bits; host fingerprint gated on authentication.
+
+    Unauthenticated callers get non-sensitive fields (service, studio_root_id,
+    chat_only, desktop_*, native_path_leases_supported) to re-adopt a sibling
+    backend and gate UI before a token exists. version / studio_version /
+    device_type require authentication, including a valid desktop secret.
+    """
     await _await_hardware_detection(_HEALTH_DETECT_BUDGET_S)
     # Snapshot, not a bare global read: a forced re-detect can start at any moment.
     snapshot = _hardware_snapshot()
@@ -2262,6 +2269,8 @@ async def health_check(request: Request):
                 authed["video_cpu_opt_in"] = bool(video_cpu_enabled())
             except Exception:
                 pass
+        # chat_only stays set: chat stays GGUF-only and Export and Video keep their own verdicts.
+        authed["cpu_training"] = bool(snapshot[0]) and _hw_module.trains_on_cpu(snapshot[1])
         # What specifically blocked that reason, when detection recorded one. Only the MLX gate does today, and only
         # because it is all-or-nothing: without it the greyed-out Train row can only say "run `unsloth studio
         # update`". From the snapshot, so it cannot come from a different detection pass than the reason beside it.

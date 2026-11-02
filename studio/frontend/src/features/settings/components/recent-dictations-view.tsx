@@ -30,7 +30,6 @@ import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import {
-  Delete02Icon,
   PauseIcon,
   PlayIcon,
   Search01Icon,
@@ -38,7 +37,8 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
-import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, TrashIcon } from "@/lib/hugeicons-derived";
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -53,24 +53,30 @@ const PAGE_SIZE = 20;
 type SortOrder = "newest" | "oldest" | "az";
 
 function formatDictationDate(ms: number): string {
-  return new Date(ms).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return new Date(ms).toLocaleString(
+    undefined,
+    withTimeFormat({
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }),
+  );
 }
 
 function formatDictationDateTime(ms: number): string {
-  return new Date(ms).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  return new Date(ms).toLocaleString(
+    undefined,
+    withTimeFormat({
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+    }),
+  );
 }
 
 /** `m:ss`, used for both the seek-bar position and the recording length. */
@@ -259,6 +265,7 @@ export function RecentDictationsView({
   onBack: () => void;
 }) {
   const t = useT();
+  useTimeFormat();
   const recentDictations = useVoiceSettingsStore((s) => s.recentDictations);
   const removeRecentDictation = useVoiceSettingsStore(
     (s) => s.removeRecentDictation,
@@ -574,7 +581,7 @@ export function RecentDictationsView({
               onClick={() => deleteOne(selected)}
               className="text-destructive hover:text-destructive"
             >
-              <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="mr-1.5 size-3.5" />
               {t("settings.voice.recents.delete")}
             </Button>
           </div>
@@ -630,7 +637,7 @@ export function RecentDictationsView({
               onClick={() => setClearAllPending(true)}
               className="shrink-0 text-destructive hover:text-destructive"
             >
-              <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="mr-1.5 size-3.5" />
               {t("settings.voice.recents.clear")}
             </Button>
           </div>
@@ -766,7 +773,7 @@ export function RecentDictationsView({
                         className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         <HugeiconsIcon
-                          icon={Delete02Icon}
+                          icon={TrashIcon}
                           strokeWidth={1.75}
                           className="size-4"
                         />

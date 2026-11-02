@@ -447,7 +447,7 @@ def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
         'types.includes("files")',
         'type.includes("uri-list")',
         '"read_native_clipboard_files"',
-        "globalThis.atob(file.base64)",
+        "decodeBase64Bytes(file.base64)",
         "new File([bytes], file.name",
         "MAX_CLIPBOARD_BYTES",
         'import("@tauri-apps/plugin-clipboard-manager")',

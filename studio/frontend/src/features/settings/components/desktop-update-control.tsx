@@ -11,17 +11,6 @@ function formatDesktopVersion(version: string): string {
   return version.startsWith("v") ? version : `v${version}`;
 }
 
-export function DesktopUpdateNote(): ReactElement | null {
-  const t = useT();
-  const update = useTauriUpdateController();
-  if (!update) return null;
-  return (
-    <p className="pb-1 text-xs text-muted-foreground leading-relaxed">
-      {t("settings.about.update.desktopManaged")}
-    </p>
-  );
-}
-
 export function DesktopUpdateControl(): ReactElement | null {
   const t = useT();
   const update = useTauriUpdateController();

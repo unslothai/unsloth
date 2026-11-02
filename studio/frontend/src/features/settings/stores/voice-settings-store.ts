@@ -15,6 +15,7 @@ import {
   migrateVoiceSettings,
 } from "./stt-model-catalog";
 import { DEFAULT_DICTATION_DICTIONARY_WORDS } from "./default-dictation-dictionary";
+import { syncSttDevicePreference } from "../api/stt-device";
 
 export * from "./stt-model-catalog";
 export { DEFAULT_DICTATION_DICTIONARY_WORDS };
@@ -523,7 +524,12 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       setSttGgufVariant: (sttGgufVariant) => set({ sttGgufVariant }),
 
       sttDevice: DEFAULT_STT_DEVICE,
-      setSttDevice: (value) => set({ sttDevice: normalizeSttDevice(value) }),
+      setSttDevice: (value) => {
+        const sttDevice = normalizeSttDevice(value);
+        set({ sttDevice });
+        // Server default for cold /v1/audio/transcriptions loads (#15280).
+        syncSttDevicePreference(sttDevice);
+      },
 
       sttProviderId: "",
       setSttProviderId: (sttProviderId) => set({ sttProviderId }),

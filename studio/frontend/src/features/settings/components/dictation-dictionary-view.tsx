@@ -33,11 +33,11 @@ import {
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { useT } from "@/i18n";
 import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
 import {
   ArrowRight01Icon,
   Cancel01Icon,
-  Delete02Icon,
   MoreVerticalIcon,
   PencilEdit02Icon,
   PlusSignIcon,
@@ -545,7 +545,7 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
                           })}
                         >
                           <HugeiconsIcon
-                            icon={Delete02Icon}
+                            icon={TrashIcon}
                             className="size-3.5"
                           />
                         </Button>

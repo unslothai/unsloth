@@ -126,6 +126,7 @@ function loadCard(
       "@/lib/toast": anyExport,
       "@/lib/utils": anyExport,
       "@hugeicons/core-free-icons": anyExport,
+      "@/lib/hugeicons-derived": anyExport,
       "@/lib/copy-icon": anyExport,
       "@hugeicons/react": anyExport,
       "../inventory": anyExport,
