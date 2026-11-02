@@ -95,13 +95,26 @@ function userMarkdown(index: number): string {
  */
 type SeedOptions = {
   plainAssistants?: readonly number[] | "all";
-  /** `rounds` x reasoning, tool call, answer per reply; truncation every `compactionEvery`th. */
-  agent?: { rounds: number; compactionEvery?: number };
+  /**
+   * `rounds` x reasoning, tool call, answer per reply; truncation every `compactionEvery`th.
+   * `sources` adds six URL source parts after every web_search call.
+   */
+  agent?: { rounds: number; compactionEvery?: number; sources?: boolean };
 };
 
 const AGENT_TOOLS = ["web_search", "terminal", "python"] as const;
 
-function agentContent(index: number, rounds: number) {
+function urlSources(tag: string) {
+  return Array.from({ length: 6 }, (_, source) => ({
+    type: "source" as const,
+    sourceType: "url" as const,
+    id: `source_${tag}_${source}`,
+    url: `https://example${source}.org/${tag}`,
+    title: `Source ${source} for ${tag}`,
+  }));
+}
+
+function agentContent(index: number, rounds: number, sources = false) {
   const parts: Exclude<ThreadMessageLike["content"], string>[number][] = [];
   for (let round = 0; round < rounds; round++) {
     const tag = `${index}_${round}`;
@@ -122,6 +135,7 @@ function agentContent(index: number, rounds: number) {
       argsText: JSON.stringify(args),
       result: `Result ${tag}. ${PROSE}\n${PROSE}\n${CLOSING}`,
     });
+    if (sources && toolName === "web_search") parts.push(...urlSources(tag));
     parts.push({
       type: "text" as const,
       text: `Answer ${tag}. ${PROSE}\n\n- first item ${tag}\n- second item ${tag}`,
@@ -155,7 +169,7 @@ function buildMessages(
       const compacted = every > 0 && ordinal > 0 && ordinal % every === 0;
       return {
         role: "assistant" as const,
-        content: agentContent(index, agent.rounds),
+        content: agentContent(index, agent.rounds, agent.sources),
         ...(compacted
           ? {
               metadata: {
@@ -189,15 +203,32 @@ function buildMessages(
 const STREAM_CHUNKS = Number(
   new URLSearchParams(window.location.search).get("stream") ?? "0",
 );
+// `&sources=1`: the streamed reply follows a web_search call with six URL sources.
+const STREAM_SOURCES =
+  new URLSearchParams(window.location.search).get("sources") === "1";
 const NEVER_RUNS: ChatModelAdapter = STREAM_CHUNKS > 0
   ? {
       async *run({ abortSignal }) {
+        const args = { query: "live reference" };
+        const prefix = STREAM_SOURCES
+          ? [
+              {
+                type: "tool-call" as const,
+                toolCallId: "call_live",
+                toolName: "web_search",
+                args,
+                argsText: JSON.stringify(args),
+                result: `Result live. ${PROSE}`,
+              },
+              ...urlSources("live"),
+            ]
+          : [];
         let text = "";
         for (let chunk = 0; chunk < STREAM_CHUNKS; chunk++) {
           await new Promise((resolve) => setTimeout(resolve, 20));
           if (abortSignal.aborted) return;
           text += `word${chunk} `;
-          yield { content: [{ type: "text" as const, text }] };
+          yield { content: [...prefix, { type: "text" as const, text }] };
         }
       },
     }

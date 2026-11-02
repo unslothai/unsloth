@@ -427,11 +427,11 @@ def test_shard_slice_unpermute_round_trip():
     [
         (LLAMA, {"num_attention_heads": 4, "num_key_value_heads": 4}, 3, "num_attention_heads = 4"),
         (QWEN3, {"num_attention_heads": 6, "num_key_value_heads": 3}, 2, "num_key_value_heads = 3"),
-        (GEMMA3, {}, 2, "larger than num_key_value_heads = 1"),
+        # num_key_value_heads < tp is replicated (test_tp_kv_replicated_gloo.py) only when tp is a multiple of it.
+        (GEMMA3, {"num_attention_heads": 12, "num_key_value_heads": 3}, 4, "not a multiple of it"),
         (MISTRAL, {}, 2, "intermediate_size = 37"),
         (OLMO2, {}, 2, "normalizes .* features, not one head"),
-        (QWEN3_MOE, {}, 2, "mixture-of-experts"),
-        (DEEPSEEK_V3, {}, 2, "mixture-of-experts|latent attention"),
+        (DEEPSEEK_V3, {}, 2, "latent attention"),
     ],
 )
 def test_refusals_plan(repo, overrides, tp, match):
@@ -440,20 +440,27 @@ def test_refusals_plan(repo, overrides, tp, match):
         tpn.derive_tp_plan(model, tp)
 
 
-def test_refuses_attention_and_layer_dropout():
-    with pytest.raises(ValueError, match = "attention dropout"):
-        tpn.derive_tp_plan(build(LLAMA, {"attention_dropout": 0.1}), 2)
+def test_moe_blocks_run_replicated():
+    plan = tpn.derive_tp_plan(build(QWEN3_MOE, {"mlp_only_layers": [1]}, lora = False), 2)
+    assert plan.replicated_moe == 1
+    assert [r.kind for r in plan.regions] == ["attention", "attention", "mlp"]
+
+
+def test_attention_dropout_needs_the_eager_attention():
+    tpn.derive_tp_plan(build(LLAMA, {"attention_dropout": 0.1}), 2)  # eager: supported
+    model = build(LLAMA, {"attention_dropout": 0.1})
+    tpn._text_config(model)._attn_implementation = "sdpa"
+    with pytest.raises(ValueError, match = "eager attention only"):
+        tpn.derive_tp_plan(model, 2)
     model = build(LLAMA)
     model.get_base_model().model.layers[0].mlp.add_module("drop", torch.nn.Dropout(0.1))
-    with pytest.raises(ValueError, match = "dropout inside decoder layers"):
-        tpn.derive_tp_plan(model, 2)
+    tpn.derive_tp_plan(model, 2)  # dropout modules: supported
 
 
 def test_refuses_dora_and_lora_bias():
     for kwargs, match in (
         ({"use_dora": True}, "DoRA"),
         ({"lora_bias": True}, "lora_bias"),
-        ({"lora_dropout": 0.1}, "lora_dropout"),
     ):
         model = build(LLAMA, **kwargs)
         region = tpn.derive_tp_plan(model, 2).regions[0]
@@ -461,7 +468,7 @@ def test_refuses_dora_and_lora_bias():
             tpn._refuse_adapter(region.path, region.projs[0].module)
 
 
-def test_refuses_quantized_and_trainable_bases():
+def test_refuses_quantized_bases_and_accepts_trainable_ones():
     model = build(LLAMA)
     region = tpn.derive_tp_plan(model, 2).regions[0]
     proj = region.projs[0].module
@@ -474,8 +481,8 @@ def test_refuses_quantized_and_trainable_bases():
     gptq = type("QuantLinear", (torch.nn.Module,), {})()
     with pytest.raises(ValueError, match = "GPTQ"):
         tpn._refuse_base("p", proj, weight, gptq)
-    with pytest.raises(ValueError, match = "full finetuning"):
-        tpn._refuse_base("p", proj, torch.nn.Parameter(weight.detach().clone()), base)
+    # Full finetuning: a trainable base weight shards like any other (tests/test_tp_full_finetune_gloo.py).
+    tpn._refuse_base("p", proj, torch.nn.Parameter(weight.detach().clone()), base)
 
 
 def test_refuses_global_width_attention():

@@ -1052,3 +1052,44 @@ def test_a_refusal_the_user_must_unblock_survives_a_later_success_in_the_same_ba
     controller.begin_batch()
     controller.record_result(controller.prepare_call(_call(load, {"model": "n"})), "ok")
     assert not controller.awaiting_user
+
+
+def test_active_tools_are_private_copies_of_every_nested_schema_node():
+    """Each call hands out its own copy: a caller rewriting one cannot reach the ledger or a later call."""
+    from collections import OrderedDict
+
+    source = {
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "description": "d",
+            "parameters": OrderedDict(
+                type = "object",
+                properties = {
+                    "mode": {"type": "string", "enum": ["a", "b"]},
+                    "limit": {"type": "integer", "minimum": 1.0, "default": True},
+                    "pairs": {"type": "array", "items": {"enum": (1, [2])}},
+                },
+            ),
+        },
+    }
+    controller = ToolLoopController(tools = [source])
+    first = controller.active_tools()
+    assert repr(first) == repr([source])
+    first[0]["function"]["parameters"]["properties"]["mode"]["enum"].append("c")
+    first[0]["function"]["parameters"]["properties"]["pairs"]["items"]["enum"][1].append(3)
+    first[0]["function"]["name"] = "renamed"
+    assert repr(controller.active_tools()) == repr([source])
+    assert source["function"]["parameters"]["properties"]["mode"]["enum"] == ["a", "b"]
+    assert source["function"]["parameters"]["properties"]["pairs"]["items"]["enum"] == (1, [2])
+
+
+def test_has_active_tools_matches_active_tools_without_copying():
+    controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
+    assert controller.has_active_tools() is bool(controller.active_tools()) is True
+    assert ToolLoopController(tools = []).has_active_tools() is False
+    controller._completed_one_shot_tools.update({"web_search", "python"})
+    assert controller.has_active_tools() is bool(controller.active_tools()) is False
+    controller._completed_one_shot_tools.clear()
+    controller._force_final_answer = True
+    assert controller.has_active_tools() is bool(controller.active_tools()) is False

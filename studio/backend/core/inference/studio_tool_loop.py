@@ -37,10 +37,14 @@ self-hosted types to thirteen.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
+import queue
 import threading
+import urllib.parse
 
 from dataclasses import dataclass, field
+from functools import partial
 from collections.abc import AsyncIterator, Callable
 from typing import Any, Protocol
 
@@ -77,6 +81,7 @@ def _append_mcp_images_owned(
 
 
 from core.inference.tool_loop_controller import (
+    UNPARSED_ARGUMENTS_KEY,
     ToolLoopController,
     _reject_json_constant,
     awaiting_approval_status,
@@ -168,6 +173,9 @@ _USAGE_DETAIL_FIELDS = (
 )
 
 _STEP_DONE = object()
+
+# Max URL reads of one batch in flight, one per host.
+_WEB_FETCH_CONCURRENCY = 4
 
 
 def _truncate_for_model(
@@ -1283,6 +1291,106 @@ def _advance_tool_stream(generator: Any, outcome: dict[str, Any]) -> Any:
         return _STEP_DONE
 
 
+def _web_fetch_host(tool_name: str, arguments: Any) -> str | None:
+    if tool_name != "web_search" or not isinstance(arguments, dict):
+        return None
+    if UNPARSED_ARGUMENTS_KEY in arguments:
+        return None
+    url = arguments.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return None
+    try:
+        host = urllib.parse.urlsplit(tools_module._normalize_url_scheme(url.strip())).hostname
+    except ValueError:
+        return None
+    return host or None
+
+
+class _StartedToolStream:
+    """A URL read started before its turn; buffers its stream's events until the loop reads them."""
+
+    def __init__(self, stream: Any, decision: Any, cancel_event: threading.Event) -> None:
+        self.decision = decision
+        self.host = _web_fetch_host(decision.tool_name, decision.arguments)
+        self._stream = stream
+        self._cancel_event = cancel_event
+        self._events: queue.Queue = queue.Queue()
+        self._stop = threading.Event()
+        self._pumped = threading.Event()
+        self._finished = False
+        # Same account context as a step thread.
+        context = contextvars.copy_context()
+        self._thread = threading.Thread(
+            target = context.run,
+            args = (self._pump,),
+            name = "tool-prefetch",
+            daemon = True,
+        )
+        self._thread.start()
+
+    def _pump(self) -> None:
+        try:
+            while not self._stop.is_set():
+                try:
+                    event = next(self._stream)
+                except StopIteration as stop:
+                    self._pumped.set()
+                    self._events.put((True, stop.value))
+                    return
+                self._events.put((False, event))
+            # Only after close(): the stream's early-close path joins its worker.
+            self._stream.close()
+            self._events.put((True, None))
+        except BaseException as exc:  # noqa: BLE001 - re-raised to the reader in order
+            self._pumped.set()
+            self._events.put((None, exc))
+
+    def __iter__(self) -> "_StartedToolStream":
+        return self
+
+    def __next__(self) -> Any:
+        if self._finished:
+            raise StopIteration
+        done, value = self._events.get()
+        if done is False:
+            return value
+        self._finished = True
+        if done is None:
+            raise value
+        raise StopIteration(value)
+
+    def serves(self, decision: Any) -> bool:
+        started = self.decision
+        return (
+            decision.tool_name == started.tool_name
+            and decision.arguments == started.arguments
+            and decision.key == started.key
+            and decision.card_id == started.card_id
+        )
+
+    def wait(self) -> None:
+        self._thread.join()
+
+    def close(self) -> None:
+        """Cancels the tool, as closing the generator mid-run does."""
+        if self._finished or self._pumped.is_set():
+            return
+        if self._thread.is_alive():
+            self._cancel_event.set()
+            self._stop.set()
+            self._thread.join(timeout = 5.0)
+
+
+async def _settle_started_stream(
+    started: _StartedToolStream, cancel_event: threading.Event
+) -> None:
+    """An unused started read: stopped on cancel, else awaited, since stopping it cancels the turn."""
+    if cancel_event.is_set():
+        started.close()
+        return
+    await asyncio.to_thread(started.wait)
+
+
 async def _drain_step_task(task: Any, cancel_event: threading.Event) -> None:
     """Closing a generator mid-next() raises and skips its cleanup, so the worker thread is joined first."""
     if task is None:
@@ -1315,6 +1423,37 @@ async def stream_with_studio_tools(
     policy: ToolLoopPolicy,
     cancel_event: threading.Event,
     mcp_image = None,
+) -> AsyncIterator[str]:
+    # A stream closed or failing mid-batch stops reads started ahead of their turn.
+    started_fetches: dict[int, _StartedToolStream] = {}
+    inner = _stream_with_studio_tools(
+        transport,
+        run = run,
+        policy = policy,
+        cancel_event = cancel_event,
+        mcp_image = mcp_image,
+        started_fetches = started_fetches,
+    )
+    try:
+        async for line in inner:
+            yield line
+    finally:
+        try:
+            await inner.aclose()
+        finally:
+            for started in list(started_fetches.values()):
+                started.close()
+            started_fetches.clear()
+
+
+async def _stream_with_studio_tools(
+    transport: ToolLoopTransport,
+    *,
+    run: ToolLoopRun,
+    policy: ToolLoopPolicy,
+    cancel_event: threading.Event,
+    mcp_image,
+    started_fetches: "dict[int, _StartedToolStream]",
 ) -> AsyncIterator[str]:
     # Off the loop: restoring may parse an envelope.
     restored = await asyncio.to_thread(restore_replayed_tool_results, run.messages)
@@ -1731,7 +1870,8 @@ async def stream_with_studio_tools(
         turn_mcp_images: list[list[dict[str, Any]]] = []
         turn_executed_real_tool = False
 
-        for call in calls:
+        started_fetches.clear()
+        for call_index, call in enumerate(calls):
             if cancel_event.is_set():
                 break
             # Before the gate: an exhausted call is replayed too, and only the decision's replay is guaranteed to parse.
@@ -1940,6 +2080,7 @@ async def stream_with_studio_tools(
                 call = decision,
                 approved = host_access_approved,
                 strict = strict_isolation,
+                share = image_share,
             ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
@@ -1979,17 +2120,95 @@ async def stream_with_studio_tools(
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
                 kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
-                if image_share is not None:
-                    kwargs["mcp_image"] = image_share["image"]
+                if share is not None:
+                    kwargs["mcp_image"] = share["image"]
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
-            # Same wrapper as local loops: live stdout for the card and a heartbeat keeping long calls alive.
-            tool_stream = scoped_tool_stream(
-                _invoke,
-                tool_name = name,
-                tool_call_id = card_id,
-                cancel_event = cancel_event,
-            )
+            tool_stream: Any = started_fetches.pop(call_index, None)
+            if tool_stream is not None and not (
+                tool_stream.serves(decision)
+                and not needs_confirmation
+                and not strict_isolation
+                and image_share is None
+            ):
+                # Not expected; its answer is not used.
+                await _settle_started_stream(tool_stream, cancel_event)
+                tool_stream = None
+            if tool_stream is None:
+                # Same wrapper as local loops: live stdout for the card and a heartbeat keeping long calls alive.
+                tool_stream = scoped_tool_stream(
+                    _invoke,
+                    tool_name = name,
+                    tool_call_id = card_id,
+                    cancel_event = cancel_event,
+                )
+            # Start following URL reads now only if each is exactly the call the loop will run: new host, no
+            # approval, within budget, key not in flight. Results are still emitted in call order.
+            current_host = _web_fetch_host(name, arguments)
+            if current_host is not None and not cancel_event.is_set():
+                in_flight_hosts = {current_host}
+                in_flight_keys = {decision.key}
+                for started in started_fetches.values():
+                    in_flight_hosts.add(started.host)
+                    in_flight_keys.add(started.decision.key)
+                next_index = max(started_fetches, default = call_index) + 1
+                while (
+                    next_index < len(calls)
+                    and len(in_flight_hosts) < _WEB_FETCH_CONCURRENCY
+                    and (unlimited or remaining - (next_index - call_index) >= 1)
+                ):
+                    follower = calls[next_index]
+                    function = follower.get("function")
+                    raw_name = function.get("name") if isinstance(function, dict) else None
+                    # By raw name first: preparing an MCP call can load tools.
+                    if not isinstance(raw_name, str) or raw_name.strip() != "web_search":
+                        break
+                    spec = controller.prepare_call(follower)
+                    host = _web_fetch_host(spec.tool_name, spec.arguments)
+                    if (
+                        not spec.should_execute
+                        or host is None
+                        or host in in_flight_hosts
+                        or spec.key in in_flight_keys
+                    ):
+                        break
+                    follower_mode, follower_bypass = live_permissions.apply(
+                        permission_mode, bypass_permissions
+                    )
+                    if needs_tool_confirmation(
+                        confirm_tool_calls = confirm_tool_calls,
+                        bypass_permissions = follower_bypass,
+                        permission_mode = follower_mode,
+                        name = spec.tool_name,
+                        arguments = spec.arguments,
+                        is_high_risk = is_high_risk_tool_call,
+                        never_needs = never_needs_approval,
+                        sandbox_level = sandbox_level,
+                        session_id = session_id,
+                    ) or requires_os_isolation(
+                        confirm_tool_calls = confirm_tool_calls,
+                        bypass_permissions = follower_bypass,
+                        permission_mode = follower_mode,
+                        name = spec.tool_name,
+                        arguments = spec.arguments,
+                        prompted = False,
+                        is_high_risk = is_high_risk_tool_call,
+                        sandbox_level = sandbox_level,
+                    ):
+                        break
+                    started_fetches[next_index] = _StartedToolStream(
+                        scoped_tool_stream(
+                            partial(_invoke, call = spec, approved = False, strict = False, share = None),
+                            tool_name = spec.tool_name,
+                            tool_call_id = spec.card_id,
+                            cancel_event = cancel_event,
+                        ),
+                        spec,
+                        cancel_event,
+                    )
+                    in_flight_hosts.add(host)
+                    in_flight_keys.add(spec.key)
+                    next_index += 1
             outcome: dict[str, Any] = {}
             step_task: Any = None
             try:
@@ -2040,6 +2259,11 @@ async def stream_with_studio_tools(
             )
             if _completion_images:
                 turn_mcp_images.append(_completion_images)
+
+        # Only a cancelled batch leaves these; never recorded.
+        for started in started_fetches.values():
+            await _settle_started_stream(started, cancel_event)
+        started_fetches.clear()
 
         yield _status_sse("")
 

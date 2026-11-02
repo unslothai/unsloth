@@ -108,7 +108,7 @@ test("a chat's Move to submenu groups projects and sections, New first and Remov
   );
   assert.match(
     APP_SIDEBAR,
-    /<P\.Item onSelect=\{\(\) => setEditingProject\(project\)\}>\n\s*<HugeiconsIcon icon=\{Settings02Icon\}/,
+    /<P\.Item onSelect=\{\(\) => setEditingProject\(project\)\}>\n\s*<HugeiconsIcon icon=\{Settings01Icon\}/,
   );
   assert.ok(!APP_SIDEBAR.includes("newSectionEllipsis"));
 });
