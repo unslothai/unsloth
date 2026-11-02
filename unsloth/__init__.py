@@ -781,18 +781,15 @@ if _IS_MLX:
         for name in _MLX_ALLOWED_EXTRA_ARGUMENTS:
             if hasattr(args, name):
                 values[name] = getattr(args, name)
-        # A real TRL config (built before this shim installed): its own fields are translated or refused too.
         trl_arguments = getattr(config_class, "_unsloth_mlx_trl_arguments", None)
         if trl_arguments is not None:
             for name in trl_arguments:
                 if name not in values and hasattr(args, name):
                     values[name] = getattr(args, name)
-            # Anything else its caller set reaches the config's refusal instead of vanishing. Compared with a fresh
-            # config, not field defaults, since TrainingArguments rewrites many fields as it initializes.
+            # Anything else set is refused. Compare to a fresh config: TrainingArguments rewrites fields at init.
             if not isinstance(args, MLXTrainingConfig) and _dataclasses.is_dataclass(args):
                 fresh = type(args)(output_dir = args.output_dir)
                 for field in _dataclasses.fields(args):
-                    # do_*: script flags transformers.Trainer never reads; eval_strategy sets do_eval by itself.
                     if (
                         field.init
                         and field.name not in values
@@ -1229,13 +1226,11 @@ if _IS_MLX:
             values = _mlx_training_argument_values(args, config_class)
             if hasattr(args, "max_length"):
                 values["max_length"] = getattr(args, "max_length")
-            # A step count computed from warmup_ratio is recomputed: overrides may change max_steps.
             if (
                 values.get("warmup_ratio")
                 and getattr(args, "_unsloth_mlx_warmup_steps_explicit", True) is False
             ):
                 values.pop("warmup_steps", None)
-        # Under its canonical name, or the copied canonical value would win over the alias. max_length keeps its own rules.
         values.update(
             {
                 (
@@ -1549,7 +1544,6 @@ if _IS_MLX:
                 if processing_class is not None
                 else self.processor or self.tokenizer
             )
-            # A preference trainer's max_length is TRL's own budget, not this context length.
             if trainer_kwargs.get("max_seq_length") is not None and not self.preference_kind:
                 _set_mlx_cuda_style_context_length(
                     self.args,
@@ -1692,7 +1686,6 @@ if _IS_MLX:
         "warmup_steps": 0,
         "weight_decay": 0.0,
     }
-    # TRL config fields without an MLX counterpart: accepted at the value that requests nothing, refused otherwise.
     _MLX_TRL_INERT_CONFIG_VALUES = {
         "base_model_attribute_name": "model",
         "cache_implementation": None,
@@ -1715,8 +1708,6 @@ if _IS_MLX:
     }
 
     class _MLXTRLConfig(_MLXSFTConfig):
-        """Base of the `trl.*Config` aliases: TRL's defaults, translated into a zoo config."""
-
         _unsloth_mlx_trl_arguments = tuple(_MLX_TRL_INERT_CONFIG_VALUES)
 
         def __init__(self, *args, **kwargs):
@@ -1733,8 +1724,6 @@ if _IS_MLX:
             super().__init__(*args, **kwargs)
 
     class _MLXTRLPolicyTrainer(UnslothTrainer):
-        """Routes a TRL trainer's constructor onto the zoo trainer it is combined with."""
-
         _unsloth_mlx_keep_dataset_order = False
 
         def __init__(self, *args, **kwargs):
@@ -1769,11 +1758,9 @@ if _IS_MLX:
             if not self._unsloth_mlx_keep_dataset_order:
                 _default_mlx_dataset_order(args)
             _default_mlx_grad_clip(args)
-            # append_eos stays True: TRL appends EOS to completions. max_length is TRL's own budget here.
             model_length = _positive_mlx_context_length(getattr(model, "max_seq_length", None))
             args_explicit = getattr(args, "_unsloth_mlx_max_seq_length_explicit", None)
             if args_explicit is None:
-                # A native zoo config carries no marker; a non-default value was set on purpose.
                 args_explicit = args.max_seq_length != MLXTrainingConfig.max_seq_length
             args_explicit = max_seq_length_explicit or args_explicit
             if model_length is not None and (
@@ -1782,7 +1769,6 @@ if _IS_MLX:
                 args.max_seq_length = model_length
             return args
 
-    # trl name stem, zoo trainer, zoo config, TRL's constructor order, trainer-only kwargs, keep zoo's batch order.
     _MLX_TRL_POLICY_TRAINERS = (
         (
             "DPO",
@@ -1853,7 +1839,6 @@ if _IS_MLX:
             True,
         ),
         (
-            # Prompts follow TRL's RepeatSampler; zoo refuses any other order.
             "GRPO",
             "MLXGRPOTrainer",
             "MLXGRPOConfig",
@@ -1896,7 +1881,6 @@ if _IS_MLX:
     )
 
     def _build_mlx_trl_policy_trainers():
-        """Return {trl name: shim} for the trainers this unsloth-zoo build implements."""
         aliases = {
             key: value
             for key, value in _MLX_TRAINING_ARGUMENT_ALIASES.items()

@@ -942,7 +942,6 @@ def test_mlx_trainer_rejects_custom_data_collator():
 
 
 def test_mlx_trainer_allows_text_completion_only_loss():
-    """Text MLX training masks prompts of prompt/completion rows."""
     unsloth = _import_mlx_unsloth()
 
     trainer = unsloth.UnslothTrainer(
@@ -1156,8 +1155,6 @@ def test_mlx_trl_star_import_exports_public_shims():
 
 
 def test_mlx_rl_trainers_stub_with_clear_error(monkeypatch):
-    """Trainers with no MLX path are retargeted, where trl exposes them, to a clear
-    NotImplementedError instead of a confusing CUDA crash; none is invented."""
     unsloth = _import_mlx_unsloth()
     trl = types.ModuleType("trl")
     trl.__path__ = ["real-trainer-package"]
