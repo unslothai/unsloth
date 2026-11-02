@@ -26,8 +26,8 @@ import {
   DatabaseIcon,
   DragDropVerticalIcon,
   FlimSlateIcon,
-  Image01Icon,
-  LockIcon,
+  ImageIcon,
+  LockKeyIcon,
   RemoveCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { Volume02Icon } from "@/lib/volume-icons";
@@ -62,7 +62,7 @@ const KIND_ICONS: Record<
 > = {
   text: MessageCircleIcon,
   tts: Volume02Icon,
-  image: Image01Icon,
+  image: ImageIcon,
   video: FlimSlateIcon,
   embedding: DatabaseIcon,
 };
@@ -374,7 +374,7 @@ export function LoadedModelsIndicator({
               className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex h-9 cursor-grab touch-none items-center gap-1.5 rounded-full pl-2.5 pr-3 font-heading text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
             >
               <HugeiconsIcon
-                icon={cardState === "otherAccount" ? LockIcon : SparkleIcon}
+                icon={cardState === "otherAccount" ? LockKeyIcon : SparkleIcon}
                 strokeWidth={1.75}
                 className="size-[calc(15px*var(--ui-space-scale,1))]"
               />
@@ -472,7 +472,7 @@ export function LoadedModelsIndicator({
           <div className="flex max-h-[min(272px,42dvh)] min-h-0 flex-col gap-0.5 overflow-y-auto">
             {cardState === "otherAccount" && (
               <NoteRow
-                icon={LockIcon}
+                icon={LockKeyIcon}
                 title={t("floatingPanels.loadedModels.otherAccount")}
                 detail={t("floatingPanels.loadedModels.otherAccountDetail")}
               />

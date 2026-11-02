@@ -36,7 +36,7 @@ import {
   ChefHatIcon,
   DashboardCircleIcon,
   FlimSlateIcon,
-  Image01Icon,
+  ImageIcon,
   LibrariesIcon,
   Message01Icon,
   Moon02Icon,
@@ -117,7 +117,7 @@ const WORKSPACES: {
   },
   {
     id: "switchToImages",
-    icon: Image01Icon,
+    icon: ImageIcon,
     labelKey: "shell.navigation.images",
     aliases: ["generate"],
   },

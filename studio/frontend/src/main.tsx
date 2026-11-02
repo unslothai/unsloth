@@ -34,6 +34,7 @@ import { watchInputModality } from "./lib/input-modality";
 import { watchMacStrayKeyText } from "./lib/mac-stray-key-text";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
 import { watchSpellCheck } from "./lib/spellcheck";
+import { watchTimeFormat } from "./lib/time-format";
 
 markAppSessionStart();
 setHubSessionRefresh(refreshSession);
@@ -85,6 +86,7 @@ watchInputModality(window);
 
 // Before the first render, so a disabled spell check never flashes underlines.
 watchSpellCheck(window);
+watchTimeFormat(window);
 
 // The macOS app types a control character for a key the page leaves unhandled (#14764).
 if (isTauri && /Mac/.test(navigator.platform)) {

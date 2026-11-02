@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ChatBackground } from "@/features/chat-background";
+import {
+  ChatBackground,
+  WindowMaterialMount,
+} from "@/features/chat-background";
 import { ImageViewer } from "@/components/image-viewer";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { LazyImportFailure } from "@/components/lazy-import-boundary";
 import { AppSidebar } from "@/components/app-sidebar";
 import { CommandPalette } from "@/components/command-palette";
-import { SpookyDecorations } from "@/features/halloween/spooky-decorations";
 import { Navbar } from "@/components/navbar";
 import { SidebarEdgeTrigger } from "@/components/sidebar-edge-trigger";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
@@ -56,6 +58,8 @@ import {
   useShortcutAvailable,
 } from "@/features/settings/hooks/use-shortcut";
 import { useHubSourceNotice } from "@/features/settings/hooks/use-hub-source-notice";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
+import { reconcileSttDevicePreference } from "@/features/settings/api/stt-device";
 import { useLowDiskNotice } from "@/features/settings/hooks/use-low-disk-notice";
 import { useTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
@@ -239,6 +243,21 @@ const AudioPage = lazy(() =>
 function PersonalizationSyncMount() {
   useRouterState({ select: (s) => s.location.pathname });
   usePersonalizationSync(hasSettledAuthSession());
+  return null;
+}
+
+// Voice Settings "Load into" kept in step with the server copy that device-less STT API loads read (#15280). Here,
+// not on store rehydrate: the store loads at startup, before the desktop backend port is known and before sign-in.
+function SttDeviceSyncMount() {
+  useRouterState({ select: (s) => s.location.pathname });
+  const settled = hasSettledAuthSession();
+  useEffect(() => {
+    if (!settled) return;
+    void reconcileSttDevicePreference(
+      useVoiceSettingsStore.getState().sttDevice,
+      (sttDevice) => useVoiceSettingsStore.setState({ sttDevice }),
+    );
+  }, [settled]);
   return null;
 }
 
@@ -700,7 +719,9 @@ function RootLayout() {
   const content = (
     <>
       <PersonalizationSyncMount />
+      <SttDeviceSyncMount />
       <InterfaceZoom />
+      <WindowMaterialMount />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <LowDiskNoticeMount />}
@@ -715,7 +736,6 @@ function RootLayout() {
       <StopRunningChatsDialog />
       <ImageViewer />
       {!hideNavbar && <CommandPalette />}
-      {!hideNavbar && <SpookyDecorations />}
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
@@ -731,7 +751,7 @@ function RootLayout() {
           data-wallpaper-route={isChatRoute ? "chat" : "page"}
           className="relative !min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
-          <ChatBackground route={isChatRoute ? "chat" : "page"} />
+          <ChatBackground route={isChatRoute ? "chat" : "page"} backdrop />
           <AppSidebar />
           <SidebarEdgeTrigger />
           <SidebarInset

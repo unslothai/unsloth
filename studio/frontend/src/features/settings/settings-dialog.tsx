@@ -24,6 +24,7 @@ import {
   ApiIcon,
   BotIcon,
   Cancel01Icon,
+  CancelCircleIcon,
   CloudIcon,
   ComputerTerminal01Icon,
   DatabaseSettingIcon,
@@ -46,6 +47,7 @@ import {
   type ReactNode,
   Suspense,
   lazy,
+  useCallback,
   useDeferredValue,
   useEffect,
   useLayoutEffect,
@@ -195,6 +197,7 @@ const TABS: TabDef[] = [
     id: "appearance",
     labelKey: "settings.tabs.appearance",
     icon: BrushCleaningIcon,
+    badgeKey: "shell.navigation.newBadge",
   },
   {
     id: "resources",
@@ -293,6 +296,29 @@ export function SettingsDialog() {
   const hubSource = useHubSource();
   const canUpgradeToFullInstall = useFullInstallUpgrade() !== null;
   const { attach: attachRail, onScroll: onRailScroll, className: railFadeClass } = useScrollFades();
+  // The list's own scroll bar width, so the tab pills keep equal side insets with or without one.
+  const railRef = useCallback(
+    (node: HTMLElement | null) => {
+      attachRail(node);
+      if (!node) {
+        return;
+      }
+      const sync = () => {
+        const width = `${node.offsetWidth - node.clientWidth}px`;
+        if (node.style.getPropertyValue("--rail-scrollbar") !== width) {
+          node.style.setProperty("--rail-scrollbar", width);
+        }
+      };
+      sync();
+      const observer = new ResizeObserver(sync);
+      observer.observe(node);
+      return () => {
+        observer.disconnect();
+        attachRail(null);
+      };
+    },
+    [attachRail],
+  );
   const visibleTabs = useMemo(() => TABS.filter((tab) => settingsTabVisible(tab.id, isOwner)), [isOwner]);
   const open = useSettingsDialogStore((s) => s.open);
   const requestedTab = useSettingsDialogStore((s) => s.activeTab);
@@ -519,7 +545,7 @@ export function SettingsDialog() {
                 <HugeiconsIcon
                   icon={Search01Icon}
                   strokeWidth={2}
-                  className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground"
+                  className="pointer-events-none absolute top-[calc(50%-0.5px)] left-[13.5px] size-4 -translate-y-1/2 text-muted-foreground"
                 />
                 <input
                   value={query}
@@ -533,16 +559,16 @@ export function SettingsDialog() {
                   data-type-to-activate="settings-search"
                   placeholder={t("common.search")}
                   aria-label={t("settings.dialog.searchPlaceholder")}
-                  className="h-[calc(36px*var(--ui-space-scale,1))] w-full rounded-full border-0 bg-accent pr-8 pl-10 text-ui-14p5 text-foreground outline-none transition-colors placeholder:text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))]"
+                  className="h-[calc(36px*var(--ui-space-scale,1))] w-full rounded-full border-0 bg-accent pt-px pr-9 pl-[39.5px] text-ui-14p5 text-foreground outline-none transition-colors placeholder:text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))]"
                 />
                 {query && (
                   <button
                     type="button"
                     onClick={() => setQuery("")}
                     aria-label={t("settings.dialog.closeAriaLabel")}
-                    className="absolute top-1/2 right-2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
+                    className="absolute top-1/2 right-[12.5px] flex size-4 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
                   >
-                    <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
+                    <HugeiconsIcon icon={CancelCircleIcon} className="size-4" />
                   </button>
                 )}
               </div>
@@ -587,13 +613,15 @@ export function SettingsDialog() {
                 </div>
               ) : null}
               <nav
-                ref={attachRail}
+                ref={railRef}
                 onScroll={onRailScroll}
                 className={cn(
                   // A short window leaves the list taller than the clipped sidebar, so scroll it.
-                  "hover-scrollbar settings-rail-fade flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-1",
+                  // Full width, so the scroll bar sits at the panel edge; the right padding gives back
+                  // what the bar takes, and a bar wider than the inset widens the left to match.
+                  "hover-scrollbar settings-rail-fade -mx-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1 pl-[max(calc(var(--spacing)*3),var(--rail-scrollbar,0px))] pr-[max(0px,calc(var(--spacing)*3-var(--rail-scrollbar,0px)))]",
                   railFadeClass,
-                  "group-data-stacked/settings:flex-none group-data-stacked/settings:flex-row group-data-stacked/settings:overflow-x-auto group-data-stacked/settings:py-0",
+                  "group-data-stacked/settings:mx-0 group-data-stacked/settings:flex-none group-data-stacked/settings:flex-row group-data-stacked/settings:overflow-x-auto group-data-stacked/settings:px-1 group-data-stacked/settings:py-0",
                   results !== null && "group-data-stacked/settings:flex hidden",
                 )}
               >
@@ -648,7 +676,8 @@ export function SettingsDialog() {
                         {t(tab.labelKey)}
                       </span>
                       {tab.badgeKey ? (
-                        <span className="relative z-10 ml-auto rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
+                        // Visual only, so the tab's accessible name stays its label.
+                        <span aria-hidden="true" className="relative z-10 ml-auto rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
                           {t(tab.badgeKey)}
                         </span>
                       ) : null}

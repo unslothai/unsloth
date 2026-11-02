@@ -139,6 +139,7 @@ def _wrapped(
     monkeypatch,
     small_ok = True,
     tuned_ok = False,
+    short_tiles = False,
 ):
     seen = {}
 
@@ -149,6 +150,7 @@ def _wrapped(
 
     monkeypatch.setattr(u, "_flex_small_smem_device_ok", lambda: small_ok)
     monkeypatch.setattr(u, "_flex_tuned_bwd_device_ok", lambda: tuned_ok)
+    monkeypatch.setattr(u, "_flex_small_smem_short_query_tiles", lambda: short_tiles)
     return u._wrap_flex_attention_forward(fake_flex), seen
 
 
@@ -247,6 +249,87 @@ def test_wrapper_short_prompt_whose_decode_tile_does_not_fit_gets_tiles(
     wrapped, seen = _wrapped(monkeypatch, small_ok = False)
     wrapped(_Causal(), *_gqa_qkv(q_len, q_heads, kv_heads), object())
     assert seen == {}  # other cards keep the defaults
+
+
+@pytest.mark.parametrize(
+    "version,expected",
+    [
+        ("2.10.0+cu128", True),
+        ("2.11.0", True),
+        ("2.13.1", True),
+        ("2.14.0", False),
+        ("2.14.1+cu130", False),
+    ],
+)
+def test_short_query_tiles_torch_gate(monkeypatch, version, expected):
+    monkeypatch.setattr(u.torch, "__version__", version)
+    assert u._flex_small_smem_short_query_tiles() is expected
+
+
+@pytest.mark.parametrize(
+    "q_len,q_heads,kv_heads,forced",
+    [
+        (1, 4, 1, False),  # Gemma 3 1B decode step: tiles, flex_decoding stays eligible
+        (4, 4, 1, False),  # 16 rows: flex_decoding's own BLOCK_M would be 16
+        (8, 4, 1, False),  # 32 rows
+        (16, 4, 1, False),  # 64 rows
+        (16, 8, 4, False),  # Gemma 3 4B 16-token prompt, 32 rows
+        (28, 8, 4, False),  # Gemma 3 4B prompt, 56 rows
+        (28, 6, 2, False),  # repeated K / V, 28 rows
+        (17, 4, 1, True),  # 68 rows: main kernel, as in the default gate
+        (127, 2, 2, True),
+    ],
+)
+def test_wrapper_short_no_grad_queries_get_tiles_before_torch_2_14(
+    monkeypatch, q_len, q_heads, kv_heads, forced
+):
+    # A batch size change makes the batch dim dynamic, which moves even one-token decode from
+    # flex_decoding to the main kernel, whose default tile does not fit (torch 2.10 / 2.11).
+    import torch
+
+    qkv = [t.to(torch.bfloat16) for t in _gqa_qkv(q_len, q_heads, kv_heads)]
+    wrapped, seen = _wrapped(monkeypatch, short_tiles = True)
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
+    wrapped(_Causal(), *qkv, object())
+    assert {
+        k: seen.get(k) for k in u._FLEX_SMALL_SMEM_KERNEL_OPTIONS
+    } == u._FLEX_SMALL_SMEM_KERNEL_OPTIONS
+    assert seen.get("FORCE_USE_FLEX_ATTENTION") is (True if forced else None)
+    # flex_decoding derives SAFE_M_BOUNDARY from plain BLOCK_M, not fwd_BLOCK_M (torch < 2.14).
+    assert seen.get("BLOCK_M") == (None if forced else 64)
+    wrapped, seen = _wrapped(monkeypatch, small_ok = False, short_tiles = True)
+    wrapped(_Causal(), *qkv, object())
+    assert seen == {}  # other cards keep the defaults
+
+
+@pytest.mark.parametrize(
+    "head_dim,dtype,tiled",
+    [
+        (256, "bfloat16", True),
+        (256, "float16", True),
+        (256, "float32", False),
+        (192, "bfloat16", False),
+    ],
+)
+def test_short_query_tiles_only_where_measured(monkeypatch, head_dim, dtype, tiled):
+    # fp32 needs 147456 B with these tiles on flex_decoding; head_dim 192 fails to build on 2.10.
+    import torch
+
+    wrapped, seen = _wrapped(monkeypatch, short_tiles = True)
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
+    qkv = [t.to(getattr(torch, dtype)) for t in _gqa_qkv(1, 4, 1, head_dim = head_dim)]
+    wrapped(_Causal(), *qkv, object())
+    assert (seen.get("fwd_BLOCK_M") == 64) is tiled
+    assert "FORCE_USE_FLEX_ATTENTION" not in seen
+
+
+def test_short_query_tiles_need_the_small_card(monkeypatch):
+    calls = []
+    monkeypatch.setattr(u, "_flex_small_smem_device_ok", lambda: False)
+    monkeypatch.setattr(u, "_flex_tuned_bwd_device_ok", lambda: False)
+    monkeypatch.setattr(u, "_flex_small_smem_short_query_tiles", lambda: calls.append(1) or True)
+    u._wrap_flex_attention_forward(lambda *a, **k: None)
+    assert calls == []
 
 
 def test_wrapper_untouched_off_class_and_outside_range(monkeypatch):

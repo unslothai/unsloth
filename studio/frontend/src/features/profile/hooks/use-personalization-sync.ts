@@ -33,6 +33,11 @@ import {
 } from "@/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  DEFAULT_GREETING,
+  type GreetingSettings,
+  sanitizeGreeting,
+} from "../greeting";
+import {
   PROFILE_TEXT_MAX_LENGTH,
   useUserProfileStore,
 } from "../stores/user-profile-store";
@@ -46,13 +51,36 @@ const PUSH_DEBOUNCE_MS = 800;
 // Version 6 shows Appearance in the account menu once.
 const PERSONALIZATION_VERSION = 6;
 
-type ProfileSnapshot = {
+type ProfileSnapshot = GreetingSettings & {
   displayName: string;
   nickname: string;
   avatarDataUrl: string | null;
   avatarShape: AvatarShape;
-  showGreetingSloth: boolean;
 };
+
+const CUSTOM_GREETING_KEYS = [
+  "greetingStyle",
+  "greetingIcon",
+  "greetingIconDataUrl",
+  "greetingText",
+  "greetingImageDataUrl",
+] as const;
+type CustomGreeting = Pick<
+  GreetingSettings,
+  (typeof CUSTOM_GREETING_KEYS)[number]
+>;
+
+function customGreeting(profile: GreetingSettings): CustomGreeting {
+  const s = sanitizeGreeting(profile);
+  return Object.fromEntries(
+    CUSTOM_GREETING_KEYS.map((key) => [key, s[key]]),
+  ) as CustomGreeting;
+}
+
+function isDefaultCustomGreeting(profile: GreetingSettings): boolean {
+  const s = sanitizeGreeting(profile);
+  return CUSTOM_GREETING_KEYS.every((key) => s[key] === DEFAULT_GREETING[key]);
+}
 
 type PersonalizationWrite = Parameters<typeof savePersonalization>[0];
 type QueuedSave = {
@@ -69,6 +97,7 @@ function profileText(value: string): string {
 function normalizeProfile(profile: ProfileSnapshot): ProfileSnapshot {
   return {
     ...profile,
+    ...customGreeting(profile),
     displayName: profileText(profile.displayName),
     nickname: profileText(profile.nickname),
   };
@@ -80,7 +109,8 @@ function sameProfile(a: ProfileSnapshot, b: ProfileSnapshot): boolean {
     a.nickname === b.nickname &&
     a.avatarDataUrl === b.avatarDataUrl &&
     a.avatarShape === b.avatarShape &&
-    a.showGreetingSloth === b.showGreetingSloth
+    a.showGreetingSloth === b.showGreetingSloth &&
+    CUSTOM_GREETING_KEYS.every((key) => a[key] === b[key])
   );
 }
 
@@ -128,6 +158,11 @@ function profileSnapshot(): ProfileSnapshot {
     avatarDataUrl: s.avatarDataUrl,
     avatarShape: s.avatarShape,
     showGreetingSloth: s.showGreetingSloth,
+    greetingStyle: s.greetingStyle,
+    greetingIcon: s.greetingIcon,
+    greetingIconDataUrl: s.greetingIconDataUrl,
+    greetingText: s.greetingText,
+    greetingImageDataUrl: s.greetingImageDataUrl,
   };
 }
 
@@ -172,6 +207,7 @@ function hasLocalSettings(
       profile.avatarDataUrl ||
       profile.avatarShape !== "circle" ||
       !profile.showGreetingSloth ||
+      !isDefaultCustomGreeting(profile) ||
       theme !== "system" ||
       palette !== "standard" ||
       !isDefaultCustomization(customization) ||
@@ -185,6 +221,13 @@ export function usePersonalizationSync(enabled: boolean): void {
   const avatarDataUrl = useUserProfileStore((s) => s.avatarDataUrl);
   const avatarShape = useUserProfileStore((s) => s.avatarShape);
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
+  const greetingStyle = useUserProfileStore((s) => s.greetingStyle);
+  const greetingIcon = useUserProfileStore((s) => s.greetingIcon);
+  const greetingIconDataUrl = useUserProfileStore((s) => s.greetingIconDataUrl);
+  const greetingText = useUserProfileStore((s) => s.greetingText);
+  const greetingImageDataUrl = useUserProfileStore(
+    (s) => s.greetingImageDataUrl,
+  );
   const { theme } = useTheme();
   const { palette } = usePalette();
   const customization = useAppearanceCustomStore((s) => s.customization);
@@ -252,6 +295,14 @@ export function usePersonalizationSync(enabled: boolean): void {
           const remoteGreeting = remote.profile.showGreetingSloth !== false;
           const keepLocalGreeting =
             remote.greetingSlothSaved === false && localGreeting === false;
+          const localProfile = profileSnapshot();
+          const remoteCustomGreeting = customGreeting({
+            ...DEFAULT_GREETING,
+            ...remote.profile,
+          });
+          const keepLocalCustomGreeting =
+            remote.greetingCustomSaved !== true &&
+            !isDefaultCustomGreeting(localProfile);
           const nextProfile: ProfileSnapshot = {
             displayName: remote.profile.displayName ?? "",
             nickname: remote.profile.nickname ?? "",
@@ -261,6 +312,9 @@ export function usePersonalizationSync(enabled: boolean): void {
             showGreetingSloth: keepLocalGreeting
               ? localGreeting
               : remoteGreeting,
+            ...(keepLocalCustomGreeting
+              ? customGreeting(localProfile)
+              : remoteCustomGreeting),
           };
           const nextTheme = remote.appearance.theme;
           const localPalette = latestPaletteRef.current;
@@ -344,7 +398,11 @@ export function usePersonalizationSync(enabled: boolean): void {
           // lastSaved records the server's actual values so the push re-uploads preserved local values.
           lastSavedRef.current = serialized({
             ...payload(
-              { ...nextProfile, showGreetingSloth: remoteGreeting },
+              {
+                ...nextProfile,
+                ...remoteCustomGreeting,
+                showGreetingSloth: remoteGreeting,
+              },
               nextTheme,
               remotePalette,
               storedRemoteCustomization,
@@ -408,7 +466,18 @@ export function usePersonalizationSync(enabled: boolean): void {
   useEffect(() => {
     if (!enabled || hydratedGeneration !== authGenerationRef.current) return;
     const current = payload(
-      { displayName, nickname, avatarDataUrl, avatarShape, showGreetingSloth },
+      {
+        displayName,
+        nickname,
+        avatarDataUrl,
+        avatarShape,
+        showGreetingSloth,
+        greetingStyle,
+        greetingIcon,
+        greetingIconDataUrl,
+        greetingText,
+        greetingImageDataUrl,
+      },
       theme,
       palette,
       customization,
@@ -433,6 +502,11 @@ export function usePersonalizationSync(enabled: boolean): void {
     avatarDataUrl,
     avatarShape,
     showGreetingSloth,
+    greetingStyle,
+    greetingIcon,
+    greetingIconDataUrl,
+    greetingText,
+    greetingImageDataUrl,
     theme,
     palette,
     customization,
