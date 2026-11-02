@@ -33,6 +33,7 @@ import {
   threadTurns,
   turnOpenerIdAt,
 } from "@/components/assistant-ui/thread-turns";
+import { THREAD_GUTTER_SHIFT_PROPERTY } from "@/components/assistant-ui/thread-gutter";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import {
@@ -476,7 +477,22 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       let fit: Record<string, string> | null = null;
       if (fitPending && anchor) {
         const box = viewport.getBoundingClientRect();
-        const centre = anchor.getBoundingClientRect().top;
+        const anchorBox = anchor.getBoundingClientRect();
+        const centre = anchorBox.top;
+        // scroll bar space left of the column (both-edges gutter, or thread-gutter.ts's shift):
+        // the rail stays by the panel's edge when the OS switches overlay and classic scroll bars
+        const edge = Math.max(
+          0,
+          anchorBox.left -
+            box.left -
+            (Number.parseFloat(getComputedStyle(viewport).paddingLeft) || 0) +
+            (Number.parseFloat(
+              viewport.style.getPropertyValue(THREAD_GUTTER_SHIFT_PROPERTY),
+            ) || 0),
+        );
+        if (anchor.style.getPropertyValue("--rail-edge") !== `${edge}px`) {
+          anchor.style.setProperty("--rail-edge", `${edge}px`);
+        }
         const room =
           Math.min(centre - box.top, box.bottom - centre) - RAIL_INSET_PX;
         // snap line, pitch and start to device pixels, or 125% scaling renders uneven dashes
@@ -708,10 +724,11 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     >
       <div
         style={{
+          left: "calc(-1 * var(--rail-edge, 0px))",
           width:
-            "calc((100% - min(100%, var(--thread-content-max-width))) / 2)",
+            "calc((100% - min(100%, var(--thread-content-max-width))) / 2 + var(--rail-edge, 0px))",
         }}
-        className="aui-turn-navigator-gutter @container/turn-gutter absolute top-0 left-0 h-0"
+        className="aui-turn-navigator-gutter @container/turn-gutter absolute top-0 h-0"
       >
         <div className="absolute top-0 left-[-0.875rem] flex w-9 -translate-y-1/2 flex-col items-start opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100 @min-[2.25rem]/turn-gutter:opacity-100">
           <nav
