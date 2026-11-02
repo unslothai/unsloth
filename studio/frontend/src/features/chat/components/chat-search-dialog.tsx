@@ -10,13 +10,13 @@ import {
 } from "@/components/ui/command";
 import {
   COMPOSER_INPUT_SELECTOR,
-  type ShortcutId,
   isImeComposing,
   triggerShortcut,
   useShortcut,
   useShortcutAvailable,
   useShortcutLabel,
-} from "@/features/settings";
+} from "@/features/settings/hooks/use-shortcut";
+import type { ShortcutId } from "@/features/settings/lib/keyboard-shortcuts";
 import { type TranslationKey, useT } from "@/i18n";
 import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
@@ -43,14 +43,14 @@ import {
   useMemo,
   useState,
 } from "react";
-import {
-  type CachedInventoryRow,
-  type LocalInventoryRow,
-  type ModelInventoryFormat,
-  isHiddenModelId,
-  useHubInventory,
-} from "@/features/hub";
-import { modelLabelKey } from "@/features/library";
+import type {
+  CachedInventoryRow,
+  LocalInventoryRow,
+} from "@/features/hub/inventory/types";
+import type { ModelInventoryFormat } from "@/features/hub/inventory/api";
+import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
+import { useHubInventory } from "@/features/hub/inventory/use-hub-inventory";
+import { modelLabelKey } from "@/features/library/file-kind";
 import { useChatProjects } from "../hooks/use-chat-projects";
 import { useChatSidebarItems } from "../hooks/use-chat-sidebar-items";
 import {

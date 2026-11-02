@@ -45,7 +45,7 @@ import {
   isServedByMlx,
   loadedContextFields,
   resolveInitialConfig,
-} from "@/features/model-picker";
+} from "@/features/model-picker/model-config/per-model-config";
 import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";

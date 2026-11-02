@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type SettingsTab, settingsTabVisible, useSettingsDialogStore } from "@/features/settings";
+import {
+  type SettingsTab,
+  useSettingsDialogStore,
+} from "@/features/settings/stores/settings-dialog-store";
+import { settingsTabVisible } from "@/features/settings/settings-tab-visibility";
 import type { TranslationKey } from "@/i18n";
 import { ChipIcon } from "@/lib/hugeicons-derived";
 import { openLink } from "@/lib/open-link";

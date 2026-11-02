@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { hubTokenHeader } from "@/features/hub";
+import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 // eslint-disable-next-line no-restricted-imports
 import { checkDiskSpace } from "@/features/settings/low-disk-check";

@@ -58,11 +58,9 @@ import {
 } from "@/features/settings/lib/view-logs-action";
 import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
 import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
-import {
-  listOpenAIModels,
-  loadMultiModelEnabled,
-  loadOpenAIAutoSwitchSettings,
-} from "@/features/settings";
+import { listOpenAIModels } from "@/features/settings/api/openai-models";
+import { loadMultiModelEnabled } from "@/features/settings/api/multi-model";
+import { loadOpenAIAutoSwitchSettings } from "@/features/settings/api/openai-auto-switch";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -180,9 +178,6 @@ import { isExternalModelId } from "../external-providers";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
-  applyPerModelConfigToRuntime,
-  confirmManagedEngineIfNeeded,
-  currentRuntimePerModelConfig,
   isServedByMlx,
   normalizeMaxSeqLength,
   residentIsServedByMlx,
@@ -190,7 +185,12 @@ import {
   savedContextPin,
   type PerModelConfig,
   loadedContextFields,
-} from "@/features/model-picker";
+} from "@/features/model-picker/model-config/per-model-config";
+import {
+  applyPerModelConfigToRuntime,
+  currentRuntimePerModelConfig,
+} from "@/features/model-picker/model-config/apply-per-model-config";
+import { confirmManagedEngineIfNeeded } from "@/features/model-picker/hooks/managed-engine-offer";
 import {
   invalidateLlamaFlagCatalog,
   loadManagedLlamaFlags,

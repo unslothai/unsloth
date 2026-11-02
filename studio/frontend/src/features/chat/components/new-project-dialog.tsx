@@ -16,9 +16,9 @@ import {
 } from "@/components/ui/dialog";
 import {
   linkStagedFolders,
-  ProjectFolderPicker,
   type StagedFolder,
-} from "@/features/rag";
+} from "@/features/rag/components/link-staged-folders";
+import { ProjectFolderPicker } from "@/features/rag/components/project-folder-picker";
 import {
   ProjectSourceDropzone,
   type StagedSource,

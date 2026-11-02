@@ -4,7 +4,7 @@
 import {
   stepInterfaceScale,
   useInterfaceScaleStore,
-} from "@/features/settings";
+} from "@/features/settings/stores/interface-scale-store";
 import { create } from "zustand";
 import type { ZoomDirection } from "./zoom-chords.ts";
 

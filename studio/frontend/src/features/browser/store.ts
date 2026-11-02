@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type DocumentAnnotations, onChatThreadsDeleted, useChatRuntimeStore } from "@/features/chat";
+import type { DocumentAnnotations } from "@/features/chat/utils/document-annotations";
+import { onChatThreadsDeleted } from "@/features/chat/utils/chat-thread-tombstones";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { create } from "zustand";
 import { localOriginOf, unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";

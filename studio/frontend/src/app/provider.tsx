@@ -24,9 +24,9 @@ import {
   usePlatformStore,
 } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
-import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
+import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/use-chat-model-runtime";
 import { DeepLinkHandler } from "@/features/deep-links";
-import { receiveSharedRunConfigUrls } from "@/features/model-picker";
+import { receiveSharedRunConfigUrls } from "@/features/model-picker/sharing/receive-link";
 import {
   DownloadManagerPanel,
   dismissStartToasts,
@@ -36,16 +36,19 @@ import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain
 import {
   NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
   NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR,
-  applyCustomizationToDocument,
-  applyInterfaceScale,
   getAppliedInterfaceZoom,
-  notifyRendererReady,
   subscribeAppliedInterfaceZoom,
+} from "@/features/settings/lib/interface-scale-runtime";
+import {
+  applyCustomizationToDocument,
   useAppearanceCustomStore,
+} from "@/features/settings/stores/appearance-custom-store";
+import {
+  applyInterfaceScale,
   useInterfaceScaleStore,
-  usePalette,
-  useTheme,
-} from "@/features/settings";
+} from "@/features/settings/stores/interface-scale-store";
+import { notifyRendererReady } from "@/features/settings/api/gpu-rendering";
+import { usePalette, useTheme } from "@/features/settings/stores/theme-store";
 import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
 import { TauriRepairContext } from "@/hooks/tauri-repair-context";
 import { TauriUpdateContext } from "@/hooks/tauri-update-context";

@@ -8,7 +8,7 @@ import test from "node:test";
 const REGISTRY_SHORTCUT = /useShortcut\("openCommandPalette"/;
 const RAW_KEY_LISTENER = /addEventListener\("keydown"/;
 const SETTINGS_INDEX_IMPORT =
-  /\bDIALOG_SETTINGS_SEARCH_INDEX,\n[^;]*from "@\/features\/settings"/;
+  /\bDIALOG_SETTINGS_SEARCH_INDEX \} from "@\/features\/settings\/dialog-search-index"/;
 const LOCALIZED_SETTINGS_KEYWORDS =
   /keywords=\{DIALOG_SETTINGS_SEARCH_INDEX\[tab\]\.map\(\(key\) =>\s*t\(key\),?\s*\)\}/;
 const HARDCODED_SETTINGS_KEYWORDS = /keywords:\s*\[/;
