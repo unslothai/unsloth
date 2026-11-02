@@ -34,6 +34,7 @@ def _wrapped_call(
     monkeypatch.setattr(u, "_flex_tuned_bwd_device_ok", lambda: False)
     monkeypatch.setattr(u, "_flex_small_smem_device_ok", lambda: small_ok)
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: needs_backward)
+    monkeypatch.setattr(u, "_flex_small_smem_short_query_tiles", lambda: False)
     wrapped = u._wrap_flex_attention_forward(fake_flex)
 
     class M(torch.nn.Module):

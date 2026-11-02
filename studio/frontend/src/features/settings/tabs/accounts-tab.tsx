@@ -2,9 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useRef, useState, type SyntheticEvent } from "react";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   CubeIcon,
-  Delete02Icon,
   Key01Icon,
   MoreHorizontalIcon,
   PlusSignIcon,
@@ -510,7 +510,7 @@ function OwnerAccountsTab() {
                             }}
                           >
                             <HugeiconsIcon
-                              icon={Delete02Icon}
+                              icon={TrashIcon}
                               className="size-4"
                               aria-hidden="true"
                             />

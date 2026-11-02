@@ -411,9 +411,16 @@ def test_a_genuine_search_failure_carries_no_pictures(monkeypatch):
 
     _SubjectDDGS.calls = []
     monkeypatch.setattr("ddgs.DDGS", Boom)
+    registered = []
+    monkeypatch.setattr(
+        search_images,
+        "register_images",
+        lambda *a, **k: registered.append(a) or [],
+    )
     result = tools._web_search("top dog breeds", include_images = True, image_queries = ["Pug"])
     assert result.startswith("Search failed:") and "[[img:" not in result
-    assert _SubjectDDGS.calls == []
+    # The lookup may already be under way beside the text search; its answer is dropped unregistered.
+    assert registered == []
 
 
 def test_clear_all_chats_beats_a_thumbnail_write_already_in_flight(monkeypatch, tmp_path):

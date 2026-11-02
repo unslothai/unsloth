@@ -245,9 +245,10 @@ def test_cpu_backend_query_only_reads_an_already_imported_zoo(monkeypatch):
 
 
 @pytest.mark.parametrize("entry", ["studio/backend/main.py", "studio/backend/run.py"])
-def test_studio_keeps_training_off_on_cpu_only_hosts(entry):
-    """Studio / Desktop stay chat-only without a GPU: both entry points opt out of the CPU training backend
-    at module level, before anything can import unsloth, and spawned training workers inherit it."""
+def test_studio_processes_opt_out_of_the_cpu_backend_by_default(entry):
+    """Both Studio entry points opt out of the CPU training backend at module level, before anything can
+    import unsloth, and spawned workers inherit it. Only a training worker on a host Studio itself trains on
+    CPU opts back in (studio/backend/core/training/worker.py sets UNSLOTH_FORCE_CPU=1)."""
     tree = ast.parse((_ROOT / entry).read_text(encoding = "utf-8"))
     opt_out = first_unsloth_import = None
     for node in tree.body:
