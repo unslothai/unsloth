@@ -1414,9 +1414,7 @@ def snapshot_is_encoder_companion(repo_id: str, snapshot: Optional[Path]) -> boo
         from core.inference.diffusion_families import _FAMILIES
         from core.inference.diffusion_te_prequant import te_prequant_companion_names
 
-        known = {
-            row[2].lower() for fam in _FAMILIES for row in fam.te_prequant_repos
-        } | {
+        known = {row[2].lower() for fam in _FAMILIES for row in fam.te_prequant_repos} | {
             row[3].lower() for fam in _FAMILIES for row in fam.te_prequant_variant_repos
         }
         if repo_id.lower() not in known:
@@ -1426,7 +1424,8 @@ def snapshot_is_encoder_companion(repo_id: str, snapshot: Optional[Path]) -> boo
             return False
         allowed_root = te_prequant_companion_names(repo_id, _FAMILIES)
         weights = [
-            p for p in root.rglob("*")
+            p
+            for p in root.rglob("*")
             if p.suffix.lower() in {".safetensors", ".bin", ".pt", ".pth", ".gguf"}
         ]
         if not weights:
@@ -1437,7 +1436,11 @@ def snapshot_is_encoder_companion(repo_id: str, snapshot: Optional[Path]) -> boo
                 if weight.name.lower() not in allowed_root:
                     return False
             elif rel.parts[0] not in {
-                "text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4", "vae"
+                "text_encoder",
+                "text_encoder_2",
+                "text_encoder_3",
+                "text_encoder_4",
+                "vae",
             }:
                 return False
             if not weight.is_file() or weight.stat().st_size == 0:
@@ -1445,9 +1448,11 @@ def snapshot_is_encoder_companion(repo_id: str, snapshot: Optional[Path]) -> boo
             match = _WEIGHT_SHARD_RE.search(weight.name)
             if match:
                 # A shard without its siblings must remain resumable, not become an asset.
-                template = weight.name[:match.start(1)] + "{}" + weight.name[match.end(1):]
+                template = weight.name[: match.start(1)] + "{}" + weight.name[match.end(1) :]
                 for number in range(1, int(match.group(2)) + 1):
-                    sibling = weight.parent / template.format(str(number).zfill(len(match.group(1))))
+                    sibling = weight.parent / template.format(
+                        str(number).zfill(len(match.group(1)))
+                    )
                     if not sibling.is_file() or sibling.stat().st_size == 0:
                         return False
         for index in root.rglob("*.index.json"):

@@ -1298,10 +1298,9 @@ def _scan_cached_models(
                 )
                 # A companion-only prefetch passes the download check yet cannot from_pretrained, so mark it partial.
                 companion_only = (
-                    (not artifact_checkpoint
-                     and hf_cache_scan.snapshot_pipeline_missing_denoiser(load_snapshot))
-                    or hf_cache_scan.snapshot_is_encoder_companion(repo_id, load_snapshot)
-                )
+                    not artifact_checkpoint
+                    and hf_cache_scan.snapshot_pipeline_missing_denoiser(load_snapshot)
+                ) or hf_cache_scan.snapshot_is_encoder_companion(repo_id, load_snapshot)
                 snapshot_partial = download_partial or companion_only
                 # Flags are OR-ed over revisions, so no payload snapshot means no directory serves the row and it would reach for the Hub.
                 if not payload.payload_snapshots:
