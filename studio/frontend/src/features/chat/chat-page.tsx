@@ -286,6 +286,7 @@ import {
   resolveComparePaneThreadIds,
 } from "./utils/compare-pane-threads";
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
+import { getQueryDraft } from "./query-draft-context";
 import {
   getStoredChatThread,
   isExpectedBackgroundChatStorageError,
@@ -4870,6 +4871,7 @@ export function ChatPage({
             <BrowserOverlaidContext.Provider value={baseBackgrounded}>
             <ChatActiveContext.Provider value={active && !baseBackgrounded}>
               <ChatRuntimeProvider
+                queryDraft={getQueryDraft(baseView.mode === "single" ? baseView.newThreadNonce : undefined, incognito)}
                 modelType="base"
                 projectId={baseView.projectId}
                 initialThreadId={

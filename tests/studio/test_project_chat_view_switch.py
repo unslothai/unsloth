@@ -39,6 +39,7 @@ BOUND_NAMES = {
     "newThreadNonce",
     "newThreadSwitchStateRef",
     "nonce",
+    "onReady",
     "onSwitchFailed",
     "paused",
     "runActive",
@@ -141,6 +142,7 @@ export const world: any = {
   // switch calls move this the way the real ones do, which is all either effect reads.
   mainThreadId: null as string | null,
   switchedToNewThread: 0,
+  readyThreads: [] as Array<{ nonce: string; threadId: string }>,
   switchedToThread: [] as string[],
   clearedAttachments: 0,
   refreshes: 0,
@@ -173,6 +175,11 @@ export const world: any = {
   // Which component's effects are replaying right now, so a module-level call can be
   // attributed to a caller. Set by the emulator, never read by the sliced source.
   component: "none",
+};
+
+// Stable like the provider's useCallback: report only when the sliced switch settles.
+const onReady = (nonce: string, threadId: string): void => {
+  world.readyThreads.push({ nonce, threadId });
 };
 
 const state: any = {
@@ -261,6 +268,7 @@ async function refreshContextUsage(): Promise<void> {
 
 const auiFixture: any = {
   threads: () => ({
+    getState: () => ({ mainThreadId: world.mainThreadId }),
     __internal_getAssistantRuntime: () => ({
       threads: {
         // Throws for an unknown id rather than returning undefined, as assistant-ui does:
@@ -447,6 +455,7 @@ function renderThreadNewChatSwitch(props: any): void {
     mainThreadId,
     newThreadSwitchStateRef,
     nonce,
+    onReady,
     paused,
     checkpoint,
     loadedContextLength,
@@ -634,6 +643,7 @@ def test_a_first_new_chat_switches_once_and_clears_nothing():
         """
         await renderSettled({ newThreadNonce: "n1" });
         console.log(JSON.stringify({
+          readyThreads: world.readyThreads,
           switched: world.switchedToNewThread,
           cleared: world.clearedAttachments,
           stops: world.stopEvents.length,
@@ -643,6 +653,7 @@ def test_a_first_new_chat_switches_once_and_clears_nothing():
         }));
         """,
     )
+    assert out["readyThreads"] == [{"nonce": "n1", "threadId": "local-1"}]
     assert out["switched"] == 1
     assert out["cleared"] == 0, "the first switch has no outgoing composer to clear"
     assert out["stops"] == 1
@@ -845,6 +856,7 @@ def test_an_implicit_new_chat_defers_the_clear_until_the_new_thread_arrives():
         renderProvider({ newThreadNonce: "n1" });
         await tick();
         const midSwitch = {
+          readyThreads: world.readyThreads.slice(),
           switched: world.switchedToNewThread,
           cleared: world.clearedAttachments,
           stops: world.stopEvents.length,
@@ -854,6 +866,7 @@ def test_an_implicit_new_chat_defers_the_clear_until_the_new_thread_arrives():
         console.log(JSON.stringify({
           implicit,
           midSwitch,
+          readyThreads: world.readyThreads.slice(),
           switched: world.switchedToNewThread,
           cleared: world.clearedAttachments,
           unhandled: unhandled.length,
@@ -867,6 +880,8 @@ def test_an_implicit_new_chat_defers_the_clear_until_the_new_thread_arrives():
         "attempt": 0,
         "pendingSavedThreadIds": [],
     }
+    assert out["midSwitch"]["readyThreads"] == []
+    assert out["readyThreads"] == [{"nonce": "n1", "threadId": "local-1"}]
     assert out["midSwitch"]["switched"] == 1
     assert out["midSwitch"]["cleared"] == 0, "the deferred clear must wait for the switch"
     assert out["midSwitch"]["stops"] == 1
@@ -1156,6 +1171,7 @@ def test_a_rejected_switch_releases_the_nonce_so_the_same_one_can_be_retried():
         await tick();
         await tick();
         const afterReject = {
+          readyThreads: world.readyThreads.slice(),
           switched: world.switchedToNewThread,
           cleared: world.clearedAttachments,
           stops: world.stopEvents.length,
@@ -1171,6 +1187,7 @@ def test_a_rejected_switch_releases_the_nonce_so_the_same_one_can_be_retried():
         await renderSettled({ newThreadNonce: "n2" });
         console.log(JSON.stringify({
           afterReject,
+          readyThreads: world.readyThreads.slice(),
           switched: world.switchedToNewThread,
           state: switchState(),
           mainThreadId: world.mainThreadId,
@@ -1178,6 +1195,11 @@ def test_a_rejected_switch_releases_the_nonce_so_the_same_one_can_be_retried():
         }));
         """,
     )
+    assert out["afterReject"]["readyThreads"] == [{"nonce": "n1", "threadId": "local-1"}]
+    assert out["readyThreads"] == [
+        {"nonce": "n1", "threadId": "local-1"},
+        {"nonce": "n2", "threadId": "local-3"},
+    ]
     state = out["afterReject"]
     assert state["switched"] == 2, "the switch was attempted"
     assert state["state"] == {

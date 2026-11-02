@@ -44,6 +44,7 @@ BOUND_NAMES = {
     "modelLoading",
     "newThreadSwitchStateRef",
     "nonce",
+    "onReady",
     "paused",
     "tipId",
     "tipRunning",
@@ -163,6 +164,7 @@ export const world: any = {
   countError: null,
   countedModel: undefined as string | undefined,
   switchedToNewThread: 0,
+  readyThreads: [] as Array<{ nonce: string; threadId: string }>,
   clearedAttachments: 0,
   promptQueueStops: 0,
   // Set to { value: x } to stand in for a non-conforming 200 on the count path. Wrapped
@@ -172,6 +174,11 @@ export const world: any = {
   // Holds the count in flight, so a test can move the world while it is awaiting.
   countGate: null as Promise<void> | null,
   promptQueueByThreadId: {} as Record<string, { paused: boolean }>,
+};
+
+// Stable like the provider's useCallback: report only when the sliced switch settles.
+const onReady = (nonce: string, threadId: string): void => {
+  world.readyThreads.push({ nonce, threadId });
 };
 
 const state: any = {
@@ -535,6 +542,7 @@ export function renderNewChatSwitch(props: any): void {
     mainThreadId,
     newThreadSwitchStateRef,
     nonce,
+    onReady,
     paused,
     checkpoint,
     loadedContextLength,

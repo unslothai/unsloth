@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { chatQueryParam } from "./utils/chat-query-param";
+
 // Separate from chat-page so /chat can validate search without loading the page.
 export type ChatSearch = {
   thread?: string;
   compare?: string;
   new?: string;
   project?: string;
+  /** Query text for a new chat, as a browser search-engine shortcut sends it. */
+  q?: string;
 };
 
 export function validateChatSearch(
@@ -17,5 +21,6 @@ export function validateChatSearch(
     compare: typeof search.compare === "string" ? search.compare : undefined,
     new: typeof search.new === "string" ? search.new : undefined,
     project: typeof search.project === "string" ? search.project : undefined,
+    q: chatQueryParam(search.q),
   };
 }
