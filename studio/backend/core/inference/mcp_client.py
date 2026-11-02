@@ -1568,7 +1568,8 @@ class McpToolList(list):
 
 
 def _capabilities(client) -> Any:
-    return getattr(getattr(client, "initialize_result", None), "capabilities", None)
+    # initialize_result stays None on a modern connection, which has no initialize handshake.
+    return getattr(client, "server_capabilities", None)
 
 
 async def _list_resources(client) -> Optional[list[dict]]:
@@ -1872,7 +1873,7 @@ def _image_mime(mime: Any) -> Optional[str]:
 
 
 def _resource_mime(obj: Any) -> Any:
-    # mcp 2.x renames mimeType to mime_type, keeping camelCase only as a deprecated alias
+    # mcp 2.x exposes mime_type; mimeType is only a constructor alias there
     return obj.mime_type if hasattr(obj, "mime_type") else getattr(obj, "mimeType", None)
 
 
