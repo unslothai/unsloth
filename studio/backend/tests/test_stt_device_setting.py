@@ -19,11 +19,11 @@ from storage import studio_db
 from utils import stt_device_settings as sds
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def isolated_home(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(studio_db, "_schema_ready", set())
-    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising=False)
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
     sds.forget_cached_stt_device()
     yield
     sds.forget_cached_stt_device()
@@ -31,12 +31,12 @@ def isolated_home(monkeypatch, tmp_path):
 
 def _put(device):
     return settings_routes.update_stt_device_setting(
-        settings_routes.SttDevicePayload(device=device), current_subject="owner"
+        settings_routes.SttDevicePayload(device = device), current_subject = "owner"
     )
 
 
 def test_unset_defaults_to_auto():
-    response = settings_routes.get_stt_device_setting(current_subject="owner")
+    response = settings_routes.get_stt_device_setting(current_subject = "owner")
     assert response.device == "auto"
     assert response.locked is False
     assert response.saved is False
@@ -63,16 +63,16 @@ def test_env_locks_settings(monkeypatch):
 def test_an_explicit_auto_is_saved_so_another_browser_adopts_it():
     """Unset and a chosen Auto both read as auto, but only a choice stops a browser migrating its own."""
     assert _put("auto").saved is True
-    assert settings_routes.get_stt_device_setting(current_subject="owner").device == "auto"
+    assert settings_routes.get_stt_device_setting(current_subject = "owner").device == "auto"
     assert _put("cpu").saved is True
 
 
 def test_delayed_browser_migration_keeps_a_newer_explicit_choice():
-    assert settings_routes.get_stt_device_setting(current_subject="owner").saved is False
+    assert settings_routes.get_stt_device_setting(current_subject = "owner").saved is False
     _put("auto")
     response = settings_routes.update_stt_device_setting(
-        settings_routes.SttDevicePayload(device="cpu", only_if_unset=True),
-        current_subject="owner",
+        settings_routes.SttDevicePayload(device = "cpu", only_if_unset = True),
+        current_subject = "owner",
     )
     assert response.device == "auto"
     assert audio_device.stt_device_default() == "auto"
@@ -80,8 +80,8 @@ def test_delayed_browser_migration_keeps_a_newer_explicit_choice():
 
 def test_initial_browser_migration_saves_cpu():
     response = settings_routes.update_stt_device_setting(
-        settings_routes.SttDevicePayload(device="cpu", only_if_unset=True),
-        current_subject="owner",
+        settings_routes.SttDevicePayload(device = "cpu", only_if_unset = True),
+        current_subject = "owner",
     )
     assert response.device == "cpu"
     assert response.saved is True

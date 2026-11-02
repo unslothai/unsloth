@@ -29,7 +29,6 @@ def _stored_stt_device() -> Optional[str]:
     token = bind_account(OWNER)
     try:
         from storage.studio_db import get_app_setting
-
         value = get_app_setting(STT_DEVICE_SETTING_KEY, None)
     except Exception:  # noqa: BLE001 - store unavailable: hardware default
         value = None
@@ -73,7 +72,7 @@ def set_stt_device(device: str, *, only_if_unset: bool = False) -> bool:
     try:
         if only_if_unset:
             return compare_and_set_app_setting(STT_DEVICE_SETTING_KEY, None, device)
-        upsert_app_settings({STT_DEVICE_SETTING_KEY: device}, read_back=False)
+        upsert_app_settings({STT_DEVICE_SETTING_KEY: device}, read_back = False)
     finally:
         reset_account(token)
         forget_cached_stt_device()
