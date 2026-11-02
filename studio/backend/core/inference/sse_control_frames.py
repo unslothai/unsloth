@@ -33,6 +33,7 @@ _CONTROL_KEYS = (
     "_toolEvent",
     "_toolStatus",
     "_diffusionFrame",
+    "_diffusionReplace",
     "_reasoningDurationMs",
     "_contextUsage",
     "_generationProgress",

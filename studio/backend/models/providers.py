@@ -87,6 +87,10 @@ class ProviderCreate(BaseModel):
 
     api_type: ProviderApiType = "chat_completions"
     reasoning_config: Optional[ProviderReasoningConfig] = None
+    diffusion_streaming: bool = Field(
+        False,
+        description = "Enable Inception Labs Mercury diffusion streaming (denoised full-text chunks) for this connection.",
+    )
 
     provider_type: str = Field(..., description = "Provider type from the registry")
     display_name: str = Field(..., description = "User-chosen label (e.g. 'My OpenAI Key')")
@@ -125,6 +129,10 @@ class ProviderUpdate(BaseModel):
 
     api_type: Optional[ProviderApiType] = None
     reasoning_config: Optional[ProviderReasoningConfig] = None
+    diffusion_streaming: Optional[bool] = Field(
+        None,
+        description = "Enable or disable Inception Labs Mercury diffusion streaming.",
+    )
 
     display_name: Optional[str] = Field(None, description = "New display name")
     base_url: Optional[str] = Field(None, description = "New base URL")
@@ -171,6 +179,10 @@ class ProviderResponse(BaseModel):
 
     api_type: ProviderApiType = "chat_completions"
     reasoning_config: Optional[ProviderReasoningConfig] = None
+    diffusion_streaming: bool = Field(
+        False,
+        description = "Whether this connection uses Inception Labs Mercury diffusion streaming.",
+    )
 
     id: str = Field(..., description = "Unique provider config ID")
     provider_type: str = Field(..., description = "Provider type (e.g. 'openai')")

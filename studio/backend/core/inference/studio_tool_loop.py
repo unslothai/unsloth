@@ -1588,6 +1588,8 @@ async def _stream_with_studio_tools(
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
         # Hold the turn-ending chunk until finalize() says whether a call was promoted, then arm the headerless stripper; arming at promotion is too late.
         held_final: str | None = None
+        # Mercury diffusion streaming: the client takes every text of this turn as the whole reply so far.
+        diffusing_turn = False
 
         active_tools = controller.active_tools()
         tools_available = (
@@ -1624,6 +1626,8 @@ async def _stream_with_studio_tools(
                 upstream_model = payload.get("model")
                 if isinstance(upstream_model, str) and upstream_model:
                     model_name = upstream_model
+                if isinstance(payload.get("_diffusionReplace"), str):
+                    diffusing_turn = True
                 if "usage" in payload:
                     if isinstance(payload.get("usage"), dict):
                         if turn.usage is None:
@@ -1695,7 +1699,11 @@ async def _stream_with_studio_tools(
                     continue
 
                 released: list[str] = []
-                for kind, value in healer.feed(content):
+                events = healer.feed(content)
+                if diffusing_turn:
+                    # The final full text arrives once, and a split would leave only its last piece on screen.
+                    events += healer.finalize()
+                for kind, value in events:
                     if kind == "text":
                         if value:
                             released.append(value)

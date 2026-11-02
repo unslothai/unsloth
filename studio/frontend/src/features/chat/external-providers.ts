@@ -40,6 +40,8 @@ export interface ExternalProviderConfig {
   isReasoningModel?: boolean;
   autoReloadModels?: boolean;
   openaiContainerTtlMinutes?: number;
+  /** Inception Labs Mercury diffusion streaming: show the answer denoising live. */
+  diffusionStreaming?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -107,6 +109,19 @@ export function supportsProviderReasoningToggle(
   );
 }
 
+// Inception Labs Mercury diffusion LLMs and custom OpenAI-compatible endpoints
+// (e.g. a custom provider pointed at api.inceptionlabs.ai) can stream the answer
+// as full-text denoising chunks.
+const DIFFUSION_STREAMING_PROVIDER_TYPES = new Set(["inception"]);
+
+export function supportsDiffusionStreaming(
+  providerType: string | null | undefined,
+): boolean {
+  if (providerType == null) return false;
+  if (DIFFUSION_STREAMING_PROVIDER_TYPES.has(providerType)) return true;
+  return providerType === LEGACY_CUSTOM_PROVIDER_TYPE;
+}
+
 const DECISION_PROVIDER_TYPES = new Set(["typesafe", "liquid"]);
 
 export function isDecisionConnection(
@@ -130,6 +145,7 @@ export function connectionApiFields(
 const NON_VISION_PROVIDER_TYPES = new Set<string>([
   "cohere",
   "deepseek",
+  "inception",
   "mistral",
 ]);
 const VISION_CAPABLE_PROVIDER_TYPES = new Set<string>([
@@ -598,6 +614,9 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
         ? raw.backendProviderType.trim()
         : undefined,
     maxOutputTokens: normalizeProviderMaxOutputTokens(raw.maxOutputTokens),
+    diffusionStreaming: supportsDiffusionStreaming(providerType)
+      ? raw.diffusionStreaming === true
+      : undefined,
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? raw.enablePromptCaching !== false
       : undefined,

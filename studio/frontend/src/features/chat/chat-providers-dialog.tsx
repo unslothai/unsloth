@@ -100,6 +100,7 @@ import {
   supportsProviderMaxOutputTokens,
   supportsProviderReasoningToggle,
   supportsRemoteModelCatalog,
+  supportsDiffusionStreaming,
   toExternalBackendProviderType,
 } from "./external-providers";
 import {
@@ -315,6 +316,7 @@ export function ChatProvidersSettings({
   );
   const [isReasoningModel, setIsReasoningModel] = useState(false);
   const [reasoningConfig, setReasoningConfig] = useState<CustomReasoningConfig | null>(null);
+  const [diffusionStreaming, setDiffusionStreaming] = useState(false);
   const [autoReloadModels, setAutoReloadModels] = useState(false);
   const [sharedDraft, setSharedDraft] = useState(false);
   const isAccountOwner = useIsAccountOwner();
@@ -344,6 +346,10 @@ export function ChatProvidersSettings({
     (!editingProviderId || editingBackendProviderType === "custom");
   const showCustomReasoning =
     isCustomReasoningConnection && apiType === "chat_completions";
+  // Custom connections only apply it on chat completions; Responses ignores it.
+  const showDiffusionStreaming =
+    supportsDiffusionStreaming(providerType) &&
+    (providerType !== LEGACY_CUSTOM_PROVIDER_TYPE || apiType === "chat_completions");
   // Unsloth runs Search, Tools, MCP and RAG on this machine for any provider advertising the
   // capability, with no extra opt-in. Say so where the connection is created: tool results
   // also travel back to the provider as the next turn's input.
@@ -486,6 +492,7 @@ export function ChatProvidersSettings({
     setMaxOutputTokensDraft("");
     setApiType("chat_completions");
     setReasoningConfig(null);
+    setDiffusionStreaming(false);
     setEditingBackendProviderType(null);
     const entry = registryByType.get(providerType);
     if (!entry) {
@@ -600,6 +607,7 @@ export function ChatProvidersSettings({
     setMaxOutputTokensDraft("");
     setApiType("chat_completions");
     setReasoningConfig(null);
+    setDiffusionStreaming(false);
     setEditingBackendProviderType(null);
     setAvailableModels([]);
     setSelectedModelIds([]);
@@ -945,6 +953,9 @@ export function ChatProvidersSettings({
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
+        diffusionStreaming: supportsDiffusionStreaming(providerType)
+          ? diffusionStreaming
+          : undefined,
         ...(showShareToggle && sharedDraft ? { shared: true } : {}),
         apiKey: apiKey.trim(),
 
@@ -970,6 +981,9 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens: created.max_output_tokens ?? undefined,
+        diffusionStreaming: supportsDiffusionStreaming(uiProviderType)
+          ? diffusionStreaming
+          : undefined,
         reasoningConfig: created.provider_type === "custom"
           ? normalizeCustomReasoningConfig(created.reasoning_config)
           : undefined,
@@ -1124,6 +1138,9 @@ export function ChatProvidersSettings({
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
+        diffusionStreaming: supportsDiffusionStreaming(existing.providerType)
+          ? diffusionStreaming
+          : undefined,
         ...(showShareToggle && sharedDraft !== (existing.shared === true)
           ? { shared: sharedDraft }
           : {}),
@@ -1156,6 +1173,9 @@ export function ChatProvidersSettings({
           ? (updated.available_models?.length ? updated.available_models : existing.availableModels)
           : availableModelsToSave,
         maxOutputTokens: updated.max_output_tokens ?? undefined,
+        diffusionStreaming: supportsDiffusionStreaming(existing.providerType)
+          ? diffusionStreaming
+          : undefined,
         reasoningConfig: updated.provider_type === "custom"
           ? normalizeCustomReasoningConfig(updated.reasoning_config)
           : undefined,
@@ -1280,6 +1300,7 @@ export function ChatProvidersSettings({
         ? (normalizeCustomReasoningConfig(provider.reasoningConfig) ?? null)
         : null,
     );
+    setDiffusionStreaming(provider.diffusionStreaming === true);
     // Seeded at the floor: parseMaxOutputTokens throws below it, so a row stored under one would
     // fail every unrelated edit. The resolver already reads it as the floor.
     setMaxOutputTokensDraft(
@@ -1900,6 +1921,26 @@ export function ChatProvidersSettings({
                     </div>
                   ) : null}
                 </>
+              ) : null}
+              {showDiffusionStreaming ? (
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label htmlFor="provider-diffusion-streaming" className="text-sm font-medium">
+                      {t("providerSettings.diffusionStreamingLabel")}
+                    </Label>
+                    <p id="provider-diffusion-streaming-help" className="text-xs leading-snug text-muted-foreground">
+                      {t("providerSettings.diffusionStreamingDescription")}
+                    </p>
+                  </div>
+                  <div className="mt-[var(--ui-title-cap-inset)] @max-[520px]:mt-0">
+                    <Switch
+                      id="provider-diffusion-streaming"
+                      checked={diffusionStreaming}
+                      onCheckedChange={setDiffusionStreaming}
+                      aria-describedby="provider-diffusion-streaming-help"
+                    />
+                  </div>
+                </div>
               ) : null}
               {showReasoningToggle ? (
                 <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">

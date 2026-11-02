@@ -152,6 +152,7 @@ def _provider_response(row: dict) -> ProviderResponse:
         base_url = row["base_url"],
         api_type = row.get("api_type", "chat_completions"),
         reasoning_config = row.get("reasoning_config"),
+        diffusion_streaming = bool(row.get("diffusion_streaming")),
         is_enabled = bool(row["is_enabled"]),
         has_api_key = has_api_key,
         auth_kind = ("chatgpt_oauth" if row["provider_type"] == "openai_codex" else "api_key"),
@@ -369,6 +370,7 @@ async def create_provider_config(
             api_type = payload.api_type,
             reasoning_config = payload.reasoning_config,
             shared = payload.shared,
+            diffusion_streaming = payload.diffusion_streaming,
         )
         try:
             if api_key:
@@ -473,6 +475,7 @@ async def update_provider_config(
         "api_type",
         "reasoning_config",
         "shared",
+        "diffusion_streaming",
     }
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
 
@@ -513,6 +516,8 @@ async def update_provider_config(
                 if payload.reasoning_config is not None
                 else None
             )
+        if "diffusion_streaming" in payload.model_fields_set:
+            metadata_updates["diffusion_streaming"] = payload.diffusion_streaming
 
     # The row snapshot this request found, keyed the way update_provider takes it.
     _restorable = dict(
@@ -525,6 +530,7 @@ async def update_provider_config(
         api_type = existing.get("api_type", "chat_completions"),
         reasoning_config = existing.get("reasoning_config"),
         shared = bool(existing.get("shared")),
+        diffusion_streaming = bool(existing.get("diffusion_streaming")),
     )
 
     def _current_matches(current: dict, field: str, written) -> bool:
