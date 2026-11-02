@@ -43,12 +43,14 @@ import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
+  type FocusEvent,
   type ReactNode,
   createContext,
   memo,
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -259,12 +261,27 @@ function CatalogRow({
 }) {
   const [interactive, setInteractive] = useState(COARSE_POINTER);
   const arm = useCallback(() => setInteractive(true), []);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const refocusIndex = useRef<number | null>(null);
+  const armFromFocus = (event: FocusEvent<HTMLDivElement>) => {
+    if (interactive) return;
+    const buttons = Array.from(event.currentTarget.querySelectorAll("button"));
+    refocusIndex.current = buttons.indexOf(event.target as Element as HTMLButtonElement);
+    arm();
+  };
+  // Arming wraps the row in a Tooltip, which remounts it and would drop keyboard focus.
+  useLayoutEffect(() => {
+    if (refocusIndex.current === null) return;
+    rowRef.current?.querySelectorAll("button")[refocusIndex.current]?.focus();
+    refocusIndex.current = null;
+  }, [interactive]);
   const card = variant === "card";
   const button = (
     <div
+      ref={rowRef}
       data-selected={selected || undefined}
       onPointerEnter={arm}
-      onFocusCapture={arm}
+      onFocusCapture={armFromFocus}
       className={cn(
         "group/row relative w-full select-none overflow-hidden text-left",
         card
@@ -319,12 +336,12 @@ function StatusDot({
     tone === "asset"
       ? "bg-status-asset"
       : tone === "warning"
-      ? "bg-status-warning"
-      : tone === "danger"
-        ? "bg-status-danger"
-        : tone === "downloading"
-          ? DOWNLOADING_DOT_CLASS
-          : "bg-status-success";
+        ? "bg-status-warning"
+        : tone === "danger"
+          ? "bg-status-danger"
+          : tone === "downloading"
+            ? DOWNLOADING_DOT_CLASS
+            : "bg-status-success";
   return (
     <span
       role="img"
@@ -418,7 +435,7 @@ export function buildRowStatusTooltip({
   } else if (isSharedAsset) {
     lines.push(
       <TooltipLegendRow key="asset" toneClass="bg-status-asset">
-        Shared assets. Supporting files used by compatible image models.
+        Shared assets. Supporting files used by compatible models.
       </TooltipLegendRow>,
     );
   } else if (isAvailableOnDevice) {

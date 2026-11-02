@@ -704,7 +704,7 @@ def _scan_hf_cache(
         latest_snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
         if not snapshot_partial and (
             hf_cache_scan.snapshot_pipeline_missing_denoiser(latest_snapshot)
-            or hf_cache_scan.snapshot_is_encoder_companion(model_id, latest_snapshot)
+            or hf_cache_scan.snapshot_is_encoder_companion(model_id, repo_dir, latest_snapshot)
         ):
             # Some denoiser shards on disk is a torn download, not a prefetch: partial, but not flagged.
             companion_prefetch = not hf_cache_scan.snapshot_denoiser_has_weights(latest_snapshot)
