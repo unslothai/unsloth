@@ -2805,7 +2805,6 @@ class ChatCompletionRequest(BaseModel):
 
     Non-OpenAI extension fields are marked with 'x-unsloth'."""
 
-    # Preserve future OpenAI fields for route handlers.
     model_config = {"extra": "allow"}
     # "off" with the client's own confirm_tool_calls=false: no prompt at all, even without OS isolation.
     _off_confirm_opt_out: bool = PrivateAttr(default = False)

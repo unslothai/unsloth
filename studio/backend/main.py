@@ -2164,7 +2164,6 @@ async def health_check(request: Request):
     backend and gate UI before a token exists. version / studio_version /
     device_type require authentication, including a valid desktop secret.
     """
-    # Bound detection waits so Train/Export can use the latest hardware snapshot.
     await _await_hardware_detection(_HEALTH_DETECT_BUDGET_S)
     # Snapshot, not a bare global read: a forced re-detect can start at any moment.
     snapshot = _hardware_snapshot()

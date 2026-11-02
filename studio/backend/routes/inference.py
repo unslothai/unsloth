@@ -50553,7 +50553,6 @@ async def openai_image_generations(
 
     With media auto-switch on, ``model`` names the image model to serve on and is loaded
     when it is not the resident one; with it off ``model`` stays informational."""
-    # Reject before opening a history row.
     if body.stream:
         raise HTTPException(
             status_code = 400,
