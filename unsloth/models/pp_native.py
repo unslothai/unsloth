@@ -968,6 +968,9 @@ class PipelineParallel:
             cast_forward_inputs = False,  # the received hidden states keep PPConfig.activation_dtype
         )
         fully_shard(self.module, mesh = dp_mesh, mp_policy = policy, reshard_after_forward = False)
+        from .fsdp2_save import _install_replicated_grad_reset
+
+        _install_replicated_grad_reset(self.module)
         self.dp_mesh = dp_mesh
         self._shapes.clear()  # stages built before hold the unwrapped module
 

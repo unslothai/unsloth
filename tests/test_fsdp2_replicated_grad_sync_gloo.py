@@ -326,6 +326,10 @@ def _diff(
             x, y = a[n], b[n]
             if (x is None) != (y is None):
                 bad.append((step, n, "none"))
+                worst = float("inf")
+            elif x is not None and (not torch.isfinite(x).all() or not torch.isfinite(y).all()):
+                bad.append((step, n, "nonfinite"))
+                worst = float("inf")
             elif x is not None and not torch.equal(x, y):
                 bad.append((step, n))
                 worst = max(worst, (x.double() - y.double()).abs().max().item())
@@ -359,9 +363,18 @@ class _Fp16Rep(torch.nn.Module):
         super().__init__()
         self.body = torch.nn.Linear(4, 4)
         self.rep = torch.nn.Parameter(torch.zeros(4, dtype = torch.float16))
+        self.fail_forward = False
 
-    def forward(self, x, scale):
-        return self.body(x).mean() + (self.rep.float() * scale).sum()
+    def forward(
+        self,
+        x,
+        scale,
+        use_rep = True,
+    ):
+        loss = self.body(x).mean()
+        if self.fail_forward:
+            raise RuntimeError("injected forward failure")
+        return loss + (self.rep.float() * scale).sum() if use_rep else loss
 
 
 def _case_fp16_overflow(rank):
@@ -387,6 +400,57 @@ def _case_fp16_overflow(rank):
     return {"names": names, "grad": model.rep.grad.float().tolist(), "file": save.__file__}
 
 
+def _case_fp16_edge(rank, mode):
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+
+    native = _load_native()
+    save = _save()
+    os.environ["UNSLOTH_FSDP2_GA_SYNC"] = "defer"
+    torch.manual_seed(0)
+    model = _Fp16Rep()
+    if mode == "wide":
+        model.rep.grad_dtype = torch.float32
+    mesh = init_device_mesh("cpu", (2,))
+    fully_shard(model.body, mesh = mesh)
+    fully_shard(model, mesh = mesh, ignored_params = {model.rep})
+    save.reduce_unsharded_trainable_grads(model)
+    owner = model
+    if mode == "outer_recovery":
+
+        class Outer(torch.nn.Module):
+            def __init__(self, inner):
+                super().__init__()
+                self.inner = inner
+
+            def forward(self, *args, **kwargs):
+                return self.inner(*args, **kwargs)
+
+        owner = Outer(model)
+        fully_shard(owner, mesh = mesh)
+        save.reduce_unsharded_trainable_grads(owner)
+    x = torch.randn(2, 4)
+    with native._no_grad_sync(owner):
+        owner(x, 4.0).backward()
+    if mode == "wide":
+        owner(x, 2.0, use_rep = False).backward()
+    else:
+        model.fail_forward = True
+        with pytest.raises(RuntimeError, match = "injected forward failure"):
+            owner(x, 9.0)
+        owner.reset_iter_state()
+        owner.zero_grad(set_to_none = True)
+        model.fail_forward = False
+        owner(x, 2.0).backward()
+    state = model.__dict__["_unsloth_replicated_grad_state"]
+    return {
+        "grad": model.rep.grad.tolist(),
+        "dtype": str(model.rep.grad.dtype),
+        "pending": bool(state.get("pending")),
+        "queued": state["queued"],
+    }
+
+
 def _worker(rank, world, port, out, case):
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
@@ -404,7 +468,7 @@ def _worker(rank, world, port, out, case):
     )
     try:
         cases = {"unit": _case_unit, "modes": _case_modes, "fp16_overflow": _case_fp16_overflow}
-        res = cases[case](rank)
+        res = _case_fp16_edge(rank, case[5:]) if case.startswith("edge_") else cases[case](rank)
         out.put((rank, res))
     except Exception as exc:
         import traceback
@@ -481,3 +545,26 @@ def test_fp16_replica_local_sum_over_micro_batches_does_not_overflow():
     for rank, r in _run("fp16_overflow").items():
         assert r["names"] == ["rep"], (rank, r)
         assert r["grad"] == [60000.0] * 4, (rank, r)
+
+
+@pytest.mark.parametrize("mode", ["wide", "recovery", "outer_recovery"])
+def test_fp16_replica_gradient_dtype_and_recovery(mode):
+    FSDPModule = _save()._fsdp_module_class()
+    if mode == "wide" and not hasattr(torch.Tensor, "grad_dtype"):
+        pytest.skip("torch has no explicit gradient dtype")
+    if mode != "wide" and not hasattr(FSDPModule, "reset_iter_state"):
+        pytest.skip("torch has no iteration recovery API")
+    for rank, r in _run("edge_" + mode).items():
+        assert r["grad"] == [4.0 if mode == "wide" else 2.0] * 4, (rank, mode, r)
+        assert r["dtype"] == ("torch.float32" if mode == "wide" else "torch.float16"), r
+        assert not r["pending"] and not r["queued"], r
+
+
+@pytest.mark.parametrize(
+    "left,right", [(1.0, None), (None, 1.0), (1.0, float("nan")), (float("inf"), float("inf"))]
+)
+def test_gradient_comparison_rejects_missing_and_nonfinite(left, right):
+    a = None if left is None else torch.tensor([left])
+    b = None if right is None else torch.tensor([right])
+    bad, worst = _diff([{"rep": a}], [{"rep": b}])
+    assert bad and worst == float("inf")

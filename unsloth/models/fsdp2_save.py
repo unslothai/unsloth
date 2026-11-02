@@ -1297,17 +1297,34 @@ def _sync_replicated_grads(
 
 
 def _stash_fp16_grads(params, state):
-    """Unsynced micro-batch: move fp16 replicated gradients into float32 local sums, so the local sum
-    over micro-batches cannot overflow fp16 before the averaging sync (FSDP2 likewise accumulates its
-    unsharded gradients in reduce_dtype). The grad stays None until that sync writes the average."""
+    """Accumulate narrow replica gradients in float32 until the averaging sync."""
     pending = state.setdefault("pending", {})
     for p in params:
-        if p.dtype != torch.float16 or p.grad is None:
+        if p.dtype != torch.float16 or p.grad is None or p.grad.dtype != torch.float16:
             continue
         g = _local_tensor(p.grad).detach().float()
         prev = pending.get(id(p))
         pending[id(p)] = g if prev is None else prev.add_(g)
         p.grad = None
+
+
+def _install_replicated_grad_reset(model):
+    reset = getattr(model, "reset_iter_state", None)
+    if reset is None or getattr(reset, "_unsloth_replicated_reset", False):
+        return
+
+    @functools.wraps(reset)
+    def reset_replicas(*args, **kwargs):
+        result = reset(*args, **kwargs)
+        for module in model.modules():
+            state = module.__dict__.get("_unsloth_replicated_grad_state")
+            if state is not None:
+                state.pop("pending", None)
+                state["queued"] = False
+        return result
+
+    reset_replicas._unsloth_replicated_reset = True
+    model.reset_iter_state = reset_replicas
 
 
 def _local_tensor(t):
@@ -1466,4 +1483,5 @@ def reduce_unsharded_trainable_grads(model):
         model.register_forward_pre_hook(_pre_forward)
         model.register_forward_hook(_post_forward)
         model.__dict__["_unsloth_replicated_grad_hooked"] = True
+    _install_replicated_grad_reset(model)
     return names
