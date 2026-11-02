@@ -366,7 +366,7 @@ def test_inferred_limit_uses_supplied_hub_cache_and_revision(tmp_path, monkeypat
 
 
 def test_missing_custom_cache_config_does_not_use_default_cache(tmp_path, monkeypatch):
-    from huggingface_hub import constants
+    from huggingface_hub import constants, try_to_load_from_cache
 
     monkeypatch.setenv("UNSLOTH_DISABLE_TOKENIZER_JSON_REPAIR", "1")
     monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path / "default_hub"))
@@ -382,9 +382,8 @@ def test_missing_custom_cache_config_does_not_use_default_cache(tmp_path, monkey
     custom_cache = tmp_path / "custom_hub"
     custom_cache.mkdir()
     repair = _load_repair_helper()
-    resolve = repair.__globals__["_resolve_tokenizer_json"]
-    assert resolve(
-        tokenizer, cache_dir = str(custom_cache), revision = revision, filename = "tokenizer_config.json"
+    assert try_to_load_from_cache(
+        tokenizer.name_or_path, "tokenizer_config.json", revision = revision
     ) == str(cached_config)
 
     repair(tokenizer, cache_dir = str(custom_cache), revision = revision)
