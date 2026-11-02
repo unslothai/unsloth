@@ -176,6 +176,14 @@ test("a quoted stateDiagram state label is text, not a style statement", () => {
   }
 });
 
+test("completed state styles keep later quoted labels intact", () => {
+  for (const statement of ["style A fill:red", "classDef x fill:red"]) {
+    const source = `stateDiagram-v2\nA --> B\n${statement}\nstate "Use style C:\\temp" as C`;
+    assert.equal(stripRemoteDiagramImages(source), source);
+    assert.equal(stripRemoteDiagramImages(stripRemoteDiagramImages(source)), source);
+  }
+});
+
 test("many unclosed `@{` markers are scanned in linear time", () => {
   const source = `sequenceDiagram\n  Alice->>Bob: ${"@{ ".repeat(16000)}`;
   const started = performance.now();

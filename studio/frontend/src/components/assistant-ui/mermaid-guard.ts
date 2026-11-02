@@ -30,6 +30,7 @@ const STATE_DIAGRAM = /^\s*stateDiagram/;
 const STATE_LABEL = /^[^\S\n]*state[^\S\n]+"[^"\n{}]*"/;
 // Lexed before the quote, these end the state statement, so a style statement after one is real.
 const STATE_EXIT = /<<(?:fork|join|choice)>>|\[\[(?:fork|join|choice)\]\]/i;
+const STATE_CONTEXT = /"|accDescr\s*\{|\b(?:style|classDef)(?:[^\S\n]+[\w,]+)?[^\S\n]*$/i;
 
 // An HTML label tag with a style attribute; its CSS can fetch (background-image and the like).
 const STYLED_TAG = /<([a-z][^<>]*\bstyle\s*=[^<>]*)/gi;
@@ -206,7 +207,7 @@ export function stripRemoteDiagramImages(source: string): string {
   // Mermaid reads the diagram type after dropping directives: `%%{init}%%stateDiagram` counts.
   const midLine = MIDLINE_STYLE.test(scanned.replace(DIRECTIVE, ""));
   const stateLabels = STATE_DIAGRAM.test(scanned.replace(FRONT_MATTER, "").replace(DIRECTIVE, ""));
-  // An earlier `"` or `accDescr {` could end inside the label.
+  // Quotes, descriptions and unfinished CSS can carry lexer state across lines.
   let quoteFree = true;
   return out
     .replace(DIRECTIVE, (block) => (STYLE_FETCH.test(block) ? "" : block))
@@ -222,7 +223,7 @@ export function stripRemoteDiagramImages(source: string): string {
     .replace(/^.*$/gm, (line) => {
       const label =
         stateLabels && quoteFree && !STATE_EXIT.test(line) ? (STATE_LABEL.exec(line)?.[0].length ?? 0) : 0;
-      if (/"|accDescr\s*\{/i.test(line.slice(label))) quoteFree = false;
+      if (STATE_CONTEXT.test(line.slice(label))) quoteFree = false;
       return withoutFetchingStyle(line, midLine, label);
     })
     .replace(ACTOR_PROPERTIES, (whole, lead: string, head: string, json: string) => {
