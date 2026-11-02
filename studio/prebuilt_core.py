@@ -720,6 +720,84 @@ class DownloadProgress:
         self.stream.flush()
 
 
+class TruncatedDownload(http.client.IncompleteRead):
+    """The server closed the body before Content-Length bytes arrived. http.client's read(amt)
+    returns b"" here instead of raising, so without this a short file is hashed as if whole."""
+
+    def __init__(self, received: int, expected: int) -> None:
+        super().__init__(b"", expected - received)
+        self.received = received
+        self.expected = expected
+
+    def __str__(self) -> str:
+        return f"connection closed after {self.received} of {self.expected} bytes"
+
+    __repr__ = __str__
+
+
+class StalledDownload(TimeoutError):
+    """The body is still arriving but too slowly to finish; the socket timeout never fires on a
+    trickle, so one stalled connection could otherwise hold an install for an hour."""
+
+
+# Bytes that must arrive per window, else the attempt is abandoned and retried on a new connection.
+DOWNLOAD_STALL_WINDOW_SECONDS = 60.0
+DOWNLOAD_STALL_MIN_BYTES = 256 * 1024
+
+
+def copy_response_body(
+    response: Any,
+    write: Callable[[bytes], Any],
+    *,
+    total_bytes: int | None,
+    progress: "DownloadProgress | None" = None,
+    chunk_size: int = 1024 * 1024,
+) -> int:
+    """Stream ``response`` into ``write`` and return the byte count. Raises StalledDownload when a
+    window passes with too few bytes, and TruncatedDownload when the body ends short of
+    ``total_bytes``; both are retryable, so the caller's loop reconnects.
+
+    A real HTTPResponse is read with read1, which returns what one receive brings: read(n) waits
+    for all n bytes, so a trickle would block it for hours and the window check would never run.
+    Anything else (file:// bodies, test doubles) keeps plain read. Each read1 stops at the next
+    ``chunk_size`` boundary and progress is reported there, so the progress lines land where the
+    whole-chunk reads put them while the stall window is still checked after every receive."""
+    per_receive = isinstance(response, http.client.HTTPResponse)
+    read = response.read1 if per_receive else response.read
+    downloaded = 0
+    next_report = chunk_size
+    window_start = time.monotonic()
+    window_bytes = 0
+    while True:
+        chunk = read(next_report - downloaded if per_receive else chunk_size)
+        if not chunk:
+            break
+        write(chunk)
+        downloaded += len(chunk)
+        window_bytes += len(chunk)
+        if downloaded >= next_report or not per_receive:
+            if progress is not None:
+                progress.update(downloaded)
+            while next_report <= downloaded:
+                next_report += chunk_size
+        now = time.monotonic()
+        if now - window_start >= DOWNLOAD_STALL_WINDOW_SECONDS:
+            if window_bytes < DOWNLOAD_STALL_MIN_BYTES and (
+                total_bytes is None or downloaded < total_bytes
+            ):
+                raise StalledDownload(
+                    f"download stalled: {window_bytes} bytes in the last "
+                    f"{now - window_start:.0f}s ({downloaded} received so far)"
+                )
+            window_start = now
+            window_bytes = 0
+    if progress is not None:
+        progress.finish(downloaded)
+    if total_bytes is not None and downloaded < total_bytes:
+        raise TruncatedDownload(downloaded, total_bytes)
+    return downloaded
+
+
 def download_label_from_url(url: str) -> str:
     name = Path(urllib.parse.urlparse(url).path).name
     return name or url
@@ -748,15 +826,9 @@ def download_bytes(
                     total_bytes = int(content_length)
                 progress = DownloadProgress(progress_label, total_bytes) if progress_label else None
                 data = bytearray()
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    data.extend(chunk)
-                    if progress is not None:
-                        progress.update(len(data))
-                if progress is not None:
-                    progress.finish(len(data))
+                copy_response_body(
+                    response, data.extend, total_bytes = total_bytes, progress = progress
+                )
                 return bytes(data)
         except Exception as exc:
             last_exc = exc
@@ -830,15 +902,9 @@ def download_file(ops: ModuleOps, url: str, destination: Path) -> None:
                     if content_length and content_length.isdigit():
                         total_bytes = int(content_length)
                     progress = DownloadProgress(f"Downloading {destination.name}", total_bytes)
-                    downloaded_bytes = 0
-                    while True:
-                        chunk = response.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        handle.write(chunk)
-                        downloaded_bytes += len(chunk)
-                        progress.update(downloaded_bytes)
-                    progress.finish(downloaded_bytes)
+                    copy_response_body(
+                        response, handle.write, total_bytes = total_bytes, progress = progress
+                    )
                 handle.flush()
                 os.fsync(handle.fileno())
             if not tmp_path.exists() or tmp_path.stat().st_size == 0:

@@ -339,7 +339,9 @@ def test_h3_int8_resolves_to_the_rotated_artifact_with_the_plain_one_behind_it()
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     src = pq.resolve_prequant_source(fam, "int8")
     assert src.location == "unsloth/MiniMax-H3-FP8"
-    assert src.filename == "MiniMax-H3-INT8-ConvRot.pt"
+    # the declared .pt's safetensors twin goes first; the .pt stays right behind it
+    assert src.filename == "MiniMax-H3-INT8-ConvRot.safetensors"
+    assert src.fallback_filenames[0] == "MiniMax-H3-INT8-ConvRot.pt"
     assert "MiniMax-H3-INT8.pt" in src.fallback_filenames
     assert pq.resolve_prequant_source(fam, "fp8").filename == "MiniMax-H3-FP8.safetensors"
 

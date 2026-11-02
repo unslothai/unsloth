@@ -175,6 +175,30 @@ def test_clear_returns_count():
     assert list(gallery.gallery_dir().glob("*.json")) == []
 
 
+def test_clear_uses_the_locked_folder_when_the_folder_moves_mid_clear(monkeypatch, tmp_path):
+    # A Settings relocation can change gallery_dir() while clear() holds the old folder's lock.
+    record = gallery.save(_mp4(), _meta(prompt = "old folder"))
+    old = gallery.gallery_dir()
+    new = tmp_path / "relocated"
+    new.mkdir()
+    (new / f"{record['id']}.json").write_text(
+        json.dumps(_meta(prompt = "new folder")), encoding = "utf-8"
+    )
+    (new / f"{record['id']}.mp4").write_bytes(_mp4())
+    calls = []
+
+    def _moving_dir():
+        calls.append(1)
+        return old if len(calls) == 1 else new
+
+    monkeypatch.setattr(gallery, "gallery_dir", _moving_dir)
+    assert gallery.clear(include_archived = True, return_ids = True) == [record["id"]]
+    assert not (old / f"{record['id']}.mp4").exists()
+    assert not (old / f"{record['id']}.json").exists()
+    assert (new / f"{record['id']}.json").exists()
+    assert (new / f"{record['id']}.mp4").exists()
+
+
 def test_clear_preserves_orphan_mp4():
     foreign = gallery.gallery_dir() / "recording.mp4"
     foreign.write_bytes(_mp4())

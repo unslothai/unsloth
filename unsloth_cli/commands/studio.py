@@ -30,6 +30,7 @@ import typer
 from typer.core import TyperCommand
 
 from unsloth_cli import _studio_deps, _studio_runtime_gate, _studio_stage
+from unsloth_cli._argv import _expand_attached_np_short as _expand_attached_np_short
 from unsloth_cli._inference import SpeculativeType
 from unsloth_cli.commands import _password_prompt
 from studio.backend.utils.pid_records import (
@@ -1902,8 +1903,9 @@ def studio_default(
         "--cloudflare/--no-cloudflare",
         help = "Expose Unsloth on a PUBLIC internet URL via a free Cloudflare HTTPS "
         "tunnel, for non-api-only wildcard binds (0.0.0.0 or ::). Off by default; "
-        "pass --cloudflare to enable it (--secure implies it). --no-cloudflare forces "
-        "it off but does not change a raw wildcard bind.",
+        "pass --cloudflare to enable it (--secure implies it). The Remote access "
+        "'Start automatically' setting also starts one on every launch, on any host. "
+        "--no-cloudflare forces both off but does not change a raw wildcard bind.",
     ),
     secure: bool = typer.Option(
         False,
@@ -2257,6 +2259,8 @@ def studio_default(
         typer.echo("\nShutting down...")
     finally:
         getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
+    # The desktop app and an in-venv `unsloth studio` serve from here, not run.py's __main__.
+    getattr(run_mod, "_exit_without_finalizing", lambda: None)()
 
 
 def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
@@ -2279,25 +2283,6 @@ def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
     if "/" in variant:
         return s, None
     return repo, variant
-
-
-def _expand_attached_np_short() -> None:
-    # Click clusters `-np8` as `-n -p 8`, dropping the value. Lockstep with the backend `_flag_name`.
-    i = 0
-    while i < len(sys.argv):
-        tok = sys.argv[i]
-        if tok == "--":
-            break
-        if len(tok) > 3 and tok.startswith("-np") and tok[3] != "=":
-            suffix = tok[3:]
-            first_numeric = suffix[0].isdigit() or (
-                len(suffix) > 1 and suffix[0] in {"-", "+"} and suffix[1].isdigit()
-            )
-            if first_numeric:
-                sys.argv[i : i + 1] = ["-np", suffix]
-                i += 2
-                continue
-        i += 1
 
 
 def _consume_legacy_short_aliases(
@@ -2577,8 +2562,9 @@ def run(
         rich_help_panel = _RUN_PANEL_SERVER,
         help = "Expose Unsloth on a PUBLIC internet URL via a free Cloudflare HTTPS "
         "tunnel, for non-api-only wildcard binds (0.0.0.0 or ::). Off by default; "
-        "pass --cloudflare to enable it (--secure implies it). --no-cloudflare forces "
-        "it off but does not change a raw wildcard bind.",
+        "pass --cloudflare to enable it (--secure implies it). The Remote access "
+        "'Start automatically' setting also starts one on every launch, on any host. "
+        "--no-cloudflare forces both off but does not change a raw wildcard bind.",
     ),
     secure: bool = typer.Option(
         False,

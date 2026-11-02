@@ -31,13 +31,13 @@ function buildDownloadFilename(execution: RecipeExecutionRecord): string {
   return sanitizeFilenameStem(execution.id);
 }
 
-function triggerClientJsonlDownload(
+async function triggerClientJsonlDownload(
   rows: Record<string, unknown>[],
   filenameStem: string,
 ): Promise<void> {
   const body =
     rows.map((row) => JSON.stringify(row)).join("\n") + (rows.length > 0 ? "\n" : "");
-  return downloadFile(body, `${filenameStem}.jsonl`, "application/x-ndjson");
+  await downloadFile(body, `${filenameStem}.jsonl`, "application/x-ndjson");
 }
 
 export async function downloadExecutionDataset(

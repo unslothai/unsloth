@@ -82,11 +82,12 @@ async function fetchDownload(url: string): Promise<Response> {
   return response;
 }
 
+/** Returns the chosen basename after a native save; browsers do not report the final name. */
 export async function downloadFile(
   content: string | Blob | Uint8Array,
   filename: string,
   mimeType = "application/octet-stream",
-): Promise<void> {
+): Promise<string | undefined> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     const bytes =
@@ -95,15 +96,15 @@ export async function downloadFile(
         : content instanceof Blob
           ? new Uint8Array(await content.arrayBuffer())
           : content;
-    const savedPath = await invoke<string | null>("save_native_file", bytes, {
+    const savedFileName = await invoke<string | null>("save_native_file", bytes, {
       headers: {
         [NATIVE_FILE_NAME_HEADER]: encodeNativeFilename(filename),
       },
     });
-    if (savedPath === null) {
+    if (savedFileName === null) {
       throw new DownloadCancelledError();
     }
-    return;
+    return savedFileName;
   }
 
   const browserContent =
@@ -121,7 +122,7 @@ export async function downloadFile(
 export async function downloadBlobStreaming(
   content: Blob,
   filename: string,
-): Promise<void> {
+): Promise<string | undefined> {
   if (!isTauri) {
     browserDownload(content, filename);
     return;
@@ -148,7 +149,7 @@ export async function downloadBlobStreaming(
         headers: { [NATIVE_FILE_SAVE_TOKEN_HEADER]: token },
       });
     }
-    await invoke<string>("finish_native_file_save", { token });
+    return await invoke<string>("finish_native_file_save", { token });
   } catch (error) {
     await invoke<void>("cancel_native_file_save", { token }).catch(
       () => undefined,
@@ -169,29 +170,29 @@ export async function urlToBlob(url: string): Promise<Blob> {
 export async function downloadUrlStreaming(
   url: string,
   filename: string,
-): Promise<void> {
+): Promise<string | undefined> {
   if (!isTauri) {
     browserUrlDownload(url, filename);
     return;
   }
   const { invoke } = await import("@tauri-apps/api/core");
-  const savedPath = await invoke<string | null>("save_native_file_from_url", {
+  const savedFileName = await invoke<string | null>("save_native_file_from_url", {
     url,
     fileName: filename,
   });
-  if (savedPath === null) {
+  if (savedFileName === null) {
     throw new DownloadCancelledError();
   }
+  return savedFileName;
 }
 
 export async function downloadUrl(
   url: string,
   filename: string,
-): Promise<void> {
+): Promise<string | undefined> {
   if (isDataUri(url)) {
     const { bytes, mimeType } = decodeDataUri(url);
-    await downloadFile(bytes, filename, mimeType);
-    return;
+    return downloadFile(bytes, filename, mimeType);
   }
   if (!isTauri) {
     browserUrlDownload(url, filename);
@@ -199,7 +200,7 @@ export async function downloadUrl(
   }
   const response = await fetchDownload(url);
   const bytes = new Uint8Array(await response.arrayBuffer());
-  await downloadFile(
+  return downloadFile(
     bytes,
     filename,
     response.headers.get("content-type") || "application/octet-stream",

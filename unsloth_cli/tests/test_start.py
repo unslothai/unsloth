@@ -9,6 +9,7 @@ import http.client
 import http.server
 import io
 import json
+import math
 import os
 import re
 import shlex
@@ -1007,7 +1008,8 @@ def test_write_codex_subagent_bridge_keeps_parent_credentials_out(tmp_path, monk
         "codex_home": str(tmp_path / "child"),
         "bypass_permissions": False,
     }
-    assert path.stat().st_mode & 0o077 == 0
+    # POSIX mode bits: Windows reports 0o666 for any writable file, whatever the open mode.
+    assert os.name == "nt" or path.stat().st_mode & 0o077 == 0
     profile = _parse_toml((tmp_path / "child" / "unsloth_api.config.toml").read_text())
     assert profile["model"] == local["id"]
     assert profile["model_provider"] == start._CODEX_PROFILE
@@ -1036,7 +1038,8 @@ def test_write_codex_parent_overlay_preserves_user_state_and_instructions(tmp_pa
     assert instructions.startswith("Keep my existing instructions.\n")
     assert start._CODEX_SUBAGENT_ROUTING_INSTRUCTIONS in instructions
     assert not (overlay / "AGENTS.md").exists()
-    assert (overlay / "AGENTS.override.md").stat().st_mode & 0o077 == 0
+    # POSIX mode bits: Windows reports 0o666 for any writable file, whatever the open mode.
+    assert os.name == "nt" or (overlay / "AGENTS.override.md").stat().st_mode & 0o077 == 0
     assert (source / "AGENTS.override.md").read_text() == "Keep my existing instructions.\n"
 
 
@@ -3428,6 +3431,10 @@ def test_no_launch_output_is_parseable(fake_studio):
     assert any(ln.startswith("export CODEX_HOME=") for ln in lines)
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "inline NAME=value assignments are POSIX; on Windows --no-launch prints PowerShell",
+)
 def test_no_launch_last_line_is_self_contained(fake_studio, tmp_path):
     # People copy just the last line, so it must inline every session env var.
     result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
@@ -3447,6 +3454,10 @@ def test_no_launch_last_line_is_self_contained(fake_studio, tmp_path):
     assert assignments["UNSLOTH_STUDIO_AUTH_TOKEN"].startswith("sk-unsloth-")
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "inline NAME=value assignments are POSIX; on Windows --no-launch prints PowerShell",
+)
 def test_no_launch_claude_last_line_blanks_conflicting_auth(fake_studio):
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
@@ -5010,7 +5021,8 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
         ),
     )
     cmd = captured["command"]
-    assert cmd[1] == "run"
+    # Windows launches through this interpreter (`python -X utf8 ...`), so "run" follows a longer head.
+    assert cmd[1 if os.name != "nt" else cmd.index("run")] == "run"
     assert "--disable-tools" in cmd and "--no-cloudflare" in cmd
     assert "--reasoning" not in cmd
     assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING"] == "auto"
@@ -5025,7 +5037,11 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     assert cmd[cmd.index("-p") + 1] == "8888"
     assert returned_base == "http://127.0.0.1:8888"
     assert start.LoadOptions().load_in_4bit is True and "--no-load-in-4bit" not in cmd
-    assert captured["kwargs"].get("start_new_session") is True
+    # Detached from this console either way: a new session on POSIX, a new process group on Windows.
+    if os.name == "nt":
+        assert captured["kwargs"]["creationflags"] & start.subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        assert captured["kwargs"].get("start_new_session") is True
     assert server.pid == 4321
     output = capsys.readouterr().out
     assert "Starting Unsloth server\n" in output
@@ -7351,7 +7367,7 @@ def test_connect_pi_no_launch(fake_studio, tmp_path, monkeypatch):
     result = CliRunner().invoke(start.start_app, ["pi", "--no-launch"])
     assert result.exit_code == 0, result.output
     home = tmp_path / "agents" / "pi"
-    _assert_env_set(result.output, "HOME", str(home))
+    assert not re.search(r"\bHOME\b", result.output)
     _assert_env_set(result.output, "PI_CODING_AGENT_DIR", str(home / ".pi" / "agent"))
     assert f"pi --provider unsloth --model {MODEL['id']}" in result.output
     config = json.loads((home / ".pi" / "agent" / "models.json").read_text())
@@ -7366,13 +7382,29 @@ def test_connect_pi_no_launch(fake_studio, tmp_path, monkeypatch):
     assert not (user_agent_dir / "models.json").exists()
 
 
+@pytest.mark.skipif(shutil.which("git") is None, reason = "needs git")
+def test_pi_shell_commands_keep_the_user_git_identity(fake_studio, tmp_path, monkeypatch):
+    user_home = _pi_user_agent_dir(tmp_path, monkeypatch).parent.parent
+    (user_home / ".gitconfig").write_text("[user]\n\temail = me@example.com\n")
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising = False)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/pi")
+    run = subprocess.run
+    captured = _capture_launch(monkeypatch, ["pi"])
+    git = run(
+        ["git", "config", "--global", "user.email"],
+        env = captured["env"],
+        capture_output = True,
+        text = True,
+    )
+    assert git.stdout.strip() == "me@example.com"
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "asserts POSIX symlinks and path forms")
 def test_write_pi_user_resources_links_resources_and_keeps_config_private(tmp_path, monkeypatch):
     user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
     user_home = user_agent_dir.parent.parent
     for name in ("extensions", "skills", "npm", "git"):
         (user_agent_dir / name).mkdir()
-    (user_home / ".agents" / "skills").mkdir(parents = True)
     (user_agent_dir / "auth.json").write_text('{"google": "user-key"}\n')
     (user_agent_dir / "models.json").write_text('{"providers": {"mine": {}}}\n')
     (user_agent_dir / "sessions").mkdir()
@@ -7403,15 +7435,12 @@ def test_write_pi_user_resources_links_resources_and_keeps_config_private(tmp_pa
     agent_dir = session_home / ".pi" / "agent"
     start.write_pi_config(BASE, "sk-unsloth-abc", MODEL, agent_dir / "models.json")
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     for name in ("extensions", "skills", "npm", "git"):
         assert (agent_dir / name).is_symlink()
         assert (agent_dir / name).resolve() == (user_agent_dir / name).resolve()
     assert not (agent_dir / "prompts").exists()
-    assert (session_home / ".agents" / "skills").resolve() == (
-        user_home / ".agents" / "skills"
-    ).resolve()
     for private in ("auth.json", "sessions"):
         assert not (agent_dir / private).exists()
     assert "mine" not in json.loads((agent_dir / "models.json").read_text())["providers"]
@@ -7444,7 +7473,7 @@ def test_write_pi_user_resources_refreshes_a_persisted_session(tmp_path, monkeyp
     session_home = tmp_path / "session"
     agent_dir = session_home / ".pi" / "agent"
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
     settings_path = agent_dir / "settings.json"
     settings = json.loads(settings_path.read_text())
     settings["packages"].append("npm:session-only")
@@ -7453,7 +7482,7 @@ def test_write_pi_user_resources_refreshes_a_persisted_session(tmp_path, monkeyp
     user_settings.write_text(json.dumps({"packages": ["npm:kept", "npm:new"]}))
     (user_agent_dir / "extensions").rmdir()
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     assert json.loads(settings_path.read_text()) == {
         "packages": ["npm:session-only", "npm:kept", "npm:new"],
@@ -7462,7 +7491,7 @@ def test_write_pi_user_resources_refreshes_a_persisted_session(tmp_path, monkeyp
     assert not (agent_dir / "extensions").exists() and not (agent_dir / "extensions").is_symlink()
 
     user_settings.unlink()
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
     assert json.loads(settings_path.read_text()) == {
         "packages": ["npm:session-only"],
         "theme": "dark",
@@ -7480,7 +7509,7 @@ def test_write_pi_user_resources_leaves_session_dirs_and_user_files_alone(tmp_pa
     (agent_dir / "npm").mkdir(parents = True)
     (agent_dir / "npm" / "session.txt").write_text("session\n")
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     assert not (agent_dir / "npm").is_symlink()
     assert (agent_dir / "npm" / "session.txt").read_text() == "session\n"
@@ -7498,11 +7527,11 @@ def test_write_pi_user_resources_uses_inherited_agent_dir(tmp_path, monkeypatch)
     agent_dir = session_home / ".pi" / "agent"
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(configured))
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
     assert (agent_dir / "extensions").resolve() == (configured / "extensions").resolve()
 
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
     assert not (agent_dir / "extensions").exists()
 
 
@@ -7518,7 +7547,7 @@ def test_write_pi_user_resources_resolves_a_relative_agent_dir_from_the_launch_d
     session_home = tmp_path / "session"
     agent_dir = session_home / ".pi" / "agent"
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     assert (agent_dir / "extensions").resolve() == (configured / "extensions").resolve()
     settings = json.loads((agent_dir / "settings.json").read_text())
@@ -7565,7 +7594,7 @@ def test_write_pi_user_resources_skips_a_windows_pi_under_wsl(tmp_path, monkeypa
     session_home = tmp_path / "session"
     agent_dir = session_home / ".pi" / "agent"
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     assert not agent_dir.exists()
 
@@ -7580,14 +7609,14 @@ def test_write_pi_user_resources_clears_a_session_a_linux_pi_prepared(tmp_path, 
     session_home = tmp_path / "session"
     agent_dir = session_home / ".pi" / "agent"
     monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: None)
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
     assert (agent_dir / "extensions").is_symlink()
     settings = json.loads((agent_dir / "settings.json").read_text())
     settings["packages"].append("npm:session-only")
     (agent_dir / "settings.json").write_text(json.dumps(settings))
 
     monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: "/mnt/c/npm/pi.cmd")
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     assert not (agent_dir / "extensions").exists()
     assert json.loads((agent_dir / "settings.json").read_text()) == {
@@ -7606,7 +7635,7 @@ def test_write_pi_user_resources_clears_npm_command_whole(tmp_path, monkeypatch,
     session_home = tmp_path / "session"
     agent_dir = session_home / ".pi" / "agent"
     monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: None)
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
     assert json.loads((agent_dir / "settings.json").read_text())["npmCommand"] == [
         "npm",
         "--registry=x",
@@ -7617,7 +7646,7 @@ def test_write_pi_user_resources_clears_npm_command_whole(tmp_path, monkeypatch,
         (agent_dir / "settings.json").write_text(json.dumps(settings))
 
     monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: "/mnt/c/npm/pi.cmd")
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     settings = json.loads((agent_dir / "settings.json").read_text())
     assert settings.get("npmCommand") == session_command
@@ -7637,7 +7666,7 @@ def test_write_pi_user_resources_reanchors_when_a_real_session_dir_blocks_the_li
     agent_dir = session_home / ".pi" / "agent"
     (agent_dir / "npm").mkdir(parents = True)
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     settings = json.loads((agent_dir / "settings.json").read_text())
     assert not (agent_dir / "npm").is_symlink()
@@ -7656,12 +7685,10 @@ def test_write_pi_user_resources_keeps_a_disabled_global_skill_disabled(tmp_path
     session_home = tmp_path / "session"
     agent_dir = session_home / ".pi" / "agent"
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
-    session_skill = session_home / ".agents" / "skills" / "off" / "SKILL.md"
-    assert session_skill.exists()
     settings = json.loads((agent_dir / "settings.json").read_text())
-    assert settings["skills"] == [f"-{disabled}", f"-{session_skill}"]
+    assert settings["skills"] == [f"-{disabled}"]
 
 
 def test_write_pi_user_resources_copies_the_npm_command(tmp_path, monkeypatch):
@@ -7673,14 +7700,14 @@ def test_write_pi_user_resources_copies_the_npm_command(tmp_path, monkeypatch):
     session_home = tmp_path / "session"
     agent_dir = session_home / ".pi" / "agent"
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     assert json.loads((agent_dir / "settings.json").read_text())["npmCommand"] == command
     settings_path = agent_dir / "settings.json"
     settings = json.loads(settings_path.read_text())
     settings["npmCommand"] = ["pnpm"]
     settings_path.write_text(json.dumps(settings))
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
     assert json.loads(settings_path.read_text())["npmCommand"] == ["pnpm"]
 
 
@@ -7694,7 +7721,7 @@ def test_write_pi_user_resources_warns_on_an_unusable_agent_dir_override(
     agent_dir = session_home / ".pi" / "agent"
     agent_dir.mkdir(parents = True)
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     assert "PI_CODING_AGENT_DIR" in capsys.readouterr().err
 
@@ -7707,7 +7734,7 @@ def test_write_pi_user_resources_keeps_a_non_list_setting(tmp_path, monkeypatch)
     agent_dir.mkdir(parents = True)
     (agent_dir / "settings.json").write_text(json.dumps({"themes": {"name": "dark"}}))
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     assert json.loads((agent_dir / "settings.json").read_text())["themes"] == {"name": "dark"}
 
@@ -7772,7 +7799,7 @@ def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, yo
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
     assert command[:2] == ["pi", "--extension"]
-    assert command[2].endswith("unsloth_cli/pi_subagent.ts")
+    assert Path(command[2]).as_posix().endswith("unsloth_cli/pi_subagent.ts")
     assert ("--approve" in command) is yolo
     assert "--provider" not in command
     assert "--model" not in command
@@ -7846,7 +7873,7 @@ def test_write_pi_output_limit_context_metadata(tmp_path, context):
         assert "contextWindow" not in model
 
 
-def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_path, monkeypatch):
+def test_connect_pi_no_launch_windows_keeps_userprofile(fake_studio, tmp_path, monkeypatch):
     user_home = _pi_user_agent_dir(tmp_path, monkeypatch).parent.parent
     # Avoid pathlib selecting WindowsPath on this POSIX runner.
     monkeypatch.setattr(start.Path, "home", lambda: user_home)
@@ -7854,8 +7881,9 @@ def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_pat
     result = CliRunner().invoke(start.start_app, ["pi", "--no-launch"])
     assert result.exit_code == 0, result.output
     home = tmp_path / "agents" / "pi"
-    assert f'$env:HOME = "{home}"' in result.output
-    assert f'$env:USERPROFILE = "{home}"' in result.output
+    assert f'$env:PI_CODING_AGENT_DIR = "{home / ".pi" / "agent"}"' in result.output
+    assert "$env:HOME" not in result.output
+    assert "$env:USERPROFILE" not in result.output
 
 
 @pytest.fixture()
@@ -8375,7 +8403,8 @@ def test_vibe_env(tmp_path):
             "name": MODEL["id"],
             "provider": start._VIBE_PROVIDER,
             "alias": start._VIBE_MODEL_ALIAS,
-            "auto_compact_threshold": int(MODEL["context_length"] * 0.9),
+            "max_context_length": MODEL["context_length"],
+            "auto_compact_threshold": MODEL["context_length"] - 24_000,
         }
     ]
     assert env["VIBE_ACTIVE_MODEL"] == start._VIBE_MODEL_ALIAS
@@ -8388,9 +8417,19 @@ def test_vibe_env_carries_temperature_and_odd_model_ids():
     _, models = _vibe_settings(start._vibe_env(BASE, model, {"temperature": 0.7}))
     assert models[0]["name"] == model["id"]
     assert models[0]["temperature"] == 0.7
-    assert models[0]["auto_compact_threshold"] == int(32768 * 0.9)
+    assert models[0]["max_context_length"] == 32768
+    assert models[0]["auto_compact_threshold"] == 32768 * 3 // 4
     _, models = _vibe_settings(start._vibe_env(BASE, {"id": "m"}))
     assert set(models[0]) == {"name", "provider", "alias"}
+
+
+@pytest.mark.parametrize("window", [16384, 40960, 131072, 262144])
+def test_vibe_env_compaction_threshold_fits_the_window(window):
+    _, models = _vibe_settings(start._vibe_env(BASE, {"id": "m", "context_length": window}))
+    assert models[0]["max_context_length"] == window
+    low = max(min(50_000, window // 2), 10_000)
+    high = window - min(24_000, math.ceil(window / 4))
+    assert low <= models[0]["auto_compact_threshold"] <= high
 
 
 def test_connect_vibe_no_launch_uses_env_only(fake_studio, tmp_path):
@@ -8413,7 +8452,8 @@ def test_vibe_launch_keeps_user_home(fake_studio, monkeypatch):
 
 
 @pytest.mark.skipif(shutil.which("vibe") is None, reason = "needs the mistral-vibe CLI")
-def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path):
+@pytest.mark.parametrize("window", [40960, MODEL["context_length"]])
+def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path, window):
     requests = []
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -8423,18 +8463,28 @@ def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append((self.headers.get("Authorization"), body))
-            chunk = {
-                "choices": [{"index": 0, "delta": {"content": "pong"}, "finish_reason": "stop"}]
-            }
+            chunks = [
+                {"choices": [{"index": 0, "delta": {"content": "pong"}, "finish_reason": "stop"}]},
+                # Vibe 3 refuses a stream without usage; Studio sends it for include_usage.
+                {
+                    "choices": [],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+                },
+            ]
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
-            self.wfile.write(f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode())
+            self.wfile.write("".join(f"data: {json.dumps(c)}\n\n" for c in chunks).encode())
+            self.wfile.write(b"data: [DONE]\n\n")
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target = server.serve_forever, daemon = True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
-    monkeypatch.setattr(start, "_connect", lambda *args, **kwargs: (base, "sk-unsloth-e2e", MODEL))
+    monkeypatch.setattr(
+        start,
+        "_connect",
+        lambda *args, **kwargs: (base, "sk-unsloth-e2e", {**MODEL, "context_length": window}),
+    )
     monkeypatch.setenv("VIBE_HOME", str(tmp_path / "vibe"))
     monkeypatch.chdir(tmp_path)
     try:
@@ -9276,7 +9326,7 @@ def test_claude_launch_does_not_clear(fake_studio, monkeypatch):
     reason = "WSL-from-Linux scenario: a Windows pi shim under /mnt called from WSL "
     "(os.name is 'posix' under WSL), so this can't run on a native Windows runner.",
 )
-def test_connect_pi_wsl_windows_shim_relocates_userprofile(fake_studio, monkeypatch):
+def test_connect_pi_wsl_windows_shim_keeps_userprofile(fake_studio, monkeypatch):
     captured = {}
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     monkeypatch.setattr(start.shutil, "which", lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/pi")
@@ -9288,11 +9338,11 @@ def test_connect_pi_wsl_windows_shim_relocates_userprofile(fake_studio, monkeypa
     monkeypatch.setattr(start.subprocess, "run", run)
     result = CliRunner().invoke(start.start_app, ["pi"])
     assert result.exit_code == 0, result.output
-    home = captured["env"]["HOME"]
-    assert captured["env"]["USERPROFILE"] == home
+    assert captured["env"].get("HOME") == os.environ.get("HOME")
+    assert captured["env"].get("USERPROFILE") == os.environ.get("USERPROFILE")
     wslenv = captured["env"]["WSLENV"].split(":")
-    assert "HOME/p" in wslenv
-    assert "USERPROFILE/p" in wslenv
+    assert "PI_CODING_AGENT_DIR/p" in wslenv
+    assert "USERPROFILE/p" not in wslenv
 
 
 def test_agent_api_key_auto_started_rejected_env_key_falls_back(fake_studio, tmp_path, monkeypatch):
@@ -9440,6 +9490,9 @@ def test_non_codex_agents_keep_the_studio_private_root(monkeypatch, tmp_path):
     assert start._ephemeral_session_prefix("claude", None) == "unsloth-claude-"
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason = "a 0o500 mode does not make a directory unwritable on Windows"
+)
 def test_session_config_falls_back_when_existing_temp_root_is_unwritable(monkeypatch, tmp_path):
     # mkdir(exist_ok = True) succeeds on an existing unwritable root, so the lock fails first.
     agents = tmp_path / "agents"
@@ -9508,6 +9561,9 @@ def test_probe_env_carries_install_dirs_and_restores_path(monkeypatch, tmp_path)
     assert os.environ.get("PATH") == before
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason = "a 0o500 mode does not make a directory unwritable on Windows"
+)
 def test_session_config_falls_back_when_studio_auth_root_is_unwritable(monkeypatch, tmp_path):
     readonly = tmp_path / "readonly"
     readonly.mkdir(mode = 0o500)
@@ -9563,9 +9619,14 @@ _RESUME_ENV_VAR = {
     "codex": "CODEX_HOME",
     "openclaw": "OPENCLAW_STATE_DIR",
     "hermes": "HERMES_HOME",
-    "pi": "HOME",
+    "pi": "PI_CODING_AGENT_DIR",
     "dsh": "DSH_HOME",
 }
+
+
+def _agent_home(agent, env) -> Path:
+    path = Path(env[_RESUME_ENV_VAR[agent]])
+    return path.parent.parent if agent == "pi" else path
 
 
 def _capture_launch(monkeypatch, argv):
@@ -9594,7 +9655,7 @@ def test_resume_persists_agent_home_to_stable_dir(agent, fake_studio, tmp_path, 
         monkeypatch.setattr(start, "is_deepseek_harness_executable", lambda _: True)
     captured = _capture_launch(monkeypatch, [agent, "--persist"])
     stable = tmp_path / "agents" / agent
-    assert captured["env"][_RESUME_ENV_VAR[agent]] == str(stable)
+    assert _agent_home(agent, captured["env"]) == stable
     assert stable.exists()
 
 
@@ -9604,7 +9665,7 @@ def test_default_launch_home_is_ephemeral(agent, fake_studio, tmp_path, monkeypa
     if agent == "dsh":
         monkeypatch.setattr(start, "is_deepseek_harness_executable", lambda _: True)
     captured = _capture_launch(monkeypatch, [agent])
-    home = captured["env"][_RESUME_ENV_VAR[agent]]
+    home = str(_agent_home(agent, captured["env"]))
     parent = start._ephemeral_session_parent(agent)
     assert start._ephemeral_session_prefix(agent, parent) in home
     if parent is None:

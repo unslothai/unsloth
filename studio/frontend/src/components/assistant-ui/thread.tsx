@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, BookmarkIcon, FileSearchIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { createPortal } from "react-dom";
 import {
   canQueueTextAttachment,
@@ -14,6 +14,7 @@ import {
   type QueuedPrompt,
 } from "@/features/chat/utils/queued-text-attachments";
 import { getAuthSessionEpoch } from "@/features/auth";
+import { useMarkChatWelcome } from "@/features/chat-background";
 
 import {
   ComposerAttachments,
@@ -68,6 +69,7 @@ import { attachWheelHoverSuppression } from "@/components/assistant-ui/thread-wh
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
 import {
   THREAD_GUTTER_CHANGE_EVENT,
+  syncThreadGutter,
   watchThreadGutter,
 } from "@/components/assistant-ui/thread-gutter";
 import { observeThreadWidthSteps } from "@/components/assistant-ui/thread-width-steps";
@@ -129,6 +131,8 @@ import {
   pasteLongTextAsFile,
   isPlainPasteChord,
   plainPasteStillCounts,
+  insertAtCaret,
+  richPasteMarkdown,
   currentDictationEntryMode,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
@@ -142,8 +146,14 @@ import {
   stopRecoveredRun,
   pythonToolRunsInStudio,
   withAttachmentOriginal,
+  priorPassTiming,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import {
+  BookmarkTurnButton,
+  BookmarkTurnMenuItem,
+  TurnNavigator,
+} from "@/components/assistant-ui/turn-navigation";
 import {
   IntentAwareScrollProvider,
   useDetachThreadFromBottom,
@@ -327,13 +337,13 @@ import {
   snapshotQueuedChatRunSettings,
   adoptLegacyDraft,
   latestDraft,
+  latestPasteDraft,
   publishDraft,
   subscribeDraft,
   composerDraftKey,
   composerPasteDraftKey,
   createPastedTextFile,
   pastedTextOf,
-  readPasteDraft,
   writePasteDraft,
   markThreadIncognito,
   markChatThreadDeleted,
@@ -354,6 +364,7 @@ import {
   showForkFailedToast,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
+  useBookmarkedTurnsStore,
   writeComposerDraft,
   normalizeChatImage,
 } from "@/features/chat";
@@ -385,6 +396,7 @@ import { useRagAvailabilityStore } from "@/features/rag/api/rag-availability";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
+import { resolveGreeting } from "@/features/profile/greeting";
 import { usePublishedFrame } from "@/features/settings/hooks/use-published-frame";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
@@ -424,18 +436,14 @@ import {
 } from "@assistant-ui/react";
 import { flushResourcesSync } from "@assistant-ui/tap";
 import {
-  AttachmentIcon,
-  Bookmark02Icon,
+  Attachment01Icon,
   CodeIcon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FileDatabaseIcon,
-  FolderAttachmentIcon,
-  Folder01Icon,
-  FolderAddIcon,
-  Image03Icon,
+  ImageIcon,
+  LayoutTwoColumnIcon,
   McpServerIcon,
+  Refresh01Icon,
   Scroll01Icon,
   Telescope02Icon,
   UndoIcon,
@@ -447,15 +455,16 @@ import {
   PlusSignIcon,
   Cancel01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon, FolderAttachmentIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  Columns2Icon,
   Loader2Icon,
   TerminalIcon,
 } from "lucide-react";
@@ -2062,6 +2071,9 @@ export const Thread: FC<{
   useEffect(() => {
     startGrammarPrewarm();
   }, []);
+  const composerAtBottom = useChatPreferencesStore(
+    (s) => s.newChatComposerAtBottom,
+  );
   // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
   // prevent the streaming-mutation race that snaps the viewport back to the
   // bottom while the user scrolls up (see the hook for the full explanation).
@@ -2125,7 +2137,8 @@ export const Thread: FC<{
     return attachWheelHoverSuppression(viewportEl);
   }, [viewportEl]);
 
-  useEffect(() => {
+  // Layout effect: shift a remounted viewport before its first paint.
+  useLayoutEffect(() => {
     if (!viewportEl) return;
     return watchThreadGutter(viewportEl);
   }, [viewportEl]);
@@ -2309,6 +2322,8 @@ export const Thread: FC<{
             </AuiIf>
           )}
 
+          <TurnNavigator viewportRef={viewportElRef} />
+
           {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
           the tail and mounts the rest over the following frames. Nothing unmounts and the
           document converges to the tree this rendered before; consumers that cannot wait call
@@ -2393,7 +2408,11 @@ export const Thread: FC<{
           />
 
           {!hideComposer && (
-            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <AuiIf
+              condition={({ thread }) =>
+                hideWelcome || !thread.isEmpty || composerAtBottom
+              }
+            >
               <ThreadComposerDock
                 disabled={isComposerAttachPending}
                 threadId={threadId}
@@ -2558,10 +2577,6 @@ const ThreadComposerDock: FC<{
       );
     },
   );
-  const showModelDisclaimer = useChatPreferencesStore(
-    (s) => s.showModelDisclaimer,
-  );
-
   const dockRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = dockRef.current;
@@ -2592,6 +2607,8 @@ const ThreadComposerDock: FC<{
     const resizeObserver = new ResizeObserver(() => apply());
     let observedFooter: Element | null = null;
     const apply = () => {
+      // May fire before the gutter's observer, which would leave the composer a scrollbar off-centre.
+      syncThreadGutter(viewport);
       // The footer is the real column box: WebKit's both-edges gutter reserves 2x the scrollbar on the right, clientWidth 1x.
       const footer = childWithClass(viewport, "aui-thread-viewport-footer");
       if (footer && footer !== observedFooter) {
@@ -2654,11 +2671,6 @@ const ThreadComposerDock: FC<{
             menuSide="top"
           />
         </div>
-        {showModelDisclaimer && (
-          <p className="composer-footer-note">
-            LLMs can make mistakes. Double-check responses.
-          </p>
-        )}
       </div>
     </div>
   );
@@ -2669,9 +2681,6 @@ const ThreadScrollToBottom: FC = () => {
   // unmounting would trip the hook's MutationObserver as a content change.
   const isAtBottom = useIsThreadAtBottom();
   const scrollToBottom = useScrollThreadToBottom();
-  const enabled = useChatPreferencesStore(
-    (state) => state.showScrollToBottomButton,
-  );
   return (
     <TooltipIconButton
       tooltip="Scroll to bottom"
@@ -2679,7 +2688,7 @@ const ThreadScrollToBottom: FC = () => {
       onClick={() => scrollToBottom("auto")}
       className={cn(
         "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-0 size-[calc(28px*var(--ui-space-scale,1))] bg-background shadow-[0_0_0_0.5px_rgb(0_0_0/0.15)] hover:bg-accent dark:shadow-[0_0_0_0.5px_rgb(255_255_255/0.2)] dark:bg-muted dark:hover:bg-accent",
-        (isAtBottom || !enabled) && "invisible pointer-events-none",
+        isAtBottom && "invisible pointer-events-none",
       )}
     >
       <ArrowDownIcon
@@ -2748,6 +2757,27 @@ const ThreadWelcome: FC<{
   const displayName = useUserProfileStore((s) => s.displayName);
   const nickname = useUserProfileStore((s) => s.nickname);
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
+  const greetingStyle = useUserProfileStore((s) => s.greetingStyle);
+  const greetingIcon = useUserProfileStore((s) => s.greetingIcon);
+  const greetingIconDataUrl = useUserProfileStore((s) => s.greetingIconDataUrl);
+  const greetingText = useUserProfileStore((s) => s.greetingText);
+  const greetingImageDataUrl = useUserProfileStore(
+    (s) => s.greetingImageDataUrl,
+  );
+  const greeting = resolveGreeting({
+    showGreetingSloth,
+    greetingStyle,
+    greetingIcon,
+    greetingIconDataUrl,
+    greetingText,
+    greetingImageDataUrl,
+  });
+  const customText = greeting.kind === "text" ? greeting.text : null;
+  // At the bottom, Thread docks the composer and the greeting centres in the space above it.
+  const composerAtBottom = useChatPreferencesStore(
+    (s) => s.newChatComposerAtBottom,
+  );
+  useMarkChatWelcome();
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
   const t = useT();
 
@@ -2762,28 +2792,85 @@ const ThreadWelcome: FC<{
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       {/* With a files panel showing (chat with files, or project sources), center the whole block. */}
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh] has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]">
+      <div
+        className={cn(
+          "aui-thread-welcome-center flex w-full grow flex-col items-center",
+          composerAtBottom
+            ? "justify-center pb-[calc(160px*var(--ui-space-scale,1))]"
+            : "justify-start has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]",
+          // Without the greeting, its row and gap become padding, so the composer stays where it was.
+          !composerAtBottom &&
+            (greeting.kind !== "off" || incognito
+              ? "pt-[27.5dvh]"
+              : "pt-[calc(27.5dvh_+_44px*var(--ui-space-scale,1)_+_2.25rem)]"),
+        )}
+      >
         {/* No padding, so the composer here is as wide as once it docks. */}
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9">
-          <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[calc(15px*var(--ui-space-scale,1))]">
-            {showGreetingSloth && !incognito && (
-              <MascotImg
-                src={currentEmojiSrc}
-                className="unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]"
+          {/* The setting hides the whole greeting; the incognito title is a status, so it stays. */}
+          {greeting.kind === "image" && !incognito && (
+            <div
+              className={cn(
+                "unsloth-welcome-greeting flex flex-row items-end justify-center",
+                !composerAtBottom &&
+                  "h-[calc(120px*var(--ui-space-scale,1))] -mt-[calc(76px*var(--ui-space-scale,1))]",
+              )}
+            >
+              <h1 className="sr-only">{t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}</h1>
+              <img
+                src={greeting.src}
+                alt=""
+                draggable={false}
+                className="unsloth-welcome-image fade-in slide-in-from-bottom-1 animate-in max-h-[calc(120px*var(--ui-space-scale,1))] max-w-full object-contain duration-200"
               />
-            )}
-            <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
-              {incognito
-                ? t("welcome.temporaryChat")
-                : t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}
-            </h1>
-          </div>
+            </div>
+          )}
+          {(greeting.kind === "text" || incognito) && (
+            <div
+              className={cn(
+                "unsloth-welcome-greeting flex flex-row items-center justify-center gap-[calc(15px*var(--ui-space-scale,1))]",
+                !incognito &&
+                  greeting.kind === "text" &&
+                  greeting.icon.kind === "none" &&
+                  "min-h-[calc(44px*var(--ui-space-scale,1))]",
+              )}
+            >
+              {!incognito && greeting.kind === "text" && greeting.icon.kind === "sloth" && (
+                <MascotImg
+                  src={currentEmojiSrc}
+                  className="unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]"
+                />
+              )}
+              {!incognito && greeting.kind === "text" && greeting.icon.kind === "custom" && (
+                <img
+                  src={greeting.icon.src}
+                  alt=""
+                  draggable={false}
+                  className="unsloth-welcome-sloth unsloth-welcome-icon size-[calc(44px*var(--ui-space-scale,1))] shrink-0 -translate-y-[2px] object-contain"
+                />
+              )}
+              <h1
+                className={cn(
+                  "aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200",
+                  customText && "min-w-0 text-balance text-center [overflow-wrap:anywhere]",
+                )}
+              >
+                {incognito
+                  ? t("welcome.temporaryChat")
+                  : customText
+                    ? customText
+                    : t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}
+              </h1>
+            </div>
+          )}
           {incognito && (
             <p className="aui-thread-welcome-message-inner fade-in -mt-2 animate-in text-center font-heading font-normal text-muted-foreground text-sm duration-200">
               {t("welcome.temporaryChatDescription")}
             </p>
           )}
-          {!hideComposer && <ComposerAnimated threadId={threadId} />}
+          {!hideComposer && !composerAtBottom && (
+            <ComposerAnimated threadId={threadId} />
+          )}
         </div>
       </div>
     </div>
@@ -2948,6 +3035,7 @@ const Composer: FC<{
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
   );
+  const richTextPaste = useChatPreferencesStore((s) => s.richTextPaste);
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
   const submitIntentRef = useRef<ComposerSubmitIntent>("default");
   const submitOnKey = useCallback(
@@ -3062,6 +3150,21 @@ const Composer: FC<{
           }),
       );
       if (event.defaultPrevented) return;
+      const markdown =
+        richTextPaste && !plainPaste ? richPasteMarkdown(event.clipboardData) : null;
+      if (markdown !== null) {
+        event.preventDefault();
+        if (pastedYoutubeUrl) setYoutubeLink(pastedYoutubeUrl);
+        // Before inserting: execCommand's input event is not a paste, so the guard would refuse a resend.
+        if (justSentRef.current?.draftKey === draftKeyRef.current) {
+          justSentRef.current = null;
+        }
+        insertAtCaret(input, markdown, (next, caret) => {
+          aui.composer().setText(next);
+          requestAnimationFrame(() => input.setSelectionRange(caret, caret));
+        });
+        return;
+      }
       if (pastedYoutubeUrl) {
         setYoutubeLink(pastedYoutubeUrl);
         if (!pastedText.includes(pastedYoutubeUrl)) {
@@ -3094,7 +3197,7 @@ const Composer: FC<{
         justSentRef.current = null;
       }
     },
-    [aui, overlay, pastedTextMinChars],
+    [aui, overlay, pastedTextMinChars, richTextPaste],
   );
 
   const composerText = useAuiState(({ composer }) => composer.text);
@@ -3904,7 +4007,7 @@ const Composer: FC<{
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const draftScope = incognito ? INCOGNITO_DRAFT_SCOPE : referenceThreadId;
   const draftKey = composerDraftKey();
-  // Text that came from Compare or another tab, so saving it back can't overwrite a newer write.
+  // Text that came from Compare, so saving it back can't overwrite a newer write.
   const remoteDraftRef = useRef<string | null>(null);
   const [draftSource] = useState(() => Symbol("chat composer"));
   // Whose pastes are on screen: a temporary chat's never cross into the saved draft, nor back.
@@ -3942,7 +4045,7 @@ const Composer: FC<{
     }
     composer.setText(draft);
   }, [draftScope, draftKey, aui]);
-  // Compare's composer or another tab, so whichever is on screen shows the latest draft.
+  // Compare's composer, so whichever is on screen shows the latest draft.
   useEffect(() => {
     if (draftScope === INCOGNITO_DRAFT_SCOPE) return;
     return subscribeDraft(draftSource, (text) => {
@@ -3999,7 +4102,7 @@ const Composer: FC<{
         const text = pastedTextOf((attachment as { file?: File }).file);
         return text === undefined ? [] : [text];
       });
-    const missing = readPasteDraft(pasteDraftKey).filter((text) => {
+    const missing = latestPasteDraft().filter((text) => {
       const at = shown.indexOf(text);
       if (at === -1) return true;
       shown.splice(at, 1);
@@ -5779,7 +5882,7 @@ const Composer: FC<{
       )}
     >
       <HugeiconsIcon
-        icon={AttachmentIcon}
+        icon={Attachment01Icon}
         strokeWidth={2}
         className="size-6 text-primary"
       />
@@ -6546,7 +6649,7 @@ const ImagesToggle: FC = () => {
       }
     >
       <PillGlyph>
-        <HugeiconsIcon icon={Image03Icon} className="size-3.5" strokeWidth={2} />
+        <HugeiconsIcon icon={ImageIcon} className="size-3.5" strokeWidth={2} />
       </PillGlyph>
       <span>Images</span>
     </button>
@@ -6918,7 +7021,7 @@ const ComposerToolsMenu: FC<{
           setRagEnabled(!ragEnabled);
         }}
       >
-        <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
+        <HugeiconsIcon icon={FileSearchIcon} strokeWidth={2} />
         Chat with files
         {ragEnabled && !ragDisabled ? (
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
@@ -6957,7 +7060,7 @@ const ComposerToolsMenu: FC<{
     savedPrompts: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
-          <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+          <HugeiconsIcon icon={BookmarkIcon} strokeWidth={2} />
           Saved prompts
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
@@ -6989,7 +7092,7 @@ const ComposerToolsMenu: FC<{
     ),
     compareChat: (
       <DropdownMenuItem onSelect={() => startCompare()}>
-        <Columns2Icon />
+        <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={2} />
         Compare chat
       </DropdownMenuItem>
     ),
@@ -7059,7 +7162,7 @@ const ComposerToolsMenu: FC<{
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
-          <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+          <HugeiconsIcon icon={ProjectIcon} strokeWidth={2} />
           Projects
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(232px*var(--ui-space-scale,1))]">
@@ -7074,7 +7177,7 @@ const ComposerToolsMenu: FC<{
                 key={project.id}
                 onSelect={() => openProject(project.id)}
               >
-                <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                <HugeiconsIcon icon={ProjectIcon} strokeWidth={2} />
                 <span className="truncate">{project.name}</span>
               </DropdownMenuItem>
             ))
@@ -7126,7 +7229,7 @@ const ComposerToolsMenu: FC<{
           disabled={!composerCanAddAttachments}
           onSelect={() => pickAttachment()}
         >
-          <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
+          <HugeiconsIcon icon={Attachment01Icon} strokeWidth={2} />
           Add photos &amp; files
         </DropdownMenuItem>
         <DropdownMenuItem
@@ -7191,7 +7294,7 @@ const ComposerToolsMenu: FC<{
             }
             onSelect={() => setImageToolsEnabled(!imageToolsEnabled)}
           >
-            <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
+            <HugeiconsIcon icon={ImageIcon} strokeWidth={2} />
             Images
             {imageToolsEnabled && !imageDisabled ? (
               <HugeiconsIcon
@@ -7581,7 +7684,7 @@ const MessageError: FC = () => {
               type="button"
               className="btn-fill aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors "
             >
-              <RefreshGlyph strokeWidth={1.75} className="size-3.5" />
+              <HugeiconsIcon icon={Refresh01Icon} strokeWidth={1.75} className="size-3.5" />
               Retry
             </button>
           </ActionBarPrimitive.Reload>
@@ -7619,24 +7722,25 @@ const GeneratingStatus: FC = () => {
   );
   const showDetails = useChatPreferencesStore((s) => s.showGenerationDetails);
   const locale = useLocale();
+  const t = useT();
   const percent = prefill ? prefillPercent(prefill) : null;
   // Held at 100% until the first token: going back to Working... for that moment would flash too.
   if (prefill === null || !labelShown || percent === null || decoding) {
     return (
       <span className="generating-glint text-sm text-muted-foreground">
-        Working...
+        {t("generationStats.working")}
       </span>
     );
   }
-  const timeLeft = formatPrefillTimeLeft(prefill);
+  const timeLeft = formatPrefillTimeLeft(prefill, t);
   return (
     <span
       data-slot="prefill-progress"
       className="generating-glint text-sm text-muted-foreground tabular-nums whitespace-normal!"
     >
-      Processing prompt {percent}%
+      {t("generationStats.processingPrompt", { percent })}
       {timeLeft ? ` · ${timeLeft}` : null}
-      {showDetails ? ` · ${formatPrefillDetails(prefill, locale)}` : null}
+      {showDetails ? ` · ${formatPrefillDetails(prefill, t, locale)}` : null}
     </span>
   );
 };
@@ -7793,6 +7897,8 @@ function useContinuation() {
       ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
       ...providerCompactionContinuationFields(metadata),
     };
+    const priorTiming = priorPassTiming(metadata);
+    if (priorTiming) request.priorTiming = priorTiming;
     return aui.thread().startRun({
       parentId: parent,
       runConfig: {
@@ -8203,9 +8309,9 @@ const AssistantMessage: FC = () => {
       <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
         {/* First, so the action bar mounting on hover never moves it. */}
         <AssistantMessageTime />
-        {/* Only while streaming, where the action bar is hidden; the timing badge takes over after. */}
+        {/* Match the row height so wrapping live text cannot move the picker. */}
+        <BranchPicker className="mr-0.5 h-8" />
         <LiveGenerationLine />
-        <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>
       {/* Renders nothing. `If last` keeps the hook off the other N-1. */}
@@ -8444,6 +8550,9 @@ function useDeleteMessage() {
         messageId,
         remoteId,
       });
+      if (remoteId) {
+        useBookmarkedTurnsStore.getState().forgetTurns(remoteId, [messageId]);
+      }
     } catch (error) {
       console.error("Failed to delete message", error);
       toast.error("Failed to delete message");
@@ -8465,7 +8574,7 @@ const DeleteMessageButton: FC = () => {
       onClick={() => void handleDelete()}
       className="hover:!text-destructive"
     >
-      <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
     </TooltipIconButton>
   );
 };
@@ -8787,6 +8896,7 @@ const AssistantActionBar: FC = () => {
                   Save to project sources
                 </ActionBarMorePrimitive.Item>
               )}
+              <BookmarkTurnMenuItem className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground" />
             </div>
           </ActionBarMorePrimitive.Content>
         </ActionBarMorePrimitive.Root>
@@ -8876,7 +8986,9 @@ const UserMessage: FC = () => {
 
       <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
         {hasContent ? (
-          <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
+          <div
+            dir="auto"
+            className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
             <MessagePrimitive.Parts />
           </div>
         ) : null}
@@ -8917,6 +9029,7 @@ const UserActionBar: FC = () => {
           </TooltipIconButton>
         </ActionBarPrimitive.Edit>
       )}
+      <BookmarkTurnButton />
       <RewindMessageButton />
       <ForkCountBadge />
       <ForkMessageButton />

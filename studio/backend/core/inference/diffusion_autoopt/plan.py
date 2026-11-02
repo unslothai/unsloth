@@ -272,4 +272,7 @@ def compile_cache_kwargs(
     if offload_below_hooks:
         # An offloaded denoiser compiles its blocks below the hooks, a different graph than a traced-hook bundle.
         kwargs["below_hooks"] = True
+    if ds.unet_compiles_regionally(ds._denoiser_unet(pipe), max_autotune = mode == SPEED_MAX):
+        # Per-block U-Net graphs: never served a whole-module bundle (nor the other way round).
+        kwargs["unet_graph"] = "blocks"
     return kwargs

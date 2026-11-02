@@ -175,9 +175,8 @@ class _Flux3Interrupted(Exception):
 
 
 # Each reference is scaled to this area before the VAE, aspect kept, Lanczos: ComfyUI's
-# ``ReferenceMultiLatent`` with the templates' ``["resize", 1]`` (1.0 megapixels), and the BFL
-# reference's multi-reference rule (each <= 1 MiP). Diffusers alone only downsizes above 16 MiP, so
-# a phone photo would otherwise be encoded at full size. The 16-px grid crop stays with the blocks.
+# ``ReferenceMultiLatent`` ``["resize", 1]`` and BFL's multi-reference rule. Diffusers alone keeps a
+# single reference up to 4 MiP (16 MiP before 0.42.0); the 16-px grid fit stays with the blocks.
 REFERENCE_AREA = 1024 * 1024
 
 

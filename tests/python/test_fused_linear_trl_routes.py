@@ -455,7 +455,10 @@ def test_adapter_bounds_its_logits_buffer_by_chunk_size(trainable_head, grad, mo
     sizes.clear()
     with torch.set_grad_enabled(grad):
         adapter.apply(hidden, weight, None, targets, 1.0, 32768, None, 1.0, ("entropy",))
-    assert kwargs[-1]["max_rows_per_chunk"] is None and max(sizes) == n * v * 4
+    # One [N, V] buffer; zoo may pad its row stride (unslothai/unsloth-zoo#2190 pads to 16 for Triton).
+    pad = getattr(fused_linear, "_FWD_PAD", 1)
+    assert kwargs[-1]["max_rows_per_chunk"] is None
+    assert max(sizes) == n * (-(-v // pad) * pad) * 4, (sizes, n, v, pad)
 
 
 @pytest.mark.parametrize("grad", [False, True])

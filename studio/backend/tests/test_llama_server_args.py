@@ -1533,3 +1533,16 @@ def test_owner_only_path_flags_names_each_file_option_once():
     assert _lsa.owner_only_path_flags(["--ctx-size", "4096", "-ngl", "99"]) == []
     assert _lsa.owner_only_path_flags(None) == []
     assert validate_extra_args(args) == args
+
+
+@pytest.mark.parametrize("chain_with_mtp", [False, True])
+def test_translate_ngram_mod_does_not_consume_a_following_flag(chain_with_mtp):
+    # Under MTP the swallowed pair is dropped, leaving the next flag's value as a bare positional.
+    from core.inference.llama_server_args import translate_ngram_mod_args, validate_extra_args
+
+    args = validate_extra_args(
+        ["--spec-type", "draft-mtp", "--spec-ngram-mod-n-min", "--top-k", "/restricted/model.gguf"]
+    )
+    out = translate_ngram_mod_args(args, "legacy", chain_with_mtp = chain_with_mtp)
+    assert out[-2:] == ["--top-k", "/restricted/model.gguf"]
+    validate_extra_args(out)

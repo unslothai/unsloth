@@ -1614,3 +1614,95 @@ def test_fetch_main_version_requires_dev_string(monkeypatch):
     assert tl._fetch_main_version() is None
     monkeypatch.setattr(tl, "_fetch_text", lambda url: '__version__ = "5.19.0.dev0"\n')
     assert tl._fetch_main_version() == "5.19.0.dev0"
+
+
+def _custom_code_model(tmp_path: Path, saved_by: str) -> str:
+    """LFM3-shaped checkpoint: model_type no transformers ships, config class in repo code."""
+    d = tmp_path / f"custom_{saved_by}"
+    d.mkdir()
+    cfg = {
+        "model_type": "lfm3_omni",
+        "architectures": ["Lfm3OmniForConditionalGeneration"],
+        "auto_map": {"AutoConfig": "configuration_lfm3_omni.Lfm3OmniConfig"},
+        "transformers_version": saved_by,
+    }
+    (d / "config.json").write_text(json.dumps(cfg))
+    return str(d)
+
+
+class TestCustomCodeRouting:
+    """The probe parses with trust_remote_code=False, so custom code fell to 5.3.0 (#16054)."""
+
+    @pytest.fixture(autouse = True)
+    def _no_probe(self, monkeypatch):
+        _fake_overlays(monkeypatch)
+        monkeypatch.setattr(tv, "_probe_tier", lambda *a, floor = "530", **k: floor)
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: None)
+        monkeypatch.setattr(tv, "TRANSFORMERS_DEFAULT_VERSION", "5.5.0")
+
+    def test_newer_than_every_tier_routes_to_newest_fixed_tier(self, tmp_path: Path):
+        assert get_transformers_tier(_custom_code_model(tmp_path, "5.19.0.dev0")) == "510"
+
+    def test_routes_to_pinned_latest_when_new_enough(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.22.0")
+        assert get_transformers_tier(_custom_code_model(tmp_path, "5.19.0.dev0")) == "latest"
+
+    def test_oldest_sidecar_at_or_above_saving_version(self, tmp_path: Path):
+        assert get_transformers_tier(_custom_code_model(tmp_path, "5.8.0")) == "510"
+
+    def test_default_kept_when_new_enough(self, tmp_path: Path):
+        assert get_transformers_tier(_custom_code_model(tmp_path, "5.3.0")) == "default"
+
+    def test_patch_release_fits_its_minor(self, tmp_path: Path):
+        assert get_transformers_tier(_custom_code_model(tmp_path, "5.5.4")) == "default"
+
+    def test_v5_tokenizer_saved_at_530_keeps_530(self, tmp_path: Path):
+        d = Path(_custom_code_model(tmp_path, "5.3.0"))
+        (d / "tokenizer_config.json").write_text(
+            json.dumps({"tokenizer_class": "TokenizersBackend"})
+        )
+        assert get_transformers_tier(str(d)) == "530"
+
+    def test_upgrade_offered_when_pypi_is_new_enough(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
+        result = check_upgrade_for_model(_custom_code_model(tmp_path, "5.12.0.dev0"))
+        assert result is not None
+        assert result["model_type"] == "lfm3_omni" and result["pypi_version"] == "5.13.0"
+        assert result["supported_in_pypi"] is True
+
+    def test_no_offer_when_pypi_too_old(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
+        assert check_upgrade_for_model(_custom_code_model(tmp_path, "5.19.0.dev0")) is None
+
+    def test_no_offer_when_installed_tier_fits(self, tmp_path: Path, monkeypatch):
+        calls = _no_network(monkeypatch)
+        assert check_upgrade_for_model(_custom_code_model(tmp_path, "5.8.0")) is None
+        assert calls["n"] == 0
+
+    def test_native_tier_is_raised_to_saving_version(self, tmp_path: Path):
+        d = tmp_path / "custom_native"
+        d.mkdir()
+        cfg = {
+            "model_type": "qwen3_moe",
+            "architectures": ["Qwen3MoeForCausalLM"],
+            "auto_map": {"AutoConfig": "configuration_x.XConfig"},
+            "transformers_version": "5.8.0",
+        }
+        (d / "config.json").write_text(json.dumps(cfg))
+        assert get_transformers_tier(str(d)) == "510"
+
+    def test_main_offered_when_pypi_is_behind(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
+        result = check_upgrade_for_model(_custom_code_model(tmp_path, "5.14.0.dev0"))
+        assert result is not None
+        assert result["supported_in_pypi"] is False and result["supported_in_main"] is True
+        assert result["main_version"] == "5.14.0.dev0"
+
+    def test_hub_name_match_is_raised_to_saving_version(self, monkeypatch):
+        cfg = {
+            "model_type": "qwen3_5",
+            "auto_map": {"AutoConfig": "configuration_x.XConfig"},
+            "transformers_version": "5.8.0",
+        }
+        monkeypatch.setattr(tv, "_load_config_json", lambda name, token = None: cfg)
+        assert get_transformers_tier("someorg/Qwen3.5-Custom") == "510"

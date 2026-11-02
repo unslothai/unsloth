@@ -33,7 +33,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
-import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, BookmarkIcon, FileSearchIcon } from "@/lib/hugeicons-derived";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
@@ -93,6 +93,8 @@ import {
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
+import { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
+import { isPlainPasteChord, plainPasteStillCounts } from "./utils/pasted-text";
 import {
   composerDraftKey,
   latestDraft,
@@ -111,17 +113,13 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
-  Columns2Icon,
 } from "lucide-react";
 import {
-  AttachmentIcon,
-  Bookmark02Icon,
+  Attachment01Icon,
   CodeIcon,
   Download01Icon,
-  FileDatabaseIcon,
-  Folder01Icon,
-  FolderAddIcon,
-  Image03Icon,
+  ImageIcon,
+  LayoutTwoColumnIcon,
   McpServerIcon,
   Scroll01Icon,
   MoreHorizontalIcon,
@@ -129,10 +127,12 @@ import {
   SlidersHorizontalIcon,
   Cancel01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon } from "@/lib/folder-icons";
 import { StopIcon } from "@/lib/media-control-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatActive } from "./runtime-provider";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { toast } from "@/lib/toast";
 import {
   PromptStorageDialog,
@@ -625,6 +625,7 @@ export function SharedComposer({
 }): ReactElement {
   const t = useT();
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
+  const richTextPaste = useChatPreferencesStore((s) => s.richTextPaste);
   const navigate = useNavigate();
   const handleExitCompare = useCallback(() => {
     if (onExitCompare) {
@@ -638,7 +639,7 @@ export function SharedComposer({
     useChatRuntimeStore.getState().incognito ? "" : latestDraft(),
   );
   const [draftSource] = useState(() => Symbol("compare composer"));
-  // Text that came from the chat composer or another tab, so it isn't published back.
+  // Text that came from the chat composer, so it isn't published back.
   const remoteDraftRef = useRef<string | null>(null);
   const unsavedDraftRef = useRef<string | null>(null);
   const incognitoBeforeRef = useRef(incognito);
@@ -1339,8 +1340,12 @@ export function SharedComposer({
     [trackAttaching, addFilesUntracked],
   );
 
+  // Plain paste: a paste event carries no modifiers, so the chord is read from the keydown before it.
+  const plainPasteAtRef = useRef(0);
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      const plainPaste = plainPasteStillCounts(plainPasteAtRef.current, performance.now());
+      plainPasteAtRef.current = 0;
       pasteClipboardFiles(
         event,
         (pasted) =>
@@ -1359,8 +1364,17 @@ export function SharedComposer({
             description: "Compare supports images and audio within the attachment size limits.",
           }),
       );
+      if (event.defaultPrevented || !richTextPaste || plainPaste) return;
+      const markdown = richPasteMarkdown(event.clipboardData);
+      if (markdown === null) return;
+      event.preventDefault();
+      const input = event.currentTarget;
+      insertAtCaret(input, markdown, (next, caret) => {
+        setCurrentText(next);
+        requestAnimationFrame(() => input.setSelectionRange(caret, caret));
+      });
     },
-    [trackAttaching, addFilesUntracked],
+    [trackAttaching, addFilesUntracked, richTextPaste, setCurrentText],
   );
 
   const removePendingImage = useCallback((id: string) => {
@@ -1801,6 +1815,8 @@ export function SharedComposer({
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
           mlx_int8_prefill: ownConfig.mlxInt8Prefill ?? false,
+          mlx_ane_prefill: ownConfig.mlxAnePrefill ?? false,
+          mlx_fast_verify: ownConfig.mlxFastVerify ?? false,
           mlx_ple_offload: ownConfig.mlxPleOffload ?? null,
           mlx_expert_offload: ownConfig.mlxExpertOffload ?? null,
           speculative_type: effectiveSpeculativeType,
@@ -2085,6 +2101,7 @@ export function SharedComposer({
           audioType: resp.audio_type ?? null,
           hasAudioInput: Boolean(resp.has_audio_input),
           hasVideoInput: Boolean(resp.has_video_input),
+          speaks: Boolean(resp.speaks),
         };
         if (idx === -1) {
           store.setModels([
@@ -2489,7 +2506,7 @@ export function SharedComposer({
           setRagEnabled(!ragEnabled);
         }}
       >
-        <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
+        <HugeiconsIcon icon={FileSearchIcon} strokeWidth={2} />
         Chat with files
         {ragEnabled && !ragDisabled ? (
           <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
@@ -2524,7 +2541,7 @@ export function SharedComposer({
     savedPrompts: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
-          <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+          <HugeiconsIcon icon={BookmarkIcon} strokeWidth={2} />
           Saved prompts
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
@@ -2562,7 +2579,7 @@ export function SharedComposer({
         className="text-primary font-medium"
         onSelect={handleExitCompare}
       >
-        <Columns2Icon />
+        <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={2} />
         Compare chat
         <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
       </DropdownMenuItem>
@@ -2613,7 +2630,7 @@ export function SharedComposer({
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
-          <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+          <HugeiconsIcon icon={ProjectIcon} strokeWidth={2} />
           Projects
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(232px*var(--ui-space-scale,1))]">
@@ -2628,7 +2645,7 @@ export function SharedComposer({
                 key={project.id}
                 onSelect={() => openProject(project.id)}
               >
-                <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                <HugeiconsIcon icon={ProjectIcon} strokeWidth={2} />
                 <span className="truncate">{project.name}</span>
               </DropdownMenuItem>
             ))
@@ -2685,7 +2702,7 @@ export function SharedComposer({
           className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100" : "opacity-0"}`}
         >
           <HugeiconsIcon
-            icon={AttachmentIcon}
+            icon={Attachment01Icon}
             strokeWidth={2}
             className="size-6 text-primary"
           />
@@ -2792,7 +2809,7 @@ export function SharedComposer({
                 onCloseAutoFocus={(event) => event.preventDefault()}
               >
                 <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
-                  <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
+                  <HugeiconsIcon icon={Attachment01Icon} strokeWidth={2} />
                   Add photos &amp; files
                 </DropdownMenuItem>
                 {activeModel?.hasAudioInput && (
@@ -2864,7 +2881,7 @@ export function SharedComposer({
                     }
                     onSelect={() => setImageToolsEnabled(!imageToolsEnabled)}
                   >
-                    <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
+                    <HugeiconsIcon icon={ImageIcon} strokeWidth={2} />
                     Images
                     {imageToolsEnabled && !imageDisabled ? (
                       <HugeiconsIcon
@@ -2912,7 +2929,7 @@ export function SharedComposer({
               aria-label="Exit compare chat"
             >
               <PillGlyph>
-                <Columns2Icon className="size-[calc(14px*var(--ui-space-scale,1))]" />
+                <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={2} className="size-[calc(14px*var(--ui-space-scale,1))]" />
               </PillGlyph>
               <span>Compare</span>
             </button>
@@ -2985,7 +3002,7 @@ export function SharedComposer({
               >
                 <PillGlyph>
                   <HugeiconsIcon
-                    icon={Image03Icon}
+                    icon={ImageIcon}
                     className="size-3.5"
                     strokeWidth={2}
                   />
@@ -3073,8 +3090,15 @@ export function SharedComposer({
                 onKeyDown={(event) => {
                   if (!skillMentions.onKeyDown(event)) onKeyDown(event);
                 }}
+                onKeyDownCapture={(event) => {
+                  plainPasteAtRef.current = isPlainPasteChord(event) ? performance.now() : 0;
+                }}
+                onKeyUpCapture={() => {
+                  plainPasteAtRef.current = 0;
+                }}
                 onPaste={handleFilePaste}
                 onBlur={() => {
+                  plainPasteAtRef.current = 0;
                   // Mac: switching input methods can fire compositionstart without a matching compositionend,
                   // leaving composingRef pinned. The OS always commits or cancels before focus is lost.
                   imeSessionOpenRef.current = false;

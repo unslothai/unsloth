@@ -3222,6 +3222,21 @@ function Invoke-NpmMirrorRetry {
     return $true
 }
 
+# install-stamp.mjs check/write; any doubt returns $false so setup runs `npm ci`.
+function Invoke-OxcInstallStamp {
+    param([Parameter(Mandatory = $true)][ValidateSet("check", "write")][string]$Mode)
+    $helper = Join-Path $OxcValidatorDir "install-stamp.mjs"
+    if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { return $false }
+    # Resolved first: a lookup failure must never read an earlier command's exit code as a pass.
+    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $node) { return $false }
+    try {
+        $global:LASTEXITCODE = 1
+        & $node.Source $helper $Mode *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch { return $false }
+}
+
 function Show-NpmRegistryHint {
     param([string]$FailureOutput = "")
     if ($FailureOutput) {
@@ -5489,7 +5504,8 @@ if ($NeedNodeForSetup) {
         Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
         step "node" "$(node -v) | npm $(npm -v) (isolated)"
 
-        if (-not (Test-Path (Join-Path $FrontendDir "package-lock.json")) -and -not (Get-Command bun -ErrorAction SilentlyContinue)) {
+        # Only the frontend build uses bun (as in setup.sh); OXC-only Node (Desktop) skips it.
+        if (-not (Test-Path (Join-Path $FrontendDir "package-lock.json")) -and -not (Get-Command bun -ErrorAction SilentlyContinue) -and $NeedFrontendBuild) {
             substep "installing bun (faster frontend package installs)..."
             $prevEAP_bun = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
@@ -5624,18 +5640,27 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
     $NpmInstallVerb = if (Test-Path "package-lock.json") { "ci" } else { "install" }
-    $oxcInstallExit = Invoke-SetupCommand { npm $NpmInstallVerb @NpmRegistryArgs }
-    if ($oxcInstallExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $oxcInstallExit = 0 }
-    if ($oxcInstallExit -ne 0) {
+    if ($NpmInstallVerb -eq "ci" -and (Invoke-OxcInstallStamp -Mode check)) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
-        Write-StudioLine "[ERROR] OXC validator npm $NpmInstallVerb failed (exit code $oxcInstallExit)" -ForegroundColor Red
-        Show-NpmRegistryHint -FailureOutput $script:SetupCommandOutput
-        Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
+        step "oxc runtime" "up to date"
+    } else {
+        # Gone before npm touches the tree, so an interrupted install is never trusted.
+        Remove-Item -LiteralPath (Join-Path $OxcValidatorDir "node_modules\.unsloth-install-stamp.json") -Force -ErrorAction SilentlyContinue
+        $oxcInstallExit = Invoke-SetupCommand { npm $NpmInstallVerb @NpmRegistryArgs }
+        if ($oxcInstallExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $oxcInstallExit = 0 }
+        if ($oxcInstallExit -ne 0) {
+            Pop-Location
+            $ErrorActionPreference = $prevEAP_oxc
+            Write-StudioLine "[ERROR] OXC validator npm $NpmInstallVerb failed (exit code $oxcInstallExit)" -ForegroundColor Red
+            Show-NpmRegistryHint -FailureOutput $script:SetupCommandOutput
+            Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
+        }
+        if ($NpmInstallVerb -eq "ci") { $null = Invoke-OxcInstallStamp -Mode write }
+        Pop-Location
+        $ErrorActionPreference = $prevEAP_oxc
+        step "oxc runtime" "installed"
     }
-    Pop-Location
-    $ErrorActionPreference = $prevEAP_oxc
-    step "oxc runtime" "installed"
 } elseif ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip") {
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }
@@ -7561,6 +7586,78 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
     $script:SkipPythonDeps = $SkipPythonDeps
 }
 
+# AMD ROCm: triton-windows paired with torch. The stack resolves unsloth's unpinned triton-windows. 3.9 removed the
+# block pointers that torch 2.11 / 2.12's flex_decoding template builds: the first decode fails to compile and flex
+# attention then runs unfused for the rest of the process (gpt-oss 4k prefill 0.1 -> 6.7 GB on gfx1151). 3.6 has no
+# HIP headers; 3.8 is the verified build. Used by the fast-path escape and the post-stack repair.
+function Get-TritonWindowsRocmSpec {
+    param([string]$TorchVersion)
+    if ($TorchVersion -match '^2\.(\d+)\.' -and @(11, 12) -contains [int]$Matches[1]) { return "triton-windows>=3.8,<3.9" }
+    return $null
+}
+
+function Get-TritonRuntimeState {
+    # Judged by the imported runtime, not metadata: a dist-info can say 3.8 while the files are 3.9 or half removed.
+    # Healthy = triton and a real (non-namespace) triton.language import with their core API, whatever the version.
+    # Paired = healthy, a final 3.8.x release (no dev / rc) and make_block_ptr present, not 3.9's raise-only stub
+    # (its message is a constant of the function body; a docstring that mentions the removal does not count).
+    # A failing import exits non-zero, which reads as neither. No double quotes: the probe helper wraps $Code in them.
+    $code = "import importlib, inspect, re; t = importlib.import_module('triton'); tl = importlib.import_module('triton.language'); " +
+        "v = getattr(t, '__version__', '') or ''; " +
+        "h = getattr(tl, '__file__', None) is not None and callable(getattr(t, 'jit', None)) and callable(getattr(tl, 'program_id', None)); " +
+        "f = getattr(tl, 'make_block_ptr', None); c = getattr(inspect.unwrap(f), '__code__', None) if callable(f) else None; " +
+        "d = getattr(inspect.unwrap(f), '__doc__', None) if callable(f) else None; " +
+        "bp = c is not None and not any(isinstance(k, str) and k != d and 'have been removed' in k for k in c.co_consts); " +
+        "print('TRITONVER=' + v); print('HEALTHY=' + str(int(bool(h)))); " +
+        "print('PAIRED=' + str(int(bool(h and bp and re.fullmatch(r'3\.8\.\d+(\.post\d+)?(\+[\w.]+)?', v)))))"
+    $probe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $code
+    return @{
+        Healthy = [bool]($probe.Ok -and $probe.Output -match '(?m)^HEALTHY=1\s*$')
+        Paired = [bool]($probe.Ok -and $probe.Output -match '(?m)^PAIRED=1\s*$')
+    }
+}
+
+function Get-RocmTritonPairing {
+    # Reads the venv as it is now; nothing cached from before the install decides. No double quotes:
+    # Invoke-BoundedPythonProbe wraps $Code in them. ROCm = torch.version.hip, read from torch/version.py without
+    # importing torch (an untagged ROCm build has no +rocm). The name lookup skips the ~riton_windows-* backup an
+    # interrupted pip replacement leaves. Triton is only what the metadata reports (a 3.8 record wins over a
+    # leftover one, a record without Version is skipped); whether the pair is stale comes from the runtime.
+    $code = "import importlib.metadata as m, importlib.util as u, os, re; " +
+        "print('TORCH=' + m.version('torch')); " +
+        "ds = list(m.distributions(name='triton-windows')); vs = [d.version for d in ds if d.version]; " +
+        "print('TRITONWIN=' + next((x for x in vs if x.startswith('3.8')), vs[0] if vs else '')); " +
+        "print('TRITONDISTS=' + str(len(ds))); " +
+        "s = u.find_spec('torch'); p = os.path.join(os.path.dirname(s.origin), 'version.py') if s and s.origin else ''; " +
+        "t = open(p, encoding='utf-8').read() if p and os.path.isfile(p) else ''; " +
+        "h = re.search(r'^hip\b[^=\n]*=\s*.([0-9][^\x27\x22\n]*)', t, re.M); " +
+        "print('HIP=' + (h.group(1) if h else ''))"
+    $probe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $code
+    $torch = if ($probe.Ok -and $probe.Output -match '(?m)^TORCH=(\S+)\s*$') { $Matches[1] } else { "" }
+    $triton = if ($probe.Ok -and $probe.Output -match '(?m)^TRITONWIN=(\S+)\s*$') { $Matches[1] } else { "" }
+    $dists = if ($probe.Ok -and $probe.Output -match '(?m)^TRITONDISTS=(\d+)\s*$') { [int]$Matches[1] } else { 0 }
+    $hip = if ($probe.Ok -and $probe.Output -match '(?m)^HIP=(\S+)\s*$') { $Matches[1] } else { "" }
+    $spec = if ($hip -or $torch -match '\+rocm') { Get-TritonWindowsRocmSpec -TorchVersion $torch } else { $null }
+    $runtime = if ($spec) { Get-TritonRuntimeState } else { @{ Healthy = $false; Paired = $false } }
+    # Known is false when the probe itself failed: nothing about the venv was read, so nothing is verified.
+    return @{ Torch = $torch; Triton = $triton; Dists = $dists; Spec = $spec; Stale = [bool]($spec -and -not $runtime.Paired);
+              Healthy = $runtime.Healthy; Known = [bool]$probe.Ok }
+}
+
+function Test-RocmTritonPairingNeedsPass {
+    # The same probe as the post-stack repair, so the two never disagree. Only a ROCm torch 2.11 / 2.12 is stale,
+    # which the pass repairs, so the check cannot re-fire on CUDA, CPU or XPU.
+    $pair = Get-RocmTritonPairing
+    if (-not $pair.Stale) { return $false }
+    if ($script:OfflineFastPath -or (Test-UvOfflineRequested)) {
+        substep "triton-windows does not pair with torch $($pair.Torch) but UV_OFFLINE is set -- left for the next online update" "Yellow"
+        return $false
+    }
+    substep "triton-windows does not pair with torch $($pair.Torch) -- forcing dependency pass to repair..." "Cyan"
+    return $true
+}
+# End of the AMD ROCm triton-windows pairing helpers.
+
 $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "unsloth" }
 $SkipPythonDeps = $false
 
@@ -7632,6 +7729,11 @@ sys.exit(2 if conflict else (0 if version else 1))
                     }
                 } catch {}
             }
+        }
+        # A verified install skips the post-stack pairing. Outside the gfx checks: a pinned ROCm index or a hybrid host
+        # can hold a ROCm torch with no detected gfx.
+        if ($SkipPythonDeps -and -not $NoTorchMode -and (Test-RocmTritonPairingNeedsPass)) {
+            $SkipPythonDeps = $false
         }
     }
 }
@@ -8396,6 +8498,92 @@ substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
 $stackExit = $LASTEXITCODE
 $script:SetupVenvChanged = $true
+
+# AMD ROCm: pair triton-windows with torch (Get-RocmTritonPairing, defined before the fast path). Decided from the
+# venv the stack left, whatever index or earlier tag produced it.
+if ($stackExit -eq 0 -and -not $NoTorchMode) {
+    $_rocmPair = Get-RocmTritonPairing
+    $_rocmTritonFrom = if ($_rocmPair.Triton) { "triton-windows $($_rocmPair.Triton)" } else { "no triton-windows" }
+    if ($_rocmPair.Stale -and ($script:OfflineFastPath -or (Test-UvOfflineRequested))) {
+        # As on the fast path: the repair needs the index, so an offline run leaves it for the next online update.
+        substep "$_rocmTritonFrom does not pair with torch $($_rocmPair.Torch) but UV_OFFLINE is set -- left for the next online update" "Yellow"
+    } elseif ($_rocmPair.Stale) {
+        substep "pairing Triton for Windows with torch $($_rocmPair.Torch) ($_rocmTritonFrom -> $($_rocmPair.Spec))..." "Cyan"
+        $_rocmImportedBefore = $_rocmPair.Healthy
+        # Set the install manifest aside until the pair is verified, so a failed replacement is never certified
+        # complete and the next update re-runs the dependency pass. As in the XPU swap: a manifest that cannot be
+        # moved stays valid through the replacement, so nothing is installed then.
+        $_rocmManifest = Join-Path $VenvDir "unsloth_install_manifest.json"
+        $_rocmHeld = "$_rocmManifest.triton-pending"
+        $_rocmHasHeld = $false
+        $_rocmBlocked = $false
+        if (Test-Path -LiteralPath $_rocmManifest -PathType Leaf) {
+            try {
+                Move-Item -LiteralPath $_rocmManifest -Destination $_rocmHeld -Force -ErrorAction Stop
+                $_rocmHasHeld = $true
+            } catch {
+                $_rocmBlocked = $true
+            }
+            # A move can report success while the original remains; confirm it is gone.
+            if (Test-Path -LiteralPath $_rocmManifest -PathType Leaf) {
+                if ($_rocmHasHeld) { Remove-Item -LiteralPath $_rocmHeld -Force -ErrorAction SilentlyContinue }
+                $_rocmHasHeld = $false
+                $_rocmBlocked = $true
+            }
+        }
+        if ($_rocmBlocked) {
+            substep "[WARN] could not set the install manifest aside; $_rocmTritonFrom left in place -- flex attention decode may run unfused." "Yellow"
+        } else {
+            # Inherited uv / pip inputs that would drop or replace the pin while still reporting success, and
+            # require-hashes, which the unhashed pin can only fail (the dependency stack relaxes it the same way).
+            $_rocmSavedEnv = @{}
+            foreach ($_n in 'UV_OVERRIDE', 'UV_EXCLUDE', 'UV_CONSTRAINT', 'PIP_CONSTRAINT', 'UV_REQUIRE_HASHES', 'PIP_REQUIRE_HASHES') {
+                $_rocmSavedEnv[$_n] = [Environment]::GetEnvironmentVariable($_n)
+                Remove-Item "Env:$_n" -ErrorAction SilentlyContinue
+            }
+            $env:PIP_REQUIRE_HASHES = "0"
+            # A broken 3.8, or a record with no version, already satisfies the pin as far as the installer can
+            # tell, so only a forced reinstall restores its files.
+            $_rocmArgs = @($_rocmPair.Spec)
+            if ($_rocmPair.Triton -match '^3\.8(\.|$)' -or ($_rocmPair.Dists -gt 0 -and -not $_rocmPair.Triton)) {
+                $_rocmArgs = @('--force-reinstall', '--no-deps') + $_rocmArgs
+            }
+            try {
+                $_rocmTritonOut = Fast-Install @_rocmArgs | Out-String
+                $_rocmTritonExit = $LASTEXITCODE
+            } finally {
+                foreach ($_n in $_rocmSavedEnv.Keys) {
+                    if ($null -ne $_rocmSavedEnv[$_n]) { Set-Item "Env:$_n" $_rocmSavedEnv[$_n] }
+                    else { Remove-Item "Env:$_n" -ErrorAction SilentlyContinue }
+                }
+            }
+            # Exit 0 is not enough: an override-dependencies entry in a uv config keeps the old version, and a
+            # probe that could not read the venv verifies nothing.
+            $_rocmAfter = Get-RocmTritonPairing
+            if ($_rocmAfter.Known -and $_rocmAfter.Spec -and -not $_rocmAfter.Stale) {
+                if ($_rocmHasHeld) {
+                    try {
+                        Move-Item -LiteralPath $_rocmHeld -Destination $_rocmManifest -Force -ErrorAction Stop
+                    } catch {
+                        # Without the manifest the next update re-runs the dependency pass; nothing is lost.
+                        substep "[WARN] could not restore the install manifest ($($_.Exception.Message)); the next update re-runs the dependency pass." "Yellow"
+                    }
+                }
+            } else {
+                $_rocmHave = if (-not $_rocmAfter.Known) { "the venv could not be read" } elseif ($_rocmAfter.Triton) { "triton-windows $($_rocmAfter.Triton) installed" } else { "no triton-windows installed" }
+                substep "[WARN] could not pair $($_rocmPair.Spec) (exit $_rocmTritonExit, $_rocmHave); flex attention decode may run unfused. Check uv override-dependencies / constraints if this repeats." "Yellow"
+                Write-StudioLine (Redact-InstallOutput $_rocmTritonOut) -ForegroundColor Yellow
+                if ($_rocmImportedBefore -and -not (Get-TritonRuntimeState).Healthy) {
+                    Write-StudioLine "[ERROR] the Triton replacement failed part way and triton no longer works -- torch.compile is broken." -ForegroundColor Red
+                    Write-StudioLine "        Repair with: python -m pip install --force-reinstall --no-deps `"$($_rocmPair.Spec)`"" -ForegroundColor Red
+                    # Fail, or install.ps1 commits this venv over its rollback copy.
+                    $stackExit = if ($_rocmTritonExit -ne 0) { $_rocmTritonExit } else { 1 }
+                }
+                if ($_rocmHasHeld) { Remove-Item -LiteralPath $_rocmHeld -Force -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+}
 
 # ── Intel XPU: bitsandbytes must carry XPU kernels ──
 # Only bitsandbytes' XPU library exports the 4-bit kernels; floor 0.50.0 (<=0.49.2 NaNs on AMD).
@@ -10113,12 +10301,14 @@ if (-not $llamaCppIsLink -and (
 
 Complete-FrontendBuildBackground
 
-# ── Precompile bytecode ── (uv installs without .pyc; only after a dependency pass, never fatal)
+# ── Precompile bytecode ── (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
 $_pycPython = Join-Path $VenvDir 'Scripts\python.exe'
 $_pycHelper = Join-Path $PSScriptRoot 'precompile_bytecode.py'
-$_pycOptedOut = @(@($env:UV_COMPILE_BYTECODE, $env:UNSLOTH_STUDIO_COMPILE_BYTECODE) |
-    Where-Object { $_ -and (@('0', 'false', 'no', 'off') -contains $_.Trim().ToLowerInvariant()) }).Count -gt 0
-if (($script:SetupVenvChanged -or $env:UNSLOTH_SETUP_RERUN -eq '1') -and -not $_pycOptedOut -and
+$_pycSwitches = @(@($env:UV_COMPILE_BYTECODE, $env:UNSLOTH_STUDIO_COMPILE_BYTECODE) |
+    Where-Object { $_ } | ForEach-Object { $_.Trim().ToLowerInvariant() })
+$_pycOptedOut = @($_pycSwitches | Where-Object { @('0', 'false', 'no', 'off') -contains $_ }).Count -gt 0
+$_pycOptedIn = @($_pycSwitches | Where-Object { @('1', 'true', 'yes', 'on') -contains $_ }).Count -gt 0
+if (($script:SetupVenvChanged -or $env:UNSLOTH_SETUP_RERUN -eq '1') -and $_pycOptedIn -and -not $_pycOptedOut -and
     (Test-Path -LiteralPath $_pycPython -PathType Leaf) -and
     (Test-Path -LiteralPath $_pycHelper -PathType Leaf)) {
     step "python" "precompiling bytecode..."

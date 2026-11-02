@@ -555,7 +555,9 @@ export async function resolveToolConfirmation(
   sessionId: string,
   approvalId: string,
   decision: "allow" | "deny",
+  fullAccess = false,
 ): Promise<boolean> {
+  const epoch = getAuthSessionEpoch();
   const response = await authFetch("/api/inference/tool-confirm", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -563,12 +565,15 @@ export async function resolveToolConfirmation(
       session_id: sessionId,
       approval_id: approvalId,
       decision,
+      ...(fullAccess ? { permission_mode: "full" } : {}),
     }),
   });
   // Ahead of parseJsonOrThrow, which folds every non-ok status into one bare Error.
   if (response.status === 404) throw new ToolApprovalGoneError();
-  const parsed = await parseJsonOrThrow<{ resolved?: boolean }>(response);
-  return parsed.resolved === true;
+  const parsed = await parseJsonOrThrow<{ resolved?: boolean; full_access_granted?: boolean }>(response);
+  // An older server may allow this call while ignoring the requested upgrade.
+  return getAuthSessionEpoch() === epoch && parsed.resolved === true &&
+    (!fullAccess || parsed.full_access_granted === true);
 }
 
 export interface CachedGgufRepo {
@@ -1344,16 +1349,22 @@ export async function listChatMessages(
   return data.messages;
 }
 
-/** Batch fetch; falls back to per-thread listChatMessages on 404/405 from older servers. */
+/**
+ * Batch fetch; falls back to per-thread listChatMessages on 404/405 from older servers.
+ * view "search" trims messages to what the search index reads; older backends ignore it.
+ */
 export async function batchListChatMessages(
   threadIds: string[],
+  options: { view?: "search" } = {},
 ): Promise<Map<string, MessageRecord[]>> {
   const out = new Map<string, MessageRecord[]>();
   if (threadIds.length === 0) return out;
   const response = await authFetch("/api/chat/messages:batch", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ threadIds }),
+    body: JSON.stringify(
+      options.view ? { threadIds, view: options.view } : { threadIds },
+    ),
   });
   if (response.status === 404 || response.status === 405) {
     const per = await Promise.all(
@@ -1423,19 +1434,15 @@ export async function saveChatMessage(
   const editQuery = options.allowGenerationEdit
     ? "?allowGenerationEdit=true"
     : "";
-  let response: Response;
-  try {
-    response = await authFetch(
-      `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}${editQuery}`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(message),
-      },
-    );
-  } finally {
-    forgetThreadReads([message.threadId]);
-  }
+  const response = await threadWriteFetch(
+    `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}${editQuery}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(message),
+    },
+    [message.threadId],
+  );
   // Two failures share this status: a protected message, where the autosave must stop, and a
   // thread-id collision, which the caller must see. Only the header separates them.
   if (

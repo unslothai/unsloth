@@ -45,8 +45,29 @@ test("the pane resizes by drag and keyboard and remembers its height", () => {
     "onKeyDown={onResizeKey}",
     "onDoubleClick={() => resizePane(null)}",
     'const PANE_HEIGHT_STORAGE_KEY = "unsloth_debug_log_pane_height";',
-    "}, [text, wrap, paneHeight]);",
+    "}, [shownText, wrap, paneHeight]);",
   ]) {
     assert.ok(tab.includes(needle), needle);
   }
+});
+
+test("the pane repaints from the held text, so a poll cannot drop a selection", () => {
+  assert.match(tab, /if \(!holding && !pointerDownRef\.current && shownText !== text\)\s*setShownText\(text\);/);
+  assert.match(pane, /\{shownText \|\|/);
+  assert.doesNotMatch(pane, /\{text \|\|/);
+  assert.match(tab, /document\.addEventListener\("selectionchange", update\)/);
+  assert.match(tab, /if \(pointerDownRef\.current && !held\) return;\s*setHolding\(held\);/);
+  assert.match(tab, /pointerDownRef\.current = false;\s*const held = inside\(\);\s*setHolding\(held\);/);
+  assert.doesNotMatch(pane, /onPointerDown=\{\(\) => \{[^}]*setHolding/);
+});
+
+test("asking for other log text ends the hold, and a context menu ends a press", () => {
+  assert.match(tab, /clearSelectionInside\(document\.getSelection\(\), paneRef\.current\);\s*selectionRef\.current \+= 1;/);
+  assert.match(tab, /clearSelectionInside\(document\.getSelection\(\), paneRef\.current\);\s*void refreshSources\(\);/);
+  assert.match(tab, /clearSelectionInside\(document\.getSelection\(\), pane\);\s*pane\.scrollTop = pane\.scrollHeight;/);
+  for (const type of ["contextmenu", "dragend", "drop"]) {
+    assert.ok(tab.includes(`window.addEventListener("${type}", release);`), type);
+  }
+  assert.match(tab, /if \(event\.buttons === 0\) release\(\);/);
+  assert.match(tab, /window\.addEventListener\("pointermove", onPointerMove\)/);
 });

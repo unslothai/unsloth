@@ -204,3 +204,145 @@ def test_block_streamed_write_during_a_refill_is_bit_identical(pipe_dir, monkeyp
     assert CC.save(cand, dense, check = prefetch) is not None
     torch.cuda.synchronize()
     _assert_hit_equals(cand, reference)
+
+
+needs_swap = pytest.mark.skipif(
+    not hasattr(torch.utils, "swap_tensors"), reason = "needs torch.utils.swap_tensors (torch >= 2.3)"
+)
+
+
+class _TopGroup:
+    """diffusers' unmatched top-level group: no stream, so its cpu_param_dict stays empty."""
+
+    def __init__(self, module):
+        self.cpu_param_dict = {}
+        self.stream = None
+        self.offload_to_disk_path = None
+        self.onload_device = torch.device("cuda")
+        self.modules = [module]
+        self.parameters = []
+        self.buffers = []
+
+
+class _TopRegistry:
+    def __init__(self, group):
+        self.hooks = {"group_offloading": _Hook(group)}
+
+    def get_hook(self, name):
+        return self.hooks["group_offloading"]
+
+
+def _onload(module):
+    """Onload keeping each Parameter / buffer object; meta stands in for a device copy the writer must not read."""
+    twins = []
+    for t in [*module.parameters(), *module.buffers()]:
+        twin = torch.empty_like(t, device = "meta")
+        if isinstance(t, torch.nn.Parameter):
+            twin = torch.nn.Parameter(twin, requires_grad = t.requires_grad)
+        torch.utils.swap_tensors(t, twin)
+        twins.append((t, twin))
+    return twins
+
+
+def _offload(twins):
+    for t, twin in twins:
+        torch.utils.swap_tensors(t, twin)
+
+
+class _CpuOffloadHook:
+    """accelerate's CpuOffload without a device: pre_forward onloads, init_hook offloads."""
+
+    twins: list = []
+
+    def init_hook(self, mod):
+        _offload(self.twins)
+        self.twins = []
+        return mod
+
+    def pre_forward(self, mod, *args, **kwargs):
+        self.twins = _onload(mod)
+        return args, kwargs
+
+
+def _written(cand, module, path):
+    import hashlib
+    CC._write(str(path), cand, {"k": "v"}, hashlib.sha256(), CC._Reader(module, lambda: None))
+    return path.read_bytes()
+
+
+@pytest.fixture
+def sleeps(monkeypatch):
+    """Counted, not slept."""
+    calls = []
+
+    class _Time:
+        def __getattr__(self, name):
+            return getattr(__import__("time"), name)
+
+        def sleep(self, s):
+            calls.append(s)
+
+    monkeypatch.setattr(CC, "time", _Time())
+    return calls
+
+
+@needs_swap
+def test_onloaded_top_level_group_is_written_from_its_kept_host_copy(pipe_dir, tmp_path, sleeps):
+    from core.inference import diffusion_memory as dm
+
+    cand = _cand(pipe_dir)
+    dense = _dense(cand)
+    CC.capture(type("P", (), {"transformer": dense})(), [cand])
+    want = _written(cand, dense, tmp_path / "plain.safetensors")
+    group = _TopGroup(dense)
+    dense._diffusers_hook = _TopRegistry(group)
+    assert dm._skip_top_level_copy_back(dense)
+    assert group.cpu_param_dict == {}
+    twins = _onload(dense)
+    assert _written(cand, dense, tmp_path / "onloaded.safetensors") == want
+    assert sleeps == []
+    # replaced on the host while offloaded: the live tensor is read
+    _offload(twins)
+    live = dense.get_parameter(_unsampled_cast_key(cand))
+    live.data = live.data + 1
+    assert _written(cand, dense, tmp_path / "replaced.safetensors") != want
+    assert sleeps == []
+
+
+@needs_swap
+def test_onloaded_model_offload_is_written_from_its_kept_host_copy(pipe_dir, tmp_path, sleeps):
+    from core.inference import diffusion_memory as dm
+
+    cand = _cand(pipe_dir)
+    dense = _dense(cand)
+    CC.capture(type("P", (), {"transformer": dense})(), [cand])
+    want = _written(cand, dense, tmp_path / "plain.safetensors")
+    hook = _CpuOffloadHook()
+    dense._hf_hook = hook
+    dm._wrap_cpu_offload_hook(hook, dense)
+    hook.pre_forward(dense)
+    assert all(p.device.type == "meta" for p in dense.parameters())
+    assert _written(cand, dense, tmp_path / "onloaded.safetensors") == want
+    assert sleeps == []
+
+
+@needs_swap
+def test_a_weight_changed_on_the_device_is_never_read_from_the_host(pipe_dir, sleeps):
+    from core.inference import diffusion_memory as dm
+
+    cand = _cand(pipe_dir)
+    dense = _dense(cand)
+    CC.capture(type("P", (), {"transformer": dense})(), [cand])
+    hook = _CpuOffloadHook()
+    dense._hf_hook = hook
+    dm._wrap_cpu_offload_hook(hook, dense)
+    hook.pre_forward(dense)
+    key = _unsampled_cast_key(cand)
+    with torch.no_grad():
+        dense.get_parameter(key).add_(1)  # the kept host copy is stale now
+    reader = CC._Reader(dense, lambda: None)
+    other = next(n for n, _d, _s in cand.names if n != key and "weight" in n)
+    assert reader.tensor(other).device.type == "cpu" and sleeps == []
+    with pytest.raises(NotImplementedError):
+        reader.tensor(key)  # waits, then reads the device copy
+    assert sleeps

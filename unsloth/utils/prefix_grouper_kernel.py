@@ -10,12 +10,12 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""GRPO PrefixGrouper FlexAttention kernel, prefix stored once; self-contained (no temp dir
-dependency); imported lazily only when prefix_seg_info is set, so default-off never imports it."""
+"""GRPO PrefixGrouper FlexAttention kernel: shared prefix stored once. Imported lazily."""
 
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -26,33 +26,57 @@ from torch.nn.attention.flex_attention import (
     flex_attention,
 )
 
-# Many distinct segment lengths: at the default recompile_limit (8) the kernel silently reuses a
-# mismatched specialisation.
-torch._dynamo.config.recompile_limit = max(getattr(torch._dynamo.config, "recompile_limit", 8), 256)
-torch._dynamo.config.accumulated_recompile_limit = max(
-    getattr(torch._dynamo.config, "accumulated_recompile_limit", 256), 2048
-)
+
+# torch 2.6 inductor fails on the dynamic mask + flex kernel; suppress_errors then runs eager T x T flex.
+PREFIX_GROUPER_MIN_TORCH = (2, 7)
 
 
-# dynamic=True is required: T changes almost every GRPO batch, and dynamic=False recompiles per T (~14s each).
+def torch_supports_prefix_grouper(version = None) -> bool:
+    """True unless the torch major.minor is known to be below PREFIX_GROUPER_MIN_TORCH."""
+    match = re.match(r"(\d+)\.(\d+)", str(torch.__version__ if version is None else version))
+    if match is None:
+        return True
+    return (int(match.group(1)), int(match.group(2))) >= PREFIX_GROUPER_MIN_TORCH
+
+
+TORCH_SUPPORTS_PREFIX_GROUPER = torch_supports_prefix_grouper()
+
+
+# Default recompile_limit (8) silently reuses a mismatched specialisation; old name cache_size_limit.
+def _raise_dynamo_limit(names, floor):
+    config = torch._dynamo.config
+    name = next((n for n in names if hasattr(config, n)), None)
+    if name is not None:
+        setattr(config, name, max(getattr(config, name), floor))
+
+
+if TORCH_SUPPORTS_PREFIX_GROUPER:
+    _raise_dynamo_limit(("recompile_limit", "cache_size_limit"), 256)
+    _raise_dynamo_limit(("accumulated_recompile_limit", "accumulated_cache_size_limit"), 2048)
+
+
+# dynamic=True: T changes almost every batch; static recompiles per T (~14 s each).
 _flex_attention_compiled = torch.compile(flex_attention, dynamic = True)
 _create_block_mask_compiled = torch.compile(create_block_mask, dynamic = True)
 
-# fp32 needs 32/32 for a ~1e-6 floor (two disjoint key runs stress online softmax); bf16 128/64 is ~5x faster; 128/128 OOMs Triton on B200.
+# fp32 needs 32/32 for a ~1e-6 floor; bf16 128/64 is ~5x faster; 128/128 OOMs Triton on B200.
 _FP32_BLOCK_M = int(os.environ.get("PG_FLEX_BLOCK_M", "32"))
 _FP32_BLOCK_N = int(os.environ.get("PG_FLEX_BLOCK_N", "32"))
 _BF16_BLOCK_M = int(os.environ.get("PG_FLEX_BF16_BLOCK_M", "128"))
 _BF16_BLOCK_N = int(os.environ.get("PG_FLEX_BF16_BLOCK_N", "64"))
 
 
-def _kernel_options_for_dtype(dtype):
+def _kernel_options_for_dtype(dtype, one_stage = False):
     """Pick the numerically-safe flash block sizes for the Q dtype."""
     if dtype == torch.bfloat16 or dtype == torch.float16:
-        return {"BLOCK_M": _BF16_BLOCK_M, "BLOCK_N": _BF16_BLOCK_N}
-    return {"BLOCK_M": _FP32_BLOCK_M, "BLOCK_N": _FP32_BLOCK_N}
+        options = {"BLOCK_M": _BF16_BLOCK_M, "BLOCK_N": _BF16_BLOCK_N}
+    else:
+        options = {"BLOCK_M": _FP32_BLOCK_M, "BLOCK_N": _FP32_BLOCK_N}
+    if one_stage:
+        options["num_stages"] = 1
+    return options
 
 
-# Backward-compat constant (fp32 default).
 _FLEX_KERNEL_OPTIONS = {"BLOCK_M": _FP32_BLOCK_M, "BLOCK_N": _FP32_BLOCK_N}
 
 # The compiled backward asserts unless T is a multiple of 128; pad tokens are fully masked and sliced off.
@@ -66,27 +90,9 @@ def _pad_len(T: int) -> int:
 
 @dataclass
 class PrefixSegInfo:
-    """Per-flat-token segment metadata driving the shared-prefix block mask.
+    """Per-token labels for the block mask, padded to T_pad (multiple of 128); pad tokens see nothing.
 
-    The label tensors are 1-D of length ``T_pad`` (>= real ``T``, padded up to a multiple
-    of 128 so the backward kernel compiles). Positions ``[T:T_pad)`` are pad tokens
-    (group/suffix == _PAD_GROUP) that attend to nothing.
-
-    Attributes
-    ----------
-    group_of_kv : LongTensor [T_pad]
-        Group id per flat token (0..num_groups-1); _PAD_GROUP for pad tokens.
-    is_prefix : BoolTensor [T_pad]
-        True iff the token is a prefix token of its group (False for pad).
-    suffix_of_kv : LongTensor [T_pad]
-        Suffix id per flat token; -1 for prefix, _PAD_GROUP for pad. Suffix ids are
-        globally unique across groups.
-    signature : hashable
-        Cache key for the block mask (depends only on the labels + T_pad).
-    T : int
-        Real flat sequence length (Q/K/V of this length are padded internally).
-    T_pad : int
-        Padded length (multiple of 128) at which the block mask is built.
+    suffix_of_kv is -1 for prefix tokens and globally unique across groups.
     """
 
     group_of_kv: torch.Tensor
@@ -115,8 +121,7 @@ def _pad_labels(group_of_kv, is_prefix, suffix_of_kv, device):
 
 
 def build_seg_info_from_layout(layout, device: Optional[torch.device] = None) -> PrefixSegInfo:
-    """Build PrefixSegInfo for ONE group from an object with ``.flat_ids``, ``.P`` and
-    ``.suffix_slices`` (used by the parity test / oracle helpers)."""
+    """PrefixSegInfo for one group (parity test / oracle helper)."""
     if device is None:
         device = layout.flat_ids.device
     T = int(layout.flat_ids.shape[1])
@@ -146,59 +151,9 @@ def build_seg_info_from_layout(layout, device: Optional[torch.device] = None) ->
 def build_seg_info_multigroup(
     group_specs: List[Tuple[int, List[int]]], device: torch.device
 ) -> Tuple[PrefixSegInfo, List[dict]]:
-    """Build PrefixSegInfo for several shared-prefix groups packed block-diagonally.
-
-    Parameters
-    ----------
-    group_specs : list of (P_g, [R_{g,0}, R_{g,1}, ...])
-        For each group: prefix length and the list of suffix lengths.
-
-    Returns
-    -------
-    seg : PrefixSegInfo
-    group_meta : list of dicts with 'base', 'P', 'prefix_last_index', 'suffix_slices'
-        (flat offsets), enough to build the completion index map.
-    """
-    group_of_list = []
-    is_prefix_list = []
-    suffix_of_list = []
-    group_meta = []
-
-    base = 0
-    suffix_counter = 0
-    sig_parts = []
-    for gid, (P, R_list) in enumerate(group_specs):
-        # Prefix.
-        group_of_list.append(torch.full((P,), gid, dtype = torch.long, device = device))
-        is_prefix_list.append(torch.ones(P, dtype = torch.bool, device = device))
-        suffix_of_list.append(torch.full((P,), -1, dtype = torch.long, device = device))
-        prefix_last_index = base + P - 1
-        suffix_slices = []
-        cursor = base + P
-        for r in R_list:
-            group_of_list.append(torch.full((r,), gid, dtype = torch.long, device = device))
-            is_prefix_list.append(torch.zeros(r, dtype = torch.bool, device = device))
-            suffix_of_list.append(torch.full((r,), suffix_counter, dtype = torch.long, device = device))
-            suffix_slices.append((cursor, cursor + r))
-            cursor += r
-            suffix_counter += 1
-        group_meta.append(
-            {
-                "base": base,
-                "P": P,
-                "prefix_last_index": prefix_last_index,
-                "suffix_slices": suffix_slices,
-            }
-        )
-        sig_parts.append((P, tuple(R_list)))
-        base = cursor
-
-    group_of_kv = torch.cat(group_of_list)
-    is_prefix = torch.cat(is_prefix_list)
-    suffix_of_kv = torch.cat(suffix_of_list)
-    group_of_kv, is_prefix, suffix_of_kv, T, T_pad = _pad_labels(
-        group_of_kv, is_prefix, suffix_of_kv, device
-    )
+    """group_specs: [(P_g, [R_g0, R_g1, ...])]. Returns (seg, per-group flat offsets)."""
+    labels, T, T_pad, group_meta, sig_parts = _seg_labels_host(group_specs)
+    group_of_kv, is_prefix, suffix_of_kv = _labels_to_device(labels, T_pad, device)
     sig = ("multi", T_pad, tuple(sig_parts))
     seg = PrefixSegInfo(
         group_of_kv = group_of_kv,
@@ -211,6 +166,62 @@ def build_seg_info_multigroup(
     return seg, group_meta
 
 
+def _seg_labels_host(group_specs):
+    """CPU int64 [3, T_pad] rows (group_of_kv, is_prefix, suffix_of_kv), pad sentinels
+    included, plus T, T_pad, group_meta and signature parts."""
+    group_meta = []
+    sig_parts = []
+    seg_lens = []
+    seg_group = []
+    seg_prefix = []
+    seg_suffix = []
+    base = 0
+    suffix_counter = 0
+    if not group_specs:
+        torch.cat([])  # the empty-list error the per-segment build raised
+    for gid, (P, R_list) in enumerate(group_specs):
+        seg_lens.append(P)
+        seg_group.append(gid)
+        seg_prefix.append(1)
+        seg_suffix.append(-1)
+        suffix_slices = []
+        cursor = base + P
+        for r in R_list:
+            seg_lens.append(r)
+            seg_group.append(gid)
+            seg_prefix.append(0)
+            seg_suffix.append(suffix_counter)
+            suffix_slices.append((cursor, cursor + r))
+            cursor += r
+            suffix_counter += 1
+        group_meta.append(
+            {
+                "base": base,
+                "P": P,
+                "prefix_last_index": base + P - 1,
+                "suffix_slices": suffix_slices,
+            }
+        )
+        sig_parts.append((P, tuple(R_list)))
+        base = cursor
+    T = base
+    T_pad = _pad_len(T)
+    labels = torch.empty((3, T_pad), dtype = torch.long, device = "cpu")
+    lens = torch.tensor(seg_lens, dtype = torch.long, device = "cpu")
+    per_seg = torch.tensor([seg_group, seg_prefix, seg_suffix], dtype = torch.long, device = "cpu")
+    labels[:, :T] = torch.repeat_interleave(per_seg, lens, dim = 1, output_size = T)
+    labels[0, T:] = _PAD_GROUP
+    labels[1, T:] = 0
+    labels[2, T:] = _PAD_GROUP
+    return labels, T, T_pad, group_meta, sig_parts
+
+
+def _labels_to_device(labels, T_pad, device):
+    """One host->device copy; each returned tensor gets its own storage."""
+    moved = labels.to(device)
+    return moved[0].clone(), moved[1].to(torch.bool), moved[2].clone()
+
+
 # Block-mask cache, keyed on (signature, device): the mask depends only on per-token labels and T.
 
 
@@ -218,18 +229,10 @@ _BLOCK_MASK_CACHE: Dict[Tuple, BlockMask] = {}
 
 
 def _make_mask_mod(group_of_kv, is_prefix, suffix_of_kv):
-    """Return a mask_mod closure over the (device) label tensors.
+    """Same group and causal, and kv is a prefix token or in q's own suffix.
 
-    keep(q, kv) = same_group AND
-        ( is_prefix[kv]  AND kv <= q                     # causal within/ into prefix
-          OR ( suffix_of_kv[kv] == suffix_of_kv[q]       # same suffix ...
-               AND (not is_prefix[q])                    # q is a suffix token ...
-               AND kv <= q ) )                           # ... causal within it
-
-    The single ``kv <= q`` guard on the is_prefix branch gives BOTH prefix-causal
-    behaviour (a prefix q sees only earlier prefix tokens) AND full-prefix-visibility for
-    suffixes (every prefix index < every suffix index in a group, so kv <= q always holds
-    for a suffix q vs a prefix kv of its group), matching the SDPA oracle exactly.
+    Every prefix index precedes every suffix index of its group, so the one ``kv <= q`` guard
+    gives prefix-causal and full-prefix visibility for suffixes, matching the SDPA oracle.
     """
 
     def mask_mod(b, h, q_idx, kv_idx):
@@ -248,22 +251,15 @@ def get_block_mask(
     device: torch.device,
     compile_mask: bool = True,
 ) -> BlockMask:
-    """Return a cached BlockMask for the segment signature (built once, reused).
-
-    CRITICAL: the block mask is cached and shared across BOTH the no-grad old/ref logprob
-    forward (which runs under torch.inference_mode) and the grad training forward. If the
-    mask were first built under inference_mode, its tensors would be INFERENCE tensors that
-    "cannot be saved for backward" when reused in the grad forward. We therefore build the
-    mask with inference mode explicitly DISABLED, so the same cached BlockMask is a normal
-    tensor usable by autograd. (The mask depends only on integer labels; it needs no grad.)
-    """
+    """Cached BlockMask per (signature, device), shared by the no-grad and grad forwards."""
     key = (seg.signature, str(device))
     bm = _BLOCK_MASK_CACHE.get(key)
     if bm is not None:
         return bm
 
-    # Move labels to the Q device (sharded models), outside inference mode: an inference tensor
-    # captured by mask_mod could not be saved for backward.
+    # Outside inference mode: the no-grad pass builds it first, and backward must save it.
+    # torch 2.7 Inductor emits a ZeroDivisionError when the first compiled mask is one 128 block.
+    compile_mask = compile_mask and seg.T_pad > _PAD_MULTIPLE
     builder = _create_block_mask_compiled if compile_mask else create_block_mask
     with torch.inference_mode(False):
         mask_mod = _make_mask_mod(
@@ -277,7 +273,6 @@ def get_block_mask(
             KV_LEN = seg.T_pad,
             device = device,
         )
-    # FIFO bound: GRPO lengths change nearly every step, so evict the oldest to cap GPU pins.
     if len(_BLOCK_MASK_CACHE) >= 8:
         _BLOCK_MASK_CACHE.pop(next(iter(_BLOCK_MASK_CACHE)))
     _BLOCK_MASK_CACHE[key] = bm
@@ -297,7 +292,18 @@ def _pad_qkv_seq(x: torch.Tensor, T_pad: int) -> torch.Tensor:
     return torch.cat([x, pad], dim = 2)
 
 
-def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
+def _run_flex(
+    q,
+    k,
+    v,
+    block_mask,
+    enable_gqa,
+    scale,
+    compiled,
+    T,
+    T_pad,
+    one_stage = False,
+):
     """Pad q/k/v to T_pad, run flex, slice the output back to T. q/k/v: [B,H,T,D]."""
     qp = _pad_qkv_seq(q, T_pad)
     kp = _pad_qkv_seq(k, T_pad)
@@ -310,10 +316,9 @@ def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
             block_mask = block_mask,
             enable_gqa = enable_gqa,
             scale = scale,
-            kernel_options = _kernel_options_for_dtype(qp.dtype),
+            kernel_options = _kernel_options_for_dtype(qp.dtype, one_stage),
         )
     else:
-        # Eager path (fp64 parity): dense scores, no kernel_options.
         out = flex_attention(
             qp,
             kp,
@@ -325,6 +330,90 @@ def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
     return out[:, :, :T, :]
 
 
+class PrefixGrouperCompileError(RuntimeError):
+    pass
+
+
+# unsloth_zoo's suppress_errors turns a failed compile into a silent eager flex fallback that
+# materialises T x T scores (torch 2.6 codegen bugs, torch <= 2.8 tiles on 101376 B smem cards).
+_COMPILE_CHECKED: Dict[Tuple, bool] = {}
+# Setups whose 3-stage tiles overflow shared memory (sm86 / sm89 / sm120 on torch 2.7 / 2.8).
+_ONE_STAGE_KEYS: set = set()
+_COMPILE_FAILURE: Optional[str] = None
+_CHECK_ENV = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_COMPILE_CHECK", "1")
+_COMPILE_CHECK_ON = _CHECK_ENV.lower() not in ("0", "false", "no", "off")
+
+
+def compile_check_failed() -> Optional[str]:
+    return _COMPILE_FAILURE
+
+
+def _root_exception(exc: BaseException) -> BaseException:
+    root = exc
+    for _ in range(8):  # BackendCompilerFailed wraps the inductor / Triton error
+        inner = getattr(root, "inner_exception", None) or root.__cause__
+        if inner is None or inner is root:
+            break
+        root = inner
+    return root
+
+
+def _compile_failure_reason(root: BaseException) -> str:
+    lines = [
+        line.strip()
+        for line in str(root).splitlines()
+        if line.strip()
+        and not line.lstrip().startswith(("Set TORCHDYNAMO_VERBOSE", "For even more"))
+    ]
+    return f"{type(root).__name__}: {lines[0][:200] if lines else ''}"
+
+
+@torch._dynamo.disable
+def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, key):
+    """Real call plus fwd + bwd on detached copies, strict, so later calls reuse those graphs."""
+    global _COMPILE_FAILURE
+
+    def strict_calls(one_stage):
+        nonlocal block_mask
+        with torch._dynamo.config.patch(suppress_errors = False):
+            if block_mask is None:
+                block_mask = get_block_mask(seg, q.device, compile_mask = True)
+            out = _run_flex(q, k, v, block_mask, enable_gqa, scale, True, T, T_pad, one_stage)
+            with torch.inference_mode(False), torch.enable_grad():
+                qc, kc, vc = (x.detach().clone().requires_grad_(True) for x in (q, k, v))
+                oc = _run_flex(qc, kc, vc, block_mask, enable_gqa, scale, True, T, T_pad, one_stage)
+                torch.autograd.grad(oc.float().sum(), (qc, kc, vc))
+        return out
+
+    try:
+        try:
+            out = strict_calls(False)
+        except torch.cuda.OutOfMemoryError:
+            raise
+        except Exception as exc:
+            if "out of resource" not in str(_root_exception(exc)):
+                raise
+            out = strict_calls(True)
+            _ONE_STAGE_KEYS.add(key)
+    except torch.cuda.OutOfMemoryError:
+        raise  # transient: not cached, callers fall back
+    except Exception as exc:
+        root = _root_exception(exc)
+        if isinstance(root, torch.cuda.OutOfMemoryError):
+            raise root from exc
+        reason = _compile_failure_reason(root)
+        _COMPILE_CHECKED[key] = False
+        _COMPILE_FAILURE = reason
+        print(
+            f"Unsloth: GRPO PrefixGrouper is off: its flex attention kernel does not compile with "
+            f"torch {torch.__version__} on this GPU ({reason}); using the packed path.",
+            flush = True,
+        )
+        raise PrefixGrouperCompileError(reason) from None
+    _COMPILE_CHECKED[key] = True
+    return out
+
+
 def flex_shared_prefix_attention(
     Q: torch.Tensor,
     K: torch.Tensor,
@@ -334,23 +423,9 @@ def flex_shared_prefix_attention(
     block_mask: Optional[BlockMask] = None,
     compiled: bool = True,
 ) -> torch.Tensor:
-    """Shared-prefix attention via FlexAttention.
-
-    Parameters
-    ----------
-    Q, K, V : Tensor [1, T, n_heads, head_dim]
-        (Q has n_heads, K/V have n_kv_heads for GQA).
-    prefix_seg_info : PrefixSegInfo
-    scale : optional float, softmax scale (defaults to 1/sqrt(head_dim)).
-    block_mask : optional precomputed BlockMask (else built/cached from seg info).
-
-    Returns
-    -------
-    Tensor [1, T, n_heads, head_dim], identical semantics to the SDPA oracle branch.
-    """
+    """Q [1, T, n_heads, D], K / V [1, T, n_kv_heads, D] -> [1, T, n_heads, D]."""
     assert Q.dim() == 4 and Q.shape[0] == 1, f"expected [1,T,H,D], got {tuple(Q.shape)}"
     device = Q.device
-    # FlexAttention wants [B, H, T, D].
     q = Q.transpose(1, 2)  # [1, n_heads, T, D]
     k = K.transpose(1, 2)  # [1, n_kv_heads, T, D]
     v = V.transpose(1, 2)
@@ -362,19 +437,33 @@ def flex_shared_prefix_attention(
     T_pad = prefix_seg_info.T_pad
     assert T == prefix_seg_info.T, f"Q length {T} != seg.T {prefix_seg_info.T}"
 
-    if block_mask is None:
-        block_mask = get_block_mask(prefix_seg_info, device, compile_mask = compiled)
-
-    out = _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad)
-    # Back to [1, T, n_heads, D].
+    out = None
+    if compiled:
+        if _COMPILE_FAILURE is not None:
+            raise PrefixGrouperCompileError(_COMPILE_FAILURE)
+        key = (str(device), q.dtype, n_heads, n_kv, q.shape[3], scale)
+        if _COMPILE_CHECK_ON and key not in _COMPILE_CHECKED:
+            out = _checked_first_call(
+                q, k, v, prefix_seg_info, block_mask, enable_gqa, scale, T, T_pad, key
+            )
+    if out is None:
+        if block_mask is None:
+            block_mask = get_block_mask(prefix_seg_info, device, compile_mask = compiled)
+        one_stage = compiled and key in _ONE_STAGE_KEYS
+        out = _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad, one_stage)
     return out.transpose(1, 2).contiguous()
 
 
 __all__ = [
+    "PREFIX_GROUPER_MIN_TORCH",
+    "TORCH_SUPPORTS_PREFIX_GROUPER",
+    "torch_supports_prefix_grouper",
     "PrefixSegInfo",
     "build_seg_info_multigroup",
     "build_seg_info_from_layout",
     "get_block_mask",
     "clear_block_mask_cache",
     "flex_shared_prefix_attention",
+    "PrefixGrouperCompileError",
+    "compile_check_failed",
 ]

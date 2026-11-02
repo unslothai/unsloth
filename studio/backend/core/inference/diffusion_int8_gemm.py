@@ -4,6 +4,7 @@
 """int8 GEMM with torchao dequant epilogue in Triton, bf16 out; sm80/sm89/sm120 measured, other sm80+ behind a
 bit-exact probe and a latency check (UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED=0 keeps them stock), sm100 / sm103 stock
 (ROCm and CPU never reach it); Linear output bit-identical, compiled block not end to end;
+sm120 loads its operands through TMA descriptors (UNSLOTH_DIFFUSION_INT8_GEMM_TMA=0 keeps pointer loads);
 UNSLOTH_DIFFUSION_INT8_GEMM=0 disables."""
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ INT8_GEMM_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED"
 INT8_GEMM_TILES_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_TILES"
 INT8_SWIGLU_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED"
 INT8_GEMM_UNLISTED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED"
+INT8_GEMM_TMA_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_TMA"
 _MIN_TRITON = (3, 2)
 # torch._int_mm needs M > 16; below that the stock path (safe_int_mm padding) stays in charge.
 _MIN_ROWS = 17
@@ -38,6 +40,7 @@ _LOCK = threading.Lock()
 _OP_HANDLE: Any = None
 # Engagement census; never read inside a traced region.
 _CALLS = [0]
+_TMA_CALLS = [0]
 
 # (BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M, num_warps, num_stages) per (major, minor), tuned on DiT shapes. Absent = off.
 _ARCH_CONFIG = {
@@ -69,6 +72,10 @@ _SHAPE_TILES: dict = {
 }
 _SHAPE_MIN_M = 1024
 
+# Same kernel and epilogue with host TMA descriptors for A / W, one tile for M >= _SHAPE_MIN_M (replaces
+# _SHAPE_TILES there); below that the pointer-load kernel is faster.
+_TMA_CONFIG = {(12, 0): (128, 128, 64, 8, 4, 4)}
+
 
 def int8_gemm_mode() -> str:
     """'off', 'force' or 'auto' from the environment."""
@@ -98,6 +105,17 @@ def swiglu_streamed_enabled() -> bool:
 def tiles_enabled() -> bool:
     raw = (os.environ.get(INT8_GEMM_TILES_ENV) or "").strip().lower()
     return raw not in ("0", "off", "false", "no")
+
+
+def tma_enabled() -> bool:
+    raw = (os.environ.get(INT8_GEMM_TMA_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def tma_config(capability: Optional[tuple]) -> Optional[tuple]:
+    if capability is None or not tma_enabled():
+        return None
+    return _TMA_CONFIG.get((int(capability[0]), int(capability[1])))
 
 
 def _triton_version_ok(version: Optional[str] = None) -> bool:
@@ -238,11 +256,69 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
         tl.store(c_ptrs, y.to(tl.bfloat16), mask = mask)
 
-    return types.SimpleNamespace(i8mm_dq = i8mm_dq)
+    @triton.jit
+    def i8mm_dq_tma(
+        a_desc,
+        w_desc,
+        xs_ptr,
+        ws_ptr,
+        b_ptr,
+        c_ptr,
+        M,
+        N,
+        K,
+        stride_cm,
+        HAS_BIAS: tl.constexpr,
+        XS_FP32: tl.constexpr,
+        WS_FP32: tl.constexpr,
+        BLOCK_M: tl.constexpr,
+        BLOCK_N: tl.constexpr,
+        BLOCK_K: tl.constexpr,
+        GROUP_M: tl.constexpr,
+    ):
+        pid = tl.program_id(0)
+        num_pid_m = tl.cdiv(M, BLOCK_M)
+        num_pid_n = tl.cdiv(N, BLOCK_N)
+        num_pid_in_group = GROUP_M * num_pid_n
+        group_id = pid // num_pid_in_group
+        first_pid_m = group_id * GROUP_M
+        group_size_m = min(num_pid_m - first_pid_m, GROUP_M)
+        pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
+        pid_n = (pid % num_pid_in_group) // group_size_m
+        om = pid_m * BLOCK_M
+        on = pid_n * BLOCK_N
+        acc = tl.zeros((BLOCK_M, BLOCK_N), dtype = tl.int32)
+        for k in range(0, tl.cdiv(K, BLOCK_K)):
+            a = a_desc.load([om, k * BLOCK_K])
+            b = w_desc.load([on, k * BLOCK_K])
+            acc = tl.dot(a, b.T, acc, out_dtype = tl.int32)
+
+        offs_m = om.to(tl.int64) + tl.arange(0, BLOCK_M)
+        offs_n = on.to(tl.int64) + tl.arange(0, BLOCK_N)
+        rm = offs_m % M
+        rn = offs_n % N
+        xs = tl.load(xs_ptr + rm).to(tl.float32)
+        ws = tl.load(ws_ptr + rn).to(tl.float32)
+        if XS_FP32:
+            y = acc.to(tl.float32)
+        else:
+            y = _rbf16(tl.extra.cuda.libdevice.int2float_rn(acc))
+        y = _rbf16(y * xs[:, None])
+        y = tl.extra.cuda.libdevice.mul_rn(y, ws[None, :])
+        if not WS_FP32:
+            y = _rbf16(y)
+        if HAS_BIAS:
+            y = tl.extra.cuda.libdevice.add_rn(y, tl.load(b_ptr + rn).to(tl.float32)[None, :])
+        c_ptrs = c_ptr + offs_m[:, None] * stride_cm + offs_n[None, :]
+        mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
+        tl.store(c_ptrs, y.to(tl.bfloat16), mask = mask)
+
+    return types.SimpleNamespace(i8mm_dq = i8mm_dq, i8mm_dq_tma = i8mm_dq_tma)
 
 
 # device index -> probed tile (None = stock).
 _DEVICE_CFG: dict = {}
+_DEVICE_TMA: dict = {}
 # device index -> the per-shape rules whose tile passed the probe on that device.
 _DEVICE_TILES: dict = {}
 
@@ -300,6 +376,52 @@ def _launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
     return out
 
 
+@lru_cache(maxsize = 1)
+def _tensor_descriptor() -> Any:
+    try:
+        from triton.tools.tensor_descriptor import TensorDescriptor
+    except Exception:  # noqa: BLE001 - Triton before host descriptors
+        return None
+    return TensorDescriptor
+
+
+def _launch_tma(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
+    import torch
+    import triton
+
+    k = _kernels()
+    desc = _tensor_descriptor()
+    m, kk = a.shape
+    n = w.shape[0]
+    bm, bn, bk, gm, warps, stages = cfg
+    out = torch.empty((m, n), device = a.device, dtype = torch.bfloat16)
+    grid = (triton.cdiv(m, bm) * triton.cdiv(n, bn),)
+    with torch.cuda.device(a.device):
+        k.i8mm_dq_tma[grid](
+            desc.from_tensor(a, [bm, bk]),
+            desc.from_tensor(w, [bn, bk]),
+            xs,
+            ws,
+            bias if bias is not None else ws,
+            out,
+            m,
+            n,
+            kk,
+            out.stride(0),
+            HAS_BIAS = bias is not None,
+            XS_FP32 = xs.dtype == torch.float32,
+            WS_FP32 = ws.dtype == torch.float32,
+            BLOCK_M = bm,
+            BLOCK_N = bn,
+            BLOCK_K = bk,
+            GROUP_M = gm,
+            num_warps = warps,
+            num_stages = stages,
+            enable_fp_fusion = False,
+        )
+    return out
+
+
 def _aligned(a: Any, w: Any) -> bool:
     """K, N, both row strides and both int8 base pointers on 16 bytes. Triton specialises on these, and an off-16 variant
     spills; the driver then reserves that local memory device-wide for the process, outside PyTorch's allocator."""
@@ -324,6 +446,11 @@ def tile_for(index: Any, m: int, n: int, k: int) -> Optional[tuple]:
     return cfg
 
 
+def tma_tile_for(index: Any, m: int) -> Optional[tuple]:
+    tile = _DEVICE_TMA.get(index)
+    return None if m < _SHAPE_MIN_M else tile
+
+
 def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     """Op body: the probed tile for this device and shape, else (launch failure, ``_aligned`` false) the stock
     epilogue."""
@@ -332,6 +459,14 @@ def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     index = a.device.index
     cfg = tile_for(index, a.shape[0], w.shape[0], a.shape[1])
     if cfg is not None and w.stride(-1) == 1 and w.device == a.device and _aligned(a, w):
+        tma = tma_tile_for(index, a.shape[0])
+        if tma is not None:
+            try:
+                out = _launch_tma(a, w, xs, ws, bias, tma)
+                _TMA_CALLS[0] += 1
+                return out
+            except Exception:  # noqa: BLE001 - pointer loads, same math
+                _DEVICE_TMA[index] = None
         try:
             return _launch(a, w, xs, ws, bias, cfg)
         except Exception:  # noqa: BLE001 - a failed launch keeps the stock math
@@ -382,6 +517,16 @@ def shape_tiles(capability: Optional[tuple]) -> tuple:
     return tuple(_SHAPE_TILES.get((int(capability[0]), int(capability[1])), ()))
 
 
+def _tma_probe(index: int, capability: tuple) -> Optional[tuple]:
+    """This arch's TMA tile when its kernel matches the eager epilogue bit for bit (``_probe``), else None."""
+    tma = tma_config(capability)
+    try:
+        ok = tma is not None and _tensor_descriptor() is not None and _probe(index, tma, tma = True)
+    except Exception:  # noqa: BLE001 - pointer loads stay
+        ok = False
+    return tma if ok else None
+
+
 def device_config(index: int) -> Optional[tuple]:
     """Probe once per device: arch gate, Triton, op registration, then a launch that must match the eager torchao
     epilogue bit for bit (bf16 and fp32 activation scales, bias, ragged M / N / K). None keeps the stock path. Each
@@ -391,6 +536,7 @@ def device_config(index: int) -> Optional[tuple]:
         return unlisted_config(index)
     if index in _DEVICE_CFG:
         return _DEVICE_CFG[index]
+    _DEVICE_TMA.pop(index, None)
     cfg = None
     rules: tuple = ()
     try:
@@ -418,6 +564,9 @@ def device_config(index: int) -> Optional[tuple]:
                     if tile not in ok:
                         ok[tile] = tile == cfg or _probe(index, tile)
                 rules = tuple(rule for rule in shape_tiles(cap) if ok[rule[4]])
+                tma = _tma_probe(index, cap)
+                if tma is not None:
+                    _DEVICE_TMA[index] = tma
     except Exception:  # noqa: BLE001
         cfg = None
     _DEVICE_TILES[index] = rules if cfg is not None else ()
@@ -526,9 +675,14 @@ _PROBE_SHAPES = (
 )
 
 
-def _probe(index: int, cfg: tuple) -> bool:
+def _probe(
+    index: int,
+    cfg: tuple,
+    tma: bool = False,
+) -> bool:
     import torch
 
+    launch = _launch_tma if tma else _launch
     dev = torch.device("cuda", index)
     g = torch.Generator(device = "cpu").manual_seed(0)
     try:
@@ -540,12 +694,12 @@ def _probe(index: int, cfg: tuple) -> bool:
             ws = (torch.rand(n, generator = g) * 0.002 + 1e-5).to(torch.bfloat16).to(dev)
             ws = ws.float() if xs32 else ws
             b = (torch.randn(n, generator = g) * 0.1).to(torch.bfloat16).to(dev) if bias else None
-            if not torch.equal(_launch(a, w, xs, ws, b, cfg), reference(a, w, xs, ws, b)):
+            if not torch.equal(launch(a, w, xs, ws, b, cfg), reference(a, w, xs, ws, b)):
                 return False
         a, w = tie_operands(dev)
         xs = torch.ones(a.shape[0], device = dev, dtype = torch.bfloat16)
         ws = torch.ones(w.shape[0], device = dev, dtype = torch.bfloat16)
-        if not torch.equal(_launch(a, w, xs, ws, None, cfg), reference(a, w, xs, ws, None)):
+        if not torch.equal(launch(a, w, xs, ws, None, cfg), reference(a, w, xs, ws, None)):
             return False
         from .diffusion_cuda_graph import synchronize_outside_capture
 
@@ -1204,7 +1358,12 @@ def _swap_on(
         logger.info(
             "diffusion.int8_gemm: %d int8 Linear(s) %s on sm_%d%d%s%s%s",
             count,
-            "run the fused-dequant GEMM (bf16 out)" if gemm else "keep cuBLAS",
+            (
+                "run the fused-dequant GEMM (bf16 out"
+                + (", TMA loads)" if _DEVICE_TMA.get(index) else ")")
+            )
+            if gemm
+            else "keep cuBLAS",
             *torch.cuda.get_device_capability(index),
             f" (latency check: {timing['fused']:.0f} vs {timing['stock']:.0f} us cuBLAS)"
             if timing
@@ -1298,3 +1457,7 @@ def is_installed(module: Any) -> bool:
 
 def call_count() -> int:
     return _CALLS[0]
+
+
+def tma_call_count() -> int:
+    return _TMA_CALLS[0]

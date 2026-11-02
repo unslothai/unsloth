@@ -126,6 +126,18 @@ def steps_run(num_inference_steps: int, strength: float, rule: str) -> int:
     return n - t_start
 
 
+def min_inference_steps(steps: int, strength: float, rule: str) -> int:
+    """``steps``, raised to the smallest count that still denoises at least one step at ``strength``."""
+    n = max(1, int(steps))
+    s = float(strength)
+    if s <= 0.0 or s >= 1.0:
+        return n
+    limit = int(math.ceil(1.0 / max(s, MIN_DENOISE))) + 2
+    while steps_run(n, s, rule) < 1 and n < limit:
+        n += 1
+    return n
+
+
 def refine_inference_steps(steps: int, denoise: float, rule: str) -> int:
     """The ``num_inference_steps`` that makes the refine pass run EXACTLY ``steps`` steps at ``denoise``."""
     steps = max(1, int(steps))

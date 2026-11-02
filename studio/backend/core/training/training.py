@@ -3637,9 +3637,10 @@ class TrainingBackend:
                 loss = None
             duration = self._progress.elapsed_seconds
         try:
-            from storage.studio_db import insert_metrics_batch, update_run_progress
-            insert_metrics_batch(target, batch)
-            update_run_progress(id = target, step = step, loss = loss, duration_seconds = duration)
+            from storage.studio_db import insert_metrics_with_progress
+            insert_metrics_with_progress(
+                target, batch, step = step, loss = loss, duration_seconds = duration
+            )
         except Exception:
             # Re-queue the claimed batch at the front so it retries on the next flush.
             with self._lock:
@@ -3762,9 +3763,8 @@ class TrainingBackend:
             return
         from storage.studio_db import (
             create_run,
-            insert_metrics_batch,
+            insert_metrics_with_progress,
             update_run_output_dir,
-            update_run_progress,
             update_run_total_steps,
         )
 
@@ -3800,8 +3800,9 @@ class TrainingBackend:
                     del member["metrics"][: len(batch)]
                     step, loss, elapsed = member["step"], member["loss"], member["elapsed"]
                 try:
-                    insert_metrics_batch(run_id, batch)
-                    update_run_progress(id = run_id, step = step, loss = loss, duration_seconds = elapsed)
+                    insert_metrics_with_progress(
+                        run_id, batch, step = step, loss = loss, duration_seconds = elapsed
+                    )
                 except Exception:
                     with self._lock:
                         member["metrics"][:0] = batch
