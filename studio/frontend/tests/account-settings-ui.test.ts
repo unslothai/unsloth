@@ -45,7 +45,6 @@ function translate(key: string, values: Record<string, string> = {}) {
 type TabOptions = {
   stallRefresh?: boolean;
   accounts?: Record<string, unknown>[];
-  // What the sidebar footer shows: the local profile store.
   localProfile?: { displayName: string; avatarDataUrl: string | null };
   ownerPasswordPending?: boolean;
   statusError?: boolean;
@@ -174,7 +173,6 @@ function tab(
     "../api/accounts": {
       fetchAccounts: async () => {
         calls.push("list");
-        // The first call is the initial load; a stall holds only later refreshes.
         if (options.stallRefresh && calls.filter((c) => c === "list").length > 1) {
           await new Promise<void>((resolve) => {
             releaseRefresh = resolve;
@@ -261,7 +259,6 @@ test("owner lists accounts without administrative actions on the owner row", asy
     (node) => node.props["data-testid"] === "account-unsloth",
   );
   assert.ok(ownerRow);
-  // Only its own password, in an icon menu like the managed rows so no label can overflow the row.
   const trigger = nodes(ownerRow).filter((node) => node.type === "Button");
   assert.equal(trigger.length, 1);
   assert.equal(content(trigger[0]).trim(), "");
@@ -526,7 +523,6 @@ test("a one-time setup code can always be dismissed, even while its refresh is s
 });
 
 test("an account the API reports without a creation date shows a dash, not the epoch", async () => {
-  // created_at can be null after upgrade, and `new Date(null)` is the epoch, not invalid.
   const ui = tab(true, null, {
     accounts: [
       {
@@ -677,6 +673,5 @@ test("the owner row matches the sidebar's local profile before the server copy a
   assert.match(content(ownerRow), /Installation owner/);
   const aliceRow = nodes(tree).find((node) => node.props["data-testid"] === "account-alice");
   assert.ok(!content(aliceRow).includes("Change password"));
-  // A managed account's row never borrows the owner's local profile.
   assert.equal(nodes(aliceRow).find((node) => node.type === "UserAvatar")?.props.imageUrl, null);
 });
