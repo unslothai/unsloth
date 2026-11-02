@@ -326,6 +326,7 @@ test("creating an account completes the existing initial-password dialog first",
   const password = nodes(tree).find((node) => node.type === "ChangePasswordDialog");
   assert.equal(password?.props.open, true);
   assert.equal(password?.props.initial, true);
+  assert.equal(password?.props.forAccountCreation, true);
   assert.equal(nodes(tree).find((node) => node.type === "Dialog")?.props.open, false);
   assert.ok(!ui.calls.some((call) => call.startsWith("create:")));
   (password?.props.onOpenChange as (open: boolean) => void)(false);

@@ -592,6 +592,7 @@ function OwnerAccountsTab() {
 
       <ChangePasswordDialog
         initial={passwordForCreate || ownerPasswordPending}
+        forAccountCreation={passwordForCreate}
         open={ownerPasswordOpen}
         onOpenChange={(open) => {
           setOwnerPasswordOpen(open);
