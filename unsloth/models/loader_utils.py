@@ -4750,7 +4750,7 @@ def _mark_loaded_revision(
             try:
                 if revision is not None:
                     setattr(target, _LOADED_REVISION_ATTR, str(revision))
-                if cache_dir:
+                if cache_dir and not getattr(target, _LOADED_CACHE_DIR_ATTR, None):
                     setattr(target, _LOADED_CACHE_DIR_ATTR, str(cache_dir))
             except Exception:
                 pass

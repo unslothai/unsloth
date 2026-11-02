@@ -199,11 +199,15 @@ def _load_cache_helpers():
     return namespace
 
 
-@pytest.mark.parametrize("notebook_cache", [False, True])
-def test_online_custom_cache_restores_source_class(tmp_path, monkeypatch, notebook_cache):
+@pytest.mark.parametrize("cache_kind", ["explicit", "colab", "kaggle"])
+def test_online_custom_cache_restores_source_class(tmp_path, monkeypatch, cache_kind):
     monkeypatch.chdir(tmp_path)
     helpers = _load_cache_helpers()
-    cache = Path("huggingface_tokenizers_cache") if notebook_cache else tmp_path / "custom"
+    cache = {
+        "explicit": tmp_path / "custom",
+        "colab": Path("huggingface_tokenizers_cache"),
+        "kaggle": tmp_path / "kaggle" / "custom",
+    }[cache_kind]
     repo = "synthetic-review/tokenizer-class-cache"
     snapshot = cache / "models--synthetic-review--tokenizer-class-cache" / "snapshots" / ("1" * 40)
     _write(snapshot / "tokenizer_config.json", {"tokenizer_class": "Qwen2Tokenizer"})
@@ -216,15 +220,19 @@ def test_online_custom_cache_restores_source_class(tmp_path, monkeypatch, notebo
         name_or_path = repo,
     )
     assert helpers["_source_tokenizer_class"](tokenizer) is None
-    if notebook_cache:
+    if cache_kind != "explicit":
         helpers.update(
-            IS_COLAB_ENVIRONMENT = True,
-            IS_KAGGLE_ENVIRONMENT = False,
+            IS_COLAB_ENVIRONMENT = cache_kind == "colab",
+            IS_KAGGLE_ENVIRONMENT = cache_kind == "kaggle",
+            KAGGLE_TMP = str(tmp_path / "kaggle"),
             AutoTokenizer = types.SimpleNamespace(from_pretrained = lambda *args, **kwargs: tokenizer),
             _repair_tokenizer_backend_from_json = lambda value, **kwargs: value,
             _fix_llava_num_additional_image_tokens = lambda value, **kwargs: value,
         )
-        loaded = helpers["_load_correct_tokenizer"](repo, fix_tokenizer = False)
+        load = helpers["_offline_aware_load"](
+            lambda **kwargs: helpers["_load_correct_tokenizer"](repo, fix_tokenizer = False, **kwargs)
+        )
+        loaded = load(cache_dir = "custom") if cache_kind == "kaggle" else load()
     else:
         load = helpers["_offline_aware_load"](lambda **kwargs: tokenizer)
         loaded = load(cache_dir = cache)
