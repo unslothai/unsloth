@@ -20,6 +20,8 @@ import tempfile
 import types
 import shutil
 import contextlib
+import contextvars
+import copy
 import threading as _threading
 import functools
 import inspect
@@ -1800,6 +1802,85 @@ def _prefer_legacy_lowercase_cache(
     return repo_id
 
 
+_LOAD_PROBE_MEMO = contextvars.ContextVar("_unsloth_load_probe_memo", default = None)
+
+
+def _load_probe_memo_scope(fn):
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        if _LOAD_PROBE_MEMO.get() is not None:
+            return fn(*args, **kwargs)
+        scope = _LOAD_PROBE_MEMO.set({})
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _LOAD_PROBE_MEMO.reset(scope)
+
+    return _wrapper
+
+
+def _new_mapper_tables():
+    memo = _LOAD_PROBE_MEMO.get()
+    if memo is not None and "new_mapper" in memo:
+        return tuple(dict(table) for table in memo["new_mapper"])
+    tables = _get_new_mapper()
+    if memo is not None and any(tables):
+        memo["new_mapper"] = tuple(dict(table) for table in tables)
+    return tables
+
+
+def _copy_error(error):
+    try:
+        clone = copy.copy(error)
+    except Exception:
+        return None
+    if type(clone) is not type(error) or str(clone) != str(error):
+        return None
+    # copy.copy shares exception notes.
+    notes = getattr(error, "__notes__", None)
+    if isinstance(notes, list):
+        clone.__notes__ = list(notes)
+    clone.__cause__ = error.__cause__
+    clone.__context__ = error.__context__
+    clone.__suppress_context__ = error.__suppress_context__
+    clone.__traceback__ = None
+    return clone
+
+
+def _memo_config_probe(loader, model_name, **kwargs):
+    memo = _LOAD_PROBE_MEMO.get()
+    if memo is None or kwargs.get("trust_remote_code") or not isinstance(model_name, str):
+        return loader(model_name, **kwargs)
+    if kwargs.get("cache_dir", 0) is None:
+        kwargs.pop("cache_dir")
+    try:
+        key = (loader, model_name, tuple(sorted(kwargs.items())), _env_says_offline())
+        hash(key)
+    except TypeError:
+        return loader(model_name, **kwargs)
+    hit = memo.get(key)
+    if hit is not None:
+        result, error = hit
+        if error is not None:
+            raise _copy_error(error)
+        return copy.deepcopy(result)
+    try:
+        result = loader(model_name, **kwargs)
+    except ImportError:
+        raise
+    except Exception as error:
+        if not _is_offline_related_error(error):
+            stored = _copy_error(error)
+            if stored is not None and _copy_error(stored) is not None:
+                memo[key] = (None, stored)
+        raise
+    try:
+        memo[key] = (copy.deepcopy(result), None)
+    except Exception:
+        pass
+    return result
+
+
 def get_model_name(
     model_name,
     load_in_4bit = True,
@@ -1841,7 +1922,7 @@ def get_model_name(
             NEW_MAP_TO_UNSLOTH_16bit,
             NEW_FP8_BLOCK_MAPPER,
             NEW_FP8_ROW_MAPPER,
-        ) = _get_new_mapper()
+        ) = _new_mapper_tables()
         upgraded_model_name = _resolve_with_mappers(
             model_name = model_name,
             load_in_4bit = load_in_4bit,
