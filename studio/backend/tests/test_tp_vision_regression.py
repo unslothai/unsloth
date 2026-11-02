@@ -558,11 +558,16 @@ def test_should_record_tensor_split_abort_decision():
 
 
 def test_fit_off_retry_skipped_on_a_tensor_capability_crash():
-    """No --fit off retry after a tensor capability crash: a second spawn cannot help and costs a load."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    retry = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
-    assert retry != -1
-    guard = src[max(0, retry - 1000) : retry]
+    tree = ast.parse(textwrap.dedent(src))
+    retry = ast.dump(ast.parse('run_cmd = [*run_cmd, "--fit", "off"]').body[0])
+    guards = [
+        ast.unparse(node.test)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If) and any(ast.dump(stmt) == retry for stmt in node.body)
+    ]
+    assert len(guards) == 1
+    guard = guards[0]
     assert "_fit_retry_allowed" in guard and "_startup_crashed" in guard
     assert (
         "not _capability_crash" in guard

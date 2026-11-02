@@ -31002,7 +31002,7 @@ class LlamaCppBackend:
                                 # Without the fitter nothing shrinks the context, and a
                                 # missing -c means the model's native one (262k for
                                 # LFM2). Keep the window the fitter was told to keep.
-                                run_cmd = self._fit_step_retry_ctx(run_cmd, env)
+                                run_cmd = self._fit_step_retry_ctx(run_cmd, env, extra_args)
                             # The mirror of the --fit on retry above. Turning the
                             # fitter off leaves -ngl at its default, which llama.cpp
                             # resolves to every layer, so the fitted attempt's
@@ -34900,14 +34900,25 @@ class LlamaCppBackend:
         return fit_is_effectively_on(cmd, env)
 
     @staticmethod
-    def _fit_step_retry_ctx(cmd: "list[str]", env: "Optional[Mapping[str, str]]") -> "list[str]":
-        """Pin -c to the --fit-ctx floor (8192 without one) when the argv names no context."""
-        if _last_flag_value(cmd, {"-c", "--ctx-size"}) is not None:
+    def _fit_step_retry_ctx(
+        cmd: "list[str]",
+        env: "Optional[Mapping[str, str]]",
+        extra_args: "Optional[Iterable[str]]" = None,
+    ) -> "list[str]":
+        """Bound managed Auto context after disabling fitting; preserve caller choices."""
+        context_flags = {"-c", "--ctx-size"}
+        if _extra_args_set_any_flag(extra_args, context_flags):
+            return cmd
+        if _last_flag_value(cmd, context_flags) not in (None, "0"):
             return cmd
         if env and env.get("LLAMA_ARG_CTX_SIZE") is not None:
             return cmd
         floor = fit_ctx_in(cmd, env)
-        return [*cmd, "-c", str(floor if floor is not None and floor > 0 else 8192)]
+        return [
+            *(strip_context_only(cmd) or []),
+            "-c",
+            str(floor if floor is not None and floor > 0 else 8192),
+        ]
 
     def _probe_mtp_decode(self, timeout: float = 60.0) -> bool:
         """/health can pass while MTP crashes on first decode, so probe a real completion; False on

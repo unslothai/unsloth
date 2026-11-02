@@ -106,6 +106,7 @@ def _run_cpu_fallback_load(
     stall_launches = (),
     stall_kind = "no_progress",
     gpu_memory = None,
+    n_ctx = 4096,
 ):
     """``stall_launches``: 0-based launch indexes whose child stays alive while the
     health wait reports a startup stall (a hung driver rather than a crash), ended
@@ -169,7 +170,7 @@ def _run_cpu_fallback_load(
     health_timeouts = []
 
     class _Process:
-        pid = 123
+        pid = None
         stdout = ()
 
         def __init__(self, returncode):
@@ -243,6 +244,7 @@ def _run_cpu_fallback_load(
             gguf_path = str(gguf),
             mmproj_path = str(mmproj) if mmproj_from_argv else None,
             model_identifier = "owner/model",
+            n_ctx = n_ctx,
             is_vision = mmproj_from_argv,
             extra_args = list(extra_args) if extra_args else None,
             cpu_fallback = cpu_fallback,
@@ -1250,7 +1252,7 @@ def test_terminal_signal_with_explicit_child_placement_does_not_replay(
     launches = []
 
     class _SignalProcess:
-        pid = 123
+        pid = None
         returncode = -11
         stdout = ()
 
@@ -1583,7 +1585,7 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
     launches = []
 
     class _Process:
-        pid = 123
+        pid = None
         stdout = ()
 
         def __init__(self, returncode):
@@ -1729,6 +1731,7 @@ class TestFitStepCrashRetry:
             returncodes = [_WINDOWS_ACCESS_VIOLATION, None],
             first_output = _FIT_STEP_CRASH_OUTPUT,
             platform = "win32",
+            n_ctx = 0,
         )
 
         assert loaded is True
@@ -1736,6 +1739,8 @@ class TestFitStepCrashRetry:
         assert len(launches) == 2
         assert _last_fit_mode(launches[0][0]) == "on"
         assert _last_fit_mode(launches[1][0]) == "off"
+        assert launches[0][0][launches[0][0].index("-c") + 1] == "0"
+        assert launches[1][0][launches[1][0].index("-c") + 1] == "8192"
         # Still the GPU launch, not the CPU replay, and the same flash-attn choice.
         assert "--device" not in launches[1][0]
         assert launches[1][0][launches[1][0].index("--flash-attn") + 1] == "on"
@@ -1805,15 +1810,20 @@ class TestFitStepCrashHelpers:
         assert LlamaCppBackend._fit_step_retry_ctx(["llama-server"], {})[-2:] == ["-c", "8192"]
 
     @pytest.mark.parametrize(
-        "cmd, env",
+        "cmd, env, extras",
         (
-            (["llama-server", "-c", "4096", "--fit", "off"], {}),
-            (["llama-server", "--ctx-size", "0", "--fit", "off"], {}),
-            (["llama-server", "--fit", "off"], {"LLAMA_ARG_CTX_SIZE": "2048"}),
+            (["llama-server", "-c", "4096", "--fit", "off"], {}, None),
+            (
+                ["llama-server", "--ctx-size", "0", "--fit", "off"],
+                {},
+                ["--ctx-size", "0"],
+            ),
+            (["llama-server", "--fit", "off"], {"LLAMA_ARG_CTX_SIZE": "2048"}, None),
+            (["llama-server", "-c", "0", "--fit", "off"], {"LLAMA_ARG_CTX_SIZE": "0"}, None),
         ),
     )
-    def test_retry_ctx_keeps_a_named_context(self, cmd, env):
-        assert LlamaCppBackend._fit_step_retry_ctx(cmd, env) == cmd
+    def test_retry_ctx_keeps_a_named_context(self, cmd, env, extras):
+        assert LlamaCppBackend._fit_step_retry_ctx(cmd, env, extras) == cmd
 
     @pytest.mark.parametrize(
         "cmd, extras, env, expected",
