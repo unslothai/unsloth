@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The mapped chat template is applied once per loaded tokenizer, not on every message."""
-
 import sys
 import threading
 from pathlib import Path

@@ -748,12 +748,6 @@ _MAPPED_TEMPLATE_LOCK = threading.Lock()
 
 
 def _mapped_template_tokenizer(model_info, tokenizer, template_name):
-    """get_chat_template for the mapped template, run once per loaded tokenizer.
-
-    It re-patches (or, for vocab-remapping templates like Gemma's, rebuilds) the tokenizer on every
-    call, which costs up to seconds per message and yields the same tokenizer each time. Keyed on
-    the tokenizer object and template; a reload builds a new model_info, so the entry goes with it.
-    A failed call is not stored, so the next message retries as before."""
     with _MAPPED_TEMPLATE_LOCK:
         cached = model_info.get("_mapped_template_tokenizer")
         if cached is not None and cached[0] is tokenizer and cached[1] == template_name:
