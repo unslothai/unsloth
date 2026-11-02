@@ -1115,7 +1115,6 @@ def _remote_code_saving_version(cfg: dict) -> str | None:
     ver = cfg.get("transformers_version")
     if isinstance(ver, str):
         return ver
-    # LFM3-Audio-2B saves it only on its nested sub-configs (``lfm``, ``depthformer``).
     nested = [
         sub.get("transformers_version")
         for sub in cfg.values()

@@ -96,7 +96,6 @@ def test_lfm2_supported_ids_use_all_linear_defaults(model_id):
 
 
 def test_lfm3_omni_uses_all_linear_defaults():
-    """The default up_proj/down_proj list misses LFM3's w1/w2/w3 MLP; an audio run then barely learns."""
     for name in (
         "LiquidAI/LFM3-Omni-2B",
         "LiquidAI/LFM3-1.7B",

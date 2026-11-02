@@ -1701,7 +1701,6 @@ class TestCustomCodeRouting:
     def test_nested_saving_version_routes_when_top_level_has_none(
         self, tmp_path: Path, monkeypatch
     ):
-        """LFM3-Audio-2B: only its ``lfm`` / ``depthformer`` sub-configs carry transformers_version."""
         monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.22.0")
         d = Path(_custom_code_model(tmp_path, "unused"))
         cfg = json.loads((d / "config.json").read_text())
