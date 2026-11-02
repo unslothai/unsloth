@@ -730,7 +730,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
         }}
         className="aui-turn-navigator-gutter @container/turn-gutter absolute top-0 h-0"
       >
-        <div className="absolute top-0 left-[-0.875rem] flex w-9 -translate-y-1/2 flex-col items-start opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100 @min-[2.25rem]/turn-gutter:opacity-100">
+        <div className="absolute top-0 left-[-0.5rem] flex w-9 -translate-y-1/2 flex-col items-start opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100 @min-[2.25rem]/turn-gutter:opacity-100">
           <nav
             aria-label={t("turns.navigator")}
             style={{
