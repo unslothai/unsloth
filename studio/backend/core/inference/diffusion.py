@@ -2234,7 +2234,6 @@ def _plans_at_requested_speed(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
-# One load's settled device reading per (device, backend), so a re-plan that finds the card unchanged skips the wait.
 _LOAD_SETTLED_MEMORY: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
     "_LOAD_SETTLED_MEMORY", default = None
 )
@@ -2243,6 +2242,9 @@ _LOAD_SETTLED_MEMORY: contextvars.ContextVar[Optional[dict]] = contextvars.Conte
 def _load_scoped_settle(fn: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
+        # Skipping delayed reads can miss a co-tenant freeing VRAM and select more offload.
+        if os.environ.get("UNSLOTH_DIFFUSION_REUSE_SETTLED_MEMORY") != "1":
+            return fn(*args, **kwargs)
         token = _LOAD_SETTLED_MEMORY.set({})
         try:
             return fn(*args, **kwargs)
@@ -2253,15 +2255,12 @@ def _load_scoped_settle(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def _forget_load_settle() -> None:
-    """The next plan in this load settles afresh (a deliberate re-snapshot)."""
     memo = _LOAD_SETTLED_MEMORY.get()
     if memo is not None:
         memo.clear()
 
 
 def _load_settled_memory(target: Any) -> DeviceMemory:
-    """settled_snapshot_device_memory, but a load's re-plan reuses its last settled reading while one fresh read of
-    the card still equals it: the spaced re-reads would only return that reading again, a second or two later."""
     memo = _LOAD_SETTLED_MEMORY.get()
     key = (getattr(target, "device", None), getattr(target, "backend", None))
     previous = None if memo is None else memo.get(key)

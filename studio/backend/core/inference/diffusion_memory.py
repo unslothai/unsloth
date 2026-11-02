@@ -1337,7 +1337,6 @@ def _settle_delay(delay_s: float) -> float:
 
 
 def _release_cuda_cache() -> None:
-    """Finish queued work and hand cached blocks back, so a CUDA read sees what this process really holds."""
     try:
         import torch
         from .diffusion_cuda_graph import synchronize_outside_capture
@@ -1349,9 +1348,7 @@ def _release_cuda_cache() -> None:
 
 
 def settled_memory_unchanged(target: Any, previous: Optional[DeviceMemory]) -> bool:
-    """True when one fresh CUDA read equals ``previous`` (a settled reading of this device), so the spaced re-reads of
-    settled_snapshot_device_memory could only return it again. Any change, ours or another process's, reads False and
-    the caller settles as before. Off CUDA, or with an unknown count, always False. Never raises."""
+    """Whether one fresh CUDA read matches; later reads can still change."""
     try:
         if previous is None or getattr(target, "device", None) != "cuda":
             return False

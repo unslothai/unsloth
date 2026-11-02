@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A load's re-plans reuse its settled CUDA reading while one fresh read still equals it, and settle as before
-otherwise (another process moved, our weights landed, a deliberate re-snapshot, any device but CUDA)."""
-
-import inspect
 import types
 
 import pytest
@@ -12,13 +8,13 @@ import pytest
 from core.inference import diffusion as dmod
 from core.inference import diffusion_memory as mem
 from core.inference.diffusion_memory import DeviceMemory
+from .test_diffusion_backend import fake_runtime, _stub_pipeline_dense_quant
 
 CUDA = types.SimpleNamespace(device = "cuda", backend = "cuda")
 
 
 @pytest.fixture
 def card(monkeypatch):
-    """A CUDA card whose free MiB the test sets; counts reads and settle sleeps (the wait is real seconds in prod)."""
     state = types.SimpleNamespace(free = 10_000, total = 24_000, reads = 0, sleeps = 0, raise_on_read = False)
 
     def snapshot(target):
@@ -38,6 +34,7 @@ def card(monkeypatch):
     monkeypatch.setattr(mem, "_release_cuda_cache", lambda: None)
     monkeypatch.setattr("time.sleep", sleep)
     monkeypatch.setenv("UNSLOTH_SETTLE_DELAY_S", "1.0")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_REUSE_SETTLED_MEMORY", "1")
     return state
 
 
@@ -53,10 +50,8 @@ def test_unchanged_card_reuses_the_settled_reading(card):
         return first, sleeps, second
 
     first, sleeps_after_first, second = _in_load(load)
-    assert (
-        sleeps_after_first == 2
-    )  # 14 GB foreign use: the first plan waits out two spaced re-reads
-    assert card.sleeps == 2  # the re-plan did not wait again
+    assert sleeps_after_first == 2
+    assert card.sleeps == 2
     assert second == first == mem.settled_snapshot_device_memory(CUDA)
 
 
@@ -134,7 +129,7 @@ def test_the_settle_itself_is_unchanged_for_other_callers(card):
     card.free = card.total - 100
     card.sleeps = 0
     mem.settled_snapshot_device_memory(CUDA)
-    assert card.sleeps == 0  # within the reserve: no wait, as before
+    assert card.sleeps == 0
 
 
 def test_scope_is_per_load_and_survives_errors(card):
@@ -146,15 +141,73 @@ def test_scope_is_per_load_and_survives_errors(card):
     with pytest.raises(ValueError):
         _in_load(boom)
     assert dmod._LOAD_SETTLED_MEMORY.get() is None
-    # A new load starts with no reading: its first plan settles in full.
     _in_load(lambda: dmod._load_settled_memory(CUDA))
     assert card.sleeps == 4
 
 
-def test_load_pipeline_is_scoped_and_the_capacity_retry_re_snapshots():
-    source = inspect.getsource(dmod.DiffusionBackend.load_pipeline)
-    assert "@_load_scoped_settle" in source
-    at = source.index("re-snapshot and replan once")
-    assert source.index("_forget_load_settle()", at) < source.index("_replan_candidate()", at)
-    plan_source = inspect.getsource(dmod.DiffusionBackend._plan_memory)
-    assert "else _load_settled_memory(target)" in plan_source
+@pytest.mark.parametrize("enabled", [None, "0", "false", "1"])
+def test_delayed_release_is_only_skipped_with_explicit_opt_in(card, monkeypatch, enabled):
+    if enabled is None:
+        monkeypatch.delenv("UNSLOTH_DIFFUSION_REUSE_SETTLED_MEMORY")
+    else:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_REUSE_SETTLED_MEMORY", enabled)
+
+    def sleep(_s):
+        card.sleeps += 1
+        if card.sleeps == 3:
+            card.free = 20_000
+
+    monkeypatch.setattr("time.sleep", sleep)
+
+    def load():
+        dmod._load_settled_memory(CUDA)
+        return dmod._load_settled_memory(CUDA)
+
+    got = _in_load(load)
+    assert got.free_mib == (10_000 if enabled == "1" else 20_000)
+    assert card.sleeps == (2 if enabled == "1" else 4)
+
+
+@pytest.mark.parametrize("reuse", [False, True])
+def test_delayed_release_preserves_resident_denoiser_by_default(
+    fake_runtime, tmp_path, monkeypatch, reuse
+):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_REUSE_SETTLED_MEMORY", raising = False)
+    if reuse:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_REUSE_SETTLED_MEMORY", "1")
+    monkeypatch.setenv("UNSLOTH_SETTLE_DELAY_S", "1")
+    backend = dmod.DiffusionBackend()
+    quantizations = _stub_pipeline_dense_quant(backend, monkeypatch)
+    clock = [0]
+    plans = []
+    real_plan = dmod.DiffusionBackend._plan_memory
+
+    def sleep(delay):
+        clock[0] += delay
+
+    def snapshot(target):
+        return DeviceMemory(
+            "cuda", "cuda", "discrete_vram", 10_000 if clock[0] < 3 else 20_000, 24_000
+        )
+
+    def plan(self, *args, **kwargs):
+        result = real_plan(self, *args, **kwargs)
+        plans.append(result)
+        return result
+
+    monkeypatch.setattr("time.sleep", sleep)
+    monkeypatch.setattr(mem, "_release_cuda_cache", lambda: None)
+    monkeypatch.setattr(mem, "snapshot_device_memory", snapshot)
+    monkeypatch.setattr(dmod.DiffusionBackend, "_plan_memory", plan)
+    monkeypatch.setattr(
+        dmod, "apply_memory_plan", lambda pipe, plan, **kwargs: (plan.offload_policy, False)
+    )
+    status = backend.load_pipeline(
+        "Tongyi-MAI/Z-Image-Turbo", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert len(quantizations) == 1
+    assert len(plans) == 2
+    assert plans[0].device_memory.free_mib == 10_000
+    assert plans[1].device_memory.free_mib == (10_000 if reuse else 20_000)
+    assert status["transformer_quant"] == "fp8"
+    assert status["offload_policy"] == ("streaming" if reuse else "group")
