@@ -589,7 +589,6 @@ def assert_settled_and_stable(poller: HealthPoller, chat_only: bool, reason, lab
     ok(f"the {label} verdict held for {STABLE_HOLD_S:.0f}s across {len(tail)} replies")
 
 
-
 def request_hardware_detection(poller: HealthPoller, getter: TokenGetter) -> bool:
     """Keep observing idle health, then make the authenticated demand a picker makes."""
     sample = poller.wait_for(
@@ -601,9 +600,7 @@ def request_hardware_detection(poller: HealthPoller, getter: TokenGetter) -> boo
     if not sample.published and sample.body.get("hardware_detection_deferred"):
         ok("ordinary health stayed provisional before the hardware request")
     step("requesting hardware detection for the capability-dependent feature")
-    status, body = _get(
-        f"{poller.base}/api/health?detect_hardware=true", poller.token
-    )
+    status, body = _get(f"{poller.base}/api/health?detect_hardware=true", poller.token)
     if status != 200 or not isinstance(body, dict) or "version" not in body:
         fail(f"authenticated hardware detection returned {status} without an accepted health reply")
         return False

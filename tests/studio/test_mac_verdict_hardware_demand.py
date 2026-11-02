@@ -24,7 +24,9 @@ def test_mac_smoke_requests_detection_before_waiting_for_a_verdict(monkeypatch, 
     smoke = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, spec.name, smoke)
     spec.loader.exec_module(smoke)
-    monkeypatch.setitem(sys.modules, "utils.mlx_repair", SimpleNamespace(mlx_stack_available = lambda: True))
+    monkeypatch.setitem(
+        sys.modules, "utils.mlx_repair", SimpleNamespace(mlx_stack_available = lambda: True)
+    )
     monkeypatch.setattr(smoke, "POLL_INTERVAL_S", 0.01)
     monkeypatch.setattr(smoke, "SETTLE_BUDGET_S", 0.5)
     monkeypatch.setattr(smoke, "STABLE_HOLD_S", 0.05)
@@ -52,7 +54,9 @@ def test_mac_smoke_requests_detection_before_waiting_for_a_verdict(monkeypatch, 
                 body = {"status": "healthy", "chat_only": chat_only if requested.is_set() else True}
                 if auth:
                     body.update(version = "test", device_type = "mac" if requested.is_set() else None)
-                    body["chat_only_reason"] = "mlx_unavailable" if requested.is_set() and chat_only else None
+                    body["chat_only_reason"] = (
+                        "mlx_unavailable" if requested.is_set() and chat_only else None
+                    )
                 if not requested.is_set():
                     body.update(hardware_detecting = True, hardware_detection_deferred = True)
             else:
