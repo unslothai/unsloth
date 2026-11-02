@@ -56,10 +56,13 @@ test("the gate's first run joins the run the entry started", async () => {
   assert.equal(runs.length, 1);
 });
 
-test("the startup run is handed out once, later reconciles run fresh", () => {
+test("gate replay shares the startup handoff until it settles", async () => {
   const { mod, runs } = loadBootstrap();
   mod.startStartupCredentialBootstrap();
-  mod.takeStartupCredentialBootstrap();
+  const first = mod.takeStartupCredentialBootstrap();
+  assert.equal(mod.takeStartupCredentialBootstrap(), first);
+  runs[0].resolve();
+  await first;
   assert.equal(mod.takeStartupCredentialBootstrap(), null);
   mod.startStartupCredentialBootstrap();
   assert.equal(runs.length, 1, "a second startup run after the first was taken");

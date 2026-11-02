@@ -6,6 +6,7 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+import { installLocalStorageFake, registerStoreStubResolver } from "./helpers/kit.ts";
 
 type Bootstrap = typeof import("../src/features/credentials/bootstrap.ts");
 const source = process.env.CREDENTIAL_BOOTSTRAP_ROOT
@@ -187,4 +188,56 @@ test("a replacement bootstrap supersedes a pending startup publication", async (
   await detached;
   assert.deepEqual(f.state.providers, ["user-edit"]);
   assert.equal(f.calls.providers, 2);
+});
+
+test("gate replay recovers a pending shared HF read that fails after readiness", async () => {
+  registerStoreStubResolver();
+  const { store } = installLocalStorageFake();
+  store.set("unsloth_auth_token", "session-token");
+  const originalFetch = globalThis.fetch;
+  let release!: (response: Response) => void;
+  let started!: () => void;
+  const firstResponse = new Promise<Response>((resolve) => { release = resolve; });
+  const firstStarted = new Promise<void>((resolve) => { started = resolve; });
+  let reads = 0;
+  globalThis.fetch = (async () => {
+    reads += 1;
+    if (reads === 1) {
+      started();
+      return firstResponse;
+    }
+    return new Response(JSON.stringify({ has_token: true, token: "hf_saved_fixture" }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    const hf = await import("../src/features/hub/stores/hf-token-store.ts");
+    const reconciliation = loadWithStubs(new URL("reconciliation.ts", source), {});
+    const mod = loadWithStubs<Bootstrap>(new URL("bootstrap.ts", source), {
+      "@/features/auth": { getAuthSessionEpoch: () => 0, hasAuthToken: () => true },
+      "@/features/chat/stores/external-providers-store": {
+        useExternalProvidersStore: { getState: () => ({ providers: [], setProviders: () => {} }) },
+      },
+      "@/features/chat/sync-external-providers": {
+        syncExternalProvidersFromBackend: async () => [],
+      },
+      "@/features/hub/stores/hf-token-store": hf,
+      "./reconciliation": reconciliation,
+    });
+    mod.startStartupCredentialBootstrap();
+    await firstStarted;
+    const firstGate = mod.takeStartupCredentialBootstrap();
+    const replayGate = mod.takeStartupCredentialBootstrap() ?? mod.bootstrapPersistedCredentials();
+    release(new Response(JSON.stringify({ detail: "brief early outage" }), {
+      status: 503, headers: { "Content-Type": "application/json" },
+    }));
+    await Promise.all([firstGate, replayGate]);
+    assert.equal(hf.getHfToken(), "hf_saved_fixture");
+    assert.equal(reads, 2);
+    assert.equal(mod.takeStartupCredentialBootstrap(), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Reflect.deleteProperty(globalThis, "window");
+    Reflect.deleteProperty(globalThis, "localStorage");
+  }
 });

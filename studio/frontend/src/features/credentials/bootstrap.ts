@@ -35,6 +35,7 @@ let startupBootstrap: {
   sessionEpoch: number;
   run: Promise<void>;
   retry: () => Promise<void>;
+  handoff?: Promise<void>;
 } | null = null;
 let startupBootstrapRequested = false;
 
@@ -74,13 +75,16 @@ export function startStartupCredentialBootstrap(): void {
 
 export function takeStartupCredentialBootstrap(): Promise<void> | null {
   const startup = startupBootstrap;
-  startupBootstrap = null;
   if (
     startup &&
     hasAuthToken() &&
     getAuthSessionEpoch() === startup.sessionEpoch
   ) {
-    return startup.run.then(startup.retry);
+    startup.handoff ??= startup.run.then(startup.retry).finally(() => {
+      if (startupBootstrap === startup) startupBootstrap = null;
+    });
+    return startup.handoff;
   }
+  startupBootstrap = null;
   return null;
 }
