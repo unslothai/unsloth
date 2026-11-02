@@ -560,11 +560,19 @@ def test_should_record_tensor_split_abort_decision():
 def test_fit_off_retry_skipped_on_a_tensor_capability_crash():
     src = inspect.getsource(LlamaCppBackend.load_model)
     tree = ast.parse(textwrap.dedent(src))
-    retry = ast.dump(ast.parse('run_cmd = [*run_cmd, "--fit", "off"]').body[0])
     guards = [
         ast.unparse(node.test)
         for node in ast.walk(tree)
-        if isinstance(node, ast.If) and any(ast.dump(stmt) == retry for stmt in node.body)
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(stmt, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "run_cmd" for target in stmt.targets
+            )
+            and isinstance(stmt.value, ast.List)
+            and [getattr(item, "value", None) for item in stmt.value.elts[-2:]] == ["--fit", "off"]
+            for stmt in node.body
+        )
     ]
     assert len(guards) == 1
     guard = guards[0]

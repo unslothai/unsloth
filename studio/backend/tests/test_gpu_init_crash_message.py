@@ -107,6 +107,7 @@ def _run_cpu_fallback_load(
     stall_kind = "no_progress",
     gpu_memory = None,
     n_ctx = 4096,
+    health_predicate = None,
 ):
     """``stall_launches``: 0-based launch indexes whose child stays alive while the
     health wait reports a startup stall (a hung driver rather than a crash), ended
@@ -206,6 +207,8 @@ def _run_cpu_fallback_load(
             backend._health_wait_stalled = True
             backend._health_wait_stall_kind = stall_kind
             return False
+        if health_predicate is not None:
+            return health_predicate(launches[-1][0])
         return returncodes[len(launches) - 1] is None
 
     cleanups = []
@@ -1721,6 +1724,23 @@ def _last_fit_mode(cmd):
 
 
 class TestFitStepCrashRetry:
+    def test_failed_fit_off_retry_keeps_flash_attention_recovery(self, monkeypatch, tmp_path):
+        _backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+            monkeypatch,
+            tmp_path,
+            returncodes = [_WINDOWS_ACCESS_VIOLATION, _WINDOWS_ACCESS_VIOLATION, None],
+            first_output = _FIT_STEP_CRASH_OUTPUT,
+            platform = "win32",
+            cpu_fallback_available = False,
+            health_predicate = lambda cmd: (
+                _last_fit_mode(cmd) == "on" and cmd[cmd.index("--flash-attn") + 1] == "off"
+            ),
+        )
+        assert loaded is True
+        assert fallback_sources == []
+        assert len(launches) == 3
+        assert [_last_fit_mode(cmd) for cmd, _env in launches] == ["on", "off", "on"]
+
     def test_a_crash_inside_the_fit_step_retries_on_the_gpu_with_fit_off(
         self, monkeypatch, tmp_path
     ):
@@ -1788,6 +1808,18 @@ class TestFitStepCrashRetry:
 
 
 class TestFitStepCrashHelpers:
+    @pytest.mark.parametrize(
+        "args, env, expected",
+        (
+            (["--parallel", "8", "--no-kv-unified"], {}, "65536"),
+            (["--parallel", "8", "--kv-unified"], {}, "8192"),
+            ([], {"LLAMA_ARG_N_PARALLEL": "4", "LLAMA_ARG_KV_UNIFIED": "off"}, "32768"),
+        ),
+    )
+    def test_retry_ctx_preserves_per_slot_floor(self, args, env, expected):
+        cmd = ["llama-server", "--fit-ctx", "8192", *args]
+        assert LlamaCppBackend._fit_step_retry_ctx(cmd, env)[-1] == expected
+
     @pytest.mark.parametrize(
         "lines, expected",
         (

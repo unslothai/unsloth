@@ -30986,7 +30986,11 @@ class LlamaCppBackend:
                                     _crashed_proc.returncode,
                                     self._llama_log_path,
                                 )
-                            run_cmd = [*run_cmd, "--fit", "off"]
+                            run_cmd = [
+                                *(self._without_flags(run_cmd, {"-fit", "--fit"}) or run_cmd),
+                                "--fit",
+                                "off",
+                            ]
                             if _fit_step_crashed:
                                 run_cmd = self._fit_step_retry_ctx(run_cmd, env, extra_args)
                             # The mirror of the --fit on retry above. Turning the
@@ -34895,10 +34899,16 @@ class LlamaCppBackend:
         if env and env.get("LLAMA_ARG_CTX_SIZE") is not None:
             return cmd
         floor = fit_ctx_in(cmd, env)
+        floor = floor if floor is not None and floor > 0 else 8192
+        streams = (
+            1
+            if _kv_unified_from_args(cmd, env = env or {})
+            else max(1, _extra_args_n_parallel(cmd, env or {}) or 1)
+        )
         return [
             *(strip_context_only(cmd) or []),
             "-c",
-            str(floor if floor is not None and floor > 0 else 8192),
+            str(floor * streams),
         ]
 
     def _probe_mtp_decode(self, timeout: float = 60.0) -> bool:
