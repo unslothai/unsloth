@@ -2008,6 +2008,27 @@ if hasattr(torch._dynamo, "assume_constant_result"):
 _SCALED_MM_FP16_OUT_BROKEN = torch.__version__ < "2.14.0"
 
 
+@functools.lru_cache(maxsize = None)
+def _probe_scaled_mm_float32_out(device):
+    """Whether rowwise torch._scaled_mm writes float32 here. Before torch 2.14 only cuBLAS does (sm90 with CUDA
+    and cuBLAS 12.9+); the CUTLASS kernel used elsewhere raises "Only bf16 and fp16 high precision output types"."""
+    ones = lambda n: torch.ones(n, dtype = torch.float32, device = device)
+    return _rowwise_gemm_works(
+        lambda x: torch._scaled_mm(
+            x, x.t(), scale_a = ones((128, 1)), scale_b = ones((1, 128)), out_dtype = torch.float32
+        ),
+        device,
+    )
+
+
+def _scaled_mm_float32_out(device):
+    return _probe_scaled_mm_float32_out(device)
+
+
+if hasattr(torch._dynamo, "assume_constant_result"):
+    _scaled_mm_float32_out = torch._dynamo.assume_constant_result(_scaled_mm_float32_out)
+
+
 def _scaled_mm_out_dtype(dtype):
     """Rowwise torch._scaled_mm out dtype: bf16 for fp16 on torch < 2.14 (caller casts back), else `dtype`."""
     return torch.bfloat16 if dtype == torch.float16 and _SCALED_MM_FP16_OUT_BROKEN else dtype
@@ -2113,8 +2134,12 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
         elif (
             backend == "scaled_mm"
             and rowwise
-            # Before torch 2.14 rowwise outputs are bf16 / fp16 only: float32 dequantizes.
-            and (x.dtype != torch.float32 or not _SCALED_MM_FP16_OUT_BROKEN)
+            # Before torch 2.14 rowwise float32 output needs cuBLAS (sm90, CUDA 12.9+): elsewhere float32 dequantizes.
+            and (
+                x.dtype != torch.float32
+                or not _SCALED_MM_FP16_OUT_BROKEN
+                or _scaled_mm_float32_out(x.device)
+            )
             and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
             and x.shape[-1] == weight.shape[1]
             # Decode-sized calls: dequant + 16-bit GEMM beats quantizing the activation unless the weight
