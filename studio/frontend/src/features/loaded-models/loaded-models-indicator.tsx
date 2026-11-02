@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useAudioWorkspaceStore } from "@/features/audio/stores/audio-workspace-store";
 import { hasAuthToken, mustChangePassword } from "@/features/auth";
-import { useSettingsDialogStore } from "@/features/settings";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
