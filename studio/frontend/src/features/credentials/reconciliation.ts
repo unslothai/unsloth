@@ -47,7 +47,6 @@ export async function reconcileLegacyHfToken<T extends HfCredentialStatus>(
   try {
     migrated = await dependencies.saveLegacyToken(legacyToken);
   } catch (error) {
-    // Keep the legacy token working while the backend is unavailable.
     dependencies.applyToken(legacyToken);
     throw error;
   }
@@ -101,7 +100,6 @@ export async function reconcileLegacyProviderKeys<
         dependencies.removeLegacyKey(config.id, legacyKey);
       }
     } catch {
-      // Preserve local input for retry and per-request fallback.
     }
   }
   return reconciled;
