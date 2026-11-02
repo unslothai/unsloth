@@ -6,6 +6,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const ja = {
+  turns: {
+    label: "ターン {number}",
+    bookmarkedLabel: "ターン {number}（ブックマーク済み）",
+    bookmark: "ターンをブックマーク",
+    removeBookmark: "ブックマークを解除",
+    navigator: "ターン",
+  },
   chatBackground: {
     noBackground: "背景なし",
     sizing: "画像のサイズ調整",
@@ -2929,6 +2936,8 @@ export const ja = {
         "詳細 速度 トークン 統計 レイヤー オフロード verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "応答に応答の編集を表示",
       inlineEditResponseDescription: "応答の編集を「その他」メニューではなく、各応答に表示します。",
+      turnNavigation: "ターンナビゲーション",
+      turnNavigationDescription: "長いチャットの左端に自分のメッセージをレールとして表示します。ホバーでプレビュー、クリックでそのターンへ移動し、ブックマークで後から見つけられます。",
       composerAtBottom: "入力欄を下に表示",
       composerAtBottomDescription: "新しいチャットで入力欄を中央ではなくページ下部に表示します。",
       projectAttachments: "プロジェクト全体でファイルを共有",

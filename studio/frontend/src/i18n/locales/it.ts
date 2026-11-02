@@ -2,6 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const it = {
+  turns: {
+    label: "Turno {number}",
+    bookmarkedLabel: "Turno {number}, nei segnalibri",
+    bookmark: "Aggiungi turno ai segnalibri",
+    removeBookmark: "Rimuovi segnalibro",
+    navigator: "Turni",
+  },
   chatBackground: {
     noBackground: "Nessuno sfondo",
     sizing: "Dimensionamento immagine",
@@ -2880,6 +2887,8 @@ export const it = {
         "dettagli velocità token statistiche livelli scaricamento verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifica risposta nelle risposte",
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
+      turnNavigation: "Navigazione dei turni",
+      turnNavigationDescription: "Mostra i tuoi messaggi come una barra sul bordo sinistro delle chat lunghe. Passa sopra un turno per l’anteprima, fai clic per raggiungerlo e aggiungilo ai segnalibri per ritrovarlo.",
       composerAtBottom: "Casella di testo in basso",
       composerAtBottomDescription: "Avvia le nuove chat con la casella di testo in fondo alla pagina invece che al centro.",
       projectAttachments: "Condividi i file nel progetto",

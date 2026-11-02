@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const de = {
+  turns: {
+    label: "Runde {number}",
+    bookmarkedLabel: "Runde {number}, mit Lesezeichen",
+    bookmark: "Lesezeichen für Runde setzen",
+    removeBookmark: "Lesezeichen entfernen",
+    navigator: "Runden",
+  },
   chatBackground: {
     noBackground: "Kein Hintergrund",
     sizing: "Bildskalierung",
@@ -2984,6 +2991,8 @@ export const de = {
         "Details Geschwindigkeit Token Statistik Schichten Auslagerung verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Antwort bearbeiten bei Antworten",
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
+      turnNavigation: "Rundennavigation",
+      turnNavigationDescription: "Zeigt deine Eingaben als Leiste am linken Rand langer Chats. Zeige auf eine Runde für eine Vorschau, klicke, um hinzuspringen, und setze Lesezeichen, um Runden wiederzufinden.",
       composerAtBottom: "Eingabefeld unten",
       composerAtBottomDescription: "Neue Chats mit dem Eingabefeld unten auf der Seite statt in der Mitte beginnen.",
       projectAttachments: "Dateien projektweit teilen",

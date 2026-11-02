@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const uk = {
+  turns: {
+    label: "Хід {number}",
+    bookmarkedLabel: "Хід {number}, у закладках",
+    bookmark: "Додати хід у закладки",
+    removeBookmark: "Прибрати закладку",
+    navigator: "Ходи",
+  },
   chatBackground: {
     noBackground: "Без тла",
     sizing: "Масштабування зображення",
@@ -3218,6 +3225,8 @@ export const uk = {
       inlineEditResponse: "Редагування відповіді на відповідях",
       inlineEditResponseDescription:
         "Показувати «Редагувати відповідь» на кожній відповіді, а не в меню «Більше».",
+      turnNavigation: "Навігація ходами",
+      turnNavigationDescription: "Показує ваші повідомлення смугою біля лівого краю довгих чатів. Наведіть, щоб переглянути хід, натисніть, щоб перейти до нього, і додавайте закладки, щоб знаходити ходи.",
       composerAtBottom: "Поле введення внизу",
       composerAtBottomDescription:
         "Починати нові чати з полем введення внизу сторінки, а не посередині.",
