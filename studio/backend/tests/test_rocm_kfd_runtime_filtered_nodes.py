@@ -144,13 +144,15 @@ def test_filtered_topology_keeps_the_discrete_card_user_reserve(
     monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CUDA)
     monkeypatch.setattr(hardware, "IS_ROCM", True)
     monkeypatch.setattr(hardware, "_torch_get_physical_gpu_count", lambda: 1)
+    monkeypatch.setattr(amd, "amd_kfd_gpu_gfx_targets", lambda: [arch, "gfx1102"])
     properties = SimpleNamespace(total_memory = 24 * 1024**3, gcnArchName = arch)
+    property_reads = []
 
     def no_occupancy(*args):
         pytest.fail("a reserve read must not create an occupancy context")
 
     def get_properties(index):
-        assert initialized, "a reserve read must not initialize a cold runtime"
+        property_reads.append(index)
         return properties
 
     module = SimpleNamespace(
@@ -162,6 +164,8 @@ def test_filtered_topology_keeps_the_discrete_card_user_reserve(
     monkeypatch.setattr(diffusion_memory, "_vram_budget_fraction", lambda: 0.5)
     reserve = video._h3_card_reserve_bytes("cuda", 0)
     assert reserve == expected
+    if not initialized:
+        assert property_reads == []
     if expected is not None:
         runtime = SimpleNamespace(vram_reserve_probe = lambda: reserve)
         flags = video._h3_spare_user_reserve(runtime, ["--max-vram", "-1"])
