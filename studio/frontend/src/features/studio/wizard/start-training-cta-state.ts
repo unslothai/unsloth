@@ -5,21 +5,33 @@ import type { TranslationKey } from "@/i18n";
 
 export function resolveStartTrainingButtonLabelKey({
   stopRequested,
+  scheduled,
+  scheduling,
   startBlocked,
   isLoadingModel,
   isCheckingDataset,
   hasModel,
   hasDataset,
+  scheduleMode,
 }: {
   stopRequested: boolean;
+  scheduled: boolean;
+  scheduling: boolean;
   startBlocked: boolean;
   isLoadingModel: boolean;
   isCheckingDataset: boolean;
   hasModel: boolean;
   hasDataset: boolean;
+  scheduleMode: boolean;
 }): TranslationKey {
   if (stopRequested) {
     return "studio.training.stopping";
+  }
+  if (scheduled) {
+    return "studio.schedule.scheduled";
+  }
+  if (scheduling) {
+    return "studio.schedule.scheduling";
   }
   if (startBlocked) {
     return "studio.training.starting";
@@ -36,7 +48,10 @@ export function resolveStartTrainingButtonLabelKey({
   if (!hasModel) {
     return "studio.training.chooseModel";
   }
-  return hasDataset
-    ? "studio.training.startTraining"
-    : "studio.training.chooseDataset";
+  if (!hasDataset) {
+    return "studio.training.chooseDataset";
+  }
+  return scheduleMode
+    ? "studio.schedule.scheduleTraining"
+    : "studio.training.startTraining";
 }
