@@ -9,7 +9,7 @@ import test from "node:test";
 
 import { readText } from "./helpers/kit.ts";
 
-const { priorPassTiming, readPriorPassTiming, withPriorServerTimings, withPriorTiming } = await import(
+const { addPass, priorPassTiming, readPriorPassTiming, withPriorServerTimings, withPriorTiming } = await import(
   "../src/features/chat/utils/continued-timing.ts"
 );
 const { CONTINUATION_RUN_CONFIG_KEY, readContinuationRequest } = await import(
@@ -109,6 +109,42 @@ test("a first pass with no token puts the first token in a later pass", () => {
   assert.equal(timing.tokenCount, 11);
 });
 
+test("three passes add up when each Continue carries the passes before it", () => {
+  const pass = (ms: number, tokens: number, first: number, start: number) => ({
+    totalStreamTime: ms, totalChunks: tokens + 1, toolCallCount: 0, tokenCount: tokens, firstTokenTime: first,
+    startedAt: start, durationMs: ms,
+    serverTimings: { predicted_n: tokens, predicted_ms: ms - 50, predicted_per_second: (tokens - 1) / ((ms - 50) / 1000) },
+  });
+  const one = pass(500, 64, 120, 1000);
+  const two = addPass(one, pass(400, 64, 90, 9000));
+  const three = addPass(two, pass(300, 20, 80, 20000));
+  assert.equal(three.tokenCount, 148);
+  assert.equal(three.totalStreamTime, 1200);
+  assert.equal(three.durationMs, 1200);
+  assert.equal(three.firstTokenTime, 120, "the answer's first token came in the first pass");
+  assert.equal(three.startedAt, 1000);
+  assert.equal(three.serverTimings?.predicted_n, 148);
+  assert.equal(three.serverTimings?.predicted_ms, 1050);
+  // The third Continue reads the second pass's carried figures through the run config.
+  const request = readContinuationRequest({ custom: { [CONTINUATION_RUN_CONFIG_KEY]: { partial: "x", priorTiming: two } } });
+  assert.deepEqual(request?.priorTiming, two);
+});
+
+test("a stopped or broken-off reply hands Resume every pass so far", () => {
+  const carried = addPass(priorPassTiming(firstPass), {
+    totalStreamTime: 900, totalChunks: 40, toolCallCount: 0, tokenCount: 39, startedAt: 9000, durationMs: 900,
+    serverTimings: { predicted_n: 39, predicted_ms: 800, predicted_per_second: 38 / 0.8 },
+  });
+  // A Stop keeps only the last streamed metadata: no `timing`, just what the stream carried.
+  const stopped = { custom: { incomplete: { reason: "cancelled" }, resumeTiming: carried } };
+  assert.deepEqual(priorPassTiming(stopped), carried);
+  assert.equal(priorPassTiming(stopped)?.tokenCount, 128 + 39);
+  // An error's yield has a merged `timing` for display but no server figures: the carried ones win.
+  const brokeOff = { custom: { timing: { totalStreamTime: 5100, tokenCount: 167, totalChunks: 170 }, resumeTiming: carried } };
+  assert.equal(priorPassTiming(brokeOff)?.serverTimings?.predicted_n, 128 + 39);
+  assert.equal(priorPassTiming(brokeOff)?.startedAt, 1000);
+});
+
 // The adapter runs only against a live provider stream, so its wiring is checked in the source.
 test("Continue carries the figures and the adapter adds them on every way a pass ends", () => {
   const thread = readText("../src/components/assistant-ui/thread.tsx");
@@ -122,4 +158,9 @@ test("Continue carries the figures and the adapter adds them on every way a pass
   assert.match(adapter, /const partialTiming = withPriorTiming\(/);
   assert.match(adapter, /serverTimings: finalServerTimings \?\? undefined,/);
   assert.match(adapter, /startedAt: priorTiming\?\.startedAt \?\? streamStartTime,/);
+  // Every streamed yield, and the error's, carries the passes so far for a Resume.
+  const live = adapter.slice(adapter.indexOf("const liveCustom = () => ({"), adapter.indexOf("const liveCustom = () => ({") + 400);
+  assert.match(live, /resumeTiming: passSoFar \? addPass\(priorTiming, passSoFar\(\)\) : priorTiming,/);
+  const partial = adapter.slice(adapter.indexOf("const partialTiming = withPriorTiming("));
+  assert.match(partial, /resumeTiming: passSoFar \? addPass\(priorTiming, passSoFar\(\)\) : priorTiming,/);
 });

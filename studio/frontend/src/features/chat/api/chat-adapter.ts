@@ -166,7 +166,12 @@ import {
   type QueuedModelCapabilities,
 } from "../utils/queued-model-capabilities";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
-import { withPriorServerTimings, withPriorTiming } from "../utils/continued-timing";
+import {
+  addPass,
+  type PriorPassTiming,
+  withPriorServerTimings,
+  withPriorTiming,
+} from "../utils/continued-timing";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
@@ -5727,6 +5732,8 @@ export function createOpenAIStreamAdapter(
       // What this request appended, for counting its own tokens.
       const passText = () => cumulativeText.slice(continuationPartial.length);
       const priorTiming = continuation?.priorTiming;
+      // Bound once the pass's counters exist; until then a Resume carries the earlier passes alone.
+      let passSoFar: (() => PriorPassTiming) | null = null;
       const geminiContinuationReplay = (
         final: boolean,
       ): GeminiContinuationReplay | undefined =>
@@ -5825,6 +5832,8 @@ export function createOpenAIStreamAdapter(
       // Provisional reason per yield since aborts skip terminal yields; a reported window outranks it.
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
+        // A Stop keeps only the last streamed yield, so it carries the figures a Resume adds up.
+        resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
         openaiCodexReasoning: codexReasoningLedger,
         openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
@@ -6382,6 +6391,21 @@ export function createOpenAIStreamAdapter(
       };
       // llama.cpp output count, including reasoning.
       let windowCount: number | null = null;
+      // llama-server's per-token figures, the newest seen: what a stopped pass reports for itself.
+      let liveServerTimings: ServerTimings | undefined;
+      passSoFar = () => {
+        const now = Date.now();
+        return {
+          totalStreamTime: now - streamStartTime,
+          totalChunks,
+          toolCallCount: toolCallParts.length,
+          ...(windowCount !== null ? { tokenCount: windowCount } : {}),
+          ...(firstTokenTime !== undefined ? { firstTokenTime } : {}),
+          startedAt: streamStartTime,
+          durationMs: now - streamStartTime,
+          ...(liveServerTimings ? { serverTimings: { ...liveServerTimings } as unknown as Record<string, number> } : {}),
+        };
+      };
 
       // Colab-style proxies can swallow fetch aborts, so also POST /inference/cancel explicitly.
       const onAbortCancel = () => {
@@ -7834,6 +7858,7 @@ export function createOpenAIStreamAdapter(
                 | undefined;
               // Timings can arrive without usage.
               windowCount = windowEvidenceCount(chunkTimings) ?? windowCount;
+              if (chunkTimings && chunkTimings.diffusion !== true) liveServerTimings = chunkTimings;
               // OpenAI usage may arrive in an empty trailing chunk or on the terminal Codex chunk.
               if (chunk.usage) {
                 serverMetadata = {
@@ -9013,6 +9038,8 @@ export function createOpenAIStreamAdapter(
                   ),
                 },
                 timing: partialTiming,
+                // Every pass so far with its server figures and start, for a Resume after this error.
+                resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
                 ...generationCustom(),
               },
             },

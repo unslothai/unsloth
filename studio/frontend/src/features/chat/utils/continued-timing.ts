@@ -35,10 +35,14 @@ function numbers(value: unknown): Record<string, number> | undefined {
   return kept.length > 0 ? Object.fromEntries(kept) : undefined;
 }
 
-/** A reply's own figures, read from its metadata; undefined when it recorded no timing. */
+/** A reply's own figures, read from its metadata; undefined when it recorded no timing. A reply that was
+ *  stopped or broke off carries them, with every earlier pass, as `resumeTiming`: a Stop keeps only the
+ *  last streamed metadata, which has no `timing`, and an error's has no server figures. */
 export function priorPassTiming(metadata: unknown): PriorPassTiming | undefined {
   const message = record(metadata);
   const custom = record(message?.custom);
+  const carried = readPriorPassTiming(custom?.resumeTiming);
+  if (carried) return carried;
   const timing = record(custom?.timing) ?? record(message?.timing);
   const details = record(custom?.responseDetails);
   const serverTimings = record(custom?.serverTimings);
@@ -128,4 +132,30 @@ export function withPriorServerTimings<T extends object>(
     if (tokens > 0) merged[perToken] = totalMs / tokens;
   }
   return merged as T;
+}
+
+/** The earlier passes plus this one, in the same shape: what a Continue after this pass carries. */
+export function addPass(prior: PriorPassTiming | undefined, pass: PriorPassTiming): PriorPassTiming {
+  if (!prior) return pass;
+  const optional = {
+    tokenCount:
+      prior.tokenCount !== undefined || pass.tokenCount !== undefined
+        ? (prior.tokenCount ?? 0) + (pass.tokenCount ?? 0)
+        : undefined,
+    firstTokenTime:
+      prior.firstTokenTime ??
+      (pass.firstTokenTime !== undefined ? prior.totalStreamTime + pass.firstTokenTime : undefined),
+    durationMs:
+      prior.durationMs !== undefined || pass.durationMs !== undefined
+        ? (prior.durationMs ?? prior.totalStreamTime) + (pass.durationMs ?? pass.totalStreamTime)
+        : undefined,
+    startedAt: prior.startedAt ?? pass.startedAt,
+    serverTimings: withPriorServerTimings(pass.serverTimings, prior.serverTimings) ?? prior.serverTimings,
+  };
+  return {
+    totalStreamTime: prior.totalStreamTime + pass.totalStreamTime,
+    totalChunks: prior.totalChunks + pass.totalChunks,
+    toolCallCount: prior.toolCallCount + pass.toolCallCount,
+    ...Object.fromEntries(Object.entries(optional).filter(([, v]) => v !== undefined)),
+  };
 }
