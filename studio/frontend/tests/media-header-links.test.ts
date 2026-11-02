@@ -39,7 +39,7 @@ test("API, Library, then the other media page with an arrow, at the chat header'
   );
   assert.match(
     LINK,
-    /icon=\{to === "\/images" \? Image01Icon : FlimSlateIcon\}/,
+    /icon=\{to === "\/images" \? ImageIcon : FlimSlateIcon\}/,
   );
 });
 

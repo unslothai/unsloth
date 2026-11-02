@@ -171,21 +171,31 @@ export function useDownloadTransportCapabilities(): TransportCapabilitiesState {
 
   useEffect(() => {
     let cancelled = false;
-    getDownloadTransportCapabilities()
-      .then((capabilities) => {
-        if (cancelled) {
-          return;
-        }
-        setState({ capabilities, isLoading: false });
-      })
-      .catch(() => {
-        if (cancelled) {
-          return;
-        }
-        setState({ capabilities: null, isLoading: false });
-      });
+    let latest = 0;
+    const load = () => {
+      // A slower answer from before a source switch must not overwrite the newer one.
+      const request = ++latest;
+      const stale = () => cancelled || request !== latest;
+      getDownloadTransportCapabilities()
+        .then((capabilities) => {
+          if (stale()) {
+            return;
+          }
+          setState({ capabilities, isLoading: false });
+        })
+        .catch(() => {
+          if (stale()) {
+            return;
+          }
+          setState({ capabilities: null, isLoading: false });
+        });
+    };
+    load();
+    // A model source switch announces itself here, and Xet availability depends on the source.
+    const unsubscribe = subscribeDownloadTransportSettings(load);
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, []);
 

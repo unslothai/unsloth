@@ -297,7 +297,7 @@ def _frontend_regex(name):
 
     source = (
         Path(__file__).resolve().parents[2] / "frontend/src/features/studio/preparation-progress.ts"
-    ).read_text()
+    ).read_text(encoding = "utf-8")
     pattern, flags = re.search(rf"const {name} =\s*/(.+)/(\w*);", source).groups()
     return re.compile(pattern.replace("(?<", "(?P<"), re.I if "i" in flags else 0)
 

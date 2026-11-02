@@ -37,10 +37,10 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   BookOpen02Icon,
   ColumnInsertIcon,
-  Delete02Icon,
   Download01Icon,
   MoreHorizontalIcon,
   NewReleasesIcon,
@@ -318,7 +318,7 @@ export function ThreadSidebar({
                         className="text-destructive focus:text-destructive"
                         onSelect={() => void handleDelete(item)}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="mr-2 size-4" />
+                        <HugeiconsIcon icon={TrashIcon} className="mr-2 size-4" />
                         Delete
                       </DropdownMenuItem>
                     </DropdownMenuContent>

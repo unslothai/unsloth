@@ -325,6 +325,7 @@ del _guard_dataset_media
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 # Studio decides training / export / chat-only from its own hardware detection, so keep
 # `import unsloth` refusing on a GPU-less host here instead of loading the CPU training backend.
+# A training worker on a host Studio trains on CPU opts back in (core/training/worker.py).
 os.environ.setdefault("UNSLOTH_DISABLE_CPU_FALLBACK", "1")
 
 # Must not import unsloth here (pulls torch/GPU); before transformers reads sentencepiece.
@@ -1488,7 +1489,6 @@ if _DOCS_ASSETS_DIR.is_dir():
 # Cap request bodies on protected POSTs; upload routes get explicit multipart headroom.
 import json as _json_for_413  # noqa: E402
 from utils.upload_limits import (  # noqa: E402
-    AUDIO_INPUT_MAX_BYTES,
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     LIBRARY_UPLOAD_MAX_BYTES,
@@ -1496,6 +1496,7 @@ from utils.upload_limits import (  # noqa: E402
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
+    audio_input_max_bytes,
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
 )
@@ -1589,7 +1590,9 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     if path.rstrip("/") == _LIBRARY_UPLOAD_PATH:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _AUDIO_INPUT_UPLOAD_PATHS:
-        return AUDIO_INPUT_MAX_BYTES
+        # None means no cap, as the route treats it.
+        cap = audio_input_max_bytes()
+        return sys.maxsize if cap is None else cap
     if _SANDBOX_UPLOAD_RE.match(path):
         return upload_request_limit_bytes(SANDBOX_UPLOAD_MAX_BYTES)
     if _RAG_DOCUMENT_UPLOAD_RE.match(path):
@@ -2260,6 +2263,8 @@ async def health_check(request: Request):
                 authed["video_cpu_opt_in"] = bool(video_cpu_enabled())
             except Exception:
                 pass
+        # chat_only stays set: chat stays GGUF-only and Export and Video keep their own verdicts.
+        authed["cpu_training"] = bool(snapshot[0]) and _hw_module.trains_on_cpu(snapshot[1])
         # What specifically blocked that reason, when detection recorded one. Only the MLX gate does today, and only
         # because it is all-or-nothing: without it the greyed-out Train row can only say "run `unsloth studio
         # update`". From the snapshot, so it cannot come from a different detection pass than the reason beside it.

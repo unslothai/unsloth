@@ -605,7 +605,9 @@ def _fit_h3_video_frame(
 ) -> tuple[Any, tuple[int, int]]:
     from PIL import Image
 
-    image = frame.to_image().convert("RGB")
+    image = frame.to_image()
+    if image.mode != "RGB":  # PyAV already returns a fresh RGB image; convert only copies it
+        image = image.convert("RGB")
     if fitted_size is None:
         fitted_size = h3_reference_frame_size(*image.size)
     if image.size != fitted_size:
@@ -975,6 +977,17 @@ class MiniMaxH3References:
 
 
 @dataclass(frozen = True)
+class DecodedReferenceAudios:
+    """Untrimmed ``decode_h3_reference_audio`` results for ``sources``, reused only for those exact inputs."""
+
+    sources: tuple = ()
+    decoded: tuple = ()
+
+    def for_inputs(self, audios: list) -> Optional[tuple]:
+        return self.decoded if tuple(audios) == self.sources else None
+
+
+@dataclass(frozen = True)
 class MiniMaxH3StagedReferences:
     """``MiniMaxH3References`` written to disk the way sd-cli reads them back."""
 
@@ -983,6 +996,46 @@ class MiniMaxH3StagedReferences:
     videos: tuple[str, ...] = ()
     video_audios: tuple[str, ...] = ()
     audios: tuple[str, ...] = ()
+
+
+# Pillow's zlib encoder releases the GIL, so a few threads write a reference video's PNGs in parallel.
+H3_REF_FRAME_WRITERS = 4
+
+
+def _write_h3_reference_frames(directory: Path, frames: Any) -> None:
+    """Write ``frames`` as 00000.png onward, encoding a repeated frame object (24 fps fill) once."""
+    import io
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Keyed by identity: ``frames`` holds every object, so no id is reused while this runs.
+    slots: dict[int, tuple[Any, list[Path]]] = {}
+    for frame_index, frame in enumerate(frames):
+        slots.setdefault(id(frame), (frame, []))[1].append(directory / f"{frame_index:05d}.png")
+
+    def write(slot: tuple[Any, list[Path]]) -> None:
+        frame, paths = slot
+        if len(paths) == 1:
+            frame.save(paths[0], format = "PNG", compress_level = 1)
+            return
+        buffer = io.BytesIO()
+        frame.save(buffer, format = "PNG", compress_level = 1)
+        data = buffer.getvalue()
+        for path in paths:
+            path.write_bytes(data)
+
+    work = list(slots.values())
+    workers = min(H3_REF_FRAME_WRITERS, len(work), os.cpu_count() or 1)
+    if workers <= 1:
+        for slot in work:
+            write(slot)
+        return
+    pool = ThreadPoolExecutor(max_workers = workers, thread_name_prefix = "h3-ref-frames")
+    try:
+        futures = [pool.submit(write, slot) for slot in work]
+        for future in futures:
+            future.result()  # first failure in frame order, as the sequential loop raised
+    finally:
+        pool.shutdown(wait = True, cancel_futures = True)
 
 
 def stage_h3_references(
@@ -1002,8 +1055,7 @@ def stage_h3_references(
     for index, (frames, waveform, sample_rate) in enumerate(references.videos):
         directory = scratch / f"ref-video-{index:02d}"
         directory.mkdir()
-        for frame_index, frame in enumerate(frames):
-            frame.save(directory / f"{frame_index:05d}.png", format = "PNG", compress_level = 1)
+        _write_h3_reference_frames(directory, frames)
         videos.append(str(directory))
         if waveform is None:
             # Positional pairing cannot express "skip this one", so stop pairing here.
