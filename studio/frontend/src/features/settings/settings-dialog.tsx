@@ -650,7 +650,8 @@ export function SettingsDialog() {
                         {t(tab.labelKey)}
                       </span>
                       {tab.badgeKey ? (
-                        <span className="relative z-10 ml-auto rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
+                        // Visual only, so the tab's accessible name stays its label.
+                        <span aria-hidden="true" className="relative z-10 ml-auto rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
                           {t(tab.badgeKey)}
                         </span>
                       ) : null}
