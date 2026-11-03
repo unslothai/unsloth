@@ -79,3 +79,11 @@ export const useBookmarkedTurnsStore = create<BookmarkedTurnsState>()(
     },
   ),
 );
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === useBookmarkedTurnsStore.persist.getOptions().name) {
+      void useBookmarkedTurnsStore.persist.rehydrate();
+    }
+  });
+}
