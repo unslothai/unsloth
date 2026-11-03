@@ -128,6 +128,7 @@ from .diffusion_zimage_cfg_split import render as zimage_cfg_split_render
 from .diffusion_prefix_kv import release_prefix_kv, track_prefix_kv
 from .diffusion_multigpu import (
     AUTOMATIC_ORDINALS,
+    current_selection,
     end_cfg_render,
     release_cfg_prefix_kv,
     drop_displaced_cfg_router,
@@ -187,6 +188,7 @@ from .diffusion_memory import (
     release_load_budget_fraction,
     vram_budget_scope,
     carry_load_budget,
+    MEMORY_MODE_AUTO,
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_LOW_VRAM,
     ACTIVATION_TILE,
@@ -12439,9 +12441,23 @@ class DiffusionBackend:
             None  # (fp8_storage, offload) -> MiB, set for a single-file DiT
         )
         single_file_stored_at: Any = None
+        resident_replan = (
+            kind == "pipeline"
+            and transformer_resident_override_mib is not None
+            and transformer_resident_override_mib > 0
+            and companion_override_mib is not None
+            and text_encoder_override_mib is not None
+            and 0 <= text_encoder_override_mib <= companion_override_mib
+            and getattr(target, "device", None) == "cuda"
+            and getattr(target, "backend", None) == "cuda"
+            and normalize_memory_mode(memory_mode) in (None, MEMORY_MODE_AUTO)
+            and not cpu_offload
+            and current_selection() is None
+            and device_memory_override is None
+        )
         device_memory = (
             device_memory_override
-            if device_memory_override is not None
+            if device_memory_override is not None or resident_replan
             else settled_snapshot_device_memory(target)
         )
         load_dtype = getattr(target, "dtype", None)
@@ -12683,18 +12699,61 @@ class DiffusionBackend:
         # Budgets the 1024x1024 default; generate() re-checks the real resolution.
         runtime_headroom = estimate_image_runtime_mib(width = None, height = None, family = variant_hint)
 
-        def _plan(model_mib: Optional[int]) -> Any:
+        def _plan(
+            model_mib: Optional[int],
+            memory: Optional[DeviceMemory] = None,
+            *,
+            probe_calibration: bool = True,
+            activation: Any = None,
+        ) -> Any:
             return plan_diffusion_memory(
                 target = target,
-                device_memory = device_memory,
+                device_memory = device_memory if memory is None else memory,
                 model_dense_mib = model_mib,
                 companion_dense_mib = companion_mib,
                 text_encoder_dense_mib = text_encoder_mib,
                 runtime_headroom_mib = runtime_headroom,
                 requested_mode = memory_mode,
                 explicit_offload = cpu_offload,
-                calibrated_activation = _calibrated_activation(fam, target),
+                calibrated_activation = _calibrated_activation(fam, target)
+                if probe_calibration
+                else activation,
             )
+
+        if resident_replan:
+
+            def can_stop(memory: DeviceMemory) -> bool:
+                if (
+                    memory.memory_kind != "discrete_vram"
+                    or memory.free_mib is None
+                    or memory.total_mib is None
+                ):
+                    return False
+                # Check flat and both measured tiers without running the allocating SDPA probe during sampling.
+                for activation in (
+                    None,
+                    calibrated_image_activation(fam.name, max_speed = False),
+                    calibrated_image_activation(fam.name, max_speed = True),
+                ):
+                    candidate = _plan(
+                        model_dense_mib, memory, probe_calibration = False, activation = activation
+                    )
+                    if not (
+                        _plan_proves_resident(candidate)
+                        and not candidate.vae_tiling
+                        and not candidate.vae_slicing
+                        and not candidate.stream_text_encoders
+                        and candidate.resident_transformer_mib is None
+                        and candidate.resident_text_encoder_mib is None
+                        and candidate.secondary_ordinal is None
+                        and candidate.secondary_components is None
+                        and candidate.layer_split is None
+                        and candidate.fallback_plan is None
+                    ):
+                        return False
+                return True
+
+            device_memory = settled_snapshot_device_memory(target, can_stop = can_stop)
 
         plan = _plan(model_dense_mib)
         if kind == "single_file" and single_file_path:

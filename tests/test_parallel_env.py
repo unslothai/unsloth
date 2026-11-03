@@ -19,6 +19,7 @@ _ENV = (
     "UNSLOTH_FSDP2",
     "UNSLOTH_PP_SCHEDULE",
     "UNSLOTH_PP_MICROBATCHES",
+    "UNSLOTH_RETURN_LOGITS",
     "WORLD_SIZE",
 )
 
@@ -344,6 +345,8 @@ def _auto_packing(monkeypatch, config, model):
 
     for name in ("enable_padding_free_metadata", "enable_sample_packing"):
         monkeypatch.setattr(trainer_module, name, lambda model, trainer: None)
+    # A RETURN_LOGITS=1 left by an earlier test in the worker turns packing off before the CP choice runs.
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
     module = SimpleNamespace(SFTTrainer = _Stub)
     trainer_module._patch_sft_trainer_auto_packing(module)
     return module.SFTTrainer(model = model, args = config)

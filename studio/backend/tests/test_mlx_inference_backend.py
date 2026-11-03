@@ -414,6 +414,8 @@ def test_a_load_warms_zoo_scopes_under_its_int8_decision(monkeypatch, mlx_moe, o
             ("warm", True, active),
             "/int8",
             "/rng",
+            # The resident batch warms in its own block, unless the first warm-up lost the queue.
+            *["rng", "/rng"] * (outcome != "dead_queue"),
         ]
     )
     assert events == ["gate_up", *warmed]
