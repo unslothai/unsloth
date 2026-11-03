@@ -15,6 +15,7 @@ import types
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 LLAMA = REPO_ROOT / "unsloth" / "models" / "llama.py"
@@ -755,7 +756,7 @@ def test_scaled_config_compiles_without_tracing_config_initialization(rope_type)
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA/ROCm accelerator required")
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA/ROCm accelerator required")
 @pytest.mark.parametrize(
     "kind", ["GemmaFixedRotaryEmbedding", "GemmaFixedLinearScalingRotaryEmbedding"]
 )
