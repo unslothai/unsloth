@@ -2128,9 +2128,7 @@ def _fp8_needs_offline_quantize(resolved_name, requested_name, fast_inference):
 
 
 def _drop_fp8_dequantize_conversions(model):
-    """Forget the Fp8Dequantize load conversions of a dequantizing fp8 load. save_pretrained reverses
-    them into Fp8Quantize, writing fp8 weights under a config with no quantization_config, so a reload
-    reads the raw fp8 values as 16bit weights. Returns how many conversions changed."""
+    """Drop reverse FP8 conversions that would save unmarked FP8 weights as a 16-bit checkpoint."""
     conversions = getattr(model, "_weight_conversions", None)
     if not conversions:
         return 0
@@ -2144,9 +2142,12 @@ def _drop_fp8_dequantize_conversions(model):
         return tuple(p[:-1] if p.endswith("$") else p for p in patterns)
 
     def _sources(patterns):
-        # The dequantizing copy anchors `.weight` sources with `$` and adds `.weight_scale_inv$` ones.
         patterns = [p[:-1] if p.endswith("$") else p for p in patterns or []]
-        return tuple(sorted(p for p in patterns if not p.endswith(".weight_scale_inv")))
+        return tuple(
+            sorted(
+                p for p in patterns if not p.endswith((".weight_scale_inv", ".activation_scale"))
+            )
+        )
 
     def _source_forms(conversion):
         return {
@@ -2174,7 +2175,6 @@ def _drop_fp8_dequantize_conversions(model):
 
     plain = None
     kept, changed = [], 0
-    # Converters the load left untouched stay as they are; a counterpart equal to one is not re-added.
     retained = {_signature(c) for c in conversions if not _has_dequant(c)}
     for conversion in conversions:
         operations = getattr(conversion, "operations", None) or []
@@ -2185,19 +2185,15 @@ def _drop_fp8_dequantize_conversions(model):
             # transformers dropped the fp8 config: 16bit weights, so no bitsandbytes stamp either.
             model._unsloth_fp8_dequantized = True
         if all(isinstance(op, Fp8Dequantize) for op in operations):
-            # weight + weight_scale_inv -> weight: the 16bit weight saves as it is.
             changed += 1
             continue
-        # A model converter (expert merge, ...) with the dequant prepended: keep its quantizer-free form.
         if plain is None:
             try:
                 from transformers.conversion_mapping import get_model_conversion_mapping
                 plain = get_model_conversion_mapping(model, None, None)
             except Exception:
                 plain = []
-        # A composite model scopes one converter per submodel; the dequantizing copy can lose its
-        # scope_prefix, so an unscoped conversion is replaced by every scoped counterpart with the same
-        # sources, targets and operations (another submodel's converter can share type and targets).
+        # Dequantization can lose scope_prefix; restore every matching scoped counterpart.
         scope = getattr(conversion, "scope_prefix", None)
         sources = _source_forms(conversion)
         matches = [

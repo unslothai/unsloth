@@ -1071,7 +1071,8 @@ class ExportBackend:
                 self._audio_type = detect_audio_type(
                     model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
-                self.is_vision = not self._audio_type and is_vision_model(
+                # audio_vlm (Gemma 3n/4, LFM3-Omni) also takes images: its text load ships no processor.
+                self.is_vision = self._audio_type in (None, "audio_vlm") and is_vision_model(
                     model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
                 from utils.models.diffusion_lm import diffusion_lm_profile_for_model
