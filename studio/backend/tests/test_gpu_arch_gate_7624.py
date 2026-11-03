@@ -432,6 +432,9 @@ class TestUnpinnedArchCrashRetry:
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set())
         )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_visibility_mask_is_unmappable", staticmethod(lambda: False)
+        )
 
     def test_drops_the_crashed_card(self):
         assert LlamaCppBackend._unpinned_arch_crash_retry(_UNPINNED_CRASH, [0, 1, 2]) == (
@@ -474,6 +477,21 @@ class TestUnpinnedArchCrashRetry:
         assert LlamaCppBackend._unpinned_arch_crash_retry(
             _UNPINNED_CRASH, [0, 1, 2], child_ids = (0, 1)
         ) == ([], [])
+
+    def test_an_unmappable_mask_is_left_alone(self, monkeypatch):
+        # A UUID/MIG mask resolves to no ids; reading the ordinal as physical could expose a hidden card.
+        monkeypatch.setattr(
+            LlamaCppBackend, "_visibility_mask_is_unmappable", staticmethod(lambda: True)
+        )
+        assert LlamaCppBackend._unpinned_arch_crash_retry(_UNPINNED_CRASH, [0, 1, 2]) == ([], [])
+
+    def test_the_childs_own_mask_still_maps_under_an_unmappable_parent(self, monkeypatch):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_visibility_mask_is_unmappable", staticmethod(lambda: True)
+        )
+        assert LlamaCppBackend._unpinned_arch_crash_retry(
+            _UNPINNED_CRASH, [0, 1, 2], child_ids = (0, 2, 1)
+        ) == ([1], [0, 2])
 
     def test_ordinal_outside_the_mask_is_not_guessed(self, monkeypatch):
         monkeypatch.setattr(

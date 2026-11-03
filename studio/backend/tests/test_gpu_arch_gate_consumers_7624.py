@@ -536,6 +536,10 @@ class TestArchRetryDropsTensorSplit:
         block = text.split("self._kernel_image_invalid(_arch_crash_tail)")[1]
         block = block.split('label = "-archfallback"')[0]
         assert "self._unpinned_arch_crash_retry(" in block
+        # A user device selector numbers cards by the unnarrowed set, so it opts the launch out.
+        assert block.index("elif _cache_target_unknown:") < block.index(
+            "self._unpinned_arch_crash_retry("
+        )
         assert "self._arch_gate_dropped_tensor_split = tuple(self._tensor_split)" in block
 
 
