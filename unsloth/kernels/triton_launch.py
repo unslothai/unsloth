@@ -15,6 +15,7 @@ __all__ = [
     "launch",
     "relaunch",
     "tag_compile_cache",
+    "jit_any_alignment",
 ]
 
 # CPU-only torch builds have no CUDA stream binding.
@@ -42,6 +43,20 @@ def _hooks_set():
     return _active(getattr(CompiledKernel, "launch_enter_hook", None)) or _active(
         getattr(CompiledKernel, "launch_exit_hook", None)
     )
+
+
+def jit_any_alignment(*names):
+    """triton.jit that keeps the == 1 specialization of the named int args but not the % 16 one.
+    For a size that is 1 in decode and anything in prefill: two binaries (decode, other), both built
+    by the first generate, instead of a third one the first time a size is a multiple of 16."""
+
+    def wrap(fn):
+        try:
+            return triton.jit(fn, do_not_specialize_on_alignment = list(names))
+        except TypeError:  # a Triton without do_not_specialize_on_alignment
+            return triton.jit(fn)
+
+    return wrap
 
 
 def relaunch(entry, grid, device_index, args):

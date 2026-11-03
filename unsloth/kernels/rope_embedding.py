@@ -19,6 +19,7 @@ import torch
 from ..device_type import DEVICE_COUNT, DEVICE_TYPE_TORCH
 from typing import Tuple
 from .utils import long_indexing, next_power_of_2, torch_gpu_device, torch_device_stream
+from .triton_launch import jit_any_alignment
 from .rms_layernorm import (
     _BF16_TRACEABLE,
     _TRACEABLE,
@@ -224,7 +225,8 @@ def _rope_embedding_QK(
 
 # No triton.heuristics wrapper: the launcher passes real bools, and the wrapper's per-call cost
 # showed up at small (decode / short-sequence) shapes.
-_rope_embedding_QK = triton.jit(_rope_embedding_QK)
+# seqlen is 1 in decode and the prompt length in prefill: no % 16 binary for multiple-of-16 prompts.
+_rope_embedding_QK = jit_any_alignment("seqlen")(_rope_embedding_QK)
 
 # Elements of one half-head tile a program rotates: several heads per program instead of one
 # program per (row, head) with half its lanes masked off.
