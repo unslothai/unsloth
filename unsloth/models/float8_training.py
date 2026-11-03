@@ -6,6 +6,8 @@ torchao.float8.Float8LinearConfig); with native FSDP2 convert before sharding.""
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import torch
 
 
@@ -661,6 +663,155 @@ def _fp8_lora_owner(model):
     return getter() if getattr(model, "peft_config", None) and callable(getter) else model
 
 
+@lru_cache(maxsize = 128)
+def _fp8_lora_operator_code(code, names):
+    return code.replace(co_varnames = names + code.co_varnames[2:])
+
+
+@lru_cache(maxsize = 128)
+def _fp8_lora_proxy_code(name, receiver, value):
+    source = f"def forward({receiver}, {value}):\n    return {name}({receiver}, {value}={value})\n"
+    return compile(source, "<Unsloth FP8 forwarding contract>", "exec").co_consts[0]
+
+
+def _prepare_fp8_lora_operators(model, allow_cpu = False):
+    import inspect
+    import os
+    import types
+    from transformers.activations import ACT2FN
+    from ..kernels.fast_lora import apply_lora_mlp_swiglu
+    from ..kernels.rms_layernorm import fast_rms_layernorm
+    from unsloth_zoo.temporary_patches.common import unwrap_already_compiled
+
+    owner = _fp8_lora_owner(model)
+    if os.environ.get("UNSLOTH_FP8_LORA_FUSED_OPS", "1") == "0" or owner.__dict__.get(
+        "_unsloth_fp8_lora_kernel_forwards"
+    ):
+        return
+
+    def fingerprint(function):
+        if isinstance(function, types.CodeType):
+            code = function
+        elif isinstance(function, types.FunctionType):
+            code = function.__code__
+        else:
+            return None
+        return (
+            code.co_code,
+            code.co_consts,
+            code.co_names,
+            code.co_argcount,
+            code.co_kwonlyargcount,
+            code.co_posonlyargcount,
+            code.co_flags & (inspect.CO_VARARGS | inspect.CO_VARKEYWORDS),
+        )
+
+    def fused_mlp(self, X):
+        X = X.contiguous()
+        if X.ndim == 2:
+            return apply_lora_mlp_swiglu(self, X.unsqueeze(0), inplace = False).squeeze(0)
+        return apply_lora_mlp_swiglu(self, X, inplace = False)
+
+    def rms_equation(self, x):
+        dtype = x.dtype
+        x = x.to(torch.float32)
+        variance = x.pow(2).mean(-1, keepdim = True)
+        x = x * torch.rsqrt(variance + self.variance_epsilon)
+        return self.weight * x.to(dtype)
+
+    def mlp_equation(self, x):
+        output = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        return output
+
+    def mlp_expression(self, x):
+        return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+
+    templates = (
+        (rms_equation, fast_rms_layernorm),
+        (mlp_equation, fused_mlp),
+        (mlp_expression, fused_mlp),
+    )
+    cache = owner.__dict__.setdefault("_unsloth_fp8_lora_kernel_cache", {})
+    forwards = []
+    for module in model.modules():
+        if not type(module).__module__.startswith(
+            ("transformers.models.", "unsloth_compiled_module_")
+        ):
+            continue
+        for name in ("forward", "_old_forward"):
+            method = getattr(module, name, None)
+            function = getattr(method, "__func__", None)
+            if function is None or function.__code__.co_argcount != 2:
+                continue
+            equation = function
+            if type(module).__module__.startswith("unsloth_compiled_module_"):
+                name_forward = type(module).__name__ + "_forward"
+                if function.__code__.co_names != (name_forward,):
+                    continue
+                proxy = _fp8_lora_proxy_code(name_forward, *function.__code__.co_varnames[:2])
+                if fingerprint(function) != fingerprint(proxy):
+                    continue
+                equation = unwrap_already_compiled(function.__globals__.get(name_forward))
+            for template, kernel in templates:
+                # Match the installed native equation, including constants, before replacing it.
+                if fingerprint(equation) != fingerprint(template):
+                    continue
+                if function.__code__.co_argcount != 2:
+                    continue
+                if kernel is fused_mlp:
+                    activation = getattr(module, "act_fn", None)
+                    if type(activation) not in (type(ACT2FN["silu"]), torch.nn.SiLU):
+                        continue
+                    if (
+                        getattr(activation, "act", torch.nn.functional.silu)
+                        is not torch.nn.functional.silu
+                    ):
+                        continue
+                    projs = [
+                        getattr(module, part, None)
+                        for part in ("gate_proj", "up_proj", "down_proj")
+                    ]
+                    states = [
+                        getattr(getattr(proj, "base_layer", None), "__dict__", {}).get(
+                            "_unsloth_fp8_lora"
+                        )
+                        for proj in projs
+                    ]
+                    if not all(
+                        state is not None and (allow_cpu or state.device.type == "cuda")
+                        for state in states
+                    ):
+                        continue
+                else:
+                    weight = getattr(module, "weight", None)
+                    if equation.__globals__.get("torch") is not torch or weight is None:
+                        continue
+                    if not allow_cpu and weight.device.type != "cuda":
+                        continue
+                operator = apply_lora_mlp_swiglu if kernel is fused_mlp else kernel
+                key = (id(module), name, function, operator, kernel.__code__)
+                replacement = cache.get(key)
+                if replacement is None:
+                    # Preserve native keyword names without a Python wrapper in each block.
+                    code = _fp8_lora_operator_code(
+                        kernel.__code__, function.__code__.co_varnames[:2]
+                    )
+                    replacement = types.FunctionType(
+                        code,
+                        kernel.__globals__,
+                        function.__name__,
+                        kernel.__defaults__,
+                        kernel.__closure__,
+                    )
+                    replacement = types.MethodType(replacement, method.__self__)
+                    # Reuse the binding across GRPO inference/training cycles to retain compiled graphs.
+                    cache[key] = replacement
+                forwards.append((module, name, module.__dict__.get(name)))
+                setattr(module, name, replacement)
+                break
+    owner.__dict__["_unsloth_fp8_lora_kernel_forwards"] = tuple(forwards)
+
+
 def _prepare_fp8_lora_loss(model):
     import functools
     import types
@@ -748,6 +899,11 @@ def _prepare_fp8_lora_loss(model):
 
 def restore_fp8_lora_for_inference(model):
     owner = _fp8_lora_owner(model)
+    for module, name, method in owner.__dict__.pop("_unsloth_fp8_lora_kernel_forwards", ()):
+        if method is None:
+            module.__dict__.pop(name, None)
+        else:
+            setattr(module, name, method)
     for module, name, method in owner.__dict__.pop("_unsloth_fp8_lora_loss_forwards", ()):
         if method is None:
             module.__dict__.pop(name, None)
@@ -831,6 +987,7 @@ def enable_fp8_lora(
         print(f"Unsloth: fp8 LoRA base on {len(converted)} Linear layers.")
     if converted:
         _prepare_fp8_lora_loss(model)
+        _prepare_fp8_lora_operators(model)
     if converted and getattr(model, "_unsloth_block_compile_installed", False):
         from ._block_compile import patch_block_compile
         patch_block_compile(model)

@@ -495,10 +495,24 @@ def test_fp8_loss_route_traces_fullgraph_without_changing_loss_or_input_gradient
     )
     (expected_grad,) = torch.autograd.grad(expected, x)
     torch._dynamo.reset()
-    actual = torch.compile(owner.forward, backend = "aot_eager", fullgraph = True)(x)
+    compiled = torch.compile(owner, backend = "aot_eager", fullgraph = True)
+    actual = compiled(x)
     (actual_grad,) = torch.autograd.grad(actual, x)
     assert torch.equal(actual, expected)
     assert torch.equal(actual_grad, expected_grad)
+    if decorated and private_namespace:
+        from torch._dynamo.utils import counters
+
+        before = counters["stats"]["unique_graphs"]
+        compiled(x)
+        stable = counters["stats"]["unique_graphs"] - before
+        f8t.restore_fp8_lora_for_inference(model)
+        f8t.enable_fp8_lora(model, allow_cpu = True)
+        before = counters["stats"]["unique_graphs"]
+        compiled(x)
+        rebound = counters["stats"]["unique_graphs"] - before
+        print("LOSS_REBIND_GRAPHS", stable, rebound)
+        assert stable == rebound == 0
 
 
 @pytest.mark.parametrize("return_dict", [False, True])
@@ -1605,3 +1619,170 @@ def test_fp8_lora_accumulates_small_adapter_before_base_rounding(monkeypatch):
     assert torch.equal(reference, torch.full_like(x, 1 + 1 / 128))
     assert torch.equal(actual, reference)
     assert not torch.equal(old_order, reference)
+
+
+@pytest.mark.parametrize(
+    "mode", ["full", "gelu", "partial", "custom", "custom_class", "private_norm", "generated"]
+)
+@pytest.mark.parametrize("layout", ["3d", "2d", "strided_3d", "strided_2d"])
+def test_native_operator_binding_preserves_keywords_and_restores_instances(
+    monkeypatch, mode, layout
+):
+    import types
+    from peft import LoraConfig, get_peft_model
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+    from transformers.models.qwen3.modeling_qwen3 import Qwen3MLP, Qwen3RMSNorm
+    from unsloth.kernels import rms_layernorm
+
+    model = get_peft_model(
+        Qwen3ForCausalLM(
+            Qwen3Config(
+                vocab_size = 64,
+                hidden_size = 32,
+                intermediate_size = 64,
+                num_hidden_layers = 2,
+                num_attention_heads = 4,
+                num_key_value_heads = 2,
+            )
+        ),
+        LoraConfig(r = 4, target_modules = ["gate_proj", "up_proj", "down_proj"]),
+    )
+    owner = model.get_base_model()
+    mlp = owner.model.layers[0].mlp
+    norm = owner.model.norm
+    original_mlp, original_norm = Qwen3MLP.forward, Qwen3RMSNorm.forward
+    for layer in owner.model.layers:
+        for part in ("gate_proj", "up_proj", "down_proj"):
+            base = getattr(layer.mlp, part).base_layer
+            base.__dict__["_unsloth_fp8_lora"] = FL.Fp8LoRABaseState(base.weight)
+    if mode == "gelu":
+        mlp.act_fn = torch.nn.GELU()
+    elif mode == "partial":
+        mlp.down_proj.base_layer.__dict__.pop("_unsloth_fp8_lora")
+    elif mode in ("custom", "custom_class"):
+
+        def residual(self, x):
+            return original_mlp(self, x) + x
+
+        if mode == "custom":
+            mlp.forward = types.MethodType(residual, mlp)
+        else:
+            residual.__module__ = Qwen3MLP.__module__
+            monkeypatch.setattr(Qwen3MLP, "forward", residual)
+    elif mode == "private_norm":
+        namespace = {k: v for k, v in original_norm.__globals__.items() if k != "__name__"}
+        private = types.FunctionType(original_norm.__code__, namespace)
+        assert private.__module__ is None
+        norm.forward = types.MethodType(private, norm)
+    elif mode == "generated":
+        from unsloth_zoo.temporary_patches.utils import torch_compile_with_fallback
+        for cls, original, argument in (
+            (Qwen3MLP, original_mlp, "x"),
+            (Qwen3RMSNorm, original_norm, "hidden_states"),
+        ):
+            helper = cls.__name__ + "_forward"
+            namespace = {
+                "__name__": "unsloth_compiled_module_test",
+                helper: torch_compile_with_fallback(backend = "aot_eager")(original),
+            }
+            exec(
+                f"def forward(self, {argument}):\n    return {helper}(self, {argument}={argument})\n",
+                namespace,
+            )
+            monkeypatch.setattr(cls, "__module__", namespace["__name__"])
+            monkeypatch.setattr(cls, "forward", namespace["forward"])
+    installed_class_forward = Qwen3MLP.forward
+    installed_norm_forward = Qwen3RMSNorm.forward
+    saved_override = mlp.__dict__.get("forward")
+    saved_norm_override = norm.__dict__.get("forward")
+    x = torch.randn(2, 3, 64)[..., ::2] if layout.startswith("strided") else torch.randn(2, 3, 32)
+    if layout.endswith("2d"):
+        x = x.reshape(6, 32)
+    x.requires_grad_(True)
+    expected_mlp, expected_norm = mlp(x = x), norm(hidden_states = x)
+    calls = {"norm": 0, "mlp": 0}
+
+    def norm_spy(
+        layernorm,
+        X,
+        gemma = False,
+        save_output = False,
+        reuse_grad = False,
+    ):
+        if not torch.compiler.is_compiling():
+            calls["norm"] += 1
+        return original_norm(layernorm, X)
+
+    def mlp_spy(
+        self,
+        X,
+        inplace = True,
+    ):
+        assert X.ndim == 3 and X.is_contiguous()
+        if not torch.compiler.is_compiling():
+            calls["mlp"] += 1
+        return original_mlp(self, X)
+
+    monkeypatch.setattr(rms_layernorm, "fast_rms_layernorm", norm_spy)
+    monkeypatch.setattr(FLK, "apply_lora_mlp_swiglu", mlp_spy)
+    monkeypatch.setenv("UNSLOTH_FP8_LORA_FUSED_OPS", "0")
+    f8t._prepare_fp8_lora_operators(model, allow_cpu = True)
+    assert "_unsloth_fp8_lora_kernel_forwards" not in owner.__dict__
+    monkeypatch.setenv("UNSLOTH_FP8_LORA_FUSED_OPS", "1")
+    f8t._prepare_fp8_lora_operators(model, allow_cpu = True)
+    installed = owner.__dict__["_unsloth_fp8_lora_kernel_forwards"]
+    assert installed
+    f8t._prepare_fp8_lora_operators(model, allow_cpu = True)
+    assert owner.__dict__["_unsloth_fp8_lora_kernel_forwards"] is installed
+    assert torch.equal(mlp(x = x), expected_mlp)
+    assert torch.equal(norm(hidden_states = x), expected_norm)
+    assert calls == {"norm": 1, "mlp": int(mode in ("full", "private_norm", "generated"))}
+    assert (
+        Qwen3MLP.forward is installed_class_forward
+        and Qwen3RMSNorm.forward is installed_norm_forward
+    )
+    if mode == "private_norm" and layout == "strided_2d":
+        reference_grad = torch.autograd.grad(expected_mlp.sum() + expected_norm.sum(), x)[0]
+        compiled_mlp = torch.compile(mlp, backend = "aot_eager", fullgraph = True)
+        compiled_norm = torch.compile(norm, backend = "aot_eager", fullgraph = True)
+        actual_mlp, actual_norm = compiled_mlp(x = x), compiled_norm(hidden_states = x)
+        torch.testing.assert_close(actual_mlp, expected_mlp)
+        torch.testing.assert_close(actual_norm, expected_norm)
+        actual_grad = torch.autograd.grad(actual_mlp.sum() + actual_norm.sum(), x)[0]
+        torch.testing.assert_close(actual_grad, reference_grad)
+        assert calls == {"norm": 1, "mlp": 1}
+        from torch._dynamo.utils import counters
+
+        before = counters["stats"]["unique_graphs"]
+        compiled_mlp(x = x)
+        compiled_norm(hidden_states = x)
+        stable = counters["stats"]["unique_graphs"] - before
+        f8t.restore_fp8_lora_for_inference(model)
+        f8t._prepare_fp8_lora_operators(model, allow_cpu = True)
+        before = counters["stats"]["unique_graphs"]
+        compiled_mlp(x = x)
+        compiled_norm(hidden_states = x)
+        rebound = counters["stats"]["unique_graphs"] - before
+        print("OPERATOR_REBIND_GRAPHS", stable, rebound)
+        assert stable == rebound == 0
+
+        def call(module, value):
+            return module(value)
+
+        shared = torch.compile(call, backend = "aot_eager", fullgraph = True)
+        shared(norm, x)
+        shared(mlp, x)
+        before = counters["stats"]["unique_graphs"]
+        other_norm = owner.model.layers[0].input_layernorm
+        other_mlp = owner.model.layers[1].mlp
+        torch.testing.assert_close(shared(other_norm, x), original_norm(other_norm, x))
+        torch.testing.assert_close(shared(other_mlp, x), original_mlp(other_mlp, x))
+        shared_growth = counters["stats"]["unique_graphs"] - before
+        print("OPERATOR_SHARED_GRAPHS", shared_growth)
+        assert shared_growth == 0
+    f8t.restore_fp8_lora_for_inference(model)
+    assert mlp.__dict__.get("forward") is saved_override
+    assert norm.__dict__.get("forward") is saved_norm_override
+    assert torch.equal(mlp(x = x), expected_mlp)
+    assert torch.equal(norm(hidden_states = x), expected_norm)
+    assert calls == {"norm": 1, "mlp": int(mode in ("full", "private_norm", "generated"))}
