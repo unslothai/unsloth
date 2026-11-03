@@ -903,10 +903,11 @@ def _apply_deepseek_reasoning_controls(
 
 
 _KIMI_K3_EFFORT_ALIASES = {"minimal": "low", "medium": "high", "xhigh": "max"}
+_KIMI_K3_FAMILY = re.compile(r"kimi-k3(?:$|[.-])")
 
 
 def _is_kimi_k3(provider_type: Optional[str], model: Optional[str]) -> bool:
-    return provider_type == "kimi" and (model or "").strip().lower() == "kimi-k3"
+    return provider_type == "kimi" and bool(_KIMI_K3_FAMILY.match((model or "").strip().lower()))
 
 
 def _apply_kimi_k3_controls(body: dict[str, Any], reasoning_effort: Optional[str]) -> None:
