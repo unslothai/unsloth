@@ -300,6 +300,12 @@ def grpo_reward_inputs(
     if any(spec.get("kind") == "python" for spec in reward_specs or []):
         out.update(python_reward_columns(out, keep_tools = "tools" in out))
     out.pop("tools", None)
+    prompt = out["prompt"]
+    if isinstance(prompt, list) and prompt and prompt[-1].get("role") == "assistant":
+        from core.training.rewards import PREFILL_COLUMN
+
+        # Training continues an assistant-ended prompt and scores that prefill plus the reply.
+        out[PREFILL_COLUMN] = prompt[-1].get("content") or ""
     return [out.pop("prompt")], {k: [v] for k, v in out.items()}
 
 
