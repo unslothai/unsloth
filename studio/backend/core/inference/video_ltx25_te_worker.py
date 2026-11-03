@@ -697,6 +697,7 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
             {
                 "type": "error",
                 "error": f"LTX-2.5 text encoder failed to load: {exc}",
+                "cache_miss": isinstance(exc, OSError) or isinstance(exc.__cause__, OSError),
                 "stack": traceback.format_exc(limit = 20),
             }
         )

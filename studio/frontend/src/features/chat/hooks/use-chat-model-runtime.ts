@@ -236,6 +236,7 @@ type ActiveModelLoadRun = {
   rollbackLoadedState: ReturnType<typeof useChatRuntimeStore.getState>;
   /** Set once the preliminary unload removed the prior resident; cancel must then reconcile. */
   residentModelUnloaded: boolean;
+  downloadKeepsResident: boolean;
   forceCancelActive: boolean;
   /** Resolves when the owning coroutine unwinds; cancellation holds the slot until then. */
   settledPromise: Promise<void>;
@@ -1076,7 +1077,11 @@ export function useChatModelRuntime() {
           if (ownsModelLoadRun(activeLoadRunRef.current, run)) {
             // Hold the slot until the aborted coroutine unwinds from its unabortable awaits.
             await run.settledPromise;
-            if (run.loadAttemptPath && run.forceCancelActive && !run.residentModelUnloaded) {
+            if (
+              run.loadAttemptPath &&
+              (run.forceCancelActive || run.downloadKeepsResident) &&
+              !run.residentModelUnloaded
+            ) {
               try {
                 const status = await getInferenceStatus(undefined, run.rollbackCheckpoint ?? undefined);
                 if ((status.loading?.length ?? 0) === 0) {
@@ -1092,7 +1097,9 @@ export function useChatModelRuntime() {
             }
             if (
               (!run.loadAttemptPath && run.residentModelUnloaded) ||
-              (run.loadAttemptPath && run.forceCancelActive && run.residentModelUnloaded)
+              (run.loadAttemptPath &&
+                (run.forceCancelActive || run.downloadKeepsResident) &&
+                run.residentModelUnloaded)
             ) {
               try {
                 // The store names the former resident but holds the cancelled target's settings.
@@ -1876,6 +1883,7 @@ export function useChatModelRuntime() {
           : currentRollbackState.activeNativePathExpiresAtMs ?? null,
         rollbackLoadedState: inheritedPendingRollback?.loadedState ?? currentRollbackState,
         residentModelUnloaded: inheritedPendingRollback?.residentUnloaded === true,
+        downloadKeepsResident: false,
         forceCancelActive,
         settledPromise: loadRunSettled,
         markSettled: markLoadRunSettled,
@@ -2542,8 +2550,10 @@ export function useChatModelRuntime() {
 
             stopQueuedRuns(stopDecision, keepsOthers || touchesOnlySelected);
             if (currentCheckpoint && !keepsOthers) {
+              // /load fetches a missing GGUF before stopping the resident, so a failed download keeps it.
+              loadRun.downloadKeepsResident = isGguf && !downloadComplete;
               // With chats generating, skip the preliminary unload so a rejected target truncates nothing.
-              if (!forceCancelActive && !touchesOnlySelected) {
+              if (!forceCancelActive && !touchesOnlySelected && !loadRun.downloadKeepsResident) {
                 await unloadModel({ model_path: currentCheckpoint });
                 // Only a real /unload removes the resident; the forced path leaves it to /load.
                 loadRun.residentModelUnloaded = true;
@@ -3566,6 +3576,7 @@ export function useChatModelRuntime() {
           previous.activeNativePathExpiresAtMs ?? null,
         rollbackLoadedState: previous,
         residentModelUnloaded: false,
+        downloadKeepsResident: false,
         forceCancelActive: false,
         settledPromise,
         markSettled: markLoadRunSettled,
