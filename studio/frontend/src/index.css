@@ -6146,6 +6146,10 @@ html[data-glass] {
   --glass-panel-fill: color-mix(in srgb, var(--panel-surface), var(--foreground) max(var(--glass-shade, 0%), var(--glass-pane-tone)));
   --glass-composer-fill: color-mix(in srgb, var(--background), var(--foreground) max(var(--glass-shade, 0%), var(--glass-pane-tone)));
 }
+/* Glass keeps the footer boundary clear; solid themes retain their scroll fade. */
+html[data-glass] [data-slot="sidebar-footer-fade"] {
+  display: none;
+}
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"],
 html[data-glass="macos"] [data-slot="sidebar-inner"] {
   background-color: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
