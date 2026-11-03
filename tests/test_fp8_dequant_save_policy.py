@@ -220,9 +220,6 @@ def test_explicit_and_automatic_dequantize_reload(tmp_path, explicit, monkeypatc
 
 @pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
 def test_heterogeneous_composite_keeps_one_copy_of_an_unwrapped_converter(monkeypatch):
-    # Two submodels whose converters share a type and target but differ in sources: only the
-    # `.weight`-sourced one gets the fp8 dequant prepended. The other one is kept as loaded and must
-    # not gain a second copy, or save_pretrained would reverse it twice.
     import transformers.conversion_mapping as cm
     from types import SimpleNamespace
     from transformers.core_model_loading import (
