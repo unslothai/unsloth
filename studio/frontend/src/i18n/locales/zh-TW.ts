@@ -1109,6 +1109,7 @@ export const zhTW = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "新增其他帳戶前，請先設定此安裝實例擁有者的密碼。此安裝實例有多個帳戶後，你將使用該密碼登入。",
       signsInAs: "以 {username} 登入",
       signsInAsOwner: "以 {alias} 或 {username} 登入",
       signInName: "您的登入名稱",
@@ -1994,6 +1995,7 @@ export const zhTW = {
         loadError: "無法載入模型自動切換設定。",
         saveError: "無法儲存模型自動切換設定。",
         idleError: "輸入 0 以保持模型載入，或輸入至少 60 秒。",
+        idleUnsaved: "尚未儲存。",
         keepKv: "卸載後保留聊天上下文",
         keepKvDescription:
           "在閒置卸載前，或在圖片或影片模型佔用 GPU 前儲存 KV 快取，讓恢復的聊天不必重新讀取記錄。最多佔用 10 GB 磁碟空間。",

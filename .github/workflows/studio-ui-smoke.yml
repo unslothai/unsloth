@@ -549,6 +549,13 @@ jobs:
           mkdir -p logs/playwright_image_footprint
           python tests/studio/playwright_image_model_footprint.py
 
+      - name: Image generation time regression (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+        run: python tests/studio/playwright_images_generation_time.py
+
       - name: Image staged-download cancel/retry regression (Playwright)
         if: matrix.shard == 'extra'
         env:
