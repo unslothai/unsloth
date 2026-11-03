@@ -6,6 +6,7 @@ merged_rollout_exact: bit-exact restore, checksummed), so decode runs one GEMM p
 finally block. fold_refusal() lists when it stays off. UNSLOTH_LORA_FOLD_GENERATE=0 disables it."""
 
 import contextlib
+import functools
 import os
 import threading
 import time
@@ -188,6 +189,21 @@ def fold_refusal(model):
         B = module.lora_B[adapter]
         if not isinstance(A, torch.nn.Linear) or not isinstance(B, torch.nn.Linear):
             return "unsupported_layer", None
+        # QAT computes fake_quant(W) + B @ A; a fold would give fake_quant(W + B @ A).
+        if any(
+            getattr(m, "weight_fake_quantizer", None) is not None
+            or getattr(m, "activation_fake_quantizer", None) is not None
+            for m in (base, A, B)
+        ):
+            return "qat", None
+        # PEFT's generate(adapter_names = ...) injects per-example adapters through these hooks and
+        # refuses them on merged layers.
+        if any(
+            isinstance(h, functools.partial)
+            and getattr(h.func, "__name__", "") == "_adapter_names_pre_forward_hook"
+            for h in module._forward_pre_hooks.values()
+        ):
+            return "mixed_adapters", None
         if any(_is_dtensor(t) or hasattr(t, "ds_id") for t in (W, A.weight, B.weight)):
             return "distributed", None
         # Params4bit / Int8Params / torchao / fp8 tensors are Parameter subclasses or other dtypes.
@@ -277,6 +293,8 @@ def lora_fold_generate(
             reason = "grad_enabled"
         elif requested_new_tokens(model, args, kwargs) < _min_tokens():
             reason = "short"
+        elif (kwargs or {}).get("adapter_names", None) is not None:
+            reason = "mixed_adapters"
         else:
             try:
                 reason, targets = fold_refusal(model)

@@ -414,6 +414,18 @@ def _refusal_cases():
     def dropout_train(m):
         m.train()
 
+    def qat(m):
+        m.base_model.model.model.layers[0].mlp.up_proj.base_layer.weight_fake_quantizer = torch.nn.Identity()
+
+    def mixed_hooks(m):
+        from functools import partial
+        from peft.tuners.lora.model import _adapter_names_pre_forward_hook
+
+        hook = partial(_adapter_names_pre_forward_hook, adapter_names = ["default", "__base__"])
+        m.base_model.model.model.layers[0].self_attn.q_proj.register_forward_pre_hook(
+            hook, with_kwargs = True
+        )
+
     return [
         ("no_lora", {}, "unwrap", None),
         ("distributed", {}, None, tp),
@@ -429,6 +441,8 @@ def _refusal_cases():
         ("unsupported_layer", {"target_modules": ["q_proj", "embed_tokens"]}, None, None),
         ("dropout_active", {"lora_dropout": 0.1}, None, dropout_train),
         ("not_16bit", {}, "fp32", None),
+        ("qat", {}, None, qat),
+        ("mixed_adapters", {}, None, mixed_hooks),
     ]
 
 
@@ -467,6 +481,11 @@ def test_environment_refusals(monkeypatch, _clean):
     with torch.inference_mode(), fold.lora_fold_generate(model, (), kw) as engaged:
         assert engaged is False
     monkeypatch.delenv("UNSLOTH_LORA_FOLD_GENERATE")
+    # Mixed-adapter batches: PEFT refuses adapter_names on merged layers.
+    with torch.inference_mode(), fold.lora_fold_generate(
+        model, (), {**kw, "adapter_names": ["default", "__base__"]}
+    ) as engaged:
+        assert engaged is False
     # Grad on: refused (the Unsloth wrappers enter it inside their inference-mode scope).
     with fold.lora_fold_generate(model, (), kw) as engaged:
         assert engaged is False
@@ -476,6 +495,7 @@ def test_environment_refusals(monkeypatch, _clean):
     assert fold.stats()["refused"] == {
         "distributed": 1,
         "kill_switch": 1,
+        "mixed_adapters": 1,
         "grad_enabled": 1,
         "exact_unavailable": 1,
     }
