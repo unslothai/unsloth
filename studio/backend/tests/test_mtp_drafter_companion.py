@@ -4292,3 +4292,175 @@ def test_download_dflash_asks_the_hub_for_sizes_only_with_a_candidate(
     picked = _dflash_download_pick(monkeypatch, listing = listing, near_path = str(weight))
     assert picked == ("dflash-model.gguf" if sized else None)
     assert len(calls) == (1 if sized else 0)
+
+
+def _dflash_snapshot_load(
+    monkeypatch,
+    tmp_path,
+    files,
+    weight,
+    *,
+    hub_sizes = True,
+):
+    """``files``: name -> (architecture, bytes, on disk); the Hub lists them all or answers nothing."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    snap = tmp_path / "models--org--repo" / "snapshots" / "abc"
+    snap.mkdir(parents = True)
+    for name, (arch, size, on_disk) in files.items():
+        if on_disk:
+            path = _write_gguf(snap / name, arch)
+            with open(path, "ab") as fh:
+                fh.write(b"\0" * (size - path.stat().st_size))
+    calls: list = []
+
+    def _sizes(repo, token = None):
+        calls.append(repo)
+        return {name: size for name, (_, size, _) in files.items()} if hub_sizes else {}
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(LlamaCppBackend, "_remote_root_gguf_sizes", staticmethod(_sizes))
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {"supports_dflash": True}),
+    )
+
+    def _fake_companion(
+        *,
+        pick,
+        outcome = None,
+        **_,
+    ):
+        target = pick(list(files))
+        return str(snap / target) if target and (snap / target).is_file() else None
+
+    b = LlamaCppBackend()
+    b._download_companion_gguf = _fake_companion
+    got = b._download_dflash(
+        hf_repo = "org/repo", near_path = str(snap / weight), binary = "/fake/llama-server"
+    )
+    return (got and Path(got).relative_to(snap).as_posix()), len(calls)
+
+
+def test_download_dflash_reuses_a_cached_sidecar_without_asking_the_hub_for_sizes(
+    monkeypatch, tmp_path
+):
+    """An unreachable Hub not flagged offline otherwise stalls the load until the client timeout."""
+    files = {
+        "model-Q4_K_M.gguf": ("llama", 100_000, True),
+        "dflash-kquant.gguf": ("dflash", 2_000, True),
+    }
+    got, hub_calls = _dflash_snapshot_load(monkeypatch, tmp_path, files, "model-Q4_K_M.gguf")
+    assert got == "dflash-kquant.gguf"
+    assert hub_calls == 0
+
+
+_D, _L = "dflash", "llama"
+
+
+@pytest.mark.parametrize("hub_sizes", [True, False], ids = ["hub-answers", "hub-down"])
+@pytest.mark.parametrize(
+    "weight, files, expected, expected_calls",
+    [
+        # Picks and model_info calls as (Hub answers, Hub down).
+        pytest.param(
+            "model-Q4_K_M-00001-of-00002.gguf",
+            {
+                "model-Q4_K_M-00001-of-00002.gguf": (_L, 3_000, True),
+                "model-Q4_K_M-00002-of-00002.gguf": (_L, 3_000, True),
+                "dflash-kquant.gguf": (_D, 5_000, True),
+            },
+            ("dflash-kquant.gguf", "dflash-kquant.gguf"),
+            (0, 0),
+            id = "split-target",
+        ),
+        pytest.param(
+            "model-Q4_K_M.gguf",
+            {
+                "model-Q4_K_M.gguf": (_L, 100_000, True),
+                "dflash-kquant-00001-of-00002.gguf": (_D, 2_000, True),
+                "dflash-kquant-00002-of-00002.gguf": (_D, 2_000, True),
+            },
+            ("dflash-kquant-00001-of-00002.gguf", "dflash-kquant-00001-of-00002.gguf"),
+            (0, 0),
+            id = "local-split",
+        ),
+        pytest.param(
+            "model-Q4_K_M.gguf",
+            {
+                "model-Q4_K_M.gguf": (_L, 100_000, True),
+                "dflash-kquant-00001-of-00002.gguf": (_D, 2_000, True),
+                "dflash-kquant-00002-of-00002.gguf": (_D, 2_000, False),
+            },
+            ("dflash-kquant-00001-of-00002.gguf", "dflash-kquant-00001-of-00002.gguf"),
+            (1, 1),
+            id = "local-split-incomplete",
+        ),
+        pytest.param(
+            "model-B-Q4_K_M.gguf",
+            {
+                "model-A-Q4_K_M.gguf": (_L, 100_000, True),
+                "model-B-Q4_K_M.gguf": (_L, 100_000, True),
+                "dflash-model-A-Q8_0.gguf": (_D, 2_000, True),
+                "dflash-kquant.gguf": (_D, 2_000, True),
+            },
+            ("dflash-kquant.gguf", "dflash-kquant.gguf"),
+            (0, 0),
+            id = "mixed-families",
+        ),
+        pytest.param(
+            "model-Q4_K_M.gguf",
+            {
+                "model-Q4_K_M.gguf": (_L, 4_000, True),
+                "dflash-model-BF16.gguf": (_D, 40_000, True),
+                "dflash-kquant.gguf": (_D, 500, True),
+            },
+            # An unanswered size request keeps every candidate, as before.
+            ("dflash-kquant.gguf", "dflash-model-BF16.gguf"),
+            (1, 1),
+            id = "oversize",
+        ),
+        pytest.param(
+            "model-Q4_K_M.gguf",
+            {
+                "model-Q4_K_M.gguf": (_L, 10_000, True),
+                "dflash-big-00001-of-00002.gguf": (_D, 6_000, True),
+                "dflash-big-00002-of-00002.gguf": (_D, 6_000, True),
+            },
+            (None, "dflash-big-00001-of-00002.gguf"),
+            (1, 1),
+            id = "split-set-over-the-bound",
+        ),
+        pytest.param(
+            "model-Q4_K_M.gguf",
+            {
+                "model-Q4_K_M.gguf": (_L, 100_000, True),
+                "dflash-model-Q4_K_M.gguf": (_L, 2_000, True),
+                "dflash-kquant.gguf": (_D, 2_000, True),
+            },
+            ("dflash-kquant.gguf", "dflash-kquant.gguf"),
+            (0, 0),
+            id = "impostor",
+        ),
+        pytest.param(
+            "model-Q4_K_M.gguf",
+            {
+                "model-Q4_K_M.gguf": (_L, 100_000, True),
+                "dflash-kquant.gguf": (_D, 2_000, False),
+            },
+            (None, None),
+            (1, 1),
+            id = "not-cached",
+        ),
+    ],
+)
+def test_download_dflash_local_sizes_keep_the_hub_sized_picks(
+    monkeypatch, tmp_path, weight, files, expected, expected_calls, hub_sizes
+):
+    """Picks match the Hub-sized scan; only a bound dropping an on-disk file asks, at most once."""
+    got, hub_calls = _dflash_snapshot_load(
+        monkeypatch, tmp_path, files, weight, hub_sizes = hub_sizes
+    )
+    assert got == expected[0 if hub_sizes else 1]
+    assert hub_calls == expected_calls[0 if hub_sizes else 1]

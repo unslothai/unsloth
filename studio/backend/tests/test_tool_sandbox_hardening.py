@@ -93,6 +93,34 @@ def test_an_approved_host_call_loads_nothing_from_the_workdir(tmp_path, monkeypa
 
 
 @_POSIX
+def test_an_approved_host_call_imports_a_package_pip_installed_with_the_prefix_layout(
+    tmp_path, monkeypatch
+):
+    import sysconfig
+
+    workdir = tmp_path / "chat"
+    packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
+    site = sysconfig.get_path("purelib", vars = {"base": str(packages), "platbase": str(packages)})
+    os.makedirs(os.path.join(site, "chatns"))
+    with open(os.path.join(site, "prefixpkg.py"), "w", encoding = "utf-8") as f:
+        f.write("VALUE = 'from-prefix-layout'\n")
+    with open(os.path.join(site, "chatns", "mod.py"), "w", encoding = "utf-8") as f:
+        f.write("VALUE = 'from-prefix-namespace'\n")
+    host_file = tmp_path / "host" / "notes.csv"
+    host_file.parent.mkdir()
+    host_file.write_text("a,b\n", encoding = "utf-8")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    code = (
+        f"print('ROWS', open({str(host_file)!r}).read().strip())\n"
+        "import prefixpkg, chatns.mod\n"
+        "print('PKG', prefixpkg.VALUE, chatns.mod.VALUE)\n"
+    )
+    out = tools._python_exec(code, None, 60, "hardening-chat", host_access_approved = True)
+    assert "ROWS a,b" in out, out
+    assert "PKG from-prefix-layout from-prefix-namespace" in out, out
+
+
+@_POSIX
 def test_an_approved_terminal_call_reuses_chat_packages_without_shadowing(tmp_path, monkeypatch):
     workdir = _planted_workdir(tmp_path)
     # Terminal deliberately retains cwd imports; exercise only the session-package precedence here.

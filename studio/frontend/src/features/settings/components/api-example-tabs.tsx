@@ -13,7 +13,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   BotIcon,
-  Image01Icon,
+  ImageIcon,
   TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -47,7 +47,8 @@ export type ApiExampleKind =
   | "decision"
   | "agents";
 
-export function useApiExampleKinds(): {
+/** Training has no chip of its own: it shows only while the Train page's API button has it open. */
+export function useApiExampleKinds(current?: ApiExampleKind): {
   id: ApiExampleKind;
   label: string;
   icon: IconSvgElement;
@@ -60,7 +61,7 @@ export function useApiExampleKinds(): {
     {
       id: "media",
       label: "Images / Video",
-      icon: Image01Icon,
+      icon: ImageIcon,
       searchLabel: "settings.apiKeys.mediaApi.title",
     },
     {
@@ -69,12 +70,15 @@ export function useApiExampleKinds(): {
       icon: AiSpeechIcon,
       searchLabel: "settings.apiKeys.audioApi.title",
     },
-    {
-      id: "training",
-      label: "Training",
-      icon: TestTubeOutlineIcon,
-      searchLabel: "settings.apiKeys.trainingApi.title",
-    },
+    ...(current === "training"
+      ? [
+          {
+            id: "training" as const,
+            label: "Training",
+            icon: TestTubeOutlineIcon,
+          },
+        ]
+      : []),
     ...(isOwner
       ? [
           {
@@ -99,7 +103,7 @@ export function ApiExampleTabNav({
   className?: string;
 }): ReactElement {
   const t = useT();
-  const kinds = useApiExampleKinds();
+  const kinds = useApiExampleKinds(kind);
   return (
     <nav aria-label="Example" className={cn("flex flex-wrap gap-1", className)}>
       {kinds.map((entry) => (

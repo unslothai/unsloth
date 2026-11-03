@@ -8,11 +8,15 @@ by HF_HUB_DISABLE_XET=1, HF_HUB_ENABLE_HF_TRANSFER=0 (http), one writer per blob
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import signal
 import sys
 import threading
 import time
+import uuid
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Union
 
@@ -71,6 +75,15 @@ _METADATA_RETRY_DELAY = 1.0
 def _on_signal(signum, frame):
     # 130 is what `classify_exit` maps to the "cancelled" job state.
     sys.exit(130)
+
+
+def _lift_http_ceiling_on_modelscope() -> None:
+    """The hub refuses large HTTP transfers on the client side, for Hugging Face's storage; ModelScope's CDN serves them."""
+    from huggingface_hub import constants
+    from utils.hub_settings import MODELSCOPE, active_source
+
+    if active_source() == MODELSCOPE:
+        constants.MAX_HTTP_DOWNLOAD_SIZE = sys.maxsize
 
 
 def _install_signal_handlers() -> None:
@@ -223,6 +236,8 @@ def _retry_metadata_fetch(repo_id: str, fetch, *, label: str):
 
 
 _RESOLVED_COMMITS: dict[str, str] = {}
+# huggingface_hub's REGEX_COMMIT_HASH: only a full sha is taken as already resolved.
+_COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 def _model_info_with_retry(repo_id: str, hf_token: str | None):
@@ -243,6 +258,254 @@ def _model_info_with_retry(repo_id: str, hf_token: str | None):
     if isinstance(commit, str) and commit:
         _RESOLVED_COMMITS[repo_id] = commit
     return info
+
+
+def _read_ref(ref: Path):
+    try:
+        return ref.read_text(encoding = "utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _write_ref(ref: Path, commit: str) -> None:
+    """Atomic, with even transient files outside refs/ (scan_cache_dir reads branch names)."""
+    ref.parent.mkdir(parents = True, exist_ok = True)
+    tmp = ref.parent.parent / f".studio-{ref.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        tmp.write_text(commit, encoding = "utf-8")
+        os.replace(tmp, ref)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _pinned_revision(repo_type: RepoType, repo_id: str, commit) -> dict:
+    """Select an immutable revision without exposing an unverified snapshot through refs/main."""
+    if not isinstance(commit, str) or not _COMMIT_SHA.fullmatch(commit):
+        return {}
+    return {"revision": commit}
+
+
+def _model_manifest_attestation(commit) -> dict:
+    """Date copied files only when metadata resolved an immutable revision."""
+    if isinstance(commit, str) and _COMMIT_SHA.fullmatch(commit):
+        return {"commit_hash": commit, "metadata_derived": True}
+    return {}
+
+
+# Among cooperating workers, the latest-started verified success owns main.
+# SHA transfers leave main unchanged; native owner locks identify abandoned attempts.
+# Journal/ref writes are not a power-loss transaction and cannot coordinate external writers.
+
+
+@dataclass(frozen = True)
+class _MainRefState:
+    next_sequence: int = 1
+    published_sequence: int = 0
+    published_commit: str | None = None
+    attempts: tuple[tuple[int, str], ...] = ()
+    owners: tuple[tuple[int, str], ...] = ()
+
+
+def _start_main_ref(state: _MainRefState, commit: str, owner: str) -> tuple[_MainRefState, int]:
+    sequence = state.next_sequence
+    return _MainRefState(
+        sequence + 1,
+        state.published_sequence,
+        state.published_commit,
+        (*state.attempts, (sequence, commit)),
+        (*state.owners, (sequence, owner)),
+    ), sequence
+
+
+def _finish_main_ref(state: _MainRefState, sequence: int, verified: bool) -> _MainRefState:
+    attempts = dict(state.attempts)
+    commit = attempts.pop(sequence)
+    publish = verified and sequence > state.published_sequence
+    return _MainRefState(
+        state.next_sequence,
+        sequence if publish else state.published_sequence,
+        commit if publish else state.published_commit,
+        tuple(attempts.items()),
+        tuple((seq, owner) for seq, owner in state.owners if seq != sequence),
+    )
+
+
+def _prune_main_ref_attempts(state: _MainRefState, owner_is_alive) -> _MainRefState:
+    for sequence, owner in state.owners:
+        if not owner_is_alive(owner):
+            state = _finish_main_ref(state, sequence, False)
+    return state
+
+
+def _main_ref_owner_lock(lock_dir: Path, owner: str):
+    # Soft locks survive SIGKILL and cannot prove ownership.
+    from filelock import FileLock, SoftFileLock
+
+    lock = FileLock(lock_dir / f"studio-main-owner-{owner}.lock")
+    lock.acquire(timeout = 0)
+    if isinstance(lock, SoftFileLock):
+        lock.release()
+        raise OSError("refs/main attempt ownership requires native file locks")
+    return lock
+
+
+def _main_ref_owner_is_alive(lock_dir: Path, owner: str) -> bool:
+    from filelock import Timeout
+
+    try:
+        lock = _main_ref_owner_lock(lock_dir, owner)
+    except Timeout:
+        return True
+    lock.release()
+    Path(lock.lock_file).unlink(missing_ok = True)
+    return False
+
+
+def _load_main_ref_state(path: Path, previous: str | None) -> _MainRefState:
+    try:
+        raw = path.read_text(encoding = "utf-8")
+    except FileNotFoundError:
+        return _MainRefState(published_commit = previous)
+    # Resetting a damaged journal could reuse a live peer's sequence.
+    data = json.loads(raw)
+    state = _MainRefState(
+        data["next_sequence"],
+        data["published_sequence"],
+        data["published_commit"],
+        tuple(tuple(attempt) for attempt in data["attempts"]),
+        tuple(tuple(owner) for owner in data.get("owners", ())),
+    )
+    if (
+        type(state.next_sequence) is not int
+        or type(state.published_sequence) is not int
+        or not 0 <= state.published_sequence < state.next_sequence
+        or not (state.published_commit is None or isinstance(state.published_commit, str))
+        or (state.published_sequence > 0 and state.published_commit is None)
+        or len(dict(state.attempts)) != len(state.attempts)
+        or any(
+            type(sequence) is not int
+            or not 0 < sequence < state.next_sequence
+            or not isinstance(commit, str)
+            or not _COMMIT_SHA.fullmatch(commit)
+            for sequence, commit in state.attempts
+        )
+        or len(dict(state.owners)) != len(state.owners)
+        or set(dict(state.owners)) != set(dict(state.attempts))
+        or any(
+            type(sequence) is not int
+            or not isinstance(owner, str)
+            or re.fullmatch(r"[0-9a-f]{32}", owner) is None
+            for sequence, owner in state.owners
+        )
+    ):
+        raise ValueError(f"Invalid refs/main publication state: {path}")
+    return state
+
+
+def _update_main_ref(
+    repo_dir: Path,
+    *,
+    commit: str | None = None,
+    sequence: int | None = None,
+    verified: bool = False,
+    on_publish = None,
+    owner: str | None = None,
+) -> int | None:
+    """Persist one decision under the lock; no network, transfer or verification here."""
+    from huggingface_hub.utils import WeakFileLock
+
+    lock_dir = repo_dir.parent / ".locks" / repo_dir.name
+    lock_dir.mkdir(parents = True, exist_ok = True)
+    state_path = lock_dir / "studio-main.json"
+    ref = repo_dir / "refs" / "main"
+    with WeakFileLock(lock_dir / "studio-main.lock"):
+        previous = _read_ref(ref)
+        before = _prune_main_ref_attempts(
+            _load_main_ref_state(state_path, previous),
+            lambda attempt_owner: _main_ref_owner_is_alive(lock_dir, attempt_owner),
+        )
+        if commit is not None:
+            if owner is None:
+                raise ValueError("refs/main attempt requires a live owner")
+            state, sequence = _start_main_ref(before, commit, owner)
+        else:
+            state = _finish_main_ref(before, sequence, verified)
+        try:
+            _write_ref(state_path, json.dumps(asdict(state)))
+            if verified and previous != state.published_commit:
+                _write_ref(ref, state.published_commit)
+        except BaseException:
+            if verified:
+                # A failed publication must not disown an older active success.
+                failed = _finish_main_ref(before, sequence, False)
+                _write_ref(state_path, json.dumps(asdict(failed)))
+                if _read_ref(ref) != previous:
+                    if previous is None:
+                        ref.unlink(missing_ok = True)
+                    else:
+                        _write_ref(ref, previous)
+            raise
+        # Reclaim under this lock so no new peer loses its snapshot.
+        if verified and state.published_sequence == sequence and on_publish is not None:
+            on_publish(state)
+    return sequence
+
+
+def _pinned_snapshot_download(
+    snapshot_download,
+    commit,
+    *,
+    expected_files = (),
+    verify = None,
+    on_publish = None,
+    **kwargs,
+):
+    """Transfer and verify outside the lock; publish and reclaim under it."""
+    from hub.utils.snapshot_reuse import repo_cache_dir
+
+    repo_type, repo_id = kwargs.get("repo_type") or "model", kwargs["repo_id"]
+    repo_dir = repo_cache_dir(repo_type, repo_id)
+    if commit is None:
+        commit = _read_ref(repo_dir / "refs" / "main")
+    pin = _pinned_revision(repo_type, repo_id, commit)
+    if not pin:
+        raise OSError(
+            f"Cannot resolve an immutable revision for {repo_id}; retry when metadata is available"
+        )
+
+    lock_dir = repo_dir.parent / ".locks" / repo_dir.name
+    lock_dir.mkdir(parents = True, exist_ok = True)
+    owner = uuid.uuid4().hex
+    owner_lock = _main_ref_owner_lock(lock_dir, owner)
+    try:
+        sequence = _update_main_ref(repo_dir, commit = commit, owner = owner)
+        try:
+            path = snapshot_download(**kwargs, **pin)
+            if Path(path).name != commit or not Path(path).is_dir():
+                raise OSError(
+                    f"Pinned download of {repo_id} returned a snapshot other than {commit}"
+                )
+            # Legacy Hub can return an existing incomplete snapshot after metadata
+            # fails. Check before making it visible to offline repo-ID resolution.
+            if expected_files:
+                from hub.utils.download_manifest import Manifest, verify_against_disk
+                manifest = Manifest(repo_type, repo_id, None, "", tuple(expected_files))
+                if not verify_against_disk(manifest, Path(path)).ok:
+                    raise OSError(f"Pinned snapshot of {repo_id} is incomplete")
+            if verify is not None:
+                verify(path)
+        except BaseException:
+            _update_main_ref(repo_dir, sequence = sequence)
+            raise
+        _update_main_ref(repo_dir, sequence = sequence, verified = True, on_publish = on_publish)
+        return path
+    finally:
+        owner_lock.release()
+        Path(owner_lock.lock_file).unlink(missing_ok = True)
 
 
 def _rebuild_header_only_ggufs(
@@ -649,7 +912,6 @@ def _download_snapshot(
     from hub.utils.download_registry import prepare_cache_for_transport
     from hub.utils import download_manifest
 
-    # One metadata fetch powers both the ignore-pattern decision and the manifest's expected_files; a failure is non-fatal and falls back to the legacy ignore set, losing verification only.
     try:
         info = _model_info_with_retry(repo_id, hf_token)
     except Exception as e:
@@ -660,14 +922,25 @@ def _download_snapshot(
         )
         info = None
 
+    commit = getattr(info, "sha", None)
     download_manifest.clear_cancel_marker("model", repo_id, None)
     if info is not None:
         ignore_patterns, expected_files = _snapshot_download_plan(info)
         # The manifest verifies the finalized files under snapshots/, which both transports produce identically; XET's block-level dedup lives only in the chunk cache.
-        download_manifest.write_manifest("model", repo_id, None, expected_files, mode)
+        download_manifest.write_manifest(
+            "model",
+            repo_id,
+            None,
+            expected_files,
+            mode,
+            **_model_manifest_attestation(getattr(info, "sha", None)),
+        )
     else:
         ignore_patterns = list(SNAPSHOT_IGNORE_PATTERNS)
-        expected_files = []
+        manifest = download_manifest.read_manifest("model", repo_id, None)
+        expected_files = list(manifest.expected_files) if manifest is not None else []
+        if manifest is not None and manifest.metadata_derived:
+            commit = download_manifest.normalized_commit_hash(manifest.commit_hash)
 
     purged = prepare_cache_for_transport("model", repo_id, mode)
     if purged:
@@ -680,28 +953,35 @@ def _download_snapshot(
         "model", repo_id, getattr(info, "sha", None), expected_files, hf_token
     )
     _preflight_disk_space("model", repo_id, to_download)
-    snapshot_path = snapshot_download(
+
+    def verify(snapshot_path: str) -> None:
+        if info is None:
+            _recover_manifest_after_download(
+                "model",
+                repo_id,
+                snapshot_path,
+                mode,
+                fetch_info = lambda: _model_info_with_retry(repo_id, hf_token),
+                expected_files_from_info = lambda recovered: _snapshot_download_plan(recovered)[1],
+            )
+        _verify_completed_download(
+            "model",
+            repo_id,
+            None,
+            snapshot_path,
+            metadata_unavailable = info is None,
+        )
+
+    _pinned_snapshot_download(
+        snapshot_download,
+        commit,
+        expected_files = expected_files,
+        verify = verify,
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         ignore_patterns = ignore_patterns,
         max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
-    )
-    if info is None:
-        _recover_manifest_after_download(
-            "model",
-            repo_id,
-            snapshot_path,
-            mode,
-            fetch_info = lambda: _model_info_with_retry(repo_id, hf_token),
-            expected_files_from_info = lambda recovered: _snapshot_download_plan(recovered)[1],
-        )
-    _verify_completed_download(
-        "model",
-        repo_id,
-        None,
-        snapshot_path,
-        metadata_unavailable = info is None,
     )
 
 
@@ -742,6 +1022,7 @@ def _download_gguf_variant(
         plan = None
         metadata_unavailable = True
 
+    commit = None if metadata_unavailable else _RESOLVED_COMMITS.get(repo_id)
     if not metadata_unavailable:
         if plan is None:
             print(
@@ -759,6 +1040,7 @@ def _download_gguf_variant(
             variant,
             expected_files,
             mode,
+            **_model_manifest_attestation(commit),
         )
     else:
         # Metadata unreachable: resume the exact shards the original attempt recorded so snapshot_download can range over the surviving .incomplete blobs.
@@ -771,6 +1053,8 @@ def _download_gguf_variant(
             )
             sys.exit(1)
         plan = plan_from_expected_files(variant, manifest.expected_files)
+        if manifest.metadata_derived:
+            commit = download_manifest.normalized_commit_hash(manifest.commit_hash)
         targets = list(plan.target_filenames)
         expected_files = list(plan.expected_files)
         download_manifest.write_manifest(
@@ -779,6 +1063,7 @@ def _download_gguf_variant(
             variant,
             expected_files,
             mode,
+            **_model_manifest_attestation(commit),
         )
         main_blob_hashes = plan.main_hashes
         companion_blob_hashes = plan.companion_hashes
@@ -824,12 +1109,36 @@ def _download_gguf_variant(
     to_download = (
         expected_files
         if metadata_unavailable
-        else _reuse_unchanged_files(
-            "model", repo_id, _RESOLVED_COMMITS.get(repo_id), expected_files, hf_token
-        )
+        else _reuse_unchanged_files("model", repo_id, commit, expected_files, hf_token)
     )
     _preflight_disk_space("model", repo_id, to_download)
-    snapshot_path = snapshot_download(
+
+    def reclaim(state: _MainRefState) -> None:
+        try:
+            from hub.services.models.deletion import reclaim_replaced_gguf_variant
+            from hub.utils.snapshot_reuse import repo_cache_dir
+            reclaim_replaced_gguf_variant(
+                repo_id,
+                variant,
+                plan.main_hashes,
+                hf_token,
+                hub_cache = repo_cache_dir("model", repo_id).parent,
+                protected_revisions = frozenset(
+                    [state.published_commit, *(sha for _, sha in state.attempts)]
+                ),
+            )
+        except Exception as e:
+            print(
+                f"Verified GGUF update for {repo_id} [{variant}], but stale-cache "
+                f"reclaim failed ({type(e).__name__}: {e})",
+                file = sys.stderr,
+            )
+
+    snapshot_path = _pinned_snapshot_download(
+        snapshot_download,
+        commit,
+        expected_files = expected_files,
+        on_publish = reclaim,
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = targets,
@@ -843,22 +1152,6 @@ def _download_gguf_variant(
         snapshot_path,
         metadata_unavailable = metadata_unavailable,
     )
-    if plan is not None:
-        try:
-            from hub.services.models.deletion import reclaim_replaced_gguf_variant
-            reclaim_replaced_gguf_variant(
-                repo_id,
-                variant,
-                plan.main_hashes,
-                hf_token,
-                hub_cache = Path(snapshot_path).parents[2],
-            )
-        except Exception as e:
-            print(
-                f"Verified GGUF update for {repo_id} [{variant}], but stale-cache "
-                f"reclaim failed ({type(e).__name__}: {e})",
-                file = sys.stderr,
-            )
 
 
 def _download_scoped_snapshot(
@@ -885,6 +1178,7 @@ def _download_scoped_snapshot(
         )
         info = None
 
+    commit = getattr(info, "sha", None)
     expected_files: list[ExpectedFile] = []
     blob_hashes: frozenset[str] = frozenset()
     if info is not None:
@@ -909,7 +1203,20 @@ def _download_scoped_snapshot(
         from hub.utils.snapshot_filters import blob_hashes_for_siblings
 
         blob_hashes = blob_hashes_for_siblings(siblings)
-        download_manifest.write_manifest("model", repo_id, scope, expected_files, mode)
+        download_manifest.write_manifest(
+            "model",
+            repo_id,
+            scope,
+            expected_files,
+            mode,
+            **_model_manifest_attestation(getattr(info, "sha", None)),
+        )
+    else:
+        manifest = download_manifest.read_manifest("model", repo_id, scope)
+        if manifest is not None:
+            expected_files = list(manifest.expected_files)
+            if manifest.metadata_derived:
+                commit = download_manifest.normalized_commit_hash(manifest.commit_hash)
 
     download_manifest.clear_cancel_marker("model", repo_id, scope)
     purged = prepare_cache_for_transport(
@@ -930,31 +1237,38 @@ def _download_scoped_snapshot(
         "model", repo_id, getattr(info, "sha", None), expected_files, hf_token
     )
     _preflight_disk_space("model", repo_id, to_download)
-    snapshot_path = snapshot_download(
+
+    def verify(snapshot_path: str) -> None:
+        if info is None:
+            # A saved manifest may omit files in the current request.
+            root = Path(snapshot_path)
+            absent = tuple(f for f in files if not (root / f).exists())
+            if absent:
+                print(
+                    f"Could not reach Hugging Face for {repo_id} [{scope}] and the copy on disk "
+                    f"is incomplete ({len(absent)} file(s) missing): {_format_path_list(absent)}. "
+                    "Reconnect (or set a valid HF token) and resume the download.",
+                    file = sys.stderr,
+                )
+                sys.exit(1)
+        _verify_completed_download(
+            "model",
+            repo_id,
+            scope,
+            snapshot_path,
+            metadata_unavailable = info is None,
+        )
+
+    _pinned_snapshot_download(
+        snapshot_download,
+        commit,
+        expected_files = expected_files,
+        verify = verify,
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = files,
         max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
-    )
-    if info is None:
-        # With no metadata there is no manifest, and snapshot_download RETURNS AN EXISTING SNAPSHOT FOLDER when repo_info also fails, flipping the job to complete with no weights.
-        root = Path(snapshot_path)
-        absent = tuple(f for f in files if not (root / f).exists())
-        if absent:
-            print(
-                f"Could not reach Hugging Face for {repo_id} [{scope}] and the copy on disk "
-                f"is incomplete ({len(absent)} file(s) missing): {_format_path_list(absent)}. "
-                "Reconnect (or set a valid HF token) and resume the download.",
-                file = sys.stderr,
-            )
-            sys.exit(1)
-    _verify_completed_download(
-        "model",
-        repo_id,
-        scope,
-        snapshot_path,
-        metadata_unavailable = info is None,
     )
 
 
@@ -1109,6 +1423,7 @@ def main() -> None:
     _install_parent_death_watchdog(args.parent_pid, args.heartbeat)
 
     hf_token = os.environ.get("HF_TOKEN") or None
+    _lift_http_ceiling_on_modelscope()
 
     if args.transport == "xet" and os.environ.get("UNSLOTH_HF_XET_FORCE_STALL") == "1":
         _force_stall_for_tests(args.repo_id, "dataset" if args.dataset else "model")

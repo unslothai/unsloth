@@ -1,20 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// Keep the background settings UI in this lazy tab, outside the chat startup barrel.
+// eslint-disable-next-line no-restricted-imports
+import {
+  ChatBackgroundControls,
+  GlassControls,
+} from "@/features/chat-background/controls";
 import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
-import { TrickOrTreatSettingsRow } from "@/features/halloween/trick-or-treat-settings-row";
+import { useChatPreferencesStore } from "@/features/chat";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import {
   ActiveColorControl,
   ChatFontRow,
   ChatWidthSelect,
+  CodeDisplaySwitch,
   SentAttachmentsSelect,
   CodeFontRow,
   CodeFontSizeRow,
+  ComposerOutlineSliderRow,
   ContrastSliderRow,
   FontSmoothingSwitch,
   HeadingFontRow,
@@ -25,7 +33,9 @@ import {
   UiFontRow,
   UiFontSizeRow,
 } from "../components/appearance-custom-controls";
+import { CodeDisplayPreview } from "../components/code-display-preview";
 import { ColorThemeSelect } from "../components/color-theme-select";
+import { GreetingSettingsRows } from "../components/greeting-controls";
 import { GpuRenderingSegmented } from "../components/gpu-rendering-segmented";
 import { SettingsRow } from "../components/settings-row";
 import { SidebarMenuCustomizer } from "../components/sidebar-menu-customizer";
@@ -38,6 +48,11 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 const FONT_CONTROL_CLASS = "flex w-76 max-w-full items-center gap-2";
 const FONT_SELECT_CLASS = "w-auto min-w-0 flex-1";
+const CODE_SWITCHES = [
+  { field: "codeLineNumbers", key: "lineNumbers" },
+  { field: "codeWordWrap", key: "wordWrap" },
+  { field: "codeLigatures", key: "ligatures" },
+] as const;
 const NOTE_CLASS =
   "max-w-[calc(280px*var(--ui-space-scale,1))] text-right text-xs";
 
@@ -148,6 +163,12 @@ function GpuRenderingRow() {
 export function AppearanceTab() {
   const t = useT();
   const { pinned, setPinned } = useSidebarPin();
+  const composerAtBottom = useChatPreferencesStore(
+    (s) => s.newChatComposerAtBottom,
+  );
+  const setComposerAtBottom = useChatPreferencesStore(
+    (s) => s.setNewChatComposerAtBottom,
+  );
   const sidebarNavSectionRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
@@ -182,7 +203,6 @@ export function AppearanceTab() {
         <SettingsRow label={t("settings.appearance.palette.label")}>
           <ColorThemeSelect />
         </SettingsRow>
-        <TrickOrTreatSettingsRow />
         <SettingsRow label={t("settings.appearance.custom.colors.accent")}>
           <ActiveColorControl
             colorKey="accent"
@@ -206,6 +226,8 @@ export function AppearanceTab() {
         </SettingsRow>
       </SettingsSection>
 
+      <GlassControls />
+      <ChatBackgroundControls />
       <SettingsSection title={t("settings.appearance.custom.preferencesTitle")}>
         <SettingsRow label={t("settings.appearance.custom.uiFont.label")}>
           <div className={FONT_CONTROL_CLASS}>
@@ -223,12 +245,6 @@ export function AppearanceTab() {
             <ChatFontRow className={FONT_SELECT_CLASS} />
           </div>
         </SettingsRow>
-        <SettingsRow label={t("settings.appearance.custom.codeFont.label")}>
-          <div className={FONT_CONTROL_CLASS}>
-            <CodeFontRow className={FONT_SELECT_CLASS} />
-            <CodeFontSizeRow />
-          </div>
-        </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.custom.interfaceScale.label")}
           description={t(
@@ -237,20 +253,7 @@ export function AppearanceTab() {
         >
           <InterfaceScaleRow />
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.chatWidth.label")}
-          description={t("settings.appearance.custom.chatWidth.description")}
-        >
-          <ChatWidthSelect />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.sentAttachments.label")}
-          description={t(
-            "settings.appearance.custom.sentAttachments.description",
-          )}
-        >
-          <SentAttachmentsSelect />
-        </SettingsRow>
+        <GreetingSettingsRows />
         <SettingsRow
           label={t("settings.appearance.custom.pointerCursors.label")}
           description={t(
@@ -273,6 +276,63 @@ export function AppearanceTab() {
         >
           <FontSmoothingSwitch />
         </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.appearance.composer.title")}>
+        <SettingsRow
+          label={t("settings.appearance.custom.chatWidth.label")}
+          description={t("settings.appearance.custom.chatWidth.description")}
+        >
+          <ChatWidthSelect />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.composerAtBottom")}
+          description={t("settings.chat.composerAtBottomDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.composerAtBottom")}
+            checked={composerAtBottom}
+            onCheckedChange={setComposerAtBottom}
+          />
+        </SettingsRow>
+        <SettingsRow label={t("chatBackground.outline")}>
+          <ComposerOutlineSliderRow />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.sentAttachments.label")}
+          description={t(
+            "settings.appearance.custom.sentAttachments.description",
+          )}
+        >
+          <SentAttachmentsSelect />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.appearance.code.title")}>
+        <SettingsRow
+          label={t("settings.appearance.custom.codeFont.label")}
+          description={t("settings.appearance.code.fontDescription")}
+        >
+          <div className={FONT_CONTROL_CLASS}>
+            <CodeFontRow className={FONT_SELECT_CLASS} />
+            <CodeFontSizeRow />
+          </div>
+        </SettingsRow>
+        <div className="pb-3">
+          <CodeDisplayPreview />
+        </div>
+        {CODE_SWITCHES.map(({ field, key }) => (
+          <SettingsRow
+            key={field}
+            label={t(`settings.appearance.code.${key}.label`)}
+            description={t(`settings.appearance.code.${key}.description`)}
+          >
+            <CodeDisplaySwitch
+              field={field}
+              label={t(`settings.appearance.code.${key}.label`)}
+            />
+          </SettingsRow>
+        ))}
       </SettingsSection>
 
       {isTauri ? (

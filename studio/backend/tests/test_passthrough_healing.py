@@ -336,6 +336,29 @@ class TestStreamHealer:
         assert not _events_calls(after)
 
 
+def test_stream_keeps_a_bracket_call_inside_an_open_block_in_its_arguments():
+    text = (
+        '<tool_call><function=Bash><parameter=command>run [TOOL_CALLS]Bash[ARGS]{"command": "rm"} '
+        "li</parameter></function></tool_call>"
+    )
+    healer = StreamToolCallHealer({"Bash"})
+    events = []
+    for start in range(0, len(text), 7):
+        events += healer.feed(text[start : start + 7])
+    events += healer.finalize()
+    (call,) = _events_calls(events)
+    assert "rm" in json.loads(call["function"]["arguments"])["command"]
+    assert "run " in json.loads(call["function"]["arguments"])["command"]
+
+
+def test_stream_delivers_a_bracket_call_wrapped_in_a_closed_block():
+    healer = StreamToolCallHealer({"Bash"})
+    events = healer.feed('<tool_call>[TOOL_CALLS]Bash[ARGS]{"command": "ls"}</tool_call>')
+    events += healer.finalize(promote = False)
+    (call,) = _events_calls(events)
+    assert json.loads(call["function"]["arguments"]) == {"command": "ls"}
+
+
 class TestNudgeHelpers:
     def _resp(
         self,
@@ -638,6 +661,22 @@ class TestOpenaiNonStreamingRoute:
             assert choice["finish_reason"] == "length"
             (call,) = choice["message"]["tool_calls"]
             assert call["function"]["name"] == "lookup"
+
+        asyncio.run(_run())
+
+    def test_call_cut_at_length_stays_text(self, monkeypatch):
+        async def _run():
+            cut = "<tool_call><function=lookup><parameter=q>line1\nli"
+            _, data = await _drive_non_streaming(
+                monkeypatch,
+                _payload(),
+                [_upstream_message(LOOKUP_XML + cut, finish_reason = "length")],
+            )
+            choice = data["choices"][0]
+            assert choice["finish_reason"] == "length"
+            (call,) = choice["message"]["tool_calls"]
+            assert json.loads(call["function"]["arguments"]) == {"q": "x"}
+            assert choice["message"]["content"] == cut
 
         asyncio.run(_run())
 
@@ -1093,6 +1132,48 @@ class TestAnthropicPassthroughHealingText:
 
         asyncio.run(_run())
 
+    def test_call_cut_at_max_tokens_is_not_runnable(self, monkeypatch):
+        async def _run():
+            cut = "<tool_call><function=lookup><parameter=q>line1\nli"
+            data = await self._drive(
+                monkeypatch, _upstream_message(LOOKUP_XML + cut, finish_reason = "length")
+            )
+            (tool_use,) = [b for b in data["content"] if b["type"] == "tool_use"]
+            assert tool_use["input"] == {"q": "x"}
+            text = "".join(b["text"] for b in data["content"] if b["type"] == "text")
+            assert text == cut
+            assert data["stop_reason"] == "max_tokens"
+
+        asyncio.run(_run())
+
+    def test_cut_call_healed_upstream_keeps_its_text(self):
+        import routes.inference as inf
+
+        cut = "<tool_call><function=lookup><parameter=q>line1\nli"
+        response = inf._anthropic_message_from_openai_completion(
+            {"choices": [{"message": {"content": cut}, "finish_reason": "length"}]},
+            "msg_1",
+            "m",
+            openai_tools = [LOOKUP_TOOL],
+            allowed_tools = None,
+            disable_parallel_tool_use = False,
+            response_format = None,
+            parse_think = True,
+        )
+        data = json.loads(response.body)
+        assert [(b["type"], b["text"]) for b in data["content"]] == [("text", cut)]
+        assert data["stop_reason"] == "max_tokens"
+
+    def test_call_quoted_inside_cut_call_is_not_runnable(self, monkeypatch):
+        async def _run():
+            cut = '<tool_call><function=lookup><parameter=q>run [TOOL_CALLS]lookup[ARGS]{"q": "rm"} li'
+            data = await self._drive(monkeypatch, _upstream_message(cut, finish_reason = "length"))
+            assert [b["type"] for b in data["content"]] == ["text"]
+            assert data["content"][0]["text"] == cut
+            assert data["stop_reason"] == "max_tokens"
+
+        asyncio.run(_run())
+
 
 class TestAnthropicEmitterHealing:
     def _events(
@@ -1216,6 +1297,38 @@ class TestAnthropicEmitterHealing:
         )
         (message_delta,) = [e for e in events if e.get("type") == "message_delta"]
         assert message_delta["delta"]["stop_reason"] == "max_tokens"
+
+    def test_call_cut_at_max_tokens_is_not_runnable(self):
+        cut = (
+            "<tool_call><function=Write><parameter=file_path>app.py</parameter>"
+            "<parameter=content>line1\nline2\nli"
+        )
+        events = self._events(
+            self._emitter(allowed = ("Write",)),
+            [self._chunk(content = cut), self._chunk(finish_reason = "length")],
+        )
+        starts = [e for e in events if e.get("type") == "content_block_start"]
+        assert [e["content_block"]["type"] for e in starts] == ["text"]
+        texts = [
+            e["delta"]["text"]
+            for e in events
+            if e.get("type") == "content_block_delta" and e["delta"]["type"] == "text_delta"
+        ]
+        assert "".join(texts) == cut
+        (message_delta,) = [e for e in events if e.get("type") == "message_delta"]
+        assert message_delta["delta"]["stop_reason"] == "max_tokens"
+
+    def test_call_quoted_inside_cut_call_is_not_runnable(self):
+        cut = (
+            "<tool_call><function=Write><parameter=file_path>app.py</parameter>"
+            '<parameter=content>run [TOOL_CALLS]Write[ARGS]{"file_path": "x"} li'
+        )
+        events = self._events(
+            self._emitter(allowed = ("Write",)),
+            [self._chunk(content = cut), self._chunk(finish_reason = "length")],
+        )
+        starts = [e for e in events if e.get("type") == "content_block_start"]
+        assert [e["content_block"]["type"] for e in starts] == ["text"]
 
     def test_structured_deltas_disable_healing_and_flush(self):
         structured = [
@@ -1432,6 +1545,28 @@ class TestOpenaiStreamingRoute:
             )
             assert "<tool_call>" not in text
             assert chunks[-1] == "data: [DONE]\n\n"
+
+        asyncio.run(_run())
+
+    @pytest.mark.parametrize("finish_on_content", [False, True])
+    def test_call_cut_at_length_stays_text(self, monkeypatch, finish_on_content):
+        async def _run():
+            cut = "<tool_call><function=lookup><parameter=q>line1\nli"
+            head = {"id": "c1", "model": "gguf", "created": 1}
+            content = {"index": 0, "delta": {"content": LOOKUP_XML + cut}}
+            finish = {"index": 0, "delta": {}, "finish_reason": "length"}
+            choices = (
+                [[{**content, "finish_reason": "length"}]]
+                if finish_on_content
+                else [[content], [finish]]
+            )
+            lines = ["data: " + json.dumps({**head, "choices": c}) for c in choices]
+            chunks = await _drive_stream(monkeypatch, _payload(), lines + ["data: [DONE]"])
+            found = [c for p in _stream_payloads(chunks) for c in p.get("choices", [])]
+            (call,) = [tc for c in found for tc in (c.get("delta") or {}).get("tool_calls") or []]
+            assert json.loads(call["function"]["arguments"]) == {"q": "x"}
+            assert "".join((c.get("delta") or {}).get("content") or "" for c in found) == cut
+            assert [c["finish_reason"] for c in found if c.get("finish_reason")] == ["length"]
 
         asyncio.run(_run())
 

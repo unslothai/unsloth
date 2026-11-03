@@ -274,9 +274,13 @@ except Exception:
 # TORCHINDUCTOR_COMPILE_THREADS.
 if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
     try:
-        torch._inductor.config.compile_threads = 1
+        from unsloth_zoo.torch_config import set_torch_config
+        set_torch_config(torch._inductor.config, "compile_threads", 1)
     except Exception:
-        pass
+        try:
+            torch._inductor.config.compile_threads = 1
+        except Exception:
+            pass
     os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
 
     def _force_single_compile_worker_in_zoo():
@@ -783,16 +787,28 @@ del patch_bitsandbytes_optimizer_step_sync
 
 
 def _define_kernels_against_triton_stub():
-    """Unsloth's kernel modules define @triton.jit kernels at import. With no Triton package, a triton import made
-    by an unsloth.* module resolves to unsloth_zoo's triton stub (calling a kernel raises); every other importer
-    still sees no Triton, so no library mistakes the stub for a real one. Returns the undo callable."""
     try:
         from unsloth_zoo.stubs import triton_stub
     except ImportError:
         return None
     import builtins
+    import threading
+    import types
 
     real_import = builtins.__import__
+    lock = threading.Lock()
+
+    def _stub_module(name):
+        # Unknown attributes of a stub module are no-ops, not submodules, so create missing ones explicitly.
+        module = triton_stub
+        with lock:
+            for i, part in enumerate(name.split(".")[1:], start = 2):
+                child = vars(module).get(part)
+                if not isinstance(child, types.ModuleType):
+                    child = triton_stub._make_module(".".join(name.split(".")[:i]))
+                    setattr(module, part, child)
+                module = child
+        return module
 
     def _import(
         name,
@@ -808,18 +824,8 @@ def _define_kernels_against_triton_stub():
             or importer.split(".")[0] != "unsloth"
         ):
             return real_import(name, globals, locals, fromlist, level)
-        meta_path, modules = list(sys.meta_path), set(sys.modules)
-        triton_stub.inject_into_sys_modules()
-        try:
-            return real_import(name, globals, locals, fromlist, level)
-        finally:
-            sys.meta_path[:] = meta_path
-            for key in [
-                k
-                for k in sys.modules
-                if (k == "triton" or k.startswith("triton.")) and k not in modules
-            ]:
-                del sys.modules[key]
+        module = _stub_module(name)
+        return module if fromlist else triton_stub
 
     builtins.__import__ = _import
 

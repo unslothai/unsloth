@@ -281,6 +281,8 @@ _QWENIMAGE_TEXT_STREAM_INT8 = (
     "to_add_out",
     "txt_mlp",
 )
+# Streamed-only int8 weight-only; W8A8 would also round the timestep row per row.
+_QWENIMAGE_MOD_WEIGHT_ONLY = ("img_mod", "txt_mod")
 # Families whose activation ranges break specific schemes at the MODEL level (the smoke probe only proves the GEMM
 # runs). Measured with the 28-pair prequant accuracy gate on B200: qwen-image + mxfp8 does semantic damage at 1024px,
 # + nvfp4 is unusable (LPIPS 0.51). Neither has a known fix, so both stay denied and auto falls through to int8
@@ -873,6 +875,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         profile = FamilyProfile(
             int8_exclude_tokens = _QWENIMAGE_INT8_EXCLUDES,
             int8_runtime_quant_tokens = _QWENIMAGE_TEXT_STREAM_INT8,
+            int8_streamed_weight_only_tokens = _QWENIMAGE_MOD_WEIGHT_ONLY,
             scheme_deny = _QWENIMAGE_SCHEME_DENY,
             train_scheme_deny = _QWENIMAGE_TRAIN_SCHEME_DENY,
             auto_prefer = _GATED_AUTO_PREFER,
@@ -1454,6 +1457,36 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
+    memo = _detect_family_memo()
+    try:
+        return memo[repo_id]
+    except (KeyError, TypeError):
+        pass
+    match = _detect_family_by_name(repo_id)
+    try:
+        if len(memo) >= _DETECT_FAMILY_MEMO_MAX:
+            memo.clear()
+        memo[repo_id] = match
+    except TypeError:
+        pass
+    return match
+
+
+_DETECT_FAMILY_MEMO_MAX = 8192
+# Paired with the table it was filled from: a replaced _FAMILIES starts an empty memo.
+_detect_family_memo_state: tuple[object, dict] = ((), {})
+
+
+def _detect_family_memo() -> dict:
+    global _detect_family_memo_state
+    families, memo = _detect_family_memo_state
+    if families is not _FAMILIES:
+        memo = {}
+        _detect_family_memo_state = (_FAMILIES, memo)
+    return memo
+
+
+def _detect_family_by_name(repo_id: str) -> Optional[DiffusionFamily]:
     needle = model_identity(repo_id).lower()
     match = _best_family_match(needle)
     if match is not None:
@@ -2096,12 +2129,12 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("hidream", 50, 5.0),
     # Ideogram 4: an explicit 48 steps at 7 still runs the card's tapered schedule.
     ("ideogram", 20, 7.0),
-    # MOSS-Image: ComfyUI workflow, 50 steps at CFG 3.
-    ("moss-image", 50, 3.0),
-    ("moss_image", 50, 3.0),
-    ("mossimage", 50, 3.0),
-    # SDXL: Turbo distilled; base wants ~30 steps + CFG ~7. "sdxl-turbo" precedes "sdxl".
-    ("sdxl-turbo", 3, 0.0),
+    # MOSS-Image: the SFT and Base t2i templates both run 25 steps at CFG 2.5.
+    ("moss-image", 25, 2.5),
+    ("moss_image", 25, 2.5),
+    ("mossimage", 25, 2.5),
+    # SDXL-Turbo: 1 step, CFG 1. "sdxl-turbo" must precede "sdxl".
+    ("sdxl-turbo", 1, 0.0),
     ("stable-diffusion-xl", 25, 7.0),
     ("sdxl", 25, 7.0),
 )

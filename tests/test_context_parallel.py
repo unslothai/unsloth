@@ -447,7 +447,7 @@ def test_fsdp2_shards_over_dp_shard_cp_and_a_later_trainer_restores_the_config(m
     accelerator = _fsdp2_accelerator(user_pc)
     Trainer, _, built = _gated_trainer(monkeypatch, accelerator = accelerator)
     Trainer()
-    assert built == [(2, "ring", "allgather", "fsdp2")]
+    assert built == [(2, "ulysses", "allgather", "fsdp2")]  # the default backend: auto
     pc = accelerator.state.parallelism_config
     # What accelerate's fsdp2_prepare_model indexes the mesh with; cp stays Unsloth's own.
     assert pc.fsdp_dim_names == ["dp_shard_cp"]
@@ -897,7 +897,7 @@ def test_cp_methods_are_wrapped_only_once_a_trainer_enables_cp(monkeypatch):
     Trainer, _, built = _gated_trainer(monkeypatch, install_cp_methods = False)
     plain = {name: Trainer.__dict__[name] for name in _CP_METHODS}
     Trainer()
-    assert built == [(2, "ring", "allgather")]
+    assert built == [(2, "ulysses", "allgather")]  # the default backend: auto
     for name in _CP_METHODS:
         assert Trainer.__dict__[name].__wrapped__ is plain[name]
 
@@ -938,17 +938,19 @@ def test_bad_cp_options_fail_before_the_trainer_builds(monkeypatch, overrides, e
 def test_cp_option_defaults_and_size_one():
     import types
 
-    assert cp.context_parallel_options(None) == (1, "ring", "allgather")
+    assert cp.context_parallel_options(None) == (1, "auto", "allgather")
     config = types.SimpleNamespace(context_parallel_size = 1, context_parallel_backend = "ulysses")
     assert cp.context_parallel_options(config) == (1, "ulysses", "allgather")
     config = types.SimpleNamespace(
         context_parallel_size = 4, context_parallel_rotate_method = "alltoall"
     )
-    assert cp.context_parallel_options(config) == (4, "ring", "alltoall")
+    assert cp.context_parallel_options(config) == (4, "auto", "alltoall")
 
 
 def test_manager_gets_the_backend_and_rotate_method(monkeypatch):
-    Trainer, _, built = _gated_trainer(monkeypatch, context_parallel_rotate_method = "alltoall")
+    Trainer, _, built = _gated_trainer(
+        monkeypatch, context_parallel_backend = "ring", context_parallel_rotate_method = "alltoall"
+    )
     Trainer()
     assert built == [(2, "ring", "alltoall")]
 
@@ -1114,7 +1116,7 @@ def test_unsloth_training_arguments_keep_the_cp_options():
         context_parallel_rotate_method = "alltoall",
         report_to = "none",
     )
-    assert cp.context_parallel_options(args) == (2, "ring", "alltoall")
+    assert cp.context_parallel_options(args) == (2, "auto", "alltoall")
 
 
 def test_cli_forwards_the_cp_options():
@@ -1165,9 +1167,9 @@ def test_generated_sft_config_carries_the_cp_options(tmp_path):
         context_parallel_rotate_method = "alltoall",
         report_to = "none",
     )
-    assert cp.context_parallel_options(config) == (2, "ring", "alltoall")
+    assert cp.context_parallel_options(config) == (2, "auto", "alltoall")
     default = config_module.SFTConfig(output_dir = str(tmp_path), report_to = "none")
-    assert cp.context_parallel_options(default) == (1, "ring", "allgather")
+    assert cp.context_parallel_options(default) == (1, "auto", "allgather")
 
 
 class _FakeCPMesh:
@@ -1375,7 +1377,7 @@ def test_instance_wrappers_made_in_init_capture_the_cp_methods(monkeypatch):
             Trainer(
                 None, args = args
             )  # SFTTrainer(model, args = SFTConfig(context_parallel_size = 2))
-        assert built == [(2, "ring", "allgather")]
+        assert built == [(2, "ulysses", "allgather")]  # the default backend: auto
         for name, method in captured.items():
             assert method is not plain[name] and method.__wrapped__ is plain[name]
 
@@ -1410,7 +1412,7 @@ def test_a_trainer_built_before_cp_still_restores_the_accelerator_state(monkeypa
     assert early._context_parallel_manager is None
     early.accelerator = types.SimpleNamespace(state = types.SimpleNamespace(device_mesh = None))
     Trainer(None, args = args)  # enables CP: installs the class wrappers
-    assert built == [(2, "ring", "allgather")]
+    assert built == [(2, "ulysses", "allgather")]  # the default backend: auto
     restored.clear()
     assert early.train() == "trained"
     assert restored == [early.accelerator.state]

@@ -7,7 +7,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { Settings02Icon } from "@hugeicons/core-free-icons";
+import { Settings01Icon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useHasRememberedRunSettings } from "../../model-config/remembered-run-settings";
 import type { ModelPickTarget } from "./types";
@@ -45,7 +45,7 @@ export function ModelLoadSettingsAction({
           )}
         >
           <HugeiconsIcon
-            icon={Settings02Icon}
+            icon={Settings01Icon}
             strokeWidth={1.75}
             className="size-3"
           />

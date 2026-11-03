@@ -28,18 +28,30 @@ def _jobs() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"]
 
 
-def _selections(job_name: str) -> list[str]:
+def _entries(job_name: str) -> list[dict]:
     """Entries without a `selection` are skipped, since the floor spot-check leg names its files
     directly."""
     job = _jobs()[job_name]
     include = job.get("strategy", {}).get("matrix", {}).get("include", [])
-    return [" ".join(entry["selection"].split()) for entry in include if "selection" in entry]
+    return [entry for entry in include if "selection" in entry]
+
+
+def _selections(job_name: str) -> list[str]:
+    return [" ".join(entry["selection"].split()) for entry in _entries(job_name)]
+
+
+_WORKERS = re.compile(r"\$\{\{ matrix\.workers \|\| (\d+) \}\}")
+
+
+def _expand(line: str, entry: dict) -> str:
+    """One shard's command: its selection, and its `workers` or the expression's default."""
+    line = line.replace("${{ matrix.selection }}", " ".join(entry["selection"].split()))
+    return _WORKERS.sub(lambda match: str(entry.get("workers", match.group(1))), line)
 
 
 def _commands_in(job_name: str) -> list[str]:
     """Expands `${{ matrix.selection }}` from this job's own matrix, not the other parallel job's."""
     job = _jobs()[job_name]
-    selections = _selections(job_name)
     commands = []
     for step in job.get("steps", []):
         joined = re.sub(r"\\\s*\n\s*", " ", str(step.get("run", "")))
@@ -48,9 +60,7 @@ def _commands_in(job_name: str) -> list[str]:
             if "python -m pytest" not in line or line.startswith("#"):
                 continue
             if "${{ matrix.selection }}" in line:
-                commands.extend(
-                    line.replace("${{ matrix.selection }}", selection) for selection in selections
-                )
+                commands.extend(_expand(line, entry) for entry in _entries(job_name))
             else:
                 commands.append(line)
     return commands
@@ -120,6 +130,10 @@ BACKEND_ISOLATED = [
     ("tests/test_web_fetch_extraction.py", "compares parse time at two input sizes"),
     ("tests/test_tool_call_parser_strict.py", "compares parse time at two nesting depths"),
     ("tests/test_pr5624_regressions.py", "R1 parser's 1s bound exceeded under CPU contention"),
+    (
+        "tests/test_web_tools_overlap.py",
+        "compares an overlapped batch's duration against a serial one",
+    ),
     # Found by staging; the scan cannot find it (see below).
     (
         "tests/test_tunnel_safe_long_post.py",
@@ -173,6 +187,10 @@ BENIGN_TIMING = {
     ),
     # A poll deadline with a 30s budget.
     ("test_gpu_query_cache.py", "wait_for_call"),
+    # 10 to 20 s poll deadlines for a child to reach its transfer barrier: descheduling only delays the poll.
+    ("test_hf_download_fallback_and_kill.py", "_wait_for_transfer"),
+    ("test_hf_download_reclaim_race.py", "test_gguf_reclaim_preserves_publication_and_active_peer"),
+    ("test_hf_download_ref_concurrency.py", "test_peer_completion_survives_an_older_process"),
 }
 
 
@@ -324,15 +342,15 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     """Pin the parser: a scan that matched nothing would pass both tests above."""
     commands = _pytest_commands()
     parallel = [command for command in commands if " -n " in f" {command} "]
-    assert len(parallel) == 11, (
-        f"expected eleven parallel pytest runs, three shards of the backend matrix and eight "
+    assert len(parallel) == 12, (
+        f"expected twelve parallel pytest runs, three shards of the backend matrix and nine "
         f"of repo-cpu-tests, got {parallel}. If a job stopped running in parallel, or a "
         f"shard was added or removed, say so here rather than letting this scan quietly "
         f"cover fewer runs."
     )
     root = [command for command in parallel if _over_the_repo_tests(command)]
-    assert len(root) == 8, (
-        f"expected the eight repo-root shards, got {root}. The isolation checks above apply "
+    assert len(root) == 9, (
+        f"expected the nine repo-root shards, got {root}. The isolation checks above apply "
         f"to those, and a scan that matched none of them would pass on nothing."
     )
     backend = [command for command in parallel if _over_the_backend(command)]

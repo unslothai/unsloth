@@ -83,6 +83,7 @@ from core.inference.context_window import (
     turn_is_servable,
 )
 from core.inference.llama_tool_schema import llama_grammar_tools
+from core.inference.llama_video_input import video_tools
 from core.inference.lookup_tables import (
     HOST_FORCED_TABLE_ARCHS as _HOST_FORCED_TABLE_ARCHS,
     HOST_FORCED_TABLE_MARKER as _HOST_FORCED_TABLE_MARKER,
@@ -91,7 +92,7 @@ from core.inference.lookup_tables import (
     is_per_layer_embedding as _is_per_layer_embedding,
     lazy_read_bytes as _lookup_lazy_read_bytes,
 )
-from core.inference.stream_errors import stream_error_from_chunk
+from core.inference.stream_errors import is_tool_parse_rejection, stream_error_from_chunk
 from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import (
     call_hub_with_anonymous_retry,
@@ -503,6 +504,7 @@ from utils import gguf_names as _gguf_names
 from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
     is_audio_cpp_gguf_architecture,
+    is_foreign_asr_gguf_architecture,
     is_speech_gguf_architecture,
 )
 
@@ -2175,8 +2177,10 @@ def _archive_and_recall(
     branch_messages: Optional[list[dict]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
     background: bool = False,
+    query_messages: Optional[list[dict]] = None,
 ) -> dict:
-    """Never raises: any failure falls back to the plain fitted messages. Recall runs at most once per request or refits stack recall blocks."""
+    """Never raises: any failure falls back to the plain fitted messages. Recall runs at most once per request or refits stack recall blocks.
+    ``query_messages`` is the client's transcript: a tool loop's live branch ends on its own notices, not the user's question."""
     result = {
         "conversation": conversation,
         "events": [],
@@ -2237,6 +2241,9 @@ def _archive_and_recall(
                 break
             attempt_k = max(1, attempt_k // 2)
 
+        recall_kwargs = {"branch_messages": branch_messages}
+        if query_messages is not None:
+            recall_kwargs["query_messages"] = query_messages
         # Retries re-ask the same queries: encode each once and reuse lexical passes and branch checks.
         with query_vector_memo(), conversation_archive.recall_session():
             for index, k in enumerate(attempts):
@@ -2245,7 +2252,7 @@ def _archive_and_recall(
                     thread_id,
                     style = style,
                     top_k = k,
-                    branch_messages = branch_messages,
+                    **recall_kwargs,
                 )
                 if not recall:
                     result["counts"] = counts
@@ -2312,6 +2319,10 @@ def _inject_recall(conversation: list[dict], recall: dict, style: str) -> Option
 
 # Transport errors can beat the child to reapable; a request cannot wait the 5s MTP reload spends.
 _RESPAWN_REAP_GRACE_S = 1.0
+# Extra --fit-target per mid-session GPU OOM of one load: an identical respawn hits the same
+# allocation once the conversation is replayed (#16177).
+_GPU_OOM_HEADROOM_STEP_MIB = 1024.0
+_GPU_OOM_HEADROOM_MAX_STRIKES = 3
 
 
 def _finalize_reasoning_only_cumulative(
@@ -2544,24 +2555,30 @@ def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
     return ""
 
 
-def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
+def _is_rehearsal_prefix(
+    stripped: str,
+    active_tools: list[dict],
+    *,
+    _names: Optional[list] = None,
+) -> bool:
     """Execution-class names stream rather than being held; otherwise it mirrors the safetensors loop."""
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
-    for name in _gguf_active_tool_names(active_tools):
+    for name in _gguf_active_tool_names(active_tools) if _names is None else _names:
         # Use the shared gate, which also refuses mcp__* names.
-        if not _markerless_promotable(name, None):
-            continue
-        if stripped == name or f"{name}[ARGS]".startswith(stripped):
+        if (stripped == name or f"{name}[ARGS]".startswith(stripped)) and _markerless_promotable(
+            name, None
+        ):
             return True
     return False
 
 
 def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
     """Holds a trailing bare tool name back while its [ARGS] may still arrive, including a bare-Gemma call:NAME{ prefix that the signal scan misses until its brace."""
+    names = _gguf_active_tool_names(active_tools)
     # A tail longer than every NAME[ARGS] cannot be a prefix, so the scan stops there (CJK has no spaces).
     limit = max(
-        (len(name) for name in _gguf_active_tool_names(active_tools) if isinstance(name, str)),
+        (len(name) for name in names if isinstance(name, str)),
         default = 0,
     ) + len("[ARGS]")
     i = len(text)
@@ -2570,11 +2587,11 @@ def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
         i -= 1
     tail = text[i:]
     held = (
-        len(tail) if tail and len(tail) <= limit and _is_rehearsal_prefix(tail, active_tools) else 0
+        len(tail)
+        if tail and len(tail) <= limit and _is_rehearsal_prefix(tail, active_tools, _names = names)
+        else 0
     )
-    return max(
-        held, held_bare_gemma_tail_len(text, lambda: set(_gguf_active_tool_names(active_tools)))
-    )
+    return max(held, held_bare_gemma_tail_len(text, lambda: set(names)))
 
 
 def _should_suppress_forced_no_tool_output(text: str, previous: str = "") -> bool:
@@ -3037,6 +3054,17 @@ def _extract_reasoning_effort_levels(chat_template: str) -> list:
     ]
 
 
+# Only a validation guard: a plain membership branch can group levels or reject the ones it names.
+_REASONING_EFFORT_ALLOWLIST_RE = re.compile(
+    r"\{%-?\s*if\s+reasoning_effort\s+not\s+in\s+\[([^\]]*)\]\s*-?%\}\s*\{\{-?\s*raise_exception\("
+)
+
+
+def _reasoning_effort_allowlist(chat_template: str) -> list:
+    match = _REASONING_EFFORT_ALLOWLIST_RE.search(chat_template)
+    return _extract_reasoning_effort_levels(match.group(1)) if match else []
+
+
 # Log each substitution once per (levels, requested) pair.
 _REASONING_EFFORT_CLAMPS_LOGGED: set = set()
 
@@ -3139,7 +3167,10 @@ def detect_reasoning_flags(
         flags["supports_reasoning"] = True
         flags["reasoning_style"] = "reasoning_effort"
         scanned = _extract_reasoning_effort_levels(tpl)
-        if "low" in scanned and "high" in scanned:
+        allowed = _reasoning_effort_allowlist(tpl)
+        if any(level != "none" for level in allowed):
+            flags["reasoning_effort_levels"] = allowed
+        elif "low" in scanned and "high" in scanned:
             flags["reasoning_effort_levels"] = scanned
         _log(
             f"{prefix}model supports reasoning "
@@ -4044,6 +4075,54 @@ _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
 # Windows + NVIDIA since driver 536.40: WDDM spills VRAM overflow to host RAM instead of failing, so the reserve matches llama.cpp fit margin.
 _WINDOWS_SYSMEM_FALLBACK_RESERVE_MIB = _LLAMA_FIT_TARGET_DEFAULT_MIB
 _WINDOWS_SYSMEM_FALLBACK_MAX_FRACTION = 0.125
+
+# WDDM backs GPU allocations with system commit the process never touches (#16015).
+_WINDOWS_GPU_UNTOUCHED_COMMIT_MIN_MIB = 2048
+_WINDOWS_GPU_COMMIT_HEADROOM_WARN_MIB = 4096
+
+
+def _windows_private_memory(pid: int) -> Optional[tuple[int, int]]:
+    """(PrivateUsage, PrivateWorkingSetSize) in bytes; None when unreadable (needs Windows 10 1809+).
+    psutil's uss and wset both count mmap'd GGUF pages, which would hide untouched commit."""
+    from ctypes import wintypes
+
+    class _COUNTERS_EX2(ctypes.Structure):
+        _fields_ = (
+            [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)]
+            + [
+                (name, ctypes.c_size_t)
+                for name in (
+                    "PeakWorkingSetSize",
+                    "WorkingSetSize",
+                    "QuotaPeakPagedPoolUsage",
+                    "QuotaPagedPoolUsage",
+                    "QuotaPeakNonPagedPoolUsage",
+                    "QuotaNonPagedPoolUsage",
+                    "PagefileUsage",
+                    "PeakPagefileUsage",
+                    "PrivateUsage",
+                    "PrivateWorkingSetSize",
+                )
+            ]
+            + [("SharedCommitUsage", ctypes.c_ulonglong)]
+        )
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        counters = _COUNTERS_EX2()
+        counters.cb = ctypes.sizeof(counters)
+        if not kernel32.K32GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+            return None
+        return int(counters.PrivateUsage), int(counters.PrivateWorkingSetSize)
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _vram_reserve_floor_mib(total_mib: float, *, sysmem_fallback: bool = False) -> float:
@@ -5612,6 +5691,7 @@ _LLAMA_VIDEO_FPS = "1"
 _VIDEO_FPS_ENV_VAR = "LLAMA_ARG_VIDEO_FPS"
 _LLAMA_SERVER_DEFAULT_VIDEO_FPS = 4.0
 _VIDEO_TIMESTAMP_ENV_VAR = "LLAMA_ARG_VIDEO_TIMESTAMP_INTERVAL"
+_VIDEO_FFMPEG_DIR_ENV_VAR = "LLAMA_ARG_VIDEO_FFMPEG_DIR"
 
 
 def _video_fps_flags(
@@ -5647,6 +5727,33 @@ def _video_fps_flags(
     return flags
 
 
+def _video_ffmpeg_dir_flags(
+    server_caps: Mapping[str, object],
+    env: Optional[Mapping[str, str]] = None,
+    extra_args: Optional[Sequence[str]] = None,
+) -> tuple[list[str], Optional[str]]:
+    if not server_caps.get("supports_video_ffmpeg_dir"):
+        return [], None
+    source = os.environ if env is None else env
+    try:
+        chosen = _last_flag_value(extra_args, frozenset({"--video-ffmpeg-dir"}), preserve_raw = True)
+    except ValueError:
+        chosen = None
+    chosen = chosen or source.get(_VIDEO_FFMPEG_DIR_ENV_VAR) or None
+    if chosen:
+        return [], chosen
+    # CreateProcess searches the server's directory before PATH.
+    if sys.platform == "win32":
+        return [], None
+    tools = video_tools()
+    if tools is None:
+        return [], None
+    ffmpeg_dir = os.path.dirname(tools[0])
+    if os.path.dirname(tools[1]) != ffmpeg_dir:
+        return [], None
+    return ["--video-ffmpeg-dir", ffmpeg_dir], ffmpeg_dir
+
+
 def requested_video_fps(
     extra_args: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] = None
 ) -> Optional[float]:
@@ -5670,6 +5777,38 @@ def requested_video_fps(
     except (TypeError, ValueError):
         return None
     return rate if rate > 0 else None
+
+
+def _video_tools_search(
+    cmd: Sequence[str],
+    env: Optional[Mapping[str, str]] = None,
+    cwd: Optional[str] = None,
+    supports_ffmpeg_dir: bool = True,
+) -> str:
+    source = os.environ if env is None else env
+    bin_dir = _last_flag_value(cmd, frozenset({"--video-ffmpeg-dir"}), preserve_raw = True)
+    search = bin_dir or (source.get(_VIDEO_FFMPEG_DIR_ENV_VAR) if supports_ffmpeg_dir else None)
+    if not search:
+        search = source.get("PATH", os.defpath)
+        if sys.platform == "win32":
+            launch_dir = os.path.dirname(str(cmd[0])) if cmd else ""
+            search = os.pathsep.join(d for d in (launch_dir, cwd or os.getcwd(), search) if d)
+    return search
+
+
+def _video_tools_reachable(
+    cmd: Sequence[str],
+    env: Optional[Mapping[str, str]] = None,
+    cwd: Optional[str] = None,
+    supports_ffmpeg_dir: bool = True,
+) -> bool:
+    """Whether the child can launch ffmpeg and ffprobe, which /props' video modality never checks (#16065)."""
+    try:
+        search = _video_tools_search(cmd, env, cwd, supports_ffmpeg_dir)
+    except Exception:
+        return True
+    names = ("ffmpeg.exe", "ffprobe.exe") if sys.platform == "win32" else ("ffmpeg", "ffprobe")
+    return all(shutil.which(name, path = search) for name in names)
 
 
 def _env_sets_mmproj_offload(env: Optional[Mapping[str, str]] = None) -> bool:
@@ -7520,6 +7659,19 @@ def _llama_chunk_has_generated_output(data: dict) -> bool:
     return False
 
 
+def _structured_calls_complete(calls: dict) -> bool:
+    for call in calls.values():
+        function = call.get("function") or {}
+        if not function.get("name", "").strip():
+            return False
+        try:
+            if not isinstance(json.loads(function.get("arguments") or ""), dict):
+                return False
+        except ValueError:
+            return False
+    return bool(calls)
+
+
 def _perf_callback_wants_timings(callback) -> bool:
     """A callback that only tracks prefill progress opts out of per-token timings."""
     return callback is not None and getattr(callback, "wants_timings", True)
@@ -7924,6 +8076,19 @@ class CountAborted(Exception):
     __slots__ = ()
 
 
+# Single-threaded render + tokenize ran ~600K chars/s on the #15800 reporter's CPU; a sixth of that still catches a hang.
+_COUNT_TIMEOUT_FLOOR_S = 10.0
+_COUNT_TIMEOUT_CHARS_PER_S = 100_000
+
+
+def _count_timeout(messages, system_text, tools) -> float:
+    try:
+        chars = len(json.dumps([system_text, messages, tools], ensure_ascii = False, default = str))
+    except Exception:  # noqa: BLE001 -- an unmeasurable prompt keeps the floor
+        chars = 0
+    return _COUNT_TIMEOUT_FLOOR_S + chars / _COUNT_TIMEOUT_CHARS_PER_S
+
+
 # Module level so tests can point the orphan sweep at a fixture tree.
 _PROC_ROOT = "/proc"
 
@@ -8258,6 +8423,9 @@ class LlamaCppBackend:
         # (load key, count) of Metal OOM retirements, and the key that stopped respawning.
         self._metal_oom_strikes = None
         self._metal_oom_terminal_key = None
+        # (load key, count) of mid-session GPU OOM deaths, and the child that logged one.
+        self._gpu_oom_strikes = None
+        self._gpu_oom_process = None
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
         # Wakes the health probe on subprocess readiness/exit, not left to the 500 ms fallback poll.
@@ -8318,6 +8486,8 @@ class LlamaCppBackend:
         self._has_audio_input: bool = False
         # Needs mmproj, build and ffmpeg to align; the GGUF alone cannot tell.
         self._has_video_input: bool = False
+        self._video_needs_ffmpeg: bool = False
+        self._video_ffmpeg_dir: Optional[str] = None
         self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
         # clip.projector_type set at load; the family whose image-token ceiling KV admission sizes images against.
         self._mmproj_projector_type: Optional[str] = None
@@ -10047,6 +10217,7 @@ class LlamaCppBackend:
                 "supports_trace_verbosity": False,
                 "supports_video_fps": False,
                 "supports_video_timestamp_interval": False,
+                "supports_video_ffmpeg_dir": None,
                 "supports_load_mode": False,
                 "supports_moe_cache": False,
                 "supports_moe_cache_auto": False,
@@ -10117,6 +10288,7 @@ class LlamaCppBackend:
         supports_no_mmproj_offload = False
         supports_video_fps = False
         supports_video_timestamp_interval = False
+        supports_video_ffmpeg_dir = None
         supports_load_mode = False
         supports_moe_cache = False
         supports_moe_cache_auto = False
@@ -10326,6 +10498,9 @@ class LlamaCppBackend:
             supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
             supports_video_fps = _is_real("--video-fps")
             supports_video_timestamp_interval = _is_real("--video-timestamp-interval")
+            supports_video_ffmpeg_dir = (
+                _is_real("--video-ffmpeg-dir") if probe_ok and blocks else None
+            )
             # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
             # Pre-initialised above: a failed probe must fall back, not raise.
             supports_load_mode = _is_real("--load-mode")
@@ -10440,6 +10615,7 @@ class LlamaCppBackend:
             "supports_trace_verbosity": supports_trace_verbosity,
             "supports_video_fps": supports_video_fps,
             "supports_video_timestamp_interval": supports_video_timestamp_interval,
+            "supports_video_ffmpeg_dir": supports_video_ffmpeg_dir,
             "supports_load_mode": supports_load_mode,
             "supports_moe_cache": supports_moe_cache,
             "supports_moe_cache_auto": supports_moe_cache_auto,
@@ -15867,6 +16043,47 @@ class LlamaCppBackend:
             f"Auto.{kv_hint}"
         )
 
+    @staticmethod
+    def _gpu_commit_headroom_message(
+        untouched_mib: int, headroom_mib: Optional[int]
+    ) -> Optional[str]:
+        """Advisory for commit Windows reserves for GPU memory; None while there is room."""
+        if headroom_mib is None or untouched_mib < _WINDOWS_GPU_UNTOUCHED_COMMIT_MIN_MIB:
+            return None
+        if headroom_mib >= _WINDOWS_GPU_COMMIT_HEADROOM_WARN_MIB:
+            return None
+        held_gib = untouched_mib / 1024
+        return (
+            f"On Windows the GPU driver reserves system commit for the model's GPU memory: "
+            f"llama-server holds about {held_gib:.1f} GiB of commit it never uses in RAM, and "
+            f"only {headroom_mib / 1024:.1f} GiB of commit is left on this system. Studio cannot "
+            f"release it, and when the commit limit runs out other apps can fail to start or "
+            f"crash. Let Windows manage the page file size, or raise it by at least "
+            f"{math.ceil(held_gib)} GiB, under System > About > Advanced system settings > "
+            f"Performance > Advanced > Virtual memory."
+        )
+
+    @staticmethod
+    def _windows_gpu_commit_notice(pid: Optional[int], binary: Optional[str]) -> Optional[str]:
+        """Measures a loaded GPU child on Windows; never raises, since it only adds a notice."""
+        if sys.platform != "win32" or not pid:
+            return None
+        try:
+            if not LlamaCppBackend._installed_ggml_backends(binary) & {"cuda", "hip", "vulkan"}:
+                return None
+            from .diffusion_memory import _windows_commit_headroom_mib
+
+            counters = _windows_private_memory(pid)
+            if counters is None:
+                return None
+            untouched_mib = max(0, counters[0] - counters[1]) // (1024 * 1024)
+            return LlamaCppBackend._gpu_commit_headroom_message(
+                untouched_mib, _windows_commit_headroom_mib()
+            )
+        except Exception as e:  # noqa: BLE001 - a failed probe must not fail the load
+            logger.debug("GPU commit headroom check failed: %s", e)
+            return None
+
     # Skip the wait when the last kill is older than this; the driver has already reclaimed it.
     _VRAM_SETTLE_WINDOW_S: float = 15.0
 
@@ -18048,6 +18265,9 @@ class LlamaCppBackend:
                         if level.group(1) == "E":
                             if any(m in line for m in _DRAFT_CONTEXT_FAILURE_MARKERS):
                                 metal_poison["draft"] = True
+                            # Startup OOM has its own retries; this one is a served child's.
+                            if startup_len is not None and self._is_gpu_memory_start_failure(line):
+                                self._gpu_oom_process = proc
                             if not device_lost_seen and any(
                                 marker in line for marker in _GPU_DEVICE_LOST_MARKERS
                             ):
@@ -19215,6 +19435,7 @@ class LlamaCppBackend:
         self._mtp_runtime_fallback_active = False
         self._metal_oom_strikes = None
         self._metal_oom_terminal_key = None
+        self._gpu_oom_strikes = None
         # Record the applied split and reset the other knobs so status and reload dedup agree.
         self._gpu_memory_mode = gpu_memory_mode if manual_ngl is not None else "auto"
         self._gpu_layers = manual_ngl if manual_ngl is not None else -1
@@ -20038,8 +20259,31 @@ class LlamaCppBackend:
 
         # Header-rejected basenames, so the search moves past an impostor to the real sidecar.
         rejected: set[str] = set()
+        # Once per call; an empty answer (also a failed model_info) is asked again, as before.
+        remote_sizes: dict[str, int] = {}
 
-        def _pick_dflash(candidates: list[str]) -> Optional[str]:
+        def _remote_sizes() -> dict[str, int]:
+            nonlocal remote_sizes
+            if not remote_sizes:
+                remote_sizes = self._remote_root_gguf_sizes(hf_repo, hf_token)
+            return remote_sizes
+
+        snap = _snapshot_dir_of(near_path) if near_path else None
+
+        def _local_sizes(candidates: list[str]) -> dict[str, int]:
+            sizes: dict[str, int] = {}
+            if snap is None:
+                return sizes
+            for name in candidates:
+                if "/" in name:
+                    continue
+                try:
+                    sizes[name] = (snap / name).stat().st_size
+                except OSError:
+                    continue
+            return sizes
+
+        def _pick_dflash(candidates: list[str], *, local: bool = False) -> Optional[str]:
             # Ranked against the weight loaded, not precision alone, so model B does not get model A's drafter; a sidecar naming no family stays eligible.
             from utils.models.drafters import (
                 dflash_repo_preference_key,
@@ -20062,22 +20306,28 @@ class LlamaCppBackend:
             ]
             if not eligible:
                 return None
-            # Same size bound as dflash_plan_files: header reads only after download, a drafter is a few layers of its target, and an unlisted size keeps the candidate.
-            sizes = self._remote_root_gguf_sizes(hf_repo, hf_token)
             try:
                 target_bytes = (self._get_gguf_size_bytes(near_path) or 0) if near_path else 0
             except OSError:
                 target_bytes = 0
-            files = sorted(
-                (
+
+            def _under_bound(sizes: Mapping[str, int]) -> list[str]:
+                # Same size bound as dflash_plan_files: header reads only after download, a drafter is a few layers of its target, and an unlisted size keeps the candidate.
+                return [
                     name
                     for name in eligible
                     # Whole set, not the picked shard: each half of a split weight can sit under the target while the set does not.
                     if not (
                         target_bytes and _drafter_set_bytes(sizes, Path(name).name) >= target_bytes
                     )
-                ),
-                key = lambda name: dflash_repo_preference_key(name, weight_name, others),
+                ]
+
+            # On-disk sizes settle it only when they keep every candidate, as an unanswered model_info does; else ask the Hub.
+            kept = _under_bound(_local_sizes(candidates)) if local else None
+            if kept is None or len(kept) != len(eligible):
+                kept = _under_bound(_remote_sizes())
+            files = sorted(
+                kept, key = lambda name: dflash_repo_preference_key(name, weight_name, others)
             )
             return files[0] if files else None
 
@@ -20097,7 +20347,9 @@ class LlamaCppBackend:
         cached: Optional[str] = None
         seen_siblings: set[str] = set()
         while near_path and not cancel_event.is_set():
-            sibling = _companion_snapshot_sibling(near_path, _pick_dflash)
+            sibling = _companion_snapshot_sibling(
+                near_path, functools.partial(_pick_dflash, local = True)
+            )
             if sibling is None or sibling in seen_siblings:
                 break
             seen_siblings.add(sibling)
@@ -20349,6 +20601,7 @@ class LlamaCppBackend:
             arch not in self._DIFFUSION_ARCHES
             and not is_speech_gguf_architecture(arch)
             and not is_audio_cpp_gguf_architecture(arch)
+            and not is_foreign_asr_gguf_architecture(arch)
             and not getattr(self, "_gguf_header_parsed", False)
         ):
             return None
@@ -20360,6 +20613,13 @@ class LlamaCppBackend:
                 return (
                     "This is an audio GGUF (speech, music or transcription), which cannot run as "
                     "a chat model. Open it from the Audio page instead."
+                )
+            if is_foreign_asr_gguf_architecture(arch):
+                return (
+                    f"This is a '{arch}' speech-recognition GGUF (parakeet.cpp / LocalAI), which "
+                    "llama.cpp cannot load. Updating llama.cpp will not help. For Parakeet in "
+                    "Unsloth, open the Audio page and use the curated audio.cpp model "
+                    "(Parakeet-TDT-0.6B-v3-GGUF)."
                 )
             if is_speech_gguf_architecture(arch):
                 # Points at the Transformers build: the Audio page cannot list a speech GGUF either.
@@ -20963,6 +21223,13 @@ class LlamaCppBackend:
                 return (
                     "This is an audio GGUF (speech, music or transcription), which llama-server "
                     "cannot run as a chat/completion model. Open it from Unsloth's Audio page instead."
+                )
+            if is_foreign_asr_gguf_architecture(arch):
+                return (
+                    f"'{arch}' is a speech-recognition GGUF for parakeet.cpp / LocalAI, which "
+                    "llama-server cannot run as a chat/completion model. Updating llama.cpp will "
+                    "not add support for it. For Parakeet in Unsloth, open the Audio page and use "
+                    "the curated audio.cpp model (Parakeet-TDT-0.6B-v3-GGUF)."
                 )
             if is_speech_gguf_architecture(arch):
                 # Name the build that runs it, not a page this file will not appear on.
@@ -23980,6 +24247,8 @@ class LlamaCppBackend:
                 self._moe_spill_batch_restore: Optional[tuple[Optional[int], Optional[int]]] = None
                 _moe_cache_candidate = False
                 _moe_cache_ram_ok = False
+                _moe_table_bytes = 0
+                _moe_cache_lazy_table = False
                 _shared_gpus = frozenset()
                 _integrated_gpus = frozenset()
                 # The discrete-first tier; accounting keeps _integrated_gpus.
@@ -24316,6 +24585,23 @@ class LlamaCppBackend:
                                 int(_idx): (_CTX_FIT_VRAM_FRACTION - _vram_frac)
                                 * (_total if _total and _total > 0 else _free)
                                 for _idx, _free, _total in _gpu_mem
+                            }
+
+                    # Each card keeps its own margin plus the headroom a mid-session OOM earned.
+                    _oom_headroom_mib = self._gpu_oom_headroom_mib(intent)
+                    if _oom_headroom_mib:
+                        _min_delta = _VRAM_FLOOR_RESERVE_MIB - (
+                            _VRAM_FLOOR_RESERVE_MIB
+                            if gpu_memory_mode == "manual" and gpu_layers < 0
+                            else _LLAMA_FIT_TARGET_DEFAULT_MIB
+                        )
+                        _fit_target_delta_mib = (
+                            max(_min_delta, _fit_target_delta_mib) + _oom_headroom_mib
+                        )
+                        if _fit_target_delta_by_idx:
+                            _fit_target_delta_by_idx = {
+                                _idx: max(_min_delta, _delta) + _oom_headroom_mib
+                                for _idx, _delta in _fit_target_delta_by_idx.items()
                             }
 
                     _sysmem_fallback = self._sysmem_fallback_risk(binary)
@@ -27734,6 +28020,8 @@ class LlamaCppBackend:
                             binary = binary,
                         )
                     if _managed_lazy_flags and _fit_lazy_bytes:
+                        # Kept resident by --lazy-mode off; the MoE cache below may want it lazy.
+                        _moe_table_bytes = _fit_lazy_bytes
                         if _fit_load_mode_kwargs["model_size"]:
                             _fit_load_mode_kwargs["model_size"] = max(
                                 1, _fit_load_mode_kwargs["model_size"] - _fit_lazy_bytes
@@ -27797,6 +28085,31 @@ class LlamaCppBackend:
                             )
                             == self._FIT_LOAD_MODE
                         )
+                        if not _moe_cache_ram_ok and _moe_table_bytes > 0 and _moe_expert_bytes > 0:
+                            # Reading the resident table lazily frees the RAM to pin the experts; the cache beats the --fit split.
+                            _moe_cache_ram_ok = bool(
+                                _moe_prompt_cache_bytes is not None
+                                and self._fit_derived_load_mode(
+                                    **{
+                                        **_fit_load_mode_kwargs,
+                                        "model_size": max(
+                                            1,
+                                            _fit_load_mode_kwargs["model_size"] - _moe_expert_bytes,
+                                        ),
+                                        "host_only_bytes": max(
+                                            0,
+                                            _fit_load_mode_kwargs["host_only_bytes"]
+                                            - _moe_table_bytes,
+                                        )
+                                        + _moe_expert_bytes
+                                        + _moe_prompt_cache_bytes,
+                                        "announce": False,
+                                    }
+                                )
+                                == self._FIT_LOAD_MODE
+                            )
+                            # --lazy-mode off goes only where the cache is really added below.
+                            _moe_cache_lazy_table = _moe_cache_ram_ok
                         if not _moe_cache_ram_ok:
                             logger.info(
                                 "MoE cache: system RAM cannot hold the %.1f GB of routed "
@@ -27812,7 +28125,7 @@ class LlamaCppBackend:
                     # Same reasoning: an unpriced load keeps llama.cpp's default.
                     _fit_load_mode = None
                     _managed_lazy_flags = None
-                    _moe_cache_candidate = _moe_cache_ram_ok = False
+                    _moe_cache_candidate = _moe_cache_ram_ok = _moe_cache_lazy_table = False
                     # And a half-built snapshot is not a price either: the throw can
                     # land after the dict exists but before the later terms are added
                     # to it, which would plan against a footprint missing them.
@@ -28188,6 +28501,10 @@ class LlamaCppBackend:
                 # On every launch, not only where Studio emits --mmproj: a projector
                 # from the extras or LLAMA_ARG_MMPROJ takes video too.
                 cmd.extend(_video_fps_flags(server_caps, extra_args = extra_args))
+                _ffmpeg_flags, self._video_ffmpeg_dir = _video_ffmpeg_dir_flags(
+                    server_caps, extra_args = extra_args
+                )
+                cmd.extend(_ffmpeg_flags)
 
                 # Report the public model id, not the raw -m path.
                 from core.inference.model_ids import public_model_id
@@ -29331,6 +29648,16 @@ class LlamaCppBackend:
                     and _placed_by_fitter
                     and _argv_loads_pinned(cmd, _fit_load_mode_env_view)
                 ):
+                    if _moe_cache_lazy_table and self._lazy_mode_flags:
+                        # These flags sit after the spec block, so removing them leaves _spec_start valid.
+                        cmd = _without_subsequence(cmd, self._lazy_mode_flags)
+                        self._lazy_mode_flags = []
+                        logger.info(
+                            "MoE cache: reading the %.1f GB lookup table lazily so system "
+                            "RAM can pin the %.1f GB of routed experts.",
+                            _moe_table_bytes / (1024**3),
+                            _moe_expert_bytes / (1024**3),
+                        )
                     self._moe_cache_flags = list(_MOE_CACHE_AUTO_TOKENS)
                     cmd.extend(self._moe_cache_flags)
                     logger.info(
@@ -32312,6 +32639,15 @@ class LlamaCppBackend:
                             else None
                         ),
                     )
+                elif not intent.cpu_fallback:
+                    _gpu_commit_notice = self._windows_gpu_commit_notice(
+                        getattr(self._process, "pid", None), binary
+                    )
+                    if _gpu_commit_notice:
+                        if self._last_load_warning:
+                            self._amend_load_warning(" " + _gpu_commit_notice)
+                        else:
+                            self._record_load_warning(_gpu_commit_notice)
                 if not self._publish_healthy():
                     # Teardown began after the 200; publishing would report a model that is gone.
                     _cleanup_cancelled_load("App shut down as the load was completing")
@@ -32344,8 +32680,27 @@ class LlamaCppBackend:
                 # -- the length --fit chose, or a --parallel slot split -- so the
                 # Adopt the context the server allocated (--fit or slot split); clear video state first, or a swap to a model without video inherits the old answer.
                 self._has_video_input = False
+                self._video_needs_ffmpeg = False
                 # Use _extra_args_as_requested: the drafter-drop snapshot would restore the Metal zero-context strip.
                 self._reconcile_effective_ctx_with_server(ctx_override or 0)
+                if self._has_video_input:
+                    _supports_dir = server_caps.get("supports_video_ffmpeg_dir") is not False
+                    self._has_video_input = _video_tools_reachable(
+                        _last_spawn_cmd, env, _spawn_cwd, supports_ffmpeg_dir = _supports_dir
+                    )
+                    self._video_needs_ffmpeg = not self._has_video_input
+                    if self._has_video_input:
+                        try:
+                            self._video_ffmpeg_dir = _video_tools_search(
+                                _last_spawn_cmd, env, _spawn_cwd, supports_ffmpeg_dir = _supports_dir
+                            )
+                        except Exception:
+                            pass
+                    if not self._has_video_input:
+                        logger.warning(
+                            "Video input disabled: llama-server decodes video with ffmpeg and "
+                            "ffprobe, and neither --video-ffmpeg-dir nor PATH provides both."
+                        )
                 if self._kv_cache_context_total is not None:
                     self._n_ubatch = min(
                         self._n_ubatch,
@@ -32410,6 +32765,7 @@ class LlamaCppBackend:
                     # the strike count.
                     self._metal_oom_strikes = None
                     self._metal_oom_terminal_key = None
+                    self._gpu_oom_strikes = None
                 self._mtp_runtime_fallback_active = _mtp_active_for_launched_server
                 self._start_mtp_crash_watchdog()
 
@@ -33329,6 +33685,7 @@ class LlamaCppBackend:
             self._mtp_runtime_fallback_active = False
             self._metal_oom_strikes = None
             self._metal_oom_terminal_key = None
+            self._gpu_oom_strikes = None
             self._hf_variant = None
             self._is_vision = False
             self._disable_vision = False
@@ -33338,6 +33695,7 @@ class LlamaCppBackend:
             self._audio_probed = False
             self._has_audio_input = False
             self._has_video_input = False
+            self._video_needs_ffmpeg = False
             self._mmproj_has_audio = False
             self._mmproj_accepts_image = True
             self._port = None
@@ -34571,6 +34929,7 @@ class LlamaCppBackend:
                 timeout = timeout,
                 headers = self._auth_headers,
                 trust_env = False,
+                verify = _local_ssl_context(),
             )
         except Exception as e:
             logger.debug(f"MTP decode probe failed: {e}")
@@ -34799,6 +35158,7 @@ class LlamaCppBackend:
                     headers = self._auth_headers,
                     timeout = _SLOT_SAVE_HTTP_TIMEOUT,
                     trust_env = False,
+                    verify = _local_ssl_context(),
                 )
             except Exception as e:
                 logger.debug(f"slot {slot} save failed: {e}")
@@ -34867,6 +35227,7 @@ class LlamaCppBackend:
                     headers = self._auth_headers,
                     timeout = _SLOT_SAVE_HTTP_TIMEOUT,
                     trust_env = False,
+                    verify = _local_ssl_context(),
                 )
             except Exception as e:
                 logger.debug(f"slot restore failed: {e}")
@@ -35584,7 +35945,13 @@ class LlamaCppBackend:
             # the requested -c, and video reads as unsupported on a model that
             # supports it. None when there is no child key, which is httpx's
             # default and what every other call site here relies on.
-            resp = httpx.get(url, headers = self._auth_headers, timeout = 5.0, trust_env = False)
+            resp = httpx.get(
+                url,
+                headers = self._auth_headers,
+                timeout = 5.0,
+                trust_env = False,
+                verify = _local_ssl_context(),
+            )
             if resp.status_code != 200:
                 return None
             props = resp.json()
@@ -35760,6 +36127,57 @@ class LlamaCppBackend:
         if data is None:
             return False
         return _llama_chunk_has_generated_output(data)
+
+    def _iter_tool_round_text(
+        self,
+        response: "httpx.Response",
+        payload: dict,
+        cancel_event: Optional[threading.Event],
+        first_token_deadline: Optional[float],
+        on_respawn: Optional[Callable[[], None]] = None,
+    ) -> Generator[str, None, None]:
+        """Raw SSE text of one tool round. A tool-call parse rejection before any output (Llama 3.x
+        ``{"type": "function", ...}``, ``;``-joined calls) is retried once with tool_choice "none",
+        which turns llama-server's parser off so Studio's parser reads the raw reply."""
+        stream = self._iter_text_cancellable(
+            response, cancel_event, first_token_deadline = first_token_deadline
+        )
+        if not payload.get("tools") or payload.get("tool_choice") == "none":
+            yield from stream
+            return
+        pending = ""
+        for chunk in stream:
+            pending += chunk
+            while "\n" in pending:
+                line, pending = pending.split("\n", 1)
+                data = None
+                stripped = line.strip()
+                if stripped.startswith("data: ") and stripped != "data: [DONE]":
+                    try:
+                        data = json.loads(stripped[6:])
+                    except json.JSONDecodeError:
+                        pass
+                if is_tool_parse_rejection(data):
+                    logger.info(
+                        "llama-server could not parse the reply as tool calls; "
+                        "asking again with its tool-call parser off"
+                    )
+                    response.close()
+                    payload["tool_choice"] = "none"
+                    with self._open_chat_stream_with_respawn_retry(
+                        payload, cancel_event, on_respawn = on_respawn
+                    ) as (retry_response, retry_deadline):
+                        yield from self._iter_text_cancellable(
+                            retry_response, cancel_event, first_token_deadline = retry_deadline
+                        )
+                    return
+                yield line + "\n"
+                # Output already reached the caller: a second request could not be joined to it.
+                if isinstance(data, dict) and _llama_chunk_has_generated_output(data):
+                    yield pending
+                    yield from stream
+                    return
+        yield pending
 
     @staticmethod
     def _iter_text_cancellable(
@@ -36073,6 +36491,8 @@ class LlamaCppBackend:
                     f"llama-server for '{self._model_identifier}' exited "
                     f"(code {proc.returncode}); respawning to recover the session"
                 )
+                if self._died_of_gpu_oom(proc):
+                    self._note_gpu_oom_strike(intent)
                 try:
                     with _automatic_recovery_load():
                         started = bool(self.load_model(intent))
@@ -36212,6 +36632,7 @@ class LlamaCppBackend:
                 headers = self._auth_headers,
                 timeout = 10.0,
                 trust_env = False,
+                verify = _local_ssl_context(),
             )
             if resp.status_code < 500:
                 return False
@@ -36235,6 +36656,36 @@ class LlamaCppBackend:
             return replace(intent, speculative_type = None, verified_gguf = None)
         except TypeError:
             return intent
+
+    def _died_of_gpu_oom(self, proc) -> bool:
+        """Whether the dead served child logged a GPU out-of-memory error before exiting."""
+        drain = getattr(self, "_stdout_thread", None)
+        if drain is not None and drain is not threading.current_thread():
+            # Its last lines can still be in the pipe when the exit status lands.
+            drain.join(timeout = 2)
+        return proc is not None and getattr(self, "_gpu_oom_process", None) is proc
+
+    def _note_gpu_oom_strike(self, intent) -> None:
+        key = self._metal_oom_key(intent)
+        prior = getattr(self, "_gpu_oom_strikes", None)
+        strikes = prior[1] + 1 if prior is not None and prior[0] == key else 1
+        strikes = min(strikes, _GPU_OOM_HEADROOM_MAX_STRIKES)
+        self._gpu_oom_strikes = (key, strikes)
+        try:
+            logger.warning(
+                f"llama-server for '{self._model_identifier}' ran out of GPU memory; "
+                f"respawning it with {int(strikes * _GPU_OOM_HEADROOM_STEP_MIB)} MiB more "
+                "free VRAM kept (--fit-target)."
+            )
+        except Exception:
+            pass
+
+    def _gpu_oom_headroom_mib(self, intent) -> float:
+        """Extra --fit-target for a reload of the load that ran out of GPU memory; 0 otherwise."""
+        prior = getattr(self, "_gpu_oom_strikes", None)
+        if prior is None or intent is None or prior[0] != self._metal_oom_key(intent):
+            return 0.0
+        return prior[1] * _GPU_OOM_HEADROOM_STEP_MIB
 
     def _metal_oom_is_terminal(self, intent) -> bool:
         """Whether ``intent`` already ran out of Metal memory twice (no more replays)."""
@@ -36393,6 +36844,7 @@ class LlamaCppBackend:
                 headers = self._auth_headers,
                 timeout = 2.0,
                 trust_env = False,
+                verify = _local_ssl_context(),
             )
             response.raise_for_status()
             result = response.json()
@@ -37091,6 +37543,34 @@ class LlamaCppBackend:
         # Caller's continue_final_message is restored once a turn progresses; forced only to join one answer.
         _final_answer_stripper = _StreamingMarkupStripper(_enabled_names_gate, seg_final = False)
 
+        def _final_answer_visible(
+            cleaned: str,
+            answer: str,
+            *,
+            at_end: bool = False,
+        ):
+            """tool_choice "none" leaves a Llama 3.x bare-JSON call in the answer text: hold while a leading
+            ;-chain of objects has an open peer (its name may not have arrived), then drop the enabled calls
+            as the tool rounds do. None means hold."""
+            if not _enabled_names_gate or not cleaned.endswith(answer):
+                return cleaned
+            probe = strip_llama3_leading_sentinels(answer.lstrip())
+            if not probe.startswith("{"):
+                return cleaned
+            if not at_end and len(probe) < _MAX_BARE_JSON_BUFFER:
+                chain = probe
+                while chain.startswith("{"):
+                    end = _balanced_brace_end(chain, 0)
+                    if end is None:
+                        return None
+                    chain = strip_llama3_leading_sentinels(chain[end + 1 :].lstrip()).lstrip(
+                        " \t\n\r;"
+                    )
+            kept = strip_leading_bare_json_call(answer, _enabled_names_gate)
+            if kept == answer:
+                return cleaned
+            return cleaned[: len(cleaned) - len(answer)] + kept
+
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
@@ -37498,6 +37978,7 @@ class LlamaCppBackend:
                             conversation,
                             _before_fit,
                             branch_messages = _extend_live_branch(_before_fit),
+                            query_messages = _request_branch,
                             thread_id = thread_id,
                             # Forge a tool exchange only when search_conversation is advertised.
                             style = (
@@ -37796,10 +38277,12 @@ class LlamaCppBackend:
                     for truncation in _respawn_truncations:
                         yield {"type": "context_truncated", **truncation}
                     raw_buf = ""
-                    for raw_chunk in self._iter_text_cancellable(
+                    for raw_chunk in self._iter_tool_round_text(
                         response,
+                        payload,
                         cancel_event,
-                        first_token_deadline = first_token_deadline,
+                        first_token_deadline,
+                        on_respawn = _refit_iteration_after_respawn,
                     ):
                         raw_buf += raw_chunk
                         while "\n" in raw_buf:
@@ -37859,6 +38342,19 @@ class LlamaCppBackend:
                                 # Error chunks have no choices; don't drop them.
                                 _stream_error = stream_error_from_chunk(chunk_data)
                                 if _stream_error is not None:
+                                    # A rejected later call (`;`-joined) must not lose the complete ones before it.
+                                    if (
+                                        has_structured_tc
+                                        and is_tool_parse_rejection(chunk_data)
+                                        and _structured_calls_complete(tool_calls_acc)
+                                    ):
+                                        logger.info(
+                                            "llama-server rejected a later tool call; "
+                                            "running the %d complete one(s) before it",
+                                            len(tool_calls_acc),
+                                        )
+                                        _stream_done = True
+                                        break
                                     raise _stream_error
                                 choices = chunk_data.get("choices", [])
                                 if not choices:
@@ -39727,7 +40223,7 @@ class LlamaCppBackend:
                 # Loop-ending turn offers no tools, so this notice must not ask for a retry; it rides the result.
                 _over_cap_final = bool(_over_cap) and (
                     tool_controller.force_final_answer
-                    or not tool_controller.active_tools()
+                    or not tool_controller.has_active_tools()
                     or (_turn_executed_real_tool and _tool_iters_done + 1 >= max_tool_iterations)
                     # Fold feedback only into a result from the SAME tool, since templates label the block with the tool name; a retry notice for skipped calls is never folded.
                     or iteration + 1 >= max_tool_iterations + _extra + _continuation_credits
@@ -39860,7 +40356,7 @@ class LlamaCppBackend:
 
                 # Clear tool status badge before next generation/final pass.
                 yield {"type": "status", "text": ""}
-                if tool_controller.force_final_answer or not tool_controller.active_tools():
+                if tool_controller.force_final_answer or not tool_controller.has_active_tools():
                     _append_budget_exhausted_nudge = False
                     break
                 # Only real tool turns use the cap, so reserved re-prompt slots never add rounds (GGUF parity).
@@ -39992,6 +40488,8 @@ class LlamaCppBackend:
                         conversation,
                         _before_final_fit,
                         branch_messages = _extend_live_branch(_before_final_fit),
+                        # The budget nudge and loop notices are user turns; search for the user's question.
+                        query_messages = _request_branch,
                         thread_id = thread_id,
                         # Inline: under tool_choice "none" a forged tool role breaks strict templates.
                         style = "inline",
@@ -40414,14 +40912,26 @@ class LlamaCppBackend:
                                             if auto_heal_tool_calls
                                             else cumulative
                                         )
+                                        if auto_heal_tool_calls:
+                                            cleaned = _final_answer_visible(cleaned, answer_text)
                                         # Emit only when cleaned text grows (monotonic).
-                                        if len(cleaned) > len(_last_emitted):
+                                        if cleaned is not None and len(cleaned) > len(
+                                            _last_emitted
+                                        ):
                                             _last_emitted = cleaned
                                             yield {"type": "content", "text": cleaned}
                             except json.JSONDecodeError:
                                 logger.debug(f"Skipping malformed SSE line: {line[:100]}")
                         if _stream_done:
                             break  # exit outer for
+                    if auto_heal_tool_calls and has_content_tokens and not in_thinking:
+                        # Release an answer still held as a possible bare-JSON call.
+                        _flushed = _final_answer_visible(
+                            _final_answer_stripper.strip(cumulative), answer_text, at_end = True
+                        )
+                        if len(_flushed) > len(_last_emitted):
+                            _last_emitted = _flushed
+                            yield {"type": "content", "text": _flushed}
                     # Commit the candidate only once another stream runs, so usage is not double counted; replay only new text, or the fragment is repeated.
                     _shown_this_attempt = _last_emitted[len(_attempt_started_at) :]
                     if (
@@ -40742,7 +41252,9 @@ class LlamaCppBackend:
 
         try:
             with httpx.Client(
-                timeout = 10,
+                timeout = httpx.Timeout(
+                    _COUNT_TIMEOUT_FLOOR_S, read = _count_timeout(messages, system_text, tools)
+                ),
                 headers = self._auth_headers,
                 trust_env = False,
                 verify = _local_ssl_context(),
@@ -40824,6 +41336,11 @@ class LlamaCppBackend:
                     except CountAborted:
                         # Not a template failure. Must precede the generic except.
                         raise
+                    except httpx.TimeoutException:
+                        if strict:
+                            raise RuntimeError(
+                                "llama-server timed out counting the prompt"
+                            ) from None
                     except Exception:
                         pass
                     return None, False
@@ -40926,7 +41443,12 @@ class LlamaCppBackend:
         """Codec name on match, None on non-audio, raises on transport/JSON errors."""
         if not self.is_loaded:
             return None
-        with httpx.Client(timeout = 10, headers = self._auth_headers, trust_env = False) as client:
+        with httpx.Client(
+            timeout = 10,
+            headers = self._auth_headers,
+            trust_env = False,
+            verify = _local_ssl_context(),
+        ) as client:
 
             def _detok(tid: int) -> str:
                 # Non-200 means marker not in vocab; transport/JSON errors still raise.

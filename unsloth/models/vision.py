@@ -257,6 +257,10 @@ from ._utils import (
     resolve_attention_implementation,
     requests_flex_attention,
     _EXPLICIT_FLEX_ATTR,
+    _config_prefers_flex_attention,
+    _config_set,
+    _iter_attention_configs,
+    _text_attention_configs,
     _get_text_only_config,
     _is_family_text_decoder,
     _config_get,
@@ -348,6 +352,10 @@ try:
     from unsloth_zoo.gradient_checkpointing import non_reentrant_offload_hooks
 except ImportError:  # older unsloth_zoo
     non_reentrant_offload_hooks = None
+try:
+    from unsloth_zoo.gradient_checkpointing import activation_offloader_for
+except ImportError:  # its non_reentrant_offload_hooks takes no owner
+    activation_offloader_for = None
 import torch.utils.checkpoint as torch_checkpoint
 import transformers.modeling_utils as hf_modeling_utils
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
@@ -379,6 +387,7 @@ from unsloth_zoo.utils import Version
 
 import types
 import functools
+import weakref
 import importlib.util
 import os
 import copy
@@ -388,6 +397,7 @@ import warnings
 from typing import Optional, Tuple, List, Union
 import re, inspect, sys
 import contextlib
+import threading
 
 try:
     from huggingface_hub.utils import get_token
@@ -1527,6 +1537,210 @@ class _EagerDecodeSteps:
         return False
 
 
+# One-token decode is slower on flex than SDPA, but prefill must stay on flex (its block mask skips tiles a
+# dense mask computes). The path is picked in prepare_inputs_for_generation, where the step's mask is built.
+_FLEX_GENERATE_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_GENERATE"
+_FLEX_GENERATE_LOCK = threading.Lock()
+
+
+# Kept outside the model: an RLock in __dict__ breaks deepcopy / pickle.
+class _ModelMap:
+    def __init__(self):
+        self.weak, self.strong = weakref.WeakKeyDictionary(), {}
+
+    def _where(self, model):
+        try:
+            weakref.ref(model)
+            return self.weak, model
+        except TypeError:
+            return self.strong, id(model)
+
+    def get(
+        self,
+        model,
+        default = None,
+    ):
+        table, key = self._where(model)
+        return table.get(key, default)
+
+    def set(self, model, value):
+        table, key = self._where(model)
+        table[key] = value
+
+    def pop(self, model):
+        table, key = self._where(model)
+        table.pop(key, None)
+
+
+_FLEX_GENERATE_SERIAL = _ModelMap()
+_FLEX_GENERATE_ROUTING = _ModelMap()
+_NON_FLEX_DECODE = "eager"
+
+
+def _flex_generate_configs(model):
+    if os.environ.get(_FLEX_GENERATE_ENV_VAR, "0") == "1":
+        return []
+    config = getattr(model, "config", None)
+    if config is None or not _config_prefers_flex_attention(config):
+        return []
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    if getattr(base, _EXPLICIT_FLEX_ATTR, False) or getattr(model, _EXPLICIT_FLEX_ATTR, False):
+        return []
+    return [
+        c
+        for c in _text_attention_configs(config)
+        if _config_get(c, "_attn_implementation", None) == "flex_attention"
+    ]
+
+
+def _step_query_length(model_inputs):
+    if not isinstance(model_inputs, dict):
+        return None
+    for key in ("inputs_embeds", "input_ids", "decoder_input_ids"):
+        x = model_inputs.get(key)
+        if isinstance(x, torch.Tensor) and x.dim() >= 2:
+            return int(x.shape[1])
+    return None
+
+
+class _NonFlexGenerate:
+    """Threads are serialised per model: they share one config, switched between mask build and forward."""
+
+    def __init__(self, model):
+        self.model = model
+        self.active = False
+        self.serial = None
+        self.base = model.get_base_model() if hasattr(model, "get_base_model") else model
+
+    def _set(self, decode):
+        state = self.model.__dict__
+        if state.get("_unsloth_non_flex_generate_pinned", False):
+            decode = True
+        value = _NON_FLEX_DECODE if decode else "flex_attention"
+        for c in state.get("_unsloth_non_flex_generate_configs", ()):
+            if _config_get(c, "_attn_implementation", None) != value:
+                _config_set(c, "_attn_implementation", value)
+
+    def _wrap_prepare(self, prepare):
+        scope = self
+
+        @functools.wraps(prepare)
+        def prepare_inputs_for_generation(*args, **kwargs):
+            cache_position = kwargs.get("cache_position")
+            if isinstance(cache_position, torch.Tensor) and cache_position.dim() == 1:
+                decode = cache_position.shape[0] == 1
+            else:
+                decode = scope.steps > 0
+            scope.steps += 1
+            scope._set(decode)
+            model_inputs = prepare(*args, **kwargs)
+            q_len = _step_query_length(model_inputs)
+            if q_len is not None and (q_len == 1) != decode:
+                scope._set(q_len == 1)
+                model_inputs = prepare(*args, **kwargs)
+            return model_inputs
+
+        return prepare_inputs_for_generation
+
+    def __enter__(self):
+        state = self.model.__dict__
+        with _FLEX_GENERATE_LOCK:
+            routed = _FLEX_GENERATE_ROUTING.get(self.base, 0) > 0 or bool(
+                _flex_generate_configs(self.model)
+            )
+            serial = None
+            if routed:
+                serial = _FLEX_GENERATE_SERIAL.get(self.base)
+                if serial is None:
+                    serial = threading.RLock()
+                    _FLEX_GENERATE_SERIAL.set(self.base, serial)
+        if serial is not None:
+            serial.acquire()
+            self.serial = serial
+        with _FLEX_GENERATE_LOCK:
+            depth = state.get("_unsloth_non_flex_generate", 0)
+            if depth == 0:
+                configs = _flex_generate_configs(self.model)
+                if not configs:
+                    self._release()
+                    return self
+                # Parents first: the transformers setter also writes sub-configs.
+                saved = [
+                    (c, field, _config_get(c, field, None))
+                    for c in _iter_attention_configs(self.model.config)
+                    for field in ("_attn_implementation", "attn_implementation")
+                    if _config_get(c, field, None) is not None
+                ]
+                state["_unsloth_non_flex_generate_saved"] = saved
+                state["_unsloth_non_flex_generate_configs"] = configs
+                _FLEX_GENERATE_ROUTING.set(self.base, _FLEX_GENERATE_ROUTING.get(self.base, 0) + 1)
+                self.steps = 0
+                # PeftModelForCausalLM.generate calls the base model's prepare_inputs_for_generation: wrap both.
+                targets = [self.model]
+                base = (
+                    self.model.get_base_model() if hasattr(self.model, "get_base_model") else None
+                )
+                if base is not None and base is not self.model:
+                    targets.append(base)
+                wrapped = []
+                for target in targets:
+                    prepare = getattr(target, "prepare_inputs_for_generation", None)
+                    if prepare is None:
+                        continue
+                    wrapped.append(
+                        (
+                            target,
+                            "prepare_inputs_for_generation" in target.__dict__,
+                            target.__dict__.get("prepare_inputs_for_generation"),
+                        )
+                    )
+                    target.prepare_inputs_for_generation = self._wrap_prepare(prepare)
+                if wrapped:
+                    state["_unsloth_non_flex_generate_prepare"] = wrapped
+                else:
+                    state["_unsloth_non_flex_generate_pinned"] = True
+                    self._set(True)
+            state["_unsloth_non_flex_generate"] = depth + 1
+            self.active = True
+        return self
+
+    def _release(self):
+        if self.serial is not None:
+            self.serial.release()
+            self.serial = None
+
+    def __exit__(self, *exc):
+        if not self.active:
+            return False
+        try:
+            self._restore()
+        finally:
+            self._release()
+        return False
+
+    def _restore(self):
+        state = self.model.__dict__
+        with _FLEX_GENERATE_LOCK:
+            depth = state.get("_unsloth_non_flex_generate", 1) - 1
+            state["_unsloth_non_flex_generate"] = depth
+            if depth == 0:
+                state.pop("_unsloth_non_flex_generate", None)
+                if state.pop("_unsloth_non_flex_generate_configs", None) is not None:
+                    left = _FLEX_GENERATE_ROUTING.get(self.base, 1) - 1
+                    if left > 0:
+                        _FLEX_GENERATE_ROUTING.set(self.base, left)
+                    else:
+                        _FLEX_GENERATE_ROUTING.pop(self.base)
+                state.pop("_unsloth_non_flex_generate_pinned", None)
+                for target, had, previous in state.pop("_unsloth_non_flex_generate_prepare", ()):
+                    if had:
+                        target.__dict__["prepare_inputs_for_generation"] = previous
+                    else:
+                        target.__dict__.pop("prepare_inputs_for_generation", None)
+                for c, field, value in state.pop("_unsloth_non_flex_generate_saved", ()):
+                    _config_set(c, field, value)
+
+
 def _compiles_decode(model):
     if unsloth_decode_compile is None:
         return False
@@ -1617,6 +1831,18 @@ try:
     torch_compiler_set_stance = torch.compiler.set_stance
 except:
     torch_compiler_set_stance = None
+
+try:
+    from unsloth_zoo.temporary_patches.utils import unsloth_reset_inference_runs
+except ImportError:
+    # Older unsloth_zoo: each compiled module counts its own inference forwards.
+    def unsloth_reset_inference_runs():
+        for name, module in list(sys.modules.items()):
+            if (
+                name.startswith("unsloth_compiled_module_")
+                and type(getattr(module, "INFERENCE_RUNS", None)) is int
+            ):
+                module.INFERENCE_RUNS = 0
 
 
 # Image and video only: get_block_sequence_ids_for_mask blocks token types 1 and 2.
@@ -2064,9 +2290,15 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
     # FlashAttention breaks on the forced static cache below (unfilled slots stay unmasked while decoding), so delegate after normalization but before it.
     _clear_generation_caches(self)
+    # Custom-code generate (LFM3) raises on any cache field it lists as unsupported; leave them unset.
+    # Inline, not a helper: tests exec this function's source with a hand-built namespace.
+    unsupported_fields = getattr(self, "_generation_fields_unsupported", None)
+    rejects_cache_fields = (
+        isinstance(unsupported_fields, dict) and "cache_implementation" in unsupported_fields
+    )
     if _uses_flash_attention_for_generation(self.config):
         # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL). The kwarg wins, since update runs last; skip it when the caller passed a cache.
-        if kwargs.get("past_key_values") is None:
+        if kwargs.get("past_key_values") is None and not rejects_cache_fields:
             kwargs["cache_implementation"] = "dynamic"
         try:
             with _get_inference_mode_context_manager(self), autocaster:
@@ -2118,6 +2350,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if force_dynamic_cache:
         cache_implementation = None
         dynamic_implementation = _dynamic_cache_choice(kwargs)
+    if rejects_cache_fields:
+        cache_implementation = None
+        force_dynamic_cache = False
 
     generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
     compile_decode = (
@@ -2153,7 +2388,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
     eager_scope = _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
     try:
-        with decode_scope, eager_scope, _get_inference_mode_context_manager(self), autocaster:
+        with (
+            _NonFlexGenerate(self),
+            decode_scope,
+            eager_scope,
+            _get_inference_mode_context_manager(self),
+            autocaster,
+        ):
             output = self._old_generate(*args, **kwargs)
     finally:
         _clear_generation_caches(self)
@@ -3319,9 +3560,130 @@ def _offload_activation_unpack(packed):
     return x if device is None else x.to(device, non_blocking = True)
 
 
-def _offload_activation_hooks():
+# hf_modeling_utils.checkpoint is shared by every model, so the owner is resolved per call from the layer.
+_GC_CONTAINERS = (torch.nn.ModuleList, torch.nn.ModuleDict)
+_GC_OFFLOAD_ROOTS = weakref.WeakSet()
+# Weak values: a strong one would keep its own key alive.
+_GC_MODULE_PARENTS = weakref.WeakKeyDictionary()
+_GC_UNRESOLVED = weakref.WeakSet()
+_GC_OWNER_DEPTH = weakref.WeakKeyDictionary()
+
+
+def _gc_is_compiling():
+    try:
+        return torch.compiler.is_compiling()
+    except Exception:
+        return False
+
+
+def _gc_owner_pre_hook(module, args):
+    if _gc_is_compiling():
+        return
+    _GC_OWNER_DEPTH[module] = _GC_OWNER_DEPTH.get(module, 0) + 1
+
+
+def _gc_owner_post_hook(module, args, output):
+    if _gc_is_compiling():
+        return
+    depth = _GC_OWNER_DEPTH.get(module, 0)
+    if depth > 0:
+        _GC_OWNER_DEPTH[module] = depth - 1
+
+
+def _gc_track_owner(owner):
+    # Module-level hooks looked up per call: the model stays picklable and a copy tracks only itself.
+    if _gc_owner_pre_hook not in owner._forward_pre_hooks.values():
+        owner.register_forward_pre_hook(_gc_owner_pre_hook)
+        owner.register_forward_hook(_gc_owner_post_hook, always_call = True)
+
+
+def _gc_index_parents(root, track = False):
+    try:
+        from transformers.modeling_layers import GradientCheckpointingLayer
+    except ImportError:
+        GradientCheckpointingLayer = ()
+    for parent in root.modules():
+        if isinstance(parent, _GC_CONTAINERS):
+            continue
+        children = list(parent.children())
+        layered = stacked = False
+        while children:
+            child = children.pop()
+            if isinstance(child, _GC_CONTAINERS):
+                stacked = True
+                layered = layered or any(
+                    isinstance(m, GradientCheckpointingLayer) for m in child.children()
+                )
+                children.extend(child.children())
+                continue
+            if child not in _GC_MODULE_PARENTS:
+                _GC_MODULE_PARENTS[child] = weakref.ref(parent)
+        # Decoder / encoder stacks (old style: the stack carries .gradient_checkpointing) are watched from
+        # the first forward; any other owner from the forward after its first checkpoint.
+        if track and (layered or (stacked and hasattr(parent, "gradient_checkpointing"))):
+            _gc_track_owner(parent)
+
+
+def _register_gc_offload_root(model, offload = True):
+    if not offload:
+        return
+    _GC_OFFLOAD_ROOTS.add(model)
+    _GC_UNRESOLVED.clear()
+    _gc_index_parents(model, track = True)
+
+
+def _gc_checkpointed_module(function):
+    # GradientCheckpointingLayer passes partial(super().__call__, ...); older stacks a bound __call__ or closure.
+    for _ in range(8):
+        if not isinstance(function, functools.partial):
+            break
+        function = function.func
+    module = getattr(function, "__self__", None)
+    if isinstance(module, torch.nn.Module):
+        return module
+    found = []
+    for cell in getattr(function, "__closure__", None) or ():
+        try:
+            value = cell.cell_contents
+        except ValueError:
+            continue
+        if isinstance(value, torch.nn.Module):
+            found.append(value)
+    return found[0] if len(found) == 1 else None
+
+
+def _gc_checkpoint_owner(function):
+    """The module owning this checkpoint's offloader, or None for the shared one."""
+    if activation_offloader_for is None:
+        return None
+    try:
+        layer = _gc_checkpointed_module(function)
+        if layer is None:
+            return None
+        ref = _GC_MODULE_PARENTS.get(layer)
+        if ref is None and layer not in _GC_UNRESOLVED:
+            for root in list(_GC_OFFLOAD_ROOTS):
+                _gc_index_parents(root)
+            ref = _GC_MODULE_PARENTS.get(layer)
+            if ref is None:
+                _GC_UNRESOLVED.add(layer)
+        owner = None if ref is None else ref()
+        if owner is None:
+            return None
+        # An owner whose hooks never fire (bypassed) would pile up records across discarded forwards: share.
+        if _GC_OWNER_DEPTH.get(owner, 0) > 0:
+            return owner
+        _gc_track_owner(owner)
+    except TypeError:  # an unhashable / non-weakrefable module
+        pass
+    return None
+
+
+def _offload_activation_hooks(owner = None):
     # The zoo hooks copy on a side stream; the fallback queues the copy on the compute stream.
     if non_reentrant_offload_hooks is not None:
+        if owner is not None and activation_offloader_for is not None:
+            return non_reentrant_offload_hooks(owner)
         return non_reentrant_offload_hooks()
     return torch.autograd.graph.saved_tensors_hooks(
         _offload_activation_pack, _offload_activation_unpack
@@ -4048,7 +4410,13 @@ class FastBaseModel:
 
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
-            if dtype == torch.bfloat16:
+            if do_forced_float32 and not SUPPORTS_BFLOAT16:
+                # Forced float32 loads bf16 then casts, but without bf16 the trainer keeps float32 (no autocast).
+                print(
+                    f"Unsloth: {model_type_arch} cannot train in float16 and this GPU has no bfloat16, "
+                    "so full finetuning runs in float32."
+                )
+            elif dtype == torch.bfloat16:
                 if float32_mixed_precision != True:
                     print(
                         f"Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.\n"
@@ -5492,12 +5860,13 @@ class FastBaseModel:
                 torch_checkpoint.checkpoint,
             )
             _offload = use_gradient_checkpointing == "unsloth"
+            _register_gc_offload_root(model, _offload)
 
             def _nonre_checkpoint(function, *args, **kwargs):
                 kwargs["use_reentrant"] = False
                 if not _offload:
                     return _orig_checkpoint(function, *args, **kwargs)
-                with _offload_activation_hooks():
+                with _offload_activation_hooks(_gc_checkpoint_owner(function)):
                     return _orig_checkpoint(function, *args, **kwargs)
 
             _nonre_checkpoint._unsloth_original = _orig_checkpoint
@@ -5670,6 +6039,9 @@ class FastBaseModel:
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
+        # A count left at 1 by a 1-token generate would go eager right after the next prefill.
+        if unsloth_reset_inference_runs is not None:
+            unsloth_reset_inference_runs()
         return model
 
     @staticmethod

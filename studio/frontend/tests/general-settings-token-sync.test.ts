@@ -108,6 +108,7 @@ function generalTab(initialToken: string) {
     "@/components/ui/button": componentStub,
     "@/components/ui/dialog": componentStub,
     "@/components/ui/input": { Input: "Input" },
+    "@/components/ui/select": componentStub,
     "@/components/ui/switch": componentStub,
     "@/features/chat": {
       useChatRuntimeStore: Object.assign(
@@ -115,6 +116,7 @@ function generalTab(initialToken: string) {
         { getState: () => runtime },
       ),
     },
+    "@/features/chat-background": { resetChatBackground: async () => true },
     "@/features/chat/stores/sidebar-organization-keys": {
       SIDEBAR_ORGANIZATION_STORAGE_KEY: "sidebar-order",
     },
@@ -150,6 +152,11 @@ function generalTab(initialToken: string) {
       SPELLCHECK_STORAGE_KEY: "unsloth_spellcheck",
       setSpellCheck: noop,
       useSpellCheck: () => true,
+    },
+    "@/lib/time-format": {
+      TIME_FORMAT_STORAGE_KEY: "unsloth_time_format",
+      setTimeFormat: noop,
+      useTimeFormat: () => "system",
     },
     "@/lib/toast": { toast: { success: noop, error: noop } },
     "@/lib/utils": {
@@ -191,6 +198,10 @@ function generalTab(initialToken: string) {
       LIBRARY_CHATS_PREFS_STORAGE_KEY: "library-chats",
       LIBRARY_SETTINGS_STORAGE_KEY: "library-settings",
       LIBRARY_VIEW_STORAGE_KEY: "library-view",
+    },
+    "../lib/client-prefs-pending": {
+      readPending: () => ({ scale: false, browser: false }),
+      writePending: () => undefined,
     },
     "../components/full-install-dialog": componentStub,
     "../components/change-password-dialog": componentStub,

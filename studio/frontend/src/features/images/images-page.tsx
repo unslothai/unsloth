@@ -11,10 +11,13 @@ import type { CompareRun } from "./compare/compare-run";
 import ComparePanel from "./compare/compare-panel";
 import {
   type DragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  memo,
   type ReactNode,
   type SetStateAction,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -22,10 +25,10 @@ import {
 import {
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  Image03Icon,
+  HistoryIcon,
+  ImageIcon,
   ImageAdd02Icon,
   ImageCropIcon,
   InformationCircleIcon,
@@ -36,8 +39,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { History as HistoryIcon, Shuffle } from "lucide-react";
-import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { Shuffle } from "lucide-react";
+import { MessageCircleIcon, TestTubeOutlineIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
 
@@ -121,7 +124,7 @@ import { GalleryItemMenu, GalleryPinBadge } from "@/components/gallery-item-menu
 import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
 import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
 import { StripDropLine } from "@/components/gallery-strip-reorder";
-import { useStripReorder } from "@/hooks/use-strip-reorder";
+import { type StripDropCue, useStripReorder } from "@/hooks/use-strip-reorder";
 import { MediaApiButton } from "@/components/media-api-button";
 import { LibraryPageLink, SiblingMediaPageLink } from "@/components/media-page-link";
 import { translate, useT } from "@/i18n";
@@ -367,6 +370,7 @@ import {
   shouldOfferGenerateAnyway,
   shouldRunQueuedOversizedRetry,
 } from "./lib/memory-refusal";
+import { HELD_BY_OTHER_ACCOUNT_NOTICE, heldByOtherAccount, ownDiffusionStatus } from "./lib/resident-owner";
 import {
   AUTOMATIC_SCHEDULE,
   DEFAULT_SAMPLER,
@@ -429,6 +433,7 @@ import {
   engineRequestField,
   engineSelectVisible,
   loadedEngineChoice,
+  loraUnavailableNote,
   nativeLoadAdvanced,
   nativeReloadTarget,
   offersCompiledLoraReload,
@@ -1592,6 +1597,131 @@ function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
   return text ? t("library.viewer.openImageNamed", { prompt: text }) : t("library.viewer.openImage");
 }
 
+/** Page callbacks a tile reads at event time, so new page closures never re-render it. */
+interface StripTileActions {
+  tileProps: ReturnType<typeof useStripReorder>["tileProps"];
+  select: (id: string) => void;
+  setMenuId: (id: string | null) => void;
+  togglePin: (id: string, pinned: boolean) => void;
+  archive: (id: string) => void;
+  remove: (id: string) => void;
+  download: (image: GalleryImage) => void;
+  addToProject: (id: string, projectId: string) => Promise<{ already: boolean }>;
+  toggleFavorite: (key: string) => void;
+  editImage: (image: GalleryImage) => void;
+}
+
+class StripTileActionsBox {
+  private actions: StripTileActions | null = null;
+  set(actions: StripTileActions) {
+    this.actions = actions;
+  }
+  get(): StripTileActions {
+    return this.actions as StripTileActions;
+  }
+}
+
+function EditImageMenuItem({ onClick }: { onClick: () => void }) {
+  return (
+    <DropdownMenuItem onClick={onClick}>
+      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+      Edit image
+    </DropdownMenuItem>
+  );
+}
+
+const GalleryStripTile = memo(function GalleryStripTile({
+  image,
+  src,
+  selected,
+  menuOpen,
+  active,
+  favorite,
+  dragging,
+  cueEdge,
+  actions,
+}: {
+  image: GalleryImage;
+  src: string | undefined;
+  selected: boolean;
+  menuOpen: boolean;
+  active: boolean;
+  favorite: boolean;
+  dragging: boolean;
+  cueEdge: StripDropCue["edge"] | null;
+  actions: StripTileActionsBox;
+}) {
+  const id = image.id;
+  return (
+    <div
+      data-image-id={id}
+      data-reorder-id={id}
+      draggable={true}
+      onDragStart={(event: DragEvent<HTMLElement>) => actions.get().tileProps(id).onDragStart(event)}
+      onDragEnd={() => actions.get().tileProps(id).onDragEnd()}
+      onKeyDown={(event: ReactKeyboardEvent<HTMLElement>) => actions.get().tileProps(id).onKeyDown(event)}
+      // Desktop only: a browser's own image menu works on these thumbnails, so keep it there.
+      // Portalled children (the New project dialog) bubble here too: leave their menu alone.
+      onContextMenu={(event) => {
+        if (!isTauri || !event.currentTarget.contains(event.target as Node)) return;
+        event.preventDefault();
+        actions.get().setMenuId(id);
+      }}
+      className={cn("group relative size-16 shrink-0", dragging && "opacity-40")}
+    >
+      {cueEdge && <StripDropLine edge={cueEdge} />}
+      <button
+        type="button"
+        onClick={() => actions.get().select(id)}
+        className="relative size-full overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {src ? (
+          <img
+            src={src}
+            alt={image.prompt}
+            draggable={false}
+            className="size-full object-cover"
+          />
+        ) : (
+          <span className="flex size-full items-center justify-center">
+            <Spinner className="size-4 text-muted-foreground" />
+          </span>
+        )}
+        {/* Selection marker on a non-focusable overlay, so the button's focus state cannot mask it. */}
+        {selected && (
+          <span className="pointer-events-none absolute inset-0 rounded-lg border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
+        )}
+      </button>
+      {image.pinned && (
+        <GalleryPinBadge
+          noun="image"
+          className="bottom-0.5 left-0.5"
+          onUnpin={() => actions.get().togglePin(id, false)}
+        />
+      )}
+      <div className="absolute right-0.5 top-0.5">
+        <GalleryItemMenu
+          variant="overlay"
+          noun="image"
+          active={active}
+          open={menuOpen}
+          onOpenChange={(open) => actions.get().setMenuId(open ? id : null)}
+          pinned={Boolean(image.pinned)}
+          archived={Boolean(image.archived)}
+          favorite={favorite}
+          onToggleFavorite={() => actions.get().toggleFavorite(`image:${id}`)}
+          onTogglePin={() => actions.get().togglePin(id, !image.pinned)}
+          onToggleArchive={() => actions.get().archive(id)}
+          onDelete={() => actions.get().remove(id)}
+          onDownload={() => actions.get().download(image)}
+          onAddToProject={(projectId) => actions.get().addToProject(id, projectId)}
+          leadingItems={<EditImageMenuItem onClick={() => actions.get().editImage(image)} />}
+        />
+      </div>
+    </div>
+  );
+});
+
 export function ImagesPage({
   active = true,
   onInitialReady,
@@ -2154,6 +2284,7 @@ export function ImagesPage({
   // Refresh the LoRA picker when the loaded family changes, since a LoRA is family-specific.
   // Not on first load or unload (a restore can precede the load), so track it in a ref.
   const loraCapable = Boolean(!external && status?.loaded && status?.supports_lora);
+  const loraOffNote = external ? null : loraUnavailableNote(status);
   const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   const bakedLorasOnLoad = useRef(false);
   useEffect(() => {
@@ -3195,7 +3326,7 @@ export function ImagesPage({
   const refreshStatus = useCallback(async () => {
     const ticket = ++statusTicket.current;
     try {
-      setStatusIfNewest(ticket, await getDiffusionStatus());
+      setStatusIfNewest(ticket, ownDiffusionStatus(await getDiffusionStatus()));
     } catch {
       // Status is best-effort; a failed poll should not surface an error toast.
     }
@@ -3311,7 +3442,7 @@ export function ImagesPage({
       if (p.phase === "ready") {
         dismissLoadToast();
         const ticket = ++statusTicket.current;
-        const loaded = await getDiffusionStatus();
+        const loaded = ownDiffusionStatus(await getDiffusionStatus());
         if (seq !== cancelSeq.current) {
           // Cancelled mid-read: drop it, the unload's own response is authoritative.
           return;
@@ -3478,7 +3609,7 @@ export function ImagesPage({
           void pollLoadProgress();
         } else if (p.phase === "ready") {
           const ticket = ++statusTicket.current;
-          const loaded = await getDiffusionStatus();
+          const loaded = ownDiffusionStatus(await getDiffusionStatus());
           setStatusIfNewest(ticket, loaded);
           const resumed = finishedLoadTarget<LastLoad>(null, loaded);
           if (resumed) {
@@ -3897,11 +4028,24 @@ export function ImagesPage({
     applyEditSource(dataUrl);
   }, [pendingLibraryEdit, capabilitiesKnown, applyEditSource]);
   const editImageItem = (image: GalleryImage) => (
-    <DropdownMenuItem onClick={() => void editGalleryImage(image)}>
-      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-      Edit image
-    </DropdownMenuItem>
+    <EditImageMenuItem onClick={() => void editGalleryImage(image)} />
   );
+  // Refreshed after every commit, read only from tile event handlers, so new page closures never re-render a tile.
+  const [stripTileActions] = useState(() => new StripTileActionsBox());
+  useLayoutEffect(() => {
+    stripTileActions.set({
+      tileProps: stripReorder.tileProps,
+      select: setSelectedId,
+      setMenuId: setTileMenuId,
+      togglePin: (id, pinned) => void handleTogglePin(id, pinned),
+      archive: (id) => void handleArchive(id),
+      remove: (id) => void handleDelete(id),
+      download: (image) => void handleQuickDownload(image),
+      addToProject: addGalleryImageToProject,
+      toggleFavorite,
+      editImage: (image) => void editGalleryImage(image),
+    });
+  });
   const { openCrop: openInpaintCrop, cropDialog: inpaintCropDialog } = useImageCrop(
     initImage,
     handleInitChange,
@@ -4855,7 +4999,7 @@ export function ImagesPage({
               className="w-full"
               onClick={() => setReferenceImages((prev) => prev.filter((_, j) => j !== i))}
             >
-              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
               Remove image {numberOf(i)}
             </Button>
           </div>
@@ -5430,12 +5574,13 @@ export function ImagesPage({
         })),
       sdControls: compareSdControls,
       hiresEngagesNegative: hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance),
+      detailerEngagesNegative: detailerEngagesNegative(detailerOn, detailerReady, detailerOptions, negativeMinGuidance),
       // The predicate the request uses (strength 0 runs plain text-to-image, where CFG rescale applies).
       controlnetEngaged,
     }),
     // samplerChoice is rebuilt every render; its two fields are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow],
+    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow, detailerOn, detailerReady, detailerOptions],
   );
 
   const handleGenerateWithRecall = useCallback(async () => {
@@ -5883,12 +6028,12 @@ export function ImagesPage({
     <div
       {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
       style={railRootStyle}
-      className="diffusion-surface @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
+      className="diffusion-surface media-header-layout @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
     >
       <MediaRailResizeHandle kind="images" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
-      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
+      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(var(--media-header-min-width),1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
           className={cn(
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden pr-3 @[50rem]:border-r @[50rem]:border-border/60",
@@ -6002,7 +6147,7 @@ export function ImagesPage({
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="images-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-var(--media-header-min-width)))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
         >
           <div
             ref={attachSettingsScroll}
@@ -6027,8 +6172,8 @@ export function ImagesPage({
               </div>
 
               {workflow === "create" && (
-                // Top edge on the heading's cap top (text-xl, leading-none; Hellix: 0.122em).
-                <div className="mt-[calc(var(--text-xl)*0.122)]">
+                // Top edge on the icon's drawn top (its stroke starts 1.25/24 into the glyph).
+                <div className="mt-[calc((var(--text-xl)-18px*var(--ui-space-scale,1))/2+18px*var(--ui-space-scale,1)*0.052)]">
                   <MediaGenerationPresetControl
                     kind="image"
                     presets={imagePresets.presets}
@@ -6116,7 +6261,7 @@ export function ImagesPage({
                           setMaskResetKey((k) => k + 1);
                         }}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                         Clear mask
                       </Button>
                       <Button
@@ -6345,7 +6490,7 @@ export function ImagesPage({
                         className="w-full"
                         onClick={() => handleInitChange(null)}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                         Remove source image
                       </Button>
                     </div>
@@ -6576,7 +6721,7 @@ export function ImagesPage({
             )}
             {!external && !loraCapable && offersNativeLoraReload(status) && (
               <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
-                <span>LoRAs need the native engine for this GGUF; diffusers runs it without them.</span>
+                <span>LoRAs are off on this load; the native engine applies them to this GGUF.</span>
                 <Button size="sm" variant="secondary" className="shrink-0 text-xs" disabled={busy !== null} onClick={handleNativeReload}>
                   Reload with native engine
                 </Button>
@@ -6591,6 +6736,9 @@ export function ImagesPage({
                   </Button>
                 )}
               </div>
+            )}
+            {loraOffNote && (
+              <div className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">{loraOffNote}</div>
             )}
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
             {loraCapable && (
@@ -6638,7 +6786,7 @@ export function ImagesPage({
                           aria-label={`Remove LoRA ${i + 1}`}
                           onClick={() => setLoras((prev) => prev.filter((_, j) => j !== i))}
                         >
-                          <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                          <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                         </Button>
                       </div>
                       <SliderField
@@ -6894,7 +7042,7 @@ export function ImagesPage({
                         if (lastSeed !== null) setSeed(String(lastSeed));
                       }}
                     >
-                      <HistoryIcon className="size-4" strokeWidth={1.5} />
+                      <HugeiconsIcon icon={HistoryIcon} className="size-4" strokeWidth={1.5} />
                     </Button>
                     </div>
                   </div>
@@ -6924,6 +7072,11 @@ export function ImagesPage({
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
           <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-3">
+            {!external && busy === null && heldByOtherAccount(status) && (
+              <p role="status" className="w-full text-center text-ui-11 leading-snug text-muted-foreground">
+                {HELD_BY_OTHER_ACCOUNT_NOTICE}
+              </p>
+            )}
             {busy === "generating" ? (
               <Button
                 className="relative z-10 text-ui-13 hover:bg-muted dark:hover:bg-muted"
@@ -7181,7 +7334,7 @@ export function ImagesPage({
               </>
             ) : busy === "generating" ? null : (
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <HugeiconsIcon icon={Image03Icon} className="size-12" strokeWidth={1.5} />
+                <HugeiconsIcon icon={ImageIcon} className="size-12" strokeWidth={1.5} />
                 <p className="text-sm">
                   {status?.loaded || external
                     ? "Enter a prompt and hit Generate."
@@ -7236,74 +7389,18 @@ export function ImagesPage({
                 </div>
               )}
               {images.map((image) => (
-                <div
+                <GalleryStripTile
                   key={image.id}
-                  data-image-id={image.id}
-                  {...stripReorder.tileProps(image.id)}
-                  // Desktop only: a browser's own image menu works on these thumbnails, so keep it there.
-                  // Portalled children (the New project dialog) bubble here too: leave their menu alone.
-                  onContextMenu={(event) => {
-                    if (!isTauri || !event.currentTarget.contains(event.target as Node)) return;
-                    event.preventDefault();
-                    setTileMenuId(image.id);
-                  }}
-                  className={cn(
-                    "group relative size-16 shrink-0",
-                    stripReorder.draggingId === image.id && "opacity-40",
-                  )}
-                >
-                  {stripReorder.cue?.id === image.id && (
-                    <StripDropLine edge={stripReorder.cue.edge} />
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setSelectedId(image.id)}
-                    className="relative size-full overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    {(thumbById[image.id] ?? srcById[image.id]) ? (
-                      <img
-                        src={thumbById[image.id] ?? srcById[image.id]}
-                        alt={image.prompt}
-                        draggable={false}
-                        className="size-full object-cover"
-                      />
-                    ) : (
-                      <span className="flex size-full items-center justify-center">
-                        <Spinner className="size-4 text-muted-foreground" />
-                      </span>
-                    )}
-                    {/* Selection marker on a non-focusable overlay, so the button's focus state cannot mask it. */}
-                    {image.id === selected?.id && (
-                      <span className="pointer-events-none absolute inset-0 rounded-lg border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
-                    )}
-                  </button>
-                  {image.pinned && (
-                    <GalleryPinBadge
-                      noun="image"
-                      className="bottom-0.5 left-0.5"
-                      onUnpin={() => void handleTogglePin(image.id, false)}
-                    />
-                  )}
-                  <div className="absolute right-0.5 top-0.5">
-                    <GalleryItemMenu
-                      variant="overlay"
-                      noun="image"
-                      active={active}
-                      open={tileMenuId === image.id}
-                      onOpenChange={(open) => setTileMenuId(open ? image.id : null)}
-                      pinned={Boolean(image.pinned)}
-                      archived={Boolean(image.archived)}
-                      favorite={isFavorite(`image:${image.id}`)}
-                      onToggleFavorite={() => toggleFavorite(`image:${image.id}`)}
-                      onTogglePin={() => void handleTogglePin(image.id, !image.pinned)}
-                      onToggleArchive={() => void handleArchive(image.id)}
-                      onDelete={() => void handleDelete(image.id)}
-                    onDownload={() => void handleQuickDownload(image)}
-                    onAddToProject={(projectId) => addGalleryImageToProject(image.id, projectId)}
-                      leadingItems={editImageItem(image)}
-                    />
-                  </div>
-                </div>
+                  image={image}
+                  src={thumbById[image.id] ?? srcById[image.id]}
+                  selected={image.id === selected?.id}
+                  menuOpen={tileMenuId === image.id}
+                  active={active}
+                  favorite={isFavorite(`image:${image.id}`)}
+                  dragging={stripReorder.draggingId === image.id}
+                  cueEdge={stripReorder.cue?.id === image.id ? stripReorder.cue.edge : null}
+                  actions={stripTileActions}
+                />
               ))}
               {hasMore && (
                 <div className="flex size-16 shrink-0 items-center justify-center">

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { resetChatBackground, useBackgroundStore } from "@/features/chat-background";
 import { Button } from "@/components/ui/button";
 import {
   Command,
@@ -117,10 +118,18 @@ export function ActiveColorControl({
 }
 
 /* ------------------------------ Typography ------------------------------ */
+// Mirrors html.client-mac (theme-boot.js), which swaps the sans default to the system font.
+const SYSTEM_SANS_NAME = "SF Pro";
+const DEFAULT_SANS_NAME =
+  typeof document !== "undefined" &&
+  document.documentElement.classList.contains("client-mac")
+    ? SYSTEM_SANS_NAME
+    : "Inter Variable";
+
 const DEFAULT_FONT_NAMES = {
-  ui: "Inter Variable",
+  ui: DEFAULT_SANS_NAME,
   heading: "Hellix",
-  chat: "Inter Variable",
+  chat: DEFAULT_SANS_NAME,
   code: "JetBrains Mono",
 } as const;
 
@@ -213,6 +222,13 @@ function detectFontsByMeasurement(candidates: string[]): string[] {
       return ctx.measureText(sample).width !== width;
     }),
   );
+}
+
+// The system font has no addressable family name, so preview it through the token.
+function previewFamily(font: string): string {
+  return font === SYSTEM_SANS_NAME
+    ? "var(--font-sans-default)"
+    : `"${font}", var(--font-sans)`;
 }
 
 let deviceFontsCache: string[] | null = null;
@@ -320,7 +336,7 @@ function FontSelect({
         >
           <span
             className="min-w-0 truncate"
-            style={{ fontFamily: `"${value ?? defaultFont}", var(--font-sans)` }}
+            style={{ fontFamily: previewFamily(value ?? defaultFont) }}
           >
             {value ?? defaultLabel}
           </span>
@@ -349,7 +365,7 @@ function FontSelect({
               data-checked={value === null}
               className="cursor-pointer rounded-md"
             >
-              <span style={{ fontFamily: `"${defaultFont}", var(--font-sans)` }}>
+              <span style={{ fontFamily: previewFamily(defaultFont) }}>
                 {defaultLabel}
               </span>
             </CommandItem>
@@ -845,6 +861,24 @@ export function CodeFontSizeRow() {
   );
 }
 
+export function CodeDisplaySwitch({
+  field,
+  label,
+}: {
+  field: "codeLineNumbers" | "codeWordWrap" | "codeLigatures";
+  label: string;
+}) {
+  const checked = useAppearanceCustomStore((s) => s.customization[field]);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  return (
+    <Switch
+      aria-label={label}
+      checked={checked}
+      onCheckedChange={(next) => patch({ [field]: next })}
+    />
+  );
+}
+
 export function FontSmoothingSwitch() {
   const fontSmoothing = useAppearanceCustomStore(
     (s) => s.customization.fontSmoothing,
@@ -951,6 +985,38 @@ export function ContrastSliderRow() {
   );
 }
 
+export function ComposerOutlineSliderRow() {
+  const t = useT();
+  const outline = useAppearanceCustomStore((s) => s.customization.composerOutline);
+  const backgroundOutline = useBackgroundStore((s) => s.value?.outline);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  const value = outline ?? backgroundOutline ?? 0;
+  const set = (next: number) => patch({ composerOutline: next });
+  return (
+    <div className="flex w-64 items-center gap-3">
+      <Slider
+        value={[value]}
+        min={0}
+        max={100}
+        step={1}
+        onValueChange={(values: number[]) => set(values[0])}
+        aria-label={t("chatBackground.outline")}
+      />
+      <NumericValueInput
+        value={value}
+        min={0}
+        max={100}
+        step={1}
+        onChange={set}
+        ariaLabel={t("chatBackground.outline")}
+        className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
+        fixedWidth={true}
+        size={4}
+      />
+    </div>
+  );
+}
+
 export function PointerCursorsSwitch() {
   const pointerCursors = useAppearanceCustomStore(
     (s) => s.customization.pointerCursors,
@@ -1026,7 +1092,9 @@ export function ResetCustomizationButton() {
   const resetAll = useAppearanceCustomStore((s) => s.resetAll);
   const interfaceScale = useInterfaceScaleStore((s) => s.scale);
   const resetInterfaceScale = useInterfaceScaleStore((s) => s.reset);
+  const background = useBackgroundStore((s) => s.value);
   const pristine =
+    background === null &&
     isDefaultCustomization(customization) &&
     interfaceScale === INTERFACE_SCALE_RANGE.default;
   return (
@@ -1036,6 +1104,7 @@ export function ResetCustomizationButton() {
       size="sm"
       disabled={pristine}
       onClick={() => {
+        void resetChatBackground();
         resetAll();
         resetInterfaceScale();
       }}
