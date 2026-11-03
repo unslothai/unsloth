@@ -174,6 +174,14 @@ export function groupPayload(group: FlowGroup, columns: FlowNode[]) {
   };
 }
 
+/** Everything the group's recipe is made of, to notice it changing under an open form. */
+export function recipeSignature(graph: DocGraph, groupId: string): string {
+  const group = graph.groups[groupId];
+  return group
+    ? JSON.stringify(groupPayload(group, groupColumns(graph, groupId)))
+    : "";
+}
+
 /** The column reading `{{ ref }}` too; null when it picks its inputs another way (samplers). */
 export function withReference(
   column: RecipeColumn,

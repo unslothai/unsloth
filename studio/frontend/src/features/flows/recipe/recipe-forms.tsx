@@ -30,7 +30,7 @@ import {
   isColumnConfig,
 } from "./recipe-adapter";
 import { commitConfigs, setupConfig, viewOf } from "./recipe-blocks";
-import { groupColumns } from "./recipe-columns";
+import { groupColumns, recipeSignature } from "./recipe-columns";
 
 /** The seed form queues replaced upload dirs for Recipe Studio to delete; a flow can share those dirs with the
  * recipe it came from, so nothing it replaces here is queued. */
@@ -71,12 +71,24 @@ function BlockForm({
   onRename?: (name: string) => void;
 }) {
   useNoUploadCleanup();
-  const [opened] = useState(() => {
+  const open = () => {
     const view = viewOf(groupId);
     return view ? { view, id: find(view) } : null;
-  });
+  };
+  const [opened, setOpened] = useState(open);
   const [configs, setConfigs] = useState(opened?.view.configs ?? {});
   const latest = useRef(configs);
+  const signature = useDocStore((s) => recipeSignature(s.graph, groupId));
+  const ours = useRef(signature);
+  useEffect(() => {
+    if (signature === ours.current) return;
+    // Undo, Redo or the canvas changed the recipe: edit what it is now, not what the form opened on.
+    ours.current = signature;
+    const next = open();
+    setOpened(next);
+    latest.current = next?.view.configs ?? {};
+    setConfigs(latest.current);
+  });
   const options = useMemo(
     () => buildDialogOptions(Object.values(configs)),
     [configs],
@@ -94,6 +106,7 @@ function BlockForm({
     latest.current = next;
     setConfigs(next);
     commitConfigs(groupId, opened.view, next);
+    ours.current = recipeSignature(useDocStore.getState().graph, groupId);
     if (onRename && typeof patch.name === "string") onRename(next[id].name);
   };
   const canDrop =

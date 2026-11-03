@@ -247,6 +247,11 @@ test("deleting a column from the inspector or Ctrl+X takes its {{ reference }} o
   const sql = graph.nodes[byName(nodes, "sql").id];
   assert.doesNotMatch(JSON.stringify(sql.params.column), /sql_prompt/);
   assert.ok(Object.values(graph.edges).every((e) => e.source !== prompt.id));
+  // One Undo brings the column back with the references to it.
+  useDocStore.getState().undo();
+  const back = useDocStore.getState().graph;
+  assert.ok(back.nodes[prompt.id]);
+  assert.match(JSON.stringify(back.nodes[sql.id].params.column), /sql_prompt/);
 });
 
 test("deleting reference wires from two recipe frames at once clears both frames' wires", async () => {
@@ -699,4 +704,21 @@ test("the run dialogs' check leaves disabled columns out, like the frame's Check
   // half cannot load under node, which is fine: the point is the client half did not stop it.
   const result = await checkRecipeGroupDetail("recipe");
   assert.ok(!result.errors.some((e) => /model is required/.test(e)), result.errors.join("; "));
+});
+
+test("a loaded document seed keeps its files when the group opens in Recipe Studio's forms", () => {
+  const { group, nodes } = sqlGroup();
+  const withDocs = {
+    ...group,
+    config: {
+      ...group.config,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      seed_config: { source: { seed_type: "unstructured", paths: ["/up/x/a.pdf"] } },
+    },
+  };
+  const view = studioView(withDocs, nodes);
+  const seed = Object.values(view.configs).find((c) => c.kind === "seed") as
+    | { resolved_paths?: string[] }
+    | undefined;
+  assert.deepEqual(seed?.resolved_paths, ["/up/x/a.pdf"]);
 });

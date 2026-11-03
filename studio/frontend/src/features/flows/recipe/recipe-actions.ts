@@ -95,7 +95,10 @@ export function connectColumns(
 }
 
 /** Removes the references behind deleted column wires; returns the edge ids it handled. */
-export function disconnectColumns(edgeIds: string[]): string[] {
+export function disconnectColumns(
+  edgeIds: string[],
+  coalesceKey?: string,
+): string[] {
   const graph = useDocStore.getState().graph;
   const changed = new Map<string, FlowNode>();
   const handled: string[] = [];
@@ -112,7 +115,8 @@ export function disconnectColumns(edgeIds: string[]): string[] {
     changed.set(target.id, { ...target, params: { ...target.params, column } });
   }
   // A wire whose reference survives (a sampler's parent) is drawn again by the sync.
-  if (groupIds.size) commitRecipe([...groupIds], [...changed.values()], null);
+  if (groupIds.size)
+    commitRecipe([...groupIds], [...changed.values()], null, coalesceKey);
   return handled;
 }
 
@@ -120,13 +124,16 @@ export function disconnectColumns(edgeIds: string[]): string[] {
 export function removeNodes(nodeIds: string[]): void {
   const graph = useDocStore.getState().graph;
   const drop = new Set(nodeIds);
+  // One key for both commits, so a single Undo brings the column and its references back together.
+  const key = `remove:${nodeIds.join(",")}:${Date.now()}`;
   disconnectColumns(
     graph.edgeOrder.filter((id) => {
       const edge = graph.edges[id];
       return drop.has(edge.source) && !drop.has(edge.target);
     }),
+    key,
   );
-  useDocStore.getState().removeElements({ nodes: nodeIds });
+  useDocStore.getState().removeElements({ nodes: nodeIds }, key);
 }
 
 export function insideRecipeGroup(
