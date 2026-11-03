@@ -1148,6 +1148,34 @@ async def _stream_post_with_compat_fallbacks(
                 return
 
 
+_OPENROUTER_CATALOG_TTL_S = 3600.0
+_openrouter_catalog: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_openrouter_catalog_lock = asyncio.Lock()
+
+
+def _slim_openrouter_models(payload: Any) -> list[dict[str, Any]]:
+    raw = payload.get("data") if isinstance(payload, dict) else None
+    models = []
+    for m in raw or []:
+        if not isinstance(m, dict) or not m.get("id"):
+            continue
+        endpoints = m.get("endpoints")
+        if isinstance(endpoints, list) and "/api/v1/chat/completions" not in endpoints:
+            continue
+        outputs = (m.get("architecture") or {}).get("output_modalities")
+        if isinstance(outputs, list) and "text" not in outputs:
+            continue
+        models.append(
+            {
+                "id": m["id"],
+                "context_length": m.get("context_length"),
+                "created": m.get("created") or 0,
+            }
+        )
+    models.sort(key = lambda m: m["created"], reverse = True)
+    return models
+
+
 def _client() -> httpx.AsyncClient:
     """The shared client for the owner; a screening client of its own for each managed account."""
     from utils.account_context import current_account_id, is_owner_context
@@ -7319,6 +7347,8 @@ class ExternalProviderClient:
 
     async def list_models(self) -> list[dict[str, Any]]:
         """return each provider's OpenAI-compatible /models entries, including Anthropic."""
+        if self.provider_type == "openrouter":
+            return await self._list_openrouter_models()
         try:
             data, models = await self._models_payload(self._timeout)
             if self.provider_type == "ollama":
@@ -7333,6 +7363,32 @@ class ExternalProviderClient:
         except httpx.HTTPError as exc:
             logger.error("Failed to list models from %s: %s", self.provider_type, exc)
             raise
+
+    async def _list_openrouter_models(self) -> list[dict[str, Any]]:
+        cached = _openrouter_catalog.get(self.base_url)
+        if cached and time.monotonic() - cached[0] < _OPENROUTER_CATALOG_TTL_S:
+            return cached[1]
+        async with _openrouter_catalog_lock:
+            cached = _openrouter_catalog.get(self.base_url)
+            if cached and time.monotonic() - cached[0] < _OPENROUTER_CATALOG_TTL_S:
+                return cached[1]
+            try:
+                response = await _client().get(
+                    f"{self.base_url}/models",
+                    headers = self._auth_headers(),
+                    timeout = self._timeout,
+                )
+                response.raise_for_status()
+                models = _slim_openrouter_models(response.json())
+            except (httpx.HTTPError, ValueError) as exc:
+                if cached:
+                    logger.warning("OpenRouter catalog refresh failed, serving cache: %s", exc)
+                    return cached[1]
+                logger.error("Failed to list models from openrouter: %s", exc)
+                raise
+            if models:
+                _openrouter_catalog[self.base_url] = (time.monotonic(), models)
+            return models
 
     async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:
         response = await _client().get(

@@ -141,6 +141,10 @@ function capProviderMenuAtItem(item: HTMLElement | null) {
   content.style.maxHeight = `min(var(--radix-select-content-available-height), ${top}px)`;
 }
 
+function hasPublicModelCatalog(providerType: string | null | undefined): boolean {
+  return providerType === "openrouter";
+}
+
 function parseManualModelIds(text: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -277,6 +281,7 @@ export function ChatProvidersSettings({
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
   const seededProviderTypeRef = useRef<string | null>(null);
+  const autoLoadedCatalogRef = useRef<string | null>(null);
   // One-shot latch; user navigation sets it too so a slow first sync cannot pull them into the form.
   const autoOpenedAddFormRef = useRef(false);
   const [page, setPage] = useState<"list" | "form">("list");
@@ -447,6 +452,7 @@ export function ChatProvidersSettings({
   const missingModelCatalogApiKey =
     !isCustomProvider &&
     !isCuratedModelList &&
+    !hasPublicModelCatalog(providerType) &&
     apiKey.trim().length === 0 &&
     !(editingProviderHasSavedKey && !clearApiKeyRequested);
   const loadModelsDisabled =
@@ -494,6 +500,17 @@ export function ChatProvidersSettings({
   }, [providers]);
 
   useEffect(() => {
+    if (page !== "form" || !hasPublicModelCatalog(providerType)) {
+      autoLoadedCatalogRef.current = null;
+      return;
+    }
+    const key = `${editingProviderId ?? "new"}:${providerType}`;
+    if (autoLoadedCatalogRef.current === key) return;
+    autoLoadedCatalogRef.current = key;
+    void loadModels({ autoLoadKey: key });
+  }, [page, providerType, editingProviderId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     if (!providerType || editingProviderId) return;
     if (seededProviderTypeRef.current === providerType) return;
     seededProviderTypeRef.current = providerType;
@@ -509,8 +526,9 @@ export function ChatProvidersSettings({
       }
       return;
     }
-    // Seed defaults only for curated providers; others stay empty until "Load available models".
-    const seedDefaults = entry.model_list_mode === "curated";
+    // Seed defaults for curated providers and OpenRouter; others stay empty until "Load available models".
+    const seedDefaults =
+      entry.model_list_mode === "curated" || hasPublicModelCatalog(providerType);
     setAvailableModels(seedDefaults ? [...entry.default_models] : []);
     setSelectedModelIds(
       isDecisionConnection({ providerType })
@@ -629,7 +647,11 @@ export function ChatProvidersSettings({
   function openAddProvider() {
     resetForm();
     const entry = providerType ? registryByType.get(providerType) : null;
-    if (entry?.model_list_mode === "curated") {
+    if (
+      entry &&
+      (entry.model_list_mode === "curated" ||
+        hasPublicModelCatalog(providerType))
+    ) {
       setAvailableModels([...entry.default_models]);
     }
     if (entry && isDecisionConnection({ providerType: entry.provider_type })) {
@@ -707,7 +729,10 @@ export function ChatProvidersSettings({
     return value;
   }
 
-  async function loadModels() {
+  async function loadModels({
+    autoLoadKey,
+  }: { autoLoadKey?: string } = {}) {
+    const silent = autoLoadKey !== undefined;
     if (!providerType) {
       toast.error("Choose a connection first.");
       return;
@@ -742,7 +767,12 @@ export function ChatProvidersSettings({
       );
       return;
     }
-    if (!isCustomProvider && !apiKey.trim() && !editingProviderHasSavedKey) {
+    if (
+      !isCustomProvider &&
+      !hasPublicModelCatalog(providerType) &&
+      !apiKey.trim() &&
+      !editingProviderHasSavedKey
+    ) {
       toast.error("Add an API key first.");
       return;
     }
@@ -772,6 +802,7 @@ export function ChatProvidersSettings({
         baseUrl,
         apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
       });
+      if (silent && autoLoadedCatalogRef.current !== autoLoadKey) return;
       // The picker keeps only ids, so per-model capabilities are learned here or lost.
       learnCatalogModelCapabilities(providerType, models);
       const registryDefaults = supportsRemoteModelCatalog(providerType)
@@ -790,13 +821,13 @@ export function ChatProvidersSettings({
       setSelectedModelIds((prev) =>
         prev.filter((id) => modelIds.includes(id)),
       );
-      if (modelIds.length === 0) {
+      if (!silent && modelIds.length === 0) {
         const hint =
           providerType === LEGACY_CUSTOM_PROVIDER_TYPE && apiType === "systemone"
             ? SYSTEM_ONE_EMPTY_CATALOG_HINT
             : emptyCatalogHint(providerType);
         toast.info(hint.title, { description: hint.description });
-      } else {
+      } else if (!silent) {
         toast.success(
           `Found ${modelIds.length} ${modelIds.length === 1 ? "model" : "models"}.`,
         );
@@ -810,10 +841,10 @@ export function ChatProvidersSettings({
           ),
         );
       }
-      setModelSearchQuery("");
+      if (!silent) setModelSearchQuery("");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      toast.error(`Could not load models: ${message}`);
+      if (!silent) toast.error(`Could not load models: ${message}`);
     } finally {
       setModelsLoading(false);
     }

@@ -1,0 +1,105 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import asyncio
+
+import httpx
+import pytest
+
+from core.inference import external_provider as ep_mod
+from core.inference.external_provider import ExternalProviderClient
+from core.inference.providers import get_provider_info
+
+CATALOG = {
+    "data": [
+        {
+            "id": "old/chat",
+            "created": 100,
+            "context_length": 8192,
+            "architecture": {"output_modalities": ["text"]},
+            "endpoints": ["/api/v1/chat/completions"],
+        },
+        {
+            "id": "new/chat",
+            "created": 300,
+            "context_length": 131072,
+            "architecture": {"output_modalities": ["text"]},
+            "endpoints": ["/api/v1/chat/completions", "/api/v1/messages"],
+        },
+        {
+            "id": "new/chat:batch",
+            "created": 300,
+            "architecture": {"output_modalities": ["text"]},
+            "endpoints": [],
+        },
+        {
+            "id": "some/image-gen",
+            "created": 200,
+            "architecture": {"output_modalities": ["image"]},
+            "endpoints": ["/api/v1/chat/completions"],
+        },
+        {"id": "legacy/no-metadata", "created": 50},
+    ]
+}
+
+
+@pytest.fixture
+def catalog_server(monkeypatch):
+    state = {"calls": 0, "fail": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        state["calls"] += 1
+        assert request.url.path == "/api/v1/models"
+        if state["fail"]:
+            return httpx.Response(503)
+        return httpx.Response(200, json = CATALOG)
+
+    monkeypatch.setattr(
+        ep_mod, "_http_client", httpx.AsyncClient(transport = httpx.MockTransport(handler))
+    )
+    monkeypatch.setattr(ep_mod, "_openrouter_catalog", {})
+    monkeypatch.setattr(ep_mod, "_openrouter_catalog_lock", asyncio.Lock())
+    return state
+
+
+def _client() -> ExternalProviderClient:
+    return ExternalProviderClient(
+        provider_type = "openrouter",
+        base_url = "https://openrouter.ai/api/v1",
+        api_key = "",
+    )
+
+
+def test_registry_uses_live_catalog_with_live_defaults():
+    info = get_provider_info("openrouter")
+    assert info.get("model_list_mode", "remote") == "remote"
+    assert "openrouter/free" in info["default_models"]
+
+
+def test_filters_non_chat_models_and_sorts_newest_first(catalog_server):
+    models = asyncio.run(_client().list_models())
+    assert [m["id"] for m in models] == ["new/chat", "old/chat", "legacy/no-metadata"]
+    assert models[0]["context_length"] == 131072
+
+
+def test_catalog_is_cached_across_clients(catalog_server):
+    async def run():
+        await asyncio.gather(*(_client().list_models() for _ in range(5)))
+        await _client().list_models()
+
+    asyncio.run(run())
+    assert catalog_server["calls"] == 1
+
+
+def test_serves_stale_catalog_when_refresh_fails(catalog_server, monkeypatch):
+    first = asyncio.run(_client().list_models())
+    monkeypatch.setattr(ep_mod, "_OPENROUTER_CATALOG_TTL_S", 0.0)
+    catalog_server["fail"] = True
+    assert asyncio.run(_client().list_models()) == first
+    assert catalog_server["calls"] == 2
+
+
+def test_raises_when_no_cache_and_fetch_fails(catalog_server):
+    catalog_server["fail"] = True
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(_client().list_models())

@@ -317,10 +317,11 @@ export function resolveExternalMaxTokensClamp(input: {
 function _inferProviderFromOpenrouterId(
   normalizedId: string,
 ): string | null {
-  if (normalizedId.startsWith("openai/")) return "openai";
-  if (normalizedId.startsWith("anthropic/")) return "anthropic";
-  if (normalizedId.startsWith("google/")) return "gemini";
-  if (normalizedId.startsWith("deepseek/")) return "deepseek";
+  const id = normalizedId.replace(/^~/, "");
+  if (id.startsWith("openai/")) return "openai";
+  if (id.startsWith("anthropic/")) return "anthropic";
+  if (id.startsWith("google/")) return "gemini";
+  if (id.startsWith("deepseek/")) return "deepseek";
   return null;
 }
 
