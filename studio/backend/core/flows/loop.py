@@ -101,7 +101,9 @@ def drop_test_rows(failures: list[dict], test_rows: list[dict]) -> list[dict]:
     A value many test rows share (a fixed Alpaca instruction, a label) identifies none of them."""
     seen: dict[str, int] = {}
     # A row repeated in the test split is still one row: its question stays banned.
-    distinct = {frozenset(s for s in _strings(row) if len(s) >= LEAK_MIN_CHARS) for row in test_rows}
+    distinct = {
+        frozenset(s for s in _strings(row) if len(s) >= LEAK_MIN_CHARS) for row in test_rows
+    }
     for strings in distinct:
         for s in strings:
             seen[s] = seen.get(s, 0) + 1
