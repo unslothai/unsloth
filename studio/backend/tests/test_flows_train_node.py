@@ -921,3 +921,21 @@ def test_a_csv_hold_out_keeps_cells_as_text_like_training(tmp_path, monkeypatch)
     monkeypatch.setattr(data, "local_seed_path", lambda ref: ref)
     rows = training._load_rows({"source": "local", "ref": str(csv)}, None, None)
     assert [r["a"] for r in rows] == ["00501", "NA"]
+
+
+def test_a_stopped_run_does_not_reload_the_previous_chat_model(monkeypatch):
+    loads, logs = [], []
+
+    async def load_llm(*a, **k):
+        loads.append(k)
+
+    monkeypatch.setattr("studio_mcp.loading.load_llm", load_llm)
+    ctx = _Ctx(lambda *a: {})
+    ctx.cancelled = True
+    ctx.log = lambda message, level = "info": logs.append(message)
+    asyncio.run(
+        training.restore_chat_model(
+            ctx, {"repo": "unsloth/Qwen3-4B-GGUF", "variant": None}, "run-1"
+        )
+    )
+    assert loads == [] and "Stopped before" in logs[0]
