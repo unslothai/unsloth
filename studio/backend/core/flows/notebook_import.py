@@ -290,6 +290,13 @@ class _Reader(ast.NodeVisitor):
                 value = self.kw(node, arg)
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     self.tune[param] = value
+            cap = self.kw(node, "max_length")
+            if (
+                fn in ("DPOConfig", "ORPOConfig")
+                and isinstance(cap, int)
+                and not isinstance(cap, bool)
+            ):
+                self.found["pref_max_length"] = cap
             for k in node.keywords if fn == "GRPOConfig" else []:
                 if k.arg == "reward_weights":
                     value = _literal(k.value)
@@ -460,6 +467,10 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
         if fn not in reader.rewards
     ]
     found, tune = reader.found, dict(reader.tune)
+    if found.get("pref_max_length"):
+        # A preference trainer's max_length comes from the node's context, so the notebook's cap goes there.
+        cap = found["pref_max_length"]
+        tune["max_seq_length"] = min(int(tune.get("max_seq_length") or cap), cap)
     report: dict[str, Any] = {
         "imported": [],
         "approximated": list(dict.fromkeys(reader.approximated)),

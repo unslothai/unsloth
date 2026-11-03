@@ -772,3 +772,13 @@ def test_grpo_reward_weights_carry_over():
     assert [r["weight"] for r in rewards] == [1.0, 1.0] and len(lines) == 1
     rewards, lines = read("")
     assert [r["weight"] for r in rewards] == [1.0, 1.0] and lines == []
+
+
+def test_a_preference_notebooks_max_length_caps_the_node_context():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/zephyr-sft', max_seq_length = 4096)",
+        "dataset = load_dataset('HuggingFaceH4/ultrafeedback_binarized', split = 'train_prefs')",
+        "trainer = DPOTrainer(model = model, args = DPOConfig(max_length = 1024, max_prompt_length = 512))",
+    )
+    doc, _ = notebook_import.read_notebook(nb, "Zephyr_(7B)-DPO.ipynb")
+    assert _tune(doc)["max_seq_length"] == 1024
