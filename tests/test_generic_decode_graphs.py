@@ -141,7 +141,12 @@ def _fresh(model):
     model.__dict__.pop(GG._ATTR, None)
 
 
-def _ids(model, bsz = 1, length = 6, pad = 0):
+def _ids(
+    model,
+    bsz = 1,
+    length = 6,
+    pad = 0,
+):
     g = torch.Generator().manual_seed(1)
     vocab = model.config.get_text_config().vocab_size
     # Below the multimodal special tokens (image / video pads sit at the top of the vocabulary).
@@ -153,7 +158,13 @@ def _ids(model, bsz = 1, length = 6, pad = 0):
     return ids, mask
 
 
-def _generate(model, ids, mask, graphs, new = 10):
+def _generate(
+    model,
+    ids,
+    mask,
+    graphs,
+    new = 10,
+):
     scope = vision._GraphDecodeSteps(model) if graphs else contextlib.nullcontext()
     with torch.inference_mode(), scope:
         return model.generate(
@@ -297,13 +308,17 @@ def test_sliding_window_layers_until_the_window_fills(host, gemma3):
     # Inside the window: every sliding layer updates by index, so every step after the first two replays.
     _fresh(gemma3)
     new = window - 3
-    assert torch.equal(_generate(gemma3, ids, mask, False, new), _generate(gemma3, ids, mask, True, new))
+    assert torch.equal(
+        _generate(gemma3, ids, mask, False, new), _generate(gemma3, ids, mask, True, new)
+    )
     s = GG.stats(gemma3)
     assert s["replays"] == new - 2 and not s["refusals"], s
     # Past the window the sliding layers roll: those steps run eagerly, tokens unchanged.
     _fresh(gemma3)
     new = window + 5
-    assert torch.equal(_generate(gemma3, ids, mask, False, new), _generate(gemma3, ids, mask, True, new))
+    assert torch.equal(
+        _generate(gemma3, ids, mask, False, new), _generate(gemma3, ids, mask, True, new)
+    )
     s = GG.stats(gemma3)
     full = 3 + new - 1 - window  # decode steps whose sliding update would roll
     assert s["refusals"] == {"sliding window full": full}, s
@@ -323,7 +338,9 @@ def test_beam_search_reordering_the_cache_stays_eager(host, llama):
     s = GG.stats(llama)
     moved = s["refusals"].get("cache moved", 0)
     # Either the reorder kept the cache in place (all replays) or every step after it ran eagerly.
-    assert (moved == 0 and s["replays"] > 0) or s["replays"] + moved + s["captures"] + s["validations"] == 7, s
+    assert (moved == 0 and s["replays"] > 0) or s["replays"] + moved + s["captures"] + s[
+        "validations"
+    ] == 7, s
 
 
 def test_qwen3_vl_text_decode_positions_match_the_model(host):
@@ -505,7 +522,11 @@ def test_window_and_host_state_checks():
     layer.keys = torch.zeros(1)
     cache = type("C", (), {})()
     cache.layers = [layer]
-    name = "cumulative_length_int" if "cumulative_length_int" in layer.__dict__ else "cumulative_length"
+    name = (
+        "cumulative_length_int"
+        if "cumulative_length_int" in layer.__dict__
+        else "cumulative_length"
+    )
     layer.__dict__[name] = 3
     assert GG._window_reason(cache, 1) is None
     layer.__dict__[name] = 4
@@ -588,7 +609,12 @@ def test_inert_when_compiling(host):
     model = torch.nn.Linear(1, 1)
     model.forward = forward
     scope = vision._GraphDecodeSteps.__new__(vision._GraphDecodeSteps)
-    scope.model, scope.forward, scope.eager_decodes, scope.eager_regions = model, forward, False, False
+    scope.model, scope.forward, scope.eager_decodes, scope.eager_regions = (
+        model,
+        forward,
+        False,
+        False,
+    )
 
     def step(x):
         out = GG.decode_step(model, forward, {"input_ids": x})
@@ -613,12 +639,18 @@ def test_generate_routes_only_static_cache_calls():
     assert "_generic_decode_graphs.wanted(self)" in source
     i = source.index("_generic_decode_graphs.wanted(self)")
     guard = source[source.rindex("if (", 0, i) : i]
-    for clause in ('cache_implementation == "static"', "not force_dynamic_cache", "not compile_decode"):
+    for clause in (
+        'cache_implementation == "static"',
+        "not force_dynamic_cache",
+        "not compile_decode",
+    ):
         assert clause in guard
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available() or torch.version.hip is not None, reason = "NVIDIA CUDA")
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.version.hip is not None, reason = "NVIDIA CUDA"
+)
 @pytest.mark.parametrize("name", [LLAMA, GEMMA3])
 def test_real_capture_matches_eager(name, monkeypatch):
     monkeypatch.setattr(G, "ENABLED", True)

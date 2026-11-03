@@ -122,9 +122,7 @@ def _static_layer_types():
         from transformers import cache_utils
     except Exception:
         return (), ()
-    full = tuple(
-        t for t in (getattr(cache_utils, "StaticLayer", None),) if isinstance(t, type)
-    )
+    full = tuple(t for t in (getattr(cache_utils, "StaticLayer", None),) if isinstance(t, type))
     sliding = tuple(
         t
         for t in (
@@ -354,9 +352,7 @@ def _host_state(cache):
     """Non-tensor scalar attributes of the cache and its layers."""
     out = []
     for owner in (cache, *cache.layers):
-        out.append(
-            {k: v for k, v in owner.__dict__.items() if v is None or type(v) in _CONSTANTS}
-        )
+        out.append({k: v for k, v in owner.__dict__.items() if v is None or type(v) in _CONSTANTS})
     return out
 
 
@@ -412,7 +408,12 @@ def _spec(value, leaves, cache):
         # Inference-ness is part of the key: compiled regions (zoo-compiled create_causal_mask) guard
         # on the dispatch key set and pick another variant for a non-inference input.
         return (
-            "T", tuple(value.shape), value.stride(), value.dtype, value.device, value.is_inference()
+            "T",
+            tuple(value.shape),
+            value.stride(),
+            value.dtype,
+            value.device,
+            value.is_inference(),
         )
     if value is cache:
         return ("C",)
@@ -463,7 +464,9 @@ def _outputs_equal(a, b):
             return False
         if not torch.equal(x, y):
             same_nan = torch.isnan(x) & torch.isnan(y) if x.is_floating_point() else None
-            if same_nan is None or not torch.equal(torch.where(same_nan, 0, x), torch.where(same_nan, 0, y)):
+            if same_nan is None or not torch.equal(
+                torch.where(same_nan, 0, x), torch.where(same_nan, 0, y)
+            ):
                 return False
     return True
 
