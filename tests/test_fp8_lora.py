@@ -896,6 +896,30 @@ def test_compiled_fp8_lora_ops_are_counted():
 
 
 @needs_cpu_scaled_mm
+def test_compiled_fused_fp8_lora_ops_are_counted(monkeypatch):
+    torch._dynamo.reset()
+    monkeypatch.setenv("UNSLOTH_STRICT_ENGAGE", "1")
+    W = _weight()
+    state = FL.Fp8LoRABaseState(W)
+    A = torch.randn(16, 256).bfloat16()
+    Bt = torch.randn(16, 384).bfloat16()
+
+    def run(x, dy):
+        return state.lora_first(x, W, x @ A.t(), Bt, 1.0), state.dgrad_accum(
+            dy, W, torch.zeros_like(x)
+        )
+
+    compiled = torch.compile(run, backend = "aot_eager", fullgraph = True)
+    x, dy = torch.randn(32, 256).bfloat16(), torch.randn(32, 384).bfloat16()
+    compiled(x, dy)
+    with P.count_lowp_gemms() as counts:
+        compiled(x, dy)
+    P.require("fp8_lora", sum(counts.values()))
+    assert counts["unsloth::fp8_lora_first"] == counts["unsloth::fp8_lora_accum"] == 1
+    assert counts["_scaled_mm"] == 0
+
+
+@needs_cpu_scaled_mm
 def test_merge_requantizes_the_fp8_copy(offload_on_cpu):
     import copy
 
