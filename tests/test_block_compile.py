@@ -584,6 +584,31 @@ def test_unsloth_host_metadata_calls_keep_the_stock_forward(monkeypatch, key):
     assert calls  # no host metadata: compiled
 
 
+def test_packed_stock_forward_says_blocks_run_uncompiled(monkeypatch, capsys):
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+
+    class PackedDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.proj(hidden_states)
+
+    PackedDecoderLayer.forward.__module__ = "unsloth.models.llama"
+    M._wrap(PackedDecoderLayer, {})
+    layer = PackedDecoderLayer().train()
+    x = torch.randn(1, 4, 8)
+    layer(x)
+    layer(x, packed_seq_lengths = None)
+    assert "uncompiled" not in capsys.readouterr().out
+    layer(x, packed_seq_lengths = torch.tensor([2, 2]))
+    layer(x, packed_seq_lengths = torch.tensor([1, 3]))
+    out = capsys.readouterr().out
+    assert out.count("packed / padding-free rows run each transformer block uncompiled") == 1
+
+
 def test_compiled_block_flags_packed_attention(monkeypatch):
     """hf_packed_attention runs packed rows outside the graph only while a block's compiled call
     runs: set there, restored after, never on the stock forward."""
@@ -1539,6 +1564,68 @@ def test_zero3_partitioned_training_keeps_the_stock_forward(monkeypatch):
     assert calls == []
     model.layers[0](x).sum().backward()
     assert calls
+
+
+def test_router_logits_after_a_forward_without_them(request, monkeypatch):
+    """transformers installs the router_logits hooks on the first forward that asks for them.
+
+    Dynamo does not guard on module hooks (skip_nnmodule_hook_guards), so a block compiled during an
+    earlier forward without output_router_logits kept running without the gate hook: no router logits,
+    and the aux loss raised IndexError in load_balancing_loss_func. The hooks now exist before the
+    first block compiles, and the hook body (guarded on the collector keys) decides per call.
+    """
+    misc = pytest.importorskip("unsloth_zoo.temporary_patches.misc")
+    if not hasattr(misc, "output_capture_scratch"):
+        pytest.skip("needs an unsloth_zoo with output_capture_scratch (unsloth-zoo#2041)")
+    misc.patch_output_collector_for_compiled_submodules()
+    M = _load()
+    torch.manual_seed(0)
+    model = _tiny_qwen3_moe(request, monkeypatch)
+    ids = torch.randint(0, 100, (2, 8))
+    want = model(input_ids = ids, labels = ids, use_cache = False, output_router_logits = True)
+    model = (
+        type(model)
+        .from_pretrained(
+            "trl-internal-testing/tiny-Qwen3MoeForCausalLM",
+            dtype = torch.float32,
+            experts_implementation = "batched_mm",
+        )
+        .train()
+    )
+    monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
+    inner = _install_blocks(M, model, monkeypatch)
+    torch._dynamo.reset()
+    model(input_ids = ids, labels = ids, use_cache = False).loss.backward()
+    out = model(input_ids = ids, labels = ids, use_cache = False, output_router_logits = True)
+    out.loss.backward()
+    assert inner, "the blocks did not run compiled"
+    assert len(out.router_logits) == len(want.router_logits) == model.config.num_hidden_layers
+    torch.testing.assert_close(out.aux_loss.detach(), want.aux_loss.detach())
+    torch.testing.assert_close(out.loss.detach(), want.loss.detach())
+    torch._dynamo.reset()
+
+
+def test_router_hooks_are_not_installed_twice_after_an_eager_capture(request, monkeypatch):
+    """Failing before: an eager capturing forward hooks the inner model; installing on the unflagged outer
+    CausalLM recursed into it again and every captured tuple held each layer twice."""
+    misc = pytest.importorskip("unsloth_zoo.temporary_patches.misc")
+    if not hasattr(misc, "output_capture_scratch"):
+        pytest.skip("needs an unsloth_zoo with output_capture_scratch (unsloth-zoo#2041)")
+    misc.patch_output_collector_for_compiled_submodules()
+    M = _load()
+    torch.manual_seed(0)
+    model = _tiny_qwen3_moe(request, monkeypatch).train()
+    ids = torch.randint(0, 100, (2, 8))
+    kwargs = dict(use_cache = False, output_router_logits = True, output_hidden_states = True)
+    model(input_ids = ids, **kwargs)
+    monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
+    _install_blocks(M, model, monkeypatch)
+    torch._dynamo.reset()
+    out = model(input_ids = ids, **kwargs)
+    layers = model.config.num_hidden_layers
+    assert len(out.router_logits) == layers, len(out.router_logits)
+    assert len(out.hidden_states) == layers + 1, len(out.hidden_states)
+    torch._dynamo.reset()
 
 
 def test_router_logits_capture_compiles_one_graph_for_every_layer(monkeypatch):

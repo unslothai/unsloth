@@ -521,7 +521,12 @@ async def logout(
 # Sync def: PBKDF2 + SQLite would block the event loop.
 @router.post("/desktop-login", response_model = Token)
 def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Response:
-    """Before reading the bucket: the shell probes with an invalid secret every tick and needs 401, since any other status reads as unmanageable."""
+    """Exchange a local desktop secret for desktop-marked owner tokens.
+
+    Multi-user installations return ``login_required`` instead of tokens.
+    Failed attempts are rate-limited per IP independently of /login.
+    """
+    # Shell ownership probes need 401 for malformed secrets even when throttled.
     if not storage.desktop_secret_is_well_formed(payload.secret):
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,

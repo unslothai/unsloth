@@ -327,18 +327,23 @@ test("the workspace chords land where the guard lets them", async () => {
     SRC__ROOT,
     /const chatOnlyMeasured = usePlatformStore\(\n\s*\(s\) => s\.isChatOnly\(\) && !s\.capabilitiesUnknown\(\),/,
   );
+  // Train follows its own verdict: a CPU training host is chat-only yet trains.
+  assert.match(
+    SRC__ROOT,
+    /const trainBlocked = usePlatformStore\(\n\s*\(s\) => s\.isTrainUnavailable\(\) && !s\.capabilitiesUnknown\(\),/,
+  );
   assert.match(
     SRC__ROOT,
     /const routeShortcutEnabled = !isAuthFlowRoute && !settingsDialogOpen;/,
   );
   assert.match(
     SRC__ROOT,
-    /useShortcut\("switchToTrain", goTo\("\/studio"\), \{\n\s*enabled: routeShortcutEnabled && !chatOnlyMeasured,/,
+    /useShortcut\("switchToTrain", goTo\("\/studio"\), \{\n\s*enabled: routeShortcutEnabled && !trainBlocked,/,
   );
   // /video checks only auth, so the chord would land on the unsupported-hardware gate.
   assert.match(
     SRC__ROOT,
-    /const videoDisabled =\n\s*videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn\) !== undefined;/,
+    /const videoDisabled =\n\s*videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining\) !== undefined;/,
   );
   assert.match(
     SRC__ROOT,
@@ -346,7 +351,7 @@ test("the workspace chords land where the guard lets them", async () => {
   );
   assert.match(
     APP_SIDEBAR,
-    /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn\);/,
+    /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining\);/,
   );
   assert.match(APP_SIDEBAR, /disabled: videoDisabled,/);
 
