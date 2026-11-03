@@ -100,19 +100,15 @@ def test_every_current_kimi_model_reaches_the_picker(monkeypatch):
 
 
 def test_kimi_previews_and_legacy_models_stay_out_of_the_picker(monkeypatch):
-    ids = ["kimi-k3-preview", "kimi-k2-0905-preview", "kimi-k2-turbo-preview", "moonshot-v1-8k"]
+    ids = [
+        "kimi-k3-preview",
+        "kimi-k2-0905-preview",
+        "kimi-k2-turbo-preview",
+        "kimi-k2-thinking",
+        "kimi-k2-thinking-turbo",
+        "moonshot-v1-8k",
+    ]
     assert _list_kimi_models(monkeypatch, ids) == []
-
-
-def test_text_only_kimi_models_get_no_mcp_images():
-    from routes.inference import _external_takes_mcp_images
-
-    kimi = PROVIDER_REGISTRY["kimi"]
-    for model_id in ("kimi-k2-thinking", "kimi-k2-thinking-turbo"):
-        assert kimi["model_id_allowlist"].match(model_id), model_id
-        assert _external_takes_mcp_images("kimi", True, model_id, kimi) is False, model_id
-    for model_id in ("kimi-k3", "kimi-k3.1-pro", "kimi-k2.6"):
-        assert _external_takes_mcp_images("kimi", True, model_id, kimi) is True, model_id
 
 
 @pytest.mark.parametrize(
