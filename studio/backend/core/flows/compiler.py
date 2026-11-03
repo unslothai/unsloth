@@ -413,7 +413,11 @@ def compile_flow(doc: dict) -> Plan:
             )
             continue
         try:
-            compiled = compile_recipe(recipe_graph(doc, node.get("group") or ""))
+            wired = any(
+                e.get("target") == nid and e.get("target_port") == "seed"
+                for e in doc.get("edges") or []
+            )
+            compiled = compile_recipe(recipe_graph(doc, node.get("group") or "", wired))
         except RecipeCompileError as exc:
             errors.append(issue(str(exc), node_id = nid))
             continue

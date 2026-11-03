@@ -56,7 +56,9 @@ def compile_recipe(graph: dict) -> dict:
     seeded = {n for n in (group.get("ui") or {}).get("seed_columns") or [] if isinstance(n, str)}
     # The seed's columns are only a preview hint (sharing drops it): with a seed and no hint, the
     # run's own validation checks a parent that may come from the seed.
-    unknown_seed = bool((group.get("config") or {}).get("seed_config")) and not seeded
+    unknown_seed = (
+        bool((group.get("config") or {}).get("seed_config")) or bool(graph.get("seed_wired"))
+    ) and not seeded
     for column in columns:
         parent = (column.get("params") or {}).get("category")
         if (
@@ -89,17 +91,25 @@ def compile_recipe(graph: dict) -> dict:
     return {"recipe": recipe, "run": copy.deepcopy(group.get("run") or {})}
 
 
-def recipe_graph(doc: dict, group_id: str) -> dict:
-    """The recipe graph of one Recipe group in a flow document."""
+def recipe_graph(
+    doc: dict,
+    group_id: str,
+    seed_wired: bool = False,
+) -> dict:
+    """The recipe graph of one Recipe group in a flow document. ``seed_wired``: its Recipe Dataset step
+    gets a seed dataset from a wire, whose columns are only known when the run starts."""
     group = next((g for g in doc.get("groups") or [] if g.get("id") == group_id), None)
     if group is None or group.get("kind") != "recipe":
         raise RecipeCompileError("This step is not inside a Data Recipe group")
-    return {
+    graph = {
         "kind": "recipe_graph",
         "version": RECIPE_GRAPH_VERSION,
         "group": group,
         "nodes": [n for n in doc.get("nodes") or [] if n.get("group") == group_id],
     }
+    if seed_wired:
+        graph["seed_wired"] = True
+    return graph
 
 
 def normalise(payload: Any) -> dict:
