@@ -1739,6 +1739,18 @@ def test_a_trained_d1_is_found_and_served_as_a_d1(home, client, engine, monkeypa
     assert laya_runtime._mlx_family(laya_runtime._mlx_target(plain)) == "clef"
 
 
+@pytest.mark.parametrize("wrapped", [True, False])
+def test_a_processor_only_model_keeps_the_engine_token_limit(engine, wrapped):
+    tokens = SimpleNamespace(encode = lambda text, add_special_tokens = False: [0] * len(text))
+    agent = laya_runtime._EngineAgent.__new__(laya_runtime._EngineAgent)
+    processor = SimpleNamespace(tokenizer = tokens) if wrapped else tokens
+    agent.model, agent.positions = SimpleNamespace(processor = processor), None
+    with pytest.raises(laya_runtime.Unavailable, match = "longer than"):
+        agent.decide(
+            "x" * (laya_runtime._ENGINE_TOKENS + 1), {"q": {"type": "noul", "instructions": "i"}}
+        )
+
+
 def test_clef_omni_is_served_by_the_mlx_engine_or_not_at_all(home, client, engine, monkeypatch):
     omni, clip = catalog.CHECKPOINTS["clef-omni"], "data:audio/wav;base64,AA=="
     zoo = sys.modules["unsloth_zoo.mlx.decision"]
