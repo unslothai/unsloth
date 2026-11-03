@@ -26,8 +26,15 @@ const LINE_TAGS = new Set(
 );
 function removeTtsEmojis(text: string): string {
   let removed = false;
-  const cleaned = text.replace(emojiRegex(), (emoji) => {
-    if (/^[©®™ℹ]$/.test(emoji)) return emoji;
+  const cleaned = text.replace(emojiRegex(), (emoji, offset, source) => {
+    if (
+      source[offset + emoji.length] === "\uFE0E" ||
+      ([...emoji].length === 1 &&
+        /\p{Emoji}/u.test(emoji) &&
+        !/\p{Emoji_Presentation}/u.test(emoji))
+    ) {
+      return emoji;
+    }
     removed = true;
     return " ";
   });

@@ -167,4 +167,8 @@ test("read-aloud preserves ordinary symbols and whitespace without emojis", () =
   );
   assert.equal(markdownToSpeechText("`two  spaces`"), "two  spaces");
   assert.equal(markdownToSpeechText("word🥰❤️, next"), "word, next");
+  assert.equal(markdownToSpeechText("$A ↔ B$"), "A ↔ B");
+  assert.equal(markdownToSpeechText("Sex: ♀ / ♂"), "Sex: ♀ / ♂");
+  assert.equal(markdownToSpeechText("Watch ⌚\uFE0E"), "Watch ⌚\uFE0E");
+  assert.equal(markdownToSpeechText("©️ ®️ ™️ ℹ️"), "");
 });
