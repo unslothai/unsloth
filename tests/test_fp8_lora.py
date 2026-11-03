@@ -1014,6 +1014,29 @@ def test_save_and_merge_exact_with_host_master(offload_on_cpu):
     )
 
 
+@pytest.mark.parametrize("method", ["merge_and_unload", "unload"])
+def test_unloaded_model_matches_its_reloaded_dense_weights(offload_on_cpu, method):
+    import copy
+
+    model = _tiny_qwen3_peft()
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    assert len(f8t.enable_fp8_lora(model, allow_cpu = True)) == 14
+    clone = copy.deepcopy(model)
+    merged = getattr(clone, method)().eval()
+    reloaded = type(merged)(copy.deepcopy(merged.config)).to(torch.bfloat16).eval()
+    reloaded.load_state_dict(merged.state_dict())
+    ids = torch.randint(0, 256, (2, 32))
+    FL.reset_fp8_lora_stats()
+    with torch.no_grad():
+        actual = merged(input_ids = ids).logits
+        expected = reloaded(input_ids = ids).logits
+    assert torch.equal(actual, expected), (actual - expected).abs().max().item()
+    assert FL.FP8_LORA_STATS["fwd"] == 0
+    assert not FL.fp8_lora_memory(merged)["layers"]
+    assert not merged.__dict__.get("_unsloth_fp8_lora_loss_forwards")
+    assert len(FL.fp8_lora_memory(model)["layers"]) == 14
+
+
 def _loss_and_grads_keep(model):
     torch.manual_seed(1)
     ids = torch.randint(0, 256, (2, 32))

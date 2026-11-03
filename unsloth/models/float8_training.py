@@ -551,6 +551,11 @@ def _merge_with_master(
     return out
 
 
+def _unload_fp8_lora(self, *args, **kwargs):
+    restore_fp8_lora_for_inference(self.model)
+    return type(self)._unload_and_optionally_merge(self, *args, **kwargs)
+
+
 def _has_variant(lora_module, adapter_name = None) -> bool:
     """Variants may read the master directly or initialize tensors on its device."""
     dora = getattr(lora_module, "use_dora", {}) or {}
@@ -988,6 +993,17 @@ def enable_fp8_lora(
     if converted:
         _prepare_fp8_lora_loss(model)
         _prepare_fp8_lora_operators(model)
+        import types
+        from peft.tuners.tuners_utils import BaseTuner
+
+        tuner = model if isinstance(model, BaseTuner) else getattr(model, "base_model", None)
+        unload = "_unload_and_optionally_merge"
+        if (
+            isinstance(tuner, BaseTuner)
+            and unload not in tuner.__dict__
+            and callable(getattr(type(tuner), unload, None))
+        ):
+            object.__setattr__(tuner, unload, types.MethodType(_unload_fp8_lora, tuner))
     if converted and getattr(model, "_unsloth_block_compile_installed", False):
         from ._block_compile import patch_block_compile
         patch_block_compile(model)
