@@ -12,6 +12,7 @@ const {
   effectiveTrainingObjective,
   missingRlRoles,
   resolveRlMapping,
+  rowAnswer,
   syncRlMapping,
 } = await import("../src/features/training/lib/rl-roles.ts");
 
@@ -188,4 +189,14 @@ test("auto-mapping prefers the higher-priority alias over column order", () => {
   );
   assert.equal(mapping.instruction, "prompt");
   assert.equal(mapping.input, undefined);
+});
+
+test("a reward preview reads a blank mapped answer as blank, as GRPO training does", () => {
+  assert.equal(rowAnswer({ answer: "72" }, "answer"), "72");
+  assert.equal(rowAnswer({ answer: null }, "answer"), null);
+  assert.equal(rowAnswer({ answer: "" }, "answer"), "");
+  assert.equal(rowAnswer({ answer: 5 }, "answer"), "5");
+  // Only no row or no answer role leaves the preview to its sample answer.
+  assert.equal(rowAnswer(null, "answer"), undefined);
+  assert.equal(rowAnswer({ answer: "72" }, undefined), undefined);
 });

@@ -38,6 +38,7 @@ import {
   previewCell,
   previewRewards,
   readRewardHead,
+  rowAnswer,
   summarizeRule,
   useRlWorkspaceStore,
   useTrainingConfigStore,
@@ -315,10 +316,11 @@ export function RewardsSection(): ReactElement {
   const answerColumn = Object.entries(mapping).find(
     ([, role]) => role === "answer",
   )?.[0];
-  const rowReference = answerColumn
-    ? previewCell(previewRow?.[answerColumn])
-    : "";
-  const reference = referenceEdit ?? (rowReference || "72");
+  // A blank answer in the row stays blank, as in training; the sample is for no row at all.
+  const mappedAnswer = rowAnswer(previewRow, answerColumn);
+  const rowReference = mappedAnswer ?? "";
+  const reference =
+    referenceEdit ?? (mappedAnswer === undefined ? "72" : rowReference);
 
   const active = library.filter((r) => !r.shadowed);
   const byName = new Map(active.map((r) => [r.name, r]));
