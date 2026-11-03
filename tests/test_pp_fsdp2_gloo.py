@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 
+import functools
 import multiprocessing
 import os
 
@@ -29,6 +30,7 @@ ARCHS = {
     "qwen3": (QWEN3, {}),
     "gemma3": (GEMMA3, {"num_attention_heads": 4, "num_key_value_heads": 2}),
 }
+_LOCAL_CONFIG = False
 N_LAYERS = 6
 STEPS = 3
 # Gemma3 reduction-order noise needs a wider bound than Llama/Qwen3.
@@ -57,7 +59,7 @@ def build(
     from peft import LoraConfig, get_peft_model
     from transformers import AutoConfig, AutoModelForCausalLM
 
-    probe = AutoConfig.from_pretrained(repo)
+    probe = AutoConfig.from_pretrained(repo, local_files_only = _LOCAL_CONFIG)
     values = probe.to_dict()
     values["num_hidden_layers"] = N_LAYERS
     values.pop("layer_types", None)
@@ -195,21 +197,26 @@ def _case_compose(
     if "dp" in dims:
         refusals["shard_model_pp_mesh"] = _raised(
             lambda: native.shard_model(
-                model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["pp"])
+                model, native.FSDP2Config(device = "cpu", param_dtype = torch.float32, mesh = mesh["pp"])
             )
         )
         refusals["shard_model_no_mesh"] = _raised(
-            lambda: native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32))
+            lambda: native.shard_model(
+                model, native.FSDP2Config(device = "cpu", param_dtype = torch.float32)
+            )
         )
         refusals["shard_model_inner_level"] = _raised(
             lambda: native.shard_model(
-                model.base_model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"])
+                model.base_model,
+                native.FSDP2Config(device = "cpu", param_dtype = torch.float32, mesh = mesh["dp"]),
             )
         )
         refusals["shard_model_cpu_offload"] = _raised(
             lambda: native.shard_model(
                 model,
-                native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"], cpu_offload = True),
+                native.FSDP2Config(
+                    device = "cpu", param_dtype = torch.float32, mesh = mesh["dp"], cpu_offload = True
+                ),
             )
         )
         refusals["fsdp_after_refusals"] = sum(
@@ -217,7 +224,9 @@ def _case_compose(
         )
         native.shard_model(
             model,
-            native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"], fit_layout = fit_layout),
+            native.FSDP2Config(
+                device = "cpu", param_dtype = torch.float32, mesh = mesh["dp"], fit_layout = fit_layout
+            ),
         )
     from torch.distributed.fsdp import FSDPModule
 
@@ -282,7 +291,9 @@ def _case_scaler(rank, world, tmp):
     ids, labels = global_batch(model, 8)
     dp_rank = mesh["dp"].get_local_rank()
     pp = ppn.apply_pipeline_parallel(model, mesh["pp"], n_microbatches = 2)
-    native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"]))
+    native.shard_model(
+        model, native.FSDP2Config(device = "cpu", param_dtype = torch.float32, mesh = mesh["dp"])
+    )
     scaler = torch.amp.GradScaler("cpu", init_scale = 1024.0)
     opt = torch.optim.SGD(pp.parameters(), lr = 1.0)
     pp.step(
@@ -322,7 +333,9 @@ def _case_order_refusals(rank, world, tmp):
     out["tp_first"] = _raised(lambda: ppn.apply_pipeline_parallel(model, mesh["pp"]))
     out["tp_first_unchanged"] = not ppn.is_pipeline_parallel(model) and layers == N_LAYERS
     model = build(LLAMA)
-    native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"]))
+    native.shard_model(
+        model, native.FSDP2Config(device = "cpu", param_dtype = torch.float32, mesh = mesh["dp"])
+    )
     out["fsdp_first"] = _raised(lambda: ppn.apply_pipeline_parallel(model, mesh["pp"]))
     out["fsdp_first_unchanged"] = not ppn.is_pipeline_parallel(model)
 
@@ -330,7 +343,9 @@ def _case_order_refusals(rank, world, tmp):
     out["mesh_2d"] = _raised(lambda: ppn.apply_pipeline_parallel(model, mesh))
 
     pp = ppn.apply_pipeline_parallel(model, mesh["pp"])
-    native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"]))
+    native.shard_model(
+        model, native.FSDP2Config(device = "cpu", param_dtype = torch.float32, mesh = mesh["dp"])
+    )
     out["tp_after_fsdp"] = _raised(lambda: tpn.apply_tensor_parallel(model, mesh["dp"]))
     out["shard_twice_is_noop"] = native.shard_model(model) is model
     out["composed"] = pp.composed
@@ -363,7 +378,9 @@ def _case_fp16_replicas(rank, world, tmp):
     pp = ppn.apply_pipeline_parallel(model, mesh["pp"], n_microbatches = 2)
     native.shard_model(
         model,
-        native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"], ignored_params = {norm}),
+        native.FSDP2Config(
+            device = "cpu", param_dtype = torch.float32, mesh = mesh["dp"], ignored_params = {norm}
+        ),
     )
     dp_rank = mesh["dp"].get_local_rank()
     grads, pending = [], []
@@ -391,6 +408,8 @@ def _free_port():
 
 
 def _worker(rank, world, port, case, tmp, kwargs):
+    global _LOCAL_CONFIG
+    _LOCAL_CONFIG = True
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
         MASTER_PORT = str(port),
@@ -414,6 +433,13 @@ def _worker(rank, world, port, case, tmp, kwargs):
         dist.destroy_process_group()
 
 
+@functools.lru_cache(maxsize = 1)
+def _prefetch_configs():
+    from transformers import AutoConfig
+    for repo, _ in ARCHS.values():
+        AutoConfig.from_pretrained(repo)
+
+
 def _spawn(
     case,
     world = 4,
@@ -426,6 +452,7 @@ def _spawn(
     native = _native()
     if not native._supports_ignored_params(native._fsdp_api()[2]):
         pytest.skip("native FSDP2 composition needs fully_shard(ignored_params) (torch 2.7+)")
+    _prefetch_configs()
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
