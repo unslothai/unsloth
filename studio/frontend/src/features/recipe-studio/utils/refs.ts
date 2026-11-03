@@ -76,7 +76,16 @@ export function replaceRef(
     return template;
   }
   const pattern = new RegExp(`{{\\s*${escapeRegExp(from)}\\s*}}`, "g");
-  return template.replace(pattern, `{{ ${to} }}`);
+  const renamed = template.replace(pattern, `{{ ${to} }}`);
+  // Inside any other tag (`{{ ticket.title }}`, `{% if ticket.priority %}`) the name is renamed
+  // where it is a variable root: outside string literals, not after a dot or inside a longer name.
+  const root = new RegExp(`(?<![\\w.])${escapeRegExp(from)}(?!\\w)`, "g");
+  return renamed.replace(/{{[\s\S]*?}}|{%[\s\S]*?%}/g, (tag) =>
+    tag
+      .split(/('[^']*'|"[^"]*")/)
+      .map((part, i) => (i % 2 ? part : part.replace(root, to)))
+      .join(""),
+  );
 }
 
 export function removeRef(template: string, ref: string): string {
