@@ -5555,10 +5555,12 @@ export function createOpenAIStreamAdapter(
         .find((message) => message.role === "user");
       // Names the turn whose file changes /rewind can undo; a continuation reuses its turn's prompt.
       // A temporary chat keeps no file history.
-      const userMessageIdField =
-        resolvedThreadId && isThreadIncognito(resolvedThreadId)
-          ? { temporary_chat: true }
-          : userMessageIdRequestField(generationUserMessage?.id);
+      const temporaryChat = Boolean(
+        resolvedThreadId && isThreadIncognito(resolvedThreadId),
+      );
+      const userMessageIdField = userMessageIdRequestField(
+        temporaryChat ? undefined : generationUserMessage?.id,
+      );
 
       // The durability gate keys on THIS turn's attachments only, so an old screenshot does not keep
       // every later text turn off the durable path.
@@ -6658,7 +6660,7 @@ export function createOpenAIStreamAdapter(
             return {
               model: externalSelection.modelId,
               messages: outboundMessages,
-              ...userMessageIdField,
+              ...(temporaryChat ? { temporary_chat: true } : {}),
               ...(providerSupportsPreserveThinking(externalProvider?.providerType)
                 ? { preserve_thinking: runtime.preserveThinking }
                 : {}),
@@ -6755,6 +6757,7 @@ export function createOpenAIStreamAdapter(
                     ...(sandboxSessionId
                       ? { session_id: sandboxSessionId }
                       : {}),
+                    ...userMessageIdField,
                     ...(sandboxAttachments.length > 0
                       ? { sandbox_attachments: sandboxAttachments }
                       : {}),
@@ -6913,6 +6916,7 @@ export function createOpenAIStreamAdapter(
               : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
             ...userMessageIdField,
+            ...(temporaryChat ? { temporary_chat: true } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...localReasoningFields,
             ...(supportsPreserveThinking

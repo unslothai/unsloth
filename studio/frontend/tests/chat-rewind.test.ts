@@ -85,16 +85,20 @@ test("completion payloads carry turn identity and temporary usage independently 
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(
     adapter,
-    /const userMessageIdField =\s*resolvedThreadId && isThreadIncognito\(resolvedThreadId\)\s*\? \{ temporary_chat: true \}\s*: userMessageIdRequestField\(generationUserMessage\?\.id\);/,
+    /const userMessageIdField = userMessageIdRequestField\(\s*temporaryChat \? undefined : generationUserMessage\?\.id,?\s*\);/,
   );
   // Local body (also the durable run's requestPayload): beside thread_id.
   assert.match(
     adapter,
-    /\.\.\.\(resolvedThreadId \? \{ thread_id: resolvedThreadId \} : \{\}\),\s*\.\.\.userMessageIdField,\s*\.\.\.\(useAdapter === undefined/,
+    /\.\.\.\(resolvedThreadId \? \{ thread_id: resolvedThreadId \} : \{\}\),\s*\.\.\.userMessageIdField,\s*\.\.\.\(temporaryChat \? \{ temporary_chat: true \} : \{\}\),\s*\.\.\.\(useAdapter === undefined/,
   );
   assert.match(
     adapter,
-    /model: externalSelection\.modelId,\s*messages: outboundMessages,\s*\.\.\.userMessageIdField,/,
+    /model: externalSelection\.modelId,\s*messages: outboundMessages,\s*\.\.\.\(temporaryChat \? \{ temporary_chat: true \} : \{\}\),/,
+  );
+  assert.match(
+    adapter,
+    /\? \{ session_id: sandboxSessionId \}\s*: \{\}\),\s*\.\.\.userMessageIdField,/,
   );
   // The durable run posts the same requestPayload, so the field rides inside it, not beside it.
   assert.match(
