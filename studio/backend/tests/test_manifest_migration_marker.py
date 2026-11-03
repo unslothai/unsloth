@@ -331,3 +331,29 @@ def test_marker_check_error_falls_back_to_the_full_scan(home, monkeypatch):
     monkeypatch.setattr(download_manifest, "_migration_already_clean", boom)
     assert download_manifest.migrate_ordinary_v2_manifests_for_downgrade() >= 3
     assert not _marker().exists()
+
+
+def test_scope_matched_only_when_folded_is_fingerprinted(home, monkeypatch):
+    # Windows folds names in the scan, so a ``Cache-*`` scope is read; the fingerprint must cover the
+    # same scopes or a v2 manifest written into it after a clean pass is never looked at again.
+    monkeypatch.setattr(download_manifest, "_folded", str.casefold)
+    _populate(home)
+    hand = home.root / "hand-hub"
+    hand.mkdir()
+    _write("Org/Hand", 2, hub_cache = hand)
+    written = download_manifest.manifest_path("model", "Org/Hand", None, hub_cache = hand)
+    payload = written.read_bytes()
+    shutil.rmtree(written.parent)
+    folded_scope = state_dir.manifests_dir() / "Cache-Hand"
+    folded_scope.mkdir()
+    download_manifest.migrate_ordinary_v2_manifests_for_downgrade()
+    _settle(state_dir.manifests_dir())
+    download_manifest.migrate_ordinary_v2_manifests_for_downgrade()
+    assert "Cache-Hand" in json.loads(_marker().read_text(encoding = "utf-8"))["dirs"]
+
+    calls = _count_reads(monkeypatch)
+    staged = folded_scope / "late.json.tmp"
+    staged.write_bytes(payload)
+    os.replace(staged, folded_scope / "late.json")
+    download_manifest.migrate_ordinary_v2_manifests_for_downgrade()
+    assert folded_scope / "late.json" in calls
