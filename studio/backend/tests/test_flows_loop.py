@@ -572,3 +572,9 @@ def test_shared_boilerplate_in_test_rows_does_not_hide_probe_failures():
     }
     leaked = {"instruction": shared, "input": "What is the capital of Spain today?", "output": "x"}
     assert loop_rounds.drop_test_rows([probe, leaked], test_rows) == [probe]
+
+
+def test_a_test_row_repeated_in_the_split_still_bans_its_question():
+    question = "What is the capital city of the country France?"
+    test_rows = [{"q": question, "a": "Paris"}, {"q": question, "a": "Paris"}]
+    assert loop_rounds.drop_test_rows([{"q": question, "model_output": "x"}], test_rows) == []
