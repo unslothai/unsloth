@@ -2325,7 +2325,9 @@ class FlowEngine:
                     )
                 found = probe_out.get(fail_port)
                 failures = loop_rounds.drop_test_rows(
-                    await self._dataset_rows(ctx, found), test_rows
+                    await self._dataset_rows(ctx, found),
+                    test_rows,
+                    str(scorer_params.get("prompt_column") or ""),
                 )
                 entry = {
                     "round": r + 1,

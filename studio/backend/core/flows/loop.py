@@ -101,34 +101,54 @@ def _strings(value: Any) -> list[str]:
     return found
 
 
-def _identifying(row: Any) -> frozenset:
-    """The long strings that could name one test row. An Alpaca row's question is its instruction
-    plus input, so the instruction alone (one task's rows share it) is not one of them."""
-    strings = {s for s in _strings(row) if len(s) >= LEAK_MIN_CHARS}
-    if isinstance(row, dict):
+def _asked(row: Any, prompt_column: str = "") -> str:
+    """The question a row asks (an Alpaca row's instruction plus input), as Benchmark asked it."""
+    found = failure_row(row, prompt_column) if isinstance(row, dict) else None
+    return found["failed_prompt"].strip() if found else ""
+
+
+def _identifying(row: Any, prompt_column: str = "") -> frozenset:
+    """The long strings that could name one test row: its question, never its answer or labels (a rare
+    category would otherwise hide every failure sharing it). An Alpaca row's question is its
+    instruction plus input, and its input on its own; the instruction alone is shared by its task."""
+    asked = _asked(row, prompt_column)
+    if asked:
+        strings = {asked}
         lowered = {str(k).lower(): v for k, v in row.items()}
-        instruction, extra = lowered.get("instruction"), lowered.get("input")
-        if isinstance(instruction, str) and isinstance(extra, str) and extra.strip():
-            strings.discard(instruction.strip())
-            asked = f"{instruction}\n\n{extra.strip()}".strip()
-            if len(asked) >= LEAK_MIN_CHARS:
-                strings.add(asked)
-    return frozenset(strings)
+        extra = lowered.get("input")
+        if isinstance(extra, str) and extra.strip() and "input" != prompt_column.lower():
+            strings.add(extra.strip())
+    elif isinstance(row, dict):
+        # No question column to go by: every value but the answer and the model's output.
+        answers = set(REFERENCE_KEYS) | set(OUTPUT_KEYS)
+        strings = set(_strings([v for k, v in row.items() if str(k).lower() not in answers]))
+    else:
+        strings = set(_strings(row))
+    return frozenset(s for s in strings if len(s) >= LEAK_MIN_CHARS)
 
 
-def drop_test_rows(failures: list[dict], test_rows: list[dict]) -> list[dict]:
-    """Guard: a failure carrying a long string that identifies one test row never reaches the seed.
-    A value many test rows share (a fixed Alpaca instruction, a label) identifies none of them."""
+def drop_test_rows(
+    failures: list[dict],
+    test_rows: list[dict],
+    prompt_column: str = "",
+) -> list[dict]:
+    """Guard: a failure asking a question that identifies one test row never reaches the seed.
+    A value many test rows share (a fixed Alpaca instruction) identifies none of them."""
     seen: dict[str, int] = {}
     # A row repeated in the test split is still one row: its question stays banned.
-    distinct = {_identifying(row) for row in test_rows}
+    distinct = {_identifying(row, prompt_column) for row in test_rows}
     for strings in distinct:
         for s in strings:
             seen[s] = seen.get(s, 0) + 1
     banned = {s for s, n in seen.items() if n == 1}
     if not banned:
         return list(failures)
-    return [f for f in failures if not any(s in banned for s in _strings(f))]
+
+    def leaks(failure: dict) -> bool:
+        asked = _asked(failure, prompt_column)
+        return (asked in banned) or any(s in banned for s in _strings(failure))
+
+    return [f for f in failures if not leaks(f)]
 
 
 # Words, signed numbers and arithmetic signs: "-1" and "1", or "5 - 4" and "5 + 4", stay apart.

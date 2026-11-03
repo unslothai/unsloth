@@ -669,3 +669,35 @@ def test_a_busy_eval_slot_stops_the_node_before_it_loads(monkeypatch):
     with pytest.raises(FlowNodeError, match = "already running"):
         asyncio.run(benchmark.benchmark(ctx))
     assert loaded == []
+
+
+def test_a_checkpoint_resolved_to_a_handle_is_found_as_chats_main_model(monkeypatch):
+    from types import SimpleNamespace
+
+    from hub.utils import host_paths
+
+    paths = {"ref:run1": "/out/run-1", "ref:other": "/out/other"}
+    monkeypatch.setattr(host_paths, "resolve_host_path_reference", lambda v: paths.get(v))
+
+    async def resolve_by(deadline, caller, **kwargs):
+        return SimpleNamespace(ref = "ref:run1", is_lora = True, gguf_variant = None)
+
+    async def load_llm(caller, job, **kwargs):
+        pass
+
+    serving = ["ref:run1", "ref:other"]
+
+    async def resident(caller):
+        return {"llm": serving}, {"serving": serving}
+
+    monkeypatch.setattr("studio_mcp.trained_models.resolve_by", resolve_by)
+    monkeypatch.setattr("studio_mcp.loading.load_llm", load_llm)
+    monkeypatch.setattr("studio_mcp.loading._resident", resident)
+    monkeypatch.setattr(benchmark, "note_loaded", lambda *a: None)
+    ctx = _Ctx(lambda *a: {})
+    ctx.resident = {}
+    ctx.set_status = lambda *a, **k: None
+    assert asyncio.run(benchmark._load_target(ctx)) == ("run-1", True)
+    serving.reverse()
+    with pytest.raises(FlowNodeError, match = "kept loaded beside"):
+        asyncio.run(benchmark._load_target(ctx))

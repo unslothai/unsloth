@@ -154,7 +154,9 @@ async def _require_primary(ctx: NodeContext, ref: str, label: str) -> None:
     serving = [s for s in status.get("serving") or [] if isinstance(s, str)]
     if len(serving) < 2:
         return
+    # Both sides as paths: a checkpoint or export resolves to an opaque `ref:` handle too.
     main = resolve_host_path_reference(serving[0]) or serving[0]
+    ref = resolve_host_path_reference(ref) or ref
     same = loading._same_id(main, ref) or (
         os.path.isabs(main)
         and os.path.isabs(ref)

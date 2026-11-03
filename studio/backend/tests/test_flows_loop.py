@@ -680,3 +680,20 @@ async def test_a_test_score_with_errored_rows_neither_wins_nor_meets_the_target(
     history = rs.nodes["loop"].outputs["history"]
     assert len(history["rounds"]) == 2 and history["rounds"][0]["test_errored"] == 1
     assert rs.nodes["loop"].outputs["checkpoint"]["name"] == "run2"
+
+
+def test_a_rare_answer_label_in_the_test_split_does_not_hide_a_probe_failure():
+    test_rows = [
+        {
+            "prompt": "My router keeps dropping the connection at night.",
+            "label": "technical_support_escalation",
+        },
+        {"prompt": "How do I change the billing address on my account?", "label": "billing"},
+    ]
+    probe = {
+        "prompt": "The app crashes whenever I open the settings page.",
+        "label": "technical_support_escalation",
+        "model_output": "billing",
+    }
+    leaked = {"prompt": "How do I change the billing address on my account?", "model_output": "x"}
+    assert loop_rounds.drop_test_rows([probe, leaked], test_rows) == [probe]
