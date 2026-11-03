@@ -6005,6 +6005,28 @@ _MEASURED_UNET_STREAMED_PEAK_MIB = 2435
 # force_upcast fp16 VAE (T4) decodes in fp32.
 _MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB = 3228
 _UNET_STREAM_SLACK_MIB = 512
+# Streamed denoise: 333 MiB above the weights at 1024^2 (L4 bf16, CFG pair, incl. the ~168 MiB prefetch window), the
+# activations scaled linearly to 2048^2 so a larger canvas still fits beside the resident leaves: 168 + 4 x 165.
+_MEASURED_UNET_STREAMED_DENOISE_MIB = 828
+# =0: size the resident leaves from the decode peak for the whole render (no lending, the #16295 sizing).
+UNET_STREAM_LEND_ENV = "UNSLOTH_DIFFUSION_UNET_STREAM_LEND"
+
+
+def unet_stream_lends_decode() -> bool:
+    """Resident UNet leaves are sized from the denoise peak and lent to the VAE decode (release_for_decode streams the
+    shortfall again before the decode and re-pins it after), as ComfyUI unloads part of the UNet for its decode."""
+    return not _env_off(UNET_STREAM_LEND_ENV)
+
+
+def unet_decode_lend(fp32_decode: bool = False) -> tuple[int, int, int, bool]:
+    """The ``DECODE_LEND_ATTR`` tuple of a streamed UNet: the decode's measured peak above the weights at 1024^2,
+    scaled linearly with the canvas (a tiled decode grows slower: it releases more than it needs, never less)."""
+    peak = (
+        _MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB
+        if fp32_decode
+        else _MEASURED_UNET_STREAMED_PEAK_MIB
+    )
+    return (peak, peak, DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT, False)
 
 
 def _measured_reserve_mib(peak_mib: int) -> int:
@@ -6018,16 +6040,23 @@ def unet_stream_room_mib(
     vae_mib: int,
     *,
     fp32_decode: bool = False,
+    lend: Optional[bool] = None,
 ) -> Optional[int]:
-    """None if whole-module offload fits; else MiB of UNet leaves to keep resident. The decode must fit too: leaf
-    groups released by a decode OOM do not survive the round trip."""
+    """None if whole-module offload fits; else MiB of UNet leaves to keep resident. ``lend`` (default: the kill switch
+    ``UNSLOTH_DIFFUSION_UNET_STREAM_LEND``): sized from the denoise peak, the decode borrows the shortfall through
+    release_for_decode; off: sized so the decode fits beside every resident leaf for the whole render."""
     if unet_mib + _measured_reserve_mib(_MEASURED_UNET_OFFLOAD_DENOISE_MIB) <= free_mib:
         return None
-    peak = (
-        _MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB
-        if fp32_decode
-        else _MEASURED_UNET_STREAMED_PEAK_MIB
-    )
+    if lend is None:
+        lend = unet_stream_lends_decode()
+    if lend:
+        peak = _MEASURED_UNET_STREAMED_DENOISE_MIB
+    else:
+        peak = (
+            _MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB
+            if fp32_decode
+            else _MEASURED_UNET_STREAMED_PEAK_MIB
+        )
     reserve = _measured_reserve_mib(peak) + _UNET_STREAM_SLACK_MIB
     return max(0, int(free_mib) - int(vae_mib) - reserve)
 
@@ -6073,9 +6102,9 @@ def _stream_unet_instead_of_model_offload(
 
         unet_mib = _mib(unet)
         vae = getattr(pipe, "vae", None)
-        room = unet_stream_room_mib(
-            free_mib, unet_mib, _mib(vae), fp32_decode = vae is not None and _vae_decodes_in_fp32(vae)
-        )
+        fp32_decode = vae is not None and _vae_decodes_in_fp32(vae)
+        lend = unet_stream_lends_decode()
+        room = unet_stream_room_mib(free_mib, unet_mib, _mib(vae), fp32_decode = fp32_decode, lend = lend)
         if room is None:
             return False
     except Exception:  # noqa: BLE001
@@ -6093,6 +6122,11 @@ def _stream_unet_instead_of_model_offload(
         try:
             # deferred speed profile would rebuild weights outside the leaf hooks; read by _engage_deferred_speed
             pipe._unsloth_unet_streamed = True
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            # the leaves were sized from the denoise peak: the decode borrows its shortfall (release_for_decode)
+            setattr(pipe, DECODE_LEND_ATTR, unet_decode_lend(fp32_decode) if lend and room else None)
         except Exception:  # noqa: BLE001
             pass
     if logger is not None:
