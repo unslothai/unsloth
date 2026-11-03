@@ -34,6 +34,18 @@ def url_host(url: Any) -> Optional[str]:
     return parts.hostname.lower().rstrip(".")
 
 
+def recipe_hosts(recipe: Any) -> list[str]:
+    """Hosts a recipe's own model providers call; a document can name any, so the owner approves them as HTTP hosts."""
+    hosts: list[str] = []
+    providers = recipe.get("model_providers") if isinstance(recipe, dict) else None
+    for provider in providers or []:
+        if isinstance(provider, dict) and provider.get("is_local") is not True:
+            host = url_host(provider.get("endpoint"))
+            if host and host not in hosts:
+                hosts.append(host)
+    return hosts
+
+
 def node_needs(spec: dict, params: dict) -> list[tuple[str, str]]:
     """(capability, detail) pairs this block needs with these params."""
     found = []
@@ -59,6 +71,8 @@ def node_needs(spec: dict, params: dict) -> list[tuple[str, str]]:
         and ("mcp", "mcp") not in found
     ):
         found.append(("mcp", "mcp"))
+    if isinstance(compiled, dict):
+        found += [("http", host) for host in recipe_hosts(compiled.get("recipe"))]
     return found
 
 
@@ -99,12 +113,13 @@ def doc_needs(doc: dict) -> dict:
         if node.get("type") == GENERATE_TYPE and not node.get("disabled")
     }
     for group in doc.get("groups") or []:
-        if (
-            group.get("kind") == "recipe"
-            and group.get("id") in running
-            and uses_mcp(group.get("config"))
-        ):
+        if group.get("kind") != "recipe" or group.get("id") not in running:
+            continue
+        if uses_mcp(group.get("config")):
             need["mcp"] = True
+        for host in recipe_hosts(group.get("config")):
+            if host not in need["hosts"]:
+                need["hosts"].append(host)
     return need
 
 

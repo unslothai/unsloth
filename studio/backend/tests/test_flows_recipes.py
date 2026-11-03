@@ -304,3 +304,14 @@ def test_a_conditional_sampler_reads_its_rule_columns():
     }
     with pytest.raises(RecipeCompileError):
         compile_recipe(import_recipe(loop))
+
+
+def test_a_recipe_group_with_an_env_key_says_how_to_run_it():
+    recipe = {
+        "columns": [],
+        "model_providers": [{"name": "openai", "api_key_env": "OPENAI_API_KEY"}],
+    }
+    with pytest.raises(FlowNodeError, match = "API key field"):
+        data.runnable_recipe(recipe)
+    recipe["model_providers"][0] = {"name": "openai", "api_key": "sk-live"}
+    assert data.runnable_recipe(recipe)["model_providers"][0]["api_key"] == "sk-live"

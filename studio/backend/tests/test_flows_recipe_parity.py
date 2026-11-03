@@ -434,3 +434,51 @@ def test_a_recipe_with_mcp_servers_needs_the_flows_mcp_approval():
     ctx.refuse.clear()
     asyncio.run(data.recipe_group(ctx))
     assert [p["name"] for p in jobs[0]["recipe"]["mcp_providers"]] == [HTTP["name"]]
+
+
+def test_a_recipe_provider_endpoint_needs_the_owners_host_approval():
+    from core.flows import capabilities
+
+    remote = copy.deepcopy(SQL)
+    remote["recipe"]["model_providers"][0]["endpoint"] = "http://169.254.169.254/v1"
+    doc = _flow(remote)
+    imported, _, _ = package.read_package(json.dumps(doc).encode())
+    assert capabilities.doc_needs(imported)["hosts"] == ["169.254.169.254"]
+    assert capabilities.doc_needs(_flow())["hosts"] == [], "no endpoint, nothing to approve"
+    local = copy.deepcopy(remote)
+    local["recipe"]["model_providers"][0]["is_local"] = True
+    assert capabilities.doc_needs(_flow(local))["hosts"] == [], "Studio's own model is not a host"
+
+    jobs: list = []
+    ctx = _Ctx(_routes(jobs), params = {RECIPE_PARAM: _compiled(doc), "mode": "preview", "rows": 2})
+    ctx.refuse["http"] = "Recipe Dataset only calls hosts the Studio owner approved"
+    with pytest.raises(FlowNodeError, match = "approved"):
+        asyncio.run(data.recipe_group(ctx))
+    assert jobs == [], "no job starts without the approval"
+
+
+def test_a_recipe_step_validates_against_the_seed_it_runs_on(monkeypatch, tmp_path):
+    from .test_flows_recipe_groups import _routes as _job_routes
+
+    monkeypatch.setattr(data, "POLL_S", 0)
+    seed = tmp_path / "seed.jsonl"
+    seed.write_text('{"origin": "fresh"}\n')
+    monkeypatch.setattr(data, "local_seed_path", lambda ref: str(seed))
+    routes, _ = _job_routes(["job1"])
+    checked = []
+
+    def recording(method, path, params, body):
+        if path == "/api/data-recipe/validate":
+            checked.append(copy.deepcopy(body))
+        return routes(method, path, params, body)
+
+    ctx = _Ctx(
+        recording,
+        params = {RECIPE_PARAM: _compiled(_flow()), "rows": 1},
+        inputs = {"seed": {"kind": "dataset", "source": "local", "ref": "loop-seed"}},
+    )
+    asyncio.run(data.recipe_group(ctx))
+    assert checked[0]["recipe"]["seed_config"]["source"] == {
+        "seed_type": "local",
+        "path": str(seed),
+    }
