@@ -106,7 +106,8 @@ export function NodeCard({
         "in-[.selected]:ring-2 in-[.selected]:ring-emerald-500/25",
         STATUS_BORDER[runtime.status],
         disabled && "opacity-45",
-        lowDetail && "[&_.flow-detail]:invisible",
+        // Media stays: a shrunk image still reads where shrunk text does not.
+        lowDetail && "[&_.flow-detail]:invisible [&_.flow-media]:visible",
         className,
       )}
       data-status={runtime.status}

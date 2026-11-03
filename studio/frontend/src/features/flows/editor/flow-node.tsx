@@ -101,7 +101,8 @@ function OutputPreview({
   runtime,
   spec,
   expanded = false,
-}: { runtime: NodeRuntime; spec: NodeSpec; expanded?: boolean }) {
+  low = false,
+}: { runtime: NodeRuntime; spec: NodeSpec; expanded?: boolean; low?: boolean }) {
   if (
     runtime.preview &&
     (runtime.status === "running" || runtime.status === "loading_model")
@@ -110,7 +111,7 @@ function OutputPreview({
       <img
         src={runtime.preview}
         alt=""
-        className="aspect-square w-full rounded-md object-cover group-data-[sized]/node:aspect-auto group-data-[sized]/node:h-full group-data-[sized]/node:object-contain"
+        className="flow-media aspect-square w-full rounded-md object-cover group-data-[sized]/node:aspect-auto group-data-[sized]/node:h-full group-data-[sized]/node:object-contain"
         draggable={false}
       />
     );
@@ -141,13 +142,14 @@ function OutputPreview({
           outputs={runtime.partial}
           spec={spec}
           expanded={expanded}
+          low={low}
         />
       </div>
     );
   }
   const outputs = runtime.outputs;
   if (!outputs) return null;
-  return <OutputValues outputs={outputs} spec={spec} expanded={expanded} />;
+  return <OutputValues outputs={outputs} spec={spec} expanded={expanded} low={low} />;
 }
 
 /** A list or object written out in full, for a card resized big enough to read it. */
@@ -165,10 +167,12 @@ function OutputValues({
   outputs,
   spec,
   expanded = false,
+  low = false,
 }: {
   outputs: Record<string, unknown>;
   spec: NodeSpec;
   expanded?: boolean;
+  low?: boolean;
 }) {
   const ids = shownOutputIds(spec.outputs, outputs);
   for (const id of ids) {
@@ -177,6 +181,7 @@ function OutputValues({
       return (
         <MediaThumb
           media={value}
+          low={low}
           className="max-h-48 w-full rounded-md object-cover group-data-[sized]/node:h-full group-data-[sized]/node:max-h-full group-data-[sized]/node:object-contain"
         />
       );
@@ -191,6 +196,7 @@ function OutputValues({
                 <MediaThumb
                   key={`${item.ref}-${i}`}
                   media={item}
+                  low={low}
                   className="aspect-square w-full rounded object-cover"
                 />
               ) : null,
@@ -431,6 +437,7 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
                 runtime={runtime}
                 spec={spec}
                 expanded={!!node.size}
+                low={lowDetail}
               />
             </div>
           )}
