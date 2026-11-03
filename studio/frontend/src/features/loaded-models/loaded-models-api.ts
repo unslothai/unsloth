@@ -147,7 +147,10 @@ export async function readLoadedModels(
       entry.servingCheckpoint
         ? withServingResident(
             entry,
-            await settled((signal) => readInferenceStatus(signal, entry.name)),
+            // By checkpoint: two local files can share a public name, and the primary wins that tie.
+            await settled((signal) =>
+              readInferenceStatus(signal, entry.servingCheckpoint),
+            ),
           )
         : entry,
     ),

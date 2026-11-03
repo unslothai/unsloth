@@ -175,3 +175,10 @@ test("an inflated image estimate shrinks before a measured chat model does", () 
   const over = memorySegments(memoryShare(2, 8, 2)!, modelBreakdown(null, [{ ...models[1], gb: 4 }], false), false);
   assert.ok(Math.abs(over[0].gb - 2) < 1e-9);
 });
+
+test("kept chat models are sized by routing on their checkpoint, not a public name they may share", () => {
+  assert.match(
+    readSrc("features/loaded-models/loaded-models-api.ts"),
+    /readInferenceStatus\(signal, entry\.servingCheckpoint\)/,
+  );
+});
