@@ -80,7 +80,27 @@ _CHECKS = textwrap.dedent(
 
     if compiled:
         torch._dynamo.config.cache_size_limit = 64
-    batch_call = checked(F.batch_fused_site)
+    # Separate code objects avoid https://github.com/pytorch/pytorch/issues/176211.
+    def qkv_plain(*args, **kwargs):
+        return F.batch_fused_site(*args, **kwargs)
+    def qkv_rope(*args, **kwargs):
+        return F.batch_fused_site(*args, **kwargs)
+    def o_plain(*args, **kwargs):
+        return F.batch_fused_site(*args, **kwargs)
+    def o_norm(*args, **kwargs):
+        return F.batch_fused_site(*args, **kwargs)
+    def down_norm(*args, **kwargs):
+        return F.batch_fused_site(*args, **kwargs)
+    def gate_up(*args, **kwargs):
+        return F.batch_fused_site(*args, **kwargs)
+    batch_calls = {
+        ("qkv", F.EPI_PLAIN): checked(qkv_plain),
+        ("qkv", F.EPI_ROPE_KV): checked(qkv_rope),
+        ("o", F.EPI_PLAIN): checked(o_plain),
+        ("o", F.EPI_RESNORM): checked(o_norm),
+        ("down", F.EPI_RESNORM): checked(down_norm),
+        ("gate_up", F.EPI_SWIGLU): checked(gate_up),
+    }
     batch_final = checked(F.batch_final_norm)
     batch_qk = checked(F.batch_qk_norm_rope_kv) if child else None
 
@@ -128,7 +148,8 @@ _CHECKS = textwrap.dedent(
     def call(batched, st, x, out=None, **kwargs):
         if getattr(st, "bias", None) is not None:
             kwargs["bias"] = st.bias
-        return (batch_call if batched else F.fused_site)(st, x, out, capability=CAP, **kwargs)
+        run = batch_calls[(st.kind, kwargs["epi"])] if batched else F.fused_site
+        return run(st, x, out, capability=CAP, **kwargs)
 
     def plain(original, batched, data, batch, k, dtype):
         pairs, lora, bias = data
@@ -242,7 +263,12 @@ _CHECKS = textwrap.dedent(
 )
 
 
-def _run(device, compiled=False, negative=False, root=REPO):
+def _run(
+    device,
+    compiled = False,
+    negative = False,
+    root = REPO,
+):
     pytest.importorskip("triton")
     pytest.importorskip("bitsandbytes")
     env = dict(os.environ)
@@ -252,9 +278,9 @@ def _run(device, compiled=False, negative=False, root=REPO):
         env.pop("TRITON_INTERPRET", None)
     cache = root / ".pytest_cache"
     if negative:
-        cache.mkdir(exist_ok=True)
+        cache.mkdir(exist_ok = True)
     context = (
-        tempfile.TemporaryDirectory(dir=cache, prefix="nf4-batch-")
+        tempfile.TemporaryDirectory(dir = cache, prefix = "nf4-batch-")
         if negative
         else contextlib.nullcontext(None)
     )
@@ -263,17 +289,17 @@ def _run(device, compiled=False, negative=False, root=REPO):
         if negative:
             source = Path(temporary)
             target = source / "unsloth" / "kernels"
-            target.mkdir(parents=True)
+            target.mkdir(parents = True)
             for name in ("nf4_decode_fused.py", "nf4.py", "nf4_gemv.py", "triton_launch.py"):
                 shutil.copyfile(root / "unsloth" / "kernels" / name, target / name)
             path = target / "nf4_decode_fused.py"
-            code = path.read_text(encoding="utf-8")
+            code = path.read_text(encoding = "utf-8")
             start = code.index("def _batch_main_kernel(")
             offset = code.index("row = tl.program_id(1).to(tl.int64)", start)
             code = code[:offset] + code[offset:].replace(
                 "row = tl.program_id(1).to(tl.int64)", "row = 0", 1
             )
-            path.write_text(code, encoding="utf-8")
+            path.write_text(code, encoding = "utf-8")
         return subprocess.run(
             [
                 sys.executable,
@@ -283,26 +309,25 @@ def _run(device, compiled=False, negative=False, root=REPO):
                 device,
                 "compiled" if compiled else "eager",
             ],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=1200,
+            env = env,
+            capture_output = True,
+            text = True,
+            timeout = 1200,
         )
 
 
 def _can_interpret():
     try:
         import triton
-
         return tuple(int(x) for x in triton.__version__.split(".")[:2]) >= (3, 7)
     except (ImportError, AttributeError, ValueError):
         return False
 
 
-@pytest.mark.skipif(not _can_interpret(), reason="Triton <3.7 cannot interpret the input loop")
+@pytest.mark.skipif(not _can_interpret(), reason = "Triton <3.7 cannot interpret the input loop")
 @pytest.mark.parametrize("negative", [False, True])
 def test_batch_decode_in_the_interpreter(negative):
-    result = _run("cpu", negative=negative)
+    result = _run("cpu", negative = negative)
     if negative:
         assert (
             result.returncode != 0
@@ -315,9 +340,9 @@ def test_batch_decode_in_the_interpreter(negative):
         )
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason="requires a real CUDA GPU")
-@pytest.mark.skipif(torch.version.hip is not None, reason="fused NF4 is gated off on ROCm")
+@pytest.mark.skipif(not has_real_cuda(), reason = "requires a real CUDA GPU")
+@pytest.mark.skipif(torch.version.hip is not None, reason = "fused NF4 is gated off on ROCm")
 @pytest.mark.parametrize("compiled", [False, True])
 def test_batch_decode_on_gpu(compiled):
-    result = _run("cuda", compiled=compiled)
+    result = _run("cuda", compiled = compiled)
     assert result.returncode == 0 and "BATCH OK" in result.stdout, result.stdout + result.stderr
