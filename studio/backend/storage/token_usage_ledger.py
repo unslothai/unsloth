@@ -76,6 +76,10 @@ def _ledger_insert(message: str, rows: str = "") -> str:
 
 
 def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_generation_runs_assistant "
+        "ON chat_generation_runs(assistant_message_id)"
+    )
     existed = (
         conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (LEDGER_TABLE,)
