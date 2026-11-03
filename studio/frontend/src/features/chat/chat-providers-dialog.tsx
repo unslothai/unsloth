@@ -134,8 +134,6 @@ function capProviderMenuAtItem(item: HTMLElement | null) {
   ) {
     top += node.offsetTop;
   }
-  const viewport = item.closest<HTMLElement>("[data-radix-select-viewport]");
-  top -= viewport?.scrollTop ?? 0;
   top += Number.parseFloat(getComputedStyle(content).paddingBottom) || 0;
   content.style.maxHeight = `min(var(--radix-select-content-available-height), ${top}px)`;
 }
