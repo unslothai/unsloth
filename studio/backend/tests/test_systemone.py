@@ -222,6 +222,17 @@ def test_question_without_instructions_is_asked_by_its_id(client, runtime, instr
     }
 
 
+@pytest.mark.parametrize("instructions", [{}, [], {"prompt": "Refund?"}, ["Refund?"]])
+def test_structured_question_instructions_are_forwarded_unchanged(client, instructions):
+    response = _post(
+        client,
+        questions = {"refund": {"type": "noul", "instructions": instructions}},
+    )
+    assert response.status_code == 200, response.text
+    _, questions = laya_runtime._agent.calls[-1]
+    assert questions["refund"]["instructions"] == instructions
+
+
 def test_named_checkpoint_swaps_the_resident_model(client, runtime):
     _post(client)
     response = _post(client, model = "laya-english")
