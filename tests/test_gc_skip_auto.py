@@ -517,7 +517,6 @@ def test_auto_counts_resident_accumulated_grads_once(monkeypatch, accumulating):
     ns, found = _load()
     gib = 1 << 30
     numel = gib // 8
-    # Resident grads are allocated, so the card has that much less usable memory.
     memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib - (gib // 2 if accumulating else 0))
     model = _FakeModel([gib // 16] * 8, memory)
     head = _trainable_head(model, numel)
