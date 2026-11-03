@@ -101,10 +101,10 @@ def _kernel() -> Any:
         stride_h,
         f_stride,
         eps,
-        HALF: tl.constexpr,
-        ROWS: tl.constexpr,
-        REAL_FMA_X: tl.constexpr,
-        IMAG_FMA_X: tl.constexpr,
+        HALF: tl.constexpr,  # hd // 2
+        ROWS: tl.constexpr,  # rows per program
+        REAL_FMA_X: tl.constexpr,  # fma pairing of real part
+        IMAG_FMA_X: tl.constexpr,  # fma pairing of imag part
     ):
         pid = tl.program_id(0).to(tl.int64)
         rows = pid * ROWS + tl.arange(0, ROWS).to(tl.int64)
