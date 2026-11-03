@@ -1,18 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""16-bit LoRA decode through an exact fold: for one generate() call every LoRA delta is added into its
-16-bit base weight in place (unsloth_zoo.merged_rollout_exact, bit-exact restore, checksummed) and the
-PEFT layers are marked merged, so decode runs one GEMM per projection instead of three. The fold is
-undone in a finally block (normal exit, exception, KeyboardInterrupt).
-
-Only folds when it is safe and worth it: grad off, max_new_tokens >= UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS
-(default 128), one active plain LoRA adapter (no DoRA, no lora bias, no active dropout) on plain 16-bit
-nn.Linear weights that are frozen, untied and on one CUDA device, no vLLM engine sharing the weights,
-no FSDP / TP / PP / DTensor / DeepSpeed parameters, and the exact kernel's self-check passed. Anything
-else runs the normal LoRA path. UNSLOTH_LORA_FOLD_GENERATE=0 disables it.
-
-STATS counts engagements and refusals by reason, for tests and benchmarks."""
+"""For one generate() call, fold each 16-bit LoRA delta into its base weight in place (unsloth_zoo
+merged_rollout_exact: bit-exact restore, checksummed), so decode runs one GEMM per projection; undone in a
+finally block. fold_refusal() lists when it stays off. UNSLOTH_LORA_FOLD_GENERATE=0 disables it."""
 
 import contextlib
 import os
@@ -30,13 +21,11 @@ __all__ = [
     "reset_stats",
 ]
 
-# engaged: folds done; restored: unfolds whose checksum matched; refused: reason -> count;
-# last: bad / elements / fold_s / unfold_s of the latest fold.
 STATS = {"engaged": 0, "restored": 0, "refused": {}, "last": None}
 _LOCK = threading.RLock()
-# Hooked generate() calls in flight (nested or on other threads): only a call that starts alone folds.
+# generate() calls in flight: only a call that starts alone folds.
 _ACTIVE = 0
-# Set after a failed restore: the weights may be corrupted, so never fold again in this process.
+# Set after a failed restore (weights may be corrupted): never fold again.
 _POISONED = None
 _STREAMS = {}
 
@@ -59,9 +48,7 @@ def _refuse(reason):
     return None
 
 
-# Break-even = fold + unfold cost / per-token saving. Kaggle T4: Llama-3.2-1B eager 0.22 s / 5.9 ms
-# ~ 37 tokens; with decode CUDA graphs the LoRA overhead per token shrinks (gemma-3-1b 25.5 vs 20.8 ms)
-# ~ 57 tokens. 128 keeps a margin for bigger models, whose fold cost grows with the weights.
+# T4 break-even (fold + unfold / per-token saving): ~37 tokens eager, ~57 with decode CUDA graphs.
 _DEFAULT_MIN_TOKENS = 128
 
 
@@ -73,7 +60,6 @@ def _min_tokens():
 
 
 def _exact_api():
-    # Indirection so CPU tests can swap in a reference fold; production is always the zoo kernel.
     from unsloth_zoo import merged_rollout_exact
     return merged_rollout_exact
 
@@ -315,9 +301,8 @@ def _scope(entries):
     t0 = time.perf_counter()
     try:
         stream = _side_stream(device)
-        # A / B are cast once and held until the unfold, so the delta is recomputed from the same bits.
-        # W.data: the in-place fold and the fix-up writes do not bump the Parameter's version counter,
-        # so a graph saved before the call still backpropagates through the restored bits.
+        # A / B cast once and held, so the unfold recomputes the same delta. W.data: no version bump,
+        # so an autograd graph saved before the call still backpropagates through the restored bits.
         for module, adapter, W in entries:
             targets.append(
                 api.ExactFoldTarget(
@@ -329,8 +314,7 @@ def _scope(entries):
             )
         info = api.exact_fold(targets, stream = stream)
         for module, adapter, _ in entries:
-            # PEFT and Unsloth's fast LoRA paths run the base layer alone while merged. The list is
-            # mutated in place (it was empty), so compiled guards see the same object.
+            # Merged = base layer only. Mutated in place so compiled guards see the same list.
             module.merged_adapters.append(adapter)
             flagged.append(module)
         _sync(device)
@@ -344,8 +328,7 @@ def _scope(entries):
         _restore(api, targets, flagged, stream)
         raise
     t1 = time.perf_counter()
-    # Host RAM of the fix-up store (indices + original values) held until the unfold; pinned memory
-    # is page-locked, so it is charged to the process for the whole generate call.
+    # Pinned host RAM of the fix-up store, held for the whole call.
     host_bytes, pinned = 0, None
     for t in targets:
         for buf in (getattr(t, "host_idx", None), getattr(t, "host_val", None)):
