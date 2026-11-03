@@ -59,6 +59,13 @@ __all__ = [
 
 # Read once: an environment lookup inside a compiled forward would be a guard on every call.
 _TRITON_ENABLED = HAS_TRITON and os.environ.get("UNSLOTH_MULTI_LORA_TRITON", "1") != "0"
+_COMPILE_STACKS_ENABLED = (
+    HAS_TRITON
+    and os.name != "nt"
+    and torch.version.hip is None
+    and os.environ.get("UNSLOTH_MULTI_LORA_COMPILE_STACKS", "1") != "0"
+    and os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") not in ("1", "true", "True")
+)
 
 
 def set_multi_lora_triton(enabled: bool) -> None:
@@ -743,20 +750,31 @@ class MultiLoraExpertParam(nn.Module):
         )
 
     def grouped_stacks(self, reversed_io: bool, dtype: torch.dtype) -> tuple:
+        if (
+            not torch.compiler.is_compiling()
+            and self.lora_A[0].device.type == "cuda"
+            and _COMPILE_STACKS_ENABLED
+            and _TRITON_ENABLED
+        ):
+            return _compiled_expert_stacks()(self, reversed_io, dtype)[:3]
+        return self._grouped_stacks(reversed_io, dtype)[:3]
+
+    def _grouped_stacks(self, reversed_io: bool, dtype: torch.dtype) -> tuple:
         """Every adapter's factors as (E*(U+1), in, R) and (E*(U+1), R, out), group e*(U+1) + u, R the largest rank
         rounded up to 8, plus per-group output scales; group e*(U+1) + U is zero."""
         R = -(-max(self.ranks) // 8) * 8
-        firsts, seconds, scales = [], [], []
+        firsts, seconds, scales, masks = [], [], [], []
         scale_dtype = torch.float64 if dtype == torch.float64 else torch.float32
         for u in range(self.num_adapters):
             first, second, scale, _ = self.grouped_mm_factors(u, reversed_io)
             r = first.shape[-1]
             firsts.append(F.pad(first.to(dtype), (0, R - r)))
             second = second.to(dtype)
-            scaled = second * scale
+            scaled = (second.to(scale_dtype) * scale).to(dtype)
             if abs(scale) > 1:
                 # Keep the original gradient path unless folding actually overflows this expert.
                 finite = torch.isfinite(scaled).all(dim = (-2, -1), keepdim = True)
+                masks.append(finite)
                 second = torch.where(finite, scaled, second)
                 scales.append(torch.where(finite.flatten(), 1.0, scale).to(scale_dtype))
             else:
@@ -770,6 +788,8 @@ class MultiLoraExpertParam(nn.Module):
             torch.stack(firsts, 1).flatten(0, 1),
             torch.stack(seconds, 1).flatten(0, 1),
             torch.stack(scales, 1).flatten(),
+            # Escaping masks cannot be donated by AOT before a retained backward.
+            tuple(masks),
         )
 
     def folded(self, W: torch.Tensor, adapter: int, transposed: bool) -> torch.Tensor:
@@ -789,6 +809,16 @@ class MultiLoraExpertParam(nn.Module):
         else:
             flat_B = B.permute(1, 0, 2).reshape(out, E * k)
         return flat_A.detach().clone(), flat_B.detach().clone()
+
+
+@functools.lru_cache(maxsize = 1)
+def _compiled_expert_stacks():
+    return torch.compile(
+        MultiLoraExpertParam._grouped_stacks,
+        fullgraph = True,
+        dynamic = True,
+        options = {"emulate_precision_casts": True},
+    )
 
 
 @functools.lru_cache(maxsize = None)
@@ -1204,8 +1234,7 @@ class MultiLoraExperts(nn.Module):
             first, second, scales = adapter.grouped_stacks(self.reversed_io, dtype)
             h = moe_utils._grouped_mm_with_backward_fix(x, first, offs_pair).contiguous()
             delta = moe_utils._grouped_mm_with_backward_fix(h, second, offs_pair)
-            delta = (delta * scales[pair_slots].unsqueeze(-1)).to(dtype)
-            y = y + delta
+            y.addcmul_(delta, scales[pair_slots].unsqueeze(-1))
         return y
 
     def _grouped(

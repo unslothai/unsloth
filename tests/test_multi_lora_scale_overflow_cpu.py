@@ -31,6 +31,8 @@ def _load_experts():
         Optional = Optional,
         Iterable = Iterable,
         functools = functools,
+        _COMPILE_STACKS_ENABLED = False,
+        _TRITON_ENABLED = False,
         _peft_expert_in_axis = lambda transposed: 1 if transposed else 2,
     )
     sys.modules[mod.__name__] = mod
