@@ -98,7 +98,7 @@ export function LibraryAttachmentPicker({ onClose }: { onClose: () => void }) {
   }, [origin.session]);
 
   useEffect(() => {
-    if (target !== origin.target) onClose();
+    if (target === null || target !== origin.target) onClose();
   }, [target, origin.target, onClose]);
 
   const attach = useRef<((item: LibraryItem) => Promise<boolean>) | null>(null);

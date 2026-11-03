@@ -6879,6 +6879,7 @@ const ComposerToolsMenu: FC<{
   const [skillsOn, setSkillsOn] = useSkillsSwitch();
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
+  const libraryPickerRequested = useRef(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
   const composerCanAddAttachments = useAuiState(
@@ -7235,7 +7236,13 @@ const ComposerToolsMenu: FC<{
         avoidCollisions={true}
         className="unsloth-plus-menu w-[calc(244px*var(--ui-space-scale,1))]"
         // Don't refocus the + on close; restored focus showed a stray ring.
-        onCloseAutoFocus={(event) => event.preventDefault()}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          if (libraryPickerRequested.current) {
+            libraryPickerRequested.current = false;
+            if (chatActive) setLibraryPickerOpen(true);
+          }
+        }}
       >
         <DropdownMenuItem
           disabled={!composerCanAddAttachments}
@@ -7246,7 +7253,7 @@ const ComposerToolsMenu: FC<{
         </DropdownMenuItem>
         <DropdownMenuItem
           disabled={!composerCanAddAttachments}
-          onSelect={() => setLibraryPickerOpen(true)}
+          onSelect={() => { libraryPickerRequested.current = true; }}
         >
           <HugeiconsIcon icon={Attachment01Icon} strokeWidth={2} />
           Attach from Library
