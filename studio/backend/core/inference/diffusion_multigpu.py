@@ -213,8 +213,8 @@ def selection_scope(
     if selection is None:
         yield None
         return
-    # Only a CFG replica reads the recorded compile arguments; automatic placement never builds one.
-    if not selection.automatic or cfg_parallel_mode() == "force":
+    # Only a CFG replica reads the recorded compile arguments; automatic placement builds one unless its lever is off.
+    if not selection.automatic or cfg_parallel_mode() == "force" or not automatic_cfg_parallel_off():
         install_compile_recorder()
     token = _SELECTION.set(selection)
     try:
@@ -2877,6 +2877,11 @@ class CfgParallelRouter:
                 t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
             ) // (1 << 20)
             free, total = self._secondary_free_total_mib()
+            if getattr(self, "automatic_idle_only", False) and not _idle_card(
+                DeviceProbe(ordinal = self.secondary.index, name = "", total_mib = total, free_mib = free)
+            ):
+                # Automatic borrowed this card because it was idle at load; something else took it since
+                raise RuntimeError(f"{self.secondary} is no longer idle ({free} of {total} MiB free)")
             reserve = _replica_reserve_mib(free, total)
             if free is not None and need_mib + reserve > free:
                 raise RuntimeError(
@@ -3310,6 +3315,7 @@ def install_cfg_parallel(
                     denoiser, primary = primary, secondary = f"cuda:{best}", logger = logger
                 )
                 router.inner = graph
+                router.automatic_idle_only = automatic
                 try:
                     _CFG_ROUTERS[pipe] = router
                 except TypeError:

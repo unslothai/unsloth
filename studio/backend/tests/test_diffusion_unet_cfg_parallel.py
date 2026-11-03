@@ -272,3 +272,26 @@ def test_automatic_never_borrows_a_different_card_model(monkeypatch):
 def test_automatic_cfg_parallel_kill_switch(monkeypatch):
     reason = _automatic_install(monkeypatch, used_mib = (9000, 3), env = "0")
     assert reason is not None and "automatic GPU placement" in reason
+
+
+def test_automatic_selection_records_compile_arguments_for_a_replica(monkeypatch):
+    calls = []
+    monkeypatch.setattr(mg, "install_compile_recorder", lambda: calls.append(1) or True)
+    with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,), automatic = True)):
+        pass
+    assert calls == [1]
+    monkeypatch.setenv(mg.AUTO_CFG_PARALLEL_ENV, "0")
+    with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,), automatic = True)):
+        pass
+    assert calls == [1]
+
+
+def test_automatic_replica_is_not_built_on_a_card_that_got_busy(monkeypatch):
+    unet = UNet2DConditionModel()
+    router, replicas = _router(unet)
+    router.automatic_idle_only = True
+    monkeypatch.setattr(router, "_secondary_free_total_mib", lambda: (9000, 15360))
+    lat = torch.randn(1, 4, 8, 8)
+    _sdxl_loop(unet, lat, steps = 2)
+    assert replicas == [] and "no longer idle" in (router.disabled_reason or "")
+    assert unet.calls[-1] == 2  # whole on the source from then on
