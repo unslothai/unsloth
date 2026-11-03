@@ -87,7 +87,6 @@ def _scale_key(v):
 
 
 def _adapter_key(module):
-    # What the regular path reads per call from a PEFT layer: enabled, merged, active adapters, scale.
     active = getattr(module, "active_adapters", None)
     if active is None:
         active = getattr(module, "active_adapter", None)
@@ -98,11 +97,21 @@ def _adapter_key(module):
         scaling = tuple(_scale_key(v) for v in (scaling.get(a) for a in active))
     else:
         scaling = None
+    shapes = None
+    lora_A = getattr(module, "lora_A", None)
+    lora_B = getattr(module, "lora_B", None)
+    if lora_A is not None and lora_B is not None and isinstance(active, tuple):
+        shapes = tuple(
+            (lora_A[a].weight.shape, lora_B[a].weight.shape)
+            for a in active
+            if a in lora_A and a in lora_B
+        )
     return (
         getattr(module, "disable_adapters", None),
         getattr(module, "merged", None),
         active,
         scaling,
+        shapes,
     )
 
 
@@ -404,7 +413,11 @@ def _build(model, X):
             return "gate / up shape"
         entry.sites = sites
         plan.layers.append(entry)
-    if norm.weight.device != device or norm.weight.shape != (hidden,):
+    if (
+        norm.weight.device != device
+        or norm.weight.shape != (hidden,)
+        or not norm.weight.is_contiguous()
+    ):
         return "final norm"
     if hasattr(norm, "modules_to_save"):
         watch.append(norm)

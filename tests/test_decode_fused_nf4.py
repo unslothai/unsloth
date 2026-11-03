@@ -400,6 +400,62 @@ def test_whole_step_graph_capture_keeps_the_regular_path(monkeypatch):
         assert D._decode_forward(model, torch.zeros(1, 1, 8), *([None] * 6)) is None
 
 
+@pytest.mark.parametrize("strided", [False, True])
+def test_strided_final_norm_keeps_the_regular_path(monkeypatch, strided):
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    D = _driver()
+    assert not torch.cuda.is_initialized()
+    monkeypatch.setattr(D.torch.cuda, "get_device_capability", lambda device: (8, 0))
+    monkeypatch.setattr(D.F, "supported_capability", lambda capability: True, raising = False)
+    monkeypatch.setattr(D, "_signature", lambda plan: ())
+    device = torch.device("cuda", 0)
+    with FakeTensorMode():
+        weight = torch.empty(16, device = device)[::2] if strided else torch.empty(8, device = device)
+        norm = lambda w: types.SimpleNamespace(weight = w, variance_epsilon = 1e-5)
+        attn = types.SimpleNamespace(
+            head_dim = 8,
+            rotary_emb = object(),
+            q_proj = object(),
+            k_proj = object(),
+            v_proj = object(),
+            o_proj = object(),
+        )
+        mlp = types.SimpleNamespace(gate_proj = object(), up_proj = object(), down_proj = object())
+        layer = types.SimpleNamespace(
+            self_attn = attn,
+            mlp = mlp,
+            input_layernorm = norm(torch.empty(8, device = device)),
+            post_attention_layernorm = norm(torch.empty(8, device = device)),
+        )
+        model = types.SimpleNamespace(
+            config = types.SimpleNamespace(
+                model_type = "llama",
+                hidden_size = 8,
+                intermediate_size = 16,
+                num_attention_heads = 1,
+                num_key_value_heads = 1,
+            ),
+            model = types.SimpleNamespace(layers = [layer], norm = norm(weight)),
+        )
+        packed = torch.empty(1, device = device, dtype = torch.uint8)
+        bounds = {"qkv": [8, 16, 24], "o": [8], "gate_up": [16, 32], "down": [8]}
+        monkeypatch.setattr(
+            D,
+            "_site",
+            lambda model, key, kind, projs, width: types.SimpleNamespace(
+                packed = packed, bounds = bounds[kind], N = bounds[kind][-1]
+            ),
+        )
+        plan = D._build(model, torch.empty((1, 1, 8), device = device, dtype = torch.float16))
+        if strided:
+            assert plan == "final norm"
+        else:
+            assert isinstance(plan, D._Plan)
+            assert plan.final_norm is weight
+    assert not torch.cuda.is_initialized()
+
+
 class _Lora:
     def __init__(self):
         self.disable_adapters, self.merged = False, False
@@ -445,6 +501,41 @@ def test_each_site_watches_a_projection_with_lora():
         assert not torch.equal(before, projection(x))
         assert D._plan_stale(plan), "a projection's scale change must invalidate the fused plan"
     assert D._site_watch([object(), object()]) == []
+
+
+@pytest.mark.parametrize("incoming_rank", [2, 4])
+def test_same_scale_hotswap_tracks_rank_changes(tmp_path, incoming_rank):
+    peft = pytest.importorskip("peft")
+    hotswap = pytest.importorskip("peft.utils.hotswap")
+    D = _driver()
+
+    def make(rank, value):
+        model = peft.get_peft_model(
+            torch.nn.Sequential(torch.nn.Linear(8, 8, bias = False)),
+            peft.LoraConfig(r = rank, lora_alpha = rank, target_modules = ["0"]),
+        )
+        projection = model.base_model.model[0]
+        torch.nn.init.constant_(projection.lora_A["default"].weight, value)
+        torch.nn.init.constant_(projection.lora_B["default"].weight, value)
+        return model, projection
+
+    model, projection = make(2, 0.1)
+    incoming, _ = make(incoming_rank, 0.3)
+    incoming.save_pretrained(tmp_path)
+    watch = D._site_watch([projection])
+    plan = types.SimpleNamespace(watch = watch, adapter_state = D._adapter_state(watch))
+    A, B = projection.lora_A["default"].weight, projection.lora_B["default"].weight
+    x = torch.ones(1, 8)
+    before = projection(x).detach().clone()
+    hotswap.hotswap_adapter(model, str(tmp_path), adapter_name = "default", torch_device = "cpu")
+    assert projection.scaling["default"] == 1.0
+    assert projection.lora_A["default"].weight.shape[0] == incoming_rank
+    assert not torch.equal(before, projection(x))
+    assert D._plan_stale(plan) == (incoming_rank != 2)
+    if incoming_rank == 2:
+        assert A is projection.lora_A["default"].weight
+        assert B is projection.lora_B["default"].weight
+        assert torch.all(A == 0.3) and torch.all(B == 0.3)
 
 
 def test_signature_follows_saved_norm_weights():
