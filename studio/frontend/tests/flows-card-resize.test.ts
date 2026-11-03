@@ -146,7 +146,9 @@ test("Tidy's frame clamp only limits growth, never shrinking a card below its si
 test("a card's first resize is laid out sized while it drags", () => {
   const src = readSrc("features/flows/editor/flow-node.tsx");
   assert.match(src, /sized=\{\(!!node\.size \|\| resizing\) && !collapsed\}/);
-  assert.match(src, /onResizeStart: \(\) => onResizing\(true\)/);
+  // Set on movement, not on press: React Flow sends no end event for a press without a drag.
+  assert.match(src, /onResize: \(\) => onResizing\(true\)/);
+  assert.doesNotMatch(src, /onResizeStart/);
 });
 
 test("a resized card's text output, finished or streaming, fills the card and scrolls", () => {
