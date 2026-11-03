@@ -102,6 +102,14 @@ def runnable_recipe(payload: Any) -> dict:
         for provider in recipe.get("model_providers") or []:
             if isinstance(provider, dict):
                 provider.pop("api_key_env", None)
+    from core.data_recipe.service import recipe_names_host_env_credential
+
+    # The job route refuses server-environment keys for API-key callers, and a flow run is one.
+    if recipe_names_host_env_credential(recipe):
+        raise FlowNodeError(
+            "This recipe reads a provider key from the server's environment, which a flow run cannot "
+            "use. Put the key in the provider's API key field instead"
+        )
     return recipe
 
 
@@ -172,6 +180,7 @@ async def recipe_group(ctx: NodeContext) -> dict:
     if not isinstance(compiled, dict):
         raise FlowNodeError("Put this step inside a Data Recipe group")
     body = runnable_recipe(compiled.get("recipe"))
+    from core.flows.capabilities import recipe_hosts
     from core.flows.recipe_share import missing_seed, uses_mcp
 
     # Same boundary as every other MCP use in Flows: the owner, in Unsloth Studio, with MCP approved.
@@ -180,14 +189,17 @@ async def recipe_group(ctx: NodeContext) -> dict:
 
     if not isinstance(ctx.inputs.get("seed"), dict) and (seed := missing_seed(body)):
         raise FlowNodeError(seed)
+    for host in recipe_hosts(body):
+        if refused := ctx.capability_refusal("http", host):
+            raise FlowNodeError(refused)
     local = local_model(body)
     if local:
         # Something earlier in the run (a Benchmark, a Loop round) may have swapped the Chat model.
         await ctx.ensure_model("chat", local)
-    # Validate against the seed it will run on: its columns are what the prompts read.
-    await apply_seed(ctx, body)
     if not isinstance(ctx.inputs.get("seed"), dict):  # a wired seed replaces it anyway
         await resolve_hub_seed(ctx, body)
+    # Validate against the seed it will run on: its columns are what the prompts read.
+    await apply_seed(ctx, body)
     checked = await ctx.call("POST", f"{RECIPES}/validate", json = {"recipe": body})
     if isinstance(checked, dict) and checked.get("valid") is False:
         problems = [
@@ -379,7 +391,7 @@ async def run_recipe(
     run: dict[str, Any],
     history: Optional[RunHistory] = None,
 ) -> dict:
-    """One Data Designer job for ``body``: its dataset (parquet if saved, else rows), a preview."""
+    """One Data Designer job for ``body`` (its wired seed already applied): its dataset (parquet if saved, else rows)."""
     run = {**run, "execution_type": "preview" if ctx.params.get("mode") == "preview" else "full"}
     rows = int(ctx.params.get("rows") or 0)
     if rows > 0:

@@ -9,7 +9,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { runsAreLive, selectedRun, toRunRecords, visibleRuns } = await import(
+const { runsAreLive, savedRunDataset, selectedRun, toRunRecords, visibleRuns } = await import(
   "../src/features/flows/recipe/recipe-runs-state.ts"
 );
 
@@ -91,4 +91,16 @@ test("Preview and Runs open from the recipe panel and the run drawer; the frame 
     read("editor/flows-editor-page.tsx"),
     /lazy\(\(\) => import\("\.\.\/recipe\/recipe-runs"\)\)/,
   );
+});
+
+test("an older run pages from its saved parquet once its recipe job is gone", () => {
+  assert.deepEqual(savedRunDataset({ artifact_path: "/home/u/.unsloth/studio/recipes/run-7" }), {
+    kind: "dataset",
+    source: "recipe",
+    ref: "recipes/run-7/parquet-files",
+  });
+  assert.equal(savedRunDataset({ artifact_path: "C:\\x\\recipes\\run-8\\" })?.ref, "recipes/run-8/parquet-files");
+  assert.equal(savedRunDataset({ artifact_path: null }), null);
+  assert.match(readFileSync(new URL("../src/features/flows/recipe/recipe-runs.tsx", import.meta.url), "utf8"), /datasetRows\(saved, offset, size\)/);
+  assert.match(readFileSync(new URL("../src/features/flows/recipe/recipe-runs.tsx", import.meta.url), "utf8"), /Math\.min\(read\.total, read\.view_rows\)/);
 });

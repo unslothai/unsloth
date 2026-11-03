@@ -61,8 +61,10 @@ export function clientErrors(group: FlowGroup, columns: FlowNode[]): string[] {
 
 /** The group as Recipe Studio configs, the same ones its importer makes for a saved recipe. */
 export function studioView(group: FlowGroup, columns: FlowNode[]): StudioView {
+  // As Recipe Studio loads a saved recipe: a loaded document seed keeps its files.
   const result = importRecipePayload(
     JSON.stringify(groupPayload(group, columns)),
+    { preserveUnstructuredUploads: true },
   );
   if (!result.snapshot) {
     return { configs: {}, byNode: {}, processors: [], errors: result.errors };

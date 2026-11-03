@@ -43,3 +43,13 @@ export function runsAreLive(
 ): boolean {
   return flowRunning || records.some((r) => isExecutionInProgress(r.status));
 }
+
+/** A finished run's saved parquet as a flow `dataset` value, so its pages outlive the recipe job. */
+export function savedRunDataset(
+  record: Pick<RecipeExecutionRecord, "artifact_path">,
+): { kind: "dataset"; source: "recipe"; ref: string } | null {
+  const name = record.artifact_path?.trim().split(/[\\/]/).filter(Boolean).pop();
+  return name
+    ? { kind: "dataset", source: "recipe", ref: `recipes/${name}/parquet-files` }
+    : null;
+}

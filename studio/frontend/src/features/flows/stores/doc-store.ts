@@ -74,12 +74,15 @@ export interface DocState {
     positions: Record<string, [number, number]>,
     membership?: Record<string, string | null>,
   ) => void;
-  removeElements: (ids: {
-    nodes?: string[];
-    edges?: string[];
-    groups?: string[];
-    notes?: string[];
-  }) => void;
+  removeElements: (
+    ids: {
+      nodes?: string[];
+      edges?: string[];
+      groups?: string[];
+      notes?: string[];
+    },
+    coalesceKey?: string,
+  ) => void;
   connect: (edge: FlowEdge, replaceSingleInput: boolean) => void;
   insertFragment: (fragment: GraphFragment) => void;
   upsertGroup: (group: FlowGroup) => void;
@@ -358,7 +361,7 @@ export const useDocStore = create<DocState>((set, get) => {
         });
       }),
 
-    removeElements: (ids) =>
+    removeElements: (ids, coalesceKey) =>
       commit((s) => {
         const dropNodes = new Set(ids.nodes ?? []);
         const dropEdges = new Set(ids.edges ?? []);
@@ -409,7 +412,7 @@ export const useDocStore = create<DocState>((set, get) => {
             ? s.graph.noteOrder.filter((id) => !dropNotes.has(id))
             : s.graph.noteOrder,
         });
-      }),
+      }, coalesceKey),
 
     connect: (edge, replaceSingleInput) =>
       commit((s) => {
