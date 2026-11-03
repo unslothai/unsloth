@@ -557,3 +557,18 @@ async def test_the_best_checkpoint_is_the_scored_fine_tunes_not_another_in_the_l
     rs = await _run(eng, d)
     assert rs.status == "completed", rs.error
     assert rs.nodes["loop"].outputs["checkpoint"]["name"] == "run2"
+
+
+def test_shared_boilerplate_in_test_rows_does_not_hide_probe_failures():
+    shared = "Answer the following question carefully."
+    test_rows = [
+        {"instruction": shared, "input": "What is the capital of France today?", "output": "Paris"},
+        {"instruction": shared, "input": "What is the capital of Spain today?", "output": "Madrid"},
+    ]
+    probe = {
+        "instruction": shared,
+        "input": "What is the capital of Italy today?",
+        "output": "Rome",
+    }
+    leaked = {"instruction": shared, "input": "What is the capital of Spain today?", "output": "x"}
+    assert loop_rounds.drop_test_rows([probe, leaked], test_rows) == [probe]

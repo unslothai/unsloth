@@ -207,7 +207,16 @@ def _head(dataset: dict, token: Any, limit: int) -> list[dict]:
         builder = next((b for ext, b in LOADERS.items() if path.endswith(ext)), None)
         if builder is None:
             raise FlowNodeError("Benchmark reads Parquet, CSV or JSON rows")
-        stream = load_dataset(builder, data_files = path, split = "train", streaming = True)
+        from utils.datasets.cells import csv_as_text_kwargs
+
+        # CSV cells stay text as Fine-tune reads them ("00501" keeps its zeros, "NA" stays a value).
+        stream = load_dataset(
+            builder,
+            data_files = path,
+            split = "train",
+            streaming = True,
+            **csv_as_text_kwargs([path]),
+        )
     return list(stream.take(limit))
 
 

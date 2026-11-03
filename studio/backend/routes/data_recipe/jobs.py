@@ -308,6 +308,21 @@ def _loaded_local_model_identity() -> tuple[bool, str, str]:
     return False, "", ""
 
 
+def _served_alongside(target: str, gguf_variant: str) -> bool:
+    """A model kept loaded beside the primary (Keep multiple models loaded): /v1 routes to it by name."""
+    try:
+        from core.inference import model_slots
+        from routes.inference import _loaded_satisfies
+
+        requested = f"{target}:{gguf_variant}" if gguf_variant else target
+        return (
+            model_slots.serving_slot(requested, model_slots.visible(), _loaded_satisfies)
+            is not None
+        )
+    except Exception:
+        return False
+
+
 def _ensure_selected_local_model_loaded(
     recipe: dict[str, Any], local_provider_names: set[str]
 ) -> None:
@@ -322,6 +337,8 @@ def _ensure_selected_local_model_loaded(
     target, gguf_variant = selection
     variant_matches = not gguf_variant or active_variant == gguf_variant
     if active_model.lower() != target.lower() or not variant_matches:
+        if _served_alongside(target, gguf_variant):
+            return
         selected = f"{target} ({gguf_variant})" if gguf_variant else target
         active = f"{active_model} ({active_variant})" if active_variant else active_model
         raise ValueError(

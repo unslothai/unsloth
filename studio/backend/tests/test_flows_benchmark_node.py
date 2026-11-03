@@ -449,3 +449,11 @@ def test_alpaca_rows_are_asked_with_their_input_and_the_trained_system_prompt(mo
     asked = [r[spec["prompt_column"]] for r in spec["rows"]]
     assert asked == ["Translate to French\n\ncat", "Say hi"]
     assert spec["system_prompt"] == "Be terse."
+
+
+def test_a_local_csv_is_scored_on_its_cell_text(tmp_path, monkeypatch):
+    csv = tmp_path / "rows.csv"
+    csv.write_text("question,answer\nzip,00501\nnone,NA\n")
+    monkeypatch.setattr("core.flows.nodes.data.local_seed_path", lambda ref: ref)
+    rows = benchmark._head({"source": "local", "ref": str(csv)}, None, 10)
+    assert [r["answer"] for r in rows] == ["00501", "NA"]

@@ -97,8 +97,14 @@ def _strings(value: Any) -> list[str]:
 
 
 def drop_test_rows(failures: list[dict], test_rows: list[dict]) -> list[dict]:
-    """Guard: a failure carrying any long string from a test row never reaches the seed."""
-    banned = {s for s in _strings(test_rows) if len(s) >= LEAK_MIN_CHARS}
+    """Guard: a failure carrying a long string that identifies one test row never reaches the seed.
+    A value many test rows share (a fixed Alpaca instruction, a label) identifies none of them."""
+    seen: dict[str, int] = {}
+    for row in test_rows:
+        for s in set(_strings(row)):
+            if len(s) >= LEAK_MIN_CHARS:
+                seen[s] = seen.get(s, 0) + 1
+    banned = {s for s, n in seen.items() if n == 1}
     if not banned:
         return list(failures)
     return [f for f in failures if not any(s in banned for s in _strings(f))]
