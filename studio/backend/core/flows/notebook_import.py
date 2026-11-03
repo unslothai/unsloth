@@ -39,6 +39,7 @@ _RL_CONFIGS = {"GRPOConfig", "DPOConfig", "ORPOConfig"}
 _RL_ARGS = {
     "num_generations": "num_generations",
     "max_completion_length": "max_completion_length",
+    "max_prompt_length": "max_prompt_length",
     "temperature": "temperature",
     "beta": "beta",
 }
@@ -319,7 +320,14 @@ class _Reader(ast.NodeVisitor):
                 name = k.value.id
                 value = self.collections.get(name, self.consts.get(name, _MISSING))
             if k.arg == "target_modules" and isinstance(value, str) and value.strip():
-                self.tune["target_modules"] = [value.strip()]
+                if value.strip() == "all-linear":
+                    self.tune["target_modules"] = ["all-linear"]
+                    continue
+                # Any other string is a PEFT regex, which the node's module list cannot express.
+                self.approximated.append(
+                    f"target_modules = {value.strip()[:80]!r} is a PEFT regex: the Fine-tune node keeps its own "
+                    "target modules, so the adapter may differ from the notebook's"
+                )
                 continue
             if k.arg == "target_modules" and isinstance(value, (list, tuple, set)):
                 modules = [m for m in value if isinstance(m, str) and m.strip()]

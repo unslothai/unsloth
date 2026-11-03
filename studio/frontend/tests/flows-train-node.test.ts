@@ -234,3 +234,11 @@ test("a reused adapter says it was not retrained", () => {
     /Reused/,
   );
 });
+
+test("Try the rewards reads the reward training uses, not one a user reward shadows", () => {
+  const src = readFileSync(
+    new URL("../src/features/flows/editor/reward-try.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /library\.filter\(\(r\) => !r\.shadowed\)\.map\(\(r\) => \[r\.name, r\.rule\]\)/);
+});

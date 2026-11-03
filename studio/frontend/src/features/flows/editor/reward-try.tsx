@@ -105,9 +105,18 @@ export function RewardTryPanel({ node }: { node: FlowNode }) {
     setError(null);
     try {
       const library = await authFetch("/api/rewards").then((res) =>
-        json<{ name: string; rule: Record<string, unknown> | null }[]>(res),
+        json<
+          {
+            name: string;
+            rule: Record<string, unknown> | null;
+            shadowed?: boolean;
+          }[]
+        >(res),
       );
-      const rules = Object.fromEntries(library.map((r) => [r.name, r.rule]));
+      // A user reward shadows the bundled one of its name, as in training.
+      const rules = Object.fromEntries(
+        library.filter((r) => !r.shadowed).map((r) => [r.name, r.rule]),
+      );
       // Each reward is scored against the column it compares to, as in training; "answer" is the role.
       const rows = await Promise.all(
         rewards.map((reward) => {

@@ -866,3 +866,13 @@ def test_stop_gives_up_on_a_blocked_holdout_read(monkeypatch):
         assert asyncio.run(run()) < 5
     finally:
         release.set()
+
+
+def test_a_csv_hold_out_keeps_cells_as_text_like_training(tmp_path, monkeypatch):
+    from core.flows.nodes import data
+
+    csv = tmp_path / "rows.csv"
+    csv.write_text("q,a\nzip,00501\nnone,NA\n")
+    monkeypatch.setattr(data, "local_seed_path", lambda ref: ref)
+    rows = training._load_rows({"source": "local", "ref": str(csv)}, None, None)
+    assert [r["a"] for r in rows] == ["00501", "NA"]
