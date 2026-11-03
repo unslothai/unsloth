@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { replaceRef } from "@/features/recipe-studio/utils/refs";
+import { renameRoot, replaceRef } from "@/features/recipe-studio/utils/refs";
 import {
   FLOW_FORMAT,
   FLOW_FORMAT_VERSION,
@@ -51,13 +51,24 @@ function uniqueColumn(
   };
 }
 
-/** Every string in a column's definition with ``from`` renamed to ``to`` where it is a reference. */
-function renameInColumn(value: unknown, from: string, to: string): unknown {
-  if (typeof value === "string") return replaceRef(value, from, to);
-  if (Array.isArray(value)) return value.map((v) => renameInColumn(v, from, to));
+/** Fields that name another column outright, not through a Jinja reference. */
+const COLUMN_NAME_FIELDS = new Set(["category", "reference_column_name", "subcategory_parent"]);
+
+/** A column's definition with column ``from`` renamed to ``to`` wherever it reads it: Jinja
+ * references, the fields that name a column, a validator's target list and sampler conditions. */
+function renameInColumn(value: unknown, from: string, to: string, key = ""): unknown {
+  if (typeof value === "string")
+    return COLUMN_NAME_FIELDS.has(key) && value === from ? to : replaceRef(value, from, to);
+  if (Array.isArray(value))
+    return key === "target_columns"
+      ? value.map((v) => (v === from ? to : v))
+      : value.map((v) => renameInColumn(v, from, to));
   if (value && typeof value === "object")
     return Object.fromEntries(
-      Object.entries(value).map(([k, v]) => [k, renameInColumn(v, from, to)]),
+      Object.entries(value).map(([k, v]) => [
+        key === "conditional_params" ? renameRoot(k, from, to) : k,
+        renameInColumn(v, from, to, k),
+      ]),
     );
   return value;
 }
