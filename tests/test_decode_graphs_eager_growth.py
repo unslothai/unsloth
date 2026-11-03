@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""An eager KV cache grows by the eager increment even after a graph generation left its store."""
-
 import types
 
 import torch
@@ -38,7 +36,6 @@ def test_eager_growth_ignores_a_retained_graph_store(monkeypatch):
     G.end_generation()
     assert "_unsloth_graph_buffers" in attn.__dict__
 
-    # Graphs off for the next generation; the store from the last one is still on the module.
     monkeypatch.setattr(G, "ENABLED", False)
     _alloc(attn, 1023, increment)
     kv = attn.paged_attention[:1023].clone()

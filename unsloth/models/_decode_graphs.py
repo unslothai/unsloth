@@ -230,7 +230,6 @@ def resize_decode_buffers(attn, increment, bsz, n_heads, n_kv_heads, head_dim):
     """The eager growth of the KV cache by `increment` rows (new rows zeroed with graphs on)."""
     global BUFFER_EPOCH
     rows = attn.paged_attention.shape[0]
-    # The store outlives a graph generation, so a later eager cache beside it must grow as eager.
     store = attn.__dict__.get("_unsloth_graph_buffers") or {}
     graph_backed = any(bufs[0] is attn.paged_attention for bufs in store.values())
     if graph_backed:
