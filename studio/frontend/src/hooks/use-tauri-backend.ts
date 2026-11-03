@@ -49,6 +49,7 @@ import {
   clearServerStopIntent,
   hasServerStopIntent,
   markServerStopIntent,
+  stopIntentDisconnectedPort,
 } from "./server-stop-intent";
 import {
   createPortWakeSignal,
@@ -68,10 +69,11 @@ export type BackendStatus =
   | "stopped"
   | "error";
 
-function syncTrayStatus(status: BackendStatus) {
+// attached: running on a server this app did not start, so the tray offers a disconnect.
+function syncTrayStatus(status: BackendStatus, attached = false) {
   if (!isTauri) return;
   import("@tauri-apps/api/core")
-    .then(({ invoke }) => invoke("set_tray_server_status", { status }))
+    .then(({ invoke }) => invoke("set_tray_server_status", { status, attached }))
     .catch(() => {});
 }
 
@@ -146,8 +148,13 @@ export function useTauriBackend() {
   );
   // Dedupe step names (Strict Mode, event replay).
   const seenStepsRef = useRef(new Set<string>());
-  // Attached to a server we did not spawn, so we cannot stop it.
-  const [isExternalServer, setIsExternalServer] = useState(false);
+  // Port of the attached server we did not spawn, so we cannot stop it. The ref serves the tray
+  // listener, which is registered once and would otherwise read the first render's value.
+  const [externalServerPort, setExternalServerPortState] = useState<number | null>(null);
+  const externalServerPortRef = useRef<number | null>(null);
+  const isExternalServer = externalServerPort !== null;
+  // Port of the external server the user disconnected from; it is still running.
+  const [disconnectedServerPort, setDisconnectedServerPort] = useState<number | null>(null);
   const externalPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const externalPollAbortedRef = useRef(false);
   const environmentWaitRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -168,14 +175,14 @@ export function useTauriBackend() {
   // Read through: the listener lives in an effect that cannot reach this render's setState.
   const closing = useSyncExternalStore(subscribeAppClosing, isAppClosing);
 
-  function setBackendStatus(nextStatus: BackendStatus) {
+  function setBackendStatus(nextStatus: BackendStatus, attached = false) {
     if (authFailureRef.current) return;
     // A native install or repair outlives a reload; do not let the next poll overwrite its state.
     stopManagedEnvironmentWait();
     statusRef.current = nextStatus;
     setStatus(nextStatus);
     setInstallDiskFull(false);
-    syncTrayStatus(nextStatus);
+    syncTrayStatus(nextStatus, attached);
   }
 
   function setBackendError(
@@ -195,6 +202,11 @@ export function useTauriBackend() {
   function clearBackendError() {
     if (authFailureRef.current) return;
     setError(null);
+  }
+
+  function setExternalServerPort(port: number | null) {
+    externalServerPortRef.current = port;
+    setExternalServerPortState(port);
   }
 
   function setRunningStatus() {
@@ -243,7 +255,7 @@ export function useTauriBackend() {
       }
       if (failures >= 3) {
         stopExternalServerPoll();
-        setIsExternalServer(false);
+        setExternalServerPort(null);
         setBackendError("External server is no longer responding");
       }
     }, 15_000);
@@ -284,6 +296,7 @@ export function useTauriBackend() {
   async function checkInstallAndStart() {
     // Honor a persisted stop before preflight; the native command can adopt a reaping backend.
     if (hasServerStopIntent()) {
+      setDisconnectedServerPort(stopIntentDisconnectedPort());
       setBackendStatus("stopped");
       return;
     }
@@ -312,9 +325,9 @@ export function useTauriBackend() {
           }
           setApiBase(preflight.port);
           portRef.current = preflight.port;
-          setIsExternalServer(true);
+          setExternalServerPort(preflight.port);
           setStartupMessage(SERVER_STARTUP_MESSAGE);
-          setRunningStatus();
+          setBackendStatus("running", true);
           startExternalServerPoll(preflight.port);
           return;
         }
@@ -325,20 +338,20 @@ export function useTauriBackend() {
           }
           setApiBase(preflight.port);
           portRef.current = preflight.port;
-          setIsExternalServer(false);
+          setExternalServerPort(null);
           stopExternalServerPoll();
           setStartupMessage(SERVER_STARTUP_MESSAGE);
           setRunningStatus();
           return;
         case "managed_ready":
-          setIsExternalServer(false);
+          setExternalServerPort(null);
           stopExternalServerPoll();
           setBackendStatus("starting");
           await startManagedServer();
           return;
         case "owned_stale":
         case "managed_stale":
-          setIsExternalServer(false);
+          setExternalServerPort(null);
           stopExternalServerPoll();
           if (
             preflight.reason === MANAGED_ENVIRONMENT_BUSY ||
@@ -361,7 +374,7 @@ export function useTauriBackend() {
           }
           return;
         case "external_conflict":
-          setIsExternalServer(false);
+          setExternalServerPort(null);
           stopExternalServerPoll();
           setBackendError(externalConflictMessage(preflight));
           return;
@@ -456,7 +469,7 @@ export function useTauriBackend() {
     seenStepsRef.current.clear();
     startingRef.current = false;
     portRef.current = null;
-    setIsExternalServer(false);
+    setExternalServerPort(null);
     stopExternalServerPoll();
     setLogs([]);
     clearBackendError();
@@ -503,11 +516,14 @@ export function useTauriBackend() {
   }
 
   async function runStopServer() {
-    if (isExternalServer) {
+    // Only disconnects: the server keeps running, and the stopped screen says so.
+    const externalPort = externalServerPortRef.current;
+    if (externalPort !== null) {
       startingRef.current = false;
-      setIsExternalServer(false);
+      setExternalServerPort(null);
+      setDisconnectedServerPort(externalPort);
       stopExternalServerPoll();
-      markServerStopIntent();
+      markServerStopIntent(externalPort);
       setBackendStatus("stopped");
       return;
     }
@@ -521,6 +537,7 @@ export function useTauriBackend() {
       throw e;
     }
     startingRef.current = false;
+    setDisconnectedServerPort(null);
     setBackendStatus("stopped");
   }
 
@@ -567,6 +584,7 @@ export function useTauriBackend() {
     forcedRepairRef.current = false;
     clearAuthFailure();
     clearServerStopIntent();
+    setDisconnectedServerPort(null);
     setError(null);
     setLogs([]);
     startingRef.current = false;
@@ -576,7 +594,7 @@ export function useTauriBackend() {
     setProgressDetail(null);
     setElevationPackages([]);
     elevationResumeRef.current = null;
-    setIsExternalServer(false);
+    setExternalServerPort(null);
     stopExternalServerPoll();
     stopManagedEnvironmentWait();
     seenStepsRef.current.clear();
@@ -827,6 +845,7 @@ export function useTauriBackend() {
 
   return {
     status, logs, error, installDiskFull, isExternalServer, closing,
+    externalServerPort, disconnectedServerPort,
     currentStepIndex, progressDetail, startupMessage, elevationPackages,
     startServer, stopServer, startInstall,
     retry, retryInstall, approveElevation, copyDiagnostics,

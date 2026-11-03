@@ -15,11 +15,28 @@ export function hasServerStopIntent(): boolean {
   }
 }
 
-export function markServerStopIntent(): void {
+// A disconnect from a server this app did not start keeps its port, so a reload still says it runs.
+const DISCONNECTED_PREFIX = "disconnected:";
+
+export function markServerStopIntent(disconnectedPort?: number): void {
   try {
-    sessionStorage.setItem(USER_STOPPED_KEY, "1");
+    sessionStorage.setItem(
+      USER_STOPPED_KEY,
+      disconnectedPort === undefined ? "1" : `${DISCONNECTED_PREFIX}${disconnectedPort}`,
+    );
   } catch {
     // The stop itself still happens; only its survival across a reload is lost.
+  }
+}
+
+export function stopIntentDisconnectedPort(): number | null {
+  try {
+    const value = sessionStorage.getItem(USER_STOPPED_KEY);
+    if (!value?.startsWith(DISCONNECTED_PREFIX)) return null;
+    const port = Number(value.slice(DISCONNECTED_PREFIX.length));
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null;
+  } catch {
+    return null;
   }
 }
 

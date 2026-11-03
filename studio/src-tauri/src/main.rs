@@ -1950,9 +1950,15 @@ fn setup_terminate_interception(app: &tauri::App) {
 
 struct TrayServerToggle(MenuItem<tauri::Wry>);
 
-fn tray_toggle_label(status: &str) -> (&'static str, bool) {
+/// `attached`: the server was not started by this app, so a click only disconnects from it.
+fn tray_toggle_label(status: &str, attached: bool) -> (&'static str, bool) {
+    let stop = if attached {
+        "Disconnect from Server"
+    } else {
+        "Stop Server"
+    };
     match status {
-        "running" => ("Stop Server", true),
+        "running" => (stop, true),
         "stopped" | "error" => ("Start Server", true),
         "starting" => ("Starting\u{2026}", false),
         _ => ("Start Server", false),
@@ -1960,9 +1966,9 @@ fn tray_toggle_label(status: &str) -> (&'static str, bool) {
 }
 
 #[tauri::command]
-fn set_tray_server_status(app: tauri::AppHandle, status: String) {
+fn set_tray_server_status(app: tauri::AppHandle, status: String, attached: Option<bool>) {
     if let Some(toggle) = app.try_state::<TrayServerToggle>() {
-        let (text, enabled) = tray_toggle_label(&status);
+        let (text, enabled) = tray_toggle_label(&status, attached.unwrap_or(false));
         let _ = toggle.0.set_text(text);
         let _ = toggle.0.set_enabled(enabled);
     }
@@ -3663,10 +3669,21 @@ media-src 'self' https:"
 
     #[test]
     fn the_tray_toggle_names_the_action_a_click_would_take() {
-        assert_eq!(tray_toggle_label("running"), ("Stop Server", true));
-        assert_eq!(tray_toggle_label("stopped"), ("Start Server", true));
-        assert_eq!(tray_toggle_label("error"), ("Start Server", true));
-        assert_eq!(tray_toggle_label("starting"), ("Starting\u{2026}", false));
+        assert_eq!(tray_toggle_label("running", false), ("Stop Server", true));
+        assert_eq!(tray_toggle_label("stopped", false), ("Start Server", true));
+        assert_eq!(tray_toggle_label("error", false), ("Start Server", true));
+        assert_eq!(tray_toggle_label("starting", false), ("Starting\u{2026}", false));
+    }
+
+    #[test]
+    fn an_attached_server_is_offered_a_disconnect_not_a_stop() {
+        assert_eq!(
+            tray_toggle_label("running", true),
+            ("Disconnect from Server", true)
+        );
+        for status in ["stopped", "error", "starting", "checking"] {
+            assert_eq!(tray_toggle_label(status, true), tray_toggle_label(status, false));
+        }
     }
 
     /// Keep this list in step with the BackendStatus union in use-tauri-backend.ts.
@@ -3682,7 +3699,7 @@ media-src 'self' https:"
             "repair-error",
         ] {
             assert_eq!(
-                tray_toggle_label(status),
+                tray_toggle_label(status, false),
                 ("Start Server", false),
                 "{status} offered a click the renderer would drop"
             );
@@ -3694,7 +3711,7 @@ media-src 'self' https:"
     fn an_unrecognised_status_greys_the_toggle_rather_than_guessing() {
         for status in ["", " ", "Running", "RUNNING", "running ", "run", "{}"] {
             assert_eq!(
-                tray_toggle_label(status),
+                tray_toggle_label(status, false),
                 ("Start Server", false),
                 "{status:?} was read as a known status"
             );
