@@ -420,7 +420,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     }
   }, []);
 
-  const view = useSuperCardView(nodes, edges, selectedSet);
+  const view = useSuperCardView(nodes, edges, selectedSet, sizes);
 
   const onNodeDragStart = useCallback(
     (_: ReactMouseEvent, node: RfNode, dragged: RfNode[]) => {

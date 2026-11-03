@@ -315,6 +315,7 @@ export function useSuperCardView(
   nodes: RfNode[],
   edges: RfEdge[],
   selected: ReadonlySet<string>,
+  sizes: ReadonlyMap<string, { width: number; height: number }> = new Map(),
 ): { nodes: RfNode[]; edges: RfEdge[] } {
   const graph = useDocStore((s) => s.graph);
   const editor = useDocStore((s) => s.meta.editor);
@@ -323,7 +324,9 @@ export function useSuperCardView(
   const cards = useMemo(() => readSuperCards(editor, graph), [editor, graph]);
   return useMemo(
     () =>
-      applySuperCards(nodes, edges, graph, cards, specs, portColors, selected),
-    [nodes, edges, graph, cards, specs, portColors, selected],
+      applySuperCards(nodes, edges, graph, cards, specs, portColors, selected, (id) =>
+        sizes.get(id),
+      ),
+    [nodes, edges, graph, cards, specs, portColors, selected, sizes],
   );
 }

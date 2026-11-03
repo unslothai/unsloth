@@ -217,6 +217,8 @@ export function applySuperCards(
   specs: Record<string, NodeSpec>,
   portColors: Record<string, string> = {},
   selected: ReadonlySet<string> = new Set(),
+  measuredOf: (id: string) => { width: number; height: number } | undefined = () =>
+    undefined,
 ): { nodes: RfNode[]; edges: RfEdge[] } {
   const closed = cards.filter((c) => !c.open);
   if (!closed.length) return { nodes, edges };
@@ -371,6 +373,11 @@ export function applySuperCards(
         data: data as unknown as RfNode["data"],
         selected: selected.has(SUPER_PREFIX + card.id),
         dragHandle: ".flow-node-drag",
+        // A card rebuilt on every drag or selection keeps its measurement, or React Flow hides it
+        // to measure again and the card and its wires blink.
+        ...(measuredOf(SUPER_PREFIX + card.id)
+          ? { measured: measuredOf(SUPER_PREFIX + card.id) }
+          : {}),
       },
     ];
   });

@@ -730,3 +730,24 @@ test("grouping a selection with a closed card groups the card's blocks", () => {
   const group = shortcuts.slice(shortcuts.indexOf("export function groupSelection"));
   assert.match(group, /const ids = selectedBlocks\(\s*useUiStore\.getState\(\)\.selectedNodes,\s*doc\.meta\.editor,\s*doc\.graph,\s*\);/);
 });
+
+test("a rebuilt closed card keeps its measurement, so React Flow does not hide it to measure again", () => {
+  useDocStore.getState().load(comic());
+  select("tpl", "img");
+  combineSelection();
+  const state = useDocStore.getState();
+  const deriver = new RfDeriver();
+  const out = applySuperCards(
+    deriver.nodes(state.graph, new Set(), null) as never,
+    deriver.edges(state.graph, new Set(), () => "any"),
+    state.graph,
+    readSuperCards(state.meta.editor, state.graph),
+    specs,
+    catalog.port_colors,
+    new Set(),
+    (id) => (id === "super:sc1" ? { width: 300, height: 180 } : undefined),
+  );
+  assert.deepEqual(out.nodes.find((n) => n.id === "super:sc1")?.measured, { width: 300, height: 180 });
+  const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
+  assert.match(canvas, /useSuperCardView\(nodes, edges, selectedSet, sizes\)/);
+});
