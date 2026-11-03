@@ -12,7 +12,10 @@ import pytest
 KERNELS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "kernels"
 
 CASES = {
-    "layernorm.py": {"layernorm_backward_dw": ("n_rows", "rows_per_program")},
+    "layernorm.py": {
+        "layernorm_backward_dw": ("n_rows", "rows_per_program"),
+        "_layernorm_sum_partials": ("n_programs",),
+    },
     "fp8.py": {"_w8a8_block_fp8_matmul": ("M",)},
     "nvfp4.py": {"_split_sum_kernel": ("SPLIT",)},
 }

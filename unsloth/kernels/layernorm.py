@@ -178,7 +178,7 @@ def layernorm_backward_dw(
         tl.store(dB + pid * n_cols + col_offsets, dB_acc, mask = mask)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ("n_programs",))
 def _layernorm_sum_partials(
     partials, out0, out1, n_programs, n_cols, BLOCK_ROWS: tl.constexpr, BLOCK_COLS: tl.constexpr
 ):
