@@ -77,13 +77,13 @@ def overlay(
             continue
         if value is None:
             continue
-        if key == "maxTokens" and value >= _MAX_TOKENS_AS_MAX and by_id[pid].get("max") is None:
-            continue
         if key == "systemPrompt":
             if isinstance(value, str):
                 out[pid] = value
             continue
         if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if key == "maxTokens" and value >= _MAX_TOKENS_AS_MAX and by_id[pid].get("max") is None:
             continue
         p = by_id[pid]
         low, high = p.get("min"), p.get("max")

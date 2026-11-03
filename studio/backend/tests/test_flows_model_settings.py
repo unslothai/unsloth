@@ -62,6 +62,12 @@ def test_server_min_p_is_not_copied_and_a_max_output_cap_takes_the_cards_ceiling
     assert vision["max_tokens"] == 8192
 
 
+def test_a_non_numeric_saved_value_is_skipped_not_raised():
+    card = param_values(GENERATE, {"params": {"max_tokens": 900}})
+    out = model_settings.overlay(card, {"maxTokens": "4096", "temperature": 0.2}, GENERATE)
+    assert out["max_tokens"] == 900 and out["temperature"] == 0.2
+
+
 def test_server_min_p_clears_the_cards_own():
     card = param_values(GENERATE, {"params": {"min_p": 0.3}})
     out = model_settings.overlay(card, {"minPMode": "server-default"}, GENERATE)
