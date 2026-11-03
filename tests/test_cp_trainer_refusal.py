@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""UNSLOTH_CP_SIZE with a trainer that carries no context parallel wrapper: the refusal names the real cause
-(the CPU backend, a non-SFT / DPO / GRPO trainer, or Unsloth's patched trainer failing to build) and a fix
-that differs from what the user already has. And the patched-trainer build skips unsloth_zoo's CPU trainer
-instead of warning that it failed (the Saturday rehearsal's cp=2 cell on the CPU backend)."""
+"""UNSLOTH_CP_SIZE on a trainer without a context parallel wrapper: the refusal names the real cause (CPU backend,
+non-SFT / DPO / GRPO trainer, failed patched-trainer build), and the build skips unsloth_zoo's CPU trainer quietly."""
 
 import sys
 import types

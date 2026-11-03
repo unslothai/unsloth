@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""accelerate's FSDP2 (accelerate launch with an FSDP2 config, UNSLOTH_FSDP2_BACKEND=accelerate,
-TrainingArguments(fsdp_config = {"fsdp_version": 2})) keeps optim = 'adamw_8bit' (the generated configs
-used to switch it to adamw_torch_fused, tests/test_fsdp2_default_optim.py): the bitsandbytes Adam / AdamW
-the Trainer builds steps each rank's local shard after Accelerator._prepare_fsdp2 (fsdp2_bnb_optim, as
-native FSDP2 does), and a bitsandbytes optimizer that cannot is refused there, before the first step."""
+"""accelerate's FSDP2 keeps optim = 'adamw_8bit': a bitsandbytes Adam / AdamW steps each rank's local shard after
+Accelerator._prepare_fsdp2, and a bitsandbytes optimizer that cannot is refused before the first step."""
 
 from __future__ import annotations
 
