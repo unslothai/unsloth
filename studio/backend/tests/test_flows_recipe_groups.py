@@ -727,7 +727,10 @@ def test_a_recipe_on_chats_loaded_model_is_keyed_on_that_model(monkeypatch):
         "model_configs": [{"alias": "m", "provider": "local", "model": "local"}],
     }
     eng = engine_mod.FlowEngine()
-    key = lambda: asyncio.run(eng._model_key(None, spec, {RECIPE_PARAM: recipe}))  # noqa: E731
+    # The shape compile_flow stores: {recipe, run}.
+    key = lambda: asyncio.run(  # noqa: E731
+        eng._model_key(None, spec, {RECIPE_PARAM: {"recipe": recipe, "run": {}}})
+    )
     first = key()
     loaded["name"] = "unsloth/gemma-3-4b-it-GGUF"
     assert key() != first and first["local"] == "unsloth/Qwen3-4B-GGUF"

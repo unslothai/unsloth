@@ -1974,7 +1974,7 @@ class FlowEngine:
     async def _model_key(self, ctx: NodeContextImpl, spec: dict, params: dict) -> Optional[dict]:
         kind = spec.get("model_kind")
         if not kind:
-            if _implicit_local_model(params.get(RECIPE_PARAM)):
+            if _implicit_local_model((params.get(RECIPE_PARAM) or {}).get("recipe")):
                 # The recipe runs on whatever Chat has loaded, so a different model is a different dataset.
                 from core.flows.nodes._common import resident_name
                 return {"local": await resident_name(ctx, "chat")}
