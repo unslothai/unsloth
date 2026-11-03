@@ -2793,14 +2793,18 @@ def apply_chat_template_for_generation(
     """Richest kwargs first, one group dropped per TypeError; continue_final_message resumes partial turn."""
     from core.inference.mcp_images import prepare_image_turn_boundaries
 
-    for template in _selected_chat_template_strings(tokenizer, tools):
+    selected_templates = _selected_chat_template_strings(tokenizer, tools)
+    for template in selected_templates:
         messages = prepare_image_turn_boundaries(messages, template)
     messages, tools, _markup = neutralize_for_render(tokenizer, messages, tools)
     reasoning_kwargs: dict = {}
     if enable_thinking is not None:
         reasoning_kwargs["enable_thinking"] = enable_thinking
     if reasoning_effort is not None:
-        reasoning_kwargs["reasoning_effort"] = reasoning_effort
+        from core.inference.llama_cpp import _fit_reasoning_effort_to_template
+        reasoning_kwargs["reasoning_effort"] = _fit_reasoning_effort_to_template(
+            "\n".join(selected_templates), reasoning_effort
+        )
     if preserve_thinking is not None:
         reasoning_kwargs["preserve_thinking"] = preserve_thinking
 
