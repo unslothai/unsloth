@@ -177,3 +177,16 @@ test("auto-load keeps cached non-GGUF models while detection is deferred", () =>
   assert.equal(runsHere(safetensors), false);
   assert.equal(runsHere({ id: "org/model-GGUF", path: "/models/m.gguf" }), true);
 });
+
+test("a deferred reply names the server platform and is re-read until measured", async () => {
+  reset();
+  replies = [{ ...DEFERRED, device_type: "linux" }, GPU];
+  await fetchDeviceType();
+  let state = usePlatformStore.getState();
+  assert.equal(state.deviceType, "linux");
+  assert.equal(state.capabilitiesUnknown(), true);
+  await fetchDeviceType();
+  state = usePlatformStore.getState();
+  assert.deepEqual(urls, ["/api/health", "/api/health"]);
+  assert.equal(state.capabilitiesUnknown(), false);
+});

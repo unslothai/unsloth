@@ -452,6 +452,7 @@ import utils.hardware.hardware as _hw_module
 from utils.torch_warmup import (
     DISABLE_ENV_VAR,
     background_media_import,
+    gate_torch_stack_import,
     join_background_warm,
     prewarm_diffusers_if_image_models_exist,
     prewarm_quant_probe_if_image_models_exist,
@@ -2310,6 +2311,7 @@ async def health_check(request: Request, detect_hardware: bool = False):
     device_type = platform_map.get(sys.platform, sys.platform)
     # Separate from device_type: Intel Macs spill to system RAM; Apple Silicon has one pool.
     from utils.hardware import is_apple_silicon
+    from utils.paths.file_manager import file_manager_kind
 
     authed = {
         **base,
@@ -2350,8 +2352,6 @@ async def health_check(request: Request, detect_hardware: bool = False):
             authed["chat_only_hint"] = None
         authed["device_type"] = device_type
         authed["apple_silicon"] = is_apple_silicon()
-        from utils.paths.file_manager import file_manager_kind
-
         authed["file_manager"] = file_manager_kind()
         # base predates the bearer await; never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)
@@ -2364,6 +2364,11 @@ async def health_check(request: Request, detect_hardware: bool = False):
         if mlx_repairing:
             # base predates the repair, so drop a now-contradicting deferred marker; the repair settles it.
             authed.pop("hardware_detection_deferred", None)
+        elif authed.get("hardware_detection_deferred"):
+            # Nothing will detect until asked, so the host platform cannot wait for a verdict.
+            authed["device_type"] = device_type
+            authed["apple_silicon"] = is_apple_silicon()
+            authed["file_manager"] = file_manager_kind()
     return authed
 
 
@@ -2801,6 +2806,8 @@ def get_system_info(
     # The image/video picker explicitly asks on first use; ordinary system polls
     # must not import torchao or diffusers just to populate optional picker tiers.
     if probe_media:
+        # Like an image or video load: the probes import torchao and diffusers, which must not race Dynamo.
+        gate_torch_stack_import("media capability probe", logger)
         with background_media_import() as window_open:
             if window_open:
                 try:

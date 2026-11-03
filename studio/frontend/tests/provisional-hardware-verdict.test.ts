@@ -200,7 +200,7 @@ test("a provisional forced refresh keeps the server-reported platform", async ()
   );
   assert.match(
     ENV,
-    /fetched: data\.device_type !== undefined \|\| keepPlatform/,
+    /fetched: \(data\.device_type !== undefined && !isDetectionDeferred\(data\)\) \|\| keepPlatform/,
     "fetched drops to false, so the authoritative platform is not treated as held",
   );
 });

@@ -41,6 +41,22 @@ def test_cold_health_and_liveness_do_not_start_detection(cold, monkeypatch):
     assert starts == []
 
 
+def test_deferred_authed_health_still_names_the_host_platform(cold, monkeypatch):
+    async def subject(request):
+        return "owner"
+
+    monkeypatch.setattr(cold, "_health_subject", subject)
+    app = FastAPI()
+    app.add_api_route("/api/health", cold.health_check)
+    with TestClient(app) as client:
+        reply = client.get("/api/health").json()
+    assert reply["hardware_detection_deferred"] is True
+    assert reply["device_type"] == {"darwin": "mac", "win32": "windows"}.get(
+        cold.sys.platform, "linux"
+    )
+    assert "apple_silicon" in reply and "file_manager" in reply
+
+
 def test_anonymous_request_cannot_trigger_hardware_detection(cold, monkeypatch):
     starts = []
     monkeypatch.setattr(cold, "start_background_detection", lambda: starts.append(True))
@@ -196,13 +212,16 @@ def test_media_capabilities_are_probed_only_for_the_picker(cold, monkeypatch, pr
 
     monkeypatch.setattr(cold, "_get_cached_system_gpu_info", snapshot)
     monkeypatch.setattr(cold, "background_media_import", lambda: nullcontext(window_open))
+    monkeypatch.setattr(cold, "gate_torch_stack_import", lambda *args: calls.append("gate"))
     monkeypatch.setattr(cold, "_refresh_dense_quant_capability", lambda: calls.append("dense"))
     monkeypatch.setattr(
         cold, "_refresh_quantised_streaming_capability", lambda: calls.append("streaming")
     )
     with pytest.raises(HardwareSnapshotReached):
         cold.get_system_info(current_subject = "owner", probe_media = probe)
-    assert calls == (["dense", "streaming"] if probe and window_open else [])
+    assert calls == (["gate"] if probe else []) + (
+        ["dense", "streaming"] if probe and window_open else []
+    )
 
 
 @pytest.mark.parametrize("mask", range(32))

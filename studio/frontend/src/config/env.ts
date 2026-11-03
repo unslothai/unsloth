@@ -356,7 +356,8 @@ async function readHealth(
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,
-        fetched: data.device_type !== undefined || keepPlatform,
+        // A deferred reply names the platform but stays unfetched, so later reads can settle the verdict.
+        fetched: (data.device_type !== undefined && !isDetectionDeferred(data)) || keepPlatform,
         verdictStale: previous.verdictStale && isProvisionalVerdict(data) && !isDetectionDeferred(data),
         detectionDeferred: isDetectionDeferred(data),
       });
