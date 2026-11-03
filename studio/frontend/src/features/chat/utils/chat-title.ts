@@ -549,7 +549,6 @@ export async function titleFromStream(
 export function normalizeTitle(raw: string): string | null {
   let title = raw.split(/\r?\n/, 1)[0] ?? "";
   title = title.replace(/^\s*title\s*:\s*/i, "");
-  // Any script's letters stay, so the title keeps the conversation's language; emoji and symbols go.
   // U+200C (ZWNJ) is part of Persian spelling.
   title = title.replace(/[^\x20-\x7E\p{L}\p{M}\p{N}‌]+/gu, " ");
   title = title.replace(/["'`]+/g, "");
