@@ -16,23 +16,12 @@ import { addFileNodes } from "./file-drop";
 import { usePlacement } from "./placement";
 import { turnReroutes } from "./reroutes";
 import { runFlow } from "./run-controller";
-import { historyAction } from "./history-keys";
+import { historyAction, isTyping } from "./history-keys";
 import { flushSave } from "./use-autosave";
 
 const CLIPBOARD_KIND = "unsloth-flow-fragment";
 let clipboard: GraphFragment | null = null;
 let pointer: { x: number; y: number } | null = null;
-
-function isTyping(target: EventTarget | null): boolean {
-  const el = target as HTMLElement | null;
-  if (!el) return false;
-  return (
-    el.isContentEditable ||
-    el.tagName === "INPUT" ||
-    el.tagName === "TEXTAREA" ||
-    el.tagName === "SELECT"
-  );
-}
 
 export function copySelection(): GraphFragment | null {
   const { graph } = useDocStore.getState();

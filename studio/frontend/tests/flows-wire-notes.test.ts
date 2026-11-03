@@ -46,3 +46,22 @@ test("the router never sees a note, so a note on the straight path does not bend
   assert.match(src, /useStore\(\(s\) => routingKey\(\[\.\.\.s\.nodeLookup\.values\(\)\]\)\)/);
   assert.match(src, /\[nodesKey, edges, scope, store(, moving)?(, global)?\]/);
 });
+
+test("turning a reroute around reroutes its wires though its box is unchanged", () => {
+  const rr = (dir: string) => ({
+    id: "rr1",
+    type: "flowReroute",
+    position: { x: 100, y: 100 },
+    measured: { width: 16, height: 28 },
+    data: { rerouteId: "rr1", dir },
+  });
+  assert.notEqual(routingKey([card("a", 0), rr("down")]), routingKey([card("a", 0), rr("up")]));
+});
+
+test("an R typed in a field while the reroute tool is armed stays in the field", () => {
+  const src = readFileSync(
+    new URL("../src/features/flows/editor/canvas-controls.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /!isTyping\(e\.target\) &&\s*armed === REROUTE_TYPE &&/);
+});

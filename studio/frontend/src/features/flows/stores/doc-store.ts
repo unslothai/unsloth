@@ -117,7 +117,7 @@ export interface TidyPatch {
   reroutes: Record<string, [number, number]>;
 }
 
-const HISTORY_LIMIT = 100;
+export const HISTORY_LIMIT = 100;
 export const GROUP_KEY = "group:";
 export const NOTE_KEY = "note:";
 const COALESCE_MS = 900;
