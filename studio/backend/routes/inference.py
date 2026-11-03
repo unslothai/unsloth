@@ -30691,8 +30691,13 @@ async def openai_chat_completions(
         )
     await _enforce_token_limit(request, external = bool(payload.provider_id or payload.provider_type))
     temporary = None
-    if payload.temporary_chat and not _request_used_api_key(request):
-        thread = payload.thread_id or payload.cancel_id or uuid.uuid4().hex
+    research = _request_is_saved_credential_workflow(request)
+    if (payload.temporary_chat or research) and not _request_used_api_key(request):
+        thread = (
+            uuid.uuid4().hex
+            if research
+            else payload.thread_id or payload.cancel_id or uuid.uuid4().hex
+        )
         temporary = (
             _hashlib.sha256(thread.encode("utf-8")).hexdigest(),
             "external" if payload.provider_id or payload.provider_type else "local",
