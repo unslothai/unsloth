@@ -102,4 +102,5 @@ test("an older run pages from its saved parquet once its recipe job is gone", ()
   assert.equal(savedRunDataset({ artifact_path: "C:\\x\\recipes\\run-8\\" })?.ref, "recipes/run-8/parquet-files");
   assert.equal(savedRunDataset({ artifact_path: null }), null);
   assert.match(readFileSync(new URL("../src/features/flows/recipe/recipe-runs.tsx", import.meta.url), "utf8"), /datasetRows\(saved, offset, size\)/);
+  assert.match(readFileSync(new URL("../src/features/flows/recipe/recipe-runs.tsx", import.meta.url), "utf8"), /Math\.min\(read\.total, read\.view_rows\)/);
 });

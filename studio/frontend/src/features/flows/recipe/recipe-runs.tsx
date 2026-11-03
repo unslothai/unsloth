@@ -139,7 +139,12 @@ function useRecipeRuns(
         }).catch(async (error) => {
           if (!saved) throw error;
           const read = await datasetRows(saved, offset, size);
-          return { dataset: read.rows, total: read.total };
+          // That reader stops at its view window; pages past it would load empty.
+          const total =
+            typeof read.total === "number"
+              ? Math.min(read.total, read.view_rows)
+              : read.total;
+          return { dataset: read.rows, total };
         });
         setPages((current) => ({
           ...current,
