@@ -3071,14 +3071,23 @@ class UnetCfgParallelRouter(CfgParallelRouter):
     ``2 * B``, so there is no second call to route. Each such call is cut in half along the batch: the first half runs
     on the source card, the second on the replica at the same time (:meth:`CfgParallelRouter.run_pair`), and the two
     outputs are concatenated. A U-Net treats every sample on its own, so the math is the same; the bits differ only
-    where the batch-B kernels round differently from batch 2B. Odd batches, unknown inputs and an unavailable replica
-    run the whole call on the source. ``UNSLOTH_DIFFUSION_CFG_PARALLEL_UNET=0`` keeps U-Nets on one card."""
+    where the batch-B kernels round differently from batch 2B. Any even batch splits (two images without guidance
+    too, which then builds the replica). Odd batches, unknown inputs, a compiled-whole module and an unavailable
+    replica run the whole call on the source. ``UNSLOTH_DIFFUSION_CFG_PARALLEL_UNET=0`` keeps U-Nets on one card."""
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        if self._pairing or self.disabled_reason is not None or _background_compile_call():
+        torch = _torch()
+        module = self.module_ref()
+        if (
+            self._pairing
+            or self.disabled_reason is not None
+            or _background_compile_call()
+            or torch.compiler.is_compiling()
+            # compiled whole after the router was installed (a deferred speed profile): its graph owns the call
+            or getattr(module, "_compiled_call_impl", None) is not None
+        ):
             self.stats["primary_calls"] += 1
             return self._primary(*args, **kwargs)
-        torch = _torch()
         sample = kwargs.get("sample", args[0] if args else None)
         n = sample.shape[0] if isinstance(sample, torch.Tensor) and sample.dim() >= 1 else 0
         halves = None
@@ -3092,7 +3101,8 @@ class UnetCfgParallelRouter(CfgParallelRouter):
             return self._primary(*args, **kwargs)
         (a0, k0), (a1, k1) = halves
         self.stats["primary_calls"] += 1
-        res = self.run_pair(lambda: self._primary(*a0, **k0), a1, k1)
+        # the primary half waits for a cold replica (a first call may compile) and marks its signature warm
+        res = self.run_pair(lambda: self._primary_noting(None, a0, k0), a1, k1)
         if res is None:
             return self._primary(*args, **kwargs)
         first, second = res
@@ -3113,8 +3123,18 @@ def _cfg_denoiser(pipe: Any) -> Any:
         return denoiser
     unet = getattr(pipe, "unet", None)
     if unet is not None and type(unet).__name__ == "UNet2DConditionModel" and not _unet_cfg_parallel_disabled():
+        if _batch_coupled_processors(unet):
+            return None  # PAG-style processors chunk the batch themselves: a dim-0 split would mix their thirds
         return unet
     return None
+
+
+def _batch_coupled_processors(unet: Any) -> bool:
+    try:
+        processors = getattr(unet, "attn_processors", None) or {}
+        return any("PAG" in type(p).__name__ for p in processors.values())
+    except Exception:  # noqa: BLE001 - unreadable: treat as coupled
+        return True
 
 
 def cfg_parallel_decline(

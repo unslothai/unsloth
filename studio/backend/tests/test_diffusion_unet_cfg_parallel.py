@@ -184,3 +184,24 @@ def test_real_diffusers_unet_split_matches_batched():
     torch.testing.assert_close(out, ref, rtol = 1e-4, atol = 1e-5)
     torch.testing.assert_close(out2, ref, rtol = 1e-4, atol = 1e-5)
     assert router.stats["pairs_parallel"] == 2
+
+
+def test_unet_with_batch_chunking_processors_is_not_a_candidate():
+    class PAGCFGIdentitySelfAttnProcessor2_0:
+        pass
+
+    class Pipe:
+        transformer = None
+        unet = UNet2DConditionModel()
+
+    Pipe.unet.attn_processors = {"down.attn1.processor": PAGCFGIdentitySelfAttnProcessor2_0()}
+    assert mg._cfg_denoiser(Pipe()) is None
+
+
+def test_unet_compiled_whole_after_install_runs_whole_on_the_source():
+    unet = UNet2DConditionModel()
+    router, replicas = _router(unet)
+    # a deferred whole-module compile landed after the router: nn.Module.__call__ now goes through it
+    unet._compiled_call_impl = lambda *a, **k: unet.forward(*a, **k)
+    _sdxl_loop(unet, torch.randn(1, 4, 8, 8), steps = 2)
+    assert unet.calls == [2, 2] and replicas == []
