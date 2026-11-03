@@ -67,8 +67,15 @@ export async function checkRecipeGroupDetail(groupId: string): Promise<RecipeChe
   try {
     const columns = runColumns(graph, groupId);
     const { clientErrors } = await import("./recipe-adapter");
-    const local = clientErrors(group, columns);
+    // A wired seed replaces the group's own when it runs, and the run validates against it, so the
+    // group's own seed (often an empty file seed) is not checked here.
+    const wired = seedWired(groupId);
+    const local = clientErrors(
+      wired ? { ...group, config: { ...group.config, seed_config: undefined } } : group,
+      columns,
+    );
     if (local.length) return { valid: false, errors: local, rawDetail: null };
+    if (wired) return { valid: true, errors: [], rawDetail: null };
     const { inspectSeedDataset, validateRecipe } = await import(
       "@/features/recipe-studio/api"
     );

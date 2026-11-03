@@ -657,3 +657,32 @@ def test_an_unnamed_full_run_is_named_after_its_group(monkeypatch):
         ctx.doc = doc
         asyncio.run(data.recipe_group(ctx))
         assert saved and all(r["run_name"] == name for r in saved), mode
+
+
+def test_a_migrated_recipe_gets_its_own_copy_of_uploaded_documents(tmp_path, monkeypatch):
+    import utils.paths.storage_roots as roots
+
+    monkeypatch.setattr(roots, "unstructured_uploads_root", lambda: tmp_path)
+    (tmp_path / "up1").mkdir()
+    (tmp_path / "up1" / "u1.pdf").write_bytes(b"%PDF")
+    (tmp_path / "up1" / "u1.extracted.txt").write_text("page")
+    payload = copy.deepcopy(SQL)
+    payload["recipe"]["seed_config"] = {
+        "source": {
+            "seed_type": "unstructured",
+            "paths": [str(tmp_path / "up1" / "u1.extracted.txt")],
+        }
+    }
+    payload["ui"] = {"unstructured_file_ids": ["u1"], "unstructured_upload_uid": "up1"}
+    doc, _ = flow_from_recipe(payload, name = "SQL")
+    flows_routes._own_uploads(doc)
+    group = doc["groups"][0]
+    new = group["ui"]["unstructured_upload_uid"]
+    assert new != "up1"
+    assert group["config"]["seed_config"]["source"]["paths"] == [
+        str(tmp_path / new / "u1.extracted.txt")
+    ]
+    # Removing the flow's copy, as the seed editor does, leaves the recipe's file in place.
+    for f in (tmp_path / new).iterdir():
+        f.unlink()
+    assert (tmp_path / "up1" / "u1.extracted.txt").read_text() == "page"
