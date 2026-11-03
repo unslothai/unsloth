@@ -554,13 +554,14 @@ def _fused_config(
     return bm, bo, br, warps, stages, split
 
 
-@triton.jit
-def _split_sum_kernel(partial_ptr, out_ptr, numel, SPLIT: tl.constexpr, BLOCK: tl.constexpr):
-    # Fixed-order sum of the split partials (determinism), one cast.
+@triton.jit(do_not_specialize = ["SPLIT"])
+def _split_sum_kernel(partial_ptr, out_ptr, numel, SPLIT, BLOCK: tl.constexpr):
+    # Fixed-order sum of the split partials (determinism), one cast. SPLIT is runtime: it follows M,
+    # so a constexpr compiled one variant per split count.
     offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < numel
     acc = tl.load(partial_ptr + offs, mask = mask, other = 0.0)
-    for i in tl.static_range(1, SPLIT):
+    for i in range(1, SPLIT):
         acc += tl.load(partial_ptr + i * numel + offs, mask = mask, other = 0.0)
     tl.store(out_ptr + offs, acc.to(out_ptr.dtype.element_ty), mask = mask)
 
