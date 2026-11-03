@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A user video load right after the Hub failed to connect: a cached base loads from the cache, not through
-diffusers' untimed ``model_info``; anything missing retries online."""
-
 from __future__ import annotations
 
 import time
@@ -422,7 +419,6 @@ def test_an_encoder_worker_cache_miss_retries_online(monkeypatch, hub_down, cach
         assert backend._loading is None, getattr(backend._loading, "error", None)
         assert flags == [True, False]
     else:
-        # Any other worker failure (out of memory, a bad file) still fails the load.
         assert flags == [True] and "encoder failed to load" in backend._loading.error
 
 
