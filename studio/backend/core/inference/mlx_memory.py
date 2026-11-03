@@ -53,8 +53,8 @@ _COMPUTE_BASE_BYTES = int(0.64 * 1024**3)
 
 _RECURRENT_DTYPE_SIZE = 4
 
-# Score copies an unfused call holds at the queries' width; Metal measured 1.01 to 1.13 (mlx 0.32.4). A NAX head_dim 512
-# tail reaches 1.32, under 100 MiB beyond this at 65K keys, which the fixed compute charge covers.
+# Score copies an unfused call holds at the queries' width; Metal measured 1.01 to 1.13 (mlx 0.32.4);
+# NAX head_dim 512 tails reach 1.32, within the fixed compute charge.
 _SCORE_LIVE = 1.13
 # A TurboQuant prefill holds the whole cache dequantized to float32 and cast to the query dtype; measured.
 _TURBOQUANT_DEQUANT_BYTES = 10
@@ -605,7 +605,6 @@ def _entry_bytes(entry) -> int:
     state = held() if callable(held) and getattr(entry, "keys", None) is not None else entry.state
 
     def nbytes(item) -> int:
-        # TurboQuant's split states nest one state per half.
         if isinstance(item, mx.array):
             return item.size * item.dtype.size
         return sum(nbytes(sub) for sub in item) if isinstance(item, (list, tuple)) else 0
@@ -982,8 +981,7 @@ def _dequantized_row_bytes(widths, dtype_size: int, kv_bits, kv_group_size, pref
         return None
     try:
         dtype = mx.float32 if dtype_size == 4 else mx.bfloat16
-        # A causal chunk never fuses over fewer keys than queries, and a forced route starts at a key count: ask at a
-        # long context, which is where the copy costs most (#15935).
+        # Ask at a long context: chunks never fuse over fewer keys than queries; forced routes start at a key count (#15935).
         cached = max(prefill_chunk + 1, 1 << 16)
 
         def rows(width):
@@ -1037,7 +1035,6 @@ def _compute_bytes(
         if row is None:
             total += _widest_quantized_scores(n_ctx, quant_boundary, prefill_chunk) * score
         else:
-            # A tail too short for the fused route still builds its scores.
             cells = max(n_ctx + 1, _widest_unfused_scores(widths, dtype_size, n_ctx, prefill_chunk))
             total += max(
                 (row + _padding_row_bytes(widths, dtype_size, n_ctx)) * n_ctx, cells * score

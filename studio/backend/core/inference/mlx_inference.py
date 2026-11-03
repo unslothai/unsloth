@@ -3293,7 +3293,7 @@ def _fitted_context(
         logger.debug("MLX snapshot unavailable for %s: %s", model_name, exc)
         return None, None
     verdict = eligibility
-    # Only an mx.quantize width; the estimator's own probe converts a TurboQuant cache as mlx-vlm does.
+    # TurboQuant is converted by the estimator's own probe, as mlx-vlm does.
     if verdict is None and isinstance(kv_bits, int):
         verdict = _kv_quant_eligibility(model, is_vlm, kv_bits)
     fitted = mlx_fit_to_memory(
@@ -6337,7 +6337,6 @@ class MLXInferenceBackend:
         self._fast_verify = _settle_fast_verify(
             self._fast_verify, self._model, getattr(self._speculative_draft, "drafter", None)
         )
-        # A refused TurboQuant stays full width, and is fitted there.
         _requested_bits = _normalize_mlx_kv_bits(kv_bits)
         _turboquant = None
         if self._turboquant:

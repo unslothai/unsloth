@@ -8288,7 +8288,6 @@ def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path
     for answer in (("refused", "r", True), ("none", "n", True)):
         verdict["answer"] = answer
         assert fit(4) == (24_576, answer) and priced[0]["kv_bits"] is None
-    # mx.quantize's probe has no TurboQuant width to try; the fit's own probe converts it.
     assert fit(turboquant) == (24_576, None) and asked == []
     assert priced[0]["kv_bits"] == turboquant
 
@@ -8446,7 +8445,6 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
         lambda _m, bits, refusal = "": probed.append(bits)
         or dict(requested_kv_bits = bits, kv_bits = None, eligibility = "refused", reason = "r", note = ""),
     )
-    # A cache the runtime probe refuses is allocated at full width, so it is fitted there.
     _, info = load(max_seq_length = 0, kv_quant = "tq-4")
     assert [kw["kv_bits"] for _, _, kw in asked] == [None] and probed == [4]
     assert info["mlx_kv_bits"] is None

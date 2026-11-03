@@ -1393,7 +1393,6 @@ class TestEstimateMemoryRoute:
         resp = _estimate(model_path = "org/model", mlx_kv_quant = "tq-4", mlx_kv_bits = 4)
         turboquant = mm.MlxTurboQuant(4)
         assert (asked["kv_bits"], seen["kv_bits"], widths) == (turboquant, turboquant, [])
-        # The load serves TurboQuant through mlx-vlm, and prices that route.
         assert (asked.pop("vision"), asked["retains_history"]) == (True, False)
 
         refuses["answer"] = True
@@ -4521,7 +4520,6 @@ def test_a_full_width_cache_pays_for_the_widest_call_mlx_does_not_fuse(monkeypat
     asked = _unfused_route(monkeypatch, fuses)
     priced = mm._compute_bytes(_BONSAI, 2, 2048, [_GROWING], n_ctx, None)
     assert priced - floor == pytest.approx(cells * _SCORE, abs = 1)
-    # A full chunk past the first decides whether later ones hold scores.
     assert (2048, 2 * 2048) in asked
 
 
@@ -4759,9 +4757,7 @@ def test_the_route_is_asked_about_a_cache_longer_than_the_chunk(monkeypatch, chu
 def test_chunks_below_a_forced_routes_key_floor_still_charge_their_scores(monkeypatch):
     _unfused_route(monkeypatch, lambda L, S: L > 15 and S >= 8192)
     assert mm._widest_unfused_scores(_BONSAI, 2, 65536, 2048) == 2047 * (3 * 2048 + 2047)
-    # All of it below the floor: no prompt the context admits has a longer tail than it holds.
     assert mm._widest_unfused_scores(_BONSAI, 2, 4352, 2048) == 2048 * 2 * 2048
-    # A chunk that reaches the floor by its second call, and one past it from the first.
     assert mm._widest_unfused_scores(_BONSAI, 2, 32768, 4096) == 4095 * 8191
     assert mm._widest_unfused_scores(_BONSAI, 2, 65536, 16384) == 8191 * 8191
 
@@ -4788,7 +4784,6 @@ def test_the_widest_call_matches_walking_every_prompt_the_context_admits(monkeyp
                 calls += [(1, prompt)]
                 widest = max([widest] + [L * S for L, S in calls if not fuses(L, S)])
             charged = mm._widest_unfused_scores(_BONSAI, 2, n_ctx, chunk)
-            # Decode's own cell is charged at the context's end, one key past any prompt.
             assert widest <= charged <= max(widest, n_ctx + 1), (chunk, n_ctx)
 
 
@@ -4841,7 +4836,6 @@ class TestATurboQuantCacheIsSizedAsMlxVlmConvertsIt:
     @pytest.mark.parametrize(
         "widths, scored_cells",
         [
-            # Long calls take the fused route; the chunk and tail below its key floor still build scores.
             ((3584, 18944, 16, 4, 256, 256), 2047 * (3 * 2048 + 2047)),
             # mlx's own kernel for this width starts above 8 queries.
             ((3584, 18944, 32, 4, 64, 64), 8 * (16 * 2048 + 8)),
