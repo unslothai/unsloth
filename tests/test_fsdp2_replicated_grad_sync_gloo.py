@@ -1,19 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The replicated-gradient all_reduce (`fsdp2_save._sync_replicated_grads`), on a gloo CPU world of 2:
-
-* gradients are bitwise equal to the previous implementation (fresh zeros buffer per sync, flags
-  always read back) over several steps, accumulated micro-steps, fp16 / fp32 / fp64 parameters and
-  rank-dependent None gradients;
-* the flat buffer is reused per (device, dtype) and rebuilt when the parameter set or a size
-  changes, and no gradient aliases it (the next sync overwrites it);
-* no device to host read (Tensor.tolist / item) nor host scalar item assignment when every local
-  gradient is present, exactly one read when some local gradient is None;
-* end to end through reduce_unsharded_trainable_grads on a fully_shard model, for every
-  UNSLOTH_FSDP2_GA_SYNC mode (skip / defer / each / auto), replicated and sharded gradients are
-  bitwise equal to the previous implementation;
-* an fp16 replica summed over unsynced micro-batches does not overflow before the average."""
 
 import multiprocessing
 import os
@@ -21,7 +8,7 @@ import os
 if multiprocessing.parent_process() is not None or getattr(
     multiprocessing.current_process(), "_inheriting", False
 ):
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # Gloo ranks must stay on CPU even on GPU hosts.
 
 import datetime  # noqa: E402
 import importlib  # noqa: E402
@@ -41,7 +28,7 @@ def _reference_sync(
     dist,
     mesh = None,
 ):
-    """The implementation before the buffer reuse / host-sync removal, verbatim."""
+    """Pre-buffer-reuse implementation, retained as an independent reference."""
     from unsloth.models.fsdp2_save import mesh_all_reduce
 
     groups = {}
@@ -78,8 +65,7 @@ def _save():
 
 
 class _Reads:
-    """Counts Tensor.tolist / Tensor.item calls and item assignment of a Python scalar (the device to
-    host reads, and host scalar copies, a CUDA run would sync on)."""
+    """Count device-to-host reads and scalar assignments that synchronize CUDA."""
 
     def __init__(self):
         self.n = 0
@@ -143,8 +129,7 @@ def _case_unit(rank):
     buffers = {}
     gen = torch.Generator().manual_seed(100 + rank)
     res = {"mismatch": [], "reads_all_present": [], "reads_some_none": [], "alias": 0}
-    # step pattern: which parameters get a local gradient this micro-step on this rank; rank 1
-    # leaves some None (a skipped branch), parameter 3 is never used on any rank in steps 0-1.
+
     patterns = [
         [0, 1, 2, 4, 5] if rank == 0 else [0, 1, 2],
         [0, 1, 2, 4, 5],
@@ -153,7 +138,7 @@ def _case_unit(rank):
         [0, 2] if rank == 1 else [0, 1, 2, 3, 4, 5],
     ]
     for step, used in enumerate(patterns):
-        if step in (2, 4):  # optimizer step boundary: zero_grad(set_to_none = True)
+        if step in (2, 4):
             for p in old + new:
                 p.grad = None
         for i in used:
@@ -162,7 +147,7 @@ def _case_unit(rank):
                 if p.grad is None:
                     p.grad = g.clone()
                 else:
-                    p.grad.add_(g)  # accumulated micro-step
+                    p.grad.add_(g)
         _reference_sync(old, dist)
         everyone_all = all(p.grad is not None for p in new)
         with _Reads() as reads:
@@ -180,7 +165,6 @@ def _case_unit(rank):
     res["n_buffers"] = len(buffers)
     ids_before = {k: id(v[1]) for k, v in buffers.items()}
 
-    # Buffer reused on an unchanged set, rebuilt when the set grows or a size changes.
     for p in old + new:
         p.grad = torch.ones_like(p)
     save._sync_replicated_grads(new, dist, None, buffers)
@@ -200,7 +184,7 @@ def _case_unit(rank):
     res["fp64_reused"] = (
         id(buffers[("cpu", torch.float64)][1]) == ids_before[("cpu", torch.float64)]
     )
-    # A size change at the same position (same parameter count).
+
     old3, new3 = _make_params([((4,), torch.float64)]), _make_params([((4,), torch.float64)])
     for p in old3 + new3:
         p.grad = torch.full((4,), float(rank + 2), dtype = torch.float64)
@@ -209,7 +193,7 @@ def _case_unit(rank):
     save._sync_replicated_grads(new3, dist, None, buffers)
     res["resized_same"] = _same(_grads(old3), _grads(new3))
     res["resized_rebuilt"] = id(buffers[("cpu", torch.float64)][1]) != before64
-    # No buffers dict (direct callers): still correct.
+
     old4, new4 = _make_params(spec), _make_params(spec)
     for p in old4 + new4:
         p.grad = torch.full(p.shape, float(rank + 1)).to(p.dtype)
@@ -222,9 +206,6 @@ def _case_unit(rank):
 
 
 class _Net(torch.nn.Module):
-    """Sharded fp32 body plus replicated (ignored) parameters of mixed dtype, one used only on some
-    micro-steps of some ranks."""
-
     def __init__(self):
         super().__init__()
         torch.manual_seed(0)
@@ -257,10 +238,6 @@ GA = 4
 
 
 def _train(save, native, rank, mode, impl):
-    """3 optimizer steps x GA micro-batches, non-final ones under fsdp2_native._no_grad_sync.
-    impl: "old" = the previous code (reference sync on every backward), "nodefer" = the new sync on
-    every backward, "new" = as shipped (the sync follows FSDP2's gradient sync flag), "oracle" = no
-    sync in backward, the reference sync once after the last micro-batch."""
     import torch.distributed as dist
 
     os.environ["UNSLOTH_FSDP2_GA_SYNC"] = mode
@@ -289,7 +266,7 @@ def _train(save, native, rank, mode, impl):
         for step in range(3):
             for micro in range(GA):
                 x = torch.randn(4, 8, generator = gen)
-                # step 0: `branch` unused everywhere; later only some micro-batches of some ranks.
+
                 use_branch = (micro + rank + step) % 3 == 0 and step != 0
                 calls.append(0)
                 if micro == GA - 1:
@@ -298,7 +275,7 @@ def _train(save, native, rank, mode, impl):
                     with native._no_grad_sync(model):
                         model(x, use_branch).backward()
             if impl == "oracle":
-                _reference_sync(rep, dist)  # counted on the last micro-batch
+                _reference_sync(rep, dist)
             grads = {}
             for n, p in model.named_parameters():
                 g = p.grad
@@ -350,8 +327,8 @@ def _case_modes(rank):
         r["calls"] = {impl: v[2] for impl, v in runs.items()}
         r["nodefer_vs_old"] = _diff(runs["old"][1], runs["nodefer"][1])[0]
         r["new_vs_old"], r["new_vs_old_max"] = _diff(runs["old"][1], runs["new"][1])
-        # fp16 replicas sum unsynced micro-batches in float32: norm16 is not bitwise, and from the
-        # second step neither is anything its update feeds.
+        # Wider fp16 sums change later updates, so only unaffected first-step gradients are bitwise.
+
         r["new_vs_oracle"] = _diff(runs["oracle"][1][:1], runs["new"][1][:1], skip = ("norm16",))[0]
         r["new_vs_oracle_max"] = _diff(runs["oracle"][1], runs["new"][1])[1]
         res[mode] = r
@@ -378,8 +355,7 @@ class _Fp16Rep(torch.nn.Module):
 
 
 def _case_fp16_overflow(rank):
-    """Each micro-batch gives `rep` a finite fp16 gradient (40000 on rank 0, 20000 on rank 1); the
-    average of the two-micro-batch sums is 60000, finite in fp16, but rank 0's local sum (80000) is not."""
+    """Local 80000 overflows fp16 before averaging with the other rank to 60000."""
     from torch.distributed.device_mesh import init_device_mesh
     from torch.distributed.fsdp import fully_shard
 
@@ -509,7 +485,7 @@ def test_replicated_sync_bitwise_buffer_reuse_and_no_host_read():
     for rank, r in _run("unit").items():
         assert r["mismatch"] == [], (rank, r)
         assert r["alias"] == 0, (rank, r)
-        # Steps 2 and 3 (and 4 on rank 0) have every local gradient; the rest leave some None.
+
         assert r["reads_all_present"] == [0] * (3 if rank == 0 else 2), (rank, r)
         assert r["reads_some_none"] == [1] * (2 if rank == 0 else 3), (rank, r)
         assert r["n_buffers"] == 2 and all(r["reused"].values()), (rank, r)
@@ -523,17 +499,15 @@ def test_replicated_sync_follows_the_ga_sync_flag():
         for mode, m in r.items():
             assert m["names"] == ["branch", "norm", "norm16"], (rank, mode, m)
             assert m["branch_none_step0"], (rank, mode, m)
-            # The new sync on every backward is bitwise the previous code (buffer / host-read change).
+
             assert m["nodefer_vs_old"] == [], (rank, mode, m)
-            # Replicated all_reduces per micro-batch (GA 4, 3 steps): the previous code syncs every
-            # backward; shipped code only on the synced one, unless the mode syncs every micro-batch.
+
             assert m["calls"]["old"] == [1] * (3 * GA), (rank, mode, m)
-            deferred = mode != "each"  # auto without a fit layout = skip
+            deferred = mode != "each"  # Auto without a fit layout defers synchronization.
             want = ([0] * (GA - 1) + [1]) * 3 if deferred else [1] * (3 * GA)
             assert m["calls"]["new"] == want, (rank, mode, m)
             assert m["calls"]["oracle"] == ([0] * (GA - 1) + [1]) * 3, (rank, mode, m)
             if deferred:
-                # Bitwise the accumulated local sum averaged once over the ranks.
                 assert m["new_vs_oracle"] == [], (rank, mode, m)
                 assert m["new_vs_oracle_max"] < 1e-2, (rank, mode, m)
                 assert m["new_vs_old_max"] < 1e-2, (rank, mode, m)

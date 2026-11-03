@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pipeline parallel composed with native FSDP2 data parallel and / or tensor parallel on a gloo CPU world
-(pp 2 x dp 2, pp 2 x tp 2, pp 2 x dp 2 x tp 2) vs the same model in one process on the global batch, fp32."""
 
 import multiprocessing
 import os
@@ -10,7 +8,7 @@ import os
 if multiprocessing.parent_process() is not None or getattr(
     multiprocessing.current_process(), "_inheriting", False
 ):
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # Gloo ranks must stay on CPU even on GPU hosts.
 
 import sys  # noqa: E402
 import tempfile  # noqa: E402
@@ -25,7 +23,7 @@ from test_tp_native_oracle import tpn  # noqa: E402
 LLAMA = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 QWEN3 = "trl-internal-testing/tiny-Qwen3ForCausalLM"
 GEMMA3 = "hf-internal-testing/tiny-random-Gemma3ForCausalLM"
-# Overrides so the head counts split over tp = 2 (as the TP suite).
+
 ARCHS = {
     "llama": (LLAMA, {}),
     "qwen3": (QWEN3, {}),
@@ -33,15 +31,12 @@ ARCHS = {
 }
 N_LAYERS = 6
 STEPS = 3
-# Step-0 grad norm tolerance vs the one-process reference. Gemma3's own fp32 grad norm sits 1.0e-4 from fp64 on one
-# process (Llama 7.8e-7), so any change of summation order (TP splits, CPU ISA) moves it by that much.
+# Gemma3 reduction-order noise needs a wider bound than Llama/Qwen3.
+
 STEP0_NORM_REL = {"llama": 1e-5, "qwen3": 1e-5, "gemma3": 3e-4}
-# Step-0 grad tolerances: per element relative to the tensor's largest entry, and relative L2 over all
-# grads. Gemma3's fp32 reordering noise under tensor parallel depends on the CPU's kernels: worst
-# element / relative L2 2.8e-5 / 2.4e-5 with this host's AVX-512 MKL, 1.6e-4 / 1.4e-4 with MKL and
-# oneDNN held to AVX2, and 2e-4 per element on a CI runner, against 2.6e-6 for llama and 5.8e-6 for
-# qwen3 on the same AVX2 run (pp x dp gemma3 stays near 4e-7). llama and qwen3 keep the strict bounds
-# on the same tensor parallel code; a gemma3-specific fault (a wrong shard, a missed reduction) is O(1).
+# CPU ISA and TP summation order move near-zero Gemma3 gradients; keep other models strict.
+
+
 GRAD_ATOL_REL = {"llama": 2e-5, "qwen3": 2e-5, "gemma3": 1e-3}
 GRAD_L2_REL = {"llama": 5e-5, "qwen3": 5e-5, "gemma3": 5e-4}
 
@@ -97,9 +92,7 @@ def global_batch(
     g = torch.Generator().manual_seed(seed)
     ids = torch.randint(0, vocab, (bsz, seq), generator = g)
     labels = ids.clone()
-    labels[
-        0, :3
-    ] = -100  # uneven token counts per dp replica / micro-batch: the global count matters
+    labels[0, :3] = -100  # Uneven token counts exercise global normalization.
     labels[-1, -2:] = -100
     labels[1, -1] = -100
     return ids, labels
@@ -143,7 +136,6 @@ def _trainable_param_groups(model, trainable = True):
 
 
 def _count_reduces():
-    """Wrap FSDP2's gradient reduce (one call per param group per synced backward)."""
     import torch.distributed.fsdp._fully_shard._fsdp_param_group as pg
 
     calls = [0]
@@ -176,8 +168,7 @@ def _case_compose(
     fit_layout = None,
     rows = 4,
 ):
-    """apply_pipeline_parallel over mesh['pp'], then apply_tensor_parallel over mesh['tp'] and / or shard_model
-    over mesh['dp']. Each dp replica trains on its rows of the global batch."""
+    """Split over pp before applying orthogonal tp/dp meshes; each dp rank gets its batch slice."""
     import torch.distributed as dist
     from safetensors.torch import load_file
     from torch.distributed.device_mesh import init_device_mesh
@@ -197,9 +188,7 @@ def _case_compose(
     model = build(repo, overrides)
     pp = ppn.apply_pipeline_parallel(model, mesh["pp"], n_microbatches = n_mb, schedule = schedule)
     refusals = {}
-    if (
-        world != dims["pp"]
-    ):  # a pp mesh smaller than the world: the other dimensions must be applied first
+    if world != dims["pp"]:
         refusals["step_before_all_dims"] = _raised(lambda: pp.step(ids[mine], labels[mine]))
     if "tp" in dims:
         tpn.apply_tensor_parallel(model, mesh["tp"])
@@ -267,7 +256,6 @@ def _case_compose(
         "owned": {n for n, p in model.named_parameters() if p.requires_grad},
         "reduces": reduces,
         "groups": len(groups),
-        # torchtitan's PP default: no unit reshards after forward (each micro-batch would all-gather again).
         "reshard_after_forward": [
             g.post_forward_mesh_info is not None
             for g in _trainable_param_groups(model, trainable = False)
@@ -286,7 +274,6 @@ def _case_compose(
 
 
 def _case_scaler(rank, world, tmp):
-    """pp 2 x dp 2: an inf on one rank's (last stage, dp replica 1) gradient skips the step on every rank."""
     from torch.distributed.device_mesh import init_device_mesh
 
     native = _native()
@@ -302,8 +289,8 @@ def _case_scaler(rank, world, tmp):
         ids[4 * dp_rank : 4 * dp_rank + 4], labels[4 * dp_rank : 4 * dp_rank + 4], scaler = scaler
     )
     if rank == world - 1:
-        # One rank (last stage, dp replica 1) finds an inf in its unscale (as a replicated gradient would);
-        # set on its found_inf directly: an inf in a DTensor shard is already reduced over dp by GradScaler.
+        # Inject found_inf directly: DTensor shard infinities already propagate over dp.
+
         unscale = scaler.unscale_
 
         def unscale_with_inf(optimizer):
@@ -324,7 +311,6 @@ def _case_scaler(rank, world, tmp):
 
 
 def _case_order_refusals(rank, world, tmp):
-    """TP or FSDP2 before the pipeline split, and a non-composable pp mesh, are refused before any change."""
     from torch.distributed.device_mesh import init_device_mesh
 
     native = _native()
@@ -339,10 +325,10 @@ def _case_order_refusals(rank, world, tmp):
     native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"]))
     out["fsdp_first"] = _raised(lambda: ppn.apply_pipeline_parallel(model, mesh["pp"]))
     out["fsdp_first_unchanged"] = not ppn.is_pipeline_parallel(model)
-    # pp mesh over all 4 ranks = world: a plain v1 split; a 2-D mesh is refused.
+
     model = build(LLAMA)
     out["mesh_2d"] = _raised(lambda: ppn.apply_pipeline_parallel(model, mesh))
-    # pp x dp: TP after shard_model is refused.
+
     pp = ppn.apply_pipeline_parallel(model, mesh["pp"])
     native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"]))
     out["tp_after_fsdp"] = _raised(lambda: tpn.apply_tensor_parallel(model, mesh["dp"]))
@@ -352,7 +338,6 @@ def _case_order_refusals(rank, world, tmp):
 
 
 def _case_pp_tp_mesh_refusal(rank, world, tmp):
-    """pp 2 x tp 2: a tp mesh that is the pp mesh itself is refused before anything is sharded."""
     from torch.distributed.device_mesh import init_device_mesh
 
     mesh = init_device_mesh("cpu", (2, 2), mesh_dim_names = ("pp", "tp"))
@@ -481,8 +466,8 @@ def _check(
             res["norms"],
             ref["norms"],
         )
-        # Later norms follow 1-2 AdamW steps (lr 1e-2), whose first updates are ~lr * sign(grad): fp32 summation
-        # order on near-zero grads moves them up to ~5e-4 (Gemma3; the pp-only split alone moves it 2.6e-4).
+        # AdamW updates amplify reduction-order noise in near-zero gradients.
+
         assert res["norms"] == pytest.approx(ref["norms"], rel = 2e-3), (
             rank,
             res["norms"],
@@ -492,7 +477,7 @@ def _check(
         num = den = 0.0
         for name, grad in res["grads"].items():
             want = ref["grads"][name]
-            # Tensor parallel row-parallel sums reorder fp32 additions: tolerance relative to the tensor's scale.
+
             atol = max(1e-6, grad_rel * float(want.abs().max()))
             torch.testing.assert_close(
                 grad, want, rtol = 1e-4, atol = atol, msg = lambda m, name = name: f"{name}: {m}"
@@ -508,7 +493,7 @@ def _check(
             ), refusals
         if "dp" in dims:
             assert res["stage_root_fsdp"]
-            # FSDP2 shards the trainable weights over dp; each group reduces once per step, not per micro-batch.
+
             assert res["placements"] and all(
                 any("S(" in pl or "Shard" in pl for pl in pls) for pls in res["placements"].values()
             ), res["placements"]
@@ -539,7 +524,7 @@ def _check(
     assert set(saved_pp) == set(saved_ref), sorted(set(saved_pp) ^ set(saved_ref))[:6]
     for key, value in saved_ref.items():
         assert saved_pp[key].shape == value.shape, key
-        # 3 AdamW steps (lr 1e-2) carry fp32 summation order differences (as the pp-only suite).
+
         torch.testing.assert_close(saved_pp[key], value, rtol = 1e-3, atol = 2e-3, msg = key)
 
 
@@ -556,7 +541,6 @@ def test_pp2_x_fsdp2_dp2_matches_one_process(arch):
 
 
 def test_pp2_x_fsdp2_dp2_1f1b_sharded_layout_matches_one_process():
-    # 1F1B, 4 micro-batches, the sharded layout (one FSDP2 unit per owned decoder layer, frozen weights sharded).
     dims = {"pp": 2, "dp": 2}
     _check(
         _spawn("compose", arch = "llama", dims = dims, schedule = "1f1b", n_mb = 4, fit_layout = False),
@@ -578,7 +562,6 @@ def test_pp2_x_tp2_matches_one_process(arch):
 
 @pytest.mark.parametrize("other", ["dp", "tp"])
 def test_pp2_x_size_one_dp_or_tp_matches_one_process(other):
-    # (pp 2, dp 1) / (pp 2, tp 1) on 2 ranks: FSDP2 / TP DTensors on a 1-rank mesh, the shape the 2-GPU proof runs.
     dims = {"pp": 2, other: 1}
     _check(_spawn("compose", world = 2, arch = "llama", dims = dims), dims)
 
