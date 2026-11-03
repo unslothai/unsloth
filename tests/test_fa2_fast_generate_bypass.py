@@ -1,6 +1,7 @@
 """Regression coverage for the FlashAttention generation fallback."""
 
 import ast
+import copy
 import inspect
 import os
 from contextlib import nullcontext
@@ -41,7 +42,7 @@ uses_flash_attention = _load_function(
     },
 )
 clear_generation_caches = _load_function("_clear_generation_caches", {})
-set_generate_param = _load_function("_set_generate_param", {})
+set_generate_param = _load_function("_set_generate_param", {"copy": copy})
 
 
 def test_top_level_flash_attention_is_detected():
@@ -334,12 +335,12 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
     fast_generate(Model(), input_ids = input_ids)
     assert captured["cache_implementation"] == "dynamic"
 
-    # Set on a supplied generation_config directly rather than also left as a raw
-    # kwarg: transformers flags a recognized GenerationConfig field present both ways
-    # as ambiguous (deprecation warning), even though the merged value is the same.
+    # Set on a copy of the supplied generation_config, not as a raw kwarg as well:
+    # transformers warns when a GenerationConfig field arrives both ways.
     generation_config = SimpleNamespace(cache_implementation = "static")
     fast_generate(Model(), input_ids = input_ids, generation_config = generation_config)
-    assert generation_config.cache_implementation == "dynamic"
+    assert captured["generation_config"].cache_implementation == "dynamic"
+    assert generation_config.cache_implementation == "static"
     assert "cache_implementation" not in captured
 
     fast_generate(Model(), input_ids = input_ids, cache_implementation = "static")

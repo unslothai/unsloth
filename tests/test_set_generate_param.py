@@ -6,6 +6,7 @@ GenerationConfig attribute (pad_token_id, cache_implementation, compile_config),
 AST-extracted so no unsloth/CUDA import is needed."""
 
 import ast
+import copy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,7 +23,7 @@ def _load_function(name, namespace):
     return namespace[name]
 
 
-set_generate_param = _load_function("_set_generate_param", {})
+set_generate_param = _load_function("_set_generate_param", {"copy": copy})
 
 
 def test_no_generation_config_sets_a_plain_kwarg():
@@ -44,7 +45,7 @@ def test_config_present_unset_field_gets_filled_in():
     kwargs = {"generation_config": generation_config}
     set_generate_param(kwargs, "pad_token_id", 99, overwrite = False)
     assert "pad_token_id" not in kwargs
-    assert generation_config.pad_token_id == 99
+    assert kwargs["generation_config"].pad_token_id == 99
 
 
 def test_config_present_already_set_field_is_preserved_when_not_overwriting():
@@ -52,7 +53,7 @@ def test_config_present_already_set_field_is_preserved_when_not_overwriting():
     kwargs = {"generation_config": generation_config}
     set_generate_param(kwargs, "pad_token_id", 99, overwrite = False)
     assert "pad_token_id" not in kwargs
-    assert generation_config.pad_token_id == 7
+    assert kwargs["generation_config"].pad_token_id == 7
 
 
 def test_config_present_default_overwrite_forces_the_value():
@@ -60,7 +61,7 @@ def test_config_present_default_overwrite_forces_the_value():
     kwargs = {"generation_config": generation_config}
     set_generate_param(kwargs, "cache_implementation", "dynamic")
     assert "cache_implementation" not in kwargs
-    assert generation_config.cache_implementation == "dynamic"
+    assert kwargs["generation_config"].cache_implementation == "dynamic"
 
 
 def test_no_leftover_kwarg_is_ever_left_alongside_an_explicit_config():
@@ -80,7 +81,7 @@ def test_a_raw_kwarg_next_to_a_config_still_wins_and_moves_onto_it():
     kwargs = {"generation_config": generation_config, "pad_token_id": 99}
     set_generate_param(kwargs, "pad_token_id", kwargs.get("pad_token_id", 0), overwrite = False)
     assert "pad_token_id" not in kwargs
-    assert generation_config.pad_token_id == 99
+    assert kwargs["generation_config"].pad_token_id == 99
 
     generation_config = SimpleNamespace(cache_implementation = None, compile_config = None)
     kwargs = {
@@ -90,9 +91,9 @@ def test_a_raw_kwarg_next_to_a_config_still_wins_and_moves_onto_it():
     }
     set_generate_param(kwargs, "cache_implementation", "static")
     set_generate_param(kwargs, "compile_config", "computed")
-    assert kwargs == {"generation_config": generation_config}
-    assert generation_config.cache_implementation == "offloaded"
-    assert generation_config.compile_config == "mine"
+    assert list(kwargs) == ["generation_config"]
+    assert kwargs["generation_config"].cache_implementation == "offloaded"
+    assert kwargs["generation_config"].compile_config == "mine"
 
 
 def test_an_explicit_none_next_to_a_config_still_wins():
@@ -101,7 +102,7 @@ def test_an_explicit_none_next_to_a_config_still_wins():
     kwargs = {"generation_config": generation_config, "cache_implementation": None}
     set_generate_param(kwargs, "cache_implementation", "static")
     assert "cache_implementation" not in kwargs
-    assert generation_config.cache_implementation is None
+    assert kwargs["generation_config"].cache_implementation is None
 
 
 def test_a_forced_value_beats_a_raw_kwarg_next_to_a_config():
@@ -109,7 +110,19 @@ def test_a_forced_value_beats_a_raw_kwarg_next_to_a_config():
     kwargs = {"generation_config": generation_config, "cache_implementation": "static"}
     set_generate_param(kwargs, "cache_implementation", "dynamic", force = True)
     assert "cache_implementation" not in kwargs
-    assert generation_config.cache_implementation == "dynamic"
+    assert kwargs["generation_config"].cache_implementation == "dynamic"
+
+
+def test_the_callers_config_is_never_mutated():
+    # TRL reuses one generation_config for every rollout; a value set for one call must not leak into the next.
+    generation_config = SimpleNamespace(pad_token_id = None, cache_implementation = "static")
+    kwargs = {"generation_config": generation_config, "pad_token_id": 11}
+    set_generate_param(kwargs, "pad_token_id", kwargs.get("pad_token_id", 0), overwrite = False)
+    set_generate_param(kwargs, "cache_implementation", "dynamic", force = True)
+    assert kwargs["generation_config"] is not generation_config
+    assert kwargs["generation_config"].pad_token_id == 11
+    assert generation_config.pad_token_id is None
+    assert generation_config.cache_implementation == "static"
 
 
 if __name__ == "__main__":

@@ -865,18 +865,15 @@ def _set_generate_param(
     overwrite = True,
     force = False,
 ):
-    # Sets a generate() parameter that is also a recognized GenerationConfig field
-    # (e.g. pad_token_id, cache_implementation, compile_config). Setting such a field
-    # as a raw kwarg *alongside* an explicit generation_config (as TRL passes at
-    # rollout time) is ambiguous to transformers and triggers its
-    # generation_config-vs-kwargs deprecation warning (GenerationMixin.
-    # _prepare_generation_config), even though the merged result is unaffected either
-    # way. Set it on that config object instead when one was passed in.
-    # overwrite=False preserves an already-set (non-None) value on the caller's config.
+    # A GenerationConfig field passed both as a raw kwarg and on an explicit
+    # generation_config (TRL rollouts) makes transformers warn, so set it on the config.
+    # overwrite=False keeps a value the caller's config already has.
     caller_generation_config = kwargs.get("generation_config")
     if caller_generation_config is not None:
-        # Never leave the raw kwarg behind. It used to win the merge, so carry the
-        # caller's value onto the config unless this call forces its own.
+        # Edit a copy: TRL reuses one config for every rollout, so changes would leak into later calls.
+        caller_generation_config = copy.copy(caller_generation_config)
+        kwargs["generation_config"] = caller_generation_config
+        # The raw kwarg used to win the merge, so carry it onto the config unless this call forces its own.
         if name in kwargs:
             caller_value = kwargs.pop(name)
             if not force:
