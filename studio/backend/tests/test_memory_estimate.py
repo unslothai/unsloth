@@ -4551,6 +4551,13 @@ def test_a_windowed_model_and_an_unreachable_zoo_keep_the_old_price(monkeypatch)
     assert mm._compute_bytes(widths, 2, 2048, [_GROWING], 262144, None) == floor
 
 
+def _longest_unfused_d256_tail():
+    from unsloth_zoo.mlx.nax import nax_available
+
+    # NAX fuses head_dim 256 from 1024 queries.
+    return 1023 if nax_available() else 2047
+
+
 @_NEEDS_MLX
 class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
     """unsloth-zoo routes each call between a score matrix and a dequantized copy of the cache."""
@@ -4608,8 +4615,9 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         unrouted = mm._compute_bytes(self.GQA[:3], 2, 2048, plan, 32768, None)
         assert mm._compute_bytes(self.GQA, 2, 2048, plan, 32768, None) == unrouted
         wide = mm._compute_bytes(self.WIDE, 2, 2048, plan, 32768, None)
+        tail = _longest_unfused_d256_tail()
         assert wide - unrouted == pytest.approx(
-            2047 * (3 * 2048 + 2047) * 16 * 2 * mm._SCORE_LIVE, abs = 1
+            tail * (3 * 2048 + tail) * 16 * 2 * mm._SCORE_LIVE, abs = 1
         )
 
     def test_a_copied_route_is_charged_a_tail_whose_scores_outgrow_the_copy(self):
@@ -4620,9 +4628,10 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         widths, n_ctx = (3584, 18944, 32, 2, 256, 0), 262144
         row = mm._dequantized_row_bytes(widths, 2, 4, 64, 2048)
         floor = mm._compute_bytes(widths[:3], 2, 2048, [], n_ctx, None)
-        tail = 2047 * (3 * 2048 + 2047) * 32 * 2 * mm._SCORE_LIVE
+        queries = _longest_unfused_d256_tail()
+        tail = queries * (3 * 2048 + queries) * 32 * 2 * mm._SCORE_LIVE
         priced = mm._compute_bytes(widths, 2, 2048, [], n_ctx, 0, 4, 64) - floor
-        assert row * n_ctx < tail and priced == int(tail)
+        assert priced == int(max(row * n_ctx, tail))
 
     def test_an_older_zoo_keeps_head_dim_256_on_mlxs_dispatch(self, monkeypatch):
         from unsloth_zoo.mlx import attention
@@ -5578,7 +5587,7 @@ _UNFUSED_HEAD_DIM_256_SCORES = {
             None,
             2_061_600,
             98_304,
-            690_952_857,
+            690_702_180,
             2,
             "bf16",
         ),
