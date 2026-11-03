@@ -51,11 +51,13 @@ export function groupGenerate(
 
 const NAME = /[A-Za-z_][A-Za-z0-9_-]*/g;
 const BLOCK = /\{\{([\s\S]*?)\}\}|\{%([\s\S]*?)%\}/g;
+const QUOTED = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g;
 
 function templateNames(text: string): string[] {
   const names: string[] = [];
   for (const block of text.matchAll(BLOCK)) {
-    const body = block[1] ?? block[2] ?? "";
+    // A quoted string is text, not a column: `{{ "topic" }}` reads nothing.
+    const body = (block[1] ?? block[2] ?? "").replace(QUOTED, '""');
     const loopVars = new Set(
       [...body.matchAll(/\bfor\s+([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]),
     );

@@ -816,3 +816,50 @@ def test_recipe_dataset_takes_every_row_count_the_run_dialog_accepts():
     spec = SPECS_BY_TYPE["recipe.generate"]
     assert param_values(spec, {"params": {"rows": 150000}})["rows"] == 150000
     assert param_values(spec, {"params": {"rows": 200000}})["rows"] == 200000
+
+
+def test_a_recipe_on_chats_model_is_cached_under_the_model_it_ran_on(monkeypatch):
+    from core.flows.engine import FlowEngine
+    from studio_mcp import loading
+
+    loaded = {"name": "org/model-a"}
+
+    async def resident(caller):
+        return {"llm": [loaded["name"]]}, {}
+
+    monkeypatch.setattr(loading, "_resident", resident)
+    payload = copy.deepcopy(SQL)
+    for provider in payload["recipe"]["model_providers"]:
+        provider["is_local"] = True
+    doc = _flow(payload)
+    ran = []
+
+    async def generate(ctx):
+        # Another GPU step switched Chat's model while this one waited for the GPU.
+        if not ran:
+            loaded["name"] = "org/model-b"
+        ran.append(loaded["name"])
+        return {
+            "dataset": {"kind": "dataset", "source": "local", "ref": loaded["name"]},
+            "preview": [],
+        }
+
+    eng = FlowEngine()
+    from core.flows.registry import load_handlers
+
+    eng.handlers = {**load_handlers(), GENERATE_TYPE: generate}
+    eng.mint_key = lambda account: ("sk-unsloth-test", None)
+    eng.revoke_key = lambda key_id: None
+
+    async def run():
+        rs = await eng.start_run(app = None, flow_id = doc["id"], doc = doc, options = {})
+        await asyncio.wait_for(rs.task, timeout = 20)
+        assert rs.status == "completed", {n: s.error for n, s in rs.nodes.items() if s.error}
+        return rs
+
+    asyncio.run(run())
+    assert ran == ["org/model-b"]
+    # Model A is back: its rows were never made, so it runs rather than handing back B's.
+    loaded["name"] = "org/model-a"
+    asyncio.run(run())
+    assert ran == ["org/model-b", "org/model-a"]

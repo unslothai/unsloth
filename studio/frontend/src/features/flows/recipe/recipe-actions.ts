@@ -191,10 +191,15 @@ export function removeElementsWithReferences(ids: {
   notes: string[];
 }): void {
   const graph = useDocStore.getState().graph;
-  const plan = planDisconnect(graph, [
-    ...ids.edges,
-    ...wiresOut(graph, ids.nodes).filter((id) => !ids.edges.includes(id)),
-  ]);
+  // A reader deleted too needs no rewrite: only the wires into columns that stay.
+  const deleted = new Set(ids.nodes);
+  const plan = planDisconnect(
+    graph,
+    [
+      ...ids.edges,
+      ...wiresOut(graph, ids.nodes).filter((id) => !ids.edges.includes(id)),
+    ].filter((id) => !deleted.has(graph.edges[id]?.target)),
+  );
   if (plan.blocked.length) return refuse(plan.blocked, "delete it");
   const key = `delete:${[...ids.nodes, ...ids.edges].join(",")}:${Date.now()}`;
   commitDisconnect(plan, key);

@@ -1824,6 +1824,24 @@ class FlowEngine:
             rs.set_status(nid, "failed")
             self._record(rs, nid, "failed", None, state.error, iteration)
             return
+        # A recipe on Chat's loaded model is keyed on the model it ran on, read while the GPU is still
+        # held: the one read above, before the wait, may have been swapped by another GPU step since.
+        relook = (
+            key is not None
+            and not spec.get("model_kind")
+            and _implicit_local_model(params.get(RECIPE_PARAM))
+        )
+
+        async def ran_on() -> Optional[str]:
+            try:
+                return cache_key(
+                    spec["type"], spec["v"], params, inputs,
+                    model = await self._model_key(ctx, spec, params), seed = seed,
+                    flow_params = ctx.flow_params,
+                )  # fmt: skip
+            except Exception:
+                return None
+
         try:
             if spec["lane"] == "gpu":
                 lock = self.gpu_lock()
@@ -1845,6 +1863,8 @@ class FlowEngine:
                             ctx.gpu_shared = True
                             rs.set_status(nid, "running")
                             outputs = await handler(ctx)
+                            if relook:
+                                key = await ran_on()
                     except NeedsExclusiveGpu:
                         shared = None
                     finally:
@@ -1860,6 +1880,8 @@ class FlowEngine:
                         else:
                             rs.set_status(nid, "running")
                             outputs = await handler(ctx)
+                        if relook:
+                            key = await ran_on()
             else:
                 rs.set_status(nid, "running")
                 outputs = await handler(ctx)

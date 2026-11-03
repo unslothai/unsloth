@@ -1199,3 +1199,37 @@ test("pasted columns are renamed all at once, so one copy's new name is not rena
   assert.equal(reader.name, "topic_2_2");
   assert.equal(reader.expr, "{{ topic_2 }}");
 });
+
+test("quoted text in a template reads no column, and deleting a {% %} reader itself is not blocked", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { removeElementsWithReferences } = await import(
+    "../src/features/flows/recipe/recipe-actions.ts"
+  );
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const names = new Set(["topic"]);
+  const { columnReferences } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  assert.deepEqual(columnReferences({ name: "f", column_type: "expression", expr: '{{ "topic" }}' }, names), []);
+  assert.deepEqual(columnReferences({ name: "f", column_type: "expression", expr: "{{ 'topic' ~ x }}" }, names), []);
+  assert.deepEqual(columnReferences({ name: "f", column_type: "expression", expr: "{{ topic }}" }, names), ["topic"]);
+
+  const { group, nodes } = sqlGroup();
+  const prompt = byName(nodes, "sql_prompt");
+  const sql = byName(nodes, "sql");
+  const control = {
+    ...sql,
+    params: {
+      column: {
+        ...(sql.params.column as object),
+        prompt: "{% if sql_prompt == 'x' %}yes{% else %}no{% endif %}",
+      },
+    },
+  };
+  const withControl = nodes.map((n) => (n.id === sql.id ? control : n));
+  useDocStore.getState().load({ ...doc(withControl, referenceEdges(withControl)), groups: [group] });
+  const graph = useDocStore.getState().graph;
+  // What the canvas hands over for a selected node: the node and every wire touching it.
+  const edges = graph.edgeOrder.filter((id) => graph.edges[id].target === sql.id || graph.edges[id].source === sql.id);
+  removeElementsWithReferences({ nodes: [sql.id], edges, groups: [], notes: [] });
+  assert.equal(useDocStore.getState().graph.nodes[sql.id], undefined);
+  assert.ok(useDocStore.getState().graph.nodes[prompt.id]);
+});
