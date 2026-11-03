@@ -72,7 +72,7 @@ export function McpImageMappings({
   }
 
   return (
-    <div className="space-y-3 rounded-[14px] bg-muted/50 p-3">
+    <div className="space-y-3 rounded-lg bg-muted/50 p-3">
       <label
         htmlFor="mcp-image-attachments"
         className="flex cursor-pointer items-start justify-between gap-3"
@@ -87,6 +87,7 @@ export function McpImageMappings({
           </span>
         </span>
         <Switch
+          className="mt-[var(--ui-title-cap-inset)]"
           id="mcp-image-attachments"
           checked={enabled}
           disabled={disabled}

@@ -55,7 +55,6 @@ def test_foreign_preflight_model_is_not_in_status(monkeypatch, accounts):
         assert reference == secret_model
         entered.set()
         assert finish.wait(10)
-        # End the simulated slow Hub authorization without downloading anything.
         raise HTTPException(status_code = 404, detail = "Model not found")
 
     monkeypatch.setattr(access, "require_model_access", slow_access)

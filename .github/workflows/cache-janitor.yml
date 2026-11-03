@@ -104,8 +104,7 @@ name: Cache janitor
 
 on:
   schedule:
-    # Every two hours. The sweep is API-only and finishes in seconds; a daily
-    # cadence let CodeQL's per-push overlay bases pile up 10+ GB between runs.
+    # Every two hours, since a daily cadence let the CodeQL per-push overlay bases pile up 10+ GB.
     - cron: '17 */2 * * *'
   workflow_dispatch:
     inputs:
@@ -123,7 +122,7 @@ on:
         type: string
         default: '3'
 
-# Two sweeps would race on the same ids and spend their DELETEs on 404s.
+# Two sweeps would race on the same ids.
 concurrency:
   group: cache-janitor-${{ github.repository }}
   cancel-in-progress: false
@@ -150,8 +149,7 @@ jobs:
         continue-on-error: true  # housekeeping must never page anyone
         env:
           GH_TOKEN: ${{ github.token }}
-          # Opt-in string, not a boolean: GitHub coerces an absent input and
-          # `false` alike, so `inputs.mode == false` is true when unset.
+          # Opt-in string, not a boolean: an absent input compares equal to false.
           DELETE: ${{ (github.event_name == 'schedule' || inputs.mode == 'delete') && 'yes' || 'no' }}
           KEEP: ${{ inputs.keep || '2' }}
           OPEN_PR_IDLE_DAYS: ${{ inputs.open_pr_idle_days || '3' }}
@@ -162,14 +160,9 @@ jobs:
           live="$RUNNER_TEMP/live.tsv"
           grouped="$RUNNER_TEMP/grouped.tsv"
 
-          # Whitelist 1..99. Anything `[ n -le KEEP ]` cannot compare exits 2,
-          # and since that test is the left operand of `&&` set -e does not
-          # fire: the `continue` is skipped and every generation gets deleted,
-          # exit 0. All-digit is not enough, since a value past bash's integer
-          # range fails the same way.
+          # Whitelist 1..99: a non-numeric KEEP makes the test below fail silently and delete every generation.
           case "$KEEP" in [1-9]|[1-9][0-9]) ;; *) echo "::warning::invalid keep=$KEEP, using 2"; KEEP=2 ;; esac
-          # Same whitelist, same reason: an unusable value must not silently
-          # become a cutoff of 0, which would treat every cache as idle.
+          # Same whitelist: a bad value must not become a cutoff of 0 that treats every cache as idle.
           case "$OPEN_PR_IDLE_DAYS" in
             [1-9]|[1-9][0-9]) ;;
             *) echo "::warning::invalid open_pr_idle_days=$OPEN_PR_IDLE_DAYS, using 3"; OPEN_PR_IDLE_DAYS=3 ;;
@@ -178,21 +171,8 @@ jobs:
 
           gib() { awk -v b="${1:-0}" 'BEGIN { printf "%.1f", b / 1073741824 }'; }
 
-          # True when the cache has not been read since the cutoff, having
-          # re-read the timestamp immediately before acting on it.
-          #
-          # The inventory is minutes old by the time the loop reaches an entry,
-          # and a run that restored it in between resets the clock. Deciding on
-          # the stale copy would delete a cache that is back in use, and the
-          # whole point of this rule is that a read means a reader. An
-          # unparseable or missing timestamp is always a keep -- same direction
-          # as the PR lookup below, where an error must never free anything.
-          #
-          # The re-check runs in report mode too, even though it deletes
-          # nothing. Report mode exists to predict what delete mode will do, and
-          # the documented way to adopt a change here is to read the report
-          # first; a preview that lists candidates the real sweep would spare
-          # sends someone looking for bytes that were never going to be freed.
+          # Re-reads last_accessed_at right before acting, since a run may have restored it since the
+          # inventory. A missing or unparseable timestamp always keeps the cache. Runs in report mode too.
           idle_since() {
             local id="$1" accessed="$2" ref="$3" key="$4" cutoff="$5" seen
             seen=$(date -u -d "$accessed" +%s 2>/dev/null || true)
@@ -209,9 +189,7 @@ jobs:
             return 0
           }
 
-          # Report a failed inventory. Deleting nothing is the safe direction,
-          # but silence means a broken janitor looks identical to a clean repo
-          # and nothing notices until the ceiling does.
+          # Fail loudly on a broken inventory so the janitor cannot look like a clean repo.
           if ! gh api --paginate "repos/$repo/actions/caches?per_page=100" \
                  -q '.actions_caches[] | [.id, .created_at, .size_in_bytes, .ref, .version, .key, .last_accessed_at] | @tsv' \
                  > "$all"; then
@@ -225,16 +203,12 @@ jobs:
 
           freed=0; deleted=0; stale_pr=0; idle_open_pr=0; dead=0
 
-          # Pass 1: caches belonging to a PR that is no longer open. Unreachable
-          # regardless of generation, so this runs before ranking and removes
-          # them from it -- otherwise a merged PR's entries occupy the keep slots
-          # of their own (ref, version, prefix) group and shield each other.
+          # Pass 1 runs before ranking so a closed PR's entries do not occupy keep slots and shield each other.
           declare -A prstate=()
           : > "$live"
           while IFS=$'\t' read -r id created size ref ver key accessed; do
             [ -z "${id:-}" ] && continue
-            # Pass 0: dead families (see the header). No reader exists on any
-            # ref, so neither PR state nor generation matters.
+            # Pass 0: dead families with no reader on any ref.
             case "$key" in
               buildkit-blob-*|buildkit-index-*|index-*)
                 echo "dead family ($(gib "$size") GiB): $key"
@@ -254,17 +228,12 @@ jobs:
             esac
             if [ -n "$num" ]; then
               case "$num" in
-                ''|*[!0-9]*) num="" ;;  # not a PR number; fall through to ranking
+                ''|*[!0-9]*) num="" ;;
               esac
             fi
             if [ -n "$num" ]; then
               if [ -z "${prstate[$num]:-}" ]; then
-                # An error must not read as "closed". Anything that is not a
-                # state we recognise becomes `unknown`, which neither pass-1 rule
-                # matches, so a rate limit or a transient 5xx keeps the cache
-                # instead of freeing it. Previously this defaulted to `open`,
-                # which was the same outcome when `open` only ever meant keep;
-                # now that an open PR can also be pruned, the two have to differ.
+                # An API error must map to unknown, never closed, so a transient failure keeps the cache.
                 state=$(gh api "repos/$repo/pulls/$num" -q '.state' < /dev/null 2>/dev/null || true)
                 case "$state" in open|closed) ;; *) state=unknown ;; esac
                 prstate[$num]=$state
@@ -280,18 +249,7 @@ jobs:
                 fi
                 continue
               fi
-              # An OPEN PR whose cache nothing has read. PR state is not a
-              # liveness signal: lookup is scoped by ref, so only this PR's own
-              # runs can restore this entry, and if none of them has in
-              # OPEN_PR_IDLE_DAYS then it is holding budget for a reader that
-              # does not exist. Dependabot is the usual shape, since those PRs
-              # sit open for weeks or months in both repos, but the rule is
-              # deliberately by age and not by author: a stale human PR costs
-              # exactly the same, and a bot PR re-run this morning is live.
-              #
-              # This only brings the reclaim forward. GitHub already evicts an
-              # entry unread for 7 days; the budget is what cannot wait, since a
-              # week of overlap times every ref that ran exceeds it.
+              # Open PR caches are only readable by that PR's runs, so an unread one is pruned by age.
               if [ "${prstate[$num]}" = "open" ] \
                  && idle_since "$id" "$accessed" "$ref" "$key" "$open_pr_cutoff"; then
                 echo "idle open PR #$num ($(gib "$size") GiB, last read $accessed): $key"
@@ -308,7 +266,6 @@ jobs:
             printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$created" "$size" "$ref" "$ver" "$key" "$accessed" >> "$live"
           done < "$all"
 
-          # Pass 2: rank the survivors by generation within each family.
           : > "$grouped"
           while IFS=$'\t' read -r id created size ref ver key accessed; do
             [ -z "${id:-}" ] && continue
@@ -343,14 +300,9 @@ jobs:
                 case "$key" in fe-dist-*) ;; *) fkeep=1 ;; esac ;;
               *) continue ;;
             esac
-            # Unshortened means the suffix did not match, which would make
-            # generation 1 look like generation N. Skip rather than guess.
+            # Suffix did not match; skip rather than misrank.
             [ "$pre" = "$key" ] && continue
-            # Group per (ref, version), not per key. Lookup is scoped by all
-            # three: a branch cannot restore a sibling's cache, and a path or
-            # compression change mints a new version that is restored
-            # independently. Ranking them together lets two entries from one
-            # scope evict every usable entry of another.
+            # Group per (ref, version, prefix): cache lookup is scoped by all three.
             printf '%s\t%s\t%s\t%s\t%s\n' "$ref|$ver|$pre" "$created" "$id" "$size" "$fkeep" >> "$grouped"
           done < "$live"
 
@@ -392,8 +344,7 @@ jobs:
             echo "| usage after | $(gib "$after") GiB of 50 GiB |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # 80% of the 50 GiB ceiling. Above this a single dependency bump can
-          # push the repo over between two scheduled sweeps.
+          # 80% of the 50 GiB ceiling.
           if [ "$after" -gt 42949672960 ]; then
             echo "::warning::Cache usage is $(gib "$after") GiB of 50 GiB after pruning. Find the family that grew."
           fi

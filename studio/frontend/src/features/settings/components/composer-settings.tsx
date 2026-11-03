@@ -3,6 +3,7 @@
 
 import { useEffect, useId, useRef } from "react";
 import { SegmentedPill } from "@/components/segmented-control";
+import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -29,7 +30,6 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const labels = composerShortcutLabels(prefs.sendShortcut, isMacPlatform());
-  // The multiline mode's chord changes once the prompt has a line break.
   const multiline = composerShortcutLabels(prefs.sendShortcut, isMacPlatform(), "\n");
   const oppositeShortcut =
     labels.opposite === multiline.opposite
@@ -63,7 +63,7 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
           className={
             embedded
               ? ""
-              : "mt-2 divide-y divide-border/60 rounded-2xl border border-border/60 bg-muted/20 px-4"
+              : "mt-2 divide-y divide-border/60 rounded-xl border border-border/60 bg-muted/20 px-4"
           }
         >
           <SettingsRow
@@ -104,7 +104,6 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
             })}
             hint={t("composerSettings.steerDescription")}
           >
-            {/* Shared track + pill selector, as on the API key expiry row. */}
             <div
               className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
               role="group"
@@ -143,6 +142,19 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
               aria-label={t("composerSettings.plainText")}
               checked={prefs.plainTextComposer}
               onCheckedChange={prefs.setPlainTextComposer}
+            />
+          </SettingsRow>
+          <SettingsRow
+            label={t("composerSettings.richPaste")}
+            badge={<Badge variant="secondary" className="h-4 px-1.5 text-ui-10 text-muted-foreground">{t("shell.beta")}</Badge>}
+            description={t("composerSettings.richPasteDescription", {
+              shortcut: isMacPlatform() ? "\u21e7\u2318V" : "Ctrl+Shift+V",
+            })}
+          >
+            <Switch
+              aria-label={t("composerSettings.richPaste")}
+              checked={prefs.richTextPaste}
+              onCheckedChange={prefs.setRichTextPaste}
             />
           </SettingsRow>
           <SettingsRow label={t("composerSettings.showContext")}>

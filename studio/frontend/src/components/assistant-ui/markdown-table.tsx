@@ -8,12 +8,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useT } from "@/i18n";
-import {
-  Cancel01Icon,
-  Copy01Icon,
-  Download01Icon,
-  ExpandIcon,
-} from "@hugeicons/core-free-icons";
+import { Cancel01Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ComponentProps,
@@ -31,6 +27,7 @@ import {
   TableDownloadDropdown,
   defaultTranslations,
 } from "streamdown";
+import { ExpandArrowsIcon } from "@/lib/expand-icons";
 
 // Streamdown ships its own glyphs for the table controls; swap in ours so copy,
 // download and expand match the icons used everywhere else.
@@ -48,7 +45,7 @@ export const MARKDOWN_TABLE_ICONS = {
   CopyIcon: streamdownIcon(Copy01Icon),
   DownloadIcon: streamdownIcon(Download01Icon),
   // Streamdown's key for the table's enlarge control.
-  Maximize2Icon: streamdownIcon(ExpandIcon),
+  Maximize2Icon: streamdownIcon(ExpandArrowsIcon),
 } satisfies NonNullable<StreamdownProps["icons"]>;
 
 // Streamdown's copy and download find the table through this attribute, so the wrapper keeps it.
@@ -172,7 +169,7 @@ export function MarkdownTable({
           disabled={isAnimating}
           onClick={() => setExpanded(true)}
         >
-          <HugeiconsIcon icon={ExpandIcon} size={14} />
+          <HugeiconsIcon icon={ExpandArrowsIcon} size={14} />
         </button>
       </div>
       <Dialog open={expanded} onOpenChange={setExpanded}>
@@ -199,7 +196,7 @@ export function MarkdownTable({
             <button
               type="button"
               aria-label={t("common.close")}
-              className="absolute top-4 right-4 flex size-10 cursor-pointer items-center justify-center rounded-full bg-popover text-foreground shadow-lg ring-1 ring-border/60 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="absolute top-4 right-4 flex size-10 cursor-pointer items-center justify-center rounded-full bg-popover text-foreground shadow-lg transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <HugeiconsIcon
                 icon={Cancel01Icon}

@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The MiniMax-H3 native preflight across the host matrix.
-
-``_run_load_h3_native`` decides three things before it commits a runtime: which binary to run,
-which device to commit it on, and -- since #8507 -- whether to spend the four-file download at all.
-Those interact: the accelerator probe only runs on a GPU target, the CPU fallback rewrites both the
-binary and the device, and every refusal has to happen before the bundle is fetched.
-
-Parametrised over ``platform x GPU vendor x binary state`` because the combinations are what broke:
-a CPU-only prebuilt on a CUDA host has its own fallback path, and a refusal reached through that
-fallback used to download the bundle first on the way to failing.
-"""
+"""The H3 preflight must refuse every host before the four-file download, CPU fallback included."""
 
 from __future__ import annotations
 
@@ -51,8 +41,7 @@ HARDWARE = [
     ("apple", "mps", "mps"),
     ("cpu", "cpu", "cpu"),
 ]
-# sys.platform values. WSL is a Linux platform string with a Windows kernel underneath, so it is
-# the linux row -- listed separately because it is where PATH picks up a Windows-side install.
+# WSL is the linux platform string; listed separately because PATH can reach a Windows install.
 PLATFORMS = ["linux", "wsl", "darwin", "win32"]
 
 
@@ -173,12 +162,7 @@ def h3_host(monkeypatch, tmp_path):
 def test_h3_preflight_refuses_before_downloading(
     h3_host, platform, hw_label, backend, device, state, help_text, expected
 ):
-    """Every refusal, on every host, costs zero downloads.
-
-    The bundle is tens of GB. A refusal that arrives after it has been fetched is the failure mode
-    the H3 gate was written to prevent, and it was reachable on all of these hosts: the gate ran
-    after the download loop, and a None binary was not rejected until later still.
-    """
+    """Every refusal costs zero downloads, since the bundle is tens of GB and must not be fetched first."""
     host = h3_host(platform = platform, backend = backend, device = device, help_text = help_text)
     with pytest.raises(RuntimeError, match = expected):
         host.run()
@@ -196,7 +180,6 @@ def test_h3_preflight_admits_a_capable_build_and_downloads_once(
     backend_obj = host.run()
     assert len(host.downloads) == 4
     assert backend_obj._state is not None
-    # A GPU target keeps its device when the build offers an accelerator; CPU/MPS are unchanged.
     assert backend_obj._state.device == device
 
 
@@ -250,7 +233,7 @@ def test_h3_cancellation_during_the_preflight_stops_before_the_asset_calls(
     original = sd_cpp_backend.ensure_h3_sd_cpp_binary
 
     def _cancel_midway(**kwargs):
-        cancelled.set()  # the user hits cancel while the install is running
+        cancelled.set()
         return original(**kwargs)
 
     monkeypatch.setattr(sd_cpp_backend, "ensure_h3_sd_cpp_binary", _cancel_midway)
@@ -258,8 +241,7 @@ def test_h3_cancellation_during_the_preflight_stops_before_the_asset_calls(
     with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
         host.run(cancel_event = cancelled)
     assert host.downloads == []
-    # The point is not that it eventually raises -- the download loop always would. It is that a
-    # cancelled load stops before paying for the four sequential size-estimate round trips.
+    # A cancelled load must stop before the four sequential size-estimate round trips.
     assert host.asset_calls == []
 
 
@@ -268,16 +250,12 @@ def test_h3_cancellation_during_the_preflight_stops_before_the_asset_calls(
 def test_h3_revets_a_user_supplied_binary_swapped_during_the_download(
     h3_host, platform, hw_label, backend, device, monkeypatch
 ):
-    """Vetting before the download means the vet-to-commit window is now the whole download.
-
-    A user-supplied binary is not ours to reinstall, so nothing else guards it: if the file at that
-    path changes while the bundle is fetched, the re-vet is the only thing standing between the
-    replacement and being recorded as the identity every later generation compares against."""
+    """A user binary is re-vetted after the download, since a swap mid-fetch would otherwise go
+    unchecked."""
     from core.inference import sd_cpp_backend
 
     host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
 
-    # The preflight sees an H3 build; by the time the download is done the path holds a pre-H3 one.
     swapped = {"done": False}
     real_probe = sd_cpp_backend._sd_cpp_probe_output
 
@@ -299,7 +277,7 @@ def test_h3_revets_a_user_supplied_binary_swapped_during_the_download(
 
     with pytest.raises(RuntimeError, match = "changed while this model was loading"):
         host.run()
-    assert len(host.downloads) == 4  # the swap is caught after the fetch, not before it
+    assert len(host.downloads) == 4
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)
@@ -307,15 +285,10 @@ def test_h3_revets_a_user_supplied_binary_swapped_during_the_download(
 def test_h3_revet_checks_identity_not_just_the_h3_marker(
     h3_host, platform, hw_label, backend, device, monkeypatch
 ):
-    """The post-download re-vet asks both of the preflight's questions, not only capability.
-
-    --ref-video is a plain option name that unrelated reference-video tools expose too, so a swap
-    to one of those would clear a marker-only re-check and then be recorded by _sd_cli_identity as
-    the vetted build every later generation compares against."""
+    """The re-vet checks binary identity too, since --ref-video is a plain option other tools expose."""
     host, real_probe, sd_cpp_backend, swapped = _shared_setup_1(backend, device, h3_host, platform)
 
     def _probe(binary, *args):
-        # Not sd.cpp, but it does carry the H3 marker -- capability alone would wave it through.
         if args == ("--help",) and swapped["done"]:
             return "reference-video-cli 2.1\n  --ref-video PATH   reference clip\n"
         return real_probe(binary, *args)
@@ -343,15 +316,11 @@ def test_h3_revet_checks_identity_not_just_the_h3_marker(
 def test_h3_revet_catches_a_user_binary_whose_accelerator_changed(
     h3_host, platform, hw_label, backend, device, monkeypatch
 ):
-    """native_device is decided on the accelerator reading and then committed for the life of the
-    runtime, so the reading has to still hold at commit time -- for a user's own build too, not
-    only a managed one. A GPU device committed around a CPU binary means offload policy and an
-    arbiter claim written against hardware nothing is running on."""
+    """The device list is re-probed at commit, since a GPU device committed around a CPU binary is wrong."""
     host, real_probe, sd_cpp_backend, swapped = _shared_setup_1(backend, device, h3_host, platform)
 
     def _probe(binary, *args):
-        # Still an H3-capable sd.cpp, so identity and capability both pass; only the device list
-        # changed, which is exactly the case the H3 re-vet cannot see.
+        # Identity and capability pass; only the device list changed, which the H3 re-vet cannot see.
         if args == ("--list-devices",) and swapped["done"]:
             return "CPU\tIntel(R) Xeon(R)\n"
         return real_probe(binary, *args)
@@ -385,7 +354,7 @@ def test_h3_revet_tolerates_an_unreadable_accelerator_reprobe(
 
     def _probe(binary, *args):
         if args == ("--list-devices",) and swapped["done"]:
-            return None  # older build that rejects the flag, or an unreadable probe
+            return None
         return real_probe(binary, *args)
 
     import utils.hf_xet_fallback as xet
@@ -409,11 +378,7 @@ def test_h3_revet_tolerates_an_unreadable_accelerator_reprobe(
 def test_h3_probes_devices_only_where_the_answer_is_used(
     h3_host, platform, hw_label, backend, device
 ):
-    """--list-devices costs a subprocess, and the full probe timeout when a build hangs on it.
-
-    A CPU or MPS target never records a baseline, so neither the decision nor the re-check can use
-    the answer -- it must not be asked. A GPU target asks exactly twice: once to decide, once under
-    the claim to confirm the decision still holds."""
+    """--list-devices is probed only on GPU targets, since CPU and MPS never use the answer."""
     host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
     host.run()
     expected = 2 if backend not in ("cpu", "mps") else 0
@@ -497,3 +462,64 @@ def test_h3_revet_does_not_invent_a_change_for_an_unrecorded_tree(
     monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
 
     host.run()
+
+
+def _h3_load_with_vae_fetch(monkeypatch, h3_host, error, *, local_files_only):
+    """Run a native H3 load whose video VAE fetch raises ``error``; the other files resolve."""
+    from core.inference.video_minimax_h3 import H3_VIDEO_VAE
+    import utils.hf_xet_fallback as xet
+
+    h3_host(platform = "linux", backend = "cpu", device = "cpu", help_text = _H3_HELP)
+    real_download = xet.hf_hub_download_with_xet_fallback
+
+    def _download(repo, wanted, *args, **kwargs):
+        if wanted == H3_VIDEO_VAE:
+            raise error
+        return real_download(repo, wanted, *args, **kwargs)
+
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+    fam = _detect_load_family(H3_REPO, None, "minimax-h3")
+    VideoBackend()._run_load_h3_native(
+        fam = fam,
+        token = None,
+        cancel_event = threading.Event(),
+        repo_id = H3_REPO,
+        gguf_filename = H3_FILE,
+        local_files_only = local_files_only,
+    )
+
+
+def test_h3_cache_only_load_names_the_missing_vae_and_the_fix(h3_host, monkeypatch):
+    """VAEs cached before the vae/official/ move miss on a cache-only load; say which file and how to fetch it."""
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    from core.inference.video_minimax_h3 import H3_VIDEO_VAE
+    from hub.utils.hf_errors import modelscope_missing
+    from utils.native_path_leases import redact_native_paths
+
+    with pytest.raises(RuntimeError) as caught:
+        _h3_load_with_vae_fetch(
+            monkeypatch, h3_host, LocalEntryNotFoundError("cannot find"), local_files_only = True
+        )
+    text = str(caught.value)
+    assert f"video VAE ({H3_VIDEO_VAE})" in text
+    assert "Load MiniMax-H3 once while online (or reconnect)" in text
+    assert isinstance(caught.value.__cause__, LocalEntryNotFoundError)
+    # The load worker stores exactly this as the progress error the UI and API read.
+    assert (modelscope_missing(caught.value) or redact_native_paths(text)) == text
+
+
+def test_h3_online_load_miss_is_unchanged(h3_host, monkeypatch):
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    error = LocalEntryNotFoundError("hub unreachable")
+    with pytest.raises(LocalEntryNotFoundError) as caught:
+        _h3_load_with_vae_fetch(monkeypatch, h3_host, error, local_files_only = False)
+    assert caught.value is error
+
+
+def test_h3_cache_only_load_keeps_an_unrelated_error(h3_host, monkeypatch):
+    error = OSError("disk full")
+    with pytest.raises(OSError) as caught:
+        _h3_load_with_vae_fetch(monkeypatch, h3_host, error, local_files_only = True)
+    assert caught.value is error

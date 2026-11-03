@@ -87,6 +87,16 @@ def _audio_cpp_family(model: str) -> Optional[str]:
     return found.family if found and found.task == "asr" and not found.unsupported else None
 
 
+def max_seconds_for(engine: Optional[str]) -> int:
+    """The longest audio Transcribe takes on ``engine``; audio.cpp reads it whole."""
+    if engine == "audiocpp":
+        from core.inference import audio_inputs
+        return audio_inputs.transcribe_max_seconds()
+    from core.inference import stt_sidecar
+
+    return int(stt_sidecar._MAX_AUDIO_SECONDS)
+
+
 def capabilities_for(model: Optional[str], engine: Optional[str]) -> dict:
     """``timestamps``: "on_request" | "always" | "unsupported"; ``aligner`` only for "on_request"."""
     model = str(model or "").strip()
@@ -97,10 +107,12 @@ def capabilities_for(model: Optional[str], engine: Optional[str]) -> dict:
         "speakers": False,
         "aligner": None,
         "cpu_only": False,
+        "max_seconds": None,
     }
     try:
         resolved_engine = _engine_for(model, engine)
         result["engine"] = resolved_engine
+        result["max_seconds"] = max_seconds_for(resolved_engine)
         if resolved_engine != "audiocpp" or not model:
             return result
         family = _audio_cpp_family(model)

@@ -26,7 +26,6 @@ test("the backends that can place a diffusion pipeline are accelerated", () => {
   }
 });
 
-// Dense quant follows backend capability rather than the backend name.
 test("the dense-quant class follows the backend's capability answer, not its name", () => {
   assert.equal(
     classifyHost({ deviceBackend: "cuda", budgetKnown: true, denseQuantSupported: true }),
@@ -41,7 +40,6 @@ test("the dense-quant class follows the backend's capability answer, not its nam
   assert.equal(preAmpere, "accelerated");
   assert.equal(hostIsAccelerated(preAmpere), true);
   assert.equal(hostRunsDenseQuant(preAmpere), false);
-  // Missing capability is conservative for older or unresolved backends.
   assert.equal(classifyHost({ deviceBackend: "cuda", budgetKnown: true }), "accelerated");
   for (const deviceBackend of ["rocm", "xpu"]) {
     const host = classifyHost({ deviceBackend, budgetKnown: true });
@@ -51,7 +49,7 @@ test("the dense-quant class follows the backend's capability answer, not its nam
   for (const host of ["gguf-only", "unknown"] as const) {
     assert.equal(hostRunsDenseQuant(host), false, host);
   }
-  // A Mac only ever reports mlx or cpu; mac + cuda means a browser-derived Mac on a remote host.
+  // mac + cuda means a browser-derived Mac on a remote host.
   for (const deviceBackend of ["mlx", "cpu"]) {
     assert.equal(
       classifyHost({
@@ -96,8 +94,7 @@ test("a resolved accelerated backend outranks a browser-derived Mac", () => {
 });
 
 test("a Mac is gguf-only whatever backend it reports", () => {
-  // Apple GPUs report as available and the backend string varies with what torch found, but no
-  // Mac can place the Modular Diffusers workflow: video.py refuses the load outright.
+  // No Mac can place the Modular Diffusers workflow: video.py refuses the load.
   for (const deviceBackend of ["mlx", "cpu", null]) {
     assert.equal(
       classifyHost({ deviceType: "mac", deviceBackend, budgetKnown: true }),
@@ -108,9 +105,7 @@ test("a Mac is gguf-only whatever backend it reports", () => {
 });
 
 test("a host still being discovered is unknown, not CPU-only", () => {
-  // The anti-flicker guarantee. The GPU hook's opening state is available:false,
-  // budgetKnown:false, and reading that as CPU-only would blink every non-GGUF row out and back
-  // on a real GPU host.
+  // The GPU hook opens with available:false; reading that as CPU-only flickers rows on GPU hosts.
   assert.equal(classifyHost({ budgetKnown: false }), "unknown");
   assert.equal(
     classifyHost({ deviceBackend: "cuda", budgetKnown: false }),
@@ -144,10 +139,7 @@ test("a gguf-only host drops the one pipeline the backend refuses, and nothing e
 });
 
 test("a gguf-only host keeps every non-GGUF row the backend can still load", () => {
-  // Each of these is a load Unsloth supports on Apple Silicon or CPU today: the diffusion
-  // pipelines are device-neutral (video_capability() certifies Apple Silicon, and
-  // diffusion_device.py picks MPS bfloat16 for exactly these), and the STT rows run through
-  // the whisper.cpp sidecar, whose format label in the catalog is informational only.
+  // Diffusion pipelines are device-neutral and STT rows run through the whisper.cpp sidecar.
   for (const id of [
     "unsloth/whisper-large-v3-turbo",
     "unsloth/whisper-tiny",
@@ -171,11 +163,8 @@ test("every dense 8-bit scheme shares the one FP8 label", () => {
   assert.equal(densePerfSuffix(["fp8"]), "Fast FP8");
   assert.equal(densePerfSuffix(["int8"]), "Fast FP8");
   assert.equal(densePerfSuffix(["mxfp8"]), "Fast FP8");
-  // Reordering the ladder must not rename the row: the label is the tier, and the resolved record
-  // names the scheme that actually loaded.
   assert.equal(densePerfSuffix(["fp8", "int8"]), "Fast FP8");
   assert.equal(densePerfSuffix(["int8", "fp8"]), "Fast FP8");
-  // A 4-bit scheme is a different quality tier and keeps its own name.
   assert.equal(densePerfSuffix(["nvfp4"]), "Fast NVFP4");
 });
 
@@ -239,7 +228,6 @@ test("a GGUF row is the slow one wherever a dense row can run beside it", () => 
 test("the dense precisions are offered exactly where they can run", () => {
   assert.equal(hostOffersDensePrecision("dense-quant"), true);
   assert.equal(hostOffersDensePrecision("accelerated"), true);
-  // An older backend reports nothing; keep the controls rather than remove ones it can honour.
   assert.equal(hostOffersDensePrecision("unknown"), true);
   assert.equal(hostOffersDensePrecision("gguf-only"), false);
 });

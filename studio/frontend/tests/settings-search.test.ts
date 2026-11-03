@@ -42,8 +42,7 @@ test("interface scale is searchable on every build", () => {
   );
 });
 
-// The words a user types for this feature are not substrings of any of its
-// labels, so without keywords the rows it is named after were unfindable.
+// The feature's search terms are not substrings of its labels.
 test("model memory rows are reachable by the terms the feature is about", () => {
   const index = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
   const rows = [
@@ -193,4 +192,21 @@ test("the multi-model, image/video idle and keepKv rows are found where they ren
   assert.ok(!index["api-keys"].includes("settings.general.modelAutoSwitch.mediaIdleUnload"));
   // ModelAutoSwitchSection is owner-only on a tab every account sees.
   assert.ok(!renderedSearchEntries(index, "api-keys", "huggingface", false).includes("settings.general.modelAutoSwitch.keepKv"));
+});
+
+const GPU_RENDERING_ENTRY = "settings.appearance.gpuRendering.label";
+
+test("GPU rendering is searchable on desktop only", () => {
+  // The Rendering section is desktop only, so the browser build has no row to scroll to.
+  const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: false, menuBarIcon: true });
+  const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
+
+  assert.equal(desktop.appearance.filter((key) => key === GPU_RENDERING_ENTRY).length, 1);
+  assert.ok(!browser.appearance.includes(GPU_RENDERING_ENTRY));
+  // Indexed in render order: after Preferences, before the sidebar nav section.
+  assert.equal(
+    desktop.appearance.indexOf(GPU_RENDERING_ENTRY) + 1,
+    desktop.appearance.indexOf("settings.appearance.sidebarNav.title"),
+  );
+  assert.equal(desktop.appearance.length, browser.appearance.length + 1);
 });

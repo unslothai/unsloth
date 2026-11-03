@@ -147,7 +147,7 @@ test("window focus triggers recovery when the document is visible", () => {
   assert.equal(recoveries, 1);
 });
 
-// The wake handler is the only caller; deleting the call or its guard leaves every test above green.
+// The wake handler is the only caller; removing it leaves every other test green.
 test("recoverCurrentThread reconciles ordinary saved messages", () => {
   const source = fileURLToPath(
     new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),

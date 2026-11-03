@@ -249,6 +249,15 @@ def bodies(studio: FastAPI, path: str) -> list[Any]:
     return [json.loads(c[3]) for c in studio.state.calls if c[1] == path]
 
 
+def media_load_bodies(studio: FastAPI, path: str) -> list[Any]:
+    """The bodies of an image or video load, each checked to name its load and shown without that id."""
+    sent = bodies(studio, path)
+    for body in sent:
+        token = body.pop("load_token", None)
+        assert isinstance(token, str) and len(token) == 32, body
+    return sent
+
+
 def queries(studio: FastAPI, path: str) -> list[dict[str, str]]:
     return [
         dict(parse_qsl(q, keep_blank_values = True)) for _m, p, q in studio.state.queries if p == path

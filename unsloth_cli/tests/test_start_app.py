@@ -43,6 +43,8 @@ def studio(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
     monkeypatch.delenv("CODEX_HOME", raising = False)
     monkeypatch.delenv("UNSLOTH_API_KEY", raising = False)
+    for name in ("OPENCLAW_CONFIG_PATH", "OPENCLAW_STATE_DIR", "OPENCLAW_HOME", "OPENCLAW_PROFILE"):
+        monkeypatch.delenv(name, raising = False)
     server = {"calls": [], "keys": {CLI_KEY, APP_KEY}, "minted": 0}
 
     def http_json(
@@ -376,6 +378,104 @@ def test_openclaw_app_adds_unsloth_and_joins_an_existing_allowlist(studio):
     assert data["models"]["providers"]["unsloth"]["baseUrl"] == f"{BASE}/v1"
 
 
+@pytest.mark.parametrize("selector", ["config", "state", "both", "home", "profile"])
+def test_openclaw_app_updates_selected_config_only(studio, monkeypatch, tmp_path, selector):
+    default = studio["home"] / ".openclaw" / "openclaw.json"
+    default.parent.mkdir()
+    default.write_text('{"marker": "unrelated default"}\n')
+    if selector == "home":
+        monkeypatch.setenv("OPENCLAW_HOME", str(tmp_path / "relocated-home"))
+        selected = tmp_path / "relocated-home" / ".openclaw" / "openclaw.json"
+    elif selector == "profile":
+        monkeypatch.setenv("OPENCLAW_PROFILE", "work")
+        selected = studio["home"] / ".openclaw-work" / "openclaw.json"
+        monkeypatch.setenv("OPENCLAW_STATE_DIR", str(selected.parent))
+        monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(selected))
+    else:
+        selected = tmp_path / "selected" / "openclaw.json"
+        if selector in ("config", "both"):
+            monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(selected))
+        if selector in ("state", "both"):
+            # An explicit file wins over a different state directory.
+            state = selected.parent if selector == "state" else tmp_path / "other-state"
+            monkeypatch.setenv("OPENCLAW_STATE_DIR", str(state))
+    selected.parent.mkdir(parents = True)
+    original = '{"marker": "selected", "agents": {"defaults": {}}}\n'
+    selected.write_text(original)
+
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(selected.read_text())
+    assert data["marker"] == "selected"
+    assert data["models"]["providers"]["unsloth"]["apiKey"] == APP_KEY
+    assert selected.with_name("openclaw.json.unsloth-backup").read_text() == original
+    assert default.read_text() == '{"marker": "unrelated default"}\n'
+    state = json.loads(start._app_state_path("openclaw", selected).read_text())
+    assert state["path"] == str(selected)
+
+
+@pytest.mark.parametrize("override", ["~/custom/openclaw.json", "relative/openclaw.json"])
+def test_openclaw_app_resolves_user_paths(studio, monkeypatch, tmp_path, override):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENCLAW_CONFIG_PATH", " " + override + " ")
+    expected = (
+        studio["home"] / "custom/openclaw.json" if override.startswith("~") else tmp_path / override
+    )
+    assert start._openclaw_app_target().path == expected
+
+
+def test_openclaw_app_expands_tilde_against_selected_home(studio, monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENCLAW_HOME", str(tmp_path / "selected-home"))
+    monkeypatch.setenv("OPENCLAW_CONFIG_PATH", "~/custom.json")
+    assert start._openclaw_app_target().path == tmp_path / "selected-home" / "custom.json"
+
+
+@pytest.mark.parametrize(
+    "reported, profile, selected",
+    [
+        ("{home}/.openclaw/openclaw.json", "work", ".openclaw"),
+        ("{home}/.openclaw-work/openclaw.json", "work", ".openclaw-work"),
+        (None, "work", ".openclaw"),
+        ("not a path", "work", ".openclaw"),
+        ("{home}/.openclaw-work/openclaw.json", "Default", ".openclaw"),
+        ("{home}/.openclaw-work/openclaw.json", "bad/name", ".openclaw"),
+    ],
+)
+def test_openclaw_profile_environment_alone(studio, monkeypatch, reported, profile, selected):
+    home = studio["home"]
+    asked = []
+
+    def check_output(command, **kwargs):
+        asked.append(command[1:])
+        if reported is None:
+            raise start.subprocess.CalledProcessError(1, command)
+        return "[plugins] ready\n" + reported.format(home = home) + "\n"
+
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: "/bin/" + name)
+    monkeypatch.setattr(start.subprocess, "check_output", check_output)
+    monkeypatch.setenv("OPENCLAW_PROFILE", profile)
+    config = home / selected / "openclaw.json"
+    config.parent.mkdir()
+    config.write_text('{"marker": "active"}\n')
+
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(config.read_text())
+    assert data["models"]["providers"]["unsloth"]["apiKey"] == APP_KEY
+    assert data["marker"] == "active"
+    other = ".openclaw-work" if selected == ".openclaw" else ".openclaw"
+    assert not (home / other / "openclaw.json").exists()
+    assert asked == ([] if profile != "work" else [["config", "file"]])
+
+
+@pytest.mark.parametrize("sentinel", ["null", " undefined "])
+def test_openclaw_home_sentinel_is_unset(studio, monkeypatch, sentinel):
+    monkeypatch.setenv("OPENCLAW_HOME", sentinel)
+    assert start._openclaw_app_target().path == studio["home"] / ".openclaw" / "openclaw.json"
+
+
 def test_openclaw_app_creates_no_allowlist(studio):
     config = studio["home"] / ".openclaw" / "openclaw.json"
     config.parent.mkdir()
@@ -412,9 +512,35 @@ def test_opencode_app_reads_a_commented_jsonc(studio, monkeypatch):
     result = CliRunner().invoke(start.start_app, ["opencode", "--app"])
 
     assert result.exit_code == 0, result.output
-    data = json.loads(config.read_text())
+    text = config.read_text()
+    assert "// mine" in text and "/* x */" in text
+    data = start._load_app_config(config, text)
     assert (data["model"], data["theme"]) == ("openai/gpt-5.5", "a//b")
     assert "unsloth-studio" in data["provider"]
+
+    assert CliRunner().invoke(start.start_app, ["opencode", "--app"]).exit_code == 0
+    assert config.read_text() == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "{}",
+        "{\n  // only a comment\n}\n",
+        '{\n  "provider": {\n    // keep\n    "openai": {"x": 1},\n  },\n}\n',
+        '{"provider": {"unsloth-studio": {"old": true}}, /* tail */ "model": "m"}',
+    ],
+)
+def test_set_app_values_keeps_jsonc_comments(tmp_path, text):
+    path = tmp_path / "opencode.jsonc"
+    updates = [(("provider", "unsloth-studio"), {"npm": "x", "models": {"a": {}}})]
+    out = start._set_app_values(text, path, updates)
+    expected = start._load_app_config(path, text)
+    expected.setdefault("provider", {})["unsloth-studio"] = updates[0][1]
+    assert start._load_app_config(path, out) == expected
+    for comment in ("// only a comment", "// keep", "/* tail */"):
+        assert (comment in out) is (comment in text)
+    assert start._set_app_values(out, path, updates) == out
 
 
 def test_opencode_app_reenables_a_disabled_unsloth(studio, monkeypatch):
@@ -431,6 +557,74 @@ def test_opencode_app_reenables_a_disabled_unsloth(studio, monkeypatch):
     assert "unsloth-studio" in data["provider"]
 
 
+@pytest.mark.parametrize(
+    "original",
+    [
+        "{ agents: { defaults: { workspace: '~/work' } }, marker: 'keep me' }",
+        "{ 'agents': { 'defaults': { 'workspace': '~/work' } }, 'marker': 'keep me' }",
+        "{ agents: { defaults: { workspace: '~/work' } }, marker: 'https://example.test/a//b' }",
+        "{ /* mine */ agents: { defaults: { workspace: '~/work', }, }, marker: '/* literal */', }",
+    ],
+)
+def test_openclaw_app_preserves_json5_values_and_original_backup(studio, original):
+    import json5
+
+    config = studio["home"] / ".openclaw" / "openclaw.json"
+    config.parent.mkdir()
+    config.write_text(original)
+    expected = json5.loads(original)
+
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
+
+    assert result.exit_code == 0, result.output
+    data = json5.loads(config.read_text())
+    assert data["agents"] == expected["agents"]
+    assert data["marker"] == expected["marker"]
+    assert data["models"]["providers"]["unsloth"]["apiKey"] == APP_KEY
+    assert config.with_name("openclaw.json.unsloth-backup").read_text() == original
+    updated = config.read_text()
+    assert CliRunner().invoke(start.start_app, ["openclaw", "--app"]).exit_code == 0
+    assert config.read_text() == updated
+
+
+def test_openclaw_app_writes_an_escaped_surrogate_pair(studio):
+    config = studio["home"] / ".openclaw" / "openclaw.json"
+    config.parent.mkdir()
+    config.write_text("{ agents: { defaults: { workspace: '~/\\ud83d\\ude80' } } }")
+
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(config.read_text(encoding = "utf-8"))
+    assert data["agents"]["defaults"]["workspace"] == "~/\U0001f680"
+
+
+@pytest.mark.parametrize("name", ["custom.settings", "custom.yaml", "custom.toml"])
+def test_openclaw_json5_format_is_selected_by_agent(studio, tmp_path, name):
+    import json5
+
+    config = tmp_path / name
+    config.write_text("{ marker: 'keep', agents: { defaults: {} } }")
+    target = start._AppTarget("openclaw", "OpenClaw app", config, start._openclaw_app_updates)
+    start._add_app_provider(target, BASE, APP_KEY, MODEL)
+    data = json5.loads(config.read_text())
+    assert data["marker"] == "keep"
+    assert "unsloth" in data["models"]["providers"]
+
+
+def test_opencode_app_does_not_accept_json5_as_jsonc(studio, monkeypatch):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", False))
+    config = studio["home"] / ".config/opencode/opencode.json"
+    config.parent.mkdir(parents = True)
+    original = "{ theme: 'dark' }"
+    config.write_text(original)
+    result = CliRunner().invoke(start.start_app, ["opencode", "--app"])
+    assert result.exit_code == 1
+    assert "Couldn't parse" in result.output
+    assert config.read_text() == original
+
+
 def test_openclaw_app_reads_a_commented_config(studio):
     config = studio["home"] / ".openclaw" / "openclaw.json"
     config.parent.mkdir()
@@ -439,7 +633,7 @@ def test_openclaw_app_reads_a_commented_config(studio):
     result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
 
     assert result.exit_code == 0, result.output
-    data = json.loads(config.read_text())
+    data = start._load_app_config(config, config.read_text())
     assert data["agents"]["defaults"] == {"model": "openai/gpt-5.5"}
     assert data["models"]["providers"]["unsloth"]["apiKey"] == APP_KEY
 
@@ -470,6 +664,35 @@ def test_codex_app_owner_without_psutil(monkeypatch):
     assert start._codex_app_owner_alive(owner) is True
 
 
+def test_hermes_app_replaces_the_provider_an_earlier_run_named_unsloth(studio):
+    yaml = pytest.importorskip("yaml")
+    config = start._hermes_app_target().path
+    config.parent.mkdir(parents = True, exist_ok = True)
+    legacy = {"base_url": f"{BASE}/v1", "api_mode": "openai", "api_key": "sk-unsloth-old"}
+    mine = {"base_url": "http://elsewhere.test/v1", "api_key": "k"}
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "model": {"provider": "custom:unsloth", "default": "m"},
+                "providers": {"unsloth": legacy, "other": mine},
+            }
+        )
+    )
+
+    result = CliRunner().invoke(start.start_app, ["hermes", "--app"])
+
+    assert result.exit_code == 0, result.output
+    data = yaml.safe_load(config.read_text())
+    assert set(data["providers"]) == {"unsloth-studio", "other"}
+    assert data["model"] == {"provider": "custom:unsloth-studio", "default": "m"}
+
+    providers = {"unsloth": {**mine, "base_url": f"{BASE}/v1", "headers": {"x": "1"}}}
+    config.write_text(yaml.safe_dump({"providers": providers}))
+    result = CliRunner().invoke(start.start_app, ["hermes", "--app"])
+    assert result.exit_code == 0, result.output
+    assert "unsloth" in yaml.safe_load(config.read_text())["providers"]
+
+
 def test_hermes_app_adds_unsloth_to_the_active_profile(studio):
     yaml = pytest.importorskip("yaml")
     root = start._hermes_app_target().path.parent
@@ -488,7 +711,7 @@ def test_hermes_app_adds_unsloth_to_the_active_profile(studio):
     data = yaml.safe_load(config.read_text())
     assert data["model"] == {"default": "openrouter/kimi-k3", "provider": "openrouter"}
     assert "compression" not in data
-    provider = data["providers"]["unsloth"]
+    provider = data["providers"]["unsloth-studio"]
     assert provider["api_key"] == APP_KEY
     assert provider["base_url"] == f"{BASE}/v1"
     assert "key_env" not in provider
@@ -503,13 +726,14 @@ def test_hermes_app_adds_unsloth_to_the_active_profile(studio):
 def test_app_refuses_a_config_it_cannot_parse(studio):
     config = studio["home"] / ".openclaw" / "openclaw.json"
     config.parent.mkdir()
-    config.write_text("{ // json5 comment\n  agents: {} }\n")
+    original = "{ // json5 comment\n  agents: { broken } }\n"
+    config.write_text(original)
 
     result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
 
     assert result.exit_code == 1
     assert "Couldn't parse" in result.output
-    assert config.read_text() == "{ // json5 comment\n  agents: {} }\n"
+    assert config.read_text() == original
     assert studio["minted"] == 0
 
 

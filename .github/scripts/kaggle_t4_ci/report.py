@@ -33,7 +33,7 @@ def _fmt_metric(value) -> str:
     if value is None:
         return "-"
     if isinstance(value, float):
-        # NaN is a real fp16 gradient-scaler outcome, not a missing value.
+        # NaN is a real fp16 gradient-scaler outcome.
         if value != value:
             return "NaN (step skipped)"
         return f"{value:.6g}"
@@ -75,7 +75,7 @@ def version_table(reports: list) -> list[str]:
     return lines
 
 
-# The label the Studio payload reports under. Duplicated in kaggle_studio_ci/report.py rather than shared: these two packages have no import relationship and both already ship a module called `report`, so a shared helper would put one on the other's sys.path, which is how `import report` starts resolving to the wrong file.
+# Duplicated rather than shared: both packages ship a `report` module, so sharing breaks imports.
 STUDIO_LABEL = "studio-gpu"
 
 
@@ -120,7 +120,6 @@ def render(report: dict) -> list[str]:
 
     config = report.get("config", {})
     if config:
-        # max_steps is up front: it decides whether the committed reference applies to this run at all.
         lines.append(
             f"Config: max_steps `{config.get('max_steps')}` - lr "
             f"`{config.get('learning_rate')}` - batch "
@@ -180,11 +179,9 @@ def render(report: dict) -> list[str]:
                 "configuration, so nothing was compared."
             )
         elif ref.get("note"):
-            # A refusal, not a deviation: the deviations list is empty for these, so printing it alone would read like a clean result.
             lines.append(f"Reference band: **{status}** - {ref['note']}")
         else:
             lines.append(f"Reference band: **{status}** - {ref.get('deviations')}")
-        # What the band did NOT compare, up front rather than buried in the evidence.
         unchecked = ref.get("config_unchecked")
         if unchecked:
             lines.append(
@@ -225,7 +222,6 @@ def render(report: dict) -> list[str]:
             )
         lines.append("")
 
-    # The whole point of the instrumentation: a reader answers "is the Hub download worth optimising" from the job summary without downloading the evidence artifact. `fetch_seconds` is None when the timer never attached, rendered as its own sentence rather than a zero, since "no download happened" and "nothing was measured" are different findings.
     phases = report.get("load_phases")
     if phases:
         if phases.get("fetch_seconds") is None:
@@ -255,7 +251,7 @@ def render(report: dict) -> list[str]:
 
     history = report.get("log_history")
     if history:
-        # GRPO: loss is ~0 by construction at num_iterations=1 and beta=0, so reward and reward_std are what is worth showing.
+        # GRPO loss is ~0 by construction here, so show reward instead.
         lines += ["| step | reward | reward_std |", "| --- | --- | --- |"]
         for entry in history:
             if entry.get("reward") is None:
@@ -297,7 +293,6 @@ SENTINELS = (
 def kernel_log_text(evidence: Path) -> str:
     """The kernel log as flat text, whichever shape Kaggle returned it in: `kernels/output` returns a JSON array of ``{stream_name, time, data}`` records, not text, so reading the file directly shows a wall of JSON with one word of message per line."""
     chunks = []
-    # rglob: a run is several kernels, each collecting into its own directory, so there is no single kernel.log any more.
     for path in sorted(evidence.rglob("kernel.log")):
         raw = path.read_text(encoding = "utf-8", errors = "replace")
         try:
@@ -352,7 +347,6 @@ def prefetch_table(evidence: Path) -> list[str]:
     failed = [r for r in records if not r.get("ok")]
     lines.append("")
     if failed:
-        # Not a failure of the run, but said out loud because the schedule assumes this lane worked: legs.KERNELS starts gptoss third to give it a window, and if the window went unused the makespan is the ~568s fallback rather than the ~500s the order was chosen for.
         lines.append(
             f"{len(failed)} of {len(records)} prefetch(es) failed. This does not fail "
             "the run -- the leg downloads the model itself -- but the leg order in "
@@ -394,7 +388,7 @@ def main() -> int:
     reason = result.get("reason", "")
     reports = result.get("reports", [])
 
-    # The Studio payload can share this kernel (see kaggle_t4_ci/build_kernel.py --with-studio) and emits its report through the same prefix, so it arrives in this list. It is a different SHAPE (assertions rather than a per-step metric trace, no `config`, no `model`), so rendering it here produces a training leg made of question marks; kaggle_studio_ci/report.py renders it properly, each reporter owning its own labels.
+    # Studio reports share this prefix but are a different shape; kaggle_studio_ci/report.py renders them.
     reports = [r for r in reports if r.get("label") != STUDIO_LABEL]
     verdict, reason = own_verdict(verdict, reason, reports, args.expect)
 

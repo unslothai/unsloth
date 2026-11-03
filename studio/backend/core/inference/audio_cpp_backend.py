@@ -1,18 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Worker backend for audio.cpp speech, music and separation models in the main audio slot.
-
-Selected by the inference worker in place of ``NativeAudioBackend`` when the model
-is an audio.cpp TTS or music GGUF, so loading, auto-switching, idle eviction,
-cancellation and the Audio page, read-aloud and ``/v1/audio/speech`` all work
-through the machinery every other main-slot audio model uses. The weights run in
-an ``audiocpp_server`` child; this class only downloads, starts, proxies and stops.
-
-A cancelled request cannot interrupt GPU work already queued inside the server, and
-the server would make the next request wait for it (minutes, for music). So a cancel
-stops the server and the next request starts it again from the warm file cache.
-"""
+"""Worker backend for audio.cpp speech, music and separation models in the main audio slot, used in
+place of NativeAudioBackend; weights run in an audiocpp_server child. A cancel stops that server
+(queued GPU work cannot be interrupted); the next request restarts it from the warm file cache."""
 
 from __future__ import annotations
 
@@ -134,11 +125,7 @@ def _wav_sample_rate(wav_bytes: bytes) -> int:
 
 
 def _music_seconds(max_new_tokens: Optional[int]) -> float:
-    """Map the shared speech-token budget onto a clip length.
-
-    The Audio page sends MiniMax's 25-frames-per-second budget for music; the same
-    number here means the same length, so one duration control drives every model.
-    """
+    """Maps the shared speech-token budget to seconds at 25 frames per second, MiniMax's music rate."""
     try:
         frames = int(max_new_tokens or 0)
     except (TypeError, ValueError):
@@ -204,9 +191,40 @@ def _reread_after_download(model: AudioCppModel, hf_token: Optional[str]) -> Aud
     return fresh
 
 
-# Strict specs that list no language option yet read the request's top-level language
-# (audio.cpp extract_request_language: VoxCPM1 keeps Cantonese text Traditional with zh-HK).
-_READS_TOP_LEVEL_LANGUAGE = frozenset({"voxcpm1", "audio8_tts"})
+# Families that read the request's top-level language, not an option (audio.cpp extract_request_language:
+# VoxCPM1 keeps Cantonese text Traditional with zh-HK; Supertonic generation_options_from_request).
+_READS_TOP_LEVEL_LANGUAGE = frozenset({"voxcpm1", "audio8_tts", "supertonic"})
+# Families that read a voice description only as a leading "(description)" on the text
+# (audio.cpp voxcpm2 split_leading_voice_tag); they read no instruct option.
+_DESCRIPTION_IN_TEXT = frozenset({"voxcpm2"})
+# Supertonic's tokenizer refuses anything but a bare ISO code (src/models/supertonic/tokenizer_text.cpp).
+_LANGUAGE_CODE_FAMILIES = frozenset({"supertonic"})
+# English names of the languages Supertonic reads (model_specs/supertonic.json).
+_CODE_LANGUAGE_NAMES = {
+    **_LANGUAGE_NAMES,
+    "ar": "Arabic",
+    "bg": "Bulgarian",
+    "cs": "Czech",
+    "da": "Danish",
+    "el": "Greek",
+    "et": "Estonian",
+    "fi": "Finnish",
+    "hi": "Hindi",
+    "hr": "Croatian",
+    "hu": "Hungarian",
+    "id": "Indonesian",
+    "lt": "Lithuanian",
+    "lv": "Latvian",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "ro": "Romanian",
+    "sk": "Slovak",
+    "sl": "Slovenian",
+    "sv": "Swedish",
+    "tr": "Turkish",
+    "uk": "Ukrainian",
+    "vi": "Vietnamese",
+}
 
 
 def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
@@ -259,7 +277,28 @@ def clone_rules(model: AudioCppModel) -> Optional[dict[str, Any]]:
             [name, list(values)] for name, values in clone.reference_text_waived
         ],
         "emotion_audio": clone.emotion_audio,
+        "description": clone_description(model) is not None,
     }
+
+
+def clone_description(model: AudioCppModel) -> Optional[str]:
+    """How a Clone run delivers a voice description: "text" (a leading tag), "instructions", or None."""
+    clone = model.clone
+    if clone is None or not clone.description:
+        return None
+    if model.family in _DESCRIPTION_IN_TEXT:
+        return "text"
+    # The server hands top-level instructions to the session as the instruction option.
+    keys = model.request_keys
+    return "instructions" if keys is None or "instruction" in keys else None
+
+
+def with_description(text: str, description: Optional[str]) -> str:
+    """``text`` behind a "(description)" tag; a text that opens with its own tag keeps it."""
+    tag = " ".join(str(description or "").replace("(", " ").replace(")", " ").split())
+    if not tag or (text or "").lstrip().startswith("("):
+        return text
+    return f"({tag}){text}"
 
 
 def edit_rules(model: AudioCppModel) -> Optional[dict[str, Any]]:
@@ -344,6 +383,17 @@ def language_name(language: Optional[str]) -> Optional[str]:
     return None
 
 
+def language_code(language: Optional[str]) -> Optional[str]:
+    """``de-DE`` or ``German`` -> ``de``; None for Auto."""
+    text = str(language or "").strip()
+    if not text or text.lower() == "auto":
+        return None
+    for code, name in _CODE_LANGUAGE_NAMES.items():
+        if name.lower() == text.lower():
+            return code
+    return text.lower().replace("_", "-").split("-", 1)[0]
+
+
 def speech_input(model: AudioCppModel, text: str) -> str:
     """VibeVoice refuses a script with no ``Speaker N:`` line."""
     if model.family == "vibevoice" and not _SPEAKER_LINE_RE.search(text or ""):
@@ -383,7 +433,6 @@ class AudioCppBackend:
         self._device_fallback: Optional[str] = None
 
     # Loading
-
     @_invalidates_gpu_memory("audio load")
     def load_model(self, config, *args, **kwargs) -> bool:
         try:
@@ -668,7 +717,6 @@ class AudioCppBackend:
             return self._server
 
     # Generation
-
     def generate_audio_response(
         self,
         text: str,
@@ -709,6 +757,15 @@ class AudioCppBackend:
             wf = workflow
         else:
             wf = "clone" if workflow == "clone" or bool(audio_inputs) else "speak"
+        # Only F5 takes a top-level clone speed; elsewhere speed is the model's own option.
+        if (
+            speed is not None
+            and wf in ("speak", "clone")
+            and "speed" not in audio_options
+            and not (wf == "clone" and (model.clone or CloneSpec()).speed)
+            and any(o["name"] == "speed" for o in workflow_options(model, wf))
+        ):
+            audio_options["speed"] = speed
         ignored = ignored_options(model, wf, audio_options)
         audio_options = {k: v for k, v in audio_options.items() if k not in ignored}
         seeded = takes_seed(model, wf)
@@ -927,8 +984,7 @@ class AudioCppBackend:
         return outputs
 
     def _restart_after_cancel(self) -> None:
-        # The server keeps computing the abandoned request; stopping it frees the GPU now and the next
-        # request starts a fresh one.
+        # Server keeps computing an abandoned request; stopping it frees the GPU for the next request
         with self._server_lock:
             self._stop_server_locked()
             self._record_runtime()
@@ -963,7 +1019,9 @@ class AudioCppBackend:
         requested: dict[str, Any] = {}
         # A strict contract refuses undeclared options; the retry would then drop the description too.
         keys = model.request_keys
-        if instructions and str(instructions).strip():
+        if instructions and str(instructions).strip() and model.family in _DESCRIPTION_IN_TEXT:
+            body["input"] = with_description(body["input"], str(instructions).strip())
+        elif instructions and str(instructions).strip():
             # Breeze and Irodori v4 call it instruction, DramaBox has neither.
             name = next((n for n in ("instruct", "instruction") if keys is None or n in keys), None)
             if name:
@@ -973,11 +1031,20 @@ class AudioCppBackend:
                     "audio.cpp: %s declares no instruction option; not sending the description",
                     model.family,
                 )
+        top_language = None
         if language and str(language).strip():
-            if keys is None or "language" in keys:
+            if model.family in _READS_TOP_LEVEL_LANGUAGE:
+                top_language = (
+                    language_code(language)
+                    if model.family in _LANGUAGE_CODE_FAMILIES
+                    else str(language).strip()
+                )
+            elif keys is None or "language" in keys:
                 requested["language"] = str(language).strip()
             else:
                 logger.info("audio.cpp: %s does not declare language; not sending it", model.family)
+        if top_language:
+            body["language"] = top_language
         merged = {**default_options, **requested}
         if merged:
             body["options"] = merged
@@ -993,16 +1060,16 @@ class AudioCppBackend:
         except AudioCppRequestError as exc:
             # 503 is a busy model, not a refused option. The server answers an option a family lacks with a
             # 4xx or a 500 depending on where the family validates it, so both count as a refusal here.
-            if not requested or exc.status == 503 or not 400 <= exc.status < 600:
+            if not (requested or top_language) or exc.status == 503 or not 400 <= exc.status < 600:
                 raise
-            # The request's own description and language are hints; the package's defaults and the
-            # user's options are not.
+            # Retry without description/language hints when rejected, except 503; defaults and user options stay
             logger.info(
                 "audio.cpp: %s rejected %s (%s); retrying without them",
                 model.family,
-                sorted(requested),
+                sorted([*requested, *(["language"] if top_language else [])]),
                 exc.detail,
             )
+            body.pop("language", None)
             if default_options:
                 body["options"] = default_options
             else:
@@ -1030,10 +1097,7 @@ class AudioCppBackend:
         options: dict,
         cancel_event,
     ) -> bytes:
-        """Speak ``text`` in the voice of ``audio_inputs["reference"]`` (a server-local WAV path).
-
-        An emotion clip has no field on the speech endpoint, so that request goes to /v1/tasks/run
-        with the clip as top-level ``audio``."""
+        """Speaks text in the voice of audio_inputs reference, a server-local WAV path; an emotion clip goes to /v1/tasks/run as top-level audio"""
         clone = model.clone or CloneSpec()
         reference = audio_inputs.get("reference")
         if not reference:
@@ -1042,6 +1106,10 @@ class AudioCppBackend:
         request_options = {name: _option_string(value) for name, value in options.items()}
         body: dict[str, Any] = {"model": server.model_id}
         spoken = speech_input(model, text)
+        description = str(instructions or "").strip()
+        delivery = clone_description(model) if description else None
+        if delivery == "text":
+            spoken = with_description(spoken, description)
         if emotion:
             body["text"] = spoken
         else:
@@ -1062,8 +1130,8 @@ class AudioCppBackend:
                 body["language"] = chosen
         if clone.speed and speed is not None:
             body["speed"] = max(_MIN_SPEED, min(_MAX_SPEED, float(speed)))
-        if clone.instructions and instructions and str(instructions).strip():
-            body["instructions"] = str(instructions).strip()
+        if description and (clone.instructions or delivery == "instructions"):
+            body["instructions"] = description
         if request_options:
             body["options"] = request_options
         if seed is not None:
@@ -1255,8 +1323,7 @@ class AudioCppBackend:
         except cm.MusicRequestError as exc:
             raise RuntimeError(str(exc)) from exc
         server = self._server_for_batch(model, batch, cancel_event)
-        # The route sizes the wait from the full work (extend, continue length); the orchestrator
-        # outlasts that same budget.
+        # Wait sized from the full work (extend, continue length); the orchestrator outlasts that budget
         timeout = float(music.get("timeout_s") or 0) or cm.timeout_seconds(
             model.family, seconds, variations, server.backend
         )
@@ -1291,7 +1358,6 @@ class AudioCppBackend:
         return first, _wav_sample_rate(first)
 
     # Unloading
-
     @_invalidates_gpu_memory("audio unload")
     def unload_model(self, model_name: str) -> bool:
         self.models.pop(model_name, None)
@@ -1316,7 +1382,7 @@ def _resolve_companion(
     found = resolve(companion.id, companion.variant, hf_token, network = network)
     if found is None:
         name = companion.id.rsplit("/", 1)[-1]
-        raise RuntimeError(f"{model.display_name} needs {name}, which Studio could not find.")
+        raise RuntimeError(f"{model.display_name} needs {name}, which Unsloth could not find.")
     return found
 
 

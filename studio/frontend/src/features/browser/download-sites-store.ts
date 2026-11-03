@@ -6,6 +6,7 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { accountDatabaseName } from "@/lib/account-transition";
+import { syncAcrossWindows } from "@/lib/sync-across-windows";
 
 export type DownloadSiteDecision = "allow" | "block";
 
@@ -33,3 +34,4 @@ export const useDownloadSitesStore = create<DownloadSitesState>()(
     },
   ),
 );
+syncAcrossWindows(useDownloadSitesStore);

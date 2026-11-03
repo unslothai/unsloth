@@ -7,6 +7,7 @@ import time
 
 import pytest
 from fastapi.responses import JSONResponse, Response
+from fastmcp.exceptions import ToolError
 
 from studio_mcp import loading
 
@@ -14,6 +15,7 @@ from .mcp_harness import (
     DEFERRED,
     WHISPER,
     bodies,
+    media_load_bodies,
     call_to,
     call_with_progress,
     fake_studio,
@@ -61,8 +63,10 @@ PAYLOADS = {
 def _no_loads_left():
     # A job left running by one test would be followed by the next one loading the same model.
     loading.LOADS.reset()
+    getattr(loading, "_MEDIA_TOKENS", {}).clear()
     yield
     loading.LOADS.reset()
+    getattr(loading, "_MEDIA_TOKENS", {}).clear()
 
 
 # tts / audio load through the LLM route but report the kind asked for. STATUS serves LLM
@@ -248,7 +252,7 @@ def test_a_gguf_image_repo_sends_its_gguf_filename(monkeypatch, fast_polls, extr
     expected = {"model_path": FLUX_GGUF, "gguf_filename": filename, "model_kind": "gguf"}
     expected.update({"hf_token": extra["hf_token"]} if "hf_token" in extra else {})
     assert bodies(studio, "/api/inference/images/download-plan") == [expected]
-    assert bodies(studio, "/api/inference/images/load") == [expected]
+    assert media_load_bodies(studio, "/api/inference/images/load") == [expected]
     lookup_token = call_to(studio, "/api/hub/gguf-variants")[2].get("x-unsloth-hf-token")
     assert lookup_token == extra.get("hf_token")
 
@@ -258,7 +262,7 @@ def test_a_plan_entry_supplies_the_checkpoint_file(monkeypatch, fast_polls):
     plan = {"entries": [{**entry, "gguf_filename": "model.safetensors"}]}
     studio = _media_studio("image", statuses = [{"loaded": True, "repo_id": "a/b"}], plan = plan)
     run_tool(monkeypatch, studio, "load_model", {"model": "a/b", "kind": "image"})
-    assert bodies(studio, "/api/inference/images/load") == [
+    assert media_load_bodies(studio, "/api/inference/images/load") == [
         {"model_path": "a/b", "gguf_filename": "model.safetensors"}
     ]
     assert [c for c in studio.state.calls if c[1] == "/api/hub/gguf-variants"] == []
@@ -308,7 +312,7 @@ def test_a_media_load_failure_is_a_tool_error(
     assert result["isError"] is True
     assert message in result["content"][0]["text"]
     if "variant" in args:
-        assert bodies(studio, "/api/inference/images/load") == []
+        assert media_load_bodies(studio, "/api/inference/images/load") == []
 
 
 def test_a_previous_model_answer_then_the_new_one_loads(monkeypatch, fast_polls):
@@ -402,7 +406,7 @@ def test_video_progress_uses_its_own_field_names(monkeypatch, fast_polls):
     assert [p["progress"] for p in progress] == [0.25, 1.0]
     assert progress[0]["message"] == "Downloading"
     assert result["structuredContent"]["model"] == LTX
-    assert bodies(studio, "/api/inference/video/load") == [{"model_path": LTX}]
+    assert media_load_bodies(studio, "/api/inference/video/load") == [{"model_path": LTX}]
 
 
 @pytest.mark.parametrize(
@@ -828,19 +832,139 @@ def test_unloading_stt_stops_a_load_still_downloading(monkeypatch, fast_polls):
     assert bodies(studio, f"{STT}/load") == []
 
 
-def test_unloading_media_stops_a_load_still_running(monkeypatch, fast_polls):
-    # Nothing is resident yet, so before this the unload answered "nothing loaded" and posted nothing.
-    unload = "/api/inference/video/unload"
-    studio = fake_studio(
-        {
-            ("POST", "/api/inference/video/download-plan"): {"entries": []},
-            ("POST", "/api/inference/video/load"): slow(LTX_LOADED, 0.5),
-            ("GET", "/api/inference/video/load-progress"): READY,
-            VIDEO_STATUS: UNLOADED,
-            IMAGE_STATUS: UNLOADED,
-            ("POST", unload): UNLOADED,
-        }
+class _TokenVideo:
+    """The video routes, keeping the load-token contract of core/inference/media_load_ids.py.
+
+    A load registers ``admit_after`` seconds into its POST (the arbiter freeing the GPU) and stays in
+    flight until ``finish()``. An unload naming a token ends that load only while it is the last one
+    admitted, answers ``superseded`` for one admitted earlier, and refuses one not admitted yet. A
+    load sent without a token gets ``studio-N``; status names the last admitted load as ``load_id``.
+    A load posted while another is in flight is refused with a 409, as Studio does.
+    """
+
+    def __init__(
+        self,
+        *,
+        admit_after: float = 0.0,
+        unload_s: float = 0.0,
+        answer_status: int = 200,
+    ):
+        self.admit_after, self.unload_s, self.answer_status = admit_after, unload_s, answer_status
+        self.current = None  # the last admitted load: [model, token, phase]
+        self.resident = None
+        self.seen: set = set()
+        self.cancelled: set = set()
+        self.events: list = []
+        # Called while an unload is out, before it answers (another client acting meanwhile).
+        self.during_unload = None
+        self.stall_status = False
+        self.status_s = 0.0
+        self.made = 0
+
+    def admit(self, model, token) -> bool:
+        if token in self.cancelled:
+            return False
+        if token is None:
+            self.made += 1
+            token = f"studio-{self.made}"
+        self.current = [model, token, "loading"]
+        self.seen.add(token)
+        self.events.append(("admitted", token))
+        return True
+
+    def finish(self) -> None:
+        self.current[2] = "ready"
+        self.resident = self.current[0]
+
+    async def load(self, request, body):
+        sent = json.loads(body)
+        await asyncio.sleep(self.admit_after)
+        if self.current is not None and self.current[2] == "loading":
+            self.events.append(("busy", sent.get("load_token")))
+            return JSONResponse({"detail": "A video load is already in progress."}, status_code = 409)
+        if not self.admit(sent["model_path"], sent.get("load_token")):
+            self.events.append(("refused", sent.get("load_token")))
+            return JSONResponse(
+                {"detail": "This load was cancelled by an unload before it started."},
+                status_code = 409,
+            )
+        if self.answer_status != 200:
+            return JSONResponse({"detail": "lost"}, status_code = self.answer_status)
+        return UNLOADED
+
+    def progress(self, request, body):
+        if self.current is None:
+            return {"phase": None}
+        return {"phase": self.current[2]}
+
+    async def status(self, request, body):
+        if self.stall_status:
+            await asyncio.sleep(30)
+        delay, self.status_s = self.status_s, 0.0
+        await asyncio.sleep(delay)
+        if not self.resident:
+            return UNLOADED
+        return {"loaded": True, "repo_id": self.resident, "load_id": self.current[1]}
+
+    async def unload(self, request, body):
+        expected = json.loads(body).get("expected_load_id") if body else None
+        self.events.append(("unload", expected))
+        await asyncio.sleep(self.unload_s)
+        if self.during_unload is not None:
+            self.during_unload()
+        self.events.append(("unload answered", expected))
+        if expected is None or (self.current is not None and self.current[1] == expected):
+            self.current = self.resident = None
+            return {**UNLOADED, **({"unloaded": True, "outcome": "unloaded"} if expected else {})}
+        if expected in self.seen:
+            return {"unloaded": False, "outcome": "superseded"}
+        self.cancelled.add(expected)
+        return {"unloaded": False, "outcome": "cancelled"}
+
+    def app(self):
+        return fake_studio(
+            {
+                ("POST", "/api/inference/video/download-plan"): {"entries": []},
+                ("POST", "/api/inference/video/load"): self.load,
+                ("GET", "/api/inference/video/load-progress"): self.progress,
+                VIDEO_STATUS: self.status,
+                IMAGE_STATUS: UNLOADED,
+                ("POST", "/api/inference/video/unload"): self.unload,
+            }
+        )
+
+
+async def _video_load(caller):
+    # Returns at once (no wait), leaving the load running in the job store, once its POST is out.
+    result = await loading.load_media(
+        caller,
+        None,
+        kind = "video",
+        model = LTX,
+        variant = None,
+        hf_token = None,
+        deadline = time.monotonic(),
     )
+    job = [job for job in loading.LOADS.jobs_of(caller.account_id) if job.slot == "video"][-1]
+    while job.post is None and not job.task.done():
+        await asyncio.sleep(0.01)
+    return result
+
+
+async def _late_unloads_done():
+    loop = asyncio.get_running_loop()
+    while held := {t for t in loading._LATE_UNLOADS if t.get_loop() is loop and not t.done()}:
+        await asyncio.wait(held, timeout = 5)
+
+
+def _tokens_sent(backend):
+    return [token for event, token in backend.events if event == "admitted" and token]
+
+
+def test_unloading_media_stops_a_load_still_running(monkeypatch, fast_polls):
+    # Nothing is resident yet: the unload names the load, which ends it in flight.
+    backend = _TokenVideo()
+    studio = backend.app()
     with session(monkeypatch, studio) as call:
         early = call("load_model", {"model": LTX, "kind": "video", "wait_s": 0})
         job_id = early["structuredContent"]["job_id"]
@@ -848,46 +972,286 @@ def test_unloading_media_stops_a_load_still_running(monkeypatch, fast_polls):
         job = call("get_job", {"kind": "load", "id": job_id})
     assert unloaded == {"kind": "video", "model": LTX, "unloaded": True}
     assert job["structuredContent"]["status"] == "cancelled"
-    assert len([c for c in studio.state.calls if c[1] == unload]) == 1
+    (token,) = _tokens_sent(backend)
+    assert bodies(studio, "/api/inference/video/unload") == [{"expected_load_id": token}]
+    assert backend.current is None
 
 
-def test_unloading_media_waits_for_a_load_post_still_freeing_the_gpu(monkeypatch, fast_polls):
-    # The route registers its load from a thread once the arbiter freed the GPU; cancelling the
-    # awaiting job does not stop that thread, so an unload posted earlier finds nothing to cancel.
-    unload = "/api/inference/video/unload"
-    registered = []
-    seen_at_unload = []
+def test_a_media_load_post_that_outlasts_the_unload_never_registers(monkeypatch, fast_polls):
+    # The unload reaches Studio before the load POST registers its load: the load is refused on
+    # arrival, and the unload never waits for the POST.
+    backend = _TokenVideo(admit_after = 0.6)
+    caller = make_caller(studio_app = backend.app())
 
-    def handoff() -> None:
-        time.sleep(0.5)
-        registered.append(True)
+    async def scenario():
+        result = await _video_load(caller)
+        began = time.monotonic()
+        unloaded = await loading.unload_media(caller, "video")
+        took = time.monotonic() - began
+        (job,) = loading.LOADS.jobs_of("owner")
+        await asyncio.wait({job.post}, timeout = 5)
+        await _late_unloads_done()
+        return result, unloaded, took
 
-    async def load(request, body):
-        await asyncio.to_thread(handoff)
-        return LTX_LOADED
+    result, unloaded, took = asyncio.run(scenario())
+    assert result.status == "loading"
+    assert took < 0.5
+    assert unloaded.unloaded is False
+    assert [e for e, _t in backend.events] == ["unload", "unload answered", "refused"]
+    assert backend.current is None and backend.resident is None
 
-    def unload_route(request, body):
-        seen_at_unload.append(bool(registered))
-        return UNLOADED
 
-    studio = fake_studio(
-        {
-            ("POST", "/api/inference/video/download-plan"): {"entries": []},
-            ("POST", "/api/inference/video/load"): load,
-            ("GET", "/api/inference/video/load-progress"): READY,
-            VIDEO_STATUS: UNLOADED,
-            IMAGE_STATUS: UNLOADED,
-            ("POST", unload): unload_route,
-        }
-    )
+def test_a_stopped_load_never_cancels_a_newer_load_from_the_ui(monkeypatch, fast_polls):
+    backend = _TokenVideo(admit_after = 0.6)
+    caller = make_caller(studio_app = backend.app())
+
+    async def scenario():
+        await _video_load(caller)
+        await loading.unload_media(caller, "video")
+        backend.admit(LTX, None)
+        backend.finish()
+        (job,) = loading.LOADS.jobs_of("owner")
+        await asyncio.wait({job.post}, timeout = 5)
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert backend.events[-1][0] == "refused"
+    assert backend.current == [LTX, "studio-1", "ready"] and backend.resident == LTX
+
+
+def test_a_cancelled_media_unload_still_ends_the_load_it_stopped(monkeypatch, fast_polls):
+    backend = _TokenVideo(unload_s = 0.4)
+    caller = make_caller(studio_app = backend.app())
+
+    async def scenario():
+        await _video_load(caller)
+        (job,) = loading.LOADS.jobs_of("owner")
+        await asyncio.wait({job.post}, timeout = 5)
+        unload = asyncio.ensure_future(loading.unload_media(caller, "video"))
+        await asyncio.sleep(0.1)
+        unload.cancel()
+        await asyncio.wait({unload}, timeout = 5)
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    (token,) = _tokens_sent(backend)
+    assert ("unload answered", token) in backend.events
+    assert backend.current is None
+
+
+def test_a_lost_load_answer_still_lets_the_token_end_the_load(monkeypatch, fast_polls):
+    # The load registered but its answer failed: the job ended, the load runs on, and a later
+    # unload still ends it by its token (nothing is resident yet, so status alone would not).
+    backend = _TokenVideo(answer_status = 500)
+    studio = backend.app()
     with session(monkeypatch, studio) as call:
-        early = call("load_model", {"model": LTX, "kind": "video", "wait_s": 0})
-        job_id = early["structuredContent"]["job_id"]
+        failed = call("load_model", {"model": LTX, "kind": "video", "wait_s": 30})
+        assert failed["isError"] is True
+        assert backend.current is not None
         unloaded = call("unload_model", {"kind": "video"})["structuredContent"]
-        job = call("get_job", {"kind": "load", "id": job_id})
     assert unloaded["unloaded"] is True
-    assert job["structuredContent"]["status"] == "cancelled"
-    assert seen_at_unload == [True]
+    (token,) = _tokens_sent(backend)
+    assert bodies(studio, "/api/inference/video/unload") == [{"expected_load_id": token}]
+    assert backend.current is None
+    assert loading._MEDIA_TOKENS == {}
+
+
+def test_a_superseded_token_leaves_the_newer_load_alone(monkeypatch, fast_polls):
+    # This caller's load finished, then the UI started another; the old token ends nothing.
+    backend = _TokenVideo()
+    caller = make_caller(studio_app = backend.app())
+
+    async def scenario():
+        await _video_load(caller)
+        (job,) = loading.LOADS.jobs_of("owner")
+        await asyncio.wait({job.post}, timeout = 5)
+        backend.finish()
+        await asyncio.wait({job.task}, timeout = 5)
+        backend.resident = None
+        backend.admit(LTX, None)
+        return await loading.unload_media(caller, "video")
+
+    unloaded = asyncio.run(scenario())
+    assert unloaded.unloaded is False
+    assert backend.events[-1] == ("unload answered", _tokens_sent(backend)[0])
+    assert backend.current == [LTX, "studio-1", "loading"]
+
+
+def test_another_accounts_unload_sends_none_of_this_accounts_tokens(monkeypatch, fast_polls):
+    backend = _TokenVideo()
+    studio = backend.app()
+    mine = make_caller(studio_app = studio)
+    theirs = make_caller(studio_app = studio, account_id = "acct-b")
+
+    async def scenario():
+        await _video_load(mine)
+        (job,) = loading.LOADS.jobs_of("owner")
+        await asyncio.wait({job.post}, timeout = 5)
+        return await loading.unload_media(theirs, "video")
+
+    unloaded = asyncio.run(scenario())
+    assert unloaded.unloaded is False
+    assert bodies(studio, "/api/inference/video/unload") == []
+    assert backend.current is not None
+
+
+def test_a_media_load_posts_after_an_unload_already_sent(monkeypatch, fast_polls):
+    # An unload of the slot still out would cancel a load registered before it ran.
+    backend = _TokenVideo(unload_s = 0.4)
+    backend.admit(LTX, None)
+    backend.finish()
+    caller = make_caller(studio_app = backend.app())
+
+    async def scenario():
+        unload = asyncio.ensure_future(loading.unload_media(caller, "video"))
+        await asyncio.sleep(0.1)
+        await _video_load(caller)
+        await asyncio.wait({unload}, timeout = 5)
+        (job,) = loading.LOADS.jobs_of("owner")
+        await asyncio.wait({job.post}, timeout = 5)
+
+    asyncio.run(scenario())
+    events = [e for e, _t in backend.events]
+    assert events == ["admitted", "unload", "unload answered", "admitted"]
+    assert backend.current is not None and backend.current[2] == "loading"
+
+
+def test_the_resident_unload_names_the_load_status_showed(monkeypatch, fast_polls):
+    # While this caller's token unload is out, the UI starts another load over the resident one.
+    # The unload of the resident names the load status showed, so it leaves that newer load alone.
+    backend = _TokenVideo(unload_s = 0.2)
+    caller = make_caller(studio_app = backend.app())
+
+    async def scenario():
+        await _video_load(caller)
+        (job,) = loading.LOADS.jobs_of("owner")
+        await asyncio.wait({job.post}, timeout = 5)
+        backend.finish()
+        await asyncio.wait({job.task}, timeout = 5)
+        # The UI's load replaces it and is resident; this caller's token is now stale.
+        backend.admit(LTX, None)
+        backend.finish()
+
+        def newer_load():
+            if backend.current[1] == "studio-1":
+                backend.admit(LTX, None)
+
+        backend.during_unload = newer_load
+        return await loading.unload_media(caller, "video")
+
+    unloaded = asyncio.run(scenario())
+    assert unloaded.unloaded is False
+    token = _tokens_sent(backend)[0]
+    assert [e for e in backend.events if e[0] == "unload"] == [
+        ("unload", token),
+        ("unload", "studio-1"),
+    ]
+    assert backend.current == [LTX, "studio-2", "loading"]
+
+
+def test_the_resident_unload_unloads_what_status_showed(monkeypatch, fast_polls):
+    backend = _TokenVideo()
+    backend.admit(LTX, None)
+    backend.finish()
+    studio = backend.app()
+    with session(monkeypatch, studio) as call:
+        unloaded = call("unload_model", {"kind": "video"})["structuredContent"]
+    assert unloaded == {"kind": "video", "model": LTX, "unloaded": True}
+    assert bodies(studio, "/api/inference/video/unload") == [{"expected_load_id": "studio-1"}]
+    assert backend.current is None
+
+
+def test_a_live_token_outlasts_any_number_of_refused_loads(monkeypatch, fast_polls):
+    # The first load registered but its answer failed, so it runs on; the retries are refused while it
+    # does. Its token must still be named by the unload.
+    backend = _TokenVideo(answer_status = 500)
+    caller = make_caller(studio_app = backend.app())
+
+    async def scenario():
+        for _ in range(10):
+            await _video_load(caller)
+            (job,) = [j for j in loading.LOADS.jobs_of("owner") if not j.task.done()] or [None]
+            if job is not None:
+                await asyncio.wait({job.task}, timeout = 5)
+        return await loading.unload_media(caller, "video")
+
+    unloaded = asyncio.run(scenario())
+    first = _tokens_sent(backend)[0]
+    assert [e for e, _t in backend.events].count("busy") == 9
+    assert unloaded.unloaded is True
+    assert ("unload answered", first) in backend.events
+    assert backend.current is None
+    assert loading._MEDIA_TOKENS == {}
+
+
+def test_a_load_shown_ready_retires_the_tokens_before_it(monkeypatch, fast_polls):
+    backend = _TokenVideo()
+    caller = make_caller(studio_app = backend.app())
+
+    async def scenario():
+        for _ in range(2):
+            await _video_load(caller)
+            (job,) = [j for j in loading.LOADS.jobs_of("owner") if not j.task.done()]
+            await asyncio.wait({job.post}, timeout = 5)
+            backend.finish()
+            await asyncio.wait({job.task}, timeout = 5)
+
+    asyncio.run(scenario())
+    first, second = _tokens_sent(backend)
+    assert list(loading._MEDIA_TOKENS[("owner", "video")]) == [second]
+
+
+def test_a_stalled_status_read_still_ends_the_stopped_load(monkeypatch, fast_polls):
+    monkeypatch.setattr(loading, "READ_S", 0.2)
+    backend = _TokenVideo()
+    caller = make_caller(studio_app = backend.app())
+
+    async def scenario():
+        await _video_load(caller)
+        (job,) = loading.LOADS.jobs_of("owner")
+        await asyncio.wait({job.post}, timeout = 5)
+        backend.stall_status = True
+        began = time.monotonic()
+        with pytest.raises(ToolError, match = "did not answer the video status read"):
+            await loading.unload_media(caller, "video")
+        return time.monotonic() - began
+
+    took = asyncio.run(scenario())
+    assert took < 5
+    (token,) = _tokens_sent(backend)
+    assert ("unload answered", token) in backend.events
+    assert backend.current is None
+
+
+def test_a_load_started_during_the_unload_status_read_waits_for_the_unload(monkeypatch, fast_polls):
+    # The status read is slow and this process starts a load of the slot meanwhile: that load posts
+    # only once the unload answered, so status never names it and the unload never ends it.
+    backend = _TokenVideo()
+    backend.admit(LTX, None)
+    backend.finish()
+    caller = make_caller(studio_app = backend.app())
+
+    async def scenario():
+        backend.status_s = 0.3
+        unload = asyncio.ensure_future(loading.unload_media(caller, "video"))
+        await asyncio.sleep(0.05)
+        load = asyncio.ensure_future(_video_load(caller))
+        result = await unload
+        await load
+        (job,) = loading.LOADS.jobs_of("owner")
+        await asyncio.wait({job.post}, timeout = 5)
+        return result
+
+    result = asyncio.run(scenario())
+    assert result.unloaded is True
+    (token,) = [t for t in _tokens_sent(backend) if not t.startswith("studio-")]
+    events = [e for e in backend.events if e[0] in ("unload answered", "admitted")]
+    assert events == [
+        ("admitted", "studio-1"),
+        ("unload answered", "studio-1"),
+        ("admitted", token),
+    ]
+    assert backend.current == [LTX, token, "loading"]
 
 
 def test_unloading_stt_lets_a_load_past_its_download_finish_then_unloads_it(
@@ -1069,3 +1433,102 @@ def test_running_chats_block_a_load_with_a_wait_or_cancel_hint(monkeypatch):
     )
     assert "thread" not in message
     assert "force_cancel_active" not in message
+
+
+def _replacement_failed_studio(*, held):
+    # The UI's model (token held) is resident; this caller's replacement t1 was in flight at the status
+    # read and then failed, so its token unload answers superseded and the old model stays loaded.
+    state = {"resident": LTX}
+
+    def status(request, body):
+        if state["resident"] is None:
+            return UNLOADED
+        return {"loaded": True, "repo_id": LTX, "load_id": "t1", "resident_load_id": held}
+
+    def unload(request, body):
+        expected = json.loads(body).get("expected_load_id") if body else None
+        if expected is not None and expected == held and state["resident"] is not None:
+            state["resident"] = None
+            return {"loaded": False, "unloaded": True, "outcome": "unloaded"}
+        return {"unloaded": False, "outcome": "superseded"}
+
+    return fake_studio(
+        {VIDEO_STATUS: status, ("POST", "/api/inference/video/unload"): unload}
+    ), state
+
+
+def test_an_unload_ends_the_model_a_failed_replacement_left_resident(monkeypatch):
+    studio, state = _replacement_failed_studio(held = "ui-1")
+    caller = make_caller(studio_app = studio)
+    loading._remember_media_token(caller, "video", "t1")
+    unloaded = asyncio.run(loading.unload_media(caller, "video"))
+    assert bodies(studio, "/api/inference/video/unload") == [
+        {"expected_load_id": "t1"},
+        {"expected_load_id": "ui-1"},
+    ]
+    assert unloaded.unloaded is True and state["resident"] is None
+
+
+def test_an_unload_names_no_resident_id_studio_does_not_report(monkeypatch):
+    # An older Studio reports no resident_load_id: only the token unload goes out, as before.
+    studio, state = _replacement_failed_studio(held = None)
+    caller = make_caller(studio_app = studio)
+    loading._remember_media_token(caller, "video", "t1")
+    unloaded = asyncio.run(loading.unload_media(caller, "video"))
+    assert bodies(studio, "/api/inference/video/unload") == [{"expected_load_id": "t1"}]
+    assert unloaded.unloaded is False and state["resident"] == LTX
+
+
+def _status_studio(status, answers = None):
+    # Status answers `status`; each unload naming a token answers the next entry of answers[token].
+    answers = {k: list(v) for k, v in (answers or {}).items()}
+
+    def unload(request, body):
+        expected = json.loads(body).get("expected_load_id") if body else None
+        queue = answers.get(expected) or [{"unloaded": False, "outcome": "superseded"}]
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    return fake_studio({VIDEO_STATUS: status, ("POST", "/api/inference/video/unload"): unload})
+
+
+def test_an_unload_sends_no_unconditional_unload_when_studio_cannot_name_the_load(monkeypatch):
+    # Studio reports load ids, but this read could not name the state: an unconditional unload
+    # could end a load admitted meanwhile, so none goes out.
+    studio = _status_studio(
+        {"loaded": True, "repo_id": LTX, "load_id": None, "resident_load_id": None}
+    )
+    caller = make_caller(studio_app = studio)
+    with pytest.raises(ToolError, match = "could not identify"):
+        asyncio.run(loading.unload_media(caller, "video"))
+    assert bodies(studio, "/api/inference/video/unload") == []
+
+
+def test_an_unload_of_a_model_studio_hides_keeps_the_plain_unload(monkeypatch):
+    # Another account's resident (Studio hides its id and status fields): the plain unload as before,
+    # which Studio refuses or performs for this caller.
+    studio = _status_studio({"loaded": True, "yours": False})
+    caller = make_caller(studio_app = studio)
+    asyncio.run(loading.unload_media(caller, "video"))
+    sent = [c[3] for c in studio.state.calls if c[1] == "/api/inference/video/unload"]
+    assert len(sent) == 1 and "expected_load_id" not in (sent[0] or "")
+
+
+def test_an_unload_retries_this_callers_resident_after_its_replacement_fails(monkeypatch):
+    # This caller loaded A, then replacement B was in flight at the read: A's unload answers superseded
+    # while B is loading, B fails and its own unload answers superseded, so A is named again after.
+    studio = _status_studio(
+        {"loaded": True, "repo_id": LTX, "load_id": "B", "resident_load_id": "A"},
+        {
+            "A": [
+                {"unloaded": False, "outcome": "superseded"},
+                {"loaded": False, "unloaded": True, "outcome": "unloaded"},
+            ]
+        },
+    )
+    caller = make_caller(studio_app = studio)
+    loading._remember_media_token(caller, "video", "A")
+    loading._remember_media_token(caller, "video", "B")
+    unloaded = asyncio.run(loading.unload_media(caller, "video"))
+    sent = bodies(studio, "/api/inference/video/unload")
+    assert sent.count({"expected_load_id": "A"}) == 2 and {"expected_load_id": "B"} in sent
+    assert unloaded.unloaded is True

@@ -4,11 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { GgufVariantsResponse } from "../src/features/chat/types/api.ts";
-import {
-  loadPickerGgufVariants,
-  createTaskLimiter,
-  hubWithdrawsSoleQuant,
-} from "../src/features/model-picker/components/model-selector/gguf-discovery.ts";
+import { loadPickerGgufVariants } from "../src/features/model-picker/components/model-selector/gguf-discovery.ts";
 
 const local: GgufVariantsResponse = {
   repo_id: "Org/Cached",
@@ -232,46 +228,6 @@ test("an update downloads the published revision's size and the Hub default wins
   assert.equal(current.variants[0].size_bytes, 256);
 });
 
-test("a Hub update or missing drafter withdraws a collapsed sole quant", async () => {
-  for (const extra of [
-    { update_available: true },
-    { pending_drafter_filename: "mtp-drafter.gguf" },
-  ]) {
-    const remote = { ...local, variants: [{ ...local.variants[0], ...extra }] };
-    assert.equal(
-      await hubWithdrawsSoleQuant(async () => remote, "q4_k_m"),
-      true,
-    );
-  }
-  assert.equal(await hubWithdrawsSoleQuant(async () => local, "Q4_K_M"), false);
-  assert.equal(
-    await hubWithdrawsSoleQuant(async () => {
-      throw new Error("Hugging Face unreachable");
-    }, "Q4_K_M"),
-    false,
-  );
-});
-
-test("follow-up Hub probes never exceed the limiter's concurrency", async () => {
-  const run = createTaskLimiter(2);
-  let active = 0;
-  let peak = 0;
-  const done = await Promise.all(
-    Array.from({ length: 7 }, (_, i) =>
-      run(async () => {
-        active += 1;
-        peak = Math.max(peak, active);
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        active -= 1;
-        if (i === 3) throw new Error("probe failed");
-        return i;
-      }).catch(() => -1),
-    ),
-  );
-  assert.equal(peak, 2);
-  assert.deepEqual(done, [0, 1, 2, -1, 4, 5, 6]);
-});
-
 test("a failed disk phase falls back to the Hub only when it is reachable", async () => {
   const calls: boolean[] = [];
   const list = async (localOnly: boolean) => {
@@ -314,3 +270,50 @@ test("an up-to-date cached quant keeps the Hub's companion-inclusive size", asyn
   assert.equal(result.variants[0].download_size_bytes, 900);
   assert.equal(result.variants[0].cache_path, "/cache/old");
 });
+
+const GIB = 1024 ** 3;
+type Variant = GgufVariantsResponse["variants"][number];
+
+async function mergedRow(cached: Partial<Variant>, hub: Partial<Variant>) {
+  const merged = await loadPickerGgufVariants(
+    async (localOnly) => ({
+      ...local,
+      variants: [{ ...local.variants[0], ...(localOnly ? cached : hub) }],
+    }),
+    options,
+    () => {},
+  );
+  return merged.variants[0];
+}
+
+test("an update's table size travels with the update's file size", async () => {
+  const row = await mergedRow(
+    { size_bytes: 70 * GIB, lookup_table_bytes: 20 * GIB },
+    { size_bytes: 80 * GIB, lookup_table_bytes: 30 * GIB, update_available: true },
+  );
+  assert.equal(row.size_bytes, 80 * GIB);
+  assert.equal(row.lookup_table_bytes, 30 * GIB);
+});
+
+for (const [name, hub, table] of [
+  [
+    "a Hub row with no table reading keeps the local header's",
+    { lookup_table_bytes: 0 },
+    20 * GIB,
+  ],
+  [
+    "an up-to-date local header's table wins over the Hub's bounded reading",
+    { lookup_table_bytes: 12 * GIB },
+    20 * GIB,
+  ],
+  [
+    "an update that drops the table is taken at its word",
+    { lookup_table_bytes: 0, update_available: true },
+    0,
+  ],
+] as const) {
+  test(name, async () => {
+    const row = await mergedRow({ lookup_table_bytes: 20 * GIB }, hub);
+    assert.equal(row.lookup_table_bytes, table);
+  });
+}

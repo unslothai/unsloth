@@ -61,10 +61,10 @@ def test_text_only_families_take_no_frame(name):
 
 def test_i2v_class_is_never_the_t2v_class():
     # A family naming its own t2v class as the i2v one would "swap" to the same class and pass the image to a
-    # __call__ that ignores it.
+    # __call__ that ignores it, unless that class takes the frame itself (Cosmos3OmniPipeline's image=).
     for fam in _FAMILIES:
         if fam.i2v_pipeline_class:
-            assert fam.i2v_pipeline_class != fam.pipeline_class
+            assert fam.i2v_pipeline_class != fam.pipeline_class or not fam.i2v_fits_first_frame
             assert fam.i2v_pipeline_class.endswith("Pipeline")
 
 

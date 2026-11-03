@@ -26,7 +26,8 @@ import pytest
 import torch
 
 import unsloth  # noqa: F401  (patches before transformers)
-from unsloth import FastLanguageModel, FastModel
+from unsloth import FastLanguageModel, FastModel, is_bfloat16_supported
+from unsloth.device_type import xpu_keeps_explicit_bf16
 from unsloth.models.loader_utils import check_and_disable_bitsandbytes_loading
 
 _BLOCK = 128
@@ -36,6 +37,11 @@ _KEEP_16BIT = "model.layers.1.self_attn.o_proj"
 cuda_available = torch.cuda.is_available()
 xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
 dev = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
+# The tests ask for bf16; as the loaders do, a GPU without bf16 (T4) loads in fp16 instead, except XPU,
+# which keeps an explicit bf16 request. fp8 dequantizes to the load dtype.
+_LOAD_DTYPE = (
+    torch.bfloat16 if is_bfloat16_supported() or xpu_keeps_explicit_bf16() else torch.float16
+)
 
 needs_gpu = pytest.mark.skipif(
     not (cuda_available or xpu_available), reason = "bitsandbytes 4bit needs a GPU"
@@ -72,12 +78,16 @@ def _quantize_block_fp8(weight):
     return quant, scale.contiguous()
 
 
-def _dequantize_reference(quant, scale):
+def _dequantize_reference(
+    quant,
+    scale,
+    dtype = torch.bfloat16,
+):
     rows, cols = quant.shape
     expanded = (
         scale.float().repeat_interleave(_BLOCK, 0)[:rows].repeat_interleave(_BLOCK, 1)[:, :cols]
     )
-    return (quant.float() * expanded).to(torch.bfloat16)
+    return (quant.float() * expanded).to(dtype)
 
 
 def _is_fp8_candidate(key, tensor):
@@ -88,7 +98,7 @@ def _is_fp8_candidate(key, tensor):
     return not key.startswith(_KEEP_16BIT + ".")
 
 
-def _write_pair(bf16_dir, root):
+def _write_pair(bf16_dir, root, deq_dtype):
     """bf16 save -> (fp8 dir, dequantized-bf16 dir)."""
     from safetensors.torch import load_file, save_file
 
@@ -108,7 +118,7 @@ def _write_pair(bf16_dir, root):
             quant, scale = _quantize_block_fp8(tensor)
             fp8_state[key] = quant
             fp8_state[key + "_scale_inv"] = scale
-            deq_state[key] = _dequantize_reference(quant, scale)
+            deq_state[key] = _dequantize_reference(quant, scale, deq_dtype)
         else:
             fp8_state[key] = tensor
             deq_state[key] = tensor
@@ -128,7 +138,11 @@ def _write_pair(bf16_dir, root):
     return fp8_dir, deq_dir
 
 
-def _build(root, moe):
+def _build(
+    root,
+    moe,
+    deq_dtype = torch.bfloat16,
+):
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(_TOKENIZER_REPO)
@@ -163,12 +177,12 @@ def _build(root, moe):
     bf16_dir = os.path.join(root, "bf16")
     model.save_pretrained(bf16_dir, safe_serialization = True)
     tokenizer.save_pretrained(bf16_dir)
-    return _write_pair(bf16_dir, root)
+    return _write_pair(bf16_dir, root, deq_dtype)
 
 
 @pytest.fixture(scope = "module")
 def dense_pair(tmp_path_factory):
-    return _build(str(tmp_path_factory.mktemp("fp8_dense")), moe = False)
+    return _build(str(tmp_path_factory.mktemp("fp8_dense")), moe = False, deq_dtype = _LOAD_DTYPE)
 
 
 @pytest.fixture(scope = "module")
@@ -295,7 +309,8 @@ def test_checkpoint_16bit_modules_stay_16bit(dense_pair):
     assert type(module) is torch.nn.Linear
     stored = load_file(os.path.join(fp8_dir, "model.safetensors"))[_KEEP_16BIT + ".weight"]
     assert stored.dtype == torch.bfloat16
-    assert torch.equal(module.weight.detach().cpu(), stored)
+    assert module.weight.dtype == _LOAD_DTYPE
+    assert torch.equal(module.weight.detach().cpu(), stored.to(_LOAD_DTYPE))
     quantization_config = model.config.quantization_config
     if not isinstance(quantization_config, dict):
         quantization_config = quantization_config.to_dict()
@@ -397,10 +412,14 @@ def test_moe_merged_16bit_save_equals_dequantized_checkpoint(moe_pair, tmp_path)
     for name in os.listdir(tmp_path / "merged"):
         if name.endswith(".safetensors"):
             merged.update(load_file(str(tmp_path / "merged" / name)))
+    fp8_state = load_file(os.path.join(fp8_dir, "model.safetensors"))
     reference = load_file(os.path.join(deq_dir, "model.safetensors"))
     assert merged.keys() == reference.keys()
     for key, tensor in reference.items():
-        assert torch.equal(merged[key], tensor), key
+        dtype = merged[key].dtype  # fp16 for merged weights on a GPU without bf16
+        if key + "_scale_inv" in fp8_state:  # straight from fp8 to the saved dtype
+            tensor = _dequantize_reference(fp8_state[key], fp8_state[key + "_scale_inv"], dtype)
+        assert torch.equal(merged[key], tensor.to(dtype)), key
 
 
 @needs_fp8_gpu

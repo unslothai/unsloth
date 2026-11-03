@@ -1,28 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An MLA model rejects different K and V cache types.
-
-llama-context.cpp gained this check, and it sits ABOVE the V-quantization
-check, so it decides first:
-
-    if ((model->hparams.is_mla() || model->arch == LLM_ARCH_DEEPSEEK4)
-            && params.type_k != params.type_v) {
-        LLAMA_LOG_ERROR("model does not support different K (%s) and V (%s)
-                         cache types");
-        return nullptr;
-    }
-
-is_mla() covers DeepSeek V2/V3/R1, Kimi K2 and GLM-4.7/5.x, which Unsloth
-already recognises through kv_lora_rank.
-
-The flash-attention-off retry resets a quantized V cache to f16 and
-deliberately leaves K quantized, because a quantized K needs no FA and
-resetting it enlarges the cache. On an MLA model that produces K=q8_0 V=f16,
-which is a hard abort for a DIFFERENT reason than the one being avoided: the
-retry that exists to recover from an FA crash fails on the K/V mismatch
-instead of recovering.
-"""
+"""MLA rejects unequal K and V cache types, so the FA-off retry must not turn K=q8_0 into V=f16."""
 
 from __future__ import annotations
 
@@ -109,10 +88,8 @@ class TestTheRetryKeepsKAndVEqualOnMla:
         assert out[out.index("--cache-type-k") + 1] == "f16"
 
     def test_argv_k_comes_down_when_v_is_quantized_only_in_the_env(self):
-        """The reset cannot see the environment, so it must not make lowering K
-        conditional on having just lowered V on argv. Here V is quantized purely
-        through LLAMA_ARG_CACHE_TYPE_V, which _drop_env_quantized_v_cache removes;
-        a K left at q8_0 would then abort against the resulting f16 V."""
+        """The env-only V case still needs K lowered, or q8_0 K would abort against the f16 V that
+        results."""
         cmd = ["llama-server", "--flash-attn", "on", "--cache-type-k", "q8_0"]
         env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"}
         out = LlamaCppBackend._with_flash_attn_off(cmd, mla = True)
@@ -374,13 +351,7 @@ class TestTheDraftSignalComesFromTheLaunchCommand:
 
 
 class TestLoadModelNeverReadsEnvBeforeItExists:
-    """A launch-site fixup that reads the child environment raises
-    UnboundLocalError and kills every load through that path.
-
-    This is a static check on purpose. The block-extraction harness used by the
-    flagless tests seeds ``env`` into the exec scope, so it would happily pass
-    while the real function raised, which is exactly what happened once.
-    """
+    """Static, since exec-based tests seed env and pass while the real launch raises UnboundLocalError."""
 
     def test_env_is_never_loaded_before_it_is_assigned(self):
         import ast

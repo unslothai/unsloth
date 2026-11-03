@@ -1,23 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Query-chunked VAE attention on ROCm, where no fused SDPA kernel takes head dim 384 / 512.
-
-AOTriton caps gfx11 at head dim 256, so SDPA falls back to the math kernel and materialises the full fp32 score
-matrix (16 GiB for a 2048x2048 FLUX.1 decode). Unmasked query rows are independent, so chunking them is exact.
-``UNSLOTH_VAE_ATTN_CHUNKED=0`` disables it; ``UNSLOTH_VAE_ATTN_CHUNK_MB`` sets the per-chunk fp32 score budget.
-"""
+"""Query-chunked VAE attention on ROCm/MPS, where no fused SDPA takes head dim 384/512; exact."""
 
 from __future__ import annotations
 
 import os
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 VAE_ATTN_CHUNK_ENV = "UNSLOTH_VAE_ATTN_CHUNKED"
 VAE_ATTN_CHUNK_MB_ENV = "UNSLOTH_VAE_ATTN_CHUNK_MB"
 _FALSE = ("0", "false", "no", "off")
 # fp32 score bytes per chunk; a full matrix at or under this runs unchunked (FLUX.1 1024x1024 is exactly 1 GiB).
 DEFAULT_SCORE_BUDGET_MB = 1024
+MPS_SCORE_BUDGET_MB = 256
 _PATCHED = "_unsloth_vae_attn_chunked"
 
 
@@ -25,20 +22,24 @@ def chunking_disabled() -> bool:
     return os.environ.get(VAE_ATTN_CHUNK_ENV, "").strip().lower() in _FALSE
 
 
-def score_budget_bytes() -> int:
+def score_budget_bytes(default_mb: int = DEFAULT_SCORE_BUDGET_MB) -> int:
     raw = os.environ.get(VAE_ATTN_CHUNK_MB_ENV, "").strip()
     try:
-        mb = int(raw) if raw else DEFAULT_SCORE_BUDGET_MB
+        mb = int(raw) if raw else default_mb
     except ValueError:
-        mb = DEFAULT_SCORE_BUDGET_MB
+        mb = default_mb
     return max(1, mb) * 2**20
 
 
 def fused_sdpa_available(q: Any, k: Any, v: Any) -> bool:
-    """Whether flash, memory-efficient or cuDNN SDPA takes this call; non-CUDA tensors or query errors count as yes."""
+    """Whether a fused SDPA kernel (CUDA, or MPS prefill) takes this call; other devices or query errors count as yes."""
     import torch
 
-    if getattr(q, "device", None) is None or q.device.type != "cuda":
+    device_type = getattr(getattr(q, "device", None), "type", None)
+    if device_type == "mps":
+        from .diffusion_attention import mps_prefill_attention
+        return mps_prefill_attention(q, k, v)
+    if device_type != "cuda":
         return True
     cb = torch.backends.cuda
     try:
@@ -163,7 +164,7 @@ def _is_attention_module(module: Any) -> bool:
     return name == "Attention" or name.endswith(("AttentionBlock", "AttnBlock"))
 
 
-def _patch(module: Any) -> None:
+def _patch(module: Any, default_mb: int) -> None:
     import torch
 
     inner = module.forward
@@ -171,7 +172,7 @@ def _patch(module: Any) -> None:
     def forward(*args: Any, **kwargs: Any) -> Any:
         if chunking_disabled() or torch.compiler.is_compiling():
             return inner(*args, **kwargs)
-        with chunked_attention_mode():
+        with chunked_attention_mode(score_budget_bytes(default_mb)):
             return inner(*args, **kwargs)
 
     forward._unsloth_vae_attn_chunked = True
@@ -183,16 +184,19 @@ def _patch(module: Any) -> None:
 def wants_install(vae: Any, target: Any = None) -> bool:
     if vae is None or chunking_disabled() or not callable(getattr(vae, "modules", None)):
         return False
-    if target is not None and getattr(target, "backend", None) != "rocm":
+    backend = getattr(target, "backend", None)
+    if target is not None and backend not in ("rocm", "mps"):
         return False
+    if backend == "mps":
+        return True
     try:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    return bool(getattr(torch.version, "hip", None))
+    return is_rocm_torch(torch)
 
 
-def patch_attention_modules(vae: Any) -> int:
+def patch_attention_modules(vae: Any, default_mb: int = DEFAULT_SCORE_BUDGET_MB) -> int:
     """Patch every attention module of ``vae`` (outermost only, idempotent). Returns the number newly patched."""
     n = 0
     covered: list = []
@@ -204,7 +208,7 @@ def patch_attention_modules(vae: Any) -> int:
         covered.append(name)
         if getattr(module, _PATCHED, False):
             continue
-        _patch(module)
+        _patch(module, default_mb)
         n += 1
     return n
 
@@ -214,11 +218,11 @@ def install(
     target: Any = None,
     logger: Any = None,
 ) -> int:
-    """Chunk the VAE attention on ROCm, where no fused SDPA kernel takes head dim > 256. Never raises."""
     try:
         if not wants_install(vae, target):
             return 0
-        n = patch_attention_modules(vae)
+        mps = getattr(target, "backend", None) == "mps"
+        n = patch_attention_modules(vae, MPS_SCORE_BUDGET_MB if mps else DEFAULT_SCORE_BUDGET_MB)
         if n and logger is not None:
             logger.info(
                 "diffusion.vae_attn_chunked: %d %s attention modules chunk SDPA calls no fused kernel takes",

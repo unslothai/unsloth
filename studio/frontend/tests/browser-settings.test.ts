@@ -22,6 +22,7 @@ Object.assign(globalThis, {
 });
 
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
+register("./helpers/file-kind-resolver.mjs", import.meta.url);
 const { useBrowserHistoryStore } = await import("../src/features/browser/history-store.ts");
 const { useBrowserPrefsStore } = await import("../src/features/browser/prefs-store.ts");
 const { useBrowserBookmarksStore } = await import("../src/features/browser/bookmarks-store.ts");
@@ -678,6 +679,269 @@ test("a file a page sends the tab to is asked about for that page, not the file'
   await saving;
   useDownloadSitesStore.getState().setSite("https://b.example", null);
   store.closeTab(tabId);
+});
+
+test("a file a page sent without a click waits for Save, then asks for its page and follows the agent's rule", async () => {
+  const { saveBrowserDownloadOnClick } = await import("../src/features/browser/downloads.ts");
+  const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");
+  const g = globalThis as { __toasts?: { message: string; options?: { id?: string; action?: { onClick: () => void } } }[] };
+  g.__toasts = [];
+  const download = { blob: new Blob(["a,b"]), name: "export.csv", contentType: "text/csv", url: "https://a.example/page", site: "https://a.example/page" };
+  saveBrowserDownloadOnClick(download);
+  saveBrowserDownloadOnClick({ ...download, agentRule: "block" });
+  assert.deepEqual(g.__toasts.map((toast) => toast.message), ["browser.downloadPrompt.ready", "browser.downloadPrompt.ready"]);
+  assert.equal(useApprovalStore.getState().queue.length, 0);
+  g.__toasts[0].options!.action!.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const queue = useApprovalStore.getState().queue;
+  assert.equal(queue.length, 1);
+  assert.equal(queue[0].origin, "https://a.example");
+  answerDownload(queue[0], false, false);
+  g.__toasts[1].options!.action!.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(g.__toasts.at(-1)!.message, "browser.downloadPrompt.blocked");
+  assert.equal(useApprovalStore.getState().queue.length, 0);
+  for (let i = 0; i < 4; i++) saveBrowserDownloadOnClick(download);
+  const ids = g.__toasts.slice(-4).map((toast) => toast.options?.id);
+  assert.equal(new Set(ids).size, 3);
+  assert.equal(ids[3], ids[0]);
+  saveBrowserDownloadOnClick({ ...download, blob: new Blob(["MZ"]), name: "update", contentType: "application/x-msdownload" });
+  g.__toasts.at(-1)!.options!.action!.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const program = useApprovalStore.getState().queue[0];
+  assert.deepEqual([program?.name, program?.dangerous], ["update.exe", true]);
+  answerDownload(program, false, false);
+});
+
+test("a download link's file is fetched through the panel, named by the server, else the link, else its address", async () => {
+  const { saveLinkedFile } = await import("../src/features/browser/downloads.ts");
+  const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");
+  const g = globalThis as { __authFetch?: unknown; __toasts?: { message: string; options?: { action?: { onClick: () => void } } }[] };
+  const fetched: string[] = [];
+  let served: Record<string, string> = {};
+  g.__authFetch = async (_path: string, init: { body: string }) => {
+    fetched.push(JSON.parse(init.body).url);
+    return new Response("a,b", { headers: { "X-Unsloth-Browser-Kind": "raw", "Content-Type": "text/plain", ...served } });
+  };
+  const asked = async () => {
+    for (let i = 0; i < 50 && useApprovalStore.getState().queue.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    const [item] = useApprovalStore.getState().queue;
+    answerDownload(item, false, false);
+    return [item.name, item.origin];
+  };
+  const rules: string[] = [];
+  const file = { site: "https://a.example/page", agentRule: (fileUrl: string) => (rules.push(fileUrl), null) };
+  try {
+    saveLinkedFile("https://a.example/downloads/data.txt", "data.txt", file);
+    assert.deepEqual(await asked(), ["data.txt", "https://a.example"]);
+    saveLinkedFile("https://a.example/downloads/data.txt", "", file);
+    assert.deepEqual(await asked(), ["data.txt", "https://a.example"]);
+    served = { "X-Unsloth-Browser-Filename": "report.txt" };
+    saveLinkedFile("https://a.example/downloads/data.txt", "data.txt", file);
+    assert.deepEqual(await asked(), ["report.txt", "https://a.example"]);
+    assert.deepEqual(rules, Array(3).fill("https://a.example/downloads/data.txt"));
+    g.__toasts = [];
+    saveLinkedFile("https://a.example/downloads/data.txt", "", file, true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(fetched.length, 3);
+    assert.deepEqual(g.__toasts.map((toast) => toast.message), ["browser.downloadPrompt.ready"]);
+    g.__toasts[0].options!.action!.onClick();
+    assert.deepEqual(await asked(), ["report.txt", "https://a.example"]);
+    assert.equal(fetched.length, 4);
+  } finally {
+    delete g.__authFetch;
+    useApprovalStore.setState({ queue: [] });
+  }
+});
+
+test("a file its site sends as an attachment is saved, not shown; inline or undeclared text still shows", async () => {
+  const { fetchBrowserPage } = await import("../src/features/browser/api.ts");
+  const { savesFile } = await import("../src/features/browser/file-kind.ts");
+  const g = globalThis as { __authFetch?: unknown };
+  const load = async (headers: Record<string, string>) => {
+    g.__authFetch = async () => new Response("a,b", { headers: { "X-Unsloth-Browser-Kind": "raw", ...headers } });
+    const page = await fetchBrowserPage({ url: "https://a.example/export" }, new AbortController().signal);
+    assert.ok(page.kind === "raw");
+    return savesFile(page.fileName ?? "export", page.contentType, page.attachment);
+  };
+  try {
+    const csv = { "Content-Type": "text/csv", "X-Unsloth-Browser-Filename": "export.csv" };
+    assert.equal(await load({ ...csv, "X-Unsloth-Browser-Attachment": "1" }), true);
+    assert.equal(await load({ "Content-Type": "application/pdf", "X-Unsloth-Browser-Attachment": "1" }), true);
+    assert.equal(await load(csv), false);
+    assert.equal(await load({ "Content-Type": "text/plain" }), false);
+    assert.equal(await load({ "Content-Type": "application/zip" }), true);
+  } finally {
+    delete g.__authFetch;
+  }
+});
+
+test("a program sent with no extension asks under the name it saves as, whatever the site's answer", async () => {
+  const { saveBrowserDownload, saveLinkAs } = await import("../src/features/browser/downloads.ts");
+  const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  const nextAsked = async () => {
+    for (let i = 0; i < 50 && useApprovalStore.getState().queue.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    return useApprovalStore.getState().queue[0];
+  };
+  const save = async (name: string, contentType: string) => {
+    const saving = saveBrowserDownload({ blob: new Blob(["MZ"], { type: contentType }), name, contentType, url: `https://a.example/${name}` });
+    const asked = await nextAsked();
+    if (asked) answerDownload(asked, false, false);
+    await saving;
+    return asked && [asked.name, asked.dangerous];
+  };
+  const prefs = useBrowserPrefsStore.getState();
+  const g = globalThis as { showSaveFilePicker?: unknown; __authFetch?: unknown };
+  try {
+    assert.deepEqual(await save("report", "application/pdf"), ["report.pdf", false]);
+    assert.deepEqual(await save("notes.txt", "application/x-msdownload"), ["notes.txt", false]);
+
+    useDownloadSitesStore.getState().setSite("https://a.example", "allow");
+    assert.deepEqual(await save("update", "application/x-msdownload"), ["update.exe", true]);
+    assert.deepEqual(await save("Installer", "application/x-apple-diskimage"), ["Installer.dmg", true]);
+    assert.deepEqual(await save("install", "text/x-sh"), ["install.sh", true]);
+    assert.deepEqual(await save("loader", "text/javascript; charset=utf-8"), ["loader.js", true]);
+    assert.deepEqual(await save(".install", "text/x-sh"), ["install.sh", true]);
+    assert.deepEqual(await save("update. ", "application/x-msdownload"), ["update.exe", true]);
+    assert.deepEqual(await save("...", "text/x-sh"), ["download.sh", true]);
+
+    prefs.setAskWhereToSave(true);
+    g.showSaveFilePicker = async () => {
+      throw new DOMException("no picker here", "NotAllowedError");
+    };
+    g.__authFetch = async () =>
+      new Response(new Blob(["MZ"]), {
+        headers: { "Content-Type": "application/x-msdownload; charset=binary", "X-Unsloth-Browser-Filename": "setup" },
+      });
+    const linked = saveLinkAs("https://a.example/download");
+    const asked = await nextAsked();
+    assert.deepEqual(asked && [asked.name, asked.dangerous], ["setup.exe", true]);
+    answerDownload(asked, false, false);
+    await linked;
+  } finally {
+    delete g.showSaveFilePicker;
+    delete g.__authFetch;
+    prefs.setAskWhereToSave(false);
+    useApprovalStore.setState({ queue: [] });
+    useDownloadSitesStore.getState().setSite("https://a.example", null);
+  }
+});
+
+test("ordinary MIME suffixes are browser-only while native program suffixes still apply", async () => {
+  const { withTypeExtension } = await import("../src/features/browser/download-safety.ts");
+  for (const name of [".gitignore", ".env", "report"]) {
+    assert.equal(withTypeExtension(name, "text/plain"), name);
+  }
+  assert.equal(withTypeExtension("report", "application/pdf"), "report");
+  assert.equal(withTypeExtension("update", "application/x-msdownload"), "update.exe");
+});
+
+test("an ordinary file sent without an extension gets its type's on the web, whatever the type's parameters", async () => {
+  const { withTypeExtension } = await import("../src/features/browser/download-safety.ts");
+  const { saveBrowserDownload } = await import("../src/features/browser/downloads.ts");
+  const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");
+  assert.equal(withTypeExtension("test-passing-green", "image/svg+xml;charset=utf-8", true), "test-passing-green.svg");
+  assert.equal(withTypeExtension("book", "application/epub+zip", true), "book.epub");
+  assert.equal(withTypeExtension("book", "application/epub+zip"), "book");
+  for (const [name, contentType, saved] of [
+    ["test-passing-green", "image/svg+xml; charset=utf-8", "test-passing-green.svg"],
+    ["book", "application/epub+zip", "book.epub"],
+  ]) {
+    const saving = saveBrowserDownload({ blob: new Blob(["x"]), name, contentType, url: `https://a.example/${name}` });
+    for (let i = 0; i < 50 && useApprovalStore.getState().queue.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    const [asked] = useApprovalStore.getState().queue;
+    assert.deepEqual([asked?.name, asked?.dangerous], [saved, false]);
+    answerDownload(asked, false, false);
+    await saving;
+  }
+});
+
+test("browser saves keep the approved name without MIME inference, including agent downloads", async () => {
+  const { saveBrowserDownload } = await import("../src/features/browser/downloads.ts");
+  const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  const prefs = useBrowserPrefsStore.getState();
+  const previous = { ...prefs };
+  const oldDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const oldTimer = window.setTimeout;
+  const create = URL.createObjectURL;
+  const revoke = URL.revokeObjectURL;
+  let transport: Blob | undefined;
+  const saved: { name: string; blob: Blob }[] = [];
+  Object.assign(globalThis, {
+    document: {
+      body: { appendChild() {} },
+      createElement: () => {
+        const anchor = { href: "", download: "", click: () => saved.push({ name: anchor.download, blob: transport! }), remove() {} };
+        return anchor;
+      },
+    },
+  });
+  Object.assign(window, { setTimeout: () => 0 });
+  URL.createObjectURL = (blob) => { transport = blob as Blob; return "blob:test"; };
+  URL.revokeObjectURL = () => {};
+  const cases: [string, string, string, boolean][] = [
+    ["update", "application/x-msdownload", "update.exe", true],
+    ["Installer", "application/x-apple-diskimage", "Installer.dmg", true],
+    ["install", "text/x-sh", "install.sh", true],
+    ["loader", "Application/X-MSDownload; charset=binary", "loader.exe", true],
+    [".install.sh", "text/x-sh", "install.sh", true],
+    ["update. ", "application/x-msdownload", "update.exe", true],
+    ["update.exe. ", "application/octet-stream", "update.exe", true],
+    ["report.pdf", "application/x-msdownload", "report.pdf", false],
+    ["setup.exe.txt", "application/x-msdownload", "setup.exe.txt", false],
+    ["x\u202efdp.exe", "application/octet-stream", "x_fdp.exe", true],
+    ["update", "application/octet-stream", "update", false],
+    ["update", "", "update", false],
+    ["profile", "application/x-apple-aspen-config", "profile", false],
+    ["report", "application/pdf", "report.pdf", false],
+    ["picture", "image/png", "picture.png", false],
+    ["data", "Application/JSON; charset=utf-8", "data.json", false],
+    ["report.txt", "application/pdf", "report.txt", false],
+    ["notes.txt", "text/x-sh", "notes.txt", false],
+  ];
+  try {
+    prefs.setAskWhereToSave(false);
+    prefs.setSaveDownloadHistory(true);
+    for (const mode of ["site", "setting", "agent"]) {
+      useDownloadSitesStore.getState().setSite("https://a.example", mode === "site" ? "allow" : null);
+      prefs.setAskBeforeDownloading(mode !== "setting");
+      for (const [name, contentType, expected, dangerous] of cases) {
+        const blob = new Blob(["MZ harmless bytes"], { type: contentType || "application/x-msdownload" });
+        const count = saved.length;
+        const saving = saveBrowserDownload({ blob, name, contentType, url: "https://a.example/download", temporary: false, agentRule: mode === "agent" ? "allow" : null });
+        const asked = useApprovalStore.getState().queue[0];
+        assert.equal(Boolean(asked), dangerous, `${mode}: ${name} (${contentType})`);
+        if (asked) {
+          assert.deepEqual([asked.name, asked.dangerous], [expected, true]);
+          assert.equal(saved.length, count);
+          answerDownload(asked, true, false);
+        }
+        await saving;
+        assert.equal(saved.length, count + 1);
+        assert.equal(saved.at(-1)?.name, expected);
+        assert.equal(saved.at(-1)?.blob.type, "application/octet-stream");
+        assert.equal(await saved.at(-1)!.blob.text(), await blob.text());
+        assert.equal(blob.type, (contentType || "application/x-msdownload").toLowerCase());
+        const recorded = useBrowserHistoryStore.getState().downloads[0];
+        assert.deepEqual([recorded.name, recorded.contentType], [expected, contentType]);
+      }
+    }
+  } finally {
+    if (oldDocument) Object.defineProperty(globalThis, "document", oldDocument);
+    else Reflect.deleteProperty(globalThis, "document");
+    window.setTimeout = oldTimer;
+    URL.createObjectURL = create;
+    URL.revokeObjectURL = revoke;
+    prefs.setAskWhereToSave(previous.askWhereToSave);
+    prefs.setAskBeforeDownloading(previous.askBeforeDownloading);
+    prefs.setSaveDownloadHistory(previous.saveDownloadHistory);
+    useDownloadSitesStore.getState().setSite("https://a.example", null);
+    for (const request of useApprovalStore.getState().queue) answerDownload(request, false, false);
+  }
 });
 
 test("Save link as asks again when the file it named by the address turns out to run code", async () => {

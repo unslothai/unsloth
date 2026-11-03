@@ -19,13 +19,11 @@ import {
   markDictationTranscript,
 } from "./dictation-outcome";
 
-/** Chat open while dictating, so the saved dictation can link back to it. */
 export function activeDictationChatId(): string | undefined {
   return useChatRuntimeStore.getState().activeThreadId ?? undefined;
 }
 
-/** Resolve the chat a saved dictation links to. undefined falls back to the active single chat;
- *  null (composers without one, e.g. Compare) means none. */
+/** undefined falls back to the active chat; null (e.g. Compare) means none. */
 export function resolveDictationChatId(
   chatId: string | null | undefined,
 ): string | undefined {
@@ -36,12 +34,10 @@ export function resolveDictationChatId(
 // Reused id so repeated network failures replace, not stack, the same toast.
 const NETWORK_TOAST_ID = "dictation-network-offline";
 
-// Short grace for the browser to finalize its latest interim hypothesis. If it does not,
-// promote that text instead of stalling on a finalization spinner.
+// If the browser does not finalize in time, promote the interim text instead of stalling.
 const STOP_FINALIZATION_GRACE_MS = 350;
 
-/** A dictation session with an extra onEnd hook (not part of the assistant-ui interface) so
- *  non-runtime callers can reset when the session ends by itself. */
+/** onEnd lets non-runtime callers reset when the session ends by itself. */
 export type StudioDictationSession = DictationAdapter.Session & {
   onEnd?: (callback: () => void) => () => void;
 };
@@ -64,7 +60,6 @@ const mediaErrorName = (error: unknown): unknown =>
     ? (error as { name?: unknown }).name
     : undefined;
 
-/** True for getUserMedia errors meaning the requested device is gone. */
 export const isMissingDeviceError = (error: unknown): boolean => {
   const name = mediaErrorName(error);
   return name === "OverconstrainedError" || name === "NotFoundError";
@@ -122,7 +117,6 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       chatId?: string | null;
     } = {},
   ) {
-    // Resolved from Voice settings at listen() time unless overridden.
     this.language = options.language;
     this.continuous = options.continuous ?? true;
     this.interimResults = options.interimResults ?? true;
@@ -132,8 +126,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
   static isSupported(): boolean {
     return (
       typeof window !== "undefined" &&
-      // WKWebView exposes the API but Apple's service refuses it (service-not-allowed); WebView2 and
-      // webkit2gtk have no engine at all.
+      // WKWebView exposes the API but Apple refuses it; WebView2 and webkit2gtk have no engine.
       !isTauri &&
       window.isSecureContext &&
       getSpeechRecognitionAPI() !== undefined &&
@@ -152,8 +145,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
     recognition.lang = this.language ?? resolveDictationLanguage();
     recognition.continuous = this.continuous;
     recognition.interimResults = this.interimResults;
-    // Pin the linked chat now so a thread switch during finalization cannot relink the transcript
-    // to the newly opened chat.
+    // Pin now so a thread switch during finalization cannot relink the transcript.
     const sessionChatId = resolveDictationChatId(this.chatId);
 
     const speechStartCallbacks = new Set<() => void>();
@@ -189,8 +181,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
           stopping = true;
           stopRequestedAt = performance.now();
           recognition.stop();
-          // Ending the track now gives the browser an audio endpoint to finalize and releases the mic
-          // without waiting on its remote speech service.
+          // Ending the track gives the browser an endpoint to finalize and frees the mic immediately.
           stopLevelMeter();
           stopStream(stream);
           stream = null;
@@ -228,8 +219,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         };
       },
 
-      // Beyond DictationAdapter: lets callers reset UI when the session ends on its own (silence,
-      // error), not just via stop().
+      // Not part of DictationAdapter: fires when the session ends on its own, not only via stop().
       onEnd: (callback: () => void) => {
         endCallbacks.add(callback);
         return () => {
@@ -321,8 +311,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         if (result.isFinal) {
           interimParts.delete(i);
           const corrected = applyDictationDictionary(transcript);
-          // Join final chunks with a single space so recorded transcripts do not merge words when a
-          // browser omits leading whitespace.
+          // Join with a space since some browsers omit leading whitespace.
           const trimmed = corrected.trim();
           if (trimmed) {
             finalTranscript = finalTranscript
@@ -365,8 +354,6 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       );
       console.error("Dictation error:", errorEvent.error, errorEvent.message);
       if (errorEvent.error === "network") {
-        // Online speech service unreachable; point the user to the offline local engine (the toast
-        // opens Voice settings).
         toast.error("No internet connection", {
           id: NETWORK_TOAST_ID,
           description:
@@ -400,8 +387,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
                 : baseAudio,
           });
         } catch (error) {
-          // Saved mic may be unplugged; fall back to the default device. Firefox and WebKit throw
-          // OverconstrainedError objects that are not DOMException instances, so match on the name.
+          // Saved mic may be gone; Firefox/WebKit OverconstrainedError is not a DOMException, so match name.
           if (micDeviceId !== "default" && isMissingDeviceError(error)) {
             stream = await navigator.mediaDevices.getUserMedia({
               audio: baseAudio,
@@ -426,8 +412,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         try {
           recognition.start(audioTrack);
         } catch (error) {
-          // Older engines expose only start(); retry without the experimental track overload. Recognition
-          // then captures from the default device, so release the selected-device stream.
+          // Older engines lack the track overload and use the default device, so release our stream.
           console.debug(
             "Dictation start(audioTrack) failed; retrying start().",
             error,

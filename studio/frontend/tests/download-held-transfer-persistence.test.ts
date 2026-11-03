@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// An XET-to-HTTP reclaim keeps the same generation, so the first reading for the
-// new run holds the dead run's downloadedBytes beside a shrunken expectedBytes,
-// and measuredTransfer marks it as held. If the flag does not survive a reload,
-// the restored job carries the stale bytes with the guard reading "measured"
-// again and the row reads "0 B left" until the first poll repairs it.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -82,8 +76,6 @@ test("a measured reading restores as measured", () => {
 });
 
 test("a current record with no marker still means never polled", () => {
-  // Undefined, not false: written since the field existed, so its absence is
-  // the record saying it never polled rather than saying nothing.
   const jobs = getState().jobs;
   assert.equal(
     jobs[jobKeyOf("model", "org/unpolled-model", "Q4_K_M")]?.measuredTransfer,

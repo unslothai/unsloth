@@ -10,14 +10,11 @@ import {
 } from "../src/features/chat/adapters/stt-errors.ts";
 
 test("a not-downloaded 409 asks for the download, from either call", () => {
-  // A segment can be the first to see this, when a short recording ends before
-  // the fire-and-forget preload rejects.
   const error = sttRequestError(409, "STT model 'small' is not downloaded.");
   assert.ok(error instanceof SttModelNotDownloadedError);
 });
 
 test("the other 409s stay ordinary errors", () => {
-  // A load cancelled for training, and a model switch mid-request.
   for (const detail of [
     "Dictation model loading was cancelled so training could start.",
     "The dictation model changed while this recording was being prepared.",

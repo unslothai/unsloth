@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""DELETE /api/models/delete-finetuned must refuse a directory the Images or Video
-engine is holding.
-
-Every other guard on that route is chat-only (llama.cpp + the transformers backend), so a
-local diffusion model under the storage root -- Images loads any existing local path -- used
-to be rmtree'd while a pipeline was still reading it, taking the companion VAE / text encoder
-files sd.cpp re-reads on every generation with it. The cached-model delete route already
-refuses this; these tests pin the same behaviour on the trained/exported route, which matches
-by PATH rather than by repo id.
-"""
+"""Refuse directories the Images or Video engine holds; other guards only cover chat models."""
 
 from __future__ import annotations
 
@@ -69,7 +60,6 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(models_module, "exports_root", lambda: tmp_path / "exports")
     entries = {f"model:training:{outputs / 'my-diffusion-model'}": {}, "upload:abc": {}}
     monkeypatch.setattr(library_db, "list_entries", lambda: entries)
-    # No chat model is resident, so only the diffusion / video guards can refuse.
     monkeypatch.setattr(models_module, "get_inference_backend", lambda: _NoChat())
 
     app = FastAPI()
@@ -118,7 +108,6 @@ def test_refuses_the_companion_base_and_the_extra_repos_the_engine_reads(client,
     target = _model_dir(outputs)
     other = outputs / "somewhere-else"
     other.mkdir()
-    # The checkpoint is the loaded id; the deleted dir is only the companion base.
     monkeypatch.setattr(
         models_module,
         "_active_diffusion_backend",
@@ -127,7 +116,6 @@ def test_refuses_the_companion_base_and_the_extra_repos_the_engine_reads(client,
     monkeypatch.setattr(models_module, "_active_video_backend", lambda: None)
     assert _delete(c, target).status_code == 400
 
-    # Same for a companion the engine reports through loaded_repo_ids (sd.cpp VAE / TE).
     monkeypatch.setattr(
         models_module,
         "_active_diffusion_backend",
@@ -195,7 +183,6 @@ def test_an_unreadable_engine_state_fails_closed(client, monkeypatch):
 
 
 def test_refuses_the_delete_while_a_diffusion_training_run_is_active(client, monkeypatch):
-    # source="training" checked only the LLM trainer, so a delete could rmtree the output directory a live diffusion LoRA run is about to write into.
     import sys
     import types
 
@@ -213,7 +200,6 @@ def test_refuses_the_delete_while_a_diffusion_training_run_is_active(client, mon
     assert "diffusion" in resp.json()["detail"].lower()
     assert target.exists()
 
-    # Idle again: the same delete goes through.
     stub.get_diffusion_training_service = lambda: types.SimpleNamespace(is_active = lambda: False)
     assert _delete(c, target).status_code == 200
     assert not target.exists()

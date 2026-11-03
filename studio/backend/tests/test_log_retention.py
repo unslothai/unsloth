@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep-newest-N retention for the per-session log directories.
-
-Three things decide whether this helper is safe to point at a directory the app is
-actively writing into: the cap has to mean what it says, the file the caller just opened
-has to survive, and one odd directory entry must not disable retention for everything
-else.
-"""
+"""Keep-newest-N pruning: exact cap, the just-opened file survives, one odd entry cannot stop it."""
 
 import os
 
@@ -54,10 +48,7 @@ def test_a_missing_directory_is_survivable(tmp_path):
 
 @pytest.mark.parametrize("population", [0, 19, 20, 21, 319])
 def test_the_protected_file_counts_toward_the_cap(tmp_path, population):
-    """Called after the open, the directory settles at `keep`, not `keep + 1`.
-
-    Pruning first leaves one extra behind on every load, so the cap is never reached.
-    """
+    """Prune after the open: the protected file counts toward keep, so the directory settles at keep."""
     _seed(tmp_path, population)
     for load in range(5):
         active = tmp_path / f"llama-active{load}.log"

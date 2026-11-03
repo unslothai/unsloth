@@ -9,7 +9,6 @@ from __future__ import annotations
 import ast
 import importlib.util
 import os
-import socket
 from pathlib import Path
 
 import pytest
@@ -260,9 +259,8 @@ def test_a_built_accelerator_is_authoritative(monkeypatch):
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _rank_worker(rank, port, out_dir):

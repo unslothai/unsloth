@@ -1,5 +1,3 @@
-# Model defaults for sesame/csm-1b
-# Based on Sesame_CSM_(1B)-TTS.ipynb
 # Also applies to: sesame/csm-1b
 
 audio_type: csm
@@ -7,7 +5,6 @@ audio_type: csm
 training:
   eval_steps: 0
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 2

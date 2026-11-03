@@ -18,11 +18,10 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import {
-  Copy01Icon,
   Download01Icon,
-  SentIcon,
-  StopIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type Ref, useEffect, useState } from "react";
 import type { AudioGalleryClip } from "../api";
@@ -34,7 +33,7 @@ import {
   type AudioSourceInputHandle,
 } from "../components/audio-source-input";
 import { SendToItems } from "../components/clip-card";
-import { Field } from "../components/field";
+import { Field, FieldLabel } from "../components/field";
 import { TranscriptView } from "../components/transcript-view";
 import {
   TranscriptExportItems,
@@ -55,7 +54,16 @@ import { transcribeLanguageFor } from "../transcribe-languages";
 import type { TranscriptExportFormat } from "../transcript-export";
 import { formatTimestamp } from "../transcript-model";
 import type { TranscriptProgress } from "../transcript-stream";
-import { GenerateActions, type GenerateBlocker } from "./tts-workspace";
+import {
+  AUDIO_ACTION_BUTTON,
+  AUDIO_GO_BUTTON,
+  AUDIO_NOTE_SLOT,
+  AUDIO_STOP_BUTTON,
+  BlockerNote,
+  GenerateActions,
+  type GenerateBlocker,
+} from "./tts-workspace";
+import { ArrowUpIcon } from "lucide-react";
 
 // Radix Select cannot hold an empty value, so "detect" travels as this.
 const AUTO = "__auto__";
@@ -76,7 +84,7 @@ function SwitchRow({
   const id = `transcribe-${name}`;
   return (
     <div className="grid gap-1.5">
-      <label
+      <FieldLabel
         htmlFor={id}
         className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
       >
@@ -99,7 +107,7 @@ function SwitchRow({
             aria-describedby={`${id}-hint`}
           />
         )}
-      </label>
+      </FieldLabel>
       <p
         id={`${id}-hint`}
         className="text-ui-11p5 leading-snug text-muted-foreground"
@@ -147,7 +155,7 @@ export function TranscribeRail({
         <AudioSourceInput
           id="transcribe-source"
           label="Audio"
-          hint="Up to 30 minutes. Drop a file, record, or reuse a clip."
+          hint={switches.sourceHint}
           value={source}
           onChange={(next) => useAudioTranscribeStore.setState({ source: next })}
           disabled={disabled}
@@ -200,7 +208,6 @@ export function TranscribeRail({
           label={name === "timestamps" ? "Timestamps" : "Speakers"}
           value={switches[name]}
           disabled={disabled}
-          // One "Use" link when both switches would offer the same model.
           onUseSpeakersModel={
             name === "speakers" && switches.timestamps.suggestSpeakersModel
               ? undefined
@@ -293,7 +300,6 @@ export function TranscribeOutput({
           />
         )}
         {transcript ? (
-          // Focused and announced by the host after a run.
           <section
             id="transcribe-result"
             tabIndex={-1}
@@ -344,7 +350,7 @@ export function TranscribeOutput({
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild={true}>
                       <Button variant="secondary" size="sm">
-                        <HugeiconsIcon icon={SentIcon} className="mr-2 size-3.5" />
+                        <ArrowUpIcon className="mr-2 size-3.5" />
                         Send to
                       </Button>
                     </DropdownMenuTrigger>
@@ -479,10 +485,13 @@ export function TranscribeFooter({
       ) : null}
       <div className="flex flex-wrap items-center justify-center gap-2">
         <Button
-          className="relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+          className={cn(
+            AUDIO_ACTION_BUTTON,
+            running ? AUDIO_STOP_BUTTON : AUDIO_GO_BUTTON,
+          )}
           onClick={running ? onStop : onTranscribe}
           disabled={running ? stopping : busy !== null || blocker !== null}
-          variant={running ? "destructive" : "default"}
+          variant={running ? "outline" : "primary"}
           aria-describedby={
             blocker
               ? "transcribe-blocker"
@@ -505,15 +514,18 @@ export function TranscribeFooter({
           )}
         </Button>
       </div>
-      {(blocker || notice) && !running ? (
-        <p
-          id={blocker ? "transcribe-blocker" : "transcribe-notice"}
-          className="text-center text-ui-11p5 leading-snug text-muted-foreground"
-        >
-          {blocker ? blocker.reason : notice}
-          <GenerateActions actions={blocker?.actions} />
-        </p>
-      ) : null}
+      <div className={AUDIO_NOTE_SLOT}>
+        {blocker && !running ? (
+          <BlockerNote id="transcribe-blocker" blocker={blocker} />
+        ) : notice && !running ? (
+          <p
+            id="transcribe-notice"
+            className="text-center text-ui-11p5 leading-snug text-muted-foreground"
+          >
+            {notice}
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Codex: ``$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl[.zst]``, grouped by ``session_meta.cwd``.
-
-Lines are ``{timestamp, type, payload}`` (codex-rs ``RolloutLine``). Text comes from the
-``user_message`` / ``agent_message`` events, which is what Codex's own thread history replays:
-the ``response_item`` user messages also carry injected AGENTS.md / environment context.
-"""
+"""Codex text comes from user_message/agent_message events, not response_item (injected context)."""
 
 from __future__ import annotations
 
@@ -100,12 +95,7 @@ def list_projects(home: Path) -> list[SourceProject]:
 
 
 def _records(path: Path) -> list[tuple[str, int, dict]]:
-    """``(origin file, ordinal, record)`` with a paginated thread's inherited prefix first.
-
-    A fork or revert (codex-rs ``history_base``) writes only the tail; the prefix is the rollout
-    named by ``history_base.thread_id`` (a rollout id, not ``session_meta.id``) up to
-    ``end_ordinal_exclusive``.
-    """
+    """A fork's prefix comes from the rollout named by ``history_base.thread_id``, not session_meta.id."""
     own = list(read_jsonl(path))
     origin = session_id_of(path)
     tagged = [(origin, record.get("ordinal", index), record) for index, record in enumerate(own)]

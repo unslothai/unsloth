@@ -74,8 +74,7 @@ export function uniqueStemNames(names: readonly string[]): string[] {
 // Zip output is moved into Blob parts at this size, so it leaves the JS heap as it is written.
 const ZIP_FLUSH_BYTES = 32 * 1024 * 1024;
 
-/** Blobs are streamed in one at a time (a loader is called only when its turn comes), and the
- *  output is flushed into Blob parts, so neither all stems nor the whole archive sit in the heap. */
+/** Streams blobs in one at a time and flushes output to Blob parts, keeping the heap small. */
 export async function zipStems(
   files: readonly { name: string; blob: Blob | (() => Promise<Blob>) }[],
 ): Promise<Blob> {

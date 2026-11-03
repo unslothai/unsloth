@@ -9,8 +9,10 @@ import {
   engineRequestField,
   engineSelectVisible,
   loadedEngineChoice,
+  loraUnavailableNote,
   nativeLoadAdvanced,
   nativeReloadTarget,
+  offersCompiledLoraReload,
   offersNativeLoraReload,
   reapplyChangesEngine,
   reapplyTarget,
@@ -91,6 +93,16 @@ test("the loaded build's select value follows the backend's engine provenance", 
   assert.equal(loadedEngineChoice({ loaded: false, resolved: { engine: { source: "explicit", requested: "sd_cpp" } } }), "auto");
 });
 
+test("the LoRA note offers a plain reload once Speed=Auto compiled LoRA off", () => {
+  const compiled = { loaded: true, engine: "diffusers", supports_lora: false, lora_after_reload: true };
+  assert.equal(offersCompiledLoraReload(compiled), true);
+  assert.equal(offersCompiledLoraReload({ ...compiled, lora_after_reload: false }), false);
+  assert.equal(offersCompiledLoraReload({ ...compiled, supports_lora: true }), false);
+  // An older backend sends no field.
+  assert.equal(offersCompiledLoraReload({ loaded: true, supports_lora: false }), false);
+  assert.equal(offersCompiledLoraReload({ loaded: false, lora_after_reload: true }), false);
+});
+
 test("the LoRA note offers a native reload only where it would turn LoRA on", () => {
   assert.equal(offersNativeLoraReload(ggufOnDiffusers), true);
   assert.equal(offersNativeLoraReload({ ...ggufOnDiffusers, lora_via_native: false }), false);
@@ -98,6 +110,20 @@ test("the LoRA note offers a native reload only where it would turn LoRA on", ()
   // The server pin would ignore the reload's pick.
   assert.equal(offersNativeLoraReload({ ...ggufOnDiffusers, engine_forced: "diffusers" }), false);
   assert.equal(offersNativeLoraReload({ loaded: false }), false);
+});
+
+test("the LoRA slot names why LoRA is off when no reload note applies", () => {
+  const reason = "LoRAs are not applied to a whole-pipeline SDXL GGUF. Load the .safetensors checkpoint to use LoRAs.";
+  const noNative = { ...ggufOnDiffusers, lora_via_native: false, lora_unavailable_reason: reason };
+  assert.equal(loraUnavailableNote(noNative), reason);
+  // A server pin suppresses the native reload note, so the reason shows instead.
+  assert.equal(loraUnavailableNote({ ...ggufOnDiffusers, engine_forced: "diffusers", lora_unavailable_reason: reason }), reason);
+  assert.equal(loraUnavailableNote({ ...ggufOnDiffusers, lora_unavailable_reason: reason }), null);
+  assert.equal(loraUnavailableNote({ loaded: true, supports_lora: false, lora_after_reload: true }), null);
+  assert.match(loraUnavailableNote({ loaded: true, supports_lora: false }) ?? "", /cannot be applied/);
+  assert.equal(loraUnavailableNote({ loaded: true, supports_lora: true }), null);
+  assert.equal(loraUnavailableNote({ loaded: false }), null);
+  assert.equal(loraUnavailableNote(null), null);
 });
 
 test("the engine badge names the engine", () => {
@@ -141,7 +167,7 @@ test("the native reload targets the resident GGUF, not a stale page load another
 
 test("a refused load reseeds the Engine select from the resident build", () => {
   const source = readSrc("features/images/images-page.tsx");
-  assert.match(source, /setEngineSeed\(""\);[\s\S]{0,80}dismissLoadToast\(\);\s*reportLoadFailure\(err, "Failed to start load"\)/);
+  assert.match(source, /setEngineSeed\(""\);[\s\S]{0,80}dismissLoadToast\(\);\s*(?:if \(!offerLoadAnywayFor\(err\)\) )?reportLoadFailure\(err, "Failed to start load"\)/);
 });
 
 test("a staged pick snapshots its resolved engine for both the plan and the load", () => {
@@ -281,6 +307,33 @@ test("Reapply resolves its target against the checkpoint status reports", () => 
   assert.match(source, /const l = reapplyTarget\(lastLoad\.current, status\);/);
 });
 
+test("a reload of the resident GGUF keeps the base repo it was loaded with", () => {
+  const status = {
+    loaded: true,
+    model_kind: "gguf",
+    repo_id: "org/flux-gguf",
+    gguf_filename: "flux-Q4_K_M.gguf",
+    display_repo_id: null,
+    base_repo: "org/custom-base",
+    component_files: {},
+  };
+  const seeded = residentReloadTarget(status);
+  assert.equal(seeded?.baseRepo, "org/custom-base");
+  assert.equal(nativeReloadTarget(seeded, status)?.baseRepo, "org/custom-base");
+  assert.equal(reapplyTarget(seeded, status)?.baseRepo, "org/custom-base");
+  // A target seeded without it (an older page, or status that named none then) picks it up from status.
+  const bare = { repoId: "org/flux-gguf", kind: "gguf" as const, filename: "flux-Q4_K_M.gguf" };
+  assert.deepEqual(nativeReloadTarget(bare, status), { ...bare, baseRepo: "org/custom-base" });
+  assert.deepEqual(reapplyTarget(bare, status), { ...bare, baseRepo: "org/custom-base" });
+  // A base the page chose itself is kept, and a pipeline carries none.
+  const own = { ...bare, baseRepo: "org/other-base" };
+  assert.equal(reapplyTarget(own, status), own);
+  const pipe = { repoId: "org/P", kind: "pipeline" as const };
+  assert.equal(reapplyTarget(pipe, { loaded: true, model_kind: "pipeline", repo_id: "org/P", base_repo: "org/x" }), pipe);
+  const source = readSrc("features/images/images-page.tsx");
+  assert.match(source, /const resident = residentReloadTarget\(\{[\s\S]{0,300}base_repo: status\?\.base_repo,[\s\S]{0,120}\}\);/);
+});
+
 test("a server pin never strips options: its native route falls back to diffusers when native cannot run", () => {
   const advanced = { transformer_quant: "fp8", text_encoder_quant: "fp8", text_encoder_file: ["/m/te.safetensors"], vae_file: "/m/vae.safetensors" };
   // The pin ignores the pick, and its fallback must build with the requested options.
@@ -308,7 +361,7 @@ test("a reload from status keeps the resident GGUF's base repo, on the load and 
   const source = readSrc("features/images/images-page.tsx");
   assert.equal(source.match(/base_repo: opts\.baseRepo,/g)?.length, 2);
   assert.equal(source.match(/displayRepoId: l\.displayRepoId, baseRepo: l\.baseRepo \}/g)?.length, 2);
-  // Carried into the next Reapply target, dropped by a retired-copy redirect.
-  assert.match(source, /const baseRepo = redirected\.repoId === repoId \? opts\.baseRepo : undefined;/);
+  // Carried into the next Reapply target.
+  assert.match(source, /opts = \{ kind: opts\.kind, filename: opts\.filename, displayRepoId: opts\.displayRepoId, baseRepo: opts\.baseRepo \};/);
   assert.match(source, /displayRepoId: opts\.displayRepoId,\s*baseRepo: opts\.baseRepo,/);
 });

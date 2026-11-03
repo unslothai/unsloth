@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Same-origin relays to a custom Hub endpoint and datasets server.
-
-The page's CSP is fixed when it is served, and the desktop app's when it launches, so the
-browser reaches an endpoint saved later through these. The Unsloth session goes in
-``Authorization``; the browser's Hugging Face token travels in ``X-HF-Authorization`` and is
-sent on to the configured endpoint only. The first path segment names the endpoint, so the
-page's caches, keyed on its Hub URL, never mix two endpoints' answers.
-"""
+"""Same-origin relays to custom Hub endpoint and datasets server; first path segment names the
+endpoint so caches never mix answers from two endpoints; HF token in X-HF-Authorization goes only
+to the configured endpoint"""
 
 from __future__ import annotations
 
@@ -182,7 +177,11 @@ def build_router(prefix: str, upstream: Callable[[], str], *, anonymous_pages: b
         body = answer.aiter_bytes()
         if anonymous:
             kind = answer.headers.get("content-type", "").split(";")[0].strip().lower()
-            if answer.is_success and (not kind.startswith("image/") or kind == "image/svg+xml"):
+            # An error page or x-error-* header can name the host this relay keeps private.
+            if not answer.is_success:
+                await answer.aclose()
+                return _refuse(answer.status_code, "The Hub endpoint returned an error.")
+            if not kind.startswith("image/") or kind == "image/svg+xml":
                 await answer.aclose()
                 return _refuse(401, "Sign in again to browse the Hub.")
             if int(answer.headers.get("content-length") or 0) > ANONYMOUS_ASSET_LIMIT:

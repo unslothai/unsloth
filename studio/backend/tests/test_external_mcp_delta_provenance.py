@@ -91,7 +91,7 @@ def named(monkeypatch):
     def _parts(tool_name: str):
         return (DISPLAY, "create_issue") if tool_name == MCP_NAME else None
 
-    # Two references: this module's import and the controller global provisional_tool_provenance reads.
+    # two references: this module's import and the controller global
     monkeypatch.setattr(loop_mod, "mcp_display_parts", _parts)
     monkeypatch.setattr(controller_mod, "mcp_display_parts", _parts)
     monkeypatch.setattr(loop_mod, "execute_tool", lambda name, arguments, **kw: "ok")
@@ -250,7 +250,7 @@ def test_a_server_that_cannot_be_named_is_asked_once_per_turn(named, monkeypatch
         assert _stamps(lines) == [], "an unnameable server must not be stamped"
         return len(asked)
 
-    # Scaling, not an exact count: tool_start also uses the helper.
+    # scaling, not an exact count: tool_start also uses the helper
     few, many = _count_for(4), _count_for(40)
     assert few == many, (
         f"{few} lookups for 4 argument fragments but {many} for 40: the scan is asking "

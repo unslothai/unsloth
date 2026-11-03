@@ -50,6 +50,9 @@ def test_random_seed_flag_seeds_the_lora_init(tmp_path, monkeypatch):
     )
     trainer = _RecordingTrainer()
     monkeypatch.setattr(train_module, "_create_cli_trainer", lambda *args: trainer)
+    monkeypatch.setattr(
+        train_module, "_dataset_modalities", lambda *args: (False, False), raising = False
+    )
     app = typer.Typer()
     app.command()(train_module.train)
 
