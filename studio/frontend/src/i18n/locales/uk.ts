@@ -3229,6 +3229,8 @@ export const uk = {
       showResponseModel: "Модель відповіді",
       showResponseModelDescription:
         "Показувати відомості про модель у відповідях асистента.",
+      rightToLeftLayout: "Розташування чату справа наліво",
+      rightToLeftLayoutDescription: "Дзеркально відобразити розташування чату справа наліво.",
       showReplyTimes: "Час відповідей",
       showReplyTimesDescription:
         "Показувати під кожною відповіддю, коли її завершено.",
