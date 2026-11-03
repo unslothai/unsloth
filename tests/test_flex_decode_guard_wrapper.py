@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The registered Transformers flex wrapper keeps short no-grad queries off flex_decoding where unsloth_zoo found it
-cannot compile (Triton 3.9 removed the block pointers torch 2.9 - 2.12's decode template builds)."""
-
 import sys
 import types
 

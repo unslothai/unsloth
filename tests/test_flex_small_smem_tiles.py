@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""sm86 / sm89 flex at 128 < head_dim <= 256: fwd_* / bwd_* tiles that fit 101376 bytes."""
-
 from types import SimpleNamespace
 
 import pytest
@@ -375,8 +373,6 @@ def test_wrapper_forced_main_kernel_no_grad_short_query_gets_tiles(monkeypatch, 
 
 
 def test_wrapper_training_calls_add_no_sequence_guard(monkeypatch):
-    # Check backward before sequence length to avoid a new dynamic-shape guard.
-
     import torch
 
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: True)
