@@ -273,6 +273,14 @@ def test_a_bad_jsonl_line_names_its_file_and_line(tmp_path):
         decision._read_local_rows([str(dataset)], None, _no_stop)
 
 
+def test_an_empty_jsonl_shard_beside_real_rows_is_skipped(tmp_path):
+    (tmp_path / "a.jsonl").write_text(json.dumps({"state": "fine"}) + "\n", encoding = "utf-8")
+    (tmp_path / "b.jsonl").write_text("", encoding = "utf-8")
+    (tmp_path / "c.jsonl").write_text("\n", encoding = "utf-8")
+    rows = decision._read_local_rows([str(tmp_path)], None, _no_stop)
+    assert rows == [{"state": "fine"}]
+
+
 def test_a_bad_line_in_an_upload_names_the_file_as_it_was_uploaded(tmp_path):
     dataset = tmp_path / f"{'a1' * 16}_decisions.jsonl"
     dataset.write_text('{"state": "fine"}\n{broken\n', encoding = "utf-8")

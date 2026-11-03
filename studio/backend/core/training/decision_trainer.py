@@ -124,6 +124,8 @@ def _read_local_rows(paths: list[str], load_dataset, warn: Callable[[str], None]
         if suffix in (".json", ".jsonl"):
             # Read directly: Arrow would merge every question's criteria keys into one struct.
             text = path.read_text(encoding = "utf-8-sig")
+            if not text.strip():
+                continue
             try:
                 data = json.loads(text)
                 rows.extend(data if isinstance(data, list) else [data])
