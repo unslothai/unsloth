@@ -285,16 +285,13 @@ _PPO_FUSED_BLOCKS = (
         ("for update in range(1, args.num_total_batches + 1):",),
         _PPO_FUSED_IMPORT + ("for update in range(1, args.num_total_batches + 1):",),
     ),
-    # Rollouts without the stacked float32 generation scores.
     (
         ("query_responses, logitss = batch_generation(",),
         (
-            "query_responses, logitss = (",
-            "    batch_generation if _unsloth_ppo_route is None else _unsloth_ppo_batch_generation",
-            ")(",
+            "query_responses, logitss = _unsloth_ppo_batch_generation(",
+            "    _unsloth_ppo_route, batch_generation,",
         ),
     ),
-    # Rollout (old) log-probs: the policy forward + fused scorer the training pass uses.
     (
         (
             "logits = logitss[i : i + args.local_rollout_forward_batch_size]",
@@ -302,7 +299,7 @@ _PPO_FUSED_BLOCKS = (
             "del logits",
         ),
         (
-            "if _unsloth_ppo_route is not None:",
+            "if _unsloth_ppo_route is not None and logitss is None:",
             "    logprob = _unsloth_ppo_policy_logprobs(",
             "        _unsloth_ppo_route, forward, selective_log_softmax, model, query_response, response,",
             "        context_length, processing_class.pad_token_id, args.temperature + 1e-7,",
