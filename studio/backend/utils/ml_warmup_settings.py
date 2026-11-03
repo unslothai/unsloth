@@ -18,8 +18,6 @@ ML_WARMUP_FEATURES: tuple[MlWarmupFeature, ...] = (
     "quantization",
 )
 ML_WARMUP_FEATURES_SETTING_KEY = "ml_library_warmup_features"
-# Read only when the selective preference is absent, to retain the earlier all-or-nothing opt-in.
-ML_WARMUP_SETTING_KEY = "ml_library_warmup_on_startup"
 _HARDWARE_DEPENDENTS = frozenset({"text", "media", "quantization"})
 
 
@@ -47,11 +45,7 @@ def get_ml_warmup_features() -> frozenset[str]:
     try:
         from storage.studio_db import get_app_setting
 
-        missing = object()
-        stored = get_app_setting(ML_WARMUP_FEATURES_SETTING_KEY, missing)
-        if stored is missing:
-            legacy = get_app_setting(ML_WARMUP_SETTING_KEY, False)
-            return frozenset(ML_WARMUP_FEATURES) if legacy is True else frozenset()
+        stored = get_app_setting(ML_WARMUP_FEATURES_SETTING_KEY, None)
         if not isinstance(stored, list):
             return frozenset()
         return _validate_features(stored)

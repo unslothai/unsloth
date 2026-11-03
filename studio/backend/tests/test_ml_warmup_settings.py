@@ -37,8 +37,7 @@ def test_missing_preferences_default_to_no_features(preferences):
 @pytest.mark.parametrize(
     "stored", [None, "", "text", True, False, 0, 1, {}, ["unknown"], ["text", 1]]
 )
-def test_invalid_preferences_default_off_even_with_legacy_opt_in(preferences, stored):
-    preferences[settings.ML_WARMUP_SETTING_KEY] = True
+def test_invalid_preferences_default_off(preferences, stored):
     preferences[settings.ML_WARMUP_FEATURES_SETTING_KEY] = stored
     assert settings.get_ml_warmup_features() == frozenset()
 
@@ -49,19 +48,6 @@ def test_unreadable_preferences_default_off(preferences, monkeypatch):
 
     monkeypatch.setattr(sys.modules["storage.studio_db"], "get_app_setting", fail)
     assert settings.get_startup_ml_warmup_features() == frozenset()
-
-
-@pytest.mark.parametrize("legacy", [None, False, "true", 1])
-def test_only_literal_legacy_true_retains_the_old_opt_in(preferences, legacy):
-    preferences[settings.ML_WARMUP_SETTING_KEY] = legacy
-    assert settings.get_ml_warmup_features() == frozenset()
-
-
-def test_legacy_true_retains_all_features_until_selective_preference_is_saved(preferences):
-    preferences[settings.ML_WARMUP_SETTING_KEY] = True
-    assert settings.get_ml_warmup_features() == frozenset(settings.ML_WARMUP_FEATURES)
-    settings.set_ml_warmup_features([])
-    assert settings.get_ml_warmup_features() == frozenset()
 
 
 def test_selections_are_persisted_deduplicated_in_canonical_order(preferences):

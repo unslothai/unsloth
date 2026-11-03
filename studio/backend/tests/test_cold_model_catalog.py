@@ -152,3 +152,27 @@ def test_an_event_without_a_device_is_not_a_measured_catalog(catalog):
     event.set()
     response = asyncio.run(models.list_models(current_subject = "owner"))
     assert response.default_models == defaults.DEFAULT_MODELS_STANDARD
+
+
+@pytest.mark.parametrize("arch", ["flux", "lumina2"])
+def test_local_gguf_listing_defers_the_device_probe_until_hardware_is_known(
+    catalog, monkeypatch, arch
+):
+    from core.inference import diffusion_engine_router, diffusion_families
+    from hub.services.models import catalog_classification
+
+    _, _, _, event = catalog
+    probed = []
+    monkeypatch.setattr(diffusion_families, "detect_family_for_pick", lambda hint: hint)
+    monkeypatch.setattr(diffusion_families, "family_gguf_loadable", lambda family: True)
+    monkeypatch.setattr(
+        diffusion_engine_router,
+        "family_buildable_here",
+        lambda family, **kwargs: probed.append(family) or False,
+    )
+    classify = lambda: catalog_classification._arch_to_task(arch, ("model",))
+    assert classify() == "text-to-image"
+    assert probed == []
+    event.set()
+    assert classify() == catalog_classification._UNSUPPORTED_DIFFUSION_TASK
+    assert probed == ["model"]

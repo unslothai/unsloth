@@ -154,3 +154,26 @@ test("the real route guard keeps hover preloads cold and starts detection on nav
   assert.deepEqual(urls, ["/api/health", "/api/health?detect_hardware=true"]);
   assert.equal(usePlatformStore.getState().capabilitiesUnknown(), false);
 });
+
+test("auto-load keeps cached non-GGUF models while detection is deferred", () => {
+  reset();
+  const adapterSource = readSrc("features/chat/api/chat-adapter.ts");
+  const lift = (name: string) => {
+    const match = new RegExp(`function ${name}\\([^)]*\\): boolean \\{([\\s\\S]*?)\\n\\}`).exec(adapterSource);
+    assert.ok(match, `${name} moved`);
+    return new Function("usePlatformStore", "isGgufLocalRow", "isMlxId", "row", match[1])
+      .bind(null, usePlatformStore, (row: { path: string }) => row.path.endsWith(".gguf"), () => false);
+  };
+  const cachedModelsRun = lift("cachedModelsRunOnThisPlatform");
+  const runsHere = lift("runsOnThisPlatform");
+  const safetensors = { id: "org/model", path: "/models/org/model" };
+
+  usePlatformStore.setState({ fetched: true, detectionDeferred: true, chatOnly: true, deviceType: "linux" });
+  assert.equal(cachedModelsRun(), true);
+  assert.equal(runsHere(safetensors), true);
+
+  usePlatformStore.setState({ detectionDeferred: false });
+  assert.equal(cachedModelsRun(), false);
+  assert.equal(runsHere(safetensors), false);
+  assert.equal(runsHere({ id: "org/model-GGUF", path: "/models/m.gguf" }), true);
+});

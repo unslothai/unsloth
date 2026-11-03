@@ -90,7 +90,11 @@ print('TEXT_WARMUP_STAYS_SCOPED')
 """
 
 
-def _run_startup(snippet, tmp_path):
+def _run_startup(
+    snippet,
+    tmp_path,
+    timeout = 120,
+):
     env = os.environ.copy()
     env.pop("UNSLOTH_STUDIO_DISABLE_TORCH_WARM", None)
     env.pop("UNSLOTH_STUDIO_DISABLE_DIFFUSERS_PREWARM", None)
@@ -116,7 +120,7 @@ def _run_startup(snippet, tmp_path):
         env = env,
         capture_output = True,
         text = True,
-        timeout = 120,
+        timeout = timeout,
     )
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr[-5000:]}"
     return result.stdout
@@ -209,7 +213,11 @@ with TestClient(main.app) as client:
         assert 'memory' in reply.json() and 'gpu' in reply.json()
     assert main._hw_module.DETECTION_COMPLETE.is_set()
     assert 'torch' in sys.modules
-    for name in ('torch._dynamo', 'transformers', 'datasets', 'diffusers', 'torchao'):
+    unselected = ['datasets', 'diffusers', 'torchao']
+    # Apple Silicon detection imports mlx_lm, which pulls in transformers.
+    if not main._hw_module.is_apple_silicon():
+        unselected += ['torch._dynamo', 'transformers']
+    for name in unselected:
         assert name not in sys.modules, name
     assert warm_status()['started'] is False
     assert '_child_probe_entry' not in spawned, spawned
@@ -312,5 +320,6 @@ print('IDLE_CHAT_REQUESTS_STAY_COLD')
 
 
 def test_idle_chat_model_status_inventory_and_monitor_requests_leave_ml_cold(tmp_path):
-    output = _run_startup(_IDLE_CHAT, tmp_path)
+    # 65 sequential requests; TestClient adds seconds per request on some hosts.
+    output = _run_startup(_IDLE_CHAT, tmp_path, timeout = 600)
     assert "IDLE_CHAT_REQUESTS_STAY_COLD" in output
