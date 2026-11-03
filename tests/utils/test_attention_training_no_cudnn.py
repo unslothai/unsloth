@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Training SDPA on SM100 avoids cuDNN attention; eval / generation calls are untouched.
-
-torch 2.13+ on B200 picks cuDNN attention for SDPA, which builds a plan for every new sequence length
-(~150 ms each). Padded training batches change length every step: Qwen3-0.6B LoRA went from 2777-3060
-to 5164-5333 useful tokens/s with flash / efficient / math (exclusive B200, no xformers, interleaved).
-"""
-
 import pytest
 import torch
 import torch.nn.functional as F
@@ -111,12 +104,10 @@ def test_training_sdpa_traces_without_a_break(monkeypatch):
 
 
 def test_gqa_probe_runs_under_the_training_restriction(monkeypatch):
-    """The enable_gqa decision is probed with the kernels the call runs with (cuDNN off)."""
     probed = []
 
     def fake_now(*args):
         probed.append((args, torch.backends.cuda.cudnn_sdp_enabled()))
-        # cuDNN takes this masked GQA call; without it only math would.
         return torch.backends.cuda.cudnn_sdp_enabled()
 
     monkeypatch.setattr(ad, "_sdpa_gqa_state_now", fake_now)
@@ -131,7 +122,7 @@ def test_gqa_probe_runs_under_the_training_restriction(monkeypatch):
         ad._sdpa_takes_gqa(Q, K, False, True, K, 0.0, no_cudnn = ad._avoids_cudnn(Q, False)) is before
     )
     assert [cudnn for _, cudnn in probed] == [False, before]
-    assert probed[0][0] == probed[1][0]  # same shapes, only the backend set differs
+    assert probed[0][0] == probed[1][0]
     assert torch.backends.cuda.cudnn_sdp_enabled() == before
     assert ad._avoids_cudnn(Q, True) and not ad._avoids_cudnn(Q, False)
     monkeypatch.setattr(ad, "_NO_CUDNN_TRAINING", frozenset())
@@ -191,7 +182,6 @@ def _flags():
 
 
 def _expected(name):
-    """The caller's own set with cuDNN dropped; a cuDNN-only policy is left as is."""
     names = _POLICIES[name]
     keep_cudnn = names == ("CUDNN_ATTENTION",)
     return (
@@ -204,7 +194,6 @@ def _expected(name):
 
 @pytest.mark.parametrize("name", list(_POLICIES))
 def test_training_pin_keeps_caller_backend_policy(monkeypatch, name):
-    """sdpa_kernel([MATH]) around a training step must stay math on SM100, not regain flash."""
     from torch.nn.attention import sdpa_kernel
 
     seen = []
@@ -236,7 +225,6 @@ def test_gqa_probe_uses_the_callers_cudnn_free_set(monkeypatch, name):
 
 @pytest.mark.parametrize("name", ["all", "math", "math_cudnn"])
 def test_compiled_training_pin_keeps_caller_backend_policy(monkeypatch, name):
-    """Traced, the pin is read under the caller's sdpa_kernel at trace time, with no graph break."""
     from torch._dynamo.utils import counters
     from torch.nn.attention import sdpa_kernel
 
@@ -263,6 +251,5 @@ def test_compiled_training_pin_keeps_caller_backend_policy(monkeypatch, name):
             c(q).sum().backward()
     assert dict(counters["graph_break"]) == {}
     expected = tuple(b for b in ad._XFORMERS_LIKE_BACKENDS if b in policy)
-    # A cuDNN-free policy has nothing to drop: no pin at all.
     assert set(pinned) == ({expected} if any("CUDNN" in str(b) for b in policy) else set())
     torch._dynamo.reset()
