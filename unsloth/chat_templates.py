@@ -2590,6 +2590,14 @@ def get_chat_template(
             pass
 
             if map_eos_token and (not stop_word in token_mapping.values()):
+                # Mapping renames the existing eos_token, so a tokenizer without one would fall
+                # into str.replace(None, ...) below: say what is missing instead.
+                if tokenizer.eos_token is None:
+                    raise RuntimeError(
+                        "Unsloth: Your tokenizer has no eos_token, so the template's stop "
+                        f"token {stop_word} cannot be mapped onto it. Set "
+                        "tokenizer.eos_token first, or pass map_eos_token = False."
+                    )
                 # Do not map 107 = <|im_end|> and 1 = <|im_end|>. This will reduce the vocab size by 1
                 logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
                 string_vocab = string_vocab.replace(tokenizer.eos_token, stop_word)
