@@ -261,13 +261,28 @@ const CORNERS: ControlPosition[] = [
   "bottom-right",
 ];
 /** Invisible edge and corner handles; one undo step per resize, committed on release. */
-function CardResizer({ id, minHeight }: { id: string; minHeight: number }) {
-  const onResizeEnd: OnResizeEnd = (_, p) =>
+function CardResizer({
+  id,
+  minHeight,
+  onResizing,
+}: {
+  id: string;
+  minHeight: number;
+  onResizing: (on: boolean) => void;
+}) {
+  const onResizeEnd: OnResizeEnd = (_, p) => {
     useDocStore.getState().updateNode(id, {
       pos: [Math.round(p.x), Math.round(p.y)],
       size: [Math.round(p.width), Math.round(p.height)],
     });
-  const common = { minWidth: CARD_MIN_WIDTH, minHeight, onResizeEnd };
+    onResizing(false);
+  };
+  const common = {
+    minWidth: CARD_MIN_WIDTH,
+    minHeight,
+    onResizeEnd,
+    onResizeStart: () => onResizing(true),
+  };
   return (
     <>
       {SIDES.map((position) => (
@@ -296,6 +311,7 @@ function CardResizer({ id, minHeight }: { id: string; minHeight: number }) {
 }
 
 function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
+  const [resizing, setResizing] = useState(false);
   const node = useDocStore((s) => s.graph.nodes[id]);
   const spec = useCatalogStore((s) => (node ? s.specs[node.type] : undefined));
   const category = useCatalogStore((s) =>
@@ -356,7 +372,8 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
       runtime={runtime}
       disabled={node.disabled}
       lowDetail={lowDetail}
-      sized={!!node.size && !collapsed}
+      // A first resize lays the card out sized while it drags, before the size is saved on release.
+      sized={(!!node.size || resizing) && !collapsed}
       data-node-id={id}
       ref={cardRef}
       // A card saved smaller than its fields (or that later grew an error) still shows them.
@@ -366,6 +383,7 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
       {!collapsed && (
         <CardResizer
           id={id}
+          onResizing={setResizing}
           minHeight={Math.max(cardMinHeight(spec), contentMin)}
         />
       )}
