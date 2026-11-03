@@ -99,7 +99,6 @@ def test_gguf_reclaim_preserves_publication_and_active_peer(tmp_path, phase):
         newer = _run(hub, tmp_path, "--variant", "Q4_K_M")
         assert newer.returncode == 0, newer.stderr
         assert ref.read_text() == _NEW
-        # Reclamation must still do useful work while protecting the active peer.
         assert not stale.exists() and not stale_blob.exists(), newer.stderr
         if phase == "after_transfer":
             assert (repo / "snapshots" / _OLD / name).read_bytes() == hub.commits[_OLD][name]
@@ -108,7 +107,6 @@ def test_gguf_reclaim_preserves_publication_and_active_peer(tmp_path, phase):
         assert child.returncode == 0, out + err
         assert ref.read_text() == _NEW
 
-        # The real offline resolver must still be able to load the published winner.
         offline = subprocess.run(
             [
                 sys.executable,

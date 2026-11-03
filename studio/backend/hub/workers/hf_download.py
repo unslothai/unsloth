@@ -470,8 +470,6 @@ def _pinned_snapshot_download(
     repo_type, repo_id = kwargs.get("repo_type") or "model", kwargs["repo_id"]
     repo_dir = repo_cache_dir(repo_type, repo_id)
     if commit is None:
-        # An offline repeat can use the already-published immutable snapshot.
-        # Resumes prefer their manifest's attested commit at the caller.
         commit = _read_ref(repo_dir / "refs" / "main")
     pin = _pinned_revision(repo_type, repo_id, commit)
     if not pin:
@@ -914,8 +912,6 @@ def _download_snapshot(
     from hub.utils.download_registry import prepare_cache_for_transport
     from hub.utils import download_manifest
 
-    # One metadata fetch powers the plan and manifest. Offline retries retain
-    # the saved expectations and attested revision when available.
     try:
         info = _model_info_with_retry(repo_id, hf_token)
     except Exception as e:
@@ -1244,8 +1240,7 @@ def _download_scoped_snapshot(
 
     def verify(snapshot_path: str) -> None:
         if info is None:
-            # The saved manifest may not cover every currently requested file.
-            # Check the request too before recording a successful publication.
+            # A saved manifest may omit files in the current request.
             root = Path(snapshot_path)
             absent = tuple(f for f in files if not (root / f).exists())
             if absent:

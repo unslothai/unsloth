@@ -686,8 +686,6 @@ def reclaim_replaced_gguf_variant(
             if _main_key(match[0], main_keys) == variant_key
         ]
         for snap, blob, name in matches:
-            # The publication lock's caller protects its published commit and
-            # every in-flight peer, even when their hashes differ from ours.
             if repo_dir is None:
                 continue
             try:

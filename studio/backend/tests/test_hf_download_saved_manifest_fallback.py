@@ -173,7 +173,6 @@ def _run_case(tmp_path, kind, scenario):
             timeout = 40,
         )
         assert result.returncode == 0, result.stdout + result.stderr
-        # All online transfers and metadata reads use the loopback fake Hub.
         assert hub.requests
         print(result.stdout.strip())
     finally:
