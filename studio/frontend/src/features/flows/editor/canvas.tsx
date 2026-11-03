@@ -72,6 +72,7 @@ import {
   foldedGroups,
   type SuperCardData,
   boxCovers,
+  readSuperCards,
   superCardDragMembers,
   toggledSelection,
 } from "./super-cards";
@@ -252,6 +253,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       string,
       {
         card: boolean;
+        /** Blocks of a closed card carried along: they keep their groups, like a card drag. */
+        keep?: string[];
         origin: { x: number; y: number };
         members: Map<string, { x: number; y: number }>;
       }
@@ -449,8 +452,19 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
           const [x, y] = doc.reroutes[id].pos;
           if (insideRect(x, y, group.rect)) members.set(id, { x, y });
         }
+        // A closed card is one object: if the frame carries any of its blocks, it carries all of it.
+        const keep: string[] = [];
+        const { meta } = useDocStore.getState();
+        for (const card of readSuperCards(meta.editor, doc)) {
+          if (card.open || !card.members.some((id) => members.has(id))) continue;
+          const rf = store.getState().nodeLookup.get(SUPER_PREFIX + card.id);
+          const whole = rf ? superCardDragMembers(rf as unknown as RfNode, doc) : null;
+          for (const [id, at] of whole ?? []) members.set(id, at);
+          keep.push(...card.members);
+        }
         dragMembers.current.set(n.id, {
           card: false,
+          keep,
           origin: { x: group.rect[0], y: group.rect[1] },
           members,
         });
@@ -477,8 +491,10 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     (_: unknown, node: RfNode) => {
       // A super card moves its blocks without changing which group they are in.
       const kept = new Set<string>();
-      for (const group of dragMembers.current.values())
+      for (const group of dragMembers.current.values()) {
         if (group.card) for (const id of group.members.keys()) kept.add(id);
+        for (const id of group.keep ?? []) kept.add(id);
+      }
       dragMembers.current = new Map();
       const current = dragRef.current;
       if (current) {

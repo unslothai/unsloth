@@ -257,8 +257,12 @@ export function applySuperCards(
   areas.push(...boxes);
   for (const n of nodes) {
     if (graph.nodes[n.id] || n.id.startsWith(GROUP_PREFIX)) continue;
-    const x = n.position.x + (n.measured?.width ?? 0) / 2;
-    const y = n.position.y + (n.measured?.height ?? 0) / 2;
+    // A note not yet mounted has no measurement: its saved size is in its style.
+    const style = n.style as { width?: unknown; height?: unknown } | undefined;
+    const w = n.measured?.width ?? (typeof style?.width === "number" ? style.width : 0);
+    const h = n.measured?.height ?? (typeof style?.height === "number" ? style.height : 0);
+    const x = n.position.x + w / 2;
+    const y = n.position.y + h / 2;
     for (const [cardId, b] of areas) {
       if (x >= b.x && y >= b.y && x <= b.right && y <= b.bottom) {
         owner.set(n.id, cardId);

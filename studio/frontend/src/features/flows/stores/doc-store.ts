@@ -737,10 +737,13 @@ export const useDocStore = create<DocState>((set, get) => {
         const groups = { ...s.graph.groups, [group.id]: group };
         const graph = { ...s.graph, groups };
         const nodes = { ...s.graph.nodes };
+        // A frame folded into a closed card keeps its blocks and takes no others.
+        const folded = foldedGroups(s.meta.editor, s.graph);
         for (const id of s.graph.nodeOrder) {
           const node = nodes[id];
           const before = node.group ?? null;
-          const after = frameAt(graph, node.pos);
+          if (before && folded.has(before)) continue;
+          const after = frameAt(graph, node.pos, folded);
           if (before === after) continue;
           if (before !== group.id && after !== group.id) continue;
           nodes[id] = { ...node, group: after };

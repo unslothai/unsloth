@@ -671,3 +671,30 @@ test("a free reroute folded into a card moves with it on Tidy", async () => {
   );
   assert.deepEqual(patch.reroutes.rr1, [550, 160]);
 });
+
+test("resizing a visible frame never hands its blocks to a folded one", () => {
+  const d = comic();
+  d.groups = [...(d.groups ?? []), { id: "outer", label: "Outer", color: "#64748b", rect: [-100, -200, 1500, 900] }];
+  d.nodes = [...d.nodes, { ...node("x", "output.preview", [420, 60]), group: "outer" }];
+  useDocStore.getState().load(d);
+  select("tpl", "img");
+  combineSelection();
+  useDocStore.getState().resizeGroup({ ...useDocStore.getState().graph.groups.outer, rect: [-100, -200, 1520, 900] });
+  const { graph } = useDocStore.getState();
+  assert.equal(graph.nodes.x.group, "outer");
+  assert.equal(graph.nodes.tpl.group, "g");
+});
+
+test("an unmeasured note folds by its saved size, not its corner", () => {
+  const d = comic();
+  // Its corner is among the card's blocks; its middle is well outside them.
+  d.notes = [{ id: "big", text: "big", rect: [320, 100, 800, 600] }];
+  useDocStore.getState().load(d);
+  select("tpl", "img");
+  combineSelection();
+  const ids = view().nodes.map((n) => n.id);
+  assert.ok(ids.includes("note:big"));
+  // Dragging a frame that carries any of a closed card's blocks carries the whole card.
+  const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
+  assert.match(canvas, /if \(card\.open \|\| !card\.members\.some\(\(id\) => members\.has\(id\)\)\) continue;/);
+});
