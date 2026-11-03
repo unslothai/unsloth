@@ -318,6 +318,13 @@ def _media_load_count(slot: str) -> Optional[int]:
     return gpu_arbiter.load_count(owner) if owner else None
 
 
+def _own_media_reload(slot: str, repo: str, variant: Optional[str]) -> None:
+    """Flows reloaded the recorded repo and variant itself (LoRA bake, ControlNet), so keep the record current."""
+    wanted = (repo.lower(), (variant or "").lower())
+    if _LOADED_VARIANT.get(slot, ())[:2] == wanted:
+        _LOADED_VARIANT[slot] = (*wanted, _media_load_count(slot))
+
+
 _LOADED_OPTIONS: dict[str, tuple[str, str, int]] = {}
 
 
@@ -840,6 +847,7 @@ async def _controlnet_ready(ctx: Any, model: Optional[dict]) -> None:
         knobs = {"transformer_quant": "off"},
     )
     note_loaded(ctx, "image", repo)
+    _own_media_reload("image", repo, variant)
 
 
 _BAKED_LORAS: dict[str, tuple[str, frozenset, int]] = {}
@@ -885,6 +893,7 @@ async def _baked_loras_ready(ctx: Any, model: Optional[dict], loras: list[dict])
         knobs = {"loras": sorted(loras, key = lambda item: item["id"])},
     )
     note_loaded(ctx, "image", str(repo))
+    _own_media_reload("image", str(repo), model.get("variant") if isinstance(model, dict) else None)
     _BAKED_LORAS["image"] = (
         str(repo).lower(),
         wanted,
