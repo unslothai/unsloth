@@ -1,10 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import json
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StrictBool,
+    StrictStr,
+    field_validator,
+)
 
 from auth.authentication import get_current_subject
 from core.training.rewards import (
@@ -61,7 +70,15 @@ class RewardPreviewRequest(BaseModel):
 
     rewards: list[RewardPreviewItem] = Field(..., min_length = 1, max_length = 16)
     completion: StrictStr = Field(..., max_length = 64 * 1024)
-    reference: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
+    # The dataset cell as is; score_rule converts it with str(), as training does.
+    reference: JsonValue = None
+
+    @field_validator("reference")
+    @classmethod
+    def _reference_size(cls, value: JsonValue) -> JsonValue:
+        if value is not None and len(json.dumps(value)) > 16 * 1024:
+            raise ValueError("reference is longer than 16 KB.")
+        return value
 
 
 class RewardPreviewScore(BaseModel):

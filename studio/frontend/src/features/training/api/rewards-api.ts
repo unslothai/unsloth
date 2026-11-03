@@ -72,7 +72,7 @@ export async function deleteReward(name: string): Promise<void> {
 export async function previewRewards(
   rewards: GrpoRewardSelection[],
   completion: string,
-  reference: string | null,
+  reference: unknown,
 ): Promise<RewardPreviewResponse> {
   return readJson(
     await authFetch("/api/rewards/preview", {

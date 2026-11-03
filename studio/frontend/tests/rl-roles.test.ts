@@ -196,7 +196,9 @@ test("a reward preview reads a blank mapped answer as blank, as GRPO training do
   assert.equal(rowAnswer({ answer: "72" }, "answer"), "72");
   assert.equal(rowAnswer({ answer: null }, "answer"), null);
   assert.equal(rowAnswer({ answer: "" }, "answer"), "");
-  assert.equal(rowAnswer({ answer: 5 }, "answer"), "5");
+  assert.equal(rowAnswer({ answer: 5 }, "answer"), 5);
+  // A structured cell goes as is; the backend str()s it as training does, not JSON.stringify.
+  assert.deepEqual(rowAnswer({ answer: { x: 1 } }, "answer"), { x: 1 });
   // Only no row or no answer role leaves the preview to its sample answer.
   assert.equal(rowAnswer(null, "answer"), undefined);
   assert.equal(rowAnswer({ answer: "72" }, undefined), undefined);
