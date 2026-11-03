@@ -723,16 +723,21 @@ def test_a_migrated_recipe_gets_its_own_copy_of_uploaded_documents(tmp_path, mon
     assert (tmp_path / "up1" / "u1.extracted.txt").read_text() == "page"
 
 
-def test_a_recipe_on_chats_loaded_model_is_keyed_on_that_model(monkeypatch):
+def test_a_recipe_on_chats_loaded_model_is_keyed_on_that_model_and_quant(monkeypatch, tmp_path):
     from core.flows import engine as engine_mod
-    from core.flows.nodes import _common
+    from studio_mcp import loading
 
-    loaded = {"name": "unsloth/Qwen3-4B-GGUF"}
+    loaded = {"name": "unsloth/Qwen3-4B-GGUF", "variant": "Q4_K_M"}
 
-    async def resident(ctx, kind):
-        return loaded["name"]
+    async def resident(caller):
+        return {"llm": [loaded["name"]]}, {"gguf_variant": loaded["variant"]}
 
-    monkeypatch.setattr(_common, "resident_name", resident)
+    monkeypatch.setattr(loading, "_resident", resident)
+
+    class Ctx:
+        caller = None
+        resident: dict = {}
+
     spec = {"type": GENERATE_TYPE}
     recipe = {
         "model_providers": [{"name": "local", "is_local": True}],
@@ -742,10 +747,22 @@ def test_a_recipe_on_chats_loaded_model_is_keyed_on_that_model(monkeypatch):
     # The shape compile_flow stores under RECIPE_PARAM.
     assert "recipe" in _compiled(_flow()) and "model_configs" in _compiled(_flow())["recipe"]
     key = lambda: asyncio.run(  # noqa: E731
-        eng._model_key(None, spec, {RECIPE_PARAM: {"recipe": recipe, "run": {}}})
+        eng._model_key(Ctx(), spec, {RECIPE_PARAM: {"recipe": recipe, "run": {}}})
     )
     first = key()
+    assert first["local"] == "unsloth/Qwen3-4B-GGUF"
+    # The same repository at another quant writes different rows.
+    loaded["variant"] = "Q8_0"
+    assert key() != first
     loaded["name"] = "unsloth/gemma-3-4b-it-GGUF"
-    assert key() != first and first["local"] == "unsloth/Qwen3-4B-GGUF"
+    assert key()["local"] == "unsloth/gemma-3-4b-it-GGUF"
+    # A local checkpoint is keyed on its files, so a re-export under the same path is new.
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    (ckpt / "model.safetensors").write_bytes(b"a")
+    loaded["name"], loaded["variant"] = str(ckpt), None
+    before = key()
+    (ckpt / "model.safetensors").write_bytes(b"bb")
+    assert key() != before
     recipe["model_configs"][0]["model"] = "unsloth/Qwen3-4B-GGUF"
     assert key() is None

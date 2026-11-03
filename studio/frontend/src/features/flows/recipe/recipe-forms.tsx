@@ -105,6 +105,9 @@ function BlockForm({
     const next = applyConfigPatch(latest.current, id, patch);
     latest.current = next;
     setConfigs(next);
+    // A provider or model preset with no name drops out of the recipe and its inspector, so a
+    // cleared name waits in the form until the new one is typed.
+    if (onRename && !String(next[id].name ?? "").trim()) return;
     commitConfigs(groupId, opened.view, next);
     ours.current = recipeSignature(useDocStore.getState().graph, groupId);
     if (onRename && typeof patch.name === "string") onRename(next[id].name);

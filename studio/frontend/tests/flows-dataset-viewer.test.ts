@@ -126,3 +126,10 @@ test("the card table leads with a recipe's generated columns and scrolls to the 
   assert.match(preview, /overflow-x-auto/);
   assert.match(preview, /columnNames\(rows, value\.columns\)/);
 });
+
+test("the viewer starts a newly shown dataset on its first page, with every column", () => {
+  const src = readFileSync(new URL("../src/features/flows/dataset/dataset-viewer.tsx", import.meta.url), "utf8");
+  assert.match(src, /<DatasetPages key=\{JSON\.stringify\(props\.value\)\} \{\.\.\.props\} \/>/);
+  const pages = src.slice(src.indexOf("function DatasetPages"));
+  assert.match(pages, /useState\(0\)/);
+});

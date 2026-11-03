@@ -107,16 +107,18 @@ function ExpandableCell({ value, dense }: { value: unknown; dense?: boolean }) {
   );
 }
 
-/** Data, Columns and Raw for one dataset, paged from the backend. */
-export function DatasetViewer({
+type ViewerProps = { value: DatasetValue; pageSize?: number; dense?: boolean };
+
+/** Data, Columns and Raw for one dataset, paged from the backend; another dataset starts on page 1. */
+export function DatasetViewer(props: ViewerProps): ReactElement {
+  return <DatasetPages key={JSON.stringify(props.value)} {...props} />;
+}
+
+function DatasetPages({
   value,
   pageSize = 20,
   dense = false,
-}: {
-  value: DatasetValue;
-  pageSize?: number;
-  dense?: boolean;
-}): ReactElement {
+}: ViewerProps): ReactElement {
   const [offset, setOffset] = useState(0);
   const [hidden, setHidden] = useState<string[]>([]);
   const [tab, setTab] = useState("data");

@@ -2011,9 +2011,14 @@ class FlowEngine:
         kind = spec.get("model_kind")
         if not kind:
             if _implicit_local_model(params.get(RECIPE_PARAM)):
-                # The recipe runs on whatever Chat has loaded, so a different model is a different dataset.
-                from core.flows.nodes._common import resident_name
-                return {"local": await resident_name(ctx, "chat")}
+                # The recipe runs on whatever Chat has loaded, so a different model or quant is a different dataset.
+                from core.flows.nodes._common import resident_identity
+
+                key = await resident_identity(ctx, "chat")
+                name = key.get("local")
+                if isinstance(name, str) and os.path.isabs(name):
+                    key["files"] = await asyncio.to_thread(_local_fingerprint, name)
+                return key
             return None
         choice = params.get("model") or {}
         key = {"repo": choice.get("repo"), "variant": choice.get("variant")}
