@@ -23,7 +23,7 @@ Graphs are dropped when the generate() call ends and when parameters, adapters o
 UNSLOTH_DECODE_GENERIC_GRAPHS_VALIDATE_ALL=1 (debug) compares every replay with the eager step and
 records the first mismatching step, max abs logit diff, max KL and top-1 disagreements (stats()["check"]).
 UNSLOTH_DECODE_GENERIC_GRAPHS=0 turns this path off; batches over UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ
-(default 8) decode eagerly. The cache is the one generate() allocates (no larger span, no extra rows):
+(default 16) decode eagerly. The cache is the one generate() allocates (no larger span, no extra rows):
 the graph adds only its pool (step intermediates and the static argument / output buffers)."""
 
 import collections
@@ -54,8 +54,8 @@ _CONSTANTS = (bool, int, float, str, torch.dtype, torch.device)
 # Refused / validated keys remembered per model.
 _MAX_KEYS = 4096
 # Largest batch replayed (larger batches decode eagerly): a graph only removes launch overhead, which
-# shrinks against the GPU time of a bigger batch. Raise / lower it from measurements.
-MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ", "8"))
+# shrinks against the GPU time of a bigger batch (T4, 1B 4-bit: 4-7x at bsz 1, still 2.7-4.7x at 16).
+MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ", "16"))
 
 
 class _Refuse(Exception):
