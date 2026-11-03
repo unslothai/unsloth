@@ -2222,7 +2222,6 @@ def run_inference_process(
         and (_probe_needs_hub or not _hub_targets_are_local(_probe_model, _probe_base))
     ):
         from utils.models.model_config import read_hub_model_info_ahead, shared_hub_model_info
-
         hub_answers.enter_context(shared_hub_model_info())
         model_info_ahead = read_hub_model_info_ahead(model_name, _config_hf_token(config))
 
