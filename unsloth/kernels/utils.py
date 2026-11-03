@@ -1842,20 +1842,23 @@ def fast_linear_forward(
         else:
             A, B = _fast_lora_weights(lora_A, lora_B, dtype)
 
+        # The update goes in place through a 1-D / 2-D view and the caller gets `out` itself back. A
+        # [bsz, 1, N] view re-made from the 2-D one gets the stride N for its size-1 dim, which differs
+        # from the row stride of a strided decode buffer (the MLP writes down_proj into temp_up[..., :hd]);
+        # the next layer's norm writes in place into that tensor, so every later torch.matmul on it (the
+        # next projections, the LM head) could not fold to one mm and ran a batched bmm over the weight
+        # expanded to the batch: +27 ms per step at batch 64 on Llama 1B LoRA (A100, CUDA graphs).
         if bsz == 1:
-            out = out.view(out_dim)
             temp_lora = torch_mv(A, X.ravel(), out = temp_lora)
             # Without out=, mv / mm follow a different autocast dtype; the in-place update does not.
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
-            out = out.addmv_(B, temp_lora, alpha = lora_S)
+            out.view(out_dim).addmv_(B, temp_lora, alpha = lora_S)
         else:
-            out = out.view(bsz, out_dim)
             temp_lora = torch_mm(X.view(bsz, in_dim), A.t(), out = temp_lora)
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
-            out = out.addmm_(temp_lora, B.t(), alpha = lora_S)
-        out = out.view(bsz, 1, out_dim)
+            out.view(bsz, out_dim).addmm_(temp_lora, B.t(), alpha = lora_S)
 
     if bias is not None:
         out += bias
