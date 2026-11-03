@@ -2302,6 +2302,90 @@ def _video_index_repo(base: str, *, local_files_only: bool = False) -> str:
     return mirror
 
 
+def _video_offline_cache_miss(exc: BaseException) -> bool:
+    return isinstance(exc, OSError) or bool(getattr(exc, "cache_miss", False))
+
+
+def _video_cached_while_hub_unreachable(
+    base_local: Optional[str],
+    base_repo: Optional[str],
+    checkpoint_repo: Optional[str],
+    checkpoint_file: Optional[str],
+    *,
+    revision: Optional[str] = None,
+    family: Any = None,
+) -> bool:
+    if base_local or not base_repo or not hub_reachability.hub_unreachable():
+        return False
+    try:
+        if Path(base_repo).expanduser().exists():
+            return False
+        import json
+        from huggingface_hub import try_to_load_from_cache
+        from core.inference.diffusion import _cached_while_hub_unreachable
+        from .diffusion_families import _local_pipeline_component_is_complete, canonical_base
+        from .diffusion_offline_source import offline_snapshot_source
+
+        manifest = None
+        manifests = (
+            ("modular_model_index.json", "model_index.json")
+            if getattr(family, "modular_workflow", None)
+            else ("model_index.json", "modular_model_index.json")
+        )
+        for name in manifests:
+            hit = try_to_load_from_cache(
+                base_repo, name, cache_dir = hub_cache_dir(), revision = revision
+            )
+            if isinstance(hit, str):
+                manifest = Path(hit)
+                break
+        if manifest is None:
+            return False
+        metadata_types = (
+            ("tokenizer",)
+            if getattr(family, "name", None) == "ltx-2.5"
+            else ("tokenizer", "processor")
+        )
+        for name, spec in json.loads(manifest.read_text(encoding = "utf-8")).items():
+            if not isinstance(spec, (list, tuple)) or len(spec) < 2:
+                continue
+            library, cls = spec[:2]
+            if (
+                library != "transformers"
+                or not isinstance(cls, str)
+                or not any(kind in cls.lower() for kind in metadata_types)
+            ):
+                continue
+            source = (
+                spec[2]
+                if manifest.name == "modular_model_index.json"
+                and len(spec) > 2
+                and isinstance(spec[2], dict)
+                else {}
+            )
+            source_repo = source.get("pretrained_model_name_or_path") or source.get("repo")
+            repo = source_repo or base_repo
+            same_base = canonical_base(repo) == canonical_base(base_repo)
+            repo = base_repo if same_base else repo
+            subfolder = source.get("subfolder", "" if source_repo else name) or ""
+            root = offline_snapshot_source(
+                repo,
+                subfolder,
+                local_files_only = True,
+                cache_dir = hub_cache_dir(),
+                revision = source.get("revision") or (revision if same_base else None),
+            )
+            if not _local_pipeline_component_is_complete(
+                Path(root) / subfolder, library, cls, False
+            ):
+                return False
+        if checkpoint_file and checkpoint_repo and not Path(checkpoint_repo).expanduser().exists():
+            return _cached_while_hub_unreachable(checkpoint_repo, checkpoint_file)
+        return True
+    except Exception:  # noqa: BLE001 - any doubt keeps the online load
+        return False
+
+
 def _video_offline_base_choice(
     base: str,
     folders: Optional[Sequence[str]] = None,
@@ -5761,6 +5845,12 @@ class VideoBackend:
                     else None,
                     skip = ("transformer",),
                 )
+            if (
+                kwargs["_base_fetch_repo"] is None
+                and kind == "pipeline"
+                and hub_reachability.hub_unreachable()
+            ):
+                kwargs["_base_fetch_repo"] = _video_fetch_repo(base, kwargs.get("hf_token"))
             kwargs["_base_fetch_revision"] = (
                 base_fetch_choice.get("revision")
                 if base_fetch_choice
@@ -5770,13 +5860,63 @@ class VideoBackend:
 
             from .diffusion_families import pinned_repo_revision
 
-            # Every hub-id config read of the base during assembly (encoder / VAE / transformer configs, the LTX-2.5
-            # companions and encoder worker) reads the commit the plan pinned; a no-op for an unpinned load.
-            with pread_safetensors():
-                with pinned_repo_revision(
-                    kwargs.get("_base_fetch_repo"), kwargs.get("_base_fetch_revision")
+            checkpoint_cached_repo = (
+                str(checkpoint_local) if checkpoint_local is not None else kwargs["repo_id"]
+            )
+            forced_offline = not local_files_only and _video_cached_while_hub_unreachable(
+                base_local,
+                kwargs.get("_base_fetch_repo") or base,
+                checkpoint_cached_repo if kind != "pipeline" else None,
+                kwargs.get("gguf_filename") if kind != "pipeline" else None,
+                revision = kwargs.get("_base_fetch_revision"),
+                family = fam,
+            )
+
+            def _load(offline: bool) -> None:
+                if forced_offline:
+                    kwargs["local_files_only"] = offline
+                with pread_safetensors():
+                    with pinned_repo_revision(
+                        kwargs.get("_base_fetch_repo"), kwargs.get("_base_fetch_revision")
+                    ):
+                        self.load_pipeline(**kwargs)
+
+            if forced_offline:
+                logger.info(
+                    "video.hub_unreachable: %s is cached and the Hub did not connect moments ago; loading "
+                    "from the cache",
+                    kwargs["repo_id"],
+                )
+            retry_online = False
+            try:
+                _load(True if forced_offline else local_files_only)
+            except Exception as exc:
+                if (
+                    not forced_offline
+                    or not _video_offline_cache_miss(exc)
+                    or self._load_token != token
+                    or (cancel_event is not None and cancel_event.is_set())
                 ):
-                    self.load_pipeline(**kwargs)
+                    raise
+                logger.info(
+                    "video.hub_unreachable: %s is not fully cached (%s); retrying online",
+                    kwargs["repo_id"],
+                    str(exc),
+                )
+                retry_online = True
+            if retry_online:
+                # Outside the except so the failed attempt's traceback frames are released before retrying online.
+                self._close_pending_ltx25_encoder(token)
+                self._rollback_precommit_globals(token)
+                _discard_resident_quant_write(self, token)
+                import gc
+
+                gc.collect()
+                try:
+                    clear_gpu_cache()
+                except Exception:  # noqa: BLE001 -- cleanup is best-effort
+                    pass
+                _load(False)
             with self._lock:
                 if self._load_token == token:
                     self._loading = None

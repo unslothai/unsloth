@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""checkpoint_skip_layers = "auto" / UNSLOTH_GC_KEEP_LAYERS, extracted from _utils.py with ast."""
 
 import ast, logging, os
 import pytest
 import torch
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import has_real_cuda
 
 transformers = pytest.importorskip("transformers")
 from transformers import Qwen3Config, Qwen3ForCausalLM
@@ -20,6 +19,7 @@ NAMES = (
     "_AutoCheckpointSkip",
     "usable_cuda_bytes",
     "_size_auto_checkpoint_skip_for_trainer",
+    "_local_numel",
 )
 
 
@@ -181,7 +181,7 @@ def test_auto_ignores_allocation_spike_before_first_step():
     model = _model(device = "cuda")
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
-    # 3 GiB usable; a 2 GiB loading spike before training must not be read as activations.
+
     ns["usable_cuda_bytes"] = lambda device: 3 << 30
     spike = torch.empty(2 << 30, dtype = torch.uint8, device = "cuda")
     del spike
@@ -215,11 +215,11 @@ def test_auto_reserves_optimizer_state_only_when_not_allocated(optimizer_stepped
     ids = torch.randint(0, 32000, (2, 64), generator = torch.Generator().manual_seed(1)).cuda()
     model = _big_model()
     numel = sum(p.numel() for p in model.parameters())
-    assert numel * 8 > (1 << 30)  # AdamW state well above the planner's slack
+    assert numel * 8 > (1 << 30)
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
     optimizer = torch.optim.AdamW(model.parameters(), lr = 1e-5)
-    # Usable after step 1: grads + foreach AdamW workspace + 1.6 GiB.
+
     ns["usable_cuda_bytes"] = lambda device: numel * 8 + int(1.6 * (1 << 30))
     model(input_ids = ids, labels = ids).loss.backward()
     if optimizer_stepped:
@@ -227,10 +227,8 @@ def test_auto_reserves_optimizer_state_only_when_not_allocated(optimizer_stepped
         optimizer.zero_grad(set_to_none = True)
     model(input_ids = ids, labels = ids).loss.backward()
     if optimizer_stepped:
-        # Full finetuning: the state is in memory_allocated already and must not be reserved again.
         assert planner.kept == [0, 1, 2, 3, 4, 5]
     else:
-        # Gradient accumulation: the state does not exist yet, so it is reserved and nothing fits.
         assert planner.kept == []
     del optimizer, model
     torch.cuda.empty_cache()
@@ -260,7 +258,7 @@ def test_auto_reserves_state_for_params_the_optimizer_has_not_seen():
     ids = torch.randint(0, 32000, (2, 64), generator = torch.Generator().manual_seed(1)).cuda()
     model = _big_model()
     numel = sum(p.numel() for p in model.parameters())
-    # A trainable param the first batch never reaches (an unrouted MoE expert, an unused tower).
+
     model.unused = torch.nn.Parameter(torch.zeros(1 << 27, device = "cuda"))
     assert model.unused.numel() * 8 >= (1 << 30)
     ns["skip_checkpointing"](model, "auto")
@@ -273,7 +271,7 @@ def test_auto_reserves_state_for_params_the_optimizer_has_not_seen():
     optimizer.zero_grad(set_to_none = True)
     assert model.unused not in optimizer.state
     model(input_ids = ids, labels = ids).loss.backward()
-    # main: one step happened, so nothing is reserved for `unused` and every layer is kept.
+
     assert planner.kept == []
     del optimizer, model
     torch.cuda.empty_cache()
@@ -289,7 +287,7 @@ def test_auto_does_not_scale_persistent_grads_by_sequence_length():
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
     optimizer = torch.optim.AdamW(model.parameters(), lr = 1e-5)
-    # Room for 16x the short batch's activations, but not for 16x the fp32 grads it allocated.
+
     usable = numel * 4 * 6
     ns["usable_cuda_bytes"] = lambda device: usable
     model(input_ids = short, labels = short).loss.backward()
@@ -297,15 +295,13 @@ def test_auto_does_not_scale_persistent_grads_by_sequence_length():
     optimizer.zero_grad(set_to_none = True)
     model(input_ids = short, labels = short).loss.backward()
     assert planner.layer_rows == 64
-    # main: (activations + grads) x 16 leaves no headroom, so nothing is kept.
+
     assert planner.kept == [0, 1, 2, 3, 4, 5]
     del optimizer, model
     torch.cuda.empty_cache()
 
 
 class _FakeLayer(torch.nn.Module):
-    """A decoder layer whose recompute leaves `cost` fake CUDA bytes behind."""
-
     def __init__(self, cost, memory):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.zeros(1), requires_grad = False)
@@ -336,7 +332,6 @@ class _FakeModel(torch.nn.Module):
 
 
 def _fake_cuda(monkeypatch, ns, usable):
-    """CPU stand-ins for the CUDA calls the planner makes; memory_allocated is a counter."""
     memory = {"allocated": 0}
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
@@ -348,7 +343,7 @@ def _fake_cuda(monkeypatch, ns, usable):
 
 
 def _fake_step(model, rows):
-    """One reentrant-checkpointed step: no_grad forward of every layer, recompute in reverse."""
+    """Simulate checkpoint forwards and recomputations without running autograd."""
     hidden = torch.zeros(1, rows, 4)
     model(hidden)
     with torch.no_grad():
@@ -369,7 +364,7 @@ def test_auto_sizes_by_the_most_expensive_layer_type(monkeypatch):
     _fake_step(model, rows = 16)
     model(torch.zeros(1, 16, 4))
     assert planner.layer_bytes == gib
-    # (10 GiB - 4.5 GiB step) * 0.75 - 1 GiB = 3.125 GiB: 3 one-GiB layers, not 25 eighth-GiB ones.
+
     assert len(planner.kept) == 3
     monkeypatch.undo()
 
@@ -380,7 +375,7 @@ def test_auto_scales_eager_attention_quadratically(monkeypatch, attn, exponent):
     gib = 1 << 30
     memory = _fake_cuda(monkeypatch, ns, usable = 12 * gib)
     model = _FakeModel([gib // 16] * 8, memory, attn = attn)
-    model.max_seq_length = 64  # 4x the probed 16 rows
+    model.max_seq_length = 64
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
     _fake_step(model, rows = 16)
@@ -389,7 +384,7 @@ def test_auto_scales_eager_attention_quadratically(monkeypatch, attn, exponent):
     step = 8 * (gib // 16)
     budget = (12 * gib - step * scale) * 0.75 - gib
     assert len(planner.kept) == min(8, int(budget // (gib // 16 * scale)))
-    # Linear: 8 of 8 fit. Quadratic: a 4x longer batch costs 16x, so only 2 do.
+
     assert len(planner.kept) == (8 if exponent == 1 else 2)
     monkeypatch.undo()
 
@@ -454,9 +449,9 @@ def test_auto_sizes_for_the_trainer_batch_not_the_first_one(monkeypatch):
     trainer.model = model
     trainer.args = type("Args", (), {"per_device_train_batch_size": 4, "max_length": None})()
     ns["_size_auto_checkpoint_skip_for_trainer"](trainer)
-    _fake_step(model, rows = 16)  # first batch: 1 row at max_seq_length
+    _fake_step(model, rows = 16)
     model(torch.zeros(1, 16, 4))
-    # Sized for 4 rows: (4 GiB - 2 GiB) * 0.75 - 1 GiB = 0.5 GiB, two 0.25 GiB layers (not all 8).
+
     assert planner.target_batch == 4
     assert len(planner.kept) == 2
     monkeypatch.undo()
@@ -467,16 +462,15 @@ def test_auto_ignores_gradients_on_another_gpu(monkeypatch):
     gib = 1 << 30
     memory = _fake_cuda(monkeypatch, ns, usable = 5 * gib)
     model = _FakeModel([gib // 16] * 8, memory)
-    model.max_seq_length = 64  # 4x the probed rows
+    model.max_seq_length = 64
     # A trainable vision tower on another card ("meta" stands in for cuda:1).
     model.tower = torch.nn.Parameter(torch.empty(gib // 8, device = "meta"))
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
     _fake_step(model, rows = 16)
-    model.tower.grad = torch.empty(gib // 8, device = "meta")  # 0.5 GiB, not on the planned card
+    model.tower.grad = torch.empty(gib // 8, device = "meta")
     model(torch.zeros(1, 16, 4))
-    # 0.5 GiB step x 4 = 2 GiB activations, tower AdamW state on its own card: (5 - 2) * 0.75 - 1 =
-    # 1.25 GiB, five 0.25 GiB layers.
+
     assert len(planner.kept) == 5
     monkeypatch.undo()
 
@@ -489,7 +483,7 @@ def test_auto_still_plans_when_the_probe_layer_moves_to_host(monkeypatch):
     model = _FakeModel([gib // 16] * 8, memory)
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
-    # offload_layers = "auto" re-plans for the trainer and swaps the last layer (the probe) to host.
+
     model.model.layers[-1].to("meta")
     _fake_step(model, rows = 16)
     model(torch.zeros(1, 16, 4))
@@ -501,14 +495,13 @@ def test_auto_never_scales_below_the_measured_length(monkeypatch):
     ns, found = _load()
     gib = 1 << 30
     memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib)
-    model = _FakeModel([gib // 16] * 8, memory)  # max_seq_length 16
+    model = _FakeModel([gib // 16] * 8, memory)
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
     planner.target_batch = 4
-    _fake_step(model, rows = 64)  # a collator expanded the batch past max_seq_length
+    _fake_step(model, rows = 64)
     model(torch.zeros(1, 64, 4))
-    # 4 rows x 64 measured tokens: scale 4, not 4 x 16 / 64 = 1.
-    # (4 GiB - 2 GiB) * 0.75 - 1 GiB = 0.5 GiB, two 0.25 GiB layers (before: all 8).
+
     assert len(planner.kept) == 2
     monkeypatch.undo()
 
@@ -523,8 +516,7 @@ def _trainable_head(model, numel):
 def test_auto_counts_resident_accumulated_grads_once(monkeypatch, accumulating):
     ns, found = _load()
     gib = 1 << 30
-    numel = gib // 8  # fp32 grad 0.5 GiB, AdamW state + foreach workspace 1.5 GiB
-    # Resident grads are allocated, so the card has that much less usable memory.
+    numel = gib // 8
     memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib - (gib // 2 if accumulating else 0))
     model = _FakeModel([gib // 16] * 8, memory)
     head = _trainable_head(model, numel)
@@ -538,7 +530,7 @@ def test_auto_counts_resident_accumulated_grads_once(monkeypatch, accumulating):
         head.grad = None
         memory["allocated"] -= gib // 2
     model(torch.zeros(1, 16, 4))
-    # Both: (4 GiB - 0.5 GiB activations - 0.5 GiB grads - 1.5 GiB) * 0.75 - 1 GiB = 0.125 GiB.
+
     assert len(planner.kept) == 2
     monkeypatch.undo()
 
@@ -557,11 +549,11 @@ def test_auto_reserves_the_foreach_optimizer_workspace(monkeypatch):
     memory["allocated"] += gib // 2
     optimizer = torch.optim.AdamW([head])
     planner._optimizer_pre_hook(optimizer, (), {})
-    optimizer.state[head] = {"step": torch.tensor(1.0)}  # state allocated by the first step
+    optimizer.state[head] = {"step": torch.tensor(1.0)}
     head.grad = None
     memory["allocated"] -= gib // 2
     model(torch.zeros(1, 16, 4))
-    # 0.5 GiB foreach workspace still reserved: (3 - 1 - 0.5) * 0.75 - 1 = 0.125 GiB, two layers.
+
     assert len(planner.kept) == 2
     monkeypatch.undo()
 
@@ -593,7 +585,7 @@ def test_auto_reserves_pending_state_only_on_the_planned_card(monkeypatch):
     planner = model._unsloth_auto_skip
     _fake_step(model, rows = 16)
     model(torch.zeros(1, 16, 4))
-    # (3 - 0.5) * 0.75 - 1 = 0.875 GiB: all 8 layers (before: 8 GiB tower state, nothing kept).
+
     assert len(planner.kept) == 8
     monkeypatch.undo()
 
@@ -609,7 +601,6 @@ def test_counts_apply_only_to_checkpointable_layers():
 @pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
 @pytest.mark.parametrize("mode", ["fullgraph", "dynamic"])
 def test_auto_planner_stays_out_of_compiled_regions(mode):
-    # TrainingArguments(torch_compile = True) compiles the whole model; the planner must stay out of it.
     from torch._dynamo.utils import counters
 
     class Wrapped(torch.nn.Module):

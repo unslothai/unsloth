@@ -1171,6 +1171,7 @@ export const es419 = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Elige la contraseña del propietario de la instalación antes de agregar otra cuenta. La usarás para iniciar sesión cuando esta instalación tenga varias cuentas.",
       signsInAs: "Inicia sesión como {username}",
       signsInAsOwner: "Inicia sesión como {alias} o {username}",
       signInName: "Tu nombre de inicio de sesión",
@@ -2131,6 +2132,7 @@ export const es419 = {
           "No se pudo guardar la configuración de cambio automático de modelo.",
         idleError:
           "Ingresa 0 para mantener el modelo cargado, o al menos 60 segundos.",
+        idleUnsaved: "Aún no se guardó.",
         keepKv: "Conservar el contexto del chat entre descargas de memoria",
         keepKvDescription:
           "Guarda la caché KV antes de liberar el modelo por inactividad, o antes de que un modelo de imagen o video ocupe la GPU, para que los chats reanudados no tengan que volver a leer el historial. Hasta 10 GB en disco.",

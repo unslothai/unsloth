@@ -7093,7 +7093,7 @@ def test_nested_object_schema_is_relaxed_on_the_wire_but_not_in_the_loop(monkeyp
 
 
 def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeypatch):
-    """Loading deferred MCP tools is not a tool round (#10997)."""
+    """Search preserves the execution budget and rendered prefix while expanding the decoding grammar."""
     from core.inference import tools as tools_mod
 
     ping = {
@@ -7104,7 +7104,7 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
             "parameters": {"type": "object"},
         },
     }
-    monkeypatch.setattr(tools_mod, "mcp_tool_search_specs", lambda arguments: [ping])
+    monkeypatch.setattr(tools_mod, "mcp_tool_spec", lambda name: ping)
     monkeypatch.setattr(tools_mod, "mcp_loadable_specs", lambda tools: [ping])
     monkeypatch.setattr(tools_mod, "mcp_record_loaded_tools", lambda *a: None)
     streams = [
@@ -7113,7 +7113,12 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
         [_sse({"content": "Pinged."}), _done()],
     ]
     backend, payloads = _backend_and_payloads(monkeypatch, streams)
-    calls = _record_tool_calls(monkeypatch, "ok")
+    calls = _record_tool_calls(
+        monkeypatch,
+        lambda name: "Loaded 1 MCP tool.\n  schema: " + json.dumps(ping)
+        if name == "mcp_tool_search"
+        else "ok",
+    )
 
     _run_tool_loop(
         backend,
@@ -7123,7 +7128,9 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
     )
 
     assert [name for name, _ in calls] == ["mcp_tool_search", "mcp__srv1__ping"]
-    assert "mcp__srv1__ping" in [t["function"]["name"] for t in payloads[1].get("tools", [])]
+    assert payloads[1]["tools"] == payloads[0]["tools"] + [ping]
+    assert payloads[1]["chat_template_kwargs"]["tools"] == payloads[0]["tools"]
+    assert payloads[2]["tools"] == payloads[0]["tools"]
 
 
 def test_budget_exhausted_final_pass_keeps_the_cached_tool_catalogue(monkeypatch):

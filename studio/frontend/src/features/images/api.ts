@@ -315,6 +315,8 @@ export interface GalleryImage {
   batch_seed?: number | null;
   batch_index: number;
   batch_size: number;
+  generation_seconds?: number | null;
+  generation_count?: number | null;
   model: string | null;
   // The load-time build. The repo id alone does not identify a pipeline (quant choice, torchao
   // scheme, baked adapters), so these are what a recipe needs once the model is unloaded.

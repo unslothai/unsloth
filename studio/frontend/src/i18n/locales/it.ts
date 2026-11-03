@@ -964,6 +964,7 @@ export const it = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Imposta la password del proprietario dell'installazione prima di aggiungere un altro account. La userai per accedere quando questa installazione avrà più account.",
       signsInAs: "Accede come {username}",
       signsInAsOwner: "Accede come {alias} o {username}",
       signInName: "Il tuo nome di accesso",
@@ -1843,6 +1844,7 @@ export const it = {
           "Salvataggio delle impostazioni di cambio automatico del modello non riuscito.",
         idleError:
           "Inserisci 0 per mantenere il modello in memoria, oppure almeno 60 secondi.",
+        idleUnsaved: "Non ancora salvato.",
         keepKv:
           "Mantieni il contesto della chat tra gli scaricamenti",
         keepKvDescription:
