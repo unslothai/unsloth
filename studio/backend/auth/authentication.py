@@ -23,6 +23,7 @@ from .storage import (
     get_user_and_secret,
     load_jwt_secret,
     save_refresh_token,
+    STUDIO_CHAT_TOOLS_KEY_NAME,
     validate_api_key_account,
     validate_api_key_with_credential,
     verify_refresh_token,
@@ -481,6 +482,8 @@ async def _get_current_credential(
                 load_policy = policy_for_credential(
                     internal = bool(record.get("key_internal")), key_name = record.get("key_name")
                 ).value,
+                ui_chat = bool(record.get("key_internal"))
+                and record.get("key_name") == STUDIO_CHAT_TOOLS_KEY_NAME,
             )
         )
         return record["username"], generation

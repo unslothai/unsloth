@@ -1768,6 +1768,8 @@ UNSLOTH_START_API_KEY_NAME = "Coding agents (unsloth start)"
 # Authority follows this mint stamp, not the name: older Studios let any caller pick the name.
 UNSLOTH_START_API_KEY_PURPOSE = "unsloth_start"
 STUDIO_CHAT_TOOLS_KEY_NAME = "Unsloth Studio chat tools"
+# The same key minted for a chat an API key started: it never gets the owner's load-beside pass.
+STUDIO_CHAT_TOOLS_API_KEY_NAME = "Unsloth Studio chat tools (API)"
 
 
 def create_api_key(

@@ -31,6 +31,8 @@ class AccountContext:
     via_api_key: bool = field(default = False, compare = False)
     # core.inference.load_policy.LoadPolicy value the credential allows; not part of identity.
     load_policy: str = field(default = "any", compare = False)
+    # The chat tools key of a signed-in UI chat, not one an API key started; not part of identity.
+    ui_chat: bool = field(default = False, compare = False)
 
     @property
     def is_owner(self) -> bool:

@@ -90,7 +90,11 @@ def _mint(account: Any, limit: float) -> tuple[str, dict]:
     expires = datetime.now(timezone.utc) + timedelta(seconds = min(limit + _KEY_GRACE_S, _KEY_MAX_S))
     return storage.create_api_key(
         username = record.username,
-        name = storage.STUDIO_CHAT_TOOLS_KEY_NAME,
+        name = (
+            storage.STUDIO_CHAT_TOOLS_API_KEY_NAME
+            if account.via_api_key
+            else storage.STUDIO_CHAT_TOOLS_KEY_NAME
+        ),
         expires_at = expires.isoformat(),
         internal = True,
         expect_gen = account.credential_gen,
