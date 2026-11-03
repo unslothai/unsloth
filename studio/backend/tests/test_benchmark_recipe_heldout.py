@@ -366,3 +366,11 @@ def test_stop_leaves_the_key_until_the_worker_turns_the_adapter_back_on(harness,
     release.set()
     harness.backend._worker.result(timeout = 10)
     assert events[-2] == ("post", True, 1) and events[-1] == ("revoke", 7)
+
+
+def test_reference_match_keeps_signs_and_decimals():
+    assert score_with_validator("reference", "1", "-1")[0] is False
+    assert score_with_validator("reference", "4.5", "4")[0] is False
+    assert score_with_validator("reference", "The answer is 4.", "4")[0] is True
+    assert score_with_validator("reference", "-1", "-1")[0] is True
+    assert score_with_validator("reference", "1,000 apples", "1000")[0] is True

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 import time
 from typing import Any, Optional
@@ -183,13 +184,21 @@ def _head(dataset: dict, token: Any, limit: int) -> list[dict]:
     from datasets import load_dataset
 
     if dataset.get("source") == "hf":
-        stream = load_dataset(
-            str(dataset["ref"]),
-            dataset.get("subset") or None,
-            split = dataset.get("split") or "train",
-            token = token,
-            streaming = True,
-        )
+        ref, subset = str(dataset["ref"]), dataset.get("subset") or None
+        split = str(dataset.get("split") or "train").replace(" ", "")
+        # Streaming takes only plain split names: `test[10:100]` becomes a bounded read of test.
+        sliced = re.fullmatch(r"([\w.-]+)\[(\d*):(\d*)\]", split)
+        if sliced:
+            lo = int(sliced.group(2) or 0)
+            if sliced.group(3):
+                limit = max(0, min(limit, int(sliced.group(3)) - lo))
+            stream = load_dataset(ref, subset, split = sliced.group(1), token = token, streaming = True)
+            return list((stream.skip(lo) if lo else stream).take(limit))
+        if "[" in split or "+" in split:
+            # Percent slices and joined splits: read the way training does.
+            loaded = load_dataset(ref, subset, split = split, token = token)
+            return loaded.select(range(min(limit, len(loaded)))).to_list()
+        stream = load_dataset(ref, subset, split = split, token = token, streaming = True)
     else:
         from core.flows.nodes.data import local_seed_path
         from core.flows.nodes.training import LOADERS
@@ -238,6 +247,24 @@ async def _samples(ctx: NodeContext, run_id: Optional[str]) -> list[dict]:
     )
 
 
+ALPACA_PROMPT = "__instruction_and_input"
+
+
+def _alpaca_question(row: dict) -> Any:
+    extra = str(row.get("input") or "").strip()
+    return f"{row.get('instruction') or ''}\n\n{extra}" if extra else row.get("instruction")
+
+
+def _system_prompt(ctx: NodeContext) -> str:
+    """The Advanced override, else the system prompt the checkpoint was trained with."""
+    own = str(ctx.params.get("system_prompt") or "")
+    if own.strip():
+        return own
+    checkpoint = ctx.inputs.get("checkpoint")
+    trained = checkpoint.get("system_prompt") if isinstance(checkpoint, dict) else None
+    return trained if isinstance(trained, str) else ""
+
+
 async def _recipe_heldout(ctx: NodeContext, label: str, is_lora: bool, max_rows: int) -> dict:
     rows = await _read_rows(ctx, ctx.inputs.get("dataset"), max_rows)
     columns = sorted({k for r in rows for k in r})
@@ -246,6 +273,17 @@ async def _recipe_heldout(ctx: NodeContext, label: str, is_lora: bool, max_rows:
     )
     if not prompt_col:
         raise FlowNodeError("Set the prompt column under Advanced: no column looks like a prompt")
+    if (
+        prompt_col == "instruction"
+        and "input" in columns
+        and not str(ctx.params.get("prompt_column") or "").strip()
+    ):
+        # An Alpaca row's question is its instruction plus its input, as training formats it.
+        asked = [{**r, ALPACA_PROMPT: _alpaca_question(r)} for r in rows]
+        prompt_col = ALPACA_PROMPT
+        columns = [c for c in columns if c != "input"]
+    else:
+        asked = rows
     reference_col = guess_column(
         [c for c in columns if c != prompt_col],
         str(ctx.params.get("reference_column") or "").strip(),
@@ -258,11 +296,11 @@ async def _recipe_heldout(ctx: NodeContext, label: str, is_lora: bool, max_rows:
         )
     with_base = is_lora and ctx.params.get("compare_base") is not False
     spec = {
-        "rows": rows,
+        "rows": asked,
         "max_rows": max_rows,
         "prompt_column": prompt_col,
         "reference_column": reference_col,
-        "system_prompt": str(ctx.params.get("system_prompt") or ""),
+        "system_prompt": _system_prompt(ctx),
         "scorer": scorer,
         "rubric": str(ctx.params.get("rubric") or ""),
         "model_alias": "candidate",
@@ -303,7 +341,7 @@ async def _recipe_heldout(ctx: NodeContext, label: str, is_lora: bool, max_rows:
         + [
             {
                 "doc_id": i,
-                "question": rows[i].get(prompt_col),
+                "question": asked[i].get(prompt_col),
                 "target": rows[i].get(reference_col) if reference_col else None,
                 "raw_response": err,
             }

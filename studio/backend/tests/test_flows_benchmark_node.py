@@ -383,3 +383,69 @@ def test_a_reused_chat_model_is_scored_as_itself(monkeypatch, tmp_path):
     ctx.chat_model = "unsloth/gemma-3-4b-it-GGUF:Q4_K_M"
     with pytest.raises(FlowNodeError, match = "kept loaded beside"):
         asyncio.run(benchmark._load_target(ctx))
+
+
+def test_a_sliced_hub_split_is_scored_without_streaming_the_instruction(monkeypatch):
+    import datasets
+
+    rows = [{"q": i} for i in range(50)]
+    asked = []
+
+    class _Stream:
+        def skip(self, n):
+            asked.append(("skip", n))
+            return _Rest(rows[n:])
+
+        def take(self, n):
+            return iter(rows[:n])
+
+    class _Rest:
+        def __init__(self, rest):
+            self.rest = rest
+
+        def take(self, n):
+            return iter(self.rest[:n])
+
+    def load(
+        name,
+        subset,
+        split,
+        token,
+        streaming = False,
+    ):
+        asked.append((split, streaming))
+        assert not streaming or "[" not in split, "Bad split"
+        return _Stream() if streaming else datasets.Dataset.from_list(rows[:5])
+
+    monkeypatch.setattr("datasets.load_dataset", load)
+    hub = {"source": "hf", "ref": "o/d"}
+    assert benchmark._head({**hub, "split": "test[10:13]"}, None, 100) == rows[10:13]
+    assert benchmark._head({**hub, "split": "test[:10%]"}, None, 3) == rows[:3]
+    assert ("test[:10%]", False) in asked
+
+
+def test_alpaca_rows_are_asked_with_their_input_and_the_trained_system_prompt(monkeypatch):
+    async def loaded(ctx):
+        return "run-1", False
+
+    alpaca = [
+        {"instruction": "Translate to French", "input": "cat", "output": "chat"},
+        {"instruction": "Say hi", "input": "", "output": "hi"},
+    ]
+
+    async def read_rows(ctx, dataset, limit):
+        return [dict(r) for r in alpaca]
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(benchmark, "_read_rows", read_rows)
+    sent = []
+    ctx = _Ctx(_routes(sent))
+    ctx.inputs["checkpoint"] = {"kind": "checkpoint", "name": "run-1", "system_prompt": "Be terse."}
+    try:
+        asyncio.run(benchmark.benchmark(ctx))
+    except Exception:
+        pass
+    spec = sent[0]["recipe"]
+    asked = [r[spec["prompt_column"]] for r in spec["rows"]]
+    assert asked == ["Translate to French\n\ncat", "Say hi"]
+    assert spec["system_prompt"] == "Be terse."

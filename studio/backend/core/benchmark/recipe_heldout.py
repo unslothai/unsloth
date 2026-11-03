@@ -35,8 +35,13 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 ChatFn = Callable[[str, list[dict[str, str]]], str]
 
 
+_TOKEN_RE = re.compile(r"(?<![\w.])[+-]?\d+(?:\.\d+)?|\w+")
+
+
 def _normalize(text: str) -> str:
-    return " ".join(re.sub(r"[^\w\s]", " ", text.lower()).split())
+    """Words and numbers, case-folded; a number keeps its sign and decimals so -1 is not 1, nor 4.5 4."""
+    text = re.sub(r"(?<=\d),(?=\d{3}\b)", "", text.lower())  # 1,000 is 1000
+    return " ".join(_TOKEN_RE.findall(text))
 
 
 def strip_thinking(text: str) -> str:
