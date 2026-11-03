@@ -304,6 +304,7 @@ async def _alongside(
         raise FlowNodeError(f"Could not load {repo} alongside {serving[0]}: {exc}") from None
     ctx.resident.clear()
     _ALONGSIDE_OPTIONS[repo.lower()] = options_hash(options)
+    note_loaded(ctx, "llm", repo)
     ctx.chat_model = name
     ctx.set_status("running")
     return {"repo": repo, "variant": variant}
@@ -324,7 +325,16 @@ async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
     return name
 
 
-_LOADED_VARIANT: dict[str, tuple[str, str]] = {}
+# slot -> (repo, variant, owner load count): a media reload outside Flows changes the count.
+_LOADED_VARIANT: dict[str, tuple[str, str, Optional[int]]] = {}
+
+
+def _media_load_count(slot: str) -> Optional[int]:
+    from core.inference import gpu_arbiter
+    owner = {"image": gpu_arbiter.DIFFUSION, "video": gpu_arbiter.VIDEO}.get(slot)
+    return gpu_arbiter.load_count(owner) if owner else None
+
+
 _LOADED_OPTIONS: dict[str, tuple[str, str, int]] = {}
 # repo -> options_hash it was loaded alongside with; pruned once it stops being served.
 _ALONGSIDE_OPTIONS: dict[str, Optional[str]] = {}
@@ -352,7 +362,12 @@ def options_hash(options: Optional[dict]) -> Optional[str]:
 async def _resident_variant(ctx: Any, slot: str, repo: str) -> Optional[str]:
     if slot != "llm":
         loaded = _LOADED_VARIANT.get(slot)
-        return loaded[1] if loaded and loaded[0] == repo.lower() else None
+        if not loaded or loaded[0] != repo.lower():
+            return None
+        if loaded[2] != _media_load_count(slot):
+            _LOADED_VARIANT.pop(slot, None)
+            return None
+        return loaded[1]
     from studio_mcp import loading
 
     try:
@@ -504,7 +519,7 @@ async def _ensure_model(
     ctx.resident.clear()
     ctx.resident[slot] = repo
     note_loaded(ctx, slot, repo)
-    _LOADED_VARIANT[slot] = wanted
+    _LOADED_VARIANT[slot] = (*wanted, _media_load_count(slot))
     if settings is None:
         _LOADED_OPTIONS.pop(slot, None)
     else:
