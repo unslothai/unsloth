@@ -38,3 +38,10 @@ test("a keyword argument with the column's name is left alone", () => {
     "{{ x | truncate(length=10) }} {{ f(length = 2) }} {% if word_count == 3 %}{% endif %}",
   );
 });
+
+test("an escaped quote inside a string literal keeps the rest of the literal untouched", () => {
+  assert.equal(
+    replaceRef(`{{ "he said \\"answer\\"" ~ answer }} {{ 'it\\'s answer' }}`, "answer", "result"),
+    `{{ "he said \\"answer\\"" ~ result }} {{ 'it\\'s answer' }}`,
+  );
+});

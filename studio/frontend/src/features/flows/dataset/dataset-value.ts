@@ -79,7 +79,9 @@ export function pageCount(
   limit: number,
   offset: number,
 ): number {
-  if (total === null) return Math.floor(offset / limit) + 2;
+  // No total yet: one page past this one, never past the reader's window.
+  if (total === null)
+    return Math.min(Math.floor(offset / limit) + 2, Math.max(1, Math.ceil(viewRows / limit)));
   return Math.max(1, Math.ceil(Math.min(total, viewRows) / limit));
 }
 
