@@ -837,3 +837,10 @@ test("a note where two folded frames overlap moves with the card the canvas fold
   assert.deepEqual(result["group:g1"], [-20, 960]);
   assert.deepEqual(result["group:g2"], [400, -40]);
 });
+
+test("a closed card re-measures its handles when its port rows change", () => {
+  const src = readFileSync(new URL("../src/features/flows/editor/super-card-node.tsx", import.meta.url), "utf8");
+  const view = src.slice(src.indexOf("function SuperCardViewImpl"));
+  assert.match(view, /const handles = \[\.\.\.inputs, \.\.\.outputs\]\.map\(\(port\) => port\.handleId\)/);
+  assert.match(view, /useEffect\(\(\) => updateNodeInternals\(id\), \[handles, id, updateNodeInternals\]\)/);
+});

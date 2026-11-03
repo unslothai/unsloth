@@ -11,8 +11,9 @@ import {
   ViewportPortal,
   useReactFlow,
   useStore,
+  useUpdateNodeInternals,
 } from "@xyflow/react";
-import { memo, useCallback, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useDocStore } from "../stores/doc-store";
@@ -50,9 +51,15 @@ const FOCUS_MIN_ZOOM = 0.8;
 const lowDetailSelector = (s: { transform: [number, number, number] }) =>
   s.transform[2] < 0.45;
 
-function SuperCardViewImpl({ data }: NodeProps<RfNode>) {
+function SuperCardViewImpl({ id, data }: NodeProps<RfNode>) {
   const { cardId, title, color, memberIds, inputs, outputs } =
     data as unknown as SuperCardData;
+  // A port row coming or going can leave the card the same size, so React Flow would keep its
+  // wires on the old handle spots.
+  const handles = [...inputs, ...outputs].map((port) => port.handleId).join("\n");
+  const updateNodeInternals = useUpdateNodeInternals();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-measure when the port rows change
+  useEffect(() => updateNodeInternals(id), [handles, id, updateNodeInternals]);
   const rollup = useRuntimeStore(
     useShallow((s) => rollUpStatus(memberIds.map((id) => s.nodes[id]?.status))),
   );
