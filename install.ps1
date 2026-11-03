@@ -9898,10 +9898,117 @@ main()
     $_unslothZooInstallSpec = "unsloth-zoo>=2026.10.11"
 
     # Twin of install.sh's _relax_unsloth_floors_to_index (#14031).
+    function Resolve-NoTorchPair {
+        param([string]$ReleaseSpec, [string]$ZooSpec)
+        $pairCode = @'
+def _no_torch_pair(unsloth_spec, zoo_spec, use_uv=True, uv_executable="uv", install_env=None):
+    """Resolve the pair from wheel metadata without resolving training dependencies."""
+    import re
+    import subprocess
+    import sys
+    import tempfile
+    from importlib.metadata import distributions
+
+    cache = {}
+
+    def metadata(name, requirements):
+        key = (name, tuple(requirements))
+        if key in cache:
+            return cache[key]
+        with tempfile.TemporaryDirectory(prefix="unsloth-pair-") as target:
+            cmd = (
+                [uv_executable, "pip", "install", "--python", sys.executable, "--resolution", "highest"]
+                if use_uv
+                else [sys.executable, "-m", "pip", "install", "--upgrade"]
+            )
+            cmd += ["--no-deps", "--quiet", "--target", target, *requirements]
+            try:
+                result = subprocess.run(
+                    cmd,
+                    env=install_env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=120,
+                    **(
+                        {"creationflags": subprocess.CREATE_NO_WINDOW}
+                        if sys.platform == "win32"
+                        else {}
+                    ),
+                )
+                dist = (
+                    next(
+                        d
+                        for d in distributions(path=[target])
+                        if re.sub(r"[-_.]+", "-", d.metadata["Name"]).lower() == name
+                    )
+                    if result.returncode == 0
+                    else None
+                )
+                value = (dist.version, dist.requires or []) if dist else None
+            except (OSError, subprocess.SubprocessError, StopIteration, ValueError):
+                value = None
+        cache[key] = value
+        return value
+
+    if metadata("unsloth-zoo", [zoo_spec]) is None:
+        zoo_spec = "unsloth-zoo"
+    request, cap, seen = unsloth_spec, [], set()
+    while True:
+        unsloth = metadata("unsloth", [request, *cap])
+        if unsloth is None:
+            if request != "unsloth":
+                request = "unsloth"
+                continue
+            return None
+        version, requires = unsloth
+        if version in seen or not re.fullmatch(r"[0-9][0-9A-Za-z.+!-]*", version):
+            return None
+        seen.add(version)
+        zoo_requires = [r for r in requires if re.match(r"(?i)^unsloth[-_.]zoo\b", r)]
+        zoo = metadata("unsloth-zoo", [zoo_spec, *zoo_requires])
+        if zoo is not None:
+            return version, zoo[0], int(request != unsloth_spec)
+        cap = [f"unsloth<{version}"]
+
+import sys
+pair = _no_torch_pair(sys.argv[1], sys.argv[2], uv_executable=sys.argv[3])
+if pair is None:
+    raise SystemExit(1)
+print(*pair)
+'@
+        $pairScript = [System.IO.Path]::GetTempFileName()
+        try {
+            [System.IO.File]::WriteAllText($pairScript, $pairCode, (New-Object System.Text.UTF8Encoding($false)))
+            & $VenvPython -I $pairScript $ReleaseSpec $ZooSpec $script:UvExe
+        } finally {
+            Remove-Item -LiteralPath $pairScript -ErrorAction SilentlyContinue
+        }
+    }
+
     function Resolve-UnslothFloorsForIndex {
-        param([string]$ReleaseSpec, [string]$ZooSpec, [string]$DesktopVersion, [string]$Marker)
+        param([string]$ReleaseSpec, [string]$ZooSpec, [string]$DesktopVersion, [string]$Marker, [bool]$NoTorch = $false)
         $result = @{ Release = $ReleaseSpec; Zoo = $ZooSpec; Available = $null }
         Remove-Item -LiteralPath $Marker -Force -ErrorAction SilentlyContinue
+        if ($NoTorch) {
+            $pair = Resolve-NoTorchPair $ReleaseSpec $ZooSpec
+            if ($LASTEXITCODE -ne 0 -or -not $pair) {
+                throw "Could not resolve a compatible unsloth / unsloth-zoo pair for no-torch mode"
+            }
+            $parts = ([string]$pair).Split(' ')
+            $result.Release = "unsloth==$($parts[0])"
+            $result.Zoo = "unsloth-zoo==$($parts[1])"
+            if ($parts[2] -eq "1") {
+                $result.Available = $parts[0]
+                if ($DesktopVersion) {
+                    substep "[WARN] your package index cannot meet $ReleaseSpec; installing unsloth $($parts[0]) + unsloth-zoo $($parts[1])" "Yellow"
+                    try {
+                        $json = @{ requested = $DesktopVersion; available = $parts[0] } | ConvertTo-Json -Compress
+                        [System.IO.File]::WriteAllText($Marker, $json + "`n", (New-Object System.Text.UTF8Encoding($false)))
+                    } catch { }
+                }
+            }
+            return $result
+        }
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
@@ -9939,7 +10046,7 @@ main()
         return $result
     }
     $_floors = Resolve-UnslothFloorsForIndex -ReleaseSpec $_unslothReleaseInstallSpec -ZooSpec $_unslothZooInstallSpec `
-        -DesktopVersion $_desktopMinVer -Marker (Join-Path $VenvDir "unsloth_feed_ceiling.json")
+        -DesktopVersion $_desktopMinVer -Marker (Join-Path $VenvDir "unsloth_feed_ceiling.json") -NoTorch ($SkipTorch -and $PackageName -eq "unsloth")
     $_unslothReleaseInstallSpec = $_floors.Release
     $_unslothZooInstallSpec = $_floors.Zoo
     if ($_floors.Available -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec = $_unslothReleaseInstallSpec }

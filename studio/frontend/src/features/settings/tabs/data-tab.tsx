@@ -77,10 +77,10 @@ import {
 import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
-  Archive03Icon,
+  ArchiveIcon,
   Download01Icon,
   FlimSlateIcon,
-  Image03Icon,
+  ImageIcon,
   LibrariesIcon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon, MessageCircleIcon, TrashIcon } from "@/lib/hugeicons-derived";
@@ -819,7 +819,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                 "archived-images",
                 "archivedImages",
                 "shell.navigation.images",
-                Image03Icon,
+                ImageIcon,
               ],
               [
                 "archived-videos",
@@ -869,7 +869,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             size="sm"
             onClick={() => setArchiveConfirmOpen(true)}
           >
-            <HugeiconsIcon icon={Archive03Icon} data-icon="inline-start" />
+            <HugeiconsIcon icon={ArchiveIcon} data-icon="inline-start" />
             {t("settings.data.archiveAllAction")}
           </Button>
         </SettingsRow>

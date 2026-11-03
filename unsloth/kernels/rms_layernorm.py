@@ -677,6 +677,8 @@ def _multirow_checked(X, W, eps, gemma):
     if verdict is None:
         if X.device.type == "cuda" and torch.cuda.is_current_stream_capturing():
             return None  # check on a later uncaptured call
+        # Real self-check launches need concrete dimensions, even during dynamic tracing.
+        n_cols, multirow = int(n_cols), tuple(int(v) for v in multirow)
         try:
             verdict = _multirow_self_check(X.device, X.dtype, W.dtype, n_cols, eps, gemma, multirow)
             reason = f"self-check mismatch for {key}"

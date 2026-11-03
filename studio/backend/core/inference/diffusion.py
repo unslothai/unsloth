@@ -1018,6 +1018,23 @@ def decode_b64_image(
     max_pixels: Optional[int] = None,
 ) -> Any:
     """Decode a base64 or data: URL image; masks decode as single-channel L, source images as RGB."""
+    return decode_b64_image_sized(data, mode = mode, max_side = max_side, max_pixels = max_pixels)[0]
+
+
+def refuse_oversized_image(w: int, h: int, max_side: int, max_pixels: Optional[int]) -> None:
+    if w > max_side or h > max_side:
+        raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_side}px per side.")
+    if max_pixels is not None and w * h > max_pixels:
+        raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_pixels:,} source pixels.")
+
+
+def decode_b64_image_sized(
+    data: str,
+    *,
+    mode: str = "RGB",
+    max_side: int = 4096,
+    max_pixels: Optional[int] = None,
+) -> tuple[Any, tuple[int, int]]:
     import base64
     import binascii
     import io
@@ -1035,12 +1052,7 @@ def decode_b64_image(
         img = Image.open(io.BytesIO(blob))
         # Reject from the header before img.load() so a huge-dimension file cannot spike memory
         w, h = img.size
-        if w > max_side or h > max_side:
-            raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_side}px per side.")
-        if max_pixels is not None and w * h > max_pixels:
-            raise ValueError(
-                f"Image is too large ({w}x{h}); maximum is {max_pixels:,} source pixels."
-            )
+        refuse_oversized_image(w, h, max_side, max_pixels)
         img.load()
         # Below the size guard because the transpose needs the pixels the guard exists to not read.
         img = exif_upright(img)
@@ -1048,7 +1060,7 @@ def decode_b64_image(
         raise  # the size guard's own message; don't wrap it as a decode error
     except Exception as exc:  # noqa: BLE001 - surfaced as a 400 to the client
         raise ValueError(f"Could not decode image: {exc}") from exc
-    return flattened_rgb(img) if mode == "RGB" else img.convert(mode)
+    return (flattened_rgb(img) if mode == "RGB" else img.convert(mode)), (w, h)
 
 
 def _snap_to_multiple(img: Any, multiple: int = 16) -> Any:
@@ -5500,7 +5512,7 @@ class DiffusionBackend:
                     kind,
                     base,
                     kwargs.get("gpu_ordinal"),
-                    kwargs.get("hf_token"),
+                    kwargs.get("_hub_token", kwargs.get("hf_token")),
                     local_files_only,
                 )
             )
@@ -6958,6 +6970,7 @@ class DiffusionBackend:
         scoped_files: dict[str, list[str]] = {}
         scoped_gguf: dict[str, Optional[str]] = {}
         missing_checkpoints: set[str] = set()
+        missing_denoisers: set[str] = set()
 
         def add_missing_entry(
             repo: str,
@@ -6966,6 +6979,7 @@ class DiffusionBackend:
             *,
             gguf: Optional[str] = None,
             checkpoint: bool = False,
+            hosted_denoiser: bool = False,
         ) -> None:
             """Adds only files neither cache root resolves, probed at the plan's revision; one entry per repo, else two jobs fight over progress and cancel."""
 
@@ -7012,6 +7026,8 @@ class DiffusionBackend:
             )
             if checkpoint:
                 missing_checkpoints.add(repo)
+            if hosted_denoiser:
+                missing_denoisers.add(repo)
             for entry in entries:
                 if entry["repo_id"] != repo:
                     continue
@@ -7023,6 +7039,7 @@ class DiffusionBackend:
                 )
                 entry["gguf_filename"] = scoped_gguf[repo]
                 entry["checkpoint"] = repo in missing_checkpoints
+                entry["hosted_denoiser"] = repo in missing_denoisers
                 return
             entries.append(
                 {
@@ -7034,6 +7051,7 @@ class DiffusionBackend:
                     ),
                     "gguf_filename": scoped_gguf[repo],
                     "checkpoint": repo in missing_checkpoints,
+                    "hosted_denoiser": repo in missing_denoisers,
                 }
             )
 
@@ -7073,7 +7091,14 @@ class DiffusionBackend:
         if dit_prequant is not None:
             # Staged, not just counted: leaving it out means a multi-GB inline pull under the load lock.
             prequant_repo, prequant_file, prequant_size = dit_prequant
-            add_missing_entry(prequant_repo, [prequant_file], {prequant_file: prequant_size})
+            # Part of a pipeline pick, replacing its dense denoiser; a GGUF pick keeps it a required asset.
+            add_missing_entry(
+                prequant_repo,
+                [prequant_file],
+                {prequant_file: prequant_size},
+                checkpoint = skip_transformer_weights,
+                hosted_denoiser = skip_transformer_weights,
+            )
         for ref in component_overrides.files.values() if component_overrides else ():
             if not ref.is_hub:
                 continue
@@ -9091,8 +9116,8 @@ class DiffusionBackend:
                                     "torch_dtype": dtype,
                                     "cache_dir": hub_cache_dir(),
                                 }
-                                if hf_token:
-                                    pipe_kwargs["token"] = hf_token
+                                if hub_token is not None:
+                                    pipe_kwargs["token"] = hub_token
                                 # fp16 load with a twin for every component reads the twins (bit-identical after cast).
                                 _te_replaced = te_precast_components(
                                     fam, fetch_base, text_encoder_quant, target
@@ -9183,7 +9208,7 @@ class DiffusionBackend:
                                             fetch_base,
                                             kind = kind,
                                             dtype = dtype,
-                                            hf_token = hf_token,
+                                            hf_token = hub_token,
                                             local_files_only = local_files_only,
                                             config_source = _base_local_dir,
                                             cache_dir = hub_cache_dir(),

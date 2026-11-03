@@ -204,8 +204,9 @@ def environment_fingerprint() -> dict[str, Any]:
             fp["gpu_name"] = torch.cuda.get_device_name(index)
             cap = torch.cuda.get_device_capability(index)
             fp["gpu_capability"] = f"sm_{cap[0]}{cap[1]}"
-        # torch keys artifacts on this tag (set by diffusion_fp8_unit_scale); a bundle from another tag would load,
-        # miss, recompile and never be rewritten. Only a set tag joins the key, so untagged bundles stay valid.
+        from .diffusion_compile_config import apply
+
+        apply()
         tag = getattr(getattr(torch, "compiler", None), "config", None)
         tag = getattr(tag, "cache_key_tag", None)
         if isinstance(tag, str) and tag:
@@ -461,14 +462,14 @@ def model_fingerprint(
         dynamic_text = None
     if dynamic_text:
         fp["dynamic_text"] = dynamic_text
-    # Inductor keys graphs on dynamic_scale_rblock: an old bundle would hit, miss every graph, and never be rewritten.
     from .diffusion_compile_config import reduction_blocks_pinned, reduction_config_filter_available
 
     if reduction_blocks_pinned():
         fp["inductor"] = {"dynamic_scale_rblock": False}
-        # Only for a family whose compile pins the reduction-config filter, so every other bundle keeps its key.
         if reduction_filter and reduction_config_filter_available():
             fp["inductor"]["force_filter_reduction_configs"] = True
+            if compile_kwargs.get("mode") in ("max-autotune", "max-autotune-no-cudagraphs"):
+                fp["inductor"]["coordinate_descent_tuning"] = False
     return fp
 
 

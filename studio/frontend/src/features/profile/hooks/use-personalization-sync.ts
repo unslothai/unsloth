@@ -3,21 +3,25 @@
 
 import {
   type AppearanceCustomization,
-  type Palette,
-  type Theme,
   isDefaultCustomization,
-  isPalette,
-  loadPersonalization,
   migrateAppearanceMenuDefault,
   migrateShippedSidebarNavDefault,
   sanitizeCustomization,
-  savePersonalization,
+  useAppearanceCustomStore,
+} from "@/features/settings/stores/appearance-custom-store";
+import {
+  type Palette,
+  type Theme,
+  isPalette,
   setPalette,
   setTheme,
-  useAppearanceCustomStore,
   usePalette,
   useTheme,
-} from "@/features/settings";
+} from "@/features/settings/stores/theme-store";
+import {
+  loadPersonalization,
+  savePersonalization,
+} from "@/features/settings/api/personalization";
 import {
   DEFAULT_LOCALE_PREFERENCE,
   LOCALE_INITIALIZATION_TIMEOUT_MS,

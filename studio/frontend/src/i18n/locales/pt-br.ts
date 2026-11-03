@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const ptBR = {
+  turns: {
+    label: "Turno {number}",
+    bookmarkedLabel: "Turno {number}, com marcador",
+    bookmark: "Marcar turno",
+    removeBookmark: "Remover marcador",
+    navigator: "Turnos",
+  },
   chatBackground: {
     noBackground: "Sem fundo",
     sizing: "Dimensionamento da imagem",
@@ -645,6 +652,8 @@ export const ptBR = {
     title: "Composição de mensagens",
     plainText: "Composição em texto simples",
     plainTextDescription: "Manter código, Markdown e links como texto literal. Desative para mostrar uma prévia formatada.",
+    richPaste: "Colar texto formatado",
+    richPasteDescription: "Cola links, tabelas e formatação como Markdown. {shortcut} cola texto simples. Editor de texto formatado completo em breve.",
     showContext: "Mostrar uso da janela de contexto",
     sendShortcut: "Atalho de envio",
     sendMultiline: "{mod} + Enter para mensagens de várias linhas",
@@ -1054,6 +1063,7 @@ export const ptBR = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Defina a senha do proprietário da instalação antes de adicionar outra conta. Você usará essa senha para entrar quando esta instalação tiver várias contas.",
       signsInAs: "Entra como {username}",
       signsInAsOwner: "Entra como {alias} ou {username}",
       signInName: "Seu nome de login",
@@ -1975,6 +1985,14 @@ export const ptBR = {
         saveError:
           "Não foi possível salvar as configurações de conexão das contas gerenciadas.",
       },
+      display: {
+        title: "Exibição",
+        timeFormat: "Formato de hora",
+        timeFormatDescription: "Mostrar horários no formato de 12 ou 24 horas.",
+        timeFormatSystem: "Padrão do sistema",
+        timeFormat12: "12 horas",
+        timeFormat24: "24 horas",
+      },
       notifications: {
         sectionTitle: "Notificações",
         showLoadedModels: "Cartão de modelos carregados",
@@ -2347,6 +2365,9 @@ export const ptBR = {
         description: "Cores usadas no Unsloth, nos modos claro e escuro.",
         standard: "Padrão",
         moreThemes: "Mais temas",
+      },
+      composer: {
+        title: "Editor",
       },
       code: {
         title: "Código",
@@ -2943,6 +2964,8 @@ export const ptBR = {
         "As notificações estão bloqueadas. Permita-as para o Unsloth nas configurações do navegador ou do sistema e tente novamente.",
       replyNotificationKeywords:
         "notificação avisar alerta terminou concluído pronto resposta segundo plano minimizado notify notification alert done finished reply background",
+      showLinkPreviews: "Prévias de links",
+      showLinkPreviewsDescription: "Mostrar prévias ao passar o cursor sobre os links das fontes.",
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",
@@ -2957,6 +2980,8 @@ export const ptBR = {
         "detalhes geração velocidade tokens estatísticas camadas especialistas desenvolvedor verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Editar resposta nas respostas",
       inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
+      turnNavigation: "Navegação por turnos",
+      turnNavigationDescription: "Mostra suas mensagens como uma barra na borda esquerda de chats longos. Passe o cursor para ver um turno, clique para ir até ele e marque turnos para encontrá-los depois.",
       composerAtBottom: "Caixa de texto embaixo",
       composerAtBottomDescription: "Comece novas conversas com a caixa de texto na parte de baixo da página, não no meio.",
       projectAttachments: "Compartilhar arquivos em todo o projeto",
@@ -3575,8 +3600,6 @@ export const ptBR = {
         repoCheckoutFallback:
           "Se você ainda tiver a cópia local do repositório, execute o instalador local a partir dela:",
         restartAfterUpdate: "Reinicie o Unsloth após a atualização.",
-        desktopManaged:
-          "O aplicativo de desktop verifica automaticamente se há novas versões. Você também pode verificar ou atualizar aqui a qualquer momento.",
         desktopReady: "Atualizações do aplicativo de desktop",
         desktopReadyDescription:
           "Verifique se há uma versão mais recente do aplicativo de desktop.",
@@ -5464,5 +5487,60 @@ export const ptBR = {
     later: "Mais tarde",
     update: "Atualizar",
     undo: "Desfazer",
+  },
+  generationStats: {
+    working: "Processando...",
+    processingPrompt: "Processando prompt {percent}%",
+    timeLeft: "faltam {eta}",
+    tokensOne: "{count} token",
+    tokens: "{count} tokens",
+    tokensOf: "{done} / {total} tokens",
+    draftAccepted: "rascunho {accepted}/{drafted} aceitos ({percent}%)",
+    timing: {
+      trigger: "Tempo da mensagem",
+      firstToken: "Primeiro token",
+      speedInStep: "Velocidade (no passo)",
+      effective: "Efetiva",
+      output: "Saída",
+      denoising: "Remoção de ruído",
+      stepsOne: "{count} passo",
+      steps: "{count} passos",
+      blocksOne: "{count} bloco",
+      blocks: "{count} blocos",
+      canvas: "Canvas",
+      generation: "Geração",
+      answerTokens: "Tokens da resposta",
+      prompt: "Prompt",
+      total: "Total",
+      chunks: "Chunks",
+      promptEval: "Avaliação do prompt",
+      promptSpeed: "Velocidade do prompt",
+      speed: "Velocidade",
+      tokens: "Tokens",
+      draftAccepted: "Rascunho aceito",
+      denoisingSteps: "Passos de remoção de ruído",
+      blocksLabel: "Blocos",
+      cacheHits: "Acertos de cache",
+      cacheWrites: "Gravações em cache",
+      stopReason: "Motivo da parada",
+      stoppedByYou: "Interrompido por você",
+      endOfTurn: "Fim do turno",
+      lengthLimit: "Limite de tamanho",
+      toolCall: "Chamada de ferramenta",
+      contentFilter: "Filtro de conteúdo",
+    },
+    placement: {
+      title: "Posicionamento dos pesos",
+      allOnCpu: "Todas as {total} camadas na CPU",
+      split: "{gpu} de {total} camadas na GPU, {cpu} na CPU",
+      allOnGpu: "Todas as {total} camadas na GPU",
+      expertCache: "Todas as {total} camadas na GPU, todos os especialistas na RAM ({amount} de cache de especialistas na GPU)",
+      expertSpillOne: "Todas as {total} camadas na GPU, pesos de especialistas de {count} camada na RAM",
+      expertSpill: "Todas as {total} camadas na GPU, pesos de especialistas de {count} camadas na RAM",
+      inUnifiedMemory: "{amount} na memória unificada",
+      inSharedMemory: "{amount} na memória compartilhada",
+      inVram: "{amount} na VRAM",
+      inRam: "{amount} na RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;
