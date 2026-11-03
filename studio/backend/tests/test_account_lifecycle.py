@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Real SQLite and HTTP coverage for owner-managed account lifecycle and setup."""
-
 import importlib.util
 import secrets
 import threading
@@ -85,6 +83,44 @@ def db_rows(table):
         return [dict(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY id")]
     finally:
         conn.close()
+
+
+def test_desktop_sets_owner_password_before_creating_managed_account(auth_env):
+    client, _, _ = auth_env
+    storage.delete_user("unsloth")
+    storage.create_initial_user(
+        "unsloth", "generated-password", secrets.token_urlsafe(64), must_change_password = True
+    )
+    raw = storage.create_desktop_secret()
+    session = client.post("/api/auth/desktop-login", json = {"secret": raw}).json()
+    desktop_headers = {"Authorization": "Bearer " + session["access_token"]}
+    before = db_rows("auth_user")
+    for _ in range(2):
+        response = client.post("/api/accounts", headers = desktop_headers, json = {"username": "alice"})
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Set the owner's password before adding an account."}
+        assert db_rows("auth_user") == before
+        assert policy.login_mode() == "single"
+    changed = client.post(
+        "/api/auth/desktop-initial-password",
+        headers = desktop_headers,
+        json = {"new_password": "chosen-password"},
+    )
+    assert changed.status_code == 200
+    desktop_headers = {"Authorization": "Bearer " + changed.json()["access_token"]}
+    assert (
+        client.post(
+            "/api/accounts", headers = desktop_headers, json = {"username": "alice"}
+        ).status_code
+        == 201
+    )
+    assert policy.login_mode() == "multi"
+    for payload in ({"secret": raw}, {"secret": raw, "seeded_owner_login": True}):
+        assert client.post("/api/auth/desktop-login", json = payload).json() == {
+            "login_required": True,
+            "login_mode": "multi",
+        }
+    assert login(client, "unsloth", "chosen-password").status_code == 200
 
 
 @pytest.mark.parametrize("actor", ["unsloth", "alice", "bob"])
