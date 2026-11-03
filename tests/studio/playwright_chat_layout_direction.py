@@ -36,7 +36,9 @@ def main() -> None:
             elif parsed.path == "/api/settings/chat-memory":
                 _json(route, {"text": "", "enabled": False})
             elif parsed.path.startswith("/api/"):
-                _json(route, _api_payload(parsed.path, parse_qs(parsed.query), full_footprint = False))
+                _json(
+                    route, _api_payload(parsed.path, parse_qs(parsed.query), full_footprint = False)
+                )
             else:
                 route.continue_()
 
