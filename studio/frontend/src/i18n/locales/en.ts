@@ -649,6 +649,8 @@ export const en = {
     title: "Composer",
     plainText: "Plain text composer",
     plainTextDescription: "Keep code, Markdown, and links as literal text. Turn off to show a formatted preview.",
+    richPaste: "Rich text paste",
+    richPasteDescription: "Pastes links, tables and formatting as Markdown. {shortcut} pastes plain text. Full rich text composer coming soon.",
     showContext: "Context window usage",
     sendShortcut: "Send shortcut",
     sendMultiline: "{mod} + Enter for multiline prompts",
@@ -1067,6 +1069,7 @@ export const en = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Choose the owner's password before adding another account. You will use it to sign in once this installation has multiple accounts.",
       signsInAs: "Signs in as {username}",
       signsInAsOwner: "Signs in as {alias} or {username}",
       signInName: "Your sign-in name",
@@ -1936,6 +1939,7 @@ export const en = {
         loadError: "Failed to load model auto-switch settings.",
         saveError: "Failed to save model auto-switch settings.",
         idleError: "Enter 0 to keep the model loaded, or at least 60 seconds.",
+        idleUnsaved: "Not saved yet.",
         keepKv: "Keep chat context across unloads",
         keepKvDescription:
           "Save the KV cache before an idle unload, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",
@@ -2361,6 +2365,9 @@ export const en = {
         description: "Colors used across Unsloth, in light and dark mode.",
         standard: "Standard",
         moreThemes: "More themes",
+      },
+      composer: {
+        title: "Composer",
       },
       code: {
         title: "Code",
@@ -2957,6 +2964,8 @@ export const en = {
         "Notifications are blocked. Allow them for Unsloth in your browser or system settings, then try again.",
       replyNotificationKeywords:
         "notify notification alert done finished complete ready response reply background minimized desktop sound",
+      showLinkPreviews: "Link previews",
+      showLinkPreviewsDescription: "Show previews when hovering over source links.",
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
@@ -5489,5 +5498,65 @@ export const en = {
     later: "Later",
     update: "Update",
     undo: "Undo",
+  },
+  // The live prompt and reply figures (Settings > Chat > Display > Generation details), the reply's
+  // timing tooltip and the Run settings "Weight placement" row. Keep GPU, CPU, RAM and VRAM.
+  generationStats: {
+    working: "Working...",
+    processingPrompt: "Processing prompt {percent}%",
+    // {eta}: a short duration such as "12s" or "2m 10s".
+    timeLeft: "{eta} left",
+    tokensOne: "{count} token",
+    tokens: "{count} tokens",
+    tokensOf: "{done} / {total} tokens",
+    // Speculative decoding: of {drafted} drafted tokens, the model kept {accepted}.
+    draftAccepted: "draft {accepted}/{drafted} accepted ({percent}%)",
+    timing: {
+      trigger: "Message timing",
+      firstToken: "First token",
+      speedInStep: "Speed (in-step)",
+      effective: "Effective",
+      output: "Output",
+      denoising: "Denoising",
+      stepsOne: "{count} step",
+      steps: "{count} steps",
+      blocksOne: "{count} block",
+      blocks: "{count} blocks",
+      canvas: "Canvas",
+      generation: "Generation",
+      answerTokens: "Answer tokens",
+      prompt: "Prompt",
+      total: "Total",
+      chunks: "Chunks",
+      promptEval: "Prompt eval",
+      promptSpeed: "Prompt speed",
+      speed: "Speed",
+      tokens: "Tokens",
+      draftAccepted: "Draft accepted",
+      denoisingSteps: "Denoising steps",
+      blocksLabel: "Blocks",
+      cacheHits: "Cache hits",
+      cacheWrites: "Cache writes",
+      stopReason: "Stop reason",
+      stoppedByYou: "Stopped by you",
+      endOfTurn: "End of turn",
+      lengthLimit: "Length limit",
+      toolCall: "Tool call",
+      contentFilter: "Content filter",
+    },
+    placement: {
+      title: "Weight placement",
+      allOnCpu: "All {total} layers on the CPU",
+      split: "{gpu} of {total} layers on the GPU, {cpu} on the CPU",
+      allOnGpu: "All {total} layers on the GPU",
+      // A MoE with every routed expert in RAM and a GPU cache of the busiest ones; {amount} is like "18 GiB".
+      expertCache: "All {total} layers on the GPU, all experts in RAM ({amount} expert cache on the GPU)",
+      expertSpillOne: "All {total} layers on the GPU, expert weights of {count} layer in RAM",
+      expertSpill: "All {total} layers on the GPU, expert weights of {count} layers in RAM",
+      inUnifiedMemory: "{amount} in unified memory",
+      inSharedMemory: "{amount} in shared memory",
+      inVram: "{amount} in VRAM",
+      inRam: "{amount} in RAM",
+    },
   },
 } as const;

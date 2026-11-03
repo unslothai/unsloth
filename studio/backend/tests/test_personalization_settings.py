@@ -87,6 +87,7 @@ def test_customization_defaults():
     p = PersonalizationPayload.model_validate({})
     c = p.appearance.customization
     assert c.contrast == 50
+    assert c.composerOutline is None
     assert c.reduceMotion == "system"
     assert c.fontSmoothing is True
     assert c.pointerCursors is False
@@ -505,6 +506,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                 "uiFontSize": 14,
                 "codeFontSize": 13,
                 "contrast": 60,
+                "composerOutline": 40,
                 "pointerCursors": True,
                 "reduceMotion": "off",
                 "fontSmoothing": True,
