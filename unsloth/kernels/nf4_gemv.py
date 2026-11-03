@@ -27,7 +27,9 @@ __all__ = [
 ]
 
 
-@triton.jit
+# M (rows, 1 at bsz 1 decode) is not specialized: one binary for every row count, so a batch size
+# change mid-session does not compile (w5_recompile: bsz 3 after bsz 1 built a second binary).
+@triton.jit(do_not_specialize = ["M"])
 def _gemv_nf4_kernel(
     X,
     W,
@@ -96,7 +98,9 @@ def _gemv_nf4_kernel(
     tl.store(OUT + rows, acc.to(OUT.dtype.element_ty), mask = rmask)
 
 
-@triton.jit
+# M (rows, 1 at bsz 1 decode) is not specialized: one binary for every row count, so a batch size
+# change mid-session does not compile (w5_recompile: bsz 3 after bsz 1 built a second binary).
+@triton.jit(do_not_specialize = ["M"])
 def _gemv_nf4_words_kernel(
     X,
     W,
@@ -285,6 +289,7 @@ def _launch(
             8,
             constexprs,
             X.device.index,
+            unspecialized = (10,),  # M
             num_warps = num_warps,
             enable_fp_fusion = True,
         )

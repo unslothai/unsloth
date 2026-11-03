@@ -82,10 +82,21 @@ def relaunch(entry, grid, device_index, args):
     return True
 
 
-def launch(kernel, grid, args, n_tensors, constexprs, device_index, **options):
+def launch(
+    kernel,
+    grid,
+    args,
+    n_tensors,
+    constexprs,
+    device_index,
+    unspecialized = (),
+    **options,
+):
     """kernel[grid](*args, **constexprs, **options) on the current stream of device_index, which
     must be the current device. args are the runtime arguments in signature order, before every
-    constexpr: n_tensors tensors, then integers. Returns the cache entry relaunch() takes, or None."""
+    constexpr: n_tensors tensors, then integers. unspecialized: positions in args of integers the
+    kernel lists in do_not_specialize (only their width is keyed, so one cache entry serves every
+    value). Returns the cache entry relaunch() takes, or None."""
     global _ENABLED
     if _ENABLED and not _hooks_set():
         key = (
@@ -94,7 +105,13 @@ def launch(kernel, grid, args, n_tensors, constexprs, device_index, **options):
             tuple(constexprs.values()),
             tuple(options.values()),
             tuple([(arg.dtype, arg.data_ptr() & 15) for arg in args[:n_tensors]]),
-            tuple([(arg == 1, arg & 15, arg < (1 << 31)) for arg in args[n_tensors:]]),
+            # Triton specializes integers (== 1, % 16) unless do_not_specialize lists them.
+            tuple(
+                [
+                    arg < (1 << 31) if i in unspecialized else (arg == 1, arg & 15, arg < (1 << 31))
+                    for i, arg in enumerate(args[n_tensors:], n_tensors)
+                ]
+            ),
         )
         entry = _CACHE.get(key)
         if entry is not None:

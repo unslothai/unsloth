@@ -64,3 +64,35 @@ def test_seqlen_kernels_use_it(path, kernels):
                 assert [a.value for a in call.args] == ["seqlen"]
                 wrapped.add(name)
     assert kernels <= wrapped
+
+
+def test_nf4_gemv_rows_unspecialized():
+    """M (rows) of the NF4 GEMV kernels is do_not_specialize, and the fast launch keys it by width only:
+    a batch size change mid-session (bsz 3 after bsz 1) reuses the one binary and the one cache entry."""
+    tree = ast.parse((ROOT / "nf4_gemv.py").read_text(encoding = "utf-8"))
+    kernels = {}
+    launch_call = args_tuple = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in ("_gemv_nf4_kernel", "_gemv_nf4_words_kernel"):
+            kernels[node.name] = node
+        if isinstance(node, ast.FunctionDef) and node.name == "_launch":
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Assign) and getattr(sub.targets[0], "id", None) == "args":
+                    args_tuple = sub.value
+                if isinstance(sub, ast.Call) and getattr(sub.func, "id", None) == "launch":
+                    launch_call = sub
+    assert set(kernels) == {"_gemv_nf4_kernel", "_gemv_nf4_words_kernel"}
+    for fn in kernels.values():
+        (deco,) = fn.decorator_list
+        dns = next(kw.value for kw in deco.keywords if kw.arg == "do_not_specialize")
+        assert [e.value for e in dns.elts] == ["M"]
+        assert fn.args.args[10].arg == "M"
+    unspecialized = next(kw.value for kw in launch_call.keywords if kw.arg == "unspecialized")
+    assert [e.value for e in unspecialized.elts] == [10]
+    assert args_tuple.elts[10].id == "M"
+
+
+def test_launch_keys_unspecialized_by_width():
+    source = "".join((ROOT / "triton_launch.py").read_text(encoding = "utf-8").split())
+    assert "unspecialized=()," in source
+    assert "arg<(1<<31)ifiinunspecializedelse(arg==1,arg&15,arg<(1<<31))" in source
