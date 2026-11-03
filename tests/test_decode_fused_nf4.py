@@ -669,7 +669,7 @@ def test_t4_qwen3_prefers_regular_graphs(monkeypatch, family, capability, graphs
         capability = capability,
         graphs = graphs,
     )
-    if family == "qwen3" and capability == (7, 5) and graphs and flag == "1":
+    if family in ("llama", "qwen3") and capability == (7, 5) and graphs and flag == "1":
         assert not isinstance(plan, D._Plan)
         assert calls == []
     else:
@@ -721,13 +721,18 @@ def test_projection_bias_is_opt_in_and_checks_real_tensor_layout(monkeypatch):
     assert D._proj_parts(projection, 256, allow_bias = True) == "bias layout"
 
 
-@pytest.mark.parametrize("strided", [False, True])
-def test_strided_final_norm_keeps_the_regular_path(monkeypatch, strided):
+def _norm_plan(
+    monkeypatch,
+    strided = False,
+    capability = (8, 0),
+    graphs = False,
+):
     from torch._subclasses.fake_tensor import FakeTensor, FakeTensorMode
 
     D = _driver()
     monkeypatch.setattr(D.torch.version, "hip", None)
-    monkeypatch.setattr(D.torch.cuda, "get_device_capability", lambda device: (8, 0))
+    monkeypatch.setattr(D.torch.cuda, "get_device_capability", lambda device: capability)
+    monkeypatch.setattr(D._decode_graphs, "ENABLED", graphs)
     monkeypatch.setattr(D.F, "supported_capability", lambda capability: True, raising = False)
     monkeypatch.setattr(D, "_signature", lambda plan: ())
     device = torch.device("cuda", 0)
@@ -770,11 +775,26 @@ def test_strided_final_norm_keeps_the_regular_path(monkeypatch, strided):
             ),
         )
         plan = D._build(model, torch.empty((1, 1, 8), device = device, dtype = torch.float16))
-        if strided:
-            assert plan == "final norm"
-        else:
-            assert isinstance(plan, D._Plan)
-            assert plan.final_norm is weight
+    return D, plan, weight
+
+
+@pytest.mark.parametrize("strided", [False, True])
+def test_strided_final_norm_keeps_the_regular_path(monkeypatch, strided):
+    D, plan, weight = _norm_plan(monkeypatch, strided)
+    if strided:
+        assert plan == "final norm"
+    else:
+        assert isinstance(plan, D._Plan)
+        assert plan.final_norm is weight
+
+
+@pytest.mark.parametrize("capability", [(7, 5), (8, 0), (8, 9)])
+@pytest.mark.parametrize("graphs", [False, True])
+@pytest.mark.parametrize("flag", ["1", "force"])
+def test_t4_prefers_regular_graphs(monkeypatch, capability, graphs, flag):
+    monkeypatch.setenv("UNSLOTH_DECODE_FUSED_NF4", flag)
+    D, plan, _ = _norm_plan(monkeypatch, capability = capability, graphs = graphs)
+    assert isinstance(plan, D._Plan) != (capability == (7, 5) and graphs and flag == "1")
 
 
 class _Lora:
