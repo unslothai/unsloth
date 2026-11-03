@@ -493,3 +493,16 @@ def test_a_tag_that_is_not_a_plain_code_is_dropped():
     assert str(tool_error("boom", "Try again.", tag = "out_of_memory")).startswith(
         "[out_of_memory] boom Try again."
     )
+
+
+def test_a_hint_never_names_a_tool_the_owner_turned_off(monkeypatch):
+    from studio_mcp import problems
+    from utils import mcp_access
+
+    monkeypatch.setattr(mcp_access, "disabled_tools", lambda: frozenset({"download_model"}))
+    tools = problems.caller_tools()
+    assert "download_model" not in tools and "load_model" in tools
+    assert problems.download_hint("image", "org/m", tools).startswith("Ask the user to load")
+    # Unsloth MCP off: every tool counts as off, so no hint names one.
+    monkeypatch.setattr(mcp_access, "disabled_tools", lambda: None)
+    assert problems.caller_tools() == frozenset()

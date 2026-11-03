@@ -68,16 +68,19 @@ def from_headers(headers: Mapping[str, str]) -> Optional[Problem]:
 
 
 def caller_tools() -> frozenset[str]:
-    """The tools the current caller's profile offers."""
+    """The tools the current caller's profile offers, less those the owner turned off."""
     from mcp_server import surface
     from studio_mcp.caller import current_caller
     from studio_mcp.profile import AGENT
+    from utils import mcp_access
 
     try:
         profile = current_caller().profile
     except RuntimeError:
         profile = AGENT
-    return surface(profile)
+    # A hint must not name a tool the access middleware refuses; cached, so cheap on the loop.
+    disabled = mcp_access.disabled_tools()
+    return frozenset() if disabled is None else surface(profile) - disabled
 
 
 def _ask_user_load(kind: str, model: Optional[str] = None) -> str:
