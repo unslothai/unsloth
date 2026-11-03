@@ -630,6 +630,19 @@ def _check_benchmark(nid: str, nodes: dict, specs: dict, inputs: dict) -> list[d
                 node_id = nid,
             )
         ]
+    picked = (nodes[nid].get("params") or {}).get("model")
+    if (
+        isinstance(picked, dict)
+        and picked.get("repo")
+        and ("checkpoint" in wired or "model" in wired)
+    ):
+        # The wired model would be scored, not the pick.
+        return [
+            issue(
+                "Benchmark scores one model: clear its Model picker or unwire what feeds it",
+                node_id = nid,
+            )
+        ]
     task = str((nodes[nid].get("params") or {}).get("task") or "Recipe held-out")
     if task == "Recipe held-out":
         return []

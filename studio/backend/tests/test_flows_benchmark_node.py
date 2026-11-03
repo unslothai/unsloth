@@ -261,6 +261,7 @@ def _bench_flow(
     *,
     via_export = None,
     both = False,
+    model = None,
 ):
     from core.flows.compiler import compile_flow, parse_document
 
@@ -269,7 +270,7 @@ def _bench_flow(
     nodes = [
         node("data", "data.hf_dataset", repo = "a/b"),
         node("train", "train.finetune"),
-        node("bench", "train.benchmark", task = task),
+        node("bench", "train.benchmark", task = task, model = model),
     ]
     edges = [edge("data", "dataset", "train", "dataset")]
     if via_export:
@@ -299,6 +300,17 @@ def test_an_lm_eval_task_on_a_fine_tune_checkpoint_is_refused_at_plan_time():
         _bench_flow("GSM8K", via_export = "merged")
     with pytest.raises(CompileError, match = "not both"):
         _bench_flow("Recipe held-out", via_export = "gguf", both = True)
+
+
+def test_a_model_picked_beside_a_wired_model_is_refused_at_plan_time():
+    from core.flows.compiler import CompileError
+
+    # The wired model would be scored and the pick silently ignored.
+    pick = {"repo": "unsloth/Qwen3-0.6B"}
+    with pytest.raises(CompileError, match = "clear its Model picker"):
+        _bench_flow("Recipe held-out", model = pick)
+    with pytest.raises(CompileError, match = "clear its Model picker"):
+        _bench_flow("GSM8K", model = pick, via_export = "gguf")
 
 
 def test_an_export_wired_into_model_loads_by_export_name_and_its_quant(monkeypatch):
