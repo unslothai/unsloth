@@ -20,6 +20,7 @@ hook, which wraps each module's parameters in an OffloadCache. Unsloth's compile
 trace that cache, so Unsloth unwraps the same-device ones right after the hook runs."""
 
 import types
+from dataclasses import dataclass
 
 import pytest
 import torch
@@ -114,26 +115,106 @@ def test_real_offload_is_left_alone():
     assert _caches(model) == 2
 
 
-def test_split_device_model_keeps_the_input_transfer():
-    # A device_map spanning two cards: compressed-tensors' from_accelerate replaces accelerate's
-    # hooks with one same-device OffloadCache per module, whose forward wrapper is then the only
-    # thing moving activations from one card to the next. Unwrapping them breaks the forward.
-    model = _Tiny()
+def _split_device_metadata(model):
+    index = 0
     for module in model.modules():
-        if module._parameters:
+        if module._parameters or module._buffers:
             offload_module_lib.offload_module(module, torch.device("cpu"), torch.device("cpu"))
-    # Pretend the norm sits on cuda:0 and the projection on cuda:1 (no GPU needed for the decision).
-    for module, device in ((model.norm, "cuda:0"), (model.proj, "cuda:1")):
-        for cache in (module._parameters, module._buffers):
-            cache.onload_device = torch.device(device)
-            cache.offload_device = torch.device(device)
+            for cache in (module._parameters, module._buffers):
+                cache.onload_device = torch.device(f"cuda:{index % 2}")
+                cache.offload_device = cache.onload_device
+            index += 1
+    return model
+
+
+def test_split_device_model_keeps_the_input_transfer():
+    model = _split_device_metadata(_Tiny())
     from unsloth.models.loader_utils import _remove_same_device_compressed_tensors_offload
 
+    assert _remove_same_device_compressed_tensors_offload(model) == 2
+    assert _caches(model) == 0
+    assert not hasattr(model.proj, "_original_forward_func")
+    assert len(model.proj._forward_pre_hooks) == 1
     assert _remove_same_device_compressed_tensors_offload(model) == 0
-    assert _caches(model) == 2
-    assert hasattr(model.proj, "_original_forward_func")
-    # Each module on its own is still a single device, so per-module unwraps keep working.
-    assert _remove_same_device_compressed_tensors_offload(model.proj) == 1
+    assert len(model.proj._forward_pre_hooks) == 1
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_split_cleanup_preserves_compilation_and_dtype_conversion(dynamic):
+    from unsloth.models.loader_utils import _remove_same_device_compressed_tensors_offload
+
+    model = nn.Sequential(nn.BatchNorm1d(4), nn.Linear(4, 4)).eval()
+    reference = nn.Sequential(nn.BatchNorm1d(4), nn.Linear(4, 4)).eval()
+    reference.load_state_dict(model.state_dict())
+    _split_device_metadata(model)
+    assert _remove_same_device_compressed_tensors_offload(model) == 2
+    model.double()
+    reference.double()
+    assert model[0].running_mean.dtype == torch.float64
+    x = torch.randn(3, 4, dtype = torch.float64, requires_grad = True)
+    expected_x = x.detach().clone().requires_grad_()
+    compiled = torch.compile(model, backend = "eager", fullgraph = True, dynamic = dynamic)
+    actual = compiled(x)
+    expected = reference(expected_x)
+    torch.testing.assert_close(actual, expected, rtol = 0, atol = 0)
+    actual.sum().backward()
+    expected.sum().backward()
+    torch.testing.assert_close(x.grad, expected_x.grad, rtol = 0, atol = 0)
+    for param, ref_param in zip(model.parameters(), reference.parameters()):
+        torch.testing.assert_close(param.grad, ref_param.grad, rtol = 0, atol = 0)
+
+
+def test_split_cleanup_moves_nested_inputs_to_the_live_device():
+    from unsloth.models.loader_utils import _remove_same_device_compressed_tensors_offload
+
+    @dataclass
+    class Payload:
+        tensor: torch.Tensor
+        label: str
+
+    class Nested(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.ones(4), requires_grad = False)
+
+        def forward(self, values, *, payload):
+            assert payload.label == "unchanged"
+            assert values[1]["other"] is None
+            return (values[0] + payload.tensor) * self.weight
+
+    model = _split_device_metadata(nn.ModuleList([nn.Linear(4, 4), Nested()]))
+    assert _remove_same_device_compressed_tensors_offload(model) == 2
+    model[1].to("meta")
+    x = torch.ones(4, requires_grad = True)
+    out = model[1]([x, {"other": None}], payload = Payload(x, "unchanged"))
+    assert out.device.type == "meta"
+    assert out.requires_grad
+
+
+def test_split_cleanup_aligns_a_parameterless_residual_container():
+    from unsloth.models.loader_utils import _remove_same_device_compressed_tensors_offload
+
+    class Residual(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = nn.Linear(4, 4)
+
+        def forward(self, x):
+            return x + self.proj(x)
+
+    model = _split_device_metadata(nn.Sequential(nn.Linear(4, 4), Residual()))
+    residual = model[1]
+    offload_module_lib.offload_module(residual, torch.device("cpu"), torch.device("cpu"))
+    for cache in (residual._parameters, residual._buffers):
+        cache.onload_device = cache.offload_device = torch.device("cuda:1")
+    assert _remove_same_device_compressed_tensors_offload(model) == 3
+    residual.to("meta")
+    assert residual(torch.randn(2, 4)).device.type == "meta"
+    residual.to_empty(device = "cpu")
+    residual.proj.reset_parameters()
+    x = torch.randn(2, 4, requires_grad = True)
+    residual(x).sum().backward()
+    assert x.grad is not None
 
 
 def test_installed_quantizer_hook_registers_the_unwrap(monkeypatch):

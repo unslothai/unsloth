@@ -3352,6 +3352,40 @@ def enable_composite_gradient_checkpointing(model, verbose = True):
     return True
 
 
+def _move_compressed_tensors_inputs(value, device):
+    from dataclasses import fields, is_dataclass
+
+    if isinstance(value, torch.Tensor):
+        return value.to(device = device)
+    if isinstance(value, list):
+        return [_move_compressed_tensors_inputs(item, device) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_move_compressed_tensors_inputs(item, device) for item in value)
+    if isinstance(value, dict):
+        return {key: _move_compressed_tensors_inputs(item, device) for key, item in value.items()}
+    if is_dataclass(value):
+        return type(value)(
+            **{
+                field.name: _move_compressed_tensors_inputs(getattr(value, field.name), device)
+                for field in fields(value)
+            }
+        )
+    return value
+
+
+def _align_compressed_tensors_inputs(module, args, kwargs):
+    reference = next((p for p in module._parameters.values() if p is not None), None)
+    if reference is None:
+        reference = next((b for b in module._buffers.values() if b is not None), None)
+    if reference is None:
+        reference = next(module.parameters(), None)
+    if reference is None:
+        reference = next(module.buffers(), None)
+    if reference is None:
+        return args, kwargs
+    return _move_compressed_tensors_inputs((args, kwargs), reference.device)
+
+
 def _remove_same_device_compressed_tensors_offload(model):
     """Unwrap compressed-tensors >= 0.19 non-offloading OffloadCaches, which torch.compile cannot trace."""
     try:
@@ -3372,11 +3406,12 @@ def _remove_same_device_compressed_tensors_offload(model):
         if onload is None or offload is None or torch.device(onload) != torch.device(offload):
             continue
         same_device.append(module)
-    # On a split model these wrappers replaced accelerate's hooks and are what move inputs across devices.
-    if len(onload_devices) > 1:
-        return 0
+    split = len(onload_devices) > 1
     for module in same_device:
         remove_module_offload(module)
+        if split:
+            # The original mover disables autograd and compares data pointers.
+            module.register_forward_pre_hook(_align_compressed_tensors_inputs, with_kwargs = True)
     return len(same_device)
 
 
