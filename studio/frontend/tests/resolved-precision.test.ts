@@ -11,6 +11,8 @@ import {
   isDenseQuantKind,
   isPrecisionRefusal,
   isResolvedHonored,
+  memoryRecipeValue,
+  offloadLabel,
   resolvedBadge,
   resolvedSeedKey,
   resolvedSelectValue,
@@ -417,4 +419,24 @@ test("a pinned dense text encoder reseeds as Dense, not Default", () => {
     reason: "nvfp4 needs Blackwell sm_100+",
   };
   assert.equal(resolvedSelectValue(declined, toTeOption), "none");
+});
+
+test("group offload names where the transformer ran, so the slow tier is not shown as the fast one", () => {
+  assert.equal(offloadLabel("group", "resident"), "group offload, transformer on GPU");
+  assert.equal(offloadLabel("group", "partial"), "group offload, transformer partly streamed");
+  assert.equal(offloadLabel("group", "streamed"), "group offload, transformer streamed");
+  assert.notEqual(offloadLabel("group", "resident"), offloadLabel("group", "streamed"));
+  assert.equal(
+    memoryRecipeValue("auto", "group", "streamed"),
+    "auto (group offload, transformer streamed)",
+  );
+});
+
+test("records and backends without a denoiser placement keep the policy-only label", () => {
+  assert.equal(offloadLabel("group"), "group offload");
+  assert.equal(offloadLabel("group", null), "group offload");
+  assert.equal(offloadLabel("group", "unknown"), "group offload");
+  assert.equal(memoryRecipeValue("auto", "group"), "auto (group offload)");
+  assert.equal(memoryRecipeValue(null, "model"), "model offload");
+  assert.equal(memoryRecipeValue("fast", "none", "resident"), "fast");
 });

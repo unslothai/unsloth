@@ -6659,6 +6659,76 @@ def _streamed_pin_leftover_mib(
 
 _DENOISER_NAMES = ("transformer", "transformer_2", "unconditional_transformer", "unet")
 
+# Where the denoiser's weights live under group offload, which decides per-step speed. "group" alone covers both
+# the near-resident tier (only the text encoders stream) and the per-step streamed one.
+DENOISER_RESIDENT = "resident"
+DENOISER_PARTIAL = "partial"
+DENOISER_STREAMED = "streamed"
+
+
+def denoiser_residency(pipe: Any) -> Optional[tuple[int, int]]:
+    """``(resident, total)`` offload groups across the denoisers, read off the live hooks: ``(0, 0)`` when none is
+    group-offloaded, a denoiser another offload hook moves counts as one streamed group, None when unreadable."""
+    resident = total = 0
+    try:
+        for name in _DENOISER_NAMES:
+            module = getattr(pipe, name, None)
+            if module is None:
+                continue
+            groups = _offload_groups(module)
+            if groups:
+                total += len(groups)
+                resident += sum(1 for g in groups if getattr(g, "_unsloth_resident", False))
+                continue
+            registry = getattr(module, "_diffusers_hook", None)
+            if any(getattr(sub, "_hf_hook", None) is not None for sub in module.modules()) or any(
+                "offload" in str(key) for key in (getattr(registry, "hooks", None) or {})
+            ):
+                total += 1
+    except Exception:  # noqa: BLE001 - a status read must never fail the load or the render
+        return None
+    return resident, total
+
+
+def _denoiser_tier(counts: Optional[tuple[int, int]]) -> Optional[str]:
+    if counts is None:
+        return None
+    resident, total = counts
+    if resident >= total:
+        return DENOISER_RESIDENT
+    return DENOISER_PARTIAL if resident else DENOISER_STREAMED
+
+
+def denoiser_offload(pipe: Any, offload_policy: Any) -> Optional[str]:
+    """resident | partial | streamed for a group-offloaded pipeline; None for other policies or an unreadable one."""
+    if offload_policy != OFFLOAD_GROUP or pipe is None:
+        return None
+    return _denoiser_tier(denoiser_residency(pipe))
+
+
+def denoiser_offload_reason(pipe: Any, offload_policy: Any) -> Optional[str]:
+    """The status-badge sentence for ``denoiser_offload``, with the live group counts; None off group offload."""
+    if offload_policy != OFFLOAD_GROUP or pipe is None:
+        return None
+    counts = denoiser_residency(pipe)
+    tier = _denoiser_tier(counts)
+    if tier is None:
+        return None
+    if tier == DENOISER_RESIDENT:
+        return (
+            "the transformer stays on the GPU; only the text encoders stream from CPU, once per prompt, "
+            "so every denoise step runs at resident speed"
+        )
+    if tier == DENOISER_PARTIAL:
+        return (
+            f"the transformer does not fit on the GPU: {counts[0]} of its {counts[1]} block groups stay "
+            "resident and the rest stream from CPU on every denoise step (slower)"
+        )
+    return (
+        "the transformer does not fit on the GPU: every block streams from CPU on every denoise step "
+        "(much slower than resident)"
+    )
+
 
 def denoisers_pinned_resident(pipe: Any) -> bool:
     """Every denoiser unhooked or with all its offload groups pinned, at least one pinned. The hooks stay so an

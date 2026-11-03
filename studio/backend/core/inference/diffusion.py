@@ -211,6 +211,9 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     plan_fits_total_capacity,
     denoisers_pinned_resident,
+    denoiser_offload,
+    denoiser_offload_reason,
+    DENOISER_RESIDENT,
     install_encode_release,
     plan_keeps_transformer_resident,
     prequant_seed_device,
@@ -10808,7 +10811,8 @@ class DiffusionBackend:
                                 else "a loaded component exceeds the device budget; "
                                 "streaming transformer blocks and text-encoder layers"
                                 if effective_policy == OFFLOAD_STREAMING
-                                else "planned from measured free VRAM vs estimated footprint",
+                                else denoiser_offload_reason(pipe, effective_policy)
+                                or "planned from measured free VRAM vs estimated footprint",
                             ),
                             "transformer_cache": (
                                 None if cache_auto else transformer_cache,
@@ -14442,6 +14446,8 @@ class DiffusionBackend:
                         )
                         whole_tier = None
                 whole_release: list = []
+                # per chunk that reached the denoiser under a whole-tier pricing: whether the pin engaged
+                whole_pinned: list[bool] = []
 
                 def _release_whole_denoiser() -> None:
                     while whole_release:
@@ -14532,6 +14538,7 @@ class DiffusionBackend:
                                     activation_mib = whole_tier[2],
                                     logger = logger,
                                 )
+                                whole_pinned.append(release is not None)
                                 if release is not None:
                                     whole_release.append(release)
                                     logger.info(
@@ -14757,6 +14764,12 @@ class DiffusionBackend:
                     "text_encoder_quant": state.text_encoder_quant,
                     "memory_mode": state.memory_mode,
                     "offload_policy": state.offload_policy,
+                    # How this generation's denoiser ran: a streamed load can run a request whole.
+                    "denoiser_offload": (
+                        DENOISER_RESIDENT
+                        if whole_pinned and all(whole_pinned)
+                        else denoiser_offload(state.pipe, state.offload_policy)
+                    ),
                     # Read after the deferred speed / step-cache toggles, so this is what ran.
                     "speed_mode": state.speed_mode,
                     "attention_backend": state.attention_backend,
@@ -15080,6 +15093,7 @@ class DiffusionBackend:
                 "gguf_variant": None,
                 "cpu_offload": False,
                 "offload_policy": None,
+                "denoiser_offload": None,
                 "vae_tiling": False,
                 "memory_mode": None,
                 "speed_mode": None,
@@ -15107,6 +15121,17 @@ class DiffusionBackend:
             state.resolved, state.speed_optims, getattr(state, "cuda_graphs", ())
         )
         speed_optims = int8_gemm_live(state.pipe, speed_optims)
+        # Live, not load-time: a later pin or release changes how much of the denoiser streams.
+        tier_reason = denoiser_offload_reason(state.pipe, state.offload_policy)
+        if (
+            tier_reason
+            and isinstance(resolved, dict)
+            and isinstance(resolved.get("memory_mode"), dict)
+        ):
+            resolved = {
+                **resolved,
+                "memory_mode": {**resolved["memory_mode"], "reason": tier_reason},
+            }
         lora_gate = dict(
             engine = "diffusers",
             family = state.family.name,
@@ -15137,6 +15162,7 @@ class DiffusionBackend:
             ),
             "cpu_offload": state.cpu_offload,
             "offload_policy": state.offload_policy,
+            "denoiser_offload": denoiser_offload(state.pipe, state.offload_policy),
             "vae_tiling": state.vae_tiling,
             "memory_mode": state.memory_mode,
             "speed_mode": state.speed_mode,

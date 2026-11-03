@@ -177,13 +177,31 @@ export function denseTextEncoderBuildLabel(status: { dtype?: string | null }): s
   return status.dtype === "gguf" ? "As in checkpoint" : denseDtypeLabel(status.dtype);
 }
 
+/** Where group offload keeps the denoiser: "group" alone covers both a near-resident and a per-step streamed run. */
+const DENOISER_OFFLOAD_LABELS: Record<string, string> = {
+  resident: "transformer on GPU",
+  partial: "transformer partly streamed",
+  streamed: "transformer streamed",
+};
+
+/** `group offload, transformer streamed`; the policy alone when the backend reported no denoiser placement. */
+export function offloadLabel(
+  offloadPolicy: string,
+  denoiserOffload?: string | null,
+): string {
+  const where = denoiserOffload ? DENOISER_OFFLOAD_LABELS[denoiserOffload] : undefined;
+  return where ? `${offloadPolicy} offload, ${where}` : `${offloadPolicy} offload`;
+}
+
 /** sd.cpp never runs the memory planner, so an absent `memory_mode` reports the offload alone. */
 export function memoryRecipeValue(
   memoryMode: string | null | undefined,
   offloadPolicy: string | null | undefined,
+  denoiserOffload?: string | null,
 ): string {
   const offloading = offloadPolicy != null && offloadPolicy !== "" && offloadPolicy !== "none";
   if (!offloading) return memoryMode ?? "";
-  if (!memoryMode) return `${offloadPolicy} offload`;
-  return `${memoryMode} (${offloadPolicy} offload)`;
+  const offload = offloadLabel(offloadPolicy, denoiserOffload);
+  if (!memoryMode) return offload;
+  return `${memoryMode} (${offload})`;
 }

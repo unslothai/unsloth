@@ -215,6 +215,7 @@ import {
   isDenseQuantKind,
   isPrecisionRefusal,
   memoryRecipeValue,
+  offloadLabel,
   resolvedBadge,
   resolvedSeedKey,
   resolvedSelectValue,
@@ -1371,7 +1372,11 @@ function RecipePopover({
           (image.offload_policy && image.offload_policy !== "none") ? (
             <RecipeRow
               label="Memory"
-              value={memoryRecipeValue(image.memory_mode, image.offload_policy)}
+              value={memoryRecipeValue(
+                image.memory_mode,
+                image.offload_policy,
+                image.denoiser_offload,
+              )}
             />
           ) : null}
           {image.speed_mode ? (
@@ -1532,8 +1537,9 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
         value={
           offload === "none"
             ? `${status.memory_mode ?? "auto"} · resident`
-            : `${status.memory_mode ?? "auto"} · ${offload} offload`
+            : `${status.memory_mode ?? "auto"} · ${offloadLabel(offload, status.denoiser_offload)}`
         }
+        badge={<ResolvedBadge status={status} controlKey="memory_mode" />}
       />
       <BuildRow
         label="Attention"
