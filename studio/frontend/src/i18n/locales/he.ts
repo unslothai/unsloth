@@ -1097,6 +1097,7 @@ export const he = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "יש להגדיר את סיסמת בעל ההתקנה לפני הוספת חשבון נוסף. הסיסמה תשמש לכניסה לאחר שיהיו בהתקנה כמה חשבונות.",
       signsInAs: "מתחבר בתור {username}",
       signsInAsOwner: "מתחבר בתור {alias} או {username}",
       signInName: "שם ההתחברות שלך",

@@ -1063,6 +1063,7 @@ export const ru = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Перед добавлением другого аккаунта задайте пароль владельца этой установки. Вы будете использовать его для входа, когда в установке будет несколько аккаунтов.",
       signsInAs: "Входит как {username}",
       signsInAsOwner: "Входит как {alias} или {username}",
       signInName: "Ваше имя для входа",

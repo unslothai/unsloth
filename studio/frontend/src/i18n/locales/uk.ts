@@ -1172,6 +1172,7 @@ export const uk = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Перш ніж додавати інший обліковий запис, установіть пароль власника цієї інсталяції. Ви використовуватимете його для входу, коли в інсталяції буде кілька облікових записів.",
       signsInAs: "Вхід як {username}",
       signsInAsOwner: "Вхід як {alias} або {username}",
       signInName: "Ваше ім’я для входу",

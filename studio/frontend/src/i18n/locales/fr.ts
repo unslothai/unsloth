@@ -1065,6 +1065,7 @@ export const fr = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Définissez le mot de passe du propriétaire de l’installation avant d’ajouter un autre compte. Vous l’utiliserez pour vous connecter une fois que cette installation aura plusieurs comptes.",
       signsInAs: "Se connecte en tant que {username}",
       signsInAsOwner: "Se connecte en tant que {alias} ou {username}",
       signInName: "Votre nom de connexion",

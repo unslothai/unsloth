@@ -1062,6 +1062,7 @@ export const ja = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "別のアカウントを追加する前に、所有者のパスワードを設定してください。このインストール環境に複数のアカウントがある場合は、そのパスワードでサインインします。",
       signsInAs: "{username} としてサインイン",
       signsInAsOwner: "{alias} または {username} としてサインイン",
       signInName: "サインイン名",

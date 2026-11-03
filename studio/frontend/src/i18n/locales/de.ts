@@ -1065,6 +1065,7 @@ export const de = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Lege das Passwort für den Besitzer dieser Installation fest, bevor du ein weiteres Konto hinzufügst. Du verwendest es zur Anmeldung, sobald diese Installation mehrere Konten hat.",
       signsInAs: "Meldet sich als {username} an",
       signsInAsOwner: "Meldet sich als {alias} oder {username} an",
       signInName: "Ihr Anmeldename",

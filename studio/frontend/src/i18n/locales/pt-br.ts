@@ -1063,6 +1063,7 @@ export const ptBR = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Defina a senha do proprietário da instalação antes de adicionar outra conta. Você usará essa senha para entrar quando esta instalação tiver várias contas.",
       signsInAs: "Entra como {username}",
       signsInAsOwner: "Entra como {alias} ou {username}",
       signInName: "Seu nome de login",

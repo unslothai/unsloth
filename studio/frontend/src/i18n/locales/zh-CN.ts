@@ -1058,6 +1058,7 @@ export const zhCN = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "添加其他账户前，请先设置此安装实例所有者的密码。此安装实例有多个账户后，你将使用该密码登录。",
       signsInAs: "以 {username} 登录",
       signsInAsOwner: "以 {alias} 或 {username} 登录",
       signInName: "你的登录名",
