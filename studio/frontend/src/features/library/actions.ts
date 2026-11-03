@@ -94,7 +94,7 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
         if (getAuthSessionEpoch() !== epoch) return;
         files.push({ url, fileName: libraryFileName(item) });
       }
-      await downloadUrlsStreaming(files);
+      await downloadUrlsStreaming(files, () => getAuthSessionEpoch() === epoch);
     } catch (error) {
       if (isDownloadCancelled(error)) return;
       toast.error(translate("library.toast.downloadManyFailed"), { description: errorMessage(error) });

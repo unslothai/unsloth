@@ -433,7 +433,7 @@ function loadDownloads(
   options: {
     native?: boolean;
     save?: (file: File | Blob) => Promise<unknown>;
-    batch?: (files: { url: string; fileName: string }[]) => Promise<void>;
+    batch?: (files: { url: string; fileName: string }[], shouldContinue?: () => boolean) => Promise<void>;
     errors?: unknown[];
   } = {},
 ) {
@@ -598,6 +598,51 @@ test("a single Desktop image retains its individual save", async () => {
   await download([{ id: "image:first", name: "single.png", sizeBytes: 1 }]);
   assert.deepEqual(names(saved), ["single.png"]);
   assert.equal(batches, 0);
+});
+
+test("a native batch stops after an account switch and a fresh attempt can save the full batch", async () => {
+  const session = { epoch: 1 };
+  const saved: string[] = [];
+  let pickers = 0;
+  let released = 0;
+  let switchAccount = true;
+  const native = loadWithStubs<{
+    downloadUrlsStreaming: (files: { url: string; fileName: string }[], shouldContinue?: () => boolean) => Promise<void>;
+  }>(new URL("../src/lib/native-files.ts", import.meta.url), {
+    "@/lib/api-base": { isTauri: true },
+    "@/lib/data-uri": {},
+    "@tauri-apps/api/core": {
+      invoke: async (command: string, args: { url?: string }) => {
+        if (command === "pick_native_download_directory") return `directory-${++pickers}`;
+        if (command === "release_native_download_directory") {
+          released += 1;
+          return;
+        }
+        assert.equal(command, "save_native_file_in_directory");
+        saved.push(args.url!);
+        if (switchAccount) {
+          session.epoch += 1;
+          switchAccount = false;
+        }
+        return "saved.png";
+      },
+    },
+  });
+  const download = loadDownloads({}, [], {}, session, undefined, {
+    native: true,
+    batch: native.downloadUrlsStreaming,
+  });
+  const images = [
+    { id: "image:first", name: "first.png", sizeBytes: null },
+    { id: "image:second", name: "second.png", sizeBytes: null },
+  ];
+  await download(images);
+  assert.deepEqual(saved, ["/download/image:first"]);
+  assert.equal(released, 1);
+  await download(images);
+  assert.deepEqual(saved, ["/download/image:first", "/download/image:first", "/download/image:second"]);
+  assert.equal(pickers, 2);
+  assert.equal(released, 2);
 });
 
 test("cancelling a sequential export stops it and a later retry still saves every file", async () => {
