@@ -11,6 +11,14 @@
   ],
   "entries": [
     {
+      "file": "unsloth/models/float8_training.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "78b864cf6acb1555",
+      "count": 1,
+      "reason": "Standalone import fallback loads only unsloth/kernels/fp8_lora.py beside this shipped module, from __file__; no model metadata or caller input selects the module name or path."
+    },
+    {
       "file": "scripts/prequant_probe.py",
       "rule": "unsafe-deserialize",
       "sink": "torch.load",
