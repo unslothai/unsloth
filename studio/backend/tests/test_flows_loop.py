@@ -697,3 +697,10 @@ def test_a_rare_answer_label_in_the_test_split_does_not_hide_a_probe_failure():
     }
     leaked = {"prompt": "How do I change the billing address on my account?", "model_output": "x"}
     assert loop_rounds.drop_test_rows([probe, leaked], test_rows) == [probe]
+
+
+def test_a_short_test_question_asked_again_never_reaches_the_seed():
+    test_rows = [{"prompt": "Billed twice?", "response": "Refund the duplicate"}] * 3
+    leaked = {"prompt": "Billed twice?", "response": "Refund the duplicate", "model_output": "x"}
+    probe = {"prompt": "Card declined?", "response": "Retry", "model_output": "y"}
+    assert loop_rounds.drop_test_rows([leaked, probe], test_rows) == [probe]

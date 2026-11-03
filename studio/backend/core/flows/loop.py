@@ -134,6 +134,8 @@ def drop_test_rows(
 ) -> list[dict]:
     """Guard: a failure asking a question that identifies one test row never reaches the seed.
     A value many test rows share (a fixed Alpaca instruction) identifies none of them."""
+    # A test question asked again is a leak at any length and however many test rows ask it.
+    questions = {q for q in (_asked(row, prompt_column) for row in test_rows) if q}
     seen: dict[str, int] = {}
     # A row repeated in the test split is still one row: its question stays banned.
     distinct = {_identifying(row, prompt_column) for row in test_rows}
@@ -141,12 +143,12 @@ def drop_test_rows(
         for s in strings:
             seen[s] = seen.get(s, 0) + 1
     banned = {s for s, n in seen.items() if n == 1}
-    if not banned:
+    if not banned and not questions:
         return list(failures)
 
     def leaks(failure: dict) -> bool:
         asked = _asked(failure, prompt_column)
-        return (asked in banned) or any(s in banned for s in _strings(failure))
+        return asked in questions or asked in banned or any(s in banned for s in _strings(failure))
 
     return [f for f in failures if not leaks(f)]
 
