@@ -8814,6 +8814,11 @@ def test_download_plan_counts_the_hosted_prequant_in_the_required_footprint(monk
     assert plan["required_bytes"] - baseline["required_bytes"] == 6 * GB
     prequant = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/Z-Image-Turbo-FP8")
     assert prequant["checkpoint"] is False
+    assert prequant["hosted_denoiser"] is False
+    selected = [entry for entry in plan["entries"] if entry["checkpoint"]]
+    assert len(selected) == 1
+    assert selected[0]["repo_id"] == "unsloth/Z-Image-GGUF"
+    assert selected[0]["files"] == ["Z-Image-Turbo-Q4_K_M.gguf"]
 
 
 def test_download_plan_counts_a_cached_lower_auto_prequant(monkeypatch):

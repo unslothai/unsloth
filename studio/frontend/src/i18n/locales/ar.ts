@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const ar = {
+  turns: {
+    label: "الجولة {number}",
+    bookmarkedLabel: "الجولة {number}، عليها إشارة مرجعية",
+    bookmark: "إضافة إشارة مرجعية للجولة",
+    removeBookmark: "إزالة الإشارة المرجعية",
+    navigator: "الجولات",
+  },
   chatBackground: {
     noBackground: "بدون خلفية",
     sizing: "تحجيم الصورة",
@@ -645,6 +652,8 @@ export const ar = {
     title: "كتابة الرسائل",
     plainText: "محرر نص عادي",
     plainTextDescription: "إبقاء التعليمات البرمجية وMarkdown والروابط كنص حرفي. عطّل هذا الخيار لعرض معاينة منسقة.",
+    richPaste: "لصق النص المنسّق",
+    richPasteDescription: "يلصق الروابط والجداول والتنسيق بصيغة Markdown. {shortcut} يلصق نصًا عاديًا. محرر نص منسق كامل قريبًا.",
     showContext: "إظهار استخدام نافذة السياق",
     sendShortcut: "اختصار الإرسال",
     sendMultiline: "{mod} + Enter للرسائل متعددة الأسطر",
@@ -1051,6 +1060,7 @@ export const ar = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "اختر كلمة مرور مالك التثبيت قبل إضافة حساب آخر. ستستخدمها لتسجيل الدخول عندما يحتوي هذا التثبيت على عدة حسابات.",
       signsInAs: "يسجّل الدخول باسم {username}",
       signsInAsOwner: "يسجّل الدخول باسم {alias} أو {username}",
       signInName: "اسم تسجيل الدخول",
@@ -1967,6 +1977,14 @@ export const ar = {
         loadError: "تعذّر تحميل إعدادات اتصال الحسابات المُدارة.",
         saveError: "تعذّر حفظ إعدادات اتصال الحسابات المُدارة.",
       },
+      display: {
+        title: "العرض",
+        timeFormat: "تنسيق الوقت",
+        timeFormatDescription: "اعرض الأوقات بنظام 12 ساعة أو 24 ساعة.",
+        timeFormatSystem: "افتراضي النظام",
+        timeFormat12: "12 ساعة",
+        timeFormat24: "24 ساعة",
+      },
       notifications: {
         sectionTitle: "الإشعارات",
         showLoadedModels: "بطاقة النماذج المحمّلة",
@@ -2332,6 +2350,9 @@ export const ar = {
         description: "الألوان المستخدمة في Unsloth في الوضعين الفاتح والداكن.",
         standard: "قياسية",
         moreThemes: "المزيد من السمات",
+      },
+      composer: {
+        title: "محرر الرسائل",
       },
       code: {
         title: "الشيفرة",
@@ -2929,6 +2950,8 @@ export const ar = {
         "الإشعارات محظورة. اسمح بها لـ Unsloth في إعدادات المتصفح أو النظام، ثم حاول مرة أخرى.",
       replyNotificationKeywords:
         "إشعار تنبيه انتهى اكتمل جاهز رد خلفية مصغر notify notification alert done finished reply background",
+      showLinkPreviews: "معاينات الروابط",
+      showLinkPreviewsDescription: "عرض المعاينات عند تمرير المؤشر فوق روابط المصادر.",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
@@ -2943,6 +2966,8 @@ export const ar = {
         "تفاصيل سرعة رموز إحصاءات طبقات ذاكرة verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "تعديل الرد في الردود",
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
+      turnNavigation: "التنقل بين الجولات",
+      turnNavigationDescription: "اعرض رسائلك كشريط على الحافة اليسرى للمحادثات الطويلة. مرّر المؤشر لمعاينة جولة، وانقر للانتقال إليها، وأضف إشارات مرجعية للعثور عليها لاحقًا.",
       composerAtBottom: "حقل الكتابة في الأسفل",
       composerAtBottomDescription: "ابدأ المحادثات الجديدة وحقل الكتابة أسفل الصفحة بدلًا من منتصفها.",
       projectAttachments: "مشاركة الملفات عبر المشروع",
@@ -3559,8 +3584,6 @@ export const ar = {
         repoCheckoutFallback:
           "إذا كانت لا تزال لديك نسخة المستودع، شغّل المثبّت المحلي منها:",
         restartAfterUpdate: "أعد تشغيل Unsloth بعد التحديث.",
-        desktopManaged:
-          "يتحقق تطبيق سطح المكتب تلقائيًا من توفر إصدارات جديدة. ويمكنك أيضًا التحقق من وجود تحديثات أو تثبيتها هنا في أي وقت.",
         desktopReady: "تحديثات تطبيق سطح المكتب",
         desktopReadyDescription:
           "تحقق مما إذا كان يتوفر إصدار أحدث من تطبيق سطح المكتب.",
@@ -5435,5 +5458,60 @@ export const ar = {
     later: "لاحقًا",
     update: "تحديث",
     undo: "تراجع",
+  },
+  generationStats: {
+    working: "جارٍ التنفيذ...",
+    processingPrompt: "جارٍ معالجة الطلب {percent}%",
+    timeLeft: "يتبقى {eta}",
+    tokensOne: "التوكنات: {count}",
+    tokens: "التوكنات: {count}",
+    tokensOf: "التوكنات: {done} / {total}",
+    draftAccepted: "المسودة: قُبل {accepted}/{drafted} ({percent}%)",
+    timing: {
+      trigger: "توقيت الرسالة",
+      firstToken: "أول توكن",
+      speedInStep: "السرعة (داخل الخطوة)",
+      effective: "الفعلية",
+      output: "المخرجات",
+      denoising: "إزالة الضوضاء",
+      stepsOne: "الخطوات: {count}",
+      steps: "الخطوات: {count}",
+      blocksOne: "الكتل: {count}",
+      blocks: "الكتل: {count}",
+      canvas: "اللوحة",
+      generation: "التوليد",
+      answerTokens: "توكنات الإجابة",
+      prompt: "الطلب",
+      total: "الإجمالي",
+      chunks: "الأجزاء",
+      promptEval: "تقييم الطلب",
+      promptSpeed: "سرعة الطلب",
+      speed: "السرعة",
+      tokens: "التوكنات",
+      draftAccepted: "المقبول من المسودة",
+      denoisingSteps: "خطوات إزالة الضوضاء",
+      blocksLabel: "الكتل",
+      cacheHits: "إصابات الذاكرة المؤقتة",
+      cacheWrites: "كتابات الذاكرة المؤقتة",
+      stopReason: "سبب التوقف",
+      stoppedByYou: "أوقفته أنت",
+      endOfTurn: "نهاية الدور",
+      lengthLimit: "حد الطول",
+      toolCall: "استدعاء أداة",
+      contentFilter: "مرشّح المحتوى",
+    },
+    placement: {
+      title: "توزيع الأوزان",
+      allOnCpu: "جميع الطبقات ({total}) على CPU",
+      split: "الطبقات: {gpu} من {total} على GPU، و{cpu} على CPU",
+      allOnGpu: "جميع الطبقات ({total}) على GPU",
+      expertCache: "جميع الطبقات ({total}) على GPU، وكل الخبراء في RAM (ذاكرة مؤقتة للخبراء بحجم {amount} على GPU)",
+      expertSpillOne: "جميع الطبقات ({total}) على GPU، وأوزان خبراء {count} طبقة في RAM",
+      expertSpill: "جميع الطبقات ({total}) على GPU، وأوزان الخبراء في RAM، الطبقات: {count}",
+      inUnifiedMemory: "{amount} في الذاكرة الموحّدة",
+      inSharedMemory: "{amount} في الذاكرة المشتركة",
+      inVram: "{amount} في VRAM",
+      inRam: "{amount} في RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

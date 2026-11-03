@@ -20,6 +20,8 @@ import tempfile
 import types
 import shutil
 import contextlib
+import contextvars
+import copy
 import threading as _threading
 import functools
 import inspect
@@ -1800,6 +1802,85 @@ def _prefer_legacy_lowercase_cache(
     return repo_id
 
 
+_LOAD_PROBE_MEMO = contextvars.ContextVar("_unsloth_load_probe_memo", default = None)
+
+
+def _load_probe_memo_scope(fn):
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        if _LOAD_PROBE_MEMO.get() is not None:
+            return fn(*args, **kwargs)
+        scope = _LOAD_PROBE_MEMO.set({})
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _LOAD_PROBE_MEMO.reset(scope)
+
+    return _wrapper
+
+
+def _new_mapper_tables():
+    memo = _LOAD_PROBE_MEMO.get()
+    if memo is not None and "new_mapper" in memo:
+        return tuple(dict(table) for table in memo["new_mapper"])
+    tables = _get_new_mapper()
+    if memo is not None and any(tables):
+        memo["new_mapper"] = tuple(dict(table) for table in tables)
+    return tables
+
+
+def _copy_error(error):
+    try:
+        clone = copy.copy(error)
+    except Exception:
+        return None
+    if type(clone) is not type(error) or str(clone) != str(error):
+        return None
+    # copy.copy shares exception notes.
+    notes = getattr(error, "__notes__", None)
+    if isinstance(notes, list):
+        clone.__notes__ = list(notes)
+    clone.__cause__ = error.__cause__
+    clone.__context__ = error.__context__
+    clone.__suppress_context__ = error.__suppress_context__
+    clone.__traceback__ = None
+    return clone
+
+
+def _memo_config_probe(loader, model_name, **kwargs):
+    memo = _LOAD_PROBE_MEMO.get()
+    if memo is None or kwargs.get("trust_remote_code") or not isinstance(model_name, str):
+        return loader(model_name, **kwargs)
+    if kwargs.get("cache_dir", 0) is None:
+        kwargs.pop("cache_dir")
+    try:
+        key = (loader, model_name, tuple(sorted(kwargs.items())), _env_says_offline())
+        hash(key)
+    except TypeError:
+        return loader(model_name, **kwargs)
+    hit = memo.get(key)
+    if hit is not None:
+        result, error = hit
+        if error is not None:
+            raise _copy_error(error)
+        return copy.deepcopy(result)
+    try:
+        result = loader(model_name, **kwargs)
+    except ImportError:
+        raise
+    except Exception as error:
+        if not _is_offline_related_error(error):
+            stored = _copy_error(error)
+            if stored is not None and _copy_error(stored) is not None:
+                memo[key] = (None, stored)
+        raise
+    try:
+        memo[key] = (copy.deepcopy(result), None)
+    except Exception:
+        pass
+    return result
+
+
 def get_model_name(
     model_name,
     load_in_4bit = True,
@@ -1841,7 +1922,7 @@ def get_model_name(
             NEW_MAP_TO_UNSLOTH_16bit,
             NEW_FP8_BLOCK_MAPPER,
             NEW_FP8_ROW_MAPPER,
-        ) = _get_new_mapper()
+        ) = _new_mapper_tables()
         upgraded_model_name = _resolve_with_mappers(
             model_name = model_name,
             load_in_4bit = load_in_4bit,
@@ -2047,9 +2128,7 @@ def _fp8_needs_offline_quantize(resolved_name, requested_name, fast_inference):
 
 
 def _drop_fp8_dequantize_conversions(model):
-    """Forget the Fp8Dequantize load conversions of a dequantizing fp8 load. save_pretrained reverses
-    them into Fp8Quantize, writing fp8 weights under a config with no quantization_config, so a reload
-    reads the raw fp8 values as 16bit weights. Returns how many conversions changed."""
+    """Drop reverse FP8 conversions that would save unmarked FP8 weights as a 16-bit checkpoint."""
     conversions = getattr(model, "_weight_conversions", None)
     if not conversions:
         return 0
@@ -2063,9 +2142,12 @@ def _drop_fp8_dequantize_conversions(model):
         return tuple(p[:-1] if p.endswith("$") else p for p in patterns)
 
     def _sources(patterns):
-        # The dequantizing copy anchors `.weight` sources with `$` and adds `.weight_scale_inv$` ones.
         patterns = [p[:-1] if p.endswith("$") else p for p in patterns or []]
-        return tuple(sorted(p for p in patterns if not p.endswith(".weight_scale_inv")))
+        return tuple(
+            sorted(
+                p for p in patterns if not p.endswith((".weight_scale_inv", ".activation_scale"))
+            )
+        )
 
     def _source_forms(conversion):
         return {
@@ -2093,7 +2175,6 @@ def _drop_fp8_dequantize_conversions(model):
 
     plain = None
     kept, changed = [], 0
-    # Converters the load left untouched stay as they are; a counterpart equal to one is not re-added.
     retained = {_signature(c) for c in conversions if not _has_dequant(c)}
     for conversion in conversions:
         operations = getattr(conversion, "operations", None) or []
@@ -2104,19 +2185,15 @@ def _drop_fp8_dequantize_conversions(model):
             # transformers dropped the fp8 config: 16bit weights, so no bitsandbytes stamp either.
             model._unsloth_fp8_dequantized = True
         if all(isinstance(op, Fp8Dequantize) for op in operations):
-            # weight + weight_scale_inv -> weight: the 16bit weight saves as it is.
             changed += 1
             continue
-        # A model converter (expert merge, ...) with the dequant prepended: keep its quantizer-free form.
         if plain is None:
             try:
                 from transformers.conversion_mapping import get_model_conversion_mapping
                 plain = get_model_conversion_mapping(model, None, None)
             except Exception:
                 plain = []
-        # A composite model scopes one converter per submodel; the dequantizing copy can lose its
-        # scope_prefix, so an unscoped conversion is replaced by every scoped counterpart with the same
-        # sources, targets and operations (another submodel's converter can share type and targets).
+        # Dequantization can lose scope_prefix; restore every matching scoped counterpart.
         scope = getattr(conversion, "scope_prefix", None)
         sources = _source_forms(conversion)
         matches = [
@@ -4731,12 +4808,14 @@ _LOADED_CACHE_DIR_ATTR = "_unsloth_loaded_cache_dir"
 _LOADED_REVISION_ATTR = "_unsloth_loaded_revision"
 
 
-def _mark_loaded_revision(result, revision):
-    """Stamp the ref a tokenizer/processor was loaded at onto the returned objects."""
-    if revision is None:
-        return result
+def _mark_loaded_revision(
+    result,
+    revision,
+    cache_dir = None,
+    load_kwargs = None,
+):
+    from ..save import _capture_source_tokenizer_class
     for obj in result if isinstance(result, (tuple, list)) else (result,):
-        # Objects that reject new attributes (__slots__) are skipped.
         try:
             targets = (obj, getattr(obj, "tokenizer", None))
         except Exception:
@@ -4745,7 +4824,23 @@ def _mark_loaded_revision(result, revision):
             if target is None:
                 continue
             try:
-                setattr(target, _LOADED_REVISION_ATTR, str(revision))
+                if revision is not None:
+                    setattr(target, _LOADED_REVISION_ATTR, str(revision))
+                if cache_dir and not getattr(target, _LOADED_CACHE_DIR_ATTR, None):
+                    setattr(target, _LOADED_CACHE_DIR_ATTR, str(cache_dir))
+                source_tokenizer = getattr(target, "tokenizer", target)
+                context = load_kwargs or {}
+                _capture_source_tokenizer_class(
+                    target,
+                    source = getattr(source_tokenizer, "name_or_path", None)
+                    if load_kwargs is not None
+                    else None,
+                    cache_dir = _tokenizer_cache_dir(source_tokenizer),
+                    revision = _tokenizer_revision(source_tokenizer)
+                    or context.get("tokenizer_revision")
+                    or context.get("revision"),
+                    subfolder = context.get("subfolder") or "",
+                )
             except Exception:
                 pass
     return result
@@ -5069,14 +5164,21 @@ def _offline_aware_load(fn):
 
     @functools.wraps(fn)
     def _wrapper(*args, **kwargs):
+        def finish(result):
+            return _mark_loaded_revision(
+                result, None, cache_dir = kwargs.get("cache_dir"), load_kwargs = kwargs
+            )
+
         if _get_effective_local_files_only(kwargs):
             kwargs["local_files_only"] = True
             with _force_hf_offline():
                 # Stamp inside the window: the env vars are restored on exit, so the request has to travel on the objects themselves to reach saving.
-                return _mark_loaded_local_files_only(fn(*args, **kwargs), kwargs.get("cache_dir"))
+                return finish(
+                    _mark_loaded_local_files_only(fn(*args, **kwargs), kwargs.get("cache_dir"))
+                )
         _pb_were_disabled = _progress_bars_were_disabled()
         try:
-            return fn(*args, **kwargs)
+            return finish(fn(*args, **kwargs))
         except Exception as e:
             # Skip if not network-related, or already retried by a nested decorator (else outer layers reload the whole model again).
             if not _is_offline_related_error(e) or getattr(e, "_unsloth_offline_retried", False):
@@ -5095,7 +5197,7 @@ def _offline_aware_load(fn):
         kwargs["local_files_only"] = True
         try:
             with _force_hf_offline():
-                return fn(*args, **kwargs)
+                return finish(fn(*args, **kwargs))
         except Exception as e:
             # A real retry failure (corrupt checkpoint, OOM) is news and goes out as itself; only the empty-cache artifact is worth replacing.
             if not _empty_cache_artifact(e):
