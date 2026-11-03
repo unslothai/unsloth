@@ -2941,8 +2941,6 @@ class TestDesktopBackendVersionConstraint:
         full = False,
         no_torch = False,
     ):
-        # Pin the torch mode: NO_TORCH is read at import, so UNSLOTH_NO_TORCH=1 or an Intel Mac
-        # would otherwise switch these with-deps expectations to the no-torch exact pin.
         with (
             mock.patch.dict(os.environ, env, clear = True),
             mock.patch.object(ips.sys, "prefix", str(tmp_path)),

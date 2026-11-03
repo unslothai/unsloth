@@ -1,23 +1,5 @@
-# Unsloth Zoo - Utilities for Unsloth
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published
-# by the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-"""The no-torch install is --no-deps, so it must get the unsloth the pair probe resolved.
-
-A lower bound lets --no-deps pick a newer unsloth whose unsloth-zoo floor the index cannot meet.
-"""
 
 from __future__ import annotations
 
@@ -59,7 +41,6 @@ def _wheel(
 
 @pytest.fixture
 def lagging_index(tmp_path, monkeypatch):
-    # unsloth .7 is published but its zoo is not yet: only .6 + .6 is a valid pair.
     index = tmp_path / "index"
     index.mkdir()
     _wheel(index, "unsloth", "2026.10.6", ["unsloth-zoo>=2026.10.6"])
@@ -73,7 +54,6 @@ def lagging_index(tmp_path, monkeypatch):
     monkeypatch.setattr(ips, "USE_UV", True)
 
     def offline_run(argv, **kwargs):
-        # The real resolver, offline: only this index is visible.
         argv = [*argv[:3], "--no-index", "--find-links", str(index), *argv[3:]]
         return subprocess.run(argv, **kwargs)
 
@@ -120,5 +100,4 @@ def test_no_torch_install_gets_the_resolved_unsloth_not_a_lower_bound(lagging_in
 
 def test_with_deps_install_keeps_the_floor(lagging_index, monkeypatch):
     monkeypatch.setattr(ips, "NO_TORCH", False)
-    # The with-deps path lets the installer read unsloth's zoo floor, so a floor is enough.
     assert ips._desktop_unsloth_spec("unsloth") == ("unsloth>=2026.10.6", "unsloth-zoo>=2026.10.6")

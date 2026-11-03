@@ -9936,12 +9936,7 @@ FEED_CEILING_MARKER = "unsloth_feed_ceiling.json"
 
 
 def _desktop_unsloth_spec(package_name: str) -> "tuple[str, str]":
-    """Desktop's backend floor, lowered to a lagging index's newest release (#14031).
-
-    Returns the (unsloth, unsloth-zoo) requirements to install. A lowered unsloth comes with
-    the zoo it was resolved against, since the no-torch path installs --no-deps and so never
-    reads unsloth's zoo floor. Twin of install.sh's _relax_unsloth_floors_to_index.
-    """
+    """Backend requirements permitted by the Desktop floor and package index (#14031)."""
     zoo_spec = "unsloth-zoo"
     desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
     if not (desktop_min_ver and package_name == "unsloth"):
@@ -9989,9 +9984,7 @@ def _desktop_unsloth_spec(package_name: str) -> "tuple[str, str]":
 
     found = resolve(spec, zoo_spec, deps = True) or {}
     if found.get("unsloth"):
-        # The zoo it resolved against as a floor: the no-torch install is --no-deps, so a bare
-        # unsloth-zoo under UV_RESOLUTION=lowest could pick one below unsloth's own zoo floor.
-        # --no-deps never reads unsloth's zoo floor: pin the resolved unsloth, not a newer one whose zoo is missing.
+        # --no-deps must preserve the pair; a bare zoo can also drift under lowest resolution.
         return (f"unsloth=={found['unsloth']}" if NO_TORCH else spec), (
             f"unsloth-zoo>={found['unsloth-zoo']}" if found.get("unsloth-zoo") else zoo_spec
         )
