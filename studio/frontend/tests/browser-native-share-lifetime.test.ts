@@ -14,11 +14,6 @@ type Overlay = {
   closest: () => null;
   querySelector: (selector: string) => object | null;
 };
-const overlay = (box: DOMRect): Overlay => ({
-  getBoundingClientRect: () => box,
-  closest: () => null,
-  querySelector: () => null,
-});
 const blocking: Overlay[] = [];
 const clickable: Overlay[] = [];
 
@@ -53,7 +48,7 @@ const placeholder = node("placeholder", "oklch(1 0 0 / 1)", wrapper);
 
 const noop = () => undefined;
 const listeners = new Map<string, (event: { target: unknown }) => void>();
-let panelFocused = true;
+const panelFocused = true;
 Object.assign(globalThis, {
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   window: Object.assign(globalThis, { innerWidth: 1000, location: { protocol: "http:" }, addEventListener: noop, removeEventListener: noop }),
