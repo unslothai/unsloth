@@ -171,6 +171,9 @@ export function ProcessorsForm({ groupId }: { groupId: string }) {
   const signature = useDocStore((s) => recipeSignature(s.graph, groupId));
   // biome-ignore lint/correctness/useExhaustiveDependencies: the signature is the group's content.
   const view = useMemo(() => viewOf(groupId), [groupId, signature]);
+  // A template mid-edit is often not JSON yet; the recipe would drop it, so it waits here until it parses.
+  const [draft, setDraft] = useState<{ group: string; text: string } | null>(null);
+  const [nameDraft, setNameDraft] = useState<{ group: string; text: string } | null>(null);
   const processors = view?.processors ?? [];
   if (!view) return null;
   const index = processors.findIndex(
@@ -223,8 +226,15 @@ export function ProcessorsForm({ groupId }: { groupId: string }) {
           <div className="grid gap-1.5">
             <FieldLabel label="Name" />
             <Input
-              value={schema.name}
-              onChange={(e) => patch({ name: e.target.value })}
+              value={nameDraft?.group === groupId ? nameDraft.text : schema.name}
+              onChange={(e) => {
+                const text = e.target.value;
+                // A blank name would drop the transform too.
+                if (text.trim()) {
+                  setNameDraft(null);
+                  patch({ name: text });
+                } else setNameDraft({ group: groupId, text });
+              }}
             />
           </div>
           <div className="grid gap-1.5">
@@ -234,12 +244,27 @@ export function ProcessorsForm({ groupId }: { groupId: string }) {
             />
             <Textarea
               className="min-h-40 text-xs"
-              value={schema.template}
-              onChange={(e) => patch({ template: e.target.value })}
+              value={draft?.group === groupId ? draft.text : schema.template}
+              onChange={(e) => {
+                const text = e.target.value;
+                if (isJsonObject(text)) {
+                  setDraft(null);
+                  patch({ template: text });
+                } else setDraft({ group: groupId, text });
+              }}
             />
           </div>
         </>
       )}
     </div>
   );
+}
+
+function isJsonObject(text: string): boolean {
+  try {
+    const value = JSON.parse(text);
+    return !!value && typeof value === "object" && !Array.isArray(value);
+  } catch {
+    return false;
+  }
 }

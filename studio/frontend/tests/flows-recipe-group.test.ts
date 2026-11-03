@@ -757,7 +757,9 @@ test("the schema transform form edits the group it shows now, after a switch or 
   );
   const form = src.slice(src.indexOf("export function ProcessorsForm"));
   assert.match(form, /const view = useMemo\(\(\) => viewOf\(groupId\), \[groupId, signature\]\);/);
-  assert.doesNotMatch(form, /useState\(/);
+  // Its only local state is a draft of a template or name that would not survive a save yet.
+  assert.equal(form.match(/useState</g)?.length, 2);
+  assert.match(form, /if \(isJsonObject\(text\)\) \{\s*setDraft\(null\);\s*patch\(\{ template: text \}\);\s*\} else setDraft\(\{ group: groupId, text \}\);/);
 });
 
 test("a column dropped in a recipe frame's setup-card space stays in the recipe", () => {
@@ -768,4 +770,20 @@ test("a column dropped in a recipe frame's setup-card space stays in the recipe"
   // Membership is tested against the height the frame is drawn at, not only the saved one.
   assert.match(canvas, /const h = Math\.max\(g\.rect\[3\], heights\[groupId\] \?\? 0\);/);
   assert.match(canvas, /groupMembership\(positions, sizesRef\.current, setupRef\.current\.heights\)/);
+});
+
+test("a GitHub seed added before a repository is entered keeps a form to enter it", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { addRecipeBlock } = await import("../src/features/flows/recipe/recipe-blocks.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  const bare = { ...group, config: { ...group.config } };
+  delete (bare.config as Record<string, unknown>).seed_config;
+  useDocStore.getState().load({ ...doc(nodes), groups: [bare] });
+  addRecipeBlock("recipe", "seed", "seed_github");
+  const after = useDocStore.getState().graph.groups.recipe;
+  const source = (after.config as { seed_config?: { source?: { seed_type?: string } } }).seed_config?.source;
+  assert.equal(source?.seed_type, "github_repo");
+  const view = studioView(after, nodes);
+  assert.ok(Object.values(view.configs).some((c) => c.kind === "seed"));
 });

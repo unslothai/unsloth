@@ -214,6 +214,16 @@ export function commitStudioEdit(
     if (value === undefined) delete config[key];
     else config[key] = value;
   }
+  const seed = Object.values(configs).find((c) => c.kind === "seed");
+  if (
+    seed?.kind === "seed" &&
+    seed.seed_source_type === "github_repo" &&
+    config.seed_config === undefined
+  ) {
+    // A GitHub seed with no repository yet builds nothing; keep a placeholder so its form opens.
+    // biome-ignore lint/style/useNamingConvention: api schema
+    config.seed_config = { source: { seed_type: "github_repo", repos: [] } };
+  }
   const ui: Record<string, unknown> = { ...(group.ui ?? {}) };
   for (const [key, value] of Object.entries(built.payload.ui)) {
     if (!LAYOUT_UI.has(key)) ui[key] = value;

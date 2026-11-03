@@ -171,6 +171,32 @@ def test_a_loop_or_a_lost_group_fails_on_the_generate_step():
     doc["groups"][0]["ui"]["seed_columns"] = ["topic"]
     with pytest.raises(CompileError):
         compile_flow(doc)
+    # No stored seed, but one wired into the Recipe Dataset step: its columns arrive with the run.
+    doc["groups"][0]["config"].pop("seed_config", None)
+    doc["groups"][0]["ui"].pop("seed_columns", None)
+    with pytest.raises(CompileError):
+        compile_flow(doc)
+    step = next(n for n in doc["nodes"] if n["type"] == GENERATE_TYPE)
+    doc["nodes"].append(
+        {
+            "id": "upstream",
+            "type": "data.hf_dataset",
+            "v": 1,
+            "pos": [0, 900],
+            "params": {"repo": "org/seeds"},
+        }
+    )
+    doc["edges"].append(
+        {
+            "id": "seed_in",
+            "source": "upstream",
+            "source_port": "dataset",
+            "target": step["id"],
+            "target_port": "seed",
+            "kind": "data",
+        }
+    )
+    compile_flow(doc)
     doc = _flow()
     extra = copy.deepcopy(next(n for n in doc["nodes"] if n["type"] == GENERATE_TYPE))
     extra["id"] = "extra_generate"
