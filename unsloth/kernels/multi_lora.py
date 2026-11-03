@@ -1653,9 +1653,34 @@ def adapter_state_dict(
             # rank-major whatever Zoo uses; how they trained here (grouped or not) does not matter.
             layout = "rank_major" if experts.peft_mode == "fold" else b_layout
             A, B = experts.adapters[param].peft_tensors(adapter, layout)
+            num_experts = _full(experts.adapters[param].lora_B[adapter]).shape[0]
+            A, B = _vanilla_expert_factors(experts.base_layer, A, B, num_experts, layout)
             out[f"{key}.lora_A.weight"] = A
             out[f"{key}.lora_B.weight"] = B
     return out
+
+
+def _vanilla_expert_factors(
+    base: nn.Module, A: torch.Tensor, B: torch.Tensor, num_experts: int, layout: str
+):
+    """The factors vanilla transformers + PEFT load, as Zoo's patched get_peft_model_state_dict saves them.
+
+    Zoo re-lays out some experts classes (Qwen3-VL-MoE stacks stored transposed, Llama-4 flagged is_transposed), so
+    the installed PEFT factors their stacks on the other axis than vanilla does. Zoo's moe_lora_factor_swap rewrites
+    a single-adapter save into vanilla's factorization; this export bypasses that save, so it applies the same swap
+    with the same rules: only flagged classes, only the rank-major packing (a legacy grouped_by_expert adapter is
+    kept as trained there too) and never a square pair (ambiguous by shape). An older Zoo without the module saves
+    as trained on both paths."""
+    if layout != "rank_major" or A.shape[1] == B.shape[0]:
+        return A, B
+    try:
+        from unsloth_zoo.temporary_patches import moe_lora_factor_swap as swap
+        swapped = swap._factors_swapped(type(base))
+    except Exception:  # noqa: BLE001 - Zoo without the converter: nothing is swapped on any save
+        return A, B
+    if not swapped:
+        return A, B
+    return swap.swap_expert_lora_factors(A, B, num_experts)
 
 
 def _peft_moe_lora_b_layout() -> str:
