@@ -32,7 +32,11 @@ test("saved ids missing from the live catalog stay pickable", () => {
   );
 });
 
-test("automatic catalog loads never send the typed API key", () => {
+test("automatic catalog loads ignore the typed API key and Base URL", () => {
   const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
   assert.match(dialog, /apiKey: silent \? "" : apiKey\.trim\(\),/);
+  assert.match(
+    dialog,
+    /const baseUrl = silent\s*\? editingProvider\?\.baseUrl \|\| null\s*: parseBaseUrlForProvider\(\s*baseUrlDraft,/,
+  );
 });

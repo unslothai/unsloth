@@ -791,18 +791,20 @@ export function ChatProvidersSettings({
     }
     setModelsLoading(true);
     try {
-      const baseUrl = parseBaseUrlForProvider(
-        baseUrlDraft,
-        supportsRemoteModelCatalog(providerType),
-        providerType,
-      );
+      // Auto-loads can run before the form drops the previous provider's key and Base URL.
+      const baseUrl = silent
+        ? editingProvider?.baseUrl || null
+        : parseBaseUrlForProvider(
+            baseUrlDraft,
+            supportsRemoteModelCatalog(providerType),
+            providerType,
+          );
       const backendProviderType =
         toExternalBackendProviderType(providerType) ?? providerType;
       const models = await listProviderModels({
         providerType: backendProviderType,
 
         providerId: editingProviderId,
-        // A typed key may still belong to the previously chosen provider.
         apiKey: silent ? "" : apiKey.trim(),
         baseUrl,
         apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
