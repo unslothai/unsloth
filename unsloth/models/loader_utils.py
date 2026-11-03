@@ -3353,8 +3353,6 @@ def enable_composite_gradient_checkpointing(model, verbose = True):
 
 
 def _move_compressed_tensors_inputs(value, device):
-    from dataclasses import fields, is_dataclass
-
     if isinstance(value, torch.Tensor):
         return value.to(device = device)
     if isinstance(value, list):
@@ -3363,6 +3361,8 @@ def _move_compressed_tensors_inputs(value, device):
         return tuple(_move_compressed_tensors_inputs(item, device) for item in value)
     if isinstance(value, dict):
         return {key: _move_compressed_tensors_inputs(item, device) for key, item in value.items()}
+    from dataclasses import fields, is_dataclass
+
     if is_dataclass(value):
         return type(value)(
             **{
@@ -3383,6 +3383,10 @@ def _align_compressed_tensors_inputs(module, args, kwargs):
         reference = next(module.buffers(), None)
     if reference is None:
         return args, kwargs
+    if len(args) == 1 and not kwargs and isinstance(args[0], torch.Tensor):
+        if args[0].device == reference.device:
+            return None
+        return (args[0].to(device = reference.device),), kwargs
     return _move_compressed_tensors_inputs((args, kwargs), reference.device)
 
 
