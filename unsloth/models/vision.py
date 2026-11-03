@@ -1540,17 +1540,27 @@ class _EagerDecodeSteps:
 
 class _GraphDecodeSteps(_EagerDecodeSteps):
     """One generate() call over a static cache with decode CUDA graphs on: each one-token decode
-    step replays a captured graph of the eager forward (_generic_decode_graphs), else runs as
-    before (eagerly inside `unsloth_eager_decode()` for the models that compile their decode)."""
+    step replays a captured graph of the step the eager path runs (_generic_decode_graphs), else
+    runs as before (inside `unsloth_eager_decode()` for the models that compile their decode)."""
 
     def __init__(self, model):
         super().__init__(model)
         self.eager_decodes = _eager_decodes(model)
+        # Diagnostic: =1 graphs the eager originals of compiled regions (not what eager decode runs).
+        self.eager_regions = self.eager_decodes or (
+            os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPHS_EAGER_REGIONS", "0") == "1"
+        )
 
     def _forward(self, *args, **kwargs):
         if not args and not torch.compiler.is_compiling():
+            # The graph records exactly the step the eager path runs: compiled regions stay
+            # compiled unless this model's eager decode leaves them (a different kernel mix
+            # rounds differently, and greedy tokens drift after a few dozen steps).
             out = _generic_decode_graphs.decode_step(
-                self.model, self.forward, kwargs, unsloth_eager_decode
+                self.model,
+                self.forward,
+                kwargs,
+                unsloth_eager_decode if self.eager_regions else None,
             )
             if out is not None:
                 return out

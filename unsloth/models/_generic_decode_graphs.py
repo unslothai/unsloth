@@ -17,6 +17,8 @@ Per graph key (batch, argument structure / dtypes / devices, cache layout, autoc
   - the first replay of a key is compared bitwise against the eager step (same cache state);
     a mismatch refuses the key.
 Graphs are dropped when the generate() call ends and when parameters, adapters or quant state change.
+UNSLOTH_DECODE_GENERIC_GRAPHS_VALIDATE_ALL=1 (debug) compares every replay with the eager step and
+records the first mismatching step, max abs logit diff, max KL and top-1 disagreements (stats()["check"]).
 UNSLOTH_DECODE_GENERIC_GRAPHS=0 turns this path off; batches over UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ
 (default 8) decode eagerly. The cache is the one generate() allocates (no larger span, no extra rows):
 the graph adds only its pool (step intermediates and the static argument / output buffers)."""
@@ -24,6 +26,7 @@ the graph adds only its pool (step intermediates and the static argument / outpu
 import collections
 import contextlib
 import os
+import traceback
 
 import torch
 
@@ -96,9 +99,15 @@ class _Cuda:
         G._begin(graph, pool)
         try:
             out = fn()
-        finally:
+        except BaseException:
+            # End the invalidated capture, but report what broke it, not the capture_end error.
             if torch.cuda.is_current_stream_capturing():
-                G._end(graph)
+                try:
+                    G._end(graph)
+                except Exception:
+                    pass
+            raise
+        G._end(graph)
         return graph, out
 
 
@@ -167,6 +176,12 @@ class _State:
         self.moved = None
         # Captures per key in the current generate() call (one expected).
         self.key_captures = collections.Counter()
+        # Decode steps seen in the current generate() call (1 = first decode step).
+        self.step = 0
+        # What broke a capture: (message, where), first few.
+        self.capture_errors = []
+        # UNSLOTH_DECODE_GENERIC_GRAPHS_VALIDATE_ALL=1: replay vs eager at every step.
+        self.check = _new_check()
         self.captures = 0
         self.replays = 0
         self.validations = 0
@@ -193,6 +208,8 @@ def begin(model):
     state.recheck = True
     state.moved = None
     state.key_captures.clear()
+    state.step = 0
+    state.check = _new_check()
     # Keys carry the cache length, so they accumulate over calls of many lengths.
     if len(state.refused) + len(state.validated) > _MAX_KEYS:
         state.refused.clear()
@@ -227,7 +244,52 @@ def stats(model):
         "refusals": dict(state.refusals),
         "refused_keys": len(state.refused),
         "max_captures_per_key": max(state.key_captures.values(), default = 0),
+        "capture_errors": list(state.capture_errors),
+        "check": dict(state.check),
     }
+
+
+def _new_check():
+    return {
+        "steps": 0,
+        "mismatches": 0,
+        "first_mismatch_step": None,
+        "max_abs_diff": 0.0,
+        "max_kl": 0.0,
+        "top1_disagree": 0,
+    }
+
+
+def _validate_all():
+    return os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPHS_VALIDATE_ALL", "0") == "1"
+
+
+def _record_check(state, eager, replay, equal):
+    """Accumulates how far the replay's first output (logits) is from the eager step's."""
+    check = state.check
+    check["steps"] += 1
+    if not equal:
+        check["mismatches"] += 1
+        if check["first_mismatch_step"] is None:
+            check["first_mismatch_step"] = state.step
+    xs, ys = _tensors(eager, []), _tensors(replay, [])
+    if not xs or not ys or not xs[0].is_floating_point() or xs[0].shape != ys[0].shape:
+        return
+    x, y = xs[0].float(), ys[0].float()
+    check["max_abs_diff"] = max(check["max_abs_diff"], float((x - y).abs().max()))
+    if x.dim() >= 2:
+        p, q = torch.log_softmax(x, -1), torch.log_softmax(y, -1)
+        kl = (p.exp() * (p - q)).sum(-1).max()
+        check["max_kl"] = max(check["max_kl"], float(kl))
+        check["top1_disagree"] += int((x.argmax(-1) != y.argmax(-1)).sum())
+
+
+def _where(error):
+    """file:line of the innermost frame outside torch that raised `error`."""
+    for frame in reversed(traceback.extract_tb(error.__traceback__)):
+        if f"{os.sep}torch{os.sep}" not in frame.filename:
+            return f"{os.path.basename(frame.filename)}:{frame.lineno} {frame.name}"
+    return None
 
 
 def _refusal(state, reason):
@@ -493,6 +555,7 @@ def decode_step(
     ):
         return None
     state = _state(model)
+    state.step += 1
     if ids.shape[0] > MAX_BSZ:
         return _refusal(state, "batch over max")
     cache = kwargs.get("past_key_values")
@@ -560,7 +623,7 @@ def decode_step(
         for buffer, leaf in zip(entry.leaves, leaves):
             if buffer is not leaf:
                 buffer.copy_(leaf)
-        if not entry.validated:
+        if not entry.validated or _validate_all():
             return _validate(state, key, entry, forward, kwargs, cache)
         entry.graph.replay()
         _advance(cache, 1)
@@ -614,7 +677,10 @@ def _capture(state, key, forward, kwargs, leaves, cache):
         if graph is None:
             # The eager step itself failed: as without graphs.
             raise
-        reason = f"capture failed: {type(error).__name__}"
+        message = " ".join(str(error).split())[:200]
+        reason = f"capture failed: {type(error).__name__}: {message}"
+        if len(state.capture_errors) < 4:
+            state.capture_errors.append((reason, _where(error)))
         state.pool = None
         state.refused[key] = reason
         state.refusals[reason] += 1
@@ -639,7 +705,11 @@ def _validate(state, key, entry, forward, kwargs, cache):
     _restore(start)
     entry.graph.replay()
     _advance(cache, 1)
-    if _outputs_equal(eager, entry.outputs):
+    equal = _outputs_equal(eager, entry.outputs)
+    _record_check(state, eager, entry.outputs, equal)
+    if equal or entry.validated:
+        # Validated keys under VALIDATE_ALL only record: the eager result keeps the generation on
+        # the eager tokens, so every later step compares from the same prefix.
         entry.validated = True
         state.validated.add(key)
         state.replays += 1

@@ -55,6 +55,7 @@ class _FakeGraph:
     def __init__(self, fn, outputs, cache, perturb):
         self.fn, self.outputs, self.cache, self.perturb = fn, outputs, cache, perturb
         self.replays = 0
+        # perturb: True = every replay, an int n = from the n-th replay on (drift after validation).
 
     def replay(self):
         self.replays += 1
@@ -62,8 +63,8 @@ class _FakeGraph:
         new = self.fn()
         GG._restore((host, []))
         _copy_into(self.outputs, new)
-        if self.perturb:
-            GG._tensors(self.outputs, [])[0].add_(1)
+        if self.perturb is True or (type(self.perturb) is int and self.replays >= self.perturb):
+            GG._tensors(self.outputs, [])[0][..., 0].add_(1)
 
 
 class _Host(GG._Cuda):
@@ -308,6 +309,45 @@ def test_validation_mismatch_refuses_the_key(host, llama):
     assert GG.stats(llama)["captures"] == 1
 
 
+def test_validate_all_pinpoints_a_later_drift(host, llama, monkeypatch):
+    _fresh(llama)
+    host.perturb = 4  # bitwise at the validated step, then the replay drifts
+    ids, mask = _ids(llama)
+    eager = _generate(llama, ids, mask, False)
+    monkeypatch.setenv("UNSLOTH_DECODE_GENERIC_GRAPHS_VALIDATE_ALL", "1")
+    # Every replay is compared and the eager result returned: tokens stay eager's.
+    assert torch.equal(eager, _generate(llama, ids, mask, True))
+    check = GG.stats(llama)["check"]
+    # Decode step 1 captures, step 2 validates (replay 1), drift from replay 4 = decode step 5.
+    assert check["steps"] == 8 and check["mismatches"] == 5, check
+    assert check["first_mismatch_step"] == 5 and check["max_abs_diff"] == 1.0, check
+    assert check["max_kl"] >= 0.0 and check["top1_disagree"] >= 0
+    monkeypatch.delenv("UNSLOTH_DECODE_GENERIC_GRAPHS_VALIDATE_ALL")
+    # Without it, the drift goes unseen once the key is trusted: why the debug mode exists.
+    _fresh(llama)
+    _generate(llama, ids, mask, True)
+    assert GG.stats(llama)["check"]["mismatches"] == 0
+
+
+def test_graph_path_runs_the_eager_path_regions(monkeypatch):
+    seen = []
+
+    def decode_step(model, forward, kwargs, regions):
+        seen.append(regions)
+        return None
+
+    monkeypatch.setattr(vision._generic_decode_graphs, "decode_step", decode_step)
+    model = torch.nn.Linear(1, 1)
+    model.forward = lambda **kw: 0
+    for compiled_decode in (False, True):
+        scope = vision._GraphDecodeSteps.__new__(vision._GraphDecodeSteps)
+        scope.model, scope.forward = model, model.forward
+        scope.eager_decodes = scope.eager_regions = compiled_decode
+        scope._forward(input_ids = torch.zeros(1, 1))
+    # Compiled regions stay compiled unless this model's eager decode already leaves them.
+    assert seen == [None, vision.unsloth_eager_decode]
+
+
 def test_capture_failure_falls_back_for_the_key(host, llama):
     _fresh(llama)
     host.fail = True
@@ -318,7 +358,11 @@ def test_capture_failure_falls_back_for_the_key(host, llama):
     s = GG.stats(llama)
     assert s["captures"] == 0 and s["replays"] == 0, s
     # Refused once for the process; every later step of the key counts as a refused eager step.
-    assert s["refused_keys"] == 1 and s["refusals"] == {"capture failed: RuntimeError": 9}, s
+    reason = "capture failed: RuntimeError: operation not permitted when stream is capturing"
+    assert s["refused_keys"] == 1 and s["refusals"] == {reason: 9}, s
+    # What broke it and where (innermost frame outside torch).
+    assert s["capture_errors"] == [(reason, s["capture_errors"][0][1])], s
+    assert "test_generic_decode_graphs.py" in s["capture_errors"][0][1], s
     assert s["eager_steps"] == 8, s
 
 
@@ -482,7 +526,7 @@ def test_inert_when_compiling(host):
     model = torch.nn.Linear(1, 1)
     model.forward = forward
     scope = vision._GraphDecodeSteps.__new__(vision._GraphDecodeSteps)
-    scope.model, scope.forward, scope.eager_decodes = model, forward, False
+    scope.model, scope.forward, scope.eager_decodes, scope.eager_regions = model, forward, False, False
 
     def step(x):
         out = GG.decode_step(model, forward, {"input_ids": x})
