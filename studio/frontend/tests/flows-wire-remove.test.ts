@@ -57,6 +57,18 @@ test("dragging a wire's end to another input moves it in one undo step", () => {
   assert.deepEqual(useDocStore.getState().graph.edgeOrder, ["e1", "e2"]);
 });
 
+test("a wire moved with a full undo history is still one undo step", async () => {
+  const { HISTORY_LIMIT } = await import("../src/features/flows/stores/doc-store.ts");
+  fanIn();
+  for (let i = 0; i < HISTORY_LIMIT; i++) useDocStore.getState().moveNodes({ a: [i + 1, 0] });
+  const moved = useDocStore.getState().graph;
+  assert.equal(useDocStore.getState().past.length, HISTORY_LIMIT);
+  reconnectWire(rf("e1", "a", "p") as never, { source: "a", sourceHandle: outHandle("text"), target: "q", targetHandle: inHandle("value") });
+  useDocStore.getState().undo();
+  assert.deepEqual(useDocStore.getState().graph.edgeOrder, moved.edgeOrder);
+  assert.equal(useDocStore.getState().graph.edges.e1?.target, "p");
+});
+
 test("a refused move puts the wire back untouched", () => {
   fanIn();
   const before = useDocStore.getState().graph;

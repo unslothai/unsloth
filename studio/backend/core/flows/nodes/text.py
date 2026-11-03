@@ -61,6 +61,11 @@ async def _model_and_load(ctx: NodeContext, kind: str) -> tuple[Any, Optional[di
         return choice, None
     repo = choice.get("repo") if isinstance(choice, dict) else None
     variant = choice.get("variant") if isinstance(choice, dict) else None
+    pinned = getattr(ctx, "settings_model", None)
+    if not repo and pinned:
+        # The model whose saved settings this card took, even if another flow swapped it meanwhile.
+        choice = pinned
+        repo, variant = pinned["repo"], pinned.get("variant")
     if not repo:
         repo = await resident_name(ctx, kind)
         if not repo:

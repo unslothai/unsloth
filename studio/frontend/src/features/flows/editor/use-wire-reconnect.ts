@@ -8,7 +8,7 @@ import {
 } from "@xyflow/react";
 import { useCallback, useMemo, useRef } from "react";
 import { toast } from "sonner";
-import { useDocStore } from "../stores/doc-store";
+import { HISTORY_LIMIT, useDocStore } from "../stores/doc-store";
 import type { RfEdge } from "./derive-rf";
 import { tryConnect } from "./node-factory";
 
@@ -32,7 +32,7 @@ export function reconnectWire(
     (old.targetHandle ?? null) === (connection.targetHandle ?? null)
   )
     return null;
-  const { graph, past, future } = before;
+  const { graph, meta, past, future } = before;
   before.removeElements({ edges: [old.id] });
   const error = tryConnect({
     source: connection.source,
@@ -44,10 +44,11 @@ export function reconnectWire(
     useDocStore.setState({ graph, past, future });
     return error;
   }
-  // The removal and the new wire are one step: drop the snapshot between them.
-  useDocStore.setState((s) =>
-    s.past.length === past.length + 2 ? { past: s.past.slice(0, -1) } : {},
-  );
+  // The removal and the new wire are one step: history goes back to the graph before the move,
+  // whatever the bounded stack dropped in between.
+  useDocStore.setState({
+    past: [...past, { graph, meta }].slice(-HISTORY_LIMIT),
+  });
   return null;
 }
 

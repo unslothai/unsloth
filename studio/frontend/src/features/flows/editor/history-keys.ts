@@ -19,3 +19,15 @@ export function historyAction(event: {
   if (y && !event.shiftKey) return "redo";
   return null;
 }
+
+/** A keydown meant for a text field, which canvas shortcuts leave alone. */
+export function isTyping(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el) return false;
+  return (
+    el.isContentEditable ||
+    el.tagName === "INPUT" ||
+    el.tagName === "TEXTAREA" ||
+    el.tagName === "SELECT"
+  );
+}

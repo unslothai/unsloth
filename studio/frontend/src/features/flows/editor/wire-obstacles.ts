@@ -6,7 +6,8 @@ export function isWireObstacle(type: string | undefined): boolean {
   return type !== "flowNote";
 }
 
-/** Changes only when something the router reads changes: a non-note node's box or visibility. */
+/** Changes only when something the router reads changes: a non-note node's box or visibility, or the
+ *  direction of a reroute, which a turn can flip without changing its box. */
 export function routingKey(
   nodes: readonly {
     id: string;
@@ -15,12 +16,13 @@ export function routingKey(
     measured?: { width?: number; height?: number };
     hidden?: boolean;
     parentId?: string;
+    data?: unknown;
   }[],
 ): string {
   let key = "";
   for (const n of nodes) {
     if (!isWireObstacle(n.type)) continue;
-    key += `${n.id}:${n.position.x},${n.position.y},${n.measured?.width ?? 0},${n.measured?.height ?? 0},${n.hidden ? 1 : 0},${n.parentId ?? ""};`;
+    key += `${n.id}:${n.position.x},${n.position.y},${n.measured?.width ?? 0},${n.measured?.height ?? 0},${n.hidden ? 1 : 0},${n.parentId ?? ""},${(n.data as { dir?: string } | undefined)?.dir ?? ""};`;
   }
   return key;
 }

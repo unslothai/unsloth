@@ -22,7 +22,7 @@ export type RfNode = Node<
   | FlowNodeData
   | { groupId: string }
   | { noteId: string }
-  | { rerouteId: string }
+  | { rerouteId: string; dir?: string }
 >;
 
 export interface WireInfo {
@@ -306,7 +306,8 @@ export class RfDeriver {
         id,
         type: "flowReroute",
         position: pos,
-        data: { rerouteId: id },
+        // The direction picks which sides its ports are on, so the wire router reads it too.
+        data: { rerouteId: id, dir: reroute.dir ?? "right" },
         selected: isSelected,
         measured: size,
       };
