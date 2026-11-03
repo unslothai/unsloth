@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { isTauri, setApiBase } from "@/lib/api-base";
+import { toast } from "@/lib/toast";
 import { invalidateHardwareInfo } from "@/hooks/use-hardware-info";
 import {
   MANAGED_ENVIRONMENT_BUSY,
@@ -777,7 +778,9 @@ export function useTauriBackend() {
 
       register<void>("tray-toggle-server", () => {
         if (statusRef.current === "running") {
-          stopServer();
+          stopServer().catch((e) => {
+            toast.error("Could not stop the server", { description: String(e) });
+          });
         } else if (
           statusRef.current === "stopped" ||
           statusRef.current === "error"
