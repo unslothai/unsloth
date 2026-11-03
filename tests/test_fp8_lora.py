@@ -44,7 +44,12 @@ FP8_DGRAD_TOL = 0.09
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason = "requires a real CUDA device for Triton rounding")
+@pytest.mark.skipif(
+    not has_real_cuda()
+    or torch.version.hip is not None
+    or torch.cuda.get_device_capability() < (8, 9),
+    reason = "requires NVIDIA compute capability 8.9+ for FP8 CUDA cast kernels",
+)
 @pytest.mark.skipif(FL.triton is None, reason = "requires Triton for the CUDA cast kernels")
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
