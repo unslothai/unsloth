@@ -214,6 +214,10 @@ _CHECKS = textwrap.dedent(
             kr = rot(y[NH * D : NH * D + NKV * D].view(NKV, D), c64, s64)
             assert rel(kc[slot_i, 0], kr) < tol, ("k bias", dt, rank)
             assert rel(vc[slot_i, 0], y[NH * D + NKV * D :].view(NKV, D)) < tol, ("v bias", dt, rank)
+            # https://triton-lang.org/main/programming-guide/chapter-3/debugging.html#limitations
+            if device == "cpu" and dt == torch.bfloat16:
+                print("BF16_QK_INTERPRETER_UNSUPPORTED", flush = True)
+                continue
             # Qwen3: raw q|k|v, then the per-head norm + RoPE + cache-write launch.
             paged = torch.zeros((L, 2, 1, NKV, D), dtype = dt, device = device)
             kc, vc = paged[:, 0], paged[:, 1]
