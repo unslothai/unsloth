@@ -37,26 +37,31 @@ function SelectedNodeToolbarImpl({ readOnly }: { readOnly: boolean }) {
       offset={8}
       className="nodrag nopan nowheel flex items-center gap-1 rounded-lg border border-border bg-popover p-1 shadow-[var(--popup-shadow)]"
     >
-      <Button
-        type="button"
-        variant="ghost"
-        size="xs"
-        title="Run only what this block needs"
-        data-testid="node-toolbar-run"
-        onClick={() => void runToNode(nodeId)}
-      >
-        <HugeiconsIcon icon={PlayIcon} size={12} /> Run
-      </Button>
-      <Button
-        type="button"
-        variant="ghost"
-        size="xs"
-        title="Run this block again, ignoring the cache (new seed when it has one)"
-        data-testid="node-toolbar-reroll"
-        onClick={() => void rerollNode(nodeId)}
-      >
-        <HugeiconsIcon icon={DiceIcon} size={12} /> Regenerate
-      </Button>
+      {/* A recipe column is design only: its recipe's Recipe Dataset step is what runs. */}
+      {!spec.design && (
+        <>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            title="Run only what this block needs"
+            data-testid="node-toolbar-run"
+            onClick={() => void runToNode(nodeId)}
+          >
+            <HugeiconsIcon icon={PlayIcon} size={12} /> Run
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            title="Run this block again, ignoring the cache (new seed when it has one)"
+            data-testid="node-toolbar-reroll"
+            onClick={() => void rerollNode(nodeId)}
+          >
+            <HugeiconsIcon icon={DiceIcon} size={12} /> Regenerate
+          </Button>
+        </>
+      )}
       {hasOutput && (
         <Button
           type="button"

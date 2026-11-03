@@ -48,7 +48,8 @@ export function setupConfig(view: StudioView, target: RecipeSetupTarget) {
   return Object.values(view.configs).find((config) =>
     target.kind === "seed"
       ? config.kind === "seed"
-      : config.kind === target.kind && config.name === target.name,
+      : // Cards go by the trimmed name, so a name mid-typing ("My ") is still its card.
+        config.kind === target.kind && config.name.trim() === target.name.trim(),
   );
 }
 

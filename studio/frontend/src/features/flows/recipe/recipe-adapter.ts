@@ -234,6 +234,20 @@ export function commitStudioEdit(
     if (value === undefined) delete config[key];
     else config[key] = value;
   }
+  // Recipe Studio's forms carry schema transforms and the seed's drop list only; any other
+  // processor (a named drop_columns) is kept as it was, not lost to an unrelated edit.
+  const others = (
+    Array.isArray(group.config?.processors) ? group.config.processors : []
+  ).filter((p): p is Record<string, unknown> => {
+    if (!p || typeof p !== "object") return false;
+    const { processor_type: type, name } = p as Record<string, unknown>;
+    return type !== "schema_transform" && !(type === "drop_columns" && name === "drop_seed_columns");
+  });
+  if (others.length > 0)
+    config.processors = [
+      ...(Array.isArray(config.processors) ? config.processors : []),
+      ...others,
+    ];
   const seed = Object.values(configs).find((c) => c.kind === "seed");
   if (seed?.kind === "seed" && config.seed_config === undefined) {
     // A seed whose form is mid-edit (an End cleared to retype) builds nothing: keep its last
