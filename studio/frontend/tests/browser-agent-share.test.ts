@@ -192,3 +192,40 @@ test("drag cleanup does not reinstall an absent agent", async () => {
   agent.endBrowserAgentRun("cleanup-run");
   assert.equal(cancellations, 1); assert.equal(installedCleanup, 0);
 });
+
+test("late navigation after switching tabs cannot approve the new tab's host", async () => {
+  const store = useBrowserStore.getState(); const chat = store.chat;
+  async function trial(host: string, late: boolean) {
+    const first = store.openTabIn(chat, `https://${host}/first`)!;
+    const second = store.openTabIn(chat, `https://${host}/second`)!;
+    store.activateTab(first); shareAgentTab(chat, first);
+    let release!: (value: unknown) => void; let sent!: () => void;
+    const started = new Promise<void>((resolve) => { sent = resolve; });
+    globals.__frameAgent = async (_tab: string, op: Record<string, unknown>) => {
+      if (op.op === "describe") return { installed: true, result: { ok: true, info: { role: "textbox", name: "Search", tag: "input" } } };
+      if (op.op === "type" && late) { sent(); return new Promise((resolve) => { release = resolve; }); }
+      return { installed: true, result: { ok: true, text: "page", links: [] } };
+    };
+    globals.__authFetch = async () => new Response(null, { status: 200 });
+    let pending: Promise<void> | undefined;
+    if (late) {
+      pending = runBrowserAction({ id: `${host}-type`, sessionId: "s", op: "type", ref: "r1", text: "hello", policy }, { runKey: `${host}-old`, chat, userText: host });
+      await started;
+    }
+    store.activateTab(second); shareAgentTab(chat, second);
+    if (pending) {
+      useBrowserStore.getState().updateTab(first, { displayUrl: `https://${host}/changed` });
+      release({ installed: true, result: { ok: true } });
+      await pending; agent.endBrowserAgentRun(`${host}-old`);
+    }
+    let finished = false;
+    const next = runBrowserAction({ id: `${host}-next`, sessionId: "s", op: "snapshot", policy }, { runKey: `${host}-next`, chat, userText: "" }).then(() => { finished = true; });
+    while (!finished && !agent.agentChat(chat).question) await new Promise((resolve) => setTimeout(resolve, 10));
+    const question = agent.agentChat(chat).question;
+    if (question) agent.answerQuestion(question.id, false);
+    await next; agent.endBrowserAgentRun(`${host}-next`);
+    return question?.ask ?? null;
+  }
+  assert.equal(await trial("control.example.org", false), "open");
+  assert.equal(await trial("late.example.org", true), "open");
+});

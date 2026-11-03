@@ -1293,6 +1293,7 @@ async function arrive(
   since: number,
   note?: string,
 ): Promise<Result> {
+  if (context.signal?.aborted) return { ok: false, error: STOPPED };
   const url = tabUrl(tab);
   const host = hostOfUrl(url);
   if (url) {
@@ -1302,6 +1303,7 @@ async function arrive(
       const gate = gateNavigation(url, { ...navigationContext(action, context), currentUrl: requested });
       const refused = await pass(gate, context);
       if (refused) return { ok: false, error: `The page went to ${host}. ${refused}` };
+      if (context.signal?.aborted) return { ok: false, error: STOPPED };
       admit(url, gate, context);
     }
     if (host && context.fullAccess !== true) context.session.reachedHosts.add(host);
