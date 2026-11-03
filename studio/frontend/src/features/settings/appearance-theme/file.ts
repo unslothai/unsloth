@@ -12,7 +12,7 @@ import {
   THEME_FILE_EXTENSION,
   type ThemeParseResult,
 } from "./domain/schema.ts";
-import { readAppearanceSnapshot } from "./snapshot.ts";
+import { readLoadedAppearanceSnapshot } from "./snapshot.ts";
 
 export type ExportThemeResult =
   | { status: "saved"; fileName: string; backgroundOmitted: boolean }
@@ -52,7 +52,8 @@ export async function exportThemeFile(opts: {
   includeLayout: boolean;
   includeAssets: boolean;
 }): Promise<ExportThemeResult> {
-  const snapshot = readAppearanceSnapshot();
+  // An export right after opening Settings must not miss a background that is still loading.
+  const snapshot = await readLoadedAppearanceSnapshot();
   const serialize = (backgroundDataUrl: string | null) =>
     `${JSON.stringify(captureTheme(snapshot, { ...opts, backgroundDataUrl }), null, 2)}\n`;
   let text = serialize(null);

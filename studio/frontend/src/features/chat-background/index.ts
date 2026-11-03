@@ -11,6 +11,7 @@ export { useChatWelcomeShown, useMarkChatWelcome } from "./welcome";
 export {
   beginBackgroundUpload,
   finishBackgroundUpload,
+  hydrateBackground,
   resetChatBackground,
   useBackgroundStore,
 } from "./storage";

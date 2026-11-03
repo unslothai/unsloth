@@ -24,7 +24,9 @@ import {
   applyAppearanceSnapshot,
   applyThemeBackground,
   readAppearanceSnapshot,
+  readLoadedAppearanceSnapshot,
   restoreBackground,
+  sameBackground,
 } from "../snapshot";
 
 export type ParsedThemeFile = Extract<ThemeParseResult, { ok: true }>;
@@ -129,14 +131,15 @@ function ImportThemeForm({
     if (busy) return;
     setBusy(true);
     try {
-      const prev = readAppearanceSnapshot();
+      // Wait for the stored background, or Undo would think there was none and delete it.
+      const prev = await readLoadedAppearanceSnapshot();
       const next = planThemeApply(prev, theme, { applyLayout, applyAssets });
       applyAppearanceSnapshot(next);
       // Undo restores the background only while it is still the one the theme set.
-      let appliedBackground: Blob | null = null;
+      let appliedBackground: ReturnType<typeof readAppearanceSnapshot>["background"] = null;
       if (next.background !== "keep") {
         if (await applyThemeBackground(next.background)) {
-          appliedBackground = readAppearanceSnapshot().background?.blob ?? null;
+          appliedBackground = readAppearanceSnapshot().background;
         } else {
           toast.warning(
             t("settings.appearance.themeFile.warning.backgroundSkipped"),
@@ -152,7 +155,7 @@ function ImportThemeForm({
             onClick: () => {
               const now = readAppearanceSnapshot();
               applyAppearanceSnapshot(planUndo(prev, next, now));
-              if (appliedBackground && now.background?.blob === appliedBackground) {
+              if (sameBackground(now.background, appliedBackground)) {
                 void restoreBackground(prev.background);
               }
               toast(t("settings.appearance.themeFile.undone"));

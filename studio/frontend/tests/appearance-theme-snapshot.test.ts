@@ -57,6 +57,10 @@ function createHost() {
       beginBackgroundUpload: () => (record("begin"), ++ticket),
       finishBackgroundUpload: async (id: number, value: unknown) => record("finish", id, value),
       resetChatBackground: async () => record("reset"),
+      hydrateBackground: async () => {
+        record("hydrate");
+        state.background = state.background ?? { adjustments: sanitizeAdjustments({}), blob: new Blob(["stored"]) };
+      },
       uploadBackgroundImage: async (blob: Blob, adjustments: unknown) => {
         record("upload", blob, adjustments);
         return upload.result;
@@ -127,4 +131,19 @@ test("applyThemeBackground uploads the decoded bytes as a Blob and returns the u
 
   host.upload.result = false;
   assert.equal(await load(host).applyThemeBackground(background), false);
+});
+
+test("the loaded snapshot waits for the stored background; undo's guard compares adjustments too", async () => {
+  const host = createHost();
+  const snapshot = load(host);
+  assert.equal(snapshot.readAppearanceSnapshot().background, null);
+  const loaded = await snapshot.readLoadedAppearanceSnapshot();
+  assert.equal(host.calls[0][0], "hydrate");
+  assert.ok(loaded.background);
+
+  const applied = loaded.background;
+  assert.equal(snapshot.sameBackground({ ...applied }, applied), true);
+  const edited = { ...applied, adjustments: { ...applied.adjustments, visibility: 12 } };
+  assert.equal(snapshot.sameBackground(edited, applied), false);
+  assert.equal(snapshot.sameBackground(null, applied), false);
 });

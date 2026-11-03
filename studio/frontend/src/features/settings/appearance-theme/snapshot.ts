@@ -4,6 +4,7 @@
 import {
   beginBackgroundUpload,
   finishBackgroundUpload,
+  hydrateBackground,
   resetChatBackground,
   sanitizeAdjustments,
   uploadBackgroundImage,
@@ -17,6 +18,21 @@ import type { AppearanceSnapshot } from "./application/plan-apply.ts";
 import type { ThemeBackground } from "./domain/schema.ts";
 
 export type AppearanceTarget = Omit<AppearanceSnapshot, "background">;
+
+/** Like readAppearanceSnapshot, after the stored background has loaded from IndexedDB. */
+export async function readLoadedAppearanceSnapshot(): Promise<AppearanceSnapshot> {
+  await hydrateBackground();
+  return readAppearanceSnapshot();
+}
+
+/** True while `now` still shows the exact background (image and adjustments) in `applied`. */
+export function sameBackground(
+  now: AppearanceSnapshot["background"],
+  applied: AppearanceSnapshot["background"],
+): boolean {
+  return Boolean(now && applied && now.blob === applied.blob &&
+    JSON.stringify(now.adjustments) === JSON.stringify(applied.adjustments));
+}
 
 /** Reads the live appearance. Does not write anything. */
 export function readAppearanceSnapshot(): AppearanceSnapshot {
