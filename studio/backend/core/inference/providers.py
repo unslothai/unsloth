@@ -237,6 +237,10 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
         "model_id_allowlist": re.compile(r"^kimi-k\d"),
         "model_id_denylist": re.compile(r"-preview$"),
+        "model_capabilities": {
+            "kimi-k2-thinking": {"vision": False},
+            "kimi-k2-thinking-turbo": {"vision": False},
+        },
         # Reasoning-class: the API rejects custom temperature/top_p ("only 1
         # is allowed"). Strip both so the server uses its required defaults.
         "body_omit": ("temperature", "top_p"),
