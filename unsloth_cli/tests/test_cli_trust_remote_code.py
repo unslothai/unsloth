@@ -11,7 +11,7 @@ import types
 
 import pytest
 import typer
-from typer.testing import CliRunner
+from typer.main import get_command
 
 import unsloth_cli.commands.chat as chatmod
 import unsloth_cli.commands.inference as infermod
@@ -26,11 +26,16 @@ def _app(command):
 
 @pytest.mark.parametrize("command", [infermod.inference, chatmod.chat])
 def test_both_commands_offer_the_flag(command):
-    # A narrow console truncates the option name column, hiding the flag's last characters.
-    result = CliRunner().invoke(_app(command), ["--help"], env = {"COLUMNS": "200", "TERM": "dumb"})
+    # Read the registered options, not the rendered help: a narrow terminal truncates the option
+    # column, so the flag's text can be missing from --help while the command accepts it.
+    cmd = get_command(_app(command))
+    names = [
+        opt
+        for param in cmd.params
+        for opt in (getattr(param, "opts", []) or []) + (getattr(param, "secondary_opts", []) or [])
+    ]
 
-    assert result.exit_code == 0, result.output
-    assert "--trust-remote-code" in result.output
+    assert "--trust-remote-code" in names
 
 
 class _FakeModelConfig:
