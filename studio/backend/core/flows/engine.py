@@ -33,7 +33,7 @@ from core.flows import capabilities
 from core.flows import caller as flow_caller
 from core.flows.cache import cache_key
 from core.flows import loop as loop_rounds
-from core.flows.compiler import FOR_EACH, LOOP, CompileError, Plan, compile_flow
+from core.flows.compiler import FOR_EACH, LOOP, RECIPE_PARAM, CompileError, Plan, compile_flow
 from core.flows.registry import CACHE_HOOKS, FlowCancelled, FlowNodeError, load_handlers
 from core.flows.schema import MAX_FOREACH_ITEMS, MAX_GPU_OPS_PER_RUN, MAX_RUN_SECONDS
 from storage import flows_db
@@ -2010,6 +2010,10 @@ class FlowEngine:
     async def _model_key(self, ctx: NodeContextImpl, spec: dict, params: dict) -> Optional[dict]:
         kind = spec.get("model_kind")
         if not kind:
+            if _implicit_local_model(params.get(RECIPE_PARAM)):
+                # The recipe runs on whatever Chat has loaded, so a different model is a different dataset.
+                from core.flows.nodes._common import resident_name
+                return {"local": await resident_name(ctx, "chat")}
             return None
         choice = params.get("model") or {}
         key = {"repo": choice.get("repo"), "variant": choice.get("variant")}
@@ -2467,6 +2471,23 @@ def _origin(account: AccountContext, kind: Optional[str]) -> dict:
     if account.via_api_key:
         return {"kind": "api_key", "owner": False}
     return {"kind": kind or "ui", "owner": account.is_owner}
+
+
+def _implicit_local_model(recipe: Any) -> bool:
+    """A compiled recipe with a local-provider model left to Chat's loaded one (blank or "local")."""
+    if not isinstance(recipe, dict):
+        return False
+    local = {
+        p.get("name")
+        for p in recipe.get("model_providers") or []
+        if isinstance(p, dict) and p.get("is_local") is True
+    }
+    return any(
+        isinstance(mc, dict)
+        and mc.get("provider") in local
+        and str(mc.get("model") or "").strip().lower() in ("", "local")
+        for mc in recipe.get("model_configs") or []
+    )
 
 
 def _local_fingerprint(path: str) -> Optional[list]:

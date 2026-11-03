@@ -162,6 +162,15 @@ def test_a_loop_or_a_lost_group_fails_on_the_generate_step():
     with pytest.raises(CompileError) as caught:
         compile_flow(doc)
     assert any("follows the category 'domain'" in i["message"] for i in caught.value.issues)
+    # A Hub seed shared without its preview's column list may still hold the parent: the run checks it.
+    ids = {n["id"] for n in doc["nodes"]}
+    doc["edges"] = [e for e in doc["edges"] if e["source"] in ids and e["target"] in ids]
+    doc["groups"][0]["config"]["seed_config"] = {"source": {"seed_type": "hf", "path": "org/seeds"}}
+    doc["groups"][0].setdefault("ui", {}).pop("seed_columns", None)
+    compile_flow(doc)
+    doc["groups"][0]["ui"]["seed_columns"] = ["topic"]
+    with pytest.raises(CompileError):
+        compile_flow(doc)
     doc = _flow()
     extra = copy.deepcopy(next(n for n in doc["nodes"] if n["type"] == GENERATE_TYPE))
     extra["id"] = "extra_generate"
@@ -686,3 +695,27 @@ def test_a_migrated_recipe_gets_its_own_copy_of_uploaded_documents(tmp_path, mon
     for f in (tmp_path / new).iterdir():
         f.unlink()
     assert (tmp_path / "up1" / "u1.extracted.txt").read_text() == "page"
+
+
+def test_a_recipe_on_chats_loaded_model_is_keyed_on_that_model(monkeypatch):
+    from core.flows import engine as engine_mod
+    from core.flows.nodes import _common
+
+    loaded = {"name": "unsloth/Qwen3-4B-GGUF"}
+
+    async def resident(ctx, kind):
+        return loaded["name"]
+
+    monkeypatch.setattr(_common, "resident_name", resident)
+    spec = {"type": GENERATE_TYPE}
+    recipe = {
+        "model_providers": [{"name": "local", "is_local": True}],
+        "model_configs": [{"alias": "m", "provider": "local", "model": "local"}],
+    }
+    eng = engine_mod.FlowEngine()
+    key = lambda: asyncio.run(eng._model_key(None, spec, {RECIPE_PARAM: recipe}))  # noqa: E731
+    first = key()
+    loaded["name"] = "unsloth/gemma-3-4b-it-GGUF"
+    assert key() != first and first["local"] == "unsloth/Qwen3-4B-GGUF"
+    recipe["model_configs"][0]["model"] = "unsloth/Qwen3-4B-GGUF"
+    assert key() is None
