@@ -225,6 +225,17 @@ def test_incremental_counting_uses_the_reply_ancestor_after_switching_branches(l
     assert _pools()["combined"]["used"] == 120 + 900 + 35
 
 
+def test_context_refresh_cannot_refund_a_later_reply(limiter_db):
+    now = _now_ms()
+    _thread("t1", now)
+    _reply("a1", "t1", now + 1, prompt = 100, completion = 10, context = 20)
+    _reply("a2", "t1", now + 2, prompt = 120, completion = 10)
+    _enable(limit = 1000, method = "incremental")
+    assert _pools()["combined"]["used"] == 220
+    _reply("a1", "t1", now + 1, prompt = 100, completion = 10, context = 110)
+    assert _pools()["combined"]["used"] == 220
+
+
 def test_split_mode_keeps_local_chats_apart_from_api_and_providers(limiter_db):
     now = _now_ms()
     _thread("t1", now)

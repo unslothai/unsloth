@@ -71,7 +71,11 @@ def _ledger_insert(message: str, rows: str = "") -> str:
             prompt_tokens = MAX(prompt_tokens, excluded.prompt_tokens),
             completion_tokens = MAX(completion_tokens, excluded.completion_tokens),
             total_tokens = MAX(total_tokens, excluded.total_tokens),
-            context_tokens = COALESCE(excluded.context_tokens, context_tokens),
+            context_tokens = CASE WHEN EXISTS (
+                SELECT 1 FROM {LEDGER_TABLE} later
+                WHERE later.thread_id = {LEDGER_TABLE}.thread_id
+                AND (later.created_at, later.message_id) > ({LEDGER_TABLE}.created_at, {LEDGER_TABLE}.message_id)
+            ) THEN context_tokens ELSE COALESCE(excluded.context_tokens, context_tokens) END,
             parent_message_id = excluded.parent_message_id
     """
 
