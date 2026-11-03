@@ -187,6 +187,7 @@ from ._utils import (
     _mark_forced_float32,
     _drop_float16_overflowing_attention_dropout,
     _ignore_block_swap_params_for_ddp,
+    block_swap_shaped,
     _mark_full_finetuning,
     _get_text_only_config,
     resolve_model_class,
@@ -2112,7 +2113,16 @@ class FastLanguageModel(FastLlamaModel):
                 local_files_only = local_files_only,
                 cache_dir = kwargs.get("cache_dir"),
             )
-            with fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext():
+            load_config = peft_load_kwargs.get("config", peft_config)
+            with (
+                fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext(),
+                block_swap_shaped(
+                    model,
+                    getattr(load_config, "init_lora_weights", True),
+                    lora_config = load_config,
+                    loading_adapter = True,
+                ),
+            ):
                 model = PeftModel.from_pretrained(
                     model,
                     old_model_name,
@@ -3594,7 +3604,16 @@ class FastModel(FastBaseModel):
                 cache_dir = kwargs.get("cache_dir"),
             )
             try:
-                with fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext():
+                load_config = peft_load_kwargs.get("config", peft_config)
+                with (
+                    fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext(),
+                    block_swap_shaped(
+                        model,
+                        getattr(load_config, "init_lora_weights", True),
+                        lora_config = load_config,
+                        loading_adapter = True,
+                    ),
+                ):
                     model = PeftModel.from_pretrained(
                         model,
                         old_model_name,
