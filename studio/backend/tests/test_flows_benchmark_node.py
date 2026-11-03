@@ -484,3 +484,88 @@ def test_stop_cancels_only_the_run_this_node_started(monkeypatch):
     assert isinstance(token, str) and token
     asyncio.run(ctx.cancel())
     assert ctx.calls[-1][:3] == ("POST", "/api/benchmarks/evals/cancel", {"token": token})
+
+
+def test_an_adapter_chat_loaded_is_found_through_its_status_handle(tmp_path, monkeypatch):
+    from hub.utils import host_paths
+
+    (tmp_path / "adapter_config.json").write_text("{}")
+    # The status a flow reads names the folder by an opaque handle, not its path.
+    monkeypatch.setattr(
+        host_paths,
+        "resolve_host_path_reference",
+        lambda v: str(tmp_path) if v == "ref:abc" else None,
+    )
+    assert benchmark._is_adapter("ref:abc")
+    assert benchmark._is_adapter(str(tmp_path))
+    assert not benchmark._is_adapter("ref:other")
+
+
+@pytest.mark.parametrize(
+    "serving, refused",
+    [
+        (["/out/run-1"], False),
+        (["/out/run-1", "org/other"], False),
+        (["org/other", "/out/run-1"], True),
+    ],
+)
+def test_a_checkpoint_kept_beside_chats_main_model_is_refused(monkeypatch, serving, refused):
+    from types import SimpleNamespace
+
+    async def resolve_by(deadline, caller, **kwargs):
+        return SimpleNamespace(ref = "/out/run-1", is_lora = True, gguf_variant = None)
+
+    async def load_llm(caller, job, **kwargs):
+        pass
+
+    async def resident(caller):
+        return {"llm": serving}, {"serving": serving}
+
+    monkeypatch.setattr("studio_mcp.trained_models.resolve_by", resolve_by)
+    monkeypatch.setattr("studio_mcp.loading.load_llm", load_llm)
+    monkeypatch.setattr("studio_mcp.loading._resident", resident)
+    monkeypatch.setattr(benchmark, "note_loaded", lambda *a: None)
+    ctx = _Ctx(lambda *a: {})
+    ctx.resident = {}
+    ctx.set_status = lambda *a, **k: None
+    if refused:
+        with pytest.raises(FlowNodeError, match = "kept loaded beside"):
+            asyncio.run(benchmark._load_target(ctx))
+    else:
+        assert asyncio.run(benchmark._load_target(ctx)) == ("run-1", True)
+
+
+@pytest.mark.parametrize(
+    "fmt, marker, is_lora",
+    [("merged", "config.json", False), ("lora", "adapter_config.json", True)],
+)
+def test_a_merged_or_lora_export_from_export_model_loads_from_its_folder(
+    tmp_path, monkeypatch, fmt, marker, is_lora
+):
+    from utils.paths import storage_roots
+
+    folder = tmp_path / f"flows-run-1-{fmt}-1"
+    folder.mkdir()
+    (folder / marker).write_text("{}")
+    loads = []
+
+    async def resolve_by(deadline, caller, **kwargs):
+        raise LookupError(f"No export named {kwargs['export']}")
+
+    async def load_llm(caller, job, **kwargs):
+        loads.append(kwargs)
+
+    monkeypatch.setattr(storage_roots, "resolve_export_dir", lambda name: tmp_path / name)
+    monkeypatch.setattr("studio_mcp.trained_models.resolve_by", resolve_by)
+    monkeypatch.setattr("studio_mcp.loading.load_llm", load_llm)
+    monkeypatch.setattr(benchmark, "note_loaded", lambda *a: None)
+    ctx = _Ctx(lambda *a: {})
+    ctx.resident = {}
+    ctx.set_status = lambda *a, **k: None
+    ctx.inputs = {"model": {"kind": "model", "model_kind": "chat", "repo": folder.name}}
+    assert asyncio.run(benchmark._load_target(ctx)) == (folder.name, is_lora)
+    assert loads[0]["model"] == str(folder) and loads[0]["is_lora"] is is_lora
+    # A name with no export behind it still says so.
+    ctx.inputs = {"model": {"kind": "model", "model_kind": "chat", "repo": "missing"}}
+    with pytest.raises(FlowNodeError, match = "missing"):
+        asyncio.run(benchmark._load_target(ctx))

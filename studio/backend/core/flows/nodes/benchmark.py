@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from pathlib import Path
 import time
 import uuid
+from types import SimpleNamespace
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -80,15 +82,25 @@ async def _load_export(ctx: NodeContext, model: dict) -> tuple[str, bool]:
     deadline = time.monotonic() + 3600
     ctx.set_status("loading_model", f"Loading {name}")
     try:
-        trained = await trained_models.resolve_by(
-            deadline,
-            ctx.caller,
-            model = None,
-            checkpoint = None,
-            export = name,
-            kind = "llm",
-            variant = model.get("variant") or None,
-        )
+        try:
+            trained = await trained_models.resolve_by(
+                deadline,
+                ctx.caller,
+                model = None,
+                checkpoint = None,
+                export = name,
+                kind = "llm",
+                variant = model.get("variant") or None,
+            )
+        except Exception as exc:
+            trained, missing = None, exc
+        else:
+            missing = None
+        if trained is None:
+            flat = await asyncio.to_thread(_flat_export, name)
+            if flat is None:
+                raise missing or FlowNodeError(f"No export named {name}")
+            trained = SimpleNamespace(ref = flat[0], is_lora = flat[1], gguf_variant = None)
         await loading.load_llm(
             ctx.caller,
             None,
@@ -107,8 +119,51 @@ async def _load_export(ctx: NodeContext, model: dict) -> tuple[str, bool]:
     except Exception as exc:
         raise FlowNodeError(f"Could not load {name}: {exc}") from None
     ctx.resident.clear()
+    await _require_primary(ctx, trained.ref, name)
     ctx.set_status("running")
     return name, bool(trained.is_lora)
+
+
+def _flat_export(name: str) -> Optional[tuple[str, bool]]:
+    """(folder, is_lora) of a merged or LoRA export Export Model wrote as one folder under exports,
+    a layout the export listing reads only for GGUF."""
+    from utils.paths.storage_roots import resolve_export_dir
+
+    try:
+        folder = resolve_export_dir(name)
+    except (OSError, ValueError):
+        return None
+    if (folder / "adapter_config.json").is_file():
+        return str(folder), True
+    if (folder / "config.json").is_file():
+        return str(folder), False
+    return None
+
+
+async def _require_primary(ctx: NodeContext, ref: str, label: str) -> None:
+    """The scoring requests reach Chat's main model. A target already kept in another slot stays
+    there when loaded again, so it would not be the model scored: refuse instead."""
+    from hub.utils.host_paths import resolve_host_path_reference
+    from studio_mcp import loading
+
+    try:
+        _slots, status = await loading._resident(ctx.caller)
+    except Exception:
+        return
+    serving = [s for s in status.get("serving") or [] if isinstance(s, str)]
+    if len(serving) < 2:
+        return
+    main = resolve_host_path_reference(serving[0]) or serving[0]
+    same = loading._same_id(main, ref) or (
+        os.path.isabs(main)
+        and os.path.isabs(ref)
+        and os.path.realpath(main) == os.path.realpath(ref)
+    )
+    if not same:
+        raise FlowNodeError(
+            f"{label} is kept loaded beside Chat's main model, and Benchmark scores the main model. "
+            "Unload it, or set Keep multiple models loaded to Off, then run again."
+        )
 
 
 async def _load_target(ctx: NodeContext) -> tuple[str, bool]:
@@ -153,6 +208,7 @@ async def _load_target(ctx: NodeContext) -> tuple[str, bool]:
         except Exception as exc:
             raise FlowNodeError(f"Could not load {name}: {exc}") from None
         ctx.resident.clear()
+        await _require_primary(ctx, trained.ref, name)
         ctx.set_status("running")
         return name, bool(trained.is_lora)
     model = ctx.params.get("model")
@@ -173,9 +229,13 @@ async def _load_target(ctx: NodeContext) -> tuple[str, bool]:
 
 
 def _is_adapter(name: str) -> bool:
-    """A model Chat loaded from a LoRA folder, so the adapter-off comparison and judging apply to it too."""
+    """A model Chat loaded from a LoRA folder, so the adapter-off comparison and judging apply to it too.
+    The status a flow reads names a local folder by its `ref:` handle; the folder is what is checked."""
+    from hub.utils.host_paths import resolve_host_path_reference
+
+    path = resolve_host_path_reference(name) or name
     try:
-        return (Path(name) / "adapter_config.json").is_file()
+        return (Path(path) / "adapter_config.json").is_file()
     except (OSError, ValueError):
         return False
 

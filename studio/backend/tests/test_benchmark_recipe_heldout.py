@@ -374,3 +374,19 @@ def test_reference_match_keeps_signs_and_decimals():
     assert score_with_validator("reference", "The answer is 4.", "4")[0] is True
     assert score_with_validator("reference", "-1", "-1")[0] is True
     assert score_with_validator("reference", "1,000 apples", "1000")[0] is True
+
+
+def test_local_scoring_requests_withdraw_studios_tools():
+    configs = {
+        "candidate": {"alias": "candidate", "model": "", "provider": "local"},
+        "remote": {"alias": "remote", "model": "gpt", "provider": "openai"},
+    }
+    providers = {
+        "local": {"name": "local", "endpoint": "http://127.0.0.1:8888/v1", "is_local": True},
+        "openai": {"name": "openai", "endpoint": "https://example.com/v1"},
+    }
+    local = resolve_chat_target("candidate", configs, providers)["body"]
+    assert local["enable_tools"] is False and local["tool_choice"] == "none"
+    # Another provider gets no Studio-only fields.
+    remote = resolve_chat_target("remote", configs, providers)["body"]
+    assert "enable_tools" not in remote and "tool_choice" not in remote

@@ -289,6 +289,11 @@ def resolve_chat_target(
     params.setdefault("max_tokens", DEFAULT_MAX_TOKENS)
     params.setdefault("temperature", 0)
     body.update(params)
+    if provider.get("is_local") is True:
+        # A score is the model's own answer: Studio's tools stay off even where the launcher turns
+        # them on by default (`tool_choice: none` also withdraws them under that default).
+        body["enable_tools"] = False
+        body["tool_choice"] = "none"
     headers = dict(provider.get("extra_headers") or {})
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
