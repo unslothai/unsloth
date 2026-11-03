@@ -2112,17 +2112,17 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
         elif (
             backend == "scaled_mm"
             and rowwise
+            and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
+            and x.shape[-1] == weight.shape[1]
+            # Decode-sized calls: dequant + 16-bit GEMM beats quantizing the activation unless the weight
+            # spills L2.
+            and x.numel() > _fp8_dequant_max_rows(x.device, weight.numel()) * x.shape[-1]
             # Before torch 2.14 rowwise float32 output needs cuBLAS (sm90, CUDA 12.9+): elsewhere float32 dequantizes.
             and (
                 x.dtype != torch.float32
                 or not _SCALED_MM_FP16_OUT_BROKEN
                 or _scaled_mm_float32_out(x.device)
             )
-            and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
-            and x.shape[-1] == weight.shape[1]
-            # Decode-sized calls: dequant + 16-bit GEMM beats quantizing the activation unless the weight
-            # spills L2.
-            and x.numel() > _fp8_dequant_max_rows(x.device, weight.numel()) * x.shape[-1]
         ):
             output_shape = (*x.shape[:-1], -1)
             x_quantized, x_scale = _quantize_fp8_per_row(

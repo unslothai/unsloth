@@ -251,3 +251,18 @@ def test_float32_probe_asks_scaled_mm_for_float32(monkeypatch, cutlass):
     finally:
         F8._probe_scaled_mm_float32_out.cache_clear()
     assert seen == [((128, 1), (1, 128), torch.float32)]
+
+
+@pytest.mark.parametrize("rows, width", [(1, 32), (64, 32), (128, 33)])
+def test_float32_dequant_calls_do_not_probe_scaled_mm(monkeypatch, rows, width):
+    def unexpected_probe(device):
+        raise AssertionError("dequant-only calls must not run the device probe")
+
+    monkeypatch.setattr(F8, "_SCALED_MM_FP16_OUT_BROKEN", True)
+    monkeypatch.setattr(F8, "_fp8_dequant_max_rows", lambda *args: 64)
+    monkeypatch.setattr(F8, "_scaled_mm_float32_out", unexpected_probe)
+    x = torch.randn(rows, 32)
+    weight = torch.randn(width, 32).to(torch.float8_e4m3fn)
+    scales = torch.ones(width, 1)
+    result = F8.FbgemmFp8Linear_matmul.apply(x, weight, scales, None, "scaled_mm")
+    torch.testing.assert_close(result, x @ weight.float().t())
