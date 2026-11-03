@@ -50,6 +50,8 @@ class ApiUsageReceipt:
     created_at: int
     kind: str = "request"
     via_api_key: bool = True
+    temporary_thread: Optional[str] = None
+    temporary_source: str = "local"
 
 
 def _valid_token_count(value: object) -> bool:
@@ -109,6 +111,9 @@ def _insert_api_usage(receipt: ApiUsageReceipt) -> bool:
     status = _bounded_text(receipt.status, MAX_STATUS_CHARS, truncate = True)
     if receipt_id is None or not subject or endpoint is None or not model or status is None:
         return False
+    if receipt.via_api_key is not True:
+        from storage.token_usage_ledger import record_temporary_usage
+        return record_temporary_usage(receipt)
 
     conn = get_connection(busy_timeout_seconds = _WRITE_BUSY_TIMEOUT_SECONDS)
     try:
@@ -141,7 +146,9 @@ def record_api_usage(receipt: ApiUsageReceipt) -> bool:
     """Insert one external request receipt, returning whether a row was added. The monitor id is the
     idempotency key, so repeated completion notification cannot inflate profile totals. Invalid or
     zero-usage receipts are ignored."""
-    if receipt.kind != "request" or receipt.via_api_key is not True:
+    if receipt.kind != "request" or (
+        receipt.via_api_key is not True and not receipt.temporary_thread
+    ):
         return False
     counts = (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens)
     if not all(_valid_token_count(value) for value in counts) or not any(counts):
@@ -164,7 +171,7 @@ def record_api_usage(receipt: ApiUsageReceipt) -> bool:
             # Worker is the only receipt writer, so a short bounded backoff lets others finish without stalling.
             _sleep_after_busy(min(0.01 * (2**attempt), _WORKER_BUSY_RETRY_SECONDS))
 
-    if inserted:
+    if inserted and receipt.via_api_key is True:
         # Lazy import avoids making profile aggregation part of schema startup.
         from storage.profile_stats_db import invalidate_profile_stats_cache
         invalidate_profile_stats_cache()

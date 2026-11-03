@@ -50,12 +50,14 @@ def _reply(
     completion: int,
     provider: str = "local",
     context: int | None = None,
+    parent: str | None = None,
 ) -> None:
     studio_db.upsert_chat_message(
         {
             "id": message_id,
             "threadId": thread_id,
             "role": "assistant",
+            "parentId": parent,
             "createdAt": created_at,
             "content": [{"type": "text", "text": "answer"}],
             "metadata": {
@@ -190,6 +192,37 @@ def test_incremental_counting_skips_history_the_previous_reply_saw(
     assert _pools()["combined"]["used"] == prompt + completion + next_prompt + next_completion
     _enable(limit = 10_000, method = "incremental")
     assert _pools()["combined"]["used"] == expected
+
+
+def test_incremental_counting_uses_the_reply_ancestor_after_switching_branches(limiter_db):
+    now = _now_ms()
+    _thread("t1", now)
+    for index, parent, prompt, completion, context in (
+        (1, None, 100, 20, 120),
+        (2, "a1", 1000, 20, 1020),
+        (3, "a1", 150, 5, 155),
+    ):
+        studio_db.upsert_chat_message(
+            {
+                "id": f"u{index}",
+                "threadId": "t1",
+                "role": "user",
+                "parentId": parent,
+                "createdAt": now + index * 2,
+                "content": [{"type": "text", "text": "question"}],
+            }
+        )
+        _reply(
+            f"a{index}",
+            "t1",
+            now + index * 2 + 1,
+            prompt = prompt,
+            completion = completion,
+            context = context,
+            parent = f"u{index}",
+        )
+    _enable(limit = 10_000, method = "incremental")
+    assert _pools()["combined"]["used"] == 120 + 900 + 35
 
 
 def test_split_mode_keeps_local_chats_apart_from_api_and_providers(limiter_db):

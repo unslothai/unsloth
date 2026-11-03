@@ -615,6 +615,7 @@ export interface OpenAIChatMessage {
 }
 
 export interface OpenAIChatCompletionsRequest {
+  temporary_chat?: boolean;
   model: string;
   messages: OpenAIChatMessage[];
   stream: boolean;

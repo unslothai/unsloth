@@ -41,7 +41,7 @@ def _ledger_insert(message: str, rows: str = "") -> str:
     return f"""
         INSERT INTO {LEDGER_TABLE}
             (message_id, thread_id, created_at, source,
-             prompt_tokens, completion_tokens, total_tokens, context_tokens)
+             prompt_tokens, completion_tokens, total_tokens, context_tokens, parent_message_id)
         SELECT u.id, u.thread_id, u.created_at,
                CASE WHEN EXISTS (
                    SELECT 1 FROM chat_threads t
@@ -50,10 +50,14 @@ def _ledger_insert(message: str, rows: str = "") -> str:
                ) THEN 'inherited' ELSE u.source END,
                u.prompt_tokens, u.completion_tokens,
                CASE WHEN u.reported_total > 0 THEN u.reported_total
-                    ELSE u.prompt_tokens + u.completion_tokens END, u.context_tokens
+                    ELSE u.prompt_tokens + u.completion_tokens END, u.context_tokens,
+               u.parent_message_id
         FROM (
             SELECT {message}.id AS id, {message}.thread_id AS thread_id,
                    {message}.created_at AS created_at,
+                   CASE WHEN {message}.parent_id IS NULL THEN NULL ELSE COALESCE((
+                       SELECT p.parent_id FROM chat_messages p WHERE p.id = {message}.parent_id
+                   ), '') END AS parent_message_id,
                    {_usage_columns(f"{message}.metadata_json")}
             {rows}
         ) AS u
@@ -63,7 +67,8 @@ def _ledger_insert(message: str, rows: str = "") -> str:
             prompt_tokens = MAX(prompt_tokens, excluded.prompt_tokens),
             completion_tokens = MAX(completion_tokens, excluded.completion_tokens),
             total_tokens = MAX(total_tokens, excluded.total_tokens),
-            context_tokens = COALESCE(excluded.context_tokens, context_tokens)
+            context_tokens = COALESCE(excluded.context_tokens, context_tokens),
+            parent_message_id = excluded.parent_message_id
     """
 
 
@@ -84,15 +89,19 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
             prompt_tokens INTEGER NOT NULL,
             completion_tokens INTEGER NOT NULL,
             total_tokens INTEGER NOT NULL,
-            context_tokens INTEGER
+            context_tokens INTEGER,
+            parent_message_id TEXT
         ) WITHOUT ROWID
         """
     )
-    upgraded = "context_tokens" not in {
-        row[1] for row in conn.execute(f"PRAGMA table_info({LEDGER_TABLE})")
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({LEDGER_TABLE})")}
+    missing = {
+        name: kind
+        for name, kind in (("context_tokens", "INTEGER"), ("parent_message_id", "TEXT"))
+        if name not in columns
     }
-    if upgraded:
-        conn.execute(f"ALTER TABLE {LEDGER_TABLE} ADD COLUMN context_tokens INTEGER")
+    for name, column_type in missing.items():
+        conn.execute(f"ALTER TABLE {LEDGER_TABLE} ADD COLUMN {name} {column_type}")
     conn.execute(
         f"CREATE INDEX IF NOT EXISTS idx_{LEDGER_TABLE}_created_at ON {LEDGER_TABLE}(created_at)"
     )
@@ -104,7 +113,7 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
         ("insert", "AFTER INSERT ON chat_messages"),
         ("update", "AFTER UPDATE OF metadata_json ON chat_messages"),
     ):
-        if upgraded:
+        if missing:
             conn.execute(f"DROP TRIGGER IF EXISTS {LEDGER_TABLE}_{event}")
         conn.execute(
             f"""
@@ -116,7 +125,7 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
             END
             """
         )
-    if not existed or upgraded:
+    if not existed or missing:
         conn.execute(
             _ledger_insert(
                 "m",
@@ -146,7 +155,7 @@ def record_run_usage(conn: sqlite3.Connection, run_id: str, chunk: dict) -> None
                 "m",
                 """
             FROM (
-                SELECT c.id, c.thread_id, c.created_at,
+                SELECT c.id, c.thread_id, c.created_at, c.parent_id,
                        json_patch(c.metadata_json, ?) AS metadata_json
                 FROM chat_messages c JOIN chat_generation_runs r ON r.assistant_message_id = c.id
                 WHERE r.id = ? AND COALESCE(json_extract(r.request_json, '$.api_monitor_via_api_key'), 0) = 0
@@ -155,6 +164,34 @@ def record_run_usage(conn: sqlite3.Connection, run_id: str, chunk: dict) -> None
             ),
             (json.dumps(metadata), run_id),
         )
+
+
+def record_temporary_usage(receipt) -> bool:
+    from storage.studio_db import get_connection
+    conn = get_connection()
+    try:
+        conn.execute(
+            f"""INSERT INTO {LEDGER_TABLE}
+                (message_id, thread_id, created_at, source, prompt_tokens, completion_tokens, total_tokens)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    prompt_tokens = MAX(prompt_tokens, excluded.prompt_tokens),
+                    completion_tokens = MAX(completion_tokens, excluded.completion_tokens),
+                    total_tokens = MAX(total_tokens, excluded.total_tokens)""",
+            (
+                receipt.id,
+                receipt.temporary_thread,
+                receipt.created_at,
+                receipt.temporary_source,
+                receipt.prompt_tokens,
+                receipt.completion_tokens,
+                receipt.total_tokens,
+            ),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
 
 
 def window_usage(conn: sqlite3.Connection, start_ms: int, method: str) -> dict[str, int]:
@@ -171,12 +208,15 @@ def window_usage(conn: sqlite3.Connection, start_ms: int, method: str) -> dict[s
             conn.execute(
                 f"""
         WITH turns AS (
-            SELECT source, created_at, completion_tokens,
-                   prompt_tokens - LAG(COALESCE(context_tokens, prompt_tokens + completion_tokens), 1, 0) OVER (
-                       PARTITION BY thread_id ORDER BY created_at, message_id
-                   ) AS prompt_delta
-            FROM {LEDGER_TABLE}
-            WHERE thread_id IN (
+            SELECT t.source, t.created_at, t.completion_tokens,
+                   t.prompt_tokens - CASE WHEN t.parent_message_id IS NULL THEN
+                       LAG(COALESCE(t.context_tokens, t.prompt_tokens + t.completion_tokens), 1, 0)
+                       OVER (PARTITION BY t.thread_id ORDER BY t.created_at, t.message_id)
+                   ELSE COALESCE(p.context_tokens, p.prompt_tokens + p.completion_tokens, 0)
+                   END AS prompt_delta
+            FROM {LEDGER_TABLE} t
+            LEFT JOIN {LEDGER_TABLE} p ON p.message_id = t.parent_message_id
+            WHERE t.thread_id IN (
                 SELECT DISTINCT thread_id FROM {LEDGER_TABLE} WHERE created_at >= ?
             )
         )

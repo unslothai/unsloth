@@ -3663,7 +3663,7 @@ from state.tool_approvals import (
 )
 
 from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
-from core.inference.api_monitor import api_monitor
+from core.inference.api_monitor import api_monitor, temporary_usage_scope
 from core.inference.image_orientation import exif_upright
 from core.inference.mcp_images import (
     MAX_MODEL_IMAGES as _MCP_MAX_MODEL_IMAGES,
@@ -30689,12 +30689,29 @@ async def openai_chat_completions(
             detail = "External providers can only be used from the Unsloth UI or with an API key.",
         )
     await _enforce_token_limit(request, external = bool(payload.provider_id or payload.provider_type))
-    response = await produce_openai_chat_completions(
-        payload,
-        request,
-        current_subject,
-        cancel_on_disconnect = True,
-    )
+    temporary = None
+    if payload.temporary_chat and not _request_used_api_key(request):
+        thread = payload.thread_id or payload.cancel_id or uuid.uuid4().hex
+        temporary = (
+            _hashlib.sha256(thread.encode("utf-8")).hexdigest(),
+            "external" if payload.provider_id or payload.provider_type else "local",
+        )
+    with temporary_usage_scope(temporary):
+        response = await produce_openai_chat_completions(
+            payload,
+            request,
+            current_subject,
+            cancel_on_disconnect = True,
+        )
+    if temporary and isinstance(response, StreamingResponse):
+        iterator = response.body_iterator
+
+        async def tracked():
+            with temporary_usage_scope(temporary):
+                async for chunk in iterator:
+                    yield chunk
+
+        response.body_iterator = tracked()
     if connection is None or not isinstance(response, StreamingResponse):
         return response
     response.body_iterator = _relay_split_thinking(

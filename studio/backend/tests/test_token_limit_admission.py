@@ -120,3 +120,73 @@ def test_delegated_request_consumes_one_override(admission, monkeypatch, endpoin
     assert response.status_code == 200, response.text
     assert produced == [body["model"]]
     assert client.post(f"/v1/{endpoint}", json = {"model": body["model"], **extra}).status_code == 429
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("external", [False, True])
+def test_temporary_chat_counts_without_persisting_its_content(
+    admission, monkeypatch, stream, external
+):
+    from fastapi.responses import StreamingResponse
+    from core.inference.api_monitor import ApiMonitor
+    from storage.api_usage_db import record_api_usage
+
+    client, body, _ = admission
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(record_api_usage)
+
+    def finish():
+        entry = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = body["model"],
+            prompt = "private prompt",
+            subject = "owner",
+        )
+        monitor.set_usage(entry, prompt_tokens = 90, completion_tokens = 10, total_tokens = 100)
+        monitor.set_reply(entry, "private answer")
+        monitor.finish(entry)
+
+    async def produce(payload, request, current_subject, *, cancel_on_disconnect):
+        if stream:
+
+            async def chunks():
+                finish()
+                yield b"data: [DONE]\n\n"
+
+            return StreamingResponse(chunks(), media_type = "text/event-stream")
+        finish()
+        return JSONResponse({"choices": []})
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", produce)
+    studio_db.upsert_app_settings(
+        {
+            "token_limit": {
+                "enabled": True,
+                "mode": "split",
+                "localLimit": 200,
+                "apiLimit": 100,
+            }
+        }
+    )
+    payload = {**body, "temporary_chat": True, "thread_id": "temporary-thread", "stream": stream}
+    if external:
+        payload["provider_type"] = "openai"
+    assert client.post("/v1/chat/completions", json = payload).status_code == 200
+    assert client.post("/v1/chat/completions", json = payload).status_code == 429
+
+    studio_db.upsert_app_settings({"token_limit": {"enabled": False}})
+    payload["temporary_chat"] = False
+    assert client.post("/v1/chat/completions", json = payload).status_code == 200
+    conn = studio_db.get_connection()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM api_usage_events").fetchone()[0] == 0
+        rows = conn.execute("SELECT * FROM token_usage_ledger").fetchall()
+        assert len(rows) == 2
+        assert sum(row["total_tokens"] for row in rows) == 200
+        assert not any(
+            "private" in str(tuple(row)) or "temporary-thread" in str(tuple(row)) for row in rows
+        )
+    finally:
+        conn.close()

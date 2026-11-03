@@ -5555,11 +5555,10 @@ export function createOpenAIStreamAdapter(
         .find((message) => message.role === "user");
       // Names the turn whose file changes /rewind can undo; a continuation reuses its turn's prompt.
       // A temporary chat keeps no file history.
-      const userMessageIdField = userMessageIdRequestField(
+      const userMessageIdField =
         resolvedThreadId && isThreadIncognito(resolvedThreadId)
-          ? undefined
-          : generationUserMessage?.id,
-      );
+          ? { temporary_chat: true }
+          : userMessageIdRequestField(generationUserMessage?.id);
 
       // The durability gate keys on THIS turn's attachments only, so an old screenshot does not keep
       // every later text turn off the durable path.

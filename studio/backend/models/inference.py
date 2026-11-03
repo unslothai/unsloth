@@ -3232,6 +3232,9 @@ class ChatCompletionRequest(BaseModel):
             "history, so /rewind can put back what this turn's tool calls changed."
         ),
     )
+    temporary_chat: bool = Field(
+        False, description = "[x-unsloth] Count usage without saving chat content."
+    )
     rag_scope: Optional[dict] = Field(
         None,
         description = (
