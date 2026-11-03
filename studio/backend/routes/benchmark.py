@@ -412,7 +412,7 @@ async def run_benchmark(
         # Claimed before the first await: checking here and claiming later on
         # the executor thread let two concurrent requests both start a run.
         account = current_account()
-        run_seq = backend.try_begin(account)
+        run_seq = backend.try_begin(account, request.run_token)
         if run_seq is None:
             raise HTTPException(
                 status_code = 409,
@@ -595,8 +595,11 @@ async def run_benchmark(
 
 
 @router.post("/cancel", response_model = BenchmarkOperationResponse)
-async def cancel_benchmark(current_subject: str = Depends(get_current_subject)):
-    """Cancel the in-flight benchmark."""
+async def cancel_benchmark(
+    token: Optional[str] = Query(None, max_length = 64),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Cancel the in-flight benchmark; with ``token``, only the run started with that token."""
     try:
         backend = get_benchmark_backend()
         if _run_hidden_from(backend, current_account()):
@@ -604,7 +607,7 @@ async def cancel_benchmark(current_subject: str = Depends(get_current_subject)):
                 success = True,
                 message = "No active benchmark to cancel",
             )
-        was_active = backend.cancel()
+        was_active = backend.cancel(token)
         return BenchmarkOperationResponse(
             success = True,
             message = "Benchmark cancelled" if was_active else "No active benchmark to cancel",

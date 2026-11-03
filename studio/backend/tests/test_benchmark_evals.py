@@ -606,3 +606,14 @@ def test_two_runs_in_one_second_get_their_own_folder_and_id(monkeypatch, tmp_pat
     first, second = (benchmark_routes._run_output_path("gsm8k") for _ in range(2))
     assert first != second
     assert os.path.basename(first).startswith("benchmark_gsm8k_20261103_081500_")
+
+
+def test_a_cancel_token_stops_only_the_run_started_with_it(monkeypatch):
+    backend = _orchestrator(monkeypatch, lambda params: {"results": {}})
+    assert backend.try_begin(None, "mine") is not None
+    # Another caller's Stop, carrying its own token, leaves this run alone.
+    assert not backend.cancel("theirs") and backend.is_active()
+    assert backend.cancel("mine") and not backend.is_active()
+    # Without a token, Stop still cancels whatever is running, as the Evals page does.
+    backend.try_begin(None, "mine")
+    assert backend.cancel()

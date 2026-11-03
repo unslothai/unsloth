@@ -87,6 +87,11 @@ class BenchmarkRunRequest(BaseModel):
     recipe: Optional[RecipeHeldoutSpec] = Field(
         None, description = "Inputs for the recipe_heldout task (Flows Benchmark node)"
     )
+    run_token: Optional[str] = Field(
+        None,
+        max_length = 64,
+        description = "A caller-chosen token; /cancel with the same token stops only this run",
+    )
 
 
 class BenchmarkStatusResponse(BaseModel):

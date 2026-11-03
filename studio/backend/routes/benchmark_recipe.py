@@ -151,7 +151,7 @@ async def run_recipe_heldout(
 
     backend = get_benchmark_backend()
     account = current_account()
-    run_seq = backend.try_begin(account)
+    run_seq = backend.try_begin(account, request.run_token)
     if run_seq is None:
         raise HTTPException(status_code = 409, detail = "A benchmark is already running.")
     started = False

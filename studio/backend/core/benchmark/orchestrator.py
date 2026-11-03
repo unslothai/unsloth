@@ -167,6 +167,8 @@ class BenchmarkOrchestrator:
         self._op_seq: int = 0
         # Account that started the current/last run (see account_jobs.job_is_foreign).
         self._result_account = None
+        # The caller's token for the current run, so its Stop cancels only that run.
+        self._run_token: Optional[str] = None
 
         # Cancellation is best-effort in-process: set to signal the run loop to
         # stop waiting on the worker thread.
@@ -249,7 +251,11 @@ class BenchmarkOrchestrator:
 
     # ── Run and cancel ────────────────────────────────────
 
-    def try_begin(self, account = None) -> Optional[int]:
+    def try_begin(
+        self,
+        account = None,
+        token: Optional[str] = None,
+    ) -> Optional[int]:
         """Claim the single run slot, or return None when a run already holds it.
 
         Synchronous so the route can call it before yielding to the event loop:
@@ -263,6 +269,7 @@ class BenchmarkOrchestrator:
             self._active = True
             self._op_seq += 1
             self._result_account = account if account is not None else current_account()
+            self._run_token = token
             self._last_op_status = None
             self._cancel_requested = False
             self._last_error = None
@@ -279,11 +286,12 @@ class BenchmarkOrchestrator:
             if self._active and op_seq == self._op_seq:
                 self._active = False
 
-    def cancel(self) -> bool:
+    def cancel(self, token: Optional[str] = None) -> bool:
+        """Stop the active run; with ``token``, only when that run was started with it."""
         # Same lock as run()'s submit, so a Stop lands either before it (nothing submitted) or
         # after it (the worker is recorded and drains).
         with self._lock:
-            if not self._active:
+            if not self._active or (token is not None and token != self._run_token):
                 return False
             self._cancel_requested = True
             self._cancel_event.set()

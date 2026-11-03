@@ -9,6 +9,7 @@ import asyncio
 import re
 from pathlib import Path
 import time
+import uuid
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -274,7 +275,9 @@ def _system_prompt(ctx: NodeContext) -> str:
     return trained if isinstance(trained, str) else ""
 
 
-async def _recipe_heldout(ctx: NodeContext, label: str, is_lora: bool, max_rows: int) -> dict:
+async def _recipe_heldout(
+    ctx: NodeContext, label: str, is_lora: bool, max_rows: int, token: str
+) -> dict:
     rows = await _read_rows(ctx, ctx.inputs.get("dataset"), max_rows)
     columns = sorted({k for r in rows for k in r})
     prompt_col = guess_column(
@@ -331,6 +334,7 @@ async def _recipe_heldout(ctx: NodeContext, label: str, is_lora: bool, max_rows:
             "model_source": "local",
             "task": RECIPE_TASK,
             "recipe": spec,
+            "run_token": token,
         },
     )
     done = done if isinstance(done, dict) else {}
@@ -389,7 +393,9 @@ async def _recipe_heldout(ctx: NodeContext, label: str, is_lora: bool, max_rows:
     }
 
 
-async def _lm_eval(ctx: NodeContext, task: str, label: str, is_lora: bool, max_rows: int) -> dict:
+async def _lm_eval(
+    ctx: NodeContext, task: str, label: str, is_lora: bool, max_rows: int, token: str
+) -> dict:
     from studio_mcp import loading
 
     if is_lora:
@@ -409,7 +415,13 @@ async def _lm_eval(ctx: NodeContext, task: str, label: str, is_lora: bool, max_r
     done = await ctx.call(
         "POST",
         f"{EVALS}/run",
-        json = {"checkpoint_path": label, "model_source": "local", "task": task, "limit": max_rows},
+        json = {
+            "checkpoint_path": label,
+            "model_source": "local",
+            "task": task,
+            "limit": max_rows,
+            "run_token": token,
+        },
     )
     done = done if isinstance(done, dict) else {}
     details = done.get("details") or {}
@@ -469,14 +481,17 @@ async def benchmark(ctx: NodeContext) -> dict:
     max_rows = max(1, min(MAX_ROWS, int(ctx.params.get("max_rows") or 20)))
     label, is_lora = await _load_target(ctx)
 
+    # Stop cancels only the run this node starts, never another one of the account's.
+    token = uuid.uuid4().hex
+
     async def cancel() -> None:
-        await ctx.call("POST", f"{EVALS}/cancel")
+        await ctx.call("POST", f"{EVALS}/cancel", params = {"token": token})
 
     ctx.on_cancel(cancel)
     if task == RECIPE_TASK:
-        found = await _recipe_heldout(ctx, label, is_lora, max_rows)
+        found = await _recipe_heldout(ctx, label, is_lora, max_rows, token)
     else:
-        found = await _lm_eval(ctx, task, label, is_lora, max_rows)
+        found = await _lm_eval(ctx, task, label, is_lora, max_rows, token)
     tag = f"benchmark-{task}-{found.get('run_id') or int(time.time())}"
     results = await _as_dataset(ctx, found["results"], f"{tag}-results")
     results.update(

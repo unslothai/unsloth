@@ -190,7 +190,7 @@ def test_lm_eval_refuses_an_adapter_and_scores_a_gguf_with_a_limit(monkeypatch):
 
     ctx = _Ctx(routes, task = "HellaSwag", max_rows = 10)
     out = asyncio.run(benchmark.benchmark(ctx))
-    assert sent == [
+    assert [{k: v for k, v in b.items() if k != "run_token"} for b in sent] == [
         {
             "checkpoint_path": "unsloth/Qwen3-0.6B-GGUF",
             "model_source": "local",
@@ -469,3 +469,18 @@ def test_a_local_csv_is_scored_on_its_cell_text(tmp_path, monkeypatch):
     monkeypatch.setattr("core.flows.nodes.data.local_seed_path", lambda ref: ref)
     rows = benchmark._head({"source": "local", "ref": str(csv)}, None, 10)
     assert [r["answer"] for r in rows] == ["00501", "NA"]
+
+
+def test_stop_cancels_only_the_run_this_node_started(monkeypatch):
+    async def loaded(ctx):
+        return "run-1", True
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    sent = []
+    base = _routes(sent)
+    ctx = _Ctx(lambda m, p, q, b: {"success": True} if p.endswith("/cancel") else base(m, p, q, b))
+    asyncio.run(benchmark.benchmark(ctx))
+    token = sent[0]["run_token"]
+    assert isinstance(token, str) and token
+    asyncio.run(ctx.cancel())
+    assert ctx.calls[-1][:3] == ("POST", "/api/benchmarks/evals/cancel", {"token": token})
