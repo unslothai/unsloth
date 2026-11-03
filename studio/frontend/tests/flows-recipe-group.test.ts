@@ -722,3 +722,40 @@ test("a loaded document seed keeps its files when the group opens in Recipe Stud
     | undefined;
   assert.deepEqual(seed?.resolved_paths, ["/up/x/a.pdf"]);
 });
+
+test("a wired seed is what the check goes by, not the group's own empty file seed", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { checkRecipeGroupDetail } = await import(
+    "../src/features/flows/recipe/recipe-group-actions.ts"
+  );
+  const { doc, node, edge } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  (group.config as { model_providers: Record<string, unknown>[] }).model_providers[0].endpoint =
+    "http://localhost:8000/v1";
+  for (const mc of (group.config as { model_configs: Record<string, unknown>[] }).model_configs)
+    mc.model ||= "qwen";
+  // biome-ignore lint/style/useNamingConvention: api schema
+  const shared = { ...group, config: { ...group.config, seed_config: { source: { seed_type: "unstructured", paths: [] } } } };
+  const step = { ...node("step", GENERATE_TYPE, [0, 300]), group: "recipe" };
+  const data = node("data", "data.hf_dataset", [0, 600]);
+  const load = (wired: boolean) =>
+    useDocStore.getState().load({
+      ...doc([...nodes, step, data], wired ? [edge("seed", "data", "dataset", "step", "seed")] : []),
+      groups: [shared],
+    });
+  load(false);
+  assert.ok((await checkRecipeGroupDetail("recipe")).errors.some((e) => /source-data preview/.test(e)));
+  load(true);
+  const wired = await checkRecipeGroupDetail("recipe");
+  assert.deepEqual(wired, { valid: true, errors: [], rawDetail: null });
+});
+
+test("the schema transform form edits the group it shows now, after a switch or Undo", () => {
+  const src = readFileSync(
+    new URL("../src/features/flows/recipe/recipe-forms.tsx", import.meta.url),
+    "utf8",
+  );
+  const form = src.slice(src.indexOf("export function ProcessorsForm"));
+  assert.match(form, /const view = useMemo\(\(\) => viewOf\(groupId\), \[groupId, signature\]\);/);
+  assert.doesNotMatch(form, /useState\(/);
+});

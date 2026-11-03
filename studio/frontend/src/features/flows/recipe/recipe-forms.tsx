@@ -167,15 +167,17 @@ export function SetupForm({ target }: { target: RecipeSetupTarget }) {
 
 /** The recipe's schema transform: reshape every final row with a Jinja JSON template. */
 export function ProcessorsForm({ groupId }: { groupId: string }) {
-  const [view] = useState(() => viewOf(groupId));
-  const [processors, setProcessors] = useState(view?.processors ?? []);
+  // Read from the document each time, so another group, Undo or Redo is what gets edited.
+  const signature = useDocStore((s) => recipeSignature(s.graph, groupId));
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the signature is the group's content.
+  const view = useMemo(() => viewOf(groupId), [groupId, signature]);
+  const processors = view?.processors ?? [];
   if (!view) return null;
   const index = processors.findIndex(
     (p) => p.processor_type === "schema_transform",
   );
   const schema = index >= 0 ? processors[index] : null;
   const commit = (next: RecipeProcessorConfig[]) => {
-    setProcessors(next);
     const graph = useDocStore.getState().graph;
     const group = graph.groups[groupId];
     if (!group) return;

@@ -272,7 +272,42 @@ def _recipe_flow(payload: Any, name: str, source: Optional[dict]) -> tuple[dict,
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc))
     doc["id"] = uuid.uuid4().hex
+    _own_uploads(doc)
     return _save(_doc_or_400(doc), None), notices
+
+
+_UPLOAD_ID = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _own_uploads(doc: dict) -> None:
+    """Copy a recipe's uploaded documents under a new upload id: removing one in the flow deletes the
+    file, which must not break the recipe it came from."""
+    import shutil
+
+    from utils.paths.storage_roots import unstructured_uploads_root
+
+    root = unstructured_uploads_root()
+    for group in doc.get("groups") or []:
+        ui = group.get("ui") if isinstance(group, dict) else None
+        uid = ui.get("unstructured_upload_uid") if isinstance(ui, dict) else None
+        if not isinstance(uid, str) or not _UPLOAD_ID.fullmatch(uid) or not (root / uid).is_dir():
+            continue
+        new = uuid.uuid4().hex
+        shutil.copytree(root / uid, root / new)
+        ui["unstructured_upload_uid"] = new
+        seed = (group.get("config") or {}).get("seed_config")
+        source = seed.get("source") if isinstance(seed, dict) else None
+        if not isinstance(source, dict):
+            continue
+
+        def moved(path: Any) -> Any:
+            p = Path(path) if isinstance(path, str) else None
+            return str(p.parent.parent / new / p.name) if p and p.parent.name == uid else path
+
+        if "path" in source:
+            source["path"] = moved(source["path"])
+        if isinstance(source.get("paths"), list):
+            source["paths"] = [moved(p) for p in source["paths"]]
 
 
 def _recipe_hash(payload: Any) -> str:
