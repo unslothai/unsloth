@@ -415,7 +415,9 @@ def _refusal_cases():
         m.train()
 
     def qat(m):
-        m.base_model.model.model.layers[0].mlp.up_proj.base_layer.weight_fake_quantizer = torch.nn.Identity()
+        m.base_model.model.model.layers[
+            0
+        ].mlp.up_proj.base_layer.weight_fake_quantizer = torch.nn.Identity()
 
     def mixed_hooks(m):
         from functools import partial
@@ -482,9 +484,12 @@ def test_environment_refusals(monkeypatch, _clean):
         assert engaged is False
     monkeypatch.delenv("UNSLOTH_LORA_FOLD_GENERATE")
     # Mixed-adapter batches: PEFT refuses adapter_names on merged layers.
-    with torch.inference_mode(), fold.lora_fold_generate(
-        model, (), {**kw, "adapter_names": ["default", "__base__"]}
-    ) as engaged:
+    with (
+        torch.inference_mode(),
+        fold.lora_fold_generate(
+            model, (), {**kw, "adapter_names": ["default", "__base__"]}
+        ) as engaged,
+    ):
         assert engaged is False
     # Grad on: refused (the Unsloth wrappers enter it inside their inference-mode scope).
     with fold.lora_fold_generate(model, (), kw) as engaged:
