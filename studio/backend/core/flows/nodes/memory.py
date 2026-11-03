@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from typing import Any, Optional
 
 from core.flows import memory as mem
@@ -13,6 +14,7 @@ from core.flows.nodes._common import as_text
 from core.flows.registry import FlowNodeError, NodeContext, handler
 
 EMBED_MODEL = "default"
+_PROCESS = uuid.uuid4().hex[:8]
 
 IMPORTANCE_PROMPT = (
     "On the scale of 1 to 10, where 1 is purely mundane (e.g., brushing teeth, making bed) and 10 is extremely "
@@ -86,9 +88,25 @@ def _set_vectors(records: list[dict], vectors: Optional[list], model: Optional[s
         record["embed_model"] = model
 
 
+# routes/inference.py _STUDIO_EMBED_MAX_INPUTS; streams hold up to MAX_RECORDS (5000).
+EMBED_BATCH = 2048
+
+
 async def _embed(ctx: NodeContext, texts: list[str]) -> Optional[tuple[list, Optional[str]]]:
     if not texts:
         return [], None
+    vectors: list = []
+    model: Optional[str] = None
+    for start in range(0, len(texts), EMBED_BATCH):
+        got = await _embed_batch(ctx, texts[start : start + EMBED_BATCH])
+        if got is None or (start and got[1] != model):
+            return None
+        vectors += got[0]
+        model = got[1]
+    return vectors, model
+
+
+async def _embed_batch(ctx: NodeContext, texts: list[str]) -> Optional[tuple[list, Optional[str]]]:
     try:
         answer = await ctx.call(
             "POST", "/v1/embeddings", json = {"model": EMBED_MODEL, "input": texts}
@@ -106,6 +124,10 @@ async def _embed(ctx: NodeContext, texts: list[str]) -> Optional[tuple[list, Opt
     if any(v is None for v in vectors):
         return None
     model = answer.get("model")
+    if model == EMBED_MODEL:
+        # llama-server echoes the alias it was asked for, so this load stands in for the model's name.
+        from core.inference import gpu_arbiter
+        model = f"{EMBED_MODEL}@{_PROCESS}:{gpu_arbiter.load_count()}"
     return vectors, model if isinstance(model, str) else None
 
 

@@ -6,7 +6,9 @@ bases chat searches."""
 
 from __future__ import annotations
 
+import asyncio
 import re
+import weakref
 from pathlib import PurePath
 from typing import Any, Optional
 from urllib.parse import quote
@@ -61,10 +63,23 @@ async def load_document(ctx: NodeContext) -> dict:
     return {"text": as_text(answer.get("text")), "truncated": bool(answer.get("truncated"))}
 
 
+# Lookup-then-create is two requests, so parallel adds to a new knowledge base would each create one.
+_KB_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
 async def _knowledge_base(ctx: NodeContext, create: bool) -> tuple[str, str]:
     name = str(ctx.params.get("knowledge_base") or "").strip()[:200].strip()
     if not name:
         raise FlowNodeError("Name the knowledge base")
+    if not create:
+        return await _find_or_create(ctx, name, create)
+    locks = _KB_LOCKS.setdefault(asyncio.get_running_loop(), {})
+    lock = locks.setdefault(name.lower(), asyncio.Lock())
+    async with lock:
+        return await _find_or_create(ctx, name, create)
+
+
+async def _find_or_create(ctx: NodeContext, name: str, create: bool) -> tuple[str, str]:
     listed = await ctx.call("GET", f"{RAG}/knowledge-bases")
     rows = listed.get("knowledgeBases") if isinstance(listed, dict) else None
     if isinstance(listed, dict) and listed.get("ragAvailable") is False:
