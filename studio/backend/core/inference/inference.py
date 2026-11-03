@@ -756,7 +756,8 @@ def _supported_generate_kwargs(model, generation_kwargs: dict) -> dict:
     if not isinstance(getattr(model, "_generation_fields_unsupported", None), dict):
         return generation_kwargs
     kept = {k: v for k, v in generation_kwargs.items() if k not in _CUSTOM_GENERATE_REJECTED_KWARGS}
-    if getattr(getattr(model, "config", None), "model_type", None) == "lfm3_omni":
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type in {"lfm3_omni", "lfm3_audio"}:
         kept["generation_mode"] = "text"
     events = [
         c.ev
@@ -769,8 +770,9 @@ def _supported_generate_kwargs(model, generation_kwargs: dict) -> dict:
 
 
 def _generate_supported(model, generation_kwargs: dict):
+    kwargs = _supported_generate_kwargs(model, generation_kwargs)
     try:
-        return model.generate(**_supported_generate_kwargs(model, generation_kwargs))
+        return model.generate(**kwargs)
     except _GenerationHalted:
         streamer = generation_kwargs.get("streamer")
         matched = getattr(streamer, "matched", None)
@@ -786,6 +788,16 @@ def _refuse_without_generate(model, model_name: str) -> None:
             f"{model_name} loads as {type(model).__name__}, which cannot generate text. "
             "Unsloth Studio has no chat path for this architecture yet."
         )
+
+
+def _audio_chat_auto_model(config):
+    if not getattr(config, "has_audio_input", False) or getattr(config, "is_vision", False):
+        return None
+    if getattr(config, "audio_type", None) != "audio_vlm":
+        return None
+    import transformers
+
+    return getattr(transformers, "AutoModelForMultimodalLM", None)
 
 
 def _processor_takes_text_first(processor) -> bool:
@@ -1415,6 +1427,36 @@ class InferenceBackend:
                     )
                     logger.info(f"Loaded {type(processor).__name__} from {processor_source}")
 
+                self.models[model_name]["model"] = model
+                self.models[model_name]["tokenizer"] = processor
+                self.models[model_name]["processor"] = processor
+
+            elif _audio_chat_auto_model(config) is not None:
+                # Its text load builds the bare backbone; the multimodal class carries generate().
+                from unsloth import FastModel
+
+                model, processor = _load_with_offload_fallback(
+                    FastModel.from_pretrained,
+                    model_name = load_path,
+                    auto_model = _audio_chat_auto_model(config),
+                    max_seq_length = max_seq_length,
+                    dtype = dtype,
+                    **_load_in_4bit_kwargs(load_in_4bit),
+                    device_map = device_map,
+                    token = _hf_token_for_loader(hf_token),
+                    trust_remote_code = trust_remote_code,
+                    use_exact_model_name = use_exact_model_name,
+                    **offload_kwargs,
+                )
+                FastModel.for_inference(model)
+                if not hasattr(processor, "feature_extractor"):
+                    from transformers import AutoProcessor
+                    processor = AutoProcessor.from_pretrained(
+                        config.base_model if config.is_lora else load_path,
+                        token = _hf_token_for_loader(hf_token),
+                        trust_remote_code = trust_remote_code,
+                    )
+                _refuse_without_generate(model, model_name)
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = processor
                 self.models[model_name]["processor"] = processor
