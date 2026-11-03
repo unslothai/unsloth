@@ -463,7 +463,7 @@ def _decode_forward(
         built = _build(model, X)
         if isinstance(built, str):
             STATS["refused"] = built
-            built = _Refused(built)
+            built = plan if isinstance(plan, _Refused) and plan.reason == built else _Refused(built)
         if isinstance(plan, _Plan) and isinstance(built, _Plan):
             if built.signature == plan.signature:
                 plan.watch, plan.adapter_state = built.watch, built.adapter_state
