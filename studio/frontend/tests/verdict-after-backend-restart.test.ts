@@ -114,6 +114,6 @@ test("only a backend that already answered marks the verdict stale", async () =>
   );
   assert.match(
     src,
-    /if \(verdictStaleRef\.current\) \{\s*verdictStaleRef\.current = false;\s*forgetMeasuredVerdict\(\);\s*\}\s*void fetchDeviceType\(\{ force: true \}\)/,
+    /if \(verdictStaleRef\.current\) \{\s*verdictStaleRef\.current = false;\s*forgetMeasuredVerdict\(\);\s*\}\s*void fetchDeviceType\(\{\s*force: true,/,
   );
 });

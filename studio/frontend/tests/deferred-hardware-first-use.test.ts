@@ -215,3 +215,11 @@ test("a deferred verdict neither redirects nor blocks Train entry points on a gu
     /s\.isTrainUnavailable\(\) && !s\.capabilitiesUnknown\(\)/,
   );
 });
+
+test("a desktop backend reconnect asks for detection on an open hardware page", () => {
+  const reconnect = /if \(verdictStaleRef\.current\) \{[\s\S]*?\}, \[status, desktopAuthReady\]\);/.exec(
+    readSrc("app/provider.tsx"),
+  );
+  assert.ok(reconnect, "the reconnect refresh moved");
+  assert.match(reconnect[0], /force: true,[\s\S]*detectHardware: routeNeedsHardware\(pathnameRef\.current\)/);
+});
