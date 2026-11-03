@@ -136,6 +136,21 @@ export function removeNodes(nodeIds: string[]): void {
   useDocStore.getState().removeElements({ nodes: nodeIds }, key);
 }
 
+/** The canvas's delete: removes a deleted column's references in the same undo step as the elements. */
+export function removeElementsWithReferences(ids: {
+  nodes: string[];
+  edges: string[];
+  groups: string[];
+  notes: string[];
+}): void {
+  const key = `delete:${[...ids.nodes, ...ids.edges].join(",")}:${Date.now()}`;
+  const references = new Set(disconnectColumns(ids.edges, key));
+  useDocStore.getState().removeElements(
+    { ...ids, edges: ids.edges.filter((id) => !references.has(id)) },
+    key,
+  );
+}
+
 export function insideRecipeGroup(
   graph: DocGraph,
   pos: [number, number],

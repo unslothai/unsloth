@@ -254,6 +254,31 @@ test("deleting a column from the inspector or Ctrl+X takes its {{ reference }} o
   assert.match(JSON.stringify(back.nodes[sql.id].params.column), /sql_prompt/);
 });
 
+test("deleting a column on the canvas is one undo step with its references", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { removeElementsWithReferences } = await import(
+    "../src/features/flows/recipe/recipe-actions.ts"
+  );
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  useDocStore.getState().load({ ...doc(nodes, referenceEdges(nodes)), groups: [group] });
+  const prompt = byName(nodes, "sql_prompt");
+  const sql = byName(nodes, "sql");
+  const graph = useDocStore.getState().graph;
+  // What the canvas's Delete key hands over: the node and its wires.
+  const edges = graph.edgeOrder.filter(
+    (id) => graph.edges[id].source === prompt.id || graph.edges[id].target === prompt.id,
+  );
+  removeElementsWithReferences({ nodes: [prompt.id], edges, groups: [], notes: [] });
+  const after = useDocStore.getState().graph;
+  assert.equal(after.nodes[prompt.id], undefined);
+  assert.doesNotMatch(JSON.stringify(after.nodes[sql.id].params.column), /sql_prompt/);
+  useDocStore.getState().undo();
+  const back = useDocStore.getState().graph;
+  assert.ok(back.nodes[prompt.id]);
+  assert.match(JSON.stringify(back.nodes[sql.id].params.column), /sql_prompt/);
+});
+
 test("deleting reference wires from two recipe frames at once clears both frames' wires", async () => {
   const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
   const { disconnectColumns } = await import("../src/features/flows/recipe/recipe-actions.ts");
