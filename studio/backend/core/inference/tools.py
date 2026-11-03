@@ -13068,7 +13068,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
             logger.warning("Skipping duplicate MCP tool '%s' on '%s'.", raw_name, display)
             continue
         seen_names.add(name)
-        tool_facts.note_mcp_tool(name, tool)
+        tool_facts.note_mcp_tool(name, tool, studio = is_studio_tools(server["url"]))
         description = tool.get("description") or ""
         if name.split("__", 2)[2] != raw_name:
             _MCP_TOOL_ALIASES[name] = raw_name

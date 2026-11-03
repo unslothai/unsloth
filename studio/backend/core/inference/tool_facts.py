@@ -14,6 +14,9 @@ from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
 REPEATABLE = BROWSER_TOOL_NAMES | MEDIA_CHAT_TOOLS
 # Reading an image is not new work that licenses a rerun.
 _BUILT_IN_READS = frozenset({"view_image"})
+# Unsloth's own tools whose answer changes while a job runs: generate_video says to keep calling get_job.
+_STUDIO_POLLS = frozenset({"get_job"})
+_mcp_polls: set[str] = set()
 # MCP functions their server marked readOnlyHint. Trusting the hint only makes deduplication
 # stricter: a read never counts as the new work that lets an identical call run again.
 _mcp_reads: set[str] = set()
@@ -33,7 +36,11 @@ def awaits_user(result: str) -> bool:
     return ASKS_THE_USER in result and any(tag in result for tag in AWAITS_USER_WHEN_ASKED)
 
 
-def note_mcp_tool(name: str, tool: Mapping[str, Any]) -> None:
+def note_mcp_tool(name: str, tool: Mapping[str, Any], *, studio: bool = False) -> None:
+    if studio and tool.get("name") in _STUDIO_POLLS:
+        _mcp_polls.add(name)
+    else:
+        _mcp_polls.discard(name)
     annotations = tool.get("annotations")
     if isinstance(annotations, Mapping) and annotations.get("readOnlyHint") is True:
         _mcp_reads.add(name)
@@ -42,7 +49,7 @@ def note_mcp_tool(name: str, tool: Mapping[str, Any]) -> None:
 
 
 def repeatable(name: Any) -> bool:
-    return name in REPEATABLE
+    return name in REPEATABLE or name in _mcp_polls
 
 
 def reads_only(name: Any) -> bool:

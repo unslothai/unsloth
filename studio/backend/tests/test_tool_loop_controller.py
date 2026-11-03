@@ -1093,3 +1093,24 @@ def test_has_active_tools_matches_active_tools_without_copying():
     controller._completed_one_shot_tools.clear()
     controller._force_final_answer = True
     assert controller.has_active_tools() is bool(controller.active_tools()) is False
+
+
+def test_polling_unsloths_own_get_job_is_never_a_duplicate():
+    video, job, status = (f"mcp__unsloth__{n}" for n in ("generate_video", "get_job", "studio_status"))
+    for name in (video, job, status):
+        tool_facts.note_mcp_tool(
+            name, {"name": name.split("__")[2], "annotations": {"readOnlyHint": name != video}}, studio = True
+        )
+    controller = ToolLoopController(tools = [_tool(video), _tool(job), _tool(status)])
+    poll = {"kind": "video", "id": "j1"}
+    controller.record_result(controller.prepare_call(_call(video, {"prompt": "a whale"})), '{"id":"j1"}')
+    for name, args in ((job, poll), (status, {}), (job, poll), (job, poll)):
+        decision = controller.prepare_call(_call(name, args))
+        assert decision.action == "execute", name
+        controller.record_result(decision, '{"state":"running"}')
+    assert not controller.force_final_answer
+    # Another server's get_job is still deduplicated.
+    tool_facts.note_mcp_tool("mcp__other__get_job", {"name": "get_job"})
+    other = ToolLoopController(tools = [_tool("mcp__other__get_job")])
+    other.record_result(other.prepare_call(_call("mcp__other__get_job", poll)), "{}")
+    assert other.prepare_call(_call("mcp__other__get_job", poll)).action == "duplicate"

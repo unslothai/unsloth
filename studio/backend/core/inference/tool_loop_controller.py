@@ -18,7 +18,7 @@ from core.inference.browser_agent import BROWSER_TOOL_NAMES
 from core.inference.llama_tool_schema import unrelaxed
 from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
 from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
-from core.inference.tool_facts import REPEATABLE, awaits_user, reads_only
+from core.inference.tool_facts import REPEATABLE, awaits_user, reads_only, repeatable
 
 # Provenance the envelope is trusted on; stamped by mcp_client.
 MCP_TOOL_PREFIX = "mcp__"
@@ -1356,7 +1356,7 @@ class ToolLoopController:
         elif (
             self._deduplicate_tool_calls
             and key in self._successful_keys
-            and tool_name not in REPEATABLE_TOOL_NAMES
+            and not repeatable(tool_name)
             and tool_name != MCP_TOOL_SEARCH_NAME
         ):
             # Not the browser tools: each acts on or reads the page as it is now, so a second

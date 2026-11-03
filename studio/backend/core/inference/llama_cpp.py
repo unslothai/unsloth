@@ -462,9 +462,9 @@ from core.inference.mcp_images import (
     is_image_tool as mcp_is_image_tool,
     mentions_images as mcp_images_mentioned_in,
 )
+from core.inference.tool_facts import repeatable
 from core.inference.tool_loop_controller import (
     BROWSER_TOOL_NAMES,
-    REPEATABLE_TOOL_NAMES,
     TRUNCATED_TOOL_TURN_MESSAGE,
     ToolLoopController,
     _reruns_after_new_work,
@@ -39401,7 +39401,7 @@ class LlamaCppBackend:
                             _last_workspace_key = _key
                         # A browser call acts on the page as it is then: two scrolls are two scrolls.
                         # Two identical generate_image calls are two images.
-                        elif _key in _seen_keys and _fn.get("name") not in REPEATABLE_TOOL_NAMES:
+                        elif _key in _seen_keys and not repeatable(_fn.get("name")):
                             continue
                         _seen_keys.add(_key)
                         if len(_deduped) < _MAX_TOOL_CALLS_PER_TURN:
