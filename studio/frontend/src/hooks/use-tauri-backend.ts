@@ -148,8 +148,7 @@ export function useTauriBackend() {
   );
   // Dedupe step names (Strict Mode, event replay).
   const seenStepsRef = useRef(new Set<string>());
-  // Port of the attached server we did not spawn, so we cannot stop it. The ref serves the tray
-  // listener, which is registered once and would otherwise read the first render's value.
+  // Port of the attached server we did not spawn.
   const [externalServerPort, setExternalServerPortState] = useState<number | null>(null);
   const externalServerPortRef = useRef<number | null>(null);
   const isExternalServer = externalServerPort !== null;
@@ -516,28 +515,19 @@ export function useTauriBackend() {
   }
 
   async function runStopServer() {
-    // Only disconnects: the server is not stopped, and the stopped screen says so.
-    const externalPort = externalServerPortRef.current;
-    if (externalPort !== null) {
-      startingRef.current = false;
-      setExternalServerPort(null);
-      setDisconnectedServerPort(externalPort);
-      stopExternalServerPoll();
-      markServerStopIntent(externalPort);
-      setBackendStatus("stopped");
-      return;
-    }
     const { invoke } = await import("@tauri-apps/api/core");
     // Record intent before the await (reaping can block ~15s); roll back if the stop fails.
     markServerStopIntent();
     try {
-      await invoke("stop_server");
+      await invoke("stop_server", { port: portRef.current });
     } catch (e) {
       clearServerStopIntent();
       throw e;
     }
     startingRef.current = false;
+    setExternalServerPort(null);
     setDisconnectedServerPort(null);
+    stopExternalServerPoll();
     setBackendStatus("stopped");
   }
 
