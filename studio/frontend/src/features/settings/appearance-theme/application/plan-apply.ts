@@ -76,8 +76,6 @@ function sameValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-const FONT_FIELDS = ["uiFont", "headingFont", "chatFont", "codeFont"] as const;
-
 /** Theme fonts first, then the current fonts the theme does not replace by name. */
 function mergeFonts(themeFonts: ImportedFont[], currentFonts: ImportedFont[]): ImportedFont[] {
   const names = new Set(themeFonts.map((font) => font.name));
