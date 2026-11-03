@@ -118,6 +118,12 @@ def _sites(model, monkeypatch):
         site = driver._site(model, kind, kind, projections, width)
         assert not isinstance(site, str), site
         assert len(site.segments) == len(projections)
+        assert len(site.tensor_bindings) == len(projections)
+        for (bound_projection, name, bound_weight), projection in zip(
+            site.tensor_bindings, projections
+        ):
+            assert bound_projection is projection and name == "weight"
+            assert bound_weight is projection.weight
         for segment, projection in zip(site.segments, projections):
             weight = projection.weight
             assert segment[0] is weight

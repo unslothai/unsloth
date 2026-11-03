@@ -148,9 +148,16 @@ def _site_watch(projs):
 
 def _plan_stale(plan):
     """Adapter state or module bindings changed since this plan was built."""
-    return _adapter_state(plan.watch) != plan.adapter_state or any(
-        getattr(owner, name, None) is not module
-        for owner, name, module in getattr(plan, "bindings", ())
+    return (
+        _adapter_state(plan.watch) != plan.adapter_state
+        or any(
+            getattr(owner, name, None) is not module
+            for owner, name, module in getattr(plan, "bindings", ())
+        )
+        or any(
+            getattr(module, name, None) is not tensor
+            for module, name, tensor in getattr(plan, "tensor_bindings", ())
+        )
     )
 
 
@@ -310,6 +317,9 @@ def _site(
             (W, qs.absmax, qs.state2.absmax if nested else None) for W, qs in zip(Ws, states)
         ),
     )
+    site.tensor_bindings = tuple(
+        (getattr(proj, "base_layer", proj), "weight", W) for proj, W in zip(projs, Ws)
+    )
     return site if batch_size == 1 else F.BatchSite(site, batch_size)
 
 
@@ -349,7 +359,7 @@ def _build(model, X):
     plan.device = device
     plan.dtype = X.dtype
     plan.capability = capability
-    watch, bindings = [], []
+    watch, bindings, tensor_bindings = [], [], []
     norm = model.model.norm
     eps = _norm_eps(norm)
     for idx, layer in enumerate(layers):
@@ -377,6 +387,7 @@ def _build(model, X):
         for name in ("input_layernorm", "post_attention_layernorm"):
             module = getattr(layer, name)
             bindings.append((layer, name, module))
+            tensor_bindings.append((module, "weight", module.weight))
             if hasattr(module, "modules_to_save"):  # a norm in modules_to_save
                 watch.append(module)
         entry = _Layer()
@@ -404,6 +415,7 @@ def _build(model, X):
                 return f"{kind}: {site}"
             watch.extend(_site_watch(projs))
             bindings.extend((owner, name, proj) for name, proj in zip(names, projs))
+            tensor_bindings.extend(getattr(site, "tensor_bindings", ()))
             if site.packed.device != device:
                 return "several devices"
             sites[kind] = site
@@ -427,10 +439,12 @@ def _build(model, X):
     ):
         return "final norm"
     bindings.append((model.model, "norm", norm))
+    tensor_bindings.append((norm, "weight", norm.weight))
     if hasattr(norm, "modules_to_save"):
         watch.append(norm)
     plan.watch = watch
     plan.bindings = tuple(bindings)
+    plan.tensor_bindings = tuple(tensor_bindings)
     plan.adapter_state = _adapter_state(watch)
     plan.eps = float(eps)
     plan.final_norm = norm.weight
@@ -529,6 +543,7 @@ def _decode_forward(
             if built.signature == plan.signature:
                 plan.watch, plan.adapter_state = built.watch, built.adapter_state
                 plan.bindings = built.bindings
+                plan.tensor_bindings = built.tensor_bindings
                 built = plan
         if built is not plan:
             if plan is not None:
