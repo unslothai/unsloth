@@ -982,8 +982,9 @@ def _dequantized_row_bytes(widths, dtype_size: int, kv_bits, kv_group_size, pref
         return None
     try:
         dtype = mx.float32 if dtype_size == 4 else mx.bfloat16
-        # A causal chunk never fuses over fewer keys than queries; later chunks see more (#15935).
-        cached = prefill_chunk + 1
+        # A causal chunk never fuses over fewer keys than queries, and a forced route starts at a key count: ask at a
+        # long context, which is where the copy costs most (#15935).
+        cached = max(prefill_chunk + 1, 1 << 16)
 
         def rows(width):
             return mx.quantize(
@@ -1028,6 +1029,7 @@ def _compute_bytes(
         copy_row = kv_heads * (head_dim + (value_dim or head_dim)) * _TURBOQUANT_DEQUANT_BYTES
         score = heads * dtype_size * _SCORE_LIVE
         cells = _widest_unfused_scores(widths, dtype_size, n_ctx, prefill_chunk)
+        copy_row += _padding_row_bytes(widths, dtype_size, n_ctx)
         total += copy_row * max(n_ctx - 1, 0) + cells * score
     elif quant_boundary is not None:
         score = heads * dtype_size * _SCORE_LIVE
@@ -1037,11 +1039,14 @@ def _compute_bytes(
         else:
             # A tail too short for the fused route still builds its scores.
             cells = max(n_ctx + 1, _widest_unfused_scores(widths, dtype_size, n_ctx, prefill_chunk))
-            total += max(row * n_ctx, cells * score)
+            total += max(
+                (row + _padding_row_bytes(widths, dtype_size, n_ctx)) * n_ctx, cells * score
+            )
     elif not any(entry.get("bound_spec") for entry in plan):
         # Windowed models are skipped: the config's head_dim need not be the full-context layers' width.
         score = heads * dtype_size * _SCORE_LIVE
-        total += _widest_unfused_scores(widths, dtype_size, n_ctx, prefill_chunk) * score
+        cells = _widest_unfused_scores(widths, dtype_size, n_ctx, prefill_chunk)
+        total += max(cells * score, _padding_row_bytes(widths, dtype_size, n_ctx) * n_ctx)
     return int(total)
 
 
@@ -1058,7 +1063,7 @@ def _widest_unfused_scores(widths, dtype_size: int, n_ctx: int, prefill_chunk: i
 
     def longest_tail(whole, limit):
         # The tail of a prompt holding no whole chunk is its first call, so it is square.
-        short, first_fused = _unfused_tails(route, widths, dtype_size, chunk if whole else 0)
+        short, first_fused = _unfused_tails(route, widths, dtype_size, whole * chunk)
         if limit > 8 and first_fused > 9:
             return min(limit, first_fused - 1)
         return max((r for r in short if r <= limit), default = 0)
@@ -1067,13 +1072,25 @@ def _widest_unfused_scores(widths, dtype_size: int, n_ctx: int, prefill_chunk: i
     cells = [n_ctx + 1 if unfused(1, 2) or unfused(1, n_ctx + 1) else 0]
     if whole and unfused(chunk, chunk):
         cells.append(chunk * chunk)
-    if whole >= 2 and unfused(chunk, whole * chunk):
-        cells.append(chunk * whole * chunk)
+
+    # A forced route starts at a key count, so calls stop being unfused somewhere short of the context.
+    if whole >= 2 and unfused(chunk, 2 * chunk):
+        lo, hi = 2, whole + 1
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            lo, hi = (mid, hi) if unfused(chunk, mid * chunk) else (lo, mid)
+        cells.append(chunk * lo * chunk)
     r = longest_tail(whole, rest)
     cells.append(r * (whole * chunk + r))
     if whole:
-        r = longest_tail(whole - 1, chunk - 1)
-        cells.append(r * ((whole - 1) * chunk + r))
+        far = longest_tail(whole - 1, chunk - 1)
+        cells.append(far * ((whole - 1) * chunk + far))
+        # The widest tail below the floor can be any of them: it shrinks as it nears the floor.
+        for held in range(whole - 1):
+            r = longest_tail(held, chunk - 1)
+            if r <= far:
+                break
+            cells.append(r * (held * chunk + r))
     return max(cells)
 
 
@@ -1098,6 +1115,16 @@ def _unfused_tails(route, widths, dtype_size: int, later: int):
         mid = (lo + hi) // 2
         lo, hi = (mid, hi) if unfused(mid) else (lo, mid)
     return short, hi
+
+
+def _padding_row_bytes(widths, dtype_size: int, n_ctx: int) -> int:
+    """Bytes per cached token of the padded K and V a forced route holds; 0 on a zoo without one."""
+    _heads, kv_heads, head_dim, value_dim = (*widths[2:], 0, 0, 0, 0)[:4]
+    try:
+        from unsloth_zoo.mlx.attention import forced_padding_row_bytes
+    except Exception:
+        return 0
+    return forced_padding_row_bytes(head_dim, value_dim or head_dim, kv_heads, dtype_size, n_ctx)
 
 
 def _zoo_route():

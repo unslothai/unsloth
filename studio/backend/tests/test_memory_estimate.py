@@ -4608,7 +4608,7 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         assert mm._compute_bytes(self.GQA, 2, 2048, plan, 32768, None) == unrouted
         wide = mm._compute_bytes(self.WIDE, 2, 2048, plan, 32768, None)
         assert wide - unrouted == pytest.approx(
-            63 * (15 * 2048 + 63) * 16 * 2 * mm._SCORE_LIVE, abs = 1
+            2047 * (3 * 2048 + 2047) * 16 * 2 * mm._SCORE_LIVE, abs = 1
         )
 
     def test_a_copied_route_is_charged_a_tail_whose_scores_outgrow_the_copy(self):
@@ -4619,7 +4619,7 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         widths, n_ctx = (3584, 18944, 32, 2, 256, 0), 262144
         row = mm._dequantized_row_bytes(widths, 2, 4, 64, 2048)
         floor = mm._compute_bytes(widths[:3], 2, 2048, [], n_ctx, None)
-        tail = 63 * (127 * 2048 + 63) * 32 * 2 * mm._SCORE_LIVE
+        tail = 2047 * (3 * 2048 + 2047) * 32 * 2 * mm._SCORE_LIVE
         priced = mm._compute_bytes(widths, 2, 2048, [], n_ctx, 0, 4, 64) - floor
         assert row * n_ctx < tail and priced == int(tail)
 
@@ -4675,7 +4675,7 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
 
     def test_a_tower_whose_values_are_narrower_keeps_the_scores(self):
         assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 128, 64), 2, 4, 64, 2048) is None
-        assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 192, 128), 2, 4, 64, 2048) is None
+        assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 160, 128), 2, 4, 64, 2048) is None
         assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 128, 128), 2, 4, 64, 2048) == (
             mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048)
         )
@@ -4746,6 +4746,65 @@ def test_the_route_is_asked_about_a_cache_longer_than_the_chunk(monkeypatch, chu
     assert mask == "causal"
 
 
+def test_chunks_below_a_forced_routes_key_floor_still_charge_their_scores(monkeypatch):
+    _unfused_route(monkeypatch, lambda L, S: L > 15 and S >= 8192)
+    assert mm._widest_unfused_scores(_BONSAI, 2, 65536, 2048) == 2047 * (3 * 2048 + 2047)
+    # All of it below the floor: no prompt the context admits has a longer tail than it holds.
+    assert mm._widest_unfused_scores(_BONSAI, 2, 4352, 2048) == 2048 * 2 * 2048
+    # A chunk that reaches the floor by its second call, and one past it from the first.
+    assert mm._widest_unfused_scores(_BONSAI, 2, 32768, 4096) == 4095 * 8191
+    assert mm._widest_unfused_scores(_BONSAI, 2, 65536, 16384) == 8191 * 8191
+
+
+@pytest.mark.parametrize(
+    "fuses",
+    [
+        lambda L, S: L > 15 and S >= 256,
+        lambda L, S: L >= 32 or (L > 15 and S >= 256),
+        lambda L, S: L > 8,
+        lambda L, S: L > 8 and L == S,
+        lambda L, S: False,
+    ],
+)
+def test_the_widest_call_matches_walking_every_prompt_the_context_admits(monkeypatch, fuses):
+    _unfused_route(monkeypatch, fuses)
+    for chunk in (16, 48, 64, 80, 96, 384):
+        for n_ctx in range(2, 900, 37):
+            widest = 0
+            for prompt in range(1, n_ctx + 1):
+                whole, rest = divmod(prompt - 1, chunk)
+                calls = [(chunk, held * chunk) for held in range(1, whole + 1)]
+                calls += [(rest, whole * chunk + rest)] if rest else []
+                calls += [(1, prompt)]
+                widest = max([widest] + [L * S for L, S in calls if not fuses(L, S)])
+            charged = mm._widest_unfused_scores(_BONSAI, 2, n_ctx, chunk)
+            # Decode's own cell is charged at the context's end, one key past any prompt.
+            assert widest <= charged <= max(widest, n_ctx + 1), (chunk, n_ctx)
+
+
+def test_tails_below_a_key_floor_are_charged_though_every_full_chunk_fuses(monkeypatch):
+    # NAX head_dim 256: mlx fuses from 1024 queries, and shorter calls only past the floor.
+    _unfused_route(monkeypatch, lambda L, S: L >= 1024 or (L > 15 and S >= 8192))
+    assert mm._widest_unfused_scores(_BONSAI, 2, 65536, 2048) == 1023 * (3 * 2048 + 1023)
+
+
+@_NEEDS_MLX
+@pytest.mark.parametrize("on_nax, row", [(False, 4 * 192 * 2), (True, 4 * 512 * 2)])
+def test_a_padded_route_is_charged_its_copies_where_they_outgrow_the_scores(
+    monkeypatch, on_nax, row
+):
+    from unsloth_zoo.mlx import attention, nax
+
+    if not hasattr(attention, "forced_padding_row_bytes"):
+        pytest.skip("needs a zoo with the padded route")
+    monkeypatch.setattr(nax, "nax_available", lambda: on_nax)
+    widths = (4096, 16384, 64, 4, 192, 128)
+    n_ctx = 2**22
+    floor = mm._compute_bytes(widths[:3], 2, 2048, [], n_ctx, None)
+    assert mm._compute_bytes(widths, 2, 2048, [], n_ctx, None) - floor >= row * n_ctx
+    assert mm._padding_row_bytes(widths, 2, 8191) == 0
+
+
 @_NEEDS_MLX
 def test_the_score_multiple_is_what_an_unfused_call_really_holds():
     import mlx.core as mx
@@ -4772,8 +4831,8 @@ class TestATurboQuantCacheIsSizedAsMlxVlmConvertsIt:
     @pytest.mark.parametrize(
         "widths, scored_cells",
         [
-            # Long calls take the fused route; a 63-query tail still builds its scores.
-            ((3584, 18944, 16, 4, 256, 256), 63 * (16 * 2048 + 63)),
+            # Long calls take the fused route; the chunk and tail below its key floor still build scores.
+            ((3584, 18944, 16, 4, 256, 256), 2047 * (3 * 2048 + 2047)),
             # mlx's own kernel for this width starts above 8 queries.
             ((3584, 18944, 32, 4, 64, 64), 8 * (16 * 2048 + 8)),
         ],
