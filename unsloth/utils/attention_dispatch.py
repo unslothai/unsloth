@@ -1272,12 +1272,7 @@ def _windowed_causal_mask(q_len: int, k_len: int, sliding_window: int, device) -
     """Causal band mask of shape (1, 1, q_len, k_len). Read-only: callers must not mutate it."""
     params = (q_len, k_len, sliding_window)
     entry = _WINDOW_MASK_CACHE.get(device)
-    if (
-        entry is not None
-        and entry["params"] == params
-        # A mask built under inference_mode cannot be saved for a training step's backward.
-        and _cache_hit(entry)
-    ):
+    if entry is not None and entry["params"] == params and _cache_hit(entry):
         return entry["mask"]
     # Drop the outgoing mask first so a shape change does not peak a whole mask higher.
     _WINDOW_MASK_CACHE.pop(device, None)

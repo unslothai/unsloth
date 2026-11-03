@@ -1800,12 +1800,10 @@ def _holds_inference_tensor(value) -> bool:
         return _cached_tensor_is_unsafe(value) if _is_compiling() else torch.is_inference(value)
     if isinstance(value, (tuple, list)):
         return any(_holds_inference_tensor(item) for item in value)
-    # Opaque objects (an xformers mask) cannot be checked: rebuild them.
     return not isinstance(value, (int, float, bool, type(None)))
 
 
 def _cache_hit(entry) -> bool:
-    # Inference tensors may serve inference mode only; normal tensors serve both.
     inference = entry["inference"]
     if inference is None:
         if _is_compiling():

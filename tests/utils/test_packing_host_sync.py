@@ -347,7 +347,6 @@ def test_inference_mode_metadata_is_not_served_to_a_training_step(dtype):
 
 @pytest.mark.parametrize("grad_mode", ["inference_mode", "no_grad"])
 def test_compiled_inference_mode_metadata_is_not_served_to_a_training_step(grad_mode):
-    """A compiled build cannot read inference_mode, so a training read must check its tensors."""
     from unsloth.utils import attention_dispatch
     from unsloth.utils.attention_dispatch import _windowed_causal_mask
 
@@ -371,7 +370,6 @@ def test_compiled_inference_mode_metadata_is_not_served_to_a_training_step(grad_
     assert train[1].tolist() == [0, 3, 8] and train[2] == 5
     _survives_backward(train[1])
     _survives_backward(train_mask.float())
-    # A compiled build outside inference_mode holds normal tensors and is still reused.
     assert (train is built) == (grad_mode == "no_grad")
     assert (train_mask is built_mask) == (grad_mode == "no_grad")
 
@@ -380,7 +378,6 @@ def test_compiled_inference_mode_metadata_is_not_served_to_a_training_step(grad_
 @pytest.mark.parametrize("grad_mode", ["inference_mode", "no_grad"])
 @pytest.mark.parametrize("kind", ["metadata", "window_mask"])
 def test_compiled_training_rejects_inference_mode_cache(backend, grad_mode, kind):
-    """No eager cache read between the compiled producer and compiled training consumer."""
     from unsloth.utils import attention_dispatch
 
     cpu = torch.device("cpu")
@@ -415,7 +412,6 @@ def test_compiled_training_rejects_inference_mode_cache(backend, grad_mode, kind
                 assert not torch.is_inference(saved)
                 torch.testing.assert_close(saved, expected)
                 torch.testing.assert_close(x.grad, expected.float())
-            # The safe entry now serves later eager reads too.
             assert build(seq) is saved
     finally:
         attention_dispatch._WINDOW_MASK_CACHE.clear()
