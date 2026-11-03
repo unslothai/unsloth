@@ -1131,3 +1131,71 @@ test("an edit keeps what its form left alone: a preset's temperature distributio
   assert.equal(column.drop, true);
   assert.deepEqual(column.multi_modal_context, images);
 });
+
+test("an open form compares each edit with what it last saved: a toggle back and two renames in a row", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { commitConfigs, viewOf } = await import("../src/features/flows/recipe/recipe-blocks.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  const cfg = group.config as Record<string, unknown>;
+  const presets = (cfg.model_configs as Record<string, unknown>[]).map((m) => ({
+    ...m,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    inference_parameters: { ...(m.inference_parameters as object), max_parallel_requests: 16 },
+  }));
+  // biome-ignore lint/style/useNamingConvention: api schema
+  const saved = { ...group, config: { ...cfg, model_configs: presets } };
+  useDocStore.getState().load({ ...doc(nodes, referenceEdges(nodes)), groups: [saved] });
+  const opened = viewOf("recipe");
+  assert.ok(opened);
+  const sql = Object.values(opened.configs).find((c) => c.name === "sql");
+  assert.ok(sql);
+  let base = opened;
+  let configs = opened.configs;
+  for (const drop of [true, false]) {
+    configs = applyConfigPatch(configs, sql.id, { drop } as never);
+    base = commitConfigs("recipe", base, configs);
+  }
+  const column = (id: string) => useDocStore.getState().graph.nodes[id].params.column as Record<string, unknown>;
+  assert.equal(column(byName(nodes, "sql").id).drop, false);
+
+  const preset = Object.values(opened.configs).find((c) => c.kind === "model_config");
+  assert.ok(preset);
+  for (const name of [`${preset.name}X`, `${preset.name}XY`]) {
+    configs = applyConfigPatch(configs, preset.id, { name });
+    base = commitConfigs("recipe", base, configs);
+  }
+  const models = useDocStore.getState().graph.groups.recipe.config?.model_configs as {
+    alias: string;
+    inference_parameters: Record<string, unknown>;
+  }[];
+  assert.equal(models[0].alias, `${preset.name}XY`);
+  assert.equal(models[0].inference_parameters.max_parallel_requests, 16);
+});
+
+test("pasted columns are renamed all at once, so one copy's new name is not renamed again", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const rect = [-100, -100, 4000, 1000] as [number, number, number, number];
+  const group = { id: "recipe", label: "R", rect, kind: "recipe" as const, config: {}, run: { rows: 5 } };
+  const col = (id: string, column: Record<string, unknown>, x: number): FlowNode => ({
+    id,
+    type: COLUMN_TYPE,
+    v: 1,
+    params: { column },
+    pos: [x, 0],
+    label: String(column.name),
+    group: "recipe",
+  });
+  const existing = col("have", { name: "topic", column_type: "sampler", sampler_type: "category", params: { values: ["a"] } }, 0);
+  useDocStore.getState().load({ ...doc([existing] as never), groups: [group] });
+  const sampler = col("p1", { name: "topic", column_type: "sampler", sampler_type: "category", params: { values: ["b"] } }, 400);
+  const expr = col("p2", { name: "topic_2", column_type: "expression", expr: "{{ topic }}" }, 800);
+  useDocStore.getState().insertFragment({ nodes: [sampler, expr], edges: [] });
+  const graph = useDocStore.getState().graph;
+  const pasted = graph.nodes.p1.params.column as { name: string };
+  const reader = graph.nodes.p2.params.column as { name: string; expr: string };
+  assert.equal(pasted.name, "topic_2");
+  assert.equal(reader.name, "topic_2_2");
+  assert.equal(reader.expr, "{{ topic_2 }}");
+});

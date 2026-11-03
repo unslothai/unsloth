@@ -78,6 +78,8 @@ function BlockForm({
   const [opened, setOpened] = useState(open);
   const [configs, setConfigs] = useState(opened?.view.configs ?? {});
   const latest = useRef(configs);
+  // What the form last saved: each edit is compared with it, not with what the form opened on.
+  const baseline = useRef(opened?.view);
   const signature = useDocStore((s) => recipeSignature(s.graph, groupId));
   const ours = useRef(signature);
   useEffect(() => {
@@ -86,6 +88,7 @@ function BlockForm({
     ours.current = signature;
     const next = open();
     setOpened(next);
+    baseline.current = next?.view;
     latest.current = next?.view.configs ?? {};
     setConfigs(latest.current);
   });
@@ -115,7 +118,7 @@ function BlockForm({
     const next = applyConfigPatch(latest.current, id, patch);
     latest.current = next;
     setConfigs(next);
-    commitConfigs(groupId, opened.view, next);
+    baseline.current = commitConfigs(groupId, baseline.current ?? opened.view, next);
     ours.current = recipeSignature(useDocStore.getState().graph, groupId);
     if (onRename && typeof patch.name === "string") onRename(next[id].name);
   };

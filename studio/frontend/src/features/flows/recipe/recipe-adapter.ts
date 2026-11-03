@@ -333,6 +333,12 @@ function keepUnshown(
   });
 }
 
+/** The view an open form compares its next edit against once `configs` is saved: the saved configs,
+ * with their names and renamed processors, so a later edit is told apart from this one. */
+export function savedView(before: StudioView, configs: Record<string, NodeConfig>): StudioView {
+  return { ...before, configs, processors: renamedProcessors(before, configs) };
+}
+
 /** What an edit made in Recipe Studio configs changes in the flow: only touched columns are rebuilt. */
 export function commitStudioEdit(
   group: FlowGroup,

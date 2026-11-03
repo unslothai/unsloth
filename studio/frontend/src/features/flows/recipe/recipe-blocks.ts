@@ -16,6 +16,7 @@ import {
   type StudioView,
   columnNode,
   commitStudioEdit,
+  savedView,
   isColumnConfig,
   studioView,
 } from "./recipe-adapter";
@@ -27,14 +28,15 @@ export function viewOf(groupId: string): StudioView | null {
   return group ? studioView(group, groupColumns(graph, groupId)) : null;
 }
 
+/** Saves `configs` as an edit of `before`; returns the view the next edit compares against. */
 export function commitConfigs(
   groupId: string,
   before: StudioView,
   configs: Record<string, NodeConfig>,
-): void {
+): StudioView {
   const graph = useDocStore.getState().graph;
   const group = graph.groups[groupId];
-  if (!group) return;
+  if (!group) return before;
   const edit = commitStudioEdit(
     group,
     groupColumns(graph, groupId),
@@ -42,6 +44,7 @@ export function commitConfigs(
     configs,
   );
   commitRecipe(groupId, edit.nodes, edit.group, `recipe:${groupId}`);
+  return savedView(before, configs);
 }
 
 export function setupConfig(view: StudioView, target: RecipeSetupTarget) {

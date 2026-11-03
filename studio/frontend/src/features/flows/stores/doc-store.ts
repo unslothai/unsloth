@@ -543,8 +543,16 @@ export const useDocStore = create<DocState>((set, get) => {
           if (node.type !== RECIPE_COLUMN || !pairs) continue;
           const own = columnNameOf(node);
           let column = (node.params as { column: Record<string, unknown> }).column;
-          for (const [from, to] of pairs)
-            column = { ...(renameInColumn(column, from, to) as Record<string, unknown>), name: own };
+          // Through placeholders, so a new name that is another copy's old name (topic -> topic_2 while
+          // topic_2 -> topic_2_2) is not renamed a second time.
+          const held = pairs.map((_, i) => `__flows_paste_${i}__`);
+          pairs.forEach(([from], i) => {
+            column = renameInColumn(column, from, held[i]) as Record<string, unknown>;
+          });
+          pairs.forEach(([, to], i) => {
+            column = renameInColumn(column, held[i], to) as Record<string, unknown>;
+          });
+          column = { ...column, name: own };
           nodes[id] = { ...node, params: { ...node.params, column } };
         }
         const edges = { ...s.graph.edges };

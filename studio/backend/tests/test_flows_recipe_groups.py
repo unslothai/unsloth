@@ -728,6 +728,36 @@ def test_a_migrated_recipe_gets_its_own_copy_of_uploaded_documents(tmp_path, mon
     assert (tmp_path / "up1" / "u1.extracted.txt").read_text() == "page"
 
 
+def test_a_migrated_legacy_document_recipe_with_no_upload_id_gets_its_own_copy(
+    tmp_path, monkeypatch
+):
+    import utils.paths.storage_roots as roots
+
+    monkeypatch.setattr(roots, "unstructured_uploads_root", lambda: tmp_path)
+    (tmp_path / "n1").mkdir()
+    (tmp_path / "n1" / "u1.extracted.txt").write_text("page")
+    payload = copy.deepcopy(SQL)
+    payload["recipe"]["seed_config"] = {
+        "source": {
+            "seed_type": "unstructured",
+            "paths": [str(tmp_path / "n1" / "u1.extracted.txt")],
+        }
+    }
+    # Recipes saved before upload ids keep only the file ids; the folder is the upload block's.
+    payload["ui"] = {"unstructured_file_ids": ["u1"]}
+    doc, _ = flow_from_recipe(payload, name = "SQL")
+    flows_routes._own_uploads(doc)
+    group = doc["groups"][0]
+    new = group["ui"]["unstructured_upload_uid"]
+    assert new and new != "n1"
+    assert group["config"]["seed_config"]["source"]["paths"] == [
+        str(tmp_path / new / "u1.extracted.txt")
+    ]
+    for f in (tmp_path / new).iterdir():
+        f.unlink()
+    assert (tmp_path / "n1" / "u1.extracted.txt").read_text() == "page"
+
+
 def test_a_recipe_on_chats_loaded_model_is_keyed_on_that_model_and_quant(monkeypatch, tmp_path):
     from core.flows import engine as engine_mod
     from studio_mcp import loading

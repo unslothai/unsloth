@@ -279,6 +279,25 @@ def _recipe_flow(payload: Any, name: str, source: Optional[dict]) -> tuple[dict,
 _UPLOAD_ID = re.compile(r"[A-Za-z0-9_-]+")
 
 
+def _upload_dir_of(source: Any, root: Path) -> Optional[str]:
+    """The one upload folder directly under ``root`` that a seed's document paths are in, else None."""
+    if not isinstance(source, dict):
+        return None
+    paths = [source.get("path")] + list(source.get("paths") or [])
+    dirs = set()
+    for path in paths:
+        if not isinstance(path, str) or not path:
+            continue
+        parent = Path(path).parent
+        try:
+            if parent.parent.resolve() != root.resolve():
+                return None
+        except OSError:
+            return None
+        dirs.add(parent.name)
+    return dirs.pop() if len(dirs) == 1 else None
+
+
 def _own_uploads(doc: dict) -> None:
     """Copy a recipe's uploaded documents under a new upload id: removing one in the flow deletes the
     file, which must not break the recipe it came from."""
@@ -288,15 +307,23 @@ def _own_uploads(doc: dict) -> None:
 
     root = unstructured_uploads_root()
     for group in doc.get("groups") or []:
-        ui = group.get("ui") if isinstance(group, dict) else None
+        if not isinstance(group, dict):
+            continue
+        seed = (group.get("config") or {}).get("seed_config")
+        source = seed.get("source") if isinstance(seed, dict) else None
+        ui = group.get("ui")
         uid = ui.get("unstructured_upload_uid") if isinstance(ui, dict) else None
+        if not isinstance(uid, str) or not uid:
+            # Older document recipes keep no upload id; their files sit in a folder named by the
+            # upload block (`n1`), which the paths themselves name.
+            uid = _upload_dir_of(source, root)
         if not isinstance(uid, str) or not _UPLOAD_ID.fullmatch(uid) or not (root / uid).is_dir():
             continue
         new = uuid.uuid4().hex
         shutil.copytree(root / uid, root / new)
+        if not isinstance(ui, dict):
+            ui = group["ui"] = {}
         ui["unstructured_upload_uid"] = new
-        seed = (group.get("config") or {}).get("seed_config")
-        source = seed.get("source") if isinstance(seed, dict) else None
         if not isinstance(source, dict):
             continue
 
