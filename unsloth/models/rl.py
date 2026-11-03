@@ -4725,6 +4725,7 @@ _TRL_FUSED_HEAD_CONTRACTS = (
     _TRL_FUSED_HEAD_ARGS,
     _TRL_FUSED_HEAD_ARGS + ("outputs",),
     _TRL_FUSED_HEAD_ARGS + ("outputs", "support_ids"),
+    _TRL_FUSED_HEAD_ARGS + ("outputs", "support_ids", "score_ids"),
 )
 
 

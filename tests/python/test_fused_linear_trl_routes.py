@@ -298,7 +298,7 @@ def test_patch_leaves_kernels_without_bias(monkeypatch):
     assert utils._ChunkedLogProbFunction is _NoBiasKernel
 
 
-class _ScoreIdsKernel(_Kernel):
+class _UnknownKernel(_Kernel):
     @classmethod
     def apply(cls, *args):
         assert len(args) == 11
@@ -319,7 +319,7 @@ class _ScoreIdsKernel(_Kernel):
         logit_scale = 1.0,
         outputs = (),
         support_ids = None,
-        score_ids = None,
+        future_ids = None,
     ):
         raise AssertionError("not reached")
 
@@ -336,13 +336,13 @@ def _install(kernel, monkeypatch):
 
 
 def test_patch_leaves_kernels_with_an_unknown_contract(monkeypatch):
-    assert _install(_ScoreIdsKernel, monkeypatch) is _ScoreIdsKernel
+    assert _install(_UnknownKernel, monkeypatch) is _UnknownKernel
     hidden, weight, bias, targets = _inputs(5)
-    before = _ScoreIdsKernel._calls
-    got = _ScoreIdsKernel.apply(
+    before = _UnknownKernel._calls
+    got = _UnknownKernel.apply(
         hidden, weight, bias, targets, 1.0, 4096, None, 1.0, ("log_probs",), None, None
     )
-    assert len(got) == 6 and _ScoreIdsKernel._calls == before + 1
+    assert len(got) == 6 and _UnknownKernel._calls == before + 1
 
     class _NoSignature:
         apply = _Kernel.apply
@@ -360,7 +360,7 @@ def test_patch_wraps_the_installed_trl_kernel(monkeypatch):
     while getattr(kernel, "function", None) is not None:
         kernel = kernel.function
     if kernel is None or "bias" not in inspect.signature(kernel.forward).parameters:
-        pytest.skip("this TRL has no fused-head kernel the adapter serves")
+        pytest.skip(reason = "this TRL has no fused-head kernel the adapter serves")
     params = tuple(inspect.signature(kernel.forward).parameters)[2:]
     if params not in unsloth_rl._TRL_FUSED_HEAD_CONTRACTS:
         assert _install(kernel, monkeypatch) is kernel, params
@@ -374,12 +374,44 @@ def test_patch_wraps_the_installed_trl_kernel(monkeypatch):
     calls = fused_linear.CALLS["logprobs"]
     got = wrapped.apply(*args)
     assert fused_linear.CALLS["logprobs"] == calls + 1
-    assert len(got) == (5 if "outputs" in params else 2)
+    assert len(got) == (6 if "score_ids" in params else 5 if "outputs" in params else 2)
     want = _reference(hidden, weight, bias, targets, 1.0, None, 1.0)[0]
     torch.testing.assert_close(got[0].double(), want, rtol = 1e-5, atol = 1e-5)
     g_got = torch.autograd.grad(got[0].sum(), hidden)[0]
     g_want = torch.autograd.grad(want.sum(), hidden)[0]
     torch.testing.assert_close(g_got.double(), g_want.double(), rtol = 1e-4, atol = 1e-5)
+
+
+def test_patch_keeps_the_supported_score_ids_route(monkeypatch):
+    class _ScoreIdsKernel(_UnknownKernel):
+        @staticmethod
+        def forward(
+            ctx,
+            hidden,
+            weight,
+            bias,
+            targets,
+            temperature,
+            chunk_size,
+            final_logit_softcapping = None,
+            logit_scale = 1.0,
+            outputs = (),
+            support_ids = None,
+            score_ids = None,
+        ):
+            raise AssertionError("not reached")
+
+    wrapped = _install(_ScoreIdsKernel, monkeypatch)
+    assert isinstance(wrapped, unsloth_rl._UnslothFusedLinearHead)
+    hidden, weight, bias, targets = _inputs(6)
+    before = fused_linear.CALLS["logprobs"]
+    got = wrapped.apply(
+        hidden, weight, bias, targets, 1.0, 32768, None, 1.0, ("log_probs",), None, None
+    )
+    assert len(got) == 6 and got[-1] is None
+    assert fused_linear.CALLS["logprobs"] == before + 1
+    want = _reference(hidden, weight, bias, targets, 1.0, None, 1.0)[0]
+    torch.testing.assert_close(got[0].double(), want, rtol = 1e-5, atol = 1e-5)
 
 
 class _HeadLM(torch.nn.Module):
