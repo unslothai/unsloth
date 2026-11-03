@@ -632,14 +632,6 @@ def _mcp_tool_spec(tool_name: str) -> Any:
         return None
 
 
-def _mcp_fit_loaded(specs: list) -> list:
-    try:
-        from core.inference.tools import mcp_fit_loaded  # noqa: PLC0415 -- cycle at import time
-        return mcp_fit_loaded(specs)
-    except Exception:  # noqa: BLE001 -- unsized, the newest load still goes through
-        return specs[:1]
-
-
 def _mcp_tool_search_specs(arguments: Any) -> list:
     try:
         from core.inference.tools import mcp_tool_search_specs  # noqa: PLC0415 -- cycle at import time
@@ -1235,8 +1227,6 @@ class ToolLoopController:
             name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
         }
         self._mcp_search = MCP_TOOL_SEARCH_NAME in self._allowed_tool_names
-        self._listed_count = len(self._tools)
-        self._mcp_loaded: list[dict[str, Any]] = []
         self._auto_heal_tool_calls = auto_heal_tool_calls
         self._deduplicate_tool_calls = deduplicate_tool_calls
         self._one_shot_tools = one_shot_tools
@@ -1296,17 +1286,22 @@ class ToolLoopController:
             canonical = _canonical_tool_name(tool_name, self._allowed_tool_names)
             if canonical is not None:
                 tool_name, name_healed = canonical, True
+        # A deferred MCP tool called by name runs under its catalog schema without joining the declared
+        # tools: growing the declaration mid-turn shifts the prompt prefix and drops llama-server's cache.
+        extra_schema = None
         if (
             self._mcp_search
             and tool_name.startswith(MCP_TOOL_PREFIX)
             and tool_name not in self._allowed_tool_names
         ):
-            self._load_mcp_tools([_mcp_tool_spec(tool_name)])
+            extra_schema = _mcp_tool_spec(tool_name)
+            if extra_schema is not None:
+                self._allowed_tool_names.add(tool_name)
         coerced = coerce_tool_arguments(
             function.get("arguments", {}),
             heal = self._auto_heal_tool_calls,
             tool_name = tool_name,
-            tool_schemas = self._tools,
+            tool_schemas = self._tools + ([extra_schema] if extra_schema is not None else []),
         )
         arguments = coerced.arguments
         if tool_name == "web_search" and UNPARSED_ARGUMENTS_KEY not in arguments:
@@ -1341,7 +1336,8 @@ class ToolLoopController:
             # Not the browser tools: each acts on or reads the page as it is now, so a second
             # scroll down or a snapshot after a click is new work, and two such no-ops ended the turn.
             # Nor the media tools: the same prompt again is another image with a fresh seed.
-            # Nor mcp_tool_search: a repeat restores tools a later load evicted.
+            # Nor mcp_tool_search: a repeat asks for other matches, and a same-query repeat only
+            # re-returns schemas the model already has.
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
 
@@ -1416,7 +1412,12 @@ class ToolLoopController:
         if not failed:
             self._successful_keys.add(decision.key)
             if self._mcp_search and decision.tool_name == MCP_TOOL_SEARCH_NAME:
-                self._load_mcp_tools(_mcp_tool_search_specs(decision.arguments))
+                # The result already carries the full schemas; only the call gate opens, so the
+                # declared tools (and the prompt prefix llama-server caches) stay as they were.
+                for spec in _mcp_tool_search_specs(decision.arguments):
+                    name = _tool_name_from_schema(spec) if isinstance(spec, Mapping) else None
+                    if name:
+                        self._allowed_tool_names.add(name)
             elif decision.tool_name.startswith(MCP_TOOL_PREFIX):
                 # Also while the catalog is listed in full, for a later turn that defers it.
                 self._remember_mcp_tools([decision.tool_name])
@@ -1428,33 +1429,6 @@ class ToolLoopController:
             is_error = failed,
             executed = True,
         )
-
-    def _load_mcp_tools(self, specs) -> None:
-        from core.inference.chat_template_helpers import neutralize_tool_descriptions  # noqa: PLC0415
-
-        # Remote text, swept as the loops sweep the catalog this controller was built from (#7066); with no model's
-        # profile at hand, against every family's markup.
-        specs = (
-            neutralize_tool_descriptions([dict(s) for s in specs if isinstance(s, Mapping)]) or []
-        )
-        listed = self._tools[: self._listed_count]
-        listed_names = {_tool_name_from_schema(tool) for tool in listed}
-        fresh = [s for s in specs if _tool_name_from_schema(s) not in listed_names]
-        fresh_names = {_tool_name_from_schema(s) for s in fresh}
-        # Newest first into the turn's load share, so a later search can retire an older load but never overflow.
-        kept = _mcp_fit_loaded(
-            fresh
-            + [
-                s
-                for s in reversed(self._mcp_loaded)
-                if _tool_name_from_schema(s) not in fresh_names
-            ]
-        )
-        self._mcp_loaded = [_copy_schema(s) for s in reversed(kept)]
-        self._tools = listed + self._mcp_loaded
-        self._allowed_tool_names = {
-            name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
-        }
 
     def _remember_mcp_tools(self, names) -> None:
         if not names:

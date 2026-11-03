@@ -7093,7 +7093,8 @@ def test_nested_object_schema_is_relaxed_on_the_wire_but_not_in_the_loop(monkeyp
 
 
 def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeypatch):
-    """Loading deferred MCP tools is not a tool round (#10997)."""
+    """Loading deferred MCP tools is not a tool round (#10997), and it never grows the declared
+    tools mid-turn: on hybrid/recurrent models that shift invalidated the whole prefix (#16538)."""
     from core.inference import tools as tools_mod
 
     ping = {
@@ -7123,7 +7124,10 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
     )
 
     assert [name for name, _ in calls] == ["mcp_tool_search", "mcp__srv1__ping"]
-    assert "mcp__srv1__ping" in [t["function"]["name"] for t in payloads[1].get("tools", [])]
+    # The found tool's schema rides the search result, so the next request's declared tools stay
+    # identical and llama-server reuses the prompt cache instead of re-processing from token 0
+    # (#16538, same template-at-the-top mechanics as the final-pass case below).
+    assert payloads[1].get("tools", []) == payloads[0].get("tools", [])
 
 
 def test_budget_exhausted_final_pass_keeps_the_cached_tool_catalogue(monkeypatch):

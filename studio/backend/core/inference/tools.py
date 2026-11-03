@@ -12358,7 +12358,8 @@ _MCP_TOOL_SEARCH_LIMIT = 5
 # window: small models often answer that a tool is unavailable rather than search for it (#10997).
 _MCP_TOOL_PRELOAD = 5
 _MCP_TOOL_PRELOAD_SHARE = 0.33
-# Tools a turn loads by search or by name, newest first; older ones leave the listing to stay within it.
+# Schemas a search result carries, newest first: the match list stops when they would take more than this
+# share of the window. They ride the result, not the tools declaration, so the prompt prefix never moves.
 _MCP_TOOL_LOAD_SHARE = 0.5
 _MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
 _MCP_TOOL_SEARCH_MAX_LIMIT = 10
@@ -12875,7 +12876,8 @@ def _mcp_tool_search(arguments) -> str:
             f"listed in the {MCP_TOOL_SEARCH_NAME} description."
         )
     lines = [
-        f"- {spec['function']['name']}: {_mcp_summary(spec['function'].get('description') or '')}"
+        f"- {spec['function']['name']}: {_mcp_summary(spec['function'].get('description') or '')}\n"
+        f"  schema: {json.dumps(spec, separators=(',', ':'))}"
         for spec in found
     ]
     return (
