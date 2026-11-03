@@ -168,6 +168,8 @@ def upcast_keeping_storage(
             if rec[3] == "host":
                 token.append(rec)
                 _set(rec[0], rec[1], rec[2], rec[4][4])
+                if rec[0] == "b":
+                    rec[4][3]["buffer_version"][rec[4][2]] = None
         for rec in records:
             kind, m, name, how, ref = rec[:5]
             if how != "host":
@@ -178,7 +180,7 @@ def upcast_keeping_storage(
             del data
             _set(kind, m, name, cast)
             del cast
-            current = _get(kind, m, name)
+            current = (m._parameters if kind == "p" else m._buffers)[name]
             rec[5], rec[6] = current.data_ptr(), _version(current)
             del current
     except BaseException:
@@ -218,11 +220,19 @@ def _restore_one(rec: list) -> None:
             _set(kind, m, name, kept.to(device, non_blocking = kept.is_pinned()))
             _mark_onloaded(state, kind, full, m, name)
         return
-    untouched = data.data_ptr() == cast_ptr and _version(data) == cast_version
+    current = (m._parameters if kind == "p" else m._buffers)[name]
+    untouched = data.data_ptr() == cast_ptr and _version(current) == cast_version
     if cast_ptr is None:
         return
     if data.dtype != load_dtype:
-        _set(kind, m, name, data.to(load_dtype))
+        try:
+            cast = data.to(load_dtype)
+        except torch.OutOfMemoryError:
+            if untouched and cast_version is not None and how == "host":
+                _set(kind, m, name, kept)
+                rec[5], rec[6] = None, None
+            raise
+        _set(kind, m, name, cast)
         if untouched and how == "host":
             _mark_onloaded(state, kind, full, m, name)
     elif how == "host" and data.device.type != "cpu":
@@ -231,15 +241,36 @@ def _restore_one(rec: list) -> None:
 
 
 def restore_storage(token: list) -> None:
-    pending = list(token)
+    pending = list(reversed(token))
+    cleared = False
     while pending:
         failed = []
+        released = False
         for rec in pending:
+            cast_ptr = rec[5]
             try:
                 _restore_one(rec)
             except Exception:  # noqa: BLE001 - retried below; a later cast back can free the room it needs
                 failed.append(rec)
-        if len(failed) == len(pending):
+                released |= cast_ptr is not None and rec[5] is None
+        if len(failed) == len(pending) and not released:
+            if not cleared:
+                import sys
+                import traceback
+                import torch
+
+                exc = sys.exc_info()[1]
+                if isinstance(exc, torch.OutOfMemoryError):
+                    errors, seen = [exc], set()
+                    while errors:
+                        error = errors.pop()
+                        if error is None or id(error) in seen:
+                            continue
+                        seen.add(id(error))
+                        traceback.clear_frames(error.__traceback__)
+                        errors.extend((error.__cause__, error.__context__))
+                    cleared = True
+                    continue
             break
         pending = failed
     token.clear()
