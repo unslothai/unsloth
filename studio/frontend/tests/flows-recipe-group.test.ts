@@ -787,3 +787,13 @@ test("a GitHub seed added before a repository is entered keeps a form to enter i
   const view = studioView(after, nodes);
   assert.ok(Object.values(view.configs).some((c) => c.kind === "seed"));
 });
+
+test("clearing a provider or model preset name keeps its form open until the new name is typed", () => {
+  const src = readFileSync(
+    new URL("../src/features/flows/recipe/recipe-forms.tsx", import.meta.url),
+    "utf8",
+  );
+  const update = src.slice(src.indexOf("const update = (id: string"), src.indexOf("const canDrop"));
+  // The form keeps the blank name; the recipe, and the card the inspector follows, keep the old one.
+  assert.match(update, /setConfigs\(next\);[\s\S]*if \(onRename && !String\(next\[id\]\.name \?\? ""\)\.trim\(\)\) return;\s*commitConfigs\(/);
+});
