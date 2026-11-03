@@ -179,7 +179,7 @@ test("stopping records the intent before the shutdown it can outlive", async () 
 
   // Reaping can block ~15s, so the marker must be written before it; order is load bearing.
   const mark = body.indexOf("markServerStopIntent();\n    try {");
-  const invoke = body.indexOf('await invoke("stop_server")');
+  const invoke = body.indexOf('await invoke("stop_server"');
   assert.ok(
     mark > 0 && invoke > mark,
     "the marker is written after the stop it must survive",
@@ -190,11 +190,29 @@ test("stopping records the intent before the shutdown it can outlive", async () 
     /catch \(e\) \{\s*clearServerStopIntent\(\);\s*throw e;\s*\}/,
     "a failed stop keeps a marker it did not earn",
   );
+});
 
-  const external = body.slice(0, body.indexOf("const { invoke }"));
+test("an attached server is stopped, not only detached", async () => {
+  const hook = USE_TAURI_BACKEND;
+  const body = hook.slice(
+    hook.indexOf("async function runStopServer()"),
+    hook.indexOf("async function startInstall("),
+  );
+
+  assert.doesNotMatch(
+    body,
+    /isExternalServer\)/,
+    "the stop branches on render state the tray handler never sees",
+  );
+  const invoke = body.indexOf('await invoke("stop_server"');
+  const detach = body.indexOf("setIsExternalServer(false);");
+  assert.ok(
+    invoke > 0 && detach > invoke,
+    "the app lets go of an attached server without stopping it",
+  );
   assert.match(
-    external,
-    /stopExternalServerPoll\(\);\s*markServerStopIntent\(\);/,
+    body.slice(detach),
+    /stopExternalServerPoll\(\);\s*setBackendStatus\("stopped"\);/,
   );
 });
 
