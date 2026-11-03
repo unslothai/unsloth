@@ -423,6 +423,7 @@ def test_strided_final_norm_keeps_the_regular_path(monkeypatch, strided):
     from torch._subclasses.fake_tensor import FakeTensor, FakeTensorMode
 
     D = _driver()
+    monkeypatch.setattr(D.torch.version, "hip", None)
     monkeypatch.setattr(D.torch.cuda, "get_device_capability", lambda device: (8, 0))
     monkeypatch.setattr(D.F, "supported_capability", lambda capability: True, raising = False)
     monkeypatch.setattr(D, "_signature", lambda plan: ())
@@ -525,6 +526,7 @@ def test_plan_goes_stale_when_peft_is_unloaded(monkeypatch):
 
     peft = pytest.importorskip("peft")
     D = _driver()
+    monkeypatch.setattr(D.torch.version, "hip", None)
     model = peft.get_peft_model(
         torch.nn.ModuleDict(
             {
