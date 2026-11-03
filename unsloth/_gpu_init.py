@@ -777,8 +777,7 @@ del patch_bitsandbytes_optimizer_step_sync
 
 
 def _define_kernels_against_triton_stub():
-    """With no Triton, triton imports from unsloth.* modules get unsloth_zoo's stub; every other importer (any thread)
-    still sees no Triton, so the stub never enters sys.modules or sys.meta_path. Returns the undo callable."""
+    """Return an undo hook for unsloth-only Triton imports, without publishing the stub."""
     try:
         from unsloth_zoo.stubs import triton_stub
     except ImportError:

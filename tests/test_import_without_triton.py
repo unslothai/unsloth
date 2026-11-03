@@ -70,7 +70,6 @@ def test_unsloth_imports_without_triton():
     )
 
 
-# The _gpu_init.py hook, with another thread importing triton mid unsloth.* import: it must see no Triton.
 _CONCURRENT = textwrap.dedent("""
     import ast, builtins, importlib.util, os, sys, textwrap, threading
     from unsloth_zoo.stubs import triton_stub
