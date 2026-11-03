@@ -5704,7 +5704,7 @@ class TestProgressStepCountMatchesTotal:
             patch.object(stack_mod, "IS_MAC_ARM", is_mac_arm),
             patch.object(stack_mod, "NO_TORCH", no_torch),
             patch.object(stack_mod, "_rocm_windows_torch_installed", False),
-            patch.object(stack_mod, "_bootstrap_uv", return_value = False),
+            patch.object(stack_mod, "_bootstrap_uv", return_value = True),
             patch.object(stack_mod, "_installed_torch_is_windows_rocm", return_value = False),
             patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True),
             patch.object(stack_mod, "_repair_bad_anyio"),
