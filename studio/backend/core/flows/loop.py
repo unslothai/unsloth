@@ -105,10 +105,13 @@ def drop_test_rows(failures: list[dict], test_rows: list[dict]) -> list[dict]:
     """Guard: a failure carrying a long string that identifies one test row never reaches the seed.
     A value many test rows share (a fixed Alpaca instruction, a label) identifies none of them."""
     seen: dict[str, int] = {}
-    for row in test_rows:
-        for s in set(_strings(row)):
-            if len(s) >= LEAK_MIN_CHARS:
-                seen[s] = seen.get(s, 0) + 1
+    # A row repeated in the test split is still one row: its question stays banned.
+    distinct = {
+        frozenset(s for s in _strings(row) if len(s) >= LEAK_MIN_CHARS) for row in test_rows
+    }
+    for strings in distinct:
+        for s in strings:
+            seen[s] = seen.get(s, 0) + 1
     banned = {s for s, n in seen.items() if n == 1}
     if not banned:
         return list(failures)
