@@ -30,6 +30,8 @@ from hub.utils.hf_tokens import (
     cache_reads_authorized,
     call_with_anonymous_retry,
     collecting_hub_token_rejections,
+    note_saved_token_rejected,
+    saved_token_rejected,
     HUB_TOKEN_REJECTED_ERROR,
     hf_token_arg,
     is_rejected_credential_error,
@@ -1319,7 +1321,11 @@ def _hub_model_info(
     key = (repo_id, _token_fingerprint(hf_token))
     if scope is not None:
         if key in scope:
-            return scope[key]
+            info, rejected = scope[key]
+            if rejected:
+                # The read may have run before the caller's rejection scope opened.
+                note_saved_token_rejected(hf_token)
+            return info
         # Asked unconditionally so one response serves every probe; the listing needs sizes.
         files_metadata = True
 
@@ -1329,12 +1335,14 @@ def _hub_model_info(
         # Shared, so whichever probe reads first fixes the bound the rest inherit.
         "timeout": _HUB_MODEL_INFO_TIMEOUT if timeout is None else timeout,
     }
-    info = call_with_anonymous_retry(
-        lambda token: hf_model_info(repo_id, **{**kwargs, "token": token}), hf_token
-    )
+    with collecting_hub_token_rejections():
+        info = call_with_anonymous_retry(
+            lambda token: hf_model_info(repo_id, **{**kwargs, "token": token}), hf_token
+        )
+        rejected = saved_token_rejected(hf_token)
 
     if scope is not None:
-        scope[key] = info
+        scope[key] = (info, rejected)
     return info
 
 

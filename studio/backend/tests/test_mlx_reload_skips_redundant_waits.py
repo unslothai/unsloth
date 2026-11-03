@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import inspect
+import urllib.error
 from types import SimpleNamespace
 
 import pytest
@@ -84,6 +85,24 @@ def test_nested_scopes_join_and_the_scope_ends_with_the_outermost(monkeypatch):
         mc._hub_model_info("org/m")
     assert reads == ["org/m"]
     assert mc._hub_model_info_scope.get() is None
+
+
+def test_a_shared_answer_replays_its_token_rejection_into_a_later_scope(monkeypatch):
+    from hub.utils.hf_tokens import saved_token_rejected, token_rejection_scope
+
+    def model_info(repo, *, token, **_k):
+        if token:
+            raise urllib.error.HTTPError(repo, 401, "expired", None, None)
+        return repo
+
+    monkeypatch.setattr("huggingface_hub.model_info", model_info)
+    monkeypatch.setattr(mc, "_env_offline", lambda: False)
+    with mc.shared_hub_model_info():
+        mc._hub_model_info("org/m", "hf_expired")
+        with token_rejection_scope():
+            assert not saved_token_rejected("hf_expired")
+            assert mc._hub_model_info("org/m", "hf_expired") == "org/m"
+            assert saved_token_rejected("hf_expired")
 
 
 def test_only_the_mlx_load_holds_the_answers():
