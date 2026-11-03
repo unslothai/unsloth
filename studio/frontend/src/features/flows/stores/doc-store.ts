@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { replaceRef } from "@/features/recipe-studio/utils/refs";
 import {
   FLOW_FORMAT,
   FLOW_FORMAT_VERSION,
@@ -48,6 +49,17 @@ function uniqueColumn(
     label: next,
     params: { ...node.params, column: { ...params.column, name: next } },
   };
+}
+
+/** Every string in a column's definition with ``from`` renamed to ``to`` where it is a reference. */
+function renameInColumn(value: unknown, from: string, to: string): unknown {
+  if (typeof value === "string") return replaceRef(value, from, to);
+  if (Array.isArray(value)) return value.map((v) => renameInColumn(v, from, to));
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, renameInColumn(v, from, to)]),
+    );
+  return value;
 }
 
 /** Graph state normalized by id. Every record is immutable: an edit replaces only what it touches,
@@ -488,6 +500,9 @@ export const useDocStore = create<DocState>((set, get) => {
       commit((s) => {
         const nodes = { ...s.graph.nodes };
         const nodeOrder = [...s.graph.nodeOrder];
+        // A copied column renamed to stay unique is renamed in the other copies that read it too.
+        const renames = new Map<string, [string, string][]>();
+        const added: string[] = [];
         for (const node of fragment.nodes) {
           if (nodes[node.id]) continue;
           const group = frameAt(s.graph, node.pos);
@@ -502,12 +517,24 @@ export const useDocStore = create<DocState>((set, get) => {
                 nodes[id].group === group &&
                 !nodes[id].disabled,
             );
-          nodes[node.id] = {
-            ...uniqueColumn(node, group, nodes, nodeOrder),
-            group,
-            ...(extra ? { disabled: true } : {}),
-          };
+          const unique = uniqueColumn(node, group, nodes, nodeOrder);
+          const from = columnNameOf(node);
+          const to = columnNameOf(unique);
+          if (group && from && to && from !== to)
+            renames.set(group, [...(renames.get(group) ?? []), [from, to]]);
+          nodes[node.id] = { ...unique, group, ...(extra ? { disabled: true } : {}) };
           nodeOrder.push(node.id);
+          added.push(node.id);
+        }
+        for (const id of added) {
+          const node = nodes[id];
+          const pairs = node.group ? renames.get(node.group) : undefined;
+          if (node.type !== RECIPE_COLUMN || !pairs) continue;
+          const own = columnNameOf(node);
+          let column = (node.params as { column: Record<string, unknown> }).column;
+          for (const [from, to] of pairs)
+            column = { ...(renameInColumn(column, from, to) as Record<string, unknown>), name: own };
+          nodes[id] = { ...node, params: { ...node.params, column } };
         }
         const edges = { ...s.graph.edges };
         const edgeOrder = [...s.graph.edgeOrder];
