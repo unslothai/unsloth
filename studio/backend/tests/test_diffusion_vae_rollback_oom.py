@@ -1,20 +1,5 @@
-# Unsloth Zoo - Utilities for Unsloth
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published
-# by the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-"""An OOM during the fp32 upcast must roll every weight back, even when the first cast back itself runs out of room."""
 
 from __future__ import annotations
 
@@ -26,8 +11,6 @@ from core.inference import diffusion_vae_upcast as vu  # noqa: E402
 
 
 class _Budget:
-    """A device with ``cap`` units; ``Tensor.to`` charges the copy before the source is freed."""
-
     def __init__(self, cap: int):
         self.cap, self.used = cap, 0
 
@@ -95,8 +78,7 @@ class _Model:
 
 
 def test_rollback_retries_a_cast_back_that_ran_out_of_room():
-    # fp16 8 + 2 + 8 = 18 of 34: large0 and bias upcast (28 used), large1 needs 16 -> OOM. Casting large0 back needs 8
-    # with 6 free; only after bias goes back (frees 2) does it fit.
+    # Large0's cast-back needs 8 free units; only the bias cast-back makes that room.
     budget = _Budget(34)
     model = _Model(budget)
     with pytest.raises(torch.OutOfMemoryError):
