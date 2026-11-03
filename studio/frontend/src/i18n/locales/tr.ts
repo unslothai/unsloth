@@ -2556,6 +2556,7 @@ export const tr = {
           clamped: "İzin verilen aralığa uyarlandı: {path}",
           dropped: "Kaldırıldı: {path}",
           backgroundSkipped: "Bu dosyadaki arka plan görseli kullanılamadı.",
+          more: "Ve {count} tane daha",
         },
       },
       gpuRendering: {

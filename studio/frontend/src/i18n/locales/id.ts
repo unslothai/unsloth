@@ -2563,6 +2563,7 @@ export const id = {
           clamped: "Disesuaikan ke rentang yang diizinkan: {path}",
           dropped: "Dihapus: {path}",
           backgroundSkipped: "Gambar latar di file ini tidak dapat digunakan.",
+          more: "Dan {count} lainnya",
         },
       },
       gpuRendering: {

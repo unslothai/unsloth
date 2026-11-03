@@ -2371,6 +2371,7 @@ export const ar = {
           clamped: "تم التعديل ضمن النطاق المسموح: {path}",
           dropped: "تمت الإزالة: {path}",
           backgroundSkipped: "تعذّر استخدام صورة الخلفية في هذا الملف.",
+          more: "و{count} أخرى",
         },
       },
       gpuRendering: {

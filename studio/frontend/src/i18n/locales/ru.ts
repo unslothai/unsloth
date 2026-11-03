@@ -2381,6 +2381,7 @@ export const ru = {
           clamped: "Приведено к допустимому диапазону: {path}",
           dropped: "Удалено: {path}",
           backgroundSkipped: "Фоновое изображение из этого файла не удалось использовать.",
+          more: "И ещё {count}",
         },
       },
       gpuRendering: {

@@ -4,29 +4,65 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CUSTOMIZATION_FIELDS,
+  LAYOUT_FIELDS,
   LOOK_FIELDS,
-  themeLookFromCustomization,
+  mapIssuePath,
+  pickFields,
 } from "../src/features/settings/appearance-theme/domain/classification.ts";
 import { parseThemeFile } from "../src/features/settings/appearance-theme/domain/parse.ts";
 import {
-  DEFAULT_THEME_GLASS,
-  MAX_BACKGROUND_DATA_URL_CHARS,
   MAX_THEME_FILE_CHARS,
   MAX_THEME_FILE_CHARS_NO_ASSETS,
+  MAX_THEME_WARNINGS,
+  type ThemeParseResult,
   THEME_FILE_KIND,
-  type ThemeBackground,
-  type ThemeFileV1,
+  type ThemeWarning,
 } from "../src/features/settings/appearance-theme/domain/schema.ts";
 import {
   DEFAULT_CUSTOMIZATION,
-  type ImportedFont,
   SIDEBAR_MENU_DEFAULT_VISIBLE,
   SIDEBAR_MENU_ITEM_IDS,
   SIDEBAR_NAV_DEFAULT_PINNED,
   SIDEBAR_NAV_ITEM_IDS,
 } from "../src/features/settings/lib/appearance-customization.ts";
 
-const FULL_LAYOUT: NonNullable<ThemeFileV1["layout"]> = {
+const file = (extra: Record<string, unknown>) => ({
+  kind: THEME_FILE_KIND,
+  schemaVersion: 1,
+  ...extra,
+});
+const parse = (extra: Record<string, unknown>) =>
+  parseThemeFile(JSON.stringify(file(extra)));
+const pad = (json: string, length: number) => json.padEnd(length, " ");
+
+function okOf(result: ThemeParseResult): Extract<ThemeParseResult, { ok: true }> {
+  if (!result.ok) throw new Error(`expected a theme, got ${result.error}`);
+  return result;
+}
+
+test("every customization field is classified, and only two are personal", () => {
+  assert.deepEqual(
+    Object.keys(DEFAULT_CUSTOMIZATION).filter((key) => !Object.hasOwn(CUSTOMIZATION_FIELDS, key)),
+    [],
+  );
+  const personal = Object.entries(CUSTOMIZATION_FIELDS)
+    .filter(([, spec]) => spec.category === "personal")
+    .map(([key]) => key);
+  assert.deepEqual(personal, ["pointerCursors", "reduceMotion"]);
+});
+
+test("sanitizer issue paths map to their file paths", () => {
+  const rows = [
+    ["uiFontSize", "typography.uiFontSize"],
+    ["importedFonts[1].name", "assets.fonts[1].name"],
+    ["colors.light.accent", "colors.light.accent"],
+    ["pointerCursors", "pointerCursors"],
+  ] as const;
+  for (const [path, expected] of rows) assert.equal(mapIssuePath(path), expected);
+});
+
+const FULL_LAYOUT = {
   sentAttachments: "chips",
   sidebarMenu: [...SIDEBAR_MENU_ITEM_IDS].reverse().map((id) => ({
     id,
@@ -39,537 +75,149 @@ const FULL_LAYOUT: NonNullable<ThemeFileV1["layout"]> = {
   sidebarNavAuto: [],
 };
 
-const FULL_FONTS: ImportedFont[] = [
-  { name: "Brand Sans", dataUrl: "data:font/woff2;base64,d09GMgABAAAA" },
-];
-
-const FULL_BACKGROUND: ThemeBackground = {
-  dataUrl: "data:image/png;base64,iVBORw0KGgo=",
-  adjustments: {
-    scope: "all",
-    effect: "Dither",
-    visibility: 40,
-    conversation: 20,
-    blur: 5,
-    fade: false,
-    outline: 10,
-    sizing: "contain",
-    zoom: 150,
-    position: "0% 100%",
-    glassLightVisibility: 50,
-    glassDarkVisibility: 30,
-    glassFade: true,
+const FULL = {
+  meta: { name: "Dusk", author: "Ada", description: "Warm evening" },
+  base: { palette: "cherry" },
+  colors: {
+    contrast: 72,
+    light: { accent: "#3366ff", background: "#fafafa", foreground: "#111111" },
+    dark: { accent: "#ff8800", background: null, foreground: "#eeeeee" },
   },
+  typography: {
+    uiFont: "Lato", headingFont: "Georgia", chatFont: "Merriweather", codeFont: "Cascadia Code",
+    uiFontSize: 17, codeFontSize: 13, fontSmoothing: false,
+  },
+  code: { lineNumbers: true, wordWrap: true, ligatures: false },
+  chat: { width: "wide", composerOutline: 40 },
+  layout: FULL_LAYOUT,
+  glass: { material: "frosted", strength: { light: 62, dark: 33 }, lens: "magnify", menus: false },
+  assets: { fonts: [{ name: "Brand", dataUrl: "data:font/woff2;base64,QUJDRA==" }] },
 };
 
-/** A valid v1 file in which every field differs from its default. */
-function fullTheme(): ThemeFileV1 {
-  return {
-    $schema: "unsloth-theme.schema.json",
-    kind: THEME_FILE_KIND,
-    schemaVersion: 1,
-    meta: {
-      name: "Harbor Dusk",
-      author: "Ada Lovelace",
-      description: "Warm accents for late sessions",
-      studioVersion: "2026.11.1",
-    },
-    base: { palette: "matcha" },
-    colors: {
-      light: {
-        accent: "#2f6fd6",
-        background: "#fbfaf7",
-        foreground: "#1a1c20",
-      },
-      dark: { accent: "#ff7a59", background: "#101318", foreground: "#e8eaef" },
-      contrast: 72,
-    },
-    typography: {
-      uiFont: "Brand Sans",
-      headingFont: "Brand Serif",
-      chatFont: "Chat Mono",
-      codeFont: "Code Mono",
-      uiFontSize: 16,
-      codeFontSize: 13,
-      fontSmoothing: false,
-    },
-    code: { lineNumbers: true, wordWrap: true, ligatures: false },
-    chat: { width: "wide", composerOutline: 35 },
-    glass: {
-      material: "frosted",
-      strength: { light: 60, dark: 25 },
-      lens: "magnify",
-      menus: false,
-    },
-    layout: FULL_LAYOUT,
-    assets: { fonts: FULL_FONTS, background: FULL_BACKGROUND },
-  };
-}
-
-function parseOk(text: string) {
-  const result = parseThemeFile(text);
-  if (!result.ok) throw new Error(`expected ok, got ${result.error}`);
-  return result;
-}
-
-test("a full v1 file parses back to every field it wrote, with no warnings", () => {
-  const source = fullTheme();
-  const { theme, warnings } = parseOk(JSON.stringify(source));
-
+test("a full non-default file parses back to every value it holds, with no warnings", () => {
+  const { theme, warnings } = okOf(parse(FULL));
   assert.deepEqual(warnings, []);
-  assert.deepEqual(theme.meta, source.meta);
-  assert.equal(theme.palette, "matcha");
-
-  assert.deepEqual(theme.look.colors, {
-    light: source.colors.light,
-    dark: source.colors.dark,
+  assert.deepEqual(theme.meta, FULL.meta);
+  assert.equal(theme.palette, "cherry");
+  assert.deepEqual(theme.look, {
+    colors: { light: FULL.colors.light, dark: FULL.colors.dark },
+    contrast: 72,
+    uiFont: "Lato",
+    headingFont: "Georgia",
+    chatFont: "Merriweather",
+    codeFont: "Cascadia Code",
+    uiFontSize: 17,
+    codeFontSize: 13,
+    fontSmoothing: false,
+    codeLineNumbers: true,
+    codeWordWrap: true,
+    codeLigatures: false,
+    chatWidth: "wide",
+    composerOutline: 40,
   });
-  assert.equal(theme.look.contrast, 72);
-  assert.equal(theme.look.uiFont, "Brand Sans");
-  assert.equal(theme.look.headingFont, "Brand Serif");
-  assert.equal(theme.look.chatFont, "Chat Mono");
-  assert.equal(theme.look.codeFont, "Code Mono");
-  assert.equal(theme.look.uiFontSize, 16);
-  assert.equal(theme.look.codeFontSize, 13);
-  assert.equal(theme.look.fontSmoothing, false);
-  assert.equal(theme.look.codeLineNumbers, true);
-  assert.equal(theme.look.codeWordWrap, true);
-  assert.equal(theme.look.codeLigatures, false);
-  assert.equal(theme.look.chatWidth, "wide");
-  assert.equal(theme.look.composerOutline, 35);
-  assert.deepEqual(Object.keys(theme.look).sort(), [...LOOK_FIELDS].sort());
-
-  assert.deepEqual(theme.glass, {
-    material: "frosted",
-    strength: { light: 60, dark: 25 },
-    lens: "magnify",
-    menus: false,
-  });
-
-  assert.deepEqual(theme.layout, {
-    sentAttachments: FULL_LAYOUT.sentAttachments,
-    sidebarMenu: FULL_LAYOUT.sidebarMenu,
-    sidebarNav: FULL_LAYOUT.sidebarNav,
-    sidebarNavAuto: [],
-  });
-  assert.deepEqual(theme.fonts, FULL_FONTS);
-  assert.deepEqual(theme.background, FULL_BACKGROUND);
-});
-
-test("missing sections fall back to the defaults without warnings", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({ kind: THEME_FILE_KIND, schemaVersion: 1 }),
-  );
-
-  assert.deepEqual(warnings, []);
-  assert.deepEqual(theme.meta, { name: "Untitled theme" });
-  assert.equal(theme.palette, "standard");
-  assert.deepEqual(
-    theme.look,
-    themeLookFromCustomization(DEFAULT_CUSTOMIZATION),
-  );
-  assert.deepEqual(theme.glass, DEFAULT_THEME_GLASS);
-  assert.equal(theme.layout, null);
-  assert.equal(theme.fonts, null);
+  assert.deepEqual(theme.layout, FULL_LAYOUT);
+  assert.deepEqual(theme.glass, FULL.glass);
+  assert.deepEqual(theme.fonts, FULL.assets.fonts);
   assert.equal(theme.background, null);
 });
 
-test("a null section counts as absent and is not reported", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      typography: null,
-      layout: null,
-      assets: null,
-    }),
-  );
-
-  assert.deepEqual(warnings, []);
-  assert.equal(theme.layout, null);
-  assert.equal(theme.fonts, null);
-  assert.equal(theme.background, null);
-});
-
-test("an empty layout section is present and resolves to the shipped layout", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({ kind: THEME_FILE_KIND, schemaVersion: 1, layout: {} }),
-  );
-
-  assert.deepEqual(warnings, []);
-  assert.deepEqual(theme.layout, {
-    sentAttachments: DEFAULT_CUSTOMIZATION.sentAttachments,
-    sidebarMenu: DEFAULT_CUSTOMIZATION.sidebarMenu,
-    sidebarNav: DEFAULT_CUSTOMIZATION.sidebarNav,
-    sidebarNavAuto: ["projects"],
-  });
-});
-
-test("a customized sidebar nav without sidebarNavAuto gets no automatic rows", () => {
-  const { theme } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      layout: { sidebarNav: [{ id: "hub", pinned: false }] },
-    }),
-  );
-
-  assert.deepEqual(theme.layout?.sidebarNavAuto, []);
-});
-
-test("unknown keys are reported at their file path", () => {
-  const text = JSON.stringify({
-    kind: THEME_FILE_KIND,
-    schemaVersion: 1,
-    extra: 1,
-    typography: { uiFont: "Brand", bogus: true },
-    colors: { light: { accent: "#112233", surface: "#ffffff" } },
-    code: { wordWrap: true, wrap: 1 },
-  });
-  const { theme, warnings } = parseOk(text);
-
-  assert.deepEqual(warnings, [
-    { kind: "unknown", path: "extra" },
-    { kind: "unknown", path: "colors.light.surface" },
-    { kind: "unknown", path: "typography.bogus" },
-    { kind: "unknown", path: "code.wrap" },
-  ]);
-  assert.equal(theme.look.uiFont, "Brand");
-  assert.equal(theme.look.colors.light.accent, "#112233");
-  assert.equal(theme.look.codeWordWrap, true);
-});
-
-test("__proto__ keys stay plain data and never touch Object.prototype", () => {
-  const text = `{"kind":"${THEME_FILE_KIND}","schemaVersion":1,"__proto__":{"polluted":1},"typography":{"__proto__":{"polluted":"yes"}},"colors":{"light":{"__proto__":{"accent":"#ff0000"}}}}`;
-  const { theme, warnings } = parseOk(text);
-
-  assert.equal(Object.hasOwn(Object.prototype, "polluted"), false);
-  assert.equal(({} as Record<string, unknown>).polluted, undefined);
-  assert.equal(theme.look.colors.light.accent, null);
-  assert.deepEqual(warnings, [
-    { kind: "unknown", path: "__proto__" },
-    { kind: "unknown", path: "colors.light.__proto__" },
-    { kind: "unknown", path: "typography.__proto__" },
-  ]);
-});
-
-test("an invalid accent becomes null with an invalid warning", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      colors: { light: { accent: "url(x)" } },
-    }),
-  );
-
-  assert.equal(theme.look.colors.light.accent, null);
-  assert.deepEqual(warnings, [
-    { kind: "invalid", path: "colors.light.accent" },
-  ]);
-});
-
-test("a font name with CSS-breaking characters is sanitized and reported", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      typography: { uiFont: 'Evil"; x' },
-    }),
-  );
-
-  assert.equal(theme.look.uiFont, "Evil x");
-  assert.deepEqual(warnings, [{ kind: "invalid", path: "typography.uiFont" }]);
-});
-
-test("an out-of-range font size is clamped and reported at its file path", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      typography: { uiFontSize: 99 },
-    }),
-  );
-
-  assert.equal(theme.look.uiFontSize, 20);
-  assert.deepEqual(warnings, [
-    { kind: "clamped", path: "typography.uiFontSize" },
-  ]);
-});
-
-test("an unknown palette falls back to standard with a warning", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      base: { palette: "neon" },
-    }),
-  );
-
-  assert.equal(theme.palette, "standard");
-  assert.deepEqual(warnings, [{ kind: "unknownPalette", palette: "neon" }]);
-});
-
-test("a non-string palette is reported as invalid", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      base: { palette: 5 },
-    }),
-  );
-
-  assert.equal(theme.palette, "standard");
-  assert.deepEqual(warnings, [{ kind: "invalid", path: "base.palette" }]);
-});
-
-test("a newer schema version parses as current and says so first", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({ ...fullTheme(), schemaVersion: 2 }),
-  );
-
-  assert.deepEqual(warnings, [{ kind: "newerVersion" }]);
-  assert.equal(theme.look.uiFont, "Brand Sans");
-});
-
-test("warnings list the version first, then reading order", () => {
-  const { warnings } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 2,
-      extra: 1,
-      base: { palette: "neon" },
-      typography: { uiFontSize: 99 },
-      colors: { light: { accent: "url(x)" } },
-    }),
-  );
-
-  assert.deepEqual(warnings, [
-    { kind: "newerVersion" },
-    { kind: "unknown", path: "extra" },
-    { kind: "unknownPalette", palette: "neon" },
-    { kind: "invalid", path: "colors.light.accent" },
-    { kind: "clamped", path: "typography.uiFontSize" },
-  ]);
-});
-
-test("a file that is not a theme is rejected", () => {
-  const notThemes = [
-    JSON.stringify({ kind: THEME_FILE_KIND, schemaVersion: 0 }),
-    JSON.stringify({ kind: THEME_FILE_KIND, schemaVersion: "1" }),
-    JSON.stringify({ kind: THEME_FILE_KIND, schemaVersion: 1.5 }),
-    JSON.stringify({ schemaVersion: 1 }),
-    JSON.stringify({ kind: "something-else", schemaVersion: 1 }),
-    "[]",
-    "null",
-    "42",
-  ];
-  for (const text of notThemes) {
-    assert.deepEqual(parseThemeFile(text), { ok: false, error: "notTheme" });
-  }
-});
-
-test("text that is not JSON is rejected as invalid JSON", () => {
-  assert.deepEqual(parseThemeFile("{"), { ok: false, error: "invalidJson" });
-});
-
-test("a file over 8,000,000 characters is too large before it is parsed", () => {
-  assert.deepEqual(parseThemeFile(" ".repeat(MAX_THEME_FILE_CHARS + 1)), {
-    ok: false,
-    error: "tooLarge",
-  });
-});
-
-test("a file without assets over the settings-only cap is too large", () => {
-  // Trailing whitespace is valid JSON, so the file is only large, not malformed.
-  const padded =
-    JSON.stringify({ kind: THEME_FILE_KIND, schemaVersion: 1 }) +
-    " ".repeat(300_000);
-  assert.ok(padded.length > MAX_THEME_FILE_CHARS_NO_ASSETS);
-  assert.deepEqual(parseThemeFile(padded), { ok: false, error: "tooLarge" });
-
-  const withAssets =
-    JSON.stringify({ kind: THEME_FILE_KIND, schemaVersion: 1, assets: {} }) +
-    " ".repeat(300_000);
-  assert.equal(parseThemeFile(withAssets).ok, true);
-});
-
-test("an svg background is skipped with a warning", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      assets: {
-        background: { dataUrl: "data:image/svg+xml;base64,PHN2Zy8+" },
-      },
-    }),
-  );
-
-  assert.equal(theme.background, null);
-  assert.deepEqual(warnings, [{ kind: "backgroundSkipped" }]);
-});
-
-test("a background data URL over its length cap is skipped", () => {
-  const dataUrl = `data:image/png;base64,${"A".repeat(MAX_BACKGROUND_DATA_URL_CHARS)}`;
-  const { theme, warnings } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      assets: { background: { dataUrl } },
-    }),
-  );
-
-  assert.equal(theme.background, null);
-  assert.deepEqual(warnings, [{ kind: "backgroundSkipped" }]);
-});
-
-test("background adjustments ignore unknown keys without a warning", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      assets: {
-        background: {
-          dataUrl: FULL_BACKGROUND.dataUrl,
-          adjustments: { scope: "all", bogus: 1 },
-        },
-      },
-    }),
-  );
-
-  assert.deepEqual(warnings, []);
-  assert.equal(theme.background?.adjustments.scope, "all");
-  assert.equal(
-    Object.hasOwn(theme.background?.adjustments ?? {}, "bogus"),
-    false,
-  );
-});
-
-test("a font that is not a valid font data URL is dropped with its index", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      assets: {
-        fonts: [
-          { name: "Brand", dataUrl: "data:font/woff2;base64,AAAA" },
-          { name: "Broken", dataUrl: "https://example.com/font.woff2" },
-        ],
-      },
-    }),
-  );
-
-  assert.deepEqual(theme.fonts, [
-    { name: "Brand", dataUrl: "data:font/woff2;base64,AAAA" },
-  ]);
-  assert.deepEqual(warnings, [{ kind: "dropped", path: "assets.fonts[1]" }]);
-});
-
-test("a section of the wrong type is reported and read as absent", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      typography: "bold",
-    }),
-  );
-
-  assert.deepEqual(warnings, [{ kind: "invalid", path: "typography" }]);
-  assert.equal(theme.look.uiFont, null);
-});
-
-test("glass values that are wrong are reported and replaced", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      glass: {
-        material: "hologram",
-        strength: { light: 150, dark: "x" },
-        lens: "spin",
-        menus: "yes",
-      },
-    }),
-  );
-
-  assert.deepEqual(theme.glass, {
+test("missing sections fall back to the defaults, and an empty layout is present", () => {
+  const bare = okOf(parse({}));
+  assert.deepEqual(bare.warnings, []);
+  assert.deepEqual(bare.theme.meta, { name: "Untitled theme" });
+  assert.equal(bare.theme.palette, "standard");
+  assert.deepEqual(bare.theme.look, pickFields(DEFAULT_CUSTOMIZATION, LOOK_FIELDS));
+  assert.deepEqual(bare.theme.glass, {
     material: "solid",
-    strength: { light: 100, dark: DEFAULT_THEME_GLASS.strength.dark },
+    strength: { light: 40, dark: 15 },
     lens: "off",
     menus: true,
   });
-  assert.deepEqual(warnings, [
-    { kind: "invalid", path: "glass.material" },
-    { kind: "clamped", path: "glass.strength.light" },
-    { kind: "invalid", path: "glass.strength.dark" },
-    { kind: "invalid", path: "glass.lens" },
-    { kind: "invalid", path: "glass.menus" },
+  assert.equal(bare.theme.layout, null);
+  assert.equal(bare.theme.fonts, null);
+  assert.equal(bare.theme.background, null);
+  assert.deepEqual(
+    okOf(parse({ layout: {} })).theme.layout,
+    pickFields(DEFAULT_CUSTOMIZATION, LAYOUT_FIELDS),
+  );
+});
+
+const WARNING_CASES: [string, Record<string, unknown>, ThemeWarning[]][] = [
+  ["unknown root key", { bogus: 1 }, [{ kind: "unknown", path: "bogus" }]],
+  ["unknown nested key", { typography: { uiFontFace: "x" } }, [{ kind: "unknown", path: "typography.uiFontFace" }]],
+  ["a null section is absent", { typography: null, meta: null }, []],
+  ["a non-object section is invalid", { typography: "lato" }, [{ kind: "invalid", path: "typography" }]],
+  ["invalid accent", { colors: { light: { accent: "url(x)" } } }, [{ kind: "invalid", path: "colors.light.accent" }]],
+  ["font with CSS-breaking characters", { typography: { uiFont: 'Evil"; x' } }, [{ kind: "invalid", path: "typography.uiFont" }]],
+  ["out-of-range font size", { typography: { uiFontSize: 99 } }, [{ kind: "clamped", path: "typography.uiFontSize" }]],
+  ["unknown palette", { base: { palette: "neon" } }, [{ kind: "unknownPalette", palette: "neon" }]],
+  ["non-string palette", { base: { palette: 5 } }, [{ kind: "invalid", path: "base.palette" }]],
+  ["glass strength out of range", { glass: { strength: { light: 500 } } }, [{ kind: "clamped", path: "glass.strength.light" }]],
+  ["unknown glass material", { glass: { material: "x" } }, [{ kind: "invalid", path: "glass.material" }]],
+  [
+    "newer schema version is read and reported first",
+    { schemaVersion: 2, bogus: 1 },
+    [{ kind: "newerVersion" }, { kind: "unknown", path: "bogus" }],
+  ],
+  [
+    "svg background is skipped",
+    { assets: { background: { dataUrl: "data:image/svg+xml;base64,PHN2Zz4=" } } },
+    [{ kind: "backgroundSkipped" }],
+  ],
+  ["a 200-character name is clamped", { meta: { name: "a".repeat(200) } }, [{ kind: "clamped", path: "meta.name" }]],
+];
+
+for (const [name, extra, expected] of WARNING_CASES) {
+  test(`warnings: ${name}`, () => {
+    assert.deepEqual(okOf(parse(extra)).warnings, expected);
+  });
+}
+
+const ERROR_CASES: [string, string, string][] = [
+  ["invalid JSON", "{not json", "invalidJson"],
+  ["an array root", "[1]", "notTheme"],
+  ["another kind", JSON.stringify({ kind: "unsloth-studio.other", schemaVersion: 1 }), "notTheme"],
+  ["schemaVersion 0", JSON.stringify(file({ schemaVersion: 0 })), "notTheme"],
+  ["schemaVersion as a string", JSON.stringify(file({ schemaVersion: "1" })), "notTheme"],
+  ["no schemaVersion", JSON.stringify(file({ schemaVersion: undefined })), "notTheme"],
+  ["over 8,000,000 characters", pad(JSON.stringify(file({})), MAX_THEME_FILE_CHARS + 1), "tooLarge"],
+  ["over the settings-only cap without assets", pad(JSON.stringify(file({})), MAX_THEME_FILE_CHARS_NO_ASSETS + 1), "tooLarge"],
+];
+
+for (const [name, text, error] of ERROR_CASES) {
+  test(`rejected: ${name}`, () => {
+    assert.deepEqual(parseThemeFile(text), { ok: false, error });
+  });
+}
+
+test("the same size with assets is accepted", () => {
+  const json = pad(JSON.stringify(file({ assets: {} })), MAX_THEME_FILE_CHARS_NO_ASSETS + 1);
+  assert.equal(okOf(parseThemeFile(json)).warnings.length, 0);
+});
+
+test("__proto__ inside a section is reported unknown and never touches Object.prototype", () => {
+  const text = `{"kind":"${THEME_FILE_KIND}","schemaVersion":1,"typography":{"__proto__":{"polluted":true}}}`;
+  assert.deepEqual(okOf(parseThemeFile(text)).warnings, [{ kind: "unknown", path: "typography.__proto__" }]);
+  assert.equal(Object.hasOwn(Object.prototype, "polluted"), false);
+  assert.equal(({} as { polluted?: unknown }).polluted, undefined);
+});
+
+test("personal keys inside sections change nothing but are reported unknown", () => {
+  const bare = okOf(parse({ typography: {}, layout: {} }));
+  const personal = okOf(
+    parse({ typography: { pointerCursors: true, reduceMotion: "on" }, layout: { pointerCursors: true } }),
+  );
+  assert.deepEqual(personal.theme, bare.theme);
+  assert.deepEqual(personal.warnings, [
+    { kind: "unknown", path: "typography.pointerCursors" },
+    { kind: "unknown", path: "typography.reduceMotion" },
+    { kind: "unknown", path: "layout.pointerCursors" },
   ]);
 });
 
-test("a long description is clamped to 280 characters", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      meta: { description: "d".repeat(300) },
-    }),
-  );
-
-  assert.equal(theme.meta.description?.length, 280);
-  assert.deepEqual(warnings, [{ kind: "clamped", path: "meta.description" }]);
-});
-
-test("the name is trimmed, control characters become spaces, and it is capped at 80", () => {
-  const trimmed = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      meta: { name: "  Tab\tTitle\u0007  " },
-    }),
-  );
-  assert.equal(trimmed.theme.meta.name, "Tab Title");
-  assert.deepEqual(trimmed.warnings, []);
-
-  const long = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      meta: { name: "n".repeat(81) },
-    }),
-  );
-  assert.equal(long.theme.meta.name.length, 80);
-  assert.deepEqual(long.warnings, [{ kind: "clamped", path: "meta.name" }]);
-});
-
-test("a non-string name is reported and the default name is used", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      meta: { name: 5 },
-    }),
-  );
-
-  assert.equal(theme.meta.name, "Untitled theme");
-  assert.deepEqual(warnings, [{ kind: "invalid", path: "meta.name" }]);
-});
-
-test("personal settings never reach the result", () => {
-  const { theme, warnings } = parseOk(
-    JSON.stringify({
-      kind: THEME_FILE_KIND,
-      schemaVersion: 1,
-      pointerCursors: true,
-      typography: { reduceMotion: "on" },
-      layout: { pointerCursors: true },
-    }),
-  );
-
-  assert.doesNotMatch(JSON.stringify(theme), /pointerCursors|reduceMotion/);
-  assert.deepEqual(
-    warnings
-      .map((warning) => ("path" in warning ? warning.path : warning.kind))
-      .sort(),
-    ["layout.pointerCursors", "pointerCursors", "typography.reduceMotion"],
-  );
+test("warnings stop at the cap and the last one counts the rest", () => {
+  const extra = Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`key${i}`, i]));
+  const { warnings } = okOf(parse(extra));
+  assert.equal(warnings.length, MAX_THEME_WARNINGS + 1);
+  assert.deepEqual(warnings.at(-1), { kind: "more", count: 10 });
 });

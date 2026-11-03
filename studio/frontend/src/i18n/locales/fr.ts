@@ -2398,6 +2398,7 @@ export const fr = {
           clamped: "Ajusté à la plage autorisée : {path}",
           dropped: "Supprimé : {path}",
           backgroundSkipped: "L'image de fond de ce fichier n'a pas pu être utilisée.",
+          more: "Et {count} de plus",
         },
       },
       gpuRendering: {

@@ -2567,6 +2567,7 @@ export const vi = {
           clamped: "Đã điều chỉnh về phạm vi cho phép: {path}",
           dropped: "Đã xóa: {path}",
           backgroundSkipped: "Không thể dùng ảnh nền trong tệp này.",
+          more: "Và {count} mục khác",
         },
       },
       gpuRendering: {

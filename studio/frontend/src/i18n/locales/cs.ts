@@ -2580,6 +2580,7 @@ export const cs = {
           clamped: "Upraveno do povoleného rozsahu: {path}",
           dropped: "Odstraněno: {path}",
           backgroundSkipped: "Obrázek na pozadí v tomto souboru nelze použít.",
+          more: "A dalších {count}",
         },
       },
       gpuRendering: {

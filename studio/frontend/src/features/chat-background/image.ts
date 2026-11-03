@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { normalizedSize, validUpload } from "./model.ts";
 
-export function canvasBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+// Some engines quietly fall back to PNG for an unsupported type, so check what came back.
+export function canvasBlob(
+	canvas: HTMLCanvasElement,
+	type = "image/png",
+	quality?: number,
+): Promise<Blob> {
 	return new Promise((resolve, reject) =>
 		canvas.toBlob(
-			(blob) => (blob ? resolve(blob) : reject(new Error("decode"))),
-			"image/png",
+			(blob) =>
+				blob?.type === type ? resolve(blob) : reject(new Error("decode")),
+			type,
+			quality,
 		),
 	);
 }
@@ -41,44 +48,40 @@ export async function decodeImage(blob: Blob): Promise<{
 	}
 }
 
-// Rejects with Error("file" | "dimensions" | "decode"), the reasons the upload UI shows.
-export async function prepareBackgroundImage(file: Blob): Promise<Blob> {
-	if (!validUpload(file)) throw new Error("file");
-	const decoded = await decodeImage(file);
+/** Decodes an image and draws it again at `size`, e.g. to cap it or change its format. */
+export async function redrawImage(
+	blob: Blob,
+	options: {
+		size?: (width: number, height: number) => [number, number];
+		type?: string;
+		quality?: number;
+		/** Painted first, so transparent pixels don't turn black in a JPEG. */
+		fill?: string;
+	} = {},
+): Promise<Blob> {
+	const decoded = await decodeImage(blob);
 	try {
-		const [width, height] = normalizedSize(decoded.width, decoded.height);
+		const [width, height] = options.size
+			? options.size(decoded.width, decoded.height)
+			: [decoded.width, decoded.height];
 		const canvas = document.createElement("canvas");
 		canvas.width = width;
 		canvas.height = height;
 		const ctx = canvas.getContext("2d");
 		if (!ctx) throw new Error("decode");
+		if (options.fill) {
+			ctx.fillStyle = options.fill;
+			ctx.fillRect(0, 0, width, height);
+		}
 		ctx.drawImage(decoded.source, 0, 0, width, height);
-		return await canvasBlob(canvas);
+		return await canvasBlob(canvas, options.type, options.quality);
 	} finally {
 		decoded.close();
 	}
 }
 
-export function blobToDataUrl(blob: Blob): Promise<string> {
-	return new Promise((resolve, reject) => {
-		const reader = new FileReader();
-		reader.onload = () => resolve(String(reader.result));
-		reader.onerror = () => reject(reader.error ?? new Error("read"));
-		reader.readAsDataURL(blob);
-	});
-}
-
-const DATA_URL = /^data:([^;,]+);base64,([\s\S]*)$/;
-
-export async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
-	const match = DATA_URL.exec(dataUrl);
-	if (!match) throw new Error("decode");
-	let binary: string;
-	try {
-		binary = atob(match[2]);
-	} catch {
-		throw new Error("decode");
-	}
-	const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-	return new Blob([bytes], { type: match[1] });
+/** Rejects with Error("file" | "dimensions" | "decode"), the reasons the upload UI shows. */
+export function prepareBackgroundImage(file: Blob): Promise<Blob> {
+	if (!validUpload(file)) return Promise.reject(new Error("file"));
+	return redrawImage(file, { size: normalizedSize });
 }

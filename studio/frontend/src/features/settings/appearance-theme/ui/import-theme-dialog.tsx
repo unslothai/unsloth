@@ -19,8 +19,7 @@ import { useId, useMemo, useState } from "react";
 
 import { COLOR_THEMES } from "../../lib/color-themes";
 import { planThemeApply } from "../application/plan-apply";
-import type { ThemeChange } from "../application/types";
-import type { AppearanceTheme, ThemeWarning } from "../domain/schema";
+import type { AppearanceTheme, ThemeParseResult, ThemeWarning } from "../domain/schema";
 import {
   applyAppearanceSnapshot,
   applyThemeBackground,
@@ -28,10 +27,7 @@ import {
   restoreBackground,
 } from "../snapshot";
 
-export type ParsedThemeFile = {
-  theme: AppearanceTheme;
-  warnings: ThemeWarning[];
-};
+export type ParsedThemeFile = Extract<ThemeParseResult, { ok: true }>;
 
 type T = ReturnType<typeof useT>;
 type Mode = "light" | "dark";
@@ -43,6 +39,10 @@ function warningText(t: T, warning: ThemeWarning): string {
       return t("settings.appearance.themeFile.warning.newerVersion");
     case "backgroundSkipped":
       return t("settings.appearance.themeFile.warning.backgroundSkipped");
+    case "more":
+      return t("settings.appearance.themeFile.warning.more", {
+        count: warning.count,
+      });
     case "unknownPalette":
       return t("settings.appearance.themeFile.warning.unknownPalette", {
         palette: warning.palette,
@@ -127,9 +127,8 @@ function ImportThemeForm({
       const prev = readAppearanceSnapshot();
       const next = planThemeApply(prev, theme, { applyLayout, applyAssets });
       applyAppearanceSnapshot(next);
-      let backgroundChanged = false;
+      const backgroundChanged = next.background !== "keep";
       if (next.background !== "keep") {
-        backgroundChanged = true;
         const ok = await applyThemeBackground(next.background);
         if (!ok) {
           toast.warning(
@@ -189,7 +188,7 @@ function ImportThemeForm({
           </p>
           {plan.changes.length > 0 ? (
             <ul className="flex flex-wrap gap-1.5">
-              {plan.changes.map((change: ThemeChange) => (
+              {plan.changes.map((change) => (
                 <li key={change}>
                   <Badge variant="secondary">
                     {t(`settings.appearance.themeFile.change.${change}`)}
@@ -280,10 +279,13 @@ function ImportThemeForm({
 export function ImportThemeDialog({
   open,
   onOpenChange,
+  onClosed,
   parsed,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** After the close animation, so the parsed file (fonts, background) can be let go. */
+  onClosed: () => void;
   parsed: ParsedThemeFile | null;
 }) {
   const [busy, setBusy] = useState(false);
@@ -306,6 +308,7 @@ export function ImportThemeDialog({
           event.preventDefault();
           target.focus();
         }}
+        onCloseAutoFocus={onClosed}
       >
         {parsed ? (
           <ImportThemeForm

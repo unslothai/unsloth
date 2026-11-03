@@ -2387,6 +2387,7 @@ export const ptBR = {
           clamped: "Ajustado para o intervalo permitido: {path}",
           dropped: "Removido: {path}",
           backgroundSkipped: "Não foi possível usar a imagem de fundo deste arquivo.",
+          more: "E mais {count}",
         },
       },
       gpuRendering: {

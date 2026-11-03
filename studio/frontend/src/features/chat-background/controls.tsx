@@ -43,14 +43,11 @@ import {
 	type BackgroundEffect,
 } from "./model";
 import {
-	beginBackgroundUpload,
-	failBackgroundUpload,
-	finishBackgroundUpload,
 	patchBackground,
 	resetChatBackground,
 	useChatBackground,
 } from "./storage";
-import { prepareBackgroundImage } from "./image";
+import { uploadBackgroundImage } from "./upload";
 import {
 	nativeMaterialAvailable,
 	useGlassStrength,
@@ -304,24 +301,11 @@ export function ChatBackgroundControls() {
 				type="file"
 				accept="image/jpeg,image/png,image/webp"
 				disabled={!ready || busy}
-				onChange={async (event) => {
+				onChange={(event) => {
 					const file = event.target.files?.[0];
 					event.target.value = "";
 					if (!file) return;
-					const ticket = beginBackgroundUpload();
-					try {
-						const blob = await prepareBackgroundImage(file);
-						await finishBackgroundUpload(ticket, {
-							...DEFAULT_ADJUSTMENTS,
-							blob,
-						});
-					} catch (error) {
-						const reason = error instanceof Error ? error.message : "";
-						failBackgroundUpload(
-							ticket,
-							reason === "file" || reason === "dimensions" ? reason : "decode",
-						);
-					}
+					void uploadBackgroundImage(file, DEFAULT_ADJUSTMENTS);
 				}}
 			/>
 			{error && (

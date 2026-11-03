@@ -2600,6 +2600,7 @@ export const nl = {
           clamped: "Aangepast aan het toegestane bereik: {path}",
           dropped: "Verwijderd: {path}",
           backgroundSkipped: "De achtergrondafbeelding in dit bestand kon niet worden gebruikt.",
+          more: "En nog {count}",
         },
       },
       gpuRendering: {

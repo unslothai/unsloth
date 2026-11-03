@@ -18,10 +18,7 @@ import { toast } from "@/lib/toast";
 import { useId, useState } from "react";
 
 import { exportThemeFile } from "../file";
-import {
-  MAX_THEME_AUTHOR_LENGTH,
-  MAX_THEME_NAME_LENGTH,
-} from "../domain/schema";
+import { META_LIMITS } from "../domain/schema";
 
 function ExportThemeForm({
   busy,
@@ -92,7 +89,7 @@ function ExportThemeForm({
             id={`${id}-name`}
             autoFocus={true}
             value={name}
-            maxLength={MAX_THEME_NAME_LENGTH}
+            maxLength={META_LIMITS.name}
             placeholder={t("settings.appearance.themeFile.exportNamePlaceholder")}
             disabled={busy}
             onChange={(event) => setName(event.target.value)}
@@ -105,7 +102,7 @@ function ExportThemeForm({
           <Input
             id={`${id}-author`}
             value={author}
-            maxLength={MAX_THEME_AUTHOR_LENGTH}
+            maxLength={META_LIMITS.author}
             disabled={busy}
             onChange={(event) => setAuthor(event.target.value)}
           />

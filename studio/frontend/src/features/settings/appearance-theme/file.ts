@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { blobToDataUrl, decodeImage } from "@/features/chat-background";
+import { redrawImage } from "@/features/chat-background";
+import { blobToDataUrl } from "@/lib/image-fit";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { captureTheme } from "./application/capture.ts";
 import { parseThemeFile } from "./domain/parse.ts";
@@ -13,95 +14,50 @@ import {
 } from "./domain/schema.ts";
 import { readAppearanceSnapshot } from "./snapshot.ts";
 
-export type ExportThemeOptions = {
-  name: string;
-  author?: string;
-  includeLayout: boolean;
-  includeAssets: boolean;
-};
-
 export type ExportThemeResult =
   | { status: "saved"; fileName: string; backgroundOmitted: boolean }
   | { status: "cancelled" };
 
-const JPEG_QUALITY = 0.85;
+/** Base64 length of `bytes`, plus room for the "data:image/...;base64," prefix. */
+const fitsInFile = (bytes: number) => Math.ceil(bytes / 3) * 4 + 32 <= MAX_BACKGROUND_DATA_URL_CHARS;
 
 function slugify(name: string): string {
   const slug = name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
     .slice(0, 60)
-    .replace(/-+$/, "");
+    .replace(/^-+|-+$/g, "");
   return slug || "theme";
 }
 
-/** Re-encodes as JPEG on white, so transparent areas do not come out black. */
-async function reencodeJpeg(blob: Blob): Promise<Blob> {
-  const decoded = await decodeImage(blob);
-  try {
-    const canvas = document.createElement("canvas");
-    canvas.width = decoded.width;
-    canvas.height = decoded.height;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("decode");
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(decoded.source, 0, 0, canvas.width, canvas.height);
-    return await new Promise<Blob>((resolve, reject) =>
-      canvas.toBlob(
-        (out) => (out ? resolve(out) : reject(new Error("decode"))),
-        "image/jpeg",
-        JPEG_QUALITY,
-      ),
-    );
-  } finally {
-    decoded.close();
-  }
-}
-
-/** The stored background as a data URL small enough for the file, or null when none fits. */
+/** The stored background as a data URL that fits the file, re-encoded as JPEG if needed, or null. */
 async function backgroundDataUrl(blob: Blob): Promise<string | null> {
-  const original = await blobToDataUrl(blob);
-  if (original.length <= MAX_BACKGROUND_DATA_URL_CHARS) return original;
   try {
-    const jpeg = await blobToDataUrl(await reencodeJpeg(blob));
-    return jpeg.length <= MAX_BACKGROUND_DATA_URL_CHARS ? jpeg : null;
+    const source = fitsInFile(blob.size)
+      ? blob
+      : await redrawImage(blob, { type: "image/jpeg", quality: 0.85, fill: "#ffffff" });
+    return fitsInFile(source.size) ? await blobToDataUrl(source) : null;
   } catch {
     return null;
   }
 }
 
 /** Saves the current look, and optionally layout and assets, as a theme file. */
-export async function exportThemeFile(
-  opts: ExportThemeOptions,
-): Promise<ExportThemeResult> {
+export async function exportThemeFile(opts: {
+  name: string;
+  author?: string;
+  includeLayout: boolean;
+  includeAssets: boolean;
+}): Promise<ExportThemeResult> {
   const snapshot = readAppearanceSnapshot();
-  const base = {
-    name: opts.name,
-    author: opts.author,
-    includeLayout: opts.includeLayout,
-    includeAssets: opts.includeAssets,
-  };
-  const backgroundBlob = opts.includeAssets
-    ? (snapshot.background?.blob ?? null)
-    : null;
-  const background = backgroundBlob
-    ? await backgroundDataUrl(backgroundBlob)
-    : null;
-  let backgroundOmitted = backgroundBlob !== null && background === null;
-  const serialize = (dataUrl: string | null) =>
-    `${JSON.stringify(
-      captureTheme(snapshot, { ...base, backgroundDataUrl: dataUrl }),
-      null,
-      2,
-    )}\n`;
+  const blob = opts.includeAssets ? (snapshot.background?.blob ?? null) : null;
+  const background = blob ? await backgroundDataUrl(blob) : null;
+  const serialize = (backgroundDataUrl: string | null) =>
+    `${JSON.stringify(captureTheme(snapshot, { ...opts, backgroundDataUrl }), null, 2)}\n`;
   let text = serialize(background);
   // Fonts and background together can pass the import cap; the background gives way first.
-  if (background !== null && text.length > MAX_THEME_FILE_CHARS) {
-    backgroundOmitted = true;
-    text = serialize(null);
-  }
+  const dropBackground = background !== null && text.length > MAX_THEME_FILE_CHARS;
+  if (dropBackground) text = serialize(null);
 
   const fileName = `${slugify(opts.name)}${THEME_FILE_EXTENSION}`;
   try {
@@ -109,7 +65,7 @@ export async function exportThemeFile(
     return {
       status: "saved",
       fileName: savedName ?? fileName,
-      backgroundOmitted,
+      backgroundOmitted: blob !== null && (background === null || dropBackground),
     };
   } catch (error) {
     if (isDownloadCancelled(error)) return { status: "cancelled" };
@@ -119,8 +75,6 @@ export async function exportThemeFile(
 
 /** Reads a picked file. Oversized files are rejected before any of their text is read. */
 export async function readThemeFile(file: Blob): Promise<ThemeParseResult> {
-  if (file.size > MAX_THEME_FILE_CHARS) {
-    return { ok: false, error: "tooLarge" };
-  }
+  if (file.size > MAX_THEME_FILE_CHARS) return { ok: false, error: "tooLarge" };
   return parseThemeFile(await file.text());
 }

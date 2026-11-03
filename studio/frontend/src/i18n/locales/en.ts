@@ -2385,6 +2385,7 @@ export const en = {
           clamped: "Adjusted to the allowed range: {path}",
           dropped: "Removed: {path}",
           backgroundSkipped: "The background image in this file couldn't be used.",
+          more: "And {count} more",
         },
       },
       gpuRendering: {

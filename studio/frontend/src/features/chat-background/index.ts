@@ -6,27 +6,13 @@ export {
   useMaterialStore,
 } from "./material";
 export { MATERIAL_LABELS } from "./material-labels";
-export {
-  DEFAULT_ADJUSTMENTS,
-  MATERIALS,
-  sanitizeAdjustments,
-  sanitizeLens,
-  sanitizeMaterial,
-  sanitizeStrengths,
-  type WindowMaterial,
-} from "./model";
+export { MATERIALS, sanitizeAdjustments, type WindowMaterial } from "./model";
 export { useChatWelcomeShown, useMarkChatWelcome } from "./welcome";
 export {
   beginBackgroundUpload,
-  failBackgroundUpload,
   finishBackgroundUpload,
-  patchBackground,
   resetChatBackground,
   useBackgroundStore,
 } from "./storage";
-export {
-  blobToDataUrl,
-  dataUrlToBlob,
-  decodeImage,
-  prepareBackgroundImage,
-} from "./image";
+export { redrawImage } from "./image";
+export { uploadBackgroundImage } from "./upload";

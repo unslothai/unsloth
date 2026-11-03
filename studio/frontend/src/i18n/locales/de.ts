@@ -2400,6 +2400,7 @@ export const de = {
           clamped: "Auf den zulässigen Bereich angepasst: {path}",
           dropped: "Entfernt: {path}",
           backgroundSkipped: "Das Hintergrundbild in dieser Datei konnte nicht verwendet werden.",
+          more: "Und {count} weitere",
         },
       },
       gpuRendering: {

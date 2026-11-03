@@ -2300,6 +2300,7 @@ export const it = {
           clamped: "Regolato all'intervallo consentito: {path}",
           dropped: "Rimosso: {path}",
           backgroundSkipped: "Non è stato possibile usare l'immagine di sfondo di questo file.",
+          more: "E altri {count}",
         },
       },
       gpuRendering: {

@@ -2552,6 +2552,7 @@ export const fa = {
           clamped: "در بازه‌ی مجاز تنظیم شد: {path}",
           dropped: "حذف شد: {path}",
           backgroundSkipped: "تصویر پس‌زمینه‌ی این فایل قابل استفاده نبود.",
+          more: "و {count} مورد دیگر",
         },
       },
       gpuRendering: {

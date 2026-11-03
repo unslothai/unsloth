@@ -33,7 +33,7 @@ export function ThemeFileSection() {
         );
         return;
       }
-      setParsed({ theme: result.theme, warnings: result.warnings });
+      setParsed(result);
       setImportOpen(true);
     } catch {
       toast.error(t("settings.appearance.themeFile.readFailed"));
@@ -87,6 +87,7 @@ export function ThemeFileSection() {
       <ImportThemeDialog
         open={importOpen}
         onOpenChange={setImportOpen}
+        onClosed={() => setParsed(null)}
         parsed={parsed}
       />
       <ExportThemeDialog open={exportOpen} onOpenChange={setExportOpen} />

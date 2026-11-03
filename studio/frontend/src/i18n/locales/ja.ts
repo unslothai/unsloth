@@ -2354,6 +2354,7 @@ export const ja = {
           clamped: "許容範囲内に調整しました: {path}",
           dropped: "削除しました: {path}",
           backgroundSkipped: "このファイル内の背景画像は使用できませんでした。",
+          more: "ほか {count} 件",
         },
       },
       gpuRendering: {

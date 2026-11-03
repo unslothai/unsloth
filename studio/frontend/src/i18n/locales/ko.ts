@@ -2365,6 +2365,7 @@ export const ko = {
           clamped: "허용 범위에 맞게 조정했습니다: {path}",
           dropped: "제거됨: {path}",
           backgroundSkipped: "이 파일의 배경 이미지를 사용할 수 없었습니다.",
+          more: "외 {count}개",
         },
       },
       gpuRendering: {

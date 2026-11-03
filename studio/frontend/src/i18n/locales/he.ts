@@ -2427,6 +2427,7 @@ export const he = {
           clamped: "הותאם לטווח המותר: {path}",
           dropped: "הוסר: {path}",
           backgroundSkipped: "לא ניתן היה להשתמש בתמונת הרקע בקובץ הזה.",
+          more: "ועוד {count}",
         },
       },
       gpuRendering: {

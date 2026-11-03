@@ -2497,6 +2497,7 @@ export const sv = {
           clamped: "Justerades till det tillåtna intervallet: {path}",
           dropped: "Borttaget: {path}",
           backgroundSkipped: "Bakgrundsbilden i den här filen kunde inte användas.",
+          more: "Och {count} till",
         },
       },
       gpuRendering: {

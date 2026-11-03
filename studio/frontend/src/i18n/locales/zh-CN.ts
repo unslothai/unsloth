@@ -2347,6 +2347,7 @@ export const zhCN = {
           clamped: "已调整到允许的范围：{path}",
           dropped: "已移除：{path}",
           backgroundSkipped: "无法使用此文件中的背景图片。",
+          more: "还有 {count} 条",
         },
       },
       language: {

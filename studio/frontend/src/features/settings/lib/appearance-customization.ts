@@ -381,36 +381,35 @@ function sanitizeImportedFonts(
   const fonts: ImportedFont[] = [];
   const seen = new Set<string>();
   let total = 0;
-  value.forEach((entry, index) => {
+  for (const [index, entry] of value.entries()) {
     const path = `importedFonts[${index}]`;
+    // Stop at the cap, like before: one issue stands for everything after it.
     if (fonts.length >= MAX_IMPORTED_FONTS) {
       report(path, "dropped");
-      return;
+      break;
     }
     const source = (entry ?? {}) as Partial<ImportedFont>;
     const rawName = sanitizeFontName(source.name);
     const name = rawName
       ? rawName.slice(0, MAX_IMPORTED_FONT_NAME_LENGTH)
       : null;
-    if (!name || seen.has(name)) {
-      report(path, "dropped");
-      return;
-    }
     const dataUrl = source.dataUrl;
     if (
+      !name ||
+      seen.has(name) ||
       typeof dataUrl !== "string" ||
       dataUrl.length > MAX_IMPORTED_FONT_DATA_URL_LENGTH ||
       total + dataUrl.length > MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH ||
       !FONT_DATA_URL_PATTERN.test(dataUrl)
     ) {
       report(path, "dropped");
-      return;
+      continue;
     }
     if (name !== source.name) report(`${path}.name`, "invalid");
     seen.add(name);
     total += dataUrl.length;
     fonts.push({ name, dataUrl });
-  });
+  }
   return fonts;
 }
 

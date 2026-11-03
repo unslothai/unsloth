@@ -2587,6 +2587,7 @@ export const uk = {
           clamped: "Скориговано до допустимого діапазону: {path}",
           dropped: "Вилучено: {path}",
           backgroundSkipped: "Фонове зображення з цього файлу не вдалося використати.",
+          more: "І ще {count}",
         },
       },
       gpuRendering: {

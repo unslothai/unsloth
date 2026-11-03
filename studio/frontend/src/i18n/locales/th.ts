@@ -2459,6 +2459,7 @@ export const th = {
           clamped: "ปรับให้อยู่ในช่วงที่อนุญาต: {path}",
           dropped: "นำออกแล้ว: {path}",
           backgroundSkipped: "ไม่สามารถใช้รูปพื้นหลังในไฟล์นี้ได้",
+          more: "และอีก {count} รายการ",
         },
       },
       gpuRendering: {

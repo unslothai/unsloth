@@ -2395,6 +2395,7 @@ export const es = {
           clamped: "Se ajustó al rango permitido: {path}",
           dropped: "Eliminado: {path}",
           backgroundSkipped: "No se pudo usar la imagen de fondo de este archivo.",
+          more: "Y {count} más",
         },
       },
       gpuRendering: {

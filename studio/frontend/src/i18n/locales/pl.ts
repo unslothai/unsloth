@@ -2595,6 +2595,7 @@ export const pl = {
           clamped: "Dostosowano do dozwolonego zakresu: {path}",
           dropped: "Usunięto: {path}",
           backgroundSkipped: "Nie udało się użyć obrazu tła z tego pliku.",
+          more: "I {count} więcej",
         },
       },
       gpuRendering: {

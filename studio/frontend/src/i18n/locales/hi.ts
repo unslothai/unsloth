@@ -2377,6 +2377,7 @@ export const hi = {
           clamped: "अनुमत सीमा में समायोजित किया गया: {path}",
           dropped: "हटाया गया: {path}",
           backgroundSkipped: "इस फ़ाइल में पृष्ठभूमि छवि का उपयोग नहीं किया जा सका।",
+          more: "और {count} और",
         },
       },
       gpuRendering: {

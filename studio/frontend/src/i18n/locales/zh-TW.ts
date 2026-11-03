@@ -2447,6 +2447,7 @@ export const zhTW = {
           clamped: "已調整至允許的範圍：{path}",
           dropped: "已移除：{path}",
           backgroundSkipped: "無法使用此檔案中的背景圖片。",
+          more: "還有 {count} 則",
         },
       },
       gpuRendering: {
