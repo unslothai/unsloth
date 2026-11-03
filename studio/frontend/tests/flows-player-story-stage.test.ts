@@ -284,7 +284,7 @@ test("a carried cue plays once while the next scene generates", () => {
       {
         id: "a",
         lines: [{ text: "", stage: { sound: "door" } }],
-        choices: [{ text: "", goto: "unwritten" }],
+        choices: [{ id: "c", text: "", goto: "unwritten" }],
       },
     ],
   };
