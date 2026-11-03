@@ -1058,6 +1058,7 @@ export const zhCN = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "添加其他账户前，请先设置此安装实例所有者的密码。此安装实例有多个账户后，你将使用该密码登录。",
       signsInAs: "以 {username} 登录",
       signsInAsOwner: "以 {alias} 或 {username} 登录",
       signInName: "你的登录名",
@@ -1904,6 +1905,7 @@ export const zhCN = {
         loadError: "加载模型自动切换设置失败。",
         saveError: "保存模型自动切换设置失败。",
         idleError: "输入 0 保持模型加载，或输入至少 60 秒。",
+        idleUnsaved: "尚未保存。",
         autoDownload: "下载缺失的模型",
         autoDownloadDescription:
           "获取 API 请求中指定但尚未下载的 GGUF。开启后，任何持有 API 密钥的人都可以占用你的磁盘空间和带宽。",

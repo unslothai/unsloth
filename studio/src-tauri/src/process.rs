@@ -3244,6 +3244,10 @@ pub fn start_backend(
     shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
 ) -> Result<u64, String> {
+    let port = crate::desktop_port::resolve_port(
+        port,
+        std::env::var_os(crate::desktop_port::PORT_ENV).as_deref(),
+    )?;
     let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
 
     // Checked on the spawn path: a webview remount can start a backend while the job is disarmed.

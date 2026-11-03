@@ -1173,6 +1173,7 @@ export const pl = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Przed dodaniem kolejnego konta ustaw hasło właściciela instalacji. Będziesz go używać do logowania, gdy ta instalacja będzie miała wiele kont.",
       signsInAs: "Logowanie jako {username}",
       signsInAsOwner: "Logowanie jako {alias} lub {username}",
       signInName: "Twoja nazwa logowania",
@@ -2130,6 +2131,7 @@ export const pl = {
           "Nie udało się zapisać ustawień automatycznego przełączania modelu.",
         idleError:
           "Wpisz 0, aby utrzymać model wczytany, lub co najmniej 60 sekund.",
+        idleUnsaved: "Jeszcze nie zapisano.",
         keepKv: "Zachowuj kontekst czatu po zwolnieniu",
         keepKvDescription:
           "Zapisuj pamięć podręczną KV przed zwolnieniem z powodu bezczynności lub przed zajęciem GPU przez model obrazów lub wideo, aby wznowione czaty nie musiały ponownie wczytywać historii. Do 10 GB na dysku.",
