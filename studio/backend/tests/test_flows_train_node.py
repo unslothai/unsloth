@@ -739,11 +739,18 @@ def test_a_sliced_hub_split_is_read_without_streaming_the_instruction(monkeypatc
         return datasets.Dataset.from_list(rows[:10])
 
     monkeypatch.setattr(datasets, "load_dataset", load)
+    splits = {"train": SimpleNamespace(num_examples = 50)}
+    monkeypatch.setattr(
+        datasets,
+        "load_dataset_builder",
+        lambda *a, **k: SimpleNamespace(info = SimpleNamespace(splits = splits)),
+    )
     hub = {"source": "hf", "ref": "org/ds"}
     rows = training._load_rows({**hub, "split": "train[5:20]"}, None, None)
     assert [r["q"] for r in rows] == list(range(5, 20)) and asked[-1] == ("train", True)
+    # A percent resolves against the listed split size and streams just those rows.
     rows = training._load_rows({**hub, "split": "train[:10%]"}, None, None)
-    assert len(rows) == 10 and asked[-1] == ("train[:10%]", False)
+    assert len(rows) == 5 and asked[-1] == ("train", True)
 
 
 def test_one_column_for_two_rl_roles_is_refused():
@@ -1020,3 +1027,71 @@ def test_a_stopped_run_does_not_reload_the_previous_chat_model(monkeypatch):
         )
     )
     assert loads == [] and "Stopped before" in logs[0]
+
+
+def _compound_world(monkeypatch, sizes):
+    from types import SimpleNamespace
+
+    import datasets
+
+    data = {name: [{"q": f"{name}{i}"} for i in range(n)] for name, n in sizes.items()}
+    asked = []
+
+    def load_dataset(
+        ref,
+        subset,
+        split,
+        token = None,
+        streaming = False,
+    ):
+        # Only whole named splits may be read, and only as a stream.
+        assert streaming and split in data, split
+        asked.append(split)
+        return datasets.Dataset.from_list(data[split]).to_iterable_dataset()
+
+    info = {name: SimpleNamespace(num_examples = n) for name, n in sizes.items()}
+    monkeypatch.setattr(datasets, "load_dataset", load_dataset)
+    monkeypatch.setattr(
+        datasets,
+        "load_dataset_builder",
+        lambda *a, **k: SimpleNamespace(info = SimpleNamespace(splits = info)),
+    )
+    return asked
+
+
+def test_percent_and_joined_splits_stream_only_their_rows(monkeypatch):
+    _compound_world(monkeypatch, {"train": 100, "validation": 40})
+    rows = training._hub_rows(
+        {"ref": "a/b", "split": "train[:50%]+validation[10:20]"}, None, 0, None
+    )
+    assert [r["q"] for r in rows] == [f"train{i}" for i in range(50)] + [
+        f"validation{i}" for i in range(10, 20)
+    ]
+    # A Train Split window over the joined rows reads across the seam.
+    rows = training._hub_rows(
+        {"ref": "a/b", "split": "train[:50%]+validation[10:20]"}, None, 48, 51
+    )
+    assert [r["q"] for r in rows] == ["train48", "train49", "validation10", "validation11"]
+
+
+def test_an_oversized_compound_split_is_refused_before_any_read(monkeypatch):
+    monkeypatch.setattr(training, "HOLDOUT_MAX_ROWS", 100)
+    asked = _compound_world(monkeypatch, {"train": 400})
+    with pytest.raises(FlowNodeError, match = "too many"):
+        training._hub_rows({"ref": "a/b", "split": "train[:50%]"}, None, 0, None)
+    assert asked == []
+    # A small Train Split End bounds it instead.
+    rows = training._hub_rows({"ref": "a/b", "split": "train[:50%]"}, None, 0, 4)
+    assert len(rows) == 5
+
+
+def test_a_percent_split_with_no_listed_sizes_is_refused(monkeypatch):
+    import datasets
+
+    _compound_world(monkeypatch, {"train": 10})
+    monkeypatch.setattr(datasets, "load_dataset_builder", lambda *a, **k: 1 / 0)
+    with pytest.raises(FlowNodeError, match = "row slice"):
+        training._hub_rows({"ref": "a/b", "split": "train[:50%]"}, None, 0, None)
+    # Joined whole splits still stream, up to the cap.
+    rows = training._hub_rows({"ref": "a/b", "split": "train+train"}, None, 0, None)
+    assert len(rows) == 20
