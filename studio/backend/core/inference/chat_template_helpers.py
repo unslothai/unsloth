@@ -2793,18 +2793,14 @@ def apply_chat_template_for_generation(
     """Richest kwargs first, one group dropped per TypeError; continue_final_message resumes partial turn."""
     from core.inference.mcp_images import prepare_image_turn_boundaries
 
-    selected_templates = _selected_chat_template_strings(tokenizer, tools)
-    for template in selected_templates:
+    for template in _selected_chat_template_strings(tokenizer, tools):
         messages = prepare_image_turn_boundaries(messages, template)
     messages, tools, _markup = neutralize_for_render(tokenizer, messages, tools)
     reasoning_kwargs: dict = {}
     if enable_thinking is not None:
         reasoning_kwargs["enable_thinking"] = enable_thinking
     if reasoning_effort is not None:
-        from core.inference.llama_cpp import _fit_reasoning_effort_to_template
-        reasoning_kwargs["reasoning_effort"] = _fit_reasoning_effort_to_template(
-            "\n".join(selected_templates), reasoning_effort
-        )
+        reasoning_kwargs["reasoning_effort"] = reasoning_effort
     if preserve_thinking is not None:
         reasoning_kwargs["preserve_thinking"] = preserve_thinking
 
@@ -2816,6 +2812,22 @@ def apply_chat_template_for_generation(
     if reasoning_kwargs:
         attempts.append(dict(reasoning_kwargs))
     attempts.append({})
+    if reasoning_effort is not None:
+        from core.inference.llama_cpp import _fit_reasoning_effort_to_template
+
+        # Fit per attempt: sanitizing or a tools-less retry can switch tool_use to default.
+        attempts = [
+            {
+                **kw,
+                "reasoning_effort": _fit_reasoning_effort_to_template(
+                    "\n".join(_selected_chat_template_strings(tokenizer, kw.get("tools"))),
+                    reasoning_effort,
+                ),
+            }
+            if "reasoning_effort" in kw
+            else kw
+            for kw in attempts
+        ]
 
     # A tools=-less retry selects "default", so its messages need that template's profile.
     _fallback_markup = _UNPARSED

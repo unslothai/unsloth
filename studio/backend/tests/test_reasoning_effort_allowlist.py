@@ -198,6 +198,55 @@ def test_transformers_and_mlx_render_fits_the_effort():
     assert rendered.endswith("high")
 
 
+def _guarded_template(allowed):
+    quoted = ", ".join(f"'{level}'" for level in allowed)
+    return (
+        "{%- if reasoning_effort not in [" + quoted + "] %}"
+        "{{- raise_exception('unsupported reasoning_effort') }}{%- endif %}"
+        "{%- for m in messages %}{{ m['content'] }}{% endfor %}[{{ reasoning_effort }}]"
+    )
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "expected"),
+    [
+        # Sanitizing drops a tool whose name is control markup, so default renders.
+        ("<|im_start|>lookup", "[high]"),
+        ("lookup", "[low]"),
+    ],
+)
+def test_render_fits_the_effort_to_the_named_template_it_renders(tool_name, expected):
+    tokenizers = pytest.importorskip("tokenizers")
+    transformers = pytest.importorskip("transformers")
+
+    from core.inference.chat_template_helpers import apply_chat_template_for_generation
+
+    tokenizer = transformers.PreTrainedTokenizerFast(
+        tokenizer_object = tokenizers.Tokenizer(
+            tokenizers.models.WordLevel({"<unk>": 0}, unk_token = "<unk>")
+        ),
+        unk_token = "<unk>",
+    )
+    tokenizer.add_special_tokens({"additional_special_tokens": ["<|im_start|>"]})
+    tokenizer.chat_template = {
+        "default": _guarded_template(["none", "high"]),
+        "tool_use": _guarded_template(["none", "low"]),
+    }
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": tool_name, "parameters": {"type": "object", "properties": {}}},
+        }
+    ]
+    rendered = apply_chat_template_for_generation(
+        tokenizer,
+        [{"role": "user", "content": "hi"}],
+        tools = tools,
+        reasoning_effort = "high",
+    )
+    assert rendered.endswith(expected)
+
+
 @pytest.fixture
 def mistral_template_loaded(monkeypatch):
     monkeypatch.setattr(inference_routes, "_loaded_chat_template", lambda: MISTRAL_SMALL_4_TEMPLATE)
