@@ -813,7 +813,7 @@ test("a GitHub seed added before a repository is entered keeps a form to enter i
   assert.ok(Object.values(view.configs).some((c) => c.kind === "seed"));
 });
 
-test("clearing a provider or model preset name keeps its form open until the new name is typed", () => {
+test("clearing a block's name, column or setup card, keeps its form open until the new name is typed", () => {
   const src = readFileSync(
     new URL("../src/features/flows/recipe/recipe-forms.tsx", import.meta.url),
     "utf8",
@@ -822,7 +822,7 @@ test("clearing a provider or model preset name keeps its form open until the new
   // The blank shows in the form only; the recipe and the configs a rename starts from keep the
   // last name, so its links follow once the new one is typed.
   const blank = update.slice(0, update.indexOf("return;"));
-  assert.match(blank, /if \(onRename && typeof patch\.name === "string" && !patch\.name\.trim\(\)\)/);
+  assert.match(blank, /if \(typeof patch\.name === "string" && !patch\.name\.trim\(\)\)/);
   assert.match(blank, /setConfigs\(\{\s*\.\.\.latest\.current,/);
   assert.doesNotMatch(blank, /latest\.current =|commitConfigs|applyConfigPatch/);
 });
@@ -851,4 +851,45 @@ test("a seed whose selection is mid-edit keeps its last valid config and its car
     (edit.group?.config as Record<string, unknown> | undefined)?.seed_config,
     seeded.config.seed_config,
   );
+});
+
+test("renaming a column renames it in the schema transform too", () => {
+  const { group, nodes } = sqlGroup();
+  const withTransform = {
+    ...group,
+    config: {
+      ...group.config,
+      processors: [
+        {
+          // biome-ignore lint/style/useNamingConvention: api schema
+          processor_type: "schema_transform",
+          name: "shape",
+          template: '{"text": "{{ sql_prompt }}", "kept": "sql_prompt"}',
+        },
+      ],
+    },
+  };
+  const view = studioView(withTransform, nodes);
+  const id = Object.values(view.configs).find((c) => c.name === "sql_prompt")?.id;
+  assert.ok(id);
+  const configs = applyConfigPatch(view.configs, id, { name: "task" });
+  const edit = commitStudioEdit(withTransform, nodes, view, configs);
+  const processors = (edit.group?.config as { processors?: { template: unknown }[] }).processors;
+  assert.deepEqual(processors?.[0].template, { text: "{{ task }}", kept: "sql_prompt" });
+});
+
+test("a pasted or duplicated second Recipe Dataset step comes into its recipe switched off", async () => {
+  const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group: small, nodes } = sqlGroup();
+  const group = { ...small, rect: [0, 0, 2000, 1000] as [number, number, number, number] };
+  const step = { id: "step", type: "recipe.generate", v: 1, pos: [group.rect[0] + 40, group.rect[1] + 60] as [number, number], params: {}, group: group.id };
+  useDocStore.getState().load({ ...doc([...nodes, step] as never), groups: [group] });
+  const store = useDocStore.getState();
+  store.insertFragment(cloneFragment(store.graph, ["step"], [40, 40]));
+  const steps = Object.values(useDocStore.getState().graph.nodes).filter((n) => n.type === "recipe.generate");
+  assert.equal(steps.length, 2);
+  assert.deepEqual(steps.map((n) => !!n.disabled).sort(), [false, true]);
+  const keys = readFileSync(new URL("../src/features/flows/editor/use-editor-shortcuts.ts", import.meta.url), "utf8");
+  assert.match(keys, /doc\.graph\.nodes\[id\]\.type !== GENERATE_TYPE/);
 });

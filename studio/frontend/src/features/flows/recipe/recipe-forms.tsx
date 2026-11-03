@@ -102,10 +102,10 @@ function BlockForm({
     );
   }
   const update = (id: string, patch: Partial<NodeConfig>) => {
-    if (onRename && typeof patch.name === "string" && !patch.name.trim()) {
-      // A provider or model preset with no name drops out of the recipe and its inspector, so a
-      // cleared name shows in the form only: the recipe and its links keep the last name until
-      // the new one is typed, and the rename then carries them across.
+    if (typeof patch.name === "string" && !patch.name.trim()) {
+      // A block with no name drops out of the recipe (a setup card and its inspector) or blanks
+      // every reference to it (a column), so a cleared name shows in the form only: the recipe and
+      // its links keep the last name until the new one is typed, and the rename carries them across.
       setConfigs({
         ...latest.current,
         [id]: { ...latest.current[id], name: patch.name } as NodeConfig,
