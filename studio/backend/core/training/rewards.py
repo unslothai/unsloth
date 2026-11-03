@@ -710,6 +710,9 @@ def preview_scores(
 ) -> tuple[list[dict], Optional[dict]]:
     """Scores in ``specs`` order, plus the isolation the Python ones ran under (None if none did).
     A Python reward that fails carries its own ``error``; the rest still score."""
+    if row and row.get("answer") is not None:
+        # Training turns the answer role into text (rl.py), so a reward gets str(answer) too.
+        row = {**row, "answer": str(row["answer"])}
     python = [s for s in specs if s.get("kind") == "python"]
     python_scores: dict = {}
     python_errors: dict = {}
