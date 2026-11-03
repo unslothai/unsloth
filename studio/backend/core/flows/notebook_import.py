@@ -290,6 +290,12 @@ class _Reader(ast.NodeVisitor):
                 value = self.kw(node, arg)
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     self.tune[param] = value
+            for k in node.keywords if fn == "GRPOConfig" else []:
+                if k.arg == "reward_weights":
+                    value = _literal(k.value)
+                    if value is _MISSING and isinstance(k.value, ast.Name):
+                        value = self.collections.get(k.value.id, _MISSING)
+                    self.found["reward_weights"] = None if value is _MISSING else value
             loss = self.kw(node, "loss_type")
             if fn == "GRPOConfig" and isinstance(loss, str):
                 level = self.kw(node, "importance_sampling_level")
@@ -370,14 +376,21 @@ def _cells(data: bytes) -> list[str]:
     return [_source(c) for c in cells if isinstance(c, dict) and c.get("cell_type") == "code"]
 
 
-def _library_rewards(names: list[str]) -> tuple[list[dict], list[str]]:
+def _library_rewards(
+    names: list[str], weights: Optional[list[float]] = None
+) -> tuple[list[dict], list[str]]:
+    """Library rewards for the notebook's reward functions, each with its reward_weights entry (1.0 without)."""
     picked: dict[str, dict] = {}
     left_out = []
-    for name in names:
+    for i, name in enumerate(names):
         low = name.lower()
         match = next((r for keys, r in _REWARD_NAMES if any(k in low for k in keys)), None)
-        if match:
-            picked.setdefault(match, {"name": match, "weight": 1.0})
+        weight = float(weights[i]) if weights else 1.0
+        if match and match in picked:
+            # TRL adds the two functions' rewards, so one library reward carries both weights.
+            picked[match]["weight"] += weight
+        elif match:
+            picked[match] = {"name": match, "weight": weight}
         else:
             left_out.append(name)
     return list(picked.values()), left_out
@@ -418,7 +431,17 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
         # One Fine-tune node runs one objective; dropping the warm-up would train something else.
         reader.unsupported.add("an SFT stage followed by RL (two training stages)")
     if reader.found.get("objective") == "grpo":
-        rewards, left_out = _library_rewards(reader.rewards)
+        weights = reader.found.get("reward_weights")
+        readable = (
+            isinstance(weights, (list, tuple))
+            and len(weights) == len(reader.rewards)
+            and all(isinstance(w, (int, float)) and not isinstance(w, bool) for w in weights)
+        )
+        if "reward_weights" in reader.found and not readable:
+            reader.approximated.append(
+                "reward_weights could not be matched to the reward functions, so each reward weighs 1"
+            )
+        rewards, left_out = _library_rewards(reader.rewards, list(weights) if readable else None)
         if not rewards:
             reader.unsupported.add(
                 "reward functions with no match in the reward library"

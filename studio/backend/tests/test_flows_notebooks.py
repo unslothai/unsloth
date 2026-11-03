@@ -747,3 +747,28 @@ def test_embedding_lora_targets_carry_over():
     doc, report = notebook_import.read_notebook(nb, "x.ipynb")
     assert doc is not None and _lora_lines(report) == []
     assert len(_tune(doc)["target_modules"]) == 7
+
+
+def test_grpo_reward_weights_carry_over():
+    def read(config):
+        nb = _nb(
+            "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+            "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+            "def correctness_reward_func(prompts, completions, answer, **kwargs):\n    return []\n"
+            "def soft_format_reward_func(completions, **kwargs):\n    return []",
+            "trainer = GRPOTrainer(model = model, reward_funcs = [correctness_reward_func, soft_format_reward_func], "
+            f"args = GRPOConfig(max_steps = 10{config}))",
+        )
+        doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")
+        return _tune(doc)["rewards"], [l for l in report["approximated"] if "reward_weights" in l]
+
+    rewards, lines = read(", reward_weights = [0.0, 5.0]")
+    assert rewards == [
+        {"name": "exact-answer", "weight": 0.0},
+        {"name": "soft-xml-format", "weight": 5.0},
+    ]
+    assert lines == []
+    rewards, lines = read(", reward_weights = WEIGHTS")
+    assert [r["weight"] for r in rewards] == [1.0, 1.0] and len(lines) == 1
+    rewards, lines = read("")
+    assert [r["weight"] for r in rewards] == [1.0, 1.0] and lines == []
