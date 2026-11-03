@@ -56,7 +56,6 @@ HAS_CONVERTERS = _transformers_supports_weight_converters()
 def _update_conversions(quantizer, conversions, model):
     # transformers 5.21+ passes the model to the hook.
     from transformers.quantizers.base import HfQuantizer
-
     if "model" in inspect.signature(HfQuantizer.update_weight_conversions).parameters:
         return quantizer.update_weight_conversions(conversions, model)
     return quantizer.update_weight_conversions(conversions)

@@ -809,9 +809,11 @@ def test_a_kept_packed_load_registers_no_decompress_op():
     from transformers.quantizers.base import HfQuantizer
 
     # transformers 5.21+ passes the model to the hook.
-    extra = (SimpleNamespace(named_parameters = lambda: iter(())),) if "model" in inspect.signature(
-        HfQuantizer.update_weight_conversions
-    ).parameters else ()
+    extra = (
+        (SimpleNamespace(named_parameters = lambda: iter(())),)
+        if "model" in inspect.signature(HfQuantizer.update_weight_conversions).parameters
+        else ()
+    )
     kept = ops(quantizer.update_weight_conversions([], *extra))
     assert kept.count("StackPackedExperts") == 4 and "DecompressPackedWeights" not in kept
     quantizer._unsloth_keep_packed, quantizer._unsloth_packed_experts = False, []
