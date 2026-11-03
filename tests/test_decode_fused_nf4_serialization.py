@@ -11,10 +11,10 @@ import torch
 from .test_decode_fused_nf4 import _driver
 
 
-def _model(qkv_bias=False):
+def _model(qkv_bias = False):
     bnb = pytest.importorskip("bitsandbytes")
     model = torch.nn.Module()
-    with torch.random.fork_rng(devices=[]):
+    with torch.random.fork_rng(devices = []):
         torch.manual_seed(3407)
         for name, n, k in (
             ("q_proj", 256, 256),
@@ -29,44 +29,44 @@ def _model(qkv_bias=False):
                 bnb.nn.Linear4bit(
                     k,
                     n,
-                    bias=qkv_bias and name in ("q_proj", "k_proj", "v_proj"),
-                    quant_type="nf4",
-                    compress_statistics=True,
+                    bias = qkv_bias and name in ("q_proj", "k_proj", "v_proj"),
+                    quant_type = "nf4",
+                    compress_statistics = True,
                 )
-                .to(dtype=torch.bfloat16)
+                .to(dtype = torch.bfloat16)
                 .to("cpu")
             )
             if module.weight.quant_state is None:
                 count = n * k // 64
                 nested = bnb.functional.QuantState(
-                    absmax=torch.ones((count + 255) // 256),
-                    shape=(count,),
-                    code=torch.linspace(0, 1, 256),
-                    blocksize=256,
-                    dtype=torch.float32,
+                    absmax = torch.ones((count + 255) // 256),
+                    shape = (count,),
+                    code = torch.linspace(0, 1, 256),
+                    blocksize = 256,
+                    dtype = torch.float32,
                 )
                 state = bnb.functional.QuantState(
-                    absmax=torch.randint(0, 256, (count,), dtype=torch.uint8),
-                    shape=(n, k),
-                    code=bnb.functional.get_4bit_type("nf4", device="cpu"),
-                    blocksize=64,
-                    quant_type="nf4",
-                    dtype=torch.bfloat16,
-                    offset=torch.tensor(0.25),
-                    state2=nested,
+                    absmax = torch.randint(0, 256, (count,), dtype = torch.uint8),
+                    shape = (n, k),
+                    code = bnb.functional.get_4bit_type("nf4", device = "cpu"),
+                    blocksize = 64,
+                    quant_type = "nf4",
+                    dtype = torch.bfloat16,
+                    offset = torch.tensor(0.25),
+                    state2 = nested,
                 )
                 module.weight = bnb.nn.Params4bit(
-                    torch.randint(0, 256, (n * k // 2, 1), dtype=torch.uint8),
-                    requires_grad=False,
-                    quant_state=state,
-                    quant_type="nf4",
-                    bnb_quantized=True,
-                    module=module,
+                    torch.randint(0, 256, (n * k // 2, 1), dtype = torch.uint8),
+                    requires_grad = False,
+                    quant_state = state,
+                    quant_type = "nf4",
+                    bnb_quantized = True,
+                    module = module,
                 )
                 module.quant_state = state
             model.add_module(name, module)
         model.embed_tokens = torch.nn.Embedding(64, 256)
-        model.lm_head = torch.nn.Linear(256, 64, bias=False)
+        model.lm_head = torch.nn.Linear(256, 64, bias = False)
         model.norms = torch.nn.ParameterList(
             [torch.nn.Parameter(torch.ones(256)) for _ in range(3)]
         )
@@ -76,7 +76,7 @@ def _model(qkv_bias=False):
 def _decoded(weight):
     state = weight.quant_state
     packed = weight.data.reshape(-1)
-    codes = torch.stack((packed >> 4, packed & 15), dim=-1).reshape(-1).long()
+    codes = torch.stack((packed >> 4, packed & 15), dim = -1).reshape(-1).long()
     scales = (
         state.state2.code[state.absmax.long()]
         * state.state2.absmax.repeat_interleave(state.state2.blocksize)[: state.absmax.numel()]
@@ -92,7 +92,11 @@ def _decoded(weight):
 def _sites(model, monkeypatch):
     driver = _driver()
 
-    def parts(projection, width, allow_bias=False):
+    def parts(
+        projection,
+        width,
+        allow_bias = False,
+    ):
         weight = projection.weight
         assert weight.quant_state.shape[1] == width
         if projection.bias is not None and not allow_bias:
@@ -101,16 +105,16 @@ def _sites(model, monkeypatch):
 
     def capture(kind, packed, absmax, code, bounds, width, blocksize, **kwargs):
         return types.SimpleNamespace(
-            packed=packed,
-            absmax=absmax,
-            absmax2=kwargs["absmax2"],
-            segments=kwargs["segments"],
-            bounds=bounds,
-            bias=kwargs["bias"],
+            packed = packed,
+            absmax = absmax,
+            absmax2 = kwargs["absmax2"],
+            segments = kwargs["segments"],
+            bounds = bounds,
+            bias = kwargs["bias"],
         )
 
     monkeypatch.setattr(driver, "_proj_parts", parts)
-    monkeypatch.setattr(driver.F, "FusedSite", capture, raising=False)
+    monkeypatch.setattr(driver.F, "FusedSite", capture, raising = False)
     for kind, names, width in (
         ("qkv", ("q_proj", "k_proj", "v_proj"), 256),
         ("o", ("o_proj",), 256),
@@ -118,7 +122,7 @@ def _sites(model, monkeypatch):
         ("down", ("down_proj",), 512),
     ):
         projections = [getattr(model, name) for name in names]
-        site = driver._site(model, kind, kind, projections, width, allow_bias=kind == "qkv")
+        site = driver._site(model, kind, kind, projections, width, allow_bias = kind == "qkv")
         assert not isinstance(site, str), site
         assert len(site.segments) == len(projections)
         for segment, projection in zip(site.segments, projections):
@@ -196,9 +200,9 @@ def _save_load(model, folder, api):
     folder.mkdir()
     if api == "torch":
         torch.save(model.state_dict(), folder / "model.pt")
-        return torch.load(folder / "model.pt", weights_only=True)
+        return torch.load(folder / "model.pt", weights_only = True)
     if api == "accelerate":
-        pytest.importorskip("accelerate").Accelerator(cpu=True).save_model(model, folder)
+        pytest.importorskip("accelerate").Accelerator(cpu = True).save_model(model, folder)
     elif api == "hub":
         pytest.importorskip("huggingface_hub").save_torch_model(model, folder)
     else:
@@ -234,7 +238,7 @@ def test_fused_nf4_checkpoints_keep_every_key_and_reload(tmp_path, monkeypatch, 
             continue
         key = name + ".weight"
         stats = {k[len(key) + 1 :]: v for k, v in restored.items() if k.startswith(key + ".")}
-        weight = bnb.nn.Params4bit.from_prequantized(restored[key], stats, device="cpu")
+        weight = bnb.nn.Params4bit.from_prequantized(restored[key], stats, device = "cpu")
         expected_weight = _decoded(module.weight)
         loaded_weight = _decoded(weight)
         assert torch.equal(expected_weight, loaded_weight), name
@@ -244,9 +248,9 @@ def test_fused_nf4_checkpoint_with_real_cpu_dequantization(tmp_path, monkeypatch
     bnb = pytest.importorskip("bitsandbytes")
     try:
         packed, state = bnb.functional.quantize_4bit(
-            torch.ones(128, 256, dtype=torch.bfloat16),
-            quant_type="nf4",
-            compress_statistics=True,
+            torch.ones(128, 256, dtype = torch.bfloat16),
+            quant_type = "nf4",
+            compress_statistics = True,
         )
         bnb.functional.dequantize_4bit(packed, state)
     except NotImplementedError as error:
@@ -264,7 +268,7 @@ def test_fused_nf4_checkpoint_with_real_cpu_dequantization(tmp_path, monkeypatch
     for name, expected_weight in expected.items():
         key = name + ".weight"
         stats = {k[len(key) + 1 :]: v for k, v in restored.items() if k.startswith(key + ".")}
-        weight = bnb.nn.Params4bit.from_prequantized(restored[key], stats, device="cpu")
+        weight = bnb.nn.Params4bit.from_prequantized(restored[key], stats, device = "cpu")
         loaded = bnb.functional.dequantize_4bit(weight.data, weight.quant_state)
         assert torch.equal(loaded, expected_weight)
 
