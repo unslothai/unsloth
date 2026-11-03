@@ -124,7 +124,7 @@ def layernorm_backward(
 
 
 # MIT 2023-2026 Songlin Yang et al.: dW/dB follow flash-linear-attention's layer_norm_bwd_kernel_row
-@triton.jit
+@triton.jit(do_not_specialize = ("n_rows", "rows_per_program"))
 def layernorm_backward_dw(
     dY,
     dX,
