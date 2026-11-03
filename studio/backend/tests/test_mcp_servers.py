@@ -2700,9 +2700,7 @@ def test_deferred_mcp_calls_keep_catalog_coercion_on_every_call(monkeypatch, sea
         "_mcp_tool_spec",
         lambda name: ping if name == "mcp__srv1__ping" else None,
     )
-    monkeypatch.setattr(
-        controller_mod, "_mcp_tool_search_specs", lambda arguments: [ping]
-    )
+    monkeypatch.setattr(controller_mod, "_mcp_tool_search_specs", lambda arguments: [ping])
     search_spec = {
         "type": "function",
         "function": {
