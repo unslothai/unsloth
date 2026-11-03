@@ -27,8 +27,7 @@ __all__ = [
 ]
 
 
-# M (rows): == 1 stays specialized (bsz 1 decode folds pid % M; unspecialized cost 1-5 % on T4), the
-# % 16 class does not, so every M > 1 shares one binary (bsz 3 then 16 compiled twice before).
+# M keeps the == 1 binary (fully unspecialized cost bsz 1 up to 5% on T4); every M > 1 shares one.
 @jit_any_alignment("M")
 def _gemv_nf4_kernel(
     X,
@@ -98,8 +97,7 @@ def _gemv_nf4_kernel(
     tl.store(OUT + rows, acc.to(OUT.dtype.element_ty), mask = rmask)
 
 
-# M (rows): == 1 stays specialized (bsz 1 decode folds pid % M; unspecialized cost 1-5 % on T4), the
-# % 16 class does not, so every M > 1 shares one binary (bsz 3 then 16 compiled twice before).
+# M: same specialization as _gemv_nf4_kernel.
 @jit_any_alignment("M")
 def _gemv_nf4_words_kernel(
     X,
@@ -348,9 +346,7 @@ def _gemv_nf4_op(
 
 
 _KERNELS = (_gemv_nf4_kernel, _gemv_nf4_words_kernel)
-# Position of M in the launch args, for launch()'s key, only when Triton really dropped its % 16
-# specialization (a Triton without do_not_specialize_on_alignment still specializes it, and keying it
-# without % 16 there would reuse a binary compiled for a divisible M).
+# Key M without % 16 only if Triton dropped it, else a binary built for a divisible M gets reused.
 _UNALIGNED_M = (
     (10,)
     if all(
