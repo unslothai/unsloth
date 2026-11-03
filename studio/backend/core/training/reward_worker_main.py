@@ -36,23 +36,35 @@ def _retry(action, seconds = 10.0):
             time.sleep(0.005)
 
 
+# Reward code can write this directory, so the host never opens a name in it through a link
+# the reward planted (that would write or read a host file outside the sandbox).
+_NO_FOLLOW = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+
+
 def put(path, payload):
-    tmp = path + ".tmp"
+    data = json.dumps(payload).encode("utf-8")
 
     def write():
-        with open(tmp, "w", encoding = "utf-8") as f:
-            json.dump(payload, f)
+        # A fresh, unguessable name created exclusively; the rename then replaces a planted link
+        # at ``path`` instead of following it.
+        tmp = f"{path}.{os.urandom(8).hex()}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NO_FOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        return tmp
 
-    _retry(write)
+    tmp = _retry(write)
     _retry(lambda: os.replace(tmp, path))
 
 
-def take(path):
-    def read():
-        with open(path, encoding = "utf-8") as f:
-            return json.load(f)
+def read_text(path):
+    fd = os.open(path, os.O_RDONLY | _NO_FOLLOW)
+    with os.fdopen(fd, "rb") as f:
+        return f.read().decode("utf-8", errors = "replace")
 
-    data = _retry(read)
+
+def take(path):
+    data = _retry(lambda: json.loads(read_text(path)))
     _retry(lambda: os.remove(path))
     return data
 
