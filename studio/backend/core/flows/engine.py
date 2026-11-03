@@ -2477,6 +2477,8 @@ def _implicit_local_model(recipe: Any) -> bool:
     """A compiled recipe with a local-provider model left to Chat's loaded one (blank or "local")."""
     if not isinstance(recipe, dict):
         return False
+    if isinstance(recipe.get("recipe"), dict):
+        recipe = recipe["recipe"]  # the compiler's {"recipe": ..., "run": ...}
     local = {
         p.get("name")
         for p in recipe.get("model_providers") or []
