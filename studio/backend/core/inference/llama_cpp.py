@@ -7249,6 +7249,7 @@ _MOE_CACHE_ERROR_RE = re.compile(
 )
 
 _LAZY_READ_TENSORS = _LOOKUP_LAZY_READ_TENSORS
+_LAZY_READ_AUTO_MIN_BYTES = _LOOKUP_LAZY_READ_AUTO_MIN_BYTES
 _LAZY_RESIDENT_MARGIN_FRAC = 0.10
 # Embedded NextN/MTP heads llama.cpp skips at load unless --spec-type draft-mtp, measured:
 # Nemotron 3.5 Super loads 2987 MiB less with MTP off (b11642 + ggml-org#30520).

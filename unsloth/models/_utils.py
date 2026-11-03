@@ -4912,6 +4912,21 @@ except Exception as e:
 
 from trl import __version__ as trl_version
 
+if False:
+    raise ImportError(
+        "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "
+        "then press Disconnect Runtime and then Restart it.\n"
+        "\n"
+        "%%capture\n"
+        "# Installs Unsloth, Xformers (Flash Attention) and all other packages!\n"
+        '!pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
+        '!pip install --no-deps "xformers<=0.0.27" trl peft accelerate bitsandbytes\n'
+        "\n"
+        f"Otherwise in local machines, your TRL version of {trl_version} is too new.\n"
+        "Please downgrade TRL via `pip install --force-reinstall trl"
+    )
+
+
 import transformers.generation.configuration_utils
 
 if hasattr(transformers.generation.configuration_utils, "ALL_CACHE_IMPLEMENTATIONS"):

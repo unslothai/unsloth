@@ -52,6 +52,7 @@ __all__ = [
 ]
 
 _PP_FLAG = "_unsloth_pp"
+_SCHEDULES = SCHEDULE_NAMES
 _MOE_CONFIG_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
 # Mixture-of-experts CausalLMs whose router auxiliary loss PipelineParallel carries between stages: every stage
 # adds its layers' load-balancing statistics to the ones it received and the last stage forms the loss
