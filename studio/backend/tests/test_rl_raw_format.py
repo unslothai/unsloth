@@ -176,6 +176,23 @@ def test_image_paths_are_found_anywhere_in_a_text_column():
     assert tmod._image_columns(Dataset.from_dict({"prompt": ["see figure.pdf"]})) == []
 
 
+@pytest.mark.parametrize(
+    "cell, image",
+    [
+        ("cat.png", True),
+        ("images/cat 1.jpeg", True),
+        ("C:\\data\\John Smith\\cat.png", True),
+        ("https://example.com/a/cat.JPG?size=2", True),
+        ("Save the chart you draw as output.png", False),
+        ("Describe the steps.\nThen save it as plot.png", False),
+    ],
+)
+def test_only_a_path_like_cell_marks_an_image_column(cell, image):
+    from datasets import Dataset
+    dataset = Dataset.from_dict({"prompt": ["q", "q"], "text": ["plain", cell]})
+    assert tmod._image_columns(dataset) == (["text"] if image else [])
+
+
 def test_rows_left_out_of_a_capped_dataset_are_not_scanned():
     from datasets import Dataset
 

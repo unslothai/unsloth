@@ -320,7 +320,12 @@ _AUDIO_SNIFF_ROWS = 16
 _AUDIO_COLUMN_KEYWORDS = ("audio", "speech", "wav", "waveform", "sound")
 
 
-_IMAGE_PATH_PATTERN = r"(?i)\.(png|jpe?g|webp|gif|bmp|tiff|svg)(\?[^\s]*)?\s*$"
+# A whole cell that is a path or URL to an image: one token, or one line with a path separator.
+# Prose that merely ends in "chart.png" is text, not an image column.
+_IMAGE_PATH_PATTERN = (
+    r"(?i)^\s*(?:\S{1,999}|[^\n]{0,998}[/\\][^\n]{0,998})"
+    r"\.(png|jpe?g|webp|gif|bmp|tiff|svg)(\?\S*)?\s*$"
+)
 
 
 def _string_column_has_image_paths(dataset, name: str) -> Optional[bool]:
