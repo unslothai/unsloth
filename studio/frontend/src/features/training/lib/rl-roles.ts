@@ -209,3 +209,19 @@ export function syncRlMapping(
   }
   return next;
 }
+
+/** The answer GRPO training gets from this row's answer column: null for an empty cell, as
+ * training keeps it. Undefined when there is no row or no answer role to read. */
+export function rowAnswer(
+  row: Record<string, unknown> | null | undefined,
+  answerColumn: string | undefined,
+): string | null | undefined {
+  if (!row || !answerColumn) {
+    return undefined;
+  }
+  const value = row[answerColumn];
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
