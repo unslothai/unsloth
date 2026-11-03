@@ -315,6 +315,8 @@ export interface GalleryImage {
   batch_seed?: number | null;
   batch_index: number;
   batch_size: number;
+  generation_seconds?: number | null;
+  generation_count?: number | null;
   model: string | null;
   // The load-time build. The repo id alone does not identify a pipeline (quant choice, torchao
   // scheme, baked adapters), so these are what a recipe needs once the model is unloaded.
@@ -448,6 +450,7 @@ export interface DiffusionDownloadPlan {
     gguf_filename: string | null;
     /** Only the planner knows: a gated pick is staged from an ungated mirror under another repo id. */
     checkpoint?: boolean;
+    hosted_denoiser?: boolean;
   }[];
   total_bytes: number;
   required_bytes?: number;

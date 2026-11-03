@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const tr = {
+  turns: {
+    label: "Tur {number}",
+    bookmarkedLabel: "Tur {number}, yer imli",
+    bookmark: "Turu yer imlerine ekle",
+    removeBookmark: "Yer imini kaldır",
+    navigator: "Turlar",
+  },
   chatBackground: {
     noBackground: "Arka plan yok",
     sizing: "Görüntü boyutlandırma",
@@ -728,6 +735,8 @@ export const tr = {
     plainText: "Düz metin yazma alanı",
     plainTextDescription:
       "Kod, Markdown ve bağlantılar olduğu gibi metin olarak kalır. Biçimlendirilmiş önizleme göstermek için kapatın.",
+    richPaste: "Biçimli metin yapıştırma",
+    richPasteDescription: "Bağlantıları, tabloları ve biçimlendirmeyi Markdown olarak yapıştırır. {shortcut} düz metin yapıştırır. Tam zengin metin düzenleyicisi yakında.",
     showContext: "Bağlam penceresi kullanımı",
     sendShortcut: "Gönderme kısayolu",
     sendMultiline: "Çok satırlı istemlerde {mod} + Enter",
@@ -1152,6 +1161,7 @@ export const tr = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Başka bir hesap eklemeden önce kurulum sahibinin parolasını belirleyin. Bu kurulumda birden fazla hesap olduğunda oturum açmak için bu parolayı kullanacaksınız.",
       signsInAs: "{username} olarak oturum açar",
       signsInAsOwner: "{alias} veya {username} olarak oturum açar",
       signInName: "Oturum açma adınız",
@@ -2090,6 +2100,7 @@ export const tr = {
         loadError: "Otomatik model değiştirme ayarları yüklenemedi.",
         saveError: "Otomatik model değiştirme ayarları kaydedilemedi.",
         idleError: "Modeli yüklü tutmak için 0 veya en az 60 saniye girin.",
+        idleUnsaved: "Henüz kaydedilmedi.",
         keepKv: "Bellekten kaldırmalar arasında sohbet bağlamını koru",
         keepKvDescription:
           "Boşta bellekten kaldırmadan veya bir görüntü ya da video modeli GPU'yu almadan önce KV önbelleğini kaydedin; böylece devam ettirilen sohbetler geçmişi yeniden okumaz. Diskte en fazla 10 GB.",
@@ -2155,6 +2166,14 @@ export const tr = {
           off: "Her araç çağrısını sormadan çalıştırır. Python ve terminal kodu yine korumalı alanda çalışır; bu, bilgisayarınızda hangi dosyalara erişebileceklerini sınırlar. Çalışan bir işletim sistemi korumalı alanı yoksa riskli çağrılar önce onay ister.",
           full: "Her araç çağrısını sormadan çalıştırır ve kod korumalı alanını kapatır; böylece Python ve terminal kodu, hesabınızın erişebildiği her dosyayı okuyabilir ve değiştirebilir.",
         },
+      },
+      display: {
+        title: "Görünüm",
+        timeFormat: "Saat biçimi",
+        timeFormatDescription: "Saatleri 12 veya 24 saat biçiminde göster.",
+        timeFormatSystem: "Sistem varsayılanı",
+        timeFormat12: "12 saat",
+        timeFormat24: "24 saat",
       },
       notifications: {
         sectionTitle: "Bildirimler",
@@ -2522,6 +2541,9 @@ export const tr = {
         description: "Unsloth genelinde açık ve koyu modda kullanılan renkler.",
         standard: "Standart",
         moreThemes: "Diğer temalar",
+      },
+      composer: {
+        title: "Mesaj kutusu",
       },
       code: {
         title: "Kod",
@@ -3174,6 +3196,8 @@ export const tr = {
         "Bildirimler engellenmiş. Tarayıcınızın veya sisteminizin ayarlarından Unsloth için bildirimlere izin verin, ardından yeniden deneyin.",
       replyNotificationKeywords:
         "bildir bildirim uyarı bitti tamamlandı hazır yanıt cevap arka plan simge durumu masaüstü ses notification",
+      showLinkPreviews: "Bağlantı önizlemeleri",
+      showLinkPreviewsDescription: "Kaynak bağlantılarının üzerine gelindiğinde önizlemeleri göster.",
       showResponseModel: "Yanıt modeli",
       showResponseModelDescription:
         "Asistan yanıtlarında model ayrıntılarını gösterin.",
@@ -3190,6 +3214,8 @@ export const tr = {
       inlineEditResponse: "Yanıtlarda Yanıtı düzenle",
       inlineEditResponseDescription:
         "Yanıtı düzenle seçeneğini Diğer menüsü yerine her yanıtta tutun.",
+      turnNavigation: "Tur gezinmesi",
+      turnNavigationDescription: "Uzun sohbetlerin sol kenarında mesajlarınızı bir şerit olarak gösterir. Önizlemek için üzerine gelin, gitmek için tıklayın ve yeniden bulmak için yer imi ekleyin.",
       composerAtBottom: "Yazma alanı altta",
       composerAtBottomDescription:
         "Yeni sohbetleri, yazma alanı sayfanın ortası yerine altında olacak şekilde başlatın.",
@@ -3856,8 +3882,6 @@ export const tr = {
         repoCheckoutFallback:
           "Depo checkout'u hâlâ duruyorsa yerel yükleyiciyi oradan çalıştırın:",
         restartAfterUpdate: "Güncellemeden sonra Unsloth'u yeniden başlatın.",
-        desktopManaged:
-          "Masaüstü uygulaması yeni uygulama sürümlerini otomatik olarak denetler. Ayrıca istediğiniz zaman buradan denetleyebilir veya güncelleyebilirsiniz.",
         desktopReady: "Masaüstü uygulaması güncellemeleri",
         desktopReadyDescription:
           "Daha yeni bir masaüstü uygulaması sürümü olup olmadığını denetleyin.",
@@ -5841,5 +5865,60 @@ export const tr = {
     later: "Daha sonra",
     update: "Güncelle",
     undo: "Geri al",
+  },
+  generationStats: {
+    working: "İşleniyor...",
+    processingPrompt: "İstem işleniyor %{percent}",
+    timeLeft: "{eta} kaldı",
+    tokensOne: "{count} token",
+    tokens: "{count} token",
+    tokensOf: "{done} / {total} token",
+    draftAccepted: "taslak {accepted}/{drafted} kabul edildi (%{percent})",
+    timing: {
+      trigger: "Mesaj zamanlaması",
+      firstToken: "İlk token",
+      speedInStep: "Hız (adım içi)",
+      effective: "Etkin",
+      output: "Çıktı",
+      denoising: "Gürültü giderme",
+      stepsOne: "{count} adım",
+      steps: "{count} adım",
+      blocksOne: "{count} blok",
+      blocks: "{count} blok",
+      canvas: "Tuval",
+      generation: "Oluşturma",
+      answerTokens: "Yanıt tokenları",
+      prompt: "İstem",
+      total: "Toplam",
+      chunks: "Parçalar",
+      promptEval: "İstem değerlendirme",
+      promptSpeed: "İstem hızı",
+      speed: "Hız",
+      tokens: "Token",
+      draftAccepted: "Kabul edilen taslak",
+      denoisingSteps: "Gürültü giderme adımları",
+      blocksLabel: "Bloklar",
+      cacheHits: "Önbellek isabetleri",
+      cacheWrites: "Önbellek yazmaları",
+      stopReason: "Durma nedeni",
+      stoppedByYou: "Siz durdurdunuz",
+      endOfTurn: "Tur sonu",
+      lengthLimit: "Uzunluk sınırı",
+      toolCall: "Araç çağrısı",
+      contentFilter: "İçerik filtresi",
+    },
+    placement: {
+      title: "Ağırlık yerleşimi",
+      allOnCpu: "{total} katmanın tümü CPU'da",
+      split: "{total} katmandan {gpu} tanesi GPU'da, {cpu} tanesi CPU'da",
+      allOnGpu: "{total} katmanın tümü GPU'da",
+      expertCache: "{total} katmanın tümü GPU'da, tüm uzmanlar RAM'de (GPU'da {amount} uzman önbelleği)",
+      expertSpillOne: "{total} katmanın tümü GPU'da, {count} katmanın uzman ağırlıkları RAM'de",
+      expertSpill: "{total} katmanın tümü GPU'da, {count} katmanın uzman ağırlıkları RAM'de",
+      inUnifiedMemory: "{amount} birleşik bellekte",
+      inSharedMemory: "{amount} paylaşılan bellekte",
+      inVram: "{amount} VRAM'de",
+      inRam: "{amount} RAM'de",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

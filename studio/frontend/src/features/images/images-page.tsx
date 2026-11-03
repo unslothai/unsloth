@@ -27,7 +27,8 @@ import {
   ArrowUpDownIcon,
   Download01Icon,
   Edit03Icon,
-  Image01Icon,
+  HistoryIcon,
+  ImageIcon,
   ImageAdd02Icon,
   ImageCropIcon,
   InformationCircleIcon,
@@ -38,7 +39,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { History as HistoryIcon, Shuffle } from "lucide-react";
+import { Shuffle } from "lucide-react";
 import { MessageCircleIcon, TestTubeOutlineIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
@@ -1292,16 +1293,19 @@ function RecipeRow({
   value,
   wrap,
   mono,
+  title,
 }: {
   label: string;
   value: string;
   wrap?: boolean;
   mono?: boolean;
+  title?: string;
 }) {
   return (
     <div className={cn("grid grid-cols-[72px_1fr] gap-2", wrap ? "items-start" : "items-center")}>
       <span className="text-muted-foreground">{label}</span>
       <span
+        title={title}
         className={cn(
           "min-w-0 text-foreground",
           wrap ? "whitespace-pre-wrap break-words" : "truncate",
@@ -1426,6 +1430,13 @@ function RecipePopover({
             />
           ) : null}
           <RecipeRow label="Size" value={`${image.width} × ${image.height}`} />
+          {image.generation_seconds != null ? (
+            <RecipeRow
+              label="Time"
+              value={`${image.generation_seconds.toFixed(image.generation_seconds < 1 ? 2 : 1)} s${(image.generation_count ?? 1) > 1 ? ` (batch of ${image.generation_count})` : ""}`}
+              title="Elapsed time until images are ready to save; may include waiting and processing"
+            />
+          ) : null}
           {!viaConnection && <RecipeRow label="Steps" value={String(image.steps)} />}
           {!viaConnection && <RecipeRow label="Guidance" value={String(image.guidance)} />}
           {samplerRecipeLabel(image.sampler, image.schedule_type) ? (
@@ -5573,12 +5584,13 @@ export function ImagesPage({
         })),
       sdControls: compareSdControls,
       hiresEngagesNegative: hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance),
+      detailerEngagesNegative: detailerEngagesNegative(detailerOn, detailerReady, detailerOptions, negativeMinGuidance),
       // The predicate the request uses (strength 0 runs plain text-to-image, where CFG rescale applies).
       controlnetEngaged,
     }),
     // samplerChoice is rebuilt every render; its two fields are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow],
+    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow, detailerOn, detailerReady, detailerOptions],
   );
 
   const handleGenerateWithRecall = useCallback(async () => {
@@ -7040,7 +7052,7 @@ export function ImagesPage({
                         if (lastSeed !== null) setSeed(String(lastSeed));
                       }}
                     >
-                      <HistoryIcon className="size-4" strokeWidth={1.5} />
+                      <HugeiconsIcon icon={HistoryIcon} className="size-4" strokeWidth={1.5} />
                     </Button>
                     </div>
                   </div>
@@ -7332,7 +7344,7 @@ export function ImagesPage({
               </>
             ) : busy === "generating" ? null : (
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <HugeiconsIcon icon={Image01Icon} className="size-12" strokeWidth={1.5} />
+                <HugeiconsIcon icon={ImageIcon} className="size-12" strokeWidth={1.5} />
                 <p className="text-sm">
                   {status?.loaded || external
                     ? "Enter a prompt and hit Generate."

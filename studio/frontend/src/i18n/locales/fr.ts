@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const fr = {
+  turns: {
+    label: "Tour {number}",
+    bookmarkedLabel: "Tour {number}, en favori",
+    bookmark: "Ajouter le tour aux favoris",
+    removeBookmark: "Retirer des favoris",
+    navigator: "Tours",
+  },
   chatBackground: {
     noBackground: "Aucun arrière-plan",
     sizing: "Dimensionnement de l’image",
@@ -645,6 +652,8 @@ export const fr = {
     title: "Saisie des messages",
     plainText: "Saisie en texte brut",
     plainTextDescription: "Conserver le code, le Markdown et les liens en texte brut. Désactivez pour afficher un aperçu mis en forme.",
+    richPaste: "Coller le texte enrichi",
+    richPasteDescription: "Colle liens, tableaux et mise en forme en Markdown. {shortcut} colle du texte brut. Éditeur de texte enrichi complet bientôt disponible.",
     showContext: "Afficher l’utilisation de la fenêtre de contexte",
     sendShortcut: "Raccourci d’envoi",
     sendMultiline: "{mod} + Enter pour les messages sur plusieurs lignes",
@@ -1056,6 +1065,7 @@ export const fr = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Définissez le mot de passe du propriétaire de l’installation avant d’ajouter un autre compte. Vous l’utiliserez pour vous connecter une fois que cette installation aura plusieurs comptes.",
       signsInAs: "Se connecte en tant que {username}",
       signsInAsOwner: "Se connecte en tant que {alias} ou {username}",
       signInName: "Votre nom de connexion",
@@ -1929,6 +1939,7 @@ export const fr = {
         saveError:
           "Échec de l'enregistrement des paramètres de changement automatique de modèle.",
         idleError: "Saisissez 0 pour garder le modèle chargé, ou au moins 60 secondes.",
+        idleUnsaved: "Pas encore enregistré.",
         autoDownload: "Télécharger les modèles manquants",
         autoDownloadDescription:
           "Récupérer un GGUF indiqué dans une requête API qui n'est pas encore téléchargé. Toute personne disposant d'une clé API peut alors consommer de l'espace disque et de la bande passante.",
@@ -1985,6 +1996,14 @@ export const fr = {
           "Impossible de charger les paramètres de connexion des comptes gérés.",
         saveError:
           "Impossible d'enregistrer les paramètres de connexion des comptes gérés.",
+      },
+      display: {
+        title: "Affichage",
+        timeFormat: "Format de l'heure",
+        timeFormatDescription: "Afficher l'heure au format 12 heures ou 24 heures.",
+        timeFormatSystem: "Valeur par défaut du système",
+        timeFormat12: "12 heures",
+        timeFormat24: "24 heures",
       },
       notifications: {
         sectionTitle: "Notifications",
@@ -2359,6 +2378,9 @@ export const fr = {
         description: "Couleurs utilisées dans Unsloth, en mode clair et sombre.",
         standard: "Standard",
         moreThemes: "Plus de thèmes",
+      },
+      composer: {
+        title: "Zone de saisie",
       },
       code: {
         title: "Code",
@@ -2966,6 +2988,8 @@ export const fr = {
         "Les notifications sont bloquées. Autorisez-les pour Unsloth dans les réglages du navigateur ou du système, puis réessayez.",
       replyNotificationKeywords:
         "notification notifier alerte terminé fini prêt réponse arrière-plan réduit notify notification alert done finished reply background",
+      showLinkPreviews: "Aperçus des liens",
+      showLinkPreviewsDescription: "Afficher un aperçu au survol des liens vers les sources.",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
@@ -2980,6 +3004,8 @@ export const fr = {
         "détails vitesse jetons statistiques couches déchargement verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifier la réponse sur les réponses",
       inlineEditResponseDescription: "Afficher Modifier la réponse sur chaque réponse, plutôt que dans le menu Plus.",
+      turnNavigation: "Navigation par tours",
+      turnNavigationDescription: "Affiche vos messages sous forme de barre sur le bord gauche des longues discussions. Survolez un tour pour l’aperçu, cliquez pour y aller et ajoutez-le aux favoris pour le retrouver.",
       composerAtBottom: "Zone de saisie en bas",
       composerAtBottomDescription: "Commencer les nouvelles discussions avec la zone de saisie en bas de la page plutôt qu'au centre.",
       projectAttachments: "Partager les fichiers dans tout le projet",
@@ -3607,8 +3633,6 @@ export const fr = {
         repoCheckoutFallback:
           "Si vous avez encore le checkout du dépôt, lancez l'installateur local depuis celui-ci :",
         restartAfterUpdate: "Redémarrez Unsloth après la mise à jour.",
-        desktopManaged:
-          "L’application de bureau recherche automatiquement les nouvelles versions. Vous pouvez également rechercher ou installer une mise à jour ici à tout moment.",
         desktopReady: "Mises à jour de l’application de bureau",
         desktopReadyDescription:
           "Vérifiez si une version plus récente de l’application de bureau est disponible.",
@@ -5519,5 +5543,60 @@ export const fr = {
     later: "Plus tard",
     update: "Mettre à jour",
     undo: "Annuler",
+  },
+  generationStats: {
+    working: "Traitement en cours...",
+    processingPrompt: "Traitement du prompt {percent} %",
+    timeLeft: "reste {eta}",
+    tokensOne: "{count} token",
+    tokens: "{count} tokens",
+    tokensOf: "{done} / {total} tokens",
+    draftAccepted: "brouillon {accepted}/{drafted} acceptés ({percent} %)",
+    timing: {
+      trigger: "Temps du message",
+      firstToken: "Premier token",
+      speedInStep: "Vitesse (par étape)",
+      effective: "Effective",
+      output: "Sortie",
+      denoising: "Débruitage",
+      stepsOne: "{count} étape",
+      steps: "{count} étapes",
+      blocksOne: "{count} bloc",
+      blocks: "{count} blocs",
+      canvas: "Canevas",
+      generation: "Génération",
+      answerTokens: "Tokens de réponse",
+      prompt: "Prompt",
+      total: "Total",
+      chunks: "Fragments",
+      promptEval: "Évaluation du prompt",
+      promptSpeed: "Vitesse du prompt",
+      speed: "Vitesse",
+      tokens: "Tokens",
+      draftAccepted: "Brouillon accepté",
+      denoisingSteps: "Étapes de débruitage",
+      blocksLabel: "Blocs",
+      cacheHits: "Lectures du cache",
+      cacheWrites: "Écritures du cache",
+      stopReason: "Motif d’arrêt",
+      stoppedByYou: "Arrêté par vous",
+      endOfTurn: "Fin de la réponse",
+      lengthLimit: "Limite de longueur",
+      toolCall: "Appel d’outil",
+      contentFilter: "Filtre de contenu",
+    },
+    placement: {
+      title: "Placement des poids",
+      allOnCpu: "Toutes les {total} couches sur le CPU",
+      split: "{gpu} couches sur {total} sur le GPU, {cpu} sur le CPU",
+      allOnGpu: "Toutes les {total} couches sur le GPU",
+      expertCache: "Toutes les {total} couches sur le GPU, tous les experts en RAM ({amount} de cache d’experts sur le GPU)",
+      expertSpillOne: "Toutes les {total} couches sur le GPU, poids des experts de {count} couche en RAM",
+      expertSpill: "Toutes les {total} couches sur le GPU, poids des experts de {count} couches en RAM",
+      inUnifiedMemory: "{amount} en mémoire unifiée",
+      inSharedMemory: "{amount} en mémoire partagée",
+      inVram: "{amount} en VRAM",
+      inRam: "{amount} en RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -2,6 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const sv = {
+  turns: {
+    label: "Tur {number}",
+    bookmarkedLabel: "Tur {number}, bokmärkt",
+    bookmark: "Bokmärk tur",
+    removeBookmark: "Ta bort bokmärke",
+    navigator: "Turer",
+  },
   chatBackground: {
     noBackground: "Ingen bakgrund",
     sizing: "Bildstorlek",
@@ -688,6 +695,8 @@ export const sv = {
     plainText: "Skrivfält med oformaterad text",
     plainTextDescription:
       "Behåll kod, Markdown och länkar som ren text. Stäng av för att visa en formaterad förhandsvisning.",
+    richPaste: "Klistra in formaterad text",
+    richPasteDescription: "Klistrar in länkar, tabeller och formatering som Markdown. {shortcut} klistrar in oformaterad text. Fullständig redigerare för formaterad text kommer snart.",
     showContext: "Användning av kontextfönstret",
     sendShortcut: "Kortkommando för att skicka",
     sendMultiline: "{mod} + Enter för uppmaningar med flera rader",
@@ -1107,6 +1116,7 @@ export const sv = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Välj installationsägarens lösenord innan du lägger till ett konto till. Du använder det för att logga in när installationen har flera konton.",
       signsInAs: "Loggar in som {username}",
       signsInAsOwner: "Loggar in som {alias} eller {username}",
       signInName: "Ditt inloggningsnamn",
@@ -2028,6 +2038,7 @@ export const sv = {
           "Det gick inte att spara inställningarna för automatiskt modellbyte.",
         idleError:
           "Ange 0 för att behålla modellen inläst, eller minst 60 sekunder.",
+        idleUnsaved: "Inte sparat ännu.",
         keepKv: "Behåll chattkontext mellan avlastningar",
         keepKvDescription:
           "Spara KV-cachen före en avlastning efter inaktivitet, eller innan en bild- eller videomodell tar över GPU:n, så att återupptagna chattar slipper läsa historiken igen. Upp till 10 GB på disk.",
@@ -2097,6 +2108,14 @@ export const sv = {
           off: "Kör varje verktygsanrop utan att fråga. Python- och terminalkod körs fortfarande i sandlådan, som begränsar vilka filer de kan nå på din dator. Utan en fungerande OS-sandlåda frågar riskabla anrop först.",
           full: "Kör varje verktygsanrop utan att fråga och stänger av kodsandlådan, så att Python- och terminalkod kan läsa och ändra alla filer som ditt konto har åtkomst till.",
         },
+      },
+      display: {
+        title: "Visning",
+        timeFormat: "Tidsformat",
+        timeFormatDescription: "Visa tider i 12- eller 24-timmarsformat.",
+        timeFormatSystem: "Systemstandard",
+        timeFormat12: "12-timmars",
+        timeFormat24: "24-timmars",
       },
       notifications: {
         sectionTitle: "Aviseringar",
@@ -2458,6 +2477,9 @@ export const sv = {
         description: "Färger som används i Unsloth, i ljust och mörkt läge.",
         standard: "Standard",
         moreThemes: "Fler teman",
+      },
+      composer: {
+        title: "Inmatningsfält",
       },
       code: {
         title: "Kod",
@@ -3091,6 +3113,8 @@ export const sv = {
         "Aviseringar är blockerade. Tillåt dem för Unsloth i webbläsarens eller systemets inställningar och försök igen.",
       replyNotificationKeywords:
         "avisering notis meddelande klar färdig svar bakgrund minimerad notify notification alert done finished reply background",
+      showLinkPreviews: "Länkförhandsvisningar",
+      showLinkPreviewsDescription: "Visa förhandsvisningar när du håller muspekaren över källänkar.",
       showResponseModel: "Svarsmodell",
       showResponseModelDescription:
         "Visa modellinformation i assistentens svar.",
@@ -3106,6 +3130,8 @@ export const sv = {
       inlineEditResponse: "Redigera svar på svaren",
       inlineEditResponseDescription:
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",
+      turnNavigation: "Turnavigering",
+      turnNavigationDescription: "Visar dina meddelanden som en list vid vänsterkanten i långa chattar. Hovra för att förhandsgranska en tur, klicka för att hoppa dit och bokmärk turer för att hitta dem igen.",
       composerAtBottom: "Inmatningsfält längst ned",
       composerAtBottomDescription: "Starta nya chattar med inmatningsfältet längst ned på sidan i stället för i mitten.",
       projectAttachments: "Dela filer i ett projekt",
@@ -3747,8 +3773,6 @@ export const sv = {
         repoCheckoutFallback:
           "Om du fortfarande har arkivets checkout kör du det lokala installationsprogrammet därifrån:",
         restartAfterUpdate: "Starta om Unsloth efter uppdateringen.",
-        desktopManaged:
-          "Skrivbordsappen kontrollerar automatiskt nya appversioner. Du kan också kontrollera eller uppdatera här när som helst.",
         desktopReady: "Uppdateringar för skrivbordsappen",
         desktopReadyDescription:
           "Kontrollera om en nyare version av skrivbordsappen är tillgänglig.",
@@ -5678,5 +5702,60 @@ export const sv = {
     later: "Senare",
     update: "Uppdatera",
     undo: "Ångra",
+  },
+  generationStats: {
+    working: "Arbetar...",
+    processingPrompt: "Bearbetar prompt {percent}%",
+    timeLeft: "{eta} kvar",
+    tokensOne: "{count} token",
+    tokens: "{count} token",
+    tokensOf: "{done} / {total} token",
+    draftAccepted: "utkast {accepted}/{drafted} accepterade ({percent}%)",
+    timing: {
+      trigger: "Meddelandetider",
+      firstToken: "Första token",
+      speedInStep: "Hastighet (inom steg)",
+      effective: "Effektiv",
+      output: "Utdata",
+      denoising: "Avbrusning",
+      stepsOne: "{count} steg",
+      steps: "{count} steg",
+      blocksOne: "{count} block",
+      blocks: "{count} block",
+      canvas: "Arbetsyta",
+      generation: "Generering",
+      answerTokens: "Svarstoken",
+      prompt: "Prompt",
+      total: "Totalt",
+      chunks: "Delar",
+      promptEval: "Promptbearbetning",
+      promptSpeed: "Prompthastighet",
+      speed: "Hastighet",
+      tokens: "Token",
+      draftAccepted: "Accepterade utkast",
+      denoisingSteps: "Avbrusningssteg",
+      blocksLabel: "Block",
+      cacheHits: "Cacheträffar",
+      cacheWrites: "Cacheskrivningar",
+      stopReason: "Stopporsak",
+      stoppedByYou: "Stoppad av dig",
+      endOfTurn: "Turen avslutad",
+      lengthLimit: "Längdgräns",
+      toolCall: "Verktygsanrop",
+      contentFilter: "Innehållsfilter",
+    },
+    placement: {
+      title: "Viktplacering",
+      allOnCpu: "Alla {total} lager på CPU:n",
+      split: "{gpu} av {total} lager på GPU:n, {cpu} på CPU:n",
+      allOnGpu: "Alla {total} lager på GPU:n",
+      expertCache: "Alla {total} lager på GPU:n, alla experter i RAM ({amount} expertcache på GPU:n)",
+      expertSpillOne: "Alla {total} lager på GPU:n, expertvikter för {count} lager i RAM",
+      expertSpill: "Alla {total} lager på GPU:n, expertvikter för {count} lager i RAM",
+      inUnifiedMemory: "{amount} i enhetligt minne",
+      inSharedMemory: "{amount} i delat minne",
+      inVram: "{amount} i VRAM",
+      inRam: "{amount} i RAM",
+    },
   },
 } as const;

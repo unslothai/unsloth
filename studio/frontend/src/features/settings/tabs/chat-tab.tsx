@@ -31,6 +31,7 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Download01Icon,
+  LayoutTwoColumnIcon,
   LibrariesIcon,
   McpServerIcon,
   Scroll01Icon,
@@ -41,7 +42,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { useNavigate } from "@tanstack/react-router";
-import { Columns2Icon } from "lucide-react";
 import { Suspense, lazy, useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
 import {
@@ -146,7 +146,7 @@ const PLUS_MENU_SETTINGS: {
   {
     id: "compareChat",
     labelKey: "settings.chat.menu.compareChat",
-    icon: <Columns2Icon className={PLUS_MENU_ICON_CLASS} />,
+    icon: <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={2} className={PLUS_MENU_ICON_CLASS} />,
   },
   {
     id: "exportChat",
@@ -315,6 +315,12 @@ export function ChatTab() {
   const setKeepRunningWhenTabClosed = useChatRuntimeStore(
     (state) => state.setKeepRunningWhenTabClosed,
   );
+  const showTurnNavigation = useChatPreferencesStore(
+    (s) => s.showTurnNavigation,
+  );
+  const setShowTurnNavigation = useChatPreferencesStore(
+    (s) => s.setShowTurnNavigation,
+  );
   const searchImages = useChatRuntimeStore((state) => state.searchImages);
   const setSearchImages = useChatRuntimeStore((state) => state.setSearchImages);
   const hydratePersistedSettings = useChatRuntimeStore(
@@ -351,6 +357,12 @@ export function ChatTab() {
   );
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
+  );
+  const showLinkPreviews = useChatPreferencesStore(
+    (state) => state.showLinkPreviews,
+  );
+  const setShowLinkPreviews = useChatPreferencesStore(
+    (state) => state.setShowLinkPreviews,
   );
   const showReplyTimes = useChatPreferencesStore(
     (state) => state.showReplyTimes,
@@ -668,6 +680,16 @@ export function ChatTab() {
 
       <SettingsSection title={t("settings.chat.groups.display.title")}>
         <SettingsRow
+          label={t("settings.chat.showLinkPreviews")}
+          description={t("settings.chat.showLinkPreviewsDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.showLinkPreviews")}
+            checked={showLinkPreviews}
+            onCheckedChange={setShowLinkPreviews}
+          />
+        </SettingsRow>
+        <SettingsRow
           label={t("settings.chat.webSearch.images")}
           description={t("settings.chat.webSearch.imagesDescription")}
         >
@@ -788,6 +810,16 @@ export function ChatTab() {
             aria-label={t("settings.chat.inlineEditResponse")}
             checked={showInlineEditResponse}
             onCheckedChange={setShowInlineEditResponse}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.turnNavigation")}
+          description={t("settings.chat.turnNavigationDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.turnNavigation")}
+            checked={showTurnNavigation}
+            onCheckedChange={setShowTurnNavigation}
           />
         </SettingsRow>
       </SettingsSection>

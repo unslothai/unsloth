@@ -83,6 +83,7 @@ from core.inference.context_window import (
     turn_is_servable,
 )
 from core.inference.llama_tool_schema import llama_grammar_tools
+from core.inference.llama_video_input import video_tools
 from core.inference.lookup_tables import (
     HOST_FORCED_TABLE_ARCHS as _HOST_FORCED_TABLE_ARCHS,
     HOST_FORCED_TABLE_MARKER as _HOST_FORCED_TABLE_MARKER,
@@ -3053,6 +3054,17 @@ def _extract_reasoning_effort_levels(chat_template: str) -> list:
     ]
 
 
+# Only a validation guard: a plain membership branch can group levels or reject the ones it names.
+_REASONING_EFFORT_ALLOWLIST_RE = re.compile(
+    r"\{%-?\s*if\s+reasoning_effort\s+not\s+in\s+\[([^\]]*)\]\s*-?%\}\s*\{\{-?\s*raise_exception\("
+)
+
+
+def _reasoning_effort_allowlist(chat_template: str) -> list:
+    match = _REASONING_EFFORT_ALLOWLIST_RE.search(chat_template)
+    return _extract_reasoning_effort_levels(match.group(1)) if match else []
+
+
 # Log each substitution once per (levels, requested) pair.
 _REASONING_EFFORT_CLAMPS_LOGGED: set = set()
 
@@ -3155,7 +3167,10 @@ def detect_reasoning_flags(
         flags["supports_reasoning"] = True
         flags["reasoning_style"] = "reasoning_effort"
         scanned = _extract_reasoning_effort_levels(tpl)
-        if "low" in scanned and "high" in scanned:
+        allowed = _reasoning_effort_allowlist(tpl)
+        if any(level != "none" for level in allowed):
+            flags["reasoning_effort_levels"] = allowed
+        elif "low" in scanned and "high" in scanned:
             flags["reasoning_effort_levels"] = scanned
         _log(
             f"{prefix}model supports reasoning "
@@ -5676,6 +5691,7 @@ _LLAMA_VIDEO_FPS = "1"
 _VIDEO_FPS_ENV_VAR = "LLAMA_ARG_VIDEO_FPS"
 _LLAMA_SERVER_DEFAULT_VIDEO_FPS = 4.0
 _VIDEO_TIMESTAMP_ENV_VAR = "LLAMA_ARG_VIDEO_TIMESTAMP_INTERVAL"
+_VIDEO_FFMPEG_DIR_ENV_VAR = "LLAMA_ARG_VIDEO_FFMPEG_DIR"
 
 
 def _video_fps_flags(
@@ -5711,6 +5727,33 @@ def _video_fps_flags(
     return flags
 
 
+def _video_ffmpeg_dir_flags(
+    server_caps: Mapping[str, object],
+    env: Optional[Mapping[str, str]] = None,
+    extra_args: Optional[Sequence[str]] = None,
+) -> tuple[list[str], Optional[str]]:
+    if not server_caps.get("supports_video_ffmpeg_dir"):
+        return [], None
+    source = os.environ if env is None else env
+    try:
+        chosen = _last_flag_value(extra_args, frozenset({"--video-ffmpeg-dir"}), preserve_raw = True)
+    except ValueError:
+        chosen = None
+    chosen = chosen or source.get(_VIDEO_FFMPEG_DIR_ENV_VAR) or None
+    if chosen:
+        return [], chosen
+    # CreateProcess searches the server's directory before PATH.
+    if sys.platform == "win32":
+        return [], None
+    tools = video_tools()
+    if tools is None:
+        return [], None
+    ffmpeg_dir = os.path.dirname(tools[0])
+    if os.path.dirname(tools[1]) != ffmpeg_dir:
+        return [], None
+    return ["--video-ffmpeg-dir", ffmpeg_dir], ffmpeg_dir
+
+
 def requested_video_fps(
     extra_args: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] = None
 ) -> Optional[float]:
@@ -5736,25 +5779,35 @@ def requested_video_fps(
     return rate if rate > 0 else None
 
 
+def _video_tools_search(
+    cmd: Sequence[str],
+    env: Optional[Mapping[str, str]] = None,
+    cwd: Optional[str] = None,
+    supports_ffmpeg_dir: bool = True,
+) -> str:
+    source = os.environ if env is None else env
+    bin_dir = _last_flag_value(cmd, frozenset({"--video-ffmpeg-dir"}), preserve_raw = True)
+    search = bin_dir or (source.get(_VIDEO_FFMPEG_DIR_ENV_VAR) if supports_ffmpeg_dir else None)
+    if not search:
+        search = source.get("PATH", os.defpath)
+        if sys.platform == "win32":
+            launch_dir = os.path.dirname(str(cmd[0])) if cmd else ""
+            search = os.pathsep.join(d for d in (launch_dir, cwd or os.getcwd(), search) if d)
+    return search
+
+
 def _video_tools_reachable(
     cmd: Sequence[str],
     env: Optional[Mapping[str, str]] = None,
     cwd: Optional[str] = None,
+    supports_ffmpeg_dir: bool = True,
 ) -> bool:
     """Whether the child can launch ffmpeg and ffprobe, which /props' video modality never checks (#16065)."""
-    source = os.environ if env is None else env
     try:
-        bin_dir = _last_flag_value(cmd, frozenset({"--video-ffmpeg-dir"}))
+        search = _video_tools_search(cmd, env, cwd, supports_ffmpeg_dir)
     except Exception:
         return True
-    search = bin_dir or source.get("LLAMA_ARG_VIDEO_FFMPEG_DIR")
     names = ("ffmpeg.exe", "ffprobe.exe") if sys.platform == "win32" else ("ffmpeg", "ffprobe")
-    if not search:
-        search = source.get("PATH", os.defpath)
-        if sys.platform == "win32":
-            # CreateProcess also searches the binary's folder and the working directory.
-            launch_dir = os.path.dirname(str(cmd[0])) if cmd else ""
-            search = os.pathsep.join(d for d in (launch_dir, cwd or os.getcwd(), search) if d)
     return all(shutil.which(name, path = search) for name in names)
 
 
@@ -8433,6 +8486,8 @@ class LlamaCppBackend:
         self._has_audio_input: bool = False
         # Needs mmproj, build and ffmpeg to align; the GGUF alone cannot tell.
         self._has_video_input: bool = False
+        self._video_needs_ffmpeg: bool = False
+        self._video_ffmpeg_dir: Optional[str] = None
         self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
         # clip.projector_type set at load; the family whose image-token ceiling KV admission sizes images against.
         self._mmproj_projector_type: Optional[str] = None
@@ -10162,6 +10217,7 @@ class LlamaCppBackend:
                 "supports_trace_verbosity": False,
                 "supports_video_fps": False,
                 "supports_video_timestamp_interval": False,
+                "supports_video_ffmpeg_dir": None,
                 "supports_load_mode": False,
                 "supports_moe_cache": False,
                 "supports_moe_cache_auto": False,
@@ -10232,6 +10288,7 @@ class LlamaCppBackend:
         supports_no_mmproj_offload = False
         supports_video_fps = False
         supports_video_timestamp_interval = False
+        supports_video_ffmpeg_dir = None
         supports_load_mode = False
         supports_moe_cache = False
         supports_moe_cache_auto = False
@@ -10441,6 +10498,9 @@ class LlamaCppBackend:
             supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
             supports_video_fps = _is_real("--video-fps")
             supports_video_timestamp_interval = _is_real("--video-timestamp-interval")
+            supports_video_ffmpeg_dir = (
+                _is_real("--video-ffmpeg-dir") if probe_ok and blocks else None
+            )
             # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
             # Pre-initialised above: a failed probe must fall back, not raise.
             supports_load_mode = _is_real("--load-mode")
@@ -10555,6 +10615,7 @@ class LlamaCppBackend:
             "supports_trace_verbosity": supports_trace_verbosity,
             "supports_video_fps": supports_video_fps,
             "supports_video_timestamp_interval": supports_video_timestamp_interval,
+            "supports_video_ffmpeg_dir": supports_video_ffmpeg_dir,
             "supports_load_mode": supports_load_mode,
             "supports_moe_cache": supports_moe_cache,
             "supports_moe_cache_auto": supports_moe_cache_auto,
@@ -24186,6 +24247,8 @@ class LlamaCppBackend:
                 self._moe_spill_batch_restore: Optional[tuple[Optional[int], Optional[int]]] = None
                 _moe_cache_candidate = False
                 _moe_cache_ram_ok = False
+                _moe_table_bytes = 0
+                _moe_cache_lazy_table = False
                 _shared_gpus = frozenset()
                 _integrated_gpus = frozenset()
                 # The discrete-first tier; accounting keeps _integrated_gpus.
@@ -27957,6 +28020,8 @@ class LlamaCppBackend:
                             binary = binary,
                         )
                     if _managed_lazy_flags and _fit_lazy_bytes:
+                        # Kept resident by --lazy-mode off; the MoE cache below may want it lazy.
+                        _moe_table_bytes = _fit_lazy_bytes
                         if _fit_load_mode_kwargs["model_size"]:
                             _fit_load_mode_kwargs["model_size"] = max(
                                 1, _fit_load_mode_kwargs["model_size"] - _fit_lazy_bytes
@@ -28020,6 +28085,31 @@ class LlamaCppBackend:
                             )
                             == self._FIT_LOAD_MODE
                         )
+                        if not _moe_cache_ram_ok and _moe_table_bytes > 0 and _moe_expert_bytes > 0:
+                            # Reading the resident table lazily frees the RAM to pin the experts; the cache beats the --fit split.
+                            _moe_cache_ram_ok = bool(
+                                _moe_prompt_cache_bytes is not None
+                                and self._fit_derived_load_mode(
+                                    **{
+                                        **_fit_load_mode_kwargs,
+                                        "model_size": max(
+                                            1,
+                                            _fit_load_mode_kwargs["model_size"] - _moe_expert_bytes,
+                                        ),
+                                        "host_only_bytes": max(
+                                            0,
+                                            _fit_load_mode_kwargs["host_only_bytes"]
+                                            - _moe_table_bytes,
+                                        )
+                                        + _moe_expert_bytes
+                                        + _moe_prompt_cache_bytes,
+                                        "announce": False,
+                                    }
+                                )
+                                == self._FIT_LOAD_MODE
+                            )
+                            # --lazy-mode off goes only where the cache is really added below.
+                            _moe_cache_lazy_table = _moe_cache_ram_ok
                         if not _moe_cache_ram_ok:
                             logger.info(
                                 "MoE cache: system RAM cannot hold the %.1f GB of routed "
@@ -28035,7 +28125,7 @@ class LlamaCppBackend:
                     # Same reasoning: an unpriced load keeps llama.cpp's default.
                     _fit_load_mode = None
                     _managed_lazy_flags = None
-                    _moe_cache_candidate = _moe_cache_ram_ok = False
+                    _moe_cache_candidate = _moe_cache_ram_ok = _moe_cache_lazy_table = False
                     # And a half-built snapshot is not a price either: the throw can
                     # land after the dict exists but before the later terms are added
                     # to it, which would plan against a footprint missing them.
@@ -28411,6 +28501,10 @@ class LlamaCppBackend:
                 # On every launch, not only where Studio emits --mmproj: a projector
                 # from the extras or LLAMA_ARG_MMPROJ takes video too.
                 cmd.extend(_video_fps_flags(server_caps, extra_args = extra_args))
+                _ffmpeg_flags, self._video_ffmpeg_dir = _video_ffmpeg_dir_flags(
+                    server_caps, extra_args = extra_args
+                )
+                cmd.extend(_ffmpeg_flags)
 
                 # Report the public model id, not the raw -m path.
                 from core.inference.model_ids import public_model_id
@@ -29554,6 +29648,16 @@ class LlamaCppBackend:
                     and _placed_by_fitter
                     and _argv_loads_pinned(cmd, _fit_load_mode_env_view)
                 ):
+                    if _moe_cache_lazy_table and self._lazy_mode_flags:
+                        # These flags sit after the spec block, so removing them leaves _spec_start valid.
+                        cmd = _without_subsequence(cmd, self._lazy_mode_flags)
+                        self._lazy_mode_flags = []
+                        logger.info(
+                            "MoE cache: reading the %.1f GB lookup table lazily so system "
+                            "RAM can pin the %.1f GB of routed experts.",
+                            _moe_table_bytes / (1024**3),
+                            _moe_expert_bytes / (1024**3),
+                        )
                     self._moe_cache_flags = list(_MOE_CACHE_AUTO_TOKENS)
                     cmd.extend(self._moe_cache_flags)
                     logger.info(
@@ -32576,10 +32680,22 @@ class LlamaCppBackend:
                 # -- the length --fit chose, or a --parallel slot split -- so the
                 # Adopt the context the server allocated (--fit or slot split); clear video state first, or a swap to a model without video inherits the old answer.
                 self._has_video_input = False
+                self._video_needs_ffmpeg = False
                 # Use _extra_args_as_requested: the drafter-drop snapshot would restore the Metal zero-context strip.
                 self._reconcile_effective_ctx_with_server(ctx_override or 0)
                 if self._has_video_input:
-                    self._has_video_input = _video_tools_reachable(_last_spawn_cmd, env, _spawn_cwd)
+                    _supports_dir = server_caps.get("supports_video_ffmpeg_dir") is not False
+                    self._has_video_input = _video_tools_reachable(
+                        _last_spawn_cmd, env, _spawn_cwd, supports_ffmpeg_dir = _supports_dir
+                    )
+                    self._video_needs_ffmpeg = not self._has_video_input
+                    if self._has_video_input:
+                        try:
+                            self._video_ffmpeg_dir = _video_tools_search(
+                                _last_spawn_cmd, env, _spawn_cwd, supports_ffmpeg_dir = _supports_dir
+                            )
+                        except Exception:
+                            pass
                     if not self._has_video_input:
                         logger.warning(
                             "Video input disabled: llama-server decodes video with ffmpeg and "
@@ -33579,6 +33695,7 @@ class LlamaCppBackend:
             self._audio_probed = False
             self._has_audio_input = False
             self._has_video_input = False
+            self._video_needs_ffmpeg = False
             self._mmproj_has_audio = False
             self._mmproj_accepts_image = True
             self._port = None
@@ -37943,12 +38060,25 @@ class LlamaCppBackend:
             if logit_bias:
                 payload["logit_bias"] = logit_bias
             # An empty list would still advertise tool use.
-            if safe_tools:
-                payload["tools"] = llama_grammar_tools(safe_tools)
-                payload["tool_choice"] = requested_choice
-                _last_sent_tools = safe_tools
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
+            if safe_tools:
+                grammar_tools = safe_tools
+                if not forced_name and requested_choice != "none":
+                    grammar_tools = neutralize_tool_descriptions(
+                        tool_controller.active_tools(include_deferred = True),
+                        _markup_cache,
+                        self.markup_profile,
+                    )
+                payload["tools"] = llama_grammar_tools(grammar_tools)
+                payload["tool_choice"] = requested_choice
+                if grammar_tools != safe_tools:
+                    # The parser needs discovered names; the template keeps its cached declaration.
+                    payload["chat_template_kwargs"] = {
+                        **(_reasoning_kw or {}),
+                        "tools": llama_grammar_tools(safe_tools),
+                    }
+                _last_sent_tools = safe_tools
             if thinking_budget_tokens is not None:
                 payload["thinking_budget_tokens"] = thinking_budget_tokens
             # Re-checked per iteration: once a tool result is appended the partial is

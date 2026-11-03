@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const th = {
+  turns: {
+    label: "รอบที่ {number}",
+    bookmarkedLabel: "รอบที่ {number} (บุ๊กมาร์กแล้ว)",
+    bookmark: "บุ๊กมาร์กรอบนี้",
+    removeBookmark: "เอาบุ๊กมาร์กออก",
+    navigator: "รอบ",
+  },
   chatBackground: {
     noBackground: "ไม่มีพื้นหลัง",
     sizing: "การปรับขนาดภาพ",
@@ -693,6 +700,8 @@ export const th = {
     plainText: "ช่องเขียนข้อความแบบข้อความธรรมดา",
     plainTextDescription:
       "เก็บโค้ด Markdown และลิงก์ไว้เป็นข้อความตามตัวอักษร ปิดเพื่อแสดงตัวอย่างแบบจัดรูปแบบ",
+    richPaste: "วางข้อความแบบมีรูปแบบ",
+    richPasteDescription: "วางลิงก์ ตาราง และการจัดรูปแบบเป็น Markdown {shortcut} วางเป็นข้อความธรรมดา ตัวเขียนข้อความแบบมีรูปแบบเต็มรูปแบบเร็ว ๆ นี้",
     showContext: "การใช้หน้าต่างบริบท",
     sendShortcut: "ทางลัดการส่ง",
     sendMultiline: "{mod} + Enter สำหรับพรอมต์หลายบรรทัด",
@@ -1104,6 +1113,7 @@ export const th = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "ตั้งรหัสผ่านของเจ้าของการติดตั้งก่อนเพิ่มบัญชีอื่น เมื่อการติดตั้งนี้มีหลายบัญชี คุณจะใช้รหัสผ่านนี้เพื่อลงชื่อเข้าใช้",
       signsInAs: "ลงชื่อเข้าใช้ในชื่อ {username}",
       signsInAsOwner: "ลงชื่อเข้าใช้ในชื่อ {alias} หรือ {username}",
       signInName: "ชื่อสำหรับลงชื่อเข้าใช้ของคุณ",
@@ -1998,6 +2008,7 @@ export const th = {
         loadError: "โหลดการตั้งค่าการสลับโมเดลอัตโนมัติไม่สำเร็จ",
         saveError: "บันทึกการตั้งค่าการสลับโมเดลอัตโนมัติไม่สำเร็จ",
         idleError: "ป้อน 0 เพื่อโหลดโมเดลค้างไว้ หรืออย่างน้อย 60 วินาที",
+        idleUnsaved: "ยังไม่ได้บันทึก",
         keepKv: "เก็บบริบทแชทไว้เมื่อยกเลิกการโหลด",
         keepKvDescription:
           "บันทึกแคช KV ก่อนยกเลิกการโหลดเมื่อไม่ได้ใช้งาน หรือก่อนที่โมเดลรูปภาพหรือวิดีโอจะใช้ GPU เพื่อให้แชทที่กลับมาทำต่อไม่ต้องอ่านประวัติซ้ำ ใช้ดิสก์ได้สูงสุด 10 GB",
@@ -2063,6 +2074,14 @@ export const th = {
           off: "เรียกใช้เครื่องมือทุกครั้งโดยไม่ถาม โค้ด Python และเทอร์มินัลยังคงทำงานในแซนด์บ็อกซ์ ซึ่งจำกัดไฟล์ที่เข้าถึงได้บนคอมพิวเตอร์ของคุณ หากไม่มีแซนด์บ็อกซ์ของระบบปฏิบัติการที่ใช้งานได้ การเรียกใช้ที่มีความเสี่ยงจะถามก่อน",
           full: "เรียกใช้เครื่องมือทุกครั้งโดยไม่ถามและปิดแซนด์บ็อกซ์โค้ด โค้ด Python และเทอร์มินัลจึงอ่านและเปลี่ยนแปลงไฟล์ใดก็ได้ที่บัญชีของคุณเข้าถึงได้",
         },
+      },
+      display: {
+        title: "การแสดงผล",
+        timeFormat: "รูปแบบเวลา",
+        timeFormatDescription: "แสดงเวลาแบบ 12 ชั่วโมงหรือ 24 ชั่วโมง",
+        timeFormatSystem: "ค่าเริ่มต้นของระบบ",
+        timeFormat12: "12 ชั่วโมง",
+        timeFormat24: "24 ชั่วโมง",
       },
       notifications: {
         sectionTitle: "การแจ้งเตือน",
@@ -2425,6 +2444,9 @@ export const th = {
         description: "สีที่ใช้ทั่วทั้ง Unsloth ทั้งในโหมดสว่างและโหมดมืด",
         standard: "มาตรฐาน",
         moreThemes: "ธีมเพิ่มเติม",
+      },
+      composer: {
+        title: "ช่องพิมพ์ข้อความ",
       },
       code: {
         title: "โค้ด",
@@ -3043,6 +3065,8 @@ export const th = {
         "การแจ้งเตือนถูกบล็อก อนุญาตการแจ้งเตือนสำหรับ Unsloth ในการตั้งค่าเบราว์เซอร์หรือระบบ แล้วลองอีกครั้ง",
       replyNotificationKeywords:
         "แจ้งเตือน การแจ้งเตือน เตือน เสร็จ เสร็จสิ้น พร้อม การตอบกลับ ตอบกลับ เบื้องหลัง ย่อ เดสก์ท็อป เสียง notify notification alert done reply background desktop sound",
+      showLinkPreviews: "ตัวอย่างลิงก์",
+      showLinkPreviewsDescription: "แสดงตัวอย่างเมื่อวางตัวชี้เมาส์เหนือลิงก์แหล่งข้อมูล",
       showResponseModel: "โมเดลที่ตอบ",
       showResponseModelDescription: "แสดงรายละเอียดโมเดลในคำตอบของผู้ช่วย",
       showReplyTimes: "เวลาตอบกลับ",
@@ -3057,6 +3081,8 @@ export const th = {
       inlineEditResponse: "แก้ไขคำตอบบนคำตอบ",
       inlineEditResponseDescription:
         "แสดง “แก้ไขคำตอบ” บนทุกคำตอบ แทนที่จะอยู่ในเมนูเพิ่มเติม",
+      turnNavigation: "การนำทางตามรอบ",
+      turnNavigationDescription: "แสดงข้อความของคุณเป็นแถบที่ขอบซ้ายของแชทยาว วางเมาส์เพื่อดูตัวอย่าง คลิกเพื่อไปยังรอบนั้น และบุ๊กมาร์กเพื่อหากลับมาได้",
       composerAtBottom: "ช่องเขียนข้อความอยู่ด้านล่าง",
       composerAtBottomDescription:
         "เริ่มแชทใหม่โดยให้ช่องเขียนข้อความอยู่ด้านล่างของหน้าแทนตรงกลาง",
@@ -3692,8 +3718,6 @@ export const th = {
         repoCheckoutFallback:
           "หากคุณยังมีโฟลเดอร์ checkout ของ repo อยู่ ให้เรียกใช้ตัวติดตั้งภายในเครื่องจากโฟลเดอร์นั้น:",
         restartAfterUpdate: "รีสตาร์ท Unsloth หลังอัปเดต",
-        desktopManaged:
-          "แอปเดสก์ท็อปจะตรวจหาเวอร์ชันใหม่ของแอปโดยอัตโนมัติ คุณยังตรวจหาหรืออัปเดตได้ที่นี่ทุกเมื่อ",
         desktopReady: "การอัปเดตแอปเดสก์ท็อป",
         desktopReadyDescription: "ตรวจสอบว่ามีแอปเดสก์ท็อปเวอร์ชันใหม่กว่าหรือไม่",
         desktopChecking: "กำลังตรวจหาการอัปเดต",
@@ -5565,5 +5589,60 @@ export const th = {
     later: "ภายหลัง",
     update: "อัปเดต",
     undo: "เลิกทำ",
+  },
+  generationStats: {
+    working: "กำลังดำเนินการ...",
+    processingPrompt: "กำลังประมวลผลพรอมต์ {percent}%",
+    timeLeft: "เหลืออีก {eta}",
+    tokensOne: "{count} โทเค็น",
+    tokens: "{count} โทเค็น",
+    tokensOf: "{done} / {total} โทเค็น",
+    draftAccepted: "ยอมรับดราฟต์ {accepted}/{drafted} ({percent}%)",
+    timing: {
+      trigger: "เวลาของข้อความ",
+      firstToken: "โทเค็นแรก",
+      speedInStep: "ความเร็ว (ในขั้นตอน)",
+      effective: "ความเร็วจริง",
+      output: "เอาต์พุต",
+      denoising: "การลดสัญญาณรบกวน",
+      stepsOne: "{count} ขั้นตอน",
+      steps: "{count} ขั้นตอน",
+      blocksOne: "{count} บล็อก",
+      blocks: "{count} บล็อก",
+      canvas: "แคนวาส",
+      generation: "การสร้าง",
+      answerTokens: "โทเค็นคำตอบ",
+      prompt: "พรอมต์",
+      total: "ทั้งหมด",
+      chunks: "ส่วนย่อย",
+      promptEval: "ประมวลผลพรอมต์",
+      promptSpeed: "ความเร็วพรอมต์",
+      speed: "ความเร็ว",
+      tokens: "โทเค็น",
+      draftAccepted: "ดราฟต์ที่ยอมรับ",
+      denoisingSteps: "ขั้นตอนลดสัญญาณรบกวน",
+      blocksLabel: "บล็อก",
+      cacheHits: "ใช้แคชซ้ำ",
+      cacheWrites: "เขียนแคช",
+      stopReason: "เหตุผลที่หยุด",
+      stoppedByYou: "คุณหยุดเอง",
+      endOfTurn: "จบเทิร์น",
+      lengthLimit: "ขีดจำกัดความยาว",
+      toolCall: "การเรียกใช้เครื่องมือ",
+      contentFilter: "ตัวกรองเนื้อหา",
+    },
+    placement: {
+      title: "ตำแหน่งน้ำหนักโมเดล",
+      allOnCpu: "ทั้ง {total} เลเยอร์อยู่บน CPU",
+      split: "{gpu} จาก {total} เลเยอร์อยู่บน GPU และ {cpu} อยู่บน CPU",
+      allOnGpu: "ทั้ง {total} เลเยอร์อยู่บน GPU",
+      expertCache: "ทั้ง {total} เลเยอร์อยู่บน GPU และ expert ทั้งหมดอยู่ใน RAM (แคช expert {amount} บน GPU)",
+      expertSpillOne: "ทั้ง {total} เลเยอร์อยู่บน GPU และน้ำหนัก expert ของ {count} เลเยอร์อยู่ใน RAM",
+      expertSpill: "ทั้ง {total} เลเยอร์อยู่บน GPU และน้ำหนัก expert ของ {count} เลเยอร์อยู่ใน RAM",
+      inUnifiedMemory: "{amount} ในหน่วยความจำแบบรวม",
+      inSharedMemory: "{amount} ในหน่วยความจำที่ใช้ร่วมกัน",
+      inVram: "{amount} ใน VRAM",
+      inRam: "{amount} ใน RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;
