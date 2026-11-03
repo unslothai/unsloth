@@ -4859,7 +4859,7 @@ export function ChatPage({
             aborting generation (#8908). Any key here brings the bug back. Compare renders as a
             sibling so it hides this rather than unmounting it, since ComparePane builds its own
             providers and nesting throws. */}
-        <LibraryAttachmentTargetContext.Provider value={shownChatKey}>
+        <LibraryAttachmentTargetContext.Provider value={active ? shownChatKey : null}>
         {baseView ? (
           <div
             className={

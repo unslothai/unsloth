@@ -131,7 +131,7 @@ export function LibraryAttachmentPicker({ onClose }: { onClose: () => void }) {
     try {
       if (item.sizeBytes !== null && item.sizeBytes > attachmentLimit(item))
         throw new LibraryFileTooLarge(item.name);
-      if (await attach.current?.(item)) onClose();
+      if ((await attach.current?.(item)) && valid()) onClose();
     } catch (cause) {
       if (valid())
         setError(
