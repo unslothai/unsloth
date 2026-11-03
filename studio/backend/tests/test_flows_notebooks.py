@@ -850,3 +850,18 @@ def test_a_notebooks_lora_rank_reaches_training_unchanged(rank):
     doc, _ = notebook_import.read_notebook(nb, "Qwen3_(4B).ipynb")
     node = next(n for n in doc["nodes"] if n["type"] == "train.finetune")
     assert param_values(SPECS_BY_TYPE["train.finetune"], node)["lora_r"] == rank
+
+
+def test_saved_training_settings_keep_the_range_flows_accepted_before():
+    from core.flows.engine import param_values
+    from core.flows.specs import SPECS_BY_TYPE
+
+    saved = {
+        "lora_r": 256,
+        "lora_alpha": 512,
+        "batch_size": 64,
+        "gradient_accumulation_steps": 128,
+        "warmup_steps": 500,
+    }
+    params = param_values(SPECS_BY_TYPE["train.finetune"], {"params": saved})
+    assert {k: params[k] for k in saved} == saved
