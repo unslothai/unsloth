@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 import {
   AlertDialog,
@@ -14,6 +14,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   TOKEN_LIMIT_CHANGED_EVENT,
   type TokenLimitPoolStatus,
@@ -50,6 +52,8 @@ export function TokenLimitNotice({ active }: { active: boolean }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [selectedPool, setSelectedPool] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
+  const passwordId = useId();
 
   useEffect(() => {
     if (!active) return;
@@ -96,6 +100,7 @@ export function TokenLimitNotice({ active }: { active: boolean }) {
     timeStyle: "short",
   });
   const canOverride = pool.reached && pool.override === null;
+  const passwordRequired = canOverride && status.settings.passwordProtected;
 
   const allowOne = async () => {
     setBusy(true);
@@ -104,11 +109,13 @@ export function TokenLimitNotice({ active }: { active: boolean }) {
         await overrideTokenLimit(
           pool.pool,
           t("settings.profile.tokenLimit.overrideError"),
+          password || undefined,
         ),
       );
       toast.success(t("settings.profile.tokenLimit.overrideGranted"));
       setOpen(false);
       setSelectedPool(null);
+      setPassword("");
     } catch (error) {
       toast.error(
         error instanceof Error
@@ -144,7 +151,10 @@ export function TokenLimitNotice({ active }: { active: boolean }) {
         onOpenChange={(next) => {
           if (!busy) {
             setOpen(next);
-            if (!next) setSelectedPool(null);
+            if (!next) {
+              setSelectedPool(null);
+              setPassword("");
+            }
           }
         }}
       >
@@ -199,13 +209,28 @@ export function TokenLimitNotice({ active }: { active: boolean }) {
               limit: pool.limit.toLocaleString(),
             })}
           </p>
+          {passwordRequired ? (
+            <div className="space-y-2">
+              <Label htmlFor={passwordId}>
+                {t("settings.profile.tokenLimit.currentPassword")}
+              </Label>
+              <Input
+                id={passwordId}
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                disabled={busy}
+              />
+            </div>
+          ) : null}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busy}>
               {t("settings.profile.tokenLimit.close")}
             </AlertDialogCancel>
             {canOverride ? (
               <AlertDialogAction
-                disabled={busy}
+                disabled={busy || (passwordRequired && !password)}
                 onClick={(event) => {
                   event.preventDefault();
                   void allowOne();

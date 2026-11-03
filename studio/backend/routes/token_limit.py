@@ -33,6 +33,7 @@ class TokenLimitOverride(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     pool: Literal["combined", "local", "api"]
+    password: Optional[str] = Field(None, max_length = 256)
 
 
 @router.get("/status")
@@ -68,4 +69,9 @@ async def override_token_limit(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> dict[str, Any]:
     require_ui_session(via_api_key)
-    return await asyncio.to_thread(token_limit.grant_override, payload.pool)
+    try:
+        return await asyncio.to_thread(
+            token_limit.grant_override, payload.pool, password = payload.password
+        )
+    except token_limit.TokenLimitPasswordError:
+        raise HTTPException(status_code = 403, detail = "Incorrect token limit password.") from None

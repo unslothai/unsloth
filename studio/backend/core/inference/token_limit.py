@@ -243,18 +243,21 @@ def update_settings(
     return status()
 
 
-def grant_override(pool: str) -> dict[str, Any]:
-    settings = load_settings()
-    if not settings["enabled"]:
-        raise HTTPException(status_code = 409, detail = "The token limit is off.")
-    _require_usage_accounting()
-    start_ms, _end_ms = period_window(settings["period"], settings["timezone"])
-    usage = _pool_usage(settings, start_ms).get(pool)
-    if usage is None:
-        raise HTTPException(status_code = 400, detail = f"Unknown token limit pool: {pool}")
-    if not usage.reached:
-        raise HTTPException(status_code = 409, detail = "This limit has not been reached.")
+def grant_override(pool: str, *, password: Optional[str] = None) -> dict[str, Any]:
     with _override_lock:
+        settings = load_settings()
+        stored_hash = settings.get("passwordHash")
+        if stored_hash and not (password and verify_password(password, stored_hash)):
+            raise TokenLimitPasswordError()
+        if not settings["enabled"]:
+            raise HTTPException(status_code = 409, detail = "The token limit is off.")
+        _require_usage_accounting()
+        start_ms, _end_ms = period_window(settings["period"], settings["timezone"])
+        usage = _pool_usage(settings, start_ms).get(pool)
+        if usage is None:
+            raise HTTPException(status_code = 400, detail = f"Unknown token limit pool: {pool}")
+        if not usage.reached:
+            raise HTTPException(status_code = 409, detail = "This limit has not been reached.")
         overrides = _overrides()
         if _override_state(overrides, pool, start_ms) is not None:
             raise HTTPException(

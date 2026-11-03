@@ -512,3 +512,16 @@ def test_routes_refuse_api_key_changes_and_report_status(limiter_db):
         }
     ]
     assert status["resetsAt"] > status["periodStart"]
+    now = _now_ms()
+    _thread("protected", now)
+    _reply("protected-reply", "protected", now, prompt = 5, completion = 1)
+    for credentials in ({}, {"password": "wrong"}):
+        refused = client.post("/api/token-limit/override", json = {"pool": "combined", **credentials})
+        assert refused.status_code == 403, refused.text
+        assert _pools()["combined"]["override"] is None
+    granted = client.post("/api/token-limit/override", json = {"pool": "combined", "password": "pw"})
+    assert granted.status_code == 200
+    token_limit.enforce(api = False)
+    with pytest.raises(HTTPException) as exhausted:
+        token_limit.enforce(api = False)
+    assert exhausted.value.status_code == 429

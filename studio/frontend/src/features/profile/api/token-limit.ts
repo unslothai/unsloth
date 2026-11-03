@@ -82,11 +82,12 @@ export async function updateTokenLimit(
 export async function overrideTokenLimit(
   pool: TokenLimitPool,
   fallbackMessage: string,
+  password?: string,
 ): Promise<TokenLimitStatus> {
   const res = await authFetch("/api/token-limit/override", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pool }),
+    body: JSON.stringify({ pool, password }),
   });
   if (!res.ok) {
     throw new Error(await readFastApiError(res, fallbackMessage));
