@@ -670,11 +670,17 @@ class LoRA_MLP(torch.autograd.Function):
                 gateS,
                 X if ctx.inplace and not _is_compiling() else None,
             )
-            upW = fast_dequantize(upW.t(), upW_quant, dtype = df.dtype)
-            addmm_(dX, df, upW.t())
+            if has_fp8_dgrad(upW_quant):
+                dX = upW_quant.dgrad_accum(df, upW, dX)
+            else:
+                upW = fast_dequantize(upW.t(), upW_quant, dtype = df.dtype)
+                addmm_(dX, df, upW.t())
             del upW
-            gateW = fast_dequantize(gateW.t(), gateW_quant, dtype = de.dtype)
-            addmm_(dX, de, gateW.t())
+            if has_fp8_dgrad(gateW_quant):
+                dX = gateW_quant.dgrad_accum(de, gateW, dX)
+            else:
+                gateW = fast_dequantize(gateW.t(), gateW_quant, dtype = de.dtype)
+                addmm_(dX, de, gateW.t())
             del gateW
             d_gateBias = d_upBias = None
             d_downBias = _lora_bias_grad(dY, downS) if ctx.biases[2] else None
@@ -1116,12 +1122,15 @@ class LoRA_QKV(torch.autograd.Function):
                 X if ctx.inplace and not _is_compiling() else None,
             )
             for W_, W_quant_, dY_ in ((QW, QW_quant, dQ), (KW, KW_quant, dK), (VW, VW_quant, dV)):
-                W_ = (
-                    W_.t()
-                    if W_quant_ is None
-                    else fast_dequantize(W_.t(), W_quant_, dtype = dY_.dtype)
-                )
-                addmm_(dX, dY_, W_.t())
+                if has_fp8_dgrad(W_quant_):
+                    dX = W_quant_.dgrad_accum(dY_, W_, dX)
+                else:
+                    W_ = (
+                        W_.t()
+                        if W_quant_ is None
+                        else fast_dequantize(W_.t(), W_quant_, dtype = dY_.dtype)
+                    )
+                    addmm_(dX, dY_, W_.t())
                 del W_
             return (
                 dX.view(batch, seq_len, hd),
@@ -1381,8 +1390,11 @@ class LoRA_W(torch.autograd.Function):
                 dX = y_dB.new_empty((y_dB.shape[0], A.shape[0])).addmm_(
                     y_dB, A.t(), beta = 0, alpha = S
                 )
-            W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)
-            addmm_(dX, dY, W.t())
+            if has_fp8_dgrad(W_quant):
+                dX = W_quant.dgrad_accum(dY, W, dX)
+            else:
+                W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)
+                addmm_(dX, dY, W.t())
             del W
         else:
             if has_fp8_dgrad(W_quant):

@@ -100,6 +100,22 @@ try:
     import triton.language as tl
 except Exception:
     triton = None
+_fast_launch = None
+if triton is not None:
+    try:
+        from .triton_launch import launch as _fast_launch, tag_compile_cache
+    except ImportError:
+        pass
+    else:
+        tag_compile_cache(__file__)
+
+
+def _launch(kernel, grid, args, n_tensors, constexprs, device_index, **options):
+    if _fast_launch is not None and not _compiling():
+        return _fast_launch(kernel, grid, args, n_tensors, constexprs, device_index, **options)
+    kernel[grid](*args, **constexprs, **options)
+
+
 # Read once: device_count() inside a compiled region graph-breaks.
 _MULTI_GPU = torch.cuda.is_available() and torch.cuda.device_count() > 1
 
@@ -168,15 +184,14 @@ def quantize_tensorwise(x: torch.Tensor, fp8_dtype = E4M3):
         BLOCK = 2048
         grid = (triton.cdiv(x.numel(), BLOCK),)
         with torch.cuda.device(x.device) if _MULTI_GPU else contextlib.nullcontext():
-            _fp8_tensorwise_cast_kernel[grid](
-                x,
-                y,
-                amax,
-                inv,
-                x.numel(),
-                FP8_MAX = fp8_max,
-                IS_E5M2 = fp8_dtype is E5M2,
-                BLOCK = BLOCK,
+            _launch(
+                _fp8_tensorwise_cast_kernel,
+                grid,
+                (x, y, amax, inv, x.numel()),
+                4,
+                {"FP8_MAX": fp8_max, "IS_E5M2": fp8_dtype is E5M2, "BLOCK": BLOCK},
+                x.device.index,
+                num_warps = 4,
             )
         return y, inv
     amax = amax.clamp(min = 1e-12) if torch.isfinite(amax) else amax
@@ -245,16 +260,18 @@ def quantize_rowwise(x: torch.Tensor, fp8_dtype = E4M3):
         one = K <= 8192
         BLOCK_K = triton.next_power_of_2(K) if one else 2048
         with torch.cuda.device(x.device) if _MULTI_GPU else contextlib.nullcontext():
-            _fp8_rowwise_cast_kernel[(M,)](
-                x,
-                y,
-                inv,
-                K,
-                x.stride(0),
-                FP8_MAX = fp8_max,
-                IS_E5M2 = fp8_dtype is E5M2,
-                BLOCK_K = BLOCK_K,
-                ONE_BLOCK = one,
+            _launch(
+                _fp8_rowwise_cast_kernel,
+                (M,),
+                (x, y, inv, K, x.stride(0)),
+                3,
+                {
+                    "FP8_MAX": fp8_max,
+                    "IS_E5M2": fp8_dtype is E5M2,
+                    "BLOCK_K": BLOCK_K,
+                    "ONE_BLOCK": one,
+                },
+                x.device.index,
                 num_warps = 8 if BLOCK_K >= 4096 else 4,
             )
         return y, inv
@@ -291,8 +308,14 @@ def fp8_transpose(w8: torch.Tensor, use_triton: Optional[bool] = None) -> torch.
     out = torch.empty((C, R), dtype = w8.dtype, device = w8.device)
     grid = (triton.cdiv(R, _TRANSPOSE_BLOCK), triton.cdiv(C, _TRANSPOSE_BLOCK))
     with torch.cuda.device(w8.device) if (_MULTI_GPU and w8.is_cuda) else contextlib.nullcontext():
-        _transpose_u8_kernel[grid](
-            w8.view(torch.uint8), out.view(torch.uint8), R, C, BLOCK = _TRANSPOSE_BLOCK, num_warps = 4
+        _launch(
+            _transpose_u8_kernel,
+            grid,
+            (w8.view(torch.uint8), out.view(torch.uint8), R, C),
+            2,
+            {"BLOCK": _TRANSPOSE_BLOCK},
+            w8.device.index,
+            num_warps = 4,
         )
     return out
 
@@ -418,6 +441,127 @@ def fp8_lora_dgrad(
     return out if out.dtype == dy.dtype else out.to(dy.dtype)
 
 
+if triton is not None:
+
+    @triton.jit(do_not_specialize = ["N", "numel", "raw_s0", "raw_s1", "delta_s0", "delta_s1"])
+    def _fp8_accum_epilogue_kernel(
+        raw_ptr,
+        x_inv_ptr,
+        w_inv_ptr,
+        delta_ptr,
+        out_ptr,
+        N,
+        numel,
+        raw_s0,
+        raw_s1,
+        delta_s0,
+        delta_s1,
+        ROW_SCALE: tl.constexpr,
+        BLOCK: tl.constexpr,
+    ):
+        offset = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+        row, col = offset // N, offset % N
+        mask = offset < numel
+        raw = tl.load(raw_ptr + row * raw_s0 + col * raw_s1, mask, other = 0)
+        sx = tl.load(x_inv_ptr + tl.where(ROW_SCALE, row, 0), mask, other = 0)
+        sw = tl.load(w_inv_ptr + tl.where(ROW_SCALE, col, 0), mask, other = 0)
+        delta = tl.load(delta_ptr + row * delta_s0 + col * delta_s1, mask, other = 0).to(tl.float32)
+        out = tl.inline_asm_elementwise(
+            "{ .reg .f32 v; mul.rn.f32 v, $1, $2; mul.rn.f32 v, v, $3; add.rn.f32 $0, v, $4; }",
+            constraints = "=f,f,f,f,f",
+            args = (raw, sx, sw, delta),
+            dtype = tl.float32,
+            is_pure = True,
+            pack = 1,
+        )
+        tl.store(out_ptr + offset, out, mask)
+
+
+def _fp8_accum_epilogue(raw, x_inv, w_inv, delta):
+    if triton is None or not raw.is_cuda or torch.version.hip is not None:
+        return (raw * x_inv * w_inv + delta.float()).to(delta.dtype)
+    out = torch.empty(raw.shape, device = raw.device, dtype = delta.dtype)
+    with torch.cuda.device(raw.device) if _MULTI_GPU else contextlib.nullcontext():
+        _launch(
+            _fp8_accum_epilogue_kernel,
+            ((raw.numel() + 1023) // 1024,),
+            (
+                raw,
+                x_inv,
+                w_inv,
+                delta,
+                out,
+                raw.shape[1],
+                raw.numel(),
+                *raw.stride(),
+                *delta.stride(),
+            ),
+            5,
+            {"ROW_SCALE": w_inv.dim() == 2, "BLOCK": 1024},
+            raw.device.index,
+            num_warps = 4,
+        )
+    return out
+
+
+def _accum_fake(x, w8, w_inv, delta, unit_scale, backward, transpose_weight):
+    return delta.new_empty(delta.shape)
+
+
+@_opaque_under_compile("fp8_lora_accum", _accum_fake)
+def fp8_lora_accum(
+    x: torch.Tensor,
+    w8: torch.Tensor,
+    w_inv: torch.Tensor,
+    delta: torch.Tensor,
+    unit_scale: torch.Tensor,
+    backward: bool,
+    transpose_weight: bool,
+) -> torch.Tensor:
+    FP8_LORA_STATS["dgrad" if backward else "fwd"] += 1
+    if transpose_weight:
+        w8 = fp8_transpose(w8)
+    if w_inv.dim() == 2:
+        x8, x_inv = quantize_rowwise(x, E4M3)
+    else:
+        dtype = (
+            E5M2
+            if backward and _DGRAD_DTYPE in (None, "auto")
+            else (_DGRAD_DTYPE if backward else E4M3)
+        )
+        x8, x_inv = quantize_tensorwise(x, dtype)
+    raw = _scaled_mm(
+        x8,
+        w8.t(),
+        unit_scale,
+        unit_scale,
+        torch.float32,
+        _DGRAD_FAST_ACCUM if backward else _FWD_FAST_ACCUM,
+    )
+    return _fp8_accum_epilogue(raw, x_inv, w_inv, delta)
+
+
+def _first_fake(x, w8, w_inv, xa, bt, alpha, unit_scale, backward, transpose_weight):
+    return x.new_empty((x.shape[0], bt.shape[1]))
+
+
+@_opaque_under_compile("fp8_lora_first", _first_fake)
+def fp8_lora_first(
+    x: torch.Tensor,
+    w8: torch.Tensor,
+    w_inv: torch.Tensor,
+    xa: torch.Tensor,
+    bt: torch.Tensor,
+    alpha: float,
+    unit_scale: torch.Tensor,
+    backward: bool,
+    transpose_weight: bool,
+) -> torch.Tensor:
+    delta = x.new_empty((x.shape[0], bt.shape[1]))
+    delta.addmm_(xa, bt, alpha = alpha, beta = 0)
+    return fp8_lora_accum(x, w8, w_inv, delta, unit_scale, backward, transpose_weight)
+
+
 def _is_transposed(W):
     return W.dim() == 2 and W.stride(0) == 1 and W.stride(1) != 1
 
@@ -439,7 +583,7 @@ class Fp8LoRABaseState:
     def __init__(self, weight: torch.Tensor):
         self.dtype = weight.dtype
         self.device = weight.device  # where the fp8 copy and the GEMMs live
-        self.w8 = self.w8t = self.w_inv = self.w_inv_fwd = self.w_inv_dgrad = None
+        self.w8 = self.w8t = self.w_inv = self.w_inv_fwd = self.w_inv_dgrad = self.unit_scale = None
         self.scaling = "tensor"
         self.offloaded = False  # True: the module's 16-bit weight is the host copy
         self._key = None
@@ -470,6 +614,7 @@ class Fp8LoRABaseState:
             else:
                 self.device = w.device
             self.w8, self.w_inv = quantize_tensorwise(w, E4M3)
+            self.unit_scale = torch.ones((), device = w.device, dtype = torch.float32)
             self.w8t = fp8_transpose(self.w8) if _CACHE_T else None
             self.scaling = _scaling_for(w.device)
             if self.scaling == "row":
@@ -532,7 +677,14 @@ class Fp8LoRABaseState:
             t.numel() * t.element_size()
             for t in {
                 id(t): t
-                for t in (self.w8, self.w8t, self.w_inv, self.w_inv_fwd, self.w_inv_dgrad)
+                for t in (
+                    self.w8,
+                    self.w8t,
+                    self.w_inv,
+                    self.w_inv_fwd,
+                    self.w_inv_dgrad,
+                    self.unit_scale,
+                )
                 if t is not None
             }.values()
         )
@@ -578,6 +730,36 @@ class Fp8LoRABaseState:
             result = fp8_lora_fwd(X2, self.w8, self.w_inv_fwd)
         result = result.view(*shape[:-1], result.shape[-1])
         return result if out is None else out.copy_(result)
+
+    def lora_first(
+        self,
+        X,
+        W,
+        XA,
+        Bt,
+        alpha,
+        out = None,
+    ):
+        backward = _is_transposed(W)
+        if not self._use_fp8(X) or (backward and _DGRAD_DTYPE is None):
+            delta = X.new_empty((X.shape[0], Bt.shape[1]))
+            delta.addmm_(XA, Bt, alpha = alpha, beta = 0)
+            result = delta.addmm_(X, self._dense(W).t().to(X.dtype))
+        else:
+            w8 = self._dgrad_weight()[0] if backward else self.w8
+            inv = self.w_inv_dgrad if backward else self.w_inv_fwd
+            result = fp8_lora_first(
+                X, w8, inv, XA, Bt, alpha, self.unit_scale, backward, backward and self.w8t is None
+            )
+        return result if out is None else out.copy_(result)
+
+    def dgrad_accum(self, dY, W, delta):
+        if _DGRAD_DTYPE is None or not self._use_fp8(dY):
+            return delta.addmm_(dY, self._dense(W).to(dY.dtype))
+        w8, transposed = self._dgrad_weight()
+        return fp8_lora_accum(
+            dY, w8, self.w_inv_dgrad, delta, self.unit_scale, True, not transposed
+        )
 
     def dgrad(
         self,

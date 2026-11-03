@@ -613,17 +613,17 @@ def test_host_master_leaves_only_fp8_bytes_on_the_compute_device(offload_on_cpu)
     assert torch.equal(lin.weight, W0)
     numel = 256 * 384
     assert state.resident_bytes(lin) == {
-        "fp8": numel + 4,
+        "fp8": numel + 8,
         "master_device": 0,
         "master_host": 2 * numel,
     }
     assert ref_state.resident_bytes(ref) == {
-        "fp8": numel + 4,
+        "fp8": numel + 8,
         "master_device": 2 * numel,
         "master_host": 0,
     }
     assert FL.fp8_lora_memory(torch.nn.Sequential(lin, ref))["total"] == {
-        "fp8": 2 * (numel + 4),
+        "fp8": 2 * (numel + 8),
         "master_device": 2 * numel,
         "master_host": 2 * numel,
     }
@@ -1359,3 +1359,23 @@ def test_fast_language_model_forwards_fp8_lora_to_fastmodel():
 
     src = inspect.getsource(FastLanguageModel.from_pretrained)
     assert '**({"float8_training": fp8_request} if fp8_lora is not None else {})' in src
+
+
+@needs_cpu_scaled_mm
+def test_fp8_lora_accumulates_small_adapter_before_base_rounding(monkeypatch):
+    monkeypatch.setattr(FL, "_SCALING", "tensor")
+    monkeypatch.setattr(FL, "_MIN_ROWS", 16)
+    x = torch.ones(16, 16, dtype = torch.bfloat16)
+    w = torch.zeros(16, 16, dtype = torch.bfloat16)
+    w[:, 0], w[:, 1] = 1, 1 / 512
+    a = torch.zeros(1, 16, dtype = torch.bfloat16)
+    a[0, 0] = 1 / 256
+    b = torch.ones(16, 1, dtype = torch.bfloat16)
+    state = FL.Fp8LoRABaseState(w)
+    delta = torch.empty_like(x).addmm_(x @ a.t(), b.t(), beta = 0)
+    reference = delta.addmm_(x, w.t())
+    actual = FLK.matmul_lora(x, w, state, a, b, 1)
+    old_order = FLK.matmul_lora(x, w, state, a, b, 1, fused = False)
+    assert torch.equal(reference, torch.full_like(x, 1 + 1 / 128))
+    assert torch.equal(actual, reference)
+    assert not torch.equal(old_order, reference)
