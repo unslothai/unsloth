@@ -185,14 +185,12 @@ def _right_pad_cat(tensors, value):
 
 
 def _ppo_scores_are_tempered_logits(model, queries, generation_config):
-    """True when generate's scores are only ``logits / temperature`` (incl. processors inherited from
-    ``model.generation_config``), so the old log-probs can be recomputed by a forward."""
+    """Whether generation scores can be recomputed as logits / temperature."""
     from transformers import LogitsProcessorList, TemperatureLogitsWarper
     from unsloth.models.rl import _caller_sampling_only
 
     kwargs = {"generation_config": generation_config}
     if getattr(getattr(model, "generate", None), "_unsloth_caller_sampling_only", False):
-        # Match Unsloth's patched generate (transformers 4.x: TRL's sampling, not the model's).
         kwargs = _caller_sampling_only(model, kwargs)
     config, model_kwargs = model._prepare_generation_config(
         kwargs.pop("generation_config"), **kwargs
@@ -227,9 +225,7 @@ def ppo_batch_generation(
     pad_token_id,
     generation_config,
 ):
-    """TRL's ``batch_generation`` without ``output_scores``: the rollout log-probs are scored from hidden states, so
-    the stacked float32 [batch, response, vocab] scores are never built. Falls back to TRL when
-    other logits processors shape the scores."""
+    """Omit generation scores only when the fused scorer can reproduce them."""
     if route is not None:
         try:
             tempered = _ppo_scores_are_tempered_logits(model, queries, generation_config)

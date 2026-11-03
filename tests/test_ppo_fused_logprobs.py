@@ -341,7 +341,6 @@ def _hidden_gpt2():
     [{}, {"repetition_penalty": 2.0}, {"no_repeat_ngram_size": 2}, {"suppress_tokens": [3, 5]}],
 )
 def test_ppo_rollout_logprobs_match_trl_generation_scores(inherited):
-    # Old log-probs include inherited processors; only pure temperature may be recomputed.
     from transformers import GenerationConfig
 
     module = _ppo_module()
