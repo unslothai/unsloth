@@ -300,9 +300,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # Fixed at 1 / 0.95 server-side (https://platform.minimax.io/docs/api-reference/text-openai-api).
         "body_omit": ("temperature", "top_p", "presence_penalty"),
     },
-    # Zen is pay as you go, Go a subscription; both translate every text model to /chat/completions.
+    # Console is pay as you go, Go a subscription; both translate every text model to /chat/completions.
     "opencode": {
-        "display_name": "OpenCode Zen",
+        "display_name": "OpenCode Console",
         "base_url": "https://opencode.ai/inference/v1",
         "default_models": [
             "kimi-k3",

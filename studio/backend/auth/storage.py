@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SQLite storage for auth data (user credentials + JWT secret)."""
-
 import contextlib
 from contextlib import contextmanager
 
@@ -777,6 +775,11 @@ def issue_account_setup_code(
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
                 if username is not None:
+                    owner = conn.execute(
+                        "SELECT must_change_password FROM auth_user WHERE role = 'owner'"
+                    ).fetchone()
+                    if owner is not None and owner["must_change_password"]:
+                        raise ValueError("Set the owner's password before adding an account.")
                     if _login_alias_taken(conn, username):
                         raise sqlite3.IntegrityError("Username is unavailable")
                     account_id = uuid.uuid4().hex

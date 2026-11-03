@@ -1591,7 +1591,8 @@ async def _stream_with_studio_tools(
         # Mercury diffusion streaming: the client takes every text of this turn as the whole reply so far.
         diffusing_turn = False
 
-        active_tools = controller.active_tools()
+        # External APIs cannot separate decoding schemas from the prompt's tools.
+        active_tools = controller.active_tools(include_deferred = True)
         tools_available = (
             tool_choice != "none" and bool(active_tools) and (unlimited or remaining > 0)
         )
