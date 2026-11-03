@@ -7599,7 +7599,7 @@ _rfi_newest() {
 }
 _rfi_no_torch_pair() {
     "$_VENV_PY" -I - "$1" "$2" <<'UNSLOTH_PAIR_PY'
-def _no_torch_pair(unsloth_spec, zoo_spec, use_uv=True):
+def _no_torch_pair(unsloth_spec, zoo_spec, use_uv=True, uv_executable="uv", install_env=None):
     """Resolve the pair from wheel metadata without resolving training dependencies."""
     import re
     import subprocess
@@ -7615,7 +7615,7 @@ def _no_torch_pair(unsloth_spec, zoo_spec, use_uv=True):
             return cache[key]
         with tempfile.TemporaryDirectory(prefix="unsloth-pair-") as target:
             cmd = (
-                ["uv", "pip", "install", "--python", sys.executable, "--resolution", "highest"]
+                [uv_executable, "pip", "install", "--python", sys.executable, "--resolution", "highest"]
                 if use_uv
                 else [sys.executable, "-m", "pip", "install", "--upgrade"]
             )
@@ -7623,6 +7623,7 @@ def _no_torch_pair(unsloth_spec, zoo_spec, use_uv=True):
             try:
                 result = subprocess.run(
                     cmd,
+                    env=install_env,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=120,

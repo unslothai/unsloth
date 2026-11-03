@@ -110,7 +110,7 @@ def test_with_deps_install_keeps_the_floor(lagging_index, monkeypatch):
 def installer_pair(request, tmp_path, monkeypatch):
     monkeypatch.setattr(ips, "NO_TORCH", True)
 
-    def resolve():
+    def resolve(*, selected_uv = False):
         if request.param == "python":
             return ips._desktop_unsloth_spec("unsloth")
         floor = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "")
@@ -163,7 +163,7 @@ def installer_pair(request, tmp_path, monkeypatch):
             script.write_text(
                 '$ErrorActionPreference = "Stop"\n'
                 + functions
-                + f"\n$VenvDir = {quote(tmp_path)}\n$VenvPython = {quote(sys.executable)}\n$script:UvExe = 'uv'\n"
+                + f"\n$VenvDir = {quote(tmp_path)}\n$VenvPython = {quote(sys.executable)}\n$script:UvExe = {quote(shutil.which('uv') if selected_uv else 'uv')}\n"
                 + "function substep { param($Message, $Color); [Console]::Error.WriteLine($Message) }\n"
                 + f"$r = Resolve-UnslothFloorsForIndex -ReleaseSpec {quote(release)} -ZooSpec 'unsloth-zoo>=2026.10.6' -DesktopVersion {quote(floor)} -Marker {quote(marker)}"
                 + (" -NoTorch $true" if "[bool]$NoTorch" in functions else "")
@@ -171,7 +171,8 @@ def installer_pair(request, tmp_path, monkeypatch):
                 encoding = "utf-8-sig",
             )
             argv = [shell, "-NoProfile", "-File", str(script)]
-        result = subprocess.run(argv, capture_output = True, text = True, timeout = 180)
+        env = dict(os.environ, PATH = str(tmp_path / "empty-path")) if selected_uv else None
+        result = subprocess.run(argv, capture_output = True, text = True, timeout = 180, env = env)
         if result.returncode:
             raise RuntimeError(result.stderr)
         return tuple(result.stdout.strip().splitlines()[-2:])
@@ -232,6 +233,26 @@ def test_pip_fallback_resolves_the_same_pair(lagging_index, monkeypatch):
         "unsloth": "2026.10.6",
         "unsloth-zoo": "2026.10.6",
     }
+
+
+@pytest.mark.parametrize("policy", ["env", "config"])
+def test_pip_metadata_uses_the_install_hash_policy(lagging_index, monkeypatch, tmp_path, policy):
+    monkeypatch.setattr(ips, "NO_TORCH", True)
+    monkeypatch.setattr(ips, "USE_UV", False)
+    if policy == "env":
+        monkeypatch.setenv("PIP_REQUIRE_HASHES", "1")
+    else:
+        config = tmp_path / "pip.conf"
+        config.write_text("[install]\nrequire-hashes = true\n", encoding = "utf-8")
+        monkeypatch.delenv("PIP_REQUIRE_HASHES", raising = False)
+        monkeypatch.setenv("PIP_CONFIG_FILE", str(config))
+    assert ips._desktop_unsloth_spec("unsloth") == ("unsloth==2026.10.6", "unsloth-zoo==2026.10.6")
+
+
+def test_powershell_metadata_uses_the_selected_uv(lagging_index, installer_pair, request):
+    if request.node.callspec.params["installer_pair"] != "powershell":
+        pytest.skip("PowerShell executable selection")
+    assert installer_pair(selected_uv = True) == ("unsloth==2026.10.6", "unsloth-zoo==2026.10.6")
 
 
 def test_bootstrap_pair_resolvers_match_the_python_installer():

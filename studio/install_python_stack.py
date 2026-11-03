@@ -9939,6 +9939,8 @@ def _no_torch_pair(
     unsloth_spec,
     zoo_spec,
     use_uv = True,
+    uv_executable = "uv",
+    install_env = None,
 ):
     """Resolve the pair from wheel metadata without resolving training dependencies."""
     import re
@@ -9955,7 +9957,15 @@ def _no_torch_pair(
             return cache[key]
         with tempfile.TemporaryDirectory(prefix = "unsloth-pair-") as target:
             cmd = (
-                ["uv", "pip", "install", "--python", sys.executable, "--resolution", "highest"]
+                [
+                    uv_executable,
+                    "pip",
+                    "install",
+                    "--python",
+                    sys.executable,
+                    "--resolution",
+                    "highest",
+                ]
                 if use_uv
                 else [sys.executable, "-m", "pip", "install", "--upgrade"]
             )
@@ -9963,6 +9973,7 @@ def _no_torch_pair(
             try:
                 result = subprocess.run(
                     cmd,
+                    env = install_env,
                     stdout = subprocess.DEVNULL,
                     stderr = subprocess.DEVNULL,
                     timeout = 120,
@@ -10021,7 +10032,14 @@ def _desktop_unsloth_spec(package_name: str) -> "tuple[str, str]":
     except OSError:
         pass
     if NO_TORCH:
-        pair = _no_torch_pair(spec, zoo_spec, use_uv = USE_UV)
+        pair = _no_torch_pair(
+            spec,
+            zoo_spec,
+            use_uv = USE_UV,
+            install_env = _install_env_for_cmd(
+                ["uv", "pip", "install"] if USE_UV else [sys.executable, "-m", "pip", "install"]
+            ),
+        )
         if pair is None:
             raise RuntimeError(
                 "Could not resolve a compatible unsloth / unsloth-zoo pair for no-torch mode"

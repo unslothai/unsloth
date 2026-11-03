@@ -9901,7 +9901,7 @@ main()
     function Resolve-NoTorchPair {
         param([string]$ReleaseSpec, [string]$ZooSpec)
         $pairCode = @'
-def _no_torch_pair(unsloth_spec, zoo_spec, use_uv=True):
+def _no_torch_pair(unsloth_spec, zoo_spec, use_uv=True, uv_executable="uv", install_env=None):
     """Resolve the pair from wheel metadata without resolving training dependencies."""
     import re
     import subprocess
@@ -9917,7 +9917,7 @@ def _no_torch_pair(unsloth_spec, zoo_spec, use_uv=True):
             return cache[key]
         with tempfile.TemporaryDirectory(prefix="unsloth-pair-") as target:
             cmd = (
-                ["uv", "pip", "install", "--python", sys.executable, "--resolution", "highest"]
+                [uv_executable, "pip", "install", "--python", sys.executable, "--resolution", "highest"]
                 if use_uv
                 else [sys.executable, "-m", "pip", "install", "--upgrade"]
             )
@@ -9925,6 +9925,7 @@ def _no_torch_pair(unsloth_spec, zoo_spec, use_uv=True):
             try:
                 result = subprocess.run(
                     cmd,
+                    env=install_env,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=120,
@@ -9970,7 +9971,7 @@ def _no_torch_pair(unsloth_spec, zoo_spec, use_uv=True):
         cap = [f"unsloth<{version}"]
 
 import sys
-pair = _no_torch_pair(*sys.argv[1:])
+pair = _no_torch_pair(sys.argv[1], sys.argv[2], uv_executable=sys.argv[3])
 if pair is None:
     raise SystemExit(1)
 print(*pair)
@@ -9978,7 +9979,7 @@ print(*pair)
         $pairScript = [System.IO.Path]::GetTempFileName()
         try {
             [System.IO.File]::WriteAllText($pairScript, $pairCode, (New-Object System.Text.UTF8Encoding($false)))
-            & $VenvPython -I $pairScript $ReleaseSpec $ZooSpec
+            & $VenvPython -I $pairScript $ReleaseSpec $ZooSpec $script:UvExe
         } finally {
             Remove-Item -LiteralPath $pairScript -ErrorAction SilentlyContinue
         }
