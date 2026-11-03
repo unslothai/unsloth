@@ -2332,6 +2332,7 @@ export const ja = {
         applied: "テーマ「{name}」を適用しました",
         undo: "元に戻す",
         undone: "以前の見た目に戻しました",
+        undoneWithoutBackground: "以前の外観に戻しましたが、背景画像は元に戻せませんでした。",
         fileTooLarge: "このファイルはテーマとしては大きすぎます。",
         fileInvalid: "このファイルは有効な Unsloth テーマではありません。",
         readFailed: "このファイルを読み取れませんでした。",

@@ -55,8 +55,8 @@ function createHost() {
         },
       },
       beginBackgroundUpload: () => (record("begin"), ++ticket),
-      finishBackgroundUpload: async (id: number, value: unknown) => record("finish", id, value),
-      resetChatBackground: async () => record("reset"),
+      finishBackgroundUpload: async (id: number, value: unknown) => (record("finish", id, value), upload.result),
+      resetChatBackground: async () => (record("reset"), upload.result),
       hydrateBackground: async () => {
         record("hydrate");
         state.background = state.background ?? { adjustments: sanitizeAdjustments({}), blob: new Blob(["stored"]) };
@@ -146,4 +146,14 @@ test("the loaded snapshot waits for the stored background; undo's guard compares
   const edited = { ...applied, adjustments: { ...applied.adjustments, visibility: 12 } };
   assert.equal(snapshot.sameBackground(edited, applied), false);
   assert.equal(snapshot.sameBackground(null, applied), false);
+});
+
+test("restoreBackground resolves with whether the background could be stored", async () => {
+  const host = createHost();
+  const snapshot = load(host);
+  const prev = { adjustments: sanitizeAdjustments({}), blob: new Blob(["png"]) };
+  assert.equal(await snapshot.restoreBackground(prev), true);
+  host.upload.result = false;
+  assert.equal(await snapshot.restoreBackground(prev), false);
+  assert.equal(await snapshot.restoreBackground(null), false);
 });

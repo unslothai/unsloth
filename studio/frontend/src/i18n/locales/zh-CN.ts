@@ -2325,6 +2325,7 @@ export const zhCN = {
         applied: "已应用主题“{name}”",
         undo: "撤销",
         undone: "已恢复之前的外观",
+        undoneWithoutBackground: "已恢复之前的外观，但无法恢复背景图片。",
         fileTooLarge: "此文件太大，不像是主题文件。",
         fileInvalid: "此文件不是有效的 Unsloth 主题。",
         readFailed: "无法读取此文件。",

@@ -255,6 +255,7 @@ export function parseThemeFile(text: string): ThemeParseResult {
   for (const issue of customization.issues) {
     warn({ kind: issue.kind, path: mapIssuePath(issue.path) });
   }
+  hidden += customization.omittedIssues;
   const glass = readGlass(section("glass"), warn);
   const background = readBackground(assets, warn);
 

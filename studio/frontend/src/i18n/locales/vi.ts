@@ -2545,6 +2545,7 @@ export const vi = {
         applied: "Đã áp dụng chủ đề “{name}”",
         undo: "Hoàn tác",
         undone: "Đã khôi phục giao diện trước đó",
+        undoneWithoutBackground: "Đã khôi phục giao diện trước đó, nhưng không thể khôi phục ảnh nền.",
         fileTooLarge: "Tệp này quá lớn để là một chủ đề.",
         fileInvalid: "Tệp này không phải là chủ đề Unsloth hợp lệ.",
         readFailed: "Không thể đọc tệp này.",

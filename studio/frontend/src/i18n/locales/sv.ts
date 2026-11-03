@@ -2475,6 +2475,7 @@ export const sv = {
         applied: "Temat \"{name}\" har tillämpats",
         undo: "Ångra",
         undone: "Tidigare utseende återställt",
+        undoneWithoutBackground: "Det tidigare utseendet har återställts, men bakgrundsbilden kunde inte återställas.",
         fileTooLarge: "Den här filen är för stor för att vara ett tema.",
         fileInvalid: "Den här filen är inte ett giltigt Unsloth-tema.",
         readFailed: "Den här filen kunde inte läsas.",

@@ -2534,6 +2534,7 @@ export const tr = {
         applied: "“{name}” teması uygulandı",
         undo: "Geri al",
         undone: "Önceki görünüm geri yüklendi",
+        undoneWithoutBackground: "Önceki görünüm geri yüklendi ancak arka plan resmi geri getirilemedi.",
         fileTooLarge: "Bu dosya bir tema olamayacak kadar büyük.",
         fileInvalid: "Bu dosya geçerli bir Unsloth teması değil.",
         readFailed: "Bu dosya okunamadı.",

@@ -155,10 +155,14 @@ function ImportThemeForm({
             onClick: () => {
               const now = readAppearanceSnapshot();
               applyAppearanceSnapshot(planUndo(prev, next, now));
-              if (sameBackground(now.background, appliedBackground)) {
-                void restoreBackground(prev.background);
-              }
-              toast(t("settings.appearance.themeFile.undone"));
+              const restoring = sameBackground(now.background, appliedBackground)
+                ? restoreBackground(prev.background)
+                : Promise.resolve(true);
+              void restoring.then((restored) =>
+                restored
+                  ? toast(t("settings.appearance.themeFile.undone"))
+                  : toast.warning(t("settings.appearance.themeFile.undoneWithoutBackground")),
+              );
             },
           },
         },

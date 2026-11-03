@@ -60,13 +60,10 @@ export function applyAppearanceSnapshot(next: AppearanceTarget): void {
   useMaterialStore.setState({ material, style, strength, lens, menus, nativeFailed: false });
 }
 
-/** Puts back a background read by readAppearanceSnapshot; null means no background. */
-export async function restoreBackground(prev: AppearanceSnapshot["background"]): Promise<void> {
-  if (!prev) {
-    await resetChatBackground();
-    return;
-  }
-  await finishBackgroundUpload(beginBackgroundUpload(), { ...prev.adjustments, blob: prev.blob });
+/** Puts back a background read by readAppearanceSnapshot; null means none. Resolves false if it could not be stored. */
+export function restoreBackground(prev: AppearanceSnapshot["background"]): Promise<boolean> {
+  if (!prev) return resetChatBackground();
+  return finishBackgroundUpload(beginBackgroundUpload(), { ...prev.adjustments, blob: prev.blob });
 }
 
 /** Stores a theme's background through the normal upload checks. Resolves false when it can't. */

@@ -2405,6 +2405,7 @@ export const he = {
         applied: "ערכת הנושא „{name}“ הוחלה",
         undo: "ביטול פעולה",
         undone: "המראה הקודם שוחזר",
+        undoneWithoutBackground: "המראה הקודם שוחזר, אבל לא ניתן היה להחזיר את תמונת הרקע.",
         fileTooLarge: "הקובץ גדול מדי מכדי להיות ערכת נושא.",
         fileInvalid: "הקובץ הזה אינו ערכת נושא תקינה של Unsloth.",
         readFailed: "לא ניתן לקרוא את הקובץ הזה.",

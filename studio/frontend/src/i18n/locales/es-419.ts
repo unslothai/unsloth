@@ -2577,6 +2577,7 @@ export const es419 = {
         applied: "Tema “{name}” aplicado",
         undo: "Deshacer",
         undone: "Se restauró la apariencia anterior",
+        undoneWithoutBackground: "Se restauró el aspecto anterior, pero no se pudo recuperar la imagen de fondo.",
         fileTooLarge: "Este archivo es demasiado grande para ser un tema.",
         fileInvalid: "Este archivo no es un tema válido de Unsloth.",
         readFailed: "No se pudo leer este archivo.",

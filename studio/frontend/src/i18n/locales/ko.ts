@@ -2343,6 +2343,7 @@ export const ko = {
         applied: "테마 “{name}” 적용됨",
         undo: "실행 취소",
         undone: "이전 외관으로 복원했습니다",
+        undoneWithoutBackground: "이전 모양으로 되돌렸지만 배경 이미지는 되돌리지 못했습니다.",
         fileTooLarge: "이 파일은 테마로 쓰기에는 너무 큽니다.",
         fileInvalid: "이 파일은 올바른 Unsloth 테마가 아닙니다.",
         readFailed: "이 파일을 읽을 수 없습니다.",

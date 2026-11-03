@@ -2355,6 +2355,7 @@ export const hi = {
         applied: "थीम “{name}” लागू की गई",
         undo: "पहले जैसा करें",
         undone: "पिछला रूप-रंग बहाल किया गया",
+        undoneWithoutBackground: "पिछला रूप वापस आ गया, लेकिन बैकग्राउंड इमेज वापस नहीं लाई जा सकी।",
         fileTooLarge: "यह फ़ाइल थीम के लिए बहुत बड़ी है।",
         fileInvalid: "यह फ़ाइल एक मान्य Unsloth थीम नहीं है।",
         readFailed: "यह फ़ाइल पढ़ी नहीं जा सकी।",

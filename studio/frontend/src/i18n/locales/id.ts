@@ -2541,6 +2541,7 @@ export const id = {
         applied: "Tema “{name}” diterapkan",
         undo: "Urungkan",
         undone: "Tampilan sebelumnya dipulihkan",
+        undoneWithoutBackground: "Tampilan sebelumnya dipulihkan, tetapi gambar latar tidak dapat dikembalikan.",
         fileTooLarge: "File ini terlalu besar untuk menjadi tema.",
         fileInvalid: "File ini bukan tema Unsloth yang valid.",
         readFailed: "File ini tidak dapat dibaca.",

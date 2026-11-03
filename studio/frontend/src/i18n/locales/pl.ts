@@ -2573,6 +2573,7 @@ export const pl = {
         applied: "Zastosowano motyw „{name}”",
         undo: "Cofnij",
         undone: "Przywrócono poprzedni wygląd",
+        undoneWithoutBackground: "Przywrócono poprzedni wygląd, ale nie udało się przywrócić obrazu tła.",
         fileTooLarge: "Ten plik jest zbyt duży, aby był motywem.",
         fileInvalid: "Ten plik nie jest prawidłowym motywem Unsloth.",
         readFailed: "Nie udało się odczytać tego pliku.",

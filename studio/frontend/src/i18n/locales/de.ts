@@ -2378,6 +2378,7 @@ export const de = {
         applied: "Design „{name}“ übernommen",
         undo: "Rückgängig",
         undone: "Vorheriges Erscheinungsbild wiederhergestellt",
+        undoneWithoutBackground: "Vorheriges Erscheinungsbild wiederhergestellt, aber das Hintergrundbild konnte nicht zurückgesetzt werden.",
         fileTooLarge: "Diese Datei ist zu groß, um ein Design zu sein.",
         fileInvalid: "Diese Datei ist kein gültiges Unsloth-Design.",
         readFailed: "Diese Datei konnte nicht gelesen werden.",

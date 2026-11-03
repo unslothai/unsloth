@@ -2558,6 +2558,7 @@ export const cs = {
         applied: "Motiv „{name}“ byl použit",
         undo: "Zpět",
         undone: "Předchozí vzhled byl obnoven",
+        undoneWithoutBackground: "Předchozí vzhled byl obnoven, ale obrázek pozadí se nepodařilo vrátit.",
         fileTooLarge: "Tento soubor je příliš velký na to, aby byl motivem.",
         fileInvalid: "Tento soubor není platný motiv Unsloth.",
         readFailed: "Tento soubor se nepodařilo přečíst.",

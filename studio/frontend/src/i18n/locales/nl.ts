@@ -2578,6 +2578,7 @@ export const nl = {
         applied: "Thema “{name}” toegepast",
         undo: "Ongedaan maken",
         undone: "Vorig uiterlijk hersteld",
+        undoneWithoutBackground: "Vorige weergave hersteld, maar de achtergrondafbeelding kon niet worden teruggezet.",
         fileTooLarge: "Dit bestand is te groot om een thema te zijn.",
         fileInvalid: "Dit bestand is geen geldig Unsloth-thema.",
         readFailed: "Dit bestand kon niet worden gelezen.",

@@ -2530,6 +2530,7 @@ export const fa = {
         applied: "پوسته «{name}» اعمال شد",
         undo: "واگرد",
         undone: "ظاهر قبلی بازگردانده شد",
+        undoneWithoutBackground: "ظاهر قبلی بازگردانده شد، اما تصویر پس‌زمینه بازگردانده نشد.",
         fileTooLarge: "این فایل برای یک پوسته بیش از حد بزرگ است.",
         fileInvalid: "این فایل یک پوسته‌ی معتبر Unsloth نیست.",
         readFailed: "این فایل خوانده نشد.",

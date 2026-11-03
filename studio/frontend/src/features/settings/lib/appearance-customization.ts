@@ -501,13 +501,20 @@ function sanitizeSidebarMenu(
  * was not kept as written is reported. A missing or null field is the default and is never reported.
  * The customization returned is the one sanitizeCustomization has always produced.
  */
+export const MAX_CUSTOMIZATION_ISSUES = 100;
+
 export function sanitizeCustomizationWithIssues(value: unknown): {
   value: AppearanceCustomization;
   issues: CustomizationIssue[];
+  /** Issues past MAX_CUSTOMIZATION_ISSUES, counted but not kept. */
+  omittedIssues: number;
 } {
   const issues: CustomizationIssue[] = [];
+  let omittedIssues = 0;
+  // A hostile payload can hold millions of bad rows; keep the first few and count the rest.
   const report: ReportIssue = (path, kind) => {
-    issues.push({ path, kind });
+    if (issues.length < MAX_CUSTOMIZATION_ISSUES) issues.push({ path, kind });
+    else omittedIssues += 1;
   };
   const source = (
     isRecord(value) ? value : {}
@@ -589,7 +596,7 @@ export function sanitizeCustomizationWithIssues(value: unknown): {
       report,
     ),
   };
-  return { value: customization, issues };
+  return { value: customization, issues, omittedIssues };
 }
 
 export function sanitizeCustomization(value: unknown): AppearanceCustomization {

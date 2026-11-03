@@ -163,6 +163,7 @@ test("a non-object payload is all defaults with no issues", () => {
     assert.deepEqual(sanitizeCustomizationWithIssues(raw), {
       value: DEFAULT_CUSTOMIZATION,
       issues: [],
+      omittedIssues: 0,
     });
   }
 });
@@ -191,4 +192,11 @@ test("sanitizeFontName keeps the cleaned name or returns null", () => {
 test("fontFamilyFromFileName gives the family a font file registers under", () => {
   assert.equal(fontFamilyFromFileName("Brand_Sans-Bold.woff2"), "Brand Sans Bold");
   assert.equal(fontFamilyFromFileName("My,Font`x.ttf"), "MyFontx");
+});
+
+test("issues stop at the cap and the rest are only counted", () => {
+  const rows = Array.from({ length: 500 }, () => ({ id: "nope", pinned: true }));
+  const { issues, omittedIssues } = sanitizeCustomizationWithIssues({ sidebarNav: rows });
+  assert.equal(issues.length, 100);
+  assert.equal(omittedIssues, 400);
 });

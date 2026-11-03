@@ -2425,6 +2425,7 @@ export const zhTW = {
         applied: "已套用主題「{name}」",
         undo: "復原",
         undone: "已還原先前的外觀",
+        undoneWithoutBackground: "已還原先前的外觀，但無法還原背景圖片。",
         fileTooLarge: "此檔案太大，不像是主題檔案。",
         fileInvalid: "此檔案不是有效的 Unsloth 主題。",
         readFailed: "無法讀取此檔案。",

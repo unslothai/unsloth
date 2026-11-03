@@ -2365,6 +2365,7 @@ export const ptBR = {
         applied: "Tema “{name}” aplicado",
         undo: "Desfazer",
         undone: "Aparência anterior restaurada",
+        undoneWithoutBackground: "A aparência anterior foi restaurada, mas não foi possível recuperar a imagem de fundo.",
         fileTooLarge: "Este arquivo é grande demais para ser um tema.",
         fileInvalid: "Este arquivo não é um tema válido do Unsloth.",
         readFailed: "Não foi possível ler este arquivo.",

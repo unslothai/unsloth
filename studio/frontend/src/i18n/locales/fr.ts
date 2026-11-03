@@ -2376,6 +2376,7 @@ export const fr = {
         applied: "Thème « {name} » appliqué",
         undo: "Annuler",
         undone: "Apparence précédente restaurée",
+        undoneWithoutBackground: "L’apparence précédente a été restaurée, mais l’image d’arrière-plan n’a pas pu être remise.",
         fileTooLarge: "Ce fichier est trop volumineux pour être un thème.",
         fileInvalid: "Ce fichier n'est pas un thème Unsloth valide.",
         readFailed: "Impossible de lire ce fichier.",

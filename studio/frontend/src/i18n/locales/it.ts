@@ -2278,6 +2278,7 @@ export const it = {
         applied: "Tema «{name}» applicato",
         undo: "Annulla",
         undone: "Aspetto precedente ripristinato",
+        undoneWithoutBackground: "Aspetto precedente ripristinato, ma non è stato possibile ripristinare l’immagine di sfondo.",
         fileTooLarge: "Questo file è troppo grande per essere un tema.",
         fileInvalid: "Questo file non è un tema Unsloth valido.",
         readFailed: "Impossibile leggere questo file.",

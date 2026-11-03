@@ -2349,6 +2349,7 @@ export const ar = {
         applied: "تم تطبيق السمة «{name}»",
         undo: "تراجع",
         undone: "تمت استعادة المظهر السابق",
+        undoneWithoutBackground: "تمت استعادة المظهر السابق، لكن تعذّرت إعادة صورة الخلفية.",
         fileTooLarge: "هذا الملف أكبر من أن يكون سمة.",
         fileInvalid: "هذا الملف ليس سمة صالحة لـ Unsloth.",
         readFailed: "تعذّرت قراءة هذا الملف.",

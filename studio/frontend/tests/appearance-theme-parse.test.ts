@@ -237,3 +237,10 @@ test("warnings stop at the cap and the last one counts the rest", () => {
   assert.equal(warnings.length, MAX_THEME_WARNINGS + 1);
   assert.deepEqual(warnings.at(-1), { kind: "more", count: 10 });
 });
+
+test("a huge invalid layout list ends in one counted warning", () => {
+  const rows = Array.from({ length: 5000 }, () => ({ id: "nope", pinned: true }));
+  const { warnings } = okOf(parse({ layout: { sidebarNav: rows } }));
+  assert.equal(warnings.length, 51);
+  assert.deepEqual(warnings.at(-1), { kind: "more", count: 4950 });
+});

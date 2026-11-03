@@ -2363,6 +2363,7 @@ export const en = {
         applied: "Theme “{name}” applied",
         undo: "Undo",
         undone: "Previous look restored",
+        undoneWithoutBackground: "Previous look restored, but the background image couldn't be put back.",
         fileTooLarge: "This file is too large to be a theme.",
         fileInvalid: "This file isn't a valid Unsloth theme.",
         readFailed: "Couldn't read this file.",
