@@ -95,7 +95,8 @@ def launch(
 ):
     """kernel[grid](*args, **constexprs, **options) on the current stream of device_index, which
     must be the current device. args are the runtime arguments in signature order, before every
-    constexpr: n_tensors tensors, then integers. unspecialized: positions in args of integers the
+    constexpr: n_tensors tensors, then integers in [0, 2**63) (sizes, strides, offsets: the key's
+    `< 2**31` then matches Triton's i32 / i64 typing). unspecialized: positions in args of integers the
     kernel lists in do_not_specialize (only their width is keyed, so one cache entry serves every
     value). unaligned: positions of integers the kernel lists in do_not_specialize_on_alignment
     (jit_any_alignment): keyed by == 1 and width, not % 16. Returns the cache entry relaunch()

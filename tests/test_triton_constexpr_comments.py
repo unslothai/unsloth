@@ -51,15 +51,14 @@ def _is_kernel_decorator(node):
 
 def _kernels(tree):
     """FunctionDefs decorated as Triton kernels, or wrapped as `k = triton.jit(f)`."""
-    defs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
-    found = {
-        n.name: n for n in defs.values() if any(_is_kernel_decorator(d) for d in n.decorator_list)
-    }
+    # Keyed by node: two factories may each define a kernel with the same name.
+    defs = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    found = {id(n): n for n in defs if any(_is_kernel_decorator(d) for d in n.decorator_list)}
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Name):
             outer = node.func.func if isinstance(node.func, ast.Call) else node.func
-            if _is_kernel_decorator(outer) and node.args[0].id in defs:
-                found[node.args[0].id] = defs[node.args[0].id]
+            if _is_kernel_decorator(outer):
+                found.update({id(n): n for n in defs if n.name == node.args[0].id})
     return found.values()
 
 
@@ -72,7 +71,7 @@ def _constexpr_params(path):
         if tok.type == tokenize.COMMENT
     }
     for fn in _kernels(tree):
-        for arg in fn.args.args + fn.args.kwonlyargs:
+        for arg in fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs:
             if arg.annotation is not None and _dotted(arg.annotation).endswith("constexpr"):
                 yield fn.name, arg.arg, arg.lineno, arg.lineno in comments
 
@@ -114,3 +113,28 @@ def test_no_per_call_size_is_constexpr():
         if name in PER_CALL_NAMES
     ]
     assert not bad, "per-call sizes must be runtime arguments:\n" + "\n".join(bad)
+
+
+def test_scanner_sees_same_name_and_positional_only_kernels(tmp_path):
+    src = tmp_path / "k.py"
+    src.write_text(
+        "import triton\nimport triton.language as tl\n\n"
+        "def make_a():\n"
+        "    @triton.jit\n"
+        "    def kernel(x, BLOCK: tl.constexpr):\n"
+        "        pass\n\n"
+        "def make_b():\n"
+        "    @triton.jit\n"
+        "    def kernel(x, BLOCK: tl.constexpr):  # elements per program\n"
+        "        pass\n\n"
+        "@triton.jit\n"
+        "def pos(n_rows: tl.constexpr, /, x):  # rows\n"
+        "    pass\n",
+        encoding = "utf-8",
+    )
+    found = sorted((k, n, line, c) for k, n, line, c in _constexpr_params(src))
+    assert found == [
+        ("kernel", "BLOCK", 6, False),
+        ("kernel", "BLOCK", 11, True),
+        ("pos", "n_rows", 15, True),
+    ]

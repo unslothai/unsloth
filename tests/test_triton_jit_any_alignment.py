@@ -28,6 +28,8 @@ def _load_triton_launch():
 
 
 def _param(kernel, name):
+    if not hasattr(kernel, "params"):  # TRITON_INTERPRET=1 returns an InterpretedFunction
+        pytest.skip("interpreted Triton function has no params")
     return next(p for p in kernel.params if p.name == name)
 
 
@@ -102,10 +104,62 @@ def test_nf4_gemv_rows_alignment_unspecialized():
     )
 
 
-def test_launch_keys():
-    source = "".join((ROOT / "triton_launch.py").read_text(encoding = "utf-8").split())
-    assert "unspecialized=(),unaligned=()," in source
-    assert (
-        "arg<(1<<31)ifiinunspecializedelse(arg==1,arg<(1<<31))ifiinunalignedelse(arg==1,arg&15,arg<(1<<31))"
-        in source
-    )
+class _Compiled:
+    packed_metadata = function = None
+
+    def __init__(self, log):
+        self.log = log
+
+    def run(self, *args):
+        self.log.append("cached")
+
+
+class _Kernel:
+    arg_names = ["out", "n", "BLOCK"]
+
+    def __init__(self):
+        self.log = []
+
+    def __getitem__(self, grid):
+        def slow(*args, **kwargs):
+            self.log.append("slow")
+            return _Compiled(self.log)
+
+        return slow
+
+
+def _fast_launch(monkeypatch):
+    mod = _load_triton_launch()
+    monkeypatch.setattr(mod, "_ENABLED", True)
+    monkeypatch.setattr(mod, "_hooks_set", lambda: False)
+    monkeypatch.setattr(mod, "_raw_stream", lambda device: 0)
+    return mod
+
+
+@pytest.mark.parametrize(
+    "mode, same, different",
+    [
+        # unspecialized: one entry for every int32 value; int32 vs int64 still split.
+        ("unspecialized", [2, 3, 16, 1, 17], [2**31]),
+        # unaligned: == 1 split, % 16 not.
+        ("unaligned", [2, 3, 16, 17], [1, 2**31]),
+        # default: == 1 and the low 4 bits split.
+        ("default", [2, 18, 34], [1, 16, 2**31]),
+    ],
+)
+def test_launch_cache_keys(monkeypatch, mode, same, different):
+    torch = pytest.importorskip("torch")
+    mod = _fast_launch(monkeypatch)
+    kernel, out = _Kernel(), torch.empty(4)
+    extra = {mode: (1,)} if mode != "default" else {}
+
+    def go(n):
+        mod.launch(kernel, (1,), (out, n), 1, {"BLOCK": 4}, 0, **extra)
+
+    for n in same:
+        go(n)
+    assert kernel.log == ["slow"] + ["cached"] * (len(same) - 1)
+    for n in different:
+        kernel.log.clear()
+        go(n)
+        assert kernel.log == ["slow"], n
