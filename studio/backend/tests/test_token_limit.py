@@ -351,15 +351,17 @@ def test_durable_usage_is_counted_before_a_browser_recovers_the_run(limiter_db, 
         _api_request("durable-receipt", now, 100)
     _enable(limit = 100)
     assert _pools()["combined"]["used"] == 100
-    if not via_api_key:
-        message = studio_db.get_chat_message("t1", "assistant")
-        message["metadata"]["contextUsage"] = {
+    message = studio_db.get_chat_message("t1", "assistant")
+    message["metadata"] = {
+        **(message["metadata"] or {}),
+        "contextUsage": {
             "promptTokens": 90,
             "completionTokens": 10,
             "totalTokens": 100,
-        }
-        studio_db.upsert_chat_message(message)
-        assert _pools()["combined"]["used"] == 100
+        },
+    }
+    studio_db.upsert_chat_message(message)
+    assert _pools()["combined"]["used"] == 100
     with pytest.raises(HTTPException):
         token_limit.enforce(api = False)
 
@@ -380,6 +382,37 @@ def test_a_password_locks_every_change_until_it_is_given(limiter_db):
     token_limit.update_settings({"enabled": False}, password = "guardian", new_password = "")
     settings = token_limit.load_settings()
     assert settings["enabled"] is False and settings["passwordHash"] is None
+
+
+def test_a_concurrent_save_cannot_remove_a_new_password(limiter_db, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+
+    loaded = threading.Event()
+    protected = threading.Event()
+    original = token_limit.load_settings
+
+    def snapshot():
+        value = original()
+        if threading.current_thread().name.endswith("_0") and not loaded.is_set():
+            loaded.set()
+            protected.wait(timeout = 1)
+        return value
+
+    def protect():
+        assert loaded.wait(timeout = 5)
+        token_limit.update_settings({}, password = None, new_password = "guardian")
+        protected.set()
+
+    monkeypatch.setattr(token_limit, "load_settings", snapshot)
+    with ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "save") as pool:
+        first = pool.submit(
+            token_limit.update_settings, {"limit": 100}, password = None, new_password = None
+        )
+        second = pool.submit(protect)
+        first.result(timeout = 5)
+        second.result(timeout = 5)
+    assert token_limit.status()["settings"]["passwordProtected"] is True
 
 
 def test_routes_refuse_api_key_changes_and_report_status(limiter_db):

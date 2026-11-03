@@ -220,14 +220,15 @@ def status() -> dict[str, Any]:
 def update_settings(
     patch: dict[str, Any], *, password: Optional[str], new_password: Optional[str]
 ) -> dict[str, Any]:
-    current = load_settings()
-    stored_hash = current.get("passwordHash")
-    if stored_hash and not (password and verify_password(password, stored_hash)):
-        raise TokenLimitPasswordError()
-    merged = _clean_settings({**current, **patch, "passwordHash": stored_hash})
-    if new_password is not None:
-        merged["passwordHash"] = hash_password(new_password) if new_password else None
-    upsert_app_settings({SETTINGS_KEY: merged}, read_back = False)
+    with _override_lock:
+        current = load_settings()
+        stored_hash = current.get("passwordHash")
+        if stored_hash and not (password and verify_password(password, stored_hash)):
+            raise TokenLimitPasswordError()
+        merged = _clean_settings({**current, **patch, "passwordHash": stored_hash})
+        if new_password is not None:
+            merged["passwordHash"] = hash_password(new_password) if new_password else None
+        upsert_app_settings({SETTINGS_KEY: merged}, read_back = False)
     return status()
 
 

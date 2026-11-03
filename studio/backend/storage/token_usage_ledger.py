@@ -62,6 +62,10 @@ def _ledger_insert(message: str, rows: str = "") -> str:
             {rows}
         ) AS u
         WHERE (u.prompt_tokens + u.completion_tokens > 0 OR u.reported_total > 0)
+          AND NOT EXISTS (
+              SELECT 1 FROM chat_generation_runs r WHERE r.assistant_message_id = u.id
+              AND json_extract(r.request_json, '$.api_monitor_via_api_key') = 1
+          )
         ON CONFLICT(message_id) DO UPDATE SET
             source = excluded.source,
             prompt_tokens = MAX(prompt_tokens, excluded.prompt_tokens),
@@ -113,8 +117,7 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
         ("insert", "AFTER INSERT ON chat_messages"),
         ("update", "AFTER UPDATE OF metadata_json ON chat_messages"),
     ):
-        if missing:
-            conn.execute(f"DROP TRIGGER IF EXISTS {LEDGER_TABLE}_{event}")
+        conn.execute(f"DROP TRIGGER IF EXISTS {LEDGER_TABLE}_{event}")
         conn.execute(
             f"""
             CREATE TRIGGER IF NOT EXISTS {LEDGER_TABLE}_{event}
@@ -158,7 +161,7 @@ def record_run_usage(conn: sqlite3.Connection, run_id: str, chunk: dict) -> None
                 SELECT c.id, c.thread_id, c.created_at, c.parent_id,
                        json_patch(c.metadata_json, ?) AS metadata_json
                 FROM chat_messages c JOIN chat_generation_runs r ON r.assistant_message_id = c.id
-                WHERE r.id = ? AND COALESCE(json_extract(r.request_json, '$.api_monitor_via_api_key'), 0) = 0
+                WHERE r.id = ?
             ) m
         """,
             ),
