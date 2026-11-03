@@ -323,6 +323,9 @@ def PatchRL(FastLanguageModel):
                     return out.clone()
                 return out
 
+            generate_with_clone._unsloth_caller_sampling_only = (
+                generating_model is not unwrapped_model
+            )
             generating_model.generate = generate_with_clone
 
             try:

@@ -495,12 +495,14 @@ def _tail_sink_to_stderr(
 ) -> None:
     """fd 2 must be the SINK, not a pipe: a fatal signal kills anything buffered in a pipe with its writer."""
     while True:
+        # Read stop BEFORE reading: an empty read that began before stop.set() can predate the last writes.
+        stopping = stop.is_set()
         try:
             chunk = reader.read(65536)
         except (OSError, ValueError):
             break
         if not chunk:
-            if stop.is_set():
+            if stopping:
                 break
             stop.wait(_TAIL_POLL_S)
             continue
