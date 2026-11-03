@@ -371,9 +371,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         elif host.startswith("private"):
             self._redirect("http://169.254.169.254/latest/meta-data/")
         else:
+            content_type = "text/html"
             body = (
                 b"<html><body><main><h1>Page</h1><p>" + b"word " * 80 + b"</p></main></body></html>"
             )
+            if host.startswith("pdf"):
+                content_type, body = "application/pdf", b"%PDF-1.4\n" + b"0" * 64
             if host.startswith("links"):
                 # Same-site links are kept only when the page fits the call's budget.
                 links = b"".join(
@@ -386,7 +389,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     + b"</ul><p>LAST_FACT_MARKER</p></main></body></html>"
                 )
             self.send_response(200)
-            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -562,6 +565,33 @@ def test_local_loop_renders_a_started_read_under_its_own_budget(monkeypatch, loc
     assert slow.peak == 2
     assert overlapped == serial
     assert "LAST_FACT_MARKER" in [e["result"] for e in overlapped if e["type"] == "tool_end"][1]
+
+
+def test_local_loop_extracts_started_pdfs_one_at_a_time(monkeypatch, local_sites):
+    from core.rag import parsers
+
+    calls = [_local_url(0, "pdfa", local_sites), _local_url(1, "pdfb", local_sites)]
+    lock = threading.Lock()
+    state = {"running": 0, "peak": 0, "calls": 0}
+
+    def parse(data, max_pages = None):
+        with lock:
+            state["calls"] += 1
+            state["running"] += 1
+            state["peak"] = max(state["peak"], state["running"])
+        time.sleep(0.3)
+        with lock:
+            state["running"] -= 1
+        return [], 1
+
+    monkeypatch.setattr(parsers, "parse_pdf_bytes", parse)
+    slow = _SlowPages(monkeypatch)
+
+    _local_turn(monkeypatch, calls)
+
+    assert slow.peak == 2
+    assert state["calls"] == 2
+    assert state["peak"] == 1
 
 
 def test_local_loop_reads_of_one_host_stay_serial(monkeypatch, local_sites):

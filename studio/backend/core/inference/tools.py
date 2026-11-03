@@ -14652,11 +14652,16 @@ def _meta_refresh_target(body: bytes, page_url: str) -> str | None:
     return None
 
 
+# PyMuPDF is not thread-safe, and URL reads of one batch download on parallel threads.
+_WEB_PDF_LOCK = threading.Lock()
+
+
 def _extract_pdf_text(data: bytes) -> str:
     """Extract page-delimited text with the same parser used by RAG ingestion."""
     from ..rag.parsers import parse_pdf_bytes
 
-    pages, total_pages = parse_pdf_bytes(data, max_pages = _MAX_WEB_PDF_PAGES)
+    with _WEB_PDF_LOCK:
+        pages, total_pages = parse_pdf_bytes(data, max_pages = _MAX_WEB_PDF_PAGES)
     page_limit_reached = total_pages > _MAX_WEB_PDF_PAGES
     parts: list[str] = []
     length = 0
