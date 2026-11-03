@@ -32,8 +32,12 @@ export function FlowHfDatasetFields({
   // The dropdown only lists split names, so its auto-select must not overwrite a saved `train[:10%]`.
   const saved = useRef(split);
   saved.current = split;
+  // Nor may it replace a half-typed expression, whose first word is not a split name yet.
+  const editing = useRef(false);
   const setSplit = useCallback(
-    (v: string | null) => onChange({ split: pickedSplit(saved.current, v) }),
+    (v: string | null) => {
+      if (!editing.current) onChange({ split: pickedSplit(saved.current, v) });
+    },
     [onChange],
   );
   return (
@@ -71,6 +75,12 @@ export function FlowHfDatasetFields({
         <Input
           value={split ?? ""}
           onChange={(e) => onChange({ split: e.target.value })}
+          onFocus={() => {
+            editing.current = true;
+          }}
+          onBlur={() => {
+            editing.current = false;
+          }}
           data-testid="flows-hf-split-expression"
         />
       </div>
