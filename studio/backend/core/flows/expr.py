@@ -86,8 +86,7 @@ def _is_num(x: Any) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool)
 
 
-# Integers past the largest double would be Infinity in the browser player, and unbounded Python ints let a
-# single expression spend seconds of CPU on the event loop.
+# Past the largest double the browser player has Infinity, and huge ints would hog the event loop.
 _MAX_DOUBLE = 1.7976931348623157e308
 
 
@@ -162,8 +161,7 @@ def _num(x: Any, op: str) -> float:
     return x
 
 
-# Past 10**308 a float scale is infinite (the browser player gives NaN); bounding digits first also keeps
-# 10 ** digits from computing a huge integer on the event loop.
+# Past 10**308 the scale is infinite (the browser gives NaN); bound digits before computing 10 ** digits.
 _ROUND_DIGITS_MAX = 308
 
 
