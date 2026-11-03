@@ -413,6 +413,26 @@ def test_durable_usage_is_counted_before_a_browser_recovers_the_run(limiter_db, 
         assert _pools()["api"]["used"] == 100
 
 
+def test_disabled_monitor_cannot_silently_leave_an_allowance_unenforced(limiter_db, monkeypatch):
+    from core.inference import api_monitor
+
+    monkeypatch.setattr(api_monitor, "api_monitor", api_monitor.ApiMonitor(enabled = False))
+    with pytest.raises(HTTPException) as error:
+        _enable()
+    assert error.value.status_code == 409
+    assert token_limit.load_settings()["enabled"] is False
+    studio_db.upsert_app_settings({"token_limit": {"enabled": True}})
+    for action in (
+        lambda: token_limit.enforce(api = True),
+        lambda: token_limit.grant_override("combined"),
+    ):
+        with pytest.raises(HTTPException) as error:
+            action()
+        assert error.value.status_code == 409
+    token_limit.update_settings({"enabled": False}, password = None, new_password = None)
+    token_limit.enforce(api = True)
+
+
 def test_a_password_locks_every_change_until_it_is_given(limiter_db):
     token_limit.update_settings(
         {"enabled": True, "limit": 1000}, password = None, new_password = "guardian"

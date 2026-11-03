@@ -217,6 +217,15 @@ def status() -> dict[str, Any]:
     }
 
 
+def _require_usage_accounting() -> None:
+    from core.inference.api_monitor import api_monitor
+    if not api_monitor.enabled:
+        raise HTTPException(
+            status_code = 409,
+            detail = "Token allowances require API usage monitoring. Unset UNSLOTH_STUDIO_DISABLE_API_MONITOR and restart, or disable the allowance.",
+        )
+
+
 def update_settings(
     patch: dict[str, Any], *, password: Optional[str], new_password: Optional[str]
 ) -> dict[str, Any]:
@@ -226,6 +235,8 @@ def update_settings(
         if stored_hash and not (password and verify_password(password, stored_hash)):
             raise TokenLimitPasswordError()
         merged = _clean_settings({**current, **patch, "passwordHash": stored_hash})
+        if merged["enabled"]:
+            _require_usage_accounting()
         if new_password is not None:
             merged["passwordHash"] = hash_password(new_password) if new_password else None
         upsert_app_settings({SETTINGS_KEY: merged}, read_back = False)
@@ -236,6 +247,7 @@ def grant_override(pool: str) -> dict[str, Any]:
     settings = load_settings()
     if not settings["enabled"]:
         raise HTTPException(status_code = 409, detail = "The token limit is off.")
+    _require_usage_accounting()
     start_ms, _end_ms = period_window(settings["period"], settings["timezone"])
     usage = _pool_usage(settings, start_ms).get(pool)
     if usage is None:
@@ -262,6 +274,7 @@ def enforce(*, api: bool) -> None:
     settings = load_settings()
     if not settings["enabled"]:
         return
+    _require_usage_accounting()
     start_ms, end_ms = period_window(settings["period"], settings["timezone"])
     pool = request_pool(settings, api = api)
     usage = _pool_usage(settings, start_ms)[pool]
