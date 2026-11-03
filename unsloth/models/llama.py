@@ -2537,10 +2537,12 @@ class _PerDeviceRopeCache:
     def _compiled_position_embeddings(self, x, position_ids):
         # Gemma divides by timescale rather than multiplying by its reciprocal.
         positions = position_ids.to(x.device).float()
-        positions = (positions.double() / getattr(self, "scaling_factor", 1.0)).float()
+        # Arc and Metal do not support FP64 tensors.
+        compute_dtype = torch.float64 if x.device.type in ("cpu", "cuda") else torch.float32
+        positions = (positions.to(compute_dtype) / getattr(self, "scaling_factor", 1.0)).float()
         timescale = self._rope_timescale_cpu.to(x.device)
         # Narrow only after division; a float32 reciprocal shifts large positions.
-        freqs = (positions[..., None].double() / timescale.double()).float()
+        freqs = (positions[..., None].to(compute_dtype) / timescale.to(compute_dtype)).float()
         emb = torch.cat((freqs, freqs), dim = -1)
         return emb.cos().to(x.dtype), emb.sin().to(x.dtype)
 
