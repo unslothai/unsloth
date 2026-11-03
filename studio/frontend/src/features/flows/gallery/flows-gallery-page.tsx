@@ -130,11 +130,11 @@ function FlowCard({
               className="h-full w-full object-cover"
             />
           ) : (
+            // Opaque colour, dimmed as one layer: a translucent currentColor darkens where strokes overlap.
             <HugeiconsIcon
               icon={kind.icon}
               size={42}
-              strokeWidth={1.2}
-              className="text-foreground/40"
+              className="text-muted-foreground opacity-60"
             />
           )}
         </div>
@@ -144,7 +144,7 @@ function FlowCard({
               {flow.name}
             </span>
             <span
-              className={`rounded px-1.5 py-0.5 text-[10.5px] ${kind.className}`}
+              className={`rounded px-1.5 py-0.5 text-ui-10p5 ${kind.className}`}
             >
               {kind.label}
             </span>
@@ -156,13 +156,13 @@ function FlowCard({
           )}
           {flow.example && needsLine(flow.needs) && (
             <p
-              className="text-[11px] text-foreground/70"
+              className="text-ui-11 text-foreground/70"
               data-testid="flows-card-needs"
             >
               {needsLine(flow.needs)}
             </p>
           )}
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-ui-11 text-muted-foreground">
             {flow.nodeCount} nodes
             {flow.updatedAt && !flow.example
               ? ` · ${relativeTime(flow.updatedAt)}`

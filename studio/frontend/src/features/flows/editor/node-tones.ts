@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { CSSProperties } from "react";
+import { portInk, studioInk } from "./theme-colors";
 
 // Recipe Studio's icon tile tones (utils/ui-tones.ts), one per Flows category.
 export const CATEGORY_TONES: Record<string, string> = {
@@ -25,9 +26,10 @@ export const CATEGORY_TONES: Record<string, string> = {
 
 /** The same tile tone from a hex, for categories the table above does not know. */
 export function accentTone(color: string): CSSProperties {
+  const ink = studioInk(color);
   return {
-    color: `color-mix(in oklab, ${color} var(--flows-port-mix, 100%), black)`,
-    background: `color-mix(in oklab, ${color} 10%, transparent)`,
-    borderColor: `color-mix(in oklab, ${color} 22%, transparent)`,
+    color: portInk(color),
+    background: `color-mix(in oklab, ${ink} 10%, transparent)`,
+    borderColor: `color-mix(in oklab, ${ink} 22%, transparent)`,
   };
 }

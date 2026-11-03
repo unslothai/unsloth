@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { newCardParams } from "../editor/llm-settings";
 import type { NodeCatalog, NodeCategory, NodeSpec, PortSpec } from "../types";
 
 export interface CatalogState {
@@ -51,12 +52,13 @@ export function findPort(
   );
 }
 
+/** What a new node starts with. */
 export function defaultParams(spec: NodeSpec): Record<string, unknown> {
   const params: Record<string, unknown> = {};
   for (const param of spec.params) {
     params[param.id] = structuredCloneSafe(param.default);
   }
-  return params;
+  return newCardParams(spec.type, params);
 }
 
 function structuredCloneSafe<T>(value: T): T {

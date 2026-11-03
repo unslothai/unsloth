@@ -2,8 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Badge } from "@/components/ui/badge";
-import { type NodeProps, useStore } from "@xyflow/react";
-import { memo } from "react";
+import {
+  type ControlPosition,
+  NodeResizeControl,
+  type NodeProps,
+  type OnResizeEnd,
+  ResizeControlVariant,
+  useStore,
+} from "@xyflow/react";
+import { memo, useLayoutEffect, useRef, useState } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useDocStore } from "../stores/doc-store";
 import {
@@ -18,8 +25,11 @@ import {
   inHandle,
   outHandle,
 } from "./connection-rules";
+import { CARD_MIN_WIDTH, cardContentMinHeight, cardMinHeight } from "./card-size";
 import type { RfNode } from "./derive-rf";
 import { nodeIcon } from "./icons";
+import { LLM_SETTINGS_NODES } from "./llm-settings";
+import { LlmReloadHint } from "./llm-settings-panel";
 import { MediaThumb, isMediaValue } from "./media";
 import {
   CollapsedPorts,
@@ -36,6 +46,8 @@ import {
 } from "./node-card";
 import { NODE_LOOKS } from "./node-looks";
 import { CATEGORY_TONES } from "./node-tones";
+import { CopyTextButton } from "./copy-text";
+import { outputCopyText, shownOutputIds } from "./value-kinds";
 import { StructuredBadge, isStructuredValue } from "./value-viewers";
 
 /** Below this zoom the text is unreadable anyway; hiding it (layout kept, so handles stay put)
@@ -88,7 +100,9 @@ function nodeFields(
 function OutputPreview({
   runtime,
   spec,
-}: { runtime: NodeRuntime; spec: NodeSpec }) {
+  expanded = false,
+  low = false,
+}: { runtime: NodeRuntime; spec: NodeSpec; expanded?: boolean; low?: boolean }) {
   if (
     runtime.preview &&
     (runtime.status === "running" || runtime.status === "loading_model")
@@ -97,14 +111,14 @@ function OutputPreview({
       <img
         src={runtime.preview}
         alt=""
-        className="aspect-square w-full rounded-md object-cover"
+        className="flow-media aspect-square w-full rounded-md object-cover group-data-[sized]/node:aspect-auto group-data-[sized]/node:h-full group-data-[sized]/node:object-contain"
         draggable={false}
       />
     );
   }
   if ((runtime.status === "running" || !runtime.outputs) && runtime.text) {
     return (
-      <p className="line-clamp-4 whitespace-pre-wrap text-ui-11 leading-snug text-foreground">
+      <p className="line-clamp-4 whitespace-pre-wrap text-ui-11 leading-snug text-foreground group-data-[sized]/node:line-clamp-none">
         {runtime.text}
       </p>
     );
@@ -124,26 +138,51 @@ function OutputPreview({
               : `Partial (stopped at ${at.step} of ${at.total})`
             : "Partial"}
         </span>
-        <OutputValues outputs={runtime.partial} spec={spec} />
+        <OutputValues
+          outputs={runtime.partial}
+          spec={spec}
+          expanded={expanded}
+          low={low}
+        />
       </div>
     );
   }
   const outputs = runtime.outputs;
   if (!outputs) return null;
-  return <OutputValues outputs={outputs} spec={spec} />;
+  return <OutputValues outputs={outputs} spec={spec} expanded={expanded} low={low} />;
+}
+
+/** A list or object written out in full, for a card resized big enough to read it. */
+export function expandedText(value: unknown): string {
+  if (Array.isArray(value))
+    return value
+      .map((item) =>
+        typeof item === "string" ? item : JSON.stringify(item, null, 2),
+      )
+      .join("\n");
+  return JSON.stringify(value, null, 2);
 }
 
 function OutputValues({
   outputs,
   spec,
-}: { outputs: Record<string, unknown>; spec: NodeSpec }) {
-  for (const port of spec.outputs) {
-    const value = outputs[port.id];
+  expanded = false,
+  low = false,
+}: {
+  outputs: Record<string, unknown>;
+  spec: NodeSpec;
+  expanded?: boolean;
+  low?: boolean;
+}) {
+  const ids = shownOutputIds(spec.outputs, outputs);
+  for (const id of ids) {
+    const value = outputs[id];
     if (isMediaValue(value)) {
       return (
         <MediaThumb
           media={value}
-          className="max-h-48 w-full rounded-md object-cover"
+          low={low}
+          className="max-h-48 w-full rounded-md object-cover group-data-[sized]/node:h-full group-data-[sized]/node:max-h-full group-data-[sized]/node:object-contain"
         />
       );
     }
@@ -157,6 +196,7 @@ function OutputValues({
                 <MediaThumb
                   key={`${item.ref}-${i}`}
                   media={item}
+                  low={low}
                   className="aspect-square w-full rounded object-cover"
                 />
               ) : null,
@@ -165,20 +205,30 @@ function OutputValues({
       );
     }
   }
-  for (const port of spec.outputs) {
-    const value = outputs[port.id];
+  for (const id of ids) {
+    const value = outputs[id];
     if (value === undefined || value === null) continue;
     if (isStructuredValue(value)) return <StructuredBadge value={value} />;
+    if (expanded && typeof value === "object") {
+      return (
+        <pre
+          className="nowheel min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words font-mono text-ui-11 leading-snug text-foreground"
+          data-testid="flow-output-expanded"
+        >
+          {expandedText(value)}
+        </pre>
+      );
+    }
     if (typeof value === "string") {
       return (
-        <p className="line-clamp-4 whitespace-pre-wrap text-ui-11 leading-snug text-foreground">
+        <p className="line-clamp-4 whitespace-pre-wrap text-ui-11 leading-snug text-foreground group-data-[sized]/node:line-clamp-none">
           {value}
         </p>
       );
     }
     if (typeof value === "number" || typeof value === "boolean") {
       return (
-        <Badge variant="secondary" className="font-mono text-ui-11">
+        <Badge variant="secondary" className="text-ui-11 tabular-nums">
           {String(value)}
         </Badge>
       );
@@ -203,6 +253,48 @@ function OutputValues({
   return null;
 }
 
+const SIDES: ControlPosition[] = ["top", "bottom", "left", "right"];
+const CORNERS: ControlPosition[] = [
+  "top-left",
+  "top-right",
+  "bottom-left",
+  "bottom-right",
+];
+/** Invisible edge and corner handles; one undo step per resize, committed on release. */
+function CardResizer({ id, minHeight }: { id: string; minHeight: number }) {
+  const onResizeEnd: OnResizeEnd = (_, p) =>
+    useDocStore.getState().updateNode(id, {
+      pos: [Math.round(p.x), Math.round(p.y)],
+      size: [Math.round(p.width), Math.round(p.height)],
+    });
+  const common = { minWidth: CARD_MIN_WIDTH, minHeight, onResizeEnd };
+  return (
+    <>
+      {SIDES.map((position) => (
+        <NodeResizeControl
+          key={position}
+          {...common}
+          position={position}
+          variant={ResizeControlVariant.Line}
+          className={
+            position === "top" || position === "bottom"
+              ? "!h-2 !border-0"
+              : "!w-2 !border-0"
+          }
+        />
+      ))}
+      {CORNERS.map((position) => (
+        <NodeResizeControl
+          key={position}
+          {...common}
+          position={position}
+          className="!size-3 !border-transparent !bg-transparent"
+        />
+      ))}
+    </>
+  );
+}
+
 function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
   const node = useDocStore((s) => s.graph.nodes[id]);
   const spec = useCatalogStore((s) => (node ? s.specs[node.type] : undefined));
@@ -212,6 +304,15 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
   const portColors = useCatalogStore((s) => s.catalog?.port_colors);
   const runtime = useRuntimeStore((s) => s.nodes[id]) ?? IDLE_RUNTIME;
   const lowDetail = useStore(lowDetailSelector);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [contentMin, setContentMin] = useState(0);
+  // Re-measured each render: an error or a new field row grows the floor without resizing the card.
+  useLayoutEffect(() => {
+    const card = cardRef.current;
+    if (!card) return;
+    const next = cardContentMinHeight(card);
+    if (next !== contentMin) setContentMin(next);
+  });
   if (!node) return null;
   if (!spec) {
     return (
@@ -245,14 +346,29 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
     }))
     .filter((port) => !port.hidden);
   const { HeaderExtra, Ports, Body } = look;
+  const copyText =
+    (runtime.status === "running" || !runtime.outputs) && runtime.text
+      ? runtime.text
+      : outputCopyText(spec.outputs, runtime.outputs ?? runtime.partial);
 
   return (
     <NodeCard
       runtime={runtime}
       disabled={node.disabled}
       lowDetail={lowDetail}
+      sized={!!node.size && !collapsed}
       data-node-id={id}
+      ref={cardRef}
+      // A card saved smaller than its fields (or that later grew an error) still shows them.
+      style={node.size && !collapsed && contentMin ? { minHeight: contentMin } : undefined}
     >
+      {/* First, so the port handles paint above the side handles. */}
+      {!collapsed && (
+        <CardResizer
+          id={id}
+          minHeight={Math.max(cardMinHeight(spec), contentMin)}
+        />
+      )}
       <NodeCardHeader
         icon={look.icon?.(node) ?? nodeIcon(spec.icon)}
         tone={look.tone ? look.tone(node) : CATEGORY_TONES[spec.category]}
@@ -278,7 +394,10 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
           />
         )
       ) : (
-        <div className="flex flex-col gap-1.5 py-2">
+        <div
+          data-card-body={true}
+          className="flex flex-col gap-1.5 py-2 group-data-[sized]/node:min-h-0 group-data-[sized]/node:flex-1 group-data-[sized]/node:[overflow-y:clip]"
+        >
           {Ports ? (
             <Ports node={node} collapsed={false} />
           ) : (
@@ -298,13 +417,28 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
           {flowOuts.length > 0 && <NodePorts inputs={[]} outputs={flowOuts} />}
           {Body ? <Body node={node} /> : null}
           {fields && <NodeFieldRows rows={fields.rows} />}
+          {LLM_SETTINGS_NODES.has(node.type) && <LlmReloadHint node={node} />}
           {fields && <NodeDisclosure sections={fields.long} />}
           {(runtime.outputs ||
             runtime.partial ||
             runtime.text ||
             runtime.preview) && (
-            <div className="flow-detail px-3">
-              <OutputPreview runtime={runtime} spec={spec} />
+            <div
+              data-card-grow={true}
+              className={`flow-detail relative px-3 group-data-[sized]/node:flex group-data-[sized]/node:min-h-0 group-data-[sized]/node:flex-1 group-data-[sized]/node:flex-col${copyText ? " pr-9" : ""}`}>
+              {copyText && (
+                <CopyTextButton
+                  text={copyText}
+                  label="Copy output"
+                  className="absolute -top-1 right-2 z-10 bg-card opacity-0 group-hover/node:opacity-100 focus-visible:opacity-100"
+                />
+              )}
+              <OutputPreview
+                runtime={runtime}
+                spec={spec}
+                expanded={!!node.size}
+                low={lowDetail}
+              />
             </div>
           )}
           {runtime.status === "failed" && runtime.error && (

@@ -168,7 +168,46 @@ pub fn setup_app_menus(
             }
         }
     }
+    route_edit_history(app, find("Edit")?)?;
     app.manage(AppMenuActions(std::sync::Mutex::new(actions)));
+    Ok(())
+}
+
+/// (native item label, action, accelerator) for the Edit items the renderer runs itself.
+#[cfg(target_os = "macos")]
+const EDIT_HISTORY: &[(&str, &str, &str)] = &[
+    ("Undo", "edit-undo", "CmdOrCtrl+Z"),
+    ("Redo", "edit-redo", "CmdOrCtrl+Shift+Z"),
+];
+
+/// The main webview is a child webview (the `unstable` feature), and wry returns NO from its
+/// performKeyEquivalent for those (tauri#9426): the page never sees Cmd+Z, the native Undo sends
+/// `undo:` instead, and that does nothing outside a text field. These items send the action to
+/// the renderer, which undoes text natively or replays the key for the page's own history.
+#[cfg(target_os = "macos")]
+fn route_edit_history(
+    app: &tauri::App,
+    edit: Option<(usize, tauri::menu::Submenu<tauri::Wry>)>,
+) -> tauri::Result<()> {
+    use tauri::menu::MenuItemBuilder;
+
+    let Some((_, edit)) = edit else {
+        return Ok(());
+    };
+    for (index, item) in edit.items()?.into_iter().enumerate() {
+        let Some(native) = item.as_predefined_menuitem() else {
+            continue;
+        };
+        let label = native.text()?;
+        let Some((_, action, accelerator)) = EDIT_HISTORY.iter().find(|row| row.0 == label) else {
+            continue;
+        };
+        let routed = MenuItemBuilder::with_id(format!("{ID_PREFIX}{action}"), &label)
+            .accelerator(*accelerator)
+            .build(app)?;
+        edit.remove(&item)?;
+        edit.insert(&routed, index)?;
+    }
     Ok(())
 }
 

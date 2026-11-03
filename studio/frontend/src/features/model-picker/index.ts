@@ -30,6 +30,7 @@ export type { ModelPickTarget } from "./components/model-selector/types";
 export {
   fetchModelOverrides,
   modelOverrideKey,
+  onModelOverrideWrite,
   putModelOverride,
   syncModelOverride,
   type ApiModelOverride,

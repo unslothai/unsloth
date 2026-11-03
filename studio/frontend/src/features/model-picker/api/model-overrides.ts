@@ -545,6 +545,15 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
 // One in-flight write per model, so writes commit in issue order: otherwise the older
 // response can land last and resurrect the entry the newer one replaced. Models overlap.
 const writesByKey = new Map<string, Promise<ModelOverrideWriteResult>>();
+const writeListeners = new Set<() => void>();
+
+/** Called after each saved-settings write settles, so a cached read can be dropped. */
+export function onModelOverrideWrite(listener: () => void): () => void {
+  writeListeners.add(listener);
+  return () => {
+    writeListeners.delete(listener);
+  };
+}
 
 export interface ModelOverrideWriteResult {
   overrides: ApiModelOverrides;
@@ -591,6 +600,7 @@ export async function putModelOverride(
     if (writesByKey.get(key) === write) {
       writesByKey.delete(key);
     }
+    for (const listener of writeListeners) listener();
   }
 }
 

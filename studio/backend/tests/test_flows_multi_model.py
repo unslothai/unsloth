@@ -58,6 +58,7 @@ def _fakes(
     monkeypatch.setattr(_common, "_caller", lambda ctx: None)
     monkeypatch.setattr(_common, "_LOADED_VARIANT", {})
     monkeypatch.setattr(_common, "_LOADED_OPTIONS", {})
+    monkeypatch.setattr(_common, "_ALONGSIDE_OPTIONS", {})
     return loads, state
 
 
@@ -115,6 +116,19 @@ def test_a_second_model_loads_alongside_and_requests_name_it(monkeypatch, mode):
     again = _Ctx()
     asyncio.run(_common.ensure_model(again, "chat", {"repo": SMALL, "variant": "Q4_K_M"}))
     assert len(loads) == 1 and asyncio.run(_body(again))["model"] == f"{SMALL}:Q4_K_M"
+
+
+def test_a_model_loaded_alongside_is_recorded_for_unload_after_run(monkeypatch):
+    _fakes(monkeypatch, "always", [BIG])
+    noted = []
+    ctx = _Ctx()
+    ctx.note_loaded = lambda slot, repo: noted.append((slot, repo))
+    asyncio.run(_common.ensure_model(ctx, "chat", {"repo": SMALL}))
+    assert noted == [("llm", SMALL)]
+    kept = _Ctx()
+    kept.note_loaded = lambda slot, repo: noted.append((slot, repo))
+    asyncio.run(_common.ensure_model(kept, "chat", {"repo": SMALL}))
+    assert noted == [("llm", SMALL)]
 
 
 def test_two_quantizations_of_one_model_are_refused(monkeypatch):
@@ -211,3 +225,61 @@ def test_a_call_queued_behind_an_alongside_load_counts_against_the_new_model():
         assert inside == ["first", "second"]
 
     asyncio.run(go())
+
+
+def test_a_card_with_load_settings_still_loads_alongside(monkeypatch):
+    loads, state = _fakes(monkeypatch, "fit", [BIG])
+    ctx = _Ctx()
+    options = {"max_seq_length": 8192, "cache_type_kv": "q8_0"}
+    asyncio.run(_common.ensure_model(ctx, "chat", {"repo": SMALL}, options = options))
+    assert len(loads) == 1 and loads[0]["alongside"] is True
+    assert loads[0]["max_seq_length"] == 8192 and loads[0]["extra_body"] == {
+        "cache_type_kv": "q8_0"
+    }
+    assert state["serving"] == [BIG, SMALL]
+
+
+def test_a_kept_model_is_reused_only_with_the_settings_it_was_loaded_with(monkeypatch):
+    loads, state = _fakes(monkeypatch, "fit", [BIG])
+    options = {"max_seq_length": 8192, "cache_type_kv": "q8_0"}
+    asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}, options = options))
+    asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}, options = dict(options)))
+    assert len(loads) == 1
+    for other in ({"max_seq_length": 32768}, None):
+        with pytest.raises(FlowNodeError, match = "other load settings"):
+            asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}, options = other))
+    assert len(loads) == 1
+    # Kept by Chat rather than a flow: its settings are unknown, so only a card without its own may bind.
+    state["serving"] = [BIG, "unsloth/gemma-3-4b-it-GGUF"]
+    asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": "unsloth/gemma-3-4b-it-GGUF"}))
+    state["serving"] = [BIG, SMALL]
+    asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}))
+    with pytest.raises(FlowNodeError, match = "other load settings"):
+        asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}, options = options))
+    assert len(loads) == 1
+
+
+def test_unload_after_run_matches_a_gguf_listed_with_its_variant(monkeypatch):
+    from core.flows import engine
+    from studio_mcp import loading
+
+    unloaded = []
+
+    async def resident(_caller):
+        return {"llm": [BIG, f"{SMALL}:Q4_K_M"]}
+
+    async def unload(_caller, name):
+        unloaded.append(name)
+
+    monkeypatch.setattr(loading, "resident_slots", resident)
+    monkeypatch.setattr(loading, "unload_llm", unload)
+
+    class _Rs:
+        caller = object()
+        initial_resident = {"llm": [BIG]}
+
+        def emit(self, *a, **k):
+            pass
+
+    asyncio.run(engine.FlowEngine._unload_loaded(None, _Rs(), {SMALL.lower(): "n1"}))
+    assert unloaded == [f"{SMALL}:Q4_K_M"]

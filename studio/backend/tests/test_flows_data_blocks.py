@@ -287,3 +287,40 @@ def test_indexed_documents_keep_their_names_with_the_sniffed_extension():
     assert name_for("../../etc/notes.exe") == "notes.pdf"
     assert name_for("<>:.pdf") == "document.pdf"
     assert name_for(None) == "document.pdf"
+
+
+def test_parallel_adds_to_a_new_knowledge_base_create_it_once(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(knowledge, "POLL_S", 0)
+    kbs = []
+
+    class Racing(_Rag):
+        async def call(
+            self,
+            method,
+            path,
+            json = None,
+            files = None,
+            **kw,
+        ):
+            if path == "/api/rag/knowledge-bases" and method == "GET":
+                listed = {"knowledgeBases": list(kbs), "ragAvailable": True}
+                await asyncio.sleep(0.01)
+                return listed
+            if path == "/api/rag/knowledge-bases":
+                kbs.append({"id": f"kb{len(kbs) + 1}", "name": json["name"]})
+                return dict(kbs[-1])
+            return await super().call(method, path, json = json, files = files, **kw)
+
+    async def both():
+        ctxs = [
+            Racing(
+                "kb.add", params = {"knowledge_base": "Shared Docs"}, inputs = {"file": _pdf_value()}
+            )
+            for _ in range(2)
+        ]
+        return await asyncio.gather(*(knowledge.add_to_knowledge_base(c) for c in ctxs))
+
+    asyncio.run(both())
+    assert [kb["name"] for kb in kbs] == ["Shared Docs"]

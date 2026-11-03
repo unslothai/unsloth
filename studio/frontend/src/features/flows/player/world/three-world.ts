@@ -41,6 +41,7 @@ import {
   advance,
   bodyHeight,
   buildActionWorld,
+  capsuleOverlapsProp,
   circleHitsBox,
   combatOf,
   enemiesAct,
@@ -1742,6 +1743,12 @@ export function createWorld3d(
     },
     playerTile() {
       return tileOf(me);
+    },
+    blocksProp(p) {
+      return (
+        action &&
+        capsuleOverlapsProp(p, (x, y) => heightAt(terrain, x, y), me.x, me.y)
+      );
     },
     openEditor() {
       if (editor) return Promise.resolve(editor);
