@@ -19,6 +19,7 @@ type Size = { width: number; height: number };
 type Rect = [number, number, number, number];
 
 export const GROUP_BLOCK = "group:";
+const NOTE_BLOCK = "note:";
 const DEFAULT_CARD: Size = { width: 260, height: 140 };
 const REROUTE_BOX: Size = { width: 28, height: 16 };
 
@@ -120,7 +121,8 @@ export function tidyPatch(
     const d: [number, number] = [at[0] - rect[0], at[1] - rect[1]];
     patch.groups[group] = [at[0], at[1], rect[2], rect[3]];
     shift.set(GROUP_BLOCK + group, d);
-    for (const id of ids) shift.set(id, d);
+    // A block placed on its own (a closed super card's) keeps that place.
+    for (const id of ids) if (!result[id]) shift.set(id, d);
   }
   for (const [id, d] of shift) {
     if (id.startsWith(GROUP_BLOCK)) continue;
@@ -157,7 +159,8 @@ export function tidyPatch(
   }
   for (const id of graph.noteOrder) {
     const rect = graph.notes[id].rect;
-    const d = carry(rect);
+    const at = result[NOTE_BLOCK + id];
+    const d = at ? [at[0] - rect[0], at[1] - rect[1]] : carry(rect);
     if (d) patch.notes[id] = [rect[0] + d[0], rect[1] + d[1], rect[2], rect[3]];
   }
 

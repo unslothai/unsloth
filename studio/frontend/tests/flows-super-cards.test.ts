@@ -555,3 +555,48 @@ test("copy and duplicate take the blocks inside a selected closed card", () => {
   const shortcuts = readFileSync(new URL("../src/features/flows/editor/use-editor-shortcuts.ts", import.meta.url), "utf8");
   assert.match(shortcuts, /const fragment = copySelection\(\);\s*if \(fragment\) \{[^}]*removeElements\(\{ nodes: fragment\.nodes\.map\(\(n\) => n\.id\) \}\)/);
 });
+
+test("a block added where a folded frame sits stays out of it", () => {
+  useDocStore.getState().load(comic());
+  select("tpl", "img");
+  combineSelection();
+  const doc0 = useDocStore.getState();
+  doc0.addNode({ ...node("new", "output.preview", [400, 100]) });
+  doc0.insertFragment({ nodes: [node("pasted", "output.preview", [420, 120])], edges: [] });
+  const { graph } = useDocStore.getState();
+  assert.equal(graph.nodes.new.group ?? null, null);
+  assert.equal(graph.nodes.pasted.group ?? null, null);
+  // An open frame still takes what lands in it.
+  setSuperCardOpen("sc1", true);
+  useDocStore.getState().addNode({ ...node("inside", "output.preview", [400, 100]) });
+  assert.equal(useDocStore.getState().graph.nodes.inside.group, "g");
+  // Dropping a dragged block there skips the folded frame too.
+  const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
+  assert.match(canvas, /if \(folded\.has\(groupId\) && graph\.nodes\[id\]\.group !== groupId\) continue;/);
+});
+
+test("tidy up keeps a card's blocks together when the card holds part of a group", async () => {
+  const { tidyRequest, tidyPatch } = await import("../src/features/flows/editor/tidy.ts");
+  const d = comic();
+  d.notes = [{ id: "n1", text: "by the template", rect: [320, 100, 100, 60] }];
+  useDocStore.getState().load(d);
+  // tpl is in group g with img; raw is outside it.
+  select("tpl", "raw");
+  combineSelection();
+  const state = useDocStore.getState();
+  const ctx = {
+    graph: state.graph,
+    size: () => ({ width: 260, height: 140 }),
+    portY: () => undefined,
+    wireStyle: "curved" as const,
+  };
+  const folded = foldLayout(tidyRequest(ctx), state, () => undefined);
+  const result = folded.unfold({ "super:sc1": [1000, 500], "group:g": [0, 0], prompt: [0, 0], view: [0, 0] });
+  const patch = tidyPatch(ctx, result);
+  const [tx, ty] = patch.nodes.tpl.pos;
+  const [rx, ry] = patch.nodes.raw.pos;
+  assert.deepEqual([rx - tx, ry - ty], [900 - 300, 300 - 40]);
+  // A note folded into the card moves with the card, not with the nearest loose block.
+  const [nx, ny] = patch.notes.n1;
+  assert.deepEqual([nx - tx, ny - ty], [320 - 300, 100 - 40]);
+});

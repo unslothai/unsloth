@@ -69,6 +69,7 @@ import {
   isApplePlatform,
   multiSelectKeys,
   SUPER_PREFIX,
+  foldedGroups,
   type SuperCardData,
   boxCovers,
   superCardDragMembers,
@@ -200,13 +201,16 @@ function groupMembership(
   positions: Record<string, [number, number]>,
   sizes: Map<string, Size>,
 ): Record<string, string | null> {
-  const { graph } = useDocStore.getState();
+  const { graph, meta } = useDocStore.getState();
+  // A frame folded into a closed card is hidden, so a block dropped where it was stays out of it.
+  const folded = foldedGroups(meta.editor, graph);
   const membership: Record<string, string | null> = {};
   for (const [id, pos] of Object.entries(positions)) {
     if (!graph.nodes[id]) continue;
     const width = sizes.get(id)?.width ?? 260;
     let best: { id: string; area: number } | null = null;
     for (const groupId of graph.groupOrder) {
+      if (folded.has(groupId) && graph.nodes[id].group !== groupId) continue;
       const key = GROUP_PREFIX + groupId;
       const g = graph.groups[groupId];
       const rect: [number, number, number, number] = positions[key]

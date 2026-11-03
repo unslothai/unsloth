@@ -12,18 +12,24 @@ import {
 } from "./derive-rf";
 import type { LayoutRequest, LayoutResult } from "./layout-core";
 import type { PortRowSpec } from "./node-card";
+import {
+  readSuperCards,
+  SUPER_CARDS_KEY,
+  type SuperCard,
+  superCardTitle,
+} from "./super-card-records";
+
+export {
+  foldedGroups,
+  readSuperCards,
+  SUPER_CARDS_KEY,
+  type SuperCard,
+  superCardTitle,
+} from "./super-card-records";
 
 // A super card is a view over the flat graph: its blocks stay real nodes with their own
 // positions, so the document the engine compiles is the same combined, open or ungrouped.
-export const SUPER_CARDS_KEY = "super_cards";
 export const SUPER_PREFIX = "super:";
-
-export interface SuperCard {
-  id: string;
-  title: string;
-  members: string[];
-  open?: boolean;
-}
 
 export interface SuperCardData {
   cardId: string;
@@ -41,47 +47,6 @@ export interface SuperCardData {
 type Editor = Record<string, unknown> | undefined;
 
 const DEFAULT_SIZE = { width: 260, height: 140 };
-
-/** Every saved card whose blocks still exist; a block belongs to one card (one nesting level). */
-export function readSuperCards(
-  editor: Editor,
-  graph: Pick<DocGraph, "nodes" | "nodeOrder" | "groups">,
-): SuperCard[] {
-  const raw = editor?.[SUPER_CARDS_KEY];
-  if (!Array.isArray(raw)) return [];
-  const taken = new Set<string>();
-  const cards: SuperCard[] = [];
-  for (const item of raw) {
-    let card: SuperCard | null = null;
-    if (typeof item === "string" && graph.groups[item]) {
-      // Earlier builds of this branch saved a collapsed group's id.
-      card = {
-        id: item,
-        title: superCardTitle(graph.groups[item]),
-        members: graph.nodeOrder.filter((id) => graph.nodes[id].group === item),
-      };
-    } else if (item && typeof item === "object") {
-      const r = item as Record<string, unknown>;
-      if (typeof r.id === "string" && Array.isArray(r.members)) {
-        card = {
-          id: r.id,
-          title:
-            typeof r.title === "string" && r.title ? r.title : "Super card",
-          members: r.members.filter((m): m is string => typeof m === "string"),
-          ...(r.open === true ? { open: true } : {}),
-        };
-      }
-    }
-    if (!card || cards.some((c) => c.id === card.id)) continue;
-    const members = card.members.filter(
-      (id) => graph.nodes[id] && !taken.has(id),
-    );
-    if (!members.length) continue;
-    for (const id of members) taken.add(id);
-    cards.push({ ...card, members });
-  }
-  return cards;
-}
 
 /** The selection with each closed super card replaced by the blocks in it, for copy and duplicate. */
 export function selectedBlocks(
@@ -104,13 +69,6 @@ export function writeSuperCards(
 ): Record<string, unknown> {
   const { [SUPER_CARDS_KEY]: _old, ...rest } = editor ?? {};
   return cards.length ? { ...rest, [SUPER_CARDS_KEY]: cards } : rest;
-}
-
-export function superCardTitle(group: {
-  label: string;
-  kind?: unknown;
-}): string {
-  return group.kind === "recipe" ? `Recipe: ${group.label}` : group.label;
 }
 
 /** Selected blocks not already in a card, plus closed cards, which a new card absorbs. */

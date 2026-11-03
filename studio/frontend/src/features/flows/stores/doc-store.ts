@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { foldedGroups } from "../editor/super-card-records";
 import {
   FLOW_FORMAT,
   FLOW_FORMAT_VERSION,
@@ -336,7 +337,10 @@ export const useDocStore = create<DocState>((set, get) => {
         withGraph(s, {
           nodes: {
             ...s.graph.nodes,
-            [node.id]: { ...node, group: node.group ?? frameAt(s.graph, node.pos) },
+            [node.id]: {
+              ...node,
+              group: node.group ?? frameAt(s.graph, node.pos, foldedGroups(s.meta.editor, s.graph)),
+            },
           },
           nodeOrder: [...s.graph.nodeOrder, node.id],
         }),
@@ -701,9 +705,10 @@ export const useDocStore = create<DocState>((set, get) => {
       commit((s) => {
         const nodes = { ...s.graph.nodes };
         const nodeOrder = [...s.graph.nodeOrder];
+        const folded = foldedGroups(s.meta.editor, s.graph);
         for (const node of fragment.nodes) {
           if (nodes[node.id]) continue;
-          nodes[node.id] = { ...node, group: frameAt(s.graph, node.pos) };
+          nodes[node.id] = { ...node, group: frameAt(s.graph, node.pos, folded) };
           nodeOrder.push(node.id);
         }
         const edges = { ...s.graph.edges };
@@ -880,10 +885,15 @@ function removeReroutes(
   };
 }
 
-function frameAt(graph: DocGraph, pos: [number, number]): string | null {
+function frameAt(
+  graph: DocGraph,
+  pos: [number, number],
+  skip: ReadonlySet<string> = new Set(),
+): string | null {
   const [x, y] = [pos[0] + 130, pos[1] + 16];
   let best: { id: string; area: number } | null = null;
   for (const id of graph.groupOrder) {
+    if (skip.has(id)) continue;
     const [gx, gy, gw, gh] = graph.groups[id].rect;
     if (x < gx || y < gy || x > gx + gw || y > gy + gh) continue;
     if (!best || gw * gh < best.area) best = { id, area: gw * gh };
