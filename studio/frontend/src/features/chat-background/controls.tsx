@@ -126,6 +126,7 @@ export function GlassControls() {
 	return (
 		<SettingsSection
 			title={t("chatBackground.glassTheme")}
+			badge={<Badge variant="accent">{t("shell.navigation.newBadge")}</Badge>}
 			action={
 				<Switch
 					aria-label={t("chatBackground.glassTheme")}
@@ -225,7 +226,7 @@ function LensRow() {
 	);
 }
 const SLIDERS: {
-	key: "visibility" | "conversation" | "blur" | "zoom" | "outline";
+	key: "visibility" | "conversation" | "blur" | "zoom";
 	label: TranslationKey;
 	min: number;
 	max: number;
@@ -235,7 +236,6 @@ const SLIDERS: {
 	{ key: "conversation", label: "chatBackground.conversationVisibility", min: 0, max: 100, unit: "%" },
 	{ key: "blur", label: "chatBackground.blur", min: 0, max: 20, unit: "px" },
 	{ key: "zoom", label: "chatBackground.zoom", min: 100, max: 300, unit: "%" },
-	{ key: "outline", label: "chatBackground.outline", min: 0, max: 100, unit: "%" },
 ];
 const errors = {
 	storage: "chatBackground.storageError",

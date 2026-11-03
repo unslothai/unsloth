@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const nl = {
+  turns: {
+    label: "Beurt {number}",
+    bookmarkedLabel: "Beurt {number}, met bladwijzer",
+    bookmark: "Bladwijzer voor beurt",
+    removeBookmark: "Bladwijzer verwijderen",
+    navigator: "Beurten",
+  },
   chatBackground: {
     noBackground: "Geen achtergrond",
     sizing: "Afbeeldingsgrootte",
@@ -734,6 +741,8 @@ export const nl = {
     plainText: "Invoerveld met platte tekst",
     plainTextDescription:
       "Behoud code, Markdown en links als letterlijke tekst. Schakel uit om een opgemaakt voorbeeld te tonen.",
+    richPaste: "Opgemaakte tekst plakken",
+    richPasteDescription: "Plakt links, tabellen en opmaak als Markdown. {shortcut} plakt platte tekst. Volledige rich-text-editor volgt binnenkort.",
     showContext: "Gebruik van contextvenster",
     sendShortcut: "Sneltoets voor versturen",
     sendMultiline: "{mod} + Enter voor prompts met meerdere regels",
@@ -1169,6 +1178,7 @@ export const nl = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Stel het wachtwoord van de installatie-eigenaar in voordat je een ander account toevoegt. Je gebruikt het om in te loggen zodra deze installatie meerdere accounts heeft.",
       signsInAs: "Logt in als {username}",
       signsInAsOwner: "Logt in als {alias} of {username}",
       signInName: "Je inlognaam",
@@ -2197,6 +2207,14 @@ export const nl = {
           full: "Voert elke toolaanroep uit zonder te vragen en schakelt de codesandbox uit, zodat Python- en terminalcode elk bestand kunnen lezen en wijzigen waartoe je account toegang heeft.",
         },
       },
+      display: {
+        title: "Weergave",
+        timeFormat: "Tijdnotatie",
+        timeFormatDescription: "Toon tijden in 12-uurs- of 24-uursnotatie.",
+        timeFormatSystem: "Systeemstandaard",
+        timeFormat12: "12-uurs",
+        timeFormat24: "24-uurs",
+      },
       notifications: {
         sectionTitle: "Meldingen",
         showLoadedModels: "Kaart met geladen modellen",
@@ -2567,6 +2585,9 @@ export const nl = {
           "Kleuren die in heel Unsloth worden gebruikt, in de lichte en donkere modus.",
         standard: "Standaard",
         moreThemes: "Meer thema's",
+      },
+      composer: {
+        title: "Invoerveld",
       },
       code: {
         title: "Code",
@@ -3217,6 +3238,8 @@ export const nl = {
         "Meldingen zijn geblokkeerd. Sta ze toe voor Unsloth in je browser- of systeeminstellingen en probeer het opnieuw.",
       replyNotificationKeywords:
         "melden melding waarschuwing klaar voltooid gereed antwoord reactie achtergrond geminimaliseerd bureaublad geluid notify notification alert done reply",
+      showLinkPreviews: "Linkvoorbeelden",
+      showLinkPreviewsDescription: "Toon voorbeelden wanneer je de muisaanwijzer boven bronlinks houdt.",
       showResponseModel: "Antwoordmodel",
       showResponseModelDescription:
         "Modelgegevens tonen in antwoorden van de assistent.",
@@ -3233,6 +3256,8 @@ export const nl = {
       inlineEditResponse: "Antwoord bewerken bij antwoorden",
       inlineEditResponseDescription:
         "Antwoord bewerken bij elk antwoord tonen, in plaats van in het menu Meer.",
+      turnNavigation: "Beurtnavigatie",
+      turnNavigationDescription: "Toont je berichten als een balk aan de linkerrand van lange chats. Wijs een beurt aan voor een voorbeeld, klik om erheen te gaan en zet bladwijzers om beurten terug te vinden.",
       composerAtBottom: "Invoerveld onderaan",
       composerAtBottomDescription:
         "Nieuwe chats starten met het invoerveld onderaan de pagina in plaats van in het midden.",
@@ -3906,8 +3931,6 @@ export const nl = {
         repoCheckoutFallback:
           "Als je de repository-checkout nog hebt, voer je daaruit het lokale installatieprogramma uit:",
         restartAfterUpdate: "Start Unsloth opnieuw na het bijwerken.",
-        desktopManaged:
-          "De desktop-app controleert automatisch op nieuwe app-versies. Je kunt hier ook op elk moment controleren of bijwerken.",
         desktopReady: "Updates van de desktop-app",
         desktopReadyDescription:
           "Controleren of er een nieuwere versie van de desktop-app beschikbaar is.",
@@ -5902,5 +5925,60 @@ export const nl = {
     later: "Later",
     update: "Bijwerken",
     undo: "Ongedaan maken",
+  },
+  generationStats: {
+    working: "Bezig...",
+    processingPrompt: "Prompt verwerken {percent}%",
+    timeLeft: "nog {eta}",
+    tokensOne: "{count} token",
+    tokens: "{count} tokens",
+    tokensOf: "{done} / {total} tokens",
+    draftAccepted: "draft {accepted}/{drafted} geaccepteerd ({percent}%)",
+    timing: {
+      trigger: "Berichttiming",
+      firstToken: "Eerste token",
+      speedInStep: "Snelheid (binnen stap)",
+      effective: "Effectief",
+      output: "Uitvoer",
+      denoising: "Denoising",
+      stepsOne: "{count} stap",
+      steps: "{count} stappen",
+      blocksOne: "{count} blok",
+      blocks: "{count} blokken",
+      canvas: "Canvas",
+      generation: "Generatie",
+      answerTokens: "Antwoordtokens",
+      prompt: "Prompt",
+      total: "Totaal",
+      chunks: "Chunks",
+      promptEval: "Prompt-evaluatie",
+      promptSpeed: "Promptsnelheid",
+      speed: "Snelheid",
+      tokens: "Tokens",
+      draftAccepted: "Draft geaccepteerd",
+      denoisingSteps: "Denoisingstappen",
+      blocksLabel: "Blokken",
+      cacheHits: "Cachetreffers",
+      cacheWrites: "Cacheschrijfacties",
+      stopReason: "Stopreden",
+      stoppedByYou: "Door jou gestopt",
+      endOfTurn: "Einde van beurt",
+      lengthLimit: "Lengtelimiet",
+      toolCall: "Toolaanroep",
+      contentFilter: "Inhoudsfilter",
+    },
+    placement: {
+      title: "Plaatsing van gewichten",
+      allOnCpu: "Alle {total} lagen op de CPU",
+      split: "{gpu} van {total} lagen op de GPU, {cpu} op de CPU",
+      allOnGpu: "Alle {total} lagen op de GPU",
+      expertCache: "Alle {total} lagen op de GPU, alle experts in RAM ({amount} expertcache op de GPU)",
+      expertSpillOne: "Alle {total} lagen op de GPU, expertgewichten van {count} laag in RAM",
+      expertSpill: "Alle {total} lagen op de GPU, expertgewichten van {count} lagen in RAM",
+      inUnifiedMemory: "{amount} in unified memory",
+      inSharedMemory: "{amount} in gedeeld geheugen",
+      inVram: "{amount} in VRAM",
+      inRam: "{amount} in RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

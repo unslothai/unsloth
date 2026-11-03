@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
@@ -741,6 +742,7 @@ export type CollectionRowLayout = "own" | "files" | { showLocation: boolean };
 
 function FileColumns({ modified }: { modified: number }) {
   const locale = useLocale();
+  useTimeFormat();
   return (
     <>
       <span className={cn(FILE_LIST_COLUMNS.modified, FILE_LIST_COLUMNS.cell)}>
@@ -766,10 +768,10 @@ function groupedTime(
 ): string {
   const date = new Date(ts);
   if (bucket === "today" || bucket === "yesterday") {
-    return date.toLocaleTimeString(locale, {
-      hour: "numeric",
-      minute: "2-digit",
-    });
+    return date.toLocaleTimeString(
+      locale,
+      withTimeFormat({ hour: "numeric", minute: "2-digit" }, locale),
+    );
   }
   if (bucket === "week") {
     return date.toLocaleDateString(locale, { weekday: "long" });
@@ -1070,6 +1072,7 @@ export function ChatRow({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const actions = useChatsActions();
   const selected = actions.selection.has(chat.id);
   const model = modelLabel(chat, actions.models);
@@ -1165,6 +1168,7 @@ export function ChatCard({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const actions = useChatsActions();
   const selected = actions.selection.has(chat.id);
   const selecting = actions.selection.size > 0;
@@ -1417,6 +1421,7 @@ export function ProjectCard({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const actions = useChatsActions();
   const pinned = actions.pinnedProjects.has(project.id);
   return (
@@ -1462,6 +1467,7 @@ export function ProjectRow({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const actions = useChatsActions();
   const pinned = actions.pinnedProjects.has(project.id);
   const sectionId = actions.projectSectionOf.get(project.id);
@@ -1647,6 +1653,7 @@ export function SectionCard({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const actions = useChatsActions();
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: the name button is the keyboard target
@@ -1690,6 +1697,7 @@ export function SectionRow({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const actions = useChatsActions();
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: the name button is the keyboard target
@@ -1779,6 +1787,7 @@ function FavoriteTile({
   menu: ReactNode;
 }) {
   const locale = useLocale();
+  useTimeFormat();
   const showTime = useLibrarySettingsStore((s) => s.showCardDates);
   return (
     <div className="group/library-card group/chat relative">

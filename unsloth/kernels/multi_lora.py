@@ -1024,7 +1024,11 @@ class MultiLoraExperts(nn.Module):
         return out
 
     def _choose_mode(self, hidden_states: torch.Tensor, args, groups) -> None:
-        adapter, rows = next(((u, rows) for u, rows in groups if u is not None), (None, None))
+        adapter, rows = None, None
+        for u, candidate_rows in groups:
+            if u is not None:
+                adapter, rows = u, candidate_rows
+                break
         if adapter is None:
             return
         # Probes run without autograd, so a checkpointed forward and its recompute run the same ops.
@@ -1034,7 +1038,8 @@ class MultiLoraExperts(nn.Module):
             )
         self.peft_mode = "fold" if probe is None else "stash"
         self.mode = self.peft_mode
-        if _grouped_disabled():
+        # Cold traces cannot run the data-dependent grouped parity probe.
+        if torch.compiler.is_compiling() or _grouped_disabled():
             return
         try:
             reason = self._grouped_unsupported(hidden_states, args) or self._grouped_parity(
