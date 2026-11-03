@@ -470,9 +470,7 @@ def test_concurrent_run_requests_get_one_slot(monkeypatch):
         lambda *a, **k: {"model": "stub", "model_args": {}, "tasks": ["arc_easy"]},
     )
     monkeypatch.setattr(benchmark_routes, "parse_run_summary", lambda *a, **k: None)
-    req = benchmark_routes.BenchmarkRunRequest(
-        checkpoint_path = "m.gguf", task = "arc_easy"
-    )
+    req = benchmark_routes.BenchmarkRunRequest(checkpoint_path = "m.gguf", task = "arc_easy")
     http = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(server_port = 1)))
 
     async def main():
@@ -695,9 +693,7 @@ def test_an_eval_and_a_sweep_never_share_the_server(monkeypatch):
         lambda *a, **k: {"model": "stub", "model_args": {}, "tasks": ["arc_easy"]},
     )
     monkeypatch.setattr(benchmark_routes, "parse_run_summary", lambda *a, **k: None)
-    req = benchmark_routes.BenchmarkRunRequest(
-        checkpoint_path = "m.gguf", task = "arc_easy"
-    )
+    req = benchmark_routes.BenchmarkRunRequest(checkpoint_path = "m.gguf", task = "arc_easy")
     http = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(server_port = 1)))
 
     app = FastAPI()
@@ -796,9 +792,7 @@ def test_a_stopped_eval_keeps_the_lease_until_its_worker_returns(monkeypatch):
         "resolve_model_details",
         lambda *a, **k: {"model": "stub", "model_args": {}, "tasks": ["arc_easy"]},
     )
-    req = benchmark_routes.BenchmarkRunRequest(
-        checkpoint_path = "m.gguf", task = "arc_easy"
-    )
+    req = benchmark_routes.BenchmarkRunRequest(checkpoint_path = "m.gguf", task = "arc_easy")
     http = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     route = threading.Thread(
         target = lambda: asyncio.run(benchmark_routes.run_benchmark(req, http, current_subject = "u"))

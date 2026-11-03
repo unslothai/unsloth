@@ -340,9 +340,7 @@ class BenchmarkTrafficMiddleware:
                     refused = SWEEP_BUSY_DETAIL
                 if refused:
                     from starlette.responses import JSONResponse
-                    await JSONResponse({"detail": refused}, status_code = 409)(
-                        scope, receive, send
-                    )
+                    await JSONResponse({"detail": refused}, status_code = 409)(scope, receive, send)
                     return
                 # A load still running after its client left (inference's padded answer) keeps
                 # counting until it ends, not until the response does.
