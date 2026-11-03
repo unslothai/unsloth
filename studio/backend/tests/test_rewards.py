@@ -271,7 +271,7 @@ def test_try_it_scores_the_prefill_of_an_assistant_ended_prompt():
     spec["rule"]["score"] = {"match": 1.0, "miss": -1.0}
     turns = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "It is "}]
     row = {"messages": turns, "answer": "It is 72"}
-    [result] = rewards.preview_scores([spec], "72", row, {"messages": "prompt"})
+    [result], _ = rewards.preview_scores([spec], "72", row, {"messages": "prompt"})
     assert result["score"] == 1.0
 
 
