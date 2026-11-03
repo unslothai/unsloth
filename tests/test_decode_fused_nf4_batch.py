@@ -42,7 +42,7 @@ _CHECKS = textwrap.dedent(
 
     def census():
         return {name: sum(len(v[0]) if isinstance(v, (tuple, list)) else len(v)
-                          for v in getattr(getattr(F, name), "device_caches", {}).values())
+                          for v in getattr(getattr(F, name), "device_caches", getattr(getattr(F, name), "cache", {})).values())
                 for name in names}
 
     def checked(fn):
