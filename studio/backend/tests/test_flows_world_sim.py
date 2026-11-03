@@ -262,6 +262,43 @@ def test_recall_does_not_reuse_vectors_from_another_embedding_model():
     assert picked[0]["id"] == "m1"
 
 
+def test_recall_notices_a_model_swap_when_the_server_echoes_the_alias(monkeypatch):
+    # llama-server answers with the model name it was asked for ("default"), not the loaded model.
+    from core.inference import gpu_arbiter
+
+    world_nodes._VECTORS.clear()
+    spaces = {
+        "old": {"fruit": [1.0, 0.0], "apple": [1.0, 0.0], "pear": [0.0, 1.0]},
+        "new": {"fruit": [1.0, 0.0], "apple": [0.0, 1.0], "pear": [1.0, 0.0]},
+    }
+    active = ["old"]
+    loads = [1]
+    embedded = []
+    monkeypatch.setattr(gpu_arbiter, "load_count", lambda owner = None: loads[0])
+
+    class Echo(SimCtx):
+        async def call(
+            self,
+            method,
+            path,
+            json = None,
+            **kw,
+        ):
+            embedded.append(list(json["input"]))
+            space = spaces[active[0]]
+            data = [{"index": i, "embedding": space[t]} for i, t in enumerate(json["input"])]
+            return {"model": json["model"], "data": data}
+
+    ctx = Echo("world.npc_reply")
+    memory = [_record(0, "apple", 5), _record(1, "pear", 5)]
+    assert run(world_nodes._recall(ctx, memory, "fruit", 9.0, 1))[0]["id"] == "m0"
+    active[0], loads[0] = "new", 2
+    run(world_nodes._recall(ctx, memory, "fruit", 9.0, 1))
+    picked = run(world_nodes._recall(ctx, memory, "fruit", 9.0, 1))
+    assert embedded[-1] == ["fruit", "apple", "pear"]
+    assert picked[0]["id"] == "m1"
+
+
 def test_plan_places_are_restricted():
     world = normalize_world(SIM_RAW, seed = 1)
     seen = {}
