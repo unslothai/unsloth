@@ -176,9 +176,7 @@ function ScoreChip({
   }
   if (value === null) {
     return (
-      <span
-        className={cn(SCORE_CHIP_CLASS, "bg-muted text-muted-foreground")}
-      >
+      <span className={cn(SCORE_CHIP_CLASS, "bg-muted text-muted-foreground")}>
         {t("rl.rewards.scoreNone")}
       </span>
     );
@@ -487,7 +485,11 @@ export function RewardsSection(): ReactElement {
       // No answer role, no answer kwarg in training; with no dataset yet, assume one.
       const row = pythonRewardRow(
         previewRow ?? {},
-        answerColumn || !previewRow ? reference : null,
+        !answerColumn && previewRow
+          ? undefined
+          : referenceEdit === null && mappedAnswer === null
+            ? null
+            : reference,
       );
       const { prompt, systemPrompt } = previewPrompt(
         previewRow,

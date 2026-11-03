@@ -91,14 +91,22 @@ test("a Python reward preview row keeps mapped columns and value types, as GRPO 
 });
 
 test("a prompt-only GRPO dataset gives a Python reward no answer", () => {
-  assert.deepEqual(pythonRewardRow({ prompt: "p", id: 7 }, null), { id: 7 });
+  assert.deepEqual(pythonRewardRow({ prompt: "p", id: 7 }, undefined), {
+    id: 7,
+  });
   assert.deepEqual(
     pythonRewardRow(
       { messages: [], completion: "c", label: true, id: 7 },
-      null,
+      undefined,
     ),
     { id: 7 },
   );
+  // An empty answer cell is still an answer kwarg, as None.
+  assert.deepEqual(pythonRewardRow({ sol: null, id: 7 }, null), {
+    sol: null,
+    id: 7,
+    answer: null,
+  });
 });
 
 test("GRPO reward reference columns must come from the dataset", async () => {

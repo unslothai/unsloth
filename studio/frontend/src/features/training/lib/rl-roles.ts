@@ -158,9 +158,10 @@ export function alpacaPromptCell(
   return cell;
 }
 
+/** ``answer`` undefined: no answer role, so no answer kwarg; null is an empty cell, kept as null. */
 export function pythonRewardRow(
   row: Record<string, unknown>,
-  answer: string | null,
+  answer: string | null | undefined,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [column, value] of Object.entries(row)) {
@@ -168,7 +169,7 @@ export function pythonRewardRow(
       out[column] = value;
     }
   }
-  if (answer !== null) {
+  if (answer !== undefined) {
     out.answer = answer;
   }
   return out;
