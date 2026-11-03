@@ -27,3 +27,14 @@ test("a filter or test with the column's name is left alone", () => {
     "{{ word_count }} {{ response | length }} {% if x is length %}{% endif %} {{ word_count + 1 }}",
   );
 });
+
+test("a keyword argument with the column's name is left alone", () => {
+  assert.equal(
+    replaceRef(
+      "{{ x | truncate(length=10) }} {{ f(length = 2) }} {% if length == 3 %}{% endif %}",
+      "length",
+      "word_count",
+    ),
+    "{{ x | truncate(length=10) }} {{ f(length = 2) }} {% if word_count == 3 %}{% endif %}",
+  );
+});

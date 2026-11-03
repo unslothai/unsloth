@@ -19,7 +19,7 @@ class RecipeCompileError(ValueError):
     pass
 
 
-def compile_recipe(graph: dict) -> dict:
+def compile_recipe(graph: dict, seed_wired: bool = False) -> dict:
     """`{recipe, run}` for a recipe graph; raises RecipeCompileError on a broken graph."""
     if not isinstance(graph, dict) or graph.get("kind") != "recipe_graph":
         raise RecipeCompileError("Not a recipe graph")
@@ -54,9 +54,9 @@ def compile_recipe(graph: dict) -> dict:
                 f"{column['name']} reads {off[0]}, which is disabled. Enable it or take the reference out"
             )
     seeded = {n for n in (group.get("ui") or {}).get("seed_columns") or [] if isinstance(n, str)}
-    # The seed's columns are only a preview hint (sharing drops it): with a seed and no hint, the
+    # The seed's columns are only a preview hint (sharing drops it, a wired seed replaces it): then the
     # run's own validation checks a parent that may come from the seed.
-    unknown_seed = bool((group.get("config") or {}).get("seed_config")) and not seeded
+    unknown_seed = seed_wired or (bool((group.get("config") or {}).get("seed_config")) and not seeded)
     for column in columns:
         parent = (column.get("params") or {}).get("category")
         if (

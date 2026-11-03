@@ -171,6 +171,20 @@ def test_a_loop_or_a_lost_group_fails_on_the_generate_step():
     doc["groups"][0]["ui"]["seed_columns"] = ["topic"]
     with pytest.raises(CompileError):
         compile_flow(doc)
+    # A wired seed replaces the group's own, so its columns are not known until the run either.
+    generate = next(n for n in doc["nodes"] if n["type"] == GENERATE_TYPE)
+    doc["nodes"].append({"id": "upstream", "type": "data.recipe", "params": {"recipe_id": "r"}})
+    doc["edges"].append(
+        {
+            "id": "upstream__seed",
+            "source": "upstream",
+            "source_port": "dataset",
+            "target": generate["id"],
+            "target_port": "seed",
+            "kind": "data",
+        }
+    )
+    compile_flow(doc)
     doc = _flow()
     extra = copy.deepcopy(next(n for n in doc["nodes"] if n["type"] == GENERATE_TYPE))
     extra["id"] = "extra_generate"

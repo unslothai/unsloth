@@ -377,7 +377,9 @@ def compile_flow(doc: dict) -> Plan:
             )
             continue
         try:
-            compiled = compile_recipe(recipe_graph(doc, node.get("group") or ""))
+            compiled = compile_recipe(
+                recipe_graph(doc, node.get("group") or ""), seed_wired = "seed" in inputs[nid]
+            )
         except RecipeCompileError as exc:
             errors.append(issue(str(exc), node_id = nid))
             continue

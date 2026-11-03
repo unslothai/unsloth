@@ -51,8 +51,8 @@ import { FlowNodeView } from "./flow-node";
 import { GroupFrame, NoteFrame } from "./frame-nodes";
 import { NODE_DRAG_MIME, addNodeConnected, tryConnect } from "./node-factory";
 import {
-  disconnectColumns,
   recipeConnectionError,
+  removeElementsWithReferences,
 } from "../recipe/recipe-actions";
 import { isRecipeGroup } from "../recipe/recipe-columns";
 import {
@@ -463,10 +463,9 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       nodes: rfNodes,
       edges: rfEdges,
     }: { nodes: RfNode[]; edges: RfEdge[] }) => {
-      const references = new Set(disconnectColumns(rfEdges.map((e) => e.id)));
       const ids = {
         nodes: [] as string[],
-        edges: rfEdges.map((e) => e.id).filter((id) => !references.has(id)),
+        edges: rfEdges.map((e) => e.id),
         groups: [] as string[],
         notes: [] as string[],
       };
@@ -483,7 +482,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
           ids.notes.push(node.id.slice(NOTE_PREFIX.length));
         else ids.nodes.push(node.id);
       }
-      useDocStore.getState().removeElements(ids);
+      removeElementsWithReferences(ids);
       useUiStore.getState().setSelection([], []);
     },
     [],
