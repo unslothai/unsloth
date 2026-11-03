@@ -2682,3 +2682,55 @@ def test_controller_without_the_search_tool_never_loads_mcp_tools(tmp_path, monk
     decision = controller.prepare_call({"function": {"name": "mcp__srv1__ping", "arguments": "{}"}})
     assert decision.action == "disabled"
     assert controller.active_tools() == []
+
+
+@pytest.mark.parametrize("searched", [False, True])
+def test_deferred_mcp_calls_keep_catalog_coercion_on_every_call(monkeypatch, searched):
+    from core.inference import tool_loop_controller as controller_mod
+
+    ping = {
+        "type": "function",
+        "function": {
+            "name": "mcp__srv1__ping",
+            "parameters": {"type": "object", "properties": {"n": {"type": "integer"}}},
+        },
+    }
+    monkeypatch.setattr(
+        controller_mod,
+        "_mcp_tool_spec",
+        lambda name: ping if name == "mcp__srv1__ping" else None,
+    )
+    monkeypatch.setattr(
+        controller_mod, "_mcp_tool_search_specs", lambda arguments: [ping]
+    )
+    search_spec = {
+        "type": "function",
+        "function": {
+            "name": "mcp_tool_search",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    controller = controller_mod.ToolLoopController(tools = [search_spec])
+    before = controller.active_tools()
+    if searched:
+        search = controller.prepare_call(
+            {"function": {"name": "mcp_tool_search", "arguments": '{"query":"ping"}'}}
+        )
+        controller.record_result(search, "Loaded")
+    for number in (3, 4):
+        decision = controller.prepare_call(
+            {
+                "function": {
+                    "name": "mcp__srv1__ping",
+                    "arguments": json.dumps({"n": str(number)}),
+                }
+            }
+        )
+        assert decision.action == "execute"
+        assert decision.arguments == {"n": number}
+        assert controller.active_tools() == before
+    unknown = controller.prepare_call(
+        {"function": {"name": "mcp__srv1__unknown", "arguments": "{}"}}
+    )
+    assert unknown.action == "disabled"
+    assert controller.active_tools() == before

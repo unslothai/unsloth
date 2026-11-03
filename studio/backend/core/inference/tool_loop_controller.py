@@ -1292,7 +1292,7 @@ class ToolLoopController:
         if (
             self._mcp_search
             and tool_name.startswith(MCP_TOOL_PREFIX)
-            and tool_name not in self._allowed_tool_names
+            and tool_name not in {_tool_name_from_schema(tool) for tool in self._tools}
         ):
             extra_schema = _mcp_tool_spec(tool_name)
             if extra_schema is not None:
