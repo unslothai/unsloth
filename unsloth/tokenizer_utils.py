@@ -1128,9 +1128,8 @@ def _fix_pad_token(tokenizer):
 
 
 def _sync_pad_token_id(model, tokenizer):
-    """Point model.config / generation_config pad_token_id at the tokenizer's pad when it has an embedding row. An older
-    unsloth_zoo raised after growing the embedding for a new pad, and FastModel's fallback tokenizer lacks that pad, so
-    the config named an id the returned tokenizer never produces."""
+    """Point config / generation_config pad_token_id at the tokenizer's pad when it has an embedding row (an older
+    unsloth_zoo raised after adding a pad, leaving the config on an id the fallback tokenizer lacks)."""
     if model is None or tokenizer is None:
         return model
     inner = getattr(tokenizer, "tokenizer", None) or tokenizer
