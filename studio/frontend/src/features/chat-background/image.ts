@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { normalizedSize, validUpload } from "./model.ts";
+import { imageHeaderSize, normalizedSize, validUpload } from "./model.ts";
 
 // Some engines quietly fall back to PNG for an unsupported type, so check what came back.
 export function canvasBlob(
@@ -81,7 +81,12 @@ export async function redrawImage(
 }
 
 /** Rejects with Error("file" | "dimensions" | "decode"), the reasons the upload UI shows. */
-export function prepareBackgroundImage(file: Blob): Promise<Blob> {
-	if (!validUpload(file)) return Promise.reject(new Error("file"));
+export async function prepareBackgroundImage(file: Blob): Promise<Blob> {
+	if (!validUpload(file)) throw new Error("file");
+	// Check the size from the header first: decoding a huge image could exhaust memory before
+	// normalizedSize ever sees it.
+	const size = imageHeaderSize(new Uint8Array(await file.arrayBuffer()));
+	if (!size) throw new Error("decode");
+	normalizedSize(...size);
 	return redrawImage(file, { size: normalizedSize });
 }

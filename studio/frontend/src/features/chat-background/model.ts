@@ -201,6 +201,43 @@ export function validUpload(file: Pick<File, "type" | "size">): boolean {
 		["image/jpeg", "image/png", "image/webp"].includes(file.type)
 	);
 }
+/**
+ * Width and height from a PNG, JPEG or WebP header, read without decoding, so an oversized image
+ * can be refused before the browser allocates it. Null when the header can't be read.
+ */
+export function imageHeaderSize(bytes: Uint8Array): [number, number] | null {
+	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	const ascii = (at: number, text: string) =>
+		bytes.length >= at + text.length &&
+		[...text].every((char, i) => bytes[at + i] === char.charCodeAt(0));
+	if (ascii(1, "PNG") && ascii(12, "IHDR") && bytes.length >= 24) {
+		return [view.getUint32(16), view.getUint32(20)];
+	}
+	if (bytes[0] === 0xff && bytes[1] === 0xd8) {
+		// Walk the JPEG segments to the first start-of-frame marker.
+		let at = 2;
+		while (at + 9 < bytes.length && bytes[at] === 0xff) {
+			const marker = bytes[at + 1];
+			const isFrame = marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker);
+			if (isFrame) return [view.getUint16(at + 7), view.getUint16(at + 5)];
+			at += 2 + view.getUint16(at + 2);
+		}
+		return null;
+	}
+	if (ascii(0, "RIFF") && ascii(8, "WEBP") && bytes.length >= 30) {
+		if (ascii(12, "VP8 ")) return [view.getUint16(26, true) & 0x3fff, view.getUint16(28, true) & 0x3fff];
+		if (ascii(12, "VP8L")) {
+			const bits = view.getUint32(21, true);
+			return [(bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1];
+		}
+		if (ascii(12, "VP8X")) {
+			const width = bytes[24] | (bytes[25] << 8) | (bytes[26] << 16);
+			const height = bytes[27] | (bytes[28] << 8) | (bytes[29] << 16);
+			return [width + 1, height + 1];
+		}
+	}
+	return null;
+}
 export function normalizedSize(
 	width: number,
 	height: number,
