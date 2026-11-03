@@ -44,15 +44,17 @@ def _is_kernel_decorator(node):
     name = _dotted(node.func if isinstance(node, ast.Call) else node)
     last = name.split(".")[-1]
     # jit_any_alignment(...) / _jit_any_alignment: triton.jit wrappers with specialization options.
-    return (last in KERNEL_DECORATORS and (name.startswith("triton") or name == last)) or last.lstrip(
-        "_"
-    ).startswith("jit_")
+    return (
+        last in KERNEL_DECORATORS and (name.startswith("triton") or name == last)
+    ) or last.lstrip("_").startswith("jit_")
 
 
 def _kernels(tree):
     """FunctionDefs decorated as Triton kernels, or wrapped as `k = triton.jit(f)`."""
     defs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
-    found = {n.name: n for n in defs.values() if any(_is_kernel_decorator(d) for d in n.decorator_list)}
+    found = {
+        n.name: n for n in defs.values() if any(_is_kernel_decorator(d) for d in n.decorator_list)
+    }
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Name):
             outer = node.func.func if isinstance(node.func, ast.Call) else node.func
@@ -87,7 +89,11 @@ def test_finds_kernels():
     # Guards the walk itself: a refactor that hides every kernel would pass the checks below vacuously.
     params = [p for path in _files() for p in _constexpr_params(path)]
     assert len(params) > 300
-    assert {path.name for path in _files()} >= {"nf4_gemv.py", "rms_layernorm.py", "cross_entropy_loss.py"}
+    assert {path.name for path in _files()} >= {
+        "nf4_gemv.py",
+        "rms_layernorm.py",
+        "cross_entropy_loss.py",
+    }
 
 
 def test_every_constexpr_line_has_a_comment():

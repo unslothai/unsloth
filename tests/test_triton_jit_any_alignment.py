@@ -19,7 +19,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "kernels"
 
 def _load_triton_launch():
     # By path: importing the unsloth package needs an accelerator.
-    spec = importlib.util.spec_from_file_location("_unsloth_triton_launch", ROOT / "triton_launch.py")
+    spec = importlib.util.spec_from_file_location(
+        "_unsloth_triton_launch", ROOT / "triton_launch.py"
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -74,7 +76,10 @@ def test_nf4_gemv_rows_alignment_unspecialized():
     kernels = {}
     launch_call = args_tuple = None
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name in ("_gemv_nf4_kernel", "_gemv_nf4_words_kernel"):
+        if isinstance(node, ast.FunctionDef) and node.name in (
+            "_gemv_nf4_kernel",
+            "_gemv_nf4_words_kernel",
+        ):
             kernels[node.name] = node
         if isinstance(node, ast.FunctionDef) and node.name == "_launch":
             for sub in ast.walk(node):
@@ -92,7 +97,9 @@ def test_nf4_gemv_rows_alignment_unspecialized():
     assert args_tuple.elts[10].id == "M"
     source = "".join((ROOT / "nf4_gemv.py").read_text(encoding = "utf-8").split())
     # Only keyed without % 16 when Triton really dropped it.
-    assert '(10,)ifall(any(p.name=="M"andgetattr(p,"do_not_specialize_on_alignment",False)' in source
+    assert (
+        '(10,)ifall(any(p.name=="M"andgetattr(p,"do_not_specialize_on_alignment",False)' in source
+    )
 
 
 def test_launch_keys():
