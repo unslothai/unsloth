@@ -5830,6 +5830,7 @@ export function createOpenAIStreamAdapter(
       let quoteCut = false;
       // Provisional reason per yield since aborts skip terminal yields; a reported window outranks it.
       const liveCustom = () => ({
+        tokenUsageParentId: continuation?.sourceMessageId,
         ...reasoningDurationTracker.metadata(),
         resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
         openaiCodexReasoning: codexReasoningLedger,
@@ -8827,8 +8828,7 @@ export function createOpenAIStreamAdapter(
             timing: finalTiming,
             custom: {
               ...reasoningDurationTracker.metadata(),
-              // Persisted so Continue survives a reload; cleared on a normal end.
-
+              tokenUsageParentId: continuation?.sourceMessageId,
               openaiCodexReasoning: codexReasoningLedger,
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
@@ -8843,7 +8843,6 @@ export function createOpenAIStreamAdapter(
               incomplete: finalIncompleteReason
                 ? { reason: finalIncompleteReason }
                 : undefined,
-              // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
               serverTimings: finalServerTimings ?? undefined,
               stopReason: lastFinishReason ?? undefined,
@@ -9013,6 +9012,7 @@ export function createOpenAIStreamAdapter(
               timing: partialTiming,
               custom: {
                 ...reasoningDurationTracker.metadata(),
+                tokenUsageParentId: continuation?.sourceMessageId,
                 contextTruncation,
                 compactionMarkers,
                 providerCompaction,
@@ -9022,8 +9022,6 @@ export function createOpenAIStreamAdapter(
                 providerCompactionConnectionKey:
                   providerCompactionOriginConnectionKey,
                 geminiContinuationReplay: geminiContinuationReplay(true),
-                // Unfinished too, so it also offers Continue -- unless the provider already
-                // said why the model stopped.
                 incomplete: {
                   reason: resolveIncompleteReason(
                     incompleteReasonAfterError(

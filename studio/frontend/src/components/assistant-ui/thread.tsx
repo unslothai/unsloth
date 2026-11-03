@@ -7886,10 +7886,10 @@ function useContinuation() {
     if (index < 0) {
       return undefined;
     }
-    // Sibling of the resumed turn, so the branch picker can still reach the original.
     const parent = index > 0 ? messages[index - 1].id : null;
     const request: ContinuationRequest = {
       partial,
+      sourceMessageId: messageId,
       ...(carriedReasoning ? { reasoning: carriedReasoning, reasoningDuration } : {}),
       ...(thoughtSignature ? { thoughtSignature } : {}),
       ...(thoughtParts.length > 0 ? { thoughtParts } : {}),

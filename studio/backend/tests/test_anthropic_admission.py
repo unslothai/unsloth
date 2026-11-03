@@ -413,7 +413,9 @@ def test_capacity_enforced_from_effective_parallel_slots(monkeypatch):
         task = asyncio.create_task(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
-        await asyncio.sleep(0.1)
+        deadline = time.monotonic() + 5
+        while _snapshot().queued == 0 and not task.done() and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
         snap = _snapshot()
         assert snap.capacity == 3 and snap.active == 3 and snap.queued == 1
         for lease in held:

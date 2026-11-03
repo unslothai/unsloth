@@ -50,9 +50,10 @@ def _ledger_insert(message: str, rows: str = "") -> str:
         FROM (
             SELECT {message}.id AS id, {message}.thread_id AS thread_id,
                    {message}.created_at AS created_at,
+                   COALESCE(NULLIF(json_extract({message}.metadata_json, '$.tokenUsageParentId'), ''),
                    CASE WHEN {message}.parent_id IS NULL THEN NULL ELSE COALESCE((
                        SELECT p.parent_id FROM chat_messages p WHERE p.id = {message}.parent_id
-                   ), '') END AS parent_message_id,
+                   ), '') END) AS parent_message_id,
                    {_usage_columns(f"{message}.metadata_json")}
             {rows}
         ) AS u

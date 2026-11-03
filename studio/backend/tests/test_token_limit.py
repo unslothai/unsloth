@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+from __future__ import annotations
+
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -51,6 +53,7 @@ def _reply(
     provider: str = "local",
     context: int | None = None,
     parent: str | None = None,
+    continued_from: str | None = None,
 ) -> None:
     studio_db.upsert_chat_message(
         {
@@ -61,6 +64,7 @@ def _reply(
             "createdAt": created_at,
             "content": [{"type": "text", "text": "answer"}],
             "metadata": {
+                "tokenUsageParentId": continued_from,
                 "contextUsage": {
                     "promptTokens": prompt,
                     "completionTokens": completion,
@@ -224,6 +228,19 @@ def test_incremental_counting_uses_the_reply_ancestor_after_switching_branches(l
         )
     _enable(limit = 10_000, method = "incremental")
     assert _pools()["combined"]["used"] == 120 + 900 + 35
+    for index, source, prompt in ((4, "a3", 155), (5, "a4", 205)):
+        _reply(
+            f"a{index}",
+            "t1",
+            now + index * 2 + 1,
+            prompt = prompt,
+            completion = 50,
+            parent = "u3",
+            continued_from = source,
+        )
+        assert _pools()["combined"]["used"] == 120 + 900 + 35 + 50 * (index - 3)
+    _enable(method = "total")
+    assert _pools()["combined"]["used"] == 1755
 
 
 def test_context_refresh_cannot_refund_a_later_reply(limiter_db):
