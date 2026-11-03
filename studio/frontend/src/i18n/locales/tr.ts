@@ -1161,6 +1161,7 @@ export const tr = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Başka bir hesap eklemeden önce kurulum sahibinin parolasını belirleyin. Bu kurulumda birden fazla hesap olduğunda oturum açmak için bu parolayı kullanacaksınız.",
       signsInAs: "{username} olarak oturum açar",
       signsInAsOwner: "{alias} veya {username} olarak oturum açar",
       signInName: "Oturum açma adınız",
@@ -2099,6 +2100,7 @@ export const tr = {
         loadError: "Otomatik model değiştirme ayarları yüklenemedi.",
         saveError: "Otomatik model değiştirme ayarları kaydedilemedi.",
         idleError: "Modeli yüklü tutmak için 0 veya en az 60 saniye girin.",
+        idleUnsaved: "Henüz kaydedilmedi.",
         keepKv: "Bellekten kaldırmalar arasında sohbet bağlamını koru",
         keepKvDescription:
           "Boşta bellekten kaldırmadan veya bir görüntü ya da video modeli GPU'yu almadan önce KV önbelleğini kaydedin; böylece devam ettirilen sohbetler geçmişi yeniden okumaz. Diskte en fazla 10 GB.",

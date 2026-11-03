@@ -24,7 +24,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useIsAccountOwner } from "@/features/auth";
+import { fetchAuthStatus, useIsAccountOwner } from "@/features/auth";
 import { UserAvatar, useUserProfileStore } from "@/features/profile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -93,6 +93,7 @@ function OwnerAccountsTab() {
   const [error, setError] = useState<string | null>(null);
   const [aliasDraft, setAliasDraft] = useState("");
   const [ownerPasswordOpen, setOwnerPasswordOpen] = useState(false);
+  const [passwordForCreate, setPasswordForCreate] = useState(false);
   const [ownerPasswordPending, ownerPasswordSet] = useOwnPasswordPending();
   // The owner's row matches the sidebar footer, which reads this store before the server copy syncs.
   const ownDisplayName = useUserProfileStore((s) => s.displayName).trim();
@@ -148,6 +149,26 @@ function OwnerAccountsTab() {
   function showSetup(result: AccountSetupCode) {
     setSetup(result);
     setCopied(false);
+  }
+
+  async function beginCreate() {
+    if (busy) return;
+    setError(null);
+    setBusy(true);
+    actionTrigger.current = null;
+    try {
+      const status = await fetchAuthStatus();
+      if (status.requires_password_change) {
+        setPasswordForCreate(true);
+        setOwnerPasswordOpen(true);
+      } else {
+        setCreating(true);
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("settings.accounts.failed"));
+    } finally {
+      setBusy(false);
+    }
   }
 
   function create(event: SyntheticEvent<HTMLFormElement>) {
@@ -233,11 +254,7 @@ function OwnerAccountsTab() {
           size="sm"
           disabled={busy}
           data-settings-label={t("settings.accounts.create")}
-          onClick={() => {
-            setError(null);
-            actionTrigger.current = null;
-            setCreating(true);
-          }}
+          onClick={() => void beginCreate()}
         >
           <HugeiconsIcon
             icon={PlusSignIcon}
@@ -574,10 +591,17 @@ function OwnerAccountsTab() {
       <ManagedProviderUrlsSection />
 
       <ChangePasswordDialog
-        initial={ownerPasswordPending}
+        initial={passwordForCreate || ownerPasswordPending}
+        forAccountCreation={passwordForCreate}
         open={ownerPasswordOpen}
-        onOpenChange={setOwnerPasswordOpen}
-        onDone={ownerPasswordSet}
+        onOpenChange={(open) => {
+          setOwnerPasswordOpen(open);
+          if (!open) setPasswordForCreate(false);
+        }}
+        onDone={() => {
+          ownerPasswordSet();
+          if (passwordForCreate) setCreating(true);
+        }}
       />
 
       <Dialog
