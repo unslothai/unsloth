@@ -8,12 +8,18 @@ import inspect
 import types
 from pathlib import Path
 
+import pytest
+
 # Loaded from source: importing core.inference.inference needs unsloth, which the backend matrix lacks.
 _SRC = Path(__file__).resolve().parents[1] / "core" / "inference" / "inference.py"
 _WANTED = {
     "_CUSTOM_GENERATE_REJECTED_KWARGS",
     "_supported_generate_kwargs",
     "_processor_takes_text_first",
+    "_GenerationHalted",
+    "_HaltingStreamer",
+    "_generate_supported",
+    "_refuse_without_generate",
 }
 _NS = {"inspect": inspect}
 exec(
@@ -34,6 +40,8 @@ exec(
 )
 _supported_generate_kwargs = _NS["_supported_generate_kwargs"]
 _processor_takes_text_first = _NS["_processor_takes_text_first"]
+_generate_supported = _NS.get("_generate_supported")
+_refuse_without_generate = _NS.get("_refuse_without_generate")
 
 _KWARGS = {"input_ids": 1, "logits_processor": [], "stopping_criteria": [], "streamer": object()}
 
@@ -47,6 +55,16 @@ def test_custom_generate_drops_rejected_kwargs():
 
 def test_regular_model_keeps_all_kwargs():
     assert _supported_generate_kwargs(types.SimpleNamespace(), _KWARGS) is _KWARGS
+
+
+def test_omni_chat_requests_text_instead_of_unstreamed_speech():
+    model = types.SimpleNamespace(
+        config = types.SimpleNamespace(model_type = "lfm3_omni"),
+        _generation_fields_unsupported = {},
+    )
+    assert _supported_generate_kwargs(model, _KWARGS)["generation_mode"] == "text"
+    model.config.model_type = "other_custom_model"
+    assert "generation_mode" not in _supported_generate_kwargs(model, _KWARGS)
 
 
 class _TextFirst:
@@ -81,3 +99,149 @@ def test_zoo_wrapped_call_still_reads_original_signature():
             return super().__call__(*args, **kwargs)
 
     assert _processor_takes_text_first(_Patched()) is True
+
+
+class _Recorder:
+    def __init__(self):
+        self.tokens, self.ended = [], False
+
+    def put(self, value):
+        self.tokens.append(value)
+
+    def end(self):
+        self.ended = True
+
+
+class _CustomGenerate:
+    """LFM3-style: rejects stopping_criteria, streams each token, ends its streamers on any exit."""
+
+    _generation_fields_unsupported = {"cache_implementation": None}
+
+    def __init__(self, on_step = None):
+        self.on_step = on_step
+        self.steps = 0
+
+    def generate(self, *, streamer, max_new_tokens, **kwargs):
+        assert "stopping_criteria" not in kwargs
+        try:
+            for step in range(max_new_tokens):
+                self.steps += 1
+                if self.on_step:
+                    self.on_step(step)
+                streamer.put(step)
+        finally:
+            streamer.end()
+        return "sequences"
+
+
+def _criteria(*events):
+    return [types.SimpleNamespace(ev = event) for event in events]
+
+
+def test_cancel_ends_a_custom_generate_without_stopping_criteria():
+    import threading
+
+    cancel = threading.Event()
+    model = _CustomGenerate(on_step = lambda step: step == 3 and cancel.set())
+    streamer = _Recorder()
+    out = _generate_supported(
+        model, {"streamer": streamer, "max_new_tokens": 100, "stopping_criteria": _criteria(cancel)}
+    )
+    assert out is None
+    assert model.steps == 4 and streamer.tokens == [0, 1, 2] and streamer.ended
+
+
+def test_a_matched_stop_sequence_ends_it_too():
+    import threading
+
+    matched = threading.Event()
+    model = _CustomGenerate(on_step = lambda step: step == 5 and matched.set())
+    out = _generate_supported(
+        model,
+        {
+            "streamer": _Recorder(),
+            "max_new_tokens": 100,
+            "stopping_criteria": _criteria(threading.Event(), matched),
+        },
+    )
+    assert out is None and model.steps == 6
+
+
+def test_an_uncancelled_custom_generate_returns_its_sequences():
+    import threading
+
+    model = _CustomGenerate()
+    streamer = _Recorder()
+    out = _generate_supported(
+        model,
+        {
+            "streamer": streamer,
+            "max_new_tokens": 4,
+            "stopping_criteria": _criteria(threading.Event()),
+        },
+    )
+    assert out == "sequences" and streamer.tokens == [0, 1, 2, 3] and streamer.ended
+
+
+@pytest.mark.parametrize("matched_stop", [False, True])
+def test_halted_custom_generation_keeps_usage_only_for_a_matched_stop(matched_stop):
+    import threading
+    import torch
+
+    _NS["torch"] = torch
+    cancel = threading.Event()
+
+    class StopRecorder(_Recorder):
+        def __init__(self):
+            super().__init__()
+            self.matched = threading.Event()
+            self.token_ids = []
+
+        def put(self, value):
+            super().put(value)
+            if value.ndim == 1:
+                self.token_ids.extend(value.tolist())
+                if len(self.token_ids) == 3:
+                    (self.matched if matched_stop else cancel).set()
+
+    class CustomGenerate:
+        _generation_fields_unsupported = {}
+
+        def generate(self, *, input_ids, streamer, **kwargs):
+            assert "stopping_criteria" not in kwargs
+            try:
+                streamer.put(input_ids)
+                for token in (21, 22, 23, 24):
+                    streamer.put(input_ids.new_tensor([token]))
+            finally:
+                streamer.end()
+            raise AssertionError("Generation should halt before the fourth token")
+
+    prompt = torch.tensor([[101, 102]], dtype = torch.long)
+    streamer = StopRecorder()
+    out = _generate_supported(
+        CustomGenerate(),
+        {
+            "input_ids": prompt,
+            "streamer": streamer,
+            "stopping_criteria": _criteria(cancel, streamer.matched),
+        },
+    )
+    assert streamer.ended and streamer.token_ids == [21, 22, 23]
+    assert torch.equal(prompt, torch.tensor([[101, 102]]))
+    if matched_stop:
+        assert isinstance(out, torch.Tensor)
+        assert out.tolist() == [[101, 102, 21, 22, 23]]
+        assert out.shape[-1] - prompt.shape[-1] == 3
+        assert out.dtype == prompt.dtype and out.device == prompt.device
+    else:
+        assert out is None
+
+
+def test_a_text_load_without_generate_is_refused_by_name():
+    class Lfm3AudioModel:
+        pass
+
+    with pytest.raises(ValueError, match = "Lfm3AudioModel, which cannot generate text"):
+        _refuse_without_generate(Lfm3AudioModel(), "LiquidAI/LFM3-Audio-2B")
+    _refuse_without_generate(types.SimpleNamespace(generate = lambda **kw: None), "any/causal-lm")
