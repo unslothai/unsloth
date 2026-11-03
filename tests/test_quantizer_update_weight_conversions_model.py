@@ -29,11 +29,13 @@ PASSES_MODEL = "model" in inspect.signature(HfQuantizer.update_weight_conversion
 
 def _model():
     from accelerate import init_empty_weights
-
     with init_empty_weights():
         return LlamaForCausalLM(
             LlamaConfig(
-                hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8,
+                hidden_size = 8,
+                num_hidden_layers = 1,
+                num_attention_heads = 2,
+                intermediate_size = 8,
                 vocab_size = 16,
             )
         )
@@ -47,14 +49,21 @@ def _call(quantizer, model):
 
 
 def _accepts_extra_positional(fn):
-    return any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in inspect.signature(fn).parameters.values())
+    return any(
+        p.kind is inspect.Parameter.VAR_POSITIONAL
+        for p in inspect.signature(fn).parameters.values()
+    )
 
 
 def _installed_bnb_overrides():
     fp8_to_nf4.install_fp8_to_nf4_quantizer()
     compressed_tensors_bnb.install_compressed_tensors_bnb_quantizer()
     cls = quantizers_auto.AUTO_QUANTIZER_MAPPING["bitsandbytes_4bit"]
-    return [k for k in cls.__mro__ if k.__module__.startswith("unsloth.") and "update_weight_conversions" in vars(k)]
+    return [
+        k
+        for k in cls.__mro__
+        if k.__module__.startswith("unsloth.") and "update_weight_conversions" in vars(k)
+    ]
 
 
 def test_bnb_4bit_overrides_forward_extra_arguments():
@@ -68,7 +77,9 @@ def test_bnb_4bit_overrides_forward_extra_arguments():
 def test_bnb_4bit_quantizer_takes_the_installed_call():
     if not _installed_bnb_overrides():
         pytest.skip("no Unsloth bitsandbytes 4-bit subclass is installed on this transformers")
-    quantizer = AutoHfQuantizer.from_config(BitsAndBytesConfig(load_in_4bit = True), pre_quantized = False)
+    quantizer = AutoHfQuantizer.from_config(
+        BitsAndBytesConfig(load_in_4bit = True), pre_quantized = False
+    )
     assert isinstance(_call(quantizer, _model()), list)
 
 
