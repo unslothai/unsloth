@@ -1605,8 +1605,16 @@ export type PerModelConfigSnapshot = {
   readonly stamps: Readonly<Record<string, string>>;
 };
 
+// A save writes its stamp before its record. The baseline reads stamps first and the
+// re-read records first, so a save landing between two reads always shows as a change.
 export function perModelConfigSnapshot(): PerModelConfigSnapshot {
-  return { records: readMapRaw(), stamps: readStamps() };
+  const stamps = readStamps();
+  return { records: readMapRaw(), stamps };
+}
+
+function currentPerModelConfigSnapshot(): PerModelConfigSnapshot {
+  const records = readMapRaw();
+  return { records, stamps: readStamps() };
 }
 
 export function modelOverrideKeyOwners(
@@ -1619,7 +1627,7 @@ export function modelOverrideKeyOwners(
 export function perModelConfigChangedSince(
   storageKey: string,
   since: PerModelConfigSnapshot,
-  current: PerModelConfigSnapshot = perModelConfigSnapshot(),
+  current: PerModelConfigSnapshot = currentPerModelConfigSnapshot(),
 ): boolean {
   return (
     current.stamps[storageKey] !== since.stamps[storageKey] ||
@@ -1635,7 +1643,7 @@ export function deletePerModelConfigsForOverrideKeys(
   unchangedSince?: PerModelConfigSnapshot,
 ): boolean {
   let deleted = true;
-  const current = unchangedSince ? perModelConfigSnapshot() : undefined;
+  const current = unchangedSince ? currentPerModelConfigSnapshot() : undefined;
   for (const owner of modelOverrideKeyOwners(overrideKeys)) {
     if (
       unchangedSince &&

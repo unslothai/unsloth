@@ -485,6 +485,47 @@ test("a forget's cleanup between another tab's two writes keeps an identical re-
   assert.equal(resolveInitialConfig(REPO, QUANT).remembered, true);
 });
 
+/** Run `save` once, right after the first storage read inside `read`. */
+function saveBetweenReads<T>(read: () => T, save: () => void): T {
+  const getItem = storage.getItem;
+  let saved = false;
+  storage.getItem = (key: string) => {
+    const value = getItem(key);
+    if (!saved) {
+      saved = true;
+      storage.getItem = getItem;
+      save();
+    }
+    return value;
+  };
+  try {
+    return read();
+  } finally {
+    storage.getItem = getItem;
+  }
+}
+
+test("an identical save between the forget snapshot's two reads is kept", () => {
+  store.clear();
+  savePerModelConfig(REPO, QUANT, tuned());
+  const snapshot = saveBetweenReads(perModelConfigSnapshot, () =>
+    assert.ok(savePerModelConfig(REPO, QUANT, tuned())),
+  );
+  deletePerModelConfigsForOverrideKeys([`${REPO}:${QUANT}`], snapshot);
+  assert.equal(resolveInitialConfig(REPO, QUANT).remembered, true);
+});
+
+test("an identical save between the cleanup's two reads is kept", () => {
+  store.clear();
+  savePerModelConfig(REPO, QUANT, tuned());
+  const snapshot = perModelConfigSnapshot();
+  saveBetweenReads(
+    () => deletePerModelConfigsForOverrideKeys([`${REPO}:${QUANT}`], snapshot),
+    () => assert.ok(savePerModelConfig(REPO, QUANT, tuned())),
+  );
+  assert.equal(resolveInitialConfig(REPO, QUANT).remembered, true);
+});
+
 test("an unsubscribed read returns the same snapshot until the store changes", () => {
   store.clear();
   savePerModelConfig(REPO, QUANT, tuned());
