@@ -103,7 +103,6 @@ def test_a_d1_trains_saves_and_tokenizes_as_one(decision_mlx, monkeypatch, tmp_p
     monkeypatch.setattr(decision_mlx, "_laya", lambda: types.SimpleNamespace(common = common))
     decision_mlx._clef_item(zoo, pipeline, "s", {"q": {}}, 64, ["image"], ["clip"])
     assert calls["item"] == (pipeline, "s", {"q": {}}, ["image"], ["clip"])
-    # 8 tokens: fits 8, not 7.
     decision_mlx._clef_item(zoo, pipeline, "s", {"q": {}}, 8, ["image"], ["clip"])
     with pytest.raises(ValueError, match = "past max_seq_length 7"):
         decision_mlx._clef_item(zoo, pipeline, "s", {"q": {}}, 7, ["image"], ["clip"])
