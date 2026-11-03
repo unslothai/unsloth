@@ -10,6 +10,7 @@ import pytest
 import torch
 
 import unsloth.utils.packing as packing
+from real_accelerator import has_real_cuda
 
 
 def _old_packed_info(seq_lengths, device):
@@ -160,7 +161,7 @@ def test_fused_ce_int_divisor_is_bitwise_torch_tensor():
         assert a.shape == b.shape and torch.equal(a.view(torch.int32), b.view(torch.int32))
 
 
-_needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+_needs_cuda = pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 
 
 def _count_syncs(fn):
@@ -547,7 +548,7 @@ def test_compiled_mode_transition_preserves_derived_cache(backend, dtype, mode, 
         torch._dynamo.reset()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "requires CUDA")
+@_needs_cuda
 @pytest.mark.parametrize("backend", ["eager", "aot_eager"])
 def test_compiled_inference_metadata_preserves_cuda_device_alias(backend):
     device = torch.device("cuda")
