@@ -175,8 +175,6 @@ def test_qat_torchao_export_converts_where_one_gpu_would(monkeypatch):
 
 
 def test_host_staged_qat_convert_counts_the_converted_copy(monkeypatch):
-    """Converted on the host, the originals stay alive (the kept module tree) beside their int8
-    copies: 10 GiB gathered needs ~15 GiB, so 13 GiB available is refused before the gather."""
     gib = 1024**3
     gathers = []
 
@@ -199,7 +197,6 @@ def test_host_staged_qat_convert_counts_the_converted_copy(monkeypatch):
             model, lambda: "exported", "save_pretrained_torchao", **options
         )
     assert gathers == []
-    # Exports that do not convert in place still need only the gathered weights.
     assert (
         fsdp2_save.fsdp2_export_on_writer(
             model, lambda: "exported", "save_pretrained_gguf", offload_to_cpu = True

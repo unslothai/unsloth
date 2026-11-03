@@ -765,7 +765,6 @@ def fsdp2_export_on_writer(
         need = _gathered_host_bytes(model, trainable_only, include, offload_to_cpu, offload_4bit)
         what = "gathered weights"
         if converts_in_place:
-            # The kept module tree holds the originals while their converted copies are built.
             need, what = (
                 _accelerator_convert_bytes(need),
                 "gathered weights and their converted copy",
