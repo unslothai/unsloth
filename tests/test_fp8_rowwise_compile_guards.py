@@ -145,6 +145,8 @@ def test_fp16_routing_decision(monkeypatch, mode, rows):
     monkeypatch.setattr(F8, "_FP8_DEQUANT_MAX_ROWS_ENV", None)
     monkeypatch.setattr(F8, "_FP8_DEQUANT_MAX_ROWS", 64)
     monkeypatch.setattr(F8, "_fp8_l2_cache_bytes", lambda device: 48 * 1024 * 1024)
+    # A real pre-sm89 GPU would refuse e4m3fn here; the decision under test is the same on every card.
+    monkeypatch.setattr(F8, "_fp8_e4m3fn_unsupported_in_trace", lambda weight: False)
     _fp16_mode(monkeypatch, mode)
     calls = []
 
