@@ -139,9 +139,9 @@ export function tidyPatch(
     const size = ctx.size(id);
     return [x, y, size.width, size.height];
   };
-  const carry = (rect: Rect): [number, number] | null => {
+  const carry = (rect: Rect, self?: string): [number, number] | null => {
     for (const group of grouped.keys())
-      if (inside(rect, graph.groups[group].rect))
+      if (group !== self && inside(rect, graph.groups[group].rect))
         return shift.get(GROUP_BLOCK + group) ?? null;
     let best: string | null = null;
     let bestGap = Number.POSITIVE_INFINITY;
@@ -151,11 +151,14 @@ export function tidyPatch(
     }
     return best ? (shift.get(best) ?? null) : null;
   };
+  // A frame whose blocks all went into closed cards got no spot of its own: it rides along too.
   for (const id of graph.groupOrder) {
-    if (grouped.has(id)) continue;
+    if (patch.groups[id]) continue;
     const rect = graph.groups[id].rect;
-    const d = carry(rect);
-    if (d) patch.groups[id] = [rect[0] + d[0], rect[1] + d[1], rect[2], rect[3]];
+    const d = carry(rect, id);
+    if (!d) continue;
+    patch.groups[id] = [rect[0] + d[0], rect[1] + d[1], rect[2], rect[3]];
+    if (grouped.has(id)) shift.set(GROUP_BLOCK + id, d);
   }
   for (const id of graph.noteOrder) {
     const rect = graph.notes[id].rect;
