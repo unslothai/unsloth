@@ -5491,6 +5491,7 @@ export const ru = {
   generationStats: {
     working: "Обработка...",
     processingPrompt: "Обработка промпта {percent}%",
+    compactingContext: "Сжатие контекста...",
     timeLeft: "осталось {eta}",
     tokensOne: "токены: {count}",
     tokens: "токены: {count}",

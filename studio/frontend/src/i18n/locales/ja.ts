@@ -5414,6 +5414,7 @@ export const ja = {
   generationStats: {
     working: "処理中...",
     processingPrompt: "プロンプトを処理中 {percent}%",
+    compactingContext: "コンテキストを圧縮中...",
     timeLeft: "残り {eta}",
     tokensOne: "{count} トークン",
     tokens: "{count} トークン",

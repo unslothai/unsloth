@@ -5544,6 +5544,7 @@ export const zhTW = {
   generationStats: {
     working: "處理中...",
     processingPrompt: "正在處理提示詞 {percent}%",
+    compactingContext: "正在壓縮上下文...",
     timeLeft: "剩餘 {eta}",
     tokensOne: "{count} 個 token",
     tokens: "{count} 個 token",

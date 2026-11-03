@@ -5916,6 +5916,7 @@ export const uk = {
   generationStats: {
     working: "Виконання...",
     processingPrompt: "Обробка запиту {percent}%",
+    compactingContext: "Стиснення контексту...",
     timeLeft: "залишилось {eta}",
     tokensOne: "токени: {count}",
     tokens: "токени: {count}",

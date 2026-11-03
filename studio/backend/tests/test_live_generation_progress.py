@@ -231,3 +231,119 @@ def test_stall_wait_still_sends_the_comment_after_the_stall_interval(monkeypatch
 def test_providers_cannot_forge_the_frame(line):
     assert sanitize_provider_sse_line(line) is None
     assert is_ui_control_sse_line(line)
+
+
+def test_a_compaction_report_becomes_one_frame_ahead_of_the_prefill():
+    signal = route._PrefillProgressSignal(None, live = True)
+    signal.compacting()
+    signal({"prompt_progress": {"total": 4000, "processed": 512}})
+    assert _frame(signal.live_frame()) == {"type": "generation_progress", "phase": "compacting"}
+    assert _frame(signal.live_frame())["phase"] == "prefill"
+    assert signal.live_frame() is None
+    # The next fit that compacts reports again.
+    signal.compacting()
+    assert _frame(signal.live_frame())["phase"] == "compacting"
+
+
+def test_a_compaction_report_is_dropped_when_not_live():
+    signal = route._PrefillProgressSignal(None)
+    signal.compacting()
+    assert signal.live_frame() is None
+
+
+def test_stall_wait_sends_the_compaction_frame_while_the_fit_blocks(monkeypatch):
+    monkeypatch.setattr(route, "_LIVE_PROGRESS_POLL_S", 0.01)
+    signal = route._PrefillProgressSignal(None, live = True)
+
+    async def scenario():
+        release = asyncio.Event()
+
+        async def step():
+            await release.wait()
+            return "context_truncated"
+
+        task = asyncio.create_task(step())
+        lines = []
+
+        async def collect():
+            async for line in route._stall_wait_frames(task, signal, first_timeout = 15.0):
+                lines.append(line)
+
+        collector = asyncio.create_task(collect())
+        signal.compacting()
+        await asyncio.sleep(0.05)
+        # Sent while the step is still blocked, not when the fit returns.
+        sent_before_release = list(lines)
+        release.set()
+        await collector
+        return sent_before_release, lines
+
+    before, lines = asyncio.run(scenario())
+    assert [_frame(line)["phase"] for line in before] == ["compacting"]
+    assert len(lines) == 1
+
+
+def _fit(messages, on_compacting, **kwargs):
+    from core.inference import llama_cpp
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+    return llama_cpp._fit_with_instruction_pins(
+        messages,
+        context_length = 1000,
+        max_tokens = 128,
+        count_tokens = counter,
+        on_compacting = on_compacting,
+        **kwargs,
+    )
+
+
+def _turns(size):
+    return [
+        {"role": "user", "content": "A" * size},
+        {"role": "assistant", "content": "B" * size},
+        {"role": "user", "content": "C" * 50},
+    ]
+
+
+def test_the_fit_reports_once_when_it_starts_evicting():
+    reports = []
+    fitted, info = _fit(_turns(600), lambda: reports.append(True))
+    assert info is not None and info["dropped_messages"] > 0
+    assert reports == [True], "one report per fit, however many counts the trim takes"
+
+
+def test_a_fit_that_keeps_everything_reports_nothing():
+    reports = []
+    fitted, info = _fit(_turns(100), lambda: reports.append(True))
+    assert info is None
+    assert reports == []
+
+
+def test_a_forced_reset_reports_before_any_count():
+    reports = []
+    _fit(_turns(100), lambda: reports.append(True), force_reset = True)
+    assert reports == [True]
+
+
+def test_a_replay_only_fit_never_reports():
+    reports = []
+    _fit(_turns(600), lambda: reports.append(True), replay_only = True, sticky_dropped = 1)
+    assert reports == []
+
+
+def test_a_failing_report_never_breaks_the_fit():
+    def boom():
+        raise RuntimeError("closed stream")
+
+    fitted, info = _fit(_turns(600), boom)
+    assert info is not None and info["fits"] is True
+
+
+def test_only_a_live_signal_is_a_compaction_reporter():
+    from core.inference import llama_cpp
+
+    signal = route._PrefillProgressSignal(None, live = True)
+    assert llama_cpp._compaction_reporter(signal) == signal.compacting
+    assert llama_cpp._compaction_reporter(lambda sample: None) is None
+    assert llama_cpp._compaction_reporter(None) is None

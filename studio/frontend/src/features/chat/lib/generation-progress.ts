@@ -20,7 +20,8 @@ function tokenCount(count: number, t: Translate, locale?: string): string {
 
 export type GenerationProgressUpdate =
   | { phase: "prefill"; prefill: LivePrefillProgress }
-  | { phase: "decode"; decode: LiveDecodeProgress };
+  | { phase: "decode"; decode: LiveDecodeProgress }
+  | { phase: "compacting" };
 
 function count(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
@@ -40,6 +41,7 @@ export function readGenerationProgress(
 ): GenerationProgressUpdate | null {
   if (frame === null || typeof frame !== "object") return null;
   const f = frame as Record<string, unknown>;
+  if (f.phase === "compacting") return { phase: "compacting" };
   if (f.phase === "prefill") {
     const processed = count(f.processed);
     if (processed === null) return null;

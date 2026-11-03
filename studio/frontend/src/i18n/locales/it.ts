@@ -5532,6 +5532,7 @@ export const it = {
   generationStats: {
     working: "Elaborazione...",
     processingPrompt: "Elaborazione del prompt {percent}%",
+    compactingContext: "Compattazione del contesto...",
     timeLeft: "{eta} rimanenti",
     tokensOne: "{count} token",
     tokens: "{count} token",

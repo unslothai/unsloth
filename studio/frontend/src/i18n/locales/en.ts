@@ -5504,6 +5504,7 @@ export const en = {
   generationStats: {
     working: "Working...",
     processingPrompt: "Processing prompt {percent}%",
+    compactingContext: "Compacting context...",
     // {eta}: a short duration such as "12s" or "2m 10s".
     timeLeft: "{eta} left",
     tokensOne: "{count} token",

@@ -5869,6 +5869,7 @@ export const tr = {
   generationStats: {
     working: "İşleniyor...",
     processingPrompt: "İstem işleniyor %{percent}",
+    compactingContext: "Bağlam sıkıştırılıyor...",
     timeLeft: "{eta} kaldı",
     tokensOne: "{count} token",
     tokens: "{count} token",

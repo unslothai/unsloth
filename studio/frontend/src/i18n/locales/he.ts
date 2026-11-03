@@ -5561,6 +5561,7 @@ export const he = {
   generationStats: {
     working: "מעבד...",
     processingPrompt: "עיבוד הפרומפט {percent}%",
+    compactingContext: "דוחס את ההקשר...",
     timeLeft: "נותרו {eta}",
     tokensOne: "{count} טוקן",
     tokens: "{count} טוקנים",

@@ -5454,6 +5454,7 @@ export const ko = {
   generationStats: {
     working: "처리 중...",
     processingPrompt: "프롬프트 처리 중 {percent}%",
+    compactingContext: "컨텍스트 압축 중...",
     timeLeft: "{eta} 남음",
     tokensOne: "토큰 {count}개",
     tokens: "토큰 {count}개",

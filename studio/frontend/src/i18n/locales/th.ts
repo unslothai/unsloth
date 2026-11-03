@@ -5593,6 +5593,7 @@ export const th = {
   generationStats: {
     working: "กำลังดำเนินการ...",
     processingPrompt: "กำลังประมวลผลพรอมต์ {percent}%",
+    compactingContext: "กำลังบีบอัดบริบท...",
     timeLeft: "เหลืออีก {eta}",
     tokensOne: "{count} โทเค็น",
     tokens: "{count} โทเค็น",

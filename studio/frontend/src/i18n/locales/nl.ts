@@ -5930,6 +5930,7 @@ export const nl = {
   generationStats: {
     working: "Bezig...",
     processingPrompt: "Prompt verwerken {percent}%",
+    compactingContext: "Context comprimeren...",
     timeLeft: "nog {eta}",
     tokensOne: "{count} token",
     tokens: "{count} tokens",

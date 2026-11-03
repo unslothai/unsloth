@@ -5841,6 +5841,7 @@ export const fa = {
   generationStats: {
     working: "در حال انجام...",
     processingPrompt: "پردازش پرامپت {percent}%",
+    compactingContext: "در حال فشرده‌سازی زمینه...",
     timeLeft: "{eta} مانده",
     tokensOne: "{count} توکن",
     tokens: "{count} توکن",

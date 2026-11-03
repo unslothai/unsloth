@@ -5474,6 +5474,7 @@ export const hi = {
   generationStats: {
     working: "प्रक्रिया जारी है...",
     processingPrompt: "प्रॉम्प्ट प्रोसेस हो रहा है {percent}%",
+    compactingContext: "संदर्भ संक्षिप्त किया जा रहा है...",
     timeLeft: "{eta} बाकी",
     tokensOne: "{count} टोकन",
     tokens: "{count} टोकन",

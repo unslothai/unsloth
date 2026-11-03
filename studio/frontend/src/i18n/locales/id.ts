@@ -5873,6 +5873,7 @@ export const id = {
   generationStats: {
     working: "Memproses...",
     processingPrompt: "Memproses prompt {percent}%",
+    compactingContext: "Memadatkan konteks...",
     timeLeft: "{eta} lagi",
     tokensOne: "{count} token",
     tokens: "{count} token",

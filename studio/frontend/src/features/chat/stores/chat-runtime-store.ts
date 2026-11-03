@@ -448,6 +448,8 @@ export type LiveGenerationProgress = {
   /** Whether "Processing prompt" is up for this pass; see prefillLabelShown. */
   prefillShown: boolean;
   decode: LiveDecodeProgress | null;
+  /** The context fit is evicting turns; ends with this pass's context_truncated or its first prefill sample. */
+  compacting?: boolean;
 };
 export type PendingImageEditReference = {
   threadId: string | null;
@@ -2737,6 +2739,7 @@ type ChatRuntimeStore = {
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setLivePrefill: (threadId: string | null, prefill: LivePrefillProgress) => void;
   setLiveDecode: (threadId: string | null, decode: LiveDecodeProgress) => void;
+  setLiveCompacting: (threadId: string | null, compacting: boolean) => void;
   clearLiveGenerationForThread: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
@@ -5993,6 +5996,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             decode,
           },
         },
+      };
+    }),
+  setLiveCompacting: (threadId, compacting) =>
+    set((state) => {
+      const key = threadId || "__default";
+      const current = state.liveGenerationByThreadId[key];
+      if (!compacting && !current?.compacting) return state;
+      // A new pass: the last round's prefill and decode figures describe a prompt the fit is replacing.
+      const next: LiveGenerationProgress = compacting
+        ? { prefill: null, prefillShown: false, decode: null, compacting: true }
+        : { ...current!, compacting: false };
+      return {
+        liveGenerationByThreadId: { ...state.liveGenerationByThreadId, [key]: next },
       };
     }),
   clearLiveGenerationForThread: (threadId) =>

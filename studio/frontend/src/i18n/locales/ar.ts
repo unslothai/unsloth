@@ -5463,6 +5463,7 @@ export const ar = {
   generationStats: {
     working: "جارٍ التنفيذ...",
     processingPrompt: "جارٍ معالجة الطلب {percent}%",
+    compactingContext: "جارٍ ضغط السياق...",
     timeLeft: "يتبقى {eta}",
     tokensOne: "التوكنات: {count}",
     tokens: "التوكنات: {count}",

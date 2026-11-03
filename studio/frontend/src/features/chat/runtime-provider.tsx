@@ -1773,6 +1773,8 @@ function scheduleGenerationRecovery(
                     store.setLivePrefill(threadId, progress.prefill);
                   } else if (progress?.phase === "decode") {
                     store.setLiveDecode(threadId, progress.decode);
+                  } else if (progress?.phase === "compacting") {
+                    store.setLiveCompacting(threadId, true);
                   }
                 }
                 continue;
@@ -1795,6 +1797,7 @@ function scheduleGenerationRecovery(
                 firstChunkAt ??= update.event.createdAt;
               }
               if (chunk.context_truncated) {
+                useChatRuntimeStore.getState().setLiveCompacting(threadId, false);
                 const toolCalls = carried
                   .map((entry) => entry.part as { type?: unknown } | null)
                   .filter((part) => part?.type === "tool-call") as Array<{

@@ -5889,6 +5889,7 @@ export const cs = {
   generationStats: {
     working: "Probíhá zpracování...",
     processingPrompt: "Zpracování promptu {percent} %",
+    compactingContext: "Zhušťování kontextu...",
     timeLeft: "zbývá {eta}",
     tokensOne: "tokeny: {count}",
     tokens: "tokeny: {count}",
