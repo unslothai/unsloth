@@ -23,12 +23,17 @@ transformers = pytest.importorskip("transformers")
 peft = pytest.importorskip("peft")
 from peft import LoraConfig, get_peft_model  # noqa: E402
 
-MODELS = ["hf-internal-testing/tiny-random-LlamaForCausalLM", "trl-internal-testing/tiny-Qwen3ForCausalLM"]
+MODELS = [
+    "hf-internal-testing/tiny-random-LlamaForCausalLM",
+    "trl-internal-testing/tiny-Qwen3ForCausalLM",
+]
 
 
 def _load_module():
     # By path: `import unsloth` needs an accelerator, this module needs only torch (+ peft lazily).
-    spec = importlib.util.spec_from_file_location("_unsloth_lora_fold_generate_under_test", MODULE_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "_unsloth_lora_fold_generate_under_test", MODULE_PATH
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -55,10 +60,18 @@ class _RefApi:
         self.folds = self.unfolds = 0
         self.ExactFoldTarget = _RefTarget
 
-    def exact_merge_available(self, device, dtype = torch.bfloat16):
+    def exact_merge_available(
+        self,
+        device,
+        dtype = torch.bfloat16,
+    ):
         return self.available
 
-    def exact_fold(self, targets, stream = None):
+    def exact_fold(
+        self,
+        targets,
+        stream = None,
+    ):
         self.folds += 1
         bad_total = 0
         for t in targets:
@@ -74,7 +87,11 @@ class _RefApi:
             bad_total += int(bad.sum())
         return {"bad": bad_total, "elements": sum(t.w.numel() for t in targets)}
 
-    def exact_unfold(self, targets, stream = None):
+    def exact_unfold(
+        self,
+        targets,
+        stream = None,
+    ):
         self.unfolds += 1
         targets = [t for t in targets if t.folded]
         wrong = 0
@@ -109,7 +126,12 @@ def model_id(request):
     return request.param
 
 
-def _make(model_id, dtype = torch.bfloat16, seed = 0, **lora):
+def _make(
+    model_id,
+    dtype = torch.bfloat16,
+    seed = 0,
+    **lora,
+):
     torch.manual_seed(seed)
     base = transformers.AutoModelForCausalLM.from_pretrained(model_id, torch_dtype = dtype)
     config = dict(r = 8, lora_alpha = 16, target_modules = "all-linear", lora_dropout = 0.0)
@@ -127,7 +149,9 @@ def _make(model_id, dtype = torch.bfloat16, seed = 0, **lora):
 def _bits(model):
     out = {}
     for name, p in model.named_parameters():
-        out[name] = p.detach().view(torch.int16).clone() if p.element_size() == 2 else p.detach().clone()
+        out[name] = (
+            p.detach().view(torch.int16).clone() if p.element_size() == 2 else p.detach().clone()
+        )
     return out
 
 
@@ -136,7 +160,11 @@ def _same_bits(a, b):
 
 
 def _merged_state(model):
-    return {name: (id(m.merged_adapters), list(m.merged_adapters)) for name, m in model.named_modules() if hasattr(m, "merged_adapters")}
+    return {
+        name: (id(m.merged_adapters), list(m.merged_adapters))
+        for name, m in model.named_modules()
+        if hasattr(m, "merged_adapters")
+    }
 
 
 def _inputs(bsz = 2, length = 5):
@@ -144,8 +172,14 @@ def _inputs(bsz = 2, length = 5):
     return torch.randint(3, 100, (bsz, length), generator = g)
 
 
-def _generate(model, new_tokens = 20, **kwargs):
-    kw = dict(input_ids = _inputs(), max_new_tokens = new_tokens, min_new_tokens = new_tokens, do_sample = False)
+def _generate(
+    model,
+    new_tokens = 20,
+    **kwargs,
+):
+    kw = dict(
+        input_ids = _inputs(), max_new_tokens = new_tokens, min_new_tokens = new_tokens, do_sample = False
+    )
     kw.update(kwargs)
     with torch.inference_mode(), fold.lora_fold_generate(model, (), kw) as engaged:
         out = model.generate(**kw)
@@ -158,7 +192,11 @@ def _count_lora_calls(model):
     def hook(*_):
         calls[0] += 1
 
-    handles = [m.register_forward_hook(hook) for n, m in model.named_modules() if n.endswith("lora_A.default")]
+    handles = [
+        m.register_forward_hook(hook)
+        for n, m in model.named_modules()
+        if n.endswith("lora_A.default")
+    ]
     return calls, handles
 
 
@@ -174,7 +212,9 @@ def test_requested_new_tokens():
     assert fold.requested_new_tokens(model, (ids,), {}) == 20
     assert fold.requested_new_tokens(model, (), {"input_ids": ids, "max_length": 12}) == 2
     config = transformers.GenerationConfig(max_new_tokens = 64)
-    assert fold.requested_new_tokens(model, (), {"input_ids": ids, "generation_config": config}) == 64
+    assert (
+        fold.requested_new_tokens(model, (), {"input_ids": ids, "generation_config": config}) == 64
+    )
 
 
 def test_fold_engages_skips_lora_and_restores_bits(model_id, _clean):
@@ -288,7 +328,10 @@ def test_checksum_mismatch_raises_and_poisons():
     model = _make(MODELS[0])
     W = model.base_model.model.model.layers[0].self_attn.q_proj.base_layer.weight
     with pytest.raises(RuntimeError, match = "Reload the model"):
-        with torch.inference_mode(), fold.lora_fold_generate(model, (), {"max_new_tokens": 32}) as engaged:
+        with (
+            torch.inference_mode(),
+            fold.lora_fold_generate(model, (), {"max_new_tokens": 32}) as engaged,
+        ):
             assert engaged
             W.data[3].add_(1.0)
     assert fold._POISONED is not None
@@ -376,12 +419,16 @@ def _refusal_cases():
     ]
 
 
-@pytest.mark.parametrize("reason,lora,kind,mutate", _refusal_cases(), ids = [c[0] for c in _refusal_cases()])
+@pytest.mark.parametrize(
+    "reason,lora,kind,mutate", _refusal_cases(), ids = [c[0] for c in _refusal_cases()]
+)
 def test_refusals_leave_model_untouched(reason, lora, kind, mutate, _clean):
     if reason == "lora_bias" and "lora_bias" not in LoraConfig.__dataclass_fields__:
         pytest.skip("peft without lora_bias")
     if kind == "unwrap":
-        model = transformers.AutoModelForCausalLM.from_pretrained(MODELS[0], torch_dtype = torch.bfloat16)
+        model = transformers.AutoModelForCausalLM.from_pretrained(
+            MODELS[0], torch_dtype = torch.bfloat16
+        )
     else:
         model = _make(MODELS[0], dtype = torch.float32 if kind == "fp32" else torch.bfloat16, **lora)
     if mutate is not None:
@@ -413,7 +460,12 @@ def test_environment_refusals(monkeypatch, _clean):
     _clean.available = False
     with torch.inference_mode(), fold.lora_fold_generate(model, (), kw) as engaged:
         assert engaged is False
-    assert fold.stats()["refused"] == {"distributed": 1, "kill_switch": 1, "grad_enabled": 1, "exact_unavailable": 1}
+    assert fold.stats()["refused"] == {
+        "distributed": 1,
+        "kill_switch": 1,
+        "grad_enabled": 1,
+        "exact_unavailable": 1,
+    }
     assert _clean.folds == 0
 
 
@@ -425,7 +477,10 @@ def test_real_zoo_api_refuses_on_cpu(monkeypatch):
     monkeypatch.setattr(fold, "_exact_api", lambda: zoo)
     model = _make(MODELS[0])
     before = _bits(model)
-    with torch.inference_mode(), fold.lora_fold_generate(model, (), {"max_new_tokens": 32}) as engaged:
+    with (
+        torch.inference_mode(),
+        fold.lora_fold_generate(model, (), {"max_new_tokens": 32}) as engaged,
+    ):
         assert engaged is False
     assert fold.stats()["refused"] == {"exact_unavailable": 1}
     assert _same_bits(before, _bits(model))
@@ -476,8 +531,11 @@ def _with_blocks(path, name):
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
     calls = [
-        n for n in ast.walk(fn)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "_old_generate"
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "_old_generate"
     ]
     withs = [n for n in ast.walk(fn) if isinstance(n, ast.With)]
     return calls, withs

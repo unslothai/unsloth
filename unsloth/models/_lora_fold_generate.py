@@ -69,11 +69,14 @@ def _min_tokens():
 def _exact_api():
     # Indirection so CPU tests can swap in a reference fold; production is always the zoo kernel.
     from unsloth_zoo import merged_rollout_exact
-
     return merged_rollout_exact
 
 
-def requested_new_tokens(model, args = (), kwargs = None):
+def requested_new_tokens(
+    model,
+    args = (),
+    kwargs = None,
+):
     """Upper bound on the tokens this generate() call decodes, as transformers resolves it."""
     kwargs = kwargs or {}
     config = kwargs.get("generation_config") or getattr(model, "generation_config", None)
@@ -118,7 +121,11 @@ def _distributed(model):
             return True
     for m in model.modules():
         for cls in type(m).__mro__:
-            if cls.__name__ in ("FullyShardedDataParallel", "FSDPModule", "DistributedDataParallel"):
+            if cls.__name__ in (
+                "FullyShardedDataParallel",
+                "FSDPModule",
+                "DistributedDataParallel",
+            ):
                 return True
     return False
 
@@ -163,14 +170,20 @@ def fold_refusal(model):
             continue
         if type(module) is not LoraLinear:
             return "unsupported_layer", None
-        if getattr(module, "use_dora", {}).get(adapter, False) or adapter in (getattr(module, "lora_variant", None) or {}):
+        if getattr(module, "use_dora", {}).get(adapter, False) or adapter in (
+            getattr(module, "lora_variant", None) or {}
+        ):
             return "dora", None
         if getattr(module, "lora_bias", {}).get(adapter, False):
             return "lora_bias", None
         if getattr(module, "fan_in_fan_out", False):
             return "unsupported_layer", None
         dropout = module.lora_dropout[adapter]
-        if not isinstance(dropout, torch.nn.Identity) and dropout.training and getattr(dropout, "p", 0) > 0:
+        if (
+            not isinstance(dropout, torch.nn.Identity)
+            and dropout.training
+            and getattr(dropout, "p", 0) > 0
+        ):
             return "dropout_active", None
         scale = module.scaling.get(adapter, None)
         if isinstance(scale, bool) or not isinstance(scale, (int, float)):
@@ -186,10 +199,17 @@ def fold_refusal(model):
         if any(_is_dtensor(t) or hasattr(t, "ds_id") for t in (W, A.weight, B.weight)):
             return "distributed", None
         # Params4bit / Int8Params / torchao / fp8 tensors are Parameter subclasses or other dtypes.
-        if type(W) is not torch.nn.Parameter or hasattr(W, "quant_state") or hasattr(base, "quant_state"):
+        if (
+            type(W) is not torch.nn.Parameter
+            or hasattr(W, "quant_state")
+            or hasattr(base, "quant_state")
+        ):
             return "quantized", None
         if W.dtype not in (torch.bfloat16, torch.float16):
-            return "quantized" if not W.is_floating_point() or W.element_size() < 2 else "not_16bit", None
+            return (
+                "quantized" if not W.is_floating_point() or W.element_size() < 2 else "not_16bit",
+                None,
+            )
         if W.device.type == "meta":
             return "offloaded", None
         if W.requires_grad:
@@ -245,7 +265,11 @@ def _sync(device):
 
 
 @contextlib.contextmanager
-def lora_fold_generate(model, args = (), kwargs = None):
+def lora_fold_generate(
+    model,
+    args = (),
+    kwargs = None,
+):
     """Fold every LoRA adapter into its 16-bit base weight for the body, then restore it bit for bit."""
     global _ACTIVE
     with _LOCK:
