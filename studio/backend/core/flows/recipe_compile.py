@@ -56,7 +56,9 @@ def compile_recipe(graph: dict, seed_wired: bool = False) -> dict:
     seeded = {n for n in (group.get("ui") or {}).get("seed_columns") or [] if isinstance(n, str)}
     # The seed's columns are only a preview hint (sharing drops it, a wired seed replaces it): then the
     # run's own validation checks a parent that may come from the seed.
-    unknown_seed = seed_wired or (bool((group.get("config") or {}).get("seed_config")) and not seeded)
+    unknown_seed = seed_wired or (
+        bool((group.get("config") or {}).get("seed_config")) and not seeded
+    )
     for column in columns:
         parent = (column.get("params") or {}).get("category")
         if (
