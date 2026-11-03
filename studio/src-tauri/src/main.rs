@@ -2580,6 +2580,7 @@ fn main() {
             native_file_dialogs::finish_native_file_save,
             native_file_dialogs::cancel_native_file_save,
             native_file_dialogs::save_native_file_from_url,
+            native_file_dialogs::save_native_files_from_urls,
             native_file_dialogs::download_logs_to_downloads,
             native_file_dialogs::pick_native_chat_import,
             native_file_dialogs::read_native_chat_import_chunk,

@@ -422,16 +422,24 @@ test("a chat attachment is not deleted when an open chat could not drop it after
   assert.deepEqual(emitted, [{ messageId: "m:1", attachmentId: "content-part-sha256-ab" }]);
 });
 
+const cancelledDownload = new Error("Save cancelled");
+
 function loadDownloads(
   fflate: object,
   saved: (File | Blob)[],
   fileNames: object,
   session: { epoch: number } = { epoch: 0 },
   fetched: (name: string) => void = () => {},
+  options: {
+    native?: boolean;
+    save?: (file: File | Blob) => Promise<unknown>;
+    batch?: (files: { url: string; fileName: string }[]) => Promise<void>;
+    errors?: unknown[];
+  } = {},
 ) {
-  const toast = Object.assign(() => {}, { loading: () => 0, dismiss: () => {}, error: () => {} });
+  const toast = Object.assign(() => {}, { loading: () => 0, dismiss: () => {}, error: (...args: unknown[]) => options.errors?.push(args) });
   return loadWithStubs<{
-    downloadLibraryItems: (items: { name: string; sizeBytes: number | null }[]) => Promise<void>;
+    downloadLibraryItems: (items: { id?: string; name: string; sizeBytes: number | null; textOnly?: boolean }[]) => Promise<void>;
   }>(new URL("../src/features/library/actions.ts", import.meta.url), {
     fflate,
     "@/config/env": { usePlatformStore: { getState: () => ({ deviceType: "linux" }) } },
@@ -442,24 +450,30 @@ function loadDownloads(
     "@/features/model-picker": {},
     "@/i18n": { translate: (key: string) => key },
     "@/lib/audio-utils": {},
-    "@/lib/api-base": { isTauri: false },
+    "@/lib/api-base": { isTauri: options.native ?? false },
     "@/lib/image-fit": {},
     "@/stores/image-edit-handoff": {},
     "@/lib/native-files": {
-      downloadFile: async (f: File | Blob) => saved.push(f),
-      isDownloadCancelled: () => false,
+      downloadFile: options.save ?? (async (f: File | Blob) => saved.push(f)),
+      downloadUrlStreaming: async (_url: string, name: string) => {
+        const save = options.save ?? (async (f: File | Blob) => saved.push(f));
+        return save(file(name));
+      },
+      downloadUrlsStreaming: options.batch,
+      isDownloadCancelled: (error: unknown) => error === cancelledDownload,
     },
     "@/lib/toast": { toast },
     "@/lib/video-utils": {},
     "./api": {
       errorMessage: String,
+      libraryDownloadUrl: async (i: { id: string }) => `/download/${i.id}`,
       libraryItemFile: async (i: { name: string }) => {
         fetched(i.name);
         return file(i.name);
       },
     },
     "./file-kind": {},
-    "./file-name": { hasOwnFile: () => true, ...fileNames },
+    "./file-name": { hasOwnFile: () => true, libraryFileName: (i: { name: string }) => i.name, ...fileNames },
     "./chat-handoff-store": {},
     "./start-chat": {},
   }).downloadLibraryItems;
@@ -544,4 +558,71 @@ test("a file named __proto__ is kept in a zipped download", async () => {
   ]);
   const archive = fflate.unzipSync(new Uint8Array(await saved[0]!.arrayBuffer()));
   assert.deepEqual(Object.keys(archive), ["__proto__ (2)", "a.txt"]);
+});
+
+
+test("Desktop exports generated images through one native batch and cancellation stays quiet", async () => {
+  const saved: File[] = [];
+  const fetched: string[] = [];
+  const batches: { url: string; fileName: string }[][] = [];
+  const errors: unknown[] = [];
+  const download = loadDownloads({}, saved, {}, undefined, (name) => fetched.push(name), {
+    native: true,
+    errors,
+    batch: async (files) => {
+      batches.push(files);
+      throw cancelledDownload;
+    },
+  });
+  const images = [
+    { id: "image:first", name: "same.png", sizeBytes: null },
+    { id: "image:second", name: "same.png", sizeBytes: 300 * 1024 * 1024 },
+  ];
+  await download(images);
+  assert.deepEqual(batches, [[
+    { url: "/download/image:first", fileName: "same.png" },
+    { url: "/download/image:second", fileName: "same.png" },
+  ]]);
+  assert.deepEqual(fetched, []);
+  assert.deepEqual(saved, []);
+  assert.deepEqual(errors, []);
+});
+
+test("a single Desktop image retains its individual save", async () => {
+  const saved: File[] = [];
+  let batches = 0;
+  const download = loadDownloads({}, saved, {}, undefined, undefined, {
+    native: true,
+    batch: async () => { batches += 1; },
+  });
+  await download([{ id: "image:first", name: "single.png", sizeBytes: 1 }]);
+  assert.deepEqual(names(saved), ["single.png"]);
+  assert.equal(batches, 0);
+});
+
+test("cancelling a sequential export stops it and a later retry still saves every file", async () => {
+  const saved: File[] = [];
+  const attempts: string[] = [];
+  const errors: unknown[] = [];
+  let cancel = true;
+  const download = loadDownloads({}, saved, {}, undefined, undefined, {
+    native: true,
+    errors,
+    save: async (f) => {
+      const image = f as File;
+      attempts.push(image.name);
+      if (cancel) throw cancelledDownload;
+      saved.push(image);
+    },
+  });
+  const files = [
+    { name: "first.txt", sizeBytes: null, textOnly: true },
+    { name: "second.txt", sizeBytes: null, textOnly: true },
+  ];
+  await download(files);
+  assert.deepEqual(attempts, ["first.txt"]);
+  assert.deepEqual(errors, []);
+  cancel = false;
+  await download(files);
+  assert.deepEqual(names(saved), ["first.txt", "second.txt"]);
 });

@@ -158,6 +158,21 @@ export async function downloadBlobStreaming(
   }
 }
 
+export interface NativeDownloadFile {
+  url: string;
+  fileName: string;
+}
+
+export async function downloadUrlsStreaming(files: NativeDownloadFile[]): Promise<void> {
+  if (!isTauri) {
+    for (const file of files) browserUrlDownload(file.url, file.fileName);
+    return;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  const saved = await invoke<string[] | null>("save_native_files_from_urls", { files });
+  if (saved === null) throw new DownloadCancelledError();
+}
+
 export async function urlToBlob(url: string): Promise<Blob> {
   if (isDataUri(url)) {
     const { bytes, mimeType } = decodeDataUri(url);

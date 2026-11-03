@@ -711,6 +711,65 @@ pub async fn save_native_file_from_url(
     Ok(Some(saved_file_name(&path)))
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBatchDownload {
+    url: String,
+    file_name: String,
+}
+
+#[tauri::command]
+pub async fn save_native_files_from_urls(
+    webview: tauri::Webview,
+    app: AppHandle,
+    files: Vec<NativeBatchDownload>,
+) -> Result<Option<Vec<String>>, String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    if files.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    for file in &files {
+        require_loopback_url(&file.url)?;
+    }
+    let config_dir = app.path().app_config_dir().ok();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app.dialog().file().set_title("Save Unsloth exports");
+    if let Some(dir) = config_dir.as_deref().and_then(last_save_dir) {
+        dialog = dialog.set_directory(dir);
+    }
+    dialog.pick_folder(move |path| {
+        let _ = tx.send(path);
+    });
+    let selected_path = rx
+        .await
+        .map_err(|_| "Save dialog closed unexpectedly.".to_string())?
+        .map(local_dialog_path)
+        .transpose()?;
+    let Some(directory) = selected_path else {
+        return Ok(None);
+    };
+    let names = stream_batch_to_directory(&files, &directory).await?;
+    if let (Some(config_dir), Some(name)) = (&config_dir, names.first()) {
+        remember_save_dir(config_dir, &directory.join(name));
+    }
+    Ok(Some(names))
+}
+
+async fn stream_batch_to_directory(
+    files: &[NativeBatchDownload],
+    directory: &Path,
+) -> Result<Vec<String>, String> {
+    let width = files.len().to_string().len();
+    let mut saved = Vec::with_capacity(files.len());
+    for (index, file) in files.iter().enumerate() {
+        let name = safe_download_name(&format!("{:0width$}-{}", index + 1, file.file_name));
+        let destination = unique_destination(directory, &name)?;
+        stream_url_to_path(&file.url, &destination, DOWNLOAD_READ_TIMEOUT, None).await?;
+        saved.push(saved_file_name(&destination));
+    }
+    Ok(saved)
+}
+
 /// Resets per chunk, so a large save is not cut short.
 const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -1056,6 +1115,80 @@ pub async fn pick_native_training_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_batch_downloads_keep_matching_names_and_previous_exports() {
+        let directory = tempfile::tempdir().unwrap();
+        for (run, expected) in [
+            ("first", vec!["1-photo.png", "2-photo.png"]),
+            ("second", vec!["1-photo (2).png", "2-photo (2).png"]),
+        ] {
+            let (url_a, server_a) = serve_once(format!("{run}-a").into_bytes(), "200 OK");
+            let (url_b, server_b) = serve_once(format!("{run}-b").into_bytes(), "200 OK");
+            let files = [
+                NativeBatchDownload {
+                    url: url_a,
+                    file_name: "photo.png".into(),
+                },
+                NativeBatchDownload {
+                    url: url_b,
+                    file_name: "photo.png".into(),
+                },
+            ];
+            let names = test_runtime()
+                .block_on(stream_batch_to_directory(&files, directory.path()))
+                .unwrap();
+            server_a.join().unwrap();
+            server_b.join().unwrap();
+            assert_eq!(names, expected);
+            assert_eq!(
+                fs::read(directory.path().join(&names[0])).unwrap(),
+                format!("{run}-a").as_bytes()
+            );
+            assert_eq!(
+                fs::read(directory.path().join(&names[1])).unwrap(),
+                format!("{run}-b").as_bytes()
+            );
+        }
+        assert_eq!(
+            fs::read(directory.path().join("1-photo.png")).unwrap(),
+            b"first-a"
+        );
+        assert_eq!(
+            fs::read(directory.path().join("2-photo.png")).unwrap(),
+            b"first-b"
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 4);
+    }
+
+    #[test]
+    fn native_batch_failure_preserves_completed_files_without_partial_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let (url_a, server_a) = serve_once(b"first".to_vec(), "200 OK");
+        let (url_b, server_b) = serve_once(b"not found".to_vec(), "404 Not Found");
+        let files = [
+            NativeBatchDownload {
+                url: url_a,
+                file_name: "photo.png".into(),
+            },
+            NativeBatchDownload {
+                url: url_b,
+                file_name: "photo.png".into(),
+            },
+        ];
+        let error = test_runtime()
+            .block_on(stream_batch_to_directory(&files, directory.path()))
+            .unwrap_err();
+        server_a.join().unwrap();
+        server_b.join().unwrap();
+        assert!(error.contains("404"), "{error}");
+        assert_eq!(
+            fs::read(directory.path().join("1-photo.png")).unwrap(),
+            b"first"
+        );
+        assert!(!directory.path().join("2-photo.png").exists());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn download_names_are_safe_on_every_platform() {

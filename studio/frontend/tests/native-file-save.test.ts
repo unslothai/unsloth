@@ -192,3 +192,36 @@ test("a native URL save reports the basename the dialog wrote", async (t) => {
   );
   assert.equal(await files.downloadUrl("/clip.wav", "clip.wav"), "renamed-clip.wav");
 });
+
+
+test("a native batch uses one command with the requested files", async () => {
+  const entries = [
+    { url: "http://127.0.0.1:8000/first.png", fileName: "same.png" },
+    { url: "http://127.0.0.1:8000/second.png", fileName: "same.png" },
+  ];
+  let calls = 0;
+  const files = loadNativeFiles(true, async (command, args) => {
+    calls += 1;
+    assert.equal(command, "save_native_files_from_urls");
+    assert.deepEqual(args, { files: entries });
+    return ["same.png", "same (2).png"];
+  });
+  await files.downloadUrlsStreaming(entries);
+  assert.equal(calls, 1);
+});
+
+test("cancelling the native batch rejects as cancellation without opening another picker", async () => {
+  let calls = 0;
+  const files = loadNativeFiles(true, async () => {
+    calls += 1;
+    return null;
+  });
+  await assert.rejects(
+    files.downloadUrlsStreaming([
+      { url: "http://127.0.0.1:8000/first.png", fileName: "first.png" },
+      { url: "http://127.0.0.1:8000/second.png", fileName: "second.png" },
+    ]),
+    (error: unknown) => files.isDownloadCancelled(error),
+  );
+  assert.equal(calls, 1);
+});

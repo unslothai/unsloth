@@ -22,7 +22,7 @@ import { useImageEditHandoffStore } from "@/stores/image-edit-handoff";
 import { MAX_AUDIO_SIZE } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { MAX_UPLOAD_IMAGE_SIDE, blobToDataUrl, fitImageDataUrl } from "@/lib/image-fit";
-import { downloadFile, downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
+import { downloadFile, downloadUrlStreaming, downloadUrlsStreaming, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";
 import {
@@ -59,23 +59,25 @@ function fitsInChat(item: LibraryItem): boolean {
 export async function downloadLibraryItem(
   item: LibraryItem,
   epoch = getAuthSessionEpoch(),
-): Promise<void> {
-  if (getAuthSessionEpoch() !== epoch) return;
+): Promise<boolean> {
+  if (getAuthSessionEpoch() !== epoch) return false;
   try {
     if (isTauri && !item.textOnly && hasOwnFile(item.id)) {
       const url = await libraryDownloadUrl(item);
-      if (getAuthSessionEpoch() !== epoch) return;
+      if (getAuthSessionEpoch() !== epoch) return false;
       await downloadUrlStreaming(url, libraryFileName(item));
-      return;
+      return true;
     }
     const file = await libraryItemFile(item);
-    if (getAuthSessionEpoch() !== epoch) return;
+    if (getAuthSessionEpoch() !== epoch) return false;
     await downloadFile(file, file.name, file.type);
+    return true;
   } catch (error) {
-    if (isDownloadCancelled(error)) return;
+    if (isDownloadCancelled(error)) return false;
     toast.error(translate("library.toast.downloadFailed", { name: item.name }), {
       description: errorMessage(error),
     });
+    return true;
   }
 }
 
@@ -83,8 +85,26 @@ const MAX_ZIP_BYTES = 256 * 1024 * 1024;
 
 export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> {
   const epoch = getAuthSessionEpoch();
+  if (isTauri && items.length > 1 && items.every((item) => !item.textOnly && hasOwnFile(item.id))) {
+    try {
+      const files: { url: string; fileName: string }[] = [];
+      for (const item of items) {
+        if (getAuthSessionEpoch() !== epoch) return;
+        const url = await libraryDownloadUrl(item);
+        if (getAuthSessionEpoch() !== epoch) return;
+        files.push({ url, fileName: libraryFileName(item) });
+      }
+      await downloadUrlsStreaming(files);
+    } catch (error) {
+      if (isDownloadCancelled(error)) return;
+      toast.error(translate("library.toast.downloadManyFailed"), { description: errorMessage(error) });
+    }
+    return;
+  }
   if (items.length <= 1 || isTauri) {
-    for (const item of items) await downloadLibraryItem(item, epoch);
+    for (const item of items) {
+      if (!(await downloadLibraryItem(item, epoch))) break;
+    }
     return;
   }
   // Unknown size counts as Infinity so it never goes into an in-memory zip.
@@ -93,7 +113,9 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
     toast(translate("library.toast.downloadingMany", { count: items.length }), {
       description: translate("library.toast.downloadingManyDescription"),
     });
-    for (const item of items) await downloadLibraryItem(item, epoch);
+    for (const item of items) {
+      if (!(await downloadLibraryItem(item, epoch))) break;
+    }
     return;
   }
   const progress = toast.loading(translate("library.toast.preparingMany", { count: items.length }));
@@ -107,7 +129,9 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
       } catch (error) {
         if (!(error instanceof LibraryFileTooLarge)) throw error;
         toast.dismiss(progress);
-        for (const each of items) await downloadLibraryItem(each, epoch);
+        for (const each of items) {
+          if (!(await downloadLibraryItem(each, epoch))) break;
+        }
         return;
       }
       budget -= file.size;
