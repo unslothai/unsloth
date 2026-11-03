@@ -309,6 +309,15 @@ def test_fingerprint_invalidation(host, llama, monkeypatch):
     assert state.fingerprint != ("stale",)
 
 
+def test_model_on_two_devices_stays_eager_for_the_call(host, llama, monkeypatch):
+    _fresh(llama)
+    monkeypatch.setattr(GG, "_fingerprint", lambda model: None)
+    ids, mask = _ids(llama)
+    assert torch.equal(_generate(llama, ids, mask, False), _generate(llama, ids, mask, True))
+    s = GG.stats(llama)
+    assert s["captures"] == 0 and s["refusals"] == {"not one CUDA device / adapters": 9}, s
+
+
 def test_release_and_invalidate_clear_generic_state(host, llama):
     _fresh(llama)
     state = GG._state(llama)

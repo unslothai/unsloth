@@ -500,7 +500,11 @@ def decode_step(
     if state.recheck or state.optimizer_steps != K._OPTIMIZER_STEPS:
         fingerprint = _fingerprint(model)
         if fingerprint is None:
+            # Ineligible until the next generate() call re-checks.
             state.clear()
+            state.fingerprint = None
+            state.recheck = False
+            state.optimizer_steps = K._OPTIMIZER_STEPS
             return _refusal(state, "not one CUDA device / adapters")
         if fingerprint != state.fingerprint:
             state.clear()
