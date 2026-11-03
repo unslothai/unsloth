@@ -2,10 +2,10 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
 """Opt-in fused batch-1 NF4 Llama decode: UNSLOTH_DECODE_FUSED_NF4=1 (tuned GPUs) or =force.
-A failed check keeps the regular path; NF4 weights are re-homed into one view-backed buffer per site."""
+A failed check keeps the regular path; projection weights retain their original storage."""
 
-import functools
 import os
+import weakref
 
 import torch
 
@@ -18,7 +18,7 @@ except Exception:
     # torch < 2.6 has no torch.library.triton_op (kernels/nf4.py): keep the regular decode path.
     F = None
 
-__all__ = ["requested", "decode_forward", "rehome_site", "release", "STATS"]
+__all__ = ["requested", "decode_forward", "release", "STATS"]
 
 ENV = "UNSLOTH_DECODE_FUSED_NF4"
 STATS = {
@@ -26,12 +26,10 @@ STATS = {
     "layers": 0,
     "graph_records": 0,
     "plans": 0,
-    "rehomed_sites": 0,
     "refused": None,
 }
 _PLAN = "_unsloth_fused_nf4_plan"
 _HOMES = "_unsloth_fused_nf4_homes"
-_PLAN_CACHES = ("_unsloth_nf4_plan", "_unsloth_gemv_plan", "_unsloth_gemv_rows")
 
 
 def requested():
@@ -39,7 +37,7 @@ def requested():
 
 
 def release(model):
-    """Drops the fused plan and site caches, which hold the re-homed weight buffers."""
+    """Drops fused plans and any caches left by an earlier implementation."""
     for module in model.modules():
         d = module.__dict__
         d.pop(_PLAN, None)
@@ -47,15 +45,28 @@ def release(model):
     _decode_graphs.invalidate(model)
 
 
-def _apply_releasing(model, fn, *args, **kwargs):
-    # .to() / .cpu() / .half() (and the export offload): the old device's buffers must be freeable.
-    release(model)
-    return type(model)._apply(model, fn, *args, **kwargs)
+class _ApplyReleasing:
+    def __init__(self, root, module):
+        self.root_ref = weakref.ref(root) if root is not None else lambda: None
+        self.module_ref = weakref.ref(module)
+
+    def __call__(self, fn, *args, **kwargs):
+        root, module = self.root_ref(), self.module_ref()
+        if root is not None and (_PLAN in root.__dict__ or _HOMES in root.__dict__):
+            release(root)
+        return type(module)._apply(module, fn, *args, **kwargs)
+
+    def __reduce__(self):
+        # Copies and pickle must bind the hook to the restored modules.
+        return type(self), (self.root_ref(), self.module_ref())
 
 
 def _track_moves(model):
     if "_apply" not in model.__dict__:
-        model.__dict__["_apply"] = functools.partial(_apply_releasing, model)
+        # Export/offload can move an individual quantized projection instead of the root.
+        for module in model.modules():
+            if "_apply" not in module.__dict__:
+                module.__dict__["_apply"] = _ApplyReleasing(model, module)
 
 
 class _Refused:
@@ -124,12 +135,18 @@ def _site_watch(projs):
 
 
 def _plan_stale(plan):
-    """Adapters toggled, switched, merged or rescaled since the plan was built (also mid-sequence)."""
-    return bool(plan.watch) and _adapter_state(plan.watch) != plan.adapter_state
+    """Adapter state or module bindings changed since this plan was built."""
+    return bool(plan.watch) and (
+        _adapter_state(plan.watch) != plan.adapter_state
+        or any(
+            getattr(owner, name, None) is not module
+            for owner, name, module in getattr(plan, "bindings", ())
+        )
+    )
 
 
 def _signature(plan):
-    # What a captured step bakes in: rebuilding to an equal signature keeps the old plan (and its buffers).
+    # An equal signature permits reusing the buffers captured by the previous step.
     return (
         (
             plan.device,
@@ -145,6 +162,10 @@ def _signature(plan):
                 site.packed.data_ptr(),
                 site.absmax.data_ptr(),
                 site.absmax2.data_ptr(),
+                tuple(
+                    tuple(t.data_ptr() for t in fields if t is not None)
+                    for fields in (getattr(site, "segments", None) or ())
+                ),
                 site.lora and tuple(t.data_ptr() for t in site.A3 + site.B3),
                 site.lora and (site.rank, site.scaling),
                 tuple(site.bounds),
@@ -202,40 +223,6 @@ def _proj_parts(proj, K):
     return W, qs, N, lora
 
 
-def rehome_site(Ws, states):
-    """Moves a site's NF4 fields into one buffer each, leaving views; returns (packed, absmax, absmax2)."""
-    nested = states[0].state2 is not None
-    with _decode_graphs._no_inference_tensors(), torch.no_grad():
-        packed = torch.cat([W.reshape(-1) for W in Ws])
-        absmax = torch.cat([qs.absmax.reshape(-1) for qs in states])
-        absmax2 = torch.cat([qs.state2.absmax.reshape(-1) for qs in states]) if nested else None
-    p = a = a2 = 0
-    for W, qs in zip(Ws, states):
-        n = W.numel()
-        W.data = packed[p : p + n].view(W.shape)
-        p += n
-        n = qs.absmax.numel()
-        qs.absmax = absmax[a : a + n]
-        a += n
-        if nested:
-            n = qs.state2.absmax.numel()
-            qs.state2.absmax = absmax2[a2 : a2 + n]
-            a2 += n
-        # Launch plans key on the old tensors and keep them alive.
-        for name in _PLAN_CACHES:
-            qs.__dict__.pop(name, None)
-    return packed, absmax, absmax2
-
-
-def _homed(home, Ws, states):
-    packed, absmax, absmax2, ptrs = home
-    return all(
-        W.data_ptr() == ptr and qs.absmax.data_ptr() == aptr
-        and (qs.state2 is None or qs.state2.absmax.data_ptr() == a2ptr)
-        for W, qs, (ptr, aptr, a2ptr) in zip(Ws, states, ptrs)
-    )  # fmt: skip
-
-
 def _site(model, key, kind, projs, K):
     parts = [_proj_parts(p, K) for p in projs]
     for part in parts:
@@ -268,25 +255,12 @@ def _site(model, key, kind, projs, K):
             return "LoRA ranks / scales / dtypes differ"
         lora = [(l[0], l[1]) for l in loras]
     _track_moves(model)
-    homes = model.__dict__.setdefault(_HOMES, {})
-    home = homes.get(key)
-    if home is None or not _homed(home, Ws, states):
-        if len(projs) > 1:
-            # Concatenation needs the same tables (one-time checks; equal NF4 / dynamic maps in practice).
-            if any(not torch.equal(qs.code, st0.code) for qs in states[1:]):
-                return "NF4 tables differ"
-            if nested and any(
-                not torch.equal(qs.state2.code, st0.state2.code) for qs in states[1:]
-            ):
-                return "absmax2 tables differ"
-        packed, absmax, absmax2 = rehome_site(Ws, states)
-        ptrs = tuple(
-            (W.data_ptr(), qs.absmax.data_ptr(), qs.state2.absmax.data_ptr() if nested else None)
-            for W, qs in zip(Ws, states)
-        )
-        home = homes[key] = (packed, absmax, absmax2, ptrs)
-        STATS["rehomed_sites"] += 1
-    packed, absmax, absmax2, _ = home
+    if any(not torch.equal(qs.code, st0.code) for qs in states[1:]):
+        return "NF4 tables differ"
+    if nested and any(not torch.equal(qs.state2.code, st0.state2.code) for qs in states[1:]):
+        return "absmax2 tables differ"
+    packed, absmax = Ws[0], st0.absmax
+    absmax2 = st0.state2.absmax if nested else None
     bounds, acc = [], 0
     for part in parts:
         acc += part[2]
@@ -315,6 +289,9 @@ def _site(model, key, kind, projs, K):
         blocksize2 = int(st0.state2.blocksize) if nested else 256,
         lora = lora,
         scaling = loras[0][2] if lora is not None else 1.0,
+        segments = tuple(
+            (W, qs.absmax, qs.state2.absmax if nested else None) for W, qs in zip(Ws, states)
+        ),
     )
 
 
@@ -325,7 +302,7 @@ def _build(model, X):
     if getattr(config, "model_type", None) != "llama":
         return "model type"
     if getattr(model, "vllm_engine", None) is not None:
-        # fast_inference: weights view vLLM's; re-homing would copy them and move vLLM-graph-captured buffers.
+        # vLLM owns its inference path and captured state.
         return "weights shared with vLLM (fast_inference)"
     device = X.device
     if device.type != "cuda" or torch.version.hip is not None:
@@ -343,13 +320,12 @@ def _build(model, X):
     if getattr(layers, "_unsloth_block_swap", None) is not None or len(layers) == 0:
         return "block swap"
     hidden = config.hidden_size
-    rehomed = STATS["rehomed_sites"]
     plan = _Plan()
     plan.layers = []
     plan.device = device
     plan.dtype = X.dtype
     plan.capability = capability
-    watch = []
+    watch, bindings = [], []
     norm = model.model.norm
     eps = _norm_eps(norm)
     for idx, layer in enumerate(layers):
@@ -374,9 +350,11 @@ def _build(model, X):
         n_kv_heads = config.num_key_value_heads
         if head_dim % 2:
             return "head dim"
-        for module in (layer.input_layernorm, layer.post_attention_layernorm):
+        for name in ("input_layernorm", "post_attention_layernorm"):
+            module = getattr(layer, name)
             if hasattr(module, "modules_to_save"):  # a norm in modules_to_save
                 watch.append(module)
+                bindings.append((layer, name, module))
         entry = _Layer()
         entry.attn = attn
         entry.ln1 = layer.input_layernorm.weight
@@ -397,6 +375,9 @@ def _build(model, X):
             if isinstance(site, str):
                 return f"{kind}: {site}"
             watch.extend(_site_watch(projs))
+            bindings.extend(
+                (owner, name, proj) for name, proj in zip(names, projs) if hasattr(proj, "lora_A")
+            )
             if site.packed.device != device:
                 return "several devices"
             sites[kind] = site
@@ -421,7 +402,9 @@ def _build(model, X):
         return "final norm"
     if hasattr(norm, "modules_to_save"):
         watch.append(norm)
+        bindings.append((model.model, "norm", norm))
     plan.watch = watch
+    plan.bindings = tuple(bindings)
     plan.adapter_state = _adapter_state(watch)
     plan.eps = float(eps)
     plan.final_norm = norm.weight
@@ -438,7 +421,6 @@ def _build(model, X):
         plan.act = torch.empty(config.intermediate_size, dtype = X.dtype, device = device)
         plan.pos = torch.zeros(1, dtype = torch.long, device = device)
         plan.slot = torch.zeros(1, dtype = torch.long, device = device)
-    plan.rehomed = STATS["rehomed_sites"] != rehomed
     plan.signature = _signature(plan)
     STATS["plans"] += 1
     return plan
@@ -475,20 +457,18 @@ def _decode_forward(
     new_sequence = not hasattr(layers[0].self_attn, "paged_attention")
     plan = model.__dict__.get(_PLAN)
     if new_sequence or plan is None or (isinstance(plan, _Plan) and _plan_stale(plan)):
-        rehomed = STATS["rehomed_sites"]
         built = _build(model, X)
-        # A refusal after some sites were re-homed still moved their weights.
-        moved = STATS["rehomed_sites"] != rehomed
         if isinstance(built, str):
             STATS["refused"] = built
             built = _Refused(built)
-        if isinstance(plan, _Plan) and isinstance(built, _Plan) and not built.rehomed:
+        if isinstance(plan, _Plan) and isinstance(built, _Plan):
             if built.signature == plan.signature:
                 plan.watch, plan.adapter_state = built.watch, built.adapter_state
+                plan.bindings = built.bindings
                 built = plan
         if built is not plan:
-            if plan is not None or moved:
-                # Captured decode steps read the old plan's buffers / weight storage, freed now.
+            if plan is not None:
+                # Captured decode steps read the previous plan's scratch buffers.
                 _decode_graphs.invalidate(model)
             plan = model.__dict__[_PLAN] = built
     if isinstance(plan, _Refused) or X.device != plan.device or X.dtype != plan.dtype:
