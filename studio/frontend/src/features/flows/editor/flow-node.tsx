@@ -287,7 +287,8 @@ function CardResizer({
     minWidth: CARD_MIN_WIDTH,
     minHeight,
     onResizeEnd,
-    onResizeStart: () => onResizing(true),
+    // Only a real drag: a press with no movement gets no end event to undo it.
+    onResize: () => onResizing(true),
   };
   return (
     <>
