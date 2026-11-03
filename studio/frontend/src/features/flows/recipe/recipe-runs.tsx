@@ -23,7 +23,7 @@ import {
 } from "@/features/recipe-studio/executions/execution-helpers";
 import { toastError } from "@/shared/toast";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { recipeRun, recipeRuns } from "../api";
+import { datasetRows, recipeRun, recipeRuns } from "../api";
 import { runFlow } from "../editor/run-controller";
 import { useDocStore } from "../stores/doc-store";
 import { useRuntimeStore } from "../stores/runtime-store";
@@ -31,6 +31,7 @@ import { type RecipeRunsTarget, useUiStore } from "../stores/ui-store";
 import { groupGenerate } from "./recipe-columns";
 import {
   runsAreLive,
+  savedRunDataset,
   selectedRun,
   toRunRecords,
   visibleRuns,
@@ -128,10 +129,17 @@ function useRecipeRuns(
       const record = merged.find((r) => r.id === id);
       if (!record?.jobId || record.kind !== "full" || page < 1) return;
       const size = record.datasetPageSize || 20;
+      const offset = (page - 1) * size;
       try {
+        // The recipe job manager keeps only the newest job; an older run pages from its saved parquet.
+        const saved = savedRunDataset(record);
         const response = await getRecipeJobDataset(record.jobId, {
           limit: size,
-          offset: (page - 1) * size,
+          offset,
+        }).catch(async (error) => {
+          if (!saved) throw error;
+          const read = await datasetRows(saved, offset, size);
+          return { dataset: read.rows, total: read.total };
         });
         setPages((current) => ({
           ...current,
