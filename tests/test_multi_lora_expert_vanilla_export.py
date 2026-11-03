@@ -161,7 +161,7 @@ def test_multi_lora_expert_export_loads_in_vanilla_peft(tmp_path, monkeypatch):
         torch.testing.assert_close(vanilla[key], delta.transpose(1, 2), atol = 1e-6, rtol = 1e-5)
 
     # The same folder still reloads under Unsloth (Zoo maps the vanilla pair back) with the trained delta.
-    reloaded = peft.PeftModel.from_pretrained(build(), str(adapter_dir))
+    reloaded = peft.PeftModel.from_pretrained(build(), str(adapter_dir), torch_device = "cpu")
     seen = 0
     for name, module in reloaded.named_modules():
         if type(module).__name__ == "ParamWrapper":
@@ -199,7 +199,7 @@ def test_legacy_grouped_multi_lora_export_is_refused_by_vanilla_peft(tmp_path, m
     proc, _ = _vanilla_load(tmp_path, adapter_dir)
     assert proc.returncode != 0 and "size mismatch" in proc.stderr, proc.stderr[-3000:]
 
-    reloaded = peft.PeftModel.from_pretrained(build(), str(adapter_dir))
+    reloaded = peft.PeftModel.from_pretrained(build(), str(adapter_dir), torch_device = "cpu")
     seen = 0
     for name, module in reloaded.named_modules():
         if type(module).__name__ == "ParamWrapper":
