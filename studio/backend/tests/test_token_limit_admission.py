@@ -125,7 +125,7 @@ def test_delegated_request_consumes_one_override(admission, monkeypatch, endpoin
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("external", [False, True])
 @pytest.mark.parametrize(
-    "usage_steps,new_tokens,internal_research",
+    "usage_steps,new_tokens,internal_workflow",
     [
         ([(90, 10, None)], 100, False),
         ([(250, 20, 160), (180, 5, 185)], 295, False),
@@ -133,7 +133,7 @@ def test_delegated_request_consumes_one_override(admission, monkeypatch, endpoin
     ],
 )
 def test_temporary_chat_counts_without_persisting_its_content(
-    admission, monkeypatch, stream, external, usage_steps, new_tokens, internal_research
+    admission, monkeypatch, stream, external, usage_steps, new_tokens, internal_workflow
 ):
     from fastapi.responses import StreamingResponse
     from core.inference.api_monitor import ApiMonitor
@@ -145,7 +145,7 @@ def test_temporary_chat_counts_without_persisting_its_content(
     monitor.set_terminal_callback(record_api_usage)
     monkeypatch.setattr(inference, "api_monitor", monitor)
     monkeypatch.setattr(
-        inference, "_request_is_saved_credential_workflow", lambda request: internal_research
+        inference, "_request_is_internal_workflow", lambda request: internal_workflow
     )
     completed = 0
 
@@ -197,7 +197,7 @@ def test_temporary_chat_counts_without_persisting_its_content(
     )
     payload = {
         **body,
-        "temporary_chat": not internal_research,
+        "temporary_chat": not internal_workflow,
         "thread_id": "temporary-thread",
         "stream": stream,
     }
@@ -211,7 +211,7 @@ def test_temporary_chat_counts_without_persisting_its_content(
     assert client.post("/v1/chat/completions", json = payload).status_code == 429
 
     studio_db.upsert_app_settings({"token_limit": {"enabled": False}})
-    monkeypatch.setattr(inference, "_request_is_saved_credential_workflow", lambda request: False)
+    monkeypatch.setattr(inference, "_request_is_internal_workflow", lambda request: False)
     payload["temporary_chat"] = False
     assert client.post("/v1/chat/completions", json = payload).status_code == 200
     conn = studio_db.get_connection()
