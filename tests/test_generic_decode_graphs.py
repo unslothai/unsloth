@@ -236,7 +236,7 @@ def test_graph_path_runs_the_compiled_variant_eager_runs(host, llama):
     flag, so the step keeps the ambient autocast; CUDA autocast is not reachable on the host.)"""
     from torch._dynamo.utils import counters
 
-    seen = []
+    seen, calls = [], []
 
     @torch.compile(backend = "eager", dynamic = False)
     def region(mask, position):
@@ -246,7 +246,9 @@ def test_graph_path_runs_the_compiled_variant_eager_runs(host, llama):
 
     def pre_hook(module, args, kwargs):
         seen.append(kwargs.get("attention_mask"))
-        seen.append(kwargs.get("cache_position"))
+        # transformers 5.x passes no cache_position: fall back to the positions.
+        position = kwargs.get("cache_position")
+        seen.append(position if position is not None else kwargs.get("position_ids"))
 
     def head_hook(module, args, out):
         mask, position = seen[-2], seen[-1]
@@ -254,6 +256,7 @@ def test_graph_path_runs_the_compiled_variant_eager_runs(host, llama):
             return out
         if isinstance(mask, dict):
             mask = next(iter(mask.values()))
+        calls.append(1)
         return out + region(mask, position)
 
     handles = [
@@ -264,6 +267,7 @@ def test_graph_path_runs_the_compiled_variant_eager_runs(host, llama):
         _fresh(llama)
         ids, mask = _ids(llama, 3, pad = 2)
         eager = _generate(llama, ids, mask, False)
+        assert calls, "the compiled region never ran: the check would be vacuous"
         before = counters["stats"]["unique_graphs"]
         graphed = _generate(llama, ids, mask, True)
         # No Dynamo variant beyond the eager step's: same inference-ness / strides / global state.
@@ -679,3 +683,40 @@ def test_static_buffers_keep_eager_strides(make):
     buffer.copy_(compact)
     replayed = buffer.expand(leaf.shape)
     assert replayed.stride() == leaf.stride() and torch.equal(replayed, leaf)
+
+
+def test_weight_changes_revoke_key_decisions(host, llama):
+    from unsloth.models import _decode_graphs as G
+    for drop in (GG.release, G.invalidate, G.release):
+        _fresh(llama)
+        state = GG._state(llama)
+        state.validated.add("key")
+        state.refused["other"] = "validation mismatch"
+        state.fingerprint = ("old",)
+        drop(llama)
+        assert not state.validated and not state.refused and state.fingerprint is None, drop
+
+
+def test_one_token_prompt_prefill_runs_eagerly(host, llama):
+    _fresh(llama)
+    ids, mask = _ids(llama, 1, length = 1)
+    eager = _generate(llama, ids, mask, False)
+    graphed = _generate(llama, ids, mask, True)
+    assert torch.equal(eager, graphed)
+    # 10 new tokens: the first forward (prefill) stays eager; only the 9 decode steps take the graph path.
+    assert GG._state(llama).step == 9 and GG.stats(llama)["replays"] > 0
+
+
+def test_capture_setup_failure_runs_eagerly(host, llama, monkeypatch):
+    _fresh(llama)
+    ids, mask = _ids(llama, 1)
+    eager = _generate(llama, ids, mask, False)
+
+    def no_pool():
+        raise torch.OutOfMemoryError("pool")
+
+    monkeypatch.setattr(host, "pool", staticmethod(no_pool))
+    graphed = _generate(llama, ids, mask, True)
+    assert torch.equal(eager, graphed)
+    s = GG.stats(llama)
+    assert s["replays"] == 0 and any("capture setup failed" in r for r in s["refusals"]), s

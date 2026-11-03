@@ -367,8 +367,7 @@ def invalidate(model):
     for module in model.modules():
         generic = module.__dict__.get("_unsloth_generic_decode_graphs")
         if generic is not None:
-            generic.clear()
-            generic.fingerprint = None
+            generic.invalidate()
     BUFFER_EPOCH += 1
 
 
@@ -386,8 +385,7 @@ def release(model):
         generic = d.get("_unsloth_generic_decode_graphs")
         if generic is not None:
             # FastModel generate's graphs (_generic_decode_graphs).
-            generic.clear()
-            generic.fingerprint = None
+            generic.invalidate()
         if "_unsloth_graph_buffers" in d:
             found = True
             del d["_unsloth_graph_buffers"]

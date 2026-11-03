@@ -160,6 +160,7 @@ class _State:
         self.moved = None
         self.key_captures = collections.Counter()
         self.step = 0
+        self.forwards = 0
         self.capture_errors = []
         self.check = _new_check()
         self.captures = 0
@@ -174,6 +175,13 @@ class _State:
         # A pool whose graphs are all freed is released by the allocator: never reuse its handle.
         self.pool = None
 
+    def invalidate(self):
+        """Weights / adapters / quant state changed: graphs and every per-key decision go."""
+        self.clear()
+        self.fingerprint = None
+        self.validated.clear()
+        self.refused.clear()
+
 
 def _state(model):
     state = model.__dict__.get(_ATTR)
@@ -186,6 +194,7 @@ def begin(model):
     """Start of a generate() call: the first graph step re-checks the fingerprint."""
     state = _state(model)
     state.recheck = True
+    state.forwards = 0
     state.moved = None
     state.key_captures.clear()
     state.step = 0
@@ -206,8 +215,7 @@ def release(model):
     for module in model.modules():
         state = module.__dict__.get(_ATTR)
         if state is not None:
-            state.clear()
-            state.fingerprint = None
+            state.invalidate()
 
 
 def stats(model):
@@ -520,6 +528,12 @@ def decode_step(
         return None
     if _BACKEND.capturing():
         return None
+    state = _state(model)
+    state.forwards += 1
+    if state.forwards == 1:
+        # A call's first forward is its prefill, even for a one-token prompt (Qwen3-VL recomputes
+        # rope_deltas there).
+        return None
     ids = kwargs.get("input_ids")
     if ids is None:
         ids = kwargs.get("inputs_embeds")
@@ -530,7 +544,6 @@ def decode_step(
         or ids.device.type != _BACKEND.device_type
     ):
         return None
-    state = _state(model)
     state.step += 1
     if ids.shape[0] > MAX_BSZ:
         return _refusal(state, "batch over max")
@@ -551,13 +564,12 @@ def decode_step(
         fingerprint = _fingerprint(model)
         if fingerprint is None:
             # Ineligible until the next generate() call re-checks.
-            state.clear()
-            state.fingerprint = None
+            state.invalidate()
             state.recheck = False
             state.optimizer_steps = K._OPTIMIZER_STEPS
             return _refusal(state, "not one CUDA device / adapters")
         if fingerprint != state.fingerprint:
-            state.clear()
+            state.invalidate()
             state.fingerprint = fingerprint
         state.recheck = False
         state.optimizer_steps = K._OPTIMIZER_STEPS
@@ -635,20 +647,28 @@ def _capture(state, key, forward, kwargs, leaves, cache):
         sig = state.cache_sig
         state.clear()
         state.cache_sig = sig
-    if state.stream is not None and state.stream.device.index != _BACKEND.current_device():
-        state.stream = None
+    try:
+        if state.stream is not None and state.stream.device.index != _BACKEND.current_device():
+            state.stream = None
+            state.pool = None
+        if state.pool is None:
+            state.pool = _BACKEND.pool()
+        if state.stream is None:
+            state.stream = _BACKEND.new_stream()
+        stream = state.stream
+        # Static buffers match their argument (dtype, strides, inference-ness): same compiled variants as eager.
+        buffers = [_buffer_like(_compact(leaf)) for leaf in leaves]
+        for buffer, leaf in zip(buffers, leaves):
+            buffer.copy_(_compact(leaf))
+        it = iter([buffer.expand(leaf.shape) for buffer, leaf in zip(buffers, leaves)])
+        static_kwargs = {k: _build(v, it, cache) for k, v in kwargs.items()}
+    except Exception as error:
+        # Graph setup (pool, stream, buffers) is optional: the step runs eagerly.
+        reason = f"capture setup failed: {type(error).__name__}"
         state.pool = None
-    if state.pool is None:
-        state.pool = _BACKEND.pool()
-    if state.stream is None:
-        state.stream = _BACKEND.new_stream()
-    stream = state.stream
-    # Static buffers match their argument (dtype, strides, inference-ness): same compiled variants as eager.
-    buffers = [_buffer_like(_compact(leaf)) for leaf in leaves]
-    for buffer, leaf in zip(buffers, leaves):
-        buffer.copy_(_compact(leaf))
-    it = iter([buffer.expand(leaf.shape) for buffer, leaf in zip(buffers, leaves)])
-    static_kwargs = {k: _build(v, it, cache) for k, v in kwargs.items()}
+        state.refused[key] = reason
+        state.refusals[reason] += 1
+        return forward(**kwargs)
     before = _host_state(cache)
     stream.wait_stream(_BACKEND.current_stream())
     graph = None
@@ -695,14 +715,14 @@ def _capture(state, key, forward, kwargs, leaves, cache):
 
 
 def _validate(state, key, entry, forward, kwargs, cache):
-    """First replay of a key: the eager step and the replay from the same cache state must agree
-    bitwise; else the key is refused and the eager result kept."""
+    """First replay of a key: the replay and the eager step from the same cache state must agree
+    bitwise; else the key is refused. The eager step runs last, so its result and its cache rows
+    are what generation continues from."""
     state.validations += 1
     start = _snapshot(cache)
-    eager = forward(**kwargs)
-    _restore(start)
     entry.graph.replay()
-    _advance(cache, 1)
+    _restore(start)
+    eager = forward(**kwargs)
     equal = _outputs_equal(eager, entry.outputs)
     _record_check(state, eager, entry.outputs, equal)
     if equal or entry.validated:
@@ -711,13 +731,10 @@ def _validate(state, key, entry, forward, kwargs, cache):
         state.validated.add(key)
         state.replays += 1
         return eager
-    # The replay wrote the same cache rows: redo the eager step over them.
     reason = "validation mismatch"
     state.refused[key] = reason
     state.refusals[reason] += 1
     state.graphs.pop(key, None)
-    _restore(start)
-    eager = forward(**kwargs)
     if os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_STRICT", "0") == "1":
         raise RuntimeError("Unsloth: decode CUDA graph replay differs from the eager step")
     return eager
