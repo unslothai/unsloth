@@ -4307,6 +4307,7 @@ function ThreadBackendAutosave({
 
 // False while the chat tab is hidden: runtime stays mounted, views unmount.
 export const ChatActiveContext = createContext(true);
+export const NewChatDraftIdContext = createContext<string | undefined>(undefined);
 
 // False while a Run handoff (Hub, Library, shared link) owns the chat model picker, so the composer
 // cannot take focus from it.
@@ -4459,7 +4460,9 @@ export function ChatRuntimeProvider({
         )}
         {/* The view stays mounted (only CSS-hidden) while off-route so the run stays attached and the
             stream alive; unmounting aborts generation. */}
-        {children}
+        <NewChatDraftIdContext.Provider value={newThreadNonce}>
+          {children}
+        </NewChatDraftIdContext.Provider>
         </ComparePaneContext.Provider>
       </ToolPaneScopeContext.Provider>
       </ChatProjectScopeContext.Provider>
