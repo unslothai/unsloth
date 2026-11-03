@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createServer, type ViteDevServer } from "vite";
 
+import { readSrc } from "./helpers/kit.ts";
+
 let vite: ViteDevServer;
 let withSavedModelIds: (catalog: string[], saved: string[]) => string[];
 
@@ -28,4 +30,9 @@ test("saved ids missing from the live catalog stay pickable", () => {
     ),
     ["openai/gpt-5.5", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-pro:nitro"],
   );
+});
+
+test("automatic catalog loads never send the typed API key", () => {
+  const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
+  assert.match(dialog, /apiKey: silent \? "" : apiKey\.trim\(\),/);
 });

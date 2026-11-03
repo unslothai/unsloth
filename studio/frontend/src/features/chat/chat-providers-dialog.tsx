@@ -802,7 +802,8 @@ export function ChatProvidersSettings({
         providerType: backendProviderType,
 
         providerId: editingProviderId,
-        apiKey: apiKey.trim(),
+        // A typed key may still belong to the previously chosen provider.
+        apiKey: silent ? "" : apiKey.trim(),
         baseUrl,
         apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
       });
