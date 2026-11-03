@@ -107,9 +107,7 @@ def _avoids_cudnn(Q, training):
 
 
 def _training_sdpa(*args, **kwargs):
-    """SDPA for a training forward (AttentionContext.training, passed in, no global state: these
-    calls run traced). On SM100 SDPA picks cuDNN attention, which builds a plan for every new
-    sequence length (~150 ms each), and training batches change length every step."""
+    """Avoid per-length cuDNN planning on SM100 training calls, including traced forwards."""
     if args and _avoids_cudnn(args[0], True):
         # Narrows the caller's sdpa_kernel policy (MATH stays math); cuDNN-only runs as asked.
         backends = _CUDNN_FREE_BACKENDS[_cudnn_free_index()]
@@ -261,9 +259,7 @@ def _padded_bucket_mask(attn_mask, pad):
 
 
 def _rerouted_sdpa(*args, **kwargs):
-    """SDPA standing in for xformers inside a compiled block, on the kernels xformers would run.
-    Without the pin, torch 2.13+ on SM100 takes cuDNN attention, which builds a new plan for every
-    new sequence length (~150 ms per length): padded batches of varying length stalled every step."""
+    """Compiled xformers stand-in: avoid cuDNN's per-length planning."""
     backends = _CUDNN_FREE_BACKENDS[_cudnn_free_index()]
     if backends is None:
         return F.scaled_dot_product_attention(*args, **kwargs)
@@ -280,7 +276,6 @@ try:
         _SDPBackend.EFFICIENT_ATTENTION,
         _SDPBackend.MATH,
     ]
-    # cuDNN-free pins, indexed by _cudnn_free_index: the caller's enabled flash / efficient / math.
     _CUDNN_FREE_BACKENDS = (None,) + tuple(
         [b for j, b in enumerate(_XFORMERS_LIKE_BACKENDS) if i >> j & 1] for i in range(1, 8)
     )
@@ -761,7 +756,6 @@ def _constant_probe(fn):
 
 _sdpa_backend_state = _constant_probe(_sdpa_backend_state)
 _sdpa_masked_choice = _constant_probe(_sdpa_masked_choice)
-# Traced: read under the caller's sdpa_kernel at trace time, like SDPA's own backend pick.
 _cudnn_free_index = _constant_probe(_cudnn_free_index)
 
 
