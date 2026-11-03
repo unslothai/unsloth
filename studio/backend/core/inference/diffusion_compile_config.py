@@ -173,7 +173,6 @@ def canonical_compile_cache_tag(current: str, prefix: str, tag: str | None) -> s
 
 
 def set_compile_cache_tag(prefix: str, tag: str | None) -> None:
-    """Record Studio's cache token for render and compile contexts."""
     cfg = _module("torch.compiler.config")
     if cfg is None:
         return

@@ -103,7 +103,6 @@ def _set_compile_cache_tag(tag: Optional[str]) -> None:
     from .diffusion_compile_config import set_compile_cache_tag
 
     try:
-        # Recorded, not just assigned: torch 2.12+ keeps the tag per context and renders compile on other threads.
         set_compile_cache_tag(_CACHE_TAG_PREFIX, tag)
     except Exception:  # noqa: BLE001
         pass

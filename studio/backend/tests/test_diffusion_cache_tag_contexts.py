@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FP8 / NVFP4 cache tags reach render and compile contexts (#15055)."""
-
 from __future__ import annotations
 
 import threading
@@ -46,8 +44,6 @@ def _in_thread(fn):
 
 
 def _render_context_tag():
-    """What a render / background-compile thread sees: both call ``apply()`` before compiling."""
-
     def read():
         compile_config.apply()
         return cc.cache_key_tag
