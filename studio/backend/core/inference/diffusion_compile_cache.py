@@ -204,7 +204,6 @@ def environment_fingerprint() -> dict[str, Any]:
             fp["gpu_name"] = torch.cuda.get_device_name(index)
             cap = torch.cuda.get_device_capability(index)
             fp["gpu_capability"] = f"sm_{cap[0]}{cap[1]}"
-        # Bundles must use the render context's tag to find torch's artifacts.
         from .diffusion_compile_config import apply
 
         apply()
