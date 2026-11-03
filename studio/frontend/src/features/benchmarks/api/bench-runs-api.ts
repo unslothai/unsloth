@@ -64,11 +64,11 @@ export async function deleteBenchRun(id: string): Promise<void> {
     throw new Error(`Deleting the benchmark run failed (${res.status})`);
 }
 
-/** Claim the GPU for a run; a run in another tab or on another device rejects with its reason. */
 /** Another runner holds the lease: renewing a held one means this run lost the server. */
 export class BenchLeaseHeldError extends Error {}
 
-/** Resolves to how many other generations reached the server under this lease so far. */
+/** Claim the GPU for a run. Resolves to the outside generations counted so far; rejects with
+ * BenchLeaseHeldError when a run in another tab or on another device holds it. */
 export async function takeBenchLease(
   holder: string,
   kind: "sweep" | "llama-bench" | "evals" = "sweep",

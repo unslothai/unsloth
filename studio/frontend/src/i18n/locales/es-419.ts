@@ -1008,6 +1008,7 @@ export const es419 = {
       showLess: "Mostrar menos",
       settings: "Configuración",
       api: "API",
+      benchmarks: "Benchmarks",
       lightMode: "Modo claro",
       darkMode: "Modo oscuro",
       guidedTour: "Recorrido guiado",

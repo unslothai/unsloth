@@ -1054,7 +1054,6 @@ export const sv = {
       runOptions: "Körningsalternativ",
     },
     navigation: {
-      benchmarks: "Benchmarks",
       newChat: "Ny chatt",
       returnToChat: "Tillbaka till chatten",
       returnToChats: "Tillbaka till {count} chattar",
@@ -1088,6 +1087,7 @@ export const sv = {
       showLess: "Visa mindre",
       settings: "Inställningar",
       api: "API",
+      benchmarks: "Benchmarks",
       lightMode: "Ljust läge",
       darkMode: "Mörkt läge",
       guidedTour: "Guidad tur",

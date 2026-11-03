@@ -122,7 +122,7 @@ export function familyOf(load: VariantLoad): Family {
   return "other";
 }
 
-/** Studio's spellings folded to one, so a requested mode can be checked against the served one. */
+/** Every spelling of a speculative mode folded to one, so requested and served compare. */
 export function canonicalSpec(raw: string | null | undefined): string {
   const s = String(raw ?? "")
     .toLowerCase()
@@ -318,11 +318,11 @@ export function sweepVariants(
   }
 }
 
-/** Context every offload row loads at: Studio's own offload cap, so the auto row compares. */
+/** Context every offload row loads at: the backend's own offload cap, so the Auto row compares. */
 export const OFFLOAD_CONTEXT = 8192;
 
 /**
- * Studio's fit, then manual placements from the least VRAM to the most, so the first out of
+ * Auto fit, then manual placements from the least VRAM to the most, so the first out of
  * memory row lets the runner skip the rest. MoE models move expert layers (n_cpu_moe, which the
  * backend clamps and offsets past dense layers); dense ones step GPU layers.
  */
@@ -504,150 +504,50 @@ export function describeFallback(code: string): string {
   return FALLBACK_REASON[code] ?? code.replace(/_/g, " ");
 }
 
-/** The user's own extra args, minus any ngram tuning an earlier variant left behind. */
-export function userExtraArgs(
-  args: readonly string[] | null | undefined,
-): string[] {
-  const out: string[] = [];
-  const list = args ?? [];
-  for (let i = 0; i < list.length; i++) {
-    const eq = list[i].indexOf("=");
-    const name = eq >= 0 ? list[i].slice(0, eq) : list[i];
-    if (NGRAM_FLAGS.includes(name)) {
-      if (eq < 0) i++; // its value is a separate token
-      continue;
-    }
-    out.push(list[i]);
-  }
-  return out;
-}
 
-// Offload flags an inherited extra arg could carry (llama_server_args._OFFLOAD_SHADOWING_FLAGS).
-// The value flags last-wins-promote into the manual layer count on /load, so an offload row's
-// requested placement would be silently replaced by the chat model's pass-through -ngl.
-// Arity matches the backend (llama_server_args._BOOLEAN_SHADOWING_FLAGS): -cmoe/--cpu-moe are
-// switches, -fit/--fit take on|off.
-const OFFLOAD_VALUE_FLAGS = [
-  "-ngl",
-  "--gpu-layers",
-  "--n-gpu-layers",
-  "-ncmoe",
-  "--n-cpu-moe",
-  "-fit",
-  "--fit",
-];
+// Flags a row owns through a load field. The backend appends extras after its managed flags, so
+// chat's pass-through copies would last-wins over the row; each group is dropped when the row sets
+// that field. Arity matches llama_server_args (value flags take the next token unless `=`-joined).
+const OFFLOAD_VALUE_FLAGS = ["-ngl", "--gpu-layers", "--n-gpu-layers", "-ncmoe", "--n-cpu-moe", "-fit", "--fit"];
 const OFFLOAD_BOOL_FLAGS = ["-cmoe", "--cpu-moe"];
-
-/** Drop inherited GPU-offload flags: the offload sweep owns placement, so its rows set it themselves. */
-function stripOffloadArgs(args: readonly string[] | null | undefined): string[] {
-  const out: string[] = [];
-  const list = args ?? [];
-  for (let i = 0; i < list.length; i++) {
-    const eq = list[i].indexOf("=");
-    const name = eq >= 0 ? list[i].slice(0, eq) : list[i];
-    if (OFFLOAD_VALUE_FLAGS.includes(name)) {
-      if (eq < 0) i++; // its value is a separate token
-      continue;
-    }
-    if (OFFLOAD_BOOL_FLAGS.includes(name)) continue;
-    out.push(list[i]);
-  }
-  return out;
-}
-
-// Draft-depth flags a spec sweep owns through spec_draft_n_max. An inherited copy in chat's
-// pass-through args would last-wins-override the depth each row asks for: the backend keeps
-// explicit extras and appends them after its managed --draft-max / --spec-draft-n-max, so every
-// depth row would run at the inherited value. Legacy and post-rename spellings, both take a value.
-const SPEC_DEPTH_FLAGS = [
-  "--draft-max",
-  "--draft-min",
-  "--spec-draft-n-max",
-  "--spec-draft-n-min",
-];
-
-/** Drop inherited draft-depth flags: a spec sweep's rows set the depth themselves. */
-function stripSpecDepthArgs(args: readonly string[] | null | undefined): string[] {
-  const out: string[] = [];
-  const list = args ?? [];
-  for (let i = 0; i < list.length; i++) {
-    const eq = list[i].indexOf("=");
-    const name = eq >= 0 ? list[i].slice(0, eq) : list[i];
-    if (SPEC_DEPTH_FLAGS.includes(name)) {
-      if (eq < 0) i++; // its value is a separate token
-      continue;
-    }
-    out.push(list[i]);
-  }
-  return out;
-}
-
-// Mode-owning flags a spec / auto-tune sweep owns through speculative_type. The loader treats
-// extras carrying --spec-type / --spec-default as owning the mode and returns before emitting the
-// row's requested mode (llama_cpp._build_speculative_flags), so a forced row would be skipped as a
-// mismatch and the Auto row silently measured under chat's override. --spec-type takes a value;
-// --spec-default is a bare flag.
+const SPEC_DEPTH_FLAGS = ["--draft-max", "--draft-min", "--spec-draft-n-max", "--spec-draft-n-min"];
+// The loader treats --spec-type / --spec-default as owning the mode and skips the row's own.
 const SPEC_MODE_VALUE_FLAGS = ["--spec-type"];
 const SPEC_MODE_BOOL_FLAGS = ["--spec-default"];
-
-/** Drop inherited speculative-mode flags: a spec or auto-tune row sets the mode itself. */
-function stripSpecModeArgs(args: readonly string[] | null | undefined): string[] {
-  const out: string[] = [];
-  const list = args ?? [];
-  for (let i = 0; i < list.length; i++) {
-    const eq = list[i].indexOf("=");
-    const name = eq >= 0 ? list[i].slice(0, eq) : list[i];
-    if (SPEC_MODE_VALUE_FLAGS.includes(name)) {
-      if (eq < 0) i++; // its value is a separate token
-      continue;
-    }
-    if (SPEC_MODE_BOOL_FLAGS.includes(name)) continue;
-    out.push(list[i]);
-  }
-  return out;
-}
-
-// Context flags the context sweep owns through max_seq_length. An inherited -c / --ctx-size in
-// chat's pass-through args would last-wins-override each row's window: parse_ctx_override reads the
-// extras (llama_server_args.parse_ctx_override), so every context row would run at the inherited size.
 const CONTEXT_FLAGS = ["-c", "--ctx-size"];
+const PARALLEL_FLAGS = ["-np", "--parallel"];
+const KV_CACHE_FLAGS = ["-ctk", "--cache-type-k", "-ctv", "--cache-type-v"];
+const DRAFT_CACHE_FLAGS = [
+  "-ctkd",
+  "--cache-type-k-draft",
+  "--spec-draft-type-k",
+  "-ctvd",
+  "--cache-type-v-draft",
+  "--spec-draft-type-v",
+];
 
-/** Drop inherited context flags: the context sweep's rows set max_seq_length themselves. */
-function stripContextArgs(args: readonly string[] | null | undefined): string[] {
+function stripFlags(
+  args: readonly string[],
+  valueFlags: readonly string[],
+  boolFlags: readonly string[] = [],
+): string[] {
   const out: string[] = [];
-  const list = args ?? [];
-  for (let i = 0; i < list.length; i++) {
-    const eq = list[i].indexOf("=");
-    const name = eq >= 0 ? list[i].slice(0, eq) : list[i];
-    if (CONTEXT_FLAGS.includes(name)) {
-      if (eq < 0) i++; // its value is a separate token
+  for (let i = 0; i < args.length; i++) {
+    const eq = args[i].indexOf("=");
+    const name = eq >= 0 ? args[i].slice(0, eq) : args[i];
+    if (valueFlags.includes(name)) {
+      if (eq < 0) i++;
       continue;
     }
-    out.push(list[i]);
+    if (boolFlags.includes(name)) continue;
+    out.push(args[i]);
   }
   return out;
 }
 
-// Slot count the parallel sweep owns through n_parallel. An inherited copy in chat's
-// pass-through args would last-wins-override the count each row asks for: the backend keeps
-// explicit extras and appends them after its managed --parallel, so every slot row would run
-// the inherited value and servedMismatch (which reads the managed count) can't catch it.
-const PARALLEL_FLAGS = ["-np", "--parallel"];
-
-/** Drop inherited parallel-slot flags: the parallel sweep's rows set the count themselves. */
-function stripParallelArgs(args: readonly string[] | null | undefined): string[] {
-  const out: string[] = [];
-  const list = args ?? [];
-  for (let i = 0; i < list.length; i++) {
-    const eq = list[i].indexOf("=");
-    const name = eq >= 0 ? list[i].slice(0, eq) : list[i];
-    if (PARALLEL_FLAGS.includes(name)) {
-      if (eq < 0) i++; // its value is a separate token
-      continue;
-    }
-    out.push(list[i]);
-  }
-  return out;
+/** The user's own extra args, minus any ngram tuning an earlier variant left behind. */
+export function userExtraArgs(args: readonly string[] | null | undefined): string[] {
+  return stripFlags(args ?? [], NGRAM_FLAGS);
 }
 
 export function variantLoad<T extends LoadPayload>(
@@ -655,24 +555,20 @@ export function variantLoad<T extends LoadPayload>(
   variant: Variant,
 ): T {
   const { llama_extra_args: extra, ...rest } = variant.load;
-  // A row that owns GPU placement (the offload sweep) must not inherit chat's -ngl / --n-cpu-moe,
-  // which /load would promote over the row's requested layer count. A row that owns speculative
-  // decoding must not inherit chat's --spec-type / --spec-default (which would take the mode) nor
-  // --draft-max / --spec-draft-n-max (which would override the depth the row asked for). A context
-  // row must not inherit chat's -c / --ctx-size, which last-wins over its requested window.
+  const load = variant.load;
   let baseArgs = base.llama_extra_args ?? [];
-  if (variant.load.gpu_memory_mode !== undefined)
-    baseArgs = stripOffloadArgs(baseArgs);
-  if (variant.load.speculative_type !== undefined)
-    baseArgs = stripSpecModeArgs(stripSpecDepthArgs(baseArgs));
-  if (variant.load.max_seq_length !== undefined)
-    baseArgs = stripContextArgs(baseArgs);
-  if (variant.load.n_parallel !== undefined)
-    baseArgs = stripParallelArgs(baseArgs);
+  if (load.gpu_memory_mode !== undefined)
+    baseArgs = stripFlags(baseArgs, OFFLOAD_VALUE_FLAGS, OFFLOAD_BOOL_FLAGS);
+  if (load.speculative_type !== undefined)
+    baseArgs = stripFlags(baseArgs, [...SPEC_MODE_VALUE_FLAGS, ...SPEC_DEPTH_FLAGS], SPEC_MODE_BOOL_FLAGS);
+  if (load.max_seq_length !== undefined) baseArgs = stripFlags(baseArgs, CONTEXT_FLAGS);
+  if (load.n_parallel !== undefined) baseArgs = stripFlags(baseArgs, PARALLEL_FLAGS);
+  if (load.cache_type_kv !== undefined) baseArgs = stripFlags(baseArgs, KV_CACHE_FLAGS);
+  if (load.spec_draft_cache_type !== undefined) baseArgs = stripFlags(baseArgs, DRAFT_CACHE_FLAGS);
   return {
     ...base,
     ...rest,
-    // Always explicit: omitted, Studio re-applies the model's stored args, which after
+    // Always explicit: omitted, the backend re-applies the model's stored args, which after
     // an ngram row would carry that row's tuning into the next one.
     llama_extra_args: [...baseArgs, ...(extra ?? [])],
     // A fresh server per row: timings include the load, and no drafter cache carries over.
@@ -696,8 +592,7 @@ export function servedMismatch(
   if (wantGpu && st.offloaded_layers === 0)
     return "The server placed no layers on the GPU";
   const want = variant.load.speculative_type;
-  // Only rows that pick a forced mode can be let down by a fallback; the Auto row asks Studio to
-  // choose, so its fallback (ngram, speculation off) is the Studio-default config we mean to measure.
+  // A fallback only fails a forced mode; Auto's fallback is the default config we mean to measure.
   if (
     want !== undefined &&
     want !== null &&
@@ -838,7 +733,7 @@ export interface VariantOutcome {
   state: VariantState;
   /** Why a row was skipped or failed, in the user's words where we can. */
   reason?: string;
-  /** What Studio actually served after the load. */
+  /** What the server actually ran after the load. */
   served?: Record<string, unknown>;
 }
 
@@ -1010,7 +905,7 @@ export interface Highlights {
 export function highlights(rows: AggRow[]): Highlights {
   const baseline = rows.find((r) => r.isBaseline) ?? null;
   const others = rows.filter((r) => !r.isBaseline);
-  // The fastest row overall, which can be the baseline (an offload sweep's Studio fit).
+  // The fastest row overall, which can be the baseline (an offload sweep's Auto fit).
   const best =
     baseline && (!others[0] || baseline.mean >= others[0].mean)
       ? baseline

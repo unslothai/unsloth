@@ -80,7 +80,7 @@ function scoreRun(run: BenchRunSummary): {
   const ranked = rows.filter((r) => done.has(r.label));
   const base = ranked.find((r) => r.isBase) ?? null;
   const challenger = ranked.find((r) => !r.isBase) ?? null;
-  // Fastest row overall wins the card, which can be the baseline (an offload sweep's Studio fit).
+  // Fastest row overall wins the card, which can be the baseline (an offload sweep's Auto fit).
   const best =
     base && (!challenger || base.tps >= challenger.tps)
       ? base

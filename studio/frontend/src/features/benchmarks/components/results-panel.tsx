@@ -343,9 +343,15 @@ export function RunResults({
         })
     : [];
   const perRow = run.config.warmup + run.config.repetitions;
-  const settled =
-    run.outcomes.filter((o) => o.state === "skipped" || o.state === "error")
-      .length * perRow;
+  // A row that stopped early still owes the reps it never ran.
+  const settled = run.outcomes
+    .filter((o) => o.state === "skipped" || o.state === "error")
+    .reduce(
+      (n, o) =>
+        n +
+        Math.max(0, perRow - run.results.filter((r) => r.variant === o.label).length),
+      0,
+    );
   const fraction = run.config.variants.length
     ? Math.min(
         1,

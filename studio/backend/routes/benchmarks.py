@@ -31,10 +31,8 @@ _loads_in_flight: dict[Optional[str], int] = {}
 
 
 def _redact_run(run: dict[str, Any], *, via_api_key: bool) -> dict[str, Any]:
-    """`model` and `config.tuneModel` hold the resolved absolute path of a local GGUF, the same
-    host identity the inference status route hides from API-key callers. The path redactor keys
-    on field name and neither is one it knows, so route them through identity keys it does and
-    map the references back."""
+    """Hide the local GGUF path in `model` and `config.tuneModel` from API-key callers, as inference
+    status does. The redactor keys on field names it knows, so map them through those and back."""
     if host_paths_visible(via_api_key):
         return run
     config = run.get("config")
@@ -259,6 +257,26 @@ def _load_done(holder: Optional[str]) -> None:
             _loads_in_flight.pop(holder, None)
 
 
+SWEEP_BUSY_DETAIL = (
+    "A benchmark is running on this model. Stop it on the Benchmarks page or let it finish, "
+    "then try again."
+)
+EVAL_BUSY_DETAIL = SWEEP_BUSY_DETAIL.replace("A benchmark", "An eval", 1)
+
+
+def refuse_if_sweep_holds(request) -> None:
+    """409 a model swap that bypasses LOAD_PATHS (auto-switch, preview) while a sweep holds the server."""
+    if _lease is None:
+        return
+    headers = getattr(request, "headers", None)
+    holder = headers.get(LEASE_HEADER.decode()) if headers is not None else None
+    with _lease_lock:
+        busy = _sweep_holds_against(holder)
+    if busy:
+        from fastapi import HTTPException
+        raise HTTPException(status_code = 409, detail = SWEEP_BUSY_DETAIL)
+
+
 def _holds_lease(holder: Optional[str]) -> bool:
     with _lease_lock:
         return bool(
@@ -317,18 +335,14 @@ class BenchmarkTrafficMiddleware:
             if path.rstrip("/") in LOAD_PATHS and _carries_bearer_credentials(scope, path):
                 refused = None
                 if _eval_running() and not _holds_lease(holder):
-                    refused = "An eval is running on this model."
+                    refused = EVAL_BUSY_DETAIL
                 elif not await _admit_load_in_turn(holder):
-                    refused = "A benchmark is running on this model."
+                    refused = SWEEP_BUSY_DETAIL
                 if refused:
                     from starlette.responses import JSONResponse
-                    await JSONResponse(
-                        {
-                            "detail": f"{refused} Stop it on the Benchmarks page or let it finish, "
-                            "then try again."
-                        },
-                        status_code = 409,
-                    )(scope, receive, send)
+                    await JSONResponse({"detail": refused}, status_code = 409)(
+                        scope, receive, send
+                    )
                     return
                 # A load still running after its client left (inference's padded answer) keeps
                 # counting until it ends, not until the response does.
