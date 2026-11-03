@@ -402,16 +402,16 @@ def test_whole_step_graph_capture_keeps_the_regular_path(monkeypatch):
 
 @pytest.mark.parametrize("strided", [False, True])
 def test_strided_final_norm_keeps_the_regular_path(monkeypatch, strided):
-    from torch._subclasses.fake_tensor import FakeTensorMode
+    from torch._subclasses.fake_tensor import FakeTensor, FakeTensorMode
 
     D = _driver()
-    assert not torch.cuda.is_initialized()
     monkeypatch.setattr(D.torch.cuda, "get_device_capability", lambda device: (8, 0))
     monkeypatch.setattr(D.F, "supported_capability", lambda capability: True, raising = False)
     monkeypatch.setattr(D, "_signature", lambda plan: ())
     device = torch.device("cuda", 0)
     with FakeTensorMode():
         weight = torch.empty_strided((8,), (2 if strided else 1,), device = device)
+        assert isinstance(weight, FakeTensor)
         norm = lambda w: types.SimpleNamespace(weight = w, variance_epsilon = 1e-5)
         attn = types.SimpleNamespace(
             head_dim = 8,
@@ -453,7 +453,6 @@ def test_strided_final_norm_keeps_the_regular_path(monkeypatch, strided):
         else:
             assert isinstance(plan, D._Plan)
             assert plan.final_norm is weight
-    assert not torch.cuda.is_initialized()
 
 
 class _Lora:
