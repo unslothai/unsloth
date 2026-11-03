@@ -109,3 +109,25 @@ test("Tidy up lays out top to bottom when asked", () => {
   const g = graph();
   assert.ok(g.nodes.src.pos[1] < g.groups.g1.rect[1] && g.groups.g1.rect[1] + 560 < g.nodes.out.pos[1], "rows go down");
 });
+
+test("a long chain wraps into bands about a screen's shape instead of one long row", () => {
+  const ids = Array.from({ length: 12 }, (_, i) => `n${i}`);
+  const request = {
+    nodes: ids.map((id) => ({ id, width: 260, height: 140 })),
+    edges: ids.slice(1).map((id, i) => ({ source: ids[i], target: id })),
+    direction: "LR" as const,
+    ...TIDY_SPACING.curved,
+  };
+  const span = (r: Record<string, [number, number]>, axis: 0 | 1, size: number) =>
+    Math.max(...ids.map((id) => r[id][axis] + size)) - Math.min(...ids.map((id) => r[id][axis]));
+  const long = computeLayout(request);
+  const wrapped = computeLayout({ ...request, wrapAspect: 16 / 9 });
+  assert.ok(span(wrapped, 0, 260) <= span(long, 0, 260) / 2, "at least two bands");
+  assert.ok(span(wrapped, 0, 260) / span(wrapped, 1, 140) < span(long, 0, 260) / span(long, 1, 140));
+  // The chain reads in order: its end sits on a later band than its start.
+  assert.ok(wrapped.n11[1] > wrapped.n0[1]);
+  const tb = computeLayout({ ...request, direction: "TB", wrapAspect: 16 / 9 });
+  assert.ok(span(tb, 1, 140) < span(computeLayout({ ...request, direction: "TB" }), 1, 140));
+  const short = { ...request, nodes: request.nodes.slice(0, 3), edges: request.edges.slice(0, 2) };
+  assert.deepEqual(computeLayout({ ...short, wrapAspect: 16 / 9 }), computeLayout(short));
+});

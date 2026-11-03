@@ -28,6 +28,9 @@ export const TIDY_SPACING = {
   curved: { nodesep: 40, ranksep: 100 },
 } as const;
 
+/** A tidied flow aims for about a screen's shape instead of one long row. */
+export const TIDY_WRAP_ASPECT = 16 / 9;
+
 export interface TidyContext {
   graph: DocGraph;
   /** A card's size once fitted. */
@@ -88,7 +91,13 @@ export function tidyRequest(ctx: TidyContext): LayoutRequest {
     seen.add(key);
     return [{ source, target }];
   });
-  return { nodes, edges, direction, ...TIDY_SPACING[ctx.wireStyle] };
+  return {
+    nodes,
+    edges,
+    direction,
+    wrapAspect: TIDY_WRAP_ASPECT,
+    ...TIDY_SPACING[ctx.wireStyle],
+  };
 }
 
 export function tidyPatch(
