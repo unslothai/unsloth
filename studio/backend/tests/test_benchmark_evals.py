@@ -184,6 +184,7 @@ def test_a_run_stopped_then_superseded_still_reads_as_cancelled(monkeypatch):
     assert not backend.was_cancelled()
     assert backend.was_cancelled(seq)
 
+
 def test_another_accounts_run_is_hidden(monkeypatch):
     backend = SimpleNamespace(_result_account = AccountContext("alice-id", "alice"))
     bob = AccountContext("bob-id", "bob")

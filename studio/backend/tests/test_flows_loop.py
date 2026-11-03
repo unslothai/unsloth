@@ -471,7 +471,6 @@ def test_fine_tune_continues_a_wired_checkpoint_as_an_adapter(monkeypatch):
     assert started[0]["model_name"] == "/out/run1" and started[0]["model_format"] == "adapter"
 
 
-
 def test_fine_tune_continues_the_checkpoint_fine_tune_emits(monkeypatch):
     # The carried value is Fine-tune's own output: a run name and no directory.
     from types import SimpleNamespace
@@ -491,6 +490,7 @@ def test_fine_tune_continues_the_checkpoint_fine_tune_emits(monkeypatch):
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
     assert started[0]["model_name"] == "/out/run1" and started[0]["model_format"] == "adapter"
+
 
 @run_async
 async def test_identical_seed_rows_reuse_one_upload_across_runs(monkeypatch):

@@ -500,7 +500,9 @@ def compile_flow(doc: dict) -> Plan:
     )
 
 
-def _enclosing_loop(nid: str, nodes: dict[str, dict], owner: dict[str, Optional[str]]) -> Optional[str]:
+def _enclosing_loop(
+    nid: str, nodes: dict[str, dict], owner: dict[str, Optional[str]]
+) -> Optional[str]:
     loop = owner.get(nid)
     while loop is not None and nodes[loop]["type"] != LOOP:
         loop = owner.get(loop)
