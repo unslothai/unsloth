@@ -1807,9 +1807,7 @@ def fast_linear_forward(
         # Autocast returns its dtype; in-place LoRA / out= decode buffers need X.dtype.
         if out.dtype != X.dtype:
             out = out.to(X.dtype)
-    elif _is_packed_state(W_quant) and not (
-        lora_first and getattr(type(W_quant), "_unsloth_fp8_dgrad", False)
-    ):
+    elif _is_packed_state(W_quant):
         out = W_quant.matmul(X, W, out = out)
     elif W.dtype == torch.float8_e4m3fn:
         # The bias is added once below; the per-channel fp8_linear path would add it a second time.
