@@ -165,6 +165,7 @@ export const ru = {
       siteInvalid: "Введите сайт, например example.com или *.example.com.",
     },
     agent: {
+      sharedTarget: "Доступно Unsloth: {title}",
       working: "Unsloth работает в этой вкладке",
       waiting: "Unsloth ждёт вашего ответа в браузере для {chat}",
       otherChat: "другого чата",
@@ -225,6 +226,8 @@ export const ru = {
       remove: "Убрать из рекомендаций",
     },
     tabMenu: {
+      shareAgent: "Поделиться вкладкой с этим чатом",
+      stopSharing: "Прекратить доступ к вкладке",
       duplicate: "Дублировать вкладку",
       closeOthers: "Закрыть другие вкладки",
       pin: "Закрепить на боковой панели",

@@ -48,6 +48,7 @@ export type AgentStep = {
 export type AgentChat = {
   /** The tab the agent drives in this chat; the model can't reach any other. */
   tabId: string | null;
+  shared: boolean;
   working: boolean;
   step: AgentStep | null;
   question: AgentPrompt | null;
@@ -59,7 +60,7 @@ export type AgentChat = {
   endedAt: number;
 };
 
-export const IDLE_AGENT: AgentChat = { tabId: null, working: false, step: null, question: null, runKey: null, stoppedRun: null, endedAt: 0 };
+export const IDLE_AGENT: AgentChat = { tabId: null, shared: false, working: false, step: null, question: null, runKey: null, stoppedRun: null, endedAt: 0 };
 
 type BrowserAgentState = {
   /** The composer's Browser tool: offer the model the browser tools. */
@@ -230,6 +231,16 @@ export function agentDownloadRule(tabId: string, site: string, fileUrl: string):
 }
 
 const activeActions = new Map<string, AbortController>();
+const targetListeners = new Set<(chat: string, previous: string | null) => void>();
+
+export function onAgentTargetChange(listener: (chat: string, previous: string | null) => void): () => void {
+  targetListeners.add(listener);
+  return () => targetListeners.delete(listener);
+}
+
+export function notifyAgentTargetChange(chat: string, previous: string | null): void {
+  for (const listener of targetListeners) listener(chat, previous);
+}
 
 export function setActiveAction(chat: string, controller: AbortController | null): void {
   if (controller) activeActions.set(liveChat(chat), controller);

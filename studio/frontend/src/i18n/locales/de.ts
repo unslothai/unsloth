@@ -165,6 +165,7 @@ export const de = {
       siteInvalid: "Gib eine Website wie example.com oder *.example.com ein.",
     },
     agent: {
+      sharedTarget: "Mit Unsloth geteilt: {title}",
       working: "Unsloth surft in diesem Tab",
       waiting: "Unsloth braucht im Browser deine Antwort für {chat}",
       otherChat: "einen anderen Chat",
@@ -225,6 +226,8 @@ export const de = {
       remove: "Aus Vorschlägen entfernen",
     },
     tabMenu: {
+      shareAgent: "Tab mit diesem Chat teilen",
+      stopSharing: "Tab nicht mehr teilen",
       duplicate: "Tab duplizieren",
       closeOthers: "Andere Tabs schließen",
       pin: "An Seitenleiste anheften",

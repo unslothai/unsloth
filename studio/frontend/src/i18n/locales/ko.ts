@@ -165,6 +165,7 @@ export const ko = {
       siteInvalid: "example.com 또는 *.example.com 같은 사이트를 입력하세요.",
     },
     agent: {
+      sharedTarget: "Unsloth와 공유 중: {title}",
       working: "Unsloth가 이 탭에서 탐색 중입니다",
       waiting: "{chat}의 브라우저에서 Unsloth가 응답을 기다리고 있습니다",
       otherChat: "다른 채팅",
@@ -225,6 +226,8 @@ export const ko = {
       remove: "추천에서 제거",
     },
     tabMenu: {
+      shareAgent: "이 채팅과 탭 공유",
+      stopSharing: "탭 공유 중지",
       duplicate: "탭 복제",
       closeOthers: "다른 탭 닫기",
       pin: "사이드바에 고정",

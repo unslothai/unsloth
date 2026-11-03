@@ -25,6 +25,7 @@ import {
   agentChat,
   askUser,
   liveChat,
+  onAgentTargetChange,
   onBrowserAgentRunEnd,
   patchAgentChat,
   setActiveAction,
@@ -190,6 +191,19 @@ onChatAdopted((from, to) => {
 onBrowserAgentRunEnd((chat) => {
   const tabId = agentChat(chat).tabId;
   if (tabId) releaseBackground(tabId);
+});
+
+onAgentTargetChange((chat, previous) => {
+  if (previous) releaseBackground(previous);
+  const session = sessions.get(chat);
+  if (!session) return;
+  session.reachedHosts.clear();
+  session.knownHosts.clear();
+  session.opaqueHosts.clear();
+  session.pageLinks.clear();
+  session.pointScale.clear();
+  session.trail = [];
+  session.at = -1;
 });
 
 function record(session: Session, op: string, url: string): void {
@@ -445,7 +459,7 @@ function reducedMotion(): boolean {
   return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
 }
 
-async function pageCall(tab: BrowserTab, request: Record<string, unknown>): Promise<AgentAnswer> {
+async function pageCall(tab: BrowserTab, request: Record<string, unknown>, signal?: AbortSignal): Promise<AgentAnswer> {
   const cursor = useBrowserAgentStore.getState().showCursor;
   const command = {
     ...request,
@@ -460,6 +474,7 @@ async function pageCall(tab: BrowserTab, request: Record<string, unknown>): Prom
     return { ...command, base, span: REF_SPAN };
   };
   while (true) {
+    if (signal?.aborted) return { ok: false, error: STOPPED };
     let reply: { installed: boolean; result: unknown } | null = null;
     if (native) {
       if (hasNativeView(tab.id)) {
@@ -469,11 +484,11 @@ async function pageCall(tab: BrowserTab, request: Record<string, unknown>): Prom
             command: { op, ...(code ? { code } : {}) },
           }).catch(() => null);
         reply = await call(command);
-        if (reply && !reply.installed) reply = await call(fresh(), pageAgentSource());
+        if (reply && !reply.installed && !signal?.aborted) reply = await call(fresh(), pageAgentSource());
       }
     } else {
       reply = await requestFrameAgent(tab.id, command);
-      if (reply && !reply.installed) reply = await requestFrameAgent(tab.id, fresh(), pageAgentSource());
+      if (reply && !reply.installed && !signal?.aborted) reply = await requestFrameAgent(tab.id, fresh(), pageAgentSource());
     }
     const answer = reply?.installed ? checkedAnswer(reply.result) : null;
     if (answer) return answer;
@@ -577,6 +592,7 @@ async function askInPanel(question: Question, context: Run, remember = true): Pr
 }
 
 async function observe(tab: BrowserTab, context: Run, note?: string, op: Record<string, unknown> = { op: "snapshot" }): Promise<Result> {
+  if (context.signal?.aborted) return { ok: false, error: STOPPED };
   const entry = currentEntry(tab);
   if (entry.kind !== "web") return { ok: false, error: "No web page is open. Use browser_navigate first." };
   if (tab.pageError || tab.nativeError) {
@@ -586,7 +602,8 @@ async function observe(tab: BrowserTab, context: Run, note?: string, op: Record<
       error: `${hostOfUrl(tabUrl(tab)) || "The page"} could not be loaded (the site refused, needs a check the panel can't pass, or is unreachable).`,
     };
   }
-  const answer = await pageCall(tab, op);
+  const answer = await pageCall(tab, op, context.signal);
+  if (context.signal?.aborted) return { ok: false, error: STOPPED };
   if (!answer.ok) return { ok: false, error: answer.error ?? "the page could not be read." };
   const fresh = findTab(tab.id) ?? tab;
   // A page that moved during the read is one nobody checked: its words and links stay out.
@@ -616,7 +633,7 @@ function grantedLocalTab(url: string, chat: string): BrowserTab | undefined {
 function moveRun(context: Run, tabId: string): void {
   const previous = agentChat(context.session.chat).tabId;
   if (previous && previous !== tabId) releaseBackground(previous);
-  patchAgentChat(context.session.chat, { tabId });
+  patchAgentChat(context.session.chat, { tabId, shared: previous === tabId && agentChat(context.session.chat).shared });
   context.session.trail = [];
   context.session.at = -1;
 }
@@ -767,6 +784,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     const gate = gateNavigation(url, navigationContext(action, context));
     const refused = await pass(gate, context);
     if (refused) return { ok: false, error: refused };
+    if (signal?.aborted) return { ok: false, error: STOPPED };
     admit(url, gate, context);
     const since = Date.now();
     const tab = await open(url, context);
@@ -786,6 +804,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   if (useNativeBrowser.getState().enabled && currentEntry(shown).kind === "web" && !hasNativeView(shown.id)) {
     await whenViewOpen(shown.id);
   }
+  if (signal?.aborted) return { ok: false, error: STOPPED };
   const tab = findTab(shown.id);
   if (!tab) return { ok: false, error: "the browser tab closed." };
   const before = tabUrl(tab);
@@ -838,6 +857,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
       if (refused) return { ok: false, error: refused };
     }
     const since = Date.now();
+    if (signal?.aborted) return { ok: false, error: STOPPED };
     // A native move starts when the view reports it; loading from now, so the wait below sees it.
     if ((nativeMove || (native && action.op === "reload")) && hasNativeView(tab.id)) store.updateTab(tab.id, { loading: true });
     if (nativeMove) nativeAction(tab.id, action.op as "back" | "forward");
@@ -854,6 +874,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   const here = tabUrl(ready);
   const moved = await stillAllowed(ready, action, context);
   if (moved) return { ok: false, error: moved };
+  if (signal?.aborted) return { ok: false, error: STOPPED };
 
   switch (action.op) {
     case "snapshot":
@@ -862,7 +883,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
       return observe(ready, context, undefined, { op: "find", query: action.query ?? "" });
     case "scroll": {
       const since = Date.now();
-      const moved = await pageCall(ready, { op: "scroll", direction: action.direction, ...(action.ref ? { ref: action.ref } : {}) });
+      const moved = await pageCall(ready, { op: "scroll", direction: action.direction, ...(action.ref ? { ref: action.ref } : {}) }, signal);
       if (!moved.ok) return { ok: false, error: moved.error };
       const after = await settle(ready.id, here, since, signal);
       if (!after) return { ok: false, error: "the browser tab closed." };
@@ -883,7 +904,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
 
   // Acting on an element: what it is decides whether the user is asked first.
   const ref = action.ref ?? "";
-  const point = action.op === "click" ? await pagePoint(ready, session, action.x, action.y) : null;
+  const point = action.op === "click" ? await pagePoint(ready, session, action.x, action.y, signal) : null;
   if (typeof point === "string") return { ok: false, error: point };
   const described = await pageCall(ready, {
     op: "describe",
@@ -972,7 +993,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
       ref,
       ...(point ? { ...point, expect: described.hit ?? "", sig: described.sig ?? "" } : {}),
       directLinks: !useNativeBrowser.getState().enabled,
-    });
+    }, signal);
     if (!clicked.ok) return { ok: false, error: clicked.error };
     if (clicked.navigate) {
       const pressedAt = Date.now();
@@ -982,6 +1003,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
       const gate = gateNavigation(end, navigationContext(action, context));
       const refused = await pass(gate, context);
       if (refused) return { ok: false, error: refused };
+      if (signal?.aborted) return { ok: false, error: STOPPED };
       admit(end, gate, context);
       // The page goes the moment the tab navigates, taking the cursor with it: let its press show first.
       if (useBrowserAgentStore.getState().showCursor) {
@@ -996,15 +1018,15 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     }
     note = clicked.note;
   } else if (action.op === "type") {
-    const typed = await pageCall(ready, { op: "type", ref, text: action.text ?? "", submit: action.submit === true });
+    const typed = await pageCall(ready, { op: "type", ref, text: action.text ?? "", submit: action.submit === true }, signal);
     if (!typed.ok) return { ok: false, error: typed.error };
     note = typed.note;
   } else if (action.op === "select") {
-    const chosen = await pageCall(ready, { op: "select", ref, value: action.value ?? "" });
+    const chosen = await pageCall(ready, { op: "select", ref, value: action.value ?? "" }, signal);
     if (!chosen.ok) return { ok: false, error: chosen.error };
     note = chosen.note;
   } else if (action.op === "press") {
-    const pressed = await pageCall(ready, { op: "press", key: action.key ?? "" });
+    const pressed = await pageCall(ready, { op: "press", key: action.key ?? "" }, signal);
     if (!pressed.ok) return { ok: false, error: pressed.error };
     note = pressed.note;
   } else {
@@ -1046,12 +1068,12 @@ type ShotView = {
 const MAX_SHOT_EDGE = 1024;
 const LINK_PRESS_MS = 350;
 
-async function pagePoint(tab: BrowserTab, session: Session, x?: number, y?: number): Promise<{ x: number; y: number } | string | null> {
+async function pagePoint(tab: BrowserTab, session: Session, x?: number, y?: number, signal?: AbortSignal): Promise<{ x: number; y: number } | string | null> {
   if (x === undefined || y === undefined) return null;
   const shot = session.pointScale.get(tab.id);
   if (!shot) return { x, y };
   if (tabUrl(tab) !== shot.url) return STALE_SHOT;
-  const status = await pageCall(tab, { op: "status" });
+  const status = await pageCall(tab, { op: "status" }, signal);
   const keys = ["width", "height", "scrollX", "scrollY", "scrolls", "doc"] as const;
   if (keys.some((key) => status[key] !== shot[key])) return STALE_SHOT;
   return { x: x * shot.scaleX, y: y * shot.scaleY };
@@ -1066,20 +1088,22 @@ async function onScreen(
   x?: number,
   y?: number,
   scroll = true,
+  signal?: AbortSignal,
 ): Promise<{ x: number; y: number } | string> {
-  const point = await pagePoint(tab, session, x, y);
+  const point = await pagePoint(tab, session, x, y, signal);
   if (point) return point;
-  const found = await pageCall(tab, { op: "locate", ref: ref ?? "", scroll });
+  const found = await pageCall(tab, { op: "locate", ref: ref ?? "", scroll }, signal);
   if (!found.ok) return found.error ?? `${ref} could not be found.`;
   if (found.x === undefined || found.y === undefined) return `${ref} is not on screen; scroll to it first.`;
   return { x: found.x, y: found.y };
 }
 
 async function moveTo(tab: BrowserTab, action: BrowserAction, context: Run, before: string): Promise<Result> {
-  const at = await onScreen(tab, context.session, action.ref, action.x, action.y);
+  const at = await onScreen(tab, context.session, action.ref, action.x, action.y, true, context.signal);
   if (typeof at === "string") return { ok: false, error: at };
+  if (context.signal?.aborted) return { ok: false, error: STOPPED };
   const since = Date.now();
-  const moved = await pageCall(tab, { op: "pointer", phase: "move", ...at });
+  const moved = await pageCall(tab, { op: "pointer", phase: "move", ...at }, context.signal);
   if (!moved.ok) return { ok: false, error: moved.error };
   return afterward(tab, before, action, context, since, moved.note);
 }
@@ -1091,11 +1115,11 @@ const DRAG_FRAME_MS = 16;
 async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Run, before: string): Promise<Result> {
   const { signal } = context;
   const scroll = Boolean(action.ref && action.toRef);
-  const start = await onScreen(tab, context.session, action.ref, action.x, action.y, scroll);
+  const start = await onScreen(tab, context.session, action.ref, action.x, action.y, scroll, signal);
   if (typeof start === "string") return { ok: false, error: start };
-  const end = await onScreen(tab, context.session, action.toRef, action.toX, action.toY, scroll);
+  const end = await onScreen(tab, context.session, action.toRef, action.toX, action.toY, scroll, signal);
   if (typeof end === "string") return { ok: false, error: end };
-  const from = scroll ? await onScreen(tab, context.session, action.ref, undefined, undefined, false) : start;
+  const from = scroll ? await onScreen(tab, context.session, action.ref, undefined, undefined, false, signal) : start;
   if (typeof from === "string") {
     return { ok: false, error: "the start and end don't fit on screen together; drag by x and y, or in shorter steps." };
   }
@@ -1128,7 +1152,7 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Run,
     return Boolean(now && !now.loading && tabUrl(now) === before);
   };
   const since = Date.now();
-  const down = await pageCall(tab, { op: "pointer", phase: "down", ...from, expect: hits[0], sig: sigs[0] });
+  const down = await pageCall(tab, { op: "pointer", phase: "down", ...from, expect: hits[0], sig: sigs[0] }, signal);
   if (!down.ok) return { ok: false, error: down.error };
   // Paced like a hand: pages often take one move per frame, or wait for a distance before a drag starts.
   const steps = Math.min(25, Math.max(5, Math.round(Math.hypot(end.x - from.x, end.y - from.y) / DRAG_STEP_PX)));
@@ -1140,7 +1164,7 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Run,
     sent = performance.now();
     // The last step lands on `end` exactly: interpolated floats can miss it by an ulp.
     const next = step === steps ? end : { x: from.x + ((end.x - from.x) * step) / steps, y: from.y + ((end.y - from.y) * step) / steps };
-    const moved = await pageCall(tab, { op: "pointer", phase: "move", ...next }).catch(() => null);
+    const moved = await pageCall(tab, { op: "pointer", phase: "move", ...next }, signal).catch(() => null);
     if (!moved?.ok) break;
     at = next;
   }
@@ -1174,7 +1198,7 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Run,
     if (!again?.ok || again.hit !== target.hit || JSON.stringify(again.info) !== JSON.stringify(target.info)) return cancel(CHANGED_UNDER_POINT);
   }
   if (signal?.aborted) return cancel(STOPPED);
-  const up = await pageCall(tab, { op: "pointer", phase: "up", ...end, expect: target.hit ?? "", sig: target.sig ?? "" });
+  const up = await pageCall(tab, { op: "pointer", phase: "up", ...end, expect: target.hit ?? "", sig: target.sig ?? "" }, signal);
   if (!up.ok) return cancel(up.error ?? CHANGED_UNDER_POINT);
   return afterward(tab, before, action, context, since, up.note);
 }
@@ -1229,7 +1253,7 @@ async function runScript(tab: BrowserTab, action: BrowserAction, context: Run, b
     }
     started = reply ? checkedAnswer(reply.result) : null;
   } else {
-    started = await pageCall(tab, { op: "evaluate", id, doc, script });
+    started = await pageCall(tab, { op: "evaluate", id, doc, script }, signal);
   }
   if (!started) return { ok: false, error: "the script did not run: the page changed while the user was asked, or it has a syntax error." };
   if (!started.ok) return { ok: false, error: started.error };
@@ -1331,6 +1355,7 @@ async function screenshot(tab: BrowserTab, context: Run): Promise<Result> {
   let blob: Blob | null;
   try {
     await sleep(100);
+    if (context.signal?.aborted) return { ok: false, error: STOPPED };
     blob = hidden || !element ? await captureHiddenPage(tab) : await screenshotPage(tab, element);
   } finally {
     await pageCall(tab, { op: "mask", on: false }).catch(() => null);

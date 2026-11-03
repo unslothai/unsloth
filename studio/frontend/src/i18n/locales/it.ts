@@ -162,6 +162,7 @@ export const it = {
       siteInvalid: "Inserisci un sito come example.com o *.example.com.",
     },
     agent: {
+      sharedTarget: "Condivisa con Unsloth: {title}",
       working: "Unsloth sta navigando in questa scheda",
       waiting: "Unsloth ha bisogno della tua risposta nel browser per {chat}",
       otherChat: "un'altra chat",
@@ -222,6 +223,8 @@ export const it = {
       remove: "Rimuovi dai suggeriti",
     },
     tabMenu: {
+      shareAgent: "Condividi scheda con questa chat",
+      stopSharing: "Interrompi condivisione scheda",
       duplicate: "Duplica scheda",
       closeOthers: "Chiudi le altre schede",
       pin: "Fissa nella barra laterale",

@@ -46,6 +46,8 @@ import { callNative, useNativeBrowser } from "./native-support";
 import { nativeAction, hasNativeView } from "./native-view";
 import { type PinnedPage, usePinnedPagesStore } from "./pinned-pages-store";
 import { type BrowserTab, chatTabs, currentEntry, useBrowserStore } from "./store";
+import { IDLE_AGENT, useBrowserAgentStore } from "./agent/agent-store";
+import { shareAgentTab } from "./agent/tab-sharing";
 import { useShallow } from "zustand/shallow";
 
 const ICON = "size-icon";
@@ -189,6 +191,9 @@ export function TabMenuItems({
   const t = useT();
   const navigate = useNavigate();
   const tabs = useBrowserStore(useShallow(chatTabs));
+  const chat = useBrowserStore((state) => state.chat);
+  const activeTabId = useBrowserStore((state) => state.activeTabId);
+  const agent = useBrowserAgentStore((state) => state.chats[chat] ?? IDLE_AGENT);
   const url = (tab && tabAddress(tab)) ?? pinned?.url ?? null;
   const pinnedId = pinned?.id ?? tab?.pinnedId ?? null;
   const index = tab ? tabs.findIndex((other) => other.id === tab.id) : -1;
@@ -209,6 +214,16 @@ export function TabMenuItems({
       ) : null,
     ],
     [
+      tab && kind === "web" && (tab.id === activeTabId || (agent.shared && agent.tabId === tab.id)) ? (
+        <Row
+          key="shareAgent"
+          P={P}
+          icon={Link01Icon}
+          onSelect={() => shareAgentTab(chat, agent.shared && agent.tabId === tab.id ? null : tab.id)}
+        >
+          {t(agent.shared && agent.tabId === tab.id ? "browser.tabMenu.stopSharing" : "browser.tabMenu.shareAgent")}
+        </Row>
+      ) : null,
       strip && tab ? (
         <Row key="newTabRight" P={P} icon={PlusSignIcon} onSelect={() => store.newTabAfter(tab.id)}>
           {t("browser.tabMenu.newTabRight")}

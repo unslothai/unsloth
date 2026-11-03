@@ -170,6 +170,7 @@ export const th = {
       siteInvalid: "ป้อนไซต์ เช่น example.com หรือ *.example.com",
     },
     agent: {
+      sharedTarget: "แชร์กับ Unsloth แล้ว: {title}",
       working: "Unsloth กำลังเข้าชมเว็บในแท็บนี้",
       waiting: "Unsloth ต้องการคำตอบจากคุณในเบราว์เซอร์สำหรับ {chat}",
       otherChat: "แชทอื่น",
@@ -230,6 +231,8 @@ export const th = {
       remove: "นำออกจากรายการแนะนำ",
     },
     tabMenu: {
+      shareAgent: "แชร์แท็บกับแชตนี้",
+      stopSharing: "หยุดแชร์แท็บ",
       duplicate: "ทำสำเนา",
       closeOthers: "ปิดแท็บอื่น",
       pin: "ปักหมุดที่แถบด้านข้าง",

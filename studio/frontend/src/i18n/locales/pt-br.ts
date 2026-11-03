@@ -165,6 +165,7 @@ export const ptBR = {
       siteInvalid: "Digite um site como example.com ou *.example.com.",
     },
     agent: {
+      sharedTarget: "Compartilhada com Unsloth: {title}",
       working: "O Unsloth está navegando nesta aba",
       waiting: "O Unsloth precisa da sua resposta no navegador para {chat}",
       otherChat: "outro chat",
@@ -225,6 +226,8 @@ export const ptBR = {
       remove: "Remover das sugestões",
     },
     tabMenu: {
+      shareAgent: "Compartilhar aba com esta conversa",
+      stopSharing: "Parar de compartilhar aba",
       duplicate: "Duplicar aba",
       closeOthers: "Fechar outras abas",
       pin: "Fixar na barra lateral",

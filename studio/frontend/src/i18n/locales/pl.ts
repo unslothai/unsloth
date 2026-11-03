@@ -172,6 +172,7 @@ export const pl = {
       siteInvalid: "Wpisz witrynę, np. example.com lub *.example.com.",
     },
     agent: {
+      sharedTarget: "Udostępniono Unsloth: {title}",
       working: "Unsloth przegląda strony w tej karcie",
       waiting: "Unsloth czeka na Twoją odpowiedź w przeglądarce (czat: {chat})",
       otherChat: "inny czat",
@@ -234,6 +235,8 @@ export const pl = {
       remove: "Usuń z sugerowanych",
     },
     tabMenu: {
+      shareAgent: "Udostępnij kartę w tym czacie",
+      stopSharing: "Przestań udostępniać kartę",
       duplicate: "Duplikuj",
       closeOthers: "Zamknij inne karty",
       pin: "Przypnij do paska bocznego",

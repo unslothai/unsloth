@@ -163,6 +163,7 @@ export const sv = {
       siteInvalid: "Ange en webbplats som example.com eller *.example.com.",
     },
     agent: {
+      sharedTarget: "Delas med Unsloth: {title}",
       working: "Unsloth surfar i den här fliken",
       waiting: "Unsloth behöver ditt svar i webbläsaren för {chat}",
       otherChat: "en annan chatt",
@@ -223,6 +224,8 @@ export const sv = {
       remove: "Ta bort från förslag",
     },
     tabMenu: {
+      shareAgent: "Dela fliken med den här chatten",
+      stopSharing: "Sluta dela fliken",
       duplicate: "Duplicera",
       closeOthers: "Stäng andra flikar",
       pin: "Fäst i sidofältet",

@@ -165,6 +165,7 @@ export const zhCN = {
       siteInvalid: "请输入网站，例如 example.com 或 *.example.com。",
     },
     agent: {
+      sharedTarget: "已与 Unsloth 共享：{title}",
       working: "Unsloth 正在此标签页中浏览",
       waiting: "Unsloth 需要你在 {chat} 的浏览器中回答",
       otherChat: "另一个聊天",
@@ -225,6 +226,8 @@ export const zhCN = {
       remove: "从推荐中移除",
     },
     tabMenu: {
+      shareAgent: "与此聊天共享标签页",
+      stopSharing: "停止共享标签页",
       duplicate: "复制标签页",
       closeOthers: "关闭其他标签页",
       pin: "固定到侧边栏",

@@ -173,6 +173,7 @@ export const es419 = {
       siteInvalid: "Escribe un sitio como example.com o *.example.com.",
     },
     agent: {
+      sharedTarget: "Compartida con Unsloth: {title}",
       working: "Unsloth está navegando en esta pestaña",
       waiting: "Unsloth necesita tu respuesta en el navegador para {chat}",
       otherChat: "otro chat",
@@ -235,6 +236,8 @@ export const es419 = {
       remove: "Quitar de sugeridos",
     },
     tabMenu: {
+      shareAgent: "Compartir pestaña con este chat",
+      stopSharing: "Dejar de compartir pestaña",
       duplicate: "Duplicar",
       closeOthers: "Cerrar otras pestañas",
       pin: "Fijar en la barra lateral",

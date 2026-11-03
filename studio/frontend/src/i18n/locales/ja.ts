@@ -166,6 +166,7 @@ export const ja = {
       siteInvalid: "example.com や *.example.com のようにサイトを入力してください。",
     },
     agent: {
+      sharedTarget: "Unsloth と共有中: {title}",
       working: "Unsloth がこのタブで操作しています",
       waiting: "{chat} のブラウザで Unsloth があなたの回答を待っています",
       otherChat: "別のチャット",
@@ -226,6 +227,8 @@ export const ja = {
       remove: "おすすめから削除",
     },
     tabMenu: {
+      shareAgent: "このチャットとタブを共有",
+      stopSharing: "タブの共有を停止",
       duplicate: "タブを複製",
       closeOthers: "他のタブを閉じる",
       pin: "サイドバーにピン留め",

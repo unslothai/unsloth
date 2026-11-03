@@ -172,6 +172,7 @@ export const uk = {
       siteInvalid: "Введіть сайт у форматі example.com або *.example.com.",
     },
     agent: {
+      sharedTarget: "Надано доступ Unsloth: {title}",
       working: "Unsloth переглядає сторінки в цій вкладці",
       waiting: "Unsloth чекає на вашу відповідь у браузері ({chat})",
       otherChat: "інший чат",
@@ -234,6 +235,8 @@ export const uk = {
       remove: "Вилучити з рекомендованих",
     },
     tabMenu: {
+      shareAgent: "Поділитися вкладкою з цим чатом",
+      stopSharing: "Припинити доступ до вкладки",
       duplicate: "Дублювати",
       closeOthers: "Закрити інші вкладки",
       pin: "Закріпити на бічній панелі",

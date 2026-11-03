@@ -165,6 +165,7 @@ export const ar = {
       siteInvalid: "أدخل موقعًا مثل example.com أو *.example.com.",
     },
     agent: {
+      sharedTarget: "تمت مشاركة علامة التبويب مع Unsloth: {title}",
       working: "يتصفح Unsloth في علامة التبويب هذه",
       waiting: "يحتاج Unsloth إلى ردك في المتصفح من أجل {chat}",
       otherChat: "محادثة أخرى",
@@ -225,6 +226,8 @@ export const ar = {
       remove: "إزالة من المقترحات",
     },
     tabMenu: {
+      shareAgent: "مشاركة علامة التبويب مع هذه المحادثة",
+      stopSharing: "إيقاف مشاركة علامة التبويب",
       duplicate: "تكرار علامة التبويب",
       closeOthers: "إغلاق علامات التبويب الأخرى",
       pin: "تثبيت في الشريط الجانبي",

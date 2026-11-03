@@ -163,6 +163,7 @@ export const en = {
     },
     agent: {
       working: "Unsloth is browsing in this tab",
+      sharedTarget: "Shared with Unsloth: {title}",
       waiting: "Unsloth needs your answer in the browser for {chat}",
       otherChat: "another chat",
       show: "Show",
@@ -222,6 +223,8 @@ export const en = {
       remove: "Remove from suggested",
     },
     tabMenu: {
+      shareAgent: "Share tab with this chat",
+      stopSharing: "Stop sharing tab",
       duplicate: "Duplicate",
       closeOthers: "Close other tabs",
       pin: "Pin to sidebar",

@@ -165,6 +165,7 @@ export const hi = {
       siteInvalid: "example.com या *.example.com जैसी साइट डालें।",
     },
     agent: {
+      sharedTarget: "Unsloth के साथ साझा: {title}",
       working: "Unsloth इस टैब में ब्राउज़ कर रहा है",
       waiting: "Unsloth को {chat} के लिए ब्राउज़र में आपका जवाब चाहिए",
       otherChat: "किसी अन्य चैट",
@@ -225,6 +226,8 @@ export const hi = {
       remove: "सुझावों से हटाएँ",
     },
     tabMenu: {
+      shareAgent: "इस चैट के साथ टैब साझा करें",
+      stopSharing: "टैब साझा करना बंद करें",
       duplicate: "टैब डुप्लिकेट करें",
       closeOthers: "दूसरे टैब बंद करें",
       pin: "साइडबार में पिन करें",

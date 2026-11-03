@@ -172,6 +172,7 @@ export const tr = {
       siteInvalid: "example.com veya *.example.com gibi bir site girin.",
     },
     agent: {
+      sharedTarget: "Unsloth ile paylaşılıyor: {title}",
       working: "Unsloth bu sekmede geziniyor",
       waiting: "Unsloth tarayıcıda yanıtınızı bekliyor (sohbet: {chat})",
       otherChat: "başka bir sohbet",
@@ -234,6 +235,8 @@ export const tr = {
       remove: "Önerilenlerden kaldır",
     },
     tabMenu: {
+      shareAgent: "Sekmeyi bu sohbetle paylaş",
+      stopSharing: "Sekme paylaşımını durdur",
       duplicate: "Çoğalt",
       closeOthers: "Diğer sekmeleri kapat",
       pin: "Kenar çubuğuna sabitle",

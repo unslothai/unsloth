@@ -165,6 +165,7 @@ export const fr = {
       siteInvalid: "Saisissez un site comme example.com ou *.example.com.",
     },
     agent: {
+      sharedTarget: "Partagé avec Unsloth : {title}",
       working: "Unsloth navigue dans cet onglet",
       waiting: "Unsloth attend votre réponse dans le navigateur pour {chat}",
       otherChat: "une autre discussion",
@@ -225,6 +226,8 @@ export const fr = {
       remove: "Retirer des suggestions",
     },
     tabMenu: {
+      shareAgent: "Partager l’onglet avec cette conversation",
+      stopSharing: "Arrêter de partager l’onglet",
       duplicate: "Dupliquer l'onglet",
       closeOthers: "Fermer les autres onglets",
       pin: "Épingler dans la barre latérale",
