@@ -134,9 +134,38 @@ def test_split_device_model_keeps_the_input_transfer():
     assert _remove_same_device_compressed_tensors_offload(model) == 2
     assert _caches(model) == 0
     assert not hasattr(model.proj, "_original_forward_func")
-    assert len(model.proj._forward_pre_hooks) == 1
+    assert not model.proj._forward_pre_hooks
+    forward = model.proj.forward.__func__
     assert _remove_same_device_compressed_tensors_offload(model) == 0
-    assert len(model.proj._forward_pre_hooks) == 1
+    assert model.proj.forward.__func__ is forward
+
+
+def test_split_forward_wrapper_deepcopy_uses_the_copy():
+    import copy
+
+    from unsloth.models.loader_utils import _remove_same_device_compressed_tensors_offload
+
+    model = _split_device_metadata(nn.Sequential(nn.Linear(4, 4), nn.Linear(4, 4)))
+    assert _remove_same_device_compressed_tensors_offload(model) == 2
+    cloned = copy.deepcopy(model)
+    x = torch.randn(2, 4, requires_grad = True)
+    expected = model(x).detach()
+    with torch.no_grad():
+        cloned[0].weight.zero_()
+        cloned[0].bias.fill_(2)
+        cloned[1].weight.fill_(1)
+        cloned[1].bias.zero_()
+    actual = cloned(x)
+    torch.testing.assert_close(actual, torch.full_like(actual, 8))
+    torch.testing.assert_close(model(x), expected)
+    actual.sum().backward()
+    assert cloned[1].weight.grad is not None
+    assert all(parameter.grad is None for parameter in model.parameters())
+    cloned[0].to("meta")
+    out = cloned[0](torch.randn(2, 4, requires_grad = True))
+    assert out.device.type == "meta"
+    assert out.requires_grad
+    assert model[0].weight.device.type == "cpu"
 
 
 @pytest.mark.parametrize("dynamic", [False, True])
@@ -162,6 +191,20 @@ def test_split_cleanup_preserves_compilation_and_dtype_conversion(dynamic):
     torch.testing.assert_close(x.grad, expected_x.grad, rtol = 0, atol = 0)
     for param, ref_param in zip(model.parameters(), reference.parameters()):
         torch.testing.assert_close(param.grad, ref_param.grad, rtol = 0, atol = 0)
+
+
+def test_split_wrapper_follows_weight_parametrization():
+    from unsloth.models.loader_utils import _remove_same_device_compressed_tensors_offload
+
+    model = nn.Sequential(nn.Linear(4, 4, bias = False), nn.Linear(4, 4))
+    x = torch.randn(2, 4)
+    expected = model(x).detach()
+    _split_device_metadata(model)
+    assert _remove_same_device_compressed_tensors_offload(model) == 2
+    torch.nn.utils.parametrize.register_parametrization(model[0], "weight", nn.Identity())
+    torch.testing.assert_close(model(x), expected, rtol = 0, atol = 0)
+    model(x).sum().backward()
+    assert model[0].parametrizations.weight.original.grad is not None
 
 
 def test_split_cleanup_moves_nested_inputs_to_the_live_device():
