@@ -698,3 +698,35 @@ test("an unmeasured note folds by its saved size, not its corner", () => {
   const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
   assert.match(canvas, /if \(card\.open \|\| !card\.members\.some\(\(id\) => members\.has\(id\)\)\) continue;/);
 });
+
+test("after a reload a closed card folds by its blocks' saved sizes", () => {
+  const d = doc(
+    [node("a", "input.text", [0, 0]), { ...node("b", "image.generate", [300, 0]), size: [500, 400] as [number, number] }],
+    [],
+  );
+  d.notes = [{ id: "n1", text: "beside", rect: [700, 250, 100, 60] }];
+  useDocStore.getState().load(d);
+  select("a", "b");
+  combineSelection();
+  rememberSizes(new Map());
+  assert.ok(!view().nodes.some((n) => n.id === "note:n1"), "the note folds into the card");
+  const state = useDocStore.getState();
+  const request = {
+    direction: "LR" as const,
+    nodes: state.graph.nodeOrder.map((id) => ({ id, width: 260, height: 140 })),
+    edges: [],
+  };
+  const result = foldLayout(request, state, () => undefined).unfold({ "super:sc1": [100, 50] });
+  assert.deepEqual(result["note:n1"], [800, 300]);
+});
+
+test("grouping a selection with a closed card groups the card's blocks", () => {
+  useDocStore.getState().load(comic());
+  select("tpl", "img");
+  combineSelection();
+  const { meta, graph } = useDocStore.getState();
+  assert.deepEqual(selectedBlocks(["super:sc1", "view"], meta.editor, graph), ["tpl", "img", "view"]);
+  const shortcuts = readFileSync(new URL("../src/features/flows/editor/use-editor-shortcuts.ts", import.meta.url), "utf8");
+  const group = shortcuts.slice(shortcuts.indexOf("export function groupSelection"));
+  assert.match(group, /const ids = selectedBlocks\(\s*useUiStore\.getState\(\)\.selectedNodes,\s*doc\.meta\.editor,\s*doc\.graph,\s*\);/);
+});

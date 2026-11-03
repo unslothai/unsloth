@@ -239,9 +239,12 @@ export function groupSelection(
   rectFallback?: [number, number, number, number],
 ): void {
   const doc = useDocStore.getState();
-  const ids = useUiStore
-    .getState()
-    .selectedNodes.filter((id) => doc.graph.nodes[id]);
+  // A selected closed card groups the blocks in it.
+  const ids = selectedBlocks(
+    useUiStore.getState().selectedNodes,
+    doc.meta.editor,
+    doc.graph,
+  );
   let rect: [number, number, number, number];
   if (ids.length) {
     const xs = ids.map((id) => doc.graph.nodes[id].pos[0]);

@@ -191,8 +191,14 @@ type Box = { x: number; y: number; right: number; bottom: number };
 
 function boxOf(nodes: RfNode[]): Box | null {
   if (!nodes.length) return null;
-  const w = (n: RfNode) => n.measured?.width ?? DEFAULT_SIZE.width;
-  const h = (n: RfNode) => n.measured?.height ?? DEFAULT_SIZE.height;
+  // A closed card's blocks never mount, so after a reload their saved size (in style) stands in.
+  const style = (n: RfNode) => (n.style ?? {}) as { width?: unknown; height?: unknown };
+  const w = (n: RfNode) =>
+    n.measured?.width ??
+    (typeof style(n).width === "number" ? (style(n).width as number) : DEFAULT_SIZE.width);
+  const h = (n: RfNode) =>
+    n.measured?.height ??
+    (typeof style(n).height === "number" ? (style(n).height as number) : DEFAULT_SIZE.height);
   return {
     x: Math.min(...nodes.map((n) => n.position.x)),
     y: Math.min(...nodes.map((n) => n.position.y)),
@@ -506,9 +512,10 @@ export function foldLayout(
       let bottom = y0;
       for (const id of card.members) {
         const size = measured(id);
+        const saved = graph.nodes[id].collapsed ? null : graph.nodes[id].size;
         const [x, y] = graph.nodes[id].pos;
-        right = Math.max(right, x + (size?.width ?? DEFAULT_SIZE.width));
-        bottom = Math.max(bottom, y + (size?.height ?? DEFAULT_SIZE.height));
+        right = Math.max(right, x + (size?.width ?? saved?.[0] ?? DEFAULT_SIZE.width));
+        bottom = Math.max(bottom, y + (size?.height ?? saved?.[1] ?? DEFAULT_SIZE.height));
       }
       boxAreas.push([[dx, dy], [x0, y0, right - x0, bottom - y0]]);
       for (const groupId of graph.groupOrder) {
