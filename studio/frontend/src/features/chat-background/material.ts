@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // eslint-disable-next-line no-restricted-imports
+import { isMacPlatform } from "@/features/settings/lib/keyboard-shortcuts";
+// eslint-disable-next-line no-restricted-imports
 import { useTheme } from "@/features/settings/stores/theme-store";
+import { isTauri } from "@/lib/api-base";
 import { useEffect } from "react";
 import { create } from "zustand";
 import {
@@ -13,7 +16,9 @@ import {
 import {
   DEFAULT_GLASS_STRENGTH,
   type GlassStrengths,
+  type LensMode,
   type WindowMaterial,
+  sanitizeLens,
   sanitizeMaterial,
   sanitizeStrength,
   sanitizeStrengths,
@@ -21,7 +26,6 @@ import {
 
 export const MATERIAL_STORAGE_KEY = "unsloth_window_material";
 
-/** Per device, not synced: how much glass reads well depends on the screen. */
 const guardedLocalStorage: StateStorage = {
   getItem: (name) => {
     try {
@@ -46,6 +50,10 @@ const guardedLocalStorage: StateStorage = {
   },
 };
 
+export function nativeMaterialAvailable(): boolean {
+  return isTauri && isMacPlatform();
+}
+
 export type GlassStyle = Exclude<WindowMaterial, "solid">;
 const sanitizeStyle = (value: unknown): GlassStyle | null => {
   const material = sanitizeMaterial(value);
@@ -55,30 +63,43 @@ const sanitizeStyle = (value: unknown): GlassStyle | null => {
 export const useMaterialStore = create<{
   material: WindowMaterial;
   style: GlassStyle;
+  nativeFailed: boolean;
   menus: boolean;
   strength: GlassStrengths;
+  lens: LensMode;
   setMaterial: (material: WindowMaterial) => void;
   setEnabled: (enabled: boolean) => void;
   setMenus: (menus: boolean) => void;
   setStrength: (strength: number, mode: keyof GlassStrengths) => void;
+  setLens: (lens: LensMode) => void;
 }>()(
   persist(
     (set) => ({
       material: "solid",
       style: "liquid-3d",
+      nativeFailed: false,
       menus: true,
       strength: DEFAULT_GLASS_STRENGTH,
+      lens: "off",
       setMaterial: (material) => {
         const next = sanitizeMaterial(material);
-        set(next === "solid" ? { material: next } : { material: next, style: next });
+        set(
+          next === "solid"
+            ? { material: next, nativeFailed: false }
+            : { material: next, style: next, nativeFailed: false },
+        );
       },
       setEnabled: (enabled) =>
-        set((s) => ({ material: enabled ? s.style : "solid" })),
+        set((s) => ({
+          material: enabled ? s.style : "solid",
+          nativeFailed: false,
+        })),
       setMenus: (menus) => set({ menus }),
       setStrength: (strength, mode) =>
         set((s) => ({
           strength: { ...s.strength, [mode]: sanitizeStrength(strength) },
         })),
+      setLens: (lens) => set({ lens: sanitizeLens(lens) }),
     }),
     {
       name: MATERIAL_STORAGE_KEY,
@@ -88,6 +109,7 @@ export const useMaterialStore = create<{
         style: s.style,
         menus: s.menus,
         strength: s.strength,
+        lens: s.lens,
       }),
       merge: (persisted, current) => {
         const stored = persisted as
@@ -96,6 +118,7 @@ export const useMaterialStore = create<{
               style?: unknown;
               menus?: unknown;
               strength?: unknown;
+              lens?: unknown;
             }
           | undefined;
         return {
@@ -107,16 +130,24 @@ export const useMaterialStore = create<{
             "liquid-3d",
           menus: typeof stored?.menus === "boolean" ? stored.menus : true,
           strength: sanitizeStrengths(stored?.strength),
+          lens: sanitizeLens(stored?.lens),
         };
       },
     },
   ),
 );
 
+async function setNativeVibrancy(enabled: boolean): Promise<boolean> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<boolean>("set_native_vibrancy", { enabled });
+}
+
 export function useGlassStrength(): number {
   const { resolved } = useTheme();
   return useMaterialStore((s) => s.strength[resolved]);
 }
+
+let nativeApplied = false;
 
 export function WindowMaterialMount() {
   const material = useMaterialStore((s) => s.material);
@@ -144,8 +175,42 @@ export function WindowMaterialMount() {
   }, [menus, material]);
   useEffect(() => {
     const root = document.documentElement;
-    if (material === "solid") root.removeAttribute("data-glass");
-    else root.setAttribute("data-glass", material);
+    const wantsNative = material === "macos" && nativeMaterialAvailable();
+    let cancelled = false;
+    const show = (value: WindowMaterial) => {
+      if (value === "solid") root.removeAttribute("data-glass");
+      else root.setAttribute("data-glass", value);
+    };
+    if (!wantsNative) {
+      show(material === "macos" ? "solid" : material);
+      if (nativeApplied) {
+        nativeApplied = false;
+        void setNativeVibrancy(false).catch(() => undefined);
+      }
+      return;
+    }
+    // A transparent page over an opaque window would show the webview's blank fill.
+    void setNativeVibrancy(true)
+      .then((applied) => {
+        if (cancelled) {
+          // Switched away while the shell was applying it: undo a late success unless macOS is back.
+          if (!applied) return;
+          if (useMaterialStore.getState().material === "macos") nativeApplied = true;
+          else void setNativeVibrancy(false).catch(() => undefined);
+          return;
+        }
+        if (!applied) throw new Error("unsupported");
+        nativeApplied = true;
+        show("macos");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        show("solid");
+        useMaterialStore.setState({ nativeFailed: true });
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [material]);
   return null;
 }

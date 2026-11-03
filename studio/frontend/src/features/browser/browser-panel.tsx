@@ -60,7 +60,7 @@ import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { asPng, copyToClipboard, copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { openExternalLink } from "@/lib/open-link";
-import { Settings01Icon, SiteInfoIcon } from "@/lib/hugeicons-derived";
+import { Settings01Icon, SiteInfoIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { ShieldAlertGlyph } from "@/lib/shield-alert-icon";
 import { SquareDashedMousePointerIcon } from "@/lib/annotate-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -69,7 +69,6 @@ import { cn } from "@/lib/utils";
 import {
   Refresh01Icon,
   Search01Icon,
-  Delete02Icon,
   ArrowUpRight01Icon,
   BubbleChatAddIcon,
   Cancel01Icon,
@@ -949,7 +948,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
                   setClearOpen(true);
                 }}
               >
-                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
                 {t("browser.menu.clearData")}
               </button>
               <button

@@ -25,7 +25,8 @@ _CHECKS = textwrap.dedent(
     import importlib, os, sys, types
     import torch
     root, device = sys.argv[1], sys.argv[2]
-    negative = len(sys.argv) > 3
+    negative = "break" in sys.argv[3:]
+    separate = "separate" in sys.argv[3:]
     import triton
     from packaging.version import Version
     zoo = types.ModuleType("unsloth_zoo"); zoo.__path__ = []
@@ -38,7 +39,7 @@ _CHECKS = textwrap.dedent(
 
     H, NH, D, NKV, I, R, L = 256, 2, 64, 1, 512, 8, 16
     EPS = 1e-5
-    CAP = (8, 0)
+    CAP = torch.cuda.get_device_capability() if device == "cuda" else (8, 0)
 
     def quant(n, k, g):
         W = (torch.randn(n, k, generator = g) / k ** 0.5).to(device)
@@ -69,7 +70,9 @@ _CHECKS = textwrap.dedent(
         s0 = qs[0][1]
         st = F.FusedSite(kind, packed, absmax, s0.code.float(), bounds, K, s0.blocksize, code2 = s0.state2.code.float(),
                          absmax2 = absmax2, seg_offset = torch.stack(offs).contiguous(), blocksize2 = s0.state2.blocksize,
-                         lora = lora, scaling = 0.5)
+                         lora = lora, scaling = 0.5,
+                         segments = [(q, s.absmax, s.state2.absmax) for q, s in qs] if separate else None)
+        assert st.separate == (separate and len(shapes) > 1)
         W64 = torch.cat([dequant64(q, s) for q, s in qs])
         if rank:
             A = torch.cat([a for a, _ in lora]).double()
@@ -238,7 +241,11 @@ _CHECKS = textwrap.dedent(
 )
 
 
-def _run(device, negative = False):
+def _run(
+    device,
+    negative = False,
+    separate = False,
+):
     pytest.importorskip("triton")
     pytest.importorskip("bitsandbytes")
     env = dict(os.environ)
@@ -247,6 +254,8 @@ def _run(device, negative = False):
     else:
         env.pop("TRITON_INTERPRET", None)
     argv = [sys.executable, "-c", _CHECKS, str(REPO), device] + (["break"] if negative else [])
+    if separate:
+        argv.append("separate")
     return subprocess.run(argv, env = env, capture_output = True, text = True, timeout = 1200)
 
 
@@ -263,8 +272,9 @@ def _triton_release():
     reason = "the Triton interpreter before 3.7 cannot run the K loop (int() of a 1-element array)",
 )
 @pytest.mark.parametrize("negative_control", [False, True])
-def test_call_sites_match_fp64_in_the_interpreter(negative_control):
-    proc = _run("cpu", negative_control)
+@pytest.mark.parametrize("separate", [False, True])
+def test_call_sites_match_fp64_in_the_interpreter(negative_control, separate):
+    proc = _run("cpu", negative_control, separate)
     if negative_control:
         assert proc.returncode != 0 and "AssertionError" in proc.stderr, proc.stdout + proc.stderr
     else:
@@ -273,9 +283,14 @@ def test_call_sites_match_fp64_in_the_interpreter(negative_control):
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
 @pytest.mark.skipif(torch.version.hip is not None, reason = "the fused path is gated off on ROCm")
-def test_call_sites_match_fp64_on_gpu():
-    proc = _run("cuda")
-    assert proc.returncode == 0 and "FUSED OK" in proc.stdout, proc.stdout + proc.stderr
+@pytest.mark.parametrize("negative_control", [False, True])
+@pytest.mark.parametrize("separate", [False, True])
+def test_call_sites_match_fp64_on_gpu(negative_control, separate):
+    proc = _run("cuda", negative_control, separate)
+    if negative_control:
+        assert proc.returncode != 0 and "AssertionError" in proc.stderr, proc.stdout + proc.stderr
+    else:
+        assert proc.returncode == 0 and "FUSED OK" in proc.stdout, proc.stdout + proc.stderr
 
 
 def _driver():
@@ -302,46 +317,6 @@ def _driver():
         if value is None:
             sys.modules.pop(key, None)
     return module
-
-
-def test_rehome_keeps_values_and_shares_one_buffer():
-    BF = pytest.importorskip("bitsandbytes.functional")
-    D = _driver()
-    g = torch.Generator().manual_seed(0)
-    Ws, states, before = [], [], []
-    for n in (128, 64, 64):
-        q, s = BF.quantize_4bit(
-            torch.randn(n, 256, generator = g).to(torch.bfloat16),
-            quant_type = "nf4",
-            compress_statistics = True,
-        )
-        W = torch.nn.Parameter(q, requires_grad = False)
-        W.quant_state = s
-        s._unsloth_gemv_plan = object()
-        Ws.append(W)
-        states.append(s)
-        before.append(BF.dequantize_4bit(q.clone(), s).clone())
-    old = [W.data_ptr() for W in Ws]
-    packed, absmax, absmax2 = D.rehome_site(Ws, states)
-    assert all(W.data_ptr() != p for W, p in zip(Ws, old))
-    assert len({W.untyped_storage().data_ptr() for W in Ws}) == 1
-    assert Ws[0].data_ptr() == packed.data_ptr()
-    assert absmax.numel() == sum(s.absmax.numel() for s in states)
-    step = states[0].absmax.numel() * absmax.element_size()
-    assert states[1].absmax.data_ptr() == absmax.data_ptr() + step
-    assert (
-        states[2].state2.absmax.untyped_storage().data_ptr() == absmax2.untyped_storage().data_ptr()
-    )
-    assert all("_unsloth_gemv_plan" not in s.__dict__ for s in states)
-    for W, s, ref in zip(Ws, states, before):
-        assert torch.equal(BF.dequantize_4bit(W.data, s), ref)
-    ptrs = tuple(
-        (W.data_ptr(), s.absmax.data_ptr(), s.state2.absmax.data_ptr()) for W, s in zip(Ws, states)
-    )
-    home = (packed, absmax, absmax2, ptrs)
-    assert D._homed(home, Ws, states)
-    Ws[1].data = Ws[1].data.clone()
-    assert not D._homed(home, Ws, states)
 
 
 def test_off_unless_requested(monkeypatch):
@@ -379,7 +354,8 @@ def test_step_runs_on_the_model_device(monkeypatch):
     assert D.decode_forward(None, types.SimpleNamespace(device = torch.device("cpu"))) is None
 
 
-def test_device_moves_release_the_fused_caches():
+@pytest.mark.parametrize("move_child", [False, True])
+def test_device_moves_release_the_fused_caches(move_child):
     # The caches hold the re-homed weight buffers: after .to() the old device's copy must be freeable.
     import weakref
 
@@ -393,7 +369,7 @@ def test_device_moves_release_the_fused_caches():
     inner.__dict__[D._HOMES] = {0: (held,)}
     del held
     assert ref() is not None
-    model.to(torch.float64)
+    (inner if move_child else model).to(torch.float64)
     assert D._PLAN not in inner.__dict__ and D._HOMES not in inner.__dict__
     assert ref() is None
     assert inner.weight.dtype == torch.float64
@@ -402,8 +378,57 @@ def test_device_moves_release_the_fused_caches():
     assert inner.weight.dtype == torch.float32
 
 
+def test_projection_moves_release_root_caches():
+    import weakref
+
+    D = _driver()
+    model = torch.nn.Sequential(torch.nn.Sequential(torch.nn.Linear(4, 4)))
+    held = torch.zeros(8)
+    ref = weakref.ref(held)
+    D._track_moves(model)
+    model.__dict__[D._PLAN] = held
+    model.__dict__[D._HOMES] = {0: held}
+    del held
+    assert ref() is not None
+    model[0][0].to(torch.float64)
+    assert D._PLAN not in model.__dict__ and D._HOMES not in model.__dict__
+    assert ref() is None
+    assert model[0][0].weight.dtype == torch.float64
+
+
+@pytest.mark.parametrize("serializer", ["copy", "pickle"])
+def test_move_hooks_follow_restored_modules(monkeypatch, serializer):
+    import copy
+    import io
+
+    D = _driver()
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4))
+    D._track_moves(model)
+    model.__dict__[D._PLAN] = torch.zeros(8)
+    if serializer == "copy":
+        cloned = copy.deepcopy(model)
+    else:
+        package = types.ModuleType("dfn")
+        package.__path__ = []
+        models = types.ModuleType("dfn.models")
+        models.__path__ = []
+        package.models = models
+        models._decode_fused_nf4 = D
+        monkeypatch.setitem(sys.modules, "dfn", package)
+        monkeypatch.setitem(sys.modules, "dfn.models", models)
+        monkeypatch.setitem(sys.modules, D.__name__, D)
+        stream = io.BytesIO()
+        torch.save(model, stream)
+        stream.seek(0)
+        cloned = torch.load(stream, weights_only = False)
+    cloned.to(torch.float64)
+    assert model[0].weight.dtype == torch.float32
+    assert cloned[0].weight.dtype == torch.float64
+    assert D._PLAN in model.__dict__ and D._PLAN not in cloned.__dict__
+
+
 def test_vllm_shared_weights_are_refused():
-    # fast_inference: the base weights view vLLM's; re-homing would copy them and move captured buffers.
+    # vLLM owns its inference path and captured state.
     D = _driver()
     model = types.SimpleNamespace(
         config = types.SimpleNamespace(model_type = "llama"), vllm_engine = object()
@@ -411,20 +436,17 @@ def test_vllm_shared_weights_are_refused():
     assert "vLLM" in D._build(model, torch.zeros(1, 1, 8))
 
 
-def test_refusal_after_rehoming_drops_captured_graphs(monkeypatch):
-    # A late refusal (e.g. biased MLP after attention moved) has still replaced weight storage.
+def test_refusal_drops_previously_fused_graphs(monkeypatch):
     D = _driver()
     dropped = []
     monkeypatch.setattr(D._decode_graphs, "invalidate", lambda model: dropped.append(model))
 
-    def build(model, X, moved):
-        D.STATS["rehomed_sites"] += moved
-        return "bias"
-
     layer = types.SimpleNamespace(self_attn = types.SimpleNamespace())
-    for moved, expected in ((0, 0), (1, 1)):
+    for previous, expected in ((None, 0), (D._Plan(), 1)):
         model = types.SimpleNamespace(model = types.SimpleNamespace(layers = [layer]))
-        monkeypatch.setattr(D, "_build", lambda m, X: build(m, X, moved))
+        if previous is not None:
+            model.__dict__[D._PLAN] = previous
+        monkeypatch.setattr(D, "_build", lambda m, X: "bias")
         with torch.no_grad():
             assert D._decode_forward(model, torch.zeros(1, 1, 8), *([None] * 6)) is None
         assert len(dropped) == expected
@@ -445,6 +467,197 @@ def test_whole_step_graph_capture_keeps_the_regular_path(monkeypatch):
     )
     with torch.no_grad():
         assert D._decode_forward(model, torch.zeros(1, 1, 8), *([None] * 6)) is None
+
+
+def _family_plan(
+    monkeypatch,
+    family,
+    qk_state = None,
+    biased = False,
+):
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    D = _driver()
+    monkeypatch.setattr(D.torch.version, "hip", None)
+    monkeypatch.setattr(D.torch.cuda, "get_device_capability", lambda device: (8, 0))
+    monkeypatch.setattr(D.F, "supported_capability", lambda capability: True, raising = False)
+    monkeypatch.setattr(D, "_signature", lambda plan: ())
+    calls = []
+    device = torch.device("cuda", 0)
+    with FakeTensorMode():
+
+        def norm(size, stride = 1):
+            return types.SimpleNamespace(
+                weight = torch.empty_strided((size,), (stride,), device = device, dtype = torch.float16),
+                variance_epsilon = 1e-6,
+            )
+
+        def projection(size):
+            return types.SimpleNamespace(bias = torch.empty(size, device = device) if biased else None)
+
+        config = types.SimpleNamespace(
+            model_type = family,
+            hidden_size = 64,
+            intermediate_size = 128,
+            num_attention_heads = 2,
+            num_key_value_heads = 1,
+            sliding_window = 4,
+        )
+        attn = types.SimpleNamespace(
+            head_dim = 32,
+            rotary_emb = object(),
+            config = config,
+            q_proj = projection(64),
+            k_proj = projection(32),
+            v_proj = projection(32),
+            o_proj = types.SimpleNamespace(bias = None),
+        )
+        if family == "qwen3" or qk_state == "extra":
+            attn.q_norm, attn.k_norm = norm(32), norm(32)
+            if qk_state == "missing_k":
+                attn.k_norm = None
+            elif qk_state == "strided":
+                attn.q_norm = norm(32, 2)
+            elif qk_state == "wrong_shape":
+                attn.q_norm = norm(16)
+        layer = types.SimpleNamespace(
+            self_attn = attn,
+            mlp = types.SimpleNamespace(gate_proj = object(), up_proj = object(), down_proj = object()),
+            input_layernorm = norm(64),
+            post_attention_layernorm = norm(64),
+        )
+        model = types.SimpleNamespace(
+            config = config, model = types.SimpleNamespace(layers = [layer], norm = norm(64))
+        )
+        packed = torch.empty(1, device = device, dtype = torch.uint8)
+        bounds = {"qkv": [64, 96, 128], "o": [64], "gate_up": [128, 256], "down": [64]}
+
+        def site(
+            model,
+            key,
+            kind,
+            projs,
+            width,
+            allow_bias = False,
+        ):
+            calls.append((kind, allow_bias))
+            if any(getattr(proj, "bias", None) is not None for proj in projs) and not allow_bias:
+                return "bias"
+            return types.SimpleNamespace(packed = packed, bounds = bounds[kind], N = bounds[kind][-1])
+
+        monkeypatch.setattr(D, "_site", site)
+        plan = D._build(model, torch.empty((1, 1, 64), device = device, dtype = torch.float16))
+    return D, plan, model, calls
+
+
+@pytest.mark.parametrize("family", ["llama", "mistral", "qwen2", "qwen3"])
+def test_families_build_compatible_plans(monkeypatch, family):
+    D, plan, model, calls = _family_plan(monkeypatch, family, biased = family == "qwen2")
+    assert isinstance(plan, D._Plan)
+    assert (getattr(plan.layers[0], "qk_norm", None) is not None) == (family == "qwen3")
+    assert calls == [("qkv", family == "qwen2"), ("o", False), ("gate_up", False), ("down", False)]
+    assert plan.layers[0].attn is model.model.layers[0].self_attn
+    assert plan.layers[0].attn.config.sliding_window == 4
+
+
+@pytest.mark.parametrize(
+    "family,qk_state,reason",
+    [
+        ("qwen3", "missing_k", "attention type"),
+        ("qwen3", "strided", "q / k norm weight"),
+        ("qwen3", "wrong_shape", "q / k norm weight"),
+        ("llama", "extra", "attention type"),
+    ],
+)
+def test_incompatible_qk_norms_keep_the_regular_path(monkeypatch, family, qk_state, reason):
+    _, plan, _, _ = _family_plan(monkeypatch, family, qk_state = qk_state)
+    assert plan == reason
+
+
+def test_projection_bias_is_opt_in_and_checks_real_tensor_layout(monkeypatch):
+    from .test_decode_fused_nf4_serialization import _model
+
+    D = _driver()
+    model = _model(qkv_bias = True)
+    projection = model.q_proj
+    for name in (
+        "_has_non_lora_adapter",
+        "_has_multiple_active_adapters",
+        "_has_active_dora_adapter",
+        "_has_active_lora_bias",
+        "_has_packed_qweight",
+    ):
+        monkeypatch.setattr(D.KU, name, lambda p: False, raising = False)
+    monkeypatch.setattr(D.KU, "_quant_state_dtype", lambda qs: qs.dtype, raising = False)
+    monkeypatch.setattr(
+        D.KU,
+        "get_lora_parameters_bias",
+        lambda p: (p.weight, p.weight.quant_state, None, None, None, p.bias),
+        raising = False,
+    )
+    assert D._proj_parts(projection, 256) == "bias"
+    parts = D._proj_parts(projection, 256, allow_bias = True)
+    assert parts[0] is projection.weight and parts[4] is projection.bias
+    projection.bias = torch.nn.Parameter(torch.empty(512)[::2])
+    assert D._proj_parts(projection, 256, allow_bias = True) == "bias layout"
+    projection.bias = torch.nn.Parameter(torch.empty(255))
+    assert D._proj_parts(projection, 256, allow_bias = True) == "bias layout"
+
+
+@pytest.mark.parametrize("strided", [False, True])
+def test_strided_final_norm_keeps_the_regular_path(monkeypatch, strided):
+    from torch._subclasses.fake_tensor import FakeTensor, FakeTensorMode
+
+    D = _driver()
+    monkeypatch.setattr(D.torch.version, "hip", None)
+    monkeypatch.setattr(D.torch.cuda, "get_device_capability", lambda device: (8, 0))
+    monkeypatch.setattr(D.F, "supported_capability", lambda capability: True, raising = False)
+    monkeypatch.setattr(D, "_signature", lambda plan: ())
+    device = torch.device("cuda", 0)
+    with FakeTensorMode():
+        weight = torch.empty_strided((8,), (2 if strided else 1,), device = device)
+        assert isinstance(weight, FakeTensor)
+        norm = lambda w: types.SimpleNamespace(weight = w, variance_epsilon = 1e-5)
+        attn = types.SimpleNamespace(
+            head_dim = 8,
+            rotary_emb = object(),
+            q_proj = object(),
+            k_proj = object(),
+            v_proj = object(),
+            o_proj = object(),
+        )
+        mlp = types.SimpleNamespace(gate_proj = object(), up_proj = object(), down_proj = object())
+        layer = types.SimpleNamespace(
+            self_attn = attn,
+            mlp = mlp,
+            input_layernorm = norm(torch.empty(8, device = device)),
+            post_attention_layernorm = norm(torch.empty(8, device = device)),
+        )
+        model = types.SimpleNamespace(
+            config = types.SimpleNamespace(
+                model_type = "llama",
+                hidden_size = 8,
+                intermediate_size = 16,
+                num_attention_heads = 1,
+                num_key_value_heads = 1,
+            ),
+            model = types.SimpleNamespace(layers = [layer], norm = norm(weight)),
+        )
+        packed = torch.empty(1, device = device, dtype = torch.uint8)
+        bounds = {"qkv": [8, 16, 24], "o": [8], "gate_up": [16, 32], "down": [8]}
+        monkeypatch.setattr(
+            D,
+            "_site",
+            lambda model, key, kind, projs, width, allow_bias = False: types.SimpleNamespace(
+                packed = packed, bounds = bounds[kind], N = bounds[kind][-1]
+            ),
+        )
+        plan = D._build(model, torch.empty((1, 1, 8), device = device, dtype = torch.float16))
+        if strided:
+            assert plan == "final norm"
+        else:
+            assert isinstance(plan, D._Plan)
+            assert plan.final_norm is weight
 
 
 class _Lora:
@@ -473,15 +686,131 @@ def test_plan_goes_stale_when_adapters_change():
 
 
 def test_each_site_watches_a_projection_with_lora():
-    # LoRA on k / v (or up) only: the first projection has no adapter, the site still needs a watch.
+    peft = pytest.importorskip("peft")
     D = _driver()
-    plain, lora_k, lora_v = (
-        object(),
-        types.SimpleNamespace(lora_A = {}),
-        types.SimpleNamespace(lora_A = {}),
+    model = peft.get_peft_model(
+        torch.nn.Sequential(*[torch.nn.Linear(8, 8, bias = False) for _ in range(3)]),
+        peft.LoraConfig(r = 2, lora_alpha = 2, target_modules = ["0", "1", "2"]),
     )
-    assert D._site_watch([plain, lora_k, lora_v]) == [lora_k]
-    assert D._site_watch([plain, plain]) == []
+    projections = list(model.base_model.model)
+    watch = D._site_watch([object(), *projections])
+    x = torch.ones(1, 8)
+    for projection in projections:
+        torch.nn.init.ones_(projection.lora_A["default"].weight)
+        torch.nn.init.ones_(projection.lora_B["default"].weight)
+        plan = types.SimpleNamespace(watch = watch, adapter_state = D._adapter_state(watch))
+        assert not D._plan_stale(plan)
+        before = projection(x).detach().clone()
+        projection.scale_layer(3.0)
+        assert not torch.equal(before, projection(x))
+        assert D._plan_stale(plan), "a projection's scale change must invalidate the fused plan"
+    assert D._site_watch([object(), object()]) == []
+
+
+def test_plan_goes_stale_when_peft_is_unloaded(monkeypatch):
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    peft = pytest.importorskip("peft")
+    D = _driver()
+    monkeypatch.setattr(D.torch.version, "hip", None)
+    model = peft.get_peft_model(
+        torch.nn.ModuleDict(
+            {
+                name: torch.nn.Linear(8, 8, bias = False)
+                for name in ("q_proj", "k_proj", "v_proj", "o_proj")
+            }
+        ),
+        peft.LoraConfig(r = 2, lora_alpha = 2, target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]),
+    )
+    owner = model.base_model.model
+    owner.head_dim, owner.rotary_emb = 8, object()
+    projection = owner.q_proj
+    torch.nn.init.ones_(projection.lora_A["default"].weight)
+    torch.nn.init.ones_(projection.lora_B["default"].weight)
+    x = torch.ones(1, 8)
+    monkeypatch.setattr(D.torch.cuda, "get_device_capability", lambda device: (8, 0))
+    monkeypatch.setattr(D.F, "supported_capability", lambda capability: True, raising = False)
+    monkeypatch.setattr(D, "_signature", lambda plan: ())
+    device = torch.device("cuda", 0)
+    with FakeTensorMode():
+        norm = lambda: types.SimpleNamespace(
+            weight = torch.empty(8, device = device), variance_epsilon = 1e-5
+        )
+        layer = types.SimpleNamespace(
+            self_attn = owner,
+            mlp = types.SimpleNamespace(gate_proj = object(), up_proj = object(), down_proj = object()),
+            input_layernorm = norm(),
+            post_attention_layernorm = norm(),
+        )
+        core = types.SimpleNamespace(
+            config = types.SimpleNamespace(
+                model_type = "llama",
+                hidden_size = 8,
+                intermediate_size = 16,
+                num_attention_heads = 1,
+                num_key_value_heads = 1,
+            ),
+            model = types.SimpleNamespace(layers = [layer], norm = norm()),
+        )
+        packed = torch.empty(1, device = device, dtype = torch.uint8)
+        bounds = {"qkv": [8, 16, 24], "o": [8], "gate_up": [16, 32], "down": [8]}
+        monkeypatch.setattr(
+            D,
+            "_site",
+            lambda model, key, kind, projs, width, allow_bias = False: types.SimpleNamespace(
+                packed = packed, bounds = bounds[kind], N = bounds[kind][-1]
+            ),
+        )
+        plan = D._build(core, torch.empty((1, 1, 8), device = device, dtype = torch.float16))
+    assert isinstance(plan, D._Plan)
+    assert not D._plan_stale(plan)
+    before = projection(x).detach().clone()
+    with torch.no_grad():
+        projection.lora_B["default"].weight.mul_(2)
+    assert not torch.equal(before, projection(x))
+    assert not D._plan_stale(plan)
+    before = projection(x).detach().clone()
+    unwrapped = model.unload()
+    assert unwrapped is owner
+    assert owner.q_proj is projection.get_base_layer()
+    assert not torch.equal(before, owner.q_proj(x))
+    assert not projection.merged and not projection.disable_adapters
+    assert D._plan_stale(plan)
+
+
+@pytest.mark.parametrize("incoming_rank", [2, 4])
+def test_same_scale_hotswap_tracks_rank_changes(tmp_path, incoming_rank):
+    peft = pytest.importorskip("peft")
+    hotswap = pytest.importorskip("peft.utils.hotswap")
+    D = _driver()
+
+    def make(rank, value):
+        model = peft.get_peft_model(
+            torch.nn.Sequential(torch.nn.Linear(8, 8, bias = False)),
+            peft.LoraConfig(r = rank, lora_alpha = rank, target_modules = ["0"]),
+        )
+        projection = model.base_model.model[0]
+        torch.nn.init.constant_(projection.lora_A["default"].weight, value)
+        torch.nn.init.constant_(projection.lora_B["default"].weight, value)
+        return model, projection
+
+    model, projection = make(2, 0.1)
+    incoming, _ = make(incoming_rank, 0.3)
+    incoming.save_pretrained(tmp_path)
+    watch = D._site_watch([projection])
+    plan = types.SimpleNamespace(watch = watch, adapter_state = D._adapter_state(watch))
+    A, B = projection.lora_A["default"].weight, projection.lora_B["default"].weight
+    x = torch.ones(1, 8)
+    before = projection(x).detach().clone()
+    hotswap.hotswap_adapter(model, str(tmp_path), adapter_name = "default", torch_device = "cpu")
+    assert projection.scaling["default"] == 1.0
+    assert projection.lora_A["default"].weight.shape[0] == incoming_rank
+    assert not torch.equal(before, projection(x))
+    assert D._plan_stale(plan) == (incoming_rank != 2)
+    if incoming_rank == 2:
+        assert A is projection.lora_A["default"].weight
+        assert B is projection.lora_B["default"].weight
+        assert torch.all(A == 0.3) and torch.all(B == 0.3)
 
 
 def test_signature_follows_saved_norm_weights():
@@ -523,7 +852,6 @@ def test_signature_follows_saved_norm_weights():
 
 
 def test_qk_norm_alone_keys_the_signature():
-    # Only q_norm is a saved module (ln1 / ln2 / final norm plain): toggling its adapter must change the key.
     peft_other = pytest.importorskip("peft.utils.other")
     D = _driver()
 
@@ -533,11 +861,18 @@ def test_qk_norm_alone_keys_the_signature():
             self.weight = torch.nn.Parameter(torch.ones(8))
             self.variance_epsilon = 1e-6
 
+        def forward(self, x):
+            return (
+                x
+                * torch.rsqrt(x.square().mean(-1, keepdim = True) + self.variance_epsilon)
+                * self.weight
+            )
+
     qn = peft_other.ModulesToSaveWrapper(Norm(), "default")
+    with torch.no_grad():
+        qn.modules_to_save["default"].weight.fill_(2.0)
     plain = torch.ones(8)
-    k_norm = torch.ones(
-        8
-    )  # one tensor: a fresh one per plan() would key on whatever address it lands at
+    k_norm = torch.ones(8)
     t = torch.zeros(4)
     site = types.SimpleNamespace(packed = t, absmax = t, absmax2 = t, lora = None, bounds = [4], bias = None)
 
@@ -559,9 +894,13 @@ def test_qk_norm_alone_keys_the_signature():
         )
 
     qn.enable_adapters(True)
+    before = qn(torch.ones(1, 8)).detach().clone()
+    watched = types.SimpleNamespace(watch = [qn], adapter_state = D._adapter_state([qn]))
     on = D._signature(plan())
     assert D._signature(plan()) == on
     qn.enable_adapters(False)
+    assert not torch.equal(before, qn(torch.ones(1, 8)))
+    assert D._plan_stale(watched)
     assert D._signature(plan()) != on
 
 
@@ -578,6 +917,63 @@ def test_plan_goes_stale_when_a_tensor_scale_changes_in_place():
     assert not D._plan_stale(plan)
     layer.scaling["default"] *= 0.5  # LoraLayer.scale_layer
     assert D._plan_stale(plan)
+
+
+@pytest.mark.parametrize("inference_scale", [False, True])
+def test_hotswap_inference_scales_keep_the_regular_path(monkeypatch, inference_scale):
+    peft = pytest.importorskip("peft")
+    hotswap = pytest.importorskip("peft.utils.hotswap")
+    BF = pytest.importorskip("bitsandbytes.functional")
+    D = _driver()
+    model = peft.get_peft_model(
+        torch.nn.Sequential(torch.nn.Linear(256, 64, bias = False)),
+        peft.LoraConfig(r = 2, lora_alpha = 2, target_modules = ["0"]),
+    )
+    projection = model.base_model.model[0]
+    torch.nn.init.ones_(projection.lora_A["default"].weight)
+    torch.nn.init.ones_(projection.lora_B["default"].weight)
+    with torch.inference_mode(inference_scale):
+        hotswap.prepare_model_for_compiled_hotswap(model)
+    scale = projection.scaling["default"]
+    assert scale.is_inference() == inference_scale
+    packed, state = BF.quantize_4bit(
+        projection.weight.detach().to(torch.float16), quant_type = "nf4", compress_statistics = True
+    )
+    for name in (
+        "_has_non_lora_adapter",
+        "_has_multiple_active_adapters",
+        "_has_active_dora_adapter",
+        "_has_active_lora_bias",
+        "_has_packed_qweight",
+    ):
+        monkeypatch.setattr(D.KU, name, lambda p: False, raising = False)
+    monkeypatch.setattr(D.KU, "_quant_state_dtype", lambda qs: qs.dtype, raising = False)
+    monkeypatch.setattr(
+        D.KU,
+        "get_lora_parameters_bias",
+        lambda p: (
+            packed,
+            state,
+            p.lora_A["default"].weight,
+            p.lora_B["default"].weight,
+            p.scaling["default"],
+            None,
+        ),
+        raising = False,
+    )
+    parts = D._proj_parts(projection, 256)
+    plan = types.SimpleNamespace(watch = [projection], adapter_state = D._adapter_state([projection]))
+    with torch.inference_mode():
+        x = torch.ones(1, 256)
+        before = projection(x).clone()
+        scale.fill_(2.0)
+        assert not torch.equal(before, projection(x))
+    if not inference_scale:
+        assert parts[3][2] == 1.0
+        assert D._plan_stale(plan)
+    else:
+        assert parts == "inference tensor LoRA scale"
+        assert D._proj_parts(projection, 256) == "inference tensor LoRA scale"
 
 
 _NO_TRITON_OP = textwrap.dedent(

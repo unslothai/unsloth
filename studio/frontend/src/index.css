@@ -329,7 +329,9 @@
 	--sidebar-border-base: #f2f2f2;
 	--sidebar-ring: #262626;
 	--destructive-foreground: oklch(1 0 0);
-	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
+	/* Inter everywhere but macOS, where html.client-mac (theme-boot.js) swaps in the system font. */
+	--font-sans-default: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
+	--font-sans: var(--font-sans-default);
 	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
@@ -447,6 +449,11 @@
 	--icon-btn-inset: calc((2rem * var(--ui-space-scale, 1) - var(--icon-size)) / 2);
 }
 
+/* SF Pro can't be bundled; Inter stays as the fallback. */
+html.client-mac {
+	--font-sans-default: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Inter Variable", ui-sans-serif, sans-serif;
+}
+
 .dark {
 	/* A faint shadow needs more alpha to read on a dark page. */
 	--popup-shadow: 0 16px 40px -12px rgb(0 0 0 / 0.7);
@@ -503,7 +510,6 @@
 	--sidebar-border-base: #3a3a3a;
 	--sidebar-ring: #dfdfdf;
 	--destructive-foreground: oklch(1 0 0);
-	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
 	--shadow-color: hsl(0 0% 0%);
@@ -557,7 +563,7 @@
    Flavor themes (Theme > More themes). Each sets --th-* seeds per mode; the
    block below maps them onto the --*-base tokens, so contrast and custom
    colors still apply. */
-:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="black-cat"], [data-palette="trick-or-treat"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"], [data-palette="hexberry"], [data-palette="candycorn"])[data-palette] {
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="trick-or-treat"])[data-palette] {
 	--background: var(--th-bg);
 	--foreground-base: var(--th-fg);
 	--action-base: var(--foreground);
@@ -607,17 +613,17 @@
 }
 
 /* Attribute specificity only, so html[data-contrast-adjust] still wins. */
-[data-palette]:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="black-cat"], [data-palette="trick-or-treat"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"], [data-palette="hexberry"], [data-palette="candycorn"]) {
+[data-palette]:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="trick-or-treat"]) {
 	--muted-foreground: var(--th-muted);
 }
 
-:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="black-cat"], [data-palette="trick-or-treat"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"], [data-palette="hexberry"], [data-palette="candycorn"])[data-palette].dark
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="trick-or-treat"])[data-palette].dark
 	:is(.chat-composer-surface, .unsloth-composer-surface, .unsloth-files-panel) {
 	background-color: color-mix(in srgb, var(--card), var(--th-fg) 4%);
 }
 
 /* Collapsed rail takes the page color, as it does in dark mode. */
-:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="black-cat"], [data-palette="trick-or-treat"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"], [data-palette="hexberry"], [data-palette="candycorn"])[data-palette]:not(.dark)
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="trick-or-treat"])[data-palette]:not(.dark)
 	[data-collapsible="icon"] [data-sidebar="sidebar"] {
 	--sidebar-surface: var(--background);
 }
@@ -1466,81 +1472,40 @@
 	--th-chart-5: #c79ae6;
 }
 
-/* Halloween themes (October only). */
-:root[data-palette="pumpkin"]:not(.dark) {
-	--th-bg: #fff3e3;
-	--th-surface: #ffe7c9;
-	--th-raised: #f7e0c1;
-	--th-hover: #efd9b9;
-	--th-border: #c1ac8b;
-	--th-fg: #3a1a00;
-	--th-muted: #6e5f3c;
-	--th-subtle: #a6917d;
-	--th-accent: #b84800;
-	--th-accent-fg: #ffffff;
-	--th-second: #3a7d00;
-	--th-chart-1: #b84800;
-	--th-chart-2: #3a7d00;
-	--th-chart-3: #c48a00;
-	--th-chart-4: #7a2fe0;
-	--th-chart-5: #d1202e;
-	--ring: #3a7d00;
-	--sidebar-ring: #3a7d00;
-	--control-accent: #3a7d00;
-	--control-accent-foreground: #ffffff;
-	--nav-icon-idle-base: #588f22;
-	--composer-shadow:
-		0 6px 28px -10px rgb(184 72 0 / 0.35),
-		0 2px 8px -2px rgb(0 0 0 / 0.1);
-}
-:root[data-palette="pumpkin"].dark {
-	--th-bg: #1f0f02;
-	--th-surface: #2b1606;
-	--th-raised: #33210d;
-	--th-hover: #3b2b14;
-	--th-border: #4b4022;
-	--th-fg: #ffeedd;
-	--th-muted: #bbbc91;
-	--th-subtle: #847365;
-	--th-accent: #ff7a00;
-	--th-accent-fg: #130901;
-	--th-second: #8fe03a;
-	--th-chart-1: #ff7a00;
-	--th-chart-2: #8fe03a;
-	--th-chart-3: #ffc21a;
-	--th-chart-4: #b06bff;
-	--th-chart-5: #ff4a3d;
-	--ring: #8fe03a;
-	--sidebar-ring: #8fe03a;
-	--control-accent: #8fe03a;
-	--control-accent-foreground: #130901;
-	--nav-icon-idle-base: #73ac2c;
-	--composer-shadow: 0 0 40px 6px rgb(255 122 0 / 0.16);
-}
-
 :root[data-palette="trick-or-treat"]:not(.dark) {
-	--th-bg: #fffae6;
-	--th-surface: #fff0c4;
-	--th-raised: #f8e8bf;
-	--th-hover: #f0e0bb;
-	--th-border: #c2b192;
-	--th-fg: #2e1f00;
-	--th-muted: #6f5b58;
-	--th-subtle: #a1977f;
-	--th-accent: #8f5c00;
-	--th-accent-fg: #ffffff;
-	--th-second: #7a2fe0;
-	--th-chart-1: #8f5c00;
-	--th-chart-2: #7a2fe0;
-	--th-chart-3: #c84a00;
-	--th-chart-4: #5f6f00;
-	--th-chart-5: #c20a7f;
-	--ring: #7a2fe0;
-	--sidebar-ring: #7a2fe0;
-	--control-accent: #7a2fe0;
+	--th-bg: #f8f2ff;
+	--th-surface: #efe3ff;
+	--th-raised: #e7d9fa;
+	--th-hover: #dfcff5;
+	--th-border: #b7a1d6;
+	--th-fg: #1f0b33;
+	--th-muted: #5e4a78;
+	--th-subtle: #9d8bb8;
+	--th-accent: #f0b400;
+	--th-accent-fg: #1f0b33;
+	--th-second: #d09a00;
+	--th-chart-1: #f0b400;
+	--th-chart-2: #6a1fd1;
+	--th-chart-3: #c20a7f;
+	--th-chart-4: #e05200;
+	--th-chart-5: #2f7d6b;
+	--ring: #6a1fd1;
+	--sidebar-ring: #6a1fd1;
+	--control-accent: #6a1fd1;
 	--control-accent-foreground: #ffffff;
 	--nav-icon-idle-base: #8e4de1;
+	--primary: #d09a00;
+	--primary-foreground: #1f0b33;
+	--sidebar-primary: #d09a00;
+	--sidebar-primary-foreground: #1f0b33;
 }
+
+/* Solid fills get the brightest gold; text keeps the slightly deeper --primary. */
+:root[data-palette="trick-or-treat"]:not(.dark) [class~="bg-primary"] {
+	--primary: var(--th-accent);
+	--primary-foreground: var(--th-accent-fg);
+}
+
 :root[data-palette="trick-or-treat"].dark {
 	--th-bg: #1a0b24;
 	--th-surface: #251135;
@@ -1563,472 +1528,6 @@
 	--control-accent: #d17dff;
 	--control-accent-foreground: #100716;
 	--nav-icon-idle-base: #a361c8;
-}
-
-:root[data-palette="bloody-valentine"]:not(.dark) {
-	--th-bg: #fff0f2;
-	--th-surface: #ffe0e6;
-	--th-raised: #f9d8df;
-	--th-hover: #f3cfd8;
-	--th-border: #cca3ae;
-	--th-fg: #3a0510;
-	--th-muted: #7c4759;
-	--th-subtle: #a6868c;
-	--th-accent: #c4001f;
-	--th-accent-fg: #ffffff;
-	--th-second: #b0247a;
-	--th-chart-1: #c4001f;
-	--th-chart-2: #b0247a;
-	--th-chart-3: #6e5a64;
-	--th-chart-4: #d1550e;
-	--th-chart-5: #8b2fd1;
-	--ring: #b0247a;
-	--sidebar-ring: #b0247a;
-	--control-accent: #b0247a;
-	--control-accent-foreground: #ffffff;
-	--nav-icon-idle-base: #bc438c;
-	--composer-shadow:
-		0 6px 28px -10px rgb(196 0 31 / 0.35),
-		0 2px 8px -2px rgb(0 0 0 / 0.1);
-}
-:root[data-palette="bloody-valentine"].dark {
-	--th-bg: #1f0307;
-	--th-surface: #2c070d;
-	--th-raised: #371017;
-	--th-hover: #411921;
-	--th-border: #562b36;
-	--th-fg: #ffe3e8;
-	--th-muted: #cfa3b2;
-	--th-subtle: #84686c;
-	--th-accent: #ff1f43;
-	--th-accent-fg: #130204;
-	--th-second: #ff8ac4;
-	--th-chart-1: #ff1f43;
-	--th-chart-2: #ff8ac4;
-	--th-chart-3: #c8b8c4;
-	--th-chart-4: #ff7a2e;
-	--th-chart-5: #c25cff;
-	--ring: #ff8ac4;
-	--sidebar-ring: #ff8ac4;
-	--control-accent: #ff8ac4;
-	--control-accent-foreground: #130204;
-	--nav-icon-idle-base: #c76895;
-	--composer-shadow: 0 0 40px 6px rgb(255 31 67 / 0.16);
-}
-
-:root[data-palette="alien"]:not(.dark) {
-	--th-bg: #eefff4;
-	--th-surface: #dafbe6;
-	--th-raised: #d4f2df;
-	--th-hover: #ceead8;
-	--th-border: #a0baab;
-	--th-fg: #032a12;
-	--th-muted: #565f5c;
-	--th-subtle: #849f8e;
-	--th-accent: #007a33;
-	--th-accent-fg: #ffffff;
-	--th-second: #b0128a;
-	--th-chart-1: #007a33;
-	--th-chart-2: #b0128a;
-	--th-chart-3: #0080b0;
-	--th-chart-4: #5f8f00;
-	--th-chart-5: #4f6f5c;
-	--ring: #b0128a;
-	--sidebar-ring: #b0128a;
-	--control-accent: #b0128a;
-	--control-accent-foreground: #ffffff;
-	--nav-icon-idle-base: #b9369a;
-	--composer-shadow:
-		0 6px 28px -10px rgb(0 122 51 / 0.35),
-		0 2px 8px -2px rgb(0 0 0 / 0.1);
-}
-:root[data-palette="alien"].dark {
-	--th-bg: #02130a;
-	--th-surface: #051e10;
-	--th-raised: #10251a;
-	--th-hover: #1c2c24;
-	--th-border: #323a38;
-	--th-fg: #d6ffe6;
-	--th-muted: #b0aab2;
-	--th-subtle: #617d6d;
-	--th-accent: #00ff6a;
-	--th-accent-fg: #010b06;
-	--th-second: #ff3dc8;
-	--th-chart-1: #00ff6a;
-	--th-chart-2: #ff3dc8;
-	--th-chart-3: #1ad6ff;
-	--th-chart-4: #c8ff1a;
-	--th-chart-5: #8fb8a0;
-	--ring: #ff3dc8;
-	--sidebar-ring: #ff3dc8;
-	--control-accent: #ff3dc8;
-	--control-accent-foreground: #010b06;
-	--nav-icon-idle-base: #c03399;
-	--composer-shadow: 0 0 40px 6px rgb(0 255 106 / 0.16);
-}
-
-:root[data-palette="ghost-ship"]:not(.dark) {
-	--th-bg: #ecfffb;
-	--th-surface: #d4f8f0;
-	--th-raised: #cef1e7;
-	--th-hover: #c7e9df;
-	--th-border: #98bbb0;
-	--th-fg: #03302a;
-	--th-muted: #516c5c;
-	--th-subtle: #83a29d;
-	--th-accent: #00756a;
-	--th-accent-fg: #ffffff;
-	--th-second: #8a6000;
-	--th-chart-1: #00756a;
-	--th-chart-2: #8a6000;
-	--th-chart-3: #1f5fc8;
-	--th-chart-4: #4f8a00;
-	--th-chart-5: #c8102e;
-	--ring: #8a6000;
-	--sidebar-ring: #8a6000;
-	--control-accent: #8a6000;
-	--control-accent-foreground: #ffffff;
-	--nav-icon-idle-base: #997826;
-	--composer-shadow:
-		0 6px 28px -10px rgb(0 117 106 / 0.35),
-		0 2px 8px -2px rgb(0 0 0 / 0.1);
-}
-:root[data-palette="ghost-ship"].dark {
-	--th-bg: #021716;
-	--th-surface: #042420;
-	--th-raised: #102e27;
-	--th-hover: #1b382d;
-	--th-border: #324c3a;
-	--th-fg: #d9fff8;
-	--th-muted: #b2c6a6;
-	--th-subtle: #637f7c;
-	--th-accent: #00e5c8;
-	--th-accent-fg: #010e0d;
-	--th-second: #ffd23d;
-	--th-chart-1: #00e5c8;
-	--th-chart-2: #ffd23d;
-	--th-chart-3: #5ca8ff;
-	--th-chart-4: #a8ff3d;
-	--th-chart-5: #ff5c7a;
-	--ring: #ffd23d;
-	--sidebar-ring: #ffd23d;
-	--control-accent: #ffd23d;
-	--control-accent-foreground: #010e0d;
-	--nav-icon-idle-base: #c0a333;
-	--composer-shadow: 0 0 40px 6px rgb(0 229 200 / 0.16);
-}
-
-:root[data-palette="the-thing"]:not(.dark) {
-	--th-bg: #eef8ff;
-	--th-surface: #dcefff;
-	--th-raised: #d6e7f6;
-	--th-hover: #d0dfee;
-	--th-border: #a2b2c0;
-	--th-fg: #04233a;
-	--th-muted: #585f67;
-	--th-subtle: #8598a6;
-	--th-accent: #0062a8;
-	--th-accent-fg: #ffffff;
-	--th-second: #c03f00;
-	--th-chart-1: #0062a8;
-	--th-chart-2: #c03f00;
-	--th-chart-3: #4f7590;
-	--th-chart-4: #0a9e86;
-	--th-chart-5: #c8102e;
-	--ring: #c03f00;
-	--sidebar-ring: #c03f00;
-	--control-accent: #c03f00;
-	--control-accent-foreground: #ffffff;
-	--nav-icon-idle-base: #c75b26;
-	--composer-shadow:
-		0 6px 28px -10px rgb(0 98 168 / 0.35),
-		0 2px 8px -2px rgb(0 0 0 / 0.1);
-}
-:root[data-palette="the-thing"].dark {
-	--th-bg: #04121f;
-	--th-surface: #081c2e;
-	--th-raised: #142433;
-	--th-hover: #1f2b39;
-	--th-border: #363b43;
-	--th-fg: #e0f3ff;
-	--th-muted: #b7aba6;
-	--th-subtle: #677784;
-	--th-accent: #3dbcff;
-	--th-accent-fg: #020b13;
-	--th-second: #ff6a1a;
-	--th-chart-1: #3dbcff;
-	--th-chart-2: #ff6a1a;
-	--th-chart-3: #cfeaff;
-	--th-chart-4: #2ee0c0;
-	--th-chart-5: #ff3d5a;
-	--ring: #ff6a1a;
-	--sidebar-ring: #ff6a1a;
-	--control-accent: #ff6a1a;
-	--control-accent-foreground: #020b13;
-	--nav-icon-idle-base: #c0541b;
-	--composer-shadow: 0 0 40px 6px rgb(61 188 255 / 0.16);
-}
-
-:root[data-palette="midnight-haunt"]:not(.dark) {
-	--th-bg: #f0f3ff;
-	--th-surface: #dfe5ff;
-	--th-raised: #d8def7;
-	--th-hover: #d1d7ee;
-	--th-border: #a8adc6;
-	--th-fg: #0c1442;
-	--th-muted: #56596c;
-	--th-subtle: #898faa;
-	--th-accent: #2f45d6;
-	--th-accent-fg: #ffffff;
-	--th-second: #856400;
-	--th-chart-1: #2f45d6;
-	--th-chart-2: #856400;
-	--th-chart-3: #007fa8;
-	--th-chart-4: #8b2fd1;
-	--th-chart-5: #c8102e;
-	--ring: #856400;
-	--sidebar-ring: #856400;
-	--control-accent: #856400;
-	--control-accent-foreground: #ffffff;
-	--nav-icon-idle-base: #957926;
-	--composer-shadow:
-		0 6px 28px -10px rgb(47 69 214 / 0.35),
-		0 2px 8px -2px rgb(0 0 0 / 0.1);
-}
-:root[data-palette="midnight-haunt"].dark {
-	--th-bg: #060a24;
-	--th-surface: #0b1236;
-	--th-raised: #161d3d;
-	--th-hover: #222743;
-	--th-border: #393c50;
-	--th-fg: #e3e8ff;
-	--th-muted: #b9b7b5;
-	--th-subtle: #696e87;
-	--th-accent: #6f86ff;
-	--th-accent-fg: #040616;
-	--th-second: #ffe066;
-	--th-chart-1: #6f86ff;
-	--th-chart-2: #ffe066;
-	--th-chart-3: #3ddcff;
-	--th-chart-4: #d67aff;
-	--th-chart-5: #ff6a8a;
-	--ring: #ffe066;
-	--sidebar-ring: #ffe066;
-	--control-accent: #ffe066;
-	--control-accent-foreground: #040616;
-	--nav-icon-idle-base: #c1ab56;
-	--composer-shadow: 0 0 40px 6px rgb(111 134 255 / 0.16);
-}
-
-:root[data-palette="gothic"]:not(.dark) {
-	--th-bg: #f7f5f7;
-	--th-surface: #ece8ed;
-	--th-raised: #e4dfe6;
-	--th-hover: #ddd7df;
-	--th-border: #b4adb6;
-	--th-fg: #1c1519;
-	--th-muted: #5f5560;
-	--th-subtle: #948a96;
-	--th-accent: #5b21b6;
-	--th-accent-fg: #ffffff;
-	--th-second: #a3173f;
-	--th-chart-1: #5b21b6;
-	--th-chart-2: #a3173f;
-	--th-chart-3: #8a8094;
-	--th-chart-4: #7c3aed;
-	--th-chart-5: #3b3440;
-	--ring: #a3173f;
-	--sidebar-ring: #a3173f;
-	--control-accent: #a3173f;
-	--control-accent-foreground: #ffffff;
-	--nav-icon-idle-base: #b84a68;
-}
-:root[data-palette="gothic"].dark {
-	--th-bg: #0b0a0d;
-	--th-surface: #141217;
-	--th-raised: #1c1920;
-	--th-hover: #242029;
-	--th-border: #3a3340;
-	--th-fg: #f1ecf2;
-	--th-muted: #b3a8b8;
-	--th-subtle: #6f6776;
-	--th-accent: #a78bfa;
-	--th-accent-fg: #0b0a0d;
-	--th-second: #e0335e;
-	--th-chart-1: #a78bfa;
-	--th-chart-2: #e0335e;
-	--th-chart-3: #c9c3d1;
-	--th-chart-4: #7c5cd6;
-	--th-chart-5: #e8b4c4;
-	--ring: #e0335e;
-	--sidebar-ring: #e0335e;
-	--control-accent: #e0335e;
-	--control-accent-foreground: #0b0a0d;
-	--nav-icon-idle-base: #b0365a;
-}
-
-:root[data-palette="hexberry"]:not(.dark) {
-	--th-bg: #fff2f8;
-	--th-surface: #ffe2f0;
-	--th-raised: #fbd8ea;
-	--th-hover: #f5cde2;
-	--th-border: #cea4ba;
-	--th-fg: #33061f;
-	--th-muted: #7d4766;
-	--th-subtle: #a8869a;
-	--th-accent: #c2187a;
-	--th-accent-fg: #ffffff;
-	--th-second: #0d7d60;
-	--th-chart-1: #c2187a;
-	--th-chart-2: #0d7d60;
-	--th-chart-3: #7a4fd1;
-	--th-chart-4: #e86aa8;
-	--th-chart-5: #a88a00;
-	--ring: #0d7d60;
-	--sidebar-ring: #0d7d60;
-	--control-accent: #0d7d60;
-	--control-accent-foreground: #ffffff;
-	--nav-icon-idle-base: #2f9c7d;
-	--composer-shadow:
-		0 6px 28px -10px rgb(194 24 122 / 0.35),
-		0 2px 8px -2px rgb(0 0 0 / 0.1);
-}
-:root[data-palette="hexberry"].dark {
-	--th-bg: #14060f;
-	--th-surface: #1f0a18;
-	--th-raised: #2a1022;
-	--th-hover: #34152b;
-	--th-border: #522245;
-	--th-fg: #ffe6f3;
-	--th-muted: #d79ac0;
-	--th-subtle: #85617a;
-	--th-accent: #ff4fae;
-	--th-accent-fg: #1a0612;
-	--th-second: #5ef0c0;
-	--th-chart-1: #ff4fae;
-	--th-chart-2: #5ef0c0;
-	--th-chart-3: #c9a7ff;
-	--th-chart-4: #ffb3d9;
-	--th-chart-5: #f2e86d;
-	--ring: #5ef0c0;
-	--sidebar-ring: #5ef0c0;
-	--control-accent: #5ef0c0;
-	--control-accent-foreground: #071a14;
-	--nav-icon-idle-base: #3fbf98;
-	--composer-shadow: 0 0 40px 6px rgb(255 79 174 / 0.16);
-}
-:root[data-palette="candycorn"]:not(.dark) {
-	--th-bg: #fffaf0;
-	--th-surface: #fff0d6;
-	--th-raised: #fbe7c6;
-	--th-hover: #f6ddb6;
-	--th-border: #c6b18f;
-	--th-fg: #2b1a05;
-	--th-muted: #7a5a2c;
-	--th-subtle: #a88f6a;
-	--th-accent: #b8520a;
-	--th-accent-fg: #ffffff;
-	--th-second: #8f6a00;
-	--th-chart-1: #b8520a;
-	--th-chart-2: #8f6a00;
-	--th-chart-3: #d07a1a;
-	--th-chart-4: #6e5a3a;
-	--th-chart-5: #c9a000;
-	--ring: #8f6a00;
-	--sidebar-ring: #8f6a00;
-	--control-accent: #8f6a00;
-	--control-accent-foreground: #ffffff;
-	--nav-icon-idle-base: #a58224;
-	--composer-shadow:
-		0 6px 28px -10px rgb(184 82 10 / 0.35),
-		0 2px 8px -2px rgb(0 0 0 / 0.1);
-}
-:root[data-palette="candycorn"].dark {
-	--th-bg: #14100a;
-	--th-surface: #1e170d;
-	--th-raised: #291f11;
-	--th-hover: #332715;
-	--th-border: #4f3d22;
-	--th-fg: #ffffff;
-	--th-muted: #ffe2b8;
-	--th-subtle: #b3936a;
-	--th-accent: #ffc72c;
-	--th-accent-fg: #1a1002;
-	--th-second: #ff7a1a;
-	--th-chart-1: #ffc72c;
-	--th-chart-2: #ff7a1a;
-	--th-chart-3: #ffffff;
-	--th-chart-4: #ffe2b8;
-	--th-chart-5: #e0601a;
-	--ring: #ff7a1a;
-	--sidebar-ring: #ff7a1a;
-	--control-accent: #ff7a1a;
-	--control-accent-foreground: #1a0c02;
-	--nav-icon-idle-base: #ff9a3c;
-	--composer-shadow: 0 0 40px 6px rgb(255 199 44 / 0.16);
-}
-
-
-:root[data-palette="black-cat"]:not(.dark) {
-	--th-bg: #f6f1ff;
-	--th-surface: #ebe0ff;
-	--th-raised: #e2d8f6;
-	--th-hover: #dacfed;
-	--th-border: #b4a9c5;
-	--th-fg: #120a1c;
-	--th-muted: #4f4759;
-	--th-subtle: #8f8999;
-	--th-accent: #6a1fd6;
-	--th-accent-fg: #ffffff;
-	--th-second: #1c1028;
-	--th-chart-1: #6a1fd6;
-	--th-chart-2: #1c1028;
-	--th-chart-3: #4a3fd1;
-	--th-chart-4: #b0128a;
-	--th-chart-5: #5c5470;
-	--ring: #1c1028;
-	--sidebar-ring: #1c1028;
-	--control-accent: #1c1028;
-	--control-accent-foreground: #ffffff;
-	--nav-icon-idle-base: #3d3248;
-	--composer-shadow:
-		0 6px 28px -10px rgb(106 31 214 / 0.35),
-		0 2px 8px -2px rgb(0 0 0 / 0.1);
-}
-:root[data-palette="black-cat"].dark {
-	--th-bg: #08060b;
-	--th-surface: #110d16;
-	--th-raised: #1c1722;
-	--th-hover: #27212d;
-	--th-border: #3c3545;
-	--th-fg: #f3eaff;
-	--th-muted: #bdb1cb;
-	--th-subtle: #726d79;
-	--th-accent: #a259ff;
-	--th-accent-fg: #050407;
-	--th-second: #dcb8ff;
-	--th-chart-1: #a259ff;
-	--th-chart-2: #dcb8ff;
-	--th-chart-3: #7a5cff;
-	--th-chart-4: #ff5cd6;
-	--th-chart-5: #b8b0c4;
-	--ring: #dcb8ff;
-	--sidebar-ring: #dcb8ff;
-	--control-accent: #dcb8ff;
-	--control-accent-foreground: #050407;
-	--nav-icon-idle-base: #a78cc2;
-	--composer-shadow: 0 0 40px 6px rgb(162 89 255 / 0.16);
-}
-
-:root:where([data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="alien"], [data-palette="ghost-ship"], [data-palette="the-thing"], [data-palette="midnight-haunt"], [data-palette="black-cat"], [data-palette="hexberry"], [data-palette="candycorn"]):not(.dark)
-	:is(.chat-composer-surface, .unsloth-composer-surface):focus-within {
-	box-shadow:
-		0 8px 34px -10px color-mix(in srgb, var(--th-accent) 45%, transparent),
-		0 2px 8px -2px rgb(0 0 0 / 0.1);
-}
-:root:where([data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="alien"], [data-palette="ghost-ship"], [data-palette="the-thing"], [data-palette="midnight-haunt"], [data-palette="black-cat"], [data-palette="hexberry"], [data-palette="candycorn"]).dark
-	:is(.chat-composer-surface, .unsloth-composer-surface):focus-within {
-	box-shadow: 0 0 48px 8px color-mix(in srgb, var(--th-accent) 22%, transparent);
 }
 
 /* --------------------------------------------------------------------------- */
@@ -2666,9 +2165,9 @@ html[data-chat-font] .aui-root {
 		height: var(--icon-size);
 	}
 
-	/* Pins Inter across themes; parent `font-heading` resolves to Geist in dark. */
+	/* Pins the default sans across themes; parent `font-heading` resolves to Geist in dark. */
 	.nav-badge {
-		font-family: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+		font-family: var(--font-sans-default);
 	}
 
 	.sidebar-nav-btn {
@@ -2682,7 +2181,6 @@ html[data-chat-font] .aui-root {
 	.group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
-	.group\/halloween-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	/* The chevron discloses this row's own list, so the row stays lit while hovered. */
 	.group\/images-item:hover > .relative > .sidebar-nav-btn,
@@ -2698,7 +2196,6 @@ html[data-chat-font] .aui-root {
 	.dark .group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
-	.dark .group\/halloween-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/images-item:hover > .relative > .sidebar-nav-btn,
 	.dark .group\/audio-item:hover > .relative > .sidebar-nav-btn,
@@ -3532,10 +3029,8 @@ html[data-chat-font] .aui-root {
 
 		/* Caret pills open a menu, so keep the icon and skip the X swap; the off-switch rules below would
 		   otherwise blank the slot when collapsed. */
-		&:has(.composer-pill-caret):hover
-			.composer-pill-glyph
-			> :not(.composer-pill-x) {
-			opacity: 1;
+		&:has(.composer-pill-caret):hover .composer-pill-glyph {
+			--pill-glyph-icon-opacity: 1;
 		}
 
 		&:has(.composer-pill-caret) .composer-pill-x {
@@ -3577,14 +3072,18 @@ html[data-chat-font] .aui-root {
 	.composer-pill-glyph > * {
 		grid-area: 1 / 1;
 	}
+	/* Swapped via the glyph: a :has() rule over `> :not(...)` restyles the whole app on every mount. */
+	.composer-pill-glyph > :not(.composer-pill-x) {
+		opacity: var(--pill-glyph-icon-opacity, 1);
+	}
 
 	.composer-pill-x {
 		@apply pointer-events-none size-[var(--ui-icon-size)] rounded-full bg-wash-10 p-[calc(3px*var(--ui-space-scale,1))] opacity-0 transition-opacity dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))];
 	}
 
-	.composer-pill-btn[data-active="true"]:has(.composer-pill-x):hover .composer-pill-glyph > :not(.composer-pill-x),
-	.unsloth-thinking-pill[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x) {
-		@apply opacity-0;
+	.composer-pill-btn[data-active="true"]:has(.composer-pill-x):hover .composer-pill-glyph,
+	.unsloth-thinking-pill[data-active="true"]:hover .composer-pill-glyph {
+		--pill-glyph-icon-opacity: 0;
 	}
 
 	.composer-pill-btn[data-active="true"]:has(.composer-pill-x):hover .composer-pill-x,
@@ -3594,10 +3093,8 @@ html[data-chat-font] .aui-root {
 
 	/* Off-switch pills (RAG, MCP) render only while the feature is on, so reveal the X even when
 	   not in their active look. */
-	.composer-pill-btn:has(> .composer-pill-glyph[role="button"]):hover
-		.composer-pill-glyph
-		> :not(.composer-pill-x) {
-		@apply opacity-0;
+	.composer-pill-btn:has(> .composer-pill-glyph[role="button"]):hover .composer-pill-glyph {
+		--pill-glyph-icon-opacity: 0;
 	}
 
 	.composer-pill-btn:has(> .composer-pill-glyph[role="button"]):hover
@@ -6517,100 +6014,6 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 }
 
 
-.spooky-spider {
-	position: absolute;
-	top: 0;
-	width: calc(26px * var(--ui-space-scale, 1));
-	height: 0;
-	animation-name: spooky-spider-drop;
-	animation-timing-function: ease-in-out;
-	animation-fill-mode: both;
-}
-.spooky-spider::before {
-	content: "";
-	position: absolute;
-	top: 0;
-	bottom: calc(13px * var(--ui-space-scale, 1));
-	left: 50%;
-	width: 1px;
-	background: currentColor;
-	opacity: 0.4;
-}
-.spooky-spider-body {
-	position: absolute;
-	bottom: calc(-6px * var(--ui-space-scale, 1));
-	left: 0;
-	width: 100%;
-	opacity: 0.85;
-	transform-origin: 50% 0;
-	animation: spooky-spider-sway 1.6s ease-in-out infinite alternate;
-}
-@keyframes spooky-spider-drop {
-	0% { height: 0; }
-	55% { height: calc(var(--spooky-drop) + 8px); }
-	72% { height: var(--spooky-drop); }
-	86% { height: calc(var(--spooky-drop) + 3px); }
-	100% { height: var(--spooky-drop); }
-}
-@keyframes spooky-spider-sway {
-	from { transform: rotate(-5deg); }
-	to { transform: rotate(5deg); }
-}
-.spooky-bats {
-	position: absolute;
-	left: 0;
-	right: 0;
-	height: calc(60px * var(--ui-space-scale, 1));
-}
-.spooky-bat {
-	position: absolute;
-	top: 0;
-	left: 0;
-	width: calc(42px * var(--ui-space-scale, 1));
-	opacity: 0.8;
-	animation-name: spooky-bat-fly;
-	animation-timing-function: linear;
-	animation-fill-mode: both;
-}
-.spooky-bat-wings {
-	display: block;
-	width: 100%;
-	transform-origin: 50% 40%;
-	animation: spooky-bat-flap 0.2s ease-in-out infinite alternate;
-}
-@keyframes spooky-bat-fly {
-	0% { transform: translate(-10vw, 0); }
-	25% { transform: translate(25vw, -2vh); }
-	50% { transform: translate(50vw, 1.5vh); }
-	75% { transform: translate(75vw, -1.5vh); }
-	100% { transform: translate(110vw, 1vh); }
-}
-@keyframes spooky-bat-flap {
-	from { transform: scaleY(1); }
-	to { transform: scaleY(0.8); }
-}
-/* Reduced motion: the spider fades in place and bats fly without flapping. The global reduced-motion rules would cut both to 0.01ms, so they keep their length. */
-html.force-reduced-motion .spooky-still :is(.spooky-spider, .spooky-bat) {
-	animation-duration: var(--spooky-ms) !important;
-}
-@media (prefers-reduced-motion: reduce) {
-	html:not(.force-motion) .spooky-still :is(.spooky-spider, .spooky-bat) {
-		animation-duration: var(--spooky-ms) !important;
-	}
-}
-.spooky-still .spooky-spider {
-	height: var(--spooky-drop);
-	animation-name: spooky-fade-in;
-}
-.spooky-still :is(.spooky-spider-body, .spooky-bat-wings) {
-	animation: none;
-}
-@keyframes spooky-fade-in {
-	from { opacity: 0; }
-	to { opacity: 0.85; }
-}
-
-
 .chat-wallpaper { position: absolute; inset: 0; overflow: hidden; pointer-events: none; --wallpaper-safe: 0; }
 .chat-wallpaper-frame { position: absolute; inset: 0; opacity: var(--wallpaper-visibility); }
 .chat-wallpaper-image {
@@ -6654,8 +6057,12 @@ html.force-reduced-motion .spooky-still :is(.spooky-spider, .spooky-bat) {
   background: color-mix(in srgb, var(--background) max(92%, calc((1 - var(--wallpaper-safe, 0)) * 100%)), transparent);
   backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
   /* An outline over the image instead of a drop shadow, through the composer's one shadow variable. */
-  --composer-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) var(--wallpaper-outline, 30%), transparent);
+  --composer-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) var(--composer-outline, var(--wallpaper-outline, 30%)), transparent);
   box-shadow: var(--composer-shadow);
+}
+/* The Appearance setting draws the same outline without a background image too. */
+html[data-composer-outline] .unsloth-composer-surface {
+  --composer-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) var(--composer-outline), transparent);
 }
 .wallpaper-preview-prose { background: var(--background); }
 
@@ -6691,7 +6098,7 @@ html[data-chat-wallpaper-workspace-ready] [data-slot="window-titlebar"][data-wal
   background: transparent;
 }
 [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] {
-  background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * 100%), transparent);
+  background: color-mix(in srgb, var(--background) max(86%, calc((1 - var(--wallpaper-safe, 0)) * 100%)), transparent);
 }
 @supports not (backdrop-filter: blur(1px)) {
   :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
@@ -6718,6 +6125,7 @@ html[data-glass="frosted"] { --glass-tint-base: 60%; --glass-blur-base: 26px; --
 html[data-glass="blurred"] { --glass-tint-base: 26%; --glass-blur-base: 48px; --glass-saturate: 125%; }
 html[data-glass="liquid"] { --glass-tint-base: 14%; --glass-blur-base: 10px; --glass-saturate: 190%; }
 html[data-glass="liquid-3d"] { --glass-tint-base: 14%; --glass-blur-base: 10px; --glass-saturate: 190%; }
+html[data-glass="macos"] { --glass-tint-base: 30%; --glass-blur-base: 24px; --glass-saturate: 160%; }
 html {
   --glass-page-bg: var(--background);
   --glass-page-popover: var(--popover);
@@ -6734,19 +6142,22 @@ html[data-glass] {
   --glass-panel-fill: color-mix(in srgb, var(--panel-surface), var(--foreground) max(var(--glass-shade, 0%), var(--glass-pane-tone)));
   --glass-composer-fill: color-mix(in srgb, var(--background), var(--foreground) max(var(--glass-shade, 0%), var(--glass-pane-tone)));
 }
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"],
+html[data-glass="macos"] [data-slot="sidebar-inner"] {
   background-color: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   box-shadow: inset -1px 0 0 color-mix(in srgb, var(--foreground) 9%, transparent);
 }
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] .nav-badge {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] .nav-badge,
+html[data-glass="macos"] [data-slot="sidebar-inner"] .nav-badge {
   border-color: color-mix(in srgb, var(--foreground) 22%, transparent);
   background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
   color: color-mix(in srgb, var(--foreground) 72%, transparent);
   box-shadow: none;
 }
-html[data-glass][data-chat-wallpaper-workspace-ready] {
+html[data-glass][data-chat-wallpaper-workspace-ready],
+html[data-glass="macos"] {
   --glass-line: color-mix(in srgb, var(--foreground-base) 9%, transparent);
   --glass-line-strong: color-mix(in srgb, var(--foreground-base) 14%, transparent);
   --border-base: var(--glass-line);
@@ -6755,7 +6166,8 @@ html[data-glass][data-chat-wallpaper-workspace-ready] {
   --sidebar-edge: var(--glass-line);
   --panel-edge: var(--glass-line);
 }
-html.dark[data-glass][data-chat-wallpaper-workspace-ready] {
+html.dark[data-glass][data-chat-wallpaper-workspace-ready],
+html.dark[data-glass="macos"] {
   --glass-line: rgb(255 255 255 / .13);
   --glass-line-strong: rgb(255 255 255 / .17);
 }
@@ -6773,17 +6185,20 @@ html:not(.dark):not([data-contrast-adjust])[data-glass] {
   --color-nav-fg-muted: var(--nav-fg-muted);
   --color-nav-icon-idle: var(--nav-icon-idle);
 }
-html[data-glass][data-chat-wallpaper-workspace-ready] .diffusion-surface {
+html[data-glass][data-chat-wallpaper-workspace-ready] .diffusion-surface,
+html[data-glass="macos"] .diffusion-surface {
   --border-base: var(--glass-line);
   --input-base: var(--glass-line-strong);
   --border: var(--border-base);
   --input: var(--input-base);
 }
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-sticky-label) {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-sticky-label),
+html[data-glass="macos"] [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-sticky-label) {
   background-color: transparent;
 }
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
-html[data-glass] .wallpaper-preview-composer {
+html[data-glass] .wallpaper-preview-composer,
+html[data-glass="macos"] .unsloth-composer-surface {
   background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc(max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
@@ -6876,12 +6291,14 @@ html[data-glass="liquid-3d"] .wallpaper-preview:has(> .chat-wallpaper[data-outli
   content: none;
 }
 
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"],
+html[data-glass="macos"] [data-slot="chat-settings-panel"] {
   background-color: color-mix(in srgb, var(--glass-panel-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] .bg-panel-surface {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] .bg-panel-surface,
+html[data-glass="macos"] [data-slot="chat-settings-panel"] .bg-panel-surface {
   background-color: transparent;
 }
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
@@ -6902,7 +6319,8 @@ html.dark[data-glass] {
 }
 html[data-glass] { --glass-field: color-mix(in srgb, var(--background) 55%, transparent); }
 html.dark[data-glass] { --glass-field: rgb(255 255 255 / .07); }
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"],
+html[data-glass="macos"] [data-slot="chat-settings-panel"] {
   --panel-input-surface: var(--glass-field);
   --panel-input-surface-hover: var(--glass-hover);
   --secondary: var(--glass-field);
@@ -6921,7 +6339,8 @@ html.dark[data-glass="liquid-3d"] {
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] :is([data-slot="sidebar-inner"], [data-slot="chat-settings-panel"]),
 html[data-glass][data-chat-wallpaper-ready] [data-wallpaper-chrome-controls],
-html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface {
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
+html[data-glass="macos"] :is([data-slot="sidebar-inner"], [data-slot="chat-settings-panel"], [data-wallpaper-chrome-controls], .unsloth-composer-surface) {
   --accent: var(--glass-hover);
   --sidebar-accent: var(--glass-hover);
   --nav-surface-hover: var(--glass-hover);
@@ -6937,7 +6356,9 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
   --color-muted: var(--glass-hover);
 }
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]):not(:focus-visible, [data-active="true"]),
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] [data-slot="sidebar-menu-button"]:is(:hover, [data-active="true"]) {
+html[data-glass="macos"] .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]):not(:focus-visible, [data-active="true"]),
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] [data-slot="sidebar-menu-button"]:is(:hover, [data-active="true"]),
+html[data-glass="macos"] [data-slot="sidebar-inner"] [data-slot="sidebar-menu-button"]:is(:hover, [data-active="true"]) {
   background-color: var(--glass-hover);
   box-shadow: var(--glass-hover-rim);
 }
@@ -6947,6 +6368,23 @@ html[data-glass^="liquid"]:not(.dark) .unsloth-composer-surface {
   --glass-hover: color-mix(in srgb, var(--foreground) 7%, transparent);
 }
 /* Menus that pin their fill with a layered !important read --sidebar or --dropdown-lift-surface, so point those at the glass. */
+html[data-glass="macos"],
+html[data-glass="macos"] body {
+  background: transparent;
+}
+html[data-glass="macos"] :is([data-slot="sidebar-inset"], [data-slot="window-titlebar"]) {
+  background-color: color-mix(in srgb, var(--background) 52%, transparent);
+}
+html[data-glass="macos"] [data-slot="window-titlebar"][data-wallpaper-sidebar-pinned] > [data-wallpaper-chrome-controls]:first-child {
+  background: color-mix(in srgb, var(--sidebar) min(96%, calc(var(--glass-tint) * var(--glass-opacity, 1))), transparent);
+}
+html[data-glass="macos"] :is([data-chat-page-root], .aui-thread-viewport, [data-wallpaper-page-canvas], .hub-page, .hub-page .hub-canvas, [data-side-panel-inset]:not(.chat-header-fade)) {
+  background: transparent;
+}
+html[data-glass="macos"] :is(.chat-header-fade, [data-slot="window-titlebar-decoration"]) {
+  visibility: hidden;
+}
+
 html[data-glass] {
   --glass-menu-fill: color-mix(in srgb, var(--popover) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 30%)), var(--glass-read-floor, 0%), var(--glass-menu-floor)) * var(--glass-opacity, 1))), transparent);
 }
@@ -7021,7 +6459,8 @@ html[data-glass^="liquid"][data-glass-menus] [data-slot="dialog-content"] {
   box-shadow: var(--glass-rim);
 }
 /* These panes clear the surface token, so ink drawn in the page colour (dark buttons' labels) takes the opaque one back. */
-html[data-glass][data-glass-menus] :is([data-slot="dialog-content"], [data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) [class*="text-background"] {
+html[data-glass][data-glass-menus] :is([data-slot="dialog-content"], [data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) [class*="text-background"],
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] [class*="text-background"] {
   --background: var(--glass-page-bg);
   --color-background: var(--glass-page-bg);
 }
@@ -7064,23 +6503,24 @@ html[data-glass]:not(.dark) {
 }
 html[data-glass][data-glass-menus]:not(.dark) [data-slot="dialog-content"] :is(.hub-tab-toggle, .btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]),
 html[data-glass][data-chat-wallpaper-workspace-ready]:not(.dark) [data-slot="chat-settings-panel"] :is(.hub-tab-toggle, .btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]),
-html[data-glass]:not(.dark) [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] :is(.hub-tab-toggle, .btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]) {
+html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :is(.hub-tab-toggle, .btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]) {
   border-color: transparent;
   background-color: var(--glass-control);
 }
 html[data-glass][data-glass-menus]:not(.dark) [data-slot="dialog-content"] :is(.btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]):is(:hover, [data-state="open"]),
 html[data-glass][data-chat-wallpaper-workspace-ready]:not(.dark) [data-slot="chat-settings-panel"] :is(.btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]):is(:hover, [data-state="open"]),
-html[data-glass]:not(.dark) [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] :is(.btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]):is(:hover, [data-state="open"]) {
+html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :is(.btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]):is(:hover, [data-state="open"]) {
   background-color: var(--glass-control-hover);
 }
 html[data-glass][data-glass-menus]:not(.dark) [data-slot="dialog-content"] .hub-tab-toggle-pill,
 html[data-glass][data-chat-wallpaper-workspace-ready]:not(.dark) [data-slot="chat-settings-panel"] .hub-tab-toggle-pill,
-html[data-glass]:not(.dark) [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] .hub-tab-toggle-pill {
+html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .hub-tab-toggle-pill {
   background-color: var(--glass-control-pill);
   box-shadow: var(--glass-control-rim);
 }
-/* Translucent hovers stack: a lit row shell and its button would show two pills. */
-html[data-glass] [class*="hover:bg-sidebar-accent"]:is(:hover, :has(:focus-visible), :has([data-state="open"]), .bg-sidebar-accent) [class*="hover:bg-sidebar-accent"] {
+/* A lit row shell and its button would stack two translucent pills. No :has() over this [class*] subject. */
+html[data-glass] [class*="hover:bg-sidebar-accent"]:is(:hover, .bg-sidebar-accent) [class*="hover:bg-sidebar-accent"],
+html[data-glass] [class*="hover:bg-sidebar-accent"] [class*="hover:bg-sidebar-accent"]:is(:focus-visible, [data-state="open"]) {
   background-color: transparent;
 }
 
@@ -7096,3 +6536,100 @@ html[data-glass^="liquid"] [data-auth-wallpaper]:has(> .chat-wallpaper[data-read
 }
 
 .glass-backdrop { background: var(--background); }
+
+html {
+  --glass-page-floor: 70%;
+}
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] {
+  background-color: color-mix(in srgb, var(--glass-page-bg) min(96%, calc(max(clamp(var(--glass-page-floor), calc(var(--glass-tint) + 22%), 88%), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent);
+  background-image: var(--glass-sheen, none);
+  --background: color-mix(in srgb, var(--glass-page-bg) 35%, transparent);
+  --card: color-mix(in srgb, var(--glass-page-card) 55%, transparent);
+  --muted: color-mix(in srgb, var(--glass-page-muted) 60%, transparent);
+  --secondary: color-mix(in srgb, var(--glass-page-secondary) 60%, transparent);
+  --panel-input-surface: color-mix(in srgb, var(--glass-page-input) 60%, transparent);
+  --accent: var(--glass-hover);
+  --nav-surface-hover: var(--glass-hover);
+  --panel-surface-hover: var(--glass-hover);
+  --chat-icon-bg-hover: var(--glass-hover);
+  --color-background: var(--background);
+  --color-card: var(--card);
+  --color-muted: var(--muted);
+  --color-secondary: var(--secondary);
+  --color-accent: var(--glass-hover);
+  --color-nav-surface-hover: var(--glass-hover);
+  --color-panel-surface-hover: var(--glass-hover);
+  --color-chat-icon-bg-hover: var(--glass-hover);
+}
+html.dark { --glass-page-floor: 60%; }
+/* Frost the image, not the pane: a backdrop-root pane makes sticky headers inside re-tint it into bands. */
+html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper[data-ready] .chat-wallpaper-artwork {
+  filter: blur(max(var(--glass-blur), 22px)) saturate(var(--glass-saturate)) !important;
+}
+html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper::after {
+  content: none;
+}
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .sticky {
+  background-color: transparent;
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+.glass-lens {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+}
+.glass-lens-fill,
+.glass-lens-rim {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+}
+.glass-lens-copy,
+.glass-lens-layer {
+  position: absolute;
+}
+.glass-lens-layer { inset: 0; }
+.glass-lens-fill .glass-lens-copy {
+  filter: blur(var(--glass-blur, 12px)) saturate(var(--glass-saturate, 150%));
+}
+.glass-lens-rim {
+  padding: 1px;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  opacity: .55;
+}
+.glass-lens-rim .glass-lens-copy {
+  filter: blur(1.5px) saturate(1.5) brightness(1.4);
+}
+/* Brightening a light page's own colour leaves a white rim on white; light mode darkens it instead. */
+html:not(.dark) .glass-lens-rim .glass-lens-copy {
+  filter: blur(1.5px) saturate(1.5) brightness(.8);
+}
+.glass-lens-rim::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(rgb(255 255 255 / .35), transparent 30%, transparent 75%, rgb(255 255 255 / .15));
+}
+.glass-lens::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 1px 1px -.5px rgb(255 255 255 / .3), inset 0 4px 4px -4px rgb(255 255 255 / .22), inset 0 -3px 4px -3px rgb(0 0 0 / .1);
+}
+.dark .glass-lens::after {
+  box-shadow: inset 0 1px 1px -.5px rgb(255 255 255 / .14), inset 0 4px 4px -4px rgb(255 255 255 / .08), inset 0 -3px 4px -3px rgb(0 0 0 / .35);
+}
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface:has(> .glass-lens) {
+  --composer-shadow: none;
+}
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .glass-lens .glass-lens-rim,
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .glass-lens::after {
+  display: none;
+}

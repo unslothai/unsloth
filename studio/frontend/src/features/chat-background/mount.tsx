@@ -39,7 +39,7 @@ export function ChatBackground({
 		(!route || inScope(value.scope, route === "chat" && welcome ? "newChat" : route));
 	if (!shown)
 		// Glass on the chat routes still needs a ready canvas when no image shows there.
-		return backdrop && ready && material !== "solid" && route !== "page" ? (
+		return backdrop && ready && material !== "solid" && material !== "macos" && route !== "page" ? (
 			<Suspense fallback={null}>
 				<Backdrop />
 			</Suspense>

@@ -11,4 +11,5 @@ export const MATERIAL_LABELS: Record<WindowMaterial, TranslationKey> = {
   blurred: "chatBackground.materialBlurred",
   liquid: "chatBackground.materialLiquid",
   "liquid-3d": "chatBackground.materialLiquid3d",
+  macos: "chatBackground.materialMacos",
 };

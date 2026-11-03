@@ -2,6 +2,7 @@
 export { ChatBackground } from "./mount";
 export {
   WindowMaterialMount,
+  nativeMaterialAvailable,
   useMaterialStore,
 } from "./material";
 export { MATERIAL_LABELS } from "./material-labels";

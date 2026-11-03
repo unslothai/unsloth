@@ -1759,7 +1759,6 @@ def _LlamaModel_fast_forward_inference(
     mlp_fast_forward_inference = fast_swiglu_inference,
 ):
     # Makes attention and MLP customisable for models like qwen3/cohere.
-    # Attention functions the fused 4bit decode reproduces (Llama's; Qwen3 marks its own).
     fused_nf4 = (
         attention_fast_forward_inference is LlamaAttention_fast_forward_inference
         or getattr(attention_fast_forward_inference, "_unsloth_fused_nf4", False)

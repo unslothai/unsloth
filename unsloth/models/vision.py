@@ -4410,7 +4410,13 @@ class FastBaseModel:
 
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
-            if dtype == torch.bfloat16:
+            if do_forced_float32 and not SUPPORTS_BFLOAT16:
+                # Forced float32 loads bf16 then casts, but without bf16 the trainer keeps float32 (no autocast).
+                print(
+                    f"Unsloth: {model_type_arch} cannot train in float16 and this GPU has no bfloat16, "
+                    "so full finetuning runs in float32."
+                )
+            elif dtype == torch.bfloat16:
                 if float32_mixed_precision != True:
                     print(
                         f"Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.\n"
