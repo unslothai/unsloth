@@ -6541,6 +6541,11 @@ class MLXInferenceBackend:
             or entry.get("spec_fallback_reason")
         ):
             return None
+        try:
+            if not self._resume_files or self._resume_files != self._resume_weight_files():
+                return None
+        except OSError:
+            return None
         # The served length reads this attribute before the argument.
         previous = self._model.max_seq_length
         self._model.max_seq_length = pinned

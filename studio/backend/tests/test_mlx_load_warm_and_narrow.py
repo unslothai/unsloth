@@ -98,6 +98,8 @@ def _narrowing(**entry):
         _speculative_draft = None,
         _kv_cache_window = 8192,
         _kv_context_budget = None,
+        _resume_files = (("w.safetensors", 1, 1),),
+        _resume_weight_files = lambda: (("w.safetensors", 1, 1),),
         cleared = 0,
     )
     backend._clear_prompt_cache = lambda: setattr(backend, "cleared", backend.cleared + 1)
@@ -132,6 +134,9 @@ def test_a_smaller_context_is_applied_to_the_held_model():
             {"spec_fallback_reason": 1},
             {"_speculative_draft": SimpleNamespace(drafter = object())},
         ),
+        (4096, {}, {"_resume_weight_files": lambda: (("w.safetensors", 2, 2),)}),
+        (4096, {}, {"_resume_files": False}),
+        (4096, {}, {"_resume_files": None}),
     ],
 )
 def test_a_load_a_fresh_one_could_plan_differently_is_not_narrowed(size, entry, attrs):
