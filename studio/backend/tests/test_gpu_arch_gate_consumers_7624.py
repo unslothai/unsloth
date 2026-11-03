@@ -537,9 +537,8 @@ class TestArchRetryDropsTensorSplit:
         block = block.split('label = "-archfallback"')[0]
         assert "self._unpinned_arch_crash_retry(" in block
         # A user device selector numbers cards by the unnarrowed set, so it opts the launch out.
-        assert block.index("elif _cache_target_unknown:") < block.index(
-            "self._unpinned_arch_crash_retry("
-        )
+        guard = 'elif _cache_target_unknown or str(env.get("LLAMA_ARG_MAIN_GPU", "")).strip():'
+        assert block.index(guard) < block.index("self._unpinned_arch_crash_retry(")
         assert "self._arch_gate_dropped_tensor_split = tuple(self._tensor_split)" in block
 
 

@@ -22203,8 +22203,11 @@ class LlamaCppBackend:
         if not matches:
             return [], []
         ordinal = int(matches[-1])
-        if child_ids is None and cls._visibility_mask_is_unmappable():
-            return [], []  # a UUID/MIG mask: renumbering it could expose a hidden card
+        # GPU_DEVICE_ORDINAL filters HIP ordinals unseen by the mask readers; a UUID/MIG mask has no ids.
+        if cls._gpu_device_ordinal_active() or (
+            child_ids is None and cls._visibility_mask_is_unmappable()
+        ):
+            return [], []  # renumbering either could expose a hidden card
         # The child's ordinals index its own mask (a split-order or survivor pin), not ours.
         physical_ids = (
             list(child_ids) if child_ids is not None else cls._resolve_visible_physical_ids()
@@ -31583,8 +31586,8 @@ class LlamaCppBackend:
                     if gpu_indices:
                         _crashed = sorted(set(gpu_indices))
                         _remaining = self._arch_crash_retry_gpu_ids(gpu_indices, _enumerated)
-                    elif _cache_target_unknown:
-                        # A user --device / LLAMA_ARG_DEVICE names cards by the unnarrowed numbering.
+                    elif _cache_target_unknown or str(env.get("LLAMA_ARG_MAIN_GPU", "")).strip():
+                        # A user --device / --main-gpu or their env twins name cards by the unnarrowed numbering.
                         _crashed, _remaining = [], []
                     else:
                         # Unpinned (a manual split, or a gate that could not read the build's

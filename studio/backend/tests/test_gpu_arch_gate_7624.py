@@ -435,6 +435,7 @@ class TestUnpinnedArchCrashRetry:
         monkeypatch.setattr(
             LlamaCppBackend, "_visibility_mask_is_unmappable", staticmethod(lambda: False)
         )
+        monkeypatch.delenv("GPU_DEVICE_ORDINAL", raising = False)
 
     def test_drops_the_crashed_card(self):
         assert LlamaCppBackend._unpinned_arch_crash_retry(_UNPINNED_CRASH, [0, 1, 2]) == (
@@ -484,6 +485,13 @@ class TestUnpinnedArchCrashRetry:
             LlamaCppBackend, "_visibility_mask_is_unmappable", staticmethod(lambda: True)
         )
         assert LlamaCppBackend._unpinned_arch_crash_retry(_UNPINNED_CRASH, [0, 1, 2]) == ([], [])
+
+    def test_gpu_device_ordinal_is_left_alone(self, monkeypatch):
+        monkeypatch.setenv("GPU_DEVICE_ORDINAL", "2,0")
+        assert LlamaCppBackend._unpinned_arch_crash_retry(_UNPINNED_CRASH, [0, 1, 2]) == ([], [])
+        assert LlamaCppBackend._unpinned_arch_crash_retry(
+            _UNPINNED_CRASH, [0, 1, 2], child_ids = (0, 2, 1)
+        ) == ([], [])
 
     def test_the_childs_own_mask_still_maps_under_an_unmappable_parent(self, monkeypatch):
         monkeypatch.setattr(
