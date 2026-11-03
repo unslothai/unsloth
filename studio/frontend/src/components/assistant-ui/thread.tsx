@@ -6777,6 +6777,12 @@ function usePickComposerAttachment(): () => void {
   }, [aui, audioAttachmentsEnabled]);
 }
 
+const LazyLibraryAttachmentPicker = lazy(() =>
+  import("@/components/assistant-ui/library-attachment-picker").then((module) => ({
+    default: module.LibraryAttachmentPicker,
+  })),
+);
+
 const ComposerToolsMenu: FC<{
   side?: "top" | "bottom";
   researchAvailable: boolean;
@@ -6872,6 +6878,7 @@ const ComposerToolsMenu: FC<{
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [skillsOn, setSkillsOn] = useSkillsSwitch();
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
   const composerCanAddAttachments = useAuiState(
@@ -7196,6 +7203,11 @@ const ComposerToolsMenu: FC<{
 
   return (
     <>
+    {libraryPickerOpen ? (
+      <Suspense fallback={null}>
+        <LazyLibraryAttachmentPicker onClose={() => setLibraryPickerOpen(false)} />
+      </Suspense>
+    ) : null}
     <PromptStorageDialog
       open={promptStorageOpen}
       onOpenChange={setPromptStorageOpen}
@@ -7231,6 +7243,13 @@ const ComposerToolsMenu: FC<{
         >
           <HugeiconsIcon icon={Attachment01Icon} strokeWidth={2} />
           Add photos &amp; files
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={!composerCanAddAttachments}
+          onSelect={() => setLibraryPickerOpen(true)}
+        >
+          <HugeiconsIcon icon={Attachment01Icon} strokeWidth={2} />
+          Attach from Library
         </DropdownMenuItem>
         <DropdownMenuItem
           disabled={searchDisabled}
