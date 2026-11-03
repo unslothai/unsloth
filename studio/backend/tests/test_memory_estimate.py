@@ -4521,7 +4521,8 @@ def test_a_full_width_cache_pays_for_the_widest_call_mlx_does_not_fuse(monkeypat
     asked = _unfused_route(monkeypatch, fuses)
     priced = mm._compute_bytes(_BONSAI, 2, 2048, [_GROWING], n_ctx, None)
     assert priced - floor == pytest.approx(cells * _SCORE, abs = 1)
-    assert (2048, 16 * 2048) in asked
+    # A full chunk past the first decides whether later ones hold scores.
+    assert (2048, 2 * 2048) in asked
 
 
 def test_a_tail_unfused_past_any_fixed_scan_is_still_priced(monkeypatch):
