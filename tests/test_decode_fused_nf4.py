@@ -579,6 +579,7 @@ def _family_plan(
     monkeypatch.setattr(D._decode_graphs, "ENABLED", graphs)
     monkeypatch.setattr(D.F, "supported_capability", lambda capability: True, raising = False)
     monkeypatch.setattr(D, "_signature", lambda plan: ())
+    monkeypatch.setattr(D, "_track_moves", lambda model: None)
     calls = []
     device = torch.device("cuda", 0)
     with FakeTensorMode():
