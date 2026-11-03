@@ -418,13 +418,18 @@ def test_whole_step_graph_capture_keeps_the_regular_path(monkeypatch):
         assert D._decode_forward(model, torch.zeros(1, 1, 8), *([None] * 6)) is None
 
 
-@pytest.mark.parametrize("strided", [False, True])
-def test_strided_final_norm_keeps_the_regular_path(monkeypatch, strided):
+def _norm_plan(
+    monkeypatch,
+    strided = False,
+    capability = (8, 0),
+    graphs = False,
+):
     from torch._subclasses.fake_tensor import FakeTensor, FakeTensorMode
 
     D = _driver()
     monkeypatch.setattr(D.torch.version, "hip", None)
-    monkeypatch.setattr(D.torch.cuda, "get_device_capability", lambda device: (8, 0))
+    monkeypatch.setattr(D.torch.cuda, "get_device_capability", lambda device: capability)
+    monkeypatch.setattr(D._decode_graphs, "ENABLED", graphs)
     monkeypatch.setattr(D.F, "supported_capability", lambda capability: True, raising = False)
     monkeypatch.setattr(D, "_signature", lambda plan: ())
     device = torch.device("cuda", 0)
@@ -467,11 +472,26 @@ def test_strided_final_norm_keeps_the_regular_path(monkeypatch, strided):
             ),
         )
         plan = D._build(model, torch.empty((1, 1, 8), device = device, dtype = torch.float16))
-        if strided:
-            assert plan == "final norm"
-        else:
-            assert isinstance(plan, D._Plan)
-            assert plan.final_norm is weight
+    return D, plan, weight
+
+
+@pytest.mark.parametrize("strided", [False, True])
+def test_strided_final_norm_keeps_the_regular_path(monkeypatch, strided):
+    D, plan, weight = _norm_plan(monkeypatch, strided)
+    if strided:
+        assert plan == "final norm"
+    else:
+        assert isinstance(plan, D._Plan)
+        assert plan.final_norm is weight
+
+
+@pytest.mark.parametrize("capability", [(7, 5), (8, 0), (8, 9)])
+@pytest.mark.parametrize("graphs", [False, True])
+@pytest.mark.parametrize("flag", ["1", "force"])
+def test_t4_prefers_regular_graphs(monkeypatch, capability, graphs, flag):
+    monkeypatch.setenv("UNSLOTH_DECODE_FUSED_NF4", flag)
+    D, plan, _ = _norm_plan(monkeypatch, capability = capability, graphs = graphs)
+    assert isinstance(plan, D._Plan) != (capability == (7, 5) and graphs and flag == "1")
 
 
 class _Lora:

@@ -310,6 +310,9 @@ def _build(model, X):
     if X.dtype not in (torch.float16, torch.bfloat16):
         return "dtype"
     capability = torch.cuda.get_device_capability(device)
+    # T4 fusion adds compilation cost without a measured gain over segmented graphs.
+    if capability == (7, 5) and _decode_graphs.enabled() and os.environ.get(ENV) != "force":
+        return "T4 uses regular CUDA graphs"
     if not F.supported_capability(capability) and os.environ.get(ENV) != "force":
         return (
             f"no tuned config for sm{capability[0]}{capability[1]} (UNSLOTH_DECODE_FUSED_NF4=force)"
