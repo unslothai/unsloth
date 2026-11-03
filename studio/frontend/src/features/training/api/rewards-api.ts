@@ -72,13 +72,15 @@ export async function deleteReward(name: string): Promise<void> {
 export async function previewRewards(
   rewards: GrpoRewardSelection[],
   completion: string,
-  reference: unknown,
+  reference: string | null,
+  row: Record<string, unknown> | null = null,
+  mapping: Record<string, string> | null = null,
 ): Promise<RewardPreviewResponse> {
   return readJson(
     await authFetch("/api/rewards/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rewards, completion, reference }),
+      body: JSON.stringify({ rewards, completion, reference, row, mapping }),
     }),
   );
 }

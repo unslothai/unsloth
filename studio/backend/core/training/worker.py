@@ -4837,6 +4837,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         max_train_rows_seed = config.get("random_seed", 3407)
 
         def _load_training_dataset():
+            from core.training.rl import reward_keep_columns
+
             result = trainer.load_and_format_dataset(
                 dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
                 format_type = config.get("format_type", ""),
@@ -4852,11 +4854,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 dataset_slice_end = config.get("dataset_slice_end"),
                 is_cpt = is_cpt_for_dataset,
                 objective = config.get("objective", "sft"),
-                rl_keep_columns = tuple(
-                    spec["rule"].get("compare_to")
-                    for spec in config.get("reward_specs") or []
-                    if spec.get("rule", {}).get("compare_to")
-                ),
+                rl_keep_columns = reward_keep_columns(config.get("reward_specs")),
                 rl_system_prompt = (config.get("rl_settings") or {}).get("system_prompt"),
                 s3_config = config.get("s3_config"),
                 dataset_local_files_only = dataset_local_only,

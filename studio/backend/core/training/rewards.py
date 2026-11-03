@@ -644,9 +644,32 @@ def make_reward_func(spec: dict) -> Callable[..., list[float]]:
     return reward
 
 
+# Try it's sample when there is no dataset row yet.
+_SAMPLE_ROW = {"prompt": "", "answer": "72"}
+
+
 def preview_scores(
     specs: list[dict],
     text: str,
-    reference: Any = None,
+    row: Optional[dict] = None,
+    mapping: Optional[dict] = None,
+    reference: Optional[str] = None,
+    system_prompt: Optional[str] = None,
 ) -> list[dict]:
-    return [{"name": s["name"], "score": score_rule(s["rule"], text, reference)} for s in specs]
+    """Scores ``text`` as training would for ``row`` (one raw dataset row): the same row
+    conversion and the same reward functions. ``reference`` overrides the answer cell."""
+    from core.training.rl import grpo_reward_inputs, reward_keep_columns
+
+    if row is None:
+        # Other compare_to columns are empty cells here: no dataset to read them from yet.
+        row = {**dict.fromkeys(reward_keep_columns(specs)), **_SAMPLE_ROW}
+        mapping = None
+    try:
+        prompts, kwargs = grpo_reward_inputs(row, specs, mapping, system_prompt, reference)
+    except ValueError as exc:
+        raise RewardError(str(exc)) from exc
+    completions = [[{"role": "assistant", "content": text}]]
+    return [
+        {"name": s["name"], "score": make_reward_func(s)(prompts, completions, **kwargs)[0]}
+        for s in specs
+    ]

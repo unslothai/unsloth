@@ -38,8 +38,6 @@ import {
   previewCell,
   previewRewards,
   readRewardHead,
-  rewardPreviewReference,
-  rowAnswer,
   summarizeRule,
   useRlWorkspaceStore,
   useTrainingConfigStore,
@@ -317,14 +315,12 @@ export function RewardsSection(): ReactElement {
   const answerColumn = Object.entries(mapping).find(
     ([, role]) => role === "answer",
   )?.[0];
-  // A blank answer in the row stays blank, as in training; the sample is for no row at all.
-  const mappedAnswer = rowAnswer(previewRow, answerColumn);
-  const rowReference = previewCell(mappedAnswer);
-  // What training compares against: null only for a null cell, which scores as missing.
-  const answerReference: unknown =
-    referenceEdit ?? (mappedAnswer === undefined ? "72" : mappedAnswer);
+  // Shown only: the backend scores the raw row, as training reads it.
+  const rowReference = answerColumn
+    ? previewCell(previewRow?.[answerColumn])
+    : "";
   const reference =
-    referenceEdit ?? (mappedAnswer === undefined ? "72" : rowReference);
+    referenceEdit ?? (answerColumn && previewRow ? rowReference : "72");
 
   const active = library.filter((r) => !r.shadowed);
   const byName = new Map(active.map((r) => [r.name, r]));
@@ -348,32 +344,29 @@ export function RewardsSection(): ReactElement {
       setPreviewTotal(null);
       return;
     }
-    // Each reward compares against its own compare_to column, as in training.
-    const groups = new Map<string, [unknown, typeof rewards]>();
-    for (const reward of rewards) {
-      const column = byName.get(reward.name)?.rule?.compare_to;
-      const ref = rewardPreviewReference(previewRow, column, answerReference);
-      const key = JSON.stringify(ref);
-      groups.set(key, [ref, [...(groups.get(key)?.[1] ?? []), reward]]);
-    }
     try {
-      const parts = await Promise.all(
-        [...groups.values()].map(([ref, group]) =>
-          previewRewards(group, completion, ref),
-        ),
+      // The raw row and the run's role mapping: the backend builds each reward's inputs with
+      // training's own row conversion. An edited answer replaces the row's answer cell.
+      const res = await previewRewards(
+        rewards,
+        completion,
+        referenceEdit,
+        previewRow,
+        mapping,
       );
       if (request !== previewRequest.current) return;
-      const scores = parts.flatMap((part) => part.scores);
-      setPreview(Object.fromEntries(scores.map((s) => [s.name, s.weighted])));
-      setPreviewTotal(parts.reduce((sum, part) => sum + part.total, 0));
+      setPreview(
+        Object.fromEntries(res.scores.map((s) => [s.name, s.weighted])),
+      );
+      setPreviewTotal(res.total);
       setPreviewError(null);
     } catch (err) {
       if (request !== previewRequest.current) return;
       setPreviewError(err instanceof Error ? err.message : String(err));
     }
-    // selectedRules stands in for the library entries (byName is rebuilt every render).
+    // selectedRules stands in for the library entries, which change without the selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rewards, completion, answerReference, previewRow, selectedRules]);
+  }, [rewards, completion, referenceEdit, previewRow, mapping, selectedRules]);
 
   useEffect(() => {
     const timer = window.setTimeout(runPreview, 350);

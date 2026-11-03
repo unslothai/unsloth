@@ -213,6 +213,42 @@ def _split_conversation(value: Any) -> tuple[list[dict], list[dict]]:
     ]
 
 
+def reward_keep_columns(reward_specs) -> tuple[str, ...]:
+    """Columns the selected rewards read by name, which format_rl_dataset must keep."""
+    return tuple(
+        spec["rule"].get("compare_to")
+        for spec in reward_specs or []
+        if (spec.get("rule") or {}).get("compare_to")
+    )
+
+
+def grpo_reward_inputs(
+    row: dict,
+    reward_specs,
+    mapping: Optional[dict] = None,
+    system_prompt: Optional[str] = None,
+    answer: Optional[str] = None,
+) -> tuple[list, dict[str, list]]:
+    """(prompts, kwargs) a GRPO reward gets for ``row`` in training: the row run through
+    format_rl_dataset as a one-row dataset (Arrow types included), each column but the prompt
+    as a list, as TRL passes them. ``answer`` replaces the answer role's cell (Try it's edit)."""
+    from datasets import Dataset
+
+    if answer is not None:
+        roles = resolve_role_columns(list(row), "grpo", mapping)
+        if "answer" in roles:
+            row = {**row, roles["answer"]: answer}
+    formatted, _ = format_rl_dataset(
+        Dataset.from_list([row]),
+        "grpo",
+        mapping,
+        reward_keep_columns(reward_specs),
+        system_prompt = system_prompt,
+    )
+    out = formatted[0]
+    return [out.pop("prompt")], {k: [v] for k, v in out.items()}
+
+
 def format_rl_dataset(
     dataset,
     objective: str,

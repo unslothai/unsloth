@@ -151,28 +151,3 @@ export function syncRlMapping(
   }
   return next;
 }
-
-/** The cell GRPO training reads from this row's answer column, as is: the backend converts it
- * the way training does. Null for an empty cell; undefined when there is no row or answer role. */
-export function rowAnswer(
-  row: Record<string, unknown> | null | undefined,
-  answerColumn: string | undefined,
-): unknown {
-  if (!row || !answerColumn) {
-    return undefined;
-  }
-  return row[answerColumn] ?? null;
-}
-
-/** The reference a reward is scored against, as in training: its compare_to column of the row,
- * else the answer. An empty cell stays "" (scored as a miss); only a null one is missing. */
-export function rewardPreviewReference(
-  row: Record<string, unknown> | null | undefined,
-  compareTo: unknown,
-  answer: unknown,
-): unknown {
-  if (typeof compareTo === "string" && compareTo !== "answer") {
-    return rowAnswer(row, compareTo) ?? null;
-  }
-  return answer;
-}

@@ -1,19 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import json
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    JsonValue,
-    StrictBool,
-    StrictStr,
-    field_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool, StrictStr
 
 from auth.authentication import get_current_subject
 from core.training.rewards import (
@@ -70,15 +61,13 @@ class RewardPreviewRequest(BaseModel):
 
     rewards: list[RewardPreviewItem] = Field(..., min_length = 1, max_length = 16)
     completion: StrictStr = Field(..., max_length = 64 * 1024)
-    # The dataset cell as is; score_rule converts it with str(), as training does.
-    reference: JsonValue = None
-
-    @field_validator("reference")
-    @classmethod
-    def _reference_size(cls, value: JsonValue) -> JsonValue:
-        if value is not None and len(json.dumps(value)) > 16 * 1024:
-            raise ValueError("reference is longer than 16 KB.")
-        return value
+    # One raw dataset row and the run's role mapping: the backend builds the reward inputs the
+    # way training does. With no row, a sample answer stands in.
+    row: Optional[dict[StrictStr, JsonValue]] = Field(None, max_length = 1024)
+    mapping: Optional[dict[StrictStr, StrictStr]] = Field(None, max_length = 1024)
+    # Try it's edited answer, in place of the row's answer cell.
+    reference: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
+    system_prompt: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
 
 
 class RewardPreviewScore(BaseModel):
@@ -124,14 +113,23 @@ def preview_rewards(
 ) -> dict[str, Any]:
     scores = []
     try:
+        specs = []
         for item in payload.rewards:
             if item.markdown is not None:
-                spec = parse_reward_markdown(item.markdown)
+                specs.append(parse_reward_markdown(item.markdown))
             elif item.name:
-                spec = get_reward(item.name)
+                specs.append(get_reward(item.name))
             else:
                 raise RewardError("Each preview item needs a name or markdown.")
-            [result] = preview_scores([spec], payload.completion, payload.reference)
+        results = preview_scores(
+            specs,
+            payload.completion,
+            payload.row,
+            payload.mapping,
+            payload.reference,
+            payload.system_prompt,
+        )
+        for result, item in zip(results, payload.rewards):
             scores.append({**result, "weighted": result["score"] * item.weight})
     except RewardError as exc:
         raise _http_error(exc) from exc
