@@ -80,3 +80,24 @@ test("a saved split expression survives the dropdown, which lists only split nam
   assert.match(field, /datasetSplit=\{shownSplit\(split\)\}/);
   assert.match(field, /onChange\(\{ split: pickedSplit\(saved\.current, v\) \}\)/);
 });
+
+test("typing a split expression is not replaced by the dropdown's auto-select mid-word", () => {
+  // `v` on the way to `validation` is no split name, so auto-select would snap it back to train.
+  assert.notEqual(shownSplit("v"), pickedSplit("v", "train"));
+  const field = readSrc("features/flows/editor/dataset-picker-field.tsx");
+  assert.match(field, /if \(!editing\.current\) onChange\(\{ split: pickedSplit\(saved\.current, v\) \}\);/);
+  assert.match(field, /onFocus=\{\(\) => \{\s+editing\.current = true;\s+\}\}/);
+  assert.match(field, /onBlur=\{\(\) => \{\s+editing\.current = false;\s+\}\}/);
+});
+
+test("the full split expression stays editable beside the split dropdown", () => {
+  const field = readSrc("features/flows/editor/dataset-picker-field.tsx");
+  assert.match(field, /<Input\s+value=\{split \?\? ""\}\s+onChange=\{\(e\) => onChange\(\{ split: e\.target\.value \}\)\}/);
+});
+
+test("an app's Select keeps a configured empty option", () => {
+  const page = readSrc("features/flows/app/flow-app-page.tsx");
+  assert.match(page, /\(field\.options \?\? \[\]\)\.map\(\(option\) => \(/);
+  assert.match(page, /onValueChange=\{\(next\) => onChange\(fromSelectValue\(next\)\)\}/);
+  assert.doesNotMatch(page, /field\.options \?\? \[\]\)\.filter\(Boolean\)/);
+});

@@ -123,9 +123,16 @@ function fitCards(
     const frame = node.group ? graph.groups[node.group]?.rect : undefined;
     if (frame) {
       const pad = 12;
+      // The frame only limits growth: a card already sticking out keeps the size it has.
       fit = [
-        Math.min(fit[0], frame[0] + frame[2] - node.pos[0] - pad),
-        Math.min(fit[1], frame[1] + frame[3] - node.pos[1] - pad),
+        Math.max(
+          Math.min(fit[0], frame[0] + frame[2] - node.pos[0] - pad),
+          Math.min(fit[0], size.width),
+        ),
+        Math.max(
+          Math.min(fit[1], frame[1] + frame[3] - node.pos[1] - pad),
+          Math.min(fit[1], size.height),
+        ),
       ];
       if (fit[0] < size.width && fit[1] < size.height && !node.size) continue;
     }

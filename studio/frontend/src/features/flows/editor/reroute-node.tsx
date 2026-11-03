@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Handle, type NodeProps, Position } from "@xyflow/react";
-import { memo } from "react";
+import {
+  Handle,
+  type NodeProps,
+  Position,
+  useUpdateNodeInternals,
+} from "@xyflow/react";
+import { memo, useEffect } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useDocStore } from "../stores/doc-store";
 import type { RerouteDir } from "../stores/reroute-graph";
@@ -30,6 +35,10 @@ function RerouteNodeImpl({ id, selected }: NodeProps<RfNode>) {
   const color =
     useCatalogStore((s) => s.catalog?.port_colors[type]) ?? "#94a3b8";
   const [inSide, outSide] = HANDLE_SIDES[dir];
+  // A down/up turn keeps the box, so React Flow would keep the old handle positions for its wires.
+  const updateNodeInternals = useUpdateNodeInternals();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-measure when the direction changes
+  useEffect(() => updateNodeInternals(id), [dir, id, updateNodeInternals]);
   return (
     <div
       className={`relative rounded-full border-2 bg-card shadow-sm ${selected ? "ring-2 ring-ring" : ""}`}

@@ -137,3 +137,8 @@ test("the resize handles and a saved size both respect the measured floor", () =
   assert.match(view, /data-card-body=\{true\}/);
   assert.match(view, /data-card-grow=\{true\}\s*className=\{?[`"]flow-detail/);
 });
+
+test("Tidy's frame clamp only limits growth, never shrinking a card below its size", () => {
+  const src = readSrc("features/flows/editor/layout.ts");
+  assert.match(src, /Math\.min\(fit\[1\], frame\[1\] \+ frame\[3\] - node\.pos\[1\] - pad\),\s*Math\.min\(fit\[1\], size\.height\),/);
+});
