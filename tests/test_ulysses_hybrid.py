@@ -336,7 +336,7 @@ def test_hybrid_gates():
 
 
 def test_flex_attention_is_refused():
-    # Eager is routed through the modeling module's eager_attention_forward now (test_ulysses_generic_gloo.py).
+    # Eager is routed through the modeling module's eager_attention_forward now (test_cp_ulysses_generic_gloo.py).
     model = _model(KINDS[0])
     attn = model.model.layers[1].self_attn
     with pytest.raises(NotImplementedError, match = "attn_implementation"):
