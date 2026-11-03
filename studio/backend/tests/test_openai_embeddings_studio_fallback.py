@@ -100,6 +100,37 @@ def test_nothing_loaded_serves_from_the_studio_embedder(studio_embedder):
     assert payload["usage"] == {"prompt_tokens": 9, "total_tokens": 9}
 
 
+def test_embeddings_stop_at_the_shared_api_allowance(studio_embedder):
+    import time
+    from core.inference import token_limit
+    from storage.api_usage_db import ApiUsageReceipt, record_api_usage
+
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(inference_route, "_request_used_api_key", lambda request: True)
+    before = _call({"input": "alpha"})
+    assert record_api_usage(
+        ApiUsageReceipt(
+            id = "used",
+            subject = "tester",
+            endpoint = "/v1/embeddings",
+            model = MODEL,
+            status = "completed",
+            prompt_tokens = 100,
+            completion_tokens = 0,
+            total_tokens = 100,
+            created_at = int(time.time() * 1000),
+        )
+    )
+    token_limit.update_settings(
+        {"enabled": True, "mode": "split", "apiLimit": 100}, password = None, new_password = None
+    )
+    assert _http_error({"input": "alpha"}).status_code == 429
+    token_limit.update_settings({"enabled": False}, password = None, new_password = None)
+    assert _call({"input": "alpha"}) == before
+
+
 def test_chat_model_loaded_serves_from_the_studio_embedder(studio_embedder):
     started = []
     studio_embedder.setattr(

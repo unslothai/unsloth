@@ -38350,6 +38350,7 @@ def _embeddings_input_present(body: dict) -> bool:
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
     else Unsloth's configured embedding model."""
+    await _enforce_token_limit(request, external = False)
     if model_slots.slots:
         try:
             await _route_to_extra_slot(_raw_body_model(await request.json()))
