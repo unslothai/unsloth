@@ -23,6 +23,7 @@ interface AudioVoicesState {
     patch: Pick<AudioVoice, "name" | "transcript" | "language">,
   ) => Promise<void>;
   remove: (id: string) => Promise<void>;
+  confirmGone: (id: string) => Promise<boolean>;
 }
 
 // Bumped by each save, rename and delete: a list fetched across one is stale and is fetched again.
@@ -95,6 +96,10 @@ export const useAudioVoicesStore = create<AudioVoicesState>()((set, get) => ({
     try {
       await deleteVoice(id);
       mutations += 1;
+      // A list fetched before the delete landed may have brought it back.
+      set((state) => ({
+        voices: state.voices.filter((voice) => voice.id !== id),
+      }));
     } catch (error) {
       // Put back only this voice: another deletion may have finished meanwhile.
       const failed = before[index];
@@ -108,5 +113,21 @@ export const useAudioVoicesStore = create<AudioVoicesState>()((set, get) => ({
       }
       throw error;
     }
+  },
+  // Another window may have saved this voice after our list was fetched.
+  confirmGone: async (id) => {
+    if (get().loading) {
+      await new Promise<void>((resolve) => {
+        const stop = useAudioVoicesStore.subscribe((state) => {
+          if (!state.loading) {
+            stop();
+            resolve();
+          }
+        });
+      });
+    }
+    await get().refresh();
+    const { voices, error } = get();
+    return !error && !voices.some((voice) => voice.id === id);
   },
 }));
