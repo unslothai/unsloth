@@ -52,7 +52,7 @@ def test_fp16_scaled_mm_out_dtype_and_bias_follow_the_fp16_mode(monkeypatch, mod
     bias = F8._scaled_mm_fp16_bias(x, w)
     if mode == "bias":
         assert bias.dtype == torch.float16 and bias.shape == (48,) and not bias.any()
-        # Cached per (rows, device): no allocation + fill per eager call.
+        # Cached per (rows, device, stream): no allocation + fill per eager call.
         assert F8._scaled_mm_fp16_bias(x, w) is bias
         assert (
             F8._scaled_mm_fp16_bias(x, torch.empty(64, 32, dtype = torch.float8_e4m3fn)) is not bias
@@ -262,3 +262,18 @@ def test_compiled_fp16_zero_bias_adds_no_graphs_or_breaks(monkeypatch):
     assert fp16 == bf16 == 2
     assert breaks == 0
     assert F8._SCALED_MM_FP16_ZERO_BIAS_CACHE == {}
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+def test_fp16_zero_bias_is_not_shared_across_cuda_streams(monkeypatch):
+    # The zeros fill is asynchronous on the stream that made it: another stream must get its own bias.
+    _fp16_mode(monkeypatch, "bias")
+    x = torch.empty(4, 32, dtype = torch.float16, device = "cuda")
+    w = torch.empty(48, 32, dtype = torch.float8_e4m3fn, device = "cuda")
+    bias = F8._scaled_mm_fp16_bias(x, w)
+    side = torch.cuda.Stream()
+    with torch.cuda.stream(side):
+        other = F8._scaled_mm_fp16_bias(x, w)
+        assert F8._scaled_mm_fp16_bias(x, w) is other
+    assert other is not bias
+    assert F8._scaled_mm_fp16_bias(x, w) is bias

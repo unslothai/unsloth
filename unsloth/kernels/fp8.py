@@ -2055,7 +2055,9 @@ def _scaled_mm_out_dtype(dtype):
     return torch.bfloat16 if _scaled_mm_fp16_dequant_only(dtype) else dtype
 
 
-# Zero fp16 biases by (rows, device), so eager calls do not allocate + fill one per forward. Bounded: cleared when full.
+# Zero fp16 biases by (rows, device, stream), so eager calls do not allocate + fill one per forward. Keyed by stream:
+# the fill is asynchronous on the stream that made it, and the caching allocator ties its storage to that stream.
+# Bounded: cleared when full.
 _SCALED_MM_FP16_ZERO_BIAS_CACHE = {}
 _SCALED_MM_FP16_ZERO_BIAS_CACHE_MAX = 64
 
@@ -2069,7 +2071,13 @@ def _scaled_mm_fp16_bias(x, weight):
     if torch.compiler.is_compiling():
         # Traced: a constant in the graph, no Python cache lookup to guard on.
         return torch.zeros(n, dtype = torch.float16, device = device)
-    key = (n, device)
+    # A real CUDA tensor means CUDA is initialized; a fake one (tests, tracing) must not initialize it.
+    stream = (
+        torch.cuda.current_stream(device).cuda_stream
+        if device.type == "cuda" and torch.cuda.is_initialized()
+        else None
+    )
+    key = (n, device, stream)
     bias = _SCALED_MM_FP16_ZERO_BIAS_CACHE.get(key)
     if bias is None:
         with torch.inference_mode(False), torch.no_grad():
