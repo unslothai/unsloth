@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import time
+
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
+
+from auth.authentication import get_current_subject
+from routes import inference
+from storage import studio_db
+
+
+def test_token_cap_blocks_new_requests_and_preserves_disabled_behavior(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+    produced = []
+
+    async def produce(payload, request, current_subject, *, cancel_on_disconnect):
+        produced.append(payload.model)
+        return JSONResponse({"ok": True})
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", produce)
+    monkeypatch.setattr(inference, "_request_used_api_key", lambda request: False)
+    app = FastAPI()
+    app.include_router(inference.router, prefix = "/v1")
+    app.dependency_overrides[get_current_subject] = lambda: "owner"
+    body = {"model": "unsloth/model", "messages": [{"role": "user", "content": "hi"}]}
+    now = int(time.time() * 1000)
+    studio_db.upsert_chat_thread(
+        {
+            "id": "thread",
+            "title": "thread",
+            "modelType": "base",
+            "modelId": body["model"],
+            "createdAt": now,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": "reply",
+            "threadId": "thread",
+            "role": "assistant",
+            "createdAt": now,
+            "content": [{"type": "text", "text": "answer"}],
+            "metadata": {
+                "contextUsage": {"promptTokens": 90, "completionTokens": 10, "totalTokens": 100}
+            },
+        }
+    )
+    with TestClient(app) as client:
+        studio_db.upsert_app_settings({"token_limit": {"enabled": False, "limit": 100}})
+        before = client.post("/v1/chat/completions", json = body)
+        assert before.status_code == 200 and before.json() == {"ok": True}
+
+        studio_db.upsert_app_settings(
+            {"token_limit": {"enabled": True, "limit": 100, "timezone": "UTC"}}
+        )
+        refused = client.post("/v1/chat/completions", json = body)
+        assert refused.status_code == 429
+        assert "daily token limit" in refused.json()["detail"]
+        assert refused.headers["X-Unsloth-Token-Limit"] == "combined"
+        assert produced == [body["model"]]
+        for endpoint, extra in (
+            ("completions", {"prompt": "hi"}),
+            ("responses", {"input": "hi"}),
+            ("messages", {"messages": body["messages"], "max_tokens": 1}),
+        ):
+            assert (
+                client.post(f"/v1/{endpoint}", json = {"model": body["model"], **extra}).status_code
+                == 429
+            )
+
+        studio_db.upsert_app_settings({"token_limit": {"enabled": False, "limit": 100}})
+        after = client.post("/v1/chat/completions", json = body)
+        assert after.status_code == before.status_code and after.content == before.content

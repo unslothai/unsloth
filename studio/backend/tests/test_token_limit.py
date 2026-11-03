@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 
 import pytest
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
@@ -131,6 +130,8 @@ def test_a_fork_does_not_count_the_history_it_copies(limiter_db):
     _reply("a2", "fork", now + 20, prompt = 600, completion = 50)
     _enable(limit = 10_000)
     assert _pools()["combined"]["used"] == 500 + 650
+    _enable(method = "incremental")
+    assert _pools()["combined"]["used"] == 500 + 100 + 50
 
 
 def test_history_from_before_the_limiter_existed_is_backfilled(limiter_db):
@@ -296,40 +297,3 @@ def test_routes_refuse_api_key_changes_and_report_status(limiter_db):
         }
     ]
     assert status["resetsAt"] > status["periodStart"]
-
-
-def test_chat_completions_is_refused_before_generation_once_the_cap_is_reached(
-    limiter_db, monkeypatch
-):
-    from routes import inference
-
-    produced = []
-
-    async def produce(payload, request, current_subject, *, cancel_on_disconnect):
-        produced.append(payload.model)
-        return JSONResponse({"ok": True})
-
-    monkeypatch.setattr(inference, "produce_openai_chat_completions", produce)
-    monkeypatch.setattr(inference, "_request_used_api_key", lambda request: False)
-    app = FastAPI()
-    app.include_router(inference.router, prefix = "/v1")
-    app.dependency_overrides[get_current_subject] = lambda: "owner"
-    client = TestClient(app)
-    body = {"model": "unsloth/model", "messages": [{"role": "user", "content": "hi"}]}
-
-    _enable(limit = 100)
-    assert client.post("/v1/chat/completions", json = body).status_code == 200
-
-    now = _now_ms()
-    _thread("t1", now)
-    _reply("a1", "t1", now + 1, prompt = 90, completion = 10)
-    refused = client.post("/v1/chat/completions", json = body)
-    assert refused.status_code == 429
-    assert "daily token limit" in refused.json()["detail"]
-    assert refused.headers["X-Unsloth-Token-Limit"] == "combined"
-    assert len(produced) == 1
-
-    token_limit.grant_override("combined")
-    assert client.post("/v1/chat/completions", json = body).status_code == 200
-    assert client.post("/v1/chat/completions", json = body).status_code == 429
-    assert len(produced) == 2

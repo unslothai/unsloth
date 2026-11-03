@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field
 
 LEDGER_TABLE = "token_usage_ledger"
 
@@ -36,12 +35,18 @@ def _usage_columns(row: str) -> str:
 
 
 def _ledger_insert(message: str, rows: str = "") -> str:
-    # Fork copies predate their thread; MAX prevents edits from refunding usage.
+    # Fork copies seed incremental context without charging it; MAX prevents refunds.
     return f"""
         INSERT INTO {LEDGER_TABLE}
             (message_id, thread_id, created_at, source,
              prompt_tokens, completion_tokens, total_tokens)
-        SELECT u.id, u.thread_id, u.created_at, u.source, u.prompt_tokens, u.completion_tokens,
+        SELECT u.id, u.thread_id, u.created_at,
+               CASE WHEN EXISTS (
+                   SELECT 1 FROM chat_threads t
+                   WHERE t.id = u.thread_id AND t.forked_from_thread_id IS NOT NULL
+                     AND u.created_at < t.created_at
+               ) THEN 'inherited' ELSE u.source END,
+               u.prompt_tokens, u.completion_tokens,
                CASE WHEN u.reported_total > 0 THEN u.reported_total
                     ELSE u.prompt_tokens + u.completion_tokens END
         FROM (
@@ -51,12 +56,6 @@ def _ledger_insert(message: str, rows: str = "") -> str:
             {rows}
         ) AS u
         WHERE (u.prompt_tokens + u.completion_tokens > 0 OR u.reported_total > 0)
-          AND NOT EXISTS (
-              SELECT 1 FROM chat_threads t
-              WHERE t.id = u.thread_id
-                AND t.forked_from_thread_id IS NOT NULL
-                AND u.created_at < t.created_at
-          )
         ON CONFLICT(message_id) DO UPDATE SET
             source = excluded.source,
             prompt_tokens = MAX(prompt_tokens, excluded.prompt_tokens),
@@ -115,42 +114,39 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
         )
 
 
-@dataclass
-class WindowUsage:
-    total: dict[str, int] = field(default_factory = lambda: {"local": 0, "external": 0, "api": 0})
-    incremental: dict[str, int] = field(
-        default_factory = lambda: {"local": 0, "external": 0, "api": 0}
-    )
-
-
-def window_usage(conn: sqlite3.Connection, start_ms: int) -> WindowUsage:
-    usage = WindowUsage()
-    rows = conn.execute(
-        f"""
-        SELECT thread_id, created_at, source, prompt_tokens, completion_tokens, total_tokens
-        FROM {LEDGER_TABLE}
-        WHERE thread_id IN (
-            SELECT DISTINCT thread_id FROM {LEDGER_TABLE} WHERE created_at >= ?
-        )
-        ORDER BY thread_id, created_at, message_id
-        """,
-        (start_ms,),
-    ).fetchall()
-    thread = None
-    seen = 0
-    for thread_id, created_at, source, prompt, completion, total in rows:
-        if thread_id != thread:
-            thread, seen = thread_id, 0
-        if created_at >= start_ms:
-            usage.total[source] = usage.total.get(source, 0) + total
-            usage.incremental[source] = (
-                usage.incremental.get(source, 0) + max(0, prompt - seen) + completion
+def window_usage(conn: sqlite3.Connection, start_ms: int, method: str) -> dict[str, int]:
+    if method == "total":
+        usage = dict(
+            conn.execute(
+                f"SELECT source, SUM(total_tokens) FROM {LEDGER_TABLE} "
+                "WHERE created_at >= ? AND source != 'inherited' GROUP BY source",
+                (start_ms,),
             )
-        seen = prompt + completion
-    api_total = conn.execute(
-        "SELECT COALESCE(SUM(total_tokens), 0) FROM api_usage_events WHERE created_at >= ?",
-        (start_ms,),
-    ).fetchone()[0]
-    usage.total["api"] = int(api_total)
-    usage.incremental["api"] = int(api_total)
+        )
+    else:
+        usage = dict(
+            conn.execute(
+                f"""
+        WITH turns AS (
+            SELECT source, created_at, completion_tokens,
+                   prompt_tokens - LAG(prompt_tokens + completion_tokens, 1, 0) OVER (
+                       PARTITION BY thread_id ORDER BY created_at, message_id
+                   ) AS prompt_delta
+            FROM {LEDGER_TABLE}
+            WHERE thread_id IN (
+                SELECT DISTINCT thread_id FROM {LEDGER_TABLE} WHERE created_at >= ?
+            )
+        )
+        SELECT source, SUM(MAX(0, prompt_delta) + completion_tokens) FROM turns
+        WHERE created_at >= ? AND source != 'inherited' GROUP BY source
+        """,
+                (start_ms, start_ms),
+            )
+        )
+    usage["api"] = int(
+        conn.execute(
+            "SELECT COALESCE(SUM(total_tokens), 0) FROM api_usage_events WHERE created_at >= ?",
+            (start_ms,),
+        ).fetchone()[0]
+    )
     return usage

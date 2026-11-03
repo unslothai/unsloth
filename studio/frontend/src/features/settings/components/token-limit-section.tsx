@@ -180,6 +180,41 @@ export function TokenLimitSection() {
     </SettingsRow>
   );
 
+  const selectInput = <K extends "period" | "mode" | "method">(
+    key: K,
+    options: readonly (readonly [Draft[K], string])[],
+    description?: string,
+  ) => {
+    const label = t(`settings.profile.tokenLimit.${key}`);
+    return (
+      <SettingsRow label={label} description={description}>
+        <Select
+          value={draft?.[key] ?? options[0][0]}
+          onValueChange={(value) =>
+            setDraft((current) =>
+              current ? { ...current, [key]: value } : current,
+            )
+          }
+          disabled={busy}
+        >
+          <SelectTrigger
+            aria-label={label}
+            className={`${key === "period" ? "w-40" : "w-56"} data-[size=default]:h-control`}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {options.map(([value, text]) => (
+              <SelectItem key={value} value={value}>
+                {text}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </SettingsRow>
+    );
+  };
+
   const resetsAt = status
     ? new Date(status.resetsAt).toLocaleString(undefined, {
         dateStyle: "medium",
@@ -225,97 +260,27 @@ export function TokenLimitSection() {
           </span>
         </SettingsRow>
       ))}
-      <SettingsRow label={t("settings.profile.tokenLimit.period")}>
-        <Select
-          value={draft?.period ?? "day"}
-          onValueChange={(period) =>
-            setDraft((current) =>
-              current
-                ? { ...current, period: period as Draft["period"] }
-                : current,
-            )
-          }
-          disabled={busy}
-        >
-          <SelectTrigger
-            aria-label={t("settings.profile.tokenLimit.period")}
-            className="w-40 data-[size=default]:h-control"
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="day">
-              {t("settings.profile.tokenLimit.periodDay")}
-            </SelectItem>
-            <SelectItem value="week">
-              {t("settings.profile.tokenLimit.periodWeek")}
-            </SelectItem>
-            <SelectItem value="month">
-              {t("settings.profile.tokenLimit.periodMonth")}
-            </SelectItem>
-          </SelectContent>
-        </Select>
-      </SettingsRow>
-      <SettingsRow
-        label={t("settings.profile.tokenLimit.mode")}
-        description={t("settings.profile.tokenLimit.modeDescription")}
-      >
-        <Select
-          value={draft?.mode ?? "combined"}
-          onValueChange={(mode) =>
-            setDraft((current) =>
-              current ? { ...current, mode: mode as Draft["mode"] } : current,
-            )
-          }
-          disabled={busy}
-        >
-          <SelectTrigger
-            aria-label={t("settings.profile.tokenLimit.mode")}
-            className="w-56 data-[size=default]:h-control"
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="combined">
-              {t("settings.profile.tokenLimit.modeCombined")}
-            </SelectItem>
-            <SelectItem value="split">
-              {t("settings.profile.tokenLimit.modeSplit")}
-            </SelectItem>
-          </SelectContent>
-        </Select>
-      </SettingsRow>
-      <SettingsRow
-        label={t("settings.profile.tokenLimit.method")}
-        description={t("settings.profile.tokenLimit.methodDescription")}
-      >
-        <Select
-          value={draft?.method ?? "total"}
-          onValueChange={(method) =>
-            setDraft((current) =>
-              current
-                ? { ...current, method: method as Draft["method"] }
-                : current,
-            )
-          }
-          disabled={busy}
-        >
-          <SelectTrigger
-            aria-label={t("settings.profile.tokenLimit.method")}
-            className="w-56 data-[size=default]:h-control"
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="total">
-              {t("settings.profile.tokenLimit.methodTotal")}
-            </SelectItem>
-            <SelectItem value="incremental">
-              {t("settings.profile.tokenLimit.methodIncremental")}
-            </SelectItem>
-          </SelectContent>
-        </Select>
-      </SettingsRow>
+      {selectInput("period", [
+        ["day", t("settings.profile.tokenLimit.periodDay")],
+        ["week", t("settings.profile.tokenLimit.periodWeek")],
+        ["month", t("settings.profile.tokenLimit.periodMonth")],
+      ])}
+      {selectInput(
+        "mode",
+        [
+          ["combined", t("settings.profile.tokenLimit.modeCombined")],
+          ["split", t("settings.profile.tokenLimit.modeSplit")],
+        ],
+        t("settings.profile.tokenLimit.modeDescription"),
+      )}
+      {selectInput(
+        "method",
+        [
+          ["total", t("settings.profile.tokenLimit.methodTotal")],
+          ["incremental", t("settings.profile.tokenLimit.methodIncremental")],
+        ],
+        t("settings.profile.tokenLimit.methodDescription"),
+      )}
       {draft?.mode === "split"
         ? [
             capInput("localLimit", t("settings.profile.tokenLimit.localLimit")),
