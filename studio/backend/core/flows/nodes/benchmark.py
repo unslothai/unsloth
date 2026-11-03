@@ -445,6 +445,8 @@ async def _recipe_heldout(
         "score": summary.get("score"),
         "passed": summary.get("passed", 0),
         "scored": summary.get("scored", 0),
+        # Rows the model or judge failed to answer (HTTP errors): left out of the score.
+        "errored": len(errored),
         "base_score": baseline.get("score") if baseline else None,
         "metric": "reference match" if scorer == "reference" else "LLM judge",
         "run_id": run_ids.get("candidate"),
@@ -563,6 +565,7 @@ async def benchmark(ctx: NodeContext) -> dict:
             "base_score": _percent(found["base_score"]),
             "passed": found["passed"],
             "scored": found["scored"],
+            "errored": found.get("errored", 0),
             "run_id": found["run_id"],
             "preview": [{k: _short(v) for k, v in r.items()} for r in found["results"][:MAX_ROWS]],
         }

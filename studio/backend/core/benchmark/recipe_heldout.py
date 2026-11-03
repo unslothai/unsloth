@@ -35,12 +35,18 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 ChatFn = Callable[[str, list[dict[str, str]]], str]
 
 
-_TOKEN_RE = re.compile(r"(?<![\w.])[+-]?\d+(?:\.\d+)?|\w+")
+# Numbers (sign and decimals kept), words, a spaced minus, and symbol runs that change an answer's
+# meaning (C# and C++, x < 1 and x > 1); sentence punctuation and quotes are not compared.
+_TOKEN_RE = re.compile(
+    r"(?<![\w.])[+-]?\d+(?:\.\d+)?|\w+|(?<=\s)-(?=\s)|[^\w\s.,!?;:'\"()\[\]{}\-]+"
+)
 
 
 def _normalize(text: str) -> str:
-    """Words and numbers, case-folded; a number keeps its sign and decimals so -1 is not 1, nor 4.5 4."""
+    """Words, numbers and meaningful symbols, case-folded; a number keeps its sign and decimals so
+    -1 is not 1, nor 4.5 4, and .5 is 0.5."""
     text = re.sub(r"(?<=\d),(?=\d{3}\b)", "", text.lower())  # 1,000 is 1000
+    text = re.sub(r"(?<![\w.])([+-]?)\.(\d)", r"\g<1>0.\2", text)  # .5 is 0.5
     return " ".join(_TOKEN_RE.findall(text))
 
 

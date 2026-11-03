@@ -657,3 +657,25 @@ async def test_on_a_mac_each_lora_round_trains_from_the_base_model(monkeypatch):
     assert rs.status == "completed", rs.error
     assert eng.starts == [None, None, None]
     assert rs.nodes["loop"].outputs["history"]["continue"] is False
+
+
+@run_async
+async def test_a_test_score_with_errored_rows_neither_wins_nor_meets_the_target():
+    eng, _, _ = _engine(test_pass = [1.0, 0.5])
+    bench = eng.handlers["test.bench"]
+    tests = []
+
+    async def flaky(ctx):
+        found = await bench(ctx)
+        if ctx.inputs["dataset"]["split"] == "test":
+            tests.append(1)
+            # Round 1's test lost a row to an HTTP error, so its 100% is over the rows that answered.
+            found["results"] = {"errored": 1 if len(tests) == 1 else 0}
+        return found
+
+    eng.handlers["test.bench"] = flaky
+    rs = await _run(eng, loop_doc(rounds = 2, target = 100))
+    assert rs.status == "completed", rs.error
+    history = rs.nodes["loop"].outputs["history"]
+    assert len(history["rounds"]) == 2 and history["rounds"][0]["test_errored"] == 1
+    assert rs.nodes["loop"].outputs["checkpoint"]["name"] == "run2"

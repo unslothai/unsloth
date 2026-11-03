@@ -384,3 +384,20 @@ def test_every_local_scoring_request_withdraws_studios_tools(harness):
     assert all(
         b.get("enable_tools") is False and b.get("tool_choice") == "none" for b in harness.bodies
     )
+
+
+@pytest.mark.parametrize(
+    "output, reference, passed",
+    [
+        ("C#", "C++", False),
+        ("x < 1", "x > 1", False),
+        (".5", "5", False),
+        ("0.5", ".5", True),
+        ("Paris.", "paris", True),
+        ("The answer is 42!", "42", True),
+        ("x - 1", "x 1", False),
+    ],
+)
+def test_reference_matching_keeps_symbols_that_change_the_answer(output, reference, passed):
+    from core.benchmark.recipe_heldout import score_with_validator
+    assert score_with_validator("reference", output, reference)[0] is passed

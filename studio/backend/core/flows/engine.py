@@ -2348,15 +2348,28 @@ class FlowEngine:
                     if isinstance(trained, dict) and isinstance(trained.get("checkpoint"), dict)
                     else None
                 )
+                # A score that left rows out (the model or judge errored on them) is not comparable:
+                # it can neither win the round nor meet the target.
+                results = test_out.get("results")
+                errored = results.get("errored") if isinstance(results, dict) else None
+                if isinstance(errored, int) and errored > 0:
+                    entry["test_errored"] = errored
+                    rs.emit(
+                        "node.log",
+                        nid,
+                        {
+                            "level": "warning",
+                            "message": f"Round {r + 1}: {errored} test rows errored, so its score does not count",
+                        },
+                    )
+                counted = entry["test_score"] is not None and not entry.get("test_errored")
                 history.append(entry)
-                if entry["test_score"] is not None and (
-                    best is None or entry["test_score"] > best["test_score"]
-                ):
+                if counted and (best is None or entry["test_score"] > best["test_score"]):
                     best = {**entry, "checkpoint": checkpoint}
                 rs.partial(
                     nid, {"port": "history", "value": list(history), "step": r + 1, "total": rounds}
                 )
-                if entry["test_score"] is not None and entry["test_score"] >= target:
+                if counted and entry["test_score"] >= target:
                     stopped = "target"
                     break
         finally:

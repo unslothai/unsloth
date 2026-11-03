@@ -117,6 +117,7 @@ def test_adapter_is_scored_against_itself_off_and_failures_keep_the_row(monkeypa
     results = out["results"]
     assert (results["passed"], results["scored"], results["base_score"]) == (3, 4, 0.0)
     assert results["run_id"] == "r1" and len(results["preview"]) == 4
+    assert results["errored"] == 1
     assert (
         results["preview"][2]["passed"] is False and results["preview"][2]["base_passed"] is False
     )
