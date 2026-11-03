@@ -1905,11 +1905,14 @@ def get_packed_info_from_kwargs(
 
     max_seqlen = max(host)
     result = (lengths, cu_seqlens, max_seqlen)
+    # Meta shapes carry symbolic host scalars without allocating device memory.
+    row_shape = torch.empty((sum(host), max_seqlen), device = "meta")
     _refresh_derived_packed_caches(entry, seq_lengths, result, device)
     _PACKED_INFO_CACHE[device] = {
         "seq_lengths": seq_lengths,
         "result": result,
         "inference": _built_in_inference_mode(),
+        "row_shape": row_shape,
     }
     _PACKED_HOST_LENGTHS_CACHE[lengths.device] = (lengths, cu_seqlens, host)
     return result
