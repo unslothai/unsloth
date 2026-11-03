@@ -531,8 +531,7 @@ def decode_step(
     state = _state(model)
     state.forwards += 1
     if state.forwards == 1:
-        # A call's first forward is its prefill, even for a one-token prompt (Qwen3-VL recomputes
-        # rope_deltas there).
+        # The first forward is the prefill, even for a one-token prompt (Qwen3-VL sets rope_deltas there).
         return None
     ids = kwargs.get("input_ids")
     if ids is None:
@@ -663,7 +662,6 @@ def _capture(state, key, forward, kwargs, leaves, cache):
         it = iter([buffer.expand(leaf.shape) for buffer, leaf in zip(buffers, leaves)])
         static_kwargs = {k: _build(v, it, cache) for k, v in kwargs.items()}
     except Exception as error:
-        # Graph setup (pool, stream, buffers) is optional: the step runs eagerly.
         reason = f"capture setup failed: {type(error).__name__}"
         state.pool = None
         state.refused[key] = reason
@@ -715,9 +713,8 @@ def _capture(state, key, forward, kwargs, leaves, cache):
 
 
 def _validate(state, key, entry, forward, kwargs, cache):
-    """First replay of a key: the replay and the eager step from the same cache state must agree
-    bitwise; else the key is refused. The eager step runs last, so its result and its cache rows
-    are what generation continues from."""
+    """First replay of a key must match the eager step bitwise, else the key is refused. Eager runs
+    last, so generation continues from its result and cache rows."""
     state.validations += 1
     start = _snapshot(cache)
     entry.graph.replay()
