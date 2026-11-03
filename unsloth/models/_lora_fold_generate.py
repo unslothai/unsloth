@@ -337,7 +337,8 @@ def lora_fold_generate(
             except Exception:
                 reason = "check_failed"
         if reason is not None:
-            _release(me)
+            if first:
+                _release(me)
             _refuse(reason)
             yield False
             return
@@ -348,7 +349,9 @@ def lora_fold_generate(
     finally:
         with _RESTORED:
             _ACTIVE -= 1
-        _release(me)
+        # Only the call that took ownership gives it back (a nested call must not end the outer fold's).
+        if first:
+            _release(me)
 
 
 def _set_owner(owner):

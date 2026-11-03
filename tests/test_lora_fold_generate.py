@@ -420,6 +420,39 @@ def test_other_threads_wait_for_restore(_clean):
     assert fold._ACTIVE == 0 and fold._OWNER is None
 
 
+def test_nested_call_keeps_the_outer_ownership(_clean):
+    import threading
+
+    model = _make(MODELS[0])
+    kw = {"max_new_tokens": 32}
+    inside, release, order = threading.Event(), threading.Event(), []
+
+    def first():
+        with torch.inference_mode(), fold.lora_fold_generate(model, (), kw) as engaged:
+            with fold.lora_fold_generate(model, (), kw) as nested:
+                order.append(("nested", nested))
+            inside.set()
+            release.wait(30)
+        order.append("first_restored")
+
+    def second():
+        inside.wait(30)
+        with torch.inference_mode(), fold.lora_fold_generate(model, (), kw) as engaged:
+            order.append(("second", engaged))
+
+    threads = [threading.Thread(target = first), threading.Thread(target = second)]
+    for t in threads:
+        t.start()
+    inside.wait(30)
+    time.sleep(0.3)
+    assert order == [("nested", False)]  # still waiting: the outer fold owns the weights
+    release.set()
+    for t in threads:
+        t.join(30)
+    assert order == [("nested", False), "first_restored", ("second", True)]
+    assert fold._ACTIVE == 0 and fold._OWNER is None
+
+
 def test_nested_call_does_not_fold_twice(_clean):
     model = _make(MODELS[0])
     before = _bits(model)
