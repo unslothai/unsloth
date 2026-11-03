@@ -52,6 +52,7 @@ __all__ = [
     "resolve_fp8_lora",
     "mark_fp8_lora",
     "enable_fp8_lora",
+    "restore_fp8_lora_for_inference",
 ]
 
 # Names and gates come from the precision registry (unsloth/precision/recipes.py).
@@ -659,6 +660,15 @@ def _block_swapped_modules(model) -> set:
             if 0 <= index < len(module):
                 out.update(id(m) for m in module[index].modules())
     return out
+
+
+def restore_fp8_lora_for_inference(model):
+    if _fp8_lora_request(model) is None:
+        return
+    kernels = _load_fp8_lora_kernels()
+    for module in model.modules():
+        if "_unsloth_fp8_lora" in module.__dict__:
+            kernels.detach_fp8_lora_base(module)
 
 
 def enable_fp8_lora(

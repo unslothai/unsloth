@@ -631,6 +631,39 @@ def test_host_master_decode_rows_use_the_dequantized_fp8_weight(offload_on_cpu):
     assert FL.FP8_LORA_STATS["fwd"] == 0
 
 
+@needs_cpu_scaled_mm
+@pytest.mark.parametrize("backend", ["llama", "vision"])
+def test_generation_restores_exact_base_then_training_reenables_fp8(
+    offload_on_cpu, monkeypatch, backend
+):
+    from unsloth.models import llama, vision
+
+    owner = llama if backend == "llama" else vision
+    api = owner.FastLlamaModel if backend == "llama" else owner.FastBaseModel
+    monkeypatch.setenv("UNSLOTH_RETURN_HIDDEN_STATES", "0")
+    monkeypatch.setattr(
+        owner, "enable_fp8_lora", lambda model: f8t.enable_fp8_lora(model, allow_cpu = True)
+    )
+    model = _tiny_qwen3_peft().eval()
+    ids = torch.randint(0, 256, (1, 32))
+    with torch.no_grad():
+        expected = model(ids).logits
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    f8t.enable_fp8_lora(model, allow_cpu = True)
+    assert FL.fp8_lora_memory(model)["layers"]
+    api.for_inference(model)
+    with torch.no_grad():
+        actual = model(ids).logits
+    assert torch.equal(actual, expected)
+    assert not FL.fp8_lora_memory(model)["layers"]
+    api.for_training(model, use_gradient_checkpointing = False)
+    assert len(FL.fp8_lora_memory(model)["layers"]) == 14
+    FL.reset_fp8_lora_stats()
+    _, grads = _loss_and_grads(model)
+    assert FL.FP8_LORA_STATS["fwd"] == 14
+    assert any(torch.count_nonzero(grad) for grad in grads.values())
+
+
 def test_host_master_dequantize_is_exact(offload_on_cpu):
     lin = _frozen_linear()
     W0 = lin.weight.detach().clone()

@@ -88,7 +88,7 @@ from .loader_utils import (
     warn_if_bitsandbytes_quantized_nothing,
 )
 from .fsdp2_qlora import prepare_fsdp2_qlora, set_fsdp2_quant_storage
-from .float8_training import enable_fp8_lora
+from .float8_training import enable_fp8_lora, restore_fp8_lora_for_inference
 from ..utils.packing import (
     get_packed_info_from_kwargs,
     mask_packed_boundary_labels,
@@ -5578,6 +5578,7 @@ class FastLlamaModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_inference!"
             )
         _tensor_parallel_for_inference(model)
+        restore_fp8_lora_for_inference(model)
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -5650,6 +5651,7 @@ class FastLlamaModel:
             m = m.model
         _for_training(m)
         apply_training_mode()
+        enable_fp8_lora(model)
         # Since transformers 4.53, this must be turned on explicitly.
         for module in checkpointing:
             set_module_gradient_checkpointing(module, use_gradient_checkpointing)
