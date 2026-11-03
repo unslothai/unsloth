@@ -135,6 +135,175 @@ def _finished_run(
     return run_id
 
 
+@pytest.mark.parametrize("mode", ["mapped", "alpaca", "raw"])
+def test_unused_weighted_messages_do_not_block_other_training_data(studio, mode):
+    client, calls, _live = studio
+    row = {
+        "messages": [{"role": "assistant", "content": "CONTEXT_ONLY", "weight": 0}],
+        "question": "Question",
+        "answer": "TARGET",
+    }
+    extra = {}
+    if mode == "mapped":
+        extra["custom_format_mapping"] = {"question": "user", "answer": "assistant"}
+    elif mode == "alpaca":
+        row.update(instruction = "Question", output = "TARGET")
+    else:
+        row["text"] = "TARGET"
+        extra["format_type"] = "raw"
+
+    async def flow():
+        uploaded = await client.files.create(
+            file = ("rows.jsonl", (json.dumps(row) + "\n").encode()), purpose = "fine-tune"
+        )
+        return await _create(client, uploaded.id, extra_body = extra)
+
+    job = _run(flow())
+    assert job.status == "validating_files"
+    assert len(calls["start"]) == 1
+
+
+@pytest.mark.parametrize("mode", ["cpt", "sparse_alpaca"])
+@pytest.mark.parametrize("file_param", ["training_file", "validation_file"])
+def test_dataset_selection_ignores_unused_message_weights(studio, tmp_path, mode, file_param):
+    from datasets import load_dataset
+    from utils.datasets.dataset_utils import format_dataset
+
+    client, calls, _live = studio
+    weighted = [{"role": "assistant", "content": "CONTEXT_ONLY", "weight": 0}]
+    if mode == "cpt":
+        rows = [{"text": "TARGET", "messages": weighted}]
+        extra = {"training_type": "Continued Pretraining"}
+    else:
+        rows = [
+            {"instruction": "Question", "output": "TARGET", "messages": weighted},
+            {"output": "TARGET", "messages": weighted},
+        ]
+        extra = {}
+    content = "".join(json.dumps(row) + "\n" for row in rows).encode()
+    source = tmp_path / "selected.jsonl"
+    source.write_bytes(content)
+    dataset = load_dataset(
+        "json", data_files = str(source), split = "train", cache_dir = str(tmp_path / "cache")
+    )
+    formatted = format_dataset(dataset, format_type = "raw" if mode == "cpt" else "auto")
+    assert formatted["final_format"] == ("raw_text" if mode == "cpt" else "alpaca")
+
+    async def flow():
+        uploaded = await client.files.create(file = ("selected.jsonl", content), purpose = "fine-tune")
+        plain = await client.files.create(file = ("plain.jsonl", CHATS), purpose = "fine-tune")
+        kwargs = {"training_file": plain.id, file_param: uploaded.id}
+        return await client.fine_tuning.jobs.create(
+            model = "unsloth/Qwen3-0.6B", extra_body = extra, **kwargs
+        )
+
+    job = _run(flow())
+    assert job.status == "validating_files"
+    assert len(calls["start"]) == 1
+
+
+def test_a_mapping_that_selects_weighted_messages_is_still_refused(studio):
+    client, calls, _live = studio
+    rows = b'{"messages":[{"role":"assistant","content":"CONTEXT_ONLY","weight":0}]}\n'
+
+    async def flow():
+        uploaded = await client.files.create(file = ("rows.jsonl", rows), purpose = "fine-tune")
+        with pytest.raises(openai.BadRequestError):
+            await _create(
+                client, uploaded.id, extra_body = {"custom_format_mapping": {"messages": "assistant"}}
+            )
+
+    _run(flow())
+    assert calls["start"] == []
+
+
+def test_exported_unit_weight_messages_still_train(studio, tmp_path):
+    from datasets import Dataset
+
+    client, calls, _live = studio
+    exported = tmp_path / "export.jsonl"
+    Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "Hi"},
+                    {"role": "assistant", "content": "Hello"},
+                    {"role": "user", "content": "Bye"},
+                    {"role": "assistant", "content": "Goodbye", "weight": 1},
+                ]
+            }
+        ]
+    ).to_json(exported)
+    rows = exported.read_bytes()
+    assert json.loads(rows)["messages"][1]["weight"] is None
+
+    async def flow():
+        uploaded = await client.files.create(file = ("export.jsonl", rows), purpose = "fine-tune")
+        return await _create(client, uploaded.id)
+
+    job = _run(flow())
+    assert job.status == "validating_files"
+    assert len(calls["start"]) == 1
+
+
+@pytest.mark.parametrize("weight, escaped", [(0, False), (0.5, False), (0, True)])
+def test_a_file_excluding_an_assistant_message_by_weight_is_refused(studio, weight, escaped):
+    client, calls, _live = studio
+    rows = (
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "Question"},
+                    {"role": "assistant", "content": "CONTEXT_ONLY", "weight": weight},
+                    {"role": "user", "content": "Question"},
+                    {"role": "assistant", "content": "TARGET", "weight": 1},
+                ]
+            }
+        ).encode()
+        + b"\n"
+    )
+    if escaped:
+        rows = rows.replace(b'"weight"', b'"weigh\\u0074"')
+        assert b'"weight"' not in rows and json.loads(rows)["messages"][1]["weight"] == 0
+
+    async def flow():
+        weighted = await client.files.create(
+            file = ("weighted.jsonl", CHATS + rows), purpose = "fine-tune"
+        )
+        plain = await client.files.create(file = ("plain.jsonl", CHATS), purpose = "fine-tune")
+        errors = []
+        for kwargs in (
+            {"training_file": weighted.id},
+            {"training_file": plain.id, "validation_file": weighted.id},
+        ):
+            try:
+                await client.fine_tuning.jobs.create(model = "unsloth/Qwen3-0.6B", **kwargs)
+            except openai.BadRequestError as exc:
+                errors.append(exc.response.text)
+        return errors
+
+    errors = _run(flow())
+    assert len(errors) == 2
+    assert "training_file line 3" in errors[0] and "validation_file line 3" in errors[1]
+    assert calls["start"] == []
+
+
+def test_a_file_with_only_weight_one_messages_still_trains(studio):
+    client, calls, _live = studio
+    rows = (
+        b'{"messages": [{"role": "user", "content": "Hi"}, '
+        b'{"role": "assistant", "content": "Hello!", "weight": 1}]}\n'
+    )
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", rows), purpose = "fine-tune")
+        return await _create(client, uploaded.id)
+
+    job = _run(flow())
+    assert job.status == "validating_files"
+    assert len(calls["start"]) == 1
+
+
 def test_upload_then_create_starts_a_studio_run(studio):
     client, calls, _live = studio
 
