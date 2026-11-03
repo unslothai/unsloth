@@ -777,3 +777,45 @@ def test_a_recipe_on_chats_loaded_model_is_keyed_on_that_model_and_quant(monkeyp
     assert key() != named
     recipe["model_providers"][0]["is_local"] = False
     assert key() is None
+
+
+def test_a_recipe_naming_its_generator_is_keyed_by_that_pick_not_by_what_chat_holds(monkeypatch):
+    from core.flows import engine as engine_mod
+    from studio_mcp import loading
+
+    loaded = {"name": "unsloth/Qwen3-4B-GGUF"}
+
+    async def resident(caller):
+        return {"llm": [loaded["name"]]}, {"gguf_variant": None}
+
+    monkeypatch.setattr(loading, "_resident", resident)
+
+    class Ctx:
+        caller = None
+        resident: dict = {}
+
+    recipe = {
+        "model_providers": [{"name": "local", "is_local": True}],
+        "model_configs": [
+            {
+                "alias": "m",
+                "provider": "local",
+                "model": "unsloth/Qwen3-4B-GGUF",
+                "gguf_variant": "Q4_K_M",
+            }
+        ],
+        "columns": [{"name": "q", "column_type": "llm-text", "model_alias": "m"}],
+    }
+    eng = engine_mod.FlowEngine()
+    key = lambda: asyncio.run(  # noqa: E731
+        eng._model_key(
+            Ctx(), {"type": GENERATE_TYPE}, {RECIPE_PARAM: {"recipe": recipe, "run": {}}}
+        )
+    )
+    first = key()
+    assert first == {"repo": "unsloth/Qwen3-4B-GGUF", "variant": "Q4_K_M"}
+    # A Benchmark left its adapter loaded: the step reloads the named generator, so the key holds.
+    loaded["name"] = "/out/run-1"
+    assert key() == first
+    recipe["model_configs"][0]["gguf_variant"] = "Q8_0"
+    assert key() != first

@@ -644,3 +644,16 @@ def test_a_single_alpaca_test_row_bans_only_its_own_question():
         "model_output": "o",
     }
     assert loop_rounds.drop_test_rows([probe, leaked, asked], test_rows) == [probe]
+
+
+@run_async
+async def test_on_a_mac_each_lora_round_trains_from_the_base_model(monkeypatch):
+    from core.flows import engine as engine_mod
+
+    # Apple Silicon's trainer refuses to continue a LoRA adapter: round 2 must not ask it to.
+    monkeypatch.setattr(engine_mod, "_adapters_restart", lambda: True)
+    eng, _, _ = _engine()
+    rs = await _run(eng, loop_doc(rounds = 3))
+    assert rs.status == "completed", rs.error
+    assert eng.starts == [None, None, None]
+    assert rs.nodes["loop"].outputs["history"]["continue"] is False

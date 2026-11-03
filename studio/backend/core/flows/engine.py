@@ -2010,7 +2010,19 @@ class FlowEngine:
     async def _model_key(self, ctx: NodeContextImpl, spec: dict, params: dict) -> Optional[dict]:
         kind = spec.get("model_kind")
         if not kind:
-            if _implicit_local_model(params.get(RECIPE_PARAM)):
+            compiled = params.get(RECIPE_PARAM)
+            recipe = compiled.get("recipe") if isinstance(compiled, dict) else None
+            from core.flows.nodes.data import local_model
+
+            named = local_model(recipe) if isinstance(recipe, dict) else None
+            if named:
+                # The step loads the generator the recipe names, so it is keyed like any picked model,
+                # not by whatever an earlier step (a Benchmark) left loaded.
+                key = dict(named)
+                if os.path.isabs(named["repo"]):
+                    key["files"] = await asyncio.to_thread(_local_fingerprint, named["repo"])
+                return key
+            if _implicit_local_model(compiled):
                 # The recipe runs on whatever Chat has loaded, so a different model or quant is a different dataset.
                 from core.flows.nodes._common import resident_identity
 
@@ -2204,6 +2216,24 @@ class FlowEngine:
             )
             and not plan.inputs[b].get("start")
         ]
+        if carry and await asyncio.to_thread(_adapters_restart):
+            # Apple Silicon's trainer starts every LoRA run on the base model: continuing an
+            # adapter would be refused in round 2, so each round trains from the base instead.
+            lora = [
+                b
+                for b in carry
+                if (plan.nodes[b].get("params") or {}).get("training_type") != "full"
+            ]
+            if lora:
+                rs.emit(
+                    "node.log",
+                    nid,
+                    {
+                        "level": "warning",
+                        "message": "This Mac trains each LoRA round from the base model; adapters do not carry over",
+                    },
+                )
+            carry = [b for b in carry if b not in lora]
         last: dict[str, dict] = {}
         saved = {k: dict(rs.input_overrides.get(k, {})) for k in (seed_node, scorer, *carry)}
 
@@ -2499,6 +2529,15 @@ def _implicit_local_model(recipe: Any) -> bool:
         isinstance(mc, dict) and mc.get("provider") in local
         for mc in recipe.get("model_configs") or []
     )
+
+
+def _adapters_restart() -> bool:
+    """Whether this machine's trainer refuses to continue a LoRA adapter (Apple Silicon's MLX)."""
+    try:
+        from core.training.training import should_use_mlx_training_backend
+        return bool(should_use_mlx_training_backend())
+    except Exception:
+        return False
 
 
 def _local_fingerprint(path: str) -> Optional[list]:
