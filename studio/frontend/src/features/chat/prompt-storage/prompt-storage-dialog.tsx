@@ -114,7 +114,7 @@ import {
 } from "../utils/conversation-markdown";
 import { planChatItemSources } from "../utils/project-source-plan";
 import { stripSearchImageTokens } from "../search-images/search-images.ts";
-import { saveMarkdownAsProjectSource } from "@/features/rag";
+import { saveMarkdownAsProjectSource } from "@/features/rag/api/save-markdown-source";
 
 function newId(): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
@@ -240,15 +240,15 @@ async function loadConversationMessages(
     emptyMessage?: string;
     includeSiblings?: boolean;
     includeInstructions?: boolean;
+    liveBranch?: string[] | null;
   } = {},
 ) {
   const {
     emptyMessage = "No messages in this conversation to export.",
     includeSiblings = true,
     includeInstructions = true,
+    liveBranch = liveThreadBranch(threadId),
   } = options;
-  // read before awaiting storage so a chat switch cannot redirect the lookup
-  const liveBranch = liveThreadBranch(threadId);
   const [raw, instructions] = await Promise.all([
     listStoredChatMessages(threadId),
     includeInstructions ? chatInstructionsTurn(threadId) : [],
@@ -474,9 +474,13 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
 }
 
 // ShareGPT training JSONL (human/system/gpt turns).
-export async function exportConversationShareGPT(threadId: string): Promise<void> {
+export async function exportConversationShareGPT(
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> {
   const messages = await loadConversationMessages(threadId, {
     includeSiblings: exportFormatIncludesSiblings("sharegpt"),
+    liveBranch,
   });
   if (!messages) return;
 
@@ -497,22 +501,30 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
 }
 
 // OpenAI/ChatML JSONL: {"messages": [{"role","content"}, ...]} per conversation; Unsloth reads this as a ChatML dataset.
-export async function exportConversationRawJsonl(threadId: string): Promise<void> {
-  return exportConversationJsonl(threadId, "training");
+export async function exportConversationRawJsonl(
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> {
+  return exportConversationJsonl(threadId, "training", liveBranch);
 }
 
-export async function exportConversationMessagesJsonl(threadId: string): Promise<void> {
-  return exportConversationJsonl(threadId, "messages");
+export async function exportConversationMessagesJsonl(
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> {
+  return exportConversationJsonl(threadId, "messages", liveBranch);
 }
 
 async function exportConversationJsonl(
   threadId: string,
   layout: ConversationJsonlLayout,
+  liveBranch?: string[] | null,
 ): Promise<void> {
   const messages = await loadConversationMessages(threadId, {
     includeSiblings: exportFormatIncludesSiblings(
       layout === "training" ? "jsonl-raw" : "jsonl-messages",
     ),
+    liveBranch,
   });
   if (!messages) return;
 
@@ -525,8 +537,11 @@ async function exportConversationJsonl(
   );
 }
 
-export async function exportConversationCsv(threadId: string): Promise<void> {
-  const messages = await loadConversationMessages(threadId);
+export async function exportConversationCsv(
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> {
+  const messages = await loadConversationMessages(threadId, { liveBranch });
   if (!messages) return;
 
   const rows = ["role,content"];
@@ -546,7 +561,11 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 
 const loadDisplayedBranchMessages = (
   threadId: string,
-  options: { emptyMessage?: string; includeInstructions?: boolean } = {},
+  options: {
+    emptyMessage?: string;
+    includeInstructions?: boolean;
+    liveBranch?: string[] | null;
+  } = {},
 ) => loadConversationMessages(threadId, { ...options, includeSiblings: false });
 
 export const buildConversationMarkdownForThread =
@@ -555,13 +574,16 @@ export const buildConversationMarkdownForThread =
     renderMessage: messageToMarkdown,
   });
 
-export const exportConversationMarkdown = createConversationMarkdownExporter({
-  loadMessages: loadDisplayedBranchMessages,
+export const exportConversationMarkdown = (
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> => createConversationMarkdownExporter<MessageRecord>({
+  loadMessages: (id) => loadDisplayedBranchMessages(id, { liveBranch }),
   renderMessage: messageToMarkdown,
   download: downloadBlob,
   exportBasename: conversationBasename,
   notifyNoContent: () => toast.info("No exportable content."),
-});
+})(threadId);
 
 // "skipped" must not stop a pair; "failed" already toasted, so stop.
 type SaveSourceOutcome = "saved" | "skipped" | "failed";
@@ -618,18 +640,22 @@ export async function saveChatItemAsProjectSource(
 }
 
 /** A sidebar row as one markdown document. Compare halves are named by model, since their order is not stable. */
-export async function buildChatItemMarkdown(item: {
-  id: string;
-  title: string;
-  type: string;
-}): Promise<string> {
+export async function buildChatItemMarkdown(
+  item: { id: string; title: string; type: string },
+  liveBranch?: string[] | null,
+): Promise<string> {
   const plans = planChatItemSources(
     item,
     item.type === "single" ? [] : await listStoredChatThreads({ pairId: item.id }),
   );
   return buildNamedConversationsMarkdown(
     plans,
-    buildConversationMarkdownForThread,
+    liveBranch === undefined
+      ? buildConversationMarkdownForThread
+      : createConversationMarkdownBuilder<MessageRecord>({
+          loadMessages: (id) => loadDisplayedBranchMessages(id, { liveBranch }),
+          renderMessage: messageToMarkdown,
+        }),
   );
 }
 

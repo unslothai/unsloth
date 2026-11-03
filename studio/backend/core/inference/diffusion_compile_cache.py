@@ -461,14 +461,14 @@ def model_fingerprint(
         dynamic_text = None
     if dynamic_text:
         fp["dynamic_text"] = dynamic_text
-    # Inductor keys graphs on dynamic_scale_rblock: an old bundle would hit, miss every graph, and never be rewritten.
     from .diffusion_compile_config import reduction_blocks_pinned, reduction_config_filter_available
 
     if reduction_blocks_pinned():
         fp["inductor"] = {"dynamic_scale_rblock": False}
-        # Only for a family whose compile pins the reduction-config filter, so every other bundle keeps its key.
         if reduction_filter and reduction_config_filter_available():
             fp["inductor"]["force_filter_reduction_configs"] = True
+            if compile_kwargs.get("mode") in ("max-autotune", "max-autotune-no-cudagraphs"):
+                fp["inductor"]["coordinate_descent_tuning"] = False
     return fp
 
 
