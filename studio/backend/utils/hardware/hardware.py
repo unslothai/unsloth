@@ -5164,9 +5164,7 @@ _DRI_DIR = "/dev/dri"
 
 
 def _rocm_kfd_render_nodes_openable() -> bool:
-    """True when every AMD GPU KFD node's DRM render node opens. libhsakmt drops a node whose render device it
-    cannot open and renumbers the rest, so a container given only some render nodes sees fewer GPUs than KFD sysfs
-    lists, and KFD order is no longer HIP order. Opening a render node creates no GPU context."""
+    """KFD order matches HIP only when every AMD render node opens."""
     try:
         entries = sorted((int(e), e) for e in os.listdir(_KFD_TOPOLOGY_NODES) if e.isdigit())
     except OSError:
@@ -5219,7 +5217,6 @@ def _rocm_context_free_visible_devices() -> list[Dict[str, Any]]:
         return []
     if targets is None or len(targets) != len(pci_ids):
         return []
-    # A runtime-filtered node (render device not passed into the container) shifts every later HIP ordinal.
     if not _rocm_kfd_render_nodes_openable():
         return []
     vram_by_pci = _rocm_linux_sysfs_vram_by_pci_gb()
