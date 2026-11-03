@@ -1065,6 +1065,7 @@ export const de = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Lege das Passwort für den Besitzer dieser Installation fest, bevor du ein weiteres Konto hinzufügst. Du verwendest es zur Anmeldung, sobald diese Installation mehrere Konten hat.",
       signsInAs: "Meldet sich als {username} an",
       signsInAsOwner: "Meldet sich als {alias} oder {username} an",
       signInName: "Ihr Anmeldename",
@@ -1940,6 +1941,7 @@ export const de = {
         saveError:
           "Einstellungen für automatischen Modellwechsel konnten nicht gespeichert werden.",
         idleError: "Geben Sie 0 ein, um das Modell geladen zu halten, oder mindestens 60 Sekunden.",
+        idleUnsaved: "Noch nicht gespeichert.",
         autoDownload: "Fehlende Modelle herunterladen",
         autoDownloadDescription:
           "Lädt ein in einer API-Anfrage genanntes GGUF herunter, das noch nicht vorhanden ist. Wer einen API-Schlüssel hat, kann dann Speicherplatz und Bandbreite verbrauchen.",

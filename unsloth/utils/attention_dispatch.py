@@ -30,7 +30,8 @@ from ..models._utils import *
 from ..context_parallel import get_cp_manager
 from .ulysses import ulysses_attention
 from ..utils.packing import (
-    _inference_mode,
+    _built_in_inference_mode,
+    _cache_hit,
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
     cover_padded_cu_seqlens,
@@ -106,12 +107,13 @@ def _avoids_cudnn(Q, training):
 
 
 def _training_sdpa(*args, **kwargs):
-    """SDPA for a training forward (AttentionContext.training, passed in, no global state: these
-    calls run traced). On SM100 SDPA picks cuDNN attention, which builds a plan for every new
-    sequence length (~150 ms each), and training batches change length every step."""
+    """Avoid per-length cuDNN planning on SM100 training calls, including traced forwards."""
     if args and _avoids_cudnn(args[0], True):
-        with _sdpa_kernel(_XFORMERS_LIKE_BACKENDS):
-            return scaled_dot_product_attention(*args, **kwargs)
+        # Narrows the caller's sdpa_kernel policy (MATH stays math); cuDNN-only runs as asked.
+        backends = _CUDNN_FREE_BACKENDS[_cudnn_free_index()]
+        if backends is not None:
+            with _sdpa_kernel(backends):
+                return scaled_dot_product_attention(*args, **kwargs)
     if len(args) >= 3 and _cudnn_length_bucket_applies(*args[:3], **kwargs):
         return _cudnn_length_bucketed_sdpa(*args, **kwargs)
     return scaled_dot_product_attention(*args, **kwargs)
@@ -257,10 +259,11 @@ def _padded_bucket_mask(attn_mask, pad):
 
 
 def _rerouted_sdpa(*args, **kwargs):
-    """SDPA standing in for xformers inside a compiled block, on the kernels xformers would run.
-    Without the pin, torch 2.13+ on SM100 takes cuDNN attention, which builds a new plan for every
-    new sequence length (~150 ms per length): padded batches of varying length stalled every step."""
-    with _sdpa_kernel(_XFORMERS_LIKE_BACKENDS):
+    """Compiled xformers stand-in: avoid cuDNN's per-length planning."""
+    backends = _CUDNN_FREE_BACKENDS[_cudnn_free_index()]
+    if backends is None:
+        return F.scaled_dot_product_attention(*args, **kwargs)
+    with _sdpa_kernel(backends):
         return F.scaled_dot_product_attention(*args, **kwargs)
 
 
@@ -273,8 +276,7 @@ try:
         _SDPBackend.EFFICIENT_ATTENTION,
         _SDPBackend.MATH,
     ]
-    # Decode pins, indexed by _decode_cudnn_free_index: the caller's enabled flash / efficient / math.
-    _DECODE_CUDNN_FREE_BACKENDS = (None,) + tuple(
+    _CUDNN_FREE_BACKENDS = (None,) + tuple(
         [b for j, b in enumerate(_XFORMERS_LIKE_BACKENDS) if i >> j & 1] for i in range(1, 8)
     )
     _CUDNN_CHOICE = (
@@ -282,7 +284,7 @@ try:
     )
 except Exception:
     _rerouted_sdpa = scaled_dot_product_attention
-    _DECODE_CUDNN_FREE_BACKENDS = (None,) * 8
+    _CUDNN_FREE_BACKENDS = (None,) * 8
     _CUDNN_CHOICE = None
 
 
@@ -390,14 +392,14 @@ def decode_scaled_dot_product_attention(query, key, value, *args, **kwargs):
     ):
         # Only the caller's own non-cuDNN backends (sdpa_kernel([MATH]) stays math); a cuDNN-only
         # policy is left as is.
-        backends = _DECODE_CUDNN_FREE_BACKENDS[_decode_cudnn_free_index()]
+        backends = _CUDNN_FREE_BACKENDS[_cudnn_free_index()]
         if backends is not None:
             with _sdpa_kernel(backends):
                 return F.scaled_dot_product_attention(query, key, value, *args, **kwargs)
     return F.scaled_dot_product_attention(query, key, value, *args, **kwargs)
 
 
-def _decode_cudnn_free_index():
+def _cudnn_free_index():
     """Bit 0 / 1 / 2: flash / efficient / math SDPA enabled; 0 when cuDNN is disabled (nothing to avoid)."""
     cuda = torch.backends.cuda
     if not cuda.cudnn_sdp_enabled():
@@ -754,8 +756,7 @@ def _constant_probe(fn):
 
 _sdpa_backend_state = _constant_probe(_sdpa_backend_state)
 _sdpa_masked_choice = _constant_probe(_sdpa_masked_choice)
-# Traced: read under the caller's sdpa_kernel at trace time, like SDPA's own backend pick.
-_decode_cudnn_free_index = _constant_probe(_decode_cudnn_free_index)
+_cudnn_free_index = _constant_probe(_cudnn_free_index)
 
 
 @functools.lru_cache(maxsize = 128)
@@ -870,8 +871,9 @@ def _sdpa_gqa_state_now(
 def _sdpa_gqa_state(*args, no_cudnn = False):
     """_sdpa_gqa_state_now; no_cudnn probes under the kernels the call runs with (_training_sdpa,
     _rerouted_sdpa), whose enabled flags are part of the probe's cache key."""
-    if no_cudnn:
-        with _sdpa_kernel(_XFORMERS_LIKE_BACKENDS):
+    backends = _CUDNN_FREE_BACKENDS[_cudnn_free_index()] if no_cudnn else None
+    if backends is not None:
+        with _sdpa_kernel(backends):
             return _sdpa_gqa_state_now(*args)
     return _sdpa_gqa_state_now(*args)
 
@@ -1312,12 +1314,7 @@ def _windowed_causal_mask(q_len: int, k_len: int, sliding_window: int, device) -
     """Causal band mask of shape (1, 1, q_len, k_len). Read-only: callers must not mutate it."""
     params = (q_len, k_len, sliding_window)
     entry = _WINDOW_MASK_CACHE.get(device)
-    if (
-        entry is not None
-        and entry["params"] == params
-        # A mask built under inference_mode cannot be saved for a training step's backward.
-        and (not entry["inference"] or _inference_mode())
-    ):
+    if entry is not None and entry["params"] == params and _cache_hit(entry):
         return entry["mask"]
     # Drop the outgoing mask first so a shape change does not peak a whole mask higher.
     _WINDOW_MASK_CACHE.pop(device, None)
@@ -1328,7 +1325,11 @@ def _windowed_causal_mask(q_len: int, k_len: int, sliding_window: int, device) -
         (k_pos[None, :] <= q_pos[:, None])
         & (k_pos[None, :] >= (q_pos[:, None] - (sliding_window - 1)))
     )[None, None, :, :]
-    _WINDOW_MASK_CACHE[device] = {"params": params, "mask": mask, "inference": _inference_mode()}
+    _WINDOW_MASK_CACHE[device] = {
+        "params": params,
+        "mask": mask,
+        "inference": _built_in_inference_mode(),
+    }
     return mask
 
 

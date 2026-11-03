@@ -1167,6 +1167,7 @@ export const cs = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Před přidáním dalšího účtu nastavte heslo vlastníka instalace. Až bude mít instalace více účtů, budete ho používat k přihlášení.",
       signsInAs: "Přihlašuje se jako {username}",
       signsInAsOwner: "Přihlašuje se jako {alias} nebo {username}",
       signInName: "Vaše přihlašovací jméno",
@@ -2118,6 +2119,7 @@ export const cs = {
           "Nastavení automatického přepínání modelu se nepodařilo uložit.",
         idleError:
           "Zadejte 0, chcete-li model ponechat načtený, nebo alespoň 60 sekund.",
+        idleUnsaved: "Zatím neuloženo.",
         keepKv: "Zachovat kontext chatu i po uvolnění",
         keepKvDescription:
           "Uložit mezipaměť KV před uvolněním při nečinnosti nebo před tím, než GPU převezme model obrázků či videa, aby obnovené chaty nemusely znovu číst historii. Až 10 GB na disku.",

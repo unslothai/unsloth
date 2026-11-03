@@ -1166,6 +1166,7 @@ export const vi = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Đặt mật khẩu của chủ sở hữu bản cài đặt trước khi thêm tài khoản khác. Bạn sẽ dùng mật khẩu này để đăng nhập khi bản cài đặt có nhiều tài khoản.",
       signsInAs: "Đăng nhập với tên {username}",
       signsInAsOwner: "Đăng nhập với tên {alias} hoặc {username}",
       signInName: "Tên đăng nhập của bạn",
@@ -2110,6 +2111,7 @@ export const vi = {
         loadError: "Không thể tải cài đặt tự động chuyển mô hình.",
         saveError: "Không thể lưu cài đặt tự động chuyển mô hình.",
         idleError: "Nhập 0 để giữ mô hình được nạp, hoặc ít nhất 60 giây.",
+        idleUnsaved: "Chưa được lưu.",
         keepKv: "Giữ ngữ cảnh trò chuyện qua các lần gỡ",
         keepKvDescription:
           "Lưu KV cache trước khi gỡ do không hoạt động, hoặc trước khi một mô hình hình ảnh hay video chiếm GPU, để các cuộc trò chuyện được tiếp tục không phải đọc lại lịch sử. Tối đa 10 GB trên ổ đĩa.",
