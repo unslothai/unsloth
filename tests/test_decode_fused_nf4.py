@@ -797,6 +797,27 @@ def test_t4_prefers_regular_graphs(monkeypatch, capability, graphs, flag):
     assert isinstance(plan, D._Plan) != (capability == (7, 5) and graphs and flag == "1")
 
 
+def test_equal_refusal_keeps_regular_graphs(monkeypatch):
+    D = _driver()
+    initial = D._Refused("regular graph path")
+    model = types.SimpleNamespace(
+        model = types.SimpleNamespace(layers = [types.SimpleNamespace(self_attn = object())])
+    )
+    model.__dict__[D._PLAN] = initial
+    invalidated = []
+    monkeypatch.setattr(D._decode_graphs, "invalidate", lambda model: invalidated.append(model))
+    monkeypatch.setattr(D, "_build", lambda model, X: initial.reason)
+    with torch.no_grad():
+        for _ in range(2):
+            assert D._decode_forward(model, torch.zeros(1, 1, 8), *([None] * 6)) is None
+            assert model.__dict__[D._PLAN] is initial
+        assert invalidated == []
+        monkeypatch.setattr(D, "_build", lambda model, X: "different refusal")
+        assert D._decode_forward(model, torch.zeros(1, 1, 8), *([None] * 6)) is None
+    assert invalidated == [model]
+    assert model.__dict__[D._PLAN].reason == "different refusal"
+
+
 class _Lora:
     def __init__(self):
         self.disable_adapters, self.merged = False, False
