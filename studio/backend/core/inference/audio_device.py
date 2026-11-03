@@ -80,7 +80,9 @@ def audio_device_forces_cpu(value: Optional[str]) -> bool:
 
 
 def audio_load_runs_on_cpu(
-    audio_type: Optional[str], value: Optional[str], model: Any = None
+    audio_type: Optional[str],
+    value: Optional[str],
+    model: Any = None,
 ) -> bool:
     """True when a native audio load of this type ends up in CPU RAM: asked for, or a GGUF
     audio model on an audio.cpp runtime that only runs on the CPU (Auto cannot place it on a GPU).

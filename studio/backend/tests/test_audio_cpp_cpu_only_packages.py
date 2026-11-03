@@ -89,9 +89,13 @@ def test_the_preflight_sizes_no_gpu_for_a_cpu_only_package(monkeypatch):
     placement = ri._LoadPlacement(None, None, False, False)
     assert ri._native_audio_cpu_load(config, request)
     # Returned untouched: no GPU chosen and no VRAM estimate, so a full card cannot refuse it.
-    assert asyncio.run(ri._preflight_native_audio_placement(config, request, placement)) is placement
+    assert (
+        asyncio.run(ri._preflight_native_audio_placement(config, request, placement)) is placement
+    )
     gpu = replace(config.__dict__["audio_cpp"], variant = _kitten("Q8_0").variant)
-    assert not ri._native_audio_cpu_load(SimpleNamespace(**{**config.__dict__, "audio_cpp": gpu}), request)
+    assert not ri._native_audio_cpu_load(
+        SimpleNamespace(**{**config.__dict__, "audio_cpp": gpu}), request
+    )
 
 
 @pytest.mark.parametrize("key, cpu_only", [("TQ2_1", True), ("Q8_0", False)])
