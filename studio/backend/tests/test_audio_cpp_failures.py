@@ -123,6 +123,39 @@ def test_studio_runtime_messages_classify(tmp_path, monkeypatch):
     assert newer.code == "family_unknown_to_runtime" and "Model M" in newer.message
 
 
+def test_estimate_uses_the_measured_family_profile():
+    gb = 1024**3
+    generic = af.estimate_resident_gb(3 * gb)
+    assert generic == af.estimate_resident_gb(3 * gb, "qwen3_tts") == 9.0
+    assert af.estimate_resident_gb(3 * gb, None) == generic
+    assert af.estimate_resident_gb(3 * gb, "new") == generic
+    # Peak grows with the input, so it keeps the generic formula.
+    assert af.estimate_resident_gb(3 * gb, "vibevoice") == generic
+    # Measured below the generic formula.
+    assert af.estimate_resident_gb(3 * gb, "chatterbox") == 6.5
+    assert af.estimate_resident_gb(int(4.4 * gb), "voxtral_tts") == 6.4
+    # Measured above it: Kokoro q8 peaks at 2.7 GB, VoxCPM2 q8 at 9.7 GB and bf16 at 13.3 GB.
+    assert af.estimate_resident_gb(int(0.1765 * gb), "kokoro_tts") == 3.68 > 2.7
+    assert af.estimate_resident_gb(int(2.7521 * gb), "voxcpm2") == 10.75 > 9.7
+    assert af.estimate_resident_gb(int(4.4445 * gb), "voxcpm2") == 14.48 > 13.3
+
+
+def test_past_the_measured_sizes_the_estimate_never_drops_below_either_profile():
+    gb = 1024**3
+    # A bigger model of a family measured low: the generic formula.
+    assert af.estimate_resident_gb(8 * gb, "voxtral_tts") == af.estimate_resident_gb(8 * gb) == 21.5
+    # A bigger model of a family measured high: its own profile.
+    assert af.estimate_resident_gb(int(8.8887 * gb), "voxcpm2") == 24.26
+    assert af.estimate_resident_gb(int(8.8887 * gb)) == 23.72
+
+
+def test_smaller_variants_estimate_with_the_family(monkeypatch):
+    model = replace(_model(sizes = (6, 3, 1), current = 0), family = "chatterbox")
+    rows = af.smaller_variants(model)
+    assert [(row["label"], row["estimate_gb"]) for row in rows] == [("Q3", 6.5), ("Q1", 4.5)]
+    assert [row["label"] for row in af.smaller_variants(model, free_gb = 7.3)] == ["Q3", "Q1"]
+
+
 def test_oom_lists_smaller_variants_and_offload_options(monkeypatch):
     from core.inference import audio_cpp_models as models
 
