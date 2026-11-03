@@ -563,6 +563,6 @@ export function normalizeTitle(raw: string): string | null {
 
   const words = title.split(" ").filter(Boolean).slice(0, 6);
   const joined = words.join(" ").trim();
-  if (!joined) return null;
-  return joined.length > 60 ? cutToUnits(joined, 60).trimEnd() : joined;
+  const clipped = joined.length > 60 ? cutToUnits(joined, 60).trimEnd() : joined;
+  return /[^\p{M}\u200C\s]/u.test(clipped) ? clipped : null;
 }

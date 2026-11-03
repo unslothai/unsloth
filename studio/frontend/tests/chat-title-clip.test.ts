@@ -617,6 +617,19 @@ test("the title is assembled from the deltas, unless it was cut short or reasone
   }
 });
 
+test("emoji-only output still falls back instead of saving an invisible title", async () => {
+  for (const raw of [
+    "\u2764\uFE0F",
+    "\u2615\uFE0F",
+  ]) {
+    assert.equal(normalizeTitle(raw), null);
+    async function* chunks(): AsyncIterable<Chunk> {
+      yield { choices: [{ delta: { content: raw }, finish_reason: "stop" }] } as Chunk;
+    }
+    assert.equal(await titleFromStream(chunks()), null);
+  }
+});
+
 test("the answer is reduced to a short, plain line in its own language", () => {
   for (const [raw, expected] of [
     ['  "Matrix Inversion" — Steps  ', "Matrix Inversion Steps"],
