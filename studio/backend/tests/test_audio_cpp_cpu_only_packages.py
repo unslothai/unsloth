@@ -94,6 +94,55 @@ def test_the_preflight_sizes_no_gpu_for_a_cpu_only_package(monkeypatch):
     assert not ri._native_audio_cpu_load(SimpleNamespace(**{**config.__dict__, "audio_cpp": gpu}), request)
 
 
+@pytest.mark.parametrize("key, cpu_only", [("TQ2_1", True), ("Q8_0", False)])
+def test_an_orchestrator_load_sends_cpu_to_the_worker_and_records_the_package(
+    monkeypatch, key, cpu_only
+):
+    from unittest.mock import MagicMock, patch
+
+    from core.inference import orchestrator as orch_mod
+
+    class _NoThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            return None
+
+    with patch.object(orch_mod.threading, "Thread", _NoThread):
+        orch = orch_mod.InferenceOrchestrator()
+    monkeypatch.setattr(srv, "runtime_runs_on_cpu", lambda: False)
+    model = _kitten(key)
+    config = SimpleNamespace(
+        identifier = model.id, gguf_variant = None, audio_type = model.audio_type, audio_cpp = model
+    )
+    model_info = {"identifier": model.id, "audio_type": model.audio_type}
+    if cpu_only:
+        model_info["audio_cpp_backend"] = "cpu"
+    gpu_selection = MagicMock(return_value = ([0], {"selection_mode": "auto"}))
+    spawn = MagicMock()
+    with (
+        patch.object(orch_mod, "prepare_gpu_selection", gpu_selection),
+        patch.object(orch, "_ensure_subprocess_alive", return_value = False),
+        patch.object(orch, "_spawn_subprocess", spawn),
+        patch.object(
+            orch, "_wait_response", return_value = {"success": True, "model_info": model_info}
+        ),
+        patch("utils.transformers_version.needs_transformers_5", return_value = False),
+    ):
+        assert orch.load_model(config = config, audio_device = "auto")
+
+    sub_config = spawn.call_args.args[0]
+    resident = orch.models[model.id]
+    assert sub_config["audio_device"] == ("cpu" if cpu_only else "auto")
+    # No card is sized or chosen for a load the worker runs on the CPU.
+    assert gpu_selection.called is not cpu_only
+    assert sub_config["gpu_selection"]["selection_mode"] == ("cpu_audio" if cpu_only else "auto")
+    assert resident["audio_cpu_only"] is cpu_only and resident["audio_cpu"] is cpu_only
+    # Auto again: the resident package already sits where Auto would put it.
+    assert ri._resident_audio_placement_matches(orch, SimpleNamespace(audio_device = "auto"))
+
+
 @pytest.mark.parametrize("device", ["auto", "cpu", "gpu"])
 def test_a_resident_cpu_only_package_is_not_reloaded_for_its_device(device):
     resident = {"audio_type": "audiocpp_tts", "audio_cpu": True, "audio_cpu_only": True}
