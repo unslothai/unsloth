@@ -298,7 +298,12 @@ def _rowwise_scaled_mm(a, b, scale_a, scale_b, dtype, fast_accum):
     if out_dtype == torch.float32 and a.device not in _ROWWISE_BF16_ONLY:
         try:
             return _scaled_mm(a, b, scale_a, scale_b, out_dtype, fast_accum)
-        except RuntimeError:
+        except (RuntimeError, ValueError) as exc:
+            if str(exc) not in (
+                "Only bf16 high precision output types are supported for row-wise scaling.",
+                "Only bf16 and fp16 high precision output types are supported for row-wise scaling.",
+            ):
+                raise
             _ROWWISE_BF16_ONLY.add(a.device)
     if dtype == torch.float16:
         return None

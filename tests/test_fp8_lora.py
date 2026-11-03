@@ -1126,7 +1126,9 @@ def test_a_variant_adapter_restores_the_master_before_placement(
 
 
 @needs_cpu_scaled_mm
-def test_rowwise_fp16_without_float32_out_stays_finite(rowwise, monkeypatch):
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError])
+@pytest.mark.parametrize("outputs", ["bf16", "bf16 and fp16"])
+def test_rowwise_fp16_without_float32_out_stays_finite(rowwise, monkeypatch, error_type, outputs):
     real = torch._scaled_mm
 
     def refuse_fp32_rowwise(
@@ -1138,8 +1140,8 @@ def test_rowwise_fp16_without_float32_out_stays_finite(rowwise, monkeypatch):
         **kwargs,
     ):
         if out_dtype == torch.float32 and scale_a is not None and scale_a.numel() > 1:
-            raise RuntimeError(
-                "Only bf16 high precision output types are supported for row-wise scaling."
+            raise error_type(
+                f"Only {outputs} high precision output types are supported for row-wise scaling."
             )
         return real(a, b, *args, scale_a = scale_a, out_dtype = out_dtype, **kwargs)
 
@@ -1156,6 +1158,31 @@ def test_rowwise_fp16_without_float32_out_stays_finite(rowwise, monkeypatch):
     Wb = W.bfloat16()
     y = FL.Fp8LoRABaseState(Wb).matmul(torch.randn(16, 64).bfloat16(), Wb)
     assert y.dtype == torch.bfloat16
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        torch.OutOfMemoryError("allocation failed"),
+        RuntimeError("CUDA error: illegal memory access"),
+    ],
+)
+def test_rowwise_failure_does_not_change_the_scaling_recipe(monkeypatch, error):
+    monkeypatch.setattr(FL, "_ROWWISE_BF16_ONLY", set())
+    calls = []
+
+    def fail_once(*args):
+        calls.append(args)
+        if len(calls) == 1:
+            raise error
+        return torch.zeros(16, 16)
+
+    monkeypatch.setattr(FL, "_scaled_mm", fail_once)
+    x = torch.zeros(16, 16)
+    with pytest.raises(type(error), match = str(error)):
+        FL._rowwise_scaled_mm(x, x.t(), torch.ones(16, 1), torch.ones(1, 16), torch.float16, True)
+    assert len(calls) == 1
+    assert FL._ROWWISE_BF16_ONLY == set()
 
 
 def test_vllm_server_merge_of_a_host_master_lands_on_the_adapter_device():
