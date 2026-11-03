@@ -945,6 +945,10 @@ async def restore_chat_model(ctx: NodeContext, previous: Optional[dict], replace
     if not previous or loading._same_id(previous["repo"], replaced_by):
         return
     label = previous["repo"] + (f" ({previous['variant']})" if previous["variant"] else "")
+    if getattr(ctx, "cancelled", False):
+        # A stopped run must not hold the GPU lane for a reload that can take minutes.
+        ctx.log(f"Stopped before {label} was loaded again; load it before the next run", "warning")
+        return
     ctx.set_status("loading_model", f"Loading {label} again")
     try:
         await loading.load_llm(

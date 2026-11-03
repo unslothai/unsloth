@@ -289,6 +289,13 @@ class _Reader(ast.NodeVisitor):
             for arg, param in args.items():
                 value = self.kw(node, arg)
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    if arg == "max_completion_length" and fn != "GRPOConfig":
+                        # Only GRPO's generation budget reaches the trainer.
+                        self.approximated.append(
+                            f"{fn}(max_completion_length = {value}): not carried over, so responses are "
+                            "not truncated to it"
+                        )
+                        continue
                     self.tune[param] = value
             cap = self.kw(node, "max_length")
             if (
