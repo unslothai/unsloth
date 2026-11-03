@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""CPU-only projection regression; no model download or package startup required."""
 
 from __future__ import annotations
 import ast
@@ -54,8 +53,6 @@ def test_grouped_projection_scales_output_without_fp16_factor_overflow(reversed_
     experts = ml.MultiLoraExperts(base, ["gate_up_proj"], 2, r = 1, lora_alpha = [scale, 1.0])
     experts.reversed_io = reversed_io
     adapter = experts.adapters["gate_up_proj"]
-    # A large but finite second factor, a small first factor and a finite final projection.
-    # Reversed orientation also swaps the actual in/out dimensions.
     first_value, second_value = (
         (0.000001, 40000.0) if scale == 100000 else (0.01, 40000.0 if scale == 2 else 5000.0)
     )
@@ -66,7 +63,7 @@ def test_grouped_projection_scales_output_without_fp16_factor_overflow(reversed_
     in_dim, out_dim = (16, 8) if reversed_io else (8, 16)
     x = torch.full((3, in_dim), 0.01, dtype = torch.float16, requires_grad = True)
     offsets = torch.tensor([1, 2, 3], dtype = torch.int32)
-    slots = torch.tensor([0, 1, 2])  # unequal scales, plus no-adapter row
+    slots = torch.tensor([0, 1, 2])
     backend = types.SimpleNamespace(
         _get_base_weight = lambda *a: torch.zeros(1, in_dim, out_dim, dtype = torch.float16),
         preprocess_weight = lambda w, *a, **kw: w,
@@ -84,7 +81,6 @@ def test_grouped_projection_scales_output_without_fp16_factor_overflow(reversed_
         None,
         torch.float16,
     )
-    # Before the fix _project has no slot argument; run that implementation too.
     if "pair_slots" in ml.MultiLoraExperts._project.__code__.co_varnames:
         got = experts._project(*args, slots)
     else:

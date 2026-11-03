@@ -1183,9 +1183,7 @@ class MultiLoraExperts(nn.Module):
             first, second = adapter.grouped_stacks(self.reversed_io, dtype)
             h = moe_utils._grouped_mm_with_backward_fix(x, first, offs_pair).contiguous()
             delta = moe_utils._grouped_mm_with_backward_fix(h, second, offs_pair)
-            # As Zoo's stash path, scale after the second GEMM: folding into a half
-            # factor can overflow even when the final projection is finite. Keep
-            # scales in at least fp32 so a large finite alpha does not itself overflow.
+            # Scaling a half factor can overflow even when its final projection is finite.
             scales = torch.tensor(
                 [*adapter.scales, 0.0],
                 device = x.device,
