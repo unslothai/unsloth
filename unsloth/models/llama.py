@@ -2426,6 +2426,12 @@ class _PerDeviceRopeCache:
 
     def _init_rope_cache_state(self, dtype):
         self._rope_cache_dtype = dtype
+        if not hasattr(self, "inv_freq") and not self._rope_rows_pick_factors:
+            # Keep Gemma's CPU pow rounding before the compiled division.
+            exponents = (2.0 / self.dim) * torch.arange(
+                self.dim // 2, dtype = torch.int64, device = "cpu"
+            ).float()
+            self._rope_timescale_cpu = self.base**exponents
         self._rope_cache_version = 0
         self._rope_cache_versions = [None] * DEVICE_COUNT
         self._rope_rows_ready = [0] * DEVICE_COUNT
@@ -2530,12 +2536,11 @@ class _PerDeviceRopeCache:
 
     def _compiled_position_embeddings(self, x, position_ids):
         # Gemma divides by timescale rather than multiplying by its reciprocal.
-        exponents = (2.0 / self.dim) * torch.arange(
-            self.dim // 2, dtype = torch.int64, device = x.device
-        ).float()
         positions = position_ids.to(x.device).float()
-        positions = positions / getattr(self, "scaling_factor", 1.0)
-        freqs = positions[..., None] / (self.base**exponents)
+        positions = (positions.double() / getattr(self, "scaling_factor", 1.0)).float()
+        timescale = self._rope_timescale_cpu.to(x.device)
+        # Narrow only after division; a float32 reciprocal shifts large positions.
+        freqs = (positions[..., None].double() / timescale.double()).float()
         emb = torch.cat((freqs, freqs), dim = -1)
         return emb.cos().to(x.dtype), emb.sin().to(x.dtype)
 
