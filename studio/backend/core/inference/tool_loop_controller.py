@@ -1257,12 +1257,20 @@ class ToolLoopController:
             for tool in self._tools
         )
 
-    def active_tools(self) -> list[dict[str, Any]]:
-        """Return tools still worth advertising to the next model call."""
+    def active_tools(self, *, include_deferred: bool = False) -> list[dict[str, Any]]:
+        """Return prompt tools, optionally including deferred schemas for decoding."""
         if self._force_final_answer:
             return []
         active: list[dict[str, Any]] = []
-        for tool in self._tools:
+        tools = self._tools
+        if include_deferred and self._mcp_search:
+            declared = {_tool_name_from_schema(tool) for tool in tools}
+            tools = tools + [
+                spec
+                for name in sorted(self._allowed_tool_names - declared)
+                if (spec := _mcp_tool_spec(name)) is not None
+            ]
+        for tool in tools:
             name = _tool_name_from_schema(tool)
             if name in self._completed_one_shot_tools:
                 continue

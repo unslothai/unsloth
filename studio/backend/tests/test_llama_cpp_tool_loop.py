@@ -7106,6 +7106,7 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
         },
     }
     monkeypatch.setattr(tools_mod, "mcp_tool_search_specs", lambda arguments: [ping])
+    monkeypatch.setattr(tools_mod, "mcp_tool_spec", lambda name: ping)
     monkeypatch.setattr(tools_mod, "mcp_loadable_specs", lambda tools: [ping])
     monkeypatch.setattr(tools_mod, "mcp_record_loaded_tools", lambda *a: None)
     streams = [
@@ -7124,10 +7125,9 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
     )
 
     assert [name for name, _ in calls] == ["mcp_tool_search", "mcp__srv1__ping"]
-    # The found tool's schema rides the search result, so the next request's declared tools stay
-    # identical and llama-server reuses the prompt cache instead of re-processing from token 0
-    # (#16538, same template-at-the-top mechanics as the final-pass case below).
-    assert payloads[1].get("tools", []) == payloads[0].get("tools", [])
+    assert payloads[1]["tools"] == payloads[0]["tools"] + [ping]
+    assert payloads[1]["chat_template_kwargs"]["tools"] == payloads[0]["tools"]
+    assert payloads[2]["tools"] == payloads[0]["tools"]
 
 
 def test_budget_exhausted_final_pass_keeps_the_cached_tool_catalogue(monkeypatch):
