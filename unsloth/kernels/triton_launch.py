@@ -90,13 +90,16 @@ def launch(
     constexprs,
     device_index,
     unspecialized = (),
+    unaligned = (),
     **options,
 ):
     """kernel[grid](*args, **constexprs, **options) on the current stream of device_index, which
     must be the current device. args are the runtime arguments in signature order, before every
     constexpr: n_tensors tensors, then integers. unspecialized: positions in args of integers the
     kernel lists in do_not_specialize (only their width is keyed, so one cache entry serves every
-    value). Returns the cache entry relaunch() takes, or None."""
+    value). unaligned: positions of integers the kernel lists in do_not_specialize_on_alignment
+    (jit_any_alignment): keyed by == 1 and width, not % 16. Returns the cache entry relaunch()
+    takes, or None."""
     global _ENABLED
     if _ENABLED and not _hooks_set():
         key = (
@@ -108,7 +111,11 @@ def launch(
             # Triton specializes integers (== 1, % 16) unless do_not_specialize lists them.
             tuple(
                 [
-                    arg < (1 << 31) if i in unspecialized else (arg == 1, arg & 15, arg < (1 << 31))
+                    arg < (1 << 31)
+                    if i in unspecialized
+                    else (arg == 1, arg < (1 << 31))
+                    if i in unaligned
+                    else (arg == 1, arg & 15, arg < (1 << 31))
                     for i, arg in enumerate(args[n_tensors:], n_tensors)
                 ]
             ),

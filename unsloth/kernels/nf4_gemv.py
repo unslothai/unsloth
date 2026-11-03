@@ -16,7 +16,7 @@ import triton
 import triton.language as tl
 
 from .nf4 import _HAS_MUL_RN, _HAS_TL_GATHER, _mul, _nf4_lut
-from .triton_launch import launch, relaunch, tag_compile_cache
+from .triton_launch import jit_any_alignment, launch, relaunch, tag_compile_cache
 
 __all__ = [
     "gemv_nf4",
@@ -27,9 +27,9 @@ __all__ = [
 ]
 
 
-# M (rows, 1 at bsz 1 decode) is not specialized: one binary for every row count, so a batch size
-# change mid-session does not compile (w5_recompile: bsz 3 after bsz 1 built a second binary).
-@triton.jit(do_not_specialize = ["M"])
+# M (rows): == 1 stays specialized (bsz 1 decode folds pid % M; unspecialized cost 1-5 % on T4), the
+# % 16 class does not, so every M > 1 shares one binary (bsz 3 then 16 compiled twice before).
+@jit_any_alignment("M")
 def _gemv_nf4_kernel(
     X,
     W,
@@ -98,9 +98,9 @@ def _gemv_nf4_kernel(
     tl.store(OUT + rows, acc.to(OUT.dtype.element_ty), mask = rmask)
 
 
-# M (rows, 1 at bsz 1 decode) is not specialized: one binary for every row count, so a batch size
-# change mid-session does not compile (w5_recompile: bsz 3 after bsz 1 built a second binary).
-@triton.jit(do_not_specialize = ["M"])
+# M (rows): == 1 stays specialized (bsz 1 decode folds pid % M; unspecialized cost 1-5 % on T4), the
+# % 16 class does not, so every M > 1 shares one binary (bsz 3 then 16 compiled twice before).
+@jit_any_alignment("M")
 def _gemv_nf4_words_kernel(
     X,
     W,
@@ -289,7 +289,7 @@ def _launch(
             8,
             constexprs,
             X.device.index,
-            unspecialized = (10,),  # M
+            unaligned = _UNALIGNED_M,
             num_warps = num_warps,
             enable_fp_fusion = True,
         )
@@ -348,6 +348,20 @@ def _gemv_nf4_op(
 
 
 _KERNELS = (_gemv_nf4_kernel, _gemv_nf4_words_kernel)
+# Position of M in the launch args, for launch()'s key, only when Triton really dropped its % 16
+# specialization (a Triton without do_not_specialize_on_alignment still specializes it, and keying it
+# without % 16 there would reuse a binary compiled for a divisible M).
+_UNALIGNED_M = (
+    (10,)
+    if all(
+        any(
+            p.name == "M" and getattr(p, "do_not_specialize_on_alignment", False)
+            for p in getattr(k, "params", ())
+        )
+        for k in _KERNELS
+    )
+    else ()
+)
 tag_compile_cache(__file__)
 _is_compiling = torch.compiler.is_compiling
 _current_device = torch.cuda.current_device

@@ -66,9 +66,10 @@ def test_seqlen_kernels_use_it(path, kernels):
     assert kernels <= wrapped
 
 
-def test_nf4_gemv_rows_unspecialized():
-    """M (rows) of the NF4 GEMV kernels is do_not_specialize, and the fast launch keys it by width only:
-    a batch size change mid-session (bsz 3 after bsz 1) reuses the one binary and the one cache entry."""
+def test_nf4_gemv_rows_alignment_unspecialized():
+    """M (rows) of the NF4 GEMV kernels keeps the == 1 specialization (batch-1 speed) but not the % 16
+    one, and the fast launch keys it the same way: every M > 1 shares one binary and one cache entry,
+    so bsz 3 / 8 / 16 after bsz 2 compile nothing."""
     tree = ast.parse((ROOT / "nf4_gemv.py").read_text(encoding = "utf-8"))
     kernels = {}
     launch_call = args_tuple = None
@@ -84,15 +85,20 @@ def test_nf4_gemv_rows_unspecialized():
     assert set(kernels) == {"_gemv_nf4_kernel", "_gemv_nf4_words_kernel"}
     for fn in kernels.values():
         (deco,) = fn.decorator_list
-        dns = next(kw.value for kw in deco.keywords if kw.arg == "do_not_specialize")
-        assert [e.value for e in dns.elts] == ["M"]
+        assert deco.func.id == "jit_any_alignment" and [a.value for a in deco.args] == ["M"]
         assert fn.args.args[10].arg == "M"
-    unspecialized = next(kw.value for kw in launch_call.keywords if kw.arg == "unspecialized")
-    assert [e.value for e in unspecialized.elts] == [10]
+    unaligned = next(kw.value for kw in launch_call.keywords if kw.arg == "unaligned")
+    assert unaligned.id == "_UNALIGNED_M"
     assert args_tuple.elts[10].id == "M"
+    source = "".join((ROOT / "nf4_gemv.py").read_text(encoding = "utf-8").split())
+    # Only keyed without % 16 when Triton really dropped it.
+    assert '(10,)ifall(any(p.name=="M"andgetattr(p,"do_not_specialize_on_alignment",False)' in source
 
 
-def test_launch_keys_unspecialized_by_width():
+def test_launch_keys():
     source = "".join((ROOT / "triton_launch.py").read_text(encoding = "utf-8").split())
-    assert "unspecialized=()," in source
-    assert "arg<(1<<31)ifiinunspecializedelse(arg==1,arg&15,arg<(1<<31))" in source
+    assert "unspecialized=(),unaligned=()," in source
+    assert (
+        "arg<(1<<31)ifiinunspecializedelse(arg==1,arg<(1<<31))ifiinunalignedelse(arg==1,arg&15,arg<(1<<31))"
+        in source
+    )
