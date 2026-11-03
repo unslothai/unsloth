@@ -66,6 +66,7 @@ export type BrowserAction = {
  *  `temporary`: the run's chat is temporary, so its pages stay out of history whatever chat is shown. */
 export type ActionContext = {
   runKey: string;
+  targetVersion?: number;
   scope?: string;
   chat?: string;
   temporary?: boolean;
@@ -232,7 +233,7 @@ const MAX_SEEN = 4_000;
 
 export function runBrowserAction(action: BrowserAction, actionContext: ActionContext): Promise<void> {
   const session = sessionFor(chatOf(actionContext));
-  const context: Run = { ...actionContext, session };
+  const context: Run = { ...actionContext, targetVersion: actionContext.targetVersion ?? agentChat(session.chat).targetVersion, session };
   const { chat } = session;
   if (seen.has(action.id)) return session.queue;
   seen.add(action.id);
@@ -270,7 +271,7 @@ export function runBrowserAction(action: BrowserAction, actionContext: ActionCon
       patchAgentChat(chat, { working: false, step: null });
     }
     if (expired && !result.ok) result = { ok: false, error: EXPIRED };
-    if (agentChat(chat).stoppedRun === context.runKey) result = { ok: false, error: STOPPED };
+    if (agentChat(chat).stoppedRun === context.runKey || agentChat(chat).targetVersion !== context.targetVersion) result = { ok: false, error: STOPPED };
     await postResult(action, result);
   });
   session.queue = next.catch(() => undefined);
@@ -459,7 +460,7 @@ function reducedMotion(): boolean {
   return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
 }
 
-async function pageCall(tab: BrowserTab, request: Record<string, unknown>, signal?: AbortSignal): Promise<AgentAnswer> {
+async function pageCall(tab: BrowserTab, request: Record<string, unknown>, signal?: AbortSignal, installIfMissing = true): Promise<AgentAnswer> {
   const cursor = useBrowserAgentStore.getState().showCursor;
   const command = {
     ...request,
@@ -484,12 +485,13 @@ async function pageCall(tab: BrowserTab, request: Record<string, unknown>, signa
             command: { op, ...(code ? { code } : {}) },
           }).catch(() => null);
         reply = await call(command);
-        if (reply && !reply.installed && !signal?.aborted) reply = await call(fresh(), pageAgentSource());
+        if (reply && !reply.installed && installIfMissing && !signal?.aborted) reply = await call(fresh(), pageAgentSource());
       }
     } else {
       reply = await requestFrameAgent(tab.id, command);
-      if (reply && !reply.installed && !signal?.aborted) reply = await requestFrameAgent(tab.id, fresh(), pageAgentSource());
+      if (reply && !reply.installed && installIfMissing && !signal?.aborted) reply = await requestFrameAgent(tab.id, fresh(), pageAgentSource());
     }
+    if (!installIfMissing && !reply?.installed) return { ok: false, error: STOPPED };
     const answer = reply?.installed ? checkedAnswer(reply.result) : null;
     if (answer) return answer;
     // The page may still be mounting after a navigation.
@@ -513,7 +515,7 @@ function waitOnPage(
     maxMs: SETTLE_MAX_MS, changingMaxMs, quietMs: SETTLE_QUIET_MS, idleQuietMs, now: Date.now, sleep,
     status: () => {
       const tab = findTab(tabId);
-      return tab ? pageCall(tab, { op: "status", since }).catch(() => null) : Promise.resolve(null);
+      return tab ? pageCall(tab, { op: "status", since }, signal).catch(() => null) : Promise.resolve(null);
     },
     moved: () => {
       const tab = findTab(tabId);
@@ -752,7 +754,7 @@ function redirectEnd(url: string): string {
 async function perform(action: BrowserAction, context: Run): Promise<Result> {
   const { signal, session } = context;
   const { chat, reachedHosts } = session;
-  if (agentChat(chat).stoppedRun === context.runKey) return { ok: false, error: STOPPED };
+  if (agentChat(chat).stoppedRun === context.runKey || agentChat(chat).targetVersion !== context.targetVersion) return { ok: false, error: STOPPED };
   if (signal?.aborted) return { ok: false, error: "the action expired before it could run." };
   // Off screen, only a native page can work on: a framed one runs in the panel.
   if (!chatOnScreen(context) && !useNativeBrowser.getState().enabled) {
@@ -911,7 +913,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     ref,
     ...point,
     ...(action.op === "select" ? { value: action.value ?? "" } : {}),
-  });
+  }, signal);
   if (!described.ok || !described.info) {
     return { ok: false, error: described.error ?? (point ? "nothing is at that point." : `${ref} could not be found.`) };
   }
@@ -975,7 +977,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   if (opaque) session.opaqueHosts.add(opaque.host);
   // A point's control can be relabelled or rewired around the same leaf while the user decides.
   if (point && gates.some((gate) => gate.kind === "ask")) {
-    if (!(await unchanged(ready, point, described.hit ?? "", JSON.stringify(info)))) {
+    if (!(await unchanged(ready, point, described.hit ?? "", JSON.stringify(info), signal))) {
       return { ok: false, error: CHANGED_UNDER_POINT };
     }
     if (signal?.aborted) return { ok: false, error: STOPPED };
@@ -1129,7 +1131,7 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Run,
   const docs: string[] = [];
   let asked = false;
   for (const point of [from, end]) {
-    const described = await pageCall(tab, { op: "describe", ref: "", ...point });
+    const described = await pageCall(tab, { op: "describe", ref: "", ...point }, signal);
     if (!described.ok || !described.info) return { ok: false, error: described.error ?? "nothing is at that point." };
     for (const gate of [gateElement("click", described.info, before, action.policy, permissions(context)), opaqueGate(described.info, before, context)]) {
       if (!gate) continue;
@@ -1144,7 +1146,7 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Run,
     docs.push(described.doc ?? "");
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
-  if (asked && !(await unchanged(tab, from, hits[0], infos[0]))) return { ok: false, error: CHANGED_UNDER_POINT };
+  if (asked && !(await unchanged(tab, from, hits[0], infos[0], signal))) return { ok: false, error: CHANGED_UNDER_POINT };
   // A handler can navigate mid-drag: the rest must not act on a page nobody gated.
   const doc = docs[0];
   const sameTab = () => {
@@ -1169,20 +1171,20 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Run,
     at = next;
   }
   const cancel = async (error: string): Promise<Result> => {
-    await pageCall(tab, { op: "pointer", phase: "cancel", ...from }).catch(() => null);
+    await pageCall(tab, { op: "pointer", phase: "cancel", ...from }, undefined, false).catch(() => null);
     return { ok: false, error };
   };
   // A new document gets nothing; the same one (a hash or pushState move) has its drag cancelled.
   const left = async (current?: string): Promise<Result> => {
     const error = "the page changed during the drag, so it was not finished; take a snapshot.";
-    const now = current ?? (await pageCall(tab, { op: "status" }).catch(() => null))?.doc;
+    const now = current ?? (await pageCall(tab, { op: "status" }, undefined, false).catch(() => null))?.doc;
     return doc && now === doc ? cancel(error) : { ok: false, error };
   };
   if (signal?.aborted) return cancel(STOPPED);
   if (!doc || !sameTab()) return left();
   // Drop zones can appear or relabel once a drag starts: re-ask unless the end is unchanged. Its doc
   // says whether this is still the document the drag began on.
-  const target = await pageCall(tab, { op: "describe", ref: "", ...end }).catch(() => null);
+  const target = await pageCall(tab, { op: "describe", ref: "", ...end }, signal).catch(() => null);
   if (target?.doc !== doc) return left(target?.doc);
   if (at.x !== end.x || at.y !== end.y) return cancel("the drag stopped short; take a snapshot to see where things are.");
   if (!target?.ok || !target.info) return cancel(target?.error ?? "nothing is at the drag's end.");
@@ -1193,7 +1195,7 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Run,
       if (refused) return cancel(refused);
       if (gate.kind === "ask" && gate.ask === "pointer") context.session.opaqueHosts.add(gate.host);
     }
-    const again = await pageCall(tab, { op: "describe", ref: "", ...end }).catch(() => null);
+    const again = await pageCall(tab, { op: "describe", ref: "", ...end }, signal).catch(() => null);
     if (!sameTab() || again?.doc !== doc) return left(again?.doc);
     if (!again?.ok || again.hit !== target.hit || JSON.stringify(again.info) !== JSON.stringify(target.info)) return cancel(CHANGED_UNDER_POINT);
   }
@@ -1214,8 +1216,8 @@ function opaqueGate(info: ElementInfo, pageUrl: string, context: Run): (Gate & {
 
 const CHANGED_UNDER_POINT = "the page changed under that point; take a screenshot to see it again.";
 
-async function unchanged(tab: BrowserTab, point: { x: number; y: number }, hit: string, info: string): Promise<boolean> {
-  const again = await pageCall(tab, { op: "describe", ref: "", ...point }).catch(() => null);
+async function unchanged(tab: BrowserTab, point: { x: number; y: number }, hit: string, info: string, signal?: AbortSignal): Promise<boolean> {
+  const again = await pageCall(tab, { op: "describe", ref: "", ...point }, signal).catch(() => null);
   return Boolean(again?.ok && again.hit === hit && JSON.stringify(again.info) === info);
 }
 
@@ -1228,7 +1230,7 @@ async function runScript(tab: BrowserTab, action: BrowserAction, context: Run, b
   const script = action.script ?? "";
   if (!script.trim()) return { ok: false, error: "the script is empty." };
   // The document the user sees as they approve: a reload or a page at the same address is another one.
-  const doc = (await pageCall(tab, { op: "status" })).doc;
+  const doc = (await pageCall(tab, { op: "status" }, signal)).doc;
   if (!doc) return { ok: false, error: "the page is not answering; take a snapshot." };
   const refused = await pass({ kind: "ask", ask: "script", host: hostOfUrl(before), name: "", detail: script, prompt: "" }, context);
   if (refused) return { ok: false, error: refused };
@@ -1266,7 +1268,7 @@ async function runScript(tab: BrowserTab, action: BrowserAction, context: Run, b
       outcome = "The page moved on before the script finished.";
       break;
     }
-    const answer = await pageCall(tab, { op: "evaluated", id });
+    const answer = await pageCall(tab, { op: "evaluated", id }, signal);
     if (!answer.ok) return { ok: false, error: answer.error };
     if (!answer.pending) {
       outcome = answer.text ?? "";
@@ -1350,7 +1352,7 @@ async function screenshot(tab: BrowserTab, context: Run): Promise<Result> {
   const element = pages[pages.length - 1];
   if (!hidden && !element) return { ok: false, error: "the browser panel is not on screen." };
   // What the user typed into card, code and password fields stays out of the picture, as out of the text.
-  const masked = await pageCall(tab, { op: "mask", on: true }).catch(() => null);
+  const masked = await pageCall(tab, { op: "mask", on: true }, context.signal).catch(() => null);
   if (!masked?.ok) return { ok: false, error: "the page could not be prepared for a screenshot; use browser_snapshot." };
   let blob: Blob | null;
   try {
@@ -1358,7 +1360,7 @@ async function screenshot(tab: BrowserTab, context: Run): Promise<Result> {
     if (context.signal?.aborted) return { ok: false, error: STOPPED };
     blob = hidden || !element ? await captureHiddenPage(tab) : await screenshotPage(tab, element);
   } finally {
-    await pageCall(tab, { op: "mask", on: false }).catch(() => null);
+    await pageCall(tab, { op: "mask", on: false }, undefined, false).catch(() => null);
   }
   if (!blob) return { ok: false, error: "the screenshot failed." };
   // A page that moved during the capture is one nobody checked or masked: no picture of it.

@@ -19,7 +19,7 @@ export function shareAgentTab(chat: string, tabId: string | null): boolean {
   const current = agentChat(key);
   if (current.tabId === tabId && current.shared === Boolean(tabId)) return true;
   stopBrowserAgent(key);
-  patchAgentChat(key, { tabId, shared: Boolean(tabId) });
+  patchAgentChat(key, { tabId, shared: Boolean(tabId), targetVersion: current.targetVersion + 1 });
   notifyAgentTargetChange(key, current.tabId);
   return true;
 }

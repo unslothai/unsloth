@@ -49,6 +49,7 @@ export type AgentChat = {
   /** The tab the agent drives in this chat; the model can't reach any other. */
   tabId: string | null;
   shared: boolean;
+  targetVersion: number;
   working: boolean;
   step: AgentStep | null;
   question: AgentPrompt | null;
@@ -60,7 +61,7 @@ export type AgentChat = {
   endedAt: number;
 };
 
-export const IDLE_AGENT: AgentChat = { tabId: null, shared: false, working: false, step: null, question: null, runKey: null, stoppedRun: null, endedAt: 0 };
+export const IDLE_AGENT: AgentChat = { tabId: null, shared: false, targetVersion: 0, working: false, step: null, question: null, runKey: null, stoppedRun: null, endedAt: 0 };
 
 type BrowserAgentState = {
   /** The composer's Browser tool: offer the model the browser tools. */
@@ -268,8 +269,8 @@ export function endBrowserAgentRun(runKey: string): void {
 
 /** The agent bar's Stop: the action running now ends too, not just the ones after it. */
 export function stopBrowserAgent(chat: string): void {
-  const { runKey, question } = agentChat(chat);
-  patchAgentChat(chat, { stoppedRun: runKey, working: false, step: null });
+  const { runKey, question, stoppedRun } = agentChat(chat);
+  patchAgentChat(chat, { stoppedRun: runKey ?? stoppedRun, working: false, step: null });
   if (question) answers.get(question.id)?.(false);
   activeActions.get(liveChat(chat))?.abort();
 }

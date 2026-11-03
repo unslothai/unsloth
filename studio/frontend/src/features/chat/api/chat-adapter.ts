@@ -77,7 +77,7 @@ function userTexts(
     .filter((message) => message?.role === "user")
     .map((message) => messageText(message.content));
 }
-import { endBrowserAgentRun } from "@/features/browser/agent/agent-store";
+import { agentChat, endBrowserAgentRun } from "@/features/browser/agent/agent-store";
 import { browserAgentToolsForTurn } from "@/features/browser/agent/tools";
 import { shownBrowserChat } from "@/features/browser/panel-availability";
 import { projectHasSources } from "@/features/rag/api/rag-api";
@@ -5506,6 +5506,7 @@ export function createOpenAIStreamAdapter(
         : threadKey === "__default"
           ? shownBrowserChat()
           : undefined;
+      const browserTargetVersion = agentChat(browserChat ?? `single:${threadKey}`).targetVersion;
       // A first turn files its handles under "__default" and autosave re-keys them mid-run, so resolve per use.
       const liveThreadKey = (owner: () => void) => {
         const key = threadKey === "__default" ? useChatRuntimeStore.getState().runKeyForOwner(threadKey, owner) : threadKey;
@@ -7456,6 +7457,7 @@ export function createOpenAIStreamAdapter(
                       if (action) {
                         void runBrowserAction(action, {
                           runKey: cancelId,
+                          targetVersion: browserTargetVersion,
                           chat: browserChat,
                           // Resolved per action: a first turn is re-keyed from "__default" to its id.
                           scope: liveThreadKey(serverCancel),
