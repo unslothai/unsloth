@@ -2348,8 +2348,11 @@ class InferenceOrchestrator:
             if audio_cpp_model:
                 # The worker picks its backend from this: a Hub id alone does not say audio.cpp.
                 sub_config["audio_cpp"] = True
-                if audio_load_runs_on_cpu(getattr(config, "audio_type", None), audio_device):
-                    # A CPU-only runtime runs Auto on the CPU too: say so, so no card is chosen and the worker hides them.
+                if audio_load_runs_on_cpu(
+                    getattr(config, "audio_type", None), audio_device, config.audio_cpp
+                ):
+                    # A CPU-only runtime or package runs Auto on the CPU too: say so, so no card
+                    # is chosen and the worker hides them.
                     audio_device = "cpu"
                     sub_config["audio_device"] = audio_device
             if audio_device_forces_cpu(audio_device) and (
@@ -2585,6 +2588,9 @@ class InferenceOrchestrator:
                             _audio_type in NATIVE_AUDIO_TYPES
                             and audio_load_runs_on_cpu(_audio_type, audio_device)
                         ) or model_info.get("audio_cpp_backend") == "cpu"
+                        self.models[self.active_model_name]["audio_cpu_only"] = bool(
+                            getattr(getattr(config, "audio_cpp", None), "cpu_only", False)
+                        )
                         self.models[self.active_model_name].update(
                             _mlx_runtime_mirror_fields(model_info)
                         )

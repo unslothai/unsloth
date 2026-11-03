@@ -3429,25 +3429,107 @@ def enable_composite_gradient_checkpointing(model, verbose = True):
     return True
 
 
+def _move_compressed_tensors_inputs(value, device):
+    if isinstance(value, torch.Tensor):
+        return value.to(device = device)
+    if isinstance(value, list):
+        return [_move_compressed_tensors_inputs(item, device) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_move_compressed_tensors_inputs(item, device) for item in value)
+    from dataclasses import fields, is_dataclass
+
+    if is_dataclass(value):
+        return type(value)(
+            **{
+                field.name: _move_compressed_tensors_inputs(getattr(value, field.name), device)
+                for field in fields(value)
+            }
+        )
+    if isinstance(value, dict):
+        return {key: _move_compressed_tensors_inputs(item, device) for key, item in value.items()}
+    return value
+
+
+def _align_compressed_tensors_inputs(module, args, kwargs):
+    reference = next((p for p in module._parameters.values() if p is not None), None)
+    if reference is None:
+        reference = next((b for b in module._buffers.values() if b is not None), None)
+    if reference is None:
+        reference = next(module.parameters(), None)
+    if reference is None:
+        reference = next(module.buffers(), None)
+    if reference is None:
+        return args, kwargs
+    if len(args) == 1 and not kwargs and isinstance(args[0], torch.Tensor):
+        if args[0].device == reference.device:
+            return None
+        return (args[0].to(device = reference.device),), kwargs
+    return _move_compressed_tensors_inputs((args, kwargs), reference.device)
+
+
+def _compressed_tensors_input_forward(original_forward, module):
+    from functools import wraps
+
+    mapping_name, tensor_name = next(
+        (
+            (mapping, name)
+            for mapping in ("_parameters", "_buffers")
+            for name, value in getattr(module, mapping).items()
+            if value is not None
+        ),
+        (None, None),
+    )
+
+    @wraps(original_forward)
+    def forward(module, *args, **kwargs):
+        if (
+            mapping_name is not None
+            and len(args) == 1
+            and not kwargs
+            and isinstance(args[0], torch.Tensor)
+        ):
+            reference = getattr(module, mapping_name).get(tensor_name)
+            if reference is not None:
+                value = args[0]
+                if value.device != reference.device:
+                    value = value.to(device = reference.device)
+                return original_forward(module, value)
+        aligned = _align_compressed_tensors_inputs(module, args, kwargs)
+        if aligned is not None:
+            args, kwargs = aligned
+        return original_forward(module, *args, **kwargs)
+
+    return forward
+
+
 def _remove_same_device_compressed_tensors_offload(model):
-    """Unwrap compressed-tensors >= 0.19 non-offloading OffloadCaches, which torch.compile cannot trace."""
     try:
         from compressed_tensors.offload.cache import OffloadCache
         from compressed_tensors.offload.module import remove_module_offload
     except Exception:
         return 0
-    removed = 0
+    same_device = []
+    onload_devices = set()
     for module in model.modules():
         cache = module._parameters
         if not isinstance(cache, OffloadCache):
             continue
         onload = getattr(cache, "onload_device", None)
         offload = getattr(cache, "offload_device", None)
+        if onload is not None:
+            onload_devices.add(torch.device(onload))
         if onload is None or offload is None or torch.device(onload) != torch.device(offload):
             continue
+        same_device.append(module)
+    split = len(onload_devices) > 1
+    for module in same_device:
         remove_module_offload(module)
-        removed += 1
-    return removed
+        if split:
+            # The original mover disables autograd and compares data pointers.
+            module.forward = _compressed_tensors_input_forward(
+                module.forward.__func__, module
+            ).__get__(module)
+    return len(same_device)
 
 
 def _decompress_compressed_tensors_model(model):
