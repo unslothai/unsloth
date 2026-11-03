@@ -309,6 +309,7 @@ def _qk_norm_rope_kv_kernel(
     n_heads, n_kv_heads, stride_cos, stride_cache_h, stride_cache_l,
     HEAD_DIM: tl.constexpr,  # attention head size
     EPS_Q: tl.constexpr, EPS_K: tl.constexpr,  # per-head norm epsilons
+    ROUND_ROPE: tl.constexpr = False,  # regular mixed-dtype norm and rotary rounding
 ):  # fmt: skip
     h = tl.program_id(0)
     HALF: tl.constexpr = HEAD_DIM // 2  # rotary half size
@@ -327,15 +328,31 @@ def _qk_norm_rope_kv_kernel(
         w1 = tl.where(
             is_q, tl.load(WQ + HALF + j).to(tl.float32), tl.load(WK + HALF + j).to(tl.float32)
         )
-        y0 = ((x0 * inv).to(w_ty).to(tl.float32) * w0).to(w_ty).to(out_ty).to(tl.float32)
-        y1 = ((x1 * inv).to(w_ty).to(tl.float32) * w1).to(w_ty).to(out_ty).to(tl.float32)
+        if ROUND_ROPE:
+            y0 = (
+                ((x0 * inv).to(QKV.dtype.element_ty).to(tl.float32) * w0)
+                .to(QKV.dtype.element_ty)
+                .to(tl.float32)
+            )
+            y1 = (
+                ((x1 * inv).to(QKV.dtype.element_ty).to(tl.float32) * w1)
+                .to(QKV.dtype.element_ty)
+                .to(tl.float32)
+            )
+        else:
+            y0 = ((x0 * inv).to(w_ty).to(tl.float32) * w0).to(w_ty).to(out_ty)
+            y1 = ((x1 * inv).to(w_ty).to(tl.float32) * w1).to(w_ty).to(out_ty)
         pos = tl.load(POS).to(tl.int64)
-        c0 = tl.load(COS + pos * stride_cos + j).to(tl.float32)
-        s0 = tl.load(SIN + pos * stride_cos + j).to(tl.float32)
-        c1 = tl.load(COS + pos * stride_cos + HALF + j).to(tl.float32)
-        s1 = tl.load(SIN + pos * stride_cos + HALF + j).to(tl.float32)
-        r0 = y0 * c0 - y1 * s0
-        r1 = y1 * c1 + y0 * s1
+        c0 = tl.load(COS + pos * stride_cos + j)
+        s0 = tl.load(SIN + pos * stride_cos + j)
+        c1 = tl.load(COS + pos * stride_cos + HALF + j)
+        s1 = tl.load(SIN + pos * stride_cos + HALF + j)
+        if ROUND_ROPE:
+            r0 = tl.fma(-y1, s0, (y0 * c0).to(QKV.dtype.element_ty).to(tl.float32))
+            r1 = tl.fma(y0, s1, (y1 * c1).to(QKV.dtype.element_ty).to(tl.float32))
+        else:
+            r0 = y0 * c0 - y1 * s0
+            r1 = y1 * c1 + y0 * s1
         if is_q:
             tl.store(Q_OUT + base + j, r0.to(out_ty))
             tl.store(Q_OUT + base + HALF + j, r1.to(out_ty))
@@ -701,7 +718,12 @@ def qk_norm_rope_kv(
         qkv, wq, wk, cos, sin, pos, slot, q_out, k_cache, v_cache,
         n_heads, n_kv_heads, cos.stride(0), k_cache.stride(2), k_cache.stride(0),
     )  # fmt: skip
-    constexprs = dict(HEAD_DIM = head_dim, EPS_Q = float(eps_q), EPS_K = float(eps_k))
+    constexprs = dict(
+        HEAD_DIM = head_dim,
+        EPS_Q = float(eps_q),
+        EPS_K = float(eps_k),
+        ROUND_ROPE = not (qkv.dtype == wq.dtype == wk.dtype == cos.dtype == sin.dtype),
+    )
     _launch(
         3, _qk_norm_rope_kv_kernel, (n_heads + 2 * n_kv_heads,), args, 10, constexprs,
         qkv.device.index, num_warps = 2,

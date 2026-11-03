@@ -293,6 +293,96 @@ def test_call_sites_match_fp64_on_gpu(negative_control, separate):
         assert proc.returncode == 0 and "FUSED OK" in proc.stdout, proc.stdout + proc.stderr
 
 
+@pytest.mark.parametrize("norm_dtype", ["float16", "float32"])
+def test_qk_norm_matches_stock_precision_in_the_interpreter(tmp_path, norm_dtype):
+    pytest.importorskip("triton")
+    script = textwrap.dedent(
+        '''
+        import ast, importlib.util, pathlib, sys
+        from types import SimpleNamespace
+        import torch
+
+        root, scratch = map(pathlib.Path, sys.argv[1:3])
+        norm_dtype = getattr(torch, sys.argv[3])
+        def extract(path, name):
+            source = (root / path).read_text(encoding="utf-8")
+            node = next(n for n in ast.parse(source).body
+                        if isinstance(n, ast.FunctionDef) and n.name == name)
+            return ast.get_source_segment(source, node)
+
+        kernel = extract("unsloth/kernels/nf4_decode_fused.py", "_qk_norm_rope_kv_kernel")
+        helper = extract("unsloth/kernels/qk_norm_rope.py", "_norm_rope_fwd_block")
+        wrapper = """
+        @triton.jit
+        def stock(Y, X, W, R, C, S, n, eps, HD:tl.constexpr, NH:tl.constexpr):
+            j = tl.arange(0, HD // 2)
+            _norm_rope_fwd_block(Y, X, 0, HD, W, R, 0, tl.arange(0, NH), n,
+                                tl.load(C + j), tl.load(S + j), j, eps, HD, True)
+        """
+        import textwrap
+        file = scratch / "precision_kernels.py"
+        file.write_text("import triton\\nimport triton.language as tl\\n@triton.jit\\n"
+                        + helper + "\\n@triton.jit\\n" + kernel + "\\n"
+                        + textwrap.dedent(wrapper), encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("precision_kernels", file)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        scope = {"torch": torch}
+        exec(extract("unsloth/models/llama.py", "fast_rms_layernorm_inference"), scope)
+        regular = scope["fast_rms_layernorm_inference"]
+        for hd in (32, 64, 128):
+            torch.manual_seed(3407)
+            nh, nk = 2, 1
+            raw = (2 * torch.randn((nh + 2 * nk) * hd)).half()
+            weights = [(1 + 0.3 * torch.randn(hd)).to(norm_dtype) for _ in range(2)]
+            angle = torch.arange(8)[:, None].double() / (
+                10000 ** (torch.arange(0, hd, 2).double() / hd))[None]
+            angle = torch.cat((angle, angle), -1)
+            cos, sin = angle.cos().half(), angle.sin().half()
+            refs = []
+            for src, weight, eps, heads in (
+                (raw[:nh * hd], weights[0], 1e-6, nh),
+                (raw[nh * hd:(nh + nk) * hd], weights[1], 1e-5, nk),
+            ):
+                if norm_dtype == torch.float16:
+                    ref = torch.empty(heads, hd, dtype=torch.float16)
+                    module.stock[(1,)](ref, src, weight, torch.empty(heads),
+                                       cos[5, :hd // 2], sin[5, :hd // 2], heads, eps,
+                                       HD=hd, NH=heads)
+                else:
+                    ref = regular(SimpleNamespace(weight=weight, variance_epsilon=eps),
+                                  src.view(1, 1, heads, hd).clone()).transpose(1, 2)
+                    rotated = torch.cat((-ref[..., hd // 2:], ref[..., :hd // 2]), -1)
+                    ref.mul_(cos[5].view(1, 1, 1, hd))
+                    ref.addcmul_(rotated, sin[5].view(1, 1, 1, hd))
+                refs.append(ref.flatten())
+            q = torch.empty(nh * hd, dtype=torch.float16)
+            k = torch.zeros(8, 1, nk, hd, dtype=torch.float16)
+            v = k.clone()
+            options = dict(HEAD_DIM=hd, EPS_Q=1e-6, EPS_K=1e-5)
+            if "ROUND_ROPE" in module._qk_norm_rope_kv_kernel.arg_names:
+                options["ROUND_ROPE"] = norm_dtype == torch.float32
+            module._qk_norm_rope_kv_kernel[(nh + 2 * nk,)](
+                raw, *weights, cos, sin, torch.tensor([5]), torch.tensor([3]),
+                q, k, v, nh, nk, hd, k.stride(2), k.stride(0), **options)
+            actual, expected = torch.cat((q, k[3, 0].flatten())), torch.cat(refs)
+            assert torch.equal(actual, expected), (hd, norm_dtype,
+                int((actual != expected).sum()), float((actual - expected).abs().max()))
+            assert torch.equal(v[3, 0].flatten(), raw[(nh + nk) * hd:])
+        assert not torch.cuda.is_initialized()
+        print("STOCK PRECISION OK")
+        '''
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script, str(REPO), str(tmp_path), norm_dtype],
+        env = dict(os.environ, TRITON_INTERPRET = "1"),
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert proc.returncode == 0 and "STOCK PRECISION OK" in proc.stdout, proc.stdout + proc.stderr
+
+
 def _driver():
     """unsloth/models/_decode_fused_nf4.py loaded by path, its kernel / utils imports stubbed."""
     root = REPO / "unsloth"
