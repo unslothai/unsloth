@@ -118,8 +118,12 @@ def drop_test_rows(failures: list[dict], test_rows: list[dict]) -> list[dict]:
     return [f for f in failures if not any(s in banned for s in _strings(f))]
 
 
+# Words, signed numbers and arithmetic signs: "-1" and "1", or "5 - 4" and "5 + 4", stay apart.
+_TOKEN = re.compile(r"[-+]?\d+(?:[.,]\d+)*|\w+|[-+*/=<>^%]")
+
+
 def _norm(text: str) -> str:
-    return " ".join(re.sub(r"[^\w\s]", " ", text.lower()).split())
+    return " ".join(_TOKEN.findall(text.lower()))
 
 
 def distinct(rows: list[dict]) -> list[dict]:

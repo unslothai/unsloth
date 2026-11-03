@@ -616,3 +616,14 @@ def test_cpt_continuing_a_4bit_checkpoint_still_loads_in_4bit(monkeypatch):
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
     assert started[0]["model_name"] == "/out/run1" and started[0]["load_in_4bit"] is True
+
+
+def test_arithmetic_failures_whose_answers_differ_only_in_sign_stay_apart():
+    failures = [
+        {"prompt": "What is -5 + 4?", "reference": "-1", "output": "1"},
+        {"prompt": "What is 5 - 4?", "reference": "1", "output": "-1"},
+        # The same question with only its punctuation changed is still one failure.
+        {"prompt": "what is -5 + 4", "reference": "-1", "output": "9"},
+    ]
+    kept = loop_rounds.distinct([loop_rounds.failure_row(f, "", "") for f in failures])
+    assert [r["failed_reference"] for r in kept] == ["-1", "1"]
