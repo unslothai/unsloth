@@ -188,14 +188,12 @@ onChatAdopted((from, to) => {
   adoptAgentChat(from, to);
 });
 
-// A chat's page stays open in the background only while its run lasts.
 onBrowserAgentRunEnd((chat) => {
-  const tabId = agentChat(chat).tabId;
-  if (tabId) releaseBackground(tabId);
+  const { tabId, shared } = agentChat(chat);
+  if (tabId && !shared) releaseBackground(tabId);
 });
 
-onAgentTargetChange((chat, previous) => {
-  if (previous) releaseBackground(previous);
+onAgentTargetChange((chat) => {
   const session = sessions.get(chat);
   if (!session) return;
   session.reachedHosts.clear();

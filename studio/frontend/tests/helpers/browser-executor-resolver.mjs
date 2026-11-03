@@ -27,7 +27,7 @@ const STUBS = {
 };
 
 export function resolve(specifier, context, next) {
-  if (context.parentURL?.includes("/src/features/browser/agent/executor.ts") && specifier in STUBS) {
+  if ((context.parentURL?.includes("/src/features/browser/agent/executor.ts") || context.parentURL?.includes("/src/features/browser/agent/tab-sharing.ts")) && specifier in STUBS) {
     return stub(STUBS[specifier]);
   }
   if (specifier.startsWith("../") && context.parentURL?.includes("/src/features/browser/agent/") && !/\.\w+$/.test(specifier)) {

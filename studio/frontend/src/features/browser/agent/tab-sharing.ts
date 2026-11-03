@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { currentEntry, onChatAdopted, useBrowserStore } from "../store";
+import { useNativeBrowser } from "../native-support";
+import { keepInBackground, releaseBackground } from "../native-view";
 import { adoptAgentChat, agentChat, liveChat, notifyAgentTargetChange, patchAgentChat, stopBrowserAgent, useBrowserAgentStore } from "./agent-store";
 
 onChatAdopted(adoptAgentChat);
@@ -20,6 +22,10 @@ export function shareAgentTab(chat: string, tabId: string | null): boolean {
   if (current.tabId === tabId && current.shared === Boolean(tabId)) return true;
   stopBrowserAgent(key);
   patchAgentChat(key, { tabId, shared: Boolean(tabId), targetVersion: current.targetVersion + 1 });
+  if (useNativeBrowser.getState().enabled) {
+    if (current.tabId && current.tabId !== tabId) releaseBackground(current.tabId);
+    if (tabId) keepInBackground(tabId);
+  }
   notifyAgentTargetChange(key, current.tabId);
   return true;
 }
