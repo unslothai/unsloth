@@ -83,6 +83,21 @@ export function readSuperCards(
   return cards;
 }
 
+/** The selection with each closed super card replaced by the blocks in it, for copy and duplicate. */
+export function selectedBlocks(
+  selected: readonly string[],
+  editor: Editor,
+  graph: Pick<DocGraph, "nodes" | "nodeOrder" | "groups">,
+): string[] {
+  const cards = new Map(
+    readSuperCards(editor, graph).map((c) => [SUPER_PREFIX + c.id, c.members]),
+  );
+  const out = new Set<string>();
+  for (const id of selected)
+    for (const m of cards.get(id) ?? [id]) if (graph.nodes[m]) out.add(m);
+  return [...out];
+}
+
 export function writeSuperCards(
   editor: Editor,
   cards: SuperCard[],

@@ -24,6 +24,7 @@ const {
   multiSelectKeys,
   readSuperCards,
   rollUpStatus,
+  selectedBlocks,
   superCardDragMembers,
   superCardTitle,
 } = await import("../src/features/flows/editor/super-cards.ts");
@@ -509,4 +510,15 @@ test("a Mac's Ctrl-click (a right-click to the browser) adds or drops a card fro
   assert.equal(isApplePlatform("Win32"), false);
   const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
   assert.match(canvas, /onNodeContextMenu=\{\(event, node\) => \{\s*if \(!APPLE \|\| !event\.ctrlKey\) return;\s*event\.preventDefault\(\);/);
+});
+
+test("copy and duplicate take the blocks inside a selected closed card", () => {
+  useDocStore.getState().load(comic());
+  select("tpl", "img");
+  combineSelection();
+  const { graph, meta } = useDocStore.getState();
+  assert.deepEqual(
+    selectedBlocks(["super:sc1", "view", "gone"], meta.editor, graph),
+    ["tpl", "img", "view"],
+  );
 });

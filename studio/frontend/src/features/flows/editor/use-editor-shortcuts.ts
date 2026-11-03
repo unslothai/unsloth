@@ -14,6 +14,7 @@ import { useUiStore } from "../stores/ui-store";
 import type { FlowEdge, FlowNode } from "../types";
 import { addFileNodes } from "./file-drop";
 import { runFlow } from "./run-controller";
+import { selectedBlocks } from "./super-cards";
 import { flushSave } from "./use-autosave";
 
 const CLIPBOARD_KIND = "unsloth-flow-fragment";
@@ -32,10 +33,12 @@ function isTyping(target: EventTarget | null): boolean {
 }
 
 export function copySelection(): GraphFragment | null {
-  const { graph } = useDocStore.getState();
-  const ids = useUiStore
-    .getState()
-    .selectedNodes.filter((id) => graph.nodes[id]);
+  const { graph, meta } = useDocStore.getState();
+  const ids = selectedBlocks(
+    useUiStore.getState().selectedNodes,
+    meta.editor,
+    graph,
+  );
   if (!ids.length) return null;
   const set = new Set(ids);
   const fragment: GraphFragment = {
@@ -187,9 +190,11 @@ export function useEditorShortcuts(active: boolean): void {
         });
       } else if (mod && key === "d") {
         event.preventDefault();
-        const ids = useUiStore
-          .getState()
-          .selectedNodes.filter((id) => doc.graph.nodes[id]);
+        const ids = selectedBlocks(
+          useUiStore.getState().selectedNodes,
+          doc.meta.editor,
+          doc.graph,
+        );
         if (!ids.length) return;
         const fragment = cloneFragment(doc.graph, ids, [40, 40]);
         doc.insertFragment(fragment);
