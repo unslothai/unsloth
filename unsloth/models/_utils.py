@@ -10648,14 +10648,9 @@ def _local_numel(t):
 
 
 class _AutoCheckpointSkip:
-    """checkpoint_skip_layers = "auto": once, after step 1, un-checkpoint as many layers as fit.
-    Per-layer cost = the largest allocation any eligible layer's reentrant recompute leaves in the
-    first backward (hybrid stacks mix attention and Mamba blocks); AdamW state is reserved for every
-    trainable param the optimizer has no state for yet. Sized for the trainer batch at the longest of
-    max_length, max_seq_length and the measured length: inputs a collator expands past that (images,
-    audio) need max_seq_length set to their bound. Under torchrun (DDP / native FSDP2) every rank
-    plans and the smallest K wins, so every rank keeps the same number of layers; tensor / pipeline parallel
-    models stay fully checkpointed."""
+    """Plan checkpoint skips once from measured memory, using the smallest count across ranks.
+    Multimodal inputs must stay within max_seq_length; tensor/pipeline parallel models are excluded.
+    """
 
     MARGIN = 1 << 30
     FRACTION = 0.75
@@ -10823,7 +10818,6 @@ class _AutoCheckpointSkip:
             # Step-local peak: a model-loading spike must not count as activations.
             torch.cuda.reset_peak_memory_stats(device)
             self.started = torch.cuda.memory_allocated(device)
-            # Grads the first backward allocates persist: they are not sequence-dependent.
             self.fresh_grads = [
                 p for p in self._parameters() if p.requires_grad and self._gradient(p) is None
             ]
@@ -10900,7 +10894,6 @@ class _AutoCheckpointSkip:
         self.stepped = True
 
     def _fresh_grad_bytes(self, device):
-        # Only grads on the planned card are in its step peak (a vision tower may sit on another GPU).
         return sum(
             _local_numel(grad) * grad.element_size()
             for p in (self.fresh_grads or ())
@@ -10968,10 +10961,8 @@ class _AutoCheckpointSkip:
             if self.step_peak is not None
             else torch.cuda.max_memory_allocated(device)
         )
-        # A short or small first batch (dynamic padding, packing, token-budget batches) under-measures:
-        # size for the trainer's batch x max length tokens, else the measured batch at max_seq_length.
+        # A short first batch must still reserve activations for the trainer's maximum batch/length.
         rows = max(1, self.layer_rows)
-        # Never below the measured length (multimodal collators can expand past max_seq_length).
         max_seq = max(rows, self.target_seq or getattr(self.model, "max_seq_length", None) or rows)
         batch = max(self.target_batch or 0, self.layer_batch)
         tokens = max(1.0, batch * max_seq / (self.layer_batch * rows))
@@ -10987,16 +10978,14 @@ class _AutoCheckpointSkip:
         resident = self._fresh_grad_bytes(device) if self.fresh_grads else 0
         activation_peak = (step_bytes - grad_bytes) * scale + max(0, grad_bytes - resident)
         self.fresh_grads = None
-        # State an optimizer step already allocated is excluded by usable_cuda_bytes; reserve the rest
-        # (sparse MoE experts, unused towers and gradient accumulation have none yet).
+        # Existing optimizer state is already excluded by usable_cuda_bytes.
         trainable = [p for p in self._parameters() if p.requires_grad]
         optimizer = sum(
             _local_numel(p) * 8
             for p in trainable
             if p.device == device and not self._has_optimizer_state(p)
         )
-        # foreach AdamW allocates about one fp32 copy of the params (sqrt of exp_avg_sq) every step,
-        # on each param's own card.
+        # foreach AdamW needs one temporary fp32 parameter-sized buffer on the parameter's device.
         optimizer += sum(_local_numel(p) * 4 for p in trainable if p.device == device)
         self.optimizers = []
         self.fsdp_params.clear()

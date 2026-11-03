@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""checkpoint_skip_layers = "auto" under torchrun, on CPU gloo: which runs take the collective, that
-every rank takes it at the same forward, and that DDP training is unchanged by the plan."""
 
 import datetime
 import math
@@ -28,8 +26,6 @@ def _load(
     tensor_parallel = False,
     pipeline_parallel = False,
 ):
-    """The planner from _utils.py, with its package-relative imports (is_distributed,
-    is_tensor_parallel, is_pipeline_parallel) answered by stubs instead of falling back."""
     sys.path.insert(0, HERE)
     import test_gc_skip_auto as T
 
@@ -54,7 +50,6 @@ def _load(
 
 
 def _spoof_cuda(ns, usable, memory):
-    # Process-local CPU stand-ins for the CUDA calls the planner makes (as T._fake_cuda does).
     torch.cuda.is_available = lambda: True
     torch.Tensor.is_cuda = property(lambda self: True)
     torch.cuda.reset_peak_memory_stats = lambda device = None: None
@@ -78,7 +73,6 @@ def _count_collectives():
 
 
 def _fake_scenario(rank, scenario, usable):
-    """The fake 8-layer model of test_gc_skip_auto, with rank-local extra forwards."""
     T, ns = _load(
         tensor_parallel = scenario == "tp",
         pipeline_parallel = scenario == "pp",
@@ -90,11 +84,9 @@ def _fake_scenario(rank, scenario, usable):
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
     if scenario == "rank0_pretrain_forward" and rank == 0:
-        # A grad-enabled training forward only rank 0 runs before step 1 (no backward).
         model(torch.zeros(1, 16, 4))
     T._fake_step(model, rows = 16)
     if scenario == "rank0_eval_and_generate" and rank == 0:
-        # Rank-0-only evaluation / sample generation between steps: eval mode, no grad.
         model.eval()
         model(torch.zeros(1, 16, 4))
         model.train()
@@ -109,7 +101,6 @@ def _fake_scenario(rank, scenario, usable):
 
 
 def _ddp_scenario(rank, scenario, usable):
-    """A tiny Qwen3 under DDP (gloo), HF reentrant gradient checkpointing, 4 optimizer steps."""
     from torch.nn.parallel import DistributedDataParallel as DDP
 
     static_graph, find_unused, accumulation, auto = scenario
@@ -123,7 +114,7 @@ def _ddp_scenario(rank, scenario, usable):
     model = T._model(layers = 4)
     if auto:
         _spoof_cuda(ns, usable, memory)
-        # Each grad-mode layer call "allocates" 1/16 GiB, so the planner measures a cost.
+
         for layer in model.model.layers:
             layer.register_forward_hook(
                 lambda m, a, o: memory.__setitem__(
@@ -234,7 +225,6 @@ def _fsdp2_grad_bytes_scenario(rank, scenario, usable):
 
 
 def _join_scenario(rank, scenario, usable):
-    """DDP.join(): rank 0 runs out of inputs before rank 1's planning forward."""
     from torch.nn.parallel import DistributedDataParallel as DDP
 
     T, ns = _load()
@@ -331,7 +321,6 @@ def _launch(kind, scenario, usable):
 
 @pytest.mark.parametrize("scenario", ["rank0_pretrain_forward", "rank0_eval_and_generate"])
 def test_rank_local_forwards_do_not_desync_the_collective(scenario):
-    # Rank 0 has room for 8 layers, rank 1 for 2; rank-local forwards must not move rank 0's plan.
     results = _launch("fake", scenario, [4 * GIB, 2 * GIB])
     assert results[0]["kept"] == results[1]["kept"] == [3, 7]
     assert results[0]["all_reduce"] == results[1]["all_reduce"] == 1
@@ -383,7 +372,7 @@ def test_single_process_plans_alone_without_a_collective(monkeypatch, world_size
     planner = model._unsloth_auto_skip
     T._fake_step(model, rows = 16)
     model(torch.zeros(1, 16, 4))
-    # (4 GiB - 0.5 GiB step) * 0.75 - 1 GiB = 1.6 GiB: all 8 sixteenth-GiB layers, as before.
+
     assert planner.kept == list(range(8))
     monkeypatch.undo()
 
@@ -406,7 +395,6 @@ def _assert_same_training(auto, reference):
     [(False, False, 1), (False, False, 2), (True, False, 1)],
 )
 def test_ddp_training_unchanged_and_ranks_agree(static_graph, find_unused, accumulation):
-    # Rank 0 fits 4, rank 1 fits 2: both keep 2; losses / weights match full checkpointing.
     usable = [8 * GIB, 2 * GIB + GIB // 4]
     auto = _launch("ddp", (static_graph, find_unused, accumulation, True), usable)
     reference = _launch("ddp", (static_graph, find_unused, accumulation, False), usable)
@@ -426,7 +414,6 @@ def _fsdp2_runs_on_cpu():
 @pytest.mark.skipif(not _fsdp2_runs_on_cpu(), reason = "this torch has no CPU FSDP2 path")
 @pytest.mark.parametrize("accumulation", [1, 2])
 def test_fsdp2_training_unchanged_and_ranks_agree(accumulation):
-    # The collective runs in the root forward pre-hook, next to FSDP2's own all-gathers.
     usable = [8 * GIB, 2 * GIB + GIB // 4]
     auto = _launch("ddp", ("fsdp2", False, accumulation, True), usable)
     reference = _launch("ddp", ("fsdp2", False, accumulation, False), usable)
