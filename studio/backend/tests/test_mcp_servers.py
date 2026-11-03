@@ -2481,6 +2481,42 @@ def test_mcp_listing_lists_a_tool_a_later_message_needs(tmp_path, monkeypatch, s
     assert "mcp__srv1__move-pages" in _names(_thread_listing(tools_mod, searching, chat))
 
 
+def test_mcp_listing_reranks_when_no_held_tool_still_fits(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    sizes = {"ping": 100, "create-pages": 60, "move-pages": 40}
+    real_cost = tools_mod._text_token_cost
+
+    def cost(text, ctx):
+        if '"name":"mcp_tool_search"' in text:
+            return 0
+        for name, size in sizes.items():
+            if text.startswith("{") and f'"name":"mcp__srv1__{name}"' in text:
+                return size
+        return 1000 if text.startswith("{") else real_cost(text, ctx)
+
+    monkeypatch.setattr(tools_mod, "_text_token_cost", cost)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 110 / searching)
+    held, ran, best = (f"mcp__srv1__{name}" for name in sizes)
+    rankings = {"first": [held], "second": [ran, best]}
+
+    def ranked(specs, query):
+        names = [spec["function"]["name"] for spec in specs]
+        return [names.index(name) for name in rankings[query]], 0
+
+    monkeypatch.setattr(tools_mod, "_mcp_ranked", ranked)
+
+    assert held in _names(
+        _thread_listing(tools_mod, searching, [{"role": "user", "content": "first"}])
+    )
+    tools_mod.mcp_record_loaded_tools("thread-1", [ran])
+    chat = [{"role": "user", "content": "second"}]
+    second = _thread_listing(tools_mod, searching, chat)
+    assert _names(second) == ["mcp_tool_search", ran, best]
+    assert _thread_listing(tools_mod, searching, chat) == second
+
+
 def test_mcp_listing_follows_a_change_of_subject(tmp_path, monkeypatch, searching):
     from core.inference import tools as tools_mod
 

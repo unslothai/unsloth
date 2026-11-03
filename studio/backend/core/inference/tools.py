@@ -12689,10 +12689,12 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
 
     held = _mcp_held_ranking(by_name)
     chosen = filled(held)
+    held = [name for name in held if by_name[name] in chosen]
     if ranked and (not held or by_name[ranked[0]] not in chosen):
         held = ranked
         chosen = filled(held)
-    _mcp_hold_ranking([name for name in held if by_name[name] in chosen])
+        held = [name for name in held if by_name[name] in chosen]
+    _mcp_hold_ranking(held)
     return chosen
 
 
