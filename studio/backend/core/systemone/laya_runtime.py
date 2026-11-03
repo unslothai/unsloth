@@ -62,6 +62,7 @@ IDLE_UNLOAD_S = 300.0
 _incapable: set[tuple[str, int]] = set()
 _unloadable: set = set()
 _LAYA_OPTION_TOKENS = 48
+_LOAD_REFUSALS = ("unknown model architecture", "error loading model vocabulary")
 
 
 class Unavailable(Exception):
@@ -1311,7 +1312,11 @@ def _load_native(checkpoint: Checkpoint):
     except BaseException as exc:
         if isinstance(exc, NativeIncapable) and (binary := resolve_binary()):
             _incapable.add(_binary_key(binary))
-        if isinstance(exc, NativeLoadError) and _is_laya_export(checkpoint):
+        if (
+            isinstance(exc, NativeLoadError)
+            and _is_laya_export(checkpoint)
+            and any(refusal in str(exc) for refusal in _LOAD_REFUSALS)
+        ):
             if binary := resolve_binary():
                 _unloadable.add((_binary_key(binary), checkpoint))
         if gpu:

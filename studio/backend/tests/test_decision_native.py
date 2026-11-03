@@ -65,6 +65,12 @@ log("start", argv=args, env={k: os.environ.get(k) for k in ("CUDA_VISIBLE_DEVICE
 if mode == "exit":
     print("stub: failed to load model", flush=True)
     sys.exit(3)
+if mode == "unknown_arch":
+    print("error loading model architecture: unknown model architecture: 'laya'", flush=True)
+    sys.exit(1)
+if mode == "unknown_vocab":
+    print("error loading model vocabulary: unknown tokenizer: 'mmbert'", flush=True)
+    sys.exit(1)
 key = opt("--api-key") or open(opt("--api-key-file"), encoding="utf-8").read().strip()
 port, alias, ub, mmproj = int(opt("--port")), opt("--alias"), int(opt("-ub")), "--mmproj" in args
 
@@ -1455,15 +1461,26 @@ def test_a_laya_export_gives_way_to_a_training_run(home, client, stub, monkeypat
         laya_runtime._ensure_loading(forced)
 
 
-def test_a_laya_export_llama_cpp_cannot_load_is_refused_and_remembered(home, client, stub):
+@pytest.mark.parametrize("mode", ["unknown_arch", "unknown_vocab"])
+def test_a_laya_export_llama_cpp_cannot_load_is_refused_and_remembered(home, client, stub, mode):
     laya = catalog.fine_tune(f"laya-ft:{_laya_fine_tune(home.outputs).name}")
     _put(client, enabled = True, model = laya.name, backend = "llama.cpp")
-    stub.set_mode("exit")
+    stub.set_mode(mode)
     assert _post(client, questions = NOUL).status_code == 503
     assert len(stub.records("start")) >= 1
     with pytest.raises(laya_runtime.Unavailable, match = "cannot load"):
         laya_runtime.select(laya, preference = "llama.cpp")
     assert laya_runtime.select(laya, preference = "auto") == (laya, None)
+
+
+def test_a_laya_export_that_failed_for_memory_loads_again(home, client, stub):
+    _laya_fine_tune(home.outputs)
+    _put(client, enabled = True, model = "laya-ft:laya_run", backend = "llama.cpp")
+    stub.set_mode("exit")
+    assert _post(client, questions = NOUL).status_code == 503
+    stub.set_mode("ok")
+    laya_runtime.unload()
+    assert _post(client, questions = NOUL).status_code == 200
 
 
 LONG_OPTION = " ".join(f"word{i}" for i in range(60))
