@@ -146,7 +146,6 @@ def _claim_lease(holder: str) -> None:
     """Hold the Benchmarks lease for the whole run, so a config sweep can't start and load a
     model beside it, and a sweep already holding it refuses this run."""
     from routes import benchmarks
-
     benchmarks.claim_lease(holder, KIND, ttl = float("inf"))
 
 
@@ -154,13 +153,11 @@ def _lease_until_restored(holder: str) -> None:
     """The tab puts chat's model back under this lease (the job id as its header), then releases
     it; a closed tab's lease lapses like any other."""
     from routes import benchmarks
-
     benchmarks.extend_lease(holder)
 
 
 def _release_lease(holder: str) -> None:
     from routes import benchmarks
-
     benchmarks.drop_lease(holder)
 
 

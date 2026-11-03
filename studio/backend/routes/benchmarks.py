@@ -137,7 +137,11 @@ class BenchmarkLease(BaseModel):
     kind: Literal["sweep", "llama-bench", "evals"] = "sweep"
 
 
-def claim_lease(holder: str, kind: str, ttl: float = LEASE_TTL_SECONDS) -> int:
+def claim_lease(
+    holder: str,
+    kind: str,
+    ttl: float = LEASE_TTL_SECONDS,
+) -> int:
     """Take or renew the one Benchmarks lease; 409 while another holder's is live or a load
     admitted before it is still running. Returns the holder's count of outside generations."""
     global _lease
