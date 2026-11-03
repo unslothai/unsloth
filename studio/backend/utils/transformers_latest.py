@@ -25,6 +25,7 @@ from utils.transformers_version import (
     _NESTED_CONFIG_KEYS,
     _release_tuple,
     _remote_code_min_version,
+    _remote_code_saving_version,
     _remote_code_tier,
     _TIER_RANK,
     _model_types_from_config,
@@ -411,7 +412,7 @@ def _remote_code_upgrade(model_name: str, cfg: dict) -> dict | None:
         "Model %s has custom code saved by transformers %s, newer than every installed tier "
         "(latest PyPI %s)",
         model_name,
-        cfg.get("transformers_version"),
+        _remote_code_saving_version(cfg),
         snapshot["pypi_version"],
     )
     types = _model_types_from_config(cfg)

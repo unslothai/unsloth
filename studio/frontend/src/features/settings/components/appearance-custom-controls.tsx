@@ -985,6 +985,38 @@ export function ContrastSliderRow() {
   );
 }
 
+export function ComposerOutlineSliderRow() {
+  const t = useT();
+  const outline = useAppearanceCustomStore((s) => s.customization.composerOutline);
+  const backgroundOutline = useBackgroundStore((s) => s.value?.outline);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  const value = outline ?? backgroundOutline ?? 0;
+  const set = (next: number) => patch({ composerOutline: next });
+  return (
+    <div className="flex w-64 items-center gap-3">
+      <Slider
+        value={[value]}
+        min={0}
+        max={100}
+        step={1}
+        onValueChange={(values: number[]) => set(values[0])}
+        aria-label={t("chatBackground.outline")}
+      />
+      <NumericValueInput
+        value={value}
+        min={0}
+        max={100}
+        step={1}
+        onChange={set}
+        ariaLabel={t("chatBackground.outline")}
+        className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
+        fixedWidth={true}
+        size={4}
+      />
+    </div>
+  );
+}
+
 export function PointerCursorsSwitch() {
   const pointerCursors = useAppearanceCustomStore(
     (s) => s.customization.pointerCursors,

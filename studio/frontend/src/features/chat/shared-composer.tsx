@@ -93,6 +93,8 @@ import {
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
+import { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
+import { isPlainPasteChord, plainPasteStillCounts } from "./utils/pasted-text";
 import {
   composerDraftKey,
   latestDraft,
@@ -111,13 +113,13 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
-  Columns2Icon,
 } from "lucide-react";
 import {
   Attachment01Icon,
   CodeIcon,
   Download01Icon,
-  Image03Icon,
+  ImageIcon,
+  LayoutTwoColumnIcon,
   McpServerIcon,
   Scroll01Icon,
   MoreHorizontalIcon,
@@ -623,6 +625,7 @@ export function SharedComposer({
 }): ReactElement {
   const t = useT();
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
+  const richTextPaste = useChatPreferencesStore((s) => s.richTextPaste);
   const navigate = useNavigate();
   const handleExitCompare = useCallback(() => {
     if (onExitCompare) {
@@ -1337,8 +1340,12 @@ export function SharedComposer({
     [trackAttaching, addFilesUntracked],
   );
 
+  // Plain paste: a paste event carries no modifiers, so the chord is read from the keydown before it.
+  const plainPasteAtRef = useRef(0);
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      const plainPaste = plainPasteStillCounts(plainPasteAtRef.current, performance.now());
+      plainPasteAtRef.current = 0;
       pasteClipboardFiles(
         event,
         (pasted) =>
@@ -1357,8 +1364,17 @@ export function SharedComposer({
             description: "Compare supports images and audio within the attachment size limits.",
           }),
       );
+      if (event.defaultPrevented || !richTextPaste || plainPaste) return;
+      const markdown = richPasteMarkdown(event.clipboardData);
+      if (markdown === null) return;
+      event.preventDefault();
+      const input = event.currentTarget;
+      insertAtCaret(input, markdown, (next, caret) => {
+        setCurrentText(next);
+        requestAnimationFrame(() => input.setSelectionRange(caret, caret));
+      });
     },
-    [trackAttaching, addFilesUntracked],
+    [trackAttaching, addFilesUntracked, richTextPaste, setCurrentText],
   );
 
   const removePendingImage = useCallback((id: string) => {
@@ -2563,7 +2579,7 @@ export function SharedComposer({
         className="text-primary font-medium"
         onSelect={handleExitCompare}
       >
-        <Columns2Icon />
+        <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={2} />
         Compare chat
         <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
       </DropdownMenuItem>
@@ -2865,7 +2881,7 @@ export function SharedComposer({
                     }
                     onSelect={() => setImageToolsEnabled(!imageToolsEnabled)}
                   >
-                    <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
+                    <HugeiconsIcon icon={ImageIcon} strokeWidth={2} />
                     Images
                     {imageToolsEnabled && !imageDisabled ? (
                       <HugeiconsIcon
@@ -2913,7 +2929,7 @@ export function SharedComposer({
               aria-label="Exit compare chat"
             >
               <PillGlyph>
-                <Columns2Icon className="size-[calc(14px*var(--ui-space-scale,1))]" />
+                <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={2} className="size-[calc(14px*var(--ui-space-scale,1))]" />
               </PillGlyph>
               <span>Compare</span>
             </button>
@@ -2986,7 +3002,7 @@ export function SharedComposer({
               >
                 <PillGlyph>
                   <HugeiconsIcon
-                    icon={Image03Icon}
+                    icon={ImageIcon}
                     className="size-3.5"
                     strokeWidth={2}
                   />
@@ -3074,8 +3090,15 @@ export function SharedComposer({
                 onKeyDown={(event) => {
                   if (!skillMentions.onKeyDown(event)) onKeyDown(event);
                 }}
+                onKeyDownCapture={(event) => {
+                  plainPasteAtRef.current = isPlainPasteChord(event) ? performance.now() : 0;
+                }}
+                onKeyUpCapture={() => {
+                  plainPasteAtRef.current = 0;
+                }}
                 onPaste={handleFilePaste}
                 onBlur={() => {
+                  plainPasteAtRef.current = 0;
                   // Mac: switching input methods can fire compositionstart without a matching compositionend,
                   // leaving composingRef pinned. The OS always commits or cancels before focus is lost.
                   imeSessionOpenRef.current = false;

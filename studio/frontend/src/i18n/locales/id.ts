@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const id = {
+  turns: {
+    label: "Giliran {number}",
+    bookmarkedLabel: "Giliran {number}, ditandai",
+    bookmark: "Tandai giliran",
+    removeBookmark: "Hapus tanda",
+    navigator: "Giliran",
+  },
   chatBackground: {
     noBackground: "Tanpa latar belakang",
     sizing: "Ukuran gambar",
@@ -727,6 +734,8 @@ export const id = {
     plainText: "Kolom pesan teks biasa",
     plainTextDescription:
       "Pertahankan kode, Markdown, dan tautan sebagai teks literal. Nonaktifkan untuk menampilkan pratinjau berformat.",
+    richPaste: "Tempel teks berformat",
+    richPasteDescription: "Menempel tautan, tabel, dan format sebagai Markdown. {shortcut} menempel teks biasa. Composer teks kaya lengkap segera hadir.",
     showContext: "Penggunaan jendela konteks",
     sendShortcut: "Pintasan kirim",
     sendMultiline: "{mod} + Enter untuk prompt multibaris",
@@ -1155,6 +1164,7 @@ export const id = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Tetapkan kata sandi pemilik instalasi sebelum menambahkan akun lain. Anda akan menggunakannya untuk masuk setelah instalasi ini memiliki beberapa akun.",
       signsInAs: "Masuk sebagai {username}",
       signsInAsOwner: "Masuk sebagai {alias} atau {username}",
       signInName: "Nama masuk Anda",
@@ -2095,6 +2105,7 @@ export const id = {
         loadError: "Gagal memuat pengaturan peralihan model otomatis.",
         saveError: "Gagal menyimpan pengaturan peralihan model otomatis.",
         idleError: "Masukkan 0 agar model tetap dimuat, atau minimal 60 detik.",
+        idleUnsaved: "Belum disimpan.",
         keepKv: "Pertahankan konteks chat saat model dilepas",
         keepKvDescription:
           "Simpan cache KV sebelum pelepasan karena tidak aktif, atau sebelum model gambar atau video mengambil alih GPU, agar chat yang dilanjutkan tidak perlu membaca ulang riwayat. Hingga 10 GB di disk.",
@@ -2160,6 +2171,14 @@ export const id = {
           off: "Menjalankan setiap panggilan alat tanpa meminta izin. Kode Python dan terminal tetap berjalan di sandbox, yang membatasi file yang dapat dijangkau di komputer Anda. Tanpa sandbox OS yang berfungsi, panggilan berisiko akan meminta izin terlebih dahulu.",
           full: "Menjalankan setiap panggilan alat tanpa meminta izin dan menonaktifkan sandbox kode, sehingga kode Python dan terminal dapat membaca dan mengubah file apa pun yang dapat diakses akun Anda.",
         },
+      },
+      display: {
+        title: "Tampilan",
+        timeFormat: "Format waktu",
+        timeFormatDescription: "Tampilkan waktu dalam format 12 jam atau 24 jam.",
+        timeFormatSystem: "Default sistem",
+        timeFormat12: "12 jam",
+        timeFormat24: "24 jam",
       },
       notifications: {
         sectionTitle: "Notifikasi",
@@ -2530,6 +2549,9 @@ export const id = {
           "Warna yang digunakan di seluruh Unsloth, dalam mode terang dan gelap.",
         standard: "Standar",
         moreThemes: "Tema lainnya",
+      },
+      composer: {
+        title: "Penyusun pesan",
       },
       code: {
         title: "Kode",
@@ -3176,6 +3198,8 @@ export const id = {
         "Notifikasi diblokir. Izinkan notifikasi untuk Unsloth di pengaturan browser atau sistem Anda, lalu coba lagi.",
       replyNotificationKeywords:
         "notify notification alert done finished complete ready response reply background minimized desktop sound notifikasi pemberitahuan selesai balasan latar belakang suara",
+      showLinkPreviews: "Pratinjau tautan",
+      showLinkPreviewsDescription: "Tampilkan pratinjau saat mengarahkan kursor ke tautan sumber.",
       showResponseModel: "Model respons",
       showResponseModelDescription:
         "Tampilkan detail model di respons asisten.",
@@ -3192,6 +3216,8 @@ export const id = {
       inlineEditResponse: "Edit respons pada respons",
       inlineEditResponseDescription:
         "Tampilkan Edit respons di setiap respons, alih-alih di menu Lainnya.",
+      turnNavigation: "Navigasi giliran",
+      turnNavigationDescription: "Tampilkan prompt Anda sebagai bilah di tepi kiri chat panjang. Arahkan kursor untuk pratinjau giliran, klik untuk melompat ke sana, dan tandai giliran agar mudah ditemukan lagi.",
       composerAtBottom: "Kolom pesan di bagian bawah",
       composerAtBottomDescription:
         "Mulai chat baru dengan kolom pesan di bagian bawah halaman, bukan di tengah.",
@@ -3858,8 +3884,6 @@ export const id = {
         repoCheckoutFallback:
           "Jika Anda masih memiliki checkout repo, jalankan penginstal lokal dari sana:",
         restartAfterUpdate: "Mulai ulang Unsloth setelah memperbarui.",
-        desktopManaged:
-          "Aplikasi desktop memeriksa versi aplikasi baru secara otomatis. Anda juga dapat memeriksa atau memperbarui di sini kapan saja.",
         desktopReady: "Pembaruan aplikasi desktop",
         desktopReadyDescription:
           "Periksa apakah versi aplikasi desktop yang lebih baru tersedia.",
@@ -5845,5 +5869,60 @@ export const id = {
     later: "Nanti",
     update: "Perbarui",
     undo: "Urungkan",
+  },
+  generationStats: {
+    working: "Memproses...",
+    processingPrompt: "Memproses prompt {percent}%",
+    timeLeft: "{eta} lagi",
+    tokensOne: "{count} token",
+    tokens: "{count} token",
+    tokensOf: "{done} / {total} token",
+    draftAccepted: "draf {accepted}/{drafted} diterima ({percent}%)",
+    timing: {
+      trigger: "Waktu pesan",
+      firstToken: "Token pertama",
+      speedInStep: "Kecepatan (dalam langkah)",
+      effective: "Efektif",
+      output: "Output",
+      denoising: "Denoising",
+      stepsOne: "{count} langkah",
+      steps: "{count} langkah",
+      blocksOne: "{count} blok",
+      blocks: "{count} blok",
+      canvas: "Kanvas",
+      generation: "Pembuatan",
+      answerTokens: "Token jawaban",
+      prompt: "Prompt",
+      total: "Total",
+      chunks: "Potongan",
+      promptEval: "Evaluasi prompt",
+      promptSpeed: "Kecepatan prompt",
+      speed: "Kecepatan",
+      tokens: "Token",
+      draftAccepted: "Draf diterima",
+      denoisingSteps: "Langkah denoising",
+      blocksLabel: "Blok",
+      cacheHits: "Cache hit",
+      cacheWrites: "Penulisan cache",
+      stopReason: "Alasan berhenti",
+      stoppedByYou: "Dihentikan oleh Anda",
+      endOfTurn: "Akhir giliran",
+      lengthLimit: "Batas panjang",
+      toolCall: "Panggilan alat",
+      contentFilter: "Filter konten",
+    },
+    placement: {
+      title: "Penempatan bobot",
+      allOnCpu: "Semua {total} lapisan di CPU",
+      split: "{gpu} dari {total} lapisan di GPU, {cpu} di CPU",
+      allOnGpu: "Semua {total} lapisan di GPU",
+      expertCache: "Semua {total} lapisan di GPU, semua expert di RAM (cache expert {amount} di GPU)",
+      expertSpillOne: "Semua {total} lapisan di GPU, bobot expert dari {count} lapisan di RAM",
+      expertSpill: "Semua {total} lapisan di GPU, bobot expert dari {count} lapisan di RAM",
+      inUnifiedMemory: "{amount} di memori terpadu",
+      inSharedMemory: "{amount} di memori bersama",
+      inVram: "{amount} di VRAM",
+      inRam: "{amount} di RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

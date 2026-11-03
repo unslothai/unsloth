@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -94,6 +95,7 @@ function DownloadRow({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const failed = (key: "browser.downloads.openFailed" | "browser.pages.revealFailed") => (name: string) => {
     toast.error(t(key, { name }));
     onFailed();
@@ -101,7 +103,8 @@ function DownloadRow({
   const target: Target = { ...item, keptId: item.id };
   const open = missing ? undefined : openTarget(target, failed("browser.downloads.openFailed"));
   const reveal = missing ? undefined : revealTarget(target, failed("browser.pages.revealFailed"));
-  const time = new Intl.DateTimeFormat(locale, { timeStyle: "short" }).format(item.downloadedAt);
+  const timeOptions = withTimeFormat({ timeStyle: "short" }, locale);
+  const time = new Intl.DateTimeFormat(locale, timeOptions).format(item.downloadedAt);
   const status = t(missing ? "browser.downloads.missing" : "browser.downloads.downloaded");
   const revealLabel = t(revealLabelKey());
   const run = (action: (() => void) | undefined) => () => {

@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const fa = {
+  turns: {
+    label: "نوبت {number}",
+    bookmarkedLabel: "نوبت {number}، نشانک‌شده",
+    bookmark: "نشانک‌گذاری نوبت",
+    removeBookmark: "حذف نشانک",
+    navigator: "نوبت‌ها",
+  },
   chatBackground: {
     noBackground: "بدون پس‌زمینه",
     sizing: "اندازه‌بندی تصویر",
@@ -726,6 +733,8 @@ export const fa = {
     plainText: "کادر نوشتن متن ساده",
     plainTextDescription:
       "کد، Markdown و پیوندها به‌صورت متن خام نگه داشته شوند. برای نمایش پیش‌نمایش قالب‌بندی‌شده، خاموش کنید.",
+    richPaste: "چسباندن متن قالب‌دار",
+    richPasteDescription: "پیوندها، جدول‌ها و قالب‌بندی را به‌صورت Markdown می‌چسباند. {shortcut} متن ساده می‌چسباند. ویرایشگر کامل متن غنی به‌زودی.",
     showContext: "میزان استفاده از پنجرهٔ زمینه",
     sendShortcut: "میان‌بر ارسال",
     sendMultiline: "{mod} + Enter برای پرامپت‌های چندخطی",
@@ -1149,6 +1158,7 @@ export const fa = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "پیش از افزودن حساب دیگر، گذرواژهٔ مالک این نصب را تعیین کنید. وقتی این نصب چند حساب داشته باشد، برای ورود از این گذرواژه استفاده خواهید کرد.",
       signsInAs: "ورود با نام {username}",
       signsInAsOwner: "ورود با نام {alias} یا {username}",
       signInName: "نام ورود شما",
@@ -2085,6 +2095,7 @@ export const fa = {
         loadError: "بارگذاری تنظیمات تعویض خودکار مدل ناموفق بود.",
         saveError: "ذخیرهٔ تنظیمات تعویض خودکار مدل ناموفق بود.",
         idleError: "برای بارگذاری‌شده ماندن مدل 0 یا دست‌کم 60 ثانیه وارد کنید.",
+        idleUnsaved: "هنوز ذخیره نشده است.",
         keepKv: "حفظ زمینهٔ گفتگو در میان تخلیه‌ها",
         keepKvDescription:
           "کش KV پیش از تخلیه در حالت بیکاری، یا پیش از آنکه مدل تصویر یا ویدیو GPU را بگیرد، ذخیره می‌شود تا گفتگوهای ازسرگرفته‌شده بازخوانی تاریخچه را رد کنند. حداکثر 10 GB روی دیسک.",
@@ -2150,6 +2161,14 @@ export const fa = {
           off: "هر فراخوانی ابزار را بدون پرسیدن اجرا می‌کند. کد Python و ترمینال همچنان در سندباکس اجرا می‌شود که محدود می‌کند به کدام فایل‌های رایانهٔ شما دسترسی داشته باشند. بدون سندباکس سیستم‌عامل فعال، فراخوانی‌های پرخطر ابتدا اجازه می‌گیرند.",
           full: "هر فراخوانی ابزار را بدون پرسیدن اجرا می‌کند و سندباکس کد را خاموش می‌کند، بنابراین کد Python و ترمینال می‌تواند هر فایلی را که حساب شما به آن دسترسی دارد بخواند و تغییر دهد.",
         },
+      },
+      display: {
+        title: "نمایش",
+        timeFormat: "قالب زمان",
+        timeFormatDescription: "نمایش زمان به صورت ۱۲ ساعته یا ۲۴ ساعته.",
+        timeFormatSystem: "پیش‌فرض سیستم",
+        timeFormat12: "۱۲ ساعته",
+        timeFormat24: "۲۴ ساعته",
       },
       notifications: {
         sectionTitle: "اعلان‌ها",
@@ -2519,6 +2538,9 @@ export const fa = {
           "رنگ‌هایی که در سراسر Unsloth، در حالت روشن و تیره، استفاده می‌شوند.",
         standard: "استاندارد",
         moreThemes: "پوسته‌های بیشتر",
+      },
+      composer: {
+        title: "ویرایشگر پیام",
       },
       code: {
         title: "کد",
@@ -3163,6 +3185,8 @@ export const fa = {
         "اعلان‌ها مسدود هستند. آن‌ها را برای Unsloth در تنظیمات مرورگر یا سیستم مجاز کنید و دوباره تلاش کنید.",
       replyNotificationKeywords:
         "اعلان هشدار تمام پایان کامل آماده پاسخ پس‌زمینه کوچک‌شده دسکتاپ صدا notification",
+      showLinkPreviews: "پیش‌نمایش پیوندها",
+      showLinkPreviewsDescription: "نمایش پیش‌نمایش هنگام قرار گرفتن نشانگر روی پیوندهای منابع.",
       showResponseModel: "مدل پاسخ",
       showResponseModelDescription:
         "جزئیات مدل در پاسخ‌های دستیار نمایش داده شود.",
@@ -3179,6 +3203,8 @@ export const fa = {
       inlineEditResponse: "«ویرایش پاسخ» روی پاسخ‌ها",
       inlineEditResponseDescription:
         "«ویرایش پاسخ» روی هر پاسخ باقی بماند، به‌جای منوی «بیشتر».",
+      turnNavigation: "پیمایش نوبت‌ها",
+      turnNavigationDescription: "پیام‌هایتان را به‌صورت نواری در لبهٔ چپ گفتگوهای طولانی نشان می‌دهد. برای پیش‌نمایش یک نوبت نشانگر را روی آن ببرید، برای رفتن به آن کلیک کنید و برای یافتن دوباره نشانکش بگذارید.",
       composerAtBottom: "کادر نوشتن در پایین",
       composerAtBottomDescription:
         "گفتگوهای جدید با کادر نوشتن در پایین صفحه آغاز شوند، نه در وسط.",
@@ -3846,8 +3872,6 @@ export const fa = {
           "اگر هنوز checkout مخزن را دارید، نصب‌کنندهٔ محلی را از همان‌جا اجرا کنید:",
         restartAfterUpdate:
           "پس از به‌روزرسانی، Unsloth را دوباره راه‌اندازی کنید.",
-        desktopManaged:
-          "برنامهٔ دسکتاپ به‌طور خودکار نسخه‌های جدید را بررسی می‌کند. همچنین می‌توانید هر زمان از اینجا بررسی یا به‌روزرسانی کنید.",
         desktopReady: "به‌روزرسانی‌های برنامهٔ دسکتاپ",
         desktopReadyDescription:
           "بررسی کنید که آیا نسخهٔ جدیدتری از برنامهٔ دسکتاپ در دسترس است.",
@@ -5813,5 +5837,60 @@ export const fa = {
     later: "بعداً",
     update: "به‌روزرسانی",
     undo: "واگرد",
+  },
+  generationStats: {
+    working: "در حال انجام...",
+    processingPrompt: "پردازش پرامپت {percent}%",
+    timeLeft: "{eta} مانده",
+    tokensOne: "{count} توکن",
+    tokens: "{count} توکن",
+    tokensOf: "{done} / {total} توکن",
+    draftAccepted: "پیش‌نویس {accepted}/{drafted} پذیرفته شد ({percent}%)",
+    timing: {
+      trigger: "زمان‌بندی پیام",
+      firstToken: "اولین توکن",
+      speedInStep: "سرعت (درون گام)",
+      effective: "مؤثر",
+      output: "خروجی",
+      denoising: "نویززدایی",
+      stepsOne: "{count} گام",
+      steps: "{count} گام",
+      blocksOne: "{count} بلوک",
+      blocks: "{count} بلوک",
+      canvas: "بوم",
+      generation: "تولید",
+      answerTokens: "توکن‌های پاسخ",
+      prompt: "پرامپت",
+      total: "کل",
+      chunks: "تکه‌ها",
+      promptEval: "ارزیابی پرامپت",
+      promptSpeed: "سرعت پرامپت",
+      speed: "سرعت",
+      tokens: "توکن‌ها",
+      draftAccepted: "پیش‌نویس پذیرفته‌شده",
+      denoisingSteps: "گام‌های نویززدایی",
+      blocksLabel: "بلوک‌ها",
+      cacheHits: "برخورد کش",
+      cacheWrites: "نوشتن در کش",
+      stopReason: "دلیل توقف",
+      stoppedByYou: "توسط شما متوقف شد",
+      endOfTurn: "پایان نوبت",
+      lengthLimit: "محدودیت طول",
+      toolCall: "فراخوانی ابزار",
+      contentFilter: "فیلتر محتوا",
+    },
+    placement: {
+      title: "محل قرارگیری وزن‌ها",
+      allOnCpu: "هر {total} لایه روی CPU",
+      split: "{gpu} از {total} لایه روی GPU، {cpu} روی CPU",
+      allOnGpu: "هر {total} لایه روی GPU",
+      expertCache: "هر {total} لایه روی GPU، همهٔ متخصص‌ها در RAM ({amount} کش متخصص روی GPU)",
+      expertSpillOne: "هر {total} لایه روی GPU، وزن‌های متخصص {count} لایه در RAM",
+      expertSpill: "هر {total} لایه روی GPU، وزن‌های متخصص {count} لایه در RAM",
+      inUnifiedMemory: "{amount} در حافظهٔ یکپارچه",
+      inSharedMemory: "{amount} در حافظهٔ مشترک",
+      inVram: "{amount} در VRAM",
+      inRam: "{amount} در RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

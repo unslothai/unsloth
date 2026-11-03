@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const pl = {
+  turns: {
+    label: "Tura {number}",
+    bookmarkedLabel: "Tura {number}, z zakładką",
+    bookmark: "Dodaj zakładkę do tury",
+    removeBookmark: "Usuń zakładkę",
+    navigator: "Tury",
+  },
   chatBackground: {
     noBackground: "Brak tła",
     sizing: "Skalowanie obrazu",
@@ -734,6 +741,8 @@ export const pl = {
     plainText: "Pole wiadomości z czystym tekstem",
     plainTextDescription:
       "Zachowuj kod, Markdown i linki jako zwykły tekst. Wyłącz, aby pokazywać sformatowany podgląd.",
+    richPaste: "Wklejanie sformatowanego tekstu",
+    richPasteDescription: "Wkleja linki, tabele i formatowanie jako Markdown. {shortcut} wkleja zwykły tekst. Pełny edytor tekstu sformatowanego wkrótce.",
     showContext: "Użycie okna kontekstu",
     sendShortcut: "Skrót wysyłania",
     sendMultiline: "{mod} + Enter dla promptów wielowierszowych",
@@ -1164,6 +1173,7 @@ export const pl = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Przed dodaniem kolejnego konta ustaw hasło właściciela instalacji. Będziesz go używać do logowania, gdy ta instalacja będzie miała wiele kont.",
       signsInAs: "Logowanie jako {username}",
       signsInAsOwner: "Logowanie jako {alias} lub {username}",
       signInName: "Twoja nazwa logowania",
@@ -2121,6 +2131,7 @@ export const pl = {
           "Nie udało się zapisać ustawień automatycznego przełączania modelu.",
         idleError:
           "Wpisz 0, aby utrzymać model wczytany, lub co najmniej 60 sekund.",
+        idleUnsaved: "Jeszcze nie zapisano.",
         keepKv: "Zachowuj kontekst czatu po zwolnieniu",
         keepKvDescription:
           "Zapisuj pamięć podręczną KV przed zwolnieniem z powodu bezczynności lub przed zajęciem GPU przez model obrazów lub wideo, aby wznowione czaty nie musiały ponownie wczytywać historii. Do 10 GB na dysku.",
@@ -2186,6 +2197,14 @@ export const pl = {
           off: "Wykonuje każde wywołanie narzędzia bez pytania. Kod w Pythonie i terminalu nadal działa w piaskownicy, która ogranicza dostęp do plików na komputerze. Bez działającej piaskownicy systemu ryzykowne wywołania najpierw pytają o zgodę.",
           full: "Wykonuje każde wywołanie narzędzia bez pytania i wyłącza piaskownicę kodu, więc kod w Pythonie i terminalu może odczytywać i zmieniać każdy plik dostępny dla Twojego konta.",
         },
+      },
+      display: {
+        title: "Wyświetlanie",
+        timeFormat: "Format godziny",
+        timeFormatDescription: "Pokazuj godziny w formacie 12- lub 24-godzinnym.",
+        timeFormatSystem: "Domyślny systemowy",
+        timeFormat12: "12-godzinny",
+        timeFormat24: "24-godzinny",
       },
       notifications: {
         sectionTitle: "Powiadomienia",
@@ -2562,6 +2581,9 @@ export const pl = {
           "Kolory używane w całym Unsloth, w trybie jasnym i ciemnym.",
         standard: "Standardowy",
         moreThemes: "Więcej motywów",
+      },
+      composer: {
+        title: "Pole wiadomości",
       },
       code: {
         title: "Kod",
@@ -3212,6 +3234,8 @@ export const pl = {
         "Powiadomienia są zablokowane. Zezwól na nie dla Unsloth w ustawieniach przeglądarki lub systemu i spróbuj ponownie.",
       replyNotificationKeywords:
         "notify notification alert done finished complete ready response reply background minimized desktop sound powiadomienie alert gotowe zakończone odpowiedź tło zminimalizowany dźwięk",
+      showLinkPreviews: "Podglądy linków",
+      showLinkPreviewsDescription: "Pokazuj podglądy po najechaniu kursorem na linki do źródeł.",
       showResponseModel: "Model odpowiedzi",
       showResponseModelDescription:
         "Pokazuj szczegóły modelu w odpowiedziach asystenta.",
@@ -3228,6 +3252,8 @@ export const pl = {
       inlineEditResponse: "Edycja odpowiedzi przy odpowiedziach",
       inlineEditResponseDescription:
         "Pokazuj opcję Edytuj odpowiedź przy każdej odpowiedzi zamiast w menu Więcej.",
+      turnNavigation: "Nawigacja po turach",
+      turnNavigationDescription: "Pokazuje Twoje wiadomości jako pasek przy lewej krawędzi długich czatów. Najedź, aby zobaczyć podgląd tury, kliknij, aby do niej przejść, i dodaj zakładkę, aby łatwo ją znaleźć.",
       composerAtBottom: "Pole wiadomości na dole",
       composerAtBottomDescription:
         "Rozpoczynaj nowe czaty z polem wiadomości na dole strony zamiast na środku.",
@@ -3906,8 +3932,6 @@ export const pl = {
         repoCheckoutFallback:
           "Jeśli nadal masz kopię repozytorium, uruchom z niej lokalny instalator:",
         restartAfterUpdate: "Po aktualizacji uruchom ponownie Unsloth.",
-        desktopManaged:
-          "Aplikacja komputerowa automatycznie sprawdza dostępność nowych wersji. W każdej chwili możesz też sprawdzić lub zaktualizować tutaj.",
         desktopReady: "Aktualizacje aplikacji komputerowej",
         desktopReadyDescription:
           "Sprawdź, czy dostępna jest nowsza wersja aplikacji komputerowej.",
@@ -5897,5 +5921,60 @@ export const pl = {
     later: "Później",
     update: "Aktualizuj",
     undo: "Cofnij",
+  },
+  generationStats: {
+    working: "Przetwarzanie...",
+    processingPrompt: "Przetwarzanie promptu {percent}%",
+    timeLeft: "zostało {eta}",
+    tokensOne: "tokeny: {count}",
+    tokens: "tokeny: {count}",
+    tokensOf: "tokeny: {done} / {total}",
+    draftAccepted: "szkic: zaakceptowano {accepted}/{drafted} ({percent}%)",
+    timing: {
+      trigger: "Czas wiadomości",
+      firstToken: "Pierwszy token",
+      speedInStep: "Szybkość (w kroku)",
+      effective: "Efektywna",
+      output: "Wyjście",
+      denoising: "Odszumianie",
+      stepsOne: "kroki: {count}",
+      steps: "kroki: {count}",
+      blocksOne: "bloki: {count}",
+      blocks: "bloki: {count}",
+      canvas: "Płótno",
+      generation: "Generowanie",
+      answerTokens: "Tokeny odpowiedzi",
+      prompt: "Prompt",
+      total: "Łącznie",
+      chunks: "Fragmenty",
+      promptEval: "Ewaluacja promptu",
+      promptSpeed: "Szybkość promptu",
+      speed: "Szybkość",
+      tokens: "Tokeny",
+      draftAccepted: "Zaakceptowane szkice",
+      denoisingSteps: "Kroki odszumiania",
+      blocksLabel: "Bloki",
+      cacheHits: "Trafienia w pamięci podręcznej",
+      cacheWrites: "Zapisy do pamięci podręcznej",
+      stopReason: "Powód zatrzymania",
+      stoppedByYou: "Zatrzymane przez Ciebie",
+      endOfTurn: "Koniec tury",
+      lengthLimit: "Limit długości",
+      toolCall: "Wywołanie narzędzia",
+      contentFilter: "Filtr treści",
+    },
+    placement: {
+      title: "Rozmieszczenie wag",
+      allOnCpu: "Wszystkie warstwy ({total}) na CPU",
+      split: "{gpu} z {total} warstw na GPU, {cpu} na CPU",
+      allOnGpu: "Wszystkie warstwy ({total}) na GPU",
+      expertCache: "Wszystkie warstwy ({total}) na GPU, wszyscy eksperci w RAM ({amount} pamięci podręcznej ekspertów na GPU)",
+      expertSpillOne: "Wszystkie warstwy ({total}) na GPU, wagi ekspertów z {count} warstwy w RAM",
+      expertSpill: "Wszystkie warstwy ({total}) na GPU, wagi ekspertów w RAM, warstwy: {count}",
+      inUnifiedMemory: "{amount} w pamięci zunifikowanej",
+      inSharedMemory: "{amount} w pamięci współdzielonej",
+      inVram: "{amount} w VRAM",
+      inRam: "{amount} w RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;
