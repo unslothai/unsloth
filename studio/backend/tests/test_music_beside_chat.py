@@ -20,7 +20,9 @@ from utils.account_context import OWNER, run_as
 
 ACE_STEP = "audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF"
 _INFO = {ACE_STEP: _music_info, "org/Music": _music_info, "org/Speech": _speak_info}
-_OWNER_CHAT_TOOLS_KEY = replace(OWNER, via_api_key = True, load_policy = LoadPolicy.BESIDE_ONLY)
+_OWNER_CHAT_TOOLS_KEY = replace(
+    OWNER, via_api_key = True, load_policy = LoadPolicy.BESIDE_ONLY, ui_chat = True
+)
 
 
 class AudioOrchestrator(FakeOrchestrator):

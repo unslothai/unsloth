@@ -299,7 +299,7 @@ def test_already_loaded_does_not_reload(monkeypatch):
 def _as_chat_tools_key(account, fn, *args, **kwargs):
     if account is None:
         return fn(*args, **kwargs)
-    key = replace(account, via_api_key = True, load_policy = "beside_only")
+    key = replace(account, via_api_key = True, load_policy = "beside_only", ui_chat = True)
     return run_as(key, fn, *args, **kwargs)
 
 
