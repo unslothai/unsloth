@@ -7,7 +7,7 @@ PEFT layers are marked merged, so decode runs one GEMM per projection instead of
 undone in a finally block (normal exit, exception, KeyboardInterrupt).
 
 Only folds when it is safe and worth it: grad off, max_new_tokens >= UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS
-(default 16), one active plain LoRA adapter (no DoRA, no lora bias, no active dropout) on plain 16-bit
+(default 128), one active plain LoRA adapter (no DoRA, no lora bias, no active dropout) on plain 16-bit
 nn.Linear weights that are frozen, untied and on one CUDA device, no vLLM engine sharing the weights,
 no FSDP / TP / PP / DTensor / DeepSpeed parameters, and the exact kernel's self-check passed. Anything
 else runs the normal LoRA path. UNSLOTH_LORA_FOLD_GENERATE=0 disables it.
@@ -59,11 +59,17 @@ def _refuse(reason):
     return None
 
 
+# Break-even = fold + unfold cost / per-token saving. Kaggle T4: Llama-3.2-1B eager 0.22 s / 5.9 ms
+# ~ 37 tokens; with decode CUDA graphs the LoRA overhead per token shrinks (gemma-3-1b 25.5 vs 20.8 ms)
+# ~ 57 tokens. 128 keeps a margin for bigger models, whose fold cost grows with the weights.
+_DEFAULT_MIN_TOKENS = 128
+
+
 def _min_tokens():
     try:
-        return int(os.environ.get("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS", "16"))
+        return int(os.environ.get("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS", _DEFAULT_MIN_TOKENS))
     except ValueError:
-        return 16
+        return _DEFAULT_MIN_TOKENS
 
 
 def _exact_api():
@@ -338,9 +344,24 @@ def _scope(entries):
         _restore(api, targets, flagged, stream)
         raise
     t1 = time.perf_counter()
+    # Host RAM of the fix-up store (indices + original values) held until the unfold; pinned memory
+    # is page-locked, so it is charged to the process for the whole generate call.
+    host_bytes, pinned = 0, None
+    for t in targets:
+        for buf in (getattr(t, "host_idx", None), getattr(t, "host_val", None)):
+            if isinstance(buf, torch.Tensor):
+                host_bytes += buf.numel() * buf.element_size()
+                pinned = buf.is_pinned() if pinned is None else (pinned and buf.is_pinned())
     with _LOCK:
         STATS["engaged"] += 1
-        STATS["last"] = {**info, "fold_s": t1 - t0, "unfold_s": None, "targets": len(targets)}
+        STATS["last"] = {
+            **info,
+            "fold_s": t1 - t0,
+            "unfold_s": None,
+            "targets": len(targets),
+            "host_store_bytes": host_bytes,
+            "host_store_pinned": pinned,
+        }
     try:
         yield True
     finally:

@@ -81,6 +81,9 @@ class _RefApi:
             back = (new.float() - d).to(w.dtype)
             bad = back.view(torch.int16) != w.view(torch.int16)
             t.bad, t.val = bad, w[bad].clone()
+            # Host fix-up store as the zoo keeps it: int32 flat indices + original 16-bit values.
+            t.host_idx = bad.flatten().nonzero().flatten().to(torch.int32)
+            t.host_val = t.val.cpu()
             t.checksum = w.view(torch.int16).long().sum()
             w.copy_(new)
             t.folded = True
@@ -114,6 +117,8 @@ def _clean(monkeypatch):
         "FSDP_VERSION",
     ):
         monkeypatch.delenv(name, raising = False)
+    # Tiny generates: test the mechanism at 16 tokens; the default (128) is checked on its own.
+    monkeypatch.setenv("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS", "16")
     api = _RefApi()
     monkeypatch.setattr(fold, "_exact_api", lambda: api)
     monkeypatch.setattr(fold, "_POISONED", None)
@@ -233,6 +238,9 @@ def test_fold_engages_skips_lora_and_restores_bits(model_id, _clean):
     s = fold.stats()
     assert s["engaged"] == 1 and s["restored"] == 1 and s["refused"] == {}
     assert s["last"]["targets"] > 0 and s["last"]["elements"] > 0
+    # 4 bytes of index + 2 of value per fix-up element; CPU tensors here are not pinned.
+    assert s["last"]["host_store_bytes"] == 6 * s["last"]["bad"]
+    assert s["last"]["host_store_pinned"] in (False, None)
     assert _clean.folds == 1 and _clean.unfolds == 1
     # The unfolded path does run LoRA: the counter above can fail.
     calls, handles = _count_lora_calls(model)
@@ -349,6 +357,11 @@ def test_short_calls_and_threshold(monkeypatch):
     monkeypatch.setenv("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS", "2")
     assert _generate(model, 4)[0] is True
     assert fold.stats()["engaged"] == 2
+    monkeypatch.delenv("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS")
+    assert fold._min_tokens() == 128
+    assert fold.requested_new_tokens(model, (), {"max_new_tokens": 127}) < fold._min_tokens()
+    monkeypatch.setenv("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS", "bad")
+    assert fold._min_tokens() == 128
 
 
 def test_nested_call_does_not_fold_twice(_clean):
