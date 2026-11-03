@@ -7,7 +7,7 @@ the run here as it goes, so a run survives a reload and shows up on every device
 import asyncio
 import threading
 import time
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
@@ -242,17 +242,21 @@ SWEEP_BUSY_DETAIL = (
 )
 
 
-def refuse_if_sweep_holds(request) -> None:
-    """409 a model swap that bypasses LOAD_PATHS (auto-switch, preview) while a sweep holds the server."""
-    if _lease is None:
-        return
+def admit_swap(request) -> Optional[Callable[[], None]]:
+    """A model swap that skips LOAD_PATHS (auto-switch, preview), admitted like a load: 409 while a
+    sweep holds the server, else counted in flight until the returned release runs."""
+    if request is None:
+        return None
     headers = getattr(request, "headers", None)
     holder = headers.get(LEASE_HEADER.decode()) if headers is not None else None
-    with _lease_lock:
-        busy = _sweep_holds_against(holder)
-    if busy:
+    admitted = _admit_load(holder)
+    if admitted is False:
         from fastapi import HTTPException
+
         raise HTTPException(status_code = 409, detail = SWEEP_BUSY_DETAIL)
+    if admitted is None:
+        return None
+    return lambda: _load_done(holder)
 
 
 def note_inference_request(holder: Optional[str]) -> None:

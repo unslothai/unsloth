@@ -8681,6 +8681,26 @@ async def _acquire_swap_gate() -> None:
         await asyncio.sleep(0.02)
 
 
+# The swap gate's holder's benchmark admission; only the gate's holder touches it.
+_swap_admission: Optional[Callable[[], None]] = None
+
+
+def _begin_swap_admission(fastapi_request) -> None:
+    """Under the swap gate: 409 while a benchmark holds the server, else count the swap as a load
+    in flight until the gate is released, so no benchmark lease is granted under it."""
+    global _swap_admission
+    from routes.benchmarks import admit_swap
+
+    _swap_admission = admit_swap(fastapi_request)
+
+
+def _end_swap_admission() -> None:
+    global _swap_admission
+    release, _swap_admission = _swap_admission, None
+    if release is not None:
+        release()
+
+
 # Queued auto-switch requests are not generating; the drain wait excludes them.
 _auto_switch_waiters: dict[tuple[str, str], int] = {}
 _auto_switch_waiters_guard = threading.Lock()
@@ -10703,11 +10723,9 @@ async def _auto_switch_npu_model(
     _note_switch_waiter(key, 1)
     try:
         async with _auto_switch_lock():
-            from routes.benchmarks import refuse_if_sweep_holds
-
-            refuse_if_sweep_holds(fastapi_request)
             await _acquire_swap_gate()
             try:
+                _begin_swap_admission(fastapi_request)
                 async with model_load_gate(), inference_lifecycle_gate():
                     # Re-read under the gate: another request may have loaded it while this one waited.
                     if await asyncio.to_thread(_loaded_satisfies, named_model):
@@ -10743,6 +10761,7 @@ async def _auto_switch_npu_model(
                 # Deregister before releasing the gate, as the GGUF switch does.
                 _note_switch_waiter(key, -1)
                 key = None
+                _end_swap_admission()
                 _auto_switch_process_lock.release()
     finally:
         if key is not None:
@@ -11401,12 +11420,10 @@ async def _maybe_auto_switch_model(
         waiter_noted = True
         try:
             async with _auto_switch_lock():
-                from routes.benchmarks import refuse_if_sweep_holds
-
-                refuse_if_sweep_holds(fastapi_request)
                 # Process-wide gate: the asyncio lock is per loop.
                 await _acquire_swap_gate()
                 try:
+                    _begin_swap_admission(fastapi_request)
                     # Hold the keep-warm gate across the swap so no new inference can
                     # start on the model while it is being torn down and replaced.
                     from utils.multi_model_settings import get_multi_model_enabled
@@ -11604,6 +11621,7 @@ async def _maybe_auto_switch_model(
                     # Deregister before releasing the gate or another loop's swap counts this as queued.
                     _note_switch_waiter(key, -1)
                     waiter_noted = False
+                    _end_swap_admission()
                     _auto_switch_process_lock.release()
         finally:
             if waiter_noted:
@@ -12133,16 +12151,14 @@ async def load_model_for_preview(
     # A refused preview must not stamp keep-warm activity, or public /p spam could pin an idle model in VRAM; untrack balances the counter.
     scope = getattr(fastapi_request, "scope", None)
     async with _auto_switch_lock():
-        from routes.benchmarks import refuse_if_sweep_holds
-
-        try:
-            refuse_if_sweep_holds(fastapi_request)
-        except HTTPException:
-            untrack_current_request(scope)
-            raise
         await _acquire_swap_gate()
         _swap_begun = False
         try:
+            try:
+                _begin_swap_admission(fastapi_request)
+            except HTTPException:
+                untrack_current_request(scope)
+                raise
             async with model_load_gate(), inference_lifecycle_gate():
                 # Preview loads bypass load_model(), so re-apply its sidecar install guard: a load must not finish mid-install or the installer later aborts.
                 if sidecar_swap_in_progress():
@@ -12259,6 +12275,7 @@ async def load_model_for_preview(
             # Cleared only after the lifecycle gate is released, so window arrivals are rejected.
             if _swap_begun:
                 note_preview_swap_end()
+            _end_swap_admission()
             _auto_switch_process_lock.release()
 
 
