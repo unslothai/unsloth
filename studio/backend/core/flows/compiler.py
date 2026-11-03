@@ -375,6 +375,8 @@ def compile_flow(doc: dict) -> Plan:
         consumers[src].add(dst)
 
     feedback = _check_feedback(feedback_edges, nodes, specs, owner, inputs, errors)
+    # A wire that is drawn but refused already has its own error; "draw the wire" would be wrong.
+    drawn = {_enclosing_loop(edge["source"], nodes, owner) for edge in feedback_edges}
 
     executable = {
         nid
@@ -385,7 +387,7 @@ def compile_flow(doc: dict) -> Plan:
         and not node.get("disabled")
     }
     for nid in executable:
-        if nodes[nid]["type"] == LOOP and nid not in feedback:
+        if nodes[nid]["type"] == LOOP and nid not in feedback and nid not in drawn:
             errors.append(
                 issue(
                     "Draw the dashed feeds-the-next-round wire from the score step back into the recipe's seed",
@@ -498,6 +500,13 @@ def compile_flow(doc: dict) -> Plan:
     )
 
 
+def _enclosing_loop(nid: str, nodes: dict[str, dict], owner: dict[str, Optional[str]]) -> Optional[str]:
+    loop = owner.get(nid)
+    while loop is not None and nodes[loop]["type"] != LOOP:
+        loop = owner.get(loop)
+    return loop
+
+
 def _check_feedback(
     edges: list[dict],
     nodes: dict[str, dict],
@@ -512,9 +521,7 @@ def _check_feedback(
         sspec, dspec = specs.get(src), specs.get(dst)
         if sspec is None or dspec is None:
             continue
-        loop = owner.get(src)
-        while loop is not None and nodes[loop]["type"] != LOOP:
-            loop = owner.get(loop)
+        loop = _enclosing_loop(src, nodes, owner)
         if loop is None or not _within(dst, loop, owner):
             errors.append(
                 issue("A feeds-the-next-round wire runs inside one Loop group", edge_id = eid)

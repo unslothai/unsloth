@@ -416,8 +416,10 @@ def test_a_loop_refuses_an_lm_eval_task_on_its_benchmark():
     d["nodes"][3]["params"]["task"] = "HellaSwag"
     parsed, errors = parse_document(d)
     assert not errors, errors
-    with pytest.raises(CompileError, match = "set Benchmark's Task to Recipe held-out"):
+    with pytest.raises(CompileError, match = "set Benchmark's Task to Recipe held-out") as raised:
         compile_flow(parsed)
+    # The feedback wire is drawn; only its task is wrong.
+    assert not any("Draw the dashed" in i["message"] for i in raised.value.issues)
 
 
 @run_async
