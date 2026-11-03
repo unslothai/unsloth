@@ -1905,8 +1905,7 @@ def get_packed_info_from_kwargs(
 
     max_seqlen = max(host)
     result = (lengths, cu_seqlens, max_seqlen)
-    # Shape metadata keeps host scalars symbolic under torch.compile, without .item()
-    # inside attention or any device allocation for the descriptor itself.
+    # Meta shapes carry symbolic host scalars without allocating device memory.
     row_shape = torch.empty((sum(host), max_seqlen), device = "meta")
     _refresh_derived_packed_caches(entry, seq_lengths, result, device)
     _PACKED_INFO_CACHE[device] = {

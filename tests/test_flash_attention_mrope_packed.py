@@ -187,8 +187,7 @@ def _compiled_boundaries(packed_rows, cases, warm):
             packing.get_packed_info_from_kwargs(
                 {"packed_seq_lengths": lengths}, torch.device("cpu")
             )
-        # Keep the recording stub's list length fixed across calls: Dynamo guards it,
-        # which would otherwise measure the harness's side effects as recompilations.
+        # Dynamo guards the recording list's length.
         calls.clear()
         compiled(_query(length), lengths)
         kw = calls[-1]
@@ -301,7 +300,6 @@ def test_warm_packed_rows_support_fullgraph_forward_backward(monkeypatch, dynami
         for total, docs, expected_cu, expected_max in cases:
             packing.clear_packed_caches()
             lengths = torch.tensor(docs, dtype = torch.int32)
-            # Only warm the metadata producer, as the outer forward does; do not warm attention.
             packing.get_packed_info_from_kwargs(
                 {"packed_seq_lengths": lengths}, torch.device("cpu")
             )

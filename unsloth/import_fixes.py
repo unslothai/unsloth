@@ -2191,8 +2191,6 @@ def _packed_row_boundaries(kwargs, device, total):
             and _cache_hit(entry)
             and "row_shape" in entry
         ):
-            # The outer forward already prepared host metadata. Shapes are traceable and
-            # symbolic, unlike cached Python ints, so warm calls need no graph break.
             covered, max_seqlen = entry["row_shape"].shape
             if covered > total:
                 return None
