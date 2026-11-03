@@ -986,3 +986,69 @@ test("a column rename reaches a drop processor's list, and an edit keeps a prese
   const kept = (edited.group?.config as { model_configs: { inference_parameters: Record<string, unknown> }[] }).model_configs;
   assert.equal(kept[0].inference_parameters.max_parallel_requests, 16);
 });
+
+test("an edited provider or preset takes what its form says, and a renamed preset keeps what the form does not show", () => {
+  const { group, nodes } = sqlGroup();
+  const cfg = group.config as Record<string, unknown>;
+  const providers = (cfg.model_providers as Record<string, unknown>[]).map((p) => ({ ...p, is_local: true }));
+  const presets = (cfg.model_configs as Record<string, unknown>[]).map((m) => ({
+    ...m,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    inference_parameters: { temperature: 0.7, top_p: 0.9, max_parallel_requests: 3 },
+  }));
+  // biome-ignore lint/style/useNamingConvention: api schema
+  const saved = { ...group, config: { ...cfg, model_providers: providers, model_configs: presets } };
+  const view = studioView(saved, nodes);
+  const provider = Object.values(view.configs).find((c) => c.kind === "model_provider");
+  const preset = Object.values(view.configs).find((c) => c.kind === "model_config");
+  assert.ok(provider && preset);
+  // Switched to an external endpoint: the saved is_local must not survive.
+  const external = commitStudioEdit(
+    saved,
+    nodes,
+    view,
+    applyConfigPatch(view.configs, provider.id, { is_local: false, endpoint: "https://example.com/v1" } as never),
+  );
+  const sent = (external.group?.config as { model_providers: Record<string, unknown>[] }).model_providers[0];
+  assert.notEqual(sent.is_local, true);
+  // Temperature cleared in the form, preset renamed: concurrency stays, temperature goes.
+  const renamed = commitStudioEdit(
+    saved,
+    nodes,
+    view,
+    applyConfigPatch(view.configs, preset.id, { name: "writer2", inference_temperature: "" } as never),
+  );
+  const params = (renamed.group?.config as { model_configs: { inference_parameters: Record<string, unknown> }[] })
+    .model_configs[0].inference_parameters;
+  assert.equal(params.max_parallel_requests, 3);
+  assert.equal(params.temperature, undefined);
+});
+
+test("a copied subcategory and validator follow the copied columns they name", async () => {
+  const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const column = (id: string, def: Record<string, unknown>, x: number) => ({
+    id,
+    type: "recipe.column",
+    v: 1,
+    params: { column: def },
+    pos: [x, 0] as [number, number],
+    label: String(def.name),
+    group: "r",
+  });
+  const nodes = [
+    column("c1", { name: "domain", column_type: "sampler", sampler_type: "category", params: { values: ["a"] } }, 0),
+    column("c2", { name: "topic", column_type: "sampler", sampler_type: "subcategory", params: { category: "domain", values: { a: ["x"] } } }, 300),
+    column("c3", { name: "check", column_type: "validation", target_columns: ["topic"] }, 600),
+  ];
+  const group = { id: "r", label: "R", kind: "recipe" as const, rect: [-100, -100, 3000, 1000] as [number, number, number, number], config: {} };
+  useDocStore.getState().load({ ...doc(nodes as never), groups: [group] });
+  const store = useDocStore.getState();
+  const fragment = cloneFragment(store.graph, ["c1", "c2", "c3"], [40, 40]);
+  store.insertFragment(fragment);
+  const g = useDocStore.getState().graph;
+  const [, topic, check] = fragment.nodes.map((n) => (g.nodes[n.id].params as { column: Record<string, unknown> }).column);
+  assert.equal(topic.name, "topic_2");
+  assert.equal((topic.params as { category: string }).category, "domain_2");
+  assert.deepEqual(check.target_columns, ["topic_2"]);
+});

@@ -236,9 +236,29 @@ const ENTRY_NAME: Record<string, string> = {
   tool_configs: "tool_alias",
 };
 
+/** Fields the forms edit (builders-model.ts): an edited entry takes these from the form, set or
+ * left out; every other saved field stays. Lists not named here are taken from the form whole. */
+const FORM_FIELDS: Record<string, string[]> = {
+  // biome-ignore lint/style/useNamingConvention: api schema
+  model_providers: ["name", "endpoint", "provider_type", "api_key_env", "api_key", "extra_headers", "extra_body", "is_local"],
+  // biome-ignore lint/style/useNamingConvention: api schema
+  model_configs: ["alias", "model", "gguf_variant", "provider", "skip_health_check", "inference_parameters"],
+};
+const FORM_INFERENCE = ["temperature", "top_p", "max_tokens", "timeout", "extra_body"];
+
+function without(record: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(record).filter(([k]) => !keys.includes(k)));
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 /** A provider, preset or tool profile the edit did not touch is kept exactly as saved, settings the
  * forms do not show included (a preset's max_parallel_requests, a uniform temperature); an edited
- * one keeps those settings under what the form changed. */
+ * or renamed one keeps those settings and takes every field the form edits from the form. */
 function keepUnshown(
   key: string,
   built: unknown,
@@ -250,31 +270,32 @@ function keepUnshown(
   if (!field || !Array.isArray(built) || !Array.isArray(saved)) return built;
   const byName = new Map(
     saved.flatMap((entry) => {
-      const name = (entry as Record<string, unknown> | null)?.[field];
+      const name = asRecord(entry)?.[field];
       return typeof name === "string" ? [[name, entry as Record<string, unknown>]] : [];
     }),
   );
   return built.map((entry) => {
-    const item = entry as Record<string, unknown>;
+    const item = asRecord(entry);
     const name = item?.[field];
-    const original = typeof name === "string" ? byName.get(name) : undefined;
-    if (!original) return entry;
+    if (!item || typeof name !== "string") return entry;
+    // The block this entry came from, found by its id so a rename still finds what was saved.
     const config = Object.values(configs).find((c) => !isColumnConfig(c) && c.name === name);
-    if (config && before.configs[config.id] === config) return original;
-    const params = (v: unknown) =>
-      v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
-    const was = params(original.inference_parameters);
-    const now = params(item.inference_parameters);
-    return {
-      ...original,
-      ...item,
-      ...(was && now
-        ? {
-            // biome-ignore lint/style/useNamingConvention: api schema
-            inference_parameters: { ...was, ...now },
-          }
-        : {}),
-    };
+    const was = config ? before.configs[config.id] : undefined;
+    const original = byName.get(was?.name ?? name);
+    if (!original) return entry;
+    if (config && was === config) return original;
+    const fields = FORM_FIELDS[key];
+    if (!fields) return entry;
+    const merged: Record<string, unknown> = { ...without(original, fields), ...item };
+    const savedParams = asRecord(original.inference_parameters);
+    if (key === "model_configs" && savedParams) {
+      // biome-ignore lint/style/useNamingConvention: api schema
+      merged.inference_parameters = {
+        ...without(savedParams, FORM_INFERENCE),
+        ...(asRecord(item.inference_parameters) ?? {}),
+      };
+    }
+    return merged;
   });
 }
 
