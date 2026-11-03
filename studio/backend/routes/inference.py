@@ -51288,7 +51288,6 @@ async def _generate_openai_images(
             logger.error("openai_images.generate_failed: %s", exc)
             raise HTTPException(status_code = 500, detail = _generate_failure_detail(str(exc)))
 
-    # The request duration includes queue time; it belongs to the request, not to each image separately.
     generation_seconds = time.perf_counter() - generation_started
     # A local-directory load puts the host path in repo_id, and the monitor row is tunnelled.
     _served_repo = str(result.get("repo_id") or "")

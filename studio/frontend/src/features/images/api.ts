@@ -315,7 +315,6 @@ export interface GalleryImage {
   batch_seed?: number | null;
   batch_index: number;
   batch_size: number;
-  // Elapsed time covers the generation request and is shared across its images.
   generation_seconds?: number | null;
   generation_count?: number | null;
   model: string | null;
