@@ -1644,6 +1644,40 @@ def test_fp8_lora_accumulates_small_adapter_before_base_rounding(monkeypatch):
     assert not torch.equal(old_order, reference)
 
 
+@pytest.mark.parametrize("projection", ["gate_proj", "up_proj", "down_proj"])
+def test_biased_native_mlp_keeps_its_forward(projection):
+    from peft import LoraConfig, get_peft_model
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    model = get_peft_model(
+        LlamaForCausalLM(
+            LlamaConfig(
+                vocab_size = 64,
+                hidden_size = 32,
+                intermediate_size = 64,
+                num_hidden_layers = 1,
+                num_attention_heads = 4,
+                num_key_value_heads = 2,
+                mlp_bias = True,
+            )
+        ),
+        LoraConfig(r = 4, target_modules = ["gate_proj", "up_proj", "down_proj"]),
+    )
+    mlp = model.get_base_model().model.layers[0].mlp
+    for name in ("gate_proj", "up_proj", "down_proj"):
+        base = getattr(mlp, name).base_layer
+        if name != projection:
+            base.bias = None
+        else:
+            base.bias.data.fill_(0.25)
+        base.__dict__["_unsloth_fp8_lora"] = FL.Fp8LoRABaseState(base.weight)
+    original = mlp.forward
+    f8t._prepare_fp8_lora_operators(model, allow_cpu = True)
+    assert mlp.forward == original
+    x = torch.randn(2, 16, 32)
+    torch.testing.assert_close(mlp(x), original(x), rtol = 0, atol = 0)
+
+
 @pytest.mark.parametrize(
     "mode", ["full", "gelu", "partial", "custom", "custom_class", "private_norm", "generated"]
 )

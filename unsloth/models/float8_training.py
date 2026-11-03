@@ -776,6 +776,11 @@ def _prepare_fp8_lora_operators(model, allow_cpu = False):
                         getattr(module, part, None)
                         for part in ("gate_proj", "up_proj", "down_proj")
                     ]
+                    if any(
+                        getattr(getattr(proj, "base_layer", None), "bias", None) is not None
+                        for proj in projs
+                    ):
+                        continue
                     states = [
                         getattr(getattr(proj, "base_layer", None), "__dict__", {}).get(
                             "_unsloth_fp8_lora"
