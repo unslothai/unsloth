@@ -376,6 +376,22 @@ export function supportsProviderMaxOutputTokens(
   );
 }
 
+// One picker entry: the plan picks the registry type, and with it the URL that decides the billing.
+export const OPENCODE_PLANS = [
+  { providerType: "opencode", label: "Console" },
+  { providerType: "opencode_go", label: "Go" },
+] as const;
+
+export function isOpenCodeProviderType(
+  providerType: string | null | undefined,
+): boolean {
+  return OPENCODE_PLANS.some((plan) => plan.providerType === providerType);
+}
+
+export function connectionPickerValue(providerType: string): string {
+  return isOpenCodeProviderType(providerType) ? "opencode" : providerType;
+}
+
 export const CUSTOM_PROVIDER_PRESETS = [
   {
     providerType: "llama_cpp",

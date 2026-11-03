@@ -280,11 +280,15 @@ _CANCEL_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inf
 
 
 def _loaded_chat_template() -> Optional[str]:
-    """Chat template of the currently loaded GGUF model, if any."""
+    """Chat template llama-server renders for the loaded GGUF: the override when one is set."""
     try:
-        return get_llama_cpp_backend().chat_template
+        backend = get_llama_cpp_backend()
+        return backend.chat_template_override or backend.chat_template
     except Exception:
         return None
+
+
+_LLAMA_ERROR_BODY_RE = _re.compile(r"llama-server returned \d{3}: (.*)", _re.DOTALL)
 
 
 def _template_raise_message(error_text: str, chat_template: Optional[str]) -> Optional[str]:
@@ -293,13 +297,23 @@ def _template_raise_message(error_text: str, chat_template: Optional[str]) -> Op
     llama-server text. Anchors on llama.cpp's "Jinja Exception:" prefix."""
     if not chat_template:
         return None
+    # Decode the JSON error body first: it escapes quotes inside the raised message.
+    stops = ('"', "\n")
+    body = _LLAMA_ERROR_BODY_RE.match(error_text)
+    if body:
+        try:
+            decoded = error_message_from_chunk(json.loads(body.group(1)))
+        except ValueError:
+            decoded = None
+        if decoded:
+            error_text, stops = decoded, ("\n",)
     marker = "Jinja Exception:"
     idx = error_text.find(marker)
     if idx == -1:
         return None
     candidate = error_text[idx + len(marker) :]
-    # llama-server appends JSON after the message; cut at the first boundary.
-    for stop in ('"', "\n"):
+    # Undecoded, llama-server appends JSON after the message; cut at the first boundary.
+    for stop in stops:
         cut = candidate.find(stop)
         if cut != -1:
             candidate = candidate[:cut]
@@ -16033,7 +16047,7 @@ def _native_audio_cpu_load(config, request) -> bool:
 
     audio_type = getattr(config, "audio_type", None)
     return audio_type in NATIVE_AUDIO_TYPES and audio_load_runs_on_cpu(
-        audio_type, getattr(request, "audio_device", None)
+        audio_type, getattr(request, "audio_device", None), getattr(config, "audio_cpp", None)
     )
 
 
@@ -16045,6 +16059,9 @@ def _resident_audio_placement_matches(backend, request) -> bool:
     resident = backend.models.get(backend.active_model_name, {})
     audio_type = resident.get("audio_type")
     if audio_type not in NATIVE_AUDIO_TYPES:
+        return True
+    if resident.get("audio_cpu_only"):
+        # A CPU-only package lands on the CPU whatever the device, so no request moves it.
         return True
     device = getattr(request, "audio_device", None)
     if resident.get("audio_device_fallback") == "cpu":
@@ -16163,7 +16180,9 @@ async def _preflight_native_audio_placement(
             # Umbrella id: size from the one variant it loads, not repository bytes.
             audio_cpp_model = getattr(config, "audio_cpp", None)
             if audio_cpp_model is not None:
-                required_gb = audio_cpp_resident_gb(audio_cpp_model.size_bytes)
+                required_gb = audio_cpp_resident_gb(
+                    audio_cpp_model.size_bytes, audio_cpp_model.family
+                )
         elif len(targets) > 1:
             required_gb = 0.0
             for target in targets:
@@ -49012,6 +49031,7 @@ async def _external_image_generation(
         timeout = 600.0,
     )
     owner = current_account_id()
+    generation_started = time.perf_counter()
     task = asyncio.create_task(
         client.create_images(
             prompt = body.prompt,
@@ -49055,6 +49075,7 @@ async def _external_image_generation(
                 status_code = 502, detail = "The image endpoint did not return a usable image."
             ) from exc
 
+        generation_seconds = time.perf_counter() - generation_started
         created_at = time.time()
 
         def _persist() -> list[dict]:
@@ -49071,6 +49092,8 @@ async def _external_image_generation(
                             "seed": body.seed or 0,
                             "batch_index": index,
                             "batch_size": body.batch_size,
+                            "generation_seconds": generation_seconds,
+                            "generation_count": len(images),
                             "model": external_model,
                             "model_kind": "connection",
                             "created_at": created_at,
@@ -49210,6 +49233,7 @@ async def _generate_diffusion_image_run(
         else None
     )
     submitted = request
+    generation_started = time.perf_counter()
     # FLUX.3 prompt upsampling runs ahead of the run, so the sidecar can leave the VRAM before the DiT denoises.
     enhancement = await _enhance_generate_prompts(backend, request)
     if enhancement.status != "applied":
@@ -49353,6 +49377,7 @@ async def _generate_diffusion_image_run(
             _diffusion_persist_active -= 1
             raise
 
+    generation_seconds = time.perf_counter() - generation_started
     # Persist each image with its full recipe. BOTH engines batch with a distinct seed per image, returned in ``seeds``, so each is individually reproducible.
     created_at = time.time()
     per_image_seeds = result.get("seeds")
@@ -49395,6 +49420,8 @@ async def _generate_diffusion_image_run(
                         "batch_index": index,
                         # The batch shares one seed, so reproducing a batch_index>0 image needs the original batch_size.
                         "batch_size": 1 if list_driven else request.batch_size,
+                        "generation_seconds": generation_seconds,
+                        "generation_count": len(result["images"]),
                         "model": result.get("repo_id"),
                         **({"engine": result["engine"]} if result.get("engine") else {}),
                         # The BUILD the image came off, not just the repo id: a GGUF repo holds many quants, a dense load may be torchao-
@@ -51235,6 +51262,7 @@ async def _generate_openai_images(
         openai_errors = True,
         hf_token = hf_token,
     )
+    generation_started = time.perf_counter()
 
     # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.
     backend = get_active_diffusion_engine()
@@ -51318,6 +51346,7 @@ async def _generate_openai_images(
             logger.error("openai_images.generate_failed: %s", exc)
             raise HTTPException(status_code = 500, detail = _generate_failure_detail(str(exc)))
 
+    generation_seconds = time.perf_counter() - generation_started
     # A local-directory load puts the host path in repo_id, and the monitor row is tunnelled.
     _served_repo = str(result.get("repo_id") or "")
     api_monitor.relabel(monitor_id, public_model_id(_served_repo) or _served_repo)
@@ -51334,6 +51363,8 @@ async def _generate_openai_images(
         "guidance": guidance,
         # The batch shares one base seed, so restoring a batch_index>0 sibling needs the original batch_size.
         "batch_size": body.n,
+        "generation_seconds": generation_seconds,
+        "generation_count": len(result["images"]),
         "model": result.get("repo_id"),
         # Same build record as /images/generate, so the gallery entry can name the GGUF quant and precision.
         "model_kind": result.get("model_kind"),
