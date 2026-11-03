@@ -27,7 +27,6 @@ import { cn } from "@/lib/utils";
 import { CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
 
 const REFRESH_MS = 60_000;
-// Saves land in bursts while a reply streams; one refetch after they settle is enough.
 const HISTORY_SETTLE_MS = 1_500;
 
 const PERIOD_KEYS = {
