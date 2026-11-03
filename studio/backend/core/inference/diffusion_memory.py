@@ -6716,18 +6716,15 @@ def denoiser_offload_reason(pipe: Any, offload_policy: Any) -> Optional[str]:
         return None
     if tier == DENOISER_RESIDENT:
         return (
-            "the transformer stays on the GPU; only the text encoders stream from CPU, once per prompt, "
-            "so every denoise step runs at resident speed"
+            "the transformer stays on the GPU, so every denoise step runs at resident speed; only "
+            "components used once per prompt, such as the text encoders, stream from CPU"
         )
     if tier == DENOISER_PARTIAL:
         return (
-            f"the transformer does not fit on the GPU: {counts[0]} of its {counts[1]} block groups stay "
-            "resident and the rest stream from CPU on every denoise step (slower)"
+            f"{counts[0]} of the transformer's {counts[1]} block groups stay on the GPU and the rest "
+            "stream from CPU on every denoise step (slower than resident)"
         )
-    return (
-        "the transformer does not fit on the GPU: every block streams from CPU on every denoise step "
-        "(much slower than resident)"
-    )
+    return "every transformer block streams from CPU on every denoise step (slower than resident)"
 
 
 def denoisers_pinned_resident(pipe: Any) -> bool:

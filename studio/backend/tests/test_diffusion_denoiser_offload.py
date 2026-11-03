@@ -62,7 +62,9 @@ def test_some_groups_pinned_is_partial_with_the_counts():
     pipe = types.SimpleNamespace(transformer = module)
     assert dm.denoiser_residency(pipe) == (2, 4)
     assert dm.denoiser_offload(pipe, dm.OFFLOAD_GROUP) == dm.DENOISER_PARTIAL
-    assert "2 of its 4 block groups" in dm.denoiser_offload_reason(pipe, dm.OFFLOAD_GROUP)
+    assert "2 of the transformer's 4 block groups" in dm.denoiser_offload_reason(
+        pipe, dm.OFFLOAD_GROUP
+    )
 
 
 def test_every_group_pinned_is_resident():
