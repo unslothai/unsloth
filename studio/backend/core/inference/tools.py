@@ -12865,8 +12865,11 @@ def _mcp_search_matches(arguments) -> tuple[list[dict], list[dict]]:
     order, exact = _mcp_ranked(specs, arguments.get("query"))
     picked = [specs[i] for i in order[: max(_mcp_search_limit(arguments.get("limit")), exact)]]
     fitted = []
-    for spec in mcp_fit_loaded(picked):
-        candidate = _mcp_search_result([*fitted, spec])
+    for spec in picked:
+        retained = [*fitted, spec]
+        if len(mcp_fit_loaded(retained)) != len(retained):
+            continue
+        candidate = _mcp_search_result(retained)
         # Price the complete response so the final result cap never cuts a schema in half.
         if _fit_result_to_room(candidate, MCP_TOOL_SEARCH_NAME) == candidate:
             fitted.append(spec)

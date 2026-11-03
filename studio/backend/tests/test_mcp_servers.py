@@ -2735,11 +2735,16 @@ def test_deferred_mcp_calls_keep_catalog_coercion_on_every_call(monkeypatch, sea
 
 
 @pytest.mark.parametrize(
-    "schema_chars,context_tokens,result_tokens",
-    [(20_000, 32_768, 32_768), (3_000, 2_048, 2_048), (1_200, 32_768, 300)],
+    "schema_chars,small_chars,context_tokens,result_tokens",
+    [
+        (20_000, 0, 32_768, 32_768),
+        (3_000, 0, 2_048, 2_048),
+        (1_200, 0, 32_768, 300),
+        (30_000, 8_000, 32_768, 32_768),
+    ],
 )
 def test_search_returns_whole_schemas_within_the_result_budget(
-    tmp_path, monkeypatch, listing_window, schema_chars, context_tokens, result_tokens
+    tmp_path, monkeypatch, listing_window, schema_chars, small_chars, context_tokens, result_tokens
 ):
     from core.inference import tools as tools_mod
 
@@ -2750,7 +2755,7 @@ def test_search_returns_whole_schemas_within_the_result_budget(
             "properties": {"value": {"type": "string", "description": "x" * schema_chars}},
         },
     }
-    _cache_server_tools(tmp_path, monkeypatch, [big, _PING])
+    _cache_server_tools(tmp_path, monkeypatch, [big, dict(_PING, description = "p" * small_chars)])
     listing_window(context_tokens)
     result = tools_mod.execute_tool(
         "mcp_tool_search",
