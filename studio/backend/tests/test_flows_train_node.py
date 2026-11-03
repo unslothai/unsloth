@@ -378,15 +378,46 @@ def test_chat_with_checkpoint_skips_the_reload_once_stopped(monkeypatch):
 
 
 def test_auto_eval_split_skips_every_split_the_training_reads(monkeypatch):
+    from types import SimpleNamespace
+
     import datasets
 
     monkeypatch.setattr(
         datasets, "get_dataset_split_names", lambda *a, **k: ["train", "validation", "test"]
     )
+    big = SimpleNamespace(num_examples = 100)
+    info = SimpleNamespace(splits = {"validation": big, "test": big})
+    monkeypatch.setattr(datasets, "load_dataset_builder", lambda *a, **k: SimpleNamespace(info = info))
     auto = training._auto_eval_split
     assert auto({"ref": "a/b"}, "train+validation", None) == "test"
     assert auto({"ref": "a/b"}, "validation[:50%]", None) == "test"
     assert auto({"ref": "a/b"}, "train", None) == "validation"
+
+
+def test_auto_eval_split_skips_a_split_too_small_to_evaluate_on(monkeypatch):
+    from types import SimpleNamespace
+
+    import datasets
+
+    monkeypatch.setattr(
+        datasets, "get_dataset_split_names", lambda *a, **k: ["train", "validation", "val", "test"]
+    )
+    sizes = {"validation": SimpleNamespace(num_examples = 5)}
+    monkeypatch.setattr(
+        datasets,
+        "load_dataset_builder",
+        lambda *a, **k: SimpleNamespace(info = SimpleNamespace(splits = sizes)),
+    )
+    # No metadata for "val": counted by streaming, and 3 rows is too few as well.
+    streamed = {"val": 3, "test": 40}
+    monkeypatch.setattr(
+        datasets,
+        "load_dataset",
+        lambda ref, subset, split, **k: SimpleNamespace(
+            take = lambda n: range(min(n, streamed[split]))
+        ),
+    )
+    assert training._auto_eval_split({"ref": "a/b"}, "train", None) == "test"
 
 
 def test_hub_holdout_never_downloads_more_than_it_can_use(monkeypatch):
@@ -663,7 +694,11 @@ def test_hub_eval_split_survives_the_hold_out(monkeypatch):
     # A blank eval split is the Hub's validation/test split, as the trainer would pick it.
     import datasets
 
+    from types import SimpleNamespace
+
     monkeypatch.setattr(datasets, "get_dataset_split_names", lambda *a, **k: ["train", "test"])
+    info = SimpleNamespace(splits = {"test": SimpleNamespace(num_examples = 50)})
+    monkeypatch.setattr(datasets, "load_dataset_builder", lambda *a, **k: SimpleNamespace(info = info))
     splits.clear()
     started.clear()
     ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, eval_steps = 0.1)
