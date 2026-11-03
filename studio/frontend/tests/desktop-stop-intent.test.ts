@@ -252,8 +252,8 @@ test("a second stop cannot run while the first is in flight", async () => {
 
   const tray = hook.slice(hook.indexOf('register<void>("tray-toggle-server"'));
   assert.match(
-    tray.slice(0, tray.indexOf("});")),
-    /statusRef\.current === "running"\)\s*\{\s*stopServer\(\);/,
+    tray.slice(0, tray.indexOf("retry();")),
+    /statusRef\.current === "running"\)\s*\{\s*stopServer\(\)/,
   );
 
   const guard = hook.slice(
@@ -293,4 +293,14 @@ test("every deliberate start drops the marker", async () => {
   );
   assert.match(retry, /clearServerStopIntent\(\);/);
   assert.match(retry, /checkInstallAndStart\(\);/);
+});
+
+test("a tray stop that fails tells the user why", () => {
+  const hook = USE_TAURI_BACKEND;
+  const tray = hook.slice(hook.indexOf('register<void>("tray-toggle-server"'));
+  assert.match(
+    tray.slice(0, tray.indexOf("retry();")),
+    /stopServer\(\)\.catch\(\(e\) => \{\s*toast\.error\([^)]*String\(e\)/,
+    "the tray drops the reason a stop failed",
+  );
 });
