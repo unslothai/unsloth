@@ -532,3 +532,23 @@ test("deleting a style-pinned reroute heals to a plain edge the backend accepts"
   const rerouteNode = readFileSync(new URL("../src/features/flows/editor/reroute-node.tsx", import.meta.url), "utf8");
   assert.match(rerouteNode, /useEffect\(\(\) => updateNodeInternals\(id\), \[dir, id, updateNodeInternals\]\)/);
 });
+
+test("a direct wire into a single input clears an empty reroute's segment there, so a later feed cannot double it", () => {
+  useDocStore.getState().load(
+    doc(
+      [node("a", "input.text", [0, 0]), node("b", "input.text", [0, 200]), node("llm", "llm.generate", [600, 0])],
+      [],
+    ),
+  );
+  useDocStore.getState().addReroute({ id: "r1", pos: [300, 10] });
+  assert.equal(
+    tryConnect({ source: "r1", sourceHandle: REROUTE_OUT_HANDLE, target: "llm", targetHandle: inHandle("prompt") }),
+    null,
+  );
+  assert.equal(tryConnect({ source: "a", sourceHandle: outHandle("text"), target: "llm", targetHandle: inHandle("prompt") }), null);
+  assert.deepEqual(graph().wireOrder, []);
+  tryConnect({ source: "b", sourceHandle: outHandle("text"), target: "r1", targetHandle: REROUTE_IN_HANDLE });
+  const into = plain().filter((e) => e.endsWith("->llm.prompt"));
+  assert.equal(into.length, 1);
+  assert.match(into[0], /:a\.text->/);
+});
