@@ -6637,7 +6637,7 @@ export function AppSidebar() {
           aria-hidden="true"
           className={cn(
             // from-[8px] holds the fade opaque across the hard clip, matching the list's pb-2.
-            "pointer-events-none absolute start-0 end-[var(--sidebar-rail,0px)] bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
+            "sidebar-footer-fade pointer-events-none absolute start-0 end-[var(--sidebar-rail,0px)] bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
             showUpdateCard ? "h-7" : "h-10",
             // data-visible is written by syncFade, not React.
             "opacity-0 data-[visible=true]:opacity-100",
