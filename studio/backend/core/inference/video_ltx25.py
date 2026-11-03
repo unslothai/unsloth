@@ -804,7 +804,13 @@ def _server_reserved_mib(device: Optional[str]) -> Optional[int]:
 
 
 class TextEncoderWorkerError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        *args: Any,
+        cache_miss: bool = False,
+    ) -> None:
+        super().__init__(*args)
+        self.cache_miss = cache_miss
 
 
 class Ltx25TextEncoderClient:
@@ -968,7 +974,9 @@ class Ltx25TextEncoderClient:
                     and msg.get("id") != request_id
                 ):
                     continue
-                raise TextEncoderWorkerError(str(msg.get("error") or "unknown error"))
+                raise TextEncoderWorkerError(
+                    str(msg.get("error") or "unknown error"), cache_miss = bool(msg.get("cache_miss"))
+                )
             return msg
 
     def wait_ready(self, cancel: Optional[threading.Event] = None) -> dict:
