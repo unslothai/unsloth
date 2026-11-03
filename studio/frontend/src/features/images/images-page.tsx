@@ -1293,16 +1293,19 @@ function RecipeRow({
   value,
   wrap,
   mono,
+  title,
 }: {
   label: string;
   value: string;
   wrap?: boolean;
   mono?: boolean;
+  title?: string;
 }) {
   return (
     <div className={cn("grid grid-cols-[72px_1fr] gap-2", wrap ? "items-start" : "items-center")}>
       <span className="text-muted-foreground">{label}</span>
       <span
+        title={title}
         className={cn(
           "min-w-0 text-foreground",
           wrap ? "whitespace-pre-wrap break-words" : "truncate",
@@ -1427,6 +1430,13 @@ function RecipePopover({
             />
           ) : null}
           <RecipeRow label="Size" value={`${image.width} × ${image.height}`} />
+          {image.generation_seconds != null ? (
+            <RecipeRow
+              label="Time"
+              value={`${image.generation_seconds.toFixed(image.generation_seconds < 1 ? 2 : 1)} s${(image.generation_count ?? 1) > 1 ? ` (batch of ${image.generation_count})` : ""}`}
+              title="Elapsed time until images are ready to save; may include waiting and processing"
+            />
+          ) : null}
           {!viaConnection && <RecipeRow label="Steps" value={String(image.steps)} />}
           {!viaConnection && <RecipeRow label="Guidance" value={String(image.guidance)} />}
           {samplerRecipeLabel(image.sampler, image.schedule_type) ? (
@@ -5574,12 +5584,13 @@ export function ImagesPage({
         })),
       sdControls: compareSdControls,
       hiresEngagesNegative: hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance),
+      detailerEngagesNegative: detailerEngagesNegative(detailerOn, detailerReady, detailerOptions, negativeMinGuidance),
       // The predicate the request uses (strength 0 runs plain text-to-image, where CFG rescale applies).
       controlnetEngaged,
     }),
     // samplerChoice is rebuilt every render; its two fields are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow],
+    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow, detailerOn, detailerReady, detailerOptions],
   );
 
   const handleGenerateWithRecall = useCallback(async () => {
