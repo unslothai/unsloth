@@ -1,17 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Small-host load route: a bf16 repo loaded at fp16/fp32 materialises every converted weight in anonymous host RAM
-(FLUX.1 at fp16: 35 GB, OOM-killed on a 31 GB host before the planner runs). Engaged only when that dense load would
-not fit: big components load at their stored bf16 (memory-mapped), encoders stream with layerwise casting, a streamed
-denoiser is stored as int8 per-channel weights. ``UNSLOTH_DIFFUSION_SMALL_HOST=0|1`` disables / forces it;
-``UNSLOTH_DIFFUSION_HOST_RAM_CHECK=0`` skips the pre-load refusal.
-"""
+"""Low-RAM load route, used only when a dense load would not fit RAM; UNSLOTH_DIFFUSION_SMALL_HOST=0|1."""
 
 from __future__ import annotations
 
 import json
 import os
+import sys
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -53,16 +50,164 @@ def host_ram_check_disabled() -> bool:
     return _env(HOST_RAM_CHECK_ENV) in ("0", "off", "false", "no")
 
 
+# Int8 spill: the route's int8 DiT weights live in a memory-mapped scratch file, not anonymous host RAM.
+# Auto only when the in-RAM route does not fit; 0 = off, 1 = always.
+SPILL_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_SPILL"
+SPILL_DIR_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_SPILL_DIR"
+_SPILL_DISK_MARGIN_MIB = 2048
+# host bytes quantisation holds at once (bias, scale, D2H staging)
+_SPILL_TRANSIENT_MIB = 256
+_SPILL_ALIGN = 64
+_SPILL_PREFIX = "unsloth-int8-spill-"
+# a spill here would be RAM again
+_RAM_FILESYSTEMS = frozenset({"tmpfs", "ramfs", "devtmpfs", "hugetlbfs", "rootfs"})
+
+
+def spill_disabled() -> bool:
+    return _env(SPILL_ENV) in ("0", "off", "false", "no")
+
+
+# A first load fetches the weights before the host-RAM decision, which reads their headers.
+DOWNLOAD_FIRST_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_DOWNLOAD_FIRST"
+
+
+def download_first_enabled() -> bool:
+    return _env(DOWNLOAD_FIRST_ENV) not in ("0", "off", "false", "no")
+
+
+def spill_forced() -> bool:
+    return _env(SPILL_ENV) in ("1", "on", "true", "yes", "force")
+
+
+def spill_dir() -> Path:
+    raw = (os.environ.get(SPILL_DIR_ENV) or "").strip()
+    if raw:
+        return Path(os.path.expanduser(raw))
+    try:
+        from utils.paths.storage_roots import cache_root as studio_cache_root
+        return studio_cache_root() / "diffusion_int8_spill"
+    except Exception:  # noqa: BLE001
+        return Path.home() / ".cache" / "unsloth" / "diffusion_int8_spill"
+
+
+def _fs_type(path: Path) -> Optional[str]:
+    try:
+        real = os.path.realpath(path)
+        best, kind = "", None
+        with open("/proc/mounts", encoding = "utf-8") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                mnt = parts[1].replace("\\040", " ")
+                inside = real == mnt or real.startswith(mnt.rstrip("/") + "/")
+                if inside and len(mnt) >= len(best):
+                    best, kind = mnt, parts[2]
+        return kind
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def spill_capacity_mib(directory: Any = None) -> Optional[int]:
+    """Free MiB for the spill, None if off, not Linux, RAM-backed or unwritable."""
+    if spill_disabled() or not sys.platform.startswith("linux"):
+        return None
+    try:
+        import shutil
+
+        d = Path(directory) if directory is not None else spill_dir()
+        # nearest existing ancestor: no directory is created unless the spill runs
+        while not d.exists() and d.parent != d:
+            d = d.parent
+        kind = _fs_type(d)
+        if kind is None or kind in _RAM_FILESYSTEMS or not os.access(d, os.W_OK):
+            return None
+        return int(shutil.disk_usage(d).free // _MIB)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _sweep_stale_spills(directory: Path) -> None:
+    try:
+        for f in directory.glob(f"{_SPILL_PREFIX}*.bin"):
+            try:
+                pid = int(f.name[len(_SPILL_PREFIX) :].split("-", 1)[0])
+            except ValueError:
+                continue
+            if pid == os.getpid():
+                continue
+            try:
+                os.kill(pid, 0)
+                continue
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                continue
+            try:
+                f.unlink()
+            except OSError:
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
+class Int8Spill:
+    """Preallocated, unlinked scratch file mapped MAP_SHARED; ``store`` returns a file-backed copy of an int8 tensor."""
+
+    def __init__(self, directory: Any, nbytes: int):
+        import torch
+
+        d = Path(directory)
+        d.mkdir(parents = True, exist_ok = True)
+        _sweep_stale_spills(d)
+        self.nbytes = max(_SPILL_ALIGN, int(nbytes))
+        path = d / f"{_SPILL_PREFIX}{os.getpid()}-{uuid.uuid4().hex[:8]}.bin"
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            try:
+                # reserve now: ENOSPC under a shared mapping is SIGBUS
+                os.posix_fallocate(fd, 0, self.nbytes)
+            finally:
+                os.close(fd)
+            self.flat = torch.from_file(str(path), shared = True, size = self.nbytes, dtype = torch.int8)
+        finally:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        self.offset = 0
+
+    def store(self, q: Any) -> Any:
+        n = int(q.numel())
+        start = -(-self.offset // _SPILL_ALIGN) * _SPILL_ALIGN
+        if start + n > self.nbytes:
+            raise RuntimeError("int8 spill file sized too small")
+        view = self.flat[start : start + n].view(q.shape)
+        view.copy_(q)
+        self.offset = start + n
+        return view
+
+
+def spill_bytes_for(numels: list) -> int:
+    return sum(-(-int(n) // _SPILL_ALIGN) * _SPILL_ALIGN for n in numels)
+
+
 _ST_DTYPES = {"BF16": "bfloat16", "F16": "float16", "F32": "float32"}
 
 
 def _safetensors_bytes_by_dtype(path: Path, keep: tuple[str, ...] = ()) -> dict[str, int]:
+    return _header_sizes(path, keep)[0]
+
+
+def _header_sizes(path: Path, keep: tuple[str, ...] = ()) -> tuple[dict[str, int], int]:
+    """(bytes per dtype plus "kept", largest embedding bytes)."""
     from .diffusion_component_sizes import read_safetensors_header
 
     out: dict[str, int] = {}
+    embed = 0
     header = read_safetensors_header(path, max_bytes = 256 * _MIB)
     if header is None:  # unreadable header: no claim about this file
-        return out
+        return out, embed
     for name, meta in header.items():
         if name == "__metadata__":
             continue
@@ -72,9 +217,16 @@ def _safetensors_bytes_by_dtype(path: Path, keep: tuple[str, ...] = ()) -> dict[
             out[key] = out.get(key, 0) + int(end) - int(start)
             if keep and any(f".{k}." in f".{name}." for k in keep):
                 out["kept"] = out.get("kept", 0) + int(end) - int(start)
+            if _is_embedding_name(name):
+                embed = max(embed, int(end) - int(start))
         except Exception:  # noqa: BLE001
             continue
-    return out
+    return out, embed
+
+
+def _is_embedding_name(name: str) -> bool:
+    leaf = name.rsplit(".", 2)
+    return "embed" in name or (len(leaf) >= 2 and leaf[-2] == "shared")
 
 
 @dataclass(frozen = True)
@@ -85,6 +237,8 @@ class StoredComponent:
     # stored MiB of ``_keep_in_fp32_modules`` tensors: they convert to fp32 on the host even on the route
     kept_fp32_mib: int = 0
     library: str = ""
+    # largest embedding (text encoders), converted on the host
+    embed_mib: int = 0
 
 
 def _keep_fp32_from_config(sub: Path) -> tuple[str, ...]:
@@ -109,6 +263,50 @@ def _weight_files(sub: Path) -> list[Path]:
     return plain or files
 
 
+def snapshot_weights_complete(
+    snapshot: Any,
+    skip: Any = (),
+    variant: Optional[str] = None,
+) -> bool:
+    """False when a ``model_index.json`` component lacks weights or index-listed shards; True without an index.
+    ``skip`` names caller-supplied components; ``variant`` checks only that layout's files."""
+    try:
+        root = Path(snapshot)
+        index = json.loads((root / "model_index.json").read_text(encoding = "utf-8"))
+    except Exception:  # noqa: BLE001
+        return True
+    for name, entry in index.items():
+        if name.startswith("_") or name in skip:
+            continue
+        if not (isinstance(entry, list) and len(entry) >= 2 and entry[0] and entry[1]):
+            continue
+        sub = root / name
+        if not sub.is_dir():
+            return False
+        files = list(sub.glob("*.safetensors")) + list(sub.glob("*.bin"))
+        shard_indexes = list(sub.glob("*.index.json"))
+        if variant:
+            marks = (f".{variant}.", f".{variant}-")
+            files = [f for f in files if any(m in f.name for m in marks)]
+            shard_indexes = [
+                f for f in sub.glob("*.index*.json") if any(m in f.name for m in marks)
+            ]
+        if not files and (sub / "config.json").is_file():
+            return False  # a model folder without weights; tokenizer / scheduler folders have no config.json
+        for shard_index in shard_indexes:
+            try:
+                shards = set(
+                    json.loads(shard_index.read_text(encoding = "utf-8"))
+                    .get("weight_map", {})
+                    .values()
+                )
+            except Exception:  # noqa: BLE001
+                return False
+            if any(not (sub / shard).is_file() for shard in shards):
+                return False
+    return True
+
+
 def stored_components(snapshot: Any) -> dict[str, StoredComponent]:
     """Per component: stored MiB and dominant dtype, from safetensors headers only."""
     out: dict[str, StoredComponent] = {}
@@ -122,9 +320,12 @@ def stored_components(snapshot: Any) -> dict[str, StoredComponent]:
             index = {}
         for sub in sorted(p for p in root.iterdir() if p.is_dir()):
             totals: dict[str, int] = {}
+            embed = 0
             keep = _keep_fp32_from_config(sub) if sub.name.startswith("text_encoder") else ()
             for f in _weight_files(sub):
-                for k, v in _safetensors_bytes_by_dtype(f, keep).items():
+                sizes, largest = _header_sizes(f, keep)
+                embed = max(embed, largest)
+                for k, v in sizes.items():
                     totals[k] = totals.get(k, 0) + v
             kept = totals.pop("kept", 0)
             if not totals:
@@ -133,7 +334,12 @@ def stored_components(snapshot: Any) -> dict[str, StoredComponent]:
             entry = index.get(sub.name)
             library = str(entry[0]) if isinstance(entry, list) and entry and entry[0] else ""
             out[sub.name] = StoredComponent(
-                sub.name, -(-sum(totals.values()) // _MIB), dtype, -(-kept // _MIB), library
+                sub.name,
+                -(-sum(totals.values()) // _MIB),
+                dtype,
+                -(-kept // _MIB),
+                library,
+                -(-embed // _MIB) if sub.name.startswith("text_encoder") else 0,
             )
     except Exception:  # noqa: BLE001 - no claim
         return {}
@@ -218,6 +424,8 @@ class SmallHostDecision:
     # component -> stored dtype it loads at (memory-mapped)
     storage_dtypes: dict[str, str] = field(default_factory = dict)
     refuse: Optional[str] = None
+    int8_spill: bool = False
+    spill_route_host_mib: int = 0
 
 
 def decide_small_host(
@@ -230,11 +438,12 @@ def decide_small_host(
     lora_active: bool = False,
     host_commit_mib: Optional[int] = None,
     pread_libraries: tuple[str, ...] = (),
+    spill_free_mib: Optional[int] = None,
 ) -> SmallHostDecision:
     """Whether this pipeline load takes the small-host route. Only CUDA loads converting large bf16 components
     (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped. ``host_commit_mib`` (Windows)
     also routes a dense load whose commit need does not fit: on Windows commit exhaustion is an access
-    violation in native code, not a Python error (#13432, #14513)."""
+    violation in native code, not a Python error (#13432, #14513). ``spill_free_mib``: ``spill_capacity_mib``, None = no spill."""
     if small_host_disabled():
         return SmallHostDecision(False, f"{SMALL_HOST_ENV}=0")
     if str(device) != "cuda":
@@ -308,13 +517,17 @@ def decide_small_host(
             route,
             **extra,
         )
+    spill, spill_route = _spill_choice(
+        converted, compute, route, reserve, host_available_mib, spill_free_mib
+    )
+    need = spill_route if spill else route
     refuse = None
     if (
         host_available_mib is not None
-        and route + reserve > int(host_available_mib)
+        and need + reserve > int(host_available_mib)
         and not host_ram_check_disabled()
     ):
-        refuse = _refusal(route, reserve, host_available_mib, "even the low-memory route")
+        refuse = _refusal(need, reserve, host_available_mib, "even the low-memory route")
     why = (
         f"{SMALL_HOST_ENV}=1"
         if forced and fits
@@ -330,8 +543,34 @@ def decide_small_host(
         route,
         storage_dtypes = storage,
         refuse = refuse,
+        int8_spill = spill,
+        spill_route_host_mib = spill_route if spill else 0,
         **extra,
     )
+
+
+def _spill_choice(
+    converted: dict[str, StoredComponent],
+    compute: str,
+    route: int,
+    reserve: int,
+    available: Optional[int],
+    spill_free_mib: Optional[int],
+) -> tuple[bool, int]:
+    """(spill, host MiB of the spilled route). Auto only when the in-RAM route does not fit."""
+    dit = sum(c.mib // 2 for n, c in converted.items() if n in INT8_DENOISER_NAMES)
+    if not dit or spill_free_mib is None or spill_disabled():
+        return False, route
+    short = available is not None and route + reserve > int(available)
+    if not (short or spill_forced()) or dit + _SPILL_DISK_MARGIN_MIB > int(spill_free_mib):
+        return False, route
+    # route omits the converted encoder embedding
+    embed = sum(
+        c.embed_mib * _itemsize(compute) // _itemsize(c.dtype)
+        for n, c in converted.items()
+        if n.startswith("text_encoder")
+    )
+    return True, route - dit + embed + _SPILL_TRANSIENT_MIB
 
 
 def _refusal(need: int, reserve: int, available: Optional[int], what: str) -> str:
@@ -485,10 +724,12 @@ def quantize_int8_weight_(
     work_device: Any,
     keep_device: Any = "cpu",
     act_int8: bool = False,
+    spill_dir: Any = None,
 ) -> dict[str, int]:
     """Replace every large ``nn.Linear`` with per-row int8 weights in place, one Linear at a time (quantised on
     ``work_device``, stored on ``keep_device``); everything else casts to ``compute_dtype``. ``act_int8`` lets the
-    new Linears run W8A8 where ``Int8WeightLinear`` allows it."""
+    new Linears run W8A8 where ``Int8WeightLinear`` allows it. ``spill_dir``: int8 weights go to an ``Int8Spill``
+    there (same bytes, file-backed)."""
     import torch
 
     cls = int8_linear_class()
@@ -498,6 +739,12 @@ def quantize_int8_weight_(
     targets = [
         (name, child) for name, child in module.named_modules() if type(child) is torch.nn.Linear
     ]
+    spill = None
+    if spill_dir is not None:
+        sizes = [
+            lin.weight.numel() for _, lin in targets if lin.weight.numel() >= _INT8_MIN_ELEMENTS
+        ]
+        spill = Int8Spill(spill_dir, spill_bytes_for(sizes))
     for name, lin in targets:
         if lin.weight.numel() < _INT8_MIN_ELEMENTS:
             stats["dense_linears"] += 1
@@ -508,7 +755,7 @@ def quantize_int8_weight_(
             q = torch.round(w / scale).clamp_(-127, 127).to(torch.int8)
             bias = None if lin.bias is None else lin.bias.detach().to(keep, compute_dtype)
             new = cls(
-                q.to(keep),
+                q.to(keep) if spill is None else spill.store(q),
                 scale.to(compute_dtype).to(keep),
                 bias,
                 lin.in_features,
@@ -521,6 +768,8 @@ def quantize_int8_weight_(
         setattr(parent, attr, new)
         stats["linears"] += 1
         stats["int8_bytes"] += new.qweight.numel()
+        if spill is not None:
+            stats["spilled_bytes"] = stats.get("spilled_bytes", 0) + new.qweight.numel()
     with torch.no_grad():
         for sub in module.modules():
             if isinstance(sub, cls):
@@ -613,9 +862,146 @@ def prepare_streamed_encoder_(module: Any, compute_dtype: Any) -> int:
                     skip_modules_pattern = None,
                     skip_modules_classes = None,
                 )
+                sub._unsloth_mmap_streamed = True
                 continue
             _convert(sub, want)
     return streamed // _MIB
+
+
+# Small hosts drop mmapped encoder pages between prompts (FLUX.1 T5 on a 31 GB T4: ~7 GB re-read, 18-24 s/prompt).
+ENCODER_RESIDENT_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_TE_RESIDENT"
+# Host RAM still taken after the route: pinned DiT staging (~2 GB on FLUX.1) + encoder prefetch ring.
+_ENCODER_RESIDENT_RUNTIME_MIB = 2560
+
+
+def _mmap_streamed_tensors(module: Any) -> list:
+    """(owner, name, tensor) of every CPU parameter / buffer left in storage dtype by ``prepare_streamed_encoder_``."""
+    out: list = []
+    seen: set = set()
+    for sub in module.modules():
+        if not getattr(sub, "_unsloth_mmap_streamed", False):
+            continue
+        for kind, items in (
+            ("p", sub.named_parameters(recurse = False)),
+            ("b", sub.named_buffers(recurse = False)),
+        ):
+            for name, t in items:
+                if t is None or t.device.type != "cpu" or t.numel() == 0:
+                    continue
+                key = t.untyped_storage().data_ptr()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append((sub, kind, name, t))
+    return out
+
+
+def streamed_encoder_mib(module: Any) -> int:
+    total = sum(int(t.numel()) * int(t.element_size()) for *_x, t in _mmap_streamed_tensors(module))
+    return -(-total // _MIB)
+
+
+def encoder_resident_mode() -> Optional[bool]:
+    value = _env(ENCODER_RESIDENT_ENV)
+    if value in ("0", "off", "false", "no"):
+        return False
+    if value in ("1", "on", "true", "yes"):
+        return True
+    return None
+
+
+def encoder_resident_keep_mib(host_total_mib: Optional[int]) -> int:
+    return host_reserve_mib(host_total_mib) + _ENCODER_RESIDENT_RUNTIME_MIB
+
+
+def encoder_resident_share_mib(
+    streamed_mib: int,
+    *,
+    host_total_mib: Optional[int],
+    host_available_mib: Optional[int],
+    host_commit_mib: Optional[int] = None,
+    min_share_mib: int = 0,
+) -> tuple[int, str]:
+    """MiB of ``streamed_mib`` that fit under ``decide_encoder_resident``'s reserve; ``host_available_mib`` read after placement."""
+    if streamed_mib <= 0:
+        return 0, "no memory-mapped encoder weights"
+    if host_available_mib is None:
+        return 0, "host RAM unreadable"
+    keep = encoder_resident_keep_mib(host_total_mib)
+    room = int(host_available_mib) - keep
+    if host_commit_mib is not None:
+        room = min(room, int(host_commit_mib) - keep)
+    share = max(0, min(int(streamed_mib), room))
+    if share <= 0 or share < int(min_share_mib):
+        return (
+            0,
+            f"{host_available_mib} MiB available host RAM leaves {max(0, room)} MiB above the "
+            f"{keep} MiB the load keeps",
+        )
+    return (
+        share,
+        f"{share} of {streamed_mib} MiB leaves {int(host_available_mib) - share} MiB of "
+        f"{host_available_mib} MiB available host RAM (keeps {keep} MiB)",
+    )
+
+
+def decide_encoder_resident(
+    streamed_mib: int,
+    *,
+    host_total_mib: Optional[int],
+    host_available_mib: Optional[int],
+    host_commit_mib: Optional[int] = None,
+    int8_spill: bool = False,
+) -> tuple[bool, str]:
+    """``host_available_mib`` is read after placement, so it already excludes the int8 DiT."""
+    mode = encoder_resident_mode()
+    if streamed_mib <= 0:
+        return False, "no memory-mapped encoder weights"
+    if mode is False:
+        return False, f"{ENCODER_RESIDENT_ENV}=0"
+    if mode is True:
+        return True, f"{ENCODER_RESIDENT_ENV}=1"
+    if int8_spill:
+        return False, "the int8 denoiser already spills to disk"
+    if host_available_mib is None:
+        return False, "host RAM unreadable"
+    keep = encoder_resident_keep_mib(host_total_mib)
+    left = int(host_available_mib) - int(streamed_mib)
+    if left < keep:
+        return (
+            False,
+            f"{streamed_mib} MiB would leave {left} MiB of {host_available_mib} MiB available host RAM, "
+            f"under the {keep} MiB the load keeps",
+        )
+    if host_commit_mib is not None and int(host_commit_mib) - int(streamed_mib) < keep:
+        return (
+            False,
+            f"{streamed_mib} MiB would leave {int(host_commit_mib) - int(streamed_mib)} MiB of commit headroom, "
+            f"under the {keep} MiB the load keeps",
+        )
+    return (
+        True,
+        f"{streamed_mib} MiB leaves {left} MiB of {host_available_mib} MiB available host RAM",
+    )
+
+
+def materialize_streamed_encoder_(module: Any, cancel_check: Any = None) -> int:
+    """Must run before group offload records the host tensors. Returns MiB copied."""
+    import torch
+
+    copied = 0
+    with torch.no_grad():
+        for sub, kind, name, t in _mmap_streamed_tensors(module):
+            fresh = torch.empty_like(t, memory_format = torch.contiguous_format)
+            fresh.copy_(t)
+            if kind == "p":
+                getattr(sub, name).data = fresh
+            else:
+                sub._buffers[name] = fresh
+            copied += int(t.numel()) * int(t.element_size())
+            if cancel_check is not None:
+                cancel_check()
+    return -(-copied // _MIB)
 
 
 def module_dtype_ok(module: Any, compute_dtype: Any) -> bool:

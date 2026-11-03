@@ -8,6 +8,7 @@ import json
 import os
 import stat
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -1382,3 +1383,32 @@ def test_a_no_torch_install_asks_llama_cpp_for_gpus(monkeypatch, tmp_path, devic
     # A reinstalled build (new mtime) is probed again.
     os.utime(binary, ns = (0, 10**9))
     assert systemone_settings.gpu_available() is expected and len(calls) == 2
+
+
+def test_an_expired_llama_cpp_gpu_answer_is_served_while_it_refreshes(monkeypatch, tmp_path):
+    from utils import systemone_settings
+
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"x")
+    key = (str(binary), os.stat(binary).st_mtime_ns)
+    release = threading.Event()
+    calls = []
+
+    def slow_probe(*_):
+        calls.append(1)
+        release.wait(5)
+        return []
+
+    monkeypatch.setattr(native_worker, "resolve_binary", lambda: str(binary))
+    monkeypatch.setattr(LlamaCppBackend, "_llama_server_env_for_binary", staticmethod(lambda _: {}))
+    monkeypatch.setattr(LlamaCppBackend, "_enumerated_gpu_devices", staticmethod(slow_probe))
+    monkeypatch.setattr(
+        systemone_settings, "_LLAMA_GPU_CACHE", [(time.monotonic() - 120, key, True)]
+    )
+    assert systemone_settings._llama_cpp_has_gpu() is True
+    assert systemone_settings._llama_cpp_has_gpu() is True
+    release.set()
+    assert systemone_settings._LLAMA_GPU_REFRESH.acquire(timeout = 5)
+    systemone_settings._LLAMA_GPU_REFRESH.release()
+    assert len(calls) == 1
+    assert systemone_settings._llama_cpp_has_gpu() is False

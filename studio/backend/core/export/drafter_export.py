@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Carry a drafter trained with the fine-tune (core/training/drafter.py) into merged and GGUF exports.
-
-The MTP head needs no copying: the export reload re-attaches `mtp_head.safetensors` and the merged / GGUF
-savers stitch it. An EAGLE-3 drafter is a separate model, copied next to the export. Each export gets a
-`drafter.json` saying how to serve the pair; Studio's llama-server launcher reads it beside a GGUF.
-"""
+"""EAGLE-3 drafters copied beside exports; MTP heads re-attach on reload; drafter.json for serving."""
 
 from __future__ import annotations
 

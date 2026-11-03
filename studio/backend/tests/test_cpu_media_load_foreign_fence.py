@@ -63,6 +63,7 @@ def test_cpu_media_load_refuses_a_generation_started_mid_load(
         diffusion_compat,
         diffusion_device,
         diffusion_engine_router,
+        diffusion_local_files,
         video,
     )
     from models.inference import DiffusionLoadRequest, VideoLoadRequest
@@ -84,7 +85,7 @@ def test_cpu_media_load_refuses_a_generation_started_mid_load(
         foreign_generation("diffusion" if modality == "image" else "video")
 
     monkeypatch.setattr(diffusion, "get_diffusion_backend", lambda: backend)
-    monkeypatch.setattr(diffusion, "resolve_local_single_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(diffusion_local_files, "resolve_local_single_file", lambda *_a, **_k: None)
     monkeypatch.setattr(video, "get_video_backend", lambda: backend)
     monkeypatch.setattr(video, "assert_video_precision_available", lambda *_a, **_k: None)
     monkeypatch.setattr(

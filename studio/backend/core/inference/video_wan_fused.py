@@ -1,15 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fused fp16 Triton kernels for diffusers' ``WanTransformerBlock`` (T4 and other fp16-only GPUs).
-
-Stock keeps norm / AdaLN modulation / gated residuals / rotary in float32 tensors (a float32 ``[B, L, 6, D]`` table per
-block for TI2V-5B). The kernels do the same per-element math, rounding in float32 exactly where the stock op chain does
-and to fp16 once, so the output is bit-identical (self-checked once per device before use). LayerNorm stats come from
-``native_layer_norm`` on the fp16 rows, bit-identical to ``layer_norm(x.float())`` (4-wide vectorised loads either way).
-Scope: fingerprinted block, fp16 CUDA (non-ROCm), no grad, not compiling. Kill switches
-``UNSLOTH_DIFFUSION_WAN_FUSED_ADALN=0`` (all), ``UNSLOTH_DIFFUSION_WAN_FUSED_ROPE=0`` (rotary only).
-"""
+"""Fused fp16 Triton kernels for diffusers' WanTransformerBlock on fp16-only GPUs (T4); bit-
+identical to stock float32 rounding, self-checked per device; fp16 CUDA non-ROCm, no grad, not
+compiling; UNSLOTH_DIFFUSION_WAN_FUSED_ADALN=0 (all), UNSLOTH_DIFFUSION_WAN_FUSED_ROPE=0 (rotary
+only)."""
 
 from __future__ import annotations
 

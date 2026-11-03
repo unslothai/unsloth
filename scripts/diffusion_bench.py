@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Standalone GPU benchmark + regression harness for the Unsloth diffusion backend.
-
-Drives ``DiffusionBackend`` directly (no HTTP server) to measure load time, peak VRAM and generation latency for a single GGUF image model, plus an accuracy guard: a fixed-seed image is rendered and compared (PSNR) against a stored reference, so a precision/dtype/guard regression that silently changes output is caught, not just speed and memory.
-
-Two modes: --write-baseline PATH runs once and saves the metrics JSON plus reference.png next to it, and --compare PATH runs again, diffs against the baseline and exits nonzero if a latency, VRAM or PSNR threshold is exceeded.
-
-torch and diffusers are imported lazily (only after argument parsing and only inside functions) so ``--help`` works on a host without them. Not part of CPU CI; this needs a real GPU and a downloadable model.
-
-Example: `python scripts/diffusion_bench.py --write-baseline outputs/diffusion_bench/baseline.json --model unsloth/Z-Image-Turbo-GGUF --gguf z-image-turbo-Q4_K_M.gguf`, then the same command with --compare after making changes.
-"""
+"""GPU benchmark of DiffusionBackend; --compare exits nonzero past latency, VRAM or PSNR thresholds;
+torch and diffusers are imported lazily so --help works without them"""
 
 from __future__ import annotations
 

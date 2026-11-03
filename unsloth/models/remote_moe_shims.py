@@ -10,9 +10,8 @@
 # GNU Affero General Public License for more details.
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Train-mode forwards for DeepSeek-V3-derived remote MoE ports (Kimi-K2.7, sarvam) whose gate
-asserts `not self.training` and whose block only computes under no-grad `moe_infer`. Keyed on
-structure, never repo name; no-op for transformers' own models."""
+"""Train-mode forwards for DeepSeek-V3-derived remote MoE ports, keyed on structure never repo name;
+no-op for the native transformers models."""
 
 import functools
 import os

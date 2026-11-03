@@ -3,8 +3,9 @@
 
 """Owner-managed account lifecycle. Private roots are retired, never erased."""
 
+import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,10 +20,13 @@ from models.auth import (
     AccountResponse,
     AccountSetupResponse,
     CreateAccountRequest,
+    OwnerLoginAliasRequest,
 )
 from hub.services.models import account_access
 from state import active_generations
-from utils.account_context import AccountContext, run_as
+from storage import sqlite_gate
+from utils.account_context import OWNER, AccountContext, run_as
+from utils.personalization_settings import PERSONALIZATION_SETTING_KEY
 from utils.paths import storage_roots
 
 
@@ -94,6 +98,10 @@ def retire_account_roots(account: AccountContext):
     from storage.studio_db import close_wal_keeper_for
 
     close_wal_keeper_for(run_as(account, storage_roots.workspace_root) / "studio.db")
+    from storage import rag_db
+
+    # Built from the workspace like studio.db: rag_db_path() refuses an escaping link, which must not block deletion.
+    rag_db.close_wal_keeper_for(run_as(account, storage_roots.workspace_root) / "rag" / "rag.db")
     from core.inference import file_history
 
     file_history.close_store(run_as(account, storage_roots.account_path, "file_history"))
@@ -138,9 +146,44 @@ def retire_account_roots(account: AccountContext):
     return restore
 
 
+def _profile_of(account: dict) -> dict:
+    """Read-only: get_connection would create and migrate a studio.db per listed account."""
+    context = (
+        OWNER
+        if account["role"] == "owner"
+        else AccountContext(account["account_id"], account["username"], account["role"])
+    )
+    try:
+        path = run_as(context, storage_roots.studio_db_path)
+        if not path.is_file():
+            return {}
+        with closing(sqlite_gate.connect(f"{path.resolve().as_uri()}?mode=ro", uri = True)) as conn:
+            row = conn.execute(
+                "SELECT value_json FROM app_settings WHERE key = ?", (PERSONALIZATION_SETTING_KEY,)
+            ).fetchone()
+        profile = json.loads(row[0]).get("profile") if row else None
+    except Exception:  # noqa: BLE001 - a missing or unreadable profile just shows the username
+        return {}
+    if not isinstance(profile, dict):
+        return {}
+    name, avatar = profile.get("displayName"), profile.get("avatarDataUrl")
+    return {
+        "display_name": name.strip() if isinstance(name, str) and name.strip() else None,
+        "avatar_url": avatar if isinstance(avatar, str) and avatar else None,
+    }
+
+
 @router.get("", response_model = AccountListResponse)
 def list_accounts():
-    return {"accounts": storage.list_accounts()}
+    return {
+        "accounts": [{**account, **_profile_of(account)} for account in storage.list_accounts()]
+    }
+
+
+@router.put("/owner/login-alias", response_model = OwnerLoginAliasRequest)
+def set_owner_login_alias(payload: OwnerLoginAliasRequest):
+    with _account_errors():
+        return {"login_alias": storage.set_owner_login_alias(payload.login_alias)}
 
 
 @router.post("", response_model = AccountSetupResponse, status_code = status.HTTP_201_CREATED)

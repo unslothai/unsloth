@@ -445,9 +445,10 @@ def _login_failure_detail() -> str:
 @router.post("/login", response_model = Token)
 async def login(payload: AuthLoginRequest, request: Request) -> Token:
     """Login with username/password. Per-account + per-IP rate-limited."""
-    username = (
-        payload.username.casefold() if policy.installation_is_multi_user() else payload.username
-    )
+    username = payload.username
+    if policy.installation_is_multi_user():
+        # Before the bucket key, so the owner's sign-in name and "unsloth" share one budget.
+        username = storage.resolve_login_username(username.casefold())
     key = _bucket_key(request, username)
     unknown_key = _unknown_user_key(request)
     blocked_for = max(_login_blocked(key), _login_blocked(unknown_key))
@@ -520,7 +521,12 @@ async def logout(
 # Sync def: PBKDF2 + SQLite would block the event loop.
 @router.post("/desktop-login", response_model = Token)
 def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Response:
-    """Before reading the bucket: the shell probes with an invalid secret every tick and needs 401, since any other status reads as unmanageable."""
+    """Exchange a local desktop secret for desktop-marked owner tokens.
+
+    Multi-user installations return ``login_required`` instead of tokens.
+    Failed attempts are rate-limited per IP independently of /login.
+    """
+    # Shell ownership probes need 401 for malformed secrets even when throttled.
     if not storage.desktop_secret_is_well_formed(payload.secret):
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,

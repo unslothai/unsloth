@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import {
+  advertisedThreadPatchGuards,
   batchListChatMessages,
   listChatImportLedger,
   updateChatThread,
@@ -14,7 +15,11 @@ import {
   threadsAwaitingImport,
   threadsMissingMessages,
 } from "./chat-title";
-import { type GuardProbe, readGuardProbe } from "./openapi-support";
+import {
+  type GuardProbe,
+  readGuardProbe,
+  resolveGuardProbe,
+} from "./openapi-support";
 import { runWithConcurrency } from "./run-with-concurrency";
 import { createSerialQueue } from "./serial-queue";
 
@@ -35,18 +40,25 @@ const serial = createSerialQueue();
 let guardSupport: Promise<boolean> | null = null;
 
 /** Read from the served schema: probing with a real patch could let an old backend apply it. */
+async function probeServedSchema(): Promise<GuardProbe> {
+  try {
+    const response = await authFetch("/openapi.json");
+    return readGuardProbe(
+      response.ok,
+      response.ok ? await response.json() : null,
+    );
+  } catch {
+    return { supported: false, settled: false };
+  }
+}
+
+/** Every repair starts from a thread list, so the advertised flag is already known when present. */
 function backendEnforcesTitleGuard(): Promise<boolean> {
   guardSupport ??= (async () => {
-    let probe: GuardProbe = { supported: false, settled: false };
-    try {
-      const response = await authFetch("/openapi.json");
-      probe = readGuardProbe(
-        response.ok,
-        response.ok ? await response.json() : null,
-      );
-    } catch {
-      probe = { supported: false, settled: false };
-    }
+    const probe = await resolveGuardProbe(
+      advertisedThreadPatchGuards(),
+      probeServedSchema,
+    );
     if (!probe.settled) guardSupport = null;
     return probe.supported;
   })();

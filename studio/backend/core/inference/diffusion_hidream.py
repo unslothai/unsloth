@@ -1,17 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HiDream-I1 Llama text-encoder assembly.
-
-The HiDream-ai/HiDream-I1-* repos name ``text_encoder_4`` (LlamaForCausalLM) and
-``tokenizer_4`` in their model_index but do NOT ship the weights: the official example
-loads meta-llama/Meta-Llama-3.1-8B-Instruct separately and passes both components into
-``HiDreamImagePipeline.from_pretrained``. That upstream repo is Hub-gated (manual
-approval), so Unsloth loads the open unsloth mirror instead -- byte-identical weights,
-no license wall at load time, and the unsloth org is already inside the loader's
-non-GGUF trust gate. ``output_hidden_states=True`` matches the official example: the
-pipeline's prompt encoder consumes the Llama hidden states, not the logits.
-"""
+"""HiDream Llama encoder loads the byte-identical unsloth mirror since upstream is gated; the
+unsloth org is inside the non-GGUF trust gate; output_hidden_states=True, as the pipeline
+consumes hidden states."""
 
 from __future__ import annotations
 

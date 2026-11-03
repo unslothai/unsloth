@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio's copy of ``unsloth/import_fixes.py::fix_torchao_safe_int_mm_repr_probe``, not an import
-of it: the diffusion process must not execute ``unsloth/__init__``. The two copies are mutually inert.
-
-torchao's int8 GEMM asks whether it is being traced by formatting its input's repr, which on a real
-CUDA tensor calls ``.item()``: a device sync per eager int8 linear, and an outright
-``cudaErrorStreamCaptureUnsupported`` inside ``torch.cuda.graph``. Installed from a meta path finder
-at import time, not at quantise time, because the int8 prequant path only ``torch.load``s torchao
-subclasses and never calls ``quantize_``.
-"""
+"""torchao int8 GEMM repr calls .item() (breaks CUDA graphs); Studio's own copy, not an import:
+diffusion must not execute unsloth/__init__; installed at import time via meta path finder"""
 
 from __future__ import annotations
 

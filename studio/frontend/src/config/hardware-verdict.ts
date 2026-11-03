@@ -30,6 +30,11 @@ export function isDetectionDeferred(data: HealthVerdict): boolean {
 }
 
 
+/** /api/health cpu_training on "no_gpu": Train runs on the CPU backend while chat stays GGUF-only. */
+export function trainsOnCpu(chatOnlyReason: string | null, cpuTraining: boolean): boolean {
+  return chatOnlyReason === "no_gpu" && cpuTraining;
+}
+
 /** Only reasons that leave no video device; Apple Silicon runs video on Metal regardless of MLX. */
 export function videoNavHint(
   chatOnlyMeasured: boolean,
@@ -37,9 +42,13 @@ export function videoNavHint(
   // Developer mode's CPU video opt-in (/api/health video_cpu_opt_in). Waives only the plain
   // no-GPU host; VideoPage still answers from the backend's own video verdict.
   videoCpuOptIn = false,
+  // On "no_torch": a GPU-less Chat only install, which the full install does not give video either.
+  cpuTraining = false,
 ): string | undefined {
   if (!chatOnlyMeasured) return undefined;
   if (chatOnlyReason === "no_gpu" && videoCpuOptIn) return undefined;
+  if (chatOnlyReason === "no_torch" && cpuTraining)
+    return "Video generation needs an NVIDIA or AMD GPU.";
   // Not "or a GPU": an Intel Mac's own dGPU is not one the video pipelines can use, so offering
   // that reads as a fix that would not work. Mirrors the backend's message for this host.
   if (chatOnlyReason === "intel_mac")

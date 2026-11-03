@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Child-process environment hygiene for the managed ggml servers.
-
-Secret-env scrubbing and the WSL2 ROCm library-dir probe, shared by the STT
-sidecar (and any future launcher of a downloaded binary). Kept in sync with
-install_llama_prebuilt.py's scrub_env / _wsl_system_rocm_lib_dirs; the backend
-cannot import the studio/ installer scripts, so this copy stays importable with
-only the backend root on sys.path.
-"""
+"""Secret-env scrubbing and WSL2 ROCm lib dirs for managed ggml servers; synced with
+install_llama_prebuilt.py; must stay importable with only the backend root on sys.path."""
 
 from __future__ import annotations
 

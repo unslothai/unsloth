@@ -5,7 +5,7 @@ import {
   Doc01Icon,
   FileEmpty02Icon,
   FlimSlateIcon,
-  Image02Icon,
+  ImageIcon,
   Pdf01Icon,
   Presentation01Icon,
   SourceCodeIcon,
@@ -166,7 +166,7 @@ export const TYPE_FILTER_KINDS: Record<LibraryTypeFilter, LibraryFileKind[]> = {
 };
 
 export const KIND_ICONS: Record<LibraryFileKind, IconSvgElement> = {
-  image: Image02Icon,
+  image: ImageIcon,
   web: SourceCodeIcon,
   word: Doc01Icon,
   document: FileEmpty02Icon,

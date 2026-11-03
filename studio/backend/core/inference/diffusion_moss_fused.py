@@ -1,29 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MOSS-Image blocks inside the regional compile: one q/k/v GEMM, and int8 Linears through ``int8_linear``.
-
-ComfyUI's repacked MOSS files fuse ``proj.q/k/v`` into one ``proj.qkv`` Linear ("one GEMM and one activation
-quantization instead of three"). Here the three bias-free int8 projections become one Linear over the concatenated
-output rows, built at load from the checkpoint's own tensors: codes and per-row scales concatenate; ConvRot parts
-rotate the SAME input at one group, and the rotation acts on the shared input axis, so the fused Linear is itself a
-ConvRotLinear (one rotation + one act quant + one GEMM for q, k and v). Per-row scales make the fused output equal the
-three separate ones. The parts' weights become views of the fused one, so no memory is added. The block reads the
-fused Linear only inside the compiled forward and only while ``proj.q/k/v`` are still the modules it was built from
-(a LoRA wrapper keeps stock). bf16 keeps three GEMMs: one fused GEMM measured neutral there.
-
-int8 (plain or ConvRot) Linears also run through ``diffusion_int8_fused.int8_linear``: the module's own rotation, the
-probed Triton act quant (bit-identical to torchao's) and ``_int_mm`` with torchao's epilogue, i.e. torchao's eager math
-where the stock compiled path is Inductor's fp32 chain.
-
-Measured on an exclusive B200 (1024x1024, 30 steps, CFG 3, CUDA graphs, s/step): INT8-ConvRot 0.0769-0.0778 ->
-0.0752 with the runner -> 0.0722-0.0726 with the fused QKV too; plain INT8 0.0700 -> 0.0673-0.0678. Peak unchanged.
-
-``UNSLOTH_DIFFUSION_MOSS_QK_ROPE=1`` (opt-in) also runs the q/k RMSNorm + split-half RoPE + [B, H, S, D] relayout as
-one kernel below; it bought 0.7% on bf16 and nothing on int8, so it stays off.
-
-Kill switch: ``UNSLOTH_DIFFUSION_MOSS_FUSED=0`` (``UNSLOTH_DIFFUSION_MOSS_FUSED_QKV=0`` keeps only the int8 runner).
-"""
+"""MOSS-Image fused q/k/v GEMM and int8 Linears; falls back to stock under LoRA on proj.q/k/v."""
 
 from __future__ import annotations
 

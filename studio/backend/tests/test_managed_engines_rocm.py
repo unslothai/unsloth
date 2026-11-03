@@ -298,7 +298,9 @@ def test_status_lists_the_precisions_the_build_loads(amd_host, monkeypatch, tmp_
     assert "int4" in install.status("vllm")["precisions"]
 
 
-def test_engine_port_stays_below_the_limit_when_the_os_offers_high_ports(monkeypatch):
+def test_engine_port_stays_below_the_limit_when_the_os_offers_high_ports(
+    monkeypatch, real_engine_free_port
+):
     # Windows ephemeral ports start at 49152; past 55535 every OS-chosen port was refused.
     taken = {30001}
 

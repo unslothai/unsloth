@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio's spelling of the Windows sentencepiece rule in unsloth/import_fixes.py.
-
-Studio cannot reach that one by importing unsloth: that runs unsloth/__init__.py, whose GPU
-branch pulls torch, Triton, transformers and the model stack into processes built to stay
-light, and can open a competing GPU context. So the rule lives here, stdlib only, importable
-at the very top of any Studio process. tests/test_windows_no_sentencepiece.py drives both
-spellings through the same cases.
-"""
+"""Stdlib-only copy of unsloth/import_fixes.py's Windows sentencepiece rule; avoids the GPU stack."""
 
 import os
 import sys

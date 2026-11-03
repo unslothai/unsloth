@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Token preview subprocess: loads only a model's tokenizer and shows how training would tokenize and
-mask a few dataset rows or a typed text.
-
-Runs the same formatting, chat template and completion masking calls as the training worker, so
-what the preview marks as trained is what the run trains on. It never touches a GPU: the parent
-starts it with every accelerator hidden, and it exits on its own once idle.
-"""
+"""Tokenizer-only preview subprocess; same formatting and masking as training, and never uses a GPU."""
 
 from __future__ import annotations
 

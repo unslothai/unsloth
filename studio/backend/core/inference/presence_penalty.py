@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Presence-penalty logits helpers for the safetensors/MLX inference paths.
-
-Kept in a dependency-light leaf module (torch + transformers only, no unsloth /
-peft) so the pure logic can be imported and unit-tested without pulling in the
-full inference backend. ``core.inference.inference`` re-exports these for the
-runtime generate paths.
-"""
+"""Presence-penalty logits helpers; torch and transformers only, so they import without the backend."""
 
 import torch
 

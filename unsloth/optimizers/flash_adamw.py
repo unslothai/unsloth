@@ -31,6 +31,7 @@ __all__ = [
     "get_flash_adamw_cls_and_kwargs",
 ]
 
+import contextlib
 import os
 import sys
 
@@ -177,9 +178,15 @@ def _get_flash_adamw_class():
             _widen_variance(self.state[p].get("exp_avg_sq"))
 
         def _load_state_for_param(self, param, opt_state, hparams):
-            state = super()._load_state_for_param(param, opt_state, hparams)
+            with _on_param_device(param):
+                state = super()._load_state_for_param(param, opt_state, hparams)
             _widen_variance(state.get("exp_avg_sq"))
             return state
+
+        def _state_dict_for_param(self, param_number, *args, **kwargs):
+            idx_to_param = kwargs.get("idx_to_param", args[2] if len(args) > 2 else {})
+            with _on_param_device(idx_to_param.get(param_number)):
+                return super()._state_dict_for_param(param_number, *args, **kwargs)
 
         def load_state_dict(self, state_dict):
             # torch.optim casts floating state to the param dtype: restore the fp32 variance.
@@ -232,10 +239,18 @@ def _get_flash_adamw_class():
                     )
                 if group is not None and not self._group_quantizes(group):
                     _refuse_unquantized_fp16()
-            return super().step_param(p, group)
+            with _on_param_device(p):
+                return super().step_param(p, group)
 
     _FLASH_ADAMW_CLASS = UnslothFlashAdamW
     return _FLASH_ADAMW_CLASS
+
+
+def _on_param_device(p):
+    # Triton launches on the current device, not p.device; device_map splits need it switched.
+    if p is not None and p.is_cuda:
+        return torch.cuda.device(p.device)
+    return contextlib.nullcontext()
 
 
 def _variance_update(var, grad, beta2):

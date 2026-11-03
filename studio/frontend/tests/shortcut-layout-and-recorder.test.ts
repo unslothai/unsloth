@@ -347,7 +347,7 @@ test("Escape in the composer is left to a mounted, keyboard-ready decline", () =
   );
   assert.match(
     controls,
-    /const keyboardReady =\n\s*!disclosure &&\n\s*chatActive &&\n\s*soleRequest &&/,
+    /const keyboardReady =\n\s*!disclosure &&\n\s*chatActive &&\n\s*!fullAccessOpen &&\n\s*soleRequest &&/,
   );
 });
 

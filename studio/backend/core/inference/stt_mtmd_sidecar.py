@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""llama.cpp multimodal (mtmd) speech-to-text sidecar for Unsloth dictation.
-
-whisper.cpp loads only the Whisper architecture, so newer ASR models run through
-llama.cpp instead: a text model plus an audio mmproj, served by `llama-server`
-and driven by the OpenAI audio content part.
-
-Owns one `llama-server` on an ephemeral 127.0.0.1 port, loaded on demand and
-unloaded after the same keep-alive as the other sidecars. Each model is two GGUF
-files, so downloads run the shared worker twice.
-"""
+"""mtmd STT sidecar for non-Whisper ASR: one llama-server on an ephemeral 127.0.0.1 port; two GGUFs."""
 
 from __future__ import annotations
 
@@ -894,7 +885,7 @@ class MtmdSttSidecar:
         path_revision: Optional[int] = None,
         device: Optional[str] = None,
     ) -> None:
-        from core.inference.audio_device import audio_device_forces_cpu
+        from core.inference.audio_device import stt_device_forces_cpu
 
         if path_revision is None:
             from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
@@ -903,10 +894,10 @@ class MtmdSttSidecar:
             # None is no opinion: a caller sending none cannot move the server.
             if device is None:
                 forced_cpu = (
-                    self._forced_cpu if self._process_alive() else audio_device_forces_cpu(None)
+                    self._forced_cpu if self._process_alive() else stt_device_forces_cpu(None)
                 )
             else:
-                forced_cpu = audio_device_forces_cpu(device)
+                forced_cpu = stt_device_forces_cpu(device)
             # Both mean "no offload", which _gpu_disabled already tracks.
             training = _training_active() or forced_cpu
             if (
@@ -1055,6 +1046,8 @@ class MtmdSttSidecar:
         port: int,
         cancel_event: Optional[threading.Event] = None,
     ) -> bool:
+        from core.inference.llama_cpp import LlamaCppBackend
+
         deadline = time.monotonic() + _SERVER_START_TIMEOUT_SECONDS
         url = f"http://127.0.0.1:{port}/health"
         while time.monotonic() < deadline:
@@ -1065,7 +1058,7 @@ class MtmdSttSidecar:
             try:
                 with urllib.request.urlopen(url, timeout = 2) as response:
                     if response.status == 200:
-                        return True
+                        return LlamaCppBackend._health_listener_is_ours(process, port)
             except Exception:
                 pass
             # Outside the except: a non-200 2xx would otherwise spin this loop with no delay.

@@ -192,7 +192,7 @@ def test_foreign_ids_do_not_authorize_reads_or_writes(client, method, path, body
 def test_list_export_and_delete_stay_in_the_account(client):
     seed_chat(BOB)
     seed_run(BOB)
-    assert client.get("/chat/threads").json() == {"threads": []}
+    assert client.get("/chat/threads").json()["threads"] == []
     assert client.get("/runs/active?threadId=private").json() == {"runs": []}
     assert client.get("/chat/attachments").json()["attachments"] == []
     assert client.get("/chat/export").json()["threadCount"] == 0

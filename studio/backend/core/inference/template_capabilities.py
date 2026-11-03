@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Does this chat template ever put the tool catalog into the prompt?
-
-Answers Studio's one yes/no per model, deciding whether the tool controls are live.
-
-Do not go back to matching substrings: that reads spelling, not meaning, and called
-Granite 3.3 tool-less for writing `{%- if tools and not available_tools -%}`.
-
-Over-approximates on purpose. A spurious yes shows a control the backend re-checks;
-a spurious no silently disables a working feature, which is the bug this replaces.
-"""
+"""Does a chat template ever put tools in the prompt; errs toward yes, never by substring matching."""
 
 from functools import lru_cache
 

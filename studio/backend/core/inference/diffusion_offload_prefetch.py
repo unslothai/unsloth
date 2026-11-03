@@ -1,24 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Event-fenced prefetch for a block-streamed denoiser's diffusers offload groups.
-
-diffusers fences its stream prefetch on the host (``stream.synchronize()`` per onload) and copies one group ahead.
-Here the compute stream waits on a per-group CUDA event instead, and up to ``depth`` streamed groups are copied ahead
-in the order the first forward recorded.
-
-A forward's first copies are queued at the first block's onload (behind a compute-stream event when the top-level
-group uploads on the compute stream): queued earlier they hold that upload back on the copy engine.
-
-Memory stays bounded without a host wait: each offload records a compute-stream event the copy stream waits on, so a
-freed block goes to the next prefetch only after the compute that read it. Bytes in flight never pass ``window``.
-Unpinned copies' temporary pinned staging is capped at ``window`` (else T4 Z-Image pinned the whole denoiser).
-Hooks are per-group / per-module instance attributes; diffusers' classes are untouched.
-
-Cross-forward carry: past the last recorded group, the NEXT forward's first groups are copied into free window
-bytes. Only while a render arms it (never into the last step's decode); held off under a slot ring, step graph,
-capture, or another prefetcher's forward in between (its copies would not be read next).
-"""
+"""Event-fenced prefetch of streamed offload groups, no host sync; a freed block is reused only
+after the compute that read it; bytes in flight never pass window; carry held off under slot
+ring, step graph or capture"""
 
 from __future__ import annotations
 
@@ -523,6 +508,12 @@ class GroupPrefetcher:
         carried = getattr(self, "carried", None)
         if carried:
             carried.discard(gid)
+        if gid in self.ready and self._keeps_for_next(gid):
+            # the next forward runs it first: re-uploading the same weights would only wait on the copy
+            self.__dict__.setdefault("carried", set()).add(gid)
+            self.stats["kept"] = self.stats.get("kept", 0) + 1
+            self._fill()
+            return
         if gid in self.ready:
             self._release(group, self.ready.pop(gid))
         else:
@@ -600,6 +591,19 @@ class GroupPrefetcher:
             ahead += 1
         if ahead < self.depth and self.pos >= len(self.order) and self.may_carry():
             self._carry(ahead)
+
+    def _keeps_for_next(self, gid: int) -> bool:
+        """``keep_first``: keep the top-level group on device; the next forward needs it first."""
+        order = self.order
+        return bool(
+            getattr(self, "keep_first", False)
+            and self.active
+            and self.on_order
+            and order
+            and self.pos >= len(order)
+            and order[0] == gid
+            and self.may_carry()
+        )
 
     def carry_usable(self) -> bool:
         return bool(
@@ -1195,6 +1199,18 @@ def cross_forward_render(pipe: Any, enabled: bool = True) -> Iterator[list]:
                 _disarm(pf)
             except Exception:  # noqa: BLE001 - leave the render's own error to surface
                 pass
+
+
+def end_cross_forward(pipe: Any) -> int:
+    """Disarm ``pipe``'s prefetchers, drop their carry; returns carried copies read so far."""
+    hits = 0
+    for pf in _pipe_prefetchers(pipe):
+        try:
+            _disarm(pf)
+            hits += int(pf.stats.get("carried_hits", 0))
+        except Exception:  # noqa: BLE001 - leave the render's own error to surface
+            pass
+    return hits
 
 
 _UNKNOWN = object()

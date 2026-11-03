@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Coarse per-IP sliding-window rate limit for the public ``/p`` preview chat.
-
-A signed link stops ref guessing, but anyone with a link can still drive GPU
-generation. This bounds sustained abuse from a single source. In-process and
-single-worker only (like the login limiter in ``routes/auth.py``); Unsloth runs as
-one uvicorn process, so a shared store isn't needed.
-"""
+"""Per-IP sliding-window rate limit for the public /p preview chat; in-process, single-worker only."""
 
 from __future__ import annotations
 

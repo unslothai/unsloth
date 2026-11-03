@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Speculative-decoding drafter trained after the fine-tune.
-
-Models with a native MTP head retrain it (llama.cpp `draft-mtp`, vLLM `method="mtp"`); models without one get
-an EAGLE-3 drafter in the speculators layout (llama.cpp `draft-eagle3`, vLLM `method="eagle3"`). A fresh MTP
-head on an architecture without an MTP graph would run in neither engine, so it is never offered.
-"""
+"""Speculative drafter after fine-tune: retrain native MTP, else EAGLE-3; never a fresh MTP head."""
 
 from __future__ import annotations
 

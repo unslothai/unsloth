@@ -20,6 +20,10 @@ pub enum DesktopAuthResponse {
         access_token: String,
         refresh_token: String,
     },
+    // Built here, never parsed from the backend.
+    SignedOut {
+        signed_out: LoginRequired,
+    },
 }
 
 // Literal values keep malformed successful responses from becoming a session.
@@ -101,6 +105,44 @@ fn home_dir() -> Result<PathBuf, String> {
 
 fn desktop_secret_path() -> Result<PathBuf, String> {
     Ok(auth_secret_path(&home_dir()?, ".desktop_secret"))
+}
+
+// A file, not webview storage: WebView2 commits localStorage lazily, so a quit soon after Log out lost it.
+fn signed_out_marker_path() -> Result<PathBuf, String> {
+    Ok(auth_secret_path(&home_dir()?, ".desktop_signed_out"))
+}
+
+fn set_signed_out(path: &Path, signed_out: bool) -> Result<(), String> {
+    let result = if signed_out {
+        path.parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(path, b"1"))
+    } else {
+        match std::fs::remove_file(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        }
+    };
+    result.map_err(|e| format!("Could not record the desktop sign-out: {}", e))
+}
+
+fn signed_out_response(marker: &Path) -> Option<DesktopAuthResponse> {
+    marker.exists().then_some(DesktopAuthResponse::SignedOut {
+        signed_out: LoginRequired,
+    })
+}
+
+#[tauri::command]
+pub async fn desktop_mark_signed_out() -> Result<(), String> {
+    // Under the auth lock, so no exchange already past the marker check can land after this returns.
+    let _auth_guard = DESKTOP_AUTH_LOCK.lock().await;
+    set_signed_out(&signed_out_marker_path()?, true)
+}
+
+#[tauri::command]
+pub async fn desktop_clear_signed_out() -> Result<(), String> {
+    let _auth_guard = DESKTOP_AUTH_LOCK.lock().await;
+    set_signed_out(&signed_out_marker_path()?, false)
 }
 
 fn read_secret_if_exists(path: &Path) -> Result<Option<String>, String> {
@@ -366,6 +408,9 @@ async fn desktop_auth_inner(
     diagnostics: &DiagnosticsState,
 ) -> Result<DesktopAuthResponse, String> {
     let _auth_guard = DESKTOP_AUTH_LOCK.lock().await;
+    if let Some(signed_out) = signed_out_response(&signed_out_marker_path()?) {
+        return Ok(signed_out);
+    }
     let mut backend = current_backend_port(state).await?;
     if backend.source == PortSource::Discovered {
         diagnostics::record_attached_external_backend(diagnostics, backend.port);
@@ -562,5 +607,21 @@ mod tests {
             error,
             "Running Unsloth backend is too old for this desktop app. Update that backend and restart."
         );
+    }
+
+    #[test]
+    fn signed_out_marker_holds_desktop_auth_until_a_sign_in_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("auth").join(".desktop_signed_out");
+        assert!(signed_out_response(&marker).is_none());
+        set_signed_out(&marker, true).unwrap();
+        let response = signed_out_response(&marker).unwrap();
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"signed_out":true}"#
+        );
+        set_signed_out(&marker, false).unwrap();
+        set_signed_out(&marker, false).unwrap();
+        assert!(signed_out_response(&marker).is_none());
     }
 }

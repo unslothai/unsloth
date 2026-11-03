@@ -1,21 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Runtime LAN listener for Unsloth Studio.
-
-Unsloth binds 127.0.0.1 by default, so a phone or laptop on the same network cannot reach it without
-relaunching with ``-H 0.0.0.0``. This module adds a second uvicorn listener over the already-running app, on the
-machine's own network addresses and the same port, and takes it away again -- no restart, and the loopback
-socket keeps serving the desktop app throughout.
-
-The listener binds each detected address explicitly rather than the wildcard: ``0.0.0.0`` collides with the
-loopback socket that already holds the port. It runs on the primary server's event loop with ``lifespan="off"``,
-so the app's startup and shutdown handlers stay owned by the primary server and never fire twice.
-
-The settings-managed listener remains IPv4 only. Address discovery also serves an existing IPv6 wildcard launch,
-while link-local IPv6 addresses are omitted because another device cannot use them without the listener's
-interface scope.
-"""
+"""Extra LAN listener on each detected address, not 0.0.0.0 (collides with loopback); lifespan=off
+so startup and shutdown stay with primary and never fire twice; settings listener IPv4 only;
+link-local IPv6 omitted."""
 
 from __future__ import annotations
 

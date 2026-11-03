@@ -78,7 +78,9 @@ class TestGradInOutputLayout:
     def test_forward_is_identity(self):
         x = torch.randn(2, 3, 5, 4, requires_grad = True)
         y = self._fn().apply(x)
-        assert torch.equal(y, x) and y.stride() == x.stride() and y.data_ptr() == x.data_ptr()
+        assert torch.equal(y, x) and y.stride() == x.stride() and not y._is_view()
+        y.mul_(2.0)
+        assert torch.equal(y, 2 * x)
 
 
 def _install_wrapper(monkeypatch):
@@ -232,6 +234,30 @@ class TestCompiledPathFunction:
 
         with _math():
             assert torch.equal(run(fn.apply), run(lambda o: o))
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    def test_compiled_inplace_consumer(self, backend):
+        # A view output here made in-place consumers raise "... is a view and is being modified inplace".
+        fn = self._fn()
+
+        def f(wrap):
+            def loss(x):
+                out = wrap(torch._C._nn.scaled_dot_product_attention(x, x, x))
+                out.mul_(2.0)
+                return (out.transpose(1, 2) * 3.0).sum()
+
+            return loss
+
+        results = []
+        for wrap in (fn.apply, lambda o: o):
+            torch._dynamo.reset()
+            x = _hf_query().requires_grad_()
+            with _math():
+                loss = torch.compile(f(wrap), fullgraph = True, backend = backend)(x)
+                loss.backward()
+            results.append((loss.detach(), x.grad))
+        torch._dynamo.reset()
+        torch.testing.assert_close(results[0], results[1])
 
     def test_fullgraph_compile_has_no_graph_break(self):
         from torch._dynamo.utils import counters

@@ -1,49 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Load MiniMax-H3's Qwen3-VL conditioner from a hosted QUANTIZED checkpoint.
-
-The H3 Diffusers path runs every component under ``ComponentsManager.enable_auto_cpu_offload``,
-so its VRAM floor is the LARGEST SINGLE RESIDENT COMPONENT, not their sum. The released bfloat16
-conditioner is 66.7 GB and the released denoiser is 66.3 GB, which is why seeding a 20 GB
-pre-quantized denoiser moved that floor by nothing at all: the encoder simply became the largest
-component instead. The encoder is the only remaining lever.
-
-``diffusion_te_prequant`` cannot serve this one. Its artifacts are layerwise-fp8 STORAGE casts of
-a dense encoder saved as ``torch.load``-able state dicts, which halve the bytes but keep every
-released tensor. The hosted H3 conditioner is a different artifact in two independent ways, and
-both savings stack:
-
-  1. It carries 50 of the released 64 decoder layers, and no ``lm_head`` and no final ``norm``
-     (47.97 GiB against 62.14 GiB for ``MiniMaxAI/MiniMax-H3`` ``text_encoder/``).
-  2. Those 50 layers' four attention and three MLP projections are ConvRot INT8
-     (25.28 GiB, i.e. 27.14 GB resident).
-
-Dropping the tail is LOSSLESS here, not an approximation. MiniMax-H3 conditions the transformer on
-``hidden_states[50]`` of the conditioner and never touches the language-model head -- see
-``diffusers/modular_pipelines/minimax_h3/modular_pipeline.py`` (``text_encoder_layer`` returns 50,
-"MiniMax-H3 reads `hidden_states[50]`, not the final one") and ``.../encoders.py``
-``get_qwen3vl_prompt_embeds``, which calls ``text_encoder.model(..., output_hidden_states=True)``
-and returns ``outputs.hidden_states[text_encoder_layer]``. Decoder layers 51-64 and ``lm_head``
-therefore cannot influence the conditioning by construction. Comparing the hosted file's tensor
-names against ``MiniMaxAI/MiniMax-H3``'s own shard index confirms the artifact drops EXACTLY that
-set and nothing else: 902 names that map 1:1 onto the released ones, the remainder being decoder
-layers 50-63 (0-based), ``model.language_model.norm.weight`` and ``lm_head.weight``.
-
-There is one mechanical catch, and it is the reason this module builds 51 layers rather than 50.
-``output_hidden_states`` yields ``[embeddings, layer_0_out, ..., layer_{N-1}_out]`` where the LAST
-entry is post-``norm``. A stack truncated to exactly 50 layers therefore returns a NORMALIZED
-``hidden_states[50]``, which is not the conditioning the released weights were trained against;
-diffusers refuses that case outright (``encoders.py``: "The last hidden state of a stack truncated
-to exactly 50 layers is post-norm"). Building a 51st slot that passes its input through unchanged
-puts ``hidden_states[50]`` back where it belongs -- the raw output after 50 real layers, bit-identical
-to what the full 64-layer conditioner produces there -- for no weights and no compute, and keeps
-``len(layers) == config.num_hidden_layers`` honest so the diffusers guard passes on a true statement.
-
-Best-effort throughout, exactly like ``diffusion_prequant``: any missing / unreadable / mismatched
-artifact returns None and the caller loads the released bfloat16 encoder instead. Inert with
-nothing configured.
-"""
+"""Qwen3-VL conditioner (50 of 64 layers, no lm_head/norm, ConvRot INT8); lossless as H3 reads
+hidden_states[50]; 51st pass-through slot avoids post-norm and keeps
+len(layers)==config.num_hidden_layers (diffusers guard); inert unless configured; bad artifacts
+fall back to released bf16 encoder."""
 
 from __future__ import annotations
 
@@ -451,6 +412,63 @@ def h3_te_pin_allowed(payload_bytes: int = 0, device: Any = None) -> bool:
         return False
 
 
+H3_TE_PIN_YIELD_ENV = "UNSLOTH_H3_TE_PIN_YIELD"
+
+
+def h3_te_pin_yields(
+    text_encoder: Any,
+    streamed_denoiser: Any,
+    device: Any = None,
+    logger: Any = None,
+) -> Optional[bool]:
+    """False when the conditioner alone fits the pin budget but not beside the denoiser that will stream: the
+    denoiser's blocks are read every step, the conditioner once per prompt, so the denoiser keeps the budget. None
+    leaves the decision to ``stream_h3_text_encoder``. ``UNSLOTH_H3_TE_PIN_YIELD=0`` turns it off. Never raises."""
+    try:
+        import os
+
+        if str(os.environ.get(H3_TE_PIN_YIELD_ENV, "")).strip().lower() in (
+            "0",
+            "off",
+            "false",
+            "no",
+        ):
+            return None
+        if text_encoder is None or streamed_denoiser is None:
+            return None
+        te_bytes = _module_payload_bytes(text_encoder)
+        dit_bytes = _host_payload_bytes(streamed_denoiser)
+        if dit_bytes <= 0 or not h3_te_pin_allowed(te_bytes, device):
+            return None
+        if h3_te_pin_allowed(te_bytes + dit_bytes, device):
+            return None
+        if logger is not None:
+            from .diffusion_memory import _pin_budget_mib
+            logger.info(
+                "video.h3_te_stream: the conditioner (%.1f GB) streams from pageable memory so the streamed "
+                "denoiser (%.1f GB) can pin first (%s MiB pinnable)",
+                te_bytes / 1e9,
+                dit_bytes / 1e9,
+                _pin_budget_mib(),
+            )
+        return False
+    except Exception:  # noqa: BLE001 -- keep the stock decision
+        return None
+
+
+def _host_payload_bytes(module: Any) -> int:
+    """Host bytes of ``module``'s CPU tensors, torchao subclasses at their inner (int8) size, not their bf16 shape."""
+    from .diffusion_prequant import tensor_payload_bytes
+
+    seen: set = set()
+    total = 0
+    for tensor in list(module.parameters()) + list(module.buffers()):
+        if id(tensor) not in seen and tensor.device.type == "cpu":
+            seen.add(id(tensor))
+            total += tensor_payload_bytes(tensor)
+    return total
+
+
 def _module_payload_bytes(module: Any) -> int:
     seen: set = set()
     total = 0
@@ -463,6 +481,17 @@ def _module_payload_bytes(module: Any) -> int:
 
 def _round_up(value: int, multiple: int) -> int:
     return (value + multiple - 1) // multiple * multiple
+
+
+def _pinned_arena(size: int) -> Any:
+    import torch
+
+    from .diffusion_memory import registered_pinned_empty
+
+    arena = registered_pinned_empty(size)
+    if arena is not None:
+        return arena
+    return torch.empty(size, dtype = torch.uint8, pin_memory = True)
 
 
 def pin_module_in_place(
@@ -500,11 +529,7 @@ def pin_module_in_place(
         slot = next((a for a in arenas if a[0].numel() - a[1] >= need), None)
         if slot is None:
             size = max(int(arena_bytes), 1 << (need - 1).bit_length())
-            arena = (
-                _arena_factory(size)
-                if _arena_factory is not None
-                else torch.empty(size, dtype = torch.uint8, pin_memory = True)
-            )
+            arena = _arena_factory(size) if _arena_factory is not None else _pinned_arena(size)
             slot = [arena, 0]
             arenas.append(slot)
         offset = slot[1]
@@ -620,3 +645,143 @@ def stream_h3_text_encoder(
             "pinned" if pin else "pageable",
         )
     return mode
+
+
+# A mapped conditioner larger than the page cache is re-read from disk every prompt (L4: +78-84 s); anon pages are not.
+H3_TE_RESIDENT_ENV = "UNSLOTH_H3_TE_RESIDENT"
+_H3_TE_RESIDENT_MIN_MIB = 1024
+_H3_TE_COPY_THREADS = 4
+
+
+def h3_te_resident_enabled() -> bool:
+    """``UNSLOTH_H3_TE_RESIDENT=0`` leaves the streamed conditioner on its memory mapping."""
+    import os
+    return str(os.environ.get(H3_TE_RESIDENT_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _streamed_host_tensors(target: Any, groups: Optional[list] = None) -> list:
+    """(group, tensor, host) pageable CPU tensors, language model first: vision is only read for image prompts."""
+    import torch
+
+    if groups is None:
+        from .diffusion_memory import _offload_groups
+        groups = _offload_groups(target)
+    names = {id(m): n for n, m in target.named_modules()}
+
+    def _late(group: Any) -> bool:
+        mods = list(getattr(group, "modules", None) or ())
+        leader = getattr(group, "onload_leader", None)
+        name = names.get(id(mods[0] if mods else leader), "")
+        return "visual" in name.split(".")
+
+    out: list = []
+    seen: set = set()
+    for group in sorted(groups, key = _late):
+        cpu = getattr(group, "cpu_param_dict", None) or {}
+        tensors = (
+            [t for m in getattr(group, "modules", None) or () for t in m.parameters()]
+            + [t for m in getattr(group, "modules", None) or () for t in m.buffers()]
+            + list(getattr(group, "parameters", None) or ())
+            + list(getattr(group, "buffers", None) or ())
+        )
+        for tensor in tensors:
+            host = cpu.get(tensor, tensor)
+            if id(tensor) in seen or host is None or host.device.type != "cpu":
+                continue
+            seen.add(id(tensor))
+            if type(host) is not torch.Tensor and type(host) is not torch.nn.Parameter:
+                continue  # tensor subclasses keep their own storage layout
+            if host.numel() == 0 or host.is_pinned():
+                continue
+            out.append((group, tensor, host))
+    return out
+
+
+def keep_h3_te_resident(
+    text_encoder: Any,
+    *,
+    logger: Any = None,
+    groups: Optional[list] = None,
+    host_ram: Any = None,
+) -> int:
+    """Copy the share of the streamed conditioner that fits beside the reserve into anonymous RAM; run after every
+    load-time host allocation. ``host_ram``: ``(total, available, commit)`` MiB. Returns MiB copied. Never raises."""
+    try:
+        target = getattr(text_encoder, "model", None)
+        if target is None or not h3_te_resident_enabled():
+            return 0
+        entries = _streamed_host_tensors(target, groups)
+        need = -(-sum(h.numel() * h.element_size() for _g, _t, h in entries) // (1 << 20))
+        if need <= 0:
+            return 0
+        from .diffusion_small_host import (
+            encoder_resident_share_mib,
+            host_commit_mib,
+            host_ram_mib,
+        )
+
+        if host_ram is None:
+            total, available = host_ram_mib()
+            commit = host_commit_mib()
+        else:
+            total, available, commit = host_ram
+        share, why = encoder_resident_share_mib(
+            need,
+            host_total_mib = total,
+            host_available_mib = available,
+            host_commit_mib = commit,
+            min_share_mib = min(need, _H3_TE_RESIDENT_MIN_MIB),
+        )
+        if share <= 0:
+            if logger is not None:
+                logger.info("video.h3_te_resident: the conditioner stays memory-mapped (%s)", why)
+            return 0
+        budget = share << 20
+        chosen = []
+        for entry in entries:
+            nbytes = entry[2].numel() * entry[2].element_size()
+            if nbytes <= budget:
+                chosen.append(entry)
+                budget -= nbytes
+        copied = _copy_host_tensors_(chosen)
+        mib = copied >> 20
+        if logger is not None:
+            logger.info(
+                "video.h3_te_resident: %d of %d MiB of the streamed conditioner copied into host RAM (%s)",
+                mib,
+                need,
+                why,
+            )
+        return mib
+    except Exception as exc:  # noqa: BLE001 -- the mapping still works
+        if logger is not None:
+            logger.warning("video.h3_te_resident: kept the mapping: %s", exc)
+        return 0
+
+
+def _copy_host_tensors_(entries: list) -> int:
+    import torch
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fresh(host: Any) -> Any:
+        out = torch.empty_like(host, memory_format = torch.contiguous_format)
+        out.copy_(host)  # releases the GIL: parallel page faults keep the disk queue full
+        return out
+
+    with torch.no_grad(), ThreadPoolExecutor(_H3_TE_COPY_THREADS) as pool:
+        fresh = list(pool.map(lambda e: _fresh(e[2]), entries))
+    copied = 0
+    with torch.no_grad():
+        for (group, tensor, host), new in zip(entries, fresh):
+            cpu = getattr(group, "cpu_param_dict", None)
+            if cpu is not None and tensor in cpu:
+                cpu[tensor] = new
+            if tensor.device.type == "cpu" and tensor.data_ptr() == host.data_ptr():
+                tensor.data = new
+            copied += new.numel() * new.element_size()
+    return copied

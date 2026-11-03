@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in (``UNSLOTH_DIFFUSION_MPS_FP16=1``) fp16 compute for Z-Image attention / FFN internals on MPS.
-
-Plain fp16 NaNs (FFN output reaches ~5e5), so the two overflowing sites run at power-of-two headroom (exact, as the
-projections are bias-free and attention is linear in v), then are clamped to the fp16 range and rescaled in bf16:
-
-    feed-forward: w2(silu(w1 x) * (w3 x / 32)) * 32
-    attention:    to_out(sdpa(q, k, v / 4)) * 4
-
-Patched per instance, never class-level, so other pipes / models are untouched.
-"""
+"""UNSLOTH_DIFFUSION_MPS_FP16=1 opt-in: Z-Image fp16 on MPS; plain fp16 NaNs, so overflow sites are
+power-of-two scaled, clamped and rescaled in bf16; patched per instance, never class-level"""
 
 from __future__ import annotations
 

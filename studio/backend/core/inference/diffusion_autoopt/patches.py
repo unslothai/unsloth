@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One registry and one lifecycle for every diffusion source / forward patch.
-
-Each per-architecture module (eager fusions, arch ``_SPECS``, Qwen RoPE, Q2.1 fast step / RoPE / fused, FLUX.2 RoPE,
-ROCm fused, Z-Image fused, Wan fused) used to be installed from its own call site with its own teardown list. They now
-register a :class:`PatchSpec` here and are installed by stage, uninstalled by group, and report one outcome each into
-the load's audit record. The modules keep their internals (fingerprints, eligibility, stashes); the registry owns
-WHEN they run, the kill switches, and the record.
-
-Fingerprints share one helper, :func:`source_digest` (the two identical ``_digest`` copies it replaces stay importable
-as aliases), plus :func:`body_has` / :func:`body_has_once` for needle guards. :func:`splice_source` is the safe in-memory
-source rewrite of unsloth-zoo's ``fused_losses/forward_install.py``: exactly-once needles, an unresolved-globals check,
-exec in the original module globals, a digest gate, and the original kept for an exact uninstall.
-"""
+"""PatchSpec registry for source/forward patches; splice_source keeps originals for exact uninstall."""
 
 from __future__ import annotations
 

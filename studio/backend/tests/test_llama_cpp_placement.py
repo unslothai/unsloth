@@ -2761,6 +2761,107 @@ def test_the_route_precheck_only_refuses_what_the_launch_would(tmp_path, monkeyp
     assert backend.host_offload_warning_for_intent(_load_intent(gguf)) is None
 
 
+def test_the_route_precheck_skips_the_gpu_probe_when_the_file_fits_in_ram(tmp_path, monkeypatch):
+    """A GGUF within RAM less headroom cannot warn, so the route skips the GPU probe."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 4, free_mib = 20_000, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = 32_000)
+    calls = []
+
+    def probe(_binary = None, **_kw):
+        calls.append(_binary)
+        return [(0, 24_000, 24_000)]
+
+    backend._get_gpu_memory = probe
+    assert backend.host_offload_warning_for_intent(_load_intent(gguf)) is None
+    assert calls == []
+    # -m is last-wins at launch.
+    big = tmp_path / "big.gguf"
+    big.write_bytes(b"x")
+    backend._get_gguf_size_bytes = lambda path: int((100 if path == str(big) else 4) * 1024**3)
+    verdict = backend.host_offload_warning_for_intent(
+        _load_intent(gguf, extra_args = ["-m", str(big)])
+    )
+    assert verdict is not None and calls == ["/fake/llama-server"]
+
+
+@pytest.mark.parametrize("ram_total_mib", [32_000, 8_000, 1_000])
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],
+        [(0, 1, 1)],
+        [(0, 20_000, 24_000)],
+        [(0, 20_000, 24_000), (1, 7_000, 8_192)],
+        [(0, 20_000, 0)],
+        [(0, 20_000, 24_000), (1, 9_000, 0)],
+        "raise",
+    ],
+    ids = [
+        "no_gpu",
+        "one_mib_gpu",
+        "one_gpu",
+        "multi_gpu",
+        "igpu_or_mig_total_0",
+        "mixed_total_0",
+        "probe_fails",
+    ],
+)
+def test_the_route_precheck_answers_as_the_full_preflight(
+    tmp_path, monkeypatch, rows, ram_total_mib
+):
+    """The skip only ever returns what the probing path returns, at and around the edge."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 1, free_mib = 20_000, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = ram_total_mib)
+
+    def probe(_binary = None, **_kw):
+        if rows == "raise":
+            raise RuntimeError("probe failed")
+        return list(rows)
+
+    backend._get_gpu_memory = probe
+    other = tmp_path / "other.gguf"
+    other.write_bytes(b"x")
+    mib = 1024 * 1024
+    edge = (ram_total_mib - 2048) * mib
+    sizes = [0, 1, 512 * mib, edge - 1, edge, edge + 1, edge + mib + 1, edge + 1024 * mib]
+    sizes = [s for s in (*sizes, 3 * edge + 7, 100 * 1024**3) if s >= 0]
+    full = LlamaCppBackend._host_offload_fits_without_gpus
+    warned = 0
+    for opt_out in (False, True):
+        if opt_out:
+            monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+        else:
+            monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+        for override_model in (False, True):
+            target = str(other if override_model else gguf)
+            extra = ["-m", str(other)] if override_model else None
+            for size in sizes:
+                for discount in (0, size // 3):
+                    backend._lazy_read_host_bytes = lambda *_a, _d = discount, **_k: _d
+                    backend._get_gguf_size_bytes = lambda path, _s = size: (
+                        _s if path == target else 1
+                    )
+                    monkeypatch.setattr(
+                        LlamaCppBackend, "_host_offload_fits_without_gpus", lambda *_a, **_k: False
+                    )
+                    expected = backend.host_offload_warning_for_intent(
+                        _load_intent(gguf, extra_args = extra)
+                    )
+                    monkeypatch.setattr(LlamaCppBackend, "_host_offload_fits_without_gpus", full)
+                    got = backend.host_offload_warning_for_intent(
+                        _load_intent(gguf, extra_args = extra)
+                    )
+                    assert got == expected, (opt_out, override_model, size, discount)
+                    warned += expected is not None
+    # Else the grid compares only Nones.
+    if rows in ([(0, 1, 1)], [(0, 20_000, 24_000)], [(0, 20_000, 24_000), (1, 7_000, 8_192)]):
+        assert warned
+
+
 def test_an_arch_gated_cpu_launch_prices_the_whole_model(tmp_path, monkeypatch):
     """The arch gate empties the pool AND masks every card, so the child is knowingly
     on the CPU rather than unprobed. Abstaining there ran an oversized GGUF wholly from
@@ -3426,6 +3527,10 @@ def _vulkan_cpu_replay_backend(tmp_path, monkeypatch, *, gguf_gb, free_mib, avai
     )
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: avail_mib)
+    )
+    # A Vulkan host is never Apple Silicon; on a Mac runner the Metal budget would size the context instead.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
     )
     monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
     return backend, gguf
@@ -5167,6 +5272,66 @@ def test_the_header_scan_sums_shards(tmp_path):
     # A missing shard reads as unknown, which discounts nothing.
     (tmp_path / "m-00002-of-00002.gguf").unlink()
     assert LlamaCppBackend()._gguf_tensor_scan(str(tmp_path / "m-00001-of-00002.gguf")) is None
+
+
+def test_a_resident_table_that_crowds_out_the_pinned_experts_is_read_lazily_for_the_cache(
+    tmp_path, _moe_cache_host
+):
+    """Qwen3.8-Flash-Next on a 94 GB host: RAM holds the lookup table resident or the
+    experts pinned, not both. The cache beats the --fit split by far, so the table is
+    read lazily (no --lazy-mode off) and the experts stay pinned for the cache."""
+    lazy = {"per_layer_token_embd.weight": 8 * _GIB}
+    # 32 GiB with 20 GiB of experts on the 20,000 MiB card: pinning the experts needs
+    # 20 + 8 (prompt cache) beside the 8 GiB table, more than 34 GiB of RAM.
+    shape = dict(lazy = lazy, arch = "qwen4exp", size_gib = 32, expert_gib = 20)
+    backend, cmd = _cache_launch(tmp_path, ram_gib = 34, **shape)
+
+    assert _has_moe_cache(cmd), cmd
+    assert cmd.count("--moe-cache-mib") == 1
+    assert _load_mode(cmd) == "none", cmd
+    assert "--lazy-mode" not in cmd and backend._lazy_mode_flags == [], cmd
+    assert backend._moe_cache_flags == _MOE_CACHE
+
+    # With the RAM for both, the table stays resident beside the pinned cache.
+    backend, cmd = _cache_launch(tmp_path, ram_gib = 256, **shape)
+    assert _has_moe_cache(cmd) and _load_mode(cmd) == "none", cmd
+    assert cmd[cmd.index("--lazy-mode") + 1] == "off", cmd
+    assert backend._lazy_mode_flags == ["--lazy-mode", "off"]
+
+    # Too little RAM even with the table lazy: no cache, and the table decision is the
+    # one a build without the cache makes (here the table already streams).
+    no_cache = dict(_CACHE_CAPS_ON, supports_moe_cache = False, supports_moe_cache_auto = False)
+    reference, reference_cmd = _cache_launch(tmp_path, ram_gib = 26, caps = no_cache, **shape)
+    backend, cmd = _cache_launch(tmp_path, ram_gib = 26, **shape)
+    assert not _has_moe_cache(cmd), cmd
+    assert backend._lazy_mode_flags == reference._lazy_mode_flags, (cmd, reference_cmd)
+    assert ("--lazy-mode" in cmd) == ("--lazy-mode" in reference_cmd), (cmd, reference_cmd)
+
+
+@pytest.mark.parametrize(
+    "cell, kwargs, env",
+    [
+        ("setting", dict(load_mode = "mmap"), {}),
+        ("extra_args", dict(extra_args = ["--load-mode", "mmap"]), {}),
+        ("env", {}, {"LLAMA_ARG_LOAD_MODE": "mmap"}),
+    ],
+    ids = lambda v: v if isinstance(v, str) else "",
+)
+def test_a_user_mmap_keeps_the_resident_table_when_the_cache_stays_off(
+    tmp_path, _moe_cache_host, monkeypatch, cell, kwargs, env
+):
+    """The lazy table is only worth it for the cache: a user's mmap keeps the cache off
+    (it needs a pinned load), so --lazy-mode off and the resident table must stay."""
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    lazy = {"per_layer_token_embd.weight": 8 * _GIB}
+    shape = dict(lazy = lazy, arch = "qwen4exp", size_gib = 32, expert_gib = 20)
+    backend, cmd = _cache_launch(tmp_path, ram_gib = 34, **shape, **kwargs)
+
+    assert not _has_moe_cache(cmd), (cell, cmd)
+    assert backend._moe_cache_flags == []
+    assert cmd[cmd.index("--lazy-mode") + 1] == "off", (cell, cmd)
+    assert backend._lazy_mode_flags == ["--lazy-mode", "off"]
 
 
 def test_the_launch_discounts_the_lazy_table(tmp_path, _moe_cache_host):

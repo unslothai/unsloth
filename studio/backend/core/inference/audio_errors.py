@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Audio errors that are safe to show a client verbatim.
-
-``safe_error_detail`` flattens everything to "An internal error occurred", right for a
-failure but wrong for a capability answer, where the reason is the whole reply. These
-carry no path or user input, so the route passes them straight through.
-"""
+"""Audio errors safe to show clients verbatim, which safe_error_detail would flatten; they hold no
+path or user input, so the route passes them through."""
 
 from __future__ import annotations
 

@@ -1,37 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Text-prompted masks for the Images page: SAM 3 (Segment Anything with Concepts) turns "sofa, red lamp, pillow:2"
-into a white-on-black mask the inpaint and localized-edit painters load and keep editable.
-
-Behaviour follows ComfyUI's ``SAM3_Detect`` node and its "Image Segmentation (SAM3)" blueprint
-(comfy_extras/nodes_sam3.py, comfy/text_encoders/sam3_clip.py): comma-separated concepts, ``:N`` caps a concept's
-detections (default 1), the image is stretched to 1008x1008 with bilinear resampling, a detection is kept when its
-score > 0.5, the best ``N`` per concept are kept, and the union of their masks (mask logits upsampled bilinearly to
-the source size, > 0) is the result. Two departures: the score is sigmoid(logit) * sigmoid(presence), as in Meta's
-SAM 3 and transformers' post-processing (ComfyUI drops the presence term, and then a concept that is not in the
-picture, "elephant" in a living room, masks the sofa at 0.72; with it every absent concept scores below 0.02 and no
-present one changes), and ComfyUI's optional crop-and-refine pass through the tracker's SAM decoder is not run.
-
-Weights come from a small table of variants (SEGMENTER_VARIANTS). The default is SAM 3.1: Meta ships it only as an
-original-format multiplex checkpoint, so it is the SAM 3.1 detector converted with transformers' own SAM 3 converter
-into a BF16 ``Sam3Model`` repository (ungated, SAM License). The official transformers-format ``facebook/sam3``
-(gated: the license is accepted on Hugging Face) stays selectable with ``UNSLOTH_SAM3_VARIANT=sam3``, and is used
-when it is already downloaded and SAM 3.1 is not. ``UNSLOTH_SAM3_PATH`` points at any local transformers-format SAM 3
-directory instead.
-
-SAM 3.1 also ships pre-quantized detector files (FP8, INT8, INT8-ConvRot; diffusion_segment_quant). On a CUDA card
-``UNSLOTH_SAM3_PRECISION`` (auto / bf16 / fp8 / int8) picks one. auto runs bf16, which is faster, while the card has
-room for it, and only when it is short of memory loads a file that passed the accuracy gate (INT8, the ConvRot build
-unless ``UNSLOTH_SAM3_INT8_CONVROT=0``). The download fetches that one weights file with the configs and tokenizer,
-and bf16 when the file is not published; the CPU and Apple's MPS run bf16 weights (a quantized file that is the only
-one on disk is dequantized there).
-
-The model is auxiliary to the image model, like the FLUX.3 prompt upsampler: loaded on the first request, kept for
-a short keep-alive, unloaded right after a call when the accelerator is tight, and dropped whenever the GPU arbiter
-hands the GPU to a load, evicts the image model, or training starts. It runs on the CPU while training holds the GPU
-or when the accelerator has no room.
-"""
+"""Text-prompted SAM 3 masks like ComfyUI SAM3_Detect, score = sigmoid(logit) * sigmoid(presence);
+dropped when the GPU arbiter loads, evicts the image model or training starts; CPU while training"""
 
 from __future__ import annotations
 
@@ -1060,7 +1031,8 @@ def mask_to_png(mask: Any) -> bytes:
 
     array = (mask.to("cpu").numpy().astype("uint8")) * 255
     buffer = io.BytesIO()
-    Image.fromarray(array, mode = "L").save(buffer, format = "PNG", optimize = True)
+    # Every zlib level is lossless; optimize=True only buys a few KB for several times the encode time.
+    Image.fromarray(array, mode = "L").save(buffer, format = "PNG", compress_level = 1)
     return buffer.getvalue()
 
 

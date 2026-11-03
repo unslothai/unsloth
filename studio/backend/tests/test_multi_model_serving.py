@@ -1817,3 +1817,50 @@ def test_a_short_load_still_replaces_an_active_model_it_may_share_with(backends,
     assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
     assert calls[-1] == (False, False)
     assert primary.model_identifier == "org/C-GGUF"
+
+
+def _away_request(check):
+    from starlette.requests import Request
+
+    request = Request({"type": "http", "method": "POST", "path": "/v1/chat/completions"})
+    inf.require_for_model_switch(request.scope, check)
+    return request
+
+
+def test_an_unattended_replace_fallback_rechecks_the_user_is_away_after_the_drain(
+    backends, monkeypatch
+):
+    primary, extra = backends
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    _gated_load_fakes(monkeypatch, short_fits = [1, 1])
+    back = []
+
+    def still_away():
+        if back:
+            raise HTTPException(status_code = 409, detail = "model_busy")
+
+    async def wait(**kw):
+        back.append(True)  # the user's chat on the active model ends during the drain
+
+    monkeypatch.setattr(inf, "_wait_for_model_switch_idle", wait)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inf.load_model_gated(request, _away_request(still_away), "s", background = True))
+    assert exc.value.status_code == 409 and exc.value.detail == "model_busy"
+    assert primary.model_identifier == "org/A-GGUF" and primary.is_loaded
+
+
+def test_an_unattended_load_that_fits_beside_the_primary_is_not_rechecked(backends, monkeypatch):
+    primary, _ = backends
+    _gated_load_fakes(monkeypatch, short_fits = [])
+
+    def refuse():
+        raise AssertionError("an alongside load that touches no loaded model was rechecked")
+
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    assert (
+        asyncio.run(inf.load_model_gated(request, _away_request(refuse), "s", background = True))
+        == "loaded"
+    )
+    assert primary.model_identifier == "org/A-GGUF"
+    assert model_slots.slots[-1].request.model_path == "org/C-GGUF"

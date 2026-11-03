@@ -165,6 +165,42 @@ def test_writer_holds_no_old_storage_after_the_weights_move(monkeypatch, base_di
         assert got[k].dtype == v.dtype and torch.equal(got[k], v), k
 
 
+def test_a_move_between_state_capture_and_the_write_holds_no_old_storage(
+    monkeypatch, base_dir, cache_root
+):
+    """Offload can land right after ``state_dict()`` returns, before the writer swaps in live reads."""
+    _as_if_on_the_accelerator(monkeypatch)
+    model = _native(base_dir)
+    expected = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    old_ptrs: set = set()
+    capture = model.state_dict
+
+    def capture_then_offload(*a, **kw):
+        state = capture(*a, **kw)
+        if old_ptrs:
+            return state
+        for t in _live_tensors(model):
+            old_ptrs.add(t.data_ptr())
+            t.data = t.data.clone()
+        return state
+
+    monkeypatch.setattr(model, "state_dict", capture_then_offload)
+
+    def check(tensors):
+        held = [v for v in tensors.values() if isinstance(v, torch.Tensor)]
+        stale = [v for v in held if v.data_ptr() in old_ptrs]
+        assert (
+            not stale
+        ), f"{len(stale)} tensors in the in-flight write still alias the moved storage"
+
+    path = _paused_save(monkeypatch, model, base_dir, check)
+    assert path is not None
+    got = _entry_tensors(path)
+    assert set(got) == set(expected)
+    for k, v in expected.items():
+        assert got[k].dtype == v.dtype and torch.equal(got[k], v), k
+
+
 def test_a_weight_that_changes_shape_mid_write_leaves_no_entry(monkeypatch, base_dir, cache_root):
     _as_if_on_the_accelerator(monkeypatch)
     model = _native(base_dir)

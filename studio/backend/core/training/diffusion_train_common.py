@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared, family-agnostic building blocks for diffusion LoRA training: dataset discovery, request
-config + validation, image loading, event emission, the stop protocol, adapter publishing, and
-the family/trainer registry, so the SDXL U-Net trainer (``diffusion_lora_trainer``) and the
-flow-matching DiT trainers share them. The pure helpers have no torch/diffusers import at call
-time and are unit-tested without a GPU; this module only routes a request to the right training
-loop."""
+"""Shared diffusion LoRA helpers and family registry; pure helpers avoid torch, so tests need no GPU."""
 
 from __future__ import annotations
 
@@ -951,20 +946,35 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
     return None
 
 
-def _training_mirror_access_specs(repo: str, note: str = "") -> dict[str, dict[str, Any]]:
-    """Access facts for a gated vendor base and its mirror, using the trainer's fetch policy."""
+def _training_fetch_repo(base: str, token: Optional[str] = None) -> str:
     from core.inference.diffusion_families import (
+        _is_local_path,
         mirror_repo,
         prefer_ungated_mirror,
         upstream_is_gated,
     )
+
+    fetched = prefer_ungated_mirror(base, token)
+    # Anonymous training ignores partial caches of gated upstreams.
+    if (
+        not token
+        and upstream_is_gated(base)
+        and not _is_local_path(base)
+        and not os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip()
+    ):
+        fetched = mirror_repo(base) or fetched
+    return fetched
+
+
+def _training_mirror_access_specs(repo: str, note: str = "") -> dict[str, dict[str, Any]]:
+    from core.inference.diffusion_families import mirror_repo, upstream_is_gated
 
     mirror = mirror_repo(repo)
     if not mirror or not upstream_is_gated(repo):
         return {}
     facts = {}
     for shown in (repo, mirror):
-        fetched = prefer_ungated_mirror(shown)
+        fetched = _training_fetch_repo(shown)
         gated = upstream_is_gated(fetched)
         explanation = (
             f"Downloads from {fetched}. The original model license still applies."
@@ -1325,25 +1335,10 @@ class DiffusionLoraConfig:
         # A blank Hub token (the Unsloth default when none is configured) must load anonymously, not as an explicit
         # empty credential.
         token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token
-        from core.inference.diffusion_families import (
-            _is_local_path,
-            mirror_repo,
-            prefer_ungated_mirror,
-            upstream_is_gated,
-        )
-
         if resolved_family == "sdxl":
             fetch_base_model = self.base_model
         else:
-            fetch_base_model = prefer_ungated_mirror(self.base_model, token or None)
-            # Gated upstream with no token only: prefer the mirror even with a cached shard; UNSLOTH_DIFFUSION_NO_MIRROR still wins, and a local clone wins over both.
-            if (
-                not token
-                and upstream_is_gated(self.base_model)
-                and not _is_local_path(self.base_model)
-                and not os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip()
-            ):
-                fetch_base_model = mirror_repo(self.base_model) or fetch_base_model
+            fetch_base_model = _training_fetch_repo(self.base_model, token or None)
         # Blank caption_column means "text", matching the start route's fingerprint.
         caption_column = str(self.caption_column or "").strip() or "text"
         bucketing = None if self.bucketing is None else _coerce_bool(self.bucketing)

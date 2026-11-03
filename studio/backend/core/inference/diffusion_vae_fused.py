@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Triton-fused GroupNorm / channel RMS norm for eagerly decoded image and video VAEs.
-
-CUDA GroupNorm has no channels-last kernel, so every norm copies NHWC <-> NCHW; these kernels read any layout,
-write channels-last with fp32 statistics. ``install(vae)`` patches instances (never classes), each falling back
-to stock on a new exception. NVIDIA CUDA + Triton >= 3.3 only; ``UNSLOTH_VAE_FUSED=0`` disables.
-"""
+"""Triton GroupNorm/RMS norm for eager VAE decode (NVIDIA CUDA, Triton>=3.3); patches instances
+never classes; falls back to stock on new exception; UNSLOTH_VAE_FUSED=0 off"""
 
 from __future__ import annotations
 
@@ -1161,7 +1157,6 @@ def uninstall(vae: Any) -> None:
 
 
 _WAN_VAES = frozenset({"AutoencoderKLWan", "AutoencoderKLQwenImage", "AutoencoderKLQwenImage21"})
-_CACHE_T = 2
 
 
 def _is_rms(norm: Any) -> bool:
