@@ -733,6 +733,8 @@ export const fa = {
     plainText: "کادر نوشتن متن ساده",
     plainTextDescription:
       "کد، Markdown و پیوندها به‌صورت متن خام نگه داشته شوند. برای نمایش پیش‌نمایش قالب‌بندی‌شده، خاموش کنید.",
+    richPaste: "چسباندن متن قالب‌دار",
+    richPasteDescription: "پیوندها، جدول‌ها و قالب‌بندی را به‌صورت Markdown می‌چسباند. {shortcut} متن ساده می‌چسباند. ویرایشگر کامل متن غنی به‌زودی.",
     showContext: "میزان استفاده از پنجرهٔ زمینه",
     sendShortcut: "میان‌بر ارسال",
     sendMultiline: "{mod} + Enter برای پرامپت‌های چندخطی",
@@ -1156,6 +1158,7 @@ export const fa = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "پیش از افزودن حساب دیگر، گذرواژهٔ مالک این نصب را تعیین کنید. وقتی این نصب چند حساب داشته باشد، برای ورود از این گذرواژه استفاده خواهید کرد.",
       signsInAs: "ورود با نام {username}",
       signsInAsOwner: "ورود با نام {alias} یا {username}",
       signInName: "نام ورود شما",

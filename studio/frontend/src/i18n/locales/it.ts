@@ -649,6 +649,8 @@ export const it = {
     title: "Composizione dei messaggi",
     plainText: "Composizione in testo semplice",
     plainTextDescription: "Mantieni codice, Markdown e link come testo letterale. Disattiva per mostrare un’anteprima formattata.",
+    richPaste: "Incolla testo formattato",
+    richPasteDescription: "Incolla link, tabelle e formattazione come Markdown. {shortcut} incolla testo semplice. Editor di testo formattato completo in arrivo.",
     showContext: "Mostra l’utilizzo della finestra di contesto",
     sendShortcut: "Scorciatoia di invio",
     sendMultiline: "{mod} + Enter per i messaggi su più righe",
@@ -962,6 +964,7 @@ export const it = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Imposta la password del proprietario dell'installazione prima di aggiungere un altro account. La userai per accedere quando questa installazione avrà più account.",
       signsInAs: "Accede come {username}",
       signsInAsOwner: "Accede come {alias} o {username}",
       signInName: "Il tuo nome di accesso",

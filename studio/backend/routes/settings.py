@@ -14,7 +14,7 @@ from typing import Annotated, Any, Literal, Optional, Union, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import (
     BaseModel,
@@ -61,6 +61,17 @@ from core.rag.config import (
 )
 from loggers import get_logger
 from utils.utils import safe_curated_detail, safe_error_detail, log_and_http_error
+from utils.device_sync_settings import (
+    MAX_BACKGROUND_IMAGE_BYTES,
+    background_image_path,
+    background_lock,
+    clear_background,
+    get_chat_background,
+    get_client_preferences,
+    save_background_adjustments,
+    save_background_image,
+    update_client_preferences,
+)
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
     PERSONALIZATION_VERSION,
@@ -4999,6 +5010,145 @@ def update_personalization_settings(
         ) from exc
     # Return the stored record, not the defaults-filled request, so it matches the next GET.
     return PersonalizationPayload.model_validate(drop_unknown_palette(merged, _PALETTE_IDS))
+
+
+class BrowserPrefsPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    openLinksInBrowser: Optional[bool] = None
+    openFilesInBrowser: Optional[bool] = None
+    searchEngine: Optional[Literal["duckduckgo", "google", "bing", "brave"]] = None
+    showFullUrl: Optional[bool] = None
+    bookmarksToolbar: Optional[Literal["always", "newtab", "never"]] = None
+    showBookmarkEditor: Optional[bool] = None
+    hiddenSuggestions: Optional[list[Annotated[str, Field(max_length = 253)]]] = Field(
+        None, max_length = 500
+    )
+    switchToNewTabs: Optional[bool] = None
+    defaultZoom: Optional[float] = Field(None, ge = 0.25, le = 5)
+    showSuggestedSites: Optional[bool] = None
+    showRecentPages: Optional[bool] = None
+    saveHistory: Optional[bool] = None
+    historyRetentionDays: Optional[int] = Field(None, ge = 0, le = 3650)
+    saveDownloadHistory: Optional[bool] = None
+    askWhereToSave: Optional[bool] = None
+    askBeforeDownloading: Optional[bool] = None
+    annotationScreenshots: Optional[Literal["always", "never"]] = None
+
+
+class ClientPreferencesPayload(BaseModel):
+    interfaceScale: Optional[int] = Field(None, ge = 50, le = 200)
+    browser: Optional[BrowserPrefsPayload] = None
+
+
+class ClientPreferencesResponse(ClientPreferencesPayload):
+    saved: bool = False
+    updatedAt: Optional[int] = None
+
+
+def _client_preferences_response(stored: dict) -> ClientPreferencesResponse:
+    response = ClientPreferencesResponse.model_validate(
+        {k: stored.get(k) for k in ("interfaceScale", "browser", "updatedAt")}
+    )
+    response.saved = bool(stored)
+    return response
+
+
+@_account_settings_router.get("/client-preferences", response_model = ClientPreferencesResponse)
+def get_client_preferences_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> ClientPreferencesResponse:
+    return _client_preferences_response(get_client_preferences())
+
+
+@_account_settings_router.put("/client-preferences", response_model = ClientPreferencesResponse)
+def update_client_preferences_settings(
+    payload: ClientPreferencesPayload, current_subject: str = Depends(get_current_subject)
+) -> ClientPreferencesResponse:
+    changes = payload.model_dump(exclude_none = True)
+    return _client_preferences_response(update_client_preferences(changes))
+
+
+class ChatBackgroundImageMeta(BaseModel):
+    sha256: str
+    type: str
+    size: int
+
+
+class ChatBackgroundAdjustmentsPayload(BaseModel):
+    adjustments: dict[str, Union[str, int, float, bool, None]] = Field(max_length = 32)
+
+
+class ChatBackgroundResponse(BaseModel):
+    saved: bool = False
+    adjustments: Optional[dict[str, Union[str, int, float, bool, None]]] = None
+    image: Optional[ChatBackgroundImageMeta] = None
+    updatedAt: Optional[int] = None
+
+
+def _chat_background_response(stored: dict) -> ChatBackgroundResponse:
+    response = ChatBackgroundResponse.model_validate(
+        {k: stored.get(k) for k in ("adjustments", "image", "updatedAt")}
+    )
+    response.saved = bool(stored)
+    return response
+
+
+@_account_settings_router.get("/chat-background", response_model = ChatBackgroundResponse)
+def get_chat_background_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> ChatBackgroundResponse:
+    return _chat_background_response(get_chat_background())
+
+
+@_account_settings_router.get("/chat-background/image")
+def get_chat_background_image(current_subject: str = Depends(get_current_subject)) -> Response:
+    with background_lock():
+        image = get_chat_background().get("image")
+        path = background_image_path()
+        if not isinstance(image, dict) or not path.is_file():
+            raise HTTPException(status_code = 404, detail = "No background image is saved.")
+        return Response(
+            content = path.read_bytes(),
+            media_type = image.get("type", "application/octet-stream"),
+            headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
+
+@_account_settings_router.put("/chat-background/image", response_model = ChatBackgroundResponse)
+async def update_chat_background_image(
+    request: Request, current_subject: str = Depends(get_current_subject)
+) -> ChatBackgroundResponse:
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_BACKGROUND_IMAGE_BYTES:
+        raise HTTPException(status_code = 413, detail = "Background image is too large.")
+    data = bytearray()
+    async for chunk in request.stream():
+        data.extend(chunk)
+        if len(data) > MAX_BACKGROUND_IMAGE_BYTES:
+            raise HTTPException(status_code = 413, detail = "Background image is too large.")
+    try:
+        stored = await asyncio.to_thread(save_background_image, bytes(data))
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return _chat_background_response(stored)
+
+
+@_account_settings_router.put("/chat-background", response_model = ChatBackgroundResponse)
+def update_chat_background_settings(
+    payload: ChatBackgroundAdjustmentsPayload, current_subject: str = Depends(get_current_subject)
+) -> ChatBackgroundResponse:
+    try:
+        return _chat_background_response(save_background_adjustments(payload.adjustments))
+    except LookupError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+
+
+@_account_settings_router.delete("/chat-background", response_model = ChatBackgroundResponse)
+def delete_chat_background_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> ChatBackgroundResponse:
+    return _chat_background_response(clear_background())
 
 
 # Backs Settings > Logs: the session log existed, but its path went only to an unseen console.

@@ -652,6 +652,8 @@ export const hi = {
     title: "संदेश लिखना",
     plainText: "सादा टेक्स्ट इनपुट",
     plainTextDescription: "कोड, Markdown और लिंक को मूल टेक्स्ट के रूप में रखें। फ़ॉर्मैट किया हुआ पूर्वावलोकन दिखाने के लिए इसे बंद करें।",
+    richPaste: "रिच टेक्स्ट पेस्ट",
+    richPasteDescription: "लिंक, टेबल और फ़ॉर्मैटिंग को Markdown के रूप में पेस्ट करता है। {shortcut} सादा टेक्स्ट पेस्ट करता है। पूरा रिच टेक्स्ट कंपोज़र जल्द आ रहा है।",
     showContext: "कॉन्टेक्स्ट विंडो का उपयोग दिखाएँ",
     sendShortcut: "भेजने का शॉर्टकट",
     sendMultiline: "कई पंक्तियों वाले संदेशों के लिए {mod} + Enter",
@@ -1062,6 +1064,7 @@ export const hi = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "दूसरा खाता जोड़ने से पहले इंस्टॉलेशन के मालिक का पासवर्ड तय करें। इस इंस्टॉलेशन में एक से अधिक खाते होने पर आप इसी पासवर्ड से साइन इन करेंगे।",
       signsInAs: "{username} के रूप में साइन इन करता है",
       signsInAsOwner: "{alias} या {username} के रूप में साइन इन करता है",
       signInName: "आपका साइन-इन नाम",

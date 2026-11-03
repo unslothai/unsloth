@@ -652,6 +652,8 @@ export const fr = {
     title: "Saisie des messages",
     plainText: "Saisie en texte brut",
     plainTextDescription: "Conserver le code, le Markdown et les liens en texte brut. Désactivez pour afficher un aperçu mis en forme.",
+    richPaste: "Coller le texte enrichi",
+    richPasteDescription: "Colle liens, tableaux et mise en forme en Markdown. {shortcut} colle du texte brut. Éditeur de texte enrichi complet bientôt disponible.",
     showContext: "Afficher l’utilisation de la fenêtre de contexte",
     sendShortcut: "Raccourci d’envoi",
     sendMultiline: "{mod} + Enter pour les messages sur plusieurs lignes",
@@ -1063,6 +1065,7 @@ export const fr = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Définissez le mot de passe du propriétaire de l’installation avant d’ajouter un autre compte. Vous l’utiliserez pour vous connecter une fois que cette installation aura plusieurs comptes.",
       signsInAs: "Se connecte en tant que {username}",
       signsInAsOwner: "Se connecte en tant que {alias} ou {username}",
       signInName: "Votre nom de connexion",

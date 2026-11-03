@@ -696,6 +696,8 @@ export const zhTW = {
     plainText: "純文字輸入框",
     plainTextDescription:
       "將程式碼、Markdown 和連結保留為原始文字。關閉後會顯示格式化預覽。",
+    richPaste: "貼上豐富文字",
+    richPasteDescription: "將連結、表格和格式貼上為 Markdown。{shortcut} 貼上純文字。完整的富文字輸入框即將推出。",
     showContext: "上下文視窗用量",
     sendShortcut: "傳送快速鍵",
     sendMultiline: "多行提示詞使用 {mod} + Enter",
@@ -1107,6 +1109,7 @@ export const zhTW = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "新增其他帳戶前，請先設定此安裝實例擁有者的密碼。此安裝實例有多個帳戶後，你將使用該密碼登入。",
       signsInAs: "以 {username} 登入",
       signsInAsOwner: "以 {alias} 或 {username} 登入",
       signInName: "您的登入名稱",
