@@ -1117,8 +1117,7 @@ def _download_gguf_variant(
         try:
             from hub.services.models.deletion import reclaim_replaced_gguf_variant
             from hub.utils.snapshot_reuse import repo_cache_dir
-
-            result = reclaim_replaced_gguf_variant(
+            reclaim_replaced_gguf_variant(
                 repo_id,
                 variant,
                 plan.main_hashes,
@@ -1128,26 +1127,6 @@ def _download_gguf_variant(
                     [state.published_commit, *(sha for _, sha in state.attempts)]
                 ),
             )
-            print(f"RECLAIM_DIAGNOSTIC result={result!r} protected={state!r}", file = sys.stderr)
-            from hub.services.models import cache_inventory, deletion
-
-            for scan in cache_inventory.all_hf_cache_scans():
-                for repo in scan.repos:
-                    if repo.repo_id == repo_id:
-                        print(
-                            f"RECLAIM_DIAGNOSTIC repo={repo.repo_path!r} "
-                            f"target={repo_cache_dir('model', repo_id).parent!r} "
-                            f"keys={deletion._main_gguf_variant_keys(repo)!r}",
-                            file = sys.stderr,
-                        )
-                        for snap, blob, name in deletion._repo_file_matches(
-                            repo, lambda name: True
-                        ):
-                            print(
-                                f"RECLAIM_DIAGNOSTIC entry={snap!r} blob={blob!r} "
-                                f"real={cache_inventory._is_real_cache_blob(blob, Path(repo.repo_path))!r}",
-                                file = sys.stderr,
-                            )
         except Exception as e:
             print(
                 f"Verified GGUF update for {repo_id} [{variant}], but stale-cache "

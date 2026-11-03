@@ -15,6 +15,24 @@ import pytest
 from .test_hf_download_pinned_revision import _FakeHub, _NEW, _OLD, _REPO, _WORKER, _repo_dir, _run
 
 
+def test_cache_blob_directory_identity_accepts_windows_extended_paths(tmp_path):
+    from hub.services.models.cache_inventory import _is_real_cache_blob
+
+    repo = _repo_dir(tmp_path)
+    store = repo / "blobs"
+    store.mkdir(parents = True)
+    blob = store / ("d" * 64)
+    blob.write_bytes(b"payload")
+    alias = Path("\\\\?\\" + str(store.resolve())) if os.name == "nt" else store
+    assert _is_real_cache_blob(alias / blob.name, repo)
+    assert _is_real_cache_blob(blob, repo)
+    outside = tmp_path / "other-blobs"
+    outside.mkdir()
+    (outside / blob.name).hardlink_to(blob)
+    assert not _is_real_cache_blob(outside / blob.name, repo)
+    assert not _is_real_cache_blob(repo / "snapshots" / "blobs" / blob.name, repo)
+
+
 def _worker_env(hub, tmp_path):
     env = dict(os.environ)
     env.pop("HF_TOKEN", None)
