@@ -388,8 +388,10 @@ def fit_checkpoint_context(
     force_reset: bool = False,
     sticky_manual: bool = False,
     replay_only: bool = False,
+    on_evict: Optional[Callable[[], None]] = None,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
-    """can_reset=False blocks new epochs (unsearchable reset loses data) but still replays one in force."""
+    """can_reset=False blocks new epochs (unsearchable reset loses data) but still replays one in force.
+    on_evict runs once, just before a new epoch drops turns; replaying the epoch in force does not call it."""
     if context_length <= 1:
         return messages, None
 
@@ -470,6 +472,8 @@ def fit_checkpoint_context(
     # primitive itself protects system, developer, final and newest user groups. The turn in progress is held too,
     # released oldest first until the reset leaves the headroom free.
     if (current_tokens > prompt_target or force_reset) and _resolved(can_reset):
+        if on_evict is not None:
+            on_evict()
         live = _live_turn_groups(messages)
         ratio = clamp_compaction_headroom_ratio(headroom_ratio)
         hold_target = prompt_target - int(

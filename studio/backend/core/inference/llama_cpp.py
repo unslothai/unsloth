@@ -368,26 +368,8 @@ def _fit_rolling_remembered(messages, kwargs):
     return fitted, truncation
 
 
-def _reports_compaction(
-    count_tokens,
-    on_compacting,
-    *,
-    message_count,
-    context_length,
-    max_tokens,
-    force_reset,
-    sticky_dropped,
-):
-    """Calls ``on_compacting`` once, when the fit is about to evict: a forced reset, or a count over the prompt budget
-    (both fit policies start evicting there). Under the budget it never fires, so a fit that keeps everything is silent.
-
-    With a saved cut (``sticky_dropped``) the full history is over budget on every request after the first compaction,
-    and replaying that cut evicts nothing new. Only counts of a candidate already shorter by the saved cut can report,
-    so the label shows when the replay itself no longer fits, not on every later turn."""
-    if on_compacting is None or count_tokens is None:
-        return count_tokens
-    target = prompt_budget(context_length or 0, max_tokens)
-    longest_reporting = message_count - max(0, int(sticky_dropped or 0))
+def _once(on_compacting):
+    """``on_compacting`` at most once per fit, never raising: a progress report must not break a fit."""
     fired = False
 
     def fire() -> None:
@@ -397,19 +379,10 @@ def _reports_compaction(
         fired = True
         try:
             on_compacting()
-        except Exception:  # noqa: BLE001 -- a progress report must never break a fit
+        except Exception:  # noqa: BLE001
             logger.debug("compaction progress report failed", exc_info = True)
 
-    if force_reset:
-        fire()
-
-    def counted(messages):
-        tokens = count_tokens(messages)
-        if tokens > target and len(messages) <= longest_reporting:
-            fire()
-        return tokens
-
-    return counted
+    return fire
 
 
 def _compaction_reporter(perf_callback):
@@ -426,16 +399,9 @@ def _fit_with_instruction_pins(
     **kwargs,
 ):
     """Pins are recomputed each fit (inline recall swaps the user dict), dropped if they block a fit, and must never mutate the anchor set the caller passed."""
-    if on_compacting is not None and not kwargs.get("replay_only"):
-        kwargs["count_tokens"] = _reports_compaction(
-            kwargs.get("count_tokens"),
-            on_compacting,
-            message_count = len(messages),
-            context_length = kwargs.get("context_length"),
-            max_tokens = kwargs.get("max_tokens"),
-            force_reset = bool(kwargs.get("force_reset")),
-            sticky_dropped = kwargs.get("sticky_dropped"),
-        )
+    if on_compacting is not None:
+        # Called by the fit itself where it decides to drop turns past the saved cut, so replaying that cut is silent.
+        kwargs["on_evict"] = _once(on_compacting)
     anchors = set(anchor_ids or ())
     try:
         from core.inference import instruction_pin

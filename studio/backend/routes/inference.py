@@ -7184,9 +7184,17 @@ class _PrefillProgressSignal:
         self._compactions_sent = 0
         self.wants_timings = inner is not None or live
 
+    def round_ended(self) -> None:
+        """A tool result closed the pass: its unsent prefill and decode figures must not follow into the next round."""
+        self._prefill_sent = self._prefill
+        self._decode = None
+        self._decode_started = False
+
     def compacting(self) -> None:
         """The context fit is evicting turns; shown until this pass's context_truncated or prefill arrives."""
         if self._live:
+            # Cleared first: a figure from the last pass sent after this report would clear the label on the client.
+            self.round_ended()
             self._compactions += 1
 
     @property
@@ -32441,6 +32449,8 @@ async def produce_openai_chat_completions(
                             continue
 
                         if event["type"] in ("tool_start", "tool_end"):
+                            if event["type"] == "tool_end":
+                                _gguf_prefill_signal.round_ended()
                             if event["type"] == "tool_start":
                                 # Gated with the card since the stamp is set once: a caller that cannot
                                 # see the card would otherwise report the tool run as its TTFT.

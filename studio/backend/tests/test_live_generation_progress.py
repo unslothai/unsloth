@@ -251,6 +251,29 @@ def test_a_compaction_report_is_dropped_when_not_live():
     assert signal.live_frame() is None
 
 
+def test_the_last_passs_unsent_figures_never_follow_a_compaction_report(monkeypatch):
+    # The tool call decoded within the throttle, so its decode figures were still pending when the fit began.
+    monkeypatch.setattr(route, "_LIVE_DECODE_FRAME_INTERVAL_S", 0.0)
+    signal = route._PrefillProgressSignal(None, live = True)
+    signal({"prompt_progress": {"total": 4000, "processed": 4000}})
+    signal({"predicted_n": 30, "predicted_per_second": 20.0})
+    signal.compacting()
+    assert _frame(signal.live_frame())["phase"] == "compacting"
+    assert signal.live_frame() is None, "a decode frame here would clear the label on the client"
+
+
+def test_a_tool_result_drops_the_last_passs_unsent_figures(monkeypatch):
+    monkeypatch.setattr(route, "_LIVE_DECODE_FRAME_INTERVAL_S", 0.0)
+    signal = route._PrefillProgressSignal(None, live = True)
+    signal({"prompt_progress": {"total": 4000, "processed": 4000}})
+    signal({"predicted_n": 30, "predicted_per_second": 20.0})
+    signal.round_ended()
+    assert signal.live_frame() is None
+    # The next pass reports normally.
+    signal({"prompt_progress": {"total": 4100, "processed": 4050}})
+    assert _frame(signal.live_frame())["processed"] == 4050
+
+
 def test_stall_wait_sends_the_compaction_frame_while_the_fit_blocks(monkeypatch):
     monkeypatch.setattr(route, "_LIVE_PROGRESS_POLL_S", 0.01)
     signal = route._PrefillProgressSignal(None, live = True)
@@ -283,11 +306,17 @@ def test_stall_wait_sends_the_compaction_frame_while_the_fit_blocks(monkeypatch)
     assert len(lines) == 1
 
 
-def _fit(messages, on_compacting, **kwargs):
+def _chars(candidate):
+    return sum(len(str(message.get("content", ""))) for message in candidate)
+
+
+def _fit(
+    messages,
+    on_compacting,
+    counter = _chars,
+    **kwargs,
+):
     from core.inference import llama_cpp
-    counter = lambda candidate: sum(  # noqa: E731
-        len(str(message.get("content", ""))) for message in candidate
-    )
     return llama_cpp._fit_with_instruction_pins(
         messages,
         context_length = 1000,
@@ -320,9 +349,19 @@ def test_a_fit_that_keeps_everything_reports_nothing():
     assert reports == []
 
 
-def test_a_forced_reset_reports_before_any_count():
+def test_a_forced_reset_reports(monkeypatch):
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
     reports = []
-    _fit(_turns(100), lambda: reports.append(True), force_reset = True)
+    fitted, info = _fit(
+        _turns(100),
+        lambda: reports.append(True),
+        force_reset = True,
+        context_policy = "checkpoint",
+        can_reset = True,
+    )
+    assert info is not None and info["checkpoint_started"]
     assert reports == [True]
 
 
@@ -375,6 +414,26 @@ def test_a_replay_that_no_longer_fits_is_reported(policy):
         _compacted_chat(500), lambda: reports.append(True), sticky_dropped = 4, **_REPLAYS[policy]
     )
     assert info is not None and info["dropped_messages"] > 4
+    assert reports == [True]
+
+
+def test_a_new_checkpoint_past_a_saved_cut_is_reported(monkeypatch):
+    # No system message, so the checkpoint block adds one, and a block the template prices at nothing leaves the
+    # reset's own count under budget: only the eviction decision itself shows that a new epoch started.
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    reports = []
+    fitted, info = _fit(
+        _compacted_chat(450),
+        lambda: reports.append(True),
+        counter = lambda candidate: _chars([m for m in candidate if m.get("role") != "system"]),
+        sticky_dropped = 4,
+        context_policy = "checkpoint",
+        sticky_is_checkpoint = True,
+        can_reset = True,
+    )
+    assert info is not None and info["checkpoint_started"] and info["dropped_messages"] > 4
     assert reports == [True]
 
 
