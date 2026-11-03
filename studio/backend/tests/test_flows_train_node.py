@@ -387,7 +387,9 @@ def test_auto_eval_split_skips_every_split_the_training_reads(monkeypatch):
     )
     big = SimpleNamespace(num_examples = 100)
     info = SimpleNamespace(splits = {"validation": big, "test": big})
-    monkeypatch.setattr(datasets, "load_dataset_builder", lambda *a, **k: SimpleNamespace(info = info))
+    monkeypatch.setattr(
+        datasets, "load_dataset_builder", lambda *a, **k: SimpleNamespace(info = info)
+    )
     auto = training._auto_eval_split
     assert auto({"ref": "a/b"}, "train+validation", None) == "test"
     assert auto({"ref": "a/b"}, "validation[:50%]", None) == "test"
@@ -698,7 +700,9 @@ def test_hub_eval_split_survives_the_hold_out(monkeypatch):
 
     monkeypatch.setattr(datasets, "get_dataset_split_names", lambda *a, **k: ["train", "test"])
     info = SimpleNamespace(splits = {"test": SimpleNamespace(num_examples = 50)})
-    monkeypatch.setattr(datasets, "load_dataset_builder", lambda *a, **k: SimpleNamespace(info = info))
+    monkeypatch.setattr(
+        datasets, "load_dataset_builder", lambda *a, **k: SimpleNamespace(info = info)
+    )
     splits.clear()
     started.clear()
     ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, eval_steps = 0.1)
