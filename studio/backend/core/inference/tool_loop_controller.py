@@ -627,25 +627,71 @@ def _declared_properties(tool_name: str, tool_schemas) -> Any:
 def _mcp_tool_spec(tool_name: str) -> Any:
     try:
         from core.inference.tools import mcp_tool_spec  # noqa: PLC0415 -- cycle at import time
-        return mcp_tool_spec(tool_name)
+        from core.inference.chat_template_helpers import neutralize_tool_descriptions  # noqa: PLC0415
+
+        specs = neutralize_tool_descriptions([mcp_tool_spec(tool_name)])
+        return specs[0] if specs else None
     except Exception:  # noqa: BLE001 -- an unknown tool stays disabled
         return None
 
 
-def _mcp_fit_loaded(specs: list) -> list:
-    try:
-        from core.inference.tools import mcp_fit_loaded  # noqa: PLC0415 -- cycle at import time
-        return mcp_fit_loaded(specs)
-    except Exception:  # noqa: BLE001 -- unsized, the newest load still goes through
-        return specs[:1]
+def _mcp_tool_search_specs(result: str) -> list:
+    specs = []
+    # The worker's result budget is absent here; its returned schemas are authoritative.
+    for line in result.splitlines():
+        if not line.startswith("  schema: "):
+            continue
+        try:
+            schema = json.loads(line.removeprefix("  schema: "))
+        except (ValueError, TypeError):
+            continue
+        name = _tool_name_from_schema(schema) if isinstance(schema, Mapping) else None
+        spec = _mcp_tool_spec(name) if name else None
+        if spec is not None:
+            specs.append(spec)
+    return specs
 
 
-def _mcp_tool_search_specs(arguments: Any) -> list:
-    try:
-        from core.inference.tools import mcp_tool_search_specs  # noqa: PLC0415 -- cycle at import time
-        return mcp_tool_search_specs(arguments)
-    except Exception:  # noqa: BLE001 -- a failed load leaves the listing as it was
-        return []
+def _tool_name_key(name: str) -> str:
+    return name.lower().replace("-", "_")
+
+
+def _canonical_tool_name(name: str, allowed: Collection[str]) -> "str | None":
+    """The one enabled tool a sampled name means when only its case or ``-``/``_`` differ (WEB_SEARCH,
+    web-search). Never an execution-class or MCP tool: those run only under their exact name, so a bare
+    call cannot reach them by a near spelling. None when no tool, or more than one, matches."""
+    # ASCII only: Unicode case folding maps other letters onto ASCII ones (``ſ`` -> ``s``, Kelvin sign -> ``k``).
+    if not name or not name.isascii():
+        return None
+    key = _tool_name_key(name)
+    matches = [tool for tool in allowed if _tool_name_key(tool) == key]
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    if match in _tool_healing_exec_names() or match.startswith(MCP_TOOL_PREFIX):
+        return None
+    return match
+
+
+def _tool_healing_exec_names() -> "frozenset[str]":
+    from core.tool_healing import EXECUTION_CLASS_TOOL_NAMES  # noqa: PLC0415 -- cycle at import time
+    return EXECUTION_CLASS_TOOL_NAMES
+
+
+def _relaxed_arguments(raw_args: str, properties: Any) -> "dict | None":
+    """The object near-JSON arguments spell, kept only when it names a declared argument."""
+    from core.inference.relaxed_json import relaxed_json_object  # noqa: PLC0415 -- failure path only
+
+    repaired = relaxed_json_object(raw_args)
+    if not repaired:
+        return None
+    if (
+        isinstance(properties, Mapping)
+        and properties
+        and not any(k in properties for k in repaired)
+    ):
+        return None
+    return repaired
 
 
 def coerce_tool_arguments(
@@ -673,6 +719,13 @@ def coerce_tool_arguments(
             # Must not raise: this runs before the budget gate, so a raise aborts the whole turn.
             pass
         if heal:
+            # Near-JSON (single quotes, a trailing comma, True/None, an object encoded as a string) is the
+            # object it spells; wrapping it whole would run the tool on the call's own source text.
+            repaired = _relaxed_arguments(raw_args, properties)
+            if repaired is not None:
+                return CoercedArguments(
+                    coerce_arguments_by_schema(repaired, properties, repair = heal), True
+                )
             # Text that opens like JSON but fails to parse is a truncated object, not a bare string;
             # wrapping it whole would pass the fragment as the argument value.
             key = (
@@ -1146,6 +1199,24 @@ def _noop_result(reason: NoopReason, tool_name: str) -> str:
     )
 
 
+_SCHEMA_ATOMS = (str, int, float, bool, type(None))
+
+
+def _copy_schema(value: Any) -> Any:
+    """copy.deepcopy for JSON schemas minus its memo: no alias or cycle tracking; non-plain nodes still deepcopy."""
+    kind = type(value)
+    if kind is dict:
+        return {
+            key: item if type(item) in _SCHEMA_ATOMS else _copy_schema(item)
+            for key, item in value.items()
+        }
+    if kind is list:
+        return [item if type(item) in _SCHEMA_ATOMS else _copy_schema(item) for item in value]
+    if kind in _SCHEMA_ATOMS:
+        return value
+    return copy.deepcopy(value)
+
+
 class ToolLoopController:
     """Per-response ledger for local agentic tool loops."""
 
@@ -1163,13 +1234,11 @@ class ToolLoopController:
         self._session_id = session_id
         self._thread_id = thread_id
         self._restrict_to_allowed = tools is not None
-        self._tools = [copy.deepcopy(dict(tool)) for tool in (tools or [])]
+        self._tools = [_copy_schema(dict(tool)) for tool in (tools or [])]
         self._allowed_tool_names = {
             name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
         }
         self._mcp_search = MCP_TOOL_SEARCH_NAME in self._allowed_tool_names
-        self._listed_count = len(self._tools)
-        self._mcp_loaded: list[dict[str, Any]] = []
         self._auto_heal_tool_calls = auto_heal_tool_calls
         self._deduplicate_tool_calls = deduplicate_tool_calls
         self._one_shot_tools = one_shot_tools
@@ -1193,16 +1262,31 @@ class ToolLoopController:
         """True once a terminal no-op should transition to a no-tools pass."""
         return self._force_final_answer
 
-    def active_tools(self) -> list[dict[str, Any]]:
-        """Return tools still worth advertising to the next model call."""
+    def has_active_tools(self) -> bool:
+        """bool(active_tools()) without copying a schema."""
+        return not self._force_final_answer and any(
+            _tool_name_from_schema(tool) not in self._completed_one_shot_tools
+            for tool in self._tools
+        )
+
+    def active_tools(self, *, include_deferred: bool = False) -> list[dict[str, Any]]:
+        """Return prompt tools, optionally including deferred schemas for decoding."""
         if self._force_final_answer:
             return []
         active: list[dict[str, Any]] = []
-        for tool in self._tools:
+        tools = self._tools
+        if include_deferred and self._mcp_search:
+            declared = {_tool_name_from_schema(tool) for tool in tools}
+            tools = tools + [
+                spec
+                for name in sorted(self._allowed_tool_names - declared)
+                if (spec := _mcp_tool_spec(name)) is not None
+            ]
+        for tool in tools:
             name = _tool_name_from_schema(tool)
             if name in self._completed_one_shot_tools:
                 continue
-            active.append(copy.deepcopy(tool))
+            active.append(_copy_schema(tool))
         return active
 
     def prepare_call(
@@ -1217,17 +1301,26 @@ class ToolLoopController:
         function = tool_call.get("function")
         function = function if isinstance(function, Mapping) else {}
         tool_name = str(function.get("name") or "").strip()
+        name_healed = False
+        if self._auto_heal_tool_calls and tool_name not in self._allowed_tool_names:
+            canonical = _canonical_tool_name(tool_name, self._allowed_tool_names)
+            if canonical is not None:
+                tool_name, name_healed = canonical, True
+        # Deferred schemas must not shift the cached prompt prefix.
+        extra_schema = None
         if (
             self._mcp_search
             and tool_name.startswith(MCP_TOOL_PREFIX)
-            and tool_name not in self._allowed_tool_names
+            and tool_name not in {_tool_name_from_schema(tool) for tool in self._tools}
         ):
-            self._load_mcp_tools([_mcp_tool_spec(tool_name)])
+            extra_schema = _mcp_tool_spec(tool_name)
+            if extra_schema is not None:
+                self._allowed_tool_names.add(tool_name)
         coerced = coerce_tool_arguments(
             function.get("arguments", {}),
             heal = self._auto_heal_tool_calls,
             tool_name = tool_name,
-            tool_schemas = self._tools,
+            tool_schemas = self._tools + ([extra_schema] if extra_schema is not None else []),
         )
         arguments = coerced.arguments
         if tool_name == "web_search" and UNPARSED_ARGUMENTS_KEY not in arguments:
@@ -1236,7 +1329,7 @@ class ToolLoopController:
         key = canonical_tool_call_key(tool_name, arguments)
         mcp = mcp_display_parts(tool_name)
         provenance = tool_event_provenance(
-            healed = coerced.healed,
+            healed = coerced.healed or name_healed,
             forced = forced,
             provisional = provisional,
             mcp_server = mcp[0] if mcp else None,
@@ -1262,7 +1355,6 @@ class ToolLoopController:
             # Not the browser tools: each acts on or reads the page as it is now, so a second
             # scroll down or a snapshot after a click is new work, and two such no-ops ended the turn.
             # Nor the media tools: the same prompt again is another image with a fresh seed.
-            # Nor mcp_tool_search: a repeat restores tools a later load evicted.
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
 
@@ -1337,7 +1429,10 @@ class ToolLoopController:
         if not failed:
             self._successful_keys.add(decision.key)
             if self._mcp_search and decision.tool_name == MCP_TOOL_SEARCH_NAME:
-                self._load_mcp_tools(_mcp_tool_search_specs(decision.arguments))
+                for spec in _mcp_tool_search_specs(result_text):
+                    name = _tool_name_from_schema(spec) if isinstance(spec, Mapping) else None
+                    if name:
+                        self._allowed_tool_names.add(name)
             elif decision.tool_name.startswith(MCP_TOOL_PREFIX):
                 # Also while the catalog is listed in full, for a later turn that defers it.
                 self._remember_mcp_tools([decision.tool_name])
@@ -1349,33 +1444,6 @@ class ToolLoopController:
             is_error = failed,
             executed = True,
         )
-
-    def _load_mcp_tools(self, specs) -> None:
-        from core.inference.chat_template_helpers import neutralize_tool_descriptions  # noqa: PLC0415
-
-        # Remote text, swept as the loops sweep the catalog this controller was built from (#7066); with no model's
-        # profile at hand, against every family's markup.
-        specs = (
-            neutralize_tool_descriptions([dict(s) for s in specs if isinstance(s, Mapping)]) or []
-        )
-        listed = self._tools[: self._listed_count]
-        listed_names = {_tool_name_from_schema(tool) for tool in listed}
-        fresh = [s for s in specs if _tool_name_from_schema(s) not in listed_names]
-        fresh_names = {_tool_name_from_schema(s) for s in fresh}
-        # Newest first into the turn's load share, so a later search can retire an older load but never overflow.
-        kept = _mcp_fit_loaded(
-            fresh
-            + [
-                s
-                for s in reversed(self._mcp_loaded)
-                if _tool_name_from_schema(s) not in fresh_names
-            ]
-        )
-        self._mcp_loaded = [copy.deepcopy(s) for s in reversed(kept)]
-        self._tools = listed + self._mcp_loaded
-        self._allowed_tool_names = {
-            name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
-        }
 
     def _remember_mcp_tools(self, names) -> None:
         if not names:

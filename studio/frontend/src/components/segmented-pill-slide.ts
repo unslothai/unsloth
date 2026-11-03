@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { prefersReducedMotion } from "@/features/settings";
+import { prefersReducedMotion } from "@/features/settings/stores/appearance-custom-store";
 
 // Slides a segmented control's selected pill from the old segment to the new one
 // without running script per frame or forcing layout during the click:

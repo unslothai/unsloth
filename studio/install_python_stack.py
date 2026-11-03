@@ -1094,6 +1094,17 @@ def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str |
     return _torch_accelerator_index_url(torch_version, _TORCHCODEC_INDEX_TAGS)
 
 
+def _torchao_index_url(torch_version: "str | None") -> "str | None":
+    """_torch_accelerator_index_url, but None on Windows for download.pytorch.org's cuNNN leaves:
+    they serve torchao for Linux only, so the pin always fails and the untagged fallback then
+    fails every later update's tag check. Mirrors, explicit indexes and cpu/xpu stay pinned."""
+    url = _torch_accelerator_index_url(torch_version)
+    tag = _torch_index_tag(torch_version)
+    if IS_WINDOWS and tag and _is_cuda_family_leaf(tag) and url == f"{_PYTORCH_DEFAULT_WHL}/{tag}":
+        return None
+    return url
+
+
 def _torch_index_tag(
     torch_version: "str | None", substitutions: "dict[str, str] | None" = None
 ) -> "str | None":
@@ -5434,7 +5445,7 @@ def _install_torchao_for_torch(torch_version: "str | None", default_index: bool 
     """
     spec = _select_torchao_spec(torch_version)
     # See _TORCHAO_DEFAULT_SPEC. Unlike torchcodec, rocm leaves do publish torchao.
-    index = None if default_index else _torch_accelerator_index_url(torch_version)
+    index = None if default_index else _torchao_index_url(torch_version)
     # --no-deps guards the second caller, which runs right after the torch repair.
     args = ["--no-deps", "--no-cache-dir"]
     needs_reinstall = _pin_needs_reinstall(spec, _torch_index_tag(torch_version) if index else "")
@@ -5498,7 +5509,7 @@ def _resync_torch_coupled_packages(label_before: str) -> bool:
         try:
             _spec = _select_torchao_spec(_label_after)
             # Same pin as step 4, or PyPI's build lands over it; ==0.18.0 never equals 0.18.0+cu130.
-            _ao_index = _torch_accelerator_index_url(_label_after)
+            _ao_index = _torchao_index_url(_label_after)
             _ao_args = ["--force-reinstall", "--no-deps", "--no-cache-dir"]
             if _pin_needs_reinstall(_spec, _torch_index_tag(_label_after) if _ao_index else ""):
                 _note(f"torch {_label_after} after repair -- reinstalling {_spec}")
@@ -9924,23 +9935,129 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
 FEED_CEILING_MARKER = "unsloth_feed_ceiling.json"
 
 
-def _desktop_unsloth_spec(package_name: str) -> "tuple[str, str]":
-    """Desktop's backend floor, lowered to a lagging index's newest release (#14031).
+def _no_torch_pair(
+    unsloth_spec,
+    zoo_spec,
+    use_uv = True,
+    uv_executable = "uv",
+    install_env = None,
+):
+    """Resolve the pair from wheel metadata without resolving training dependencies."""
+    import re
+    import subprocess
+    import sys
+    import tempfile
+    from importlib.metadata import distributions
 
-    Returns the (unsloth, unsloth-zoo) requirements to install. A lowered unsloth comes with
-    the zoo it was resolved against, since the no-torch path installs --no-deps and so never
-    reads unsloth's zoo floor. Twin of install.sh's _relax_unsloth_floors_to_index.
-    """
+    cache = {}
+
+    def metadata(name, requirements):
+        key = (name, tuple(requirements))
+        if key in cache:
+            return cache[key]
+        with tempfile.TemporaryDirectory(prefix = "unsloth-pair-") as target:
+            cmd = (
+                [
+                    uv_executable,
+                    "pip",
+                    "install",
+                    "--python",
+                    sys.executable,
+                    "--resolution",
+                    "highest",
+                ]
+                if use_uv
+                else [sys.executable, "-m", "pip", "install", "--upgrade"]
+            )
+            cmd += ["--no-deps", "--quiet", "--target", target, *requirements]
+            try:
+                result = subprocess.run(
+                    cmd,
+                    env = install_env,
+                    stdout = subprocess.DEVNULL,
+                    stderr = subprocess.DEVNULL,
+                    timeout = 120,
+                    **(
+                        {"creationflags": subprocess.CREATE_NO_WINDOW}
+                        if sys.platform == "win32"
+                        else {}
+                    ),
+                )
+                dist = (
+                    next(
+                        d
+                        for d in distributions(path = [target])
+                        if re.sub(r"[-_.]+", "-", d.metadata["Name"]).lower() == name
+                    )
+                    if result.returncode == 0
+                    else None
+                )
+                value = (dist.version, dist.requires or []) if dist else None
+            except (OSError, subprocess.SubprocessError, StopIteration, ValueError):
+                value = None
+        cache[key] = value
+        return value
+
+    if metadata("unsloth-zoo", [zoo_spec]) is None:
+        zoo_spec = "unsloth-zoo"
+    request, cap, seen = unsloth_spec, [], set()
+    while True:
+        unsloth = metadata("unsloth", [request, *cap])
+        if unsloth is None:
+            if request != "unsloth":
+                request = "unsloth"
+                continue
+            return None
+        version, requires = unsloth
+        if version in seen or not re.fullmatch(r"[0-9][0-9A-Za-z.+!-]*", version):
+            return None
+        seen.add(version)
+        zoo_requires = [r for r in requires if re.match(r"(?i)^unsloth[-_.]zoo\b", r)]
+        zoo = metadata("unsloth-zoo", [zoo_spec, *zoo_requires])
+        if zoo is not None:
+            return version, zoo[0], int(request != unsloth_spec)
+        cap = [f"unsloth<{version}"]
+
+
+def _desktop_unsloth_spec(package_name: str) -> "tuple[str, str]":
+    """Backend requirements permitted by the Desktop floor and package index (#14031)."""
     zoo_spec = "unsloth-zoo"
     desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-    if not (desktop_min_ver and package_name == "unsloth"):
+    if package_name != "unsloth" or (not desktop_min_ver and not NO_TORCH):
         return package_name, zoo_spec
-    spec = f"unsloth>={desktop_min_ver}"
+    spec = f"unsloth>={desktop_min_ver}" if desktop_min_ver else package_name
     marker = Path(sys.prefix) / FEED_CEILING_MARKER
     try:
         marker.unlink()
     except OSError:
         pass
+    if NO_TORCH:
+        pair = _no_torch_pair(
+            spec,
+            zoo_spec,
+            use_uv = USE_UV,
+            install_env = _install_env_for_cmd(
+                ["uv", "pip", "install"] if USE_UV else [sys.executable, "-m", "pip", "install"]
+            ),
+        )
+        if pair is None:
+            raise RuntimeError(
+                "Could not resolve a compatible unsloth / unsloth-zoo pair for no-torch mode"
+            )
+        available, zoo, lowered = pair
+        if lowered and desktop_min_ver:
+            _note(
+                f"[WARN] your package index cannot meet {spec}; installing unsloth {available} + unsloth-zoo {zoo}",
+                _warn,
+            )
+            try:
+                marker.write_text(
+                    json.dumps({"requested": desktop_min_ver, "available": available}) + "\n",
+                    encoding = "utf-8",
+                )
+            except OSError:
+                pass
+        return f"unsloth=={available}", f"unsloth-zoo=={zoo}"
     if not USE_UV:
         return spec, zoo_spec
 
@@ -9978,8 +10095,6 @@ def _desktop_unsloth_spec(package_name: str) -> "tuple[str, str]":
 
     found = resolve(spec, zoo_spec, deps = True) or {}
     if found.get("unsloth"):
-        # The zoo it resolved against as a floor: the no-torch install is --no-deps, so a bare
-        # unsloth-zoo under UV_RESOLUTION=lowest could pick one below unsloth's own zoo floor.
         return spec, (
             f"unsloth-zoo>={found['unsloth-zoo']}" if found.get("unsloth-zoo") else zoo_spec
         )
@@ -11728,7 +11843,8 @@ def _git_remote_commit(
     env.setdefault("GIT_ASKPASS", "echo")
     try:
         probe = subprocess.run(
-            [exe, "ls-remote", "--", url, revision],
+            # A pattern-filtered ls-remote omits the peeled line unless it is asked for.
+            [exe, "ls-remote", "--", url, revision, f"{revision}^{{}}"],
             capture_output = True,
             text = True,
             encoding = "utf-8",
@@ -11747,8 +11863,8 @@ def _git_remote_commit(
         if ref and _COMMIT_REVISION_RE.fullmatch(sha):
             rows[ref] = sha.lower()
     for ref in (
-        f"refs/tags/{revision}^{{}}",
         f"refs/heads/{revision}",
+        f"refs/tags/{revision}^{{}}",
         f"refs/tags/{revision}",
         revision,
     ):

@@ -7,6 +7,7 @@ import glob
 import json
 import structlog
 import tempfile
+import time
 from loggers import get_logger
 import os
 import re
@@ -605,10 +606,97 @@ def _dir_is_fresh(directory):
     )
 
 
-def _holds_checkpoint_weights(directory):
+def _holds_checkpoint_weights(directory, files = None):
+    if files is not None:
+        return any(
+            "/" not in name and Path(name).suffix in (".safetensors", ".bin") for name in files
+        )
     return Path(directory).is_dir() and any(
         entry.suffix in (".safetensors", ".bin") for entry in Path(directory).iterdir()
     )
+
+
+def _escaped_patterns(names):
+    # glob.escape keeps "model[v2].safetensors" a literal for upload_folder's fnmatch.
+    return None if names is None else [glob.escape(name) for name in names]
+
+
+# Single-file weights carry no index: a leftover one beside them is not part of the save.
+_UNSHARDED_WEIGHTS = ({"model.safetensors"}, {"pytorch_model.bin"})
+# A rewrite within one timestamp tick (FAT/exFAT: 2 s) of a file's last write can keep its mtime.
+_SAME_TICK_NS = 3_000_000_000
+
+
+class _ReusedFolderWrites:
+    """Files one save wrote into a reused folder, told apart from leftovers by a read-only
+    (size, mtime, inode, ctime) snapshot, so a killed export leaves the folder untouched.
+    ``written()`` is None when they cannot be told apart: the caller stages a second save."""
+
+    def __init__(self, directory):
+        self._root = Path(directory)
+        try:
+            self._before: Optional[dict] = self._scan(time.time_ns() - _SAME_TICK_NS)
+        except OSError as exception:
+            logger.info(f"Reused folder not tracked, staging a second save: {exception}")
+            self._before = None
+
+    def _scan(self, settled_before: Optional[int] = None) -> dict:
+        notes = {}
+        for path in self._root.rglob("*"):
+            if path.is_symlink():
+                raise OSError(f"{path} is a symlink")
+            if not path.is_file():
+                continue
+            stat = path.stat()
+            # A hard link changes with a file outside the folder (the save may write one).
+            if stat.st_nlink > 1:
+                raise OSError(f"{path} is hard linked")
+            # Also a clock skewed ahead (network filesystems): a rewrite could match its times.
+            if settled_before is not None and stat.st_mtime_ns > settled_before:
+                raise OSError(f"{path} was written too recently to tell a rewrite apart")
+            notes[path.relative_to(self._root).as_posix()] = (
+                stat.st_size,
+                stat.st_mtime_ns,
+                stat.st_ino,
+                stat.st_ctime_ns,
+            )
+        return notes
+
+    def _index_shards(self, name) -> Optional[set]:
+        try:
+            weight_map = json.loads((self._root / name).read_text(encoding = "utf-8"))["weight_map"]
+            return {str(shard) for shard in weight_map.values()}
+        except Exception:
+            return None
+
+    def written(self) -> Optional[List[str]]:
+        """Relative posix paths the save wrote, or None to stage a second save."""
+        if self._before is None:
+            return None
+        try:
+            after = self._scan()
+        except OSError as exception:
+            logger.info(f"Reused folder not tracked, staging a second save: {exception}")
+            return None
+        written = {name for name, note in after.items() if self._before.get(name) != note}
+        # A save can keep a file it would write into an empty folder: huggingface_hub's local_dir
+        # download skips one its bookkeeping or hash calls current (unsloth_zoo fetches the shard
+        # index that way), and unsloth_zoo fetches tokenizer.model only when it is missing.
+        kept = set(after) - written
+        if "tokenizer.model" in kept:
+            logger.info("Reused folder keeps tokenizer.model, staging a second save")
+            return None
+        for name in sorted(kept):
+            if "/" in name or not name.endswith(".index.json"):
+                continue
+            shards = self._index_shards(name)
+            if shards is None or shards in _UNSHARDED_WEIGHTS:
+                logger.info(f"Reused folder keeps {name}, staging a second save")
+                return None
+            # Listing only shards this save wrote = its own skipped index; else a previous export's.
+            if shards and shards <= written:
+                written.add(name)
+        return sorted(written)
 
 
 def _ensure_hub_repo_private(hf_api, repo_id):
@@ -646,27 +734,87 @@ def _hub_push_token(hf_token: HfTokenArg) -> HfTokenArg:
     return hf_token
 
 
+def _mlx_kept_sidecars(model, folder, written) -> Optional[List[str]]:
+    """unsloth_zoo's MLX save copies source sidecars and its fallback README only when missing:
+    a kept sidecar counts as written if it equals a fresh copy; any other kept one -> None."""
+    try:
+        kept = {
+            path.name
+            for path in Path(folder).iterdir()
+            if path.is_file() and path.name not in written
+        }
+    except OSError as exception:
+        logger.info(f"Could not list the reused folder, staging a second save: {exception}")
+        return None
+    if "README.md" in kept:
+        logger.info("Reused folder keeps README.md, staging a second save")
+        return None
+    source = getattr(model, "_src_path", None)
+    if not kept or not isinstance(source, (str, os.PathLike)) or not os.path.isdir(source):
+        return written
+    try:
+        from unsloth_zoo.mlx.utils import _copy_source_sidecars
+    except Exception as exception:
+        logger.info(f"MLX sidecar rules unavailable, staging a second save: {exception}")
+        return None
+    import filecmp
+
+    written = list(written)
+    try:
+        with tempfile.TemporaryDirectory(prefix = _STAGING_PREFIX) as scratch:
+            # Exactly the sidecars a save into an empty folder copies (small, non-weight files).
+            _copy_source_sidecars(source, scratch)
+            for name in sorted(kept):
+                fresh = Path(scratch, name)
+                if not fresh.is_file():
+                    continue
+                if not filecmp.cmp(fresh, Path(folder, name), shallow = False):
+                    logger.info(f"Reused folder keeps a different {name}, staging a second save")
+                    return None
+                written.append(name)
+    except Exception as exception:
+        logger.info(f"Could not check the kept MLX sidecars, staging a second save: {exception}")
+        return None
+    return sorted(written)
+
+
 def _push_mlx_merged(
-    model, tokenizer, *, save_method, output_path, output_is_fresh, repo_id, hf_token, private
+    model,
+    tokenizer,
+    *,
+    save_method,
+    output_path,
+    output_is_fresh,
+    repo_id,
+    hf_token,
+    private,
+    reused_writes = None,
 ):
     """Upload an MLX merged save; returns the repo id the Hub resolved."""
     with contextlib.ExitStack() as stack:
         upload_dir = output_path
+        written = None
         if not output_is_fresh:
-            # A reused folder can hold leftovers, so upload a clean second save; without a
-            # local save this is the only one.
+            # A reused folder can hold leftovers: upload only what this save wrote
+            written = reused_writes.written() if reused_writes else None
+            if written:
+                written = _mlx_kept_sidecars(model, output_path, written)
+        if not output_is_fresh and not written:
+            # Without a local save this is the only one.
             upload_dir = stack.enter_context(
                 _staging_dir(Path(output_path).parent)
                 if output_path
                 else tempfile.TemporaryDirectory()
             )
             model.save_pretrained_merged(upload_dir, tokenizer, save_method = save_method)
+            written = None
         hf_api = HfApi(token = hf_token)
         repo_id = _open_hub_repo(hf_api, repo_id, private)
         hf_api.upload_folder(
             folder_path = upload_dir,
             repo_id = repo_id,
             repo_type = "model",
+            allow_patterns = _escaped_patterns(written),
             ignore_patterns = _HUB_UPLOAD_IGNORE,
             delete_patterns = [_REAP_REPORT],
         )
@@ -711,6 +859,33 @@ def _checkpoint_load_refusal(checkpoint_path, pinned_base) -> Optional[str]:
     if pinned_base and os.path.isdir(pinned_base) and escaping_weight_references(pinned_base):
         return "The base model's weight index names files outside its folder."
     return None
+
+
+def _with_base_processor(tokenizer, base_model: str, **load_kw):
+    """A text-only VLM adapter saves a bare tokenizer; the export still needs the base's processor (mmproj)."""
+    if tokenizer is None or hasattr(tokenizer, "tokenizer"):
+        return tokenizer
+    try:
+        from transformers import AutoProcessor
+        processor = AutoProcessor.from_pretrained(base_model, **load_kw)
+    except Exception as e:
+        logger.info(f"No processor from base model {base_model}: {e}")
+        return tokenizer
+    if not hasattr(processor, "tokenizer"):
+        return tokenizer
+    processor.tokenizer = tokenizer
+    if getattr(tokenizer, "chat_template", None):
+        processor.chat_template = tokenizer.chat_template
+    return processor
+
+
+def _restore_use_cache(model) -> None:
+    """The load prepares the model for training (use_cache=False on every config); export saves it."""
+    try:
+        from unsloth_zoo.training_utils import restore_use_cache
+    except ImportError:
+        return
+    restore_use_cache(model)
 
 
 def _cached_hub_adapter_commit(checkpoint_path: str) -> Optional[str]:
@@ -896,7 +1071,8 @@ class ExportBackend:
                 self._audio_type = detect_audio_type(
                     model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
-                self.is_vision = not self._audio_type and is_vision_model(
+                # audio_vlm (Gemma 3n/4, LFM3-Omni) also takes images: its text load ships no processor.
+                self.is_vision = self._audio_type in (None, "audio_vlm") and is_vision_model(
                     model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
                 from utils.models.diffusion_lm import diffusion_lm_profile_for_model
@@ -1032,6 +1208,15 @@ class ExportBackend:
                 )
                 if _IS_MLX and adapter_config.exists():
                     processor = load_mlx_adapter_processor(processor, checkpoint_path)
+                elif base_model:
+                    with _offline_window_if(local_files_only):
+                        processor = _with_base_processor(
+                            processor,
+                            base_model,
+                            trust_remote_code = trust_remote_code,
+                            token = token,
+                            local_files_only = local_files_only,
+                        )
                 tokenizer = processor
 
             else:
@@ -1061,6 +1246,7 @@ class ExportBackend:
                 self.is_peft = adapter_config.exists()
             else:
                 self.is_peft = isinstance(model, (PeftModel, PeftModelForCausalLM))
+                _restore_use_cache(model)
 
             restored_repo_id = restore_hf_cache_repo_identity(model, base_model)
             if restored_repo_id:
@@ -1278,6 +1464,26 @@ class ExportBackend:
         except Exception as exc:  # noqa: BLE001 - the report never blocks an export
             logger.warning(f"Could not update reap_report.json in {folder}: {exc}")
 
+    def _export_dir_overlaps_checkpoint(self, save_directory) -> bool:
+        """Export dir inside / around the checkpoint or a local base: some files pre-exist."""
+        config = getattr(self.current_model, "config", None)
+        # An MLX model also names the folder its sidecars are copied from.
+        sources = (
+            self.current_checkpoint,
+            getattr(config, "_name_or_path", None),
+            getattr(self.current_model, "_src_path", None),
+        )
+        for source in sources:
+            if not isinstance(source, (str, os.PathLike)) or not os.path.isdir(source):
+                continue
+            try:
+                export_dir, source = Path(save_directory).resolve(), Path(source).resolve()
+            except OSError:
+                return True
+            if export_dir == source or source in export_dir.parents or export_dir in source.parents:
+                return True
+        return False
+
     def _write_export_metadata(self, save_directory: str):
         """Write export_metadata.json with base model info for Chat page discovery."""
         try:
@@ -1326,6 +1532,7 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         save_dir_was_empty = False
+        reused_writes: Optional[_ReusedFolderWrites] = None
         # compressed-tensors (NVIDIA-only) vs portable torchao FP8/INT8.
         _LABEL_TO_ALIAS = {
             "FP8 (compressed-tensors)": "fp8",
@@ -1462,6 +1669,12 @@ class ExportBackend:
                 # Reused folders may hold leftovers, so only a fresh one is pushed as is.
                 save_dir_was_empty = _dir_is_fresh(save_directory)
                 ensure_dir(Path(save_directory))
+                if (
+                    push_to_hub
+                    and not (is_compressed or is_torchao or save_dir_was_empty)
+                    and not self._export_dir_overlaps_checkpoint(save_directory)
+                ):
+                    reused_writes = _ReusedFolderWrites(save_directory)
 
                 # save.py turns None into get_token(), so the merge needs the token spelled out.
                 merged_token_kw = (
@@ -1536,6 +1749,7 @@ class ExportBackend:
                         repo_id = repo_id,
                         hf_token = hf_token,
                         private = private,
+                        reused_writes = reused_writes,
                     )
                 else:
                     uploaded = False
@@ -1543,8 +1757,11 @@ class ExportBackend:
                         # Upload the built artifact; push_to_hub_merged would redo the merge and quantization.
                         with contextlib.ExitStack() as stack:
                             upload_dir = output_path
-                            if not (is_compressed or is_torchao or save_dir_was_empty):
-                                # A reused folder can hold leftovers, so upload from a clean staged second save
+                            # A reused folder can hold leftovers: upload only what this save wrote
+                            written = reused_writes.written() if reused_writes else None
+                            if written is None and not (
+                                is_compressed or is_torchao or save_dir_was_empty
+                            ):
                                 upload_dir = stack.enter_context(
                                     _staging_dir(Path(output_path).parent)
                                 )
@@ -1558,7 +1775,7 @@ class ExportBackend:
                                 self._sync_reap_report(upload_dir)
                             # Whatever was built, only weights are worth a repo; without them the
                             # merging push below runs instead, as it did before this was uploaded.
-                            if _holds_checkpoint_weights(upload_dir):
+                            if _holds_checkpoint_weights(upload_dir, written):
                                 hf_api = HfApi(token = hf_token)
                                 repo_url = hf_api.create_repo(
                                     repo_id, private = private, exist_ok = True
@@ -1570,6 +1787,7 @@ class ExportBackend:
                                     folder_path = upload_dir,
                                     repo_id = repo_id,
                                     repo_type = "model",
+                                    allow_patterns = _escaped_patterns(written),
                                     ignore_patterns = _HUB_UPLOAD_IGNORE,
                                     delete_patterns = [_REAP_REPORT],
                                 )
@@ -1646,12 +1864,19 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         save_dir_was_empty = False
+        reused_writes: Optional[_ReusedFolderWrites] = None
         try:
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving base model locally to: {save_directory}")
                 save_dir_was_empty = _dir_is_fresh(save_directory)
                 ensure_dir(Path(save_directory))
+                if (
+                    push_to_hub
+                    and not save_dir_was_empty
+                    and not self._export_dir_overlaps_checkpoint(save_directory)
+                ):
+                    reused_writes = _ReusedFolderWrites(save_directory)
 
                 if _IS_MLX:
                     # fuse() is a no-op without LoRA layers, so this handles non-LoRA models too.
@@ -1693,14 +1918,16 @@ class ExportBackend:
                         repo_id = repo_id,
                         hf_token = hf_token,
                         private = private,
+                        reused_writes = reused_writes,
                     )
                 else:
                     base_model = base_model_id or _card_base_model(self.current_model)
 
                     with contextlib.ExitStack() as stack:
                         upload_dir = save_directory
-                        if save_directory and not save_dir_was_empty:
-                            # A reused folder can hold leftovers, so upload from a clean staged second save
+                        # A reused folder can hold leftovers: upload only what this save wrote
+                        written = reused_writes.written() if reused_writes else None
+                        if save_directory and not save_dir_was_empty and written is None:
                             upload_dir = stack.enter_context(
                                 _staging_dir(Path(save_directory).parent)
                             )
@@ -1732,6 +1959,7 @@ class ExportBackend:
                                 folder_path = upload_dir,
                                 repo_id = repo_id,
                                 repo_type = "model",
+                                allow_patterns = _escaped_patterns(written),
                                 ignore_patterns = _HUB_UPLOAD_IGNORE,
                                 delete_patterns = [_REAP_REPORT],
                             )

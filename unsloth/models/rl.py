@@ -35,6 +35,15 @@ from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
+
+try:
+    from unsloth_zoo.compiler import _compile_versions_scope
+except ImportError:  # unsloth_zoo predates the scope
+
+    def _compile_versions_scope(function):
+        return function
+
+
 from ..device_type import DEVICE_COUNT, DEVICE_TYPE, clean_gpu_cache
 from . import _decode_graphs
 from .rl_replacements import (
@@ -314,6 +323,9 @@ def PatchRL(FastLanguageModel):
                     return out.clone()
                 return out
 
+            generate_with_clone._unsloth_caller_sampling_only = (
+                generating_model is not unwrapped_model
+            )
             generating_model.generate = generate_with_clone
 
             try:
@@ -558,7 +570,11 @@ def prepare_for_training_mode(f):
         output = f(self, *args, **kwargs)
         # Restore previous mode when possible
         if hasattr(self, 'model') and hasattr(self.model, "for_inference"):
-            if _was_training is False:
+            if _was_training is False and getattr(self, '_unsloth_tensor_parallel', False):
+                # Tensor / pipeline parallel: for_inference gathers a whole replica (refused for some layouts);
+                # restoring the mode needs only eval, and generate gathers when it is asked for.
+                self.model.eval()
+            elif _was_training is False:
                 self.model.for_inference()
             elif _was_training is True and hasattr(self.model, "for_training"):
                 self.model.for_training(use_gradient_checkpointing=use_gc)
@@ -1243,6 +1259,37 @@ def _attested_within_cap(dataset, cap):
     return claimed <= cap
 
 
+def _arrow_within_cap(dataset, cap):
+    """True when Arrow list lengths prove every ``input_ids`` fits ``cap``, else None (the row scan decides). Only plain python-format splits with nothing to decode, where a row's ``input_ids`` is its stored list."""
+    try:
+        import datasets
+        import pyarrow
+        import pyarrow.compute as pc
+        from datasets.features.features import require_decoding
+
+        if type(dataset) is not datasets.Dataset or dataset._format_type is not None:
+            return None
+        if any(require_decoding(feature) for feature in dataset.features.values()):
+            return None
+        column = dataset.data.column("input_ids")
+        kind = column.type
+        if not (
+            pyarrow.types.is_list(kind)
+            or pyarrow.types.is_large_list(kind)
+            or pyarrow.types.is_fixed_size_list(kind)
+        ):
+            return None
+        lengths = pc.list_value_length(column)
+        if dataset._indices is not None:
+            lengths = lengths.take(dataset._indices.column(0))
+        if lengths.null_count:
+            return None
+        longest = pc.max(lengths).as_py()
+        return True if longest is None or longest <= cap else None
+    except Exception:
+        return None
+
+
 def pretokenized_within_cap(dataset, cap):
     """Whether every pre-tokenized row in ``dataset`` already fits ``cap``. The generated ``__init__`` carries an inlined copy (that module is standalone and cannot import from here); this one serves callers reached when the generated block was never inserted, and a test pins the two to the same verdict. Unverifiable reads FALSE, never true: a single-pass stream cannot be scanned without consuming it, an unexhausted one proves only its prefix, and a split that raises mid-scan has said nothing, and in each case guessing yes is the silently-uncapped run."""
     if dataset is None:
@@ -1250,6 +1297,8 @@ def pretokenized_within_cap(dataset, cap):
     attested = _attested_within_cap(dataset, cap)
     if attested is not None:
         return attested
+    if _arrow_within_cap(dataset, cap):
+        return True
     try:
         try:
             n = len(dataset)
@@ -2952,6 +3001,21 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            _unsloth_claim = _unsloth_own.get('_unsloth_truncated_to')\n"
                     "            if isinstance(_unsloth_claim, int) and not isinstance(_unsloth_claim, bool):\n"
                     "                return _unsloth_claim <= _unsloth_cap\n"
+                    # Inline copy of _arrow_within_cap: anything it cannot prove falls through to the row loop.
+                    "        try:\n"
+                    "            import datasets as _unsloth_hfds, pyarrow as _unsloth_pa, pyarrow.compute as _unsloth_pc\n"
+                    "            from datasets.features.features import require_decoding as _unsloth_decodes\n"
+                    "            if type(_ds) is _unsloth_hfds.Dataset and _ds._format_type is None and not any(_unsloth_decodes(_f) for _f in _ds.features.values()):\n"
+                    "                _unsloth_col = _ds.data.column('input_ids')\n"
+                    "                _unsloth_t = _unsloth_col.type\n"
+                    "                if _unsloth_pa.types.is_list(_unsloth_t) or _unsloth_pa.types.is_large_list(_unsloth_t) or _unsloth_pa.types.is_fixed_size_list(_unsloth_t):\n"
+                    "                    _unsloth_lens = _unsloth_pc.list_value_length(_unsloth_col)\n"
+                    "                    if _ds._indices is not None: _unsloth_lens = _unsloth_lens.take(_ds._indices.column(0))\n"
+                    "                    if not _unsloth_lens.null_count:\n"
+                    "                        _unsloth_longest = _unsloth_pc.max(_unsloth_lens).as_py()\n"
+                    "                        if _unsloth_longest is None or _unsloth_longest <= _unsloth_cap: return True\n"
+                    "        except Exception:\n"
+                    "            pass\n"
                     "        try:\n"
                     "            try:    _n = len(_ds)\n"
                     "            except Exception: _n = None\n"
@@ -3469,8 +3533,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         metadata = {'help': 'Ranks per context parallel group. 1 disables it.'},
     )
     context_parallel_backend : Optional[str] = field(
-        default = 'ring',
-        metadata = {'help': 'Context parallel attention backend: ring or ulysses (keeps packing).'},
+        default = 'auto',
+        metadata = {'help': 'Context parallel attention backend: auto (Ulysses unless the heads cannot be split, then ring), ulysses (keeps packing) or ring.'},
     )
     context_parallel_rotate_method : Optional[str] = field(
         default = 'allgather',
@@ -3478,7 +3542,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     )"""
         max_seq_length_call += (
             "context_parallel_size = 1,"
-            "context_parallel_backend = 'ring',"
+            "context_parallel_backend = 'auto',"
             "context_parallel_rotate_method = 'allgather',"
         )
         max_seq_length_post += (
@@ -3495,10 +3559,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         metadata = {'help': 'Ranks per context parallel group (training forwards only). 1 disables it.'},
     )
     context_parallel_backend : Optional[str] = field(
-        default = 'ulysses',
-        metadata = {'help': 'Context parallel attention backend; preference and RL trainers support ulysses.'},
+        default = 'auto',
+        metadata = {'help': 'Context parallel attention backend: auto (= ulysses); preference and RL trainers support ulysses.'},
     )"""
-        max_seq_length_call += "context_parallel_size = 1,context_parallel_backend = 'ulysses',"
+        max_seq_length_call += "context_parallel_size = 1,context_parallel_backend = 'auto',"
         max_seq_length_post += (
             "\n        self.context_parallel_size = context_parallel_size"
             "\n        self.context_parallel_backend = context_parallel_backend"
@@ -4494,6 +4558,7 @@ def _patch_trl_experimental_trainer(name, module):
                 setattr(owner, x, cls)
 
 
+@_compile_versions_scope
 def patch_trl_rl_trainers():
     import trl.trainer
 
@@ -4661,11 +4726,12 @@ class _UnslothFusedLinearHead:
         # TRL 1.14's kernel (1.1 - 1.13 take no bias and are not wrapped) takes no ``outputs`` and returns ``(log_probs, entropy)``.
         try:
             forward = getattr(function, "forward", None)
-            self._legacy = (
-                forward is not None and "outputs" not in inspect.signature(forward).parameters
-            )
+            params = inspect.signature(forward).parameters if forward is not None else {}
+            self._legacy = forward is not None and "outputs" not in params
+            self._score_ids = "score_ids" in params
         except (TypeError, ValueError):
             self._legacy = False
+            self._score_ids = False
         module = sys.modules.get(getattr(function, "__module__", None) or "")
         # TRL tiles the projection as [min(N, TOKEN_CHUNK_SIZE), chunk_size]: chunk_size counts vocab columns.
         self._token_rows = int(getattr(module, "TOKEN_CHUNK_SIZE", 4096))
@@ -4680,7 +4746,6 @@ class _UnslothFusedLinearHead:
             self._lazy_entropy = False
 
     def __getattr__(self, name):
-        # Keep TRL's attributes visible so a later patch pass recognises what it already wrapped.
         if name == "function":
             raise AttributeError(name)
         return getattr(self.function, name)
@@ -4740,6 +4805,7 @@ class _UnslothFusedLinearHead:
         logit_scale = 1.0,
         outputs = ("entropy", "log_sum_sq_probs", "mean_logits", "is_top1"),
         support_ids = None,
+        score_ids = None,
     ):
         if self._legacy:
             args = (
@@ -4765,8 +4831,10 @@ class _UnslothFusedLinearHead:
                 logit_scale,
                 outputs,
             )
-        # support_ids (TRL > 1.16, per-row kept set) and a late UNSLOTH_FUSED_LINEAR=0 go to TRL's kernel.
-        if support_ids is not None:
+        if self._score_ids:
+            if support_ids is not None or score_ids is not None:
+                return self.function.apply(*args, support_ids, score_ids)
+        elif support_ids is not None:
             return self.function.apply(*args, support_ids)
         if os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
             return self.function.apply(*args)
@@ -4825,11 +4893,10 @@ class _UnslothFusedLinearHead:
             extra["log_sum_sq_probs"],
             extra["mean_logits"],
             extra["is_top1"],
-        )
+        ) + ((None,) if self._score_ids else ())
 
 
 def patch_trl_fused_lm_head_kernel():
-    # UNSLOTH_FUSED_LINEAR=0 keeps TRL's own chunked log-prob kernel.
     if os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
         return
     try:

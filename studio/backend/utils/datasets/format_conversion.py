@@ -191,12 +191,9 @@ def standardize_chat_format(
     }
 
     if not is_streaming_dataset(dataset):
-        from utils.hardware import dataset_map_num_proc
+        from utils.hardware import light_map_num_proc
 
-        if num_proc is None or type(num_proc) is not int:
-            num_proc = dataset_map_num_proc()
-        else:
-            num_proc = dataset_map_num_proc(num_proc)
+        num_proc = light_map_num_proc(dataset, num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Standardizing chat format"
@@ -348,12 +345,9 @@ def convert_chatml_to_alpaca(
     }
 
     if not is_iterable:
-        from utils.hardware import dataset_map_num_proc
+        from utils.hardware import light_map_num_proc
 
-        if num_proc is None or type(num_proc) is not int:
-            num_proc = dataset_map_num_proc()
-        else:
-            num_proc = dataset_map_num_proc(num_proc)
+        num_proc = light_map_num_proc(dataset, num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting ChatML to Alpaca format"
@@ -410,12 +404,9 @@ def convert_alpaca_to_chatml(
     }
 
     if not is_iterable:
-        from utils.hardware import dataset_map_num_proc
+        from utils.hardware import light_map_num_proc
 
-        if num_proc is None or type(num_proc) is not int:
-            num_proc = dataset_map_num_proc()
-        else:
-            num_proc = dataset_map_num_proc(num_proc)
+        num_proc = light_map_num_proc(dataset, num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting Alpaca to ChatML format"
@@ -850,7 +841,7 @@ def convert_sharegpt_with_images_to_vlm_format(
     dataset_name = None,
     progress_callback = None,
 ):
-    """Convert ShareGPT/ChatML datasets carrying a separate image column and ``<image>`` placeholders in the conversation text, e.g. {"image": "sam/images/sa_545504.jpg", "conversations": [{"from": "human", "value": "<image> What is this photo about?"}, ...]}. Returns a list of dicts in standard VLM messages format, PIL Images inline."""
+    """Convert ShareGPT/ChatML datasets carrying a separate image column and ``<image>`` placeholders in the conversation text, e.g. {"image": "sam/images/sa_545504.jpg", "conversations": [{"from": "human", "value": "<image> What is this photo about?"}, ...]}. Image lists match placeholders in conversation order. Returns a list of dicts in standard VLM messages format, PIL Images inline."""
     from PIL import Image
     from tqdm import tqdm
     from utils.account_context import current_account
@@ -871,7 +862,14 @@ def convert_sharegpt_with_images_to_vlm_format(
 
     # Resolve image loading, the same 3 tiers as convert_to_vlm_format.
     total = len(dataset)
-    first_image = next(iter(dataset))[image_column]
+    first_image = None
+    for sample in dataset:
+        image_data = sample.get(image_column)
+        if isinstance(image_data, list):
+            image_data = next((image for image in image_data if image is not None), None)
+        if image_data is not None:
+            first_image = image_data
+            break
 
     _image_lookup = None
     if (
@@ -904,9 +902,8 @@ def convert_sharegpt_with_images_to_vlm_format(
                 )
             else:
                 logger.info(
-                    f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found — falling back to local open"
+                    f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found; unmatched filenames use local paths"
                 )
-                _image_lookup = None
         except Exception as e:
             logger.info(f"⚠️ Failed to build HF repo image lookup: {e}")
             _image_lookup = None
@@ -941,10 +938,25 @@ def convert_sharegpt_with_images_to_vlm_format(
 
     def _convert_single_sample(sample):
         """Convert one ShareGPT+image sample to standard VLM format."""
-        pil_image = _resolve_image(sample[image_column])
+        image_data = sample[image_column]
         conversation = sample[messages_column]
+        is_image_list = isinstance(image_data, list)
+        if is_image_list:
+            marker_count = sum(
+                (msg.get("value") or msg.get("content") or "").count("<image>")
+                for msg in conversation
+            )
+            if not image_data or len(image_data) != marker_count:
+                raise ValueError(
+                    f"Image list has {len(image_data)} images but conversation has "
+                    f"{marker_count} <image> placeholders"
+                )
+            pil_images = [_resolve_image(image) for image in image_data]
+        else:
+            pil_images = [_resolve_image(image_data)]
 
         new_messages = []
+        image_index = 0
         for msg in conversation:
             role_raw = msg.get("from") or msg.get("role", "user")
             role = _ROLE_MAP.get(role_raw.lower(), role_raw.lower())
@@ -958,9 +970,15 @@ def convert_sharegpt_with_images_to_vlm_format(
                     if part:
                         content.append({"type": "text", "text": part})
                     if i < len(parts) - 1:
-                        content.append({"type": "image", "image": pil_image})
+                        content.append(
+                            {
+                                "type": "image",
+                                "image": pil_images[image_index if is_image_list else 0],
+                            }
+                        )
+                        image_index += 1
                 if not content:
-                    content.append({"type": "image", "image": pil_image})
+                    content.append({"type": "image", "image": pil_images[0]})
             else:
                 content = [{"type": "text", "text": text}]
 

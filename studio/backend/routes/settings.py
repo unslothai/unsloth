@@ -14,7 +14,7 @@ from typing import Annotated, Any, Literal, Optional, Union, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import (
     BaseModel,
@@ -61,6 +61,17 @@ from core.rag.config import (
 )
 from loggers import get_logger
 from utils.utils import safe_curated_detail, safe_error_detail, log_and_http_error
+from utils.device_sync_settings import (
+    MAX_BACKGROUND_IMAGE_BYTES,
+    background_image_path,
+    background_lock,
+    clear_background,
+    get_chat_background,
+    get_client_preferences,
+    save_background_adjustments,
+    save_background_image,
+    update_client_preferences,
+)
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
     PERSONALIZATION_VERSION,
@@ -71,6 +82,7 @@ from utils.personalization_settings import (
 from utils.upload_limits import (
     MAX_UPLOAD_LIMIT_MB,
     MIN_UPLOAD_LIMIT_MB,
+    audio_input_max_bytes,
     default_upload_limit_mb,
     get_upload_limit_mb,
     set_upload_limit_mb,
@@ -209,6 +221,7 @@ from utils.embedding_model_settings import (
     set_rag_embedding_model,
     validate_embedding_model,
 )
+from utils.stt_device_settings import set_stt_device
 from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
 from utils.llama_cpp_path_settings import (
     MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH,
@@ -593,6 +606,8 @@ class UploadLimitResponse(BaseModel):
     default_upload_size_mb: int
     min_upload_size_mb: int = MIN_UPLOAD_LIMIT_MB
     max_allowed_upload_size_mb: int = MAX_UPLOAD_LIMIT_MB
+    # Audio page upload cap; None means no cap.
+    audio_input_max_bytes: Optional[int] = None
 
 
 class ToolResultLimitPayload(BaseModel):
@@ -1061,6 +1076,7 @@ class ModelOverridePayload(BaseModel):
     disable_vision: bool = False
     mlx_int8_prefill: bool = False
     mlx_ane_prefill: bool = False
+    mlx_fast_verify: bool = False
     # Auto (null or "auto") is stored as absence; omitted keeps the stored value.
     mlx_ple_offload: Optional[Union[Literal["auto", "off"], float]] = None
     mlx_expert_offload: Optional[Union[Literal["auto", "off"], float]] = None
@@ -1077,7 +1093,7 @@ class ModelOverridePayload(BaseModel):
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
     # -1 is Auto (llama.cpp --fit sizes the offload); the normalizer treats it as unset.
-    gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 1024)
+    gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 2**31 - 1)
     n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
     tensor_split: Optional[list[float]] = Field(default = None, min_length = 2, max_length = MAX_GPU_IDS)
     gpu_ids: Optional[list[int]] = Field(default = None, max_length = MAX_GPU_IDS)
@@ -1168,6 +1184,7 @@ def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
         max_upload_size_bytes = upload_limit_bytes(limit_mb),
         max_upload_size_label = upload_limit_label(limit_mb),
         default_upload_size_mb = default_upload_limit_mb(),
+        audio_input_max_bytes = audio_input_max_bytes(limit_mb),
     )
 
 
@@ -2690,6 +2707,7 @@ def update_openai_auto_switch_override(
                 and not payload.disable_vision
                 and not payload.mlx_int8_prefill
                 and not payload.mlx_ane_prefill
+                and not payload.mlx_fast_verify
                 and payload.load_in_4bit
                 # null clears just that knob, so naming one is not a forget.
                 and not {"mlx_ple_offload", "mlx_expert_offload"} & payload.model_fields_set
@@ -2702,6 +2720,7 @@ def update_openai_auto_switch_override(
                         "disable_vision",
                         "mlx_int8_prefill",
                         "mlx_ane_prefill",
+                        "mlx_fast_verify",
                         "load_in_4bit",
                     )
                 }
@@ -2928,6 +2947,7 @@ def update_openai_auto_switch_override(
                 disable_vision = payload.disable_vision,
                 mlx_int8_prefill = payload.mlx_int8_prefill,
                 mlx_ane_prefill = payload.mlx_ane_prefill,
+                mlx_fast_verify = payload.mlx_fast_verify,
                 load_in_4bit = payload.load_in_4bit,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
@@ -3030,6 +3050,31 @@ class EmbeddingModelResponse(BaseModel):
 
 class EmbeddingDevicePayload(BaseModel):
     device: Literal["auto", "cpu", "gpu"]
+
+
+class SttDevicePayload(BaseModel):
+    device: Literal["auto", "cpu", "gpu"]
+    only_if_unset: bool = False
+
+
+class SttDeviceResponse(BaseModel):
+    device: Literal["auto", "cpu", "gpu"] = "auto"
+    locked: bool = False
+    # Distinguishes an unset preference from a saved Auto choice.
+    saved: bool = False
+
+
+def _stt_device_response() -> SttDeviceResponse:
+    from core.inference.audio_device import audio_device_env_locked, stt_device_default
+    from utils.stt_device_settings import stt_device_is_saved
+    try:
+        return SttDeviceResponse(
+            device = stt_device_default(),  # type: ignore[arg-type]
+            locked = audio_device_env_locked(),
+            saved = stt_device_is_saved(),
+        )
+    except Exception:  # noqa: BLE001 - probe must never block reading settings
+        return SttDeviceResponse()
 
 
 def _embedding_device_state() -> tuple[str, bool]:
@@ -3973,6 +4018,34 @@ def update_embedding_device(
     return _embedding_model_response()
 
 
+@_owner_settings_router.get("/stt-device", response_model = SttDeviceResponse)
+def get_stt_device_setting(
+    current_subject: str = Depends(get_current_subject),
+) -> SttDeviceResponse:
+    """Voice Settings "Load into": where a cold STT API load places the model (#15280)."""
+    return _stt_device_response()
+
+
+@_owner_settings_router.put("/stt-device", response_model = SttDeviceResponse)
+def update_stt_device_setting(
+    payload: SttDevicePayload, current_subject: str = Depends(get_current_subject)
+) -> SttDeviceResponse:
+    """Persist Voice Settings "Load into" so ``/v1/audio/transcriptions`` honours it on a cold load.
+
+    ``UNSLOTH_AUDIO_DEVICE`` still wins when set. An already-resident model is not moved;
+    the next cold load (or an explicit ``device`` on ``/audio/stt/load``) applies the choice.
+    """
+    from core.inference.audio_device import audio_device_env_locked
+
+    if audio_device_env_locked():
+        raise HTTPException(
+            status_code = 409, detail = "The STT device is set by UNSLOTH_AUDIO_DEVICE."
+        )
+    set_stt_device(payload.device, only_if_unset = payload.only_if_unset)
+    logger.info("settings.stt_device_updated subject=%s device=%s", current_subject, payload.device)
+    return _stt_device_response()
+
+
 @_owner_settings_router.delete("/embedding-model", response_model = EmbeddingModelResponse)
 def reset_embedding_model(
     current_subject: str = Depends(get_current_subject),
@@ -4552,6 +4625,11 @@ def _is_bundled_avatar_url(value: str) -> bool:
     return path[path.index(marker) :].lower().endswith(".png")
 
 
+_GREETING_DATA_URL_PATTERN = r"^data:image/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$"
+MAX_GREETING_ICON_DATA_URL_LENGTH = 96 * 1024
+MAX_GREETING_IMAGE_DATA_URL_LENGTH = MAX_AVATAR_DATA_URL_BYTES
+
+
 class PersonalizationProfile(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
@@ -4560,6 +4638,25 @@ class PersonalizationProfile(BaseModel):
     avatarDataUrl: Optional[str] = Field(None, max_length = MAX_AVATAR_DATA_URL_BYTES)
     avatarShape: Literal["circle", "rounded"] = "circle"
     showGreetingSloth: bool = True
+    greetingStyle: Literal["text", "image"] = "text"
+    greetingIcon: Literal["sloth", "custom", "none"] = "sloth"
+    greetingIconDataUrl: Optional[str] = Field(
+        None,
+        max_length = MAX_GREETING_ICON_DATA_URL_LENGTH,
+        pattern = _GREETING_DATA_URL_PATTERN,
+    )
+    greetingText: str = Field("", max_length = 100)
+    greetingImageDataUrl: Optional[str] = Field(
+        None,
+        max_length = MAX_GREETING_IMAGE_DATA_URL_LENGTH,
+        pattern = _GREETING_DATA_URL_PATTERN,
+    )
+
+    @field_validator("greetingStyle", "greetingIcon", mode = "before")
+    @classmethod
+    def _known_greeting_choice(cls, value: object, info) -> object:
+        allowed = get_args(cls.model_fields[info.field_name].annotation)
+        return value if value in allowed else cls.model_fields[info.field_name].default
 
     @field_validator("avatarDataUrl")
     @classmethod
@@ -4747,9 +4844,13 @@ class PersonalizationCustomization(BaseModel):
     chatWidth: Literal["standard", "wide", "full"] = "standard"
     sentAttachments: Literal["auto", "list", "chips"] = "auto"
     contrast: int = Field(50, ge = 0, le = 100)
+    composerOutline: Optional[int] = Field(None, ge = 0, le = 100)
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"
     fontSmoothing: bool = True
+    codeLineNumbers: bool = False
+    codeWordWrap: bool = False
+    codeLigatures: bool = True
     sidebarMenu: list[PersonalizationSidebarMenuItem] = Field(
         default_factory = _default_sidebar_menu,
         max_length = MAX_SIDEBAR_MENU_INPUT_ITEMS,
@@ -4805,8 +4906,6 @@ class PersonalizationAppearance(BaseModel):
     theme: Literal["light", "dark", "system"] = "system"
     palette: Literal[
         "standard",
-        "classic",
-        "minimal",
         "blueberry",
         "butterfly-pea",
         "cherry",
@@ -4829,17 +4928,7 @@ class PersonalizationAppearance(BaseModel):
         "taro",
         "wasabi",
         "yuzu",
-        "pumpkin",
-        "bloody-valentine",
-        "the-thing",
-        "alien",
-        "gothic",
-        "hexberry",
-        "candycorn",
-        "black-cat",
         "trick-or-treat",
-        "ghost-ship",
-        "midnight-haunt",
     ] = "standard"
     language: Optional[str] = Field(None, max_length = 20)
     customization: PersonalizationCustomization = Field(
@@ -4866,6 +4955,7 @@ class PersonalizationResponse(PersonalizationPayload):
     sentAttachmentsSaved: bool = False
     paletteSaved: bool = False
     greetingSlothSaved: bool = False
+    greetingCustomSaved: bool = False
 
 
 @_account_settings_router.get("/personalization", response_model = PersonalizationResponse)
@@ -4885,6 +4975,7 @@ def get_personalization_settings(
     )
     response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
     response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
+    response.greetingCustomSaved = isinstance(profile, dict) and "greetingStyle" in profile
     return response
 
 
@@ -4919,6 +5010,145 @@ def update_personalization_settings(
         ) from exc
     # Return the stored record, not the defaults-filled request, so it matches the next GET.
     return PersonalizationPayload.model_validate(drop_unknown_palette(merged, _PALETTE_IDS))
+
+
+class BrowserPrefsPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    openLinksInBrowser: Optional[bool] = None
+    openFilesInBrowser: Optional[bool] = None
+    searchEngine: Optional[Literal["duckduckgo", "google", "bing", "brave"]] = None
+    showFullUrl: Optional[bool] = None
+    bookmarksToolbar: Optional[Literal["always", "newtab", "never"]] = None
+    showBookmarkEditor: Optional[bool] = None
+    hiddenSuggestions: Optional[list[Annotated[str, Field(max_length = 253)]]] = Field(
+        None, max_length = 500
+    )
+    switchToNewTabs: Optional[bool] = None
+    defaultZoom: Optional[float] = Field(None, ge = 0.25, le = 5)
+    showSuggestedSites: Optional[bool] = None
+    showRecentPages: Optional[bool] = None
+    saveHistory: Optional[bool] = None
+    historyRetentionDays: Optional[int] = Field(None, ge = 0, le = 3650)
+    saveDownloadHistory: Optional[bool] = None
+    askWhereToSave: Optional[bool] = None
+    askBeforeDownloading: Optional[bool] = None
+    annotationScreenshots: Optional[Literal["always", "never"]] = None
+
+
+class ClientPreferencesPayload(BaseModel):
+    interfaceScale: Optional[int] = Field(None, ge = 50, le = 200)
+    browser: Optional[BrowserPrefsPayload] = None
+
+
+class ClientPreferencesResponse(ClientPreferencesPayload):
+    saved: bool = False
+    updatedAt: Optional[int] = None
+
+
+def _client_preferences_response(stored: dict) -> ClientPreferencesResponse:
+    response = ClientPreferencesResponse.model_validate(
+        {k: stored.get(k) for k in ("interfaceScale", "browser", "updatedAt")}
+    )
+    response.saved = bool(stored)
+    return response
+
+
+@_account_settings_router.get("/client-preferences", response_model = ClientPreferencesResponse)
+def get_client_preferences_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> ClientPreferencesResponse:
+    return _client_preferences_response(get_client_preferences())
+
+
+@_account_settings_router.put("/client-preferences", response_model = ClientPreferencesResponse)
+def update_client_preferences_settings(
+    payload: ClientPreferencesPayload, current_subject: str = Depends(get_current_subject)
+) -> ClientPreferencesResponse:
+    changes = payload.model_dump(exclude_none = True)
+    return _client_preferences_response(update_client_preferences(changes))
+
+
+class ChatBackgroundImageMeta(BaseModel):
+    sha256: str
+    type: str
+    size: int
+
+
+class ChatBackgroundAdjustmentsPayload(BaseModel):
+    adjustments: dict[str, Union[str, int, float, bool, None]] = Field(max_length = 32)
+
+
+class ChatBackgroundResponse(BaseModel):
+    saved: bool = False
+    adjustments: Optional[dict[str, Union[str, int, float, bool, None]]] = None
+    image: Optional[ChatBackgroundImageMeta] = None
+    updatedAt: Optional[int] = None
+
+
+def _chat_background_response(stored: dict) -> ChatBackgroundResponse:
+    response = ChatBackgroundResponse.model_validate(
+        {k: stored.get(k) for k in ("adjustments", "image", "updatedAt")}
+    )
+    response.saved = bool(stored)
+    return response
+
+
+@_account_settings_router.get("/chat-background", response_model = ChatBackgroundResponse)
+def get_chat_background_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> ChatBackgroundResponse:
+    return _chat_background_response(get_chat_background())
+
+
+@_account_settings_router.get("/chat-background/image")
+def get_chat_background_image(current_subject: str = Depends(get_current_subject)) -> Response:
+    with background_lock():
+        image = get_chat_background().get("image")
+        path = background_image_path()
+        if not isinstance(image, dict) or not path.is_file():
+            raise HTTPException(status_code = 404, detail = "No background image is saved.")
+        return Response(
+            content = path.read_bytes(),
+            media_type = image.get("type", "application/octet-stream"),
+            headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
+
+@_account_settings_router.put("/chat-background/image", response_model = ChatBackgroundResponse)
+async def update_chat_background_image(
+    request: Request, current_subject: str = Depends(get_current_subject)
+) -> ChatBackgroundResponse:
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_BACKGROUND_IMAGE_BYTES:
+        raise HTTPException(status_code = 413, detail = "Background image is too large.")
+    data = bytearray()
+    async for chunk in request.stream():
+        data.extend(chunk)
+        if len(data) > MAX_BACKGROUND_IMAGE_BYTES:
+            raise HTTPException(status_code = 413, detail = "Background image is too large.")
+    try:
+        stored = await asyncio.to_thread(save_background_image, bytes(data))
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return _chat_background_response(stored)
+
+
+@_account_settings_router.put("/chat-background", response_model = ChatBackgroundResponse)
+def update_chat_background_settings(
+    payload: ChatBackgroundAdjustmentsPayload, current_subject: str = Depends(get_current_subject)
+) -> ChatBackgroundResponse:
+    try:
+        return _chat_background_response(save_background_adjustments(payload.adjustments))
+    except LookupError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+
+
+@_account_settings_router.delete("/chat-background", response_model = ChatBackgroundResponse)
+def delete_chat_background_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> ChatBackgroundResponse:
+    return _chat_background_response(clear_background())
 
 
 # Backs Settings > Logs: the session log existed, but its path went only to an unseen console.

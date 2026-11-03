@@ -10,13 +10,13 @@ import {
 } from "@/components/ui/command";
 import {
   COMPOSER_INPUT_SELECTOR,
-  type ShortcutId,
   isImeComposing,
   triggerShortcut,
   useShortcut,
   useShortcutAvailable,
   useShortcutLabel,
-} from "@/features/settings";
+} from "@/features/settings/hooks/use-shortcut";
+import type { ShortcutId } from "@/features/settings/lib/keyboard-shortcuts";
 import { type TranslationKey, useT } from "@/i18n";
 import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
@@ -24,7 +24,8 @@ import {
   Cancel01Icon,
   DashboardCircleIcon,
   FlimSlateIcon,
-  Image01Icon,
+  ImageIcon,
+  LayoutTwoColumnIcon,
   PencilEdit02Icon,
   Search01Icon,
   BubbleChatTemporaryIcon,
@@ -33,7 +34,7 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
-import { Columns2Icon, GitBranchIcon, type LucideIcon } from "lucide-react";
+import { GitBranchIcon, type LucideIcon } from "lucide-react";
 import {
   type KeyboardEvent,
   type ReactNode,
@@ -43,14 +44,14 @@ import {
   useMemo,
   useState,
 } from "react";
-import {
-  type CachedInventoryRow,
-  type LocalInventoryRow,
-  type ModelInventoryFormat,
-  isHiddenModelId,
-  useHubInventory,
-} from "@/features/hub";
-import { modelLabelKey } from "@/features/library";
+import type {
+  CachedInventoryRow,
+  LocalInventoryRow,
+} from "@/features/hub/inventory/types";
+import type { ModelInventoryFormat } from "@/features/hub/inventory/api";
+import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
+import { useHubInventory } from "@/features/hub/inventory/use-hub-inventory";
+import { modelLabelKey } from "@/features/library/file-kind";
 import { useChatProjects } from "../hooks/use-chat-projects";
 import { useChatSidebarItems } from "../hooks/use-chat-sidebar-items";
 import {
@@ -146,7 +147,7 @@ const ACTIONS: Action[] = [
   },
   {
     id: "switchToImages",
-    icon: Image01Icon,
+    icon: ImageIcon,
     labelKey: "shell.search.generateImage",
   },
   {
@@ -630,7 +631,7 @@ function chatRow(
     haystack: item.searchText,
     icon:
       item.type === "compare"
-        ? Columns2Icon
+        ? LayoutTwoColumnIcon
         : item.isFork
           ? GitBranchIcon
           : MessageCircleIcon,

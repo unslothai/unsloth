@@ -7,6 +7,7 @@ unclassified keeps today's status and text."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -92,10 +93,11 @@ def _preflight(
     *,
     availability = None,
     prepared = None,
+    model = None,
 ):
     import utils.hardware as hardware
 
-    model = _model()
+    model = model or _model()
     config = SimpleNamespace(identifier = model.id, audio_type = "audiocpp_tts", audio_cpp = model)
     request = SimpleNamespace(gpu_ids = None, hf_token = None, max_seq_length = 2048, audio_device = None)
     placement = ri._LoadPlacement(None, None, False, False)
@@ -139,6 +141,40 @@ def test_placement_refusal_lists_variants_that_fit(monkeypatch):
     assert raised.value.status_code == 400 and detail["code"] == "out_of_memory"
     assert [row["label"] for row in detail["smaller_variants"]] == ["Q2", "Q1"]
     assert detail["message"].startswith("No single GPU has enough free memory for Model M.")
+
+
+@pytest.mark.parametrize(
+    "family, size_gb, free_gb, fits",
+    [
+        # 7.3 GB free is an 8 GB card under a desktop session.
+        ("voxtral_tts", 3, 7.3, True),
+        ("chatterbox", 3, 7.3, True),
+        ("qwen3_tts", 3, 7.3, False),
+        ("vibevoice", 3, 7.3, False),
+        # Families whose measured peak is above the generic formula are refused where it fit.
+        ("voxcpm2", 2.75, 9.5, False),
+        ("qwen3_tts", 2.75, 9.5, True),
+        ("kokoro_tts", 0.18, 3.0, False),
+    ],
+)
+def test_placement_uses_the_family_estimate(monkeypatch, family, size_gb, free_gb, fits):
+    monkeypatch.setattr(af, "offload_options", lambda model: [])
+    size = int(size_gb * 1024**3)
+    base = _model(sizes = (3,))
+    variant = dataclasses.replace(
+        base.variant, files = (dataclasses.replace(base.variant.files[0], size = size),)
+    )
+    model = dataclasses.replace(base, family = family, variant = variant, variants = (variant,))
+    availability = ri._NativeAudioAvailability({0: free_gb}, {0: 0.0})
+    prepared = ([0], {"selection_mode": "fallback_all"})
+    if not fits:
+        with pytest.raises(HTTPException) as raised:
+            _preflight(None, availability = availability, prepared = prepared, model = model)
+        assert raised.value.detail["code"] == "out_of_memory"
+        return
+    placement = _preflight(None, availability = availability, prepared = prepared, model = model)
+    assert placement.resolved_gpu_ids == [0]
+    assert placement.native_required_gb == af.estimate_resident_gb(size, family) < free_gb
 
 
 def test_generation_crash_oom_maps_to_out_of_memory(monkeypatch):

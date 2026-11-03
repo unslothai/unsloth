@@ -45,7 +45,7 @@ import {
   isServedByMlx,
   loadedContextFields,
   resolveInitialConfig,
-} from "@/features/model-picker";
+} from "@/features/model-picker/model-config/per-model-config";
 import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
@@ -166,6 +166,12 @@ import {
   type QueuedModelCapabilities,
 } from "../utils/queued-model-capabilities";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
+import {
+  addPass,
+  type PriorPassTiming,
+  withPriorServerTimings,
+  withPriorTiming,
+} from "../utils/continued-timing";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
@@ -372,7 +378,11 @@ import {
   createTrailingPlaceholderWatch,
   stripTrailingTemplatePlaceholder,
 } from "../utils/trailing-template-placeholder";
-import { createStreamPublishGate } from "../utils/stream-pacing";
+import {
+  TRAILING_PUBLISH,
+  createStreamPublishGate,
+  withTrailingPublish,
+} from "../utils/stream-pacing";
 import {
   countReasoningGroups,
   createReasoningDurationTracker,
@@ -2308,6 +2318,8 @@ export async function buildLocalTokenCountExtras(
     ? await projectHasSources(ragProjectId)
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
+  // Same id the completion sends (resolveSandboxSessionId).
+  const sessionId = sandboxSessionIdFor(threadId, ragProjectId);
 
   // re-fetch for every counted user turn so skills created since page load match request pricing.
   await settleSkillsForText(userTexts(messages).join("\n"));
@@ -2358,6 +2370,7 @@ export async function buildLocalTokenCountExtras(
       ...localMediaTools,
     ],
     mcp_enabled: mcpEnabledForChat,
+    ...(sessionId ? { session_id: sessionId } : {}),
     // Top level, not in rag_scope: archived threads add search_conversation regardless of RAG.
     ...threadField,
     // Armed research puts the deep_research schema in the prompt, so the count carries it.
@@ -2728,6 +2741,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedMlxInt8PrefillRequested",
   "mlxAnePrefill",
   "loadedMlxAnePrefillRequested",
+  "mlxFastVerify",
+  "loadedMlxFastVerifyRequested",
   "mlxPleOffload",
   "mlxExpertOffload",
   "loadedMlxPleOffloadRequested",
@@ -2879,6 +2894,7 @@ const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
   "text-to-audio",
   "audio-to-audio",
   "automatic-speech-recognition",
+  "speech-recognition-unsupported",
 ]);
 
 // ollama is excluded: local_model_resolver.py skips its scanner. hermes is read-only, so included.
@@ -3703,6 +3719,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       mlx_kv_quant: config.mlxKvQuant ?? null,
       mlx_int8_prefill: config.mlxInt8Prefill ?? false,
       mlx_ane_prefill: config.mlxAnePrefill ?? false,
+      mlx_fast_verify: config.mlxFastVerify ?? false,
       mlx_ple_offload: config.mlxPleOffload ?? null,
       mlx_expert_offload: config.mlxExpertOffload ?? null,
       speculative_type: effectiveSpeculativeType,
@@ -5712,6 +5729,9 @@ export function createOpenAIStreamAdapter(
       // A seed that ends inside the thought: the next reasoning delta extends it.
       const resumesInsideThought = Boolean(resumedThought) && !continuation?.partial;
       let cumulativeText = continuationPartial;
+      const passText = () => cumulativeText.slice(continuationPartial.length);
+      const priorTiming = continuation?.priorTiming;
+      let passSoFar: (() => PriorPassTiming) | null = null;
       const geminiContinuationReplay = (
         final: boolean,
       ): GeminiContinuationReplay | undefined =>
@@ -5810,6 +5830,7 @@ export function createOpenAIStreamAdapter(
       // Provisional reason per yield since aborts skip terminal yields; a reported window outranks it.
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
+        resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
         openaiCodexReasoning: codexReasoningLedger,
         openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
@@ -6367,6 +6388,24 @@ export function createOpenAIStreamAdapter(
       };
       // llama.cpp output count, including reasoning.
       let windowCount: number | null = null;
+      let liveServerTimings: ServerTimings | undefined;
+      passSoFar = () => {
+        const now = Date.now();
+        return {
+          totalStreamTime: now - streamStartTime,
+          totalChunks,
+          toolCallCount: toolCallParts.length,
+          ...(windowCount !== null
+            ? { tokenCount: windowCount }
+            : cumulativeText.length > continuationPartial.length
+              ? { tokenCount: Math.max(1, Math.round((cumulativeText.length - continuationPartial.length) / 4)) }
+              : {}),
+          ...(firstTokenTime !== undefined ? { firstTokenTime } : {}),
+          startedAt: streamStartTime,
+          durationMs: now - streamStartTime,
+          ...(liveServerTimings ? { serverTimings: { ...liveServerTimings } as unknown as Record<string, number> } : {}),
+        };
+      };
 
       // Colab-style proxies can swallow fetch aborts, so also POST /inference/cancel explicitly.
       const onAbortCancel = () => {
@@ -6457,9 +6496,12 @@ export function createOpenAIStreamAdapter(
             externalProvider?.name ??
             (isExternalRequest ? "External provider" : "Local model"),
           providerType: externalProvider?.providerType ?? "local",
-          startedAt: streamStartTime,
+          startedAt: priorTiming?.startedAt ?? streamStartTime,
           finishedAt,
-          durationMs: finishedAt - streamStartTime,
+          durationMs:
+            (priorTiming ? (priorTiming.durationMs ?? priorTiming.totalStreamTime) : 0) +
+            finishedAt -
+            streamStartTime,
           ...(sandboxSessionId ? { sessionId: sandboxSessionId } : {}),
           cancelId,
           toolCalls: Array.from(
@@ -7101,7 +7143,7 @@ export function createOpenAIStreamAdapter(
               }
             };
             // The window lets a length-stop tell user Max Tokens from the backend's stand-in for Max.
-            const stream =
+            const sourceStream =
               generationDecision === "durable"
                 ? durableStream()
                 : streamChatCompletions(
@@ -7111,8 +7153,25 @@ export function createOpenAIStreamAdapter(
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
+            const stream = withTrailingPublish(sourceStream, canPublish);
 
             for await (const chunk of stream) {
+              if (chunk === TRAILING_PUBLISH) {
+                if (canPublish(streamedChars)) {
+                  yield {
+                    content: liveAssistantContent(),
+                    metadata: {
+                      timing: buildTiming(
+                        streamStartTime,
+                        totalChunks,
+                        firstTokenTime,
+                      ),
+                      custom: liveCustom(),
+                    },
+                  };
+                }
+                continue;
+              }
               const chunkModel = (chunk as { model?: unknown }).model;
               if (typeof chunkModel === "string" && chunkModel.length > 0) {
                 responseModelId = chunkModel;
@@ -7373,6 +7432,7 @@ export function createOpenAIStreamAdapter(
                 if (toolEvent.type === "context_window_exceeded") {
                   contextWindowExceeded = true;
                   // assistant-ui saves the last STREAMED yield, so publish why the turn ended now.
+                  canPublish.published();
                   yield {
                     content: liveAssistantContent(),
                     metadata: {
@@ -7442,6 +7502,7 @@ export function createOpenAIStreamAdapter(
                       ),
                     } as PositionedToolCallPart;
                     // A stop before the next chunk saves only what was yielded.
+                    canPublish.published();
                     yield {
                       content: liveAssistantContent(),
                       metadata: {
@@ -7776,6 +7837,7 @@ export function createOpenAIStreamAdapter(
                     };
                   }
                 }
+                canPublish.published();
                 yield {
                   content: liveAssistantContent(),
                   metadata: {
@@ -7795,6 +7857,7 @@ export function createOpenAIStreamAdapter(
                 | undefined;
               // Timings can arrive without usage.
               windowCount = windowEvidenceCount(chunkTimings) ?? windowCount;
+              if (chunkTimings && chunkTimings.diffusion !== true) liveServerTimings = chunkTimings;
               // OpenAI usage may arrive in an empty trailing chunk or on the terminal Codex chunk.
               if (chunk.usage) {
                 serverMetadata = {
@@ -8374,6 +8437,7 @@ export function createOpenAIStreamAdapter(
                 const forcePublish =
                   addedToolCall || replayStateChanged || stampedProvenance;
                 if (forcePublish || canPublish(streamedChars)) {
+                  canPublish.published();
                   yield {
                     content: liveAssistantContent(),
                     metadata: {
@@ -8395,6 +8459,7 @@ export function createOpenAIStreamAdapter(
               if (replayStateChanged && !delta && !reasoning) {
                 const replayContent = liveAssistantContent();
                 if (replayContent.length > 0) {
+                  canPublish.published();
                   yield {
                     content: replayContent,
                     metadata: {
@@ -8485,6 +8550,7 @@ export function createOpenAIStreamAdapter(
               }
 
               if (assistantContent.length > 0) {
+                canPublish.published();
                 yield {
                   content: assistantContent,
                   metadata: {
@@ -8571,8 +8637,12 @@ export function createOpenAIStreamAdapter(
 
         const meta = serverMetadata;
         const finalTokenCount =
-          meta?.usage?.completion_tokens ?? estimateTokenCount(cumulativeText);
-        const finalTokPerSec = meta?.timings?.predicted_per_second;
+          meta?.usage?.completion_tokens ?? estimateTokenCount(passText());
+        const finalServerTimings = withPriorServerTimings(
+          meta?.timings,
+          priorTiming?.serverTimings,
+        );
+        const finalTokPerSec = finalServerTimings?.predicted_per_second;
         const serverPromptEvalTime = meta?.timings?.prompt_ms;
 
         // Prefer llama-server timings; fall back to provider usage envelope.
@@ -8717,14 +8787,18 @@ export function createOpenAIStreamAdapter(
               "Compaction needs the conversation archive and the default checkpoint policy.",
           });
         }
-        const finalTiming = buildTiming(
-          streamStartTime,
-          totalChunks,
-          // What the user waited, as a resumed run records it. Server prompt eval has its own row.
-          firstTokenTime ?? serverPromptEvalTime,
-          finishedAt - streamStartTime,
-          finalTokenCount,
-          toolCallParts.length,
+        const finalTiming = withPriorTiming(
+          buildTiming(
+            streamStartTime,
+            totalChunks,
+            // What the user waited, as a resumed run records it. Server prompt eval has its own row.
+            firstTokenTime ?? serverPromptEvalTime,
+            finishedAt - streamStartTime,
+            finalTokenCount,
+            toolCallParts.length,
+            finalTokPerSec,
+          ),
+          priorTiming,
           finalTokPerSec,
         );
 
@@ -8768,7 +8842,7 @@ export function createOpenAIStreamAdapter(
                 : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
-              serverTimings: meta?.timings ?? undefined,
+              serverTimings: finalServerTimings ?? undefined,
               stopReason: lastFinishReason ?? undefined,
               contextUsage: meta?.usage
                 ? {
@@ -8919,13 +8993,16 @@ export function createOpenAIStreamAdapter(
           closeReasoningContent();
           const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
-          const partialTiming = buildTiming(
-            streamStartTime,
-            totalChunks,
-            firstTokenTime,
-            Date.now() - streamStartTime,
-            estimateTokenCount(partialText),
-            toolCallParts.length,
+          const partialTiming = withPriorTiming(
+            buildTiming(
+              streamStartTime,
+              totalChunks,
+              firstTokenTime,
+              Date.now() - streamStartTime,
+              estimateTokenCount(continuation ? passText() : partialText),
+              toolCallParts.length,
+            ),
+            priorTiming,
           );
           yield {
             content: partialContent,
@@ -8959,6 +9036,7 @@ export function createOpenAIStreamAdapter(
                   ),
                 },
                 timing: partialTiming,
+                resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
                 ...generationCustom(),
               },
             },
