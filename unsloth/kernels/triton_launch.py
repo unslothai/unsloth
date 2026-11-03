@@ -93,14 +93,11 @@ def launch(
     unaligned = (),
     **options,
 ):
-    """kernel[grid](*args, **constexprs, **options) on the current stream of device_index, which
-    must be the current device. args are the runtime arguments in signature order, before every
-    constexpr: n_tensors tensors, then integers in [0, 2**63) (sizes, strides, offsets: the key's
-    `< 2**31` then matches Triton's i32 / i64 typing). unspecialized: positions in args of integers the
-    kernel lists in do_not_specialize (only their width is keyed, so one cache entry serves every
-    value). unaligned: positions of integers the kernel lists in do_not_specialize_on_alignment
-    (jit_any_alignment): keyed by == 1 and width, not % 16. Returns the cache entry relaunch()
-    takes, or None."""
+    """kernel[grid](*args, **constexprs, **options) on device_index's current stream (the current device).
+    args: runtime arguments in signature order before every constexpr: n_tensors tensors, then ints in
+    [0, 2**63) (sizes, strides, offsets: `< 2**31` then matches Triton's i32 / i64 typing). unspecialized /
+    unaligned: positions of ints in do_not_specialize / do_not_specialize_on_alignment (jit_any_alignment),
+    keyed by width only / by == 1 and width. Returns the cache entry relaunch() takes, or None."""
     global _ENABLED
     if _ENABLED and not _hooks_set():
         key = (
