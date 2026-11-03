@@ -844,3 +844,29 @@ test("a closed card re-measures its handles when its port rows change", () => {
   assert.match(view, /const handles = \[\.\.\.inputs, \.\.\.outputs\]\.map\(\(port\) => port\.handleId\)/);
   assert.match(view, /useEffect\(\(\) => updateNodeInternals\(id\), \[handles, id, updateNodeInternals\]\)/);
 });
+
+test("one output fanned out through folded reroutes is one card port, named by its block", () => {
+  const d = doc(
+    [
+      { ...node("a", "input.text", [0, 0]), group: "g", label: "Script" },
+      { ...node("b", "input.text", [0, 200]), group: "g" },
+      node("p1", "output.preview", [900, 0]),
+      node("p2", "output.preview", [900, 300]),
+    ],
+    [edge("e1", "a", "text", "p1", "value"), edge("e2", "a", "text", "p2", "value")],
+  );
+  d.groups = [{ id: "g", label: "Panel", color: "#8b5cf6", rect: [-20, -40, 600, 400] }];
+  useDocStore.getState().load(d);
+  useDocStore.getState().addReroute({ id: "r1", pos: [400, 20] }, "e1");
+  useDocStore.getState().addReroute({ id: "r2", pos: [400, 220] }, "e2");
+  select("a", "b");
+  combineSelection();
+  const out = view();
+  const card = out.nodes.find((n) => n.id.startsWith("super:"));
+  const outputs = (card?.data as { outputs: { handleId: string; label: string }[] }).outputs;
+  assert.equal(outputs.length, 1);
+  assert.match(outputs[0].label, /^Script · /);
+  const crossing = out.edges.filter((e) => e.source === card?.id);
+  assert.deepEqual(new Set(crossing.map((e) => e.sourceHandle)), new Set([outputs[0].handleId]));
+  assert.deepEqual(crossing.map((e) => e.target).sort(), ["p1", "p2"]);
+});

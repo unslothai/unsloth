@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DocGraph, DocMeta } from "../stores/doc-store";
+import { rerouteDownstream, rerouteUpstream } from "../stores/reroute-graph";
 import type { NodeSpec, NodeStatus } from "../types";
-import { parseHandle } from "./connection-rules";
+import { inHandle, outHandle, parseHandle } from "./connection-rules";
 import {
   GROUP_PREFIX,
   NOTE_PREFIX,
@@ -319,6 +320,27 @@ export function applySuperCards(
     return handleId;
   };
 
+  // A reroute folded into a card stands for the block port it carries, so one output fanned out
+  // through several reroutes is one port, labelled by its block; a loose reroute keeps its own.
+  const portOf = (
+    side: "in" | "out",
+    cardId: string,
+    nodeId: string,
+    handle: string | null | undefined,
+  ): [string, string | null | undefined] => {
+    if (!graph.reroutes[nodeId]) return [nodeId, handle];
+    if (side === "out") {
+      const up = rerouteUpstream(graph, nodeId);
+      return up && owner.get(up.node) === cardId
+        ? [up.node, outHandle(up.port)]
+        : [nodeId, handle];
+    }
+    const down = rerouteDownstream(graph, nodeId);
+    return down.length === 1 && owner.get(down[0].node) === cardId
+      ? [down[0].node, inHandle(down[0].port)]
+      : [nodeId, handle];
+  };
+
   const seen = new Set<string>();
   const nextEdges: RfEdge[] = [];
   for (const edge of edges) {
@@ -333,10 +355,10 @@ export function applySuperCards(
     if (!(sourceCard || visible.has(edge.source))) continue;
     if (!(targetCard || visible.has(edge.target))) continue;
     const sourceHandle = sourceCard
-      ? addPort("out", sourceCard, edge.source, edge.sourceHandle)
+      ? addPort("out", sourceCard, ...portOf("out", sourceCard, edge.source, edge.sourceHandle))
       : edge.sourceHandle;
     const targetHandle = targetCard
-      ? addPort("in", targetCard, edge.target, edge.targetHandle)
+      ? addPort("in", targetCard, ...portOf("in", targetCard, edge.target, edge.targetHandle))
       : edge.targetHandle;
     const source = sourceCard ? SUPER_PREFIX + sourceCard : edge.source;
     const target = targetCard ? SUPER_PREFIX + targetCard : edge.target;
