@@ -19,13 +19,13 @@ def _function(source, name):
     return source[start : source.index("\n}", start) + 2]
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def desktop_port_binary(tmp_path_factory):
     rustc = shutil.which("rustc")
     assert rustc is not None, "rustc is required to exercise the Desktop launch code"
     scratch = tmp_path_factory.mktemp("desktop-port")
-    process = (SRC / "process.rs").read_text(encoding="utf-8")
-    owner = (SRC / "desktop_backend_owner.rs").read_text(encoding="utf-8")
+    process = (SRC / "process.rs").read_text(encoding = "utf-8")
+    owner = (SRC / "desktop_backend_owner.rs").read_text(encoding = "utf-8")
     start = process.index("pub fn start_backend(")
     start = process.index("{", start) + 1
     prefix = process[start : process.index("let _runtime_launch_guard", start)]
@@ -58,12 +58,12 @@ def desktop_port_binary(tmp_path_factory):
         + '}, Err(error) => {eprintln!("{error}"); std::process::exit(2);} } }\n'
     )
     path = scratch / "main.rs"
-    path.write_text(source, encoding="utf-8")
+    path.write_text(source, encoding = "utf-8")
     binary = scratch / ("desktop-port.exe" if os.name == "nt" else "desktop-port")
     result = subprocess.run(
         [rustc, "--edition=2021", str(path), "-o", str(binary)],
-        text=True,
-        capture_output=True,
+        text = True,
+        capture_output = True,
     )
     assert result.returncode == 0, result.stderr
     return binary
@@ -74,7 +74,7 @@ def _run(binary, value):
     env.pop("UNSLOTH_DESKTOP_PORT", None)
     if value is not None:
         env["UNSLOTH_DESKTOP_PORT"] = value
-    return subprocess.run([str(binary)], env=env, capture_output=True, text=True)
+    return subprocess.run([str(binary)], env = env, capture_output = True, text = True)
 
 
 @pytest.mark.parametrize("value", [None, "", "  "])
@@ -110,7 +110,7 @@ def test_portless_owner_uses_its_recorded_request_after_env_is_removed(desktop_p
     env = os.environ.copy()
     env.pop("UNSLOTH_DESKTOP_PORT", None)
     result = subprocess.run(
-        [str(desktop_port_binary), "owner"], env=env, capture_output=True, text=True
+        [str(desktop_port_binary), "owner"], env = env, capture_output = True, text = True
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines()[-1] == str(list(range(9123, 9144)))
