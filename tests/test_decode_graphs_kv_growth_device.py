@@ -8,7 +8,7 @@ import pytest
 import unsloth  # noqa: F401  (must precede transformers)
 from unsloth import FastLanguageModel
 import torch
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import has_real_cuda
 from transformers import StoppingCriteria, StoppingCriteriaList
 
 import unsloth.models._decode_graphs as G
@@ -98,7 +98,6 @@ def test_early_stop_does_not_hold_max_new_tokens(monkeypatch):
     ids_g, logits_g, rows, delta = _run(model, tok, enc, True, monkeypatch, 32768, stop = 20)
     assert torch.equal(ids_e, ids_g) and torch.equal(logits_e, logits_g)
     assert delta["replays"] > 0, delta
-    # prompt + one 512 increment, rounded to the 256-row bucket; not 32768 + prompt
     assert rows is not None and rows <= 1024, rows
 
 
@@ -110,7 +109,6 @@ def test_long_rollout_grows_and_stays_bitwise(monkeypatch):
     ids_e, logits_e, _, _ = _run(model, tok, enc, False, monkeypatch, new, min_new = new)
     ids_g, logits_g, _, delta = _run(model, tok, enc, True, monkeypatch, new, min_new = new)
     assert torch.equal(ids_e, ids_g) and torch.equal(logits_e, logits_g)
-    # 768 -> 1536 -> hint: a few re-captures, most steps replayed
     assert 2 <= delta["captures"] <= 4, delta
     assert delta["replays"] >= new - 10, delta
 
