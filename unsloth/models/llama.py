@@ -5231,7 +5231,6 @@ class FastLlamaModel:
             prefetch_depth = prefetch_depth,
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
-        # After block swap so its streamed layers keep 16-bit; block compile traces only at the first forward.
         enable_fp8_lora(model)
         skip_checkpointing(model, checkpoint_skip_layers)
 
@@ -5566,8 +5565,6 @@ class FastLlamaModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
-        # float8_training with LoRA: fp8 frozen base, before any block compile traces the layers.
-        # get_peft_model converts later, once block swap has picked its layers.
         if not _defer_fp8_lora:
             enable_fp8_lora(model)
         _unsloth_install_pretrain_detector(model)

@@ -3322,14 +3322,10 @@ def _unsloth_vllm_merged_weight(module, weight):
                 delta = module.get_delta_weight(adapter).float()
             else:
                 continue
-            # A host weight (an fp8 LoRA base keeps its exact master in host RAM) merges on the adapter's
-            # device: the vLLM server broadcast (NCCL) takes CUDA tensors only.
             device = weight.device if weight.device.type != "cpu" else delta.device
             delta = delta.to(device).reshape(weight.shape)
             merged = delta if merged is None else merged + delta.to(merged.device)
     if merged is None:
-        # No active delta (another adapter selected, adapters disabled): a host master still goes out on the
-        # fp8 compute device.
         base = getattr(module, "base_layer", None)
         state = base.__dict__.get("_unsloth_fp8_lora") if base is not None else None
         if state is not None and weight.device != state.device:
@@ -3359,7 +3355,6 @@ def _unsloth_vllm_peft_merge_out_of_place(base, layers):
     the base tensors and return {id(param): merged tensor}; the live parameters keep their exact bytes."""
     params = list(base.parameters(recurse = False))
     originals = [param.data for param in params]
-    # FP8 LoRA bases (kernels/fp8_lora.py) requantize on merge: keep the live fp8 copy and host master state.
     fp8 = base.__dict__.get("_unsloth_fp8_lora")
     fp8_saved = dict(fp8.__dict__) if fp8 is not None else None
     states = [

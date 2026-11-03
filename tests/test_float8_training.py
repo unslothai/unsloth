@@ -241,8 +241,6 @@ def test_refuses_when_scaled_mm_probe_fails(monkeypatch):
 
 
 def test_loader_float8_training_for_lora_needs_a_16bit_base():
-    # With LoRA, float8_training means the fp8 frozen base (kernels/fp8_lora.py): a 4-bit base is refused
-    # before anything loads.
     from unsloth import FastLanguageModel, FastModel
     for loader in (FastLanguageModel, FastModel):
         with pytest.raises(ValueError, match = "load_in_4bit = False"):

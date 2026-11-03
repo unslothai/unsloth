@@ -23,7 +23,6 @@ pytestmark = pytest.mark.skipif(
 
 
 def _cpu_scaled_mm_works():
-    # Older torch builds (2.6) have the fp8 dtypes and torch._scaled_mm but no CPU kernel for it: probe the op.
     if not hasattr(torch, "float8_e4m3fn") or not hasattr(torch, "_scaled_mm"):
         return False
     try:
@@ -68,7 +67,6 @@ def _weight(
     return (torch.randn(N, K, generator = g) * K**-0.5).to(dtype)
 
 
-# ---- op numerics -----------------------------------------------------------------------------------------
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @needs_cpu_scaled_mm
 def test_fwd_and_dgrad_within_fp8_error(dtype):
@@ -82,10 +80,8 @@ def test_fwd_and_dgrad_within_fp8_error(dtype):
     ref_dx = dy.float() @ W.float()
     assert y.dtype == dtype and dx.dtype == dtype
     e_fwd, e_dgrad = _rel(y, ref_y), _rel(dx, ref_dx)
-    # Inside the fp8 band, and clearly not the 16-bit GEMM (which is ~0.002): fp8 really ran.
     assert 0.01 < e_fwd < FP8_FWD_TOL, e_fwd
     assert 0.01 < e_dgrad < FP8_DGRAD_TOL, e_dgrad
-    # The transposed view (what LoRA_MLP's down-projection backward hands matmul_lora) is the dgrad.
     assert torch.equal(state.matmul(dy, W.t()), dx)
     assert FL.FP8_LORA_STATS["fwd"] == 1 and FL.FP8_LORA_STATS["dgrad"] == 2
 
@@ -112,7 +108,6 @@ def test_scaled_mm_counted_and_fp16_never_written_by_the_fp8_gemm(monkeypatch):
 
 @needs_cpu_scaled_mm
 def test_large_fp16_values_stay_finite():
-    # Outputs near the fp16 limit: exact as the 16-bit GEMM would be, no fp8-specific overflow.
     W = torch.full((32, 64), 0.5, dtype = torch.float16)
     x = torch.full((16, 64), 1800.0, dtype = torch.float16)  # each output 57600 < 65504
     y = FL.Fp8LoRABaseState(W).matmul(x, W)
@@ -122,7 +117,6 @@ def test_large_fp16_values_stay_finite():
 
 @needs_cpu_scaled_mm
 def test_fp16_results_at_the_fp16_limit_stay_finite():
-    # Failing before: the GEMM wrote bf16, which rounds 65504 to 65536, an inf after the cast back to fp16.
     W = torch.full((32, 64), 0.5, dtype = torch.float16)
     x = torch.full((16, 64), 2047.0, dtype = torch.float16)  # each output 65504, the fp16 maximum
     state = FL.Fp8LoRABaseState(W)
@@ -148,7 +142,6 @@ def test_decode_rows_use_the_16bit_weight():
     assert FL.FP8_LORA_STATS["fwd"] == 0 and FL.FP8_LORA_STATS["fwd_16bit"] == 1
 
 
-# ---- cache -----------------------------------------------------------------------------------------------
 @needs_cpu_scaled_mm
 def test_quantized_once_and_requantized_after_an_in_place_change(monkeypatch):
     monkeypatch.setattr(FL, "_CACHE_T", True)
@@ -160,7 +153,6 @@ def test_quantized_once_and_requantized_after_an_in_place_change(monkeypatch):
         state.matmul(x, W)
     assert state.quantizations == 1 and FL.FP8_LORA_STATS["quantize"] == 1
     w8 = state.w8
-    # Both orientations come from one quantization: w8t is w8 transposed, byte for byte.
     assert torch.equal(state.w8t.view(torch.uint8), w8.t().contiguous().view(torch.uint8))
     with torch.no_grad():
         W.mul_(2.0)  # a LoRA merge / unmerge writes the base weight in place
@@ -169,7 +161,6 @@ def test_quantized_once_and_requantized_after_an_in_place_change(monkeypatch):
     assert _rel(state.matmul(x, W), x.float() @ W.float().t()) < FP8_FWD_TOL
 
 
-# ---- the LoRA kernels: forward fp8, input gradient fp8, LoRA grads in 16 bit -------------------------------
 class _Proj(torch.nn.Module):
     """A PEFT lora.Linear stand-in: base_layer + lora_A / lora_B ModuleDicts."""
 
@@ -206,7 +197,6 @@ def _silu_fwd(e, g):
 
 
 def _silu_bwd(DW, e, g):
-    # swiglu_DWf_DW_dfg_kernel's contract: returns (h, df, de) = (f * g, DW * f, DW * g * f'(e)).
     ef = e.float()
     s = torch.sigmoid(ef)
     f = ef * s
@@ -259,7 +249,6 @@ def test_lora_kernels_run_fp8_and_keep_lora_grads_16bit(kind):
     FL.reset_fp8_lora_stats()
     outs, dX, grads, projs = _run_block(kind, fp8 = True)
     n = len(projs)
-    # Every base GEMM ran in fp8: one forward and one input gradient per projection.
     assert FL.FP8_LORA_STATS["fwd"] == n, FL.FP8_LORA_STATS
     assert FL.FP8_LORA_STATS["dgrad"] == n, FL.FP8_LORA_STATS
     assert FL.FP8_LORA_STATS["fwd_16bit"] == 0 and FL.FP8_LORA_STATS["dgrad_16bit"] == 0
@@ -275,7 +264,6 @@ def test_lora_kernels_run_fp8_and_keep_lora_grads_16bit(kind):
 
 @needs_cpu_scaled_mm
 def test_peft_path_base_forward_and_backward():
-    # PEFT lora.Linear calls base_layer(x): the patched forward runs the same two fp8 GEMMs.
     base = torch.nn.Linear(256, 384, bias = True, dtype = torch.bfloat16)
     base.requires_grad_(False)
     ref = torch.nn.Linear(256, 384, bias = True, dtype = torch.bfloat16)
@@ -290,7 +278,6 @@ def test_peft_path_base_forward_and_backward():
     yb.backward(dy)
     assert _rel(ya, yb) < FP8_FWD_TOL and _rel(xa.grad, xb.grad) < FP8_DGRAD_TOL
     assert FL.FP8_LORA_STATS["fwd"] == 1 and FL.FP8_LORA_STATS["dgrad"] == 1
-    # state_dict is untouched: the 16-bit weight is the source of truth for save / merge.
     assert set(base.state_dict()) == {"weight", "bias"}
     assert base.weight.dtype == torch.bfloat16
 
@@ -346,7 +333,6 @@ def test_enable_fp8_lora_on_a_peft_model():
     assert len(converted) == 2 * 7  # every LoRA'd projection; lm_head / embeddings untouched
     assert P.engaged(model)[f8t.FP8_LORA_RECIPE]["modules"] == 14
     loss, grads = _loss_and_grads(model)
-    # Layer 0's q / k / v read the frozen embedding output, which needs no input gradient: 14 - 3 dgrads.
     assert FL.FP8_LORA_STATS["fwd"] == 14 and FL.FP8_LORA_STATS["dgrad"] == 11
     assert abs(loss - loss_ref) / loss_ref < 0.01
     assert grads.keys() == grads_ref.keys()
@@ -362,7 +348,6 @@ def test_no_request_no_conversion_and_strict_zero_engagement(monkeypatch):
     assert f8t.enable_fp8_lora(model) == []  # loaded without float8_training: untouched
     for module in model.modules():
         assert "_unsloth_fp8_lora" not in module.__dict__
-    # Requested, but nothing eligible (CPU weights without allow_cpu): strict mode refuses the silent fallback.
     monkeypatch.setenv("UNSLOTH_STRICT_ENGAGE", "1")
     with pytest.raises(P.EngagementError):
         f8t.enable_fp8_lora(model, recipe = f8t.FP8_LORA_RECIPE)
@@ -382,7 +367,6 @@ def test_eligibility_reasons():
     assert "_Sub" in FL.eligible_base(sub)
 
 
-# ---- torch.compile ---------------------------------------------------------------------------------------
 @needs_cpu_scaled_mm
 def test_compile_aot_eager_fullgraph():
     torch._dynamo.reset()
@@ -408,13 +392,11 @@ def test_compile_aot_eager_fullgraph():
     out.backward()
     torch.testing.assert_close(out, eager)
     torch.testing.assert_close(x.grad, g_eager)
-    # The opaque ops ran inside the compiled graph: forward and backward GEMMs counted.
     assert FL.FP8_LORA_STATS["fwd"] == 2 and FL.FP8_LORA_STATS["dgrad"] == 2, FL.FP8_LORA_STATS
     explain = torch._dynamo.explain(step)(x)
     assert explain.graph_break_count == 0
 
 
-# ---- refusals before load ---------------------------------------------------------------------------------
 def test_resolve_refusals_and_names():
     R = f8t.FP8_LORA_RECIPE
     with pytest.raises(P.PrecisionRefused, match = "fp8 tensor cores"):
@@ -434,13 +416,11 @@ def test_resolve_refusals_and_names():
     with pytest.raises(ValueError, match = "full finetuning recipe"):
         f8t.resolve_fp8_lora("rowwise", gpu = "sm89")
     assert f8t.resolve_fp8_lora("fp8_lora", gpu = "sm89", dtype = torch.bfloat16) == R
-    # sm120 runs per-token scales (faster there); sm89 tensorwise (rowwise _scaled_mm is slow on L4).
     assert f8t.resolve_fp8_lora("fp8_lora", gpu = "sm120", dtype = torch.float16) == "fp8_lora_rowwise"
     assert FL.scaling_for_class("sm120") == "row" and FL.scaling_for_class("sm89") == "tensor"
     assert f8t.resolve_fp8_lora(False) is None and f8t.resolve_fp8_lora(None) is None
     gate = P.get_recipe(R).gate("sm89").status
     if gate != "named":  # explicit until the gates in the registry evidence are met
-        # By name (True) only where it was measured faster.
         with pytest.raises(P.PrecisionRefused, match = "not been measured faster"):
             f8t.resolve_fp8_lora(True, gpu = "sm89")
 
@@ -452,7 +432,6 @@ def test_loader_refuses_before_any_load():
             cls.from_pretrained(
                 model_name = "unsloth/does-not-exist", load_in_4bit = True, float8_training = "fp8_lora"
             )
-        # No CUDA here: refused with the hardware reason, not a missing-repo error.
         with pytest.raises(P.PrecisionRefused, match = "no CUDA device|tensor cores"):
             cls.from_pretrained(
                 model_name = "unsloth/does-not-exist",
@@ -470,7 +449,6 @@ def test_registry_row():
     assert r.gate("sm75").status == "refused" and r.gate("sm80").status == "refused"
 
 
-# ---- rowwise (per-token) activation / gradient scales: UNSLOTH_FP8_LORA_SCALING=row ------------------------
 @pytest.fixture
 def rowwise(monkeypatch):
     monkeypatch.setattr(FL, "_SCALING", "row")
@@ -488,7 +466,6 @@ def test_rowwise_numerics_and_outlier_tokens(rowwise):
     assert state.w_inv_fwd.shape == (1, 384) and state.w_inv_dgrad.shape == (1, 256)
     y = state.matmul(x, W)
     ref = x.float() @ W.float().t()
-    # Every other token keeps its own scale: the outlier row does not flush them toward zero.
     rest = _rel(y[1:], ref[1:])
     assert rest < FP8_FWD_TOL, rest
     FL._SCALING = "tensor"
@@ -516,7 +493,6 @@ def test_rowwise_lora_kernels_and_peft_path(rowwise):
 
 
 def test_loaded_adapter_is_converted_when_marked(monkeypatch):
-    # An adapter repo loads as a PeftModel and skips get_peft_model: mark_fp8_lora converts it directly.
     model = _tiny_qwen3_peft()
     calls = []
     real = f8t.enable_fp8_lora
@@ -544,8 +520,6 @@ def test_default_no_transposed_cache_matches_cached(monkeypatch):
 
 @needs_cpu_scaled_mm
 def test_compiled_graph_has_no_fp8_transpose_outside_the_ops():
-    # sm89 Inductor writes corrupt bytes into 2D-tiled fp8 transposes (scripts/fp8_lora/l4_wgrad_bisect2.py):
-    # every fp8 tensor op must stay inside the opaque fwd / dgrad ops, never in the traced graph.
     torch._dynamo.reset()
     base = torch.nn.Linear(256, 384, bias = False, dtype = torch.bfloat16).requires_grad_(False)
     FL.attach_fp8_lora_base(base)
@@ -583,11 +557,8 @@ def test_compiled_graph_has_no_fp8_transpose_outside_the_ops():
     ), names
 
 
-# ---- host master: the GPU keeps only the fp8 copy (memory at or below bf16 LoRA) ----------------------------
 @pytest.fixture
 def offload_on_cpu(monkeypatch):
-    # The compute device is the CPU here, so offload to a separate host copy: every code path of the GPU case
-    # runs, only the device copy itself is trivial (the GPU job checks that part).
     monkeypatch.setattr(FL, "_OFFLOAD_CPU_WEIGHTS", True)
     monkeypatch.setattr(FL, "_OFFLOAD_MASTER", True)
     monkeypatch.delenv("WORLD_SIZE", raising = False)
@@ -613,13 +584,11 @@ def test_host_master_leaves_only_fp8_bytes_on_the_compute_device(offload_on_cpu)
     assert lin.weight is param  # optimizer / PEFT / named_parameters keep the same Parameter
     assert torch.equal(lin.weight, W0)  # the host master is the exact 16-bit weight
     numel = 256 * 384
-    # Per converted layer: fp8 copy (1 byte / weight) + one fp32 scale; no 16-bit bytes on the device.
     assert state.resident_bytes(lin) == {
         "fp8": numel + 4,
         "master_device": 0,
         "master_host": 2 * numel,
     }
-    # Before: the 16-bit master stayed beside the fp8 copy (3 bytes / weight on the device).
     assert ref_state.resident_bytes(ref) == {
         "fp8": numel + 4,
         "master_device": 2 * numel,
@@ -656,7 +625,6 @@ def test_host_master_decode_rows_use_the_dequantized_fp8_weight(offload_on_cpu):
     dense = (state.w8.float() * state.w_inv).bfloat16()
     torch.testing.assert_close(state.matmul(x, lin.weight), x @ dense.t())
     torch.testing.assert_close(lin(x), x @ dense.t())
-    # Its orientation follows W: the transposed view gives the input-gradient form.
     dy = torch.randn(1, 1, 384).bfloat16()
     torch.testing.assert_close(state.matmul(dy, lin.weight.t()), dy @ dense)
     assert _rel(lin(x), x @ W0.t()) < FP8_FWD_TOL
@@ -667,7 +635,6 @@ def test_host_master_dequantize_is_exact(offload_on_cpu):
     lin = _frozen_linear()
     W0 = lin.weight.detach().clone()
     state = FL.attach_fp8_lora_base(lin)
-    # fast_dequantize (unsloth's merged save) gets the exact weight, never the fp8 reconstruction.
     from unsloth.kernels.utils import fast_dequantize
 
     assert torch.equal(fast_dequantize(lin.weight, state), W0)
@@ -679,11 +646,9 @@ def test_module_moves_keep_or_restore_the_host_master(offload_on_cpu):
     lin = _frozen_linear(bias = True)
     state = FL.attach_fp8_lora_base(lin)
     w8 = state.w8
-    # The Trainer's model.to(device) onto the device the fp8 copy lives on: master stays in host RAM.
     lin.to(state.device)
     lin.to(torch.bfloat16)
     assert state.offloaded and state.w8 is w8
-    # A real conversion brings the exact master back first, then converts it.
     W0 = lin.weight.detach().clone()
     lin.half()
     assert not state.offloaded and lin.weight.dtype == torch.float16
@@ -729,14 +694,12 @@ def test_save_and_merge_exact_with_host_master(offload_on_cpu):
     sd = model.state_dict()
     for name, value in frozen.items():
         assert torch.equal(sd[name], value), name
-    # Serialized base weights round trip bit for bit.
     from safetensors.torch import load, save
 
     base = {n: sd[n].contiguous() for n in frozen if "base_layer" in n}
     assert len(base) == 14
     loaded = load(save(base))
     assert all(torch.equal(loaded[n], frozen[n]) for n in base)
-    # Same LoRA weights into the untouched copy, then merge both ways: bitwise equal to the 16-bit merge.
     ref.load_state_dict({n: p for n, p in sd.items() if "lora_" in n}, strict = False)
     from unsloth.save import _merge_lora
 
@@ -750,7 +713,6 @@ def test_save_and_merge_exact_with_host_master(offload_on_cpu):
     assert merged.keys() == merged_ref.keys()
     for name in merged_ref:
         assert torch.equal(merged[name], merged_ref[name]), name
-    # PEFT merge put the masters back on the compute device before adding the delta.
     assert all(
         not m.__dict__["_unsloth_fp8_lora"].offloaded
         for m in model.modules()
@@ -809,7 +771,6 @@ def test_merge_of_a_deepcopy_merges_the_copy_only(offload_on_cpu):
     layer, twin_layer = dict(model.named_modules())[name], dict(twin.named_modules())[name]
     before = layer.base_layer.weight.detach().clone()
     twin_layer.merge()
-    # The copy merged into its own base; the original layer is untouched and still unmerged.
     assert twin_layer.merged and not layer.merged
     assert torch.equal(layer.base_layer.weight, before)
     assert layer.base_layer.__dict__["_unsloth_fp8_lora"].offloaded
@@ -820,7 +781,6 @@ def test_merge_of_a_deepcopy_merges_the_copy_only(offload_on_cpu):
 
 @needs_cpu_scaled_mm
 def test_compiled_fp8_lora_ops_are_counted():
-    # Under torch.compile the fp8 forward and dgrad are opaque custom ops; the counter names them.
     torch._dynamo.reset()
     W = _weight()
     state = FL.Fp8LoRABaseState(W)
@@ -840,8 +800,6 @@ def test_compiled_fp8_lora_ops_are_counted():
 
 @needs_cpu_scaled_mm
 def test_merge_requantizes_the_fp8_copy(offload_on_cpu):
-    # Failing before: PEFT merges in place (same storage and version), so the fp8 cache kept the unmerged weight
-    # while PEFT stopped adding the adapter: the merged model dropped the adapter.
     import copy
 
     model = _tiny_qwen3_peft()
@@ -855,7 +813,6 @@ def test_merge_requantizes_the_fp8_copy(offload_on_cpu):
         ref.merge_adapter()
         merged = model(input_ids = ids).logits.float()
         want = ref(input_ids = ids).logits.float()
-    # fp8 of the merged weight (this test's random adapter is large): about 0.1; the adapter dropped: above 1.
     assert _rel(merged, want) < 0.3 and _rel(merged, before) < 0.3
 
 
@@ -886,7 +843,6 @@ def test_dora_layers_keep_the_master_on_the_device(offload_on_cpu):
 
 
 def test_an_added_adapter_lands_on_the_compute_device(offload_on_cpu, monkeypatch):
-    # Failing before: PEFT placed a new adapter on base_layer.weight's device, the host for an offloaded master.
     from peft import LoraConfig
 
     model = _tiny_qwen3_peft()
@@ -906,7 +862,6 @@ def test_an_added_adapter_lands_on_the_compute_device(offload_on_cpu, monkeypatc
         return real_to(self, *args, **kwargs)
 
     monkeypatch.setattr(torch.nn.Module, "to", spy)
-    # Requantizing onto the meta stand-in cannot run; placement is what this test checks.
     monkeypatch.setattr(FL.Fp8LoRABaseState, "refresh", lambda self, weight: self)
     model.add_adapter("second", LoraConfig(r = 4, target_modules = ["q_proj"]))
     added = [m for m in layers if "second" in m.lora_A]
@@ -920,7 +875,6 @@ def test_an_added_adapter_lands_on_the_compute_device(offload_on_cpu, monkeypatc
 
 
 def test_low_cpu_mem_adapters_stay_on_meta_for_the_loader(offload_on_cpu):
-    # Failing before: the placement wrapper moved PEFT's meta parameters (low_cpu_mem_usage) and raised.
     from peft import LoraConfig
 
     model = _tiny_qwen3_peft()
@@ -932,7 +886,6 @@ def test_low_cpu_mem_adapters_stay_on_meta_for_the_loader(offload_on_cpu):
 
 
 def test_a_dora_adapter_restores_the_master_before_placement(offload_on_cpu, monkeypatch):
-    # Failing before: PEFT placed the DoRA adapter (and its magnitude) by the host master, then the master moved.
     from peft import LoraConfig
     from peft.tuners.lora import LoraLayer
 
@@ -954,7 +907,6 @@ def test_a_dora_adapter_restores_the_master_before_placement(offload_on_cpu, mon
 
 @needs_cpu_scaled_mm
 def test_load_state_dict_requantizes_for_compiled_calls():
-    # Failing before: refresh() is skipped while compiled, so new base weights kept the old fp8 copy.
     torch._dynamo.reset()
     lin = _frozen_linear()
     FL.attach_fp8_lora_base(lin, offload = False)
@@ -966,7 +918,6 @@ def test_load_state_dict_requantizes_for_compiled_calls():
 
 
 def test_a_dtype_move_requantizes_for_compiled_calls():
-    # Failing before: .to() moved the master but kept the fp8 copy's dtype / device until an eager forward.
     lin = _frozen_linear()
     state = FL.attach_fp8_lora_base(lin, offload = False)
     lin.half()
@@ -974,7 +925,6 @@ def test_a_dtype_move_requantizes_for_compiled_calls():
 
 
 def test_a_pissa_adapter_requantizes_the_rewritten_base(offload_on_cpu):
-    # Failing before: PiSSA rewrites the base to its residual during add_adapter; compiled calls kept the old fp8.
     from peft import LoraConfig
 
     model = _tiny_qwen3_peft()
@@ -994,8 +944,6 @@ def test_a_pissa_adapter_requantizes_the_rewritten_base(offload_on_cpu):
 
 
 def test_mamba_raw_weight_projections_keep_the_master(offload_on_cpu):
-    # Failing before: an offloaded x_proj / dt_proj / out_proj master met the device adapter delta in Unsloth's
-    # fused Mamba path (W + delta), a device mismatch on the GPU.
     from peft import LoraConfig, get_peft_model
 
     class MambaMixer(torch.nn.Module):
@@ -1019,7 +967,6 @@ def test_mamba_raw_weight_projections_keep_the_master(offload_on_cpu):
 
 @needs_cpu_scaled_mm
 def test_legacy_scaled_mm_tuple_return(monkeypatch):
-    # torch 2.4 returns (output, amax) from torch._scaled_mm; the fp8 path must take the output.
     real = torch._scaled_mm
     monkeypatch.setattr(torch, "_scaled_mm", lambda *a, **k: (real(*a, **k), torch.zeros(())))
     W = _weight()
@@ -1031,9 +978,6 @@ def test_legacy_scaled_mm_tuple_return(monkeypatch):
 
 @pytest.mark.parametrize("arch", ["falcon_h1", "wavlm"])
 def test_parents_reading_a_child_weight_keep_its_master(offload_on_cpu, arch):
-    # Failing before: only class names with "mamba" were kept; Falcon-H1's mixer and WavLM attention read
-    # out_proj / q_proj .weight themselves, so an offloaded master met the device activations.
-
     if arch == "falcon_h1":
         mod = pytest.importorskip("transformers.models.falcon_h1.modeling_falcon_h1")
         parent_cls, leaf = mod.FalconH1Mixer, "out_proj"
@@ -1050,8 +994,6 @@ def test_parents_reading_a_child_weight_keep_its_master(offload_on_cpu, arch):
 
 @needs_cpu_scaled_mm
 def test_refresh_under_inference_mode_builds_trainable_fp8_tensors():
-    # Failing before: a merge / unmerge inside inference_mode rebuilt the cache as inference tensors, which the
-    # next training step could not save for backward.
     lin = _frozen_linear()
     state = FL.attach_fp8_lora_base(lin, offload = False)
     with torch.inference_mode():
@@ -1064,8 +1006,6 @@ def test_refresh_under_inference_mode_builds_trainable_fp8_tensors():
 
 
 def test_grpo_out_of_place_merge_leaves_the_fp8_copy_alone(offload_on_cpu):
-    # Failing before: the merge wrapper requantized the temporarily merged base into the live fp8 state, and the
-    # sync helper restored only param.data, so compiled forwards kept the merged base under an unmerged adapter.
     from unsloth.models.rl_replacements import _unsloth_vllm_peft_merge_out_of_place
 
     model = _tiny_qwen3_peft()
@@ -1080,8 +1020,6 @@ def test_grpo_out_of_place_merge_leaves_the_fp8_copy_alone(offload_on_cpu):
 
 
 def test_a_base_weight_shared_by_two_lora_layers_stays_16bit(offload_on_cpu):
-    # Failing before: both readers got their own fp8 copy; merging through one left the other's copy stale (PEFT
-    # merges in place: same storage and version), so the two layers disagreed after merge_adapter.
     from peft import LoraConfig, get_peft_model
 
     class Tied(torch.nn.Module):
@@ -1104,8 +1042,6 @@ def test_a_base_weight_shared_by_two_lora_layers_stays_16bit(offload_on_cpu):
 
 
 def test_block_swapped_layers_are_not_converted(offload_on_cpu):
-    # Failing before: layers managed by block swap (offload_layers) were converted, and an evicted layer's empty
-    # placeholder weight crashed quantization ("cannot compute the inf norm on an empty tensor").
     import types
 
     model = _tiny_qwen3_peft()
@@ -1120,8 +1056,6 @@ def test_block_swapped_layers_are_not_converted(offload_on_cpu):
 
 
 def test_sharded_or_preloaded_weights_are_not_eligible():
-    # Failing before: native FSDP2 sharded loading leaves a rank-local row chunk (tagged for the later gather) in a
-    # plain Parameter, so its fp8 copy was quantized from one shard and the forward produced the wrong shape.
     linear = torch.nn.Linear(64, 64, bias = False).bfloat16().requires_grad_(False)
     linear.weight = torch.nn.Parameter(linear.weight.data[:32].clone(), requires_grad = False)
     assert "shard" in FL.eligible_base(linear)
@@ -1131,8 +1065,6 @@ def test_sharded_or_preloaded_weights_are_not_eligible():
 
 
 def test_get_peft_model_converts_after_block_swap():
-    # Failing before: FastLanguageModel.get_peft_model converted inside patch_peft_model, before install_block_swap
-    # picked its layers, so streamed layers kept fp8 state over evicted placeholder weights.
     import inspect
     from unsloth.models.llama import FastLlamaModel
 
@@ -1145,8 +1077,6 @@ def test_get_peft_model_converts_after_block_swap():
 
 
 def test_column_major_weights_are_not_eligible():
-    # Failing before: a [128, 64] weight stored as a transposed [64, 128] passed, and matmul_lora's
-    # transpose check sent its forward to the input-gradient GEMM (shape error, or a wrong product when square).
     linear = torch.nn.Linear(64, 128, bias = False).bfloat16().requires_grad_(False)
     linear.weight = torch.nn.Parameter(torch.randn(64, 128).bfloat16().t(), requires_grad = False)
     assert "contiguous" in FL.eligible_base(linear)
@@ -1156,8 +1086,6 @@ def test_column_major_weights_are_not_eligible():
 def test_a_variant_adapter_restores_the_master_before_placement(
     offload_on_cpu, monkeypatch, variant
 ):
-    # Failing before: only DoRA brought the host master back, so BD-LoRA's block-diagonal A and VeLoRA's
-    # BufferDict, both built by their variant init on base_layer.weight's device, stayed on the host.
     import peft
     from peft import LoraConfig
     from peft.tuners.lora import LoraLayer
@@ -1199,8 +1127,6 @@ def test_a_variant_adapter_restores_the_master_before_placement(
 
 @needs_cpu_scaled_mm
 def test_rowwise_fp16_without_float32_out_stays_finite(rowwise, monkeypatch):
-    # Failing before: where rowwise _scaled_mm refuses float32 out (torch 2.8), the retry wrote bf16, which rounds
-    # 65504 to 65536 and the fp16 cast made it inf. fp16 now takes the tensorwise GEMM there.
     real = torch._scaled_mm
 
     def refuse_fp32_rowwise(
@@ -1227,15 +1153,12 @@ def test_rowwise_fp16_without_float32_out_stays_finite(rowwise, monkeypatch):
     assert torch.isfinite(state.matmul(x, W)).all()  # the refusal is remembered, still finite
     dy = torch.full((16, 32), 4094.0, dtype = torch.float16)
     assert torch.isfinite(state.dgrad(dy, W)).all()
-    # bf16 activations keep the rowwise GEMM with bf16 out.
     Wb = W.bfloat16()
     y = FL.Fp8LoRABaseState(Wb).matmul(torch.randn(16, 64).bfloat16(), Wb)
     assert y.dtype == torch.bfloat16
 
 
 def test_vllm_server_merge_of_a_host_master_lands_on_the_adapter_device():
-    # Failing before: the plain-LoRA merge moved the delta to weight.device, so an offloaded fp8 base (master in
-    # host RAM) produced a CPU tensor, which the vLLM server's NCCL broadcast refuses. Meta stands in for CUDA.
     from types import SimpleNamespace
 
     from unsloth.models.rl_replacements import _unsloth_vllm_merged_weight
@@ -1251,7 +1174,6 @@ def test_vllm_server_merge_of_a_host_master_lands_on_the_adapter_device():
     weight = torch.nn.Parameter(torch.randn(32, 64).bfloat16(), requires_grad = False)
     merged = _unsloth_vllm_merged_weight(module, weight)
     assert merged.device.type == "meta" and merged.dtype == torch.bfloat16
-    # A resident base still merges on its own device.
     lora_A.to_empty(device = "cpu")
     lora_B.to_empty(device = "cpu")
     module.lora_A["default"], module.lora_B["default"] = lora_A, lora_B
@@ -1260,9 +1182,6 @@ def test_vllm_server_merge_of_a_host_master_lands_on_the_adapter_device():
 
 @needs_cpu_scaled_mm
 def test_a_merge_under_inference_mode_leaves_a_trainable_master(offload_on_cpu, monkeypatch):
-    # Failing before: restore() copied the host master to the device inside inference_mode, so the master became
-    # an inference tensor and the next training forward raised "Inference tensors cannot be saved for backward".
-    # The compute device is the CPU here, so the host -> device copy is forced to allocate as a real one would.
     real_to = torch.Tensor.to
 
     def allocating_to(self, *args, **kwargs):
@@ -1284,8 +1203,6 @@ def test_a_merge_under_inference_mode_leaves_a_trainable_master(offload_on_cpu, 
 
 
 def test_text_diffusion_refuses_fp8_lora_instead_of_dropping_it():
-    # Failing before: the diffusion route returned before mark_fp8_lora, and FastDiffusionModel.get_peft_model never
-    # converts, so float8_training = "fp8_lora" trained the bases in 16-bit with no notice.
     import inspect
 
     from unsloth.models.loader import FastModel
@@ -1297,8 +1214,6 @@ def test_text_diffusion_refuses_fp8_lora_instead_of_dropping_it():
 
 
 def test_vllm_server_sync_of_a_host_master_without_an_active_delta_lands_on_the_device():
-    # Failing before: with another adapter selected (or adapters disabled) the merge returned the host master
-    # itself, a CPU tensor, which the vLLM server's NCCL broadcast refuses. Meta stands in for CUDA.
     from types import SimpleNamespace
 
     from unsloth.models.rl_replacements import _unsloth_vllm_merged_weight
@@ -1314,8 +1229,6 @@ def test_vllm_server_sync_of_a_host_master_without_an_active_delta_lands_on_the_
 
 
 def test_fast_language_model_forwards_fp8_lora_to_fastmodel():
-    # Failing before: FastLanguageModel popped float8_training and delegated without it, so FastModel's
-    # text-diffusion refusal never ran and the delegated model trained its bases in 16-bit.
     import inspect
 
     from unsloth.models.loader import FastLanguageModel

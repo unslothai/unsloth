@@ -413,10 +413,7 @@ def convert_model_to_float8_training(
     return converted
 
 
-# FP8 LoRA: fp8 forward + input gradient on the frozen 16-bit base (kernels/fp8_lora.py).
 FP8_LORA_RECIPE = "fp8_lora_tensorwise"
-# float8_training values that mean the frozen-base recipe when the model trains LoRA. True / "tensorwise" run
-# only where the recipe is named (measured faster at equal loss); "fp8_lora" runs wherever the GPU can.
 _FP8_LORA_BY_NAME = ("tensorwise",)
 _FP8_LORA_EXPLICIT = ("fp8_lora", FP8_LORA_RECIPE)
 
@@ -499,7 +496,6 @@ def mark_fp8_lora(model, recipe):
 
 
 def _fp8_lora_request(model):
-    # PeftModel / LoraModel forward attribute reads to the wrapped model; walk explicitly as well.
     stack, seen = [model], set()
     while stack and len(seen) < 8:
         m = stack.pop()
@@ -541,15 +537,12 @@ def _merge_with_master(
     _unsloth_method = "merge",
     **kwargs,
 ):
-    # Resolved from self (not captured), so a deepcopy of the model merges its own layers.
     base = getattr(self, "base_layer", None)
     if base is not None:
         _load_fp8_lora_kernels().restore_fp8_lora_master(base)
     out = getattr(type(self), _unsloth_method)(self, *args, **kwargs)
     state = base.__dict__.get("_unsloth_fp8_lora") if base is not None else None
     if state is not None:
-        # PEFT adds the delta into weight.data in place (same storage and version): requantize now, so the
-        # next forward (compiled ones too) uses the merged weight.
         state._key = None
         state.refresh(base.weight)
     return out
@@ -576,8 +569,6 @@ def _move_adapter_with_master(self, adapter_name, *args, **kwargs):
     out = type(self)._move_adapter_to_device_of_base_layer(self, adapter_name, *args, **kwargs)
     if state is None:
         return out
-    # Adapter init can rewrite the base weight (PiSSA / OLoRA keep the residual): requantize now, not at the next
-    # eager forward, so compiled calls see it.
     state._key = None
     state.refresh(base.weight)
     if not state.offloaded:
@@ -708,19 +699,12 @@ def enable_fp8_lora(
             elif torch.cuda.get_device_capability(device) < (8, 9):
                 why = "compute capability below 8.9"
         if why is None and id(base) in swapped:
-            # Block swap (offload_layers) streams these weights in and out and leaves empty placeholders: no fp8
-            # copy of a weight that is not there.
             why = "block-swapped layer"
         if why is None and uses.get(id(base.weight), 0) > 1:
-            # A Parameter shared by two modules (tied weights): a merge through one reader would leave the other's
-            # fp8 copy stale (same storage and version), so it stays a 16-bit base.
             why = "weight shared with another module"
         if why is not None:
             skipped[name] = why
             continue
-        # LoRA variants (DoRA's column norm, BD-LoRA / VeLoRA tensors built by base weight device) and parents
-        # that read a child's weight directly (fused Mamba / Falcon-H1 kernels, WavLM attention) keep the master
-        # on the device.
         reads_raw = _has_variant(module) or _mamba_raw_weight_leaf(model, name)
         state = kernels.attach_fp8_lora_base(base, offload = offload and not reads_raw)
         offloaded += int(state.offloaded)

@@ -1929,7 +1929,6 @@ class FastLanguageModel(FastLlamaModel):
                 unsloth_tiled_mlp = unsloth_tiled_mlp,
                 text_only = text_only,
                 *args,
-                # FastModel owns the request from here: it marks the model, or refuses (text-diffusion) first.
                 **({"float8_training": fp8_request} if fp8_lora is not None else {}),
                 **kwargs,
             )
@@ -2558,7 +2557,6 @@ class FastModel(FastBaseModel):
         # Text-diffusion slow-path dispatch, factored so the normal route and the legacy-config fallback share one call site.
         def _dispatch_diffusion():
             if fp8_lora is not None:
-                # FastDiffusionModel.get_peft_model never converts LoRA bases: refuse rather than train in 16-bit.
                 raise NotImplementedError(
                     f"Unsloth: float8_training = {fp8_lora!r} (fp8 LoRA) is not supported for text-diffusion "
                     "models yet. Instead: drop float8_training for LoRA, or float8_training with "

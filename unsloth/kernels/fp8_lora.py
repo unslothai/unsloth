@@ -14,23 +14,12 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""FP8 LoRA on a frozen 16-bit base: the base GEMMs (forward y = x W^T and input gradient dx = dy W) run in
-fp8 through torch._scaled_mm, the LoRA branch stays in the activation dtype (Megatron-Bridge TEFusedLoRALinear
-split). The base weight is frozen, so it is quantized once (tensorwise e4m3) and cached; the 16-bit weight stays
-the source of truth for merge / save. A weight changed in place (merge, unmerge, load) is requantized on its
-next eager use. cuBLAS fp8 GEMMs are TN only, so dgrad needs a K-major copy: transposed per backward inside the
-opaque op by a square-tile Triton kernel (UNSLOTH_FP8_LORA_CACHE_T=1 caches it instead: +1 byte per weight).
+"""FP8 frozen-base GEMMs with 16-bit LoRA adapters and an exact master for saving and merging.
 
-Memory: once quantized, the 16-bit weight moves to host RAM (pinned; same Parameter object, so state_dict, save
-and merge read the exact weight) and the GPU keeps only the fp8 copy, 1 byte per weight against bf16 LoRA's 2.
-fast_dequantize hands back the exact weight on the GPU (merged save), PEFT merge / unmerge and moves to another
-device or dtype bring it back first, and decode rows use the dequantized fp8 weight. Kept on the GPU for 16-bit
-dgrad, distributed runs and shared Parameters; UNSLOTH_FP8_LORA_OFFLOAD_MASTER=0 keeps it there always.
-
-Scales (UNSLOTH_FP8_LORA_SCALING): tensor = activations e4m3 / output gradients e5m2, one scale per tensor;
-row = one e4m3 scale per token for both. auto picks row on compute capability 12.x and tensor elsewhere (L4's
-rowwise _scaled_mm is slower than bf16). UNSLOTH_FP8_LORA_DGRAD=0 keeps the input gradient in 16 bit. The fp8
-GEMM writes bfloat16 for float16 activations (then casts), never float16 directly."""
+cuBLAS needs a K-major dgrad operand; transpose inside the opaque op, or cache it with
+UNSLOTH_FP8_LORA_CACHE_T=1. Offloaded masters remain the same Parameter on the host;
+decode reconstructs the FP8 weight, while save and merge restore the exact master.
+"""
 
 from __future__ import annotations
 
@@ -60,7 +49,6 @@ __all__ = [
 E4M3 = torch.float8_e4m3fn
 E5M2 = torch.float8_e5m2
 _FP8_MAX = {E4M3: 448.0, E5M2: 57344.0}
-# Engagement counters (also counted inside compiled graphs: the ops are opaque there).
 FP8_LORA_STATS = {"fwd": 0, "dgrad": 0, "dgrad_16bit": 0, "fwd_16bit": 0, "quantize": 0}
 
 
@@ -69,8 +57,6 @@ def reset_fp8_lora_stats():
         FP8_LORA_STATS[key] = 0
 
 
-# auto: row on sm12x (RTX PRO 6000: 1.24x vs tensorwise 1.17x at Qwen3-1.7B), tensor elsewhere (L4: rowwise
-# _scaled_mm is slower than bf16, tensorwise 1.29x).
 _SCALING = os.environ.get("UNSLOTH_FP8_LORA_SCALING", "auto").strip().lower()
 _SCALING = {"rowwise": "row", "tensorwise": "tensor"}.get(_SCALING, _SCALING)
 if _SCALING not in ("auto", "row", "tensor"):
@@ -95,7 +81,6 @@ def _scaling_for(device):
 
 
 def _env_dgrad():
-    # None = 16-bit dgrad; "auto" = e5m2 for tensorwise gradients (torchao), e4m3 for rowwise.
     value = os.environ.get("UNSLOTH_FP8_LORA_DGRAD", "auto").strip().lower()
     if value in ("0", "false", "off", "no", "bf16", "16bit"):
         return None
@@ -105,13 +90,9 @@ def _env_dgrad():
 _DGRAD_DTYPE = _env_dgrad()
 _FWD_FAST_ACCUM = os.environ.get("UNSLOTH_FP8_LORA_FWD_FAST_ACCUM", "1") != "0"
 _DGRAD_FAST_ACCUM = os.environ.get("UNSLOTH_FP8_LORA_DGRAD_FAST_ACCUM", "0") == "1"
-# Default 0 (transpose per backward): 1% slower tensorwise, 7% rowwise at Qwen3-1.7B, 0.4 / 1.3 GB less peak
-# memory at Qwen3-0.6B / 1.7B than caching the transposed copy.
 _CACHE_T = os.environ.get("UNSLOTH_FP8_LORA_CACHE_T", "0") == "1"
 _OFFLOAD_MASTER = os.environ.get("UNSLOTH_FP8_LORA_OFFLOAD_MASTER", "1") != "0"
-# Tests only: offload CPU-resident weights too.
 _OFFLOAD_CPU_WEIGHTS = False
-# Fewer rows than this (decode) use the 16-bit weight: an fp8 GEMM there is launch bound and less exact.
 _MIN_ROWS = int(os.environ.get("UNSLOTH_FP8_LORA_MIN_ROWS", "16"))
 
 try:
@@ -301,17 +282,13 @@ def fp8_transpose(w8: torch.Tensor, use_triton: Optional[bool] = None) -> torch.
 
 
 def _out_dtype(dtype):
-    # The fp8 GEMM never writes float16 (outputs past 65504 overflow there), nor bf16 for it: bf16 rounds a
-    # finite fp16 result such as 65504 up to 65536, an inf after the cast back. float32 out, the caller casts.
     return torch.bfloat16 if dtype == torch.bfloat16 else torch.float32
 
 
-# Devices whose rowwise _scaled_mm refused float32 out (older cuBLAS / CUTLASS paths take bf16 only).
 _ROWWISE_BF16_ONLY = set()
 
 
 def _rowwise_ok(dtype, device) -> bool:
-    # fp16 needs float32 out; where rowwise cannot write it, the caller runs the tensorwise GEMM instead.
     return dtype != torch.float16 or device not in _ROWWISE_BF16_ONLY
 
 
@@ -329,7 +306,6 @@ def _rowwise_scaled_mm(a, b, scale_a, scale_b, dtype, fast_accum):
 
 
 def _weight_scale(w_inv):
-    # Rowwise w_inv is the weight's one tensorwise scale broadcast per output column.
     return w_inv.reshape(-1)[0] if w_inv.dim() == 2 else w_inv
 
 
@@ -350,7 +326,6 @@ _library = None
 
 
 def _opaque_under_compile(name, fake):
-    # Under torch.compile the call is one opaque registered op: no graph break, no retrace of the launcher.
     def decorator(fn):
         global _library
         substitute_in_graph = getattr(torch._dynamo, "substitute_in_graph", None)
@@ -410,7 +385,6 @@ def fp8_lora_dgrad(
     w8t = w8 if w_is_t else fp8_transpose(w8)
     out = None
     if w_inv.dim() == 2 and _rowwise_ok(dy.dtype, dy.device):
-        # Rowwise gradients are e4m3 (torchao's rowwise recipe; per-token scales need no e5m2 range).
         dy8, dy_inv = quantize_rowwise(dy, E4M3)
         out = _rowwise_scaled_mm(dy8, w8t.t(), dy_inv, w_inv, dy.dtype, _DGRAD_FAST_ACCUM)
     if out is None:
@@ -468,11 +442,9 @@ class Fp8LoRABaseState:
         key = self._weight_key(weight)
         if key == self._key:
             return self
-        # Not inference tensors even when refreshed under inference_mode (a merge there): training saves them.
         with torch.inference_mode(False), torch.no_grad():
             w = weight.detach()
             if self.offloaded:
-                # The host master changed in place (load_state_dict): requantize on the compute device.
                 w = w.to(self.device)
             else:
                 self.device = w.device
@@ -480,7 +452,6 @@ class Fp8LoRABaseState:
             self.w8t = fp8_transpose(self.w8) if _CACHE_T else None
             self.scaling = _scaling_for(w.device)
             if self.scaling == "row":
-                # _scaled_mm's rowwise form takes [M, 1] x [1, N] scales: the weight's one scale per column.
                 self.w_inv_fwd = self.w_inv.reshape(1, 1).expand(1, w.shape[0]).contiguous()
                 self.w_inv_dgrad = self.w_inv.reshape(1, 1).expand(1, w.shape[1]).contiguous()
             else:
@@ -522,8 +493,6 @@ class Fp8LoRABaseState:
         if not self.offloaded:
             return False
         weight = module.weight
-        # A merge under inference_mode would otherwise make the master an inference tensor, which the next
-        # training forward cannot save for backward.
         with torch.inference_mode(False), torch.no_grad():
             weight.data = weight.data.to(self.device, copy = True)
         self.offloaded = False
@@ -564,8 +533,6 @@ class Fp8LoRABaseState:
         W = None,
         dtype = None,
     ):
-        # W is the 16-bit weight (or its .t()): exact, nothing to decode. A host master is copied to the compute
-        # device as is (merged save must not lose precision), never rebuilt from fp8.
         if W is not None and W.device != self.device:
             return W.to(self.device)
         return W
@@ -622,7 +589,6 @@ class _Fp8FrozenLinear(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, weight, w8, w8t, w_inv_fwd, w_inv_dgrad):
-        # w8t None: the backward transposes w8 inside the dgrad op.
         ctx.w_is_t = w8t is not None
         ctx.save_for_backward(
             weight,
@@ -673,16 +639,13 @@ def eligible_base(module) -> Optional[str]:
         return f"{type(module).__name__} is not a plain nn.Linear"
     weight = module.weight
     if type(weight) not in (torch.Tensor, torch.nn.Parameter):
-        # DTensor (FSDP2 / TP shards), tensor subclasses: the cached fp8 copy would be a local shard.
         return f"weight is a {type(weight).__name__}"
     if getattr(weight, "_unsloth_fsdp2_preload", None) is not None or tuple(weight.shape) != (
         module.out_features,
         module.in_features,
     ):
-        # Native FSDP2 sharded loading leaves a rank-local chunk here until the gather.
         return f"weight is a {tuple(weight.shape)} shard of {module.out_features} x {module.in_features}"
     if not weight.is_contiguous():
-        # The fused LoRA path reads a column-major weight as its own transpose (the input-gradient request).
         return "weight is not contiguous"
     if weight.dtype not in (torch.bfloat16, torch.float16):
         return f"weight dtype {weight.dtype}"
@@ -715,8 +678,6 @@ def _fp8_base_apply(
     fn,
     recurse = True,
 ):
-    # nn.Module.to / cuda / half reach the base layer here. A move to where the fp8 copy already lives (the
-    # Trainer's model.to(device)) leaves the host master alone; anything else brings it back first.
     state = self.__dict__.get("_unsloth_fp8_lora")
     if state is not None and state.offloaded:
         probe = fn(torch.empty(0, dtype = state.dtype, device = state.device))
@@ -729,8 +690,6 @@ def _fp8_base_apply(
         state.restore(self)
     out = torch.nn.Module._apply(self, fn, recurse)
     if state is not None:
-        # Requantize where the weight now lives (eagerly: refresh() is skipped while compiled, so a compiled call
-        # after .to(other device / dtype) would otherwise mix the old fp8 copy with the moved activations).
         state._key = None
         state.refresh(self.weight)
     return out
@@ -758,8 +717,6 @@ def attach_fp8_lora_base(module, offload: Optional[bool] = None) -> Fp8LoRABaseS
 
 
 def _fp8_requantize_after_load(module, incompatible_keys):
-    # Eagerly, outside any compiled region: refresh() is skipped while tracing, so a compiled forward after
-    # load_state_dict would otherwise keep using the previous fp8 copy.
     state = module.__dict__.get("_unsloth_fp8_lora")
     if state is not None:
         state._key = None
