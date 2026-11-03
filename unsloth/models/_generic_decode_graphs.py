@@ -3,28 +3,15 @@
 
 """CUDA-graph decode for any FastModel model generating over a transformers StaticCache.
 
-Each one-token decode step of `unsloth_base_fast_generate` replays a torch.cuda.CUDAGraph of the
-model's own eager forward. Every tensor argument (input ids, positions, cache position, the 4D mask
-generate builds for a static cache) is copied into a static buffer; the step's outputs are cloned out.
-Runs only where `_decode_graphs.enabled()` (RL rollouts, Studio, UNSLOTH_DECODE_CUDA_GRAPHS=1), on
-NVIDIA CUDA, and only over static attention layers whose update indexes the cache on the device:
-recurrent / linear-attention / offloaded caches and a sliding window about to fill stay eager.
-
-Per graph key (batch, argument structure / dtypes / devices, cache layout, autocast):
-  - the first step runs eagerly (it is the warm-up), then the same step is captured;
-  - a capture that syncs the host, or a step that changes cache host state beyond the length
-    counters, refuses the key for the process (eager from then on);
-  - the first replay of a key is compared bitwise against the eager step (same cache state);
-    a mismatch refuses the key.
-The step runs in the eager step's exact state (inference-ness and strides of every argument, ambient
-autocast and its cache flag, compiled regions as eager runs them): Dynamo guards on all of these, and a
-different compiled variant rounds differently.
-Graphs are dropped when the generate() call ends and when parameters, adapters or quant state change.
-UNSLOTH_DECODE_GENERIC_GRAPHS_VALIDATE_ALL=1 (debug) compares every replay with the eager step and
-records the first mismatching step, max abs logit diff, max KL and top-1 disagreements (stats()["check"]).
-UNSLOTH_DECODE_GENERIC_GRAPHS=0 turns this path off; batches over UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ
-(default 16) decode eagerly. The cache is the one generate() allocates (no larger span, no extra rows):
-the graph adds only its pool (step intermediates and the static argument / output buffers)."""
+Each one-token decode step of `unsloth_base_fast_generate` replays a CUDAGraph of the model's own step,
+with tensor arguments copied into static buffers. Only where `_decode_graphs.enabled()`, on NVIDIA CUDA,
+over static attention layers that index the cache on the device. Per graph key: the first step runs
+eagerly, then is captured; the first replay must match the eager step bitwise; a host sync, host-state
+change or mismatch refuses the key. The step runs in the eager step's exact state (argument inference-ness
+and strides, ambient autocast + cache flag, compiled regions as eager runs them): Dynamo guards on all of
+these and another compiled variant rounds differently. Graphs are dropped at the end of generate() and on
+parameter / adapter / quant changes. UNSLOTH_DECODE_GENERIC_GRAPHS=0 disables; _VALIDATE_ALL=1 checks every
+replay (debug); batches over UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ (16) decode eagerly."""
 
 import collections
 import contextlib
@@ -45,16 +32,12 @@ __all__ = [
 ]
 
 _ATTR = "_unsloth_generic_decode_graphs"
-# Host-side length counters of the static cache layers (transformers 4.57: `cumulative_length` int on
-# sliding layers; 5.x: `cumulative_length_int` on sliding layers, `cumulative_length` device scalar).
+# Host length counters of static cache layers (4.57 sliding: cumulative_length; 5.x: cumulative_length_int).
 _COUNTERS = ("cumulative_length", "cumulative_length_int")
-# Tensor arguments larger than this are not copied into static buffers every step.
 _MAX_ARG_BYTES = 16 * 1024 * 1024
 _CONSTANTS = (bool, int, float, str, torch.dtype, torch.device)
-# Refused / validated keys remembered per model.
 _MAX_KEYS = 4096
-# Largest batch replayed (larger batches decode eagerly): a graph only removes launch overhead, which
-# shrinks against the GPU time of a bigger batch (T4, 1B 4-bit: 4-7x at bsz 1, still 2.7-4.7x at 16).
+# Graphs only remove launch overhead (T4 1B 4-bit: 4-7x at bsz 1, 2.7-4.7x at 16).
 MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ", "16"))
 
 
@@ -175,13 +158,9 @@ class _State:
         self.refused = {}
         self.validated = set()
         self.moved = None
-        # Captures per key in the current generate() call (one expected).
         self.key_captures = collections.Counter()
-        # Decode steps seen in the current generate() call (1 = first decode step).
         self.step = 0
-        # What broke a capture: (message, where), first few.
         self.capture_errors = []
-        # UNSLOTH_DECODE_GENERIC_GRAPHS_VALIDATE_ALL=1: replay vs eager at every step.
         self.check = _new_check()
         self.captures = 0
         self.replays = 0
@@ -211,7 +190,6 @@ def begin(model):
     state.key_captures.clear()
     state.step = 0
     state.check = _new_check()
-    # Keys carry the cache length, so they accumulate over calls of many lengths.
     if len(state.refused) + len(state.validated) > _MAX_KEYS:
         state.refused.clear()
         state.validated.clear()
@@ -336,8 +314,7 @@ def _host_counter(layer):
 
 
 def _window_reason(cache, q_len):
-    # A sliding layer updates by index only while the window does not fill this step; once full it
-    # rolls, which a replay cannot repeat with a moving host counter.
+    # A full sliding window rolls, which a replay cannot repeat.
     for layer in cache.layers:
         if type(layer) in _SLIDING_LAYERS:
             count = _host_counter(layer)
@@ -405,8 +382,7 @@ def _spec(value, leaves, cache):
         if value.numel() * value.element_size() > _MAX_ARG_BYTES:
             raise _Refuse("large tensor argument")
         leaves.append(value)
-        # Inference-ness is part of the key: compiled regions (zoo-compiled create_causal_mask) guard
-        # on the dispatch key set and pick another variant for a non-inference input.
+        # Inference-ness: compiled regions (create_causal_mask) guard on the dispatch key set.
         return (
             "T",
             tuple(value.shape),
@@ -441,7 +417,6 @@ def _map_outputs(value, fn):
     if isinstance(value, torch.Tensor):
         return fn(value)
     if isinstance(value, collections.OrderedDict) and hasattr(value, "to_tuple"):
-        # transformers ModelOutput: rebuilt with the same fields set.
         return type(value)(**{k: _map_outputs(v, fn) for k, v in value.items()})
     if type(value) in (tuple, list):
         return type(value)(_map_outputs(v, fn) for v in value)
@@ -501,8 +476,7 @@ def _fingerprint(model):
     return tuple(items)
 
 
-# Models whose forward derives decode positions from `cache_position[0] == 0` (a host sync) when
-# position_ids is None (transformers 4.x Qwen3-VL; 5.x builds them in prepare_inputs_for_generation).
+# Forward derives positions from `cache_position[0] == 0` (host sync) without position_ids (4.x Qwen3-VL).
 _MROPE_MODEL_TYPES = ("qwen3_vl", "qwen3_vl_moe")
 
 
@@ -603,15 +577,13 @@ def decode_step(
         (type(layer).__name__, layer.max_cache_len, tuple(layer.keys.shape), layer.keys.dtype)
         for layer in cache.layers
     )
-    # The ambient autocast state, cache flag included (Dynamo guards on it too). Casts the autocast
-    # cache holds live until the outermost autocast exits, which in generate() is after end().
+    # Ambient autocast incl. cache flag (Dynamo guards on it); cached casts outlive end() in generate().
     autocast = (G._autocast_state(), torch.is_autocast_cache_enabled())
     key = (spec, layout, autocast, torch.is_inference_mode_enabled(), eager_regions is not None)
     refused = state.refused.get(key)
     if refused is not None:
         return _refusal(state, refused)
-    # Graphs address this cache's tensors: a new cache (a new generate call) re-captures, while
-    # the same cache moved in place (beam search reorders it) stays eager for the rest of the call.
+    # Graphs address this cache's tensors: a new cache re-captures; one reordered in place stays eager.
     cache_sig = (id(cache),) + tuple(
         (layer.keys.data_ptr(), layer.values.data_ptr()) for layer in cache.layers
     )
@@ -666,12 +638,10 @@ def _capture(state, key, forward, kwargs, leaves, cache):
     if state.stream is None:
         state.stream = _BACKEND.new_stream()
     stream = state.stream
-    # Each static buffer is what its argument is: same dtype, strides and inference-ness, so every
-    # compiled region in the step (warm-up, capture, replay) runs the variant the eager step runs.
+    # Static buffers match their argument (dtype, strides, inference-ness): same compiled variants as eager.
     buffers = [_buffer_like(_compact(leaf)) for leaf in leaves]
     for buffer, leaf in zip(buffers, leaves):
         buffer.copy_(_compact(leaf))
-    # Broadcast (stride 0) arguments are passed broadcast again, with the eager argument's strides.
     it = iter([buffer.expand(leaf.shape) for buffer, leaf in zip(buffers, leaves)])
     static_kwargs = {k: _build(v, it, cache) for k, v in kwargs.items()}
     before = _host_state(cache)
@@ -679,7 +649,7 @@ def _capture(state, key, forward, kwargs, leaves, cache):
     graph = None
     try:
         with _BACKEND.stream(stream):
-            # The real step: JIT, cuBLAS workspaces and lazy caches are built outside the capture.
+            # Warm-up: JIT, cuBLAS workspaces and lazy caches built outside the capture.
             outputs = forward(**static_kwargs)
             stream.synchronize()
             reason = _host_state_reason(before, _host_state(cache), 1)
@@ -731,8 +701,7 @@ def _validate(state, key, entry, forward, kwargs, cache):
     equal = _outputs_equal(eager, entry.outputs)
     _record_check(state, eager, entry.outputs, equal)
     if equal or entry.validated:
-        # Validated keys under VALIDATE_ALL only record: the eager result keeps the generation on
-        # the eager tokens, so every later step compares from the same prefix.
+        # VALIDATE_ALL only records: generation stays on the eager tokens, so steps share a prefix.
         entry.validated = True
         state.validated.add(key)
         state.replays += 1
