@@ -1053,7 +1053,6 @@ class _EngineAgent:
         # state and questions out its own way, so what the model reads can differ from this count by the layout's overhead.
         text = state if isinstance(state, str) else json.dumps(state, ensure_ascii = False)
         text += json.dumps(questions, ensure_ascii = False)
-        # A d1 or Decider has a processor: LFM3's wraps its tokenizer, d1-omni's is one.
         processor = getattr(self.model, "processor", None)
         tokenizer = (
             getattr(self.model, "tokenizer", None)
