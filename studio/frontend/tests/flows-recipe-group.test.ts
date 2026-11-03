@@ -937,3 +937,52 @@ test("a recipe column's toolbar has no Run or Regenerate, and a setup card is fo
   const forms = readFileSync(new URL("../src/features/flows/recipe/recipe-forms.tsx", import.meta.url), "utf8");
   assert.match(forms, /setRecipeSetup\(\{ \.\.\.target, name: name\.trim\(\) \}, true\)/);
 });
+
+test("copies of connected columns read each other, not the columns they were copied from", async () => {
+  const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group: small, nodes } = sqlGroup();
+  const group = { ...small, rect: [-100, -100, 4000, 1000] as [number, number, number, number] };
+  useDocStore.getState().load({ ...doc(nodes as never), groups: [group] });
+  const reader = nodes.find((n) => JSON.stringify(n.params).includes("{{ sql_prompt }}"));
+  const source = nodes.find((n) => (n.params as { column: { name: string } }).column.name === "sql_prompt");
+  assert.ok(reader && source);
+  const store = useDocStore.getState();
+  const fragment = cloneFragment(store.graph, [source.id, reader.id], [40, 40]);
+  store.insertFragment(fragment);
+  const copy = useDocStore.getState().graph.nodes[fragment.nodes[1].id];
+  const text = JSON.stringify(copy.params);
+  assert.match(text, /\{\{ sql_prompt_2 \}\}/);
+  assert.doesNotMatch(text, /\{\{ sql_prompt \}\}/);
+});
+
+test("a column rename reaches a drop processor's list, and an edit keeps a preset's unshown settings", () => {
+  const { group, nodes } = sqlGroup();
+  const cfg = group.config as Record<string, unknown>;
+  const presets = (cfg.model_configs as Record<string, unknown>[]).map((m) => ({
+    ...m,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    inference_parameters: { ...(m.inference_parameters as object), max_parallel_requests: 16 },
+  }));
+  const withExtras = {
+    ...group,
+    config: {
+      ...cfg,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      model_configs: presets,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      processors: [{ processor_type: "drop_columns", name: "remove_helpers", column_names: ["sql_prompt"] }],
+    },
+  };
+  const view = studioView(withExtras, nodes);
+  const id = Object.values(view.configs).find((c) => c.name === "sql_prompt")?.id;
+  assert.ok(id);
+  const renamed = commitStudioEdit(withExtras, nodes, view, applyConfigPatch(view.configs, id, { name: "task" }));
+  const drop = (renamed.group?.config as { processors: { column_names: string[] }[] }).processors;
+  assert.deepEqual(drop[0].column_names, ["task"]);
+  const provider = Object.values(view.configs).find((c) => c.kind === "model_provider");
+  assert.ok(provider);
+  const edited = commitStudioEdit(withExtras, nodes, view, applyConfigPatch(view.configs, provider.id, { api_key: "sk-new" } as never));
+  const kept = (edited.group?.config as { model_configs: { inference_parameters: Record<string, unknown> }[] }).model_configs;
+  assert.equal(kept[0].inference_parameters.max_parallel_requests, 16);
+});

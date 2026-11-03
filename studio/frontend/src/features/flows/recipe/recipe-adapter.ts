@@ -175,21 +175,107 @@ export interface RecipeEdit {
 
 /** The schema transform's templates name columns too: a column renamed in this edit is renamed
  * there, so the transform still reads it. Unchanged processors keep their identity. */
+function columnRenames(
+  before: StudioView,
+  configs: Record<string, NodeConfig>,
+): [string, string][] {
+  return Object.entries(before.configs).flatMap(([id, was]): [string, string][] => {
+    const now = configs[id];
+    if (!now || !isColumnConfig(was) || !was.name || !now.name || was.name === now.name) return [];
+    return [[was.name, now.name]];
+  });
+}
+
 function renamedProcessors(
   before: StudioView,
   configs: Record<string, NodeConfig>,
 ): RecipeProcessorConfig[] {
   let processors = before.processors;
-  for (const [id, was] of Object.entries(before.configs)) {
-    const now = configs[id];
-    if (!now || !isColumnConfig(was) || !was.name || !now.name || was.name === now.name) continue;
+  for (const [from, to] of columnRenames(before, configs)) {
     const next = processors.map((processor) => {
-      const template = replaceRef(processor.template, was.name, now.name);
+      const template = replaceRef(processor.template, from, to);
       return template === processor.template ? processor : { ...processor, template };
     });
     if (next.some((processor, i) => processor !== processors[i])) processors = next;
   }
   return processors;
+}
+
+/** The group's processors the forms do not show (a named drop_columns), with renamed columns
+ * renamed in their column lists; null when none changed. */
+function renamedDrops(
+  group: FlowGroup,
+  renames: [string, string][],
+): unknown[] | null {
+  const raw = Array.isArray(group.config?.processors) ? group.config.processors : [];
+  if (!renames.length) return null;
+  const map = new Map(renames);
+  let changed = false;
+  const next = raw.map((p) => {
+    const item = p as Record<string, unknown> | null;
+    if (!item || item.processor_type !== "drop_columns" || !Array.isArray(item.column_names))
+      return p;
+    const names = item.column_names.map((n) => (typeof n === "string" ? (map.get(n) ?? n) : n));
+    if (names.every((n, i) => n === (item.column_names as unknown[])[i])) return p;
+    changed = true;
+    // biome-ignore lint/style/useNamingConvention: api schema
+    return { ...item, column_names: names };
+  });
+  return changed ? next : null;
+}
+
+/** The field naming each entry of a recipe-level list, as the forms name its block. */
+const ENTRY_NAME: Record<string, string> = {
+  // biome-ignore lint/style/useNamingConvention: api schema
+  model_providers: "name",
+  // biome-ignore lint/style/useNamingConvention: api schema
+  mcp_providers: "name",
+  // biome-ignore lint/style/useNamingConvention: api schema
+  model_configs: "alias",
+  // biome-ignore lint/style/useNamingConvention: api schema
+  tool_configs: "tool_alias",
+};
+
+/** A provider, preset or tool profile the edit did not touch is kept exactly as saved, settings the
+ * forms do not show included (a preset's max_parallel_requests, a uniform temperature); an edited
+ * one keeps those settings under what the form changed. */
+function keepUnshown(
+  key: string,
+  built: unknown,
+  saved: unknown,
+  before: StudioView,
+  configs: Record<string, NodeConfig>,
+): unknown {
+  const field = ENTRY_NAME[key];
+  if (!field || !Array.isArray(built) || !Array.isArray(saved)) return built;
+  const byName = new Map(
+    saved.flatMap((entry) => {
+      const name = (entry as Record<string, unknown> | null)?.[field];
+      return typeof name === "string" ? [[name, entry as Record<string, unknown>]] : [];
+    }),
+  );
+  return built.map((entry) => {
+    const item = entry as Record<string, unknown>;
+    const name = item?.[field];
+    const original = typeof name === "string" ? byName.get(name) : undefined;
+    if (!original) return entry;
+    const config = Object.values(configs).find((c) => !isColumnConfig(c) && c.name === name);
+    if (config && before.configs[config.id] === config) return original;
+    const params = (v: unknown) =>
+      v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+    const was = params(original.inference_parameters);
+    const now = params(item.inference_parameters);
+    return {
+      ...original,
+      ...item,
+      ...(was && now
+        ? {
+            // biome-ignore lint/style/useNamingConvention: api schema
+            inference_parameters: { ...was, ...now },
+          }
+        : {}),
+    };
+  });
 }
 
 /** What an edit made in Recipe Studio configs changes in the flow: only touched columns are rebuilt. */
@@ -221,7 +307,8 @@ export function commitStudioEdit(
     Object.values(before.configs).some(
       (config) => !isColumnConfig(config) && !configs[config.id],
     );
-  if (!recipeLevel && processors === before.processors) {
+  const drops = renamedDrops(group, columnRenames(before, configs));
+  if (!recipeLevel && processors === before.processors && !drops) {
     return { nodes, group: null };
   }
   const built = buildRecipePayload(configs, asNodes(configs), [], processors);
@@ -232,12 +319,12 @@ export function commitStudioEdit(
   const config: Record<string, unknown> = { ...(group.config ?? {}) };
   for (const [key, value] of Object.entries(recipe)) {
     if (value === undefined) delete config[key];
-    else config[key] = value;
+    else config[key] = keepUnshown(key, value, group.config?.[key], before, configs);
   }
   // Recipe Studio's forms carry schema transforms and the seed's drop list only; any other
   // processor (a named drop_columns) is kept as it was, not lost to an unrelated edit.
   const others = (
-    Array.isArray(group.config?.processors) ? group.config.processors : []
+    drops ?? (Array.isArray(group.config?.processors) ? group.config.processors : [])
   ).filter((p): p is Record<string, unknown> => {
     if (!p || typeof p !== "object") return false;
     const { processor_type: type, name } = p as Record<string, unknown>;
