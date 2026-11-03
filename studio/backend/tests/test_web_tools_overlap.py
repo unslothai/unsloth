@@ -378,7 +378,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if host.startswith("pdf"):
                 content_type, body = "application/pdf", b"%PDF-1.4\n" + b"0" * 64
             if host.startswith("links"):
-                # Same-site links are kept only when the page fits the call's budget.
                 links = b"".join(
                     b'<li><a href="/docs/' + b"section-%d/" % i * 12 + b'">part</a></li>'
                     for i in range(12)

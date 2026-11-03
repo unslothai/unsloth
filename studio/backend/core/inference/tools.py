@@ -14652,7 +14652,7 @@ def _meta_refresh_target(body: bytes, page_url: str) -> str | None:
     return None
 
 
-# PyMuPDF is not thread-safe, and URL reads of one batch download on parallel threads.
+# PyMuPDF is not thread-safe.
 _WEB_PDF_LOCK = threading.Lock()
 
 
