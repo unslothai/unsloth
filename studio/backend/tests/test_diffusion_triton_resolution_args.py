@@ -37,7 +37,11 @@ VAE_SHAPE_ARGS = {
 
 
 def _defs(path):
-    return {n.name: n for n in ast.walk(ast.parse(path.read_text(encoding = "utf-8"))) if isinstance(n, ast.FunctionDef)}
+    return {
+        n.name: n
+        for n in ast.walk(ast.parse(path.read_text(encoding = "utf-8")))
+        if isinstance(n, ast.FunctionDef)
+    }
 
 
 def _dns(fn):
@@ -64,8 +68,11 @@ def test_resolution_sizes_not_specialized(rel):
 def test_vae_shape_args_cover_group_norm_and_attention():
     src = (INF / "diffusion_vae_fused.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
-    table = next(ast.literal_eval(n.value) for n in tree.body
-                 if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "_SHAPE_ARGS")
+    table = next(
+        ast.literal_eval(n.value)
+        for n in tree.body
+        if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "_SHAPE_ARGS"
+    )
     defs = _defs(INF / "diffusion_vae_fused.py")
     for name, args in VAE_SHAPE_ARGS.items():
         assert tuple(table[name]) == args, name
