@@ -315,6 +315,10 @@ test("dragging a card carries its blocks and its folded group frame", () => {
     img: { x: 600, y: 0 },
     "group:g": { x: 280, y: -40 },
   });
+  // Every selected card moves with the drag, not only the one under the pointer.
+  const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
+  assert.match(canvas, /for \(const n of dragged\.length \? dragged : \[node\]\) \{\s*const folded = superCardDragMembers\(n, doc\);/);
+  assert.match(canvas, /const group = dragMembers\.current\.get\(change\.id\);/);
 });
 
 test("the card rolls its blocks' run status into one", () => {
@@ -382,6 +386,32 @@ test("auto layout places a closed card as one block and moves its blocks with it
   assert.deepEqual(result["group:g"], [360, 20]);
   assert.deepEqual(result["note:n1"], [400, 160]);
   assert.equal(result["note:n2"], undefined);
+});
+
+test("tidy up folds a group the card holds whole, so the card keeps its wires", async () => {
+  const { tidyRequest } = await import("../src/features/flows/editor/tidy.ts");
+  useDocStore.getState().load(comic());
+  select("tpl", "img");
+  combineSelection();
+  const state = useDocStore.getState();
+  const request = tidyRequest({
+    graph: state.graph,
+    size: () => ({ width: 260, height: 140 }),
+    portY: () => undefined,
+    wireStyle: "curved",
+  });
+  assert.ok(request.nodes.some((n) => n.id === "group:g"));
+  const folded = foldLayout(request, state, () => undefined);
+  assert.deepEqual(folded.request.nodes.map((n) => n.id).sort(), [
+    "prompt",
+    "raw",
+    "super:sc1",
+    "view",
+  ]);
+  assert.deepEqual(
+    folded.request.edges.map((e) => `${e.source}>${e.target}`).sort(),
+    ["prompt>super:sc1", "super:sc1>raw", "super:sc1>view"],
+  );
 });
 
 test("auto layout moves a note a wide block folded, after the block left React Flow", () => {

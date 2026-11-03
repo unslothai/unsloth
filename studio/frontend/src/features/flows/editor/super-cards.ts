@@ -462,6 +462,15 @@ export function foldLayout(
   const owner = new Map<string, string>();
   for (const card of closed)
     for (const id of card.members) owner.set(id, SUPER_PREFIX + card.id);
+  // Tidy up lays a group out as one block; a group wholly inside a card folds into it too.
+  for (const groupId of graph.groupOrder) {
+    const inGroup = graph.nodeOrder.filter(
+      (id) => graph.nodes[id].group === groupId,
+    );
+    const card = inGroup.length ? owner.get(inGroup[0]) : undefined;
+    if (card && inGroup.every((id) => owner.get(id) === card))
+      owner.set(GROUP_PREFIX + groupId, card);
+  }
   const blockOf = (id: string) => owner.get(id) ?? id;
   const nodes = request.nodes.filter((n) => !owner.has(n.id));
   for (const card of closed) {

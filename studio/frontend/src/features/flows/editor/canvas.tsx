@@ -242,11 +242,17 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const deriver = useRef<RfDeriver | null>(null);
   deriver.current ??= new RfDeriver();
   const [drag, setDrag] = useState<Positions | null>(null);
-  const dragMembers = useRef<{
-    groupRfId: string;
-    origin: { x: number; y: number };
-    members: Map<string, { x: number; y: number }>;
-  } | null>(null);
+  // Every dragged frame or closed super card, keyed by its React Flow id, with its contents' start.
+  const dragMembers = useRef<
+    Map<
+      string,
+      {
+        card: boolean;
+        origin: { x: number; y: number };
+        members: Map<string, { x: number; y: number }>;
+      }
+    >
+  >(new Map());
   const [sizes, setSizes] = useState<Map<string, Size>>(() => new Map());
   const connectStart = useRef<OnConnectStartParams | null>(null);
   const sizesRef = useRef(sizes);
@@ -320,8 +326,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
           } else if (change.dragging) {
             nextDrag ??= { ...(drag ?? {}) };
             nextDrag[change.id] = change.position;
-            const group = dragMembers.current;
-            if (group && group.groupRfId === change.id) {
+            const group = dragMembers.current.get(change.id);
+            if (group) {
               const dx = change.position.x - group.origin.x;
               const dy = change.position.y - group.origin.y;
               for (const [memberId, origin] of group.members) {
@@ -410,39 +416,41 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const view = useSuperCardView(nodes, edges, selectedSet);
 
   const onNodeDragStart = useCallback(
-    (_: ReactMouseEvent, node: RfNode) => {
-      dragMembers.current = null;
+    (_: ReactMouseEvent, node: RfNode, dragged: RfNode[]) => {
       const doc = useDocStore.getState().graph;
-      const folded = superCardDragMembers(node, doc);
-      if (folded) {
-        dragMembers.current = {
-          groupRfId: node.id,
-          origin: node.position,
-          members: folded,
-        };
-        return;
-      }
-      if (!node.id.startsWith(GROUP_PREFIX)) return;
-      const group = doc.groups[node.id.slice(GROUP_PREFIX.length)];
-      if (!group) return;
-      const members = new Map<string, { x: number; y: number }>();
       const currentSizes = sizesRef.current;
-      for (const id of doc.nodeOrder) {
-        const n = doc.nodes[id];
-        const size = currentSizes.get(id) ?? { width: 260, height: 120 };
-        if (insideRect(n.pos[0] + size.width / 2, n.pos[1] + 20, group.rect)) {
-          members.set(id, { x: n.pos[0], y: n.pos[1] });
+      dragMembers.current = new Map();
+      for (const n of dragged.length ? dragged : [node]) {
+        const folded = superCardDragMembers(n, doc);
+        if (folded) {
+          dragMembers.current.set(n.id, {
+            card: true,
+            origin: n.position,
+            members: folded,
+          });
+          continue;
         }
+        if (!n.id.startsWith(GROUP_PREFIX)) continue;
+        const group = doc.groups[n.id.slice(GROUP_PREFIX.length)];
+        if (!group) continue;
+        const members = new Map<string, { x: number; y: number }>();
+        for (const id of doc.nodeOrder) {
+          const m = doc.nodes[id];
+          const size = currentSizes.get(id) ?? { width: 260, height: 120 };
+          if (insideRect(m.pos[0] + size.width / 2, m.pos[1] + 20, group.rect)) {
+            members.set(id, { x: m.pos[0], y: m.pos[1] });
+          }
+        }
+        for (const id of doc.rerouteOrder) {
+          const [x, y] = doc.reroutes[id].pos;
+          if (insideRect(x, y, group.rect)) members.set(id, { x, y });
+        }
+        dragMembers.current.set(n.id, {
+          card: false,
+          origin: { x: group.rect[0], y: group.rect[1] },
+          members,
+        });
       }
-      for (const id of doc.rerouteOrder) {
-        const [x, y] = doc.reroutes[id].pos;
-        if (insideRect(x, y, group.rect)) members.set(id, { x, y });
-      }
-      dragMembers.current = {
-        groupRfId: node.id,
-        origin: { x: group.rect[0], y: group.rect[1] },
-        members,
-      };
     },
     [],
   );
@@ -463,20 +471,19 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
 
   const onNodeDragStop = useCallback(
     (_: unknown, node: RfNode) => {
-      const card = dragMembers.current?.groupRfId.startsWith(SUPER_PREFIX);
-      dragMembers.current = null;
+      // A super card moves its blocks without changing which group they are in.
+      const kept = new Set<string>();
+      for (const group of dragMembers.current.values())
+        if (group.card) for (const id of group.members.keys()) kept.add(id);
+      dragMembers.current = new Map();
       const current = dragRef.current;
       if (current) {
         const positions: Record<string, [number, number]> = {};
         for (const [id, p] of Object.entries(current))
           positions[id] = [Math.round(p.x), Math.round(p.y)];
-        // A super card moves its blocks without changing which group they are in.
-        useDocStore
-          .getState()
-          .moveNodes(
-            positions,
-            card ? undefined : groupMembership(positions, sizesRef.current),
-          );
+        const membership = groupMembership(positions, sizesRef.current);
+        for (const id of kept) delete membership[id];
+        useDocStore.getState().moveNodes(positions, membership);
       }
       setDrag(null);
       const doc = useDocStore.getState().graph;
