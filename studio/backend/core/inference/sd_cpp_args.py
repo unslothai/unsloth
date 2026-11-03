@@ -410,8 +410,11 @@ def metal_placement_flags(offload: Sequence[str]) -> list[str]:
     return [f for f in flags if f not in offload]
 
 
-# 1 / 0 forces sd.cpp's --mmap on / off on macOS; unset decides from the installed build (``mac_mmap_flags``).
+# 1 / 0 forces sd.cpp's --mmap on / off; unset decides from the installed build (``mmap_flags``).
 SD_CPP_MMAP_ENV = "UNSLOTH_DIFFUSION_SD_CPP_MMAP"
+# `sd-cli --help` text of builds whose --mmap still loads and repacks the weights the CPU repacks (older builds map
+# them and run them unrepacked: slower, and different pixels).
+CPU_MMAP_REPACK_HELP = "weights the CPU repacks are still loaded"
 # leejet/stable-diffusion.cpp#2037 (master-907) maps mmapped weights through Metal device buffers. Older builds accept
 # --mmap but hand Metal a CPU buffer it cannot address, so the flag is only safe from this build on.
 METAL_MMAP_MIN_BUILD = 907
@@ -497,6 +500,77 @@ def mac_mmap_flags(binary: Optional[str], extra_args: Optional[Sequence[str]] = 
         return ["--mmap"]
     build = sd_cpp_build_number(_installed_sd_cpp_tag(str(binary))) if binary else None
     return ["--mmap"] if build is not None and build >= METAL_MMAP_MIN_BUILD else []
+
+
+@functools.lru_cache(maxsize = 8)
+def _installed_sd_cpp_accelerator(binary: str) -> Optional[str]:
+    """The accelerator class (``cpu`` / ``cuda`` / ``vulkan`` / ...) Studio's installer recorded next to ``binary``."""
+    import json
+    from pathlib import Path
+
+    try:
+        path = Path(binary).resolve()
+    except Exception:  # noqa: BLE001
+        return None
+    for parent in list(path.parents)[:3]:
+        try:
+            with open(parent / _INSTALL_RECORD, "r", encoding = "utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        accel = rec.get("accelerator") if isinstance(rec, dict) else None
+        return accel if isinstance(accel, str) and accel else None
+    return None
+
+
+def sd_cpp_mmap_keeps_cpu_repack(binary: str) -> bool:
+    """True when ``binary --help`` says its --mmap still repacks CPU weights. Fails closed."""
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return False
+    return _cpu_mmap_repack_in_help(str(binary), st.st_size, st.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize = 16)
+def _cpu_mmap_repack_in_help(binary: str, size: int, mtime_ns: int) -> bool:
+    from core.inference.sd_cpp_backend import _sd_cpp_probe_output
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and CPU_MMAP_REPACK_HELP in text
+
+
+def mmap_flags(
+    binary: Optional[str],
+    extra_args: Optional[Sequence[str]] = None,
+    backend_args: Optional[Sequence[str]] = None,
+) -> list[str]:
+    """``--mmap`` where it saves memory at no cost: macOS from the Metal mmap build (``mac_mmap_flags``), and a CPU
+    render elsewhere (Studio's CPU bundle or an explicit ``--backend cpu``) on builds whose --mmap still repacks CPU
+    weights. There it keeps every weight the CPU does not repack (BF16 text encoders, F16 VAE, Q5_K / Q6_K on x86)
+    as clean file-backed pages instead of a second anonymous copy, pixel-identical: Z-Image Turbo Q4_K_M with the
+    BF16 Qwen3-4B encoder peaks at about 4.6 GB anonymous memory instead of 13.3 GB. GPU renders are left alone.
+    ``UNSLOTH_DIFFUSION_SD_CPP_MMAP`` = 1 / 0 forces it either way."""
+    import sys
+
+    if sys.platform == "darwin":
+        return mac_mmap_flags(binary, extra_args)
+    if "--mmap" in (extra_args or ()):
+        return []
+    forced = os.environ.get(SD_CPP_MMAP_ENV, "").strip().lower()
+    if forced in ("0", "false", "no", "off"):
+        return []
+    if forced in ("1", "true", "yes", "on"):
+        return ["--mmap"]
+    if not binary:
+        return []
+    args = [*(backend_args or ()), *(extra_args or ())]
+    target = _diffusion_backend([args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"])
+    on_cpu = (
+        target.lower() == "cpu"
+        if target is not None
+        else _installed_sd_cpp_accelerator(str(binary)) == "cpu"
+    )
+    return ["--mmap"] if on_cpu and sd_cpp_mmap_keeps_cpu_repack(str(binary)) else []
 
 
 # Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which
@@ -819,7 +893,7 @@ def build_sd_cpp_command(
     if offload:
         cmd += offload
     cmd += metal_placement_flags(offload)
-    cmd += mac_mmap_flags(binary, extra_args)
+    cmd += mmap_flags(binary, extra_args, offload)
     if verbose:
         cmd += ["-v"]
     if extra_args:
@@ -917,7 +991,7 @@ def build_sd_cpp_video_command(
     if offload:
         cmd += offload
     cmd += metal_placement_flags(offload)
-    cmd += mac_mmap_flags(binary, extra_args)
+    cmd += mmap_flags(binary, extra_args, offload)
     if verbose:
         cmd.append("-v")
     if extra_args:
@@ -1025,7 +1099,7 @@ def build_sd_cpp_server_command(
         native_speed_flags(native_speed, backend_args, accelerator, binary), offload
     )
     cmd += placement
-    cmd += mac_mmap_flags(binary, extra_args)
+    cmd += mmap_flags(binary, extra_args, offload)
     if verbose:
         cmd += ["-v"]
     if extra_args:
