@@ -543,6 +543,15 @@ def _check_feedback(
                 )
             )
             continue
+        if nodes[src].get("disabled") and not nodes[loop].get("disabled"):
+            # A round runs its scorer directly, so a disabled one would still run every round.
+            errors.append(
+                issue(
+                    f"Enable {sspec['title']}: its Loop scores every round with it",
+                    node_id = src,
+                )
+            )
+            continue
         task = next((p for p in sspec["params"] if p["id"] == "task"), None)
         if (
             task

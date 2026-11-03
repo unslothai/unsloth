@@ -169,6 +169,9 @@ class BenchmarkOrchestrator:
         self._result_account = None
         # The caller's token for the current run, so its Stop cancels only that run.
         self._run_token: Optional[str] = None
+        # Set while the slot is reserved for a run that has not started yet (a Flows Benchmark
+        # loading its model): monotonic expiry, so a caller that never runs cannot hold the slot.
+        self._reserved_until: Optional[float] = None
 
         # Cancellation is best-effort in-process: set to signal the run loop to
         # stop waiting on the worker thread.
@@ -225,7 +228,8 @@ class BenchmarkOrchestrator:
     # ── State helpers ─────────────────────────────────────
 
     def is_active(self) -> bool:
-        return self._active
+        reserved = self._reserved_until
+        return self._active and (reserved is None or time.monotonic() < reserved)
 
     def is_draining(self) -> bool:
         """A stopped run's worker is still finishing; a new run would queue behind it."""
@@ -264,8 +268,9 @@ class BenchmarkOrchestrator:
         """
         from utils.account_context import current_account
         with self._lock:
-            if self._active or self.is_draining():
+            if self._held_against(token) or self.is_draining():
                 return None
+            self._reserved_until = None
             self._active = True
             self._op_seq += 1
             self._result_account = account if account is not None else current_account()
@@ -280,6 +285,38 @@ class BenchmarkOrchestrator:
             clear_progress()
             return self._op_seq
 
+    def _held_against(self, token: Optional[str]) -> bool:
+        """The slot is taken for this caller: a run, or another caller's unexpired reservation."""
+        if not self._active:
+            return False
+        if self._reserved_until is None:
+            return True
+        if token and token == self._run_token:
+            return False
+        return time.monotonic() < self._reserved_until
+
+    def reserve(
+        self,
+        account = None,
+        token: Optional[str] = None,
+        ttl: float = 7200.0,
+    ) -> bool:
+        """Hold the slot for the run ``token`` starts next, so nothing else claims it (or swaps the
+        model a run is scoring) while that caller loads its model. ``try_begin`` with the same token
+        takes it over; ``cancel`` with it, or the expiry, frees it."""
+        from utils.account_context import current_account
+
+        if not token:
+            return False
+        with self._lock:
+            if self._held_against(token) or self.is_draining():
+                return False
+            self._active = True
+            self._reserved_until = time.monotonic() + ttl
+            self._run_token = token
+            self._result_account = account if account is not None else current_account()
+            return True
+
     def release(self, op_seq: int) -> None:
         """Free a slot claimed with ``try_begin`` whose run never started."""
         with self._lock:
@@ -293,6 +330,11 @@ class BenchmarkOrchestrator:
         with self._lock:
             if not self._active or (token is not None and token != self._run_token):
                 return False
+            if self._reserved_until is not None:
+                # Only reserved: no run to stop, the slot is just freed.
+                self._reserved_until = None
+                self._active = False
+                return True
             self._cancel_requested = True
             self._cancel_event.set()
             self._last_op_status = "cancelled"

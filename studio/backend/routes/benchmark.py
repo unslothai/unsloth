@@ -594,6 +594,24 @@ async def run_benchmark(
                 logger.warning("Failed to revoke benchmark API key: %s", e)
 
 
+@router.post("/reserve", response_model = BenchmarkOperationResponse)
+async def reserve_benchmark(
+    token: str = Query(..., min_length = 8, max_length = 64),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Hold the run slot for the run ``token`` starts next (a Flows Benchmark loads its model first,
+    which must not swap the model under a run in progress). Freed by ``/cancel?token=``."""
+    backend = get_benchmark_backend()
+    if not backend.reserve(current_account(), token):
+        raise HTTPException(
+            status_code = 409,
+            detail = "The stopped benchmark is still finishing. Try again in a moment."
+            if backend.is_draining()
+            else "A benchmark is already running.",
+        )
+    return BenchmarkOperationResponse(success = True, message = "Benchmark slot reserved")
+
+
 @router.post("/cancel", response_model = BenchmarkOperationResponse)
 async def cancel_benchmark(
     token: Optional[str] = Query(None, max_length = 64),

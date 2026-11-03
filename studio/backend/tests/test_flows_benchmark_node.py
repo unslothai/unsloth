@@ -36,6 +36,8 @@ class _Ctx:
         **_,
     ):
         self.calls.append((method, path, params, json, files))
+        if path in ("/api/benchmarks/evals/reserve", "/api/benchmarks/evals/cancel"):
+            return {"success": True}
         return self.routes(method, path, params, json)
 
     def progress(self, *a, **k):
@@ -585,3 +587,85 @@ def test_a_merged_or_lora_export_from_export_model_loads_from_its_folder(
     ctx.inputs = {"model": {"kind": "model", "model_kind": "chat", "repo": "missing"}}
     with pytest.raises(FlowNodeError, match = "missing"):
         asyncio.run(benchmark._load_target(ctx))
+
+
+def test_the_eval_slot_is_held_before_the_model_loads_and_freed_after():
+    from core.benchmark.orchestrator import BenchmarkOrchestrator
+
+    slot = BenchmarkOrchestrator()
+    assert slot.reserve(None, "node-a")
+    # Another run, or another node's reservation, is refused while the model loads.
+    assert slot.try_begin(None, "someone") is None
+    assert not slot.reserve(None, "node-b")
+    assert slot.is_active()
+    # The reserving node's own run takes the slot over.
+    seq = slot.try_begin(None, "node-a")
+    assert seq is not None
+    slot.finish(seq)
+    assert not slot.is_active()
+    # A reservation no run took over is freed by its token, never by another one.
+    assert slot.reserve(None, "node-c")
+    assert not slot.cancel("node-a")
+    assert slot.cancel("node-c")
+    assert slot.try_begin(None, "next") is not None
+
+
+def test_an_expired_reservation_does_not_hold_the_slot(monkeypatch):
+    from core.benchmark import orchestrator
+
+    slot = orchestrator.BenchmarkOrchestrator()
+    assert slot.reserve(None, "node-a", ttl = 5)
+    now = orchestrator.time.monotonic()
+    monkeypatch.setattr(orchestrator.time, "monotonic", lambda: now + 10)
+    assert not slot.is_active()
+    assert slot.try_begin(None, "other") is not None
+
+
+def test_the_node_reserves_the_eval_slot_before_loading_and_frees_it_when_loading_fails(
+    monkeypatch,
+):
+    from core.flows.registry import FlowNodeError
+
+    order = []
+
+    async def failing(ctx):
+        order.append("load")
+        raise FlowNodeError("Could not load run-1")
+
+    monkeypatch.setattr(benchmark, "_load_target", failing)
+    ctx = _Ctx(lambda *a: None)
+    with pytest.raises(FlowNodeError):
+        asyncio.run(benchmark.benchmark(ctx))
+    paths = [c[1] for c in ctx.calls]
+    assert paths == ["/api/benchmarks/evals/reserve", "/api/benchmarks/evals/cancel"]
+    assert ctx.calls[0][2] == ctx.calls[1][2]
+    assert order == ["load"]
+
+
+def test_a_busy_eval_slot_stops_the_node_before_it_loads(monkeypatch):
+    from core.flows.registry import FlowNodeError
+
+    loaded = []
+
+    async def load(ctx):
+        loaded.append(1)
+        return "run-1", False
+
+    monkeypatch.setattr(benchmark, "_load_target", load)
+    ctx = _Ctx(lambda *a: None)
+
+    async def busy(
+        method,
+        path,
+        json = None,
+        params = None,
+        **_,
+    ):
+        if path.endswith("/reserve"):
+            raise FlowNodeError("A benchmark is already running.")
+        return {"success": True}
+
+    ctx.call = busy
+    with pytest.raises(FlowNodeError, match = "already running"):
+        asyncio.run(benchmark.benchmark(ctx))
+    assert loaded == []

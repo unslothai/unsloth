@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
 from pathlib import Path
@@ -550,19 +551,26 @@ def _percent(score: Any) -> Optional[float]:
 async def benchmark(ctx: NodeContext) -> dict:
     task = TASKS.get(str(ctx.params.get("task") or ""), RECIPE_TASK)
     max_rows = max(1, min(MAX_ROWS, int(ctx.params.get("max_rows") or 20)))
-    label, is_lora = await _load_target(ctx)
-
     # Stop cancels only the run this node starts, never another one of the account's.
     token = uuid.uuid4().hex
 
     async def cancel() -> None:
         await ctx.call("POST", f"{EVALS}/cancel", params = {"token": token})
 
+    # The eval slot is held before the model loads: loading while another eval runs would swap
+    # the model that run is scoring.
+    await ctx.call("POST", f"{EVALS}/reserve", params = {"token": token})
     ctx.on_cancel(cancel)
-    if task == RECIPE_TASK:
-        found = await _recipe_heldout(ctx, label, is_lora, max_rows, token)
-    else:
-        found = await _lm_eval(ctx, task, label, is_lora, max_rows, token)
+    try:
+        label, is_lora = await _load_target(ctx)
+        if task == RECIPE_TASK:
+            found = await _recipe_heldout(ctx, label, is_lora, max_rows, token)
+        else:
+            found = await _lm_eval(ctx, task, label, is_lora, max_rows, token)
+    finally:
+        # Frees a reservation no run took over; a finished run's slot is already free.
+        with contextlib.suppress(Exception):
+            await ctx.call("POST", f"{EVALS}/cancel", params = {"token": token})
     tag = f"benchmark-{task}-{found.get('run_id') or int(time.time())}"
     results = await _as_dataset(ctx, found["results"], f"{tag}-results")
     results.update(
