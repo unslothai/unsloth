@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import secrets
+import sqlite3
 import threading
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -88,8 +91,17 @@ def _clean_settings(raw: Any) -> dict[str, Any]:
     return settings
 
 
-def load_settings() -> dict[str, Any]:
-    return _clean_settings(get_app_setting(SETTINGS_KEY))
+def load_settings(conn: Optional[sqlite3.Connection] = None) -> dict[str, Any]:
+    if conn is None:
+        return _clean_settings(get_app_setting(SETTINGS_KEY))
+    row = conn.execute(
+        "SELECT value_json FROM app_settings WHERE key = ?", (SETTINGS_KEY,)
+    ).fetchone()
+    try:
+        raw = json.loads(row[0]) if row else None
+    except (TypeError, ValueError):
+        raw = None
+    return _clean_settings(raw)
 
 
 def public_settings(settings: dict[str, Any]) -> dict[str, Any]:
@@ -160,12 +172,19 @@ class PoolUsage:
         return self.used >= self.limit * WARNING_FRACTION
 
 
-def _pool_usage(settings: dict[str, Any], start_ms: int) -> dict[str, PoolUsage]:
-    conn = get_connection()
+def _pool_usage(
+    settings: dict[str, Any],
+    start_ms: int,
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict[str, PoolUsage]:
+    owns_connection = conn is None
+    if owns_connection:
+        conn = get_connection()
     try:
         counts = window_usage(conn, start_ms, settings["method"])
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
     local, external, api = (counts.get(source, 0) for source in ("local", "external", "api"))
     used = {
         "combined": local + external + api,
@@ -274,13 +293,14 @@ def _period_label(period: str) -> str:
 
 
 def enforce(*, api: bool) -> None:
-    settings = load_settings()
-    if not settings["enabled"]:
-        return
-    _require_usage_accounting()
-    start_ms, end_ms = period_window(settings["period"], settings["timezone"])
-    pool = request_pool(settings, api = api)
-    usage = _pool_usage(settings, start_ms)[pool]
+    with closing(get_connection()) as conn:
+        settings = load_settings(conn)
+        if not settings["enabled"]:
+            return
+        _require_usage_accounting()
+        start_ms, end_ms = period_window(settings["period"], settings["timezone"])
+        pool = request_pool(settings, api = api)
+        usage = _pool_usage(settings, start_ms, conn)[pool]
     if not usage.reached:
         return
     with _override_lock:
