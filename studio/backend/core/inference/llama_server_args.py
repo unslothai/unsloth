@@ -851,7 +851,7 @@ def resolve_reasoning_budget_message_with_env(
 
 def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
     """Last user-supplied -ngl value from extras, read before Manual mode strips the flags."""
-    raw_value = _last_flag_value(args, _GPU_LAYER_FLAGS)
+    raw_value = _last_flag_value(args, _GPU_LAYER_FLAGS, preserve_raw = True)
     if raw_value is None:
         return None
     if raw_value == "auto":
