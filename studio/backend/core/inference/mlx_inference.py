@@ -6535,13 +6535,12 @@ class MLXInferenceBackend:
         if entry is None or pinned is None or not self._served_context:
             return None
         offload = entry.get("mlx_offload") or {}
-        drafter = getattr(self._speculative_draft, "drafter", None)
         if (
             any(part.get("applied") for part in offload.values() if isinstance(part, dict))
             or self._kv_quant["requested_kv_bits"] is not None
             or self._turboquant
             or self._prompt_cache_room is not None
-            or (entry.get("spec_fallback_reason") and drafter is None)
+            or entry.get("spec_fallback_reason")
         ):
             return None
         # The served length reads this attribute before the argument.

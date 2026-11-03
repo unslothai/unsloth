@@ -112,6 +112,11 @@ def test_a_smaller_context_is_applied_to_the_held_model():
         (4096, {}, {"_prompt_cache_room": 1}),
         (4096, {"spec_fallback_reason": "does not fit"}, {}),
         (4096, {"spec_fallback_reason": 1}, {"_speculative_draft": SimpleNamespace(drafter = None)}),
+        (
+            4096,
+            {"spec_fallback_reason": 1},
+            {"_speculative_draft": SimpleNamespace(drafter = object())},
+        ),
     ],
 )
 def test_a_load_a_fresh_one_could_plan_differently_is_not_narrowed(size, entry, attrs):
