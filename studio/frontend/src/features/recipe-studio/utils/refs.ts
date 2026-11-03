@@ -87,7 +87,7 @@ export function replaceRef(
   );
   return renamed.replace(/{{[\s\S]*?}}|{%[\s\S]*?%}/g, (tag) =>
     tag
-      .split(/('[^']*'|"[^"]*")/)
+      .split(/('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/)
       .map((part, i) => (i % 2 ? part : part.replace(root, to)))
       .join(""),
   );

@@ -68,6 +68,8 @@ test("paging uses the reader's total, then the value's count, then how far rows 
   assert.equal(pageCount(45, 1000, 20, 0), 3);
   assert.equal(pageCount(5000, 1000, 20, 0), 50);
   assert.equal(pageCount(null, 1000, 20, 40), 4);
+  // An unknown total still stops at the reader's 1000-row window: page 50 is the last.
+  assert.equal(pageCount(null, 1000, 20, 980), 50);
   assert.equal(pageCount(0, 1000, 20, 0), 1);
 });
 

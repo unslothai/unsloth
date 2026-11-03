@@ -819,6 +819,10 @@ test("clearing a provider or model preset name keeps its form open until the new
     "utf8",
   );
   const update = src.slice(src.indexOf("const update = (id: string"), src.indexOf("const canDrop"));
-  // The form keeps the blank name; the recipe, and the card the inspector follows, keep the old one.
-  assert.match(update, /setConfigs\(next\);[\s\S]*if \(onRename && !String\(next\[id\]\.name \?\? ""\)\.trim\(\)\) return;\s*commitConfigs\(/);
+  // The blank shows in the form only; the recipe and the configs a rename starts from keep the
+  // last name, so its links follow once the new one is typed.
+  const blank = update.slice(0, update.indexOf("return;"));
+  assert.match(blank, /if \(onRename && typeof patch\.name === "string" && !patch\.name\.trim\(\)\)/);
+  assert.match(blank, /setConfigs\(\{\s*\.\.\.latest\.current,/);
+  assert.doesNotMatch(blank, /latest\.current =|commitConfigs|applyConfigPatch/);
 });
