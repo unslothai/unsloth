@@ -663,3 +663,19 @@ def test_real_capture_matches_eager(name, monkeypatch):
     s = GG.stats(model)
     assert torch.equal(eager, graphed), s
     assert s["captures"] == 1 and s["replays"] == 22 and not s["refusals"], s
+
+
+@pytest.mark.parametrize("make", ["dense", "sliced", "broadcast", "sliced_broadcast"])
+def test_static_buffers_keep_eager_strides(make):
+    base = torch.arange(64, dtype = torch.float32).view(2, 32)
+    leaf = {
+        "dense": base,
+        "sliced": base[:, ::2],  # shape (2, 16), strides (32, 2)
+        "broadcast": base[:1].expand(4, 32),
+        "sliced_broadcast": base[:1, ::2].expand(3, 16),
+    }[make]
+    compact = GG._compact(leaf)
+    buffer = GG._buffer_like(compact)
+    buffer.copy_(compact)
+    replayed = buffer.expand(leaf.shape)
+    assert replayed.stride() == leaf.stride() and torch.equal(replayed, leaf)

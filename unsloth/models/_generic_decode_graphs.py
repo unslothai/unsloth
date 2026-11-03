@@ -616,12 +616,17 @@ def _compact(leaf):
     return leaf[tuple(slice(0, 1) if st == 0 else slice(None) for st in leaf.stride())]
 
 
+def _empty_strided_like(leaf):
+    # empty_like makes a non-dense view (a sliced mask) dense: keep eager's strides exactly.
+    return torch.empty_strided(leaf.shape, leaf.stride(), dtype = leaf.dtype, device = leaf.device)
+
+
 def _buffer_like(leaf):
     if leaf.is_inference():
         with torch.inference_mode():
-            return torch.empty_like(leaf)
+            return _empty_strided_like(leaf)
     with G._no_inference_tensors():
-        return torch.empty_like(leaf)
+        return _empty_strided_like(leaf)
 
 
 def _capture(state, key, forward, kwargs, leaves, cache):
