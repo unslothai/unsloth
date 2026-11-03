@@ -744,14 +744,17 @@ class MultiLoraExpertParam(nn.Module):
 
     def grouped_stacks(self, reversed_io: bool, dtype: torch.dtype) -> tuple:
         """Every adapter's factors as (E*(U+1), in, R) and (E*(U+1), R, out), group e*(U+1) + u, R the largest rank
-        rounded up to 8 (zero padding is exact), without scaling; group e*(U+1) + U is zero."""
+        rounded up to 8 (zero padding is exact); scales of magnitude <= 1 stay folded, group e*(U+1) + U is zero."""
         R = -(-max(self.ranks) // 8) * 8
         firsts, seconds = [], []
         for u in range(self.num_adapters):
-            first, second, _, _ = self.grouped_mm_factors(u, reversed_io)
+            first, second, scale, _ = self.grouped_mm_factors(u, reversed_io)
             r = first.shape[-1]
             firsts.append(F.pad(first.to(dtype), (0, R - r)))
-            seconds.append(F.pad(second.to(dtype), (0, 0, 0, R - r)))
+            second = second.to(dtype)
+            if abs(scale) <= 1:
+                second = second * scale
+            seconds.append(F.pad(second, (0, 0, 0, R - r)))
         firsts.append(torch.zeros_like(firsts[0]))
         seconds.append(torch.zeros_like(seconds[0]))
         return torch.stack(firsts, 1).flatten(0, 1), torch.stack(seconds, 1).flatten(0, 1)
@@ -1183,13 +1186,15 @@ class MultiLoraExperts(nn.Module):
             first, second = adapter.grouped_stacks(self.reversed_io, dtype)
             h = moe_utils._grouped_mm_with_backward_fix(x, first, offs_pair).contiguous()
             delta = moe_utils._grouped_mm_with_backward_fix(h, second, offs_pair)
-            # Scaling a half factor can overflow even when its final projection is finite.
-            scales = torch.tensor(
-                [*adapter.scales, 0.0],
-                device = x.device,
-                dtype = torch.float64 if dtype == torch.float64 else torch.float32,
-            )
-            y = y + (delta * scales[pair_slots].unsqueeze(-1)).to(dtype)
+            # Amplify after GEMM; attenuate the factor so an unscaled GEMM cannot newly overflow.
+            if any(abs(s) > 1 for s in adapter.scales):
+                scales = torch.tensor(
+                    [*(s if abs(s) > 1 else 1.0 for s in adapter.scales), 0.0],
+                    device = x.device,
+                    dtype = torch.float64 if dtype == torch.float64 else torch.float32,
+                )
+                delta = (delta * scales[pair_slots].unsqueeze(-1)).to(dtype)
+            y = y + delta
         return y
 
     def _grouped(

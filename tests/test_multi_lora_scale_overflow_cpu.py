@@ -44,7 +44,7 @@ def _grouped_mm(x, weight, offsets):
 
 
 @pytest.mark.parametrize("reversed_io", [False, True])
-@pytest.mark.parametrize("scale", [2.0, 16.0, 100000.0])
+@pytest.mark.parametrize("scale", [-0.25, 0.25, 2.0, 16.0, 100000.0])
 def test_grouped_projection_scales_output_without_fp16_factor_overflow(reversed_io, scale):
     ml = _load_experts()
     base = nn.Module()
@@ -54,14 +54,22 @@ def test_grouped_projection_scales_output_without_fp16_factor_overflow(reversed_
     experts.reversed_io = reversed_io
     adapter = experts.adapters["gate_up_proj"]
     first_value, second_value = (
-        (0.000001, 40000.0) if scale == 100000 else (0.01, 40000.0 if scale == 2 else 5000.0)
+        (0.000001, 40000.0)
+        if scale == 100000
+        else (0.01, 40000.0 if scale == 2 or abs(scale) < 1 else 5000.0)
     )
     with torch.no_grad():
-        for A, B in zip(adapter.lora_A, adapter.lora_B):
-            A.fill_(second_value if reversed_io else first_value)
-            B.fill_(first_value if reversed_io else second_value)
+        for u, (A, B) in enumerate(zip(adapter.lora_A, adapter.lora_B)):
+            value = 1.0 if abs(scale) < 1 and u == 0 else first_value
+            A.fill_(second_value if reversed_io else value)
+            B.fill_(value if reversed_io else second_value)
     in_dim, out_dim = (16, 8) if reversed_io else (8, 16)
-    x = torch.full((3, in_dim), 0.01, dtype = torch.float16, requires_grad = True)
+    x = torch.full(
+        (3, in_dim),
+        4 / in_dim if abs(scale) < 1 else 0.01,
+        dtype = torch.float16,
+        requires_grad = True,
+    )
     offsets = torch.tensor([1, 2, 3], dtype = torch.int32)
     slots = torch.tensor([0, 1, 2])
     backend = types.SimpleNamespace(
@@ -88,7 +96,11 @@ def test_grouped_projection_scales_output_without_fp16_factor_overflow(reversed_
     refs = []
     for u in range(2):
         a, b, scaling, _ = adapter.grouped_mm_factors(u, reversed_io)
-        refs.append(((x[u : u + 1] @ a[0].half()) @ b[0].half()) * scaling)
+        h = x[u : u + 1] @ a[0].half()
+        if abs(scaling) <= 1:
+            refs.append(h @ (b[0].half() * scaling))
+        else:
+            refs.append((h @ b[0].half()) * scaling)
     ref = torch.cat([*refs, x[2:3] @ torch.zeros(in_dim, out_dim, dtype = x.dtype)])
     grad = torch.full_like(got, 1e-6)
     leaves = [x, *adapter.lora_A, *adapter.lora_B]
