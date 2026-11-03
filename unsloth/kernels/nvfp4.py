@@ -555,7 +555,9 @@ def _fused_config(
 
 
 @triton.jit
-def _split_sum_kernel(partial_ptr, out_ptr, numel, SPLIT: tl.constexpr, BLOCK: tl.constexpr):  # SPLIT split-K partials, BLOCK block size
+def _split_sum_kernel(
+    partial_ptr, out_ptr, numel, SPLIT: tl.constexpr, BLOCK: tl.constexpr
+):  # SPLIT split-K partials, BLOCK block size
     # Fixed-order sum of the split partials (determinism), one cast.
     offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < numel

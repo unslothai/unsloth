@@ -141,7 +141,15 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _gn_combine(
-        pn_ptr, pmean_ptr, pm2_ptr, mean_ptr, rstd_ptr, n_chunks, G, eps, BLOCK: tl.constexpr  # block size
+        pn_ptr,
+        pmean_ptr,
+        pm2_ptr,
+        mean_ptr,
+        rstd_ptr,
+        n_chunks,
+        G,
+        eps,
+        BLOCK: tl.constexpr,  # block size
     ):
         row = tl.program_id(0)
         g = row % G
@@ -294,7 +302,15 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _add_rmsnorm(
-        h_ptr, o_ptr, s_ptr, w_ptr, n_ptr, N, eps, HAS_RES: tl.constexpr, BLOCK_N: tl.constexpr  # HAS_RES residual add present, BLOCK_N block size along the row
+        h_ptr,
+        o_ptr,
+        s_ptr,
+        w_ptr,
+        n_ptr,
+        N,
+        eps,
+        HAS_RES: tl.constexpr,
+        BLOCK_N: tl.constexpr,  # HAS_RES residual add present, BLOCK_N block size along the row
     ):
         row = tl.program_id(0).to(tl.int64)
         cols = tl.arange(0, BLOCK_N)
@@ -377,7 +393,14 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _dequant_epilogue(
-        acc_ptr, xs_ptr, ws_ptr, bias_ptr, out_ptr, N, HAS_BIAS: tl.constexpr, BLOCK_N: tl.constexpr  # HAS_BIAS bias present, BLOCK_N block size along the row
+        acc_ptr,
+        xs_ptr,
+        ws_ptr,
+        bias_ptr,
+        out_ptr,
+        N,
+        HAS_BIAS: tl.constexpr,
+        BLOCK_N: tl.constexpr,  # HAS_BIAS bias present, BLOCK_N block size along the row
     ):
         row = tl.program_id(0).to(tl.int64)
         pid_n = tl.program_id(1)

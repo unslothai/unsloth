@@ -70,7 +70,16 @@ def layernorm_forward(
 
 @triton.jit
 def _layernorm_backward_row(
-    dY, dX, X, W_row, r, mu, row_idx, col_offsets, mask, n_cols: tl.constexpr  # hidden size
+    dY,
+    dX,
+    X,
+    W_row,
+    r,
+    mu,
+    row_idx,
+    col_offsets,
+    mask,
+    n_cols: tl.constexpr,  # hidden size
 ):
     # based on karpathy/llm.c; float32 matches torchtune's Fp32LayerNorm.
     dY_row = tl.load(dY + col_offsets, mask = mask, other = 0).to(tl.float32)
@@ -180,7 +189,13 @@ def layernorm_backward_dw(
 
 @triton.jit
 def _layernorm_sum_partials(
-    partials, out0, out1, n_programs, n_cols, BLOCK_ROWS: tl.constexpr, BLOCK_COLS: tl.constexpr  # BLOCK_ROWS partial rows per program, BLOCK_COLS columns per program
+    partials,
+    out0,
+    out1,
+    n_programs,
+    n_cols,
+    BLOCK_ROWS: tl.constexpr,
+    BLOCK_COLS: tl.constexpr,  # BLOCK_ROWS partial rows per program, BLOCK_COLS columns per program
 ):
     # Not torch.sum: Inductor reorders it, so eager and compiled bytes would differ.
     which = tl.program_id(1)

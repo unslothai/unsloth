@@ -1297,7 +1297,13 @@ def _fp8_rowwise_gemv_rows_kernel(
 
 @triton.jit(do_not_specialize = ["M"])
 def _fp8_rowwise_gemv_rows_reduce(
-    p_ptr, s_ptr, y_ptr, M, N, SPLIT_K: tl.constexpr, BLOCK: tl.constexpr  # SPLIT_K split-K factor, BLOCK block size
+    p_ptr,
+    s_ptr,
+    y_ptr,
+    M,
+    N,
+    SPLIT_K: tl.constexpr,
+    BLOCK: tl.constexpr,  # SPLIT_K split-K factor, BLOCK block size
 ):
     offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < M * N
