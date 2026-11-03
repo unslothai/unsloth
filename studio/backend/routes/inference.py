@@ -7090,6 +7090,7 @@ def _monitor_usage(
             completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens"),
             total_tokens = usage.get("total_tokens"),
             context_length = context_length,
+            context_tokens = usage.get("context_tokens"),
         )
     tok_per_sec = prompt_tok_per_sec = prompt_ms = decode_ms = None
     if isinstance(timings, dict):

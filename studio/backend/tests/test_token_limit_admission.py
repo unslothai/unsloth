@@ -124,18 +124,29 @@ def test_delegated_request_consumes_one_override(admission, monkeypatch, endpoin
 
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize(
+    "usage_steps,new_tokens",
+    [
+        ([(90, 10, None)], 100),
+        ([(250, 20, 160), (180, 5, 185)], 295),
+    ],
+)
 def test_temporary_chat_counts_without_persisting_its_content(
-    admission, monkeypatch, stream, external
+    admission, monkeypatch, stream, external, usage_steps, new_tokens
 ):
     from fastapi.responses import StreamingResponse
     from core.inference.api_monitor import ApiMonitor
     from storage.api_usage_db import record_api_usage
+    from core.inference import token_limit
 
     client, body, _ = admission
     monitor = ApiMonitor()
     monitor.set_terminal_callback(record_api_usage)
+    monkeypatch.setattr(inference, "api_monitor", monitor)
+    completed = 0
 
     def finish():
+        nonlocal completed
         entry = monitor.start(
             endpoint = "/v1/chat/completions",
             method = "POST",
@@ -143,7 +154,17 @@ def test_temporary_chat_counts_without_persisting_its_content(
             prompt = "private prompt",
             subject = "owner",
         )
-        monitor.set_usage(entry, prompt_tokens = 90, completion_tokens = 10, total_tokens = 100)
+        prompt, completion, context = usage_steps[completed % len(usage_steps)]
+        completed += 1
+        inference._monitor_usage(
+            entry,
+            {
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_tokens": prompt + completion,
+                "context_tokens": context,
+            },
+        )
         monitor.set_reply(entry, "private answer")
         monitor.finish(entry)
 
@@ -164,15 +185,20 @@ def test_temporary_chat_counts_without_persisting_its_content(
             "token_limit": {
                 "enabled": True,
                 "mode": "split",
-                "localLimit": 200,
-                "apiLimit": 100,
+                "method": "incremental",
+                "localLimit": 100 + new_tokens,
+                "apiLimit": new_tokens,
             }
         }
     )
     payload = {**body, "temporary_chat": True, "thread_id": "temporary-thread", "stream": stream}
     if external:
         payload["provider_type"] = "openai"
-    assert client.post("/v1/chat/completions", json = payload).status_code == 200
+    for _ in usage_steps:
+        assert client.post("/v1/chat/completions", json = payload).status_code == 200
+    assert token_limit.status()["pools"][1 if external else 0]["used"] == new_tokens + (
+        0 if external else 100
+    )
     assert client.post("/v1/chat/completions", json = payload).status_code == 429
 
     studio_db.upsert_app_settings({"token_limit": {"enabled": False}})
@@ -183,8 +209,10 @@ def test_temporary_chat_counts_without_persisting_its_content(
         assert conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM api_usage_events").fetchone()[0] == 0
         rows = conn.execute("SELECT * FROM token_usage_ledger").fetchall()
-        assert len(rows) == 2
-        assert sum(row["total_tokens"] for row in rows) == 200
+        assert len(rows) == 1 + len(usage_steps)
+        assert sum(row["total_tokens"] for row in rows) == 100 + sum(
+            p + c for p, c, _ in usage_steps
+        )
         assert not any(
             "private" in str(tuple(row)) or "temporary-thread" in str(tuple(row)) for row in rows
         )

@@ -52,6 +52,7 @@ class ApiUsageReceipt:
     via_api_key: bool = True
     temporary_thread: Optional[str] = None
     temporary_source: str = "local"
+    context_tokens: Optional[int] = None
 
 
 def _valid_token_count(value: object) -> bool:
