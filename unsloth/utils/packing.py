@@ -1760,9 +1760,49 @@ def _inference_mode() -> bool:
     return not _is_compiling() and torch.is_inference_mode_enabled()
 
 
+def _built_in_inference_mode():
+    """None marks a traced grad-off build whose tensor provenance is not yet known."""
+    if _is_compiling():
+        return None if not torch.is_grad_enabled() else False
+    return torch.is_inference_mode_enabled()
+
+
+@torch.compiler.assume_constant_result
+def _cached_tensor_is_unsafe(tensor) -> bool:
+    # Constant evaluation loses inference context for intermediates created in this trace.
+    if torch.is_inference(tensor):
+        return True
+    for cache in (_PACKED_INFO_CACHE, _PADDED_CU_SEQLENS_CACHE, _SDPA_MASK_CACHE):
+        for entry in cache.values():
+            value = entry.get("result", entry.get("mask"))
+            values = value if isinstance(value, (tuple, list)) else (value,)
+            if any(tensor is item for item in values):
+                return False
+    return True
+
+
+def _holds_inference_tensor(value) -> bool:
+    if isinstance(value, torch.Tensor):
+        return _cached_tensor_is_unsafe(value) if _is_compiling() else torch.is_inference(value)
+    if isinstance(value, (tuple, list)):
+        return any(_holds_inference_tensor(item) for item in value)
+    return not isinstance(value, (int, float, bool, type(None)))
+
+
 def _cache_hit(entry) -> bool:
-    # Inference tensors may serve inference mode only; normal tensors serve both.
-    return not entry["inference"] or _inference_mode()
+    inference = entry["inference"]
+    if inference is None:
+        if _is_compiling():
+            return not torch.is_grad_enabled() or not _holds_inference_tensor(
+                entry.get("result", entry.get("mask"))
+            )
+        if torch.is_inference_mode_enabled():
+            return True
+        if _holds_inference_tensor(entry.get("result", entry.get("mask"))):
+            return False
+        entry["inference"] = False
+        return True
+    return not inference or _inference_mode()
 
 
 def _pinned_to_device(tensor: torch.Tensor, device) -> torch.Tensor:
@@ -1773,6 +1813,38 @@ def _pinned_to_device(tensor: torch.Tensor, device) -> torch.Tensor:
         # No pinnable host memory (pinned limit, WSL, a CUDA-less build): pageable copy, same values.
         return tensor.to(device = device)
     return pinned.to(device = device, non_blocking = True)
+
+
+def _refresh_derived_packed_caches(previous, seq_lengths, result, device):
+    if previous is None or previous["seq_lengths"] is not seq_lengths:
+        return
+    segments = _SEGMENT_LENGTHS_CACHE.get(result[0].device)
+    if segments is not None and segments[0] is previous["result"][0]:
+        _SEGMENT_LENGTHS_CACHE[result[0].device] = (result[0], segments[1], segments[2])
+    padded_device = result[1].device
+    padded = _PADDED_CU_SEQLENS_CACHE.get(padded_device)
+    if padded is not None and padded["cu_seqlens"] is previous["result"][1]:
+        value = padded["result"]
+        if _holds_inference_tensor(value):
+            value = (value[0].clone(), value[1])
+        _PADDED_CU_SEQLENS_CACHE[padded_device] = {
+            "cu_seqlens": result[1],
+            "total": padded["total"],
+            "result": value,
+            "inference": _built_in_inference_mode(),
+        }
+    cached = _SDPA_MASK_CACHE.get(device)
+    if cached is None or cached["seq_lengths"] is not previous["result"][0]:
+        return
+    mask = cached["mask"]
+    if _holds_inference_tensor(mask):
+        mask = mask.clone()
+    _SDPA_MASK_CACHE[device] = {
+        "seq_lengths": result[0],
+        "params": cached["params"],
+        "mask": mask,
+        "inference": _built_in_inference_mode(),
+    }
 
 
 def get_packed_info_from_kwargs(
@@ -1805,10 +1877,11 @@ def get_packed_info_from_kwargs(
         torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
         max_seqlen = int(lengths.max().item())
         result = (lengths, cu_seqlens, max_seqlen)
+        _refresh_derived_packed_caches(entry, seq_lengths, result, device)
         _PACKED_INFO_CACHE[device] = {
             "seq_lengths": seq_lengths,
             "result": result,
-            "inference": False,
+            "inference": _built_in_inference_mode(),
         }
         return result
 
@@ -1832,10 +1905,14 @@ def get_packed_info_from_kwargs(
 
     max_seqlen = max(host)
     result = (lengths, cu_seqlens, max_seqlen)
+    # Meta shapes carry symbolic host scalars without allocating device memory.
+    row_shape = torch.empty((sum(host), max_seqlen), device = "meta")
+    _refresh_derived_packed_caches(entry, seq_lengths, result, device)
     _PACKED_INFO_CACHE[device] = {
         "seq_lengths": seq_lengths,
         "result": result,
-        "inference": _inference_mode(),
+        "inference": _built_in_inference_mode(),
+        "row_shape": row_shape,
     }
     _PACKED_HOST_LENGTHS_CACHE[lengths.device] = (lengths, cu_seqlens, host)
     return result
@@ -1908,7 +1985,7 @@ def cover_padded_cu_seqlens(
         "cu_seqlens": cu_seqlens,
         "total": total_tokens,
         "result": result,
-        "inference": _inference_mode(),
+        "inference": _built_in_inference_mode(),
     }
     return result
 
@@ -1951,7 +2028,7 @@ def build_xformers_block_causal_mask(
             "seq_lengths": seq_lengths,
             "params": params,
             "mask": mask,
-            "inference": _inference_mode(),
+            "inference": _built_in_inference_mode(),
         }
     else:
         mask = base_mask
@@ -2046,7 +2123,7 @@ def build_sdpa_packed_attention_mask(
         "seq_lengths": seq_lengths,
         "params": params,
         "mask": result,
-        "inference": _inference_mode(),
+        "inference": _built_in_inference_mode(),
     }
     return result
 

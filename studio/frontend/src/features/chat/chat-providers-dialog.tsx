@@ -88,7 +88,10 @@ import {
   PROVIDER_MAX_OUTPUT_TOKENS_MIN,
   connectionApiFields,
   getExternalProviderApiKey,
+  connectionPickerValue,
   isCustomProviderType,
+  isOpenCodeProviderType,
+  OPENCODE_PLANS,
   isDecisionConnection,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
@@ -119,7 +122,7 @@ const PROVIDER_FORM_EASE: [number, number, number, number] = [
 const PROVIDER_FORM_DURATION = 0.2;
 const CUSTOM_PROVIDER_MISSING_KEY_MESSAGE =
   "No API key found. Add a valid API key for this connection.";
-const HIDDEN_PROVIDER_TYPES = new Set(["qwen"]);
+const HIDDEN_PROVIDER_TYPES = new Set(["qwen", "opencode_go"]);
 
 // Ends the open provider menu just above this item so the rows from it on need a scroll.
 function capProviderMenuAtItem(item: HTMLElement | null) {
@@ -134,8 +137,6 @@ function capProviderMenuAtItem(item: HTMLElement | null) {
   ) {
     top += node.offsetTop;
   }
-  const viewport = item.closest<HTMLElement>("[data-radix-select-viewport]");
-  top -= viewport?.scrollTop ?? 0;
   top += Number.parseFloat(getComputedStyle(content).paddingBottom) || 0;
   content.style.maxHeight = `min(var(--radix-select-content-available-height), ${top}px)`;
 }
@@ -353,6 +354,19 @@ export function ChatProvidersSettings({
       toExternalBackendProviderType(providerType),
       null,
     ) === true;
+
+  const chooseProviderType = (value: string) => {
+    if (editingProviderId) return;
+    setProviderType(value);
+    setReasoningConfig(null);
+    setAvailableModels([]);
+    setSelectedModelIds([]);
+    setManualModelIds("");
+    setModelSearchQuery("");
+    if (isCustomProviderType(value)) {
+      setCustomProviderName(customProviderDisplayName(value));
+    }
+  };
 
   const registryByType = useMemo(
     () => new Map(registry.map((entry) => [entry.provider_type, entry])),
@@ -1511,19 +1525,8 @@ export function ChatProvidersSettings({
                   </p>
                 </div>
                 <Select
-                  value={providerType}
-                  onValueChange={(value) => {
-                    if (editingProviderId) return;
-                    setProviderType(value);
-                    setReasoningConfig(null);
-                    setAvailableModels([]);
-                    setSelectedModelIds([]);
-                    setManualModelIds("");
-                    setModelSearchQuery("");
-                    if (isCustomProviderType(value)) {
-                      setCustomProviderName(customProviderDisplayName(value));
-                    }
-                  }}
+                  value={connectionPickerValue(providerType)}
+                  onValueChange={chooseProviderType}
                 >
                   <SelectTrigger
                     id="provider-preset"
@@ -1579,7 +1582,9 @@ export function ChatProvidersSettings({
                                 className="size-4"
                                 title={entry.display_name}
                               />
-                              <span className="truncate">{entry.display_name}</span>
+                              <span className="truncate">
+                                {entry.provider_type === "opencode" ? "OpenCode" : entry.display_name}
+                              </span>
                             </span>
                           </SelectItem>
                         ))}
@@ -1587,6 +1592,35 @@ export function ChatProvidersSettings({
                   </SelectContent>
                 </Select>
               </div>
+
+              {isOpenCodeProviderType(providerType) ? (
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label htmlFor="provider-opencode-plan" className="text-sm font-medium">
+                      Plan
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      The same OpenCode key works for both.
+                    </p>
+                  </div>
+                  <Select value={providerType} onValueChange={chooseProviderType}>
+                    <SelectTrigger
+                      id="provider-opencode-plan"
+                      className="mt-[var(--ui-title-cap-inset)] h-9 w-full text-sm @max-[520px]:mt-0"
+                      disabled={editingProviderId != null}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {OPENCODE_PLANS.map((plan) => (
+                        <SelectItem key={plan.providerType} value={plan.providerType}>
+                          {plan.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
 
               {showApiKeyField ? (
                 <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">

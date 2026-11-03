@@ -10,6 +10,7 @@ import pytest
 pytest.importorskip("torch")
 import torch.compiler.config as cc  # noqa: E402
 
+from core.inference import diffusion_compile_config as compile_config  # noqa: E402
 from core.inference import diffusion_fp8_unit_scale as fp8  # noqa: E402
 from core.inference import diffusion_nvfp4_act_quant as nvfp4  # noqa: E402
 
@@ -17,7 +18,9 @@ from core.inference import diffusion_nvfp4_act_quant as nvfp4  # noqa: E402
 @pytest.fixture(autouse = True)
 def _restore_tag():
     saved = cc.cache_key_tag
+    compile_config._reset_for_tests()
     yield
+    compile_config._reset_for_tests()
     cc.cache_key_tag = saved
 
 
