@@ -202,3 +202,12 @@ export function usePalette(): {
   );
   return { palette, setPalette };
 }
+
+/** Current theme mode without subscribing; for code outside React. */
+export function getTheme(): Theme {
+  return currentTheme;
+}
+
+export function getPalette(): Palette {
+  return currentPalette;
+}

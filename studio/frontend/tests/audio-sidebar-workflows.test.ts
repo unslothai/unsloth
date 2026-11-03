@@ -204,7 +204,7 @@ test("a nav row's New pill sits beside its label, clear of the trailing disclosu
 });
 
 test("Audio is still unpinned by default", () => {
-  const store = readSrc("features/settings/stores/appearance-custom-store.ts");
+  const store = readSrc("features/settings/lib/appearance-customization.ts");
   assert.match(
     store,
     /SIDEBAR_NAV_DEFAULT_PINNED[^=]*= \{[^}]*\n\s*audio: false,/,

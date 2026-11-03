@@ -67,6 +67,7 @@ import {
   useTheme,
 } from "../stores/theme-store";
 import { COLOR_THEMES } from "../lib/color-themes";
+import { fontFamilyFromFileName } from "../lib/appearance-customization";
 import { ColorPickerSwatch } from "./color-picker";
 import { normalizeSizeInputDraft } from "./size-input-value";
 
@@ -567,11 +568,7 @@ const FONT_STYLE_SUFFIXES = new Set([
 ]);
 
 function fontBaseName(fileName: string): string {
-  return fileName
-    .replace(/\.[^.]+$/, "")
-    .replace(/[;{}()<>"']/g, "")
-    .replace(/[_-]+/g, " ")
-    .trim();
+  return fontFamilyFromFileName(fileName);
 }
 
 function familyCandidates(base: string): string[] {

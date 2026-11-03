@@ -60,6 +60,9 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.profile.stats.longestStreak",
   ],
   appearance: [
+    "settings.appearance.themeFile.title",
+    "settings.appearance.themeFile.importLabel",
+    "settings.appearance.themeFile.exportLabel",
     "chatBackground.title",
     "chatBackground.material",
     "chatBackground.glassTheme",
