@@ -176,3 +176,35 @@ async def test_new_weights_pushed_to_a_hub_base_model_train_again(world):
     world["model_sha"] = None
     await _run(eng, _flow())
     assert len(world["trained"]) == 3
+
+
+@run_async
+async def test_a_continued_adapter_trains_again_when_the_base_under_it_changes(world, tmp_path):
+    import json
+    import os
+
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "model.safetensors").write_bytes(b"old")
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_model.safetensors").write_bytes(b"lora")
+    (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": str(base)}))
+    eng = _engine(world)
+    await _run(eng, _flow(base_model = str(adapter)))
+    await _run(eng, _flow(base_model = str(adapter)))
+    assert len(world["trained"]) == 1
+    (base / "model.safetensors").write_bytes(b"new weights")
+    os.utime(base / "model.safetensors", ns = (1, 1))
+    await _run(eng, _flow(base_model = str(adapter)))
+    assert len(world["trained"]) == 2
+    # A Hub base under the adapter: a new revision trains again too.
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/base"})
+    )
+    await _run(eng, _flow(base_model = str(adapter)))
+    await _run(eng, _flow(base_model = str(adapter)))
+    assert len(world["trained"]) == 3
+    world["model_sha"] = "m2"
+    await _run(eng, _flow(base_model = str(adapter)))
+    assert len(world["trained"]) == 4

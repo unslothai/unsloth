@@ -210,3 +210,18 @@ export function adapterPathFor(
   );
   return found ? (found.adapter_path as string) : null;
 }
+
+/** What "Chat with it" hands Chat: the run's base and adapter folder, or null when the adapter list
+ * could not be read or does not have the run, since Chat would then pick another adapter on that base. */
+export function chatHandoffFor(
+  listed: { loras?: { adapter_path?: unknown }[] } | null,
+  checkpoint: { base_model?: string; name?: string } | undefined,
+): { baseModel: string | null; outputDir: string } | null {
+  const outputDir =
+    listed && checkpoint?.name
+      ? adapterPathFor(listed.loras ?? [], checkpoint.name)
+      : null;
+  return outputDir
+    ? { baseModel: checkpoint?.base_model ?? null, outputDir }
+    : null;
+}

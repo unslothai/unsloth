@@ -10,7 +10,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { trainView, sparklinePath, rewardMax, rewardText, adapterPathFor } =
+const { trainView, sparklinePath, rewardMax, rewardText, adapterPathFor, chatHandoffFor } =
   await import(
   "../src/features/flows/editor/train-status.ts"
 );
@@ -171,6 +171,18 @@ test("Chat with it finds the adapter by the run folder's name", () => {
   assert.equal(adapterPathFor(loras, "run-1"), "/out/run-1/");
   assert.equal(adapterPathFor(loras, "run-2"), "C:\\out\\run-2");
   assert.equal(adapterPathFor(loras, "run-3"), null);
+});
+
+test("Chat with it hands over nothing when the run cannot be found, so Chat never picks another adapter", () => {
+  const checkpoint = { base_model: "unsloth/Qwen3-0.6B", name: "run-1" };
+  assert.deepEqual(chatHandoffFor({ loras: [{ adapter_path: "/out/run-1" }] }, checkpoint), {
+    baseModel: "unsloth/Qwen3-0.6B",
+    outputDir: "/out/run-1",
+  });
+  // The adapter scan failed, or does not list the run: no handoff with a null folder.
+  assert.equal(chatHandoffFor(null, checkpoint), null);
+  assert.equal(chatHandoffFor({ loras: [{ adapter_path: "/out/run-2" }] }, checkpoint), null);
+  assert.equal(chatHandoffFor({ loras: [] }, undefined), null);
 });
 
 test("Advanced holds every Train page setting, grouped in the Train page's order", () => {

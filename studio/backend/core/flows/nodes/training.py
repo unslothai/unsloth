@@ -399,6 +399,52 @@ def _content_hash(path: str) -> str:
     return digest.hexdigest()
 
 
+def _adapter_base(path: str) -> Optional[str]:
+    """The base a saved LoRA folder trains on top of (its adapter_config.json), else None."""
+    import json
+
+    try:
+        with open(os.path.join(path, "adapter_config.json"), encoding = "utf-8") as fh:
+            named = json.load(fh).get("base_model_name_or_path")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return named.strip() if isinstance(named, str) and named.strip() else None
+
+
+async def _model_material(ctx: NodeContext, base: str) -> Optional[dict]:
+    """What identifies the weights a run starts from: a local folder's files, a Hub repo's revision,
+    and for a saved LoRA folder the same for the base it loads under it. None = cannot tell."""
+    found: dict = {}
+    if os.path.isabs(base):
+        from core.flows.engine import _local_fingerprint
+
+        # Weights replaced at the same path must train again, as a local model's cache key does.
+        found["base_model_files"] = await asyncio.to_thread(_local_fingerprint, base)
+        if found["base_model_files"] is None:
+            return None
+        under = await asyncio.to_thread(_adapter_base, base)
+        if under and under != base:
+            # Continuing an adapter also loads its base: a changed base must train again too.
+            inner = await _model_material(ctx, under)
+            if inner is None:
+                return None
+            found["adapter_base"] = inner
+        return found
+    from core.flows.nodes.data import _REPO
+    from core.training.account_jobs import account_hf_token
+
+    if _REPO.match(base):
+        # New weights pushed to the same Hub repo must train again too.
+        token = account_hf_token(getattr(ctx.caller, "hf_token", None))
+        try:
+            found["base_model_revision"] = await asyncio.to_thread(_hub_model_revision, base, token)
+        except Exception:
+            return None
+        if not found["base_model_revision"]:
+            return None
+    return found
+
+
 async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
     """What the params can't show: the dataset's content and, for GRPO, the reward rules.
     None (an unreachable Hub, a missing file) means train again rather than guess."""
@@ -406,27 +452,11 @@ async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
     if found is None:
         return None
     base = str(ctx.params.get("base_model") or "").strip()
-    if base and os.path.isabs(base):
-        from core.flows.engine import _local_fingerprint
-
-        # Weights replaced at the same path must train again, as a local model's cache key does.
-        found["base_model_files"] = await asyncio.to_thread(_local_fingerprint, base)
-        if found["base_model_files"] is None:
+    if base:
+        model = await _model_material(ctx, base)
+        if model is None:
             return None
-    elif base:
-        from core.flows.nodes.data import _REPO
-        from core.training.account_jobs import account_hf_token
-        if _REPO.match(base):
-            # New weights pushed to the same Hub repo must train again too.
-            token = account_hf_token(getattr(ctx.caller, "hf_token", None))
-            try:
-                found["base_model_revision"] = await asyncio.to_thread(
-                    _hub_model_revision, base, token
-                )
-            except Exception:
-                return None
-            if not found["base_model_revision"]:
-                return None
+        found.update(model)
     if str(ctx.params.get("objective") or "sft") == "grpo":
         # A reward can be saved again under the same name, so the key holds what each rule checks.
         found["rewards"] = reward_rules(ctx.params.get("rewards"))

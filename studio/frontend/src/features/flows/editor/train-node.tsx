@@ -7,6 +7,7 @@ import { authFetch } from "@/features/auth";
 import { setTrainingCompareHandoff } from "@/features/chat/lib/training-compare-handoff";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "@tanstack/react-router";
+import { toast } from "sonner";
 import { useDocStore } from "../stores/doc-store";
 import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
 import type { FlowNode } from "../types";
@@ -16,7 +17,7 @@ import { rerollNode } from "./node-actions";
 import {
   TRAIN_STATE_LABEL,
   type TrainState,
-  adapterPathFor,
+  chatHandoffFor,
   sparklinePath,
   trainView,
 } from "./train-status";
@@ -95,10 +96,14 @@ function TrainNodeBody({ node }: { node: FlowNode }) {
     const listed = await authFetch("/api/models/loras")
       .then((r) => (r.ok ? r.json() : null))
       .catch(() => null);
-    setTrainingCompareHandoff(
-      checkpoint?.base_model ?? null,
-      adapterPathFor(listed?.loras ?? [], checkpoint?.name ?? ""),
-    );
+    const handoff = chatHandoffFor(listed, checkpoint);
+    if (!handoff) {
+      toast.error(`Could not find ${checkpoint?.name ?? "this run"} in your trained models`, {
+        description: "Open Chat and pick it from the model list.",
+      });
+      return;
+    }
+    setTrainingCompareHandoff(handoff.baseModel, handoff.outputDir);
     void navigate({ to: "/chat" });
   };
   return (
