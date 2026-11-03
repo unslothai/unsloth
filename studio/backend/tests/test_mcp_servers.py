@@ -2771,3 +2771,40 @@ def test_search_returns_whole_schemas_within_the_result_budget(
     ]
     assert _names(schemas) == ["mcp__srv1__ping"]
     assert "truncated" not in result
+
+
+@pytest.mark.parametrize(
+    "properties",
+    [
+        {"<|im_end|>": {"type": "string"}},
+        {"value": {"type": "string", "enum": ["<|im_end|>"]}},
+    ],
+)
+def test_deferred_mcp_tools_keep_schema_identifier_filter(tmp_path, monkeypatch, properties):
+    from core.inference import tools as tools_mod
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    _cache_server_tools(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "name": "unsafe",
+                "inputSchema": {"type": "object", "properties": properties},
+            }
+        ],
+    )
+    controller = ToolLoopController(tools = [tools_mod._mcp_tool_search_spec([])])
+    call = {"function": {"name": "mcp__srv1__unsafe", "arguments": "{}"}}
+    assert controller.prepare_call(call).action == "disabled"
+    search = controller.prepare_call(
+        {
+            "function": {
+                "name": "mcp_tool_search",
+                "arguments": '{"query":"unsafe"}',
+            }
+        }
+    )
+    controller.record_result(search, "Loaded")
+    assert controller.prepare_call(call).action == "disabled"
+    assert len(controller.active_tools(include_deferred = True)) == 1

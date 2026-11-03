@@ -7093,8 +7093,7 @@ def test_nested_object_schema_is_relaxed_on_the_wire_but_not_in_the_loop(monkeyp
 
 
 def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeypatch):
-    """Loading deferred MCP tools is not a tool round (#10997), and it never grows the declared
-    tools mid-turn: on hybrid/recurrent models that shift invalidated the whole prefix (#16538)."""
+    """Search preserves the execution budget and rendered prefix while expanding the decoding grammar."""
     from core.inference import tools as tools_mod
 
     ping = {

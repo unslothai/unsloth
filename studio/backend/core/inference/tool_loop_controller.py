@@ -627,7 +627,10 @@ def _declared_properties(tool_name: str, tool_schemas) -> Any:
 def _mcp_tool_spec(tool_name: str) -> Any:
     try:
         from core.inference.tools import mcp_tool_spec  # noqa: PLC0415 -- cycle at import time
-        return mcp_tool_spec(tool_name)
+        from core.inference.chat_template_helpers import neutralize_tool_descriptions  # noqa: PLC0415
+
+        specs = neutralize_tool_descriptions([mcp_tool_spec(tool_name)])
+        return specs[0] if specs else None
     except Exception:  # noqa: BLE001 -- an unknown tool stays disabled
         return None
 
@@ -635,7 +638,8 @@ def _mcp_tool_spec(tool_name: str) -> Any:
 def _mcp_tool_search_specs(arguments: Any) -> list:
     try:
         from core.inference.tools import mcp_tool_search_specs  # noqa: PLC0415 -- cycle at import time
-        return mcp_tool_search_specs(arguments)
+        from core.inference.chat_template_helpers import neutralize_tool_descriptions  # noqa: PLC0415
+        return neutralize_tool_descriptions(mcp_tool_search_specs(arguments)) or []
     except Exception:  # noqa: BLE001 -- a failed load leaves the listing as it was
         return []
 
