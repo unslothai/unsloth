@@ -273,6 +273,24 @@ test("a hostile waking from a knockout does not chase noises made while it was o
   );
 });
 
+test("a hostile added mid-play does not hear noises made before it existed", () => {
+  const { brain } = arena();
+  const c = A.newCombat();
+  const v = V.newVerbs();
+  V.makeNoise(v, 6.5, 5.5, V.NOISE.shot);
+  const hidden = player(22, 22, { hidden: true });
+  run(brain, c, hidden, 30, v.noises);
+  const late = E.addAgent(brain, "late", 5.5, 5.5, true);
+  const roused = () => {
+    const states = new Set<string>();
+    run(brain, c, hidden, 0.5, v.noises, () => states.add(late.state));
+    return [...states].filter((x) => x !== "idle" && x !== "patrol");
+  };
+  assert.deepEqual(roused(), []);
+  V.makeNoise(v, 6.5, 5.5, V.NOISE.shot);
+  assert.notDeepEqual(roused(), [], "a fresh noise still reaches it");
+});
+
 test("it decides at 10 Hz while it moves every frame", () => {
   const { brain } = arena();
   const c = A.newCombat();

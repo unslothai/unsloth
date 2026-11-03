@@ -258,6 +258,44 @@ def test_the_handler_makes_exactly_one_call_and_never_retries():
     json.dumps(out)
 
 
+def test_an_unparsable_mayor_answer_falls_back_after_one_request(monkeypatch):
+    from core.flows.nodes import _common
+
+    async def no_load(ctx, kind, model):
+        return None
+
+    monkeypatch.setattr(_common, "ensure_model", no_load)
+    answers = iter(["not json at all", json.dumps(_answer())])
+
+    class RealJsonCtx(FakeCtx):
+        def __init__(self):
+            super().__init__("world.npc_reply", inputs = {"state": _state()})
+            self.posts = 0
+
+        async def llm_json(self, **kw):
+            return await _common.llm_json(self, **kw)
+
+        def on_cancel(self, fn):
+            pass
+
+        async def call(
+            self,
+            method,
+            path,
+            json = None,
+            **kw,
+        ):
+            if path == "/api/inference/cancel":
+                return {}
+            self.posts += 1
+            return {"choices": [{"message": {"content": next(answers)}}]}
+
+    ctx = RealJsonCtx()
+    out = run(world_nodes.world_npc_reply(ctx))["reply"]["mayor"]
+    assert ctx.posts == 1
+    assert out["advice_source"] == "fallback"
+
+
 def test_the_mayor_example_turns_city_on():
     doc = next(d for d in build() if d["id"] == "mayor-meadow")
     world = resolve_world(doc)

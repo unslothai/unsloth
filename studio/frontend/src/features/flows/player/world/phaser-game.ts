@@ -57,6 +57,8 @@ export interface WorldArt {
 export interface WorldGameHandle {
   destroy(): void;
   playerTile(): Point;
+  /** The player's body overlaps this prop (3D action movement); tile checks miss a capsule reaching across. */
+  blocksProp?(p: WorldProp3d): boolean;
   removeItem(id: string): void;
   addNpc(npc: WorldNpc, at: Point): void;
   addItem(item: WorldItem, at: Point): void;

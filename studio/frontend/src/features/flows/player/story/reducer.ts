@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import {
   ExprError,
   Prng,
@@ -55,6 +54,8 @@ export interface StoryState {
   error: string | null;
   rev: number;
   seed: number;
+  // Sounds passed while leaving a scene, played at the next stop.
+  cues?: string[];
 }
 
 export type StoryAction =
@@ -112,6 +113,12 @@ export function restAt(lines: StoryLine[], from: number): number {
   )
     i++;
   return i;
+}
+
+function settled(s: StoryState): StoryState {
+  if (!s.cues) return s;
+  const { cues: _, ...rest } = s;
+  return rest;
 }
 
 export function atSceneStart(m: StoryManifest, s: StoryState): boolean {
@@ -263,17 +270,25 @@ function enter(
   }
   if (scene.generate_lines && m.entry_points?.next_scene)
     return { ...s, status: "reading" };
-  return leave(m, s, scene, hops + 1);
+  return leave(m, s, scene, hops + 1, 0);
 }
 
 function leave(
   m: StoryManifest,
-  s: StoryState,
+  here: StoryState,
   scene: StoryScene,
   hops: number,
+  from: number,
 ): StoryState {
-  const visible = visibleChoices(scene, s.vars);
-  if (visible.length > 0) return { ...s, status: "choosing" };
+  const visible = visibleChoices(scene, here.vars);
+  if (visible.length > 0) return { ...here, status: "choosing" };
+  const passed = [
+    ...(here.cues ?? []),
+    ...visibleLines(scene, here.vars)
+      .slice(from)
+      .flatMap((l) => (l.stage?.sound ? [l.stage.sound] : [])),
+  ];
+  const s = passed.length > 0 ? { ...here, cues: passed } : here;
   const routes = (scene.choices ?? []).filter((c) => c.text === "");
   for (const c of routes) {
     if (cond(c.if, s.vars)) return take(m, s, c, hops);
@@ -347,12 +362,12 @@ export function reduce(
       const next = restAt(lines, s.line + 1);
       if (next < lines.length) {
         return {
-          ...s,
+          ...settled(s),
           line: next,
           backlog: withBacklog(s, scene, lines[next]),
         };
       }
-      return leave(m, s, scene, 0);
+      return leave(m, settled(s), scene, 0, s.line + 1);
     }
     case "choose": {
       if (s.status !== "choosing") return s;
@@ -366,15 +381,20 @@ export function reduce(
         speaker: CHOICE_SPEAKER,
         text: choice.text,
       };
-      return take(m, { ...s, backlog: [...s.backlog, picked] }, choice, 0);
+      return take(
+        m,
+        { ...settled(s), backlog: [...s.backlog, picked] },
+        choice,
+        0,
+      );
     }
     case "jump":
-      return enter(m, s, a.sceneId, 0);
+      return enter(m, settled(s), a.sceneId, 0);
     case "set":
       return { ...s, vars: { ...s.vars, ...a.vars } };
     case "load": {
       if (!saveFits(m, a.state)) return s;
-      const loaded = { ...a.state, rev: s.rev + 1 };
+      const loaded = { ...settled(a.state), rev: s.rev + 1 };
       const scene = sceneOf(m, loaded, loaded.sceneId);
       if (!scene || loaded.status !== "reading") return loaded;
       const lines = visibleLines(scene, loaded.vars);
@@ -390,14 +410,14 @@ export function reduce(
         return s;
       const scene: StoryScene = { ...a.scene, id: a.asId };
       const withScene = {
-        ...s,
+        ...settled(s),
         extraScenes: { ...s.extraScenes, [a.asId]: scene },
       };
       return enter(m, withScene, a.asId, 0);
     }
     case "generationFailed":
       if (a.rev !== s.rev || s.status !== "generating") return s;
-      return fail(s, a.message);
+      return fail(settled(s), a.message);
     case "setBackground":
       if (a.rev !== s.rev) return s;
       return { ...s, backgrounds: { ...s.backgrounds, [a.sceneId]: a.media } };
@@ -435,7 +455,7 @@ export function reduce(
         const lines = visibleLines(replaced, s.vars);
         const first = Math.min(restAt(lines, 0), Math.max(0, lines.length - 1));
         return {
-          ...next,
+          ...settled(next),
           line: first,
           backlog: withBacklog({ ...next, backlog }, replaced, lines[first]),
         };
@@ -527,7 +547,8 @@ function castAfter(
 
 export function stageAt(m: StoryManifest, s: StoryState): StageView {
   const scene = sceneOf(m, s, s.sceneId);
-  if (!scene) return { cast: [], leaving: [], sounds: [] };
+  const carried = s.cues ?? [];
+  if (!scene) return { cast: [], leaving: [], sounds: carried };
   const lines = visibleLines(scene, s.vars);
   const upto = s.status === "choosing" ? lines.length - 1 : s.line;
   let prev = -1;
@@ -540,12 +561,14 @@ export function stageAt(m: StoryManifest, s: StoryState): StageView {
   }
   const before = castAfter(scene, lines, prev);
   const now = castAfter(scene, lines, upto);
-  const sounds: string[] = [];
+  const sounds = [...carried];
+  const here = s.status === "reading" || s.status === "choosing";
   const shown = new Map<string, StoryTransition | null>();
   const hidden = new Map<string, StoryTransition | null>();
   for (let i = prev + 1; i <= upto && i < lines.length; i++) {
     const st = lines[i].stage;
-    if (st?.sound) sounds.push(st.sound);
+    // Past a scene (ended, generating, error) its sounds are already carried.
+    if (st?.sound && here) sounds.push(st.sound);
     if (st?.show) shown.set(st.show, st.with ?? null);
     if (st?.hide) hidden.set(st.hide, st.with ?? null);
   }
