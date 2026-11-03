@@ -191,15 +191,15 @@ def record_temporary_usage(receipt) -> bool:
     try:
         conn.execute(
             f"""INSERT INTO {LEDGER_TABLE}
-                (message_id, thread_id, created_at, source, prompt_tokens, completion_tokens, total_tokens, context_tokens)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (message_id, thread_id, created_at, source, prompt_tokens, completion_tokens, total_tokens, context_tokens, parent_message_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
                     prompt_tokens = MAX(prompt_tokens, excluded.prompt_tokens),
                     completion_tokens = MAX(completion_tokens, excluded.completion_tokens),
                     total_tokens = MAX(total_tokens, excluded.total_tokens),
                     context_tokens = COALESCE(context_tokens, excluded.context_tokens)""",
             (
-                receipt.id,
+                receipt.temporary_message_id or receipt.id,
                 receipt.temporary_thread,
                 receipt.created_at,
                 receipt.temporary_source,
@@ -207,6 +207,7 @@ def record_temporary_usage(receipt) -> bool:
                 receipt.completion_tokens,
                 receipt.total_tokens,
                 receipt.context_tokens,
+                receipt.temporary_parent_id,
             ),
         )
         conn.commit()

@@ -125,15 +125,16 @@ def test_delegated_request_consumes_one_override(admission, monkeypatch, endpoin
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("external", [False, True])
 @pytest.mark.parametrize(
-    "usage_steps,new_tokens,internal_workflow",
+    "usage_steps,new_tokens,internal_workflow,parents",
     [
-        ([(90, 10, None)], 100, False),
-        ([(250, 20, 160), (180, 5, 185)], 295, False),
-        ([(90, 10, None), (90, 10, None)], 200, True),
+        ([(90, 10, None)], 100, False, [""]),
+        ([(250, 20, 160), (180, 5, 185)], 295, False, ["", "private-msg-0"]),
+        ([(100, 50, None), (100, 50, None)], 300, False, ["", ""]),
+        ([(90, 10, None), (90, 10, None)], 200, True, ["", ""]),
     ],
 )
 def test_temporary_chat_counts_without_persisting_its_content(
-    admission, monkeypatch, stream, external, usage_steps, new_tokens, internal_workflow
+    admission, monkeypatch, stream, external, usage_steps, new_tokens, internal_workflow, parents
 ):
     from fastapi.responses import StreamingResponse
     from core.inference.api_monitor import ApiMonitor
@@ -203,7 +204,9 @@ def test_temporary_chat_counts_without_persisting_its_content(
     }
     if external:
         payload["provider_type"] = "openai"
-    for _ in usage_steps:
+    for index, parent in enumerate(parents):
+        payload["temporary_message_id"] = f"private-msg-{index}"
+        payload["temporary_parent_id"] = parent
         assert client.post("/v1/chat/completions", json = payload).status_code == 200
     assert token_limit.status()["pools"][1 if external else 0]["used"] == new_tokens + (
         0 if external else 100

@@ -32,13 +32,21 @@ from storage.api_usage_db import (
 
 logger = logging.getLogger(__name__)
 TerminalCallback = Callable[[ApiUsageReceipt], None]
-_temporary_usage: ContextVar[Optional[tuple[str, str]]] = ContextVar(
-    "temporary_usage", default = None
-)
+
+
+@dataclass(frozen = True, slots = True)
+class TemporaryUsage:
+    thread: str
+    source: str
+    message_id: Optional[str] = None
+    parent_id: Optional[str] = None
+
+
+_temporary_usage: ContextVar[Optional[TemporaryUsage]] = ContextVar("temporary_usage", default = None)
 
 
 @contextmanager
-def temporary_usage_scope(value: Optional[tuple[str, str]]):
+def temporary_usage_scope(value: Optional[TemporaryUsage]):
     token = _temporary_usage.set(value)
     try:
         yield
@@ -201,7 +209,7 @@ class ApiMonitorEntry:
     account_id: str = field(default_factory = current_account_id)
     # True for sk-unsloth callers only: the panel auto-opens on these, not Unsloth's chat.
     via_api_key: bool = False
-    temporary_usage: Optional[tuple[str, str]] = None
+    temporary_usage: Optional[TemporaryUsage] = None
     # Monotonic anchors so duration math survives wall-clock steps (NTP).
     started_monotonic: float = 0.0
     finished_monotonic: Optional[float] = None
@@ -977,8 +985,14 @@ class ApiMonitor:
                 created_at = int(entry.finished_at * 1000),
                 kind = entry.kind,
                 via_api_key = entry.via_api_key,
-                temporary_thread = entry.temporary_usage[0] if entry.temporary_usage else None,
-                temporary_source = entry.temporary_usage[1] if entry.temporary_usage else "local",
+                temporary_thread = entry.temporary_usage.thread if entry.temporary_usage else None,
+                temporary_source = entry.temporary_usage.source if entry.temporary_usage else "local",
+                temporary_message_id = entry.temporary_usage.message_id
+                if entry.temporary_usage
+                else None,
+                temporary_parent_id = entry.temporary_usage.parent_id
+                if entry.temporary_usage
+                else None,
                 context_tokens = entry.context_tokens,
             ),
         )

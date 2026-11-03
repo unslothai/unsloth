@@ -3663,7 +3663,7 @@ from state.tool_approvals import (
 )
 
 from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
-from core.inference.api_monitor import api_monitor, temporary_usage_scope
+from core.inference.api_monitor import api_monitor, TemporaryUsage, temporary_usage_scope
 from core.inference.image_orientation import exif_upright
 from core.inference.mcp_images import (
     MAX_MODEL_IMAGES as _MCP_MAX_MODEL_IMAGES,
@@ -30698,9 +30698,15 @@ async def openai_chat_completions(
             if internal
             else payload.thread_id or payload.cancel_id or uuid.uuid4().hex
         )
-        temporary = (
+        temporary = TemporaryUsage(
             _hashlib.sha256(thread.encode("utf-8")).hexdigest(),
             "external" if payload.provider_id or payload.provider_type else "local",
+            _hashlib.sha256(f"{thread}\0{payload.temporary_message_id}".encode()).hexdigest()
+            if not internal and payload.temporary_message_id
+            else None,
+            _hashlib.sha256(f"{thread}\0{payload.temporary_parent_id}".encode()).hexdigest()
+            if not internal and payload.temporary_parent_id
+            else (None if internal else payload.temporary_parent_id),
         )
     with temporary_usage_scope(temporary):
         response = await produce_openai_chat_completions(

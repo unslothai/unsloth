@@ -85,11 +85,11 @@ test("completion payloads carry turn identity and temporary usage independently 
   );
   assert.match(
     adapter,
-    /\.\.\.\(resolvedThreadId \? \{ thread_id: resolvedThreadId \} : \{\}\),\s*\.\.\.userMessageIdField,\s*\.\.\.\(temporaryChat \? \{ temporary_chat: true \} : \{\}\),\s*\.\.\.\(useAdapter === undefined/,
+    /\.\.\.\(resolvedThreadId \? \{ thread_id: resolvedThreadId \} : \{\}\),\s*\.\.\.userMessageIdField,\s*\.\.\.temporaryUsageFields,\s*\.\.\.\(useAdapter === undefined/,
   );
   assert.match(
     adapter,
-    /model: externalSelection\.modelId,\s*messages: outboundMessages,\s*\.\.\.\(temporaryChat \? \{ temporary_chat: true \} : \{\}\),/,
+    /model: externalSelection\.modelId,\s*messages: outboundMessages,\s*\.\.\.temporaryUsageFields,/,
   );
   assert.match(
     adapter,

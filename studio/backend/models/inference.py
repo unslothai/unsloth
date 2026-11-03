@@ -3235,6 +3235,8 @@ class ChatCompletionRequest(BaseModel):
     temporary_chat: bool = Field(
         False, description = "[x-unsloth] Count usage without saving chat content."
     )
+    temporary_message_id: Optional[str] = Field(None, max_length = 256)
+    temporary_parent_id: Optional[str] = Field(None, max_length = 256)
     rag_scope: Optional[dict] = Field(
         None,
         description = (

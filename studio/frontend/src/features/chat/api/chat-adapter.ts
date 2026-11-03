@@ -5558,6 +5558,14 @@ export function createOpenAIStreamAdapter(
       const temporaryChat = Boolean(
         resolvedThreadId && isThreadIncognito(resolvedThreadId),
       );
+      const temporaryUsageFields = temporaryChat
+        ? {
+            temporary_chat: true,
+            temporary_message_id: unstable_assistantMessageId,
+            temporary_parent_id: continuation?.sourceMessageId ??
+              [...rawMessages].reverse().find((message) => message.role === "assistant")?.id ?? "",
+          }
+        : {};
       const userMessageIdField = userMessageIdRequestField(
         temporaryChat ? undefined : generationUserMessage?.id,
       );
@@ -6661,7 +6669,7 @@ export function createOpenAIStreamAdapter(
             return {
               model: externalSelection.modelId,
               messages: outboundMessages,
-              ...(temporaryChat ? { temporary_chat: true } : {}),
+              ...temporaryUsageFields,
               ...(providerSupportsPreserveThinking(externalProvider?.providerType)
                 ? { preserve_thinking: runtime.preserveThinking }
                 : {}),
@@ -6917,7 +6925,7 @@ export function createOpenAIStreamAdapter(
               : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
             ...userMessageIdField,
-            ...(temporaryChat ? { temporary_chat: true } : {}),
+            ...temporaryUsageFields,
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...localReasoningFields,
             ...(supportsPreserveThinking
