@@ -1062,6 +1062,41 @@ def test_a_run_asks_the_loaded_model_for_text_only(monkeypatch):
     assert request.state.keyless_api_admitted is False
 
 
+@pytest.mark.parametrize("external", [False, True])
+def test_scheduled_replies_respect_the_cap_and_one_override(monkeypatch, external):
+    import json
+
+    from core.inference import token_limit
+    from storage import providers_db
+
+    now = db.now_ms()
+    config = {"id": "conn-1", "is_enabled": 1, "display_name": "OpenAI", "provider_type": "openai"}
+    monkeypatch.setattr(providers_db, "get_provider", lambda provider_id: config)
+    monkeypatch.setattr(scheduler_module, "_chat_model_loaded", lambda: True)
+    task = make_task(model = "external::conn-1::gpt-5-mini" if external else None)
+    response = json.loads(completion("Done.").body)
+    response["usage"] = {"prompt_tokens": 90, "completion_tokens": 10, "total_tokens": 100}
+    answer = generate(monkeypatch, FakeProducer(JSONResponse(response)), task)
+    assert answer.content == "Done."
+    scheduler_module.save_chat(task, {"id": "run-1"}, answer, now, now + 1)
+    token_limit.update_settings(
+        {"enabled": True, "mode": "split", "localLimit": 100, "apiLimit": 100},
+        password = None,
+        new_password = None,
+    )
+    assert token_limit.status()["pools"][1 if external else 0]["used"] == 100
+    producer = FakeProducer(completion("Done."))
+    for granted in (False, True, False):
+        if granted:
+            token_limit.grant_override("api" if external else "local")
+            assert generate(monkeypatch, producer, task).content == "Done."
+        else:
+            producer.payload = None
+            with pytest.raises(RunFailed, match = "token limit"):
+                generate(monkeypatch, producer, task)
+            assert producer.payload is None
+
+
 @pytest.fixture
 def projects_home(tmp_path, monkeypatch):
     # Project folders otherwise land in the real ~/Documents/Unsloth Studio.
