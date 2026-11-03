@@ -6108,7 +6108,6 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
             scaling = scaler.get_scale() if scaler is not None and scaler.is_enabled() else None,
             rows_per_chunk = int(rows) if rows.strip().isdigit() else None,
         )
-        # Traced, the counter would make Dynamo guard (recompile) on its value.
         if not torch.compiler.is_compiling():
             try:
                 self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1

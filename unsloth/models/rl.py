@@ -4616,7 +4616,6 @@ _TRL_FUSED_HEAD_ARGS = (
     "final_logit_softcapping",
     "logit_scale",
 )
-# forward() params after ctx + hidden states: TRL 1.14, 1.15 - 1.16, and with ``support_ids``.
 _TRL_FUSED_HEAD_CONTRACTS = (
     _TRL_FUSED_HEAD_ARGS,
     _TRL_FUSED_HEAD_ARGS + ("outputs",),

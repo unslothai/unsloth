@@ -299,8 +299,6 @@ def test_patch_leaves_kernels_without_bias(monkeypatch):
 
 
 class _ScoreIdsKernel(_Kernel):
-    """TRL main's kernel (after 1.16): ``support_ids`` and ``score_ids`` passed on every call, six outputs."""
-
     @classmethod
     def apply(cls, *args):
         assert len(args) == 11
@@ -338,7 +336,6 @@ def _install(kernel, monkeypatch):
 
 
 def test_patch_leaves_kernels_with_an_unknown_contract(monkeypatch):
-    """A call / return contract the adapter does not reproduce keeps TRL's kernel, which then serves every call."""
     assert _install(_ScoreIdsKernel, monkeypatch) is _ScoreIdsKernel
     hidden, weight, bias, targets = _inputs(5)
     before = _ScoreIdsKernel._calls
@@ -355,8 +352,6 @@ def test_patch_leaves_kernels_with_an_unknown_contract(monkeypatch):
 
 
 def test_patch_wraps_the_installed_trl_kernel(monkeypatch):
-    """A released TRL kernel (1.14 - 1.16) gets the adapter, and the fused path serves its call.
-    A newer contract (TRL 1.17 adds score_ids and a sixth output) stays with TRL."""
     try:
         from trl.kernels import ChunkedLogProbFunction as kernel
     except Exception:

@@ -228,7 +228,6 @@ def test_traces_without_graph_breaks_and_matches_trl(kind, kwargs, split, masked
 
 @pytest.mark.parametrize("dynamic", [False, True, None], ids = ["static", "dynamic", "auto"])
 def test_engagement_counter_compiles_once(dynamic):
-    # A traced counter would recompile every step until fullgraph=True hits the limit.
     from torch._dynamo.testing import CompileCounterWithBackend
 
     forward = _load(True)
@@ -245,7 +244,7 @@ def test_engagement_counter_compiles_once(dynamic):
     counter = CompileCounterWithBackend("aot_eager")
     compiled = torch.compile(body, fullgraph = True, backend = counter, dynamic = dynamic)
     compiled(states).backward()
-    first = counter.frame_count  # dynamic=True may restart the first compile once ([0/0_1])
+    first = counter.frame_count
     for _ in range(9):
         compiled(states).backward()
     assert counter.frame_count == first

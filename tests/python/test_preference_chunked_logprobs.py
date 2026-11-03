@@ -319,7 +319,6 @@ def test_labels_differing_from_input_ids_take_a_second_nll_pass(monkeypatch):
 
 def test_declines_without_kernel_or_on_unsupported_setups(monkeypatch):
     stock, source = _trl_class("orpo")
-    # The class carrying the rewritten concatenated_forward, whether or not importing unsloth rebound TRL's.
     cls = type(
         "Patched",
         (stock,),
