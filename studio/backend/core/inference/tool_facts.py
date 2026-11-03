@@ -36,7 +36,12 @@ def awaits_user(result: str) -> bool:
     return ASKS_THE_USER in result and any(tag in result for tag in AWAITS_USER_WHEN_ASKED)
 
 
-def note_mcp_tool(name: str, tool: Mapping[str, Any], *, studio: bool = False) -> None:
+def note_mcp_tool(
+    name: str,
+    tool: Mapping[str, Any],
+    *,
+    studio: bool = False,
+) -> None:
     if studio and tool.get("name") in _STUDIO_POLLS:
         _mcp_polls.add(name)
     else:
