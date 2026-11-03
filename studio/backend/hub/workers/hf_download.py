@@ -296,30 +296,9 @@ def _model_manifest_attestation(commit) -> dict:
     return {}
 
 
-# refs/main publication contract for cooperating, SHA-pinned workers:
-# 1. At quiescence, main names the most recently STARTED verified successful
-#    attempt, or the value before the attempts if none succeeded. A previous
-#    successful publication is the baseline for subsequent attempts.
-# 2. Failure/cancellation never exposes its incomplete commit and never hides
-#    a peer's completed publication, even if partial files have landed.
-# 3. Verification failure raises; it cannot succeed via an older cache fallback.
-# 4. Transfers and verification run without the lock. All coordination files,
-#    including temporary files, live outside refs/ (scan_cache_dir reads refs).
-# 5. Only the winning success may reclaim, under the publication lock, with the
-#    published commit and every active attempt's commit protected from deletion.
-# 6. Each active attempt holds a native file lock until finish. A released owner
-#    lock proves cancellation, including SIGKILL and backend/orphan shutdown.
-#
-# Start and finish linearize under the same cross-process lock. Never pin main
-# before transfer: immutable SHA downloads do not write it, so rollback is just
-# removing an attempt. Only max(start sequence) among verified successes may
-# publish. A running newer attempt does not prevent an older success publishing;
-# it supersedes that publication only if it too succeeds. This also handles ABA
-# commits and successful no-op downloads without inspecting snapshot mutations.
-# The lock/state must be shared by all writers; unrelated Hub writers and
-# unrelated cache deletion are outside this protocol. This is not a power-loss
-# transaction across the JSON file and main; I/O errors fail closed rather than
-# retrying unpinned.
+# Among cooperating workers, the latest-started verified success owns main.
+# SHA transfers leave main unchanged; native owner locks identify abandoned attempts.
+# Journal/ref writes are not a power-loss transaction and cannot coordinate external writers.
 
 
 @dataclass(frozen = True)
@@ -332,7 +311,6 @@ class _MainRefState:
 
 
 def _start_main_ref(state: _MainRefState, commit: str, owner: str) -> tuple[_MainRefState, int]:
-    """Pure start decision; sequence allocation defines the attempt's start order."""
     sequence = state.next_sequence
     return _MainRefState(
         sequence + 1,
@@ -344,7 +322,6 @@ def _start_main_ref(state: _MainRefState, commit: str, owner: str) -> tuple[_Mai
 
 
 def _finish_main_ref(state: _MainRefState, sequence: int, verified: bool) -> _MainRefState:
-    """Pure terminal decision, shared by success, transfer/verification failure and cancel."""
     attempts = dict(state.attempts)
     commit = attempts.pop(sequence)
     publish = verified and sequence > state.published_sequence
@@ -358,7 +335,6 @@ def _finish_main_ref(state: _MainRefState, sequence: int, verified: bool) -> _Ma
 
 
 def _prune_main_ref_attempts(state: _MainRefState, owner_is_alive) -> _MainRefState:
-    """A dead owner is a cancellation, never a verified success."""
     for sequence, owner in state.owners:
         if not owner_is_alive(owner):
             state = _finish_main_ref(state, sequence, False)
@@ -366,9 +342,7 @@ def _prune_main_ref_attempts(state: _MainRefState, owner_is_alive) -> _MainRefSt
 
 
 def _main_ref_owner_lock(lock_dir: Path, owner: str):
-    # WeakFileLock may fall back to a soft lock, whose file survives SIGKILL.
-    # Require an OS-held lock instead: neither PID reuse nor backend restarts
-    # can make a dead owner look alive. Every attempt has a unique lock name.
+    # Soft locks survive SIGKILL and cannot prove ownership.
     from filelock import FileLock, SoftFileLock
 
     lock = FileLock(lock_dir / f"studio-main-owner-{owner}.lock")
@@ -386,8 +360,6 @@ def _main_ref_owner_is_alive(lock_dir: Path, owner: str) -> bool:
         lock = _main_ref_owner_lock(lock_dir, owner)
     except Timeout:
         return True
-    # A live worker keeps its lock even while waiting for the publication lock.
-    # No future attempt will reuse this UUID, so removing a dead lock is safe.
     lock.release()
     Path(lock.lock_file).unlink(missing_ok = True)
     return False
@@ -398,8 +370,7 @@ def _load_main_ref_state(path: Path, previous: str | None) -> _MainRefState:
         raw = path.read_text(encoding = "utf-8")
     except FileNotFoundError:
         return _MainRefState(published_commit = previous)
-    # A damaged journal must not reset the sequence while peers are still alive.
-    # Propagate errors instead of starting an uncoordinated/unpinned transfer.
+    # Resetting a damaged journal could reuse a live peer's sequence.
     data = json.loads(raw)
     state = _MainRefState(
         data["next_sequence"],
@@ -431,8 +402,6 @@ def _load_main_ref_state(path: Path, previous: str | None) -> _MainRefState:
             for sequence, owner in state.owners
         )
     ):
-        # An old journal with active ownerless workers cannot be safely pruned:
-        # fail closed rather than guessing whether those workers have died.
         raise ValueError(f"Invalid refs/main publication state: {path}")
     return state
 
@@ -471,9 +440,7 @@ def _update_main_ref(
                 _write_ref(ref, state.published_commit)
         except BaseException:
             if verified:
-                # Publication itself failed/cancelled. Do not leave a successful
-                # sequence that could disown an older still-running success.
-                # The lock excludes every peer until both files are restored.
+                # A failed publication must not disown an older active success.
                 failed = _finish_main_ref(before, sequence, False)
                 _write_ref(state_path, json.dumps(asdict(failed)))
                 if _read_ref(ref) != previous:
@@ -482,8 +449,7 @@ def _update_main_ref(
                     else:
                         _write_ref(ref, previous)
             raise
-        # Check ownership and reclaim in the same critical section: no peer can
-        # start or publish between the winner check and the last deletion.
+        # Reclaim under this lock so no new peer loses its snapshot.
         if verified and state.published_sequence == sequence and on_publish is not None:
             on_publish(state)
     return sequence
@@ -498,14 +464,7 @@ def _pinned_snapshot_download(
     on_publish = None,
     **kwargs,
 ):
-    """Transfer at an immutable SHA, verify, then publish by start order.
-
-    No provisional refs and no unpinned retries: Hub's legacy cache fallback must
-    neither expose partial bytes nor turn a failed update into an older success.
-    ``verify`` runs before success is recorded, outside the publication lock.
-    ``on_publish`` runs only for the winning verified attempt, under the lock.
-    Resolve metadata fallbacks before enrollment; never let the Hub write main.
-    """
+    """Transfer and verify outside the lock; publish and reclaim under it."""
     from hub.utils.snapshot_reuse import repo_cache_dir
 
     repo_type, repo_id = kwargs.get("repo_type") or "model", kwargs["repo_id"]
