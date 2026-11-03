@@ -611,6 +611,39 @@ test("tidy up keeps a card's blocks together when the card holds part of a group
   assert.deepEqual([nx - tx, ny - ty], [320 - 300, 100 - 40]);
 });
 
+test("tidy up moves a frame whose blocks all went into different closed cards", async () => {
+  const { tidyRequest, tidyPatch } = await import("../src/features/flows/editor/tidy.ts");
+  const { tidyGraph } = await import("../src/features/flows/editor/super-cards.ts");
+  useDocStore.getState().load(comic());
+  // Group g holds tpl and img, and each lands in its own closed card.
+  select("tpl", "raw");
+  combineSelection();
+  select("img", "view");
+  combineSelection();
+  const state = useDocStore.getState();
+  const ctx = {
+    graph: state.graph,
+    size: () => ({ width: 260, height: 140 }),
+    portY: () => undefined,
+    wireStyle: "curved" as const,
+  };
+  const folded = foldLayout(
+    tidyRequest({ ...ctx, graph: tidyGraph(state.graph, state.meta.editor) }),
+    state,
+    () => undefined,
+  );
+  assert.ok(!folded.request.nodes.some((n) => n.id === "group:g"));
+  const ids = cards().map((c) => `super:${c.id}`);
+  const patch = tidyPatch(
+    ctx,
+    folded.unfold({ prompt: [0, 0], [ids[0]]: [2000, 2000], [ids[1]]: [2400, 2000] }),
+  );
+  // The frame follows its blocks instead of staying where they were.
+  const [tx, ty] = patch.nodes.tpl.pos;
+  const [gx, gy] = patch.groups.g;
+  assert.deepEqual([gx - tx, gy - ty], [280 - 300, -40 - 40]);
+});
+
 test("Select All takes closed cards too, so Delete removes them", async () => {
   const { selectAllIds } = await import("../src/features/flows/editor/super-cards.ts");
   useDocStore.getState().load(comic());
