@@ -1663,14 +1663,9 @@ def adapter_state_dict(
 def _vanilla_expert_factors(
     base: nn.Module, A: torch.Tensor, B: torch.Tensor, num_experts: int, layout: str
 ):
-    """The factors as Zoo's patched get_peft_model_state_dict saves them, which this export bypasses.
+    """Apply Zoo's moe_lora_factor_swap save rules (bypassed by this export) so vanilla PEFT loads it.
 
-    Zoo re-lays out some experts classes (Qwen3-VL-MoE stacks stored transposed, Llama-4 flagged is_transposed), so
-    the installed PEFT factors their stacks on the other axis than vanilla does, and Zoo's moe_lora_factor_swap
-    swaps them back on save. The same rules apply here: only flagged classes, never a square pair (ambiguous by
-    shape), and never a legacy grouped_by_expert lora_B. That one has PEFT's 2D shape with another column order, so
-    a Zoo that saves it as [out, E, R] (vanilla PEFT then refuses it; Zoo's loaders flatten it back) gets the same
-    here. An older Zoo saves as trained on both paths."""
+    Only flagged classes, never a square pair; a legacy grouped lora_B is saved [out, E, R] as Zoo does."""
     try:
         from unsloth_zoo.temporary_patches import moe_lora_factor_swap as swap
     except Exception:  # noqa: BLE001 - Zoo without the converter: nothing is rewritten on any save

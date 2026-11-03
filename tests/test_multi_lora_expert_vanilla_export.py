@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A multi-LoRA expert export (adapter_state_dict, what Studio's batched trainer saves) loads in vanilla
-transformers + PEFT with the delta it trained, for experts Zoo re-lays out (Qwen3-VL-MoE stores its stacks
-transposed, so the installed PEFT factors them on the other axis than vanilla does)."""
+"""A multi-LoRA expert export loads in vanilla PEFT with its trained delta, for experts Zoo re-lays out."""
 
 from __future__ import annotations
 
@@ -143,7 +141,6 @@ def _vanilla_load(tmp_path, adapter_dir):
 def test_multi_lora_expert_export_loads_in_vanilla_peft(tmp_path, monkeypatch):
     monkeypatch.delenv("UNSLOTH_MOE_LORA_B_LAYOUT", raising = False)
     model, build, adapter_dir = _export(tmp_path)
-    # The delta adapter 0 trained, in Zoo's stored stack layout.
     mine = {}
     for name, experts in model.named_modules():
         if isinstance(experts, ml.MultiLoraExperts):
@@ -177,8 +174,7 @@ def test_multi_lora_expert_export_loads_in_vanilla_peft(tmp_path, monkeypatch):
 
 
 def test_legacy_grouped_multi_lora_export_is_refused_by_vanilla_peft(tmp_path, monkeypatch):
-    """A legacy grouped_by_expert lora_B has PEFT's 2D shape with another column order: saved 2D, vanilla PEFT loads
-    it with the experts mixed. It is saved [out, E, R] as Zoo's own save writes it, so vanilla refuses it."""
+    """A legacy grouped lora_B saved 2D would load with experts mixed, so it is saved [out, E, R] and refused."""
     swap = pytest.importorskip("unsloth_zoo.temporary_patches.moe_lora_factor_swap")
     if not hasattr(swap, "_flatten_grouped_lora_B"):
         pytest.skip("this Zoo saves a legacy grouped_by_expert lora_B 2D")
@@ -196,15 +192,13 @@ def test_legacy_grouped_multi_lora_export_is_refused_by_vanilla_peft(tmp_path, m
     saved = load_file(str(adapter_dir / "adapter_model.safetensors"))
     expert_B = [v for k, v in saved.items() if "experts" in k and ".lora_B." in k]
     assert len(expert_B) == len(EXPERTS)
-    # [out, E, R]: no PEFT reads a 3D lora_B. Shape alone refuses it on every PEFT, including 0.18 on
-    # transformers 4.x, where the experts' factors are otherwise not swapped and a 2D lora_B loads mixed.
+    # A 3D lora_B is refused by shape on every PEFT, including 0.18 where a 2D one would load mixed.
     assert all(B.dim() == 3 and B.shape[1] == 4 for B in expert_B), [
         tuple(B.shape) for B in expert_B
     ]
     proc, _ = _vanilla_load(tmp_path, adapter_dir)
     assert proc.returncode != 0 and "size mismatch" in proc.stderr, proc.stderr[-3000:]
 
-    # Unsloth, in the same legacy mode, reloads the factors exactly as trained.
     reloaded = peft.PeftModel.from_pretrained(build(), str(adapter_dir))
     seen = 0
     for name, module in reloaded.named_modules():
