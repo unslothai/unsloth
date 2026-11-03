@@ -5166,6 +5166,9 @@ class FastBaseModel:
                     revision = _tokenizer_revision,
                 )
                 model, _fallback_tok = patch_tokenizer(model, _fallback_tok)
+                from ..tokenizer_utils import _sync_pad_token_id
+
+                model = _sync_pad_token_id(model, _fallback_tok)
                 # Re-attach as a processor wrapper if the original was a processor (audio ones included).
                 if any(
                     hasattr(tokenizer, k)
