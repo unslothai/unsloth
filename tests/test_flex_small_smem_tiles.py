@@ -7,13 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import unsloth  # noqa: F401  (must precede transformers)
+import unsloth  # noqa: F401
 import unsloth.models._utils as u
 
 
 @pytest.fixture(autouse = True)
 def _flex_decoding_available(monkeypatch):
-    # These pin the routing where flex_decoding compiles; test_flex_decode_guard_wrapper.py covers a host where it cannot.
     monkeypatch.setattr(u, "_flex_decoding_unavailable", lambda: False, raising = False)
 
 
@@ -55,13 +54,13 @@ def devices(monkeypatch):
         ((RTX3090,), True),
         ((L4,), True),
         ((L40S, L4), True),
-        ((T4,), False),  # pre-Ampere never reaches flex (_FLEX_ATTENTION_MIN_CAPABILITY)
-        ((A100,), False),  # the default template fits: unchanged
+        ((T4,), False),
+        ((A100,), False),
         ((ORIN,), False),
         ((H100,), False),
         ((B200,), False),
-        ((RTX_PRO_6000,), False),  # sm120 has its own Inductor table, not measured here
-        ((L4, A100), False),  # every visible device must be in the class
+        ((RTX_PRO_6000,), False),
+        ((L4, A100), False),
         ((), False),
     ],
 )
@@ -103,7 +102,7 @@ def test_options_in_range(head_dim):
     opts = u._flex_small_smem_kernel_options(head_dim, True)
     assert opts == u._FLEX_SMALL_SMEM_KERNEL_OPTIONS
     assert all(k.startswith(("fwd_", "bwd_")) for k in opts)
-    opts["fwd_num_stages"] = 99  # a fresh dict per call
+    opts["fwd_num_stages"] = 99
     assert u._FLEX_SMALL_SMEM_KERNEL_OPTIONS["fwd_num_stages"] == 1
 
 
@@ -168,14 +167,13 @@ def _qkv(
 def test_wrapper_passes_tiles_for_training_calls(monkeypatch):
     wrapped, seen = _wrapped(monkeypatch)
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: True)
-    wrapped(_Causal(), *_qkv(16), object())  # a non-None mask stays on flex
+    wrapped(_Causal(), *_qkv(16), object())
     for k, v in u._FLEX_SMALL_SMEM_KERNEL_OPTIONS.items():
         assert seen[k] == v
     assert seen["FORCE_USE_FLEX_ATTENTION"] is True
 
 
 def test_wrapper_leaves_caller_tiles_alone(monkeypatch):
-    # A partial caller set merged with ours could break the templates' tile divisibility checks.
     wrapped, seen = _wrapped(monkeypatch)
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: True)
     wrapped(_Causal(), *_qkv(256), object(), kernel_options = {"fwd_num_stages": 3, "BLOCK_M": 16})
@@ -204,9 +202,9 @@ def test_wrapper_no_grad_prefill_gets_tiles_decode_does_not(monkeypatch):
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
     wrapped(_Causal(), *_qkv(128, grad = False), object())
     assert seen.get("fwd_BLOCK_M") == 64
-    assert "FORCE_USE_FLEX_ATTENTION" not in seen  # q_len >= 128 is the main kernel already
+    assert "FORCE_USE_FLEX_ATTENTION" not in seen
     wrapped(_Causal(), *_qkv(8, grad = False), object())
-    assert seen == {}  # flex_decoding keeps its own config
+    assert seen == {}
 
 
 def _gqa_qkv(
@@ -225,20 +223,19 @@ def _gqa_qkv(
 @pytest.mark.parametrize(
     "q_len,q_heads,kv_heads,tiled",
     [
-        (1, 4, 1, False),  # Gemma 3 1B decode step: 16 rows, flex_decoding fits
-        (16, 4, 1, False),  # 64 rows still fit
-        (17, 4, 1, True),  # 68 rows -> a 128-row tile: 114688 B
-        (28, 4, 1, True),  # Gemma 3 1B / 270M chat prompt
-        (28, 8, 4, False),  # Gemma 3 4B: 2 query heads per kv head, 56 rows
+        (1, 4, 1, False),
+        (16, 4, 1, False),
+        (17, 4, 1, True),
+        (28, 4, 1, True),
+        (28, 8, 4, False),
         (40, 8, 4, True),
         (127, 2, 2, True),
-        (28, 6, 2, False),  # not a power of two: transformers repeats K / V, 28 rows
+        (28, 6, 2, False),
     ],
 )
 def test_wrapper_short_prompt_whose_decode_tile_does_not_fit_gets_tiles(
     monkeypatch, q_len, q_heads, kv_heads, tiled
 ):
-    # A failed compile here pinned flex_attention to the eager fallback for the whole process.
     wrapped, seen = _wrapped(monkeypatch)
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
     wrapped(_Causal(), *_gqa_qkv(q_len, q_heads, kv_heads), object())
@@ -252,7 +249,7 @@ def test_wrapper_short_prompt_whose_decode_tile_does_not_fit_gets_tiles(
         assert seen == {}
     wrapped, seen = _wrapped(monkeypatch, small_ok = False)
     wrapped(_Causal(), *_gqa_qkv(q_len, q_heads, kv_heads), object())
-    assert seen == {}  # other cards keep the defaults
+    assert seen == {}
 
 
 @pytest.mark.parametrize(
@@ -273,22 +270,22 @@ def test_short_query_tiles_torch_gate(monkeypatch, version, expected):
 @pytest.mark.parametrize(
     "q_len,q_heads,kv_heads,forced",
     [
-        (1, 4, 1, False),  # Gemma 3 1B decode step: tiles, flex_decoding stays eligible
-        (4, 4, 1, False),  # 16 rows: flex_decoding's own BLOCK_M would be 16
-        (8, 4, 1, False),  # 32 rows
-        (16, 4, 1, False),  # 64 rows
-        (16, 8, 4, False),  # Gemma 3 4B 16-token prompt, 32 rows
-        (28, 8, 4, False),  # Gemma 3 4B prompt, 56 rows
-        (28, 6, 2, False),  # repeated K / V, 28 rows
-        (17, 4, 1, True),  # 68 rows: main kernel, as in the default gate
+        (1, 4, 1, False),
+        (4, 4, 1, False),
+        (8, 4, 1, False),
+        (16, 4, 1, False),
+        (16, 8, 4, False),
+        (28, 8, 4, False),
+        (28, 6, 2, False),
+        (17, 4, 1, True),
         (127, 2, 2, True),
     ],
 )
 def test_wrapper_short_no_grad_queries_get_tiles_before_torch_2_14(
     monkeypatch, q_len, q_heads, kv_heads, forced
 ):
-    # A batch size change makes the batch dim dynamic, which moves even one-token decode from
-    # flex_decoding to the main kernel, whose default tile does not fit (torch 2.10 / 2.11).
+    # Before 2.14, a dynamic batch can move one-token decode onto the main kernel.
+
     import torch
 
     qkv = [t.to(torch.bfloat16) for t in _gqa_qkv(q_len, q_heads, kv_heads)]
@@ -303,7 +300,7 @@ def test_wrapper_short_no_grad_queries_get_tiles_before_torch_2_14(
     assert seen.get("BLOCK_M") == (None if forced else 64)
     wrapped, seen = _wrapped(monkeypatch, small_ok = False, short_tiles = True)
     wrapped(_Causal(), *qkv, object())
-    assert seen == {}  # other cards keep the defaults
+    assert seen == {}
 
 
 @pytest.mark.parametrize(
@@ -316,7 +313,6 @@ def test_wrapper_short_no_grad_queries_get_tiles_before_torch_2_14(
     ],
 )
 def test_short_query_tiles_only_where_measured(monkeypatch, head_dim, dtype, tiled):
-    # fp32 needs 147456 B with these tiles on flex_decoding; head_dim 192 fails to build on 2.10.
     import torch
 
     wrapped, seen = _wrapped(monkeypatch, short_tiles = True)
@@ -356,8 +352,6 @@ def test_a100_keeps_its_tuned_backward(monkeypatch):
 
 
 def test_small_card_with_tuned_backward_forced_keeps_fitting_tiles(monkeypatch):
-    # UNSLOTH_FLEX_TUNED_BACKWARD=1 on an L4: backward-only keys would leave the default forward
-    # tile, which does not fit, so the full small-memory set wins.
     wrapped, seen = _wrapped(monkeypatch, small_ok = True, tuned_ok = True)
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: True)
     wrapped(_Causal(), *_qkv(256), object())
@@ -367,8 +361,8 @@ def test_small_card_with_tuned_backward_forced_keeps_fitting_tiles(monkeypatch):
 
 @pytest.mark.parametrize("requested", [{"FORCE_USE_FLEX_ATTENTION": True}, {"BACKEND": "TRITON"}])
 def test_wrapper_forced_main_kernel_no_grad_short_query_gets_tiles(monkeypatch, requested):
-    # Gradient checkpointing runs each block's first forward under no_grad, and the block compile
-    # hook forces the main kernel there, whose default head_dim 256 tiles do not fit (#15271).
+    # Checkpoint forwards force the main kernel (#15271).
+
     wrapped, seen = _wrapped(monkeypatch)
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
     wrapped(_Causal(), *_qkv(64, grad = False), object(), kernel_options = dict(requested))
@@ -377,12 +371,12 @@ def test_wrapper_forced_main_kernel_no_grad_short_query_gets_tiles(monkeypatch, 
     for k, v in requested.items():
         assert seen[k] == v
     wrapped(_Causal(), *_qkv(64, grad = False), object(), kernel_options = {"BACKEND": "AUTO"})
-    assert "fwd_BLOCK_M" not in seen  # flex_decoding may still run: its own tiles
+    assert "fwd_BLOCK_M" not in seen
 
 
 def test_wrapper_training_calls_add_no_sequence_guard(monkeypatch):
-    # The grad check must short-circuit before query.shape[2] >= 128, or a dynamic-shape block
-    # compiles once more when the sequence crosses 128.
+    # Check backward before sequence length to avoid a new dynamic-shape guard.
+
     import torch
 
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: True)
@@ -510,7 +504,6 @@ def test_wrapper_forced_short_prompt_keeps_explicit_backend_untouched(monkeypatc
 
 
 def test_wrapper_forced_short_prompt_keeps_caller_force_off_untouched(monkeypatch):
-    # The caller's FORCE off sends 112 rows to flex_decoding, which our main-kernel tiles do not cover.
     wrapped, seen = _wrapped(monkeypatch)
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
     requested = {"FORCE_USE_FLEX_ATTENTION": False}

@@ -1270,7 +1270,6 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             and small_smem_device_ok
             and hasattr(query, "dim")
             and query.dim() == 4
-            # Newer flex casts fp32 inputs inside autocast; older implementations leave them fp32.
             and (
                 getattr(query, "dtype", None) in (torch.float16, torch.bfloat16)
                 or (
