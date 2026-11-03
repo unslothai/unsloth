@@ -73,9 +73,14 @@ def failure_row(
 
     prompt = pick(prompt_column, PROMPT_KEYS, None)
     reference = pick(reference_column, REFERENCE_KEYS, prompt)
+    question = _text(lowered.get(prompt)) if prompt else ""
+    extra = _text(lowered.get("input")) if prompt == "instruction" and not prompt_column else ""
+    if extra.strip():
+        # An Alpaca row was scored as instruction plus input; feed back the same question.
+        question = f"{question}\n\n{extra.strip()}"
     row = {
         "origin": "failure",
-        "failed_prompt": _text(lowered.get(prompt)) if prompt else "",
+        "failed_prompt": question,
         "failed_reference": _text(lowered.get(reference)) if reference else "",
         "failed_output": _text(lowered.get(output)) if output else "",
     }

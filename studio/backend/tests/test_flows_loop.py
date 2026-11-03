@@ -572,3 +572,19 @@ def test_shared_boilerplate_in_test_rows_does_not_hide_probe_failures():
     }
     leaked = {"instruction": shared, "input": "What is the capital of Spain today?", "output": "x"}
     assert loop_rounds.drop_test_rows([probe, leaked], test_rows) == [probe]
+
+
+def test_an_alpaca_failure_is_fed_back_with_its_input():
+    row = loop_rounds.failure_row(
+        {
+            "instruction": "Translate to French",
+            "input": "cat",
+            "output": "chat",
+            "model_output": "dog",
+        }
+    )
+    assert row["failed_prompt"] == "Translate to French\n\ncat"
+    plain = loop_rounds.failure_row(
+        {"instruction": "Say hi", "input": "", "output": "hi", "model_output": "x"}
+    )
+    assert plain["failed_prompt"] == "Say hi"
