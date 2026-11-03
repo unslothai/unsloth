@@ -383,12 +383,14 @@ export const Route = createRootRoute({
       // Hover preloads must leave an idle session cold.
       detectHardware: !preload && routeNeedsHardware(location.pathname),
     });
-    const { isChatOnly, isTrainUnavailable, capabilitiesUnknown } = usePlatformStore.getState();
+    const { isChatOnly, isTrainUnavailable, capabilitiesUnknown, detectionDeferred } =
+      usePlatformStore.getState();
     const unmeasured = capabilitiesUnknown();
     if (
       isChatOnly() &&
       !isChatOnlyAllowed(location.pathname, !isTrainUnavailable()) &&
-      !(unmeasured && waitsOutUnknownVerdict(location.pathname))
+      // A deferred chat_only is provisional; hardware routes requested detection above.
+      !(unmeasured && (detectionDeferred || waitsOutUnknownVerdict(location.pathname)))
     ) {
       throw redirect({ to: "/chat" });
     }

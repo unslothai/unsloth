@@ -190,3 +190,28 @@ test("a deferred reply names the server platform and is re-read until measured",
   assert.deepEqual(urls, ["/api/health", "/api/health"]);
   assert.equal(state.capabilitiesUnknown(), false);
 });
+
+test("a deferred verdict neither redirects nor blocks Train entry points on a guess", async () => {
+  reset();
+  const rootSource = readSrc("app/routes/__root.tsx");
+  const match = /beforeLoad: async \(\{ location, preload \}\) => \{([\s\S]*?)\n  \},\n  component: RootLayout/.exec(rootSource);
+  assert.ok(match, "root route guard moved");
+  const beforeLoad = new Function(
+    "fetchDeviceType", "routeNeedsHardware", "usePlatformStore",
+    "isChatOnlyAllowed", "waitsOutUnknownVerdict", "redirect",
+    "return async ({ location, preload }) => {" + match[1] + "};",
+  )(
+    fetchDeviceType, routeNeedsHardware, usePlatformStore,
+    () => false, () => false, () => { throw new Error("redirected"); },
+  ) as (options: { location: { pathname: string }; preload: boolean }) => Promise<void>;
+
+  await beforeLoad({ location: { pathname: "/settings" }, preload: false });
+  replies = [{ ...GPU, chat_only: true, chat_only_reason: "no_gpu" }];
+  await fetchDeviceType({ force: true });
+  await assert.rejects(beforeLoad({ location: { pathname: "/settings" }, preload: false }), /redirected/);
+
+  assert.match(
+    readSrc("features/settings/tabs/data-tab.tsx"),
+    /s\.isTrainUnavailable\(\) && !s\.capabilitiesUnknown\(\)/,
+  );
+});

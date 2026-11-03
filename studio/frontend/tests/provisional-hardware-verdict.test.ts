@@ -316,7 +316,7 @@ test("the route guard waits out an unknown verdict on Train and Video", async ()
   }
   assert.match(
     src,
-    /!\(unmeasured && waitsOutUnknownVerdict\(location\.pathname\)\)/,
+    /!\(unmeasured && \(detectionDeferred \|\| waitsOutUnknownVerdict\(location\.pathname\)\)\)/,
     "the redirect does not consult the unknown state",
   );
   // Child routes count too, or /studio/anything bounces while /studio does not.
