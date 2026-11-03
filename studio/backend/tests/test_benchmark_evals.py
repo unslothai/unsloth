@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -593,3 +594,11 @@ def test_a_hub_run_is_named_with_its_loaded_quant(monkeypatch):
     )
     llama.is_loaded = False
     assert label(repo) == repo
+
+
+def test_two_runs_in_one_second_get_their_own_folder_and_id(monkeypatch, tmp_path):
+    monkeypatch.setattr(benchmark_routes, "outputs_root", lambda: tmp_path)
+    monkeypatch.setattr(benchmark_routes.time, "strftime", lambda fmt: "20261103_081500")
+    first, second = (benchmark_routes._run_output_path("gsm8k") for _ in range(2))
+    assert first != second
+    assert os.path.basename(first).startswith("benchmark_gsm8k_20261103_081500_")

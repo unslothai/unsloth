@@ -12,6 +12,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
 
@@ -233,6 +234,12 @@ logger = get_logger(__name__)
 threading.Thread(target = _get_task_cache, daemon = True).start()
 
 
+
+def _run_output_path(task: str) -> str:
+    """The run's results folder; its name is also the run id, so two runs in one second need a suffix."""
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    return str(outputs_root() / "evals" / f"benchmark_{task}_{ts}_{uuid.uuid4().hex[:6]}")
+
 @router.get("/tasks", response_model = BenchmarkTasksResponse)
 async def list_benchmark_tasks(current_subject: str = Depends(get_current_subject)):
     """List available benchmark tasks — curated shortlist merged with all lm_eval tasks."""
@@ -420,8 +427,7 @@ async def run_benchmark(
 
         # Results are always written to an auto-managed directory; there is no
         # user-supplied output path.
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        output_path = str(outputs_root() / "evals" / f"benchmark_{request.task}_{ts}")
+        output_path = _run_output_path(request.task)
 
         model_lines, lm_eval_kwargs = resolve_model_details(
             request.checkpoint_path,
