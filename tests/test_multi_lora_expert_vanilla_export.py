@@ -82,7 +82,15 @@ def _apply_zoo_patches():
             pass
 
 
-def test_multi_lora_expert_export_loads_in_vanilla_peft(tmp_path):
+def _key(name, parameter_name):
+    name = name.removeprefix("base_model.model.")
+    while name.endswith(".base_layer"):
+        name = name[: -len(".base_layer")]
+    return f"{name}.{parameter_name}"
+
+
+def _export(tmp_path):
+    """A tiny Qwen3-VL-MoE with adapter 0 trained (non-zero B) and exported as Studio's batched trainer does."""
     swap = pytest.importorskip("unsloth_zoo.temporary_patches.moe_lora_factor_swap")
     _apply_zoo_patches()
     scope = {}
@@ -93,24 +101,13 @@ def test_multi_lora_expert_export_loads_in_vanilla_peft(tmp_path):
     if not swap._factors_swapped(experts_cls):
         pytest.skip(f"this Zoo does not re-lay out {experts_cls.__name__}")
     ml.inject_multi_lora(lm, ["q_proj"], 2, R, ALPHA)
-    wrapped = ml.inject_multi_lora_experts(lm, EXPERTS, 2, R, ALPHA)
-    assert wrapped
+    assert ml.inject_multi_lora_experts(lm, EXPERTS, 2, R, ALPHA)
     with torch.no_grad():
         # Non-zero B: PEFT's zero init would load any layout as a zero delta.
         torch.manual_seed(1)
         for _, layer in ml._layers(model):
             for B in layer.lora_B:
                 B.normal_(0, 0.5)
-
-    # The delta adapter 0 trained, in Zoo's stored stack layout.
-    mine = {}
-    for name, experts in model.named_modules():
-        if isinstance(experts, ml.MultiLoraExperts):
-            for param in experts.parameter_names:
-                W = getattr(experts.base_layer, param)
-                delta = experts.adapters[param].folded(torch.zeros_like(W), 0, experts.transposed)
-                mine[f"{name}.{param.split('.')[-1]}"] = delta.detach()
-    assert len(mine) == len(EXPERTS)
 
     from safetensors.torch import save_file
 
@@ -125,7 +122,10 @@ def test_multi_lora_expert_export_loads_in_vanilla_peft(tmp_path):
         target_modules = ["q_proj"],
         target_parameters = EXPERTS,
     ).save_pretrained(str(adapter_dir))
+    return model, scope["build"], adapter_dir
 
+
+def _vanilla_load(tmp_path, adapter_dir):
     script = tmp_path / "vanilla_load.py"
     script.write_text(VANILLA)
     out = tmp_path / "deltas.pt"
@@ -137,8 +137,24 @@ def test_multi_lora_expert_export_loads_in_vanilla_peft(tmp_path):
         env = env,
         timeout = 600,
     )
-    assert proc.returncode == 0, proc.stderr[-3000:]
+    return proc, out
 
+
+def test_multi_lora_expert_export_loads_in_vanilla_peft(tmp_path, monkeypatch):
+    monkeypatch.delenv("UNSLOTH_MOE_LORA_B_LAYOUT", raising = False)
+    model, build, adapter_dir = _export(tmp_path)
+    # The delta adapter 0 trained, in Zoo's stored stack layout.
+    mine = {}
+    for name, experts in model.named_modules():
+        if isinstance(experts, ml.MultiLoraExperts):
+            for param in experts.parameter_names:
+                W = getattr(experts.base_layer, param)
+                delta = experts.adapters[param].folded(torch.zeros_like(W), 0, experts.transposed)
+                mine[f"{name}.{param.split('.')[-1]}"] = delta.detach()
+    assert len(mine) == len(EXPERTS)
+
+    proc, out = _vanilla_load(tmp_path, adapter_dir)
+    assert proc.returncode == 0, proc.stderr[-3000:]
     vanilla = torch.load(out)
     assert set(vanilla) == set(mine), (sorted(vanilla), sorted(mine))
     for key, delta in mine.items():
@@ -148,17 +164,53 @@ def test_multi_lora_expert_export_loads_in_vanilla_peft(tmp_path):
         torch.testing.assert_close(vanilla[key], delta.transpose(1, 2), atol = 1e-6, rtol = 1e-5)
 
     # The same folder still reloads under Unsloth (Zoo maps the vanilla pair back) with the trained delta.
-    reloaded = peft.PeftModel.from_pretrained(scope["build"](), str(adapter_dir))
+    reloaded = peft.PeftModel.from_pretrained(build(), str(adapter_dir))
     seen = 0
     for name, module in reloaded.named_modules():
-        if type(module).__name__ != "ParamWrapper":
-            continue
-        name = name.removeprefix("base_model.model.")
-        while name.endswith(".base_layer"):
-            name = name[: -len(".base_layer")]
-        key = f"{name}.{module.parameter_name}"
-        torch.testing.assert_close(
-            module.get_delta_weight("default"), mine[key], atol = 1e-6, rtol = 1e-5
-        )
-        seen += 1
+        if type(module).__name__ == "ParamWrapper":
+            key = _key(name, module.parameter_name)
+            torch.testing.assert_close(
+                module.get_delta_weight("default"), mine[key], atol = 1e-6, rtol = 1e-5
+            )
+            seen += 1
     assert seen == len(mine)
+
+
+def test_legacy_grouped_multi_lora_export_is_refused_by_vanilla_peft(tmp_path, monkeypatch):
+    """A legacy grouped_by_expert lora_B has PEFT's 2D shape with another column order: saved 2D, vanilla PEFT loads
+    it with the experts mixed. It is saved [out, E, R] as Zoo's own save writes it, so vanilla refuses it."""
+    swap = pytest.importorskip("unsloth_zoo.temporary_patches.moe_lora_factor_swap")
+    if not hasattr(swap, "_flatten_grouped_lora_B"):
+        pytest.skip("this Zoo saves a legacy grouped_by_expert lora_B 2D")
+    monkeypatch.setenv("UNSLOTH_MOE_LORA_B_LAYOUT", "grouped_by_expert")
+    model, build, adapter_dir = _export(tmp_path)
+    trained = {}
+    for name, experts in model.named_modules():
+        if isinstance(experts, ml.MultiLoraExperts):
+            for param in experts.parameter_names:
+                A, B = experts.adapters[param].peft_tensors(0, "grouped_by_expert")
+                trained[f"{name}.{param.split('.')[-1]}"] = (A, B)
+
+    from safetensors.torch import load_file
+
+    saved = load_file(str(adapter_dir / "adapter_model.safetensors"))
+    expert_B = [v for k, v in saved.items() if "experts" in k and ".lora_B." in k]
+    assert len(expert_B) == len(EXPERTS)
+    # [out, E, R]: no PEFT reads a 3D lora_B. Shape alone refuses it on every PEFT, including 0.18 on
+    # transformers 4.x, where the experts' factors are otherwise not swapped and a 2D lora_B loads mixed.
+    assert all(B.dim() == 3 and B.shape[1] == 4 for B in expert_B), [
+        tuple(B.shape) for B in expert_B
+    ]
+    proc, _ = _vanilla_load(tmp_path, adapter_dir)
+    assert proc.returncode != 0 and "size mismatch" in proc.stderr, proc.stderr[-3000:]
+
+    # Unsloth, in the same legacy mode, reloads the factors exactly as trained.
+    reloaded = peft.PeftModel.from_pretrained(build(), str(adapter_dir))
+    seen = 0
+    for name, module in reloaded.named_modules():
+        if type(module).__name__ == "ParamWrapper":
+            A, B = trained[_key(name, module.parameter_name)]
+            torch.testing.assert_close(module.lora_A["default"].weight, A, atol = 0, rtol = 0)
+            torch.testing.assert_close(module.lora_B["default"].weight, B, atol = 0, rtol = 0)
+            seen += 1
+    assert seen == len(trained)

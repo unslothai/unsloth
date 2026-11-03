@@ -1663,22 +1663,23 @@ def adapter_state_dict(
 def _vanilla_expert_factors(
     base: nn.Module, A: torch.Tensor, B: torch.Tensor, num_experts: int, layout: str
 ):
-    """The factors vanilla transformers + PEFT load, as Zoo's patched get_peft_model_state_dict saves them.
+    """The factors as Zoo's patched get_peft_model_state_dict saves them, which this export bypasses.
 
     Zoo re-lays out some experts classes (Qwen3-VL-MoE stacks stored transposed, Llama-4 flagged is_transposed), so
-    the installed PEFT factors their stacks on the other axis than vanilla does. Zoo's moe_lora_factor_swap rewrites
-    a single-adapter save into vanilla's factorization; this export bypasses that save, so it applies the same swap
-    with the same rules: only flagged classes, only the rank-major packing (a legacy grouped_by_expert adapter is
-    kept as trained there too) and never a square pair (ambiguous by shape). An older Zoo without the module saves
-    as trained on both paths."""
-    if layout != "rank_major" or A.shape[1] == B.shape[0]:
-        return A, B
+    the installed PEFT factors their stacks on the other axis than vanilla does, and Zoo's moe_lora_factor_swap
+    swaps them back on save. The same rules apply here: only flagged classes, never a square pair (ambiguous by
+    shape), and never a legacy grouped_by_expert lora_B. That one has PEFT's 2D shape with another column order, so
+    a Zoo that saves it as [out, E, R] (vanilla PEFT then refuses it; Zoo's loaders flatten it back) gets the same
+    here. An older Zoo saves as trained on both paths."""
     try:
         from unsloth_zoo.temporary_patches import moe_lora_factor_swap as swap
-        swapped = swap._factors_swapped(type(base))
-    except Exception:  # noqa: BLE001 - Zoo without the converter: nothing is swapped on any save
+    except Exception:  # noqa: BLE001 - Zoo without the converter: nothing is rewritten on any save
         return A, B
-    if not swapped:
+    if layout != "rank_major":
+        if hasattr(swap, "_flatten_grouped_lora_B") and B.shape[1] % num_experts == 0:
+            B = B.reshape(B.shape[0], num_experts, B.shape[1] // num_experts)
+        return A, B
+    if A.shape[1] == B.shape[0] or not swap._factors_swapped(type(base)):
         return A, B
     return swap.swap_expert_lora_factors(A, B, num_experts)
 
