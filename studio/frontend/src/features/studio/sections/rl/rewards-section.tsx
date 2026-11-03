@@ -469,11 +469,12 @@ export function RewardsSection(): ReactElement {
   )?.[0];
   // A blank answer in the row stays blank, as in training; the sample is for no row at all.
   const mappedAnswer = rowAnswer(previewRow, answerColumn);
-  const rowReference = mappedAnswer ?? "";
+  const rowReference = previewCell(mappedAnswer);
   // What training compares against: null only for a null cell, which scores as missing.
-  const answerReference =
+  const answerReference: unknown =
     referenceEdit ?? (mappedAnswer === undefined ? "72" : mappedAnswer);
-  const reference = answerReference ?? "";
+  const reference =
+    referenceEdit ?? (mappedAnswer === undefined ? "72" : rowReference);
 
   const active = library.filter((r) => !r.shadowed);
   const byName = new Map(active.map((r) => [r.name, r]));

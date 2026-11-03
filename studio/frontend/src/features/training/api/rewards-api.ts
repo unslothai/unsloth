@@ -84,7 +84,7 @@ export async function deleteReward(name: string): Promise<void> {
 export async function previewRewards(
   rewards: GrpoRewardSelection[],
   completion: string,
-  reference: string | null,
+  reference: unknown,
   row: Record<string, unknown> | null = null,
   prompt: string | Record<string, unknown>[] | null = null,
   systemPrompt: string | null = null,

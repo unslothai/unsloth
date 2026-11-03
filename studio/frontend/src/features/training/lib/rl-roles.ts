@@ -161,7 +161,7 @@ export function alpacaPromptCell(
 /** ``answer`` undefined: no answer role, so no answer kwarg; null is an empty cell, kept as null. */
 export function pythonRewardRow(
   row: Record<string, unknown>,
-  answer: string | null | undefined,
+  answer: unknown,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [column, value] of Object.entries(row)) {
@@ -211,20 +211,16 @@ export function syncRlMapping(
   return next;
 }
 
-/** The answer GRPO training gets from this row's answer column: null for an empty cell, as
- * training keeps it. Undefined when there is no row or no answer role to read. */
+/** The cell GRPO training reads from this row's answer column, as is: the backend converts it
+ * the way training does. Null for an empty cell; undefined when there is no row or answer role. */
 export function rowAnswer(
   row: Record<string, unknown> | null | undefined,
   answerColumn: string | undefined,
-): string | null | undefined {
+): unknown {
   if (!row || !answerColumn) {
     return undefined;
   }
-  const value = row[answerColumn];
-  if (value === null || value === undefined) {
-    return null;
-  }
-  return typeof value === "string" ? value : JSON.stringify(value);
+  return row[answerColumn] ?? null;
 }
 
 /** The reference a reward is scored against, as in training: its compare_to column of the row,
@@ -232,8 +228,8 @@ export function rowAnswer(
 export function rewardPreviewReference(
   row: Record<string, unknown> | null | undefined,
   compareTo: unknown,
-  answer: string | null,
-): string | null {
+  answer: unknown,
+): unknown {
   if (typeof compareTo === "string" && compareTo !== "answer") {
     return rowAnswer(row, compareTo) ?? null;
   }
