@@ -29,8 +29,7 @@ _ACTIVE = 0
 # Set after a failed restore (weights may be corrupted): never fold again.
 _POISONED = None
 _STREAMS = {}
-# Thread whose call may fold, from its entry until it refuses or restores: other threads' calls wait, since
-# they would run on weights being folded / restored (LoRA applied twice or not at all).
+# Thread whose call may fold, until it refuses or restores: other threads wait (weights in flux).
 _OWNER = None
 _RESTORED = threading.Condition(_LOCK)
 _POISON_ATTR = "_unsloth_lora_fold_poisoned"
@@ -210,8 +209,7 @@ def fold_refusal(model):
             for m in (base, A, B)
         ):
             return "qat", None
-        # PEFT's generate(adapter_names = ...) injects per-example adapters through these hooks and
-        # refuses them on merged layers.
+        # PEFT generate(adapter_names=...) hooks: PEFT refuses them on merged layers.
         if any(
             isinstance(h, functools.partial)
             and getattr(h.func, "__name__", "") == "_adapter_names_pre_forward_hook"
@@ -349,7 +347,7 @@ def lora_fold_generate(
     finally:
         with _RESTORED:
             _ACTIVE -= 1
-        # Only the call that took ownership gives it back (a nested call must not end the outer fold's).
+        # Only the owning call releases (a nested call must not end the outer fold's).
         if first:
             _release(me)
 
@@ -444,7 +442,7 @@ def _restore(model, api, targets, flagged, stream):
     try:
         api.exact_unfold(targets, stream = stream)
     except BaseException as error:
-        # No more folds in this process, and this model refuses to generate on its unknown weights.
+        # No more folds; this model refuses to generate on its unknown weights.
         _POISONED = repr(error)
         try:
             setattr(model, _POISON_ATTR, _POISONED)
