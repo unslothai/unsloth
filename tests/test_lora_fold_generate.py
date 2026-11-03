@@ -13,6 +13,8 @@ import sys
 import types
 from pathlib import Path
 
+import time
+
 import pytest
 import torch
 
@@ -362,6 +364,38 @@ def test_short_calls_and_threshold(monkeypatch):
     assert fold.requested_new_tokens(model, (), {"max_new_tokens": 127}) < fold._min_tokens()
     monkeypatch.setenv("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS", "bad")
     assert fold._min_tokens() == 128
+
+
+def test_other_threads_wait_for_restore(_clean):
+    import threading
+
+    model = _make(MODELS[0])
+    kw = {"max_new_tokens": 32}
+    inside, release, order = threading.Event(), threading.Event(), []
+
+    def first():
+        with torch.inference_mode(), fold.lora_fold_generate(model, (), kw) as engaged:
+            order.append(("first", engaged))
+            inside.set()
+            release.wait(30)
+        order.append("first_restored")
+
+    def second():
+        inside.wait(30)
+        with torch.inference_mode(), fold.lora_fold_generate(model, (), kw) as engaged:
+            order.append(("second", engaged))
+
+    threads = [threading.Thread(target = first), threading.Thread(target = second)]
+    for t in threads:
+        t.start()
+    inside.wait(30)
+    time.sleep(0.3)
+    assert order == [("first", True)]  # the second call waits while weights are folded
+    release.set()
+    for t in threads:
+        t.join(30)
+    assert order == [("first", True), "first_restored", ("second", True)]
+    assert fold._ACTIVE == 0 and fold._OWNER is None
 
 
 def test_nested_call_does_not_fold_twice(_clean):

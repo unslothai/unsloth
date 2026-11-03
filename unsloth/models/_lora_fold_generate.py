@@ -29,6 +29,10 @@ _ACTIVE = 0
 # Set after a failed restore (weights may be corrupted): never fold again.
 _POISONED = None
 _STREAMS = {}
+# Thread whose call may fold, from its entry until it refuses or restores: other threads' calls wait, since
+# they would run on weights being folded / restored (LoRA applied twice or not at all).
+_OWNER = None
+_RESTORED = threading.Condition(_LOCK)
 
 
 def stats():
@@ -280,9 +284,14 @@ def lora_fold_generate(
 ):
     """Fold every LoRA adapter into its 16-bit base weight for the body, then restore it bit for bit."""
     global _ACTIVE
-    with _LOCK:
+    me = threading.get_ident()
+    with _RESTORED:
+        while _OWNER is not None and _OWNER != me:
+            _RESTORED.wait()
         first = _ACTIVE == 0
         _ACTIVE += 1
+        if first:
+            _set_owner(me)
     try:
         reason, targets = None, None
         if os.environ.get("UNSLOTH_LORA_FOLD_GENERATE", "1") == "0":
@@ -301,14 +310,30 @@ def lora_fold_generate(
             except Exception:
                 reason = "check_failed"
         if reason is not None:
+            _release(me)
             _refuse(reason)
             yield False
             return
         with _scope(targets) as engaged:
+            if not engaged:
+                _release(me)
             yield engaged
     finally:
-        with _LOCK:
+        with _RESTORED:
             _ACTIVE -= 1
+        _release(me)
+
+
+def _set_owner(owner):
+    global _OWNER
+    _OWNER = owner
+
+
+def _release(me):
+    with _RESTORED:
+        if _OWNER == me:
+            _set_owner(None)
+            _RESTORED.notify_all()
 
 
 @contextlib.contextmanager
