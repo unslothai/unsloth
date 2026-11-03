@@ -12,6 +12,9 @@ import {
   type FlowNote,
 } from "../types";
 
+/** recipe-columns.ts GENERATE_TYPE; kept here so the store imports nothing from the recipe editor. */
+const RECIPE_DATASET = "recipe.generate";
+
 /** Graph state normalized by id. Every record is immutable: an edit replaces only what it touches,
  *  so a node component selecting `nodes[id]` re-renders only when that node changed. */
 export interface DocGraph {
@@ -452,7 +455,19 @@ export const useDocStore = create<DocState>((set, get) => {
         const nodeOrder = [...s.graph.nodeOrder];
         for (const node of fragment.nodes) {
           if (nodes[node.id]) continue;
-          nodes[node.id] = { ...node, group: frameAt(s.graph, node.pos) };
+          const group = frameAt(s.graph, node.pos);
+          // A recipe runs from one Recipe Dataset step: a pasted or duplicated second one comes in off.
+          const extra =
+            node.type === RECIPE_DATASET &&
+            !node.disabled &&
+            !!group &&
+            nodeOrder.some(
+              (id) =>
+                nodes[id].type === RECIPE_DATASET &&
+                nodes[id].group === group &&
+                !nodes[id].disabled,
+            );
+          nodes[node.id] = { ...node, group, ...(extra ? { disabled: true } : {}) };
           nodeOrder.push(node.id);
         }
         const edges = { ...s.graph.edges };

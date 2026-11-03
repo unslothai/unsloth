@@ -6,6 +6,7 @@
 
 import { syncSubcategoryConfigsForCategoryUpdate } from "@/features/recipe-studio/stores/helpers/edge-sync";
 import { applyRenameToConfigs } from "@/features/recipe-studio/stores/helpers/reference-sync";
+import { replaceRef } from "@/features/recipe-studio/utils/refs";
 import type {
   NodeConfig,
   RecipeNode,
@@ -172,13 +173,32 @@ export interface RecipeEdit {
   group: FlowGroup | null;
 }
 
+/** The schema transform's templates name columns too: a column renamed in this edit is renamed
+ * there, so the transform still reads it. Unchanged processors keep their identity. */
+function renamedProcessors(
+  before: StudioView,
+  configs: Record<string, NodeConfig>,
+): RecipeProcessorConfig[] {
+  let processors = before.processors;
+  for (const [id, was] of Object.entries(before.configs)) {
+    const now = configs[id];
+    if (!now || !isColumnConfig(was) || !was.name || !now.name || was.name === now.name) continue;
+    const next = processors.map((processor) => {
+      const template = replaceRef(processor.template, was.name, now.name);
+      return template === processor.template ? processor : { ...processor, template };
+    });
+    if (next.some((processor, i) => processor !== processors[i])) processors = next;
+  }
+  return processors;
+}
+
 /** What an edit made in Recipe Studio configs changes in the flow: only touched columns are rebuilt. */
 export function commitStudioEdit(
   group: FlowGroup,
   columns: FlowNode[],
   before: StudioView,
   configs: Record<string, NodeConfig>,
-  processors: RecipeProcessorConfig[] = before.processors,
+  processors: RecipeProcessorConfig[] = renamedProcessors(before, configs),
 ): RecipeEdit {
   const nodes: FlowNode[] = [];
   for (const node of columns) {

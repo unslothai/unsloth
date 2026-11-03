@@ -11,6 +11,7 @@ import {
   useDocStore,
 } from "../stores/doc-store";
 import { removeNodes } from "../recipe/recipe-actions";
+import { GENERATE_TYPE } from "../recipe/recipe-columns";
 import { useUiStore } from "../stores/ui-store";
 import type { FlowEdge, FlowNode } from "../types";
 import { addFileNodes } from "./file-drop";
@@ -188,9 +189,12 @@ export function useEditorShortcuts(active: boolean): void {
         });
       } else if (mod && key === "d") {
         event.preventDefault();
+        // As the inspector's Duplicate: a recipe's one Recipe Dataset step is not copied.
         const ids = useUiStore
           .getState()
-          .selectedNodes.filter((id) => doc.graph.nodes[id]);
+          .selectedNodes.filter(
+            (id) => doc.graph.nodes[id] && doc.graph.nodes[id].type !== GENERATE_TYPE,
+          );
         if (!ids.length) return;
         const fragment = cloneFragment(doc.graph, ids, [40, 40]);
         doc.insertFragment(fragment);
