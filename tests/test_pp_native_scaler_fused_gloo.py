@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Real CPU/gloo AMP optimizers using PipelineParallel's scaler hooks, without a GPU import.
-Run directly with Python, or collect with pytest. No model or network access is needed.
-"""
-
 import multiprocessing
 import os
 
-# Only spawned workers (and a direct run) hide the GPUs: pytest's own process keeps its mask for other tests.
 if (
     __name__ == "__main__"
     or multiprocessing.parent_process() is not None
@@ -72,7 +67,7 @@ def _worker(rank, rendezvous, output):
             for step in range(3):
                 if recipe != "pp_unscale_unbound":
                     pipeline._bind_scaler(scaler)
-                    pipeline._bind_scaler(scaler)  # repeated binds must not stack hooks
+                    pipeline._bind_scaler(scaler)
                 pipeline._step_scaler = None if recipe == "pp_unscale_unbound" else scaler
                 scaler.scale(parameter * (step + 1)).backward()
                 overflow = step == 1 and inf_rank != -1
