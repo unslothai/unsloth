@@ -782,3 +782,14 @@ def test_a_preference_notebooks_max_length_caps_the_node_context():
     )
     doc, _ = notebook_import.read_notebook(nb, "Zephyr_(7B)-DPO.ipynb")
     assert _tune(doc)["max_seq_length"] == 1024
+
+
+def test_a_preference_notebooks_completion_cap_is_reported_not_imported():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/zephyr-sft')",
+        "dataset = load_dataset('HuggingFaceH4/ultrafeedback_binarized', split = 'train_prefs')",
+        "trainer = DPOTrainer(model = model, args = DPOConfig(max_completion_length = 128))",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Zephyr_(7B)-DPO.ipynb")
+    assert "max_completion_length" not in _tune(doc)
+    assert any("max_completion_length = 128" in line for line in report["approximated"])

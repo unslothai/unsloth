@@ -31,7 +31,6 @@ function pick(row: Record<string, unknown>, named: unknown, names: string[]) {
   return key && row[key] !== undefined ? String(row[key]) : "";
 }
 
-/** The column mapped to `role` in the node's own column mapping, if any. */
 function sampleCompletion(reference: string): string {
   const final = reference.split("####").pop()?.trim() ?? "";
   return `<reasoning>\n...\n</reasoning>\n<answer>\n${final}\n</answer>`;

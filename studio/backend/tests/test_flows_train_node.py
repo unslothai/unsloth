@@ -347,6 +347,48 @@ def test_chat_with_checkpoint_puts_back_the_chat_model_it_replaced(monkeypatch):
     assert loads == [("/out/run-1", None), ("unsloth/Qwen3-1.7B-GGUF", "Q4_K_M")]
 
 
+def test_chat_with_checkpoint_skips_the_reload_once_stopped(monkeypatch):
+    from types import SimpleNamespace
+
+    from studio_mcp import loading, trained_models
+
+    loads = []
+
+    async def load_llm(caller, ctx, **kw):
+        loads.append(kw["model"])
+
+    async def resolve_by(*a, **k):
+        return SimpleNamespace(ref = "/out/run-1", is_lora = True)
+
+    monkeypatch.setattr(loading, "load_llm", load_llm)
+    monkeypatch.setattr(trained_models, "resolve_by", resolve_by)
+    ctx = _Ctx(lambda m, p, q, b: {"model_identifier": "unsloth/Qwen3-1.7B-GGUF"})
+    ctx.inputs = {"checkpoint": {"kind": "checkpoint", "name": "run-1"}, "prompt": "hi"}
+    ctx.params = {"max_tokens": 8}
+    ctx.resident, ctx.set_status = {}, lambda *a, **k: None
+
+    async def llm_text(**k):
+        ctx.cancelled = True
+        raise FlowCancelled()
+
+    ctx.llm_text = llm_text
+    with pytest.raises(FlowCancelled):
+        asyncio.run(training.chat_checkpoint(ctx))
+    assert loads == ["/out/run-1"]
+
+
+def test_auto_eval_split_skips_every_split_the_training_reads(monkeypatch):
+    import datasets
+
+    monkeypatch.setattr(
+        datasets, "get_dataset_split_names", lambda *a, **k: ["train", "validation", "test"]
+    )
+    auto = training._auto_eval_split
+    assert auto({"ref": "a/b"}, "train+validation", None) == "test"
+    assert auto({"ref": "a/b"}, "validation[:50%]", None) == "test"
+    assert auto({"ref": "a/b"}, "train", None) == "validation"
+
+
 def test_hub_holdout_never_downloads_more_than_it_can_use(monkeypatch):
     from types import SimpleNamespace
 

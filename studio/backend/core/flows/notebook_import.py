@@ -471,6 +471,12 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
         # A preference trainer's max_length comes from the node's context, so the notebook's cap goes there.
         cap = found["pref_max_length"]
         tune["max_seq_length"] = min(int(tune.get("max_seq_length") or cap), cap)
+    if found.get("objective") in ("dpo", "orpo") and "max_completion_length" in tune:
+        # Only GRPO forwards a completion cap; a preference run truncates at the context alone.
+        reader.approximated.append(
+            f"max_completion_length = {tune.pop('max_completion_length')}: Studio's preference training "
+            "has no completion cap, so responses are cut only at the context length"
+        )
     report: dict[str, Any] = {
         "imported": [],
         "approximated": list(dict.fromkeys(reader.approximated)),

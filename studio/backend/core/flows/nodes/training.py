@@ -794,11 +794,13 @@ def _auto_eval_split(dataset: dict, train_split: str, token: Any) -> Optional[st
         )
     except Exception:
         return None
-    base = re.match(r"[\w.-]+", train_split)
-    return next(
-        (c for c in EVAL_SPLIT_CANDIDATES if c in names and c != (base and base.group(0))),
-        None,
-    )
+    from utils.hf_dataset_options import hf_dataset_split_instruction_names
+
+    # Every split the training instruction reads is excluded, as the trainer excludes them.
+    trained = set(hf_dataset_split_instruction_names(train_split)) or {
+        m.group(0) for m in [re.match(r"[\w.-]+", train_split)] if m
+    }
+    return next((c for c in EVAL_SPLIT_CANDIDATES if c in names and c not in trained), None)
 
 
 async def hub_eval_upload(ctx: NodeContext, dataset: dict, split: str) -> str:
@@ -942,7 +944,8 @@ async def active_chat_model(ctx: NodeContext) -> Optional[dict]:
 async def restore_chat_model(ctx: NodeContext, previous: Optional[dict], replaced_by: str) -> None:
     from studio_mcp import loading
 
-    if not previous or loading._same_id(previous["repo"], replaced_by):
+    # A stopped run frees the GPU lane now; reloading the old model could hold it for half an hour.
+    if not previous or ctx.cancelled or loading._same_id(previous["repo"], replaced_by):
         return
     label = previous["repo"] + (f" ({previous['variant']})" if previous["variant"] else "")
     ctx.set_status("loading_model", f"Loading {label} again")
