@@ -498,3 +498,14 @@ def test_a_model_unset_card_runs_on_the_model_whose_settings_it_took(monkeypatch
     asyncio.run(_common.ensure_model(_LoadCtx({}), "chat", {"repo": GGUF, "variant": None}))
     asyncio.run(_common.ensure_model(plain, "chat", None))
     assert [l["model"] for l in loads] == [other, GGUF, other, GGUF]
+
+
+def test_a_pinned_card_with_load_settings_reloads_the_model_it_took_them_from(monkeypatch):
+    other = "unsloth/gemma-3-4b-it-GGUF"
+    loads = _load_fakes(monkeypatch, [other])
+    ctx = _LoadCtx({"model": None, "load": {"max_seq_length": 4096}})
+    ctx.settings_model = {"repo": GGUF, "variant": None}
+    model, load = asyncio.run(text_nodes._model_and_load(ctx, "chat"))
+    assert model == {"repo": GGUF, "variant": None} and load["max_seq_length"] == 4096
+    asyncio.run(_common.ensure_model(ctx, "chat", model, load))
+    assert [l["model"] for l in loads] == [GGUF]
