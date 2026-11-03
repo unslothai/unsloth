@@ -1095,3 +1095,14 @@ def test_a_percent_split_with_no_listed_sizes_is_refused(monkeypatch):
     # Joined whole splits still stream, up to the cap.
     rows = training._hub_rows({"ref": "a/b", "split": "train+train"}, None, 0, None)
     assert len(rows) == 20
+
+
+def test_a_window_over_joined_splits_of_unknown_size_counts_the_rows_each_has(monkeypatch):
+    import datasets
+
+    _compound_world(monkeypatch, {"train": 100, "validation": 100})
+    monkeypatch.setattr(datasets, "load_dataset_builder", lambda *a, **k: 1 / 0)
+    rows = training._hub_rows({"ref": "a/b", "split": "train+validation"}, None, 150, 154)
+    assert [r["q"] for r in rows] == [f"validation{i}" for i in range(50, 55)]
+    rows = training._hub_rows({"ref": "a/b", "split": "train+validation"}, None, 98, 101)
+    assert [r["q"] for r in rows] == ["train98", "train99", "validation0", "validation1"]

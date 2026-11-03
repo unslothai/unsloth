@@ -835,3 +835,18 @@ def test_a_dpo_loss_other_than_sigmoid_is_reported(loss, reported):
     )
     _doc, report = notebook_import.read_notebook(nb, "Zephyr_(7B)-DPO.ipynb")
     assert any("loss_type" in line for line in report["approximated"]) is reported
+
+
+@pytest.mark.parametrize("rank", [1, 2, 256])
+def test_a_notebooks_lora_rank_reaches_training_unchanged(rank):
+    from core.flows.engine import param_values
+    from core.flows.specs import SPECS_BY_TYPE
+
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B')\n"
+        f"model = FastLanguageModel.get_peft_model(model, r = {rank})",
+        "dataset = load_dataset('mlabonne/FineTome-100k', split = 'train')",
+    )
+    doc, _ = notebook_import.read_notebook(nb, "Qwen3_(4B).ipynb")
+    node = next(n for n in doc["nodes"] if n["type"] == "train.finetune")
+    assert param_values(SPECS_BY_TYPE["train.finetune"], node)["lora_r"] == rank

@@ -1769,9 +1769,9 @@ NODE_SPECS: list[dict] = [
                 "int",
                 16,
                 "Rank",
-                min = 4,
-                max = 128,
-                step = 4,
+                # The range saved flows and imported notebooks were accepted at; Train's slider is narrower.
+                min = 1,
+                max = 256,
                 help = "Dimension of the low-rank matrices. Higher = more capacity.",
                 show_when = LORA,
                 **adv("LoRA Settings"),
