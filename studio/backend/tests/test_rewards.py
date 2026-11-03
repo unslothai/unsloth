@@ -203,23 +203,76 @@ def test_preview_scores_and_weights(client):
     assert body["total"] == 3.0
 
 
-@pytest.mark.parametrize(
-    "reference, completion",
-    [(True, "True"), ({"x": 1}, "{'x': 1}"), ([1, 2], "[1, 2]"), (5, "5"), ("", "")],
-)
-def test_preview_scores_a_structured_reference_as_training_does(client, reference, completion):
-    # Training hands score_rule the raw cell, which str() turns into Python's text, not JSON's.
-    md = _md("same", "type: exact_match\nscore: {match: 1, miss: -1}")
-    response = client.post(
-        "/api/rewards/preview",
-        json = {
-            "rewards": [{"markdown": md}],
-            "completion": completion,
-            "reference": reference,
-        },
+_MISSING = object()
+_CELLS = [
+    pytest.param("72", id = "str"),
+    pytest.param("", id = "empty"),
+    pytest.param(None, id = "none"),
+    pytest.param(True, id = "bool"),
+    pytest.param(5, id = "int"),
+    pytest.param(2.5, id = "float"),
+    pytest.param([1, 2], id = "list"),
+    pytest.param({"x": 1}, id = "object"),
+    pytest.param(_MISSING, id = "missing"),
+]
+
+
+@pytest.mark.parametrize("column", ["answer", "ref"])
+@pytest.mark.parametrize("cell", _CELLS)
+def test_try_it_gives_rewards_the_inputs_training_does(column, cell):
+    import json
+
+    from datasets import Dataset
+
+    from core.training.rl import format_rl_dataset, grpo_reward_inputs, reward_keep_columns
+
+    raw = {"question": "q", "answer": "7", "ref": "7"}
+    if cell is _MISSING:
+        del raw[column]
+    else:
+        raw[column] = cell
+    rule = rewards.validate_rule(
+        {"type": "exact_match", "compare_to": column, "score": {"match": 1, "miss": -1}}
     )
-    assert response.status_code == 200, response.text
-    assert response.json()["scores"][0]["score"] == 1.0
+    specs = [{"name": "same", "kind": "rule", "rule": rule}]
+    mapping = {"question": "prompt"}
+    dataset = Dataset.from_list([raw])
+    # Try it's row is the dataset preview's: the stored row as JSON.
+    preview_row = json.loads(json.dumps(dataset[0]))
+    if cell is _MISSING:
+        with pytest.raises(ValueError) as trained:
+            format_rl_dataset(dataset, "grpo", mapping, reward_keep_columns(specs))
+        with pytest.raises(ValueError) as previewed:
+            grpo_reward_inputs(preview_row, specs, mapping)
+        assert str(previewed.value) == str(trained.value)
+        return
+    formatted, _ = format_rl_dataset(dataset, "grpo", mapping, reward_keep_columns(specs))
+    # What TRL hands each reward: the prompt, and every other column as a list.
+    trained = formatted[0]
+    training_args = ([trained.pop("prompt")], {k: [v] for k, v in trained.items()})
+    assert grpo_reward_inputs(preview_row, specs, mapping) == training_args
+    # The cell's own text, so the rule scores a match wherever str() agrees on both sides.
+    completion = str(cell)
+    reward = rewards.make_reward_func(specs[0])
+    completions = [[{"role": "assistant", "content": completion}]]
+    results, _ = rewards.preview_scores(specs, completion, preview_row, mapping)
+    assert results == [
+        {
+            "name": "same",
+            "score": reward(training_args[0], completions, **training_args[1])[0],
+            "error": None,
+        }
+    ]
+
+
+def test_try_it_scores_the_prefill_of_an_assistant_ended_prompt():
+    # Training continues the assistant turn and scores the prefill plus the reply.
+    spec = {"name": "same", "kind": "rule", "rule": rewards.validate_rule({"type": "exact_match"})}
+    spec["rule"]["score"] = {"match": 1.0, "miss": -1.0}
+    turns = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "It is "}]
+    row = {"messages": turns, "answer": "It is 72"}
+    [result], _ = rewards.preview_scores([spec], "72", row, {"messages": "prompt"})
+    assert result["score"] == 1.0
 
 
 def test_bundled_root_is_packaged():
@@ -249,7 +302,7 @@ def test_preview_reads_each_rules_compare_to_column_like_training():
         "score": {"match": 1, "miss": 0},
     }
     spec = {"name": "gold-match", "kind": "rule", "rule": rewards.validate_rule(rule)}
-    row = {"answer": "72", "gold": "yes"}
+    row = {"question": "q", "answer": "72", "gold": "yes"}
     trained = rewards.make_reward_func(spec)(
         completions = ["yes"], **{k: [v] for k, v in row.items()}
     )

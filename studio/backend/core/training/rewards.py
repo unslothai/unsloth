@@ -698,52 +698,54 @@ def make_reward_func(spec: dict) -> Callable[..., list[float]]:
     return reward
 
 
+# Try it's sample when there is no dataset row yet.
+_SAMPLE_ROW = {"prompt": "", "answer": "72"}
+
+
 def preview_scores(
     specs: list[dict],
     text: str,
-    reference: Any = None,
     row: Optional[dict] = None,
-    prompt: Any = None,
+    mapping: Optional[dict] = None,
+    reference: Optional[str] = None,
+    system_prompt: Optional[str] = None,
     owner: Optional[str] = None,
     python_isolation: str = "required",
-    system_prompt: Optional[str] = None,
 ) -> tuple[list[dict], Optional[dict]]:
-    """Scores in ``specs`` order, plus the isolation the Python ones ran under (None if none did).
-    A Python reward that fails carries its own ``error``; the rest still score."""
-    if row and row.get("answer") is not None:
-        # Training turns the answer role into text (rl.py), so a reward gets str(answer) too.
-        row = {**row, "answer": str(row["answer"])}
+    """Scores ``text`` as training would for ``row`` (one raw dataset row): the same row
+    conversion and the same reward functions. ``reference`` overrides the answer cell.
+    Also returns the isolation the Python rewards ran under (None if none did); a Python reward
+    that fails carries its own ``error`` and the rest still score."""
+    from core.training.rl import grpo_reward_inputs, reward_keep_columns
+
+    if row is None:
+        # Other compare_to columns are empty cells here: no dataset to read them from yet.
+        keep = [c for c in reward_keep_columns(specs) if c != "*"]
+        row = {**dict.fromkeys(keep), **_SAMPLE_ROW}
+        mapping = None
+    try:
+        prompts, kwargs = grpo_reward_inputs(row, specs, mapping, system_prompt, reference)
+    except ValueError as exc:
+        raise RewardError(str(exc)) from exc
+    completions = [[{"role": "assistant", "content": text}]]
     python = [s for s in specs if s.get("kind") == "python"]
     python_scores: dict = {}
     python_errors: dict = {}
     isolation = None
     if python:
         from core.training.python_rewards import PythonRewardError, preview_python_scores
-        if row is None and reference is not None:
-            row = {"answer": reference}
         try:
             python_scores, isolation, python_errors = preview_python_scores(
-                python,
-                text,
-                row or {},
-                prompt,
-                owner = owner,
-                mode = python_isolation,
-                system_prompt = system_prompt,
+                python, prompts, completions, kwargs, owner = owner, mode = python_isolation
             )
         except PythonRewardError as exc:
             # No worker (no sandbox, a busy preview): every Python reward shares the reason.
             python_errors = {s["name"]: str(exc) for s in python}
     out = []
     for s in specs:
-        error = None
         if s.get("kind") == "python":
-            score = python_scores.get(s["name"])
-            error = python_errors.get(s["name"])
+            score, error = python_scores.get(s["name"]), python_errors.get(s["name"])
         else:
-            # Training reads the rule's compare_to column (make_reward_func), so the preview does too.
-            column = s["rule"].get("compare_to")
-            ref = row[column] if row and column in row else reference
-            score = score_rule(s["rule"], text, ref)
+            score, error = make_reward_func(s)(prompts, completions, **kwargs)[0], None
         out.append({"name": s["name"], "score": score, "error": error})
     return out, isolation

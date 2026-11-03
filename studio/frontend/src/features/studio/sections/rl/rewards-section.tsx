@@ -41,15 +41,10 @@ import {
   previewCell,
   previewRewards,
   readRewardHead,
-  rowAnswer,
   summarizeRule,
   useRlWorkspaceStore,
   useTrainingConfigStore,
 } from "@/features/training";
-import {
-  alpacaPromptCell,
-  pythonRewardRow,
-} from "@/features/training/lib/rl-roles";
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { GrpoPythonRewardIsolation } from "@/types/training";
@@ -372,33 +367,6 @@ function CodeDialog({
   );
 }
 
-/** Row 1's prompt cell as stored (chat turns stay turns) and the system prompt training adds
- *  (rl.py prompt_turns), so a reward that reads prompts scores the same as in a run. */
-function previewPrompt(
-  row: Record<string, unknown> | null,
-  mapping: Record<string, string>,
-  configured: string,
-): {
-  prompt: string | Record<string, unknown>[] | null;
-  systemPrompt: string | null;
-} {
-  const column = (role: string) =>
-    Object.entries(mapping).find(([, r]) => r === role)?.[0];
-  const promptColumn = column("prompt");
-  const systemColumn = column("system");
-  const cell = alpacaPromptCell(row, mapping, promptColumn);
-  const turns =
-    Array.isArray(cell) &&
-    cell.every((m) => typeof m === "object" && m !== null);
-  const own = systemColumn ? previewCell(row?.[systemColumn]) : "";
-  return {
-    prompt: turns
-      ? (cell as Record<string, unknown>[])
-      : previewCell(cell) || null,
-    systemPrompt: own || (configured.trim() ? configured : null),
-  };
-}
-
 export function RewardsSection(): ReactElement {
   const t = useT();
   const {
@@ -467,14 +435,12 @@ export function RewardsSection(): ReactElement {
   const answerColumn = Object.entries(mapping).find(
     ([, role]) => role === "answer",
   )?.[0];
-  // A blank answer in the row stays blank, as in training; the sample is for no row at all.
-  const mappedAnswer = rowAnswer(previewRow, answerColumn);
-  const rowReference = previewCell(mappedAnswer);
-  // What training compares against: null only for a null cell, which scores as missing.
-  const answerReference: unknown =
-    referenceEdit ?? (mappedAnswer === undefined ? "72" : mappedAnswer);
+  // Shown only: the backend scores the raw row, as training reads it.
+  const rowReference = answerColumn
+    ? previewCell(previewRow?.[answerColumn])
+    : "";
   const reference =
-    referenceEdit ?? (mappedAnswer === undefined ? "72" : rowReference);
+    referenceEdit ?? (answerColumn && previewRow ? rowReference : "72");
 
   const active = library.filter((r) => !r.shadowed);
   const byName = new Map(active.map((r) => [r.name, r]));
@@ -502,29 +468,22 @@ export function RewardsSection(): ReactElement {
       setPreviewTotal(null);
       return;
     }
-    // The backend scores each rule against its own compare_to column from row, as in training.
     try {
-      // No answer role, no answer kwarg in training; with no dataset yet, assume one.
-      const row = pythonRewardRow(
-        previewRow ?? {},
-        !answerColumn && previewRow ? undefined : answerReference,
-      );
-      const { prompt, systemPrompt } = previewPrompt(
-        previewRow,
-        mapping,
-        // An empty prompt can survive turning the reasoning format on; training adds its prompt.
-        configuredSystemPrompt(
-          grpoSystemPrompt,
-          reasoning,
-          GRPO_REASONING_SYSTEM_PROMPT,
-        ),
+      // The raw row, the run's role mapping and system prompt: the backend builds each
+      // reward's inputs with training's own row conversion. An edited answer replaces the
+      // row's answer cell. An empty prompt can survive turning the reasoning format on;
+      // training adds its prompt.
+      const systemPrompt = configuredSystemPrompt(
+        grpoSystemPrompt,
+        reasoning,
+        GRPO_REASONING_SYSTEM_PROMPT,
       );
       const res = await previewRewards(
         rewards,
         completion,
-        answerReference,
-        row,
-        prompt,
+        referenceEdit,
+        previewRow,
+        mapping,
         systemPrompt,
         isolationMode,
       );
@@ -549,14 +508,13 @@ export function RewardsSection(): ReactElement {
       setIsolation(null);
       setPreviewError(err instanceof Error ? err.message : String(err));
     }
-    // selectedRules stands in for the library entries (byName is rebuilt every render).
+    // selectedRules stands in for the library entries, which change without the selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     rewards,
     completion,
-    answerReference,
+    referenceEdit,
     previewRow,
-    answerColumn,
     mapping,
     grpoSystemPrompt,
     reasoning,

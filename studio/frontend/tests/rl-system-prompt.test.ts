@@ -74,6 +74,6 @@ test("Try it previews rewards with the prompt training gets under the reasoning 
   );
   assert.match(
     src,
-    /previewPrompt\(\s*previewRow,\s*mapping,[\s\S]{0,160}configuredSystemPrompt\(\s*grpoSystemPrompt,\s*reasoning,/,
+    /const systemPrompt = configuredSystemPrompt\(\s*grpoSystemPrompt,\s*reasoning,[\s\S]{0,240}previewRow,\s*mapping,\s*systemPrompt,/,
   );
 });

@@ -477,6 +477,29 @@ def _without_padding(turns: Any) -> Any:
     ]
 
 
+def reward_call_inputs(prompts: Any, completions: Any, kwargs: dict[str, Any]) -> tuple:
+    """(prompts, completions, kwargs) the worker gets for one TRL reward call; Try it sends its
+    row through here too."""
+    kwargs = dict(kwargs)
+    # A prompt rendered to text (render_grpo_prompts) comes back as its turns, with the
+    # assistant prefill TRL would have put in front of the completion.
+    turns = kwargs.pop(PROMPT_TURNS_COLUMN, None)
+    tools = kwargs.pop(TOOLS_COLUMN, None)
+    if isinstance(tools, list) and "tools" not in kwargs:
+        kwargs["tools"] = [json.loads(t) if isinstance(t, str) else t for t in tools]
+    prefills = kwargs.pop(PREFILL_COLUMN, None)
+    if isinstance(turns, list) and isinstance(prompts, list) and len(turns) == len(prompts):
+        prompts = [json.loads(t) if isinstance(t, str) else t for t in turns]
+    if isinstance(prompts, list):
+        prompts = [_without_padding(p) for p in prompts]
+    if isinstance(prefills, list) and isinstance(completions, list):
+        completions = [
+            p + c if isinstance(c, str) and isinstance(p, str) else c
+            for p, c in zip(prefills, completions)
+        ] + completions[len(prefills) :]
+    return _as_turns(prompts, "user"), _as_turns(completions, "assistant"), kwargs
+
+
 def make_python_reward_funcs(
     specs: list[dict], worker: RewardWorker
 ) -> list[Callable[..., list[Optional[float]]]]:
@@ -486,25 +509,7 @@ def make_python_reward_funcs(
             completions = None,
             **kwargs,
         ):
-            # A prompt rendered to text (render_grpo_prompts) comes back as its turns, with the
-            # assistant prefill TRL would have put in front of the completion.
-            turns = kwargs.pop(PROMPT_TURNS_COLUMN, None)
-            tools = kwargs.pop(TOOLS_COLUMN, None)
-            if isinstance(tools, list) and "tools" not in kwargs:
-                kwargs["tools"] = [json.loads(t) if isinstance(t, str) else t for t in tools]
-            prefills = kwargs.pop(PREFILL_COLUMN, None)
-            if isinstance(turns, list) and isinstance(prompts, list) and len(turns) == len(prompts):
-                prompts = [json.loads(t) if isinstance(t, str) else t for t in turns]
-            if isinstance(prompts, list):
-                prompts = [_without_padding(p) for p in prompts]
-            if isinstance(prefills, list) and isinstance(completions, list):
-                completions = [
-                    p + c if isinstance(c, str) and isinstance(p, str) else c
-                    for p, c in zip(prefills, completions)
-                ] + completions[len(prefills) :]
-            return worker.score(
-                [name], _as_turns(prompts, "user"), _as_turns(completions, "assistant"), kwargs
-            )[name]
+            return worker.score([name], *reward_call_inputs(prompts, completions, kwargs))[name]
 
         reward.__name__ = name.replace("-", "_")
         return reward
@@ -551,14 +556,14 @@ def _start_preview_worker(specs: list[dict], mode: str) -> RewardWorker:
 
 def preview_python_scores(
     specs: list[dict],
-    text: str,
-    row: dict[str, Any],
-    prompt: Any = None,
+    prompts: list,
+    completions: list,
+    kwargs: dict[str, list],
     owner: Optional[str] = None,
     mode: str = "required",
-    system_prompt: Optional[str] = None,
 ) -> tuple[dict[str, Optional[float]], dict[str, Any], dict[str, str]]:
-    """Score one reply for the Try it box. The worker is kept warm for a couple of minutes,
+    """Score one reply for the Try it box, from the reward inputs training would pass
+    (rl.grpo_reward_inputs). The worker is kept warm for a couple of minutes,
     since the box re-scores on every edit. ``mode`` is the os_sandbox mode, as in training:
     ``required`` refuses a host without OS isolation, ``auto`` is the opt-in to software safeguards.
     Returns the scores, the worker's isolation and each failing reward's error."""
@@ -601,22 +606,14 @@ def preview_python_scores(
             other["timer"].cancel()
         if other["worker"] is not None:
             other["worker"].close()
-    from core.training.rl import _REWARD_CALL_KEYS, _row_tools, prompt_turns
-
-    prompts = [prompt_turns(prompt, system_prompt)]
-    completions = [[{"role": "assistant", "content": text}]]
-    # As format_rl_dataset drops them: TRL passes these names to the reward itself.
-    kwargs = {k: [v] for k, v in (row or {}).items() if k not in _REWARD_CALL_KEYS}
-    if "tools" in kwargs:
-        # Decoded and unpadded, as training passes them.
-        kwargs["tools"] = [_row_tools(row)]
+    call = reward_call_inputs(prompts, completions, kwargs)
     failed = True
     try:
         with entry["start"]:
             if entry["worker"] is None:
                 entry["worker"] = _start_preview_worker(specs, mode)
         worker = entry["worker"]
-        scores, errors = worker.score_each([s["name"] for s in specs], prompts, completions, kwargs)
+        scores, errors = worker.score_each([s["name"] for s in specs], *call)
         failed = False
     finally:
         with _preview_lock:

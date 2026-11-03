@@ -116,65 +116,6 @@ export function missingRlRoles(
   return RL_REQUIRED_ROLES[objective].filter((role) => !mapped.has(role));
 }
 
-// Mirrors _RL_ROW_KEYS, _TRL_SCHEMA_KEYS and _REWARD_CALL_KEYS in rl.py: TRL fills or
-// refuses these, every other column reaches a Python reward.
-const RL_ROW_KEYS = new Set([
-  "prompt",
-  "answer",
-  "chosen",
-  "rejected",
-  "messages",
-  "completion",
-  "label",
-  "prompts",
-  "completions",
-  "completion_ids",
-  "trainer_state",
-  "log_extra",
-  "log_metric",
-  "environments",
-]);
-
-/** Row 1 the way GRPO training hands it to a Python reward: mapped role columns included,
- *  values in their own types, and `answer` only when the dataset has an answer role. */
-/** The prompt cell as format_rl_dataset builds it: an Alpaca row's unmapped input joins the instruction. */
-export function alpacaPromptCell(
-  row: Record<string, unknown> | null,
-  mapping: Record<string, string>,
-  promptColumn: string | undefined,
-): unknown {
-  const cell = promptColumn ? row?.[promptColumn] : undefined;
-  const input = row?.input;
-  if (
-    promptColumn === "instruction" &&
-    !(RL_ROLES.grpo as readonly string[]).includes(mapping.input) &&
-    mapping.input !== RL_IGNORE &&
-    typeof cell === "string" &&
-    typeof input === "string" &&
-    input.trim()
-  ) {
-    return `${cell}\n\n${input}`;
-  }
-  return cell;
-}
-
-/** ``answer`` undefined: no answer role, so no answer kwarg; null is an empty cell, kept as null. */
-export function pythonRewardRow(
-  row: Record<string, unknown>,
-  answer: unknown,
-): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [column, value] of Object.entries(row)) {
-    if (!RL_ROW_KEYS.has(column)) {
-      out[column] = value;
-    }
-  }
-  if (answer !== undefined) {
-    out.answer = answer;
-  }
-  return out;
-}
-
 /** compare_to columns of the selected GRPO rewards that the dataset cannot supply. The worker
  * renames the answer role's column to "answer"; any other name must be a dataset column. */
 export function missingRewardColumns(
@@ -209,29 +150,4 @@ export function syncRlMapping(
     }
   }
   return next;
-}
-
-/** The cell GRPO training reads from this row's answer column, as is: the backend converts it
- * the way training does. Null for an empty cell; undefined when there is no row or answer role. */
-export function rowAnswer(
-  row: Record<string, unknown> | null | undefined,
-  answerColumn: string | undefined,
-): unknown {
-  if (!row || !answerColumn) {
-    return undefined;
-  }
-  return row[answerColumn] ?? null;
-}
-
-/** The reference a reward is scored against, as in training: its compare_to column of the row,
- * else the answer. An empty cell stays "" (scored as a miss); only a null one is missing. */
-export function rewardPreviewReference(
-  row: Record<string, unknown> | null | undefined,
-  compareTo: unknown,
-  answer: unknown,
-): unknown {
-  if (typeof compareTo === "string" && compareTo !== "answer") {
-    return rowAnswer(row, compareTo) ?? null;
-  }
-  return answer;
 }

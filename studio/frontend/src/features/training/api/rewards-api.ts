@@ -84,9 +84,9 @@ export async function deleteReward(name: string): Promise<void> {
 export async function previewRewards(
   rewards: GrpoRewardSelection[],
   completion: string,
-  reference: unknown,
+  reference: string | null,
   row: Record<string, unknown> | null = null,
-  prompt: string | Record<string, unknown>[] | null = null,
+  mapping: Record<string, string> | null = null,
   systemPrompt: string | null = null,
   pythonRewardIsolation: GrpoPythonRewardIsolation = "required",
 ): Promise<RewardPreviewResponse> {
@@ -99,7 +99,7 @@ export async function previewRewards(
         completion,
         reference,
         row,
-        prompt,
+        mapping,
         system_prompt: systemPrompt,
         python_reward_isolation: pythonRewardIsolation,
       }),
