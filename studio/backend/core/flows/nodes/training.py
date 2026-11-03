@@ -113,7 +113,7 @@ async def finetune(ctx: NodeContext) -> dict:
             config[key] = int(params[key])
     if str(params.get("project_name") or "").strip():
         config["project_name"] = str(params["project_name"]).strip()
-    method_fields(params, config)
+    method_fields(params, config, base_model)
     lora_fields(params, config)
     schedule_fields(params, config, ctx.seed)
     memory_fields(params, config, objective)
@@ -291,15 +291,16 @@ async def finetune(ctx: NodeContext) -> dict:
     }
 
 
-def method_fields(params: dict, config: dict) -> None:
-    """Method, precision, sequence length and learning rates, as the Train page sends them."""
+def method_fields(params: dict, config: dict, base_model: Optional[str] = None) -> None:
+    """Method, precision, sequence length and learning rates, as the Train page sends them. ``base_model``
+    is the model a continued checkpoint was trained on, since ``model_name`` is then its folder."""
     method = str(params.get("training_type") or "lora")
     config["training_type"] = TRAINING_TYPES.get(method, TRAINING_TYPES["lora"])
     if method == "lora":
         config["load_in_4bit"] = params.get("load_in_4bit") is not False
     else:
         # Full trains in 16-bit; CPT loads 4-bit only for a pre-quantized checkpoint, like the Train page.
-        config["load_in_4bit"] = method == "cpt" and "4bit" in config["model_name"].lower()
+        config["load_in_4bit"] = method == "cpt" and "4bit" in (base_model or config["model_name"]).lower()
     config["max_seq_length"] = int(params.get("max_seq_length") or 2048)
     lr = params.get("learning_rate")
     config["learning_rate"] = "2e-4" if lr in (None, "") else str(lr)

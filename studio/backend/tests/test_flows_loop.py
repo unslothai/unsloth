@@ -578,3 +578,25 @@ def test_a_test_row_repeated_in_the_split_still_bans_its_question():
     question = "What is the capital city of the country France?"
     test_rows = [{"q": question, "a": "Paris"}, {"q": question, "a": "Paris"}]
     assert loop_rounds.drop_test_rows([{"q": question, "model_output": "x"}], test_rows) == []
+
+
+def test_cpt_continuing_a_4bit_checkpoint_still_loads_in_4bit(monkeypatch):
+    # model_name is the adapter folder by now; the base it was trained on sets the precision.
+    from core.flows.nodes import training
+
+    from .test_flows_train_node import _Ctx as TrainCtx, _recipe_routes
+
+    monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
+    started = []
+    ctx = TrainCtx(_recipe_routes(started))
+    ctx.params["training_type"] = "cpt"
+    ctx.params["base_model"] = "unsloth/Qwen3-0.6B-bnb-4bit"
+    ctx.inputs["start"] = {
+        "kind": "checkpoint",
+        "name": "run1",
+        "base_model": "unsloth/Qwen3-0.6B-bnb-4bit",
+        "output_dir": "/out/run1",
+    }
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    assert started[0]["model_name"] == "/out/run1" and started[0]["load_in_4bit"] is True
