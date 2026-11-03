@@ -4712,23 +4712,6 @@ def patch_trl_fused_lm_head_devices():
             setattr(_mod, "add_fused_lm_head", add_fused_lm_head)
 
 
-_TRL_FUSED_HEAD_ARGS = (
-    "weight",
-    "bias",
-    "targets",
-    "temperature",
-    "chunk_size",
-    "final_logit_softcapping",
-    "logit_scale",
-)
-_TRL_FUSED_HEAD_CONTRACTS = (
-    _TRL_FUSED_HEAD_ARGS,
-    _TRL_FUSED_HEAD_ARGS + ("outputs",),
-    _TRL_FUSED_HEAD_ARGS + ("outputs", "support_ids"),
-    _TRL_FUSED_HEAD_ARGS + ("outputs", "support_ids", "score_ids"),
-)
-
-
 class _UnslothFusedLinearHead:
     """TRL >= 1.15's ``_ChunkedLogProbFunction`` slot, served by unsloth_zoo's fused linear kernel (no backward
     recompute for a frozen head, fp32 logits on CUDA). Anything it does not reproduce exactly goes to TRL's kernel."""
@@ -4920,12 +4903,12 @@ def patch_trl_fused_lm_head_kernel():
     kernel = getattr(_tu, "_ChunkedLogProbFunction", None)
     if kernel is None or getattr(kernel, "_unsloth_fused_linear", False):
         return
-    # Exact contracts only: no ``bias`` (TRL <= 1.13) shifts args; newer kernels (``score_ids``) raise in apply().
+    # TRL 1.1 - 1.13's kernel takes no ``bias``: the adapter would shift every argument after ``weight``.
+    forward = getattr(kernel, "forward", None)
     try:
-        params = tuple(inspect.signature(kernel.forward).parameters)[2:]
-    except (AttributeError, TypeError, ValueError):
-        return
-    if params not in _TRL_FUSED_HEAD_CONTRACTS:
+        if forward is not None and "bias" not in inspect.signature(forward).parameters:
+            return
+    except (TypeError, ValueError):
         return
     try:
         import unsloth_zoo.fused_losses.fused_linear  # noqa: F401
