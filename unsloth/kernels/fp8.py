@@ -425,7 +425,8 @@ def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, tor
 
 
 # Adapted from sgl-project/sglang python/sglang/srt/layers/quantization/fp8_kernel.py
-@triton.jit
+# M (token rows) runtime: BLOCK_SIZE_M already buckets it; no extra %16 / == 1 variant per prompt length.
+@triton.jit(do_not_specialize = ["M"])
 def _w8a8_block_fp8_matmul(
     A,
     B,
