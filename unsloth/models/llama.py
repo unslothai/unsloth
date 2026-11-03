@@ -2420,18 +2420,14 @@ def _decode_rotary_seq_len(rotary_emb, kv_seq_len, position_ids):
 
 
 class _PerDeviceRopeCache:
-    """cos/sin built lazily per device with only the rows asked for, so torchrun ranks do not
-    allocate on their peers. A row depends only on its position, so a shorter cache matches the
-    full one row for row."""
+    """Build position-independent rows lazily on the consuming device."""
 
     _rope_rows_pick_factors = False
 
     def _init_rope_cache_state(self, dtype):
         self._rope_cache_dtype = dtype
-        # Bumped whenever the eager code rebuilt every device (growth), so stale devices rebuild.
         self._rope_cache_version = 0
         self._rope_cache_versions = [None] * DEVICE_COUNT
-        # Rows each device can serve without bookkeeping; reset on growth. Read per layer per decode step.
         self._rope_rows_ready = [0] * DEVICE_COUNT
         # A compiled grad-off build may hold inference tensors (AOTAutograd drops
         # inference_mode(False)); rebuilt on the next grad-enabled read, off the fast path.
@@ -2516,7 +2512,6 @@ class _PerDeviceRopeCache:
         seq_len = None,
     ):
         if position_ids is not None and seq_len is None:
-            # Stock transformers call (a plain model built after the patch): per-position cos/sin.
             if torch.compiler.is_compiling() and not self._rope_rows_pick_factors:
                 return self._compiled_position_embeddings(x, position_ids)
             rows = int(position_ids.max()) + 1
