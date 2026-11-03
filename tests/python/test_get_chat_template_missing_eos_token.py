@@ -11,5 +11,5 @@ class _TokenizerWithoutEos:
 
 
 def test_missing_eos_token_is_named():
-    with pytest.raises(RuntimeError, match="has no eos_token"):
+    with pytest.raises(RuntimeError, match = "has no eos_token"):
         get_chat_template(_TokenizerWithoutEos(), "chatml")
