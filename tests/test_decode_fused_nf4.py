@@ -568,12 +568,15 @@ def _family_plan(
     family,
     qk_state = None,
     biased = False,
+    capability = (8, 0),
+    graphs = False,
 ):
     from torch._subclasses.fake_tensor import FakeTensorMode
 
     D = _driver()
     monkeypatch.setattr(D.torch.version, "hip", None)
-    monkeypatch.setattr(D.torch.cuda, "get_device_capability", lambda device: (8, 0))
+    monkeypatch.setattr(D.torch.cuda, "get_device_capability", lambda device: capability)
+    monkeypatch.setattr(D._decode_graphs, "ENABLED", graphs)
     monkeypatch.setattr(D.F, "supported_capability", lambda capability: True, raising = False)
     monkeypatch.setattr(D, "_signature", lambda plan: ())
     calls = []
@@ -652,6 +655,26 @@ def test_families_build_compatible_plans(monkeypatch, family):
     assert calls == [("qkv", family == "qwen2"), ("o", False), ("gate_up", False), ("down", False)]
     assert plan.layers[0].attn is model.model.layers[0].self_attn
     assert plan.layers[0].attn.config.sliding_window == 4
+
+
+@pytest.mark.parametrize("family", ["llama", "mistral", "qwen2", "qwen3"])
+@pytest.mark.parametrize("capability", [(7, 5), (8, 0), (8, 9)])
+@pytest.mark.parametrize("graphs", [False, True])
+@pytest.mark.parametrize("flag", ["1", "force"])
+def test_t4_qwen3_prefers_regular_graphs(monkeypatch, family, capability, graphs, flag):
+    monkeypatch.setenv("UNSLOTH_DECODE_FUSED_NF4", flag)
+    D, plan, _, calls = _family_plan(
+        monkeypatch,
+        family,
+        capability = capability,
+        graphs = graphs,
+    )
+    if family == "qwen3" and capability == (7, 5) and graphs and flag == "1":
+        assert not isinstance(plan, D._Plan)
+        assert calls == []
+    else:
+        assert isinstance(plan, D._Plan)
+        assert len(calls) == 4
 
 
 @pytest.mark.parametrize(
