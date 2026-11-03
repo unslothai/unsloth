@@ -5,7 +5,9 @@
 
 import asyncio
 import copy
+import io
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -203,6 +205,10 @@ def test_seed_tokens_and_local_seed_paths_stay_on_this_machine():
     assert "paths" not in group["config"]["seed_config"]["source"]
     for mode in ("json", "package", "baked"):
         out, _, _ = asyncio.run(package.export_flow(doc, mode, None))
+        # Read a package's members: three bytes like "up1" can turn up in compressed data by chance.
+        if out[:2] == b"PK":
+            with zipfile.ZipFile(io.BytesIO(out)) as zf:
+                out = b"".join(zf.read(name) for name in zf.namelist())
         assert b"private page" not in out and b"up1" not in out and b"a.pdf" not in out
     payload = copy.deepcopy(SQL)
     payload["recipe"]["seed_config"] = {"source": {"seed_type": "hf", "path": "me/private"}}
