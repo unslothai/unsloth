@@ -272,7 +272,10 @@ def resolve_chat_target(
     params = dict(mc.get("inference_parameters") or {})
     api_key = provider.get("api_key") or ""
     env_name = provider.get("api_key_env")
-    if not api_key and isinstance(env_name, str) and env_name:
+    from core.training.account_jobs import managed_account
+
+    # Same rule as Data Recipes: a managed account never reads a key from the server's environment.
+    if not api_key and isinstance(env_name, str) and env_name and not managed_account():
         api_key = os.environ.get(env_name, "")
     body: dict[str, Any] = {"model": mc.get("model") or "local"}
     body.update(provider.get("extra_body") or {})

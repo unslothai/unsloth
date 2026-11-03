@@ -43,16 +43,24 @@ logger = get_logger(__name__)
 
 def _recipe_task(params: dict) -> dict:
     targets = params["targets"]
-    with httpx.Client() as client:
-        try:
-            return run_benchmark(
-                params["spec"],
-                chat = lambda target, messages: post_chat(client, targets[target], messages),
-                on_progress = lambda done, total: _report_progress(done, total, "Recipe held-out"),
-                is_cancelled = params["is_cancelled"],
-            )
-        finally:
-            _restore_adapter(client, targets)
+    # The worker can outlive a Stop, so it revokes the run's key itself once the adapter is back on.
+    params["key_claimed"] = True
+    try:
+        with httpx.Client() as client:
+            try:
+                return run_benchmark(
+                    params["spec"],
+                    chat = lambda target, messages: post_chat(client, targets[target], messages),
+                    on_progress = lambda done, total: _report_progress(
+                        done, total, "Recipe held-out"
+                    ),
+                    is_cancelled = params["is_cancelled"],
+                )
+            finally:
+                _restore_adapter(client, targets)
+    finally:
+        if params.get("key_id") is not None:
+            _revoke_internal_api_key_safe(params["key_id"])
 
 
 def _restore_adapter(client: Any, targets: dict) -> None:
@@ -123,6 +131,10 @@ async def run_recipe_heldout(
         ],
     }
     require_ui_session_for_host_env_credentials(recipe, via_api_key)
+    names = [p.get("name") for p in recipe["model_providers"] if isinstance(p, dict)]
+    if len(names) != len(set(names)):
+        # Providers are looked up by name, so a second one named like the local model would be the one called.
+        raise HTTPException(status_code = 400, detail = "Each model provider needs its own name.")
     local_names = {
         p.get("name")
         for p in recipe["model_providers"]
@@ -144,6 +156,7 @@ async def run_recipe_heldout(
         raise HTTPException(status_code = 409, detail = "A benchmark is already running.")
     started = False
     key_id: Optional[int] = None
+    params: dict[str, Any] = {}
     try:
         try:
             key_id = _inject_local_providers(recipe, http_request, credential[1])
@@ -201,6 +214,7 @@ async def run_recipe_heldout(
             },
             "targets": targets,
             "is_cancelled": backend.was_cancelled,
+            "key_id": key_id,
         }
         backend.clear_logs()
         backend._append_log(
@@ -269,5 +283,5 @@ async def run_recipe_heldout(
             backend.release(run_seq)
         else:
             backend.finish(op_seq = run_seq, error = "Failed to store benchmark results")
-        if key_id is not None:
+        if key_id is not None and not params.get("key_claimed"):
             _revoke_internal_api_key_safe(key_id)
