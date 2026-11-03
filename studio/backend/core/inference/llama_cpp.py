@@ -22188,16 +22188,25 @@ class LlamaCppBackend:
     _CURRENT_DEVICE_RE = re.compile(r"current device:\s*(\d+)")
 
     @classmethod
-    def _unpinned_arch_crash_retry(cls, output: str, enumerated) -> tuple[list[int], list[int]]:
+    def _unpinned_arch_crash_retry(
+        cls,
+        output: str,
+        enumerated,
+        child_ids: Optional[Sequence[int]] = None,
+    ) -> tuple[list[int], list[int]]:
         """``(crashed, remaining)`` physical ids for a ROCm kernel-image crash on an unpinned
-        launch, from the child's "current device: N"; ``([], [])`` when it cannot be named."""
+        launch, from the child's "current device: N"; ``([], [])`` when it cannot be named.
+        ``child_ids`` is the child's own ordinal-to-physical list when the launch masked it."""
         if not cls._host_torch_is_rocm():
             return [], []  # CUDA orders the unmasked child by speed, not by our ids
         matches = cls._CURRENT_DEVICE_RE.findall(output or "")
         if not matches:
             return [], []
         ordinal = int(matches[-1])
-        physical_ids = cls._resolve_visible_physical_ids()
+        # The child's ordinals index its own mask (a split-order or survivor pin), not ours.
+        physical_ids = (
+            list(child_ids) if child_ids is not None else cls._resolve_visible_physical_ids()
+        )
         if physical_ids is not None:
             if ordinal >= len(physical_ids):
                 return [], []
@@ -23059,9 +23068,9 @@ class LlamaCppBackend:
             # ROCR_VISIBLE_DEVICES masks nothing on Windows.
             var = "HIP_VISIBLE_DEVICES" if sys.platform == "win32" else "ROCR_VISIBLE_DEVICES"
             return base + (
-                f"This often means an unsupported secondary GPU; on AMD/ROCm, hide it "
+                "This often means an unsupported secondary GPU; on AMD/ROCm, hide it "
                 f"with {var} (e.g. {var}=0 exposes only the first GPU) before "
-                f"launching Unsloth Studio."
+                "launching Unsloth Studio."
             )
         if backend == "cuda":
             return base + (
@@ -31556,7 +31565,7 @@ class LlamaCppBackend:
                             "update llama.cpp to use tensor parallelism with a "
                             "quantized cache."
                         )
-                # Auto-pinned device has no kernels in this binary: retry once on a narrowed set, since the gate cannot see custom builds; explicit picks keep their error.
+                # A launched device has no kernels in this binary: retry once on a narrowed set, since the gate cannot see custom builds or unreadable coverage; explicit picks keep their error.
                 _arch_crash_tail = "\n".join(self._stdout_lines[-80:])
                 if (
                     not healthy
@@ -31576,7 +31585,7 @@ class LlamaCppBackend:
                         # Unpinned (a manual split, or a gate that could not read the build's
                         # coverage): only the child's own "current device" names the card.
                         _crashed, _remaining = self._unpinned_arch_crash_retry(
-                            _arch_crash_tail, _enumerated
+                            _arch_crash_tail, _enumerated, _child_gpu_physical_ids
                         )
                     if _remaining:
                         # Earlier notices priced the crashed selection; re-price on the respawn set, since first notice wins.

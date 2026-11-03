@@ -464,6 +464,17 @@ class TestUnpinnedArchCrashRetry:
             [1, 3],
         )
 
+    def test_the_childs_own_mask_wins_over_the_parents(self):
+        # A manual split pins the child's order (or the gate pins survivors) without gpu_indices.
+        assert LlamaCppBackend._unpinned_arch_crash_retry(
+            _UNPINNED_CRASH, [0, 1, 2], child_ids = (0, 2, 1)
+        ) == ([1], [0, 2])
+
+    def test_ordinal_outside_the_childs_mask_is_not_guessed(self):
+        assert LlamaCppBackend._unpinned_arch_crash_retry(
+            _UNPINNED_CRASH, [0, 1, 2], child_ids = (0, 1)
+        ) == ([], [])
+
     def test_ordinal_outside_the_mask_is_not_guessed(self, monkeypatch):
         monkeypatch.setattr(
             LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: [0, 1])
