@@ -49,6 +49,7 @@ def _reply(
     prompt: int,
     completion: int,
     provider: str = "local",
+    context: int | None = None,
 ) -> None:
     studio_db.upsert_chat_message(
         {
@@ -62,6 +63,7 @@ def _reply(
                     "promptTokens": prompt,
                     "completionTokens": completion,
                     "totalTokens": prompt + completion,
+                    "contextTokens": context,
                 },
                 "responseDetails": {"providerType": provider},
             },
@@ -134,13 +136,20 @@ def test_a_fork_does_not_count_the_history_it_copies(limiter_db):
     assert _pools()["combined"]["used"] == 500 + 100 + 50
 
 
-def test_history_from_before_the_limiter_existed_is_backfilled(limiter_db):
+@pytest.mark.parametrize("existing_ledger", [False, True])
+def test_history_from_before_the_limiter_existed_is_backfilled(limiter_db, existing_ledger):
     now = _now_ms()
     _thread("t1", now)
     _reply("a1", "t1", now + 1, prompt = 70, completion = 30)
     conn = sqlite3.connect(studio_db_path())
     try:
         conn.execute("DROP TABLE token_usage_ledger")
+        if existing_ledger:
+            conn.execute("""CREATE TABLE token_usage_ledger (
+                message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+                source TEXT NOT NULL, prompt_tokens INTEGER NOT NULL,
+                completion_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL
+            ) WITHOUT ROWID""")
         conn.commit()
     finally:
         conn.close()
@@ -163,15 +172,24 @@ def test_malformed_metadata_never_blocks_the_chat_write(limiter_db):
     assert _pools()["combined"]["used"] == 100
 
 
-def test_incremental_counting_skips_history_the_previous_reply_saw(limiter_db):
+@pytest.mark.parametrize(
+    "prompt,completion,context,next_prompt,next_completion,expected",
+    [
+        (100, 50, None, 170, 30, 200),
+        (250, 20, 160, 180, 5, 295),
+    ],
+)
+def test_incremental_counting_skips_history_the_previous_reply_saw(
+    limiter_db, prompt, completion, context, next_prompt, next_completion, expected
+):
     now = _now_ms()
     _thread("t1", now)
-    _reply("a1", "t1", now + 1, prompt = 100, completion = 50)
-    _reply("a2", "t1", now + 2, prompt = 170, completion = 30)
+    _reply("a1", "t1", now + 1, prompt = prompt, completion = completion, context = context)
+    _reply("a2", "t1", now + 2, prompt = next_prompt, completion = next_completion)
     _enable(limit = 10_000, method = "total")
-    assert _pools()["combined"]["used"] == 150 + 200
+    assert _pools()["combined"]["used"] == prompt + completion + next_prompt + next_completion
     _enable(limit = 10_000, method = "incremental")
-    assert _pools()["combined"]["used"] == 150 + 20 + 30
+    assert _pools()["combined"]["used"] == expected
 
 
 def test_split_mode_keeps_local_chats_apart_from_api_and_providers(limiter_db):

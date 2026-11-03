@@ -30,6 +30,7 @@ def _usage_columns(row: str) -> str:
              WHEN {server_completion} > 0 THEN {server_completion}
              ELSE {timing_completion} END AS completion_tokens,
         {_count(row, "$.contextUsage.totalTokens")} AS reported_total,
+        NULLIF({_count(row, "$.contextUsage.contextTokens")}, 0) AS context_tokens,
         CASE WHEN COALESCE(json_extract({row}, '$.responseDetails.providerType'), 'local')
                   IN ('local', '') THEN 'local' ELSE 'external' END AS source
     """
@@ -40,7 +41,7 @@ def _ledger_insert(message: str, rows: str = "") -> str:
     return f"""
         INSERT INTO {LEDGER_TABLE}
             (message_id, thread_id, created_at, source,
-             prompt_tokens, completion_tokens, total_tokens)
+             prompt_tokens, completion_tokens, total_tokens, context_tokens)
         SELECT u.id, u.thread_id, u.created_at,
                CASE WHEN EXISTS (
                    SELECT 1 FROM chat_threads t
@@ -49,7 +50,7 @@ def _ledger_insert(message: str, rows: str = "") -> str:
                ) THEN 'inherited' ELSE u.source END,
                u.prompt_tokens, u.completion_tokens,
                CASE WHEN u.reported_total > 0 THEN u.reported_total
-                    ELSE u.prompt_tokens + u.completion_tokens END
+                    ELSE u.prompt_tokens + u.completion_tokens END, u.context_tokens
         FROM (
             SELECT {message}.id AS id, {message}.thread_id AS thread_id,
                    {message}.created_at AS created_at,
@@ -61,7 +62,8 @@ def _ledger_insert(message: str, rows: str = "") -> str:
             source = excluded.source,
             prompt_tokens = MAX(prompt_tokens, excluded.prompt_tokens),
             completion_tokens = MAX(completion_tokens, excluded.completion_tokens),
-            total_tokens = MAX(total_tokens, excluded.total_tokens)
+            total_tokens = MAX(total_tokens, excluded.total_tokens),
+            context_tokens = COALESCE(excluded.context_tokens, context_tokens)
     """
 
 
@@ -81,10 +83,16 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
             source TEXT NOT NULL,
             prompt_tokens INTEGER NOT NULL,
             completion_tokens INTEGER NOT NULL,
-            total_tokens INTEGER NOT NULL
+            total_tokens INTEGER NOT NULL,
+            context_tokens INTEGER
         ) WITHOUT ROWID
         """
     )
+    upgraded = "context_tokens" not in {
+        row[1] for row in conn.execute(f"PRAGMA table_info({LEDGER_TABLE})")
+    }
+    if upgraded:
+        conn.execute(f"ALTER TABLE {LEDGER_TABLE} ADD COLUMN context_tokens INTEGER")
     conn.execute(
         f"CREATE INDEX IF NOT EXISTS idx_{LEDGER_TABLE}_created_at ON {LEDGER_TABLE}(created_at)"
     )
@@ -96,6 +104,8 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
         ("insert", "AFTER INSERT ON chat_messages"),
         ("update", "AFTER UPDATE OF metadata_json ON chat_messages"),
     ):
+        if upgraded:
+            conn.execute(f"DROP TRIGGER IF EXISTS {LEDGER_TABLE}_{event}")
         conn.execute(
             f"""
             CREATE TRIGGER IF NOT EXISTS {LEDGER_TABLE}_{event}
@@ -106,7 +116,7 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
             END
             """
         )
-    if not existed:
+    if not existed or upgraded:
         conn.execute(
             _ledger_insert(
                 "m",
@@ -125,6 +135,7 @@ def record_run_usage(conn: sqlite3.Connection, run_id: str, chunk: dict) -> None
                 ("promptTokens", "prompt_tokens"),
                 ("completionTokens", "completion_tokens"),
                 ("totalTokens", "total_tokens"),
+                ("contextTokens", "context_tokens"),
             )
         }
     if isinstance(chunk.get("timings"), dict):
@@ -161,7 +172,7 @@ def window_usage(conn: sqlite3.Connection, start_ms: int, method: str) -> dict[s
                 f"""
         WITH turns AS (
             SELECT source, created_at, completion_tokens,
-                   prompt_tokens - LAG(prompt_tokens + completion_tokens, 1, 0) OVER (
+                   prompt_tokens - LAG(COALESCE(context_tokens, prompt_tokens + completion_tokens), 1, 0) OVER (
                        PARTITION BY thread_id ORDER BY created_at, message_id
                    ) AS prompt_delta
             FROM {LEDGER_TABLE}
