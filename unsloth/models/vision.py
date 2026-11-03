@@ -285,6 +285,7 @@ from ._utils import *
 from ._utils import _ignore_block_swap_params_for_ddp
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._uma_safetensors import is_integrated_unified_memory_gpu
+from ._lora_fold_generate import lora_fold_generate as _lora_fold_generate
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
 from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_custom_dtype
@@ -2301,7 +2302,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if kwargs.get("past_key_values") is None and not rejects_cache_fields:
             kwargs["cache_implementation"] = "dynamic"
         try:
-            with _get_inference_mode_context_manager(self), autocaster:
+            with (
+                _get_inference_mode_context_manager(self),
+                autocaster,
+                _lora_fold_generate(self, args, kwargs),
+            ):
                 return self._old_generate(*args, **kwargs)
         finally:
             _clear_generation_caches(self)
@@ -2394,6 +2399,8 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             eager_scope,
             _get_inference_mode_context_manager(self),
             autocaster,
+            # 16-bit LoRA: adapters folded into the base weights for this call, restored after.
+            _lora_fold_generate(self, args, kwargs),
         ):
             output = self._old_generate(*args, **kwargs)
     finally:

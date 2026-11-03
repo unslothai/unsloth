@@ -159,6 +159,7 @@ from ..kernels.fused_add_rms_layernorm import (
 )
 from ..kernels import fast_lora as _fast_lora
 from . import _decode_graphs
+from ._lora_fold_generate import lora_fold_generate as _lora_fold_generate
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..tokenizer_utils import *
 from ..context_parallel import get_cp_manager
@@ -3071,6 +3072,8 @@ def unsloth_fast_generate(self, *args, **kwargs):
         with (
             _get_inference_mode_context_manager(self),
             torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
+            # 16-bit LoRA: adapters folded into the base weights for this call, restored after.
+            _lora_fold_generate(self, args, kwargs),
         ):
             output = self._old_generate(*args, **kwargs)
     finally:
