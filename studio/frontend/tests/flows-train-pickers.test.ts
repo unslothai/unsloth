@@ -80,3 +80,15 @@ test("a saved split expression survives the dropdown, which lists only split nam
   assert.match(field, /datasetSplit=\{shownSplit\(split\)\}/);
   assert.match(field, /onChange\(\{ split: pickedSplit\(saved\.current, v\) \}\)/);
 });
+
+test("the full split expression stays editable beside the split dropdown", () => {
+  const field = readSrc("features/flows/editor/dataset-picker-field.tsx");
+  assert.match(field, /<Input\s+value=\{split \?\? ""\}\s+onChange=\{\(e\) => onChange\(\{ split: e\.target\.value \}\)\}/);
+});
+
+test("an app's Select keeps a configured empty option", () => {
+  const page = readSrc("features/flows/app/flow-app-page.tsx");
+  assert.match(page, /\(field\.options \?\? \[\]\)\.map\(\(option\) => \(/);
+  assert.match(page, /onValueChange=\{\(next\) => onChange\(fromSelectValue\(next\)\)\}/);
+  assert.doesNotMatch(page, /field\.options \?\? \[\]\)\.filter\(Boolean\)/);
+});
