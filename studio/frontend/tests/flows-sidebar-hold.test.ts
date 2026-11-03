@@ -24,6 +24,6 @@ test("on Mac the toolbar is the titlebar row, on the canvas colour, clear of the
   assert.match(page, /sidebarBeside && !macChrome \? "scale-100"/);
   const bar = read("features/flows/editor/toolbar.tsx");
   assert.match(bar, /data-tauri-drag-region=\{titlebar \|\| undefined\}/);
-  assert.match(bar, /\$\{titlebar \? "bg-background" : "bg-sidebar"\}/);
+  assert.match(bar, /\$\{titlebar \? "relative z-50 bg-background" : "bg-sidebar"\}/);
   assert.match(bar, /clearNav \? "pl-\[var\(--studio-collapsed-chat-controls-inset,0\.5rem\)\]"/);
 });
