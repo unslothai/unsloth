@@ -90,6 +90,34 @@ def _unit_mesh(unit):
         return None
 
 
+def _root_mesh(mesh):
+    get = getattr(mesh, "_get_root_mesh", None)
+    if get is not None:
+        return get()
+    from torch.distributed.device_mesh import _mesh_resources
+
+    return _mesh_resources.get_root_mesh(mesh)
+
+
+def _composed_writer_rank(meshes):
+    try:
+        root = _root_mesh(meshes[0])
+        if any(_root_mesh(m) is not root for m in meshes[1:]):
+            return None
+        axes = set()
+        for m in meshes:
+            # Flattened mesh names need not exist in the root.
+            coordinates = torch.isin(root.mesh, m.mesh.reshape(-1)).nonzero()
+            if coordinates.shape[0] != m.mesh.numel():
+                return None
+            axes.update((coordinates != coordinates[0]).any(dim = 0).nonzero().flatten().tolist())
+        coordinate = root.get_coordinate()
+        index = tuple(slice(None) if axis in axes else c for axis, c in enumerate(coordinate))
+        return int(root.mesh[index].min())
+    except Exception:
+        return None
+
+
 def mesh_writer_rank(model):
     """Lowest global rank of the model's FSDP2 mesh: a sub-mesh without rank 0 never gathers there."""
     dist = _dist()
@@ -99,7 +127,15 @@ def mesh_writer_rank(model):
     mesh = None
     if isinstance(model, torch.nn.Module):
         if DTensor is not None:
-            mesh = next((p.device_mesh for p in model.parameters() if isinstance(p, DTensor)), None)
+            meshes = []
+            for p in model.parameters():
+                if isinstance(p, DTensor) and p.device_mesh not in meshes:
+                    meshes.append(p.device_mesh)
+            if len(meshes) > 1:
+                writer = _composed_writer_rank(meshes)
+                if writer is not None:
+                    return writer
+            mesh = meshes[0] if meshes else None
         if mesh is None:
             # Unsharded parameters (eval forward, no reshard) carry no mesh; the units still do.
             mesh = next(filter(None, map(_unit_mesh, fsdp2_units(model))), None)
