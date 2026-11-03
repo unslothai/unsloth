@@ -951,6 +951,7 @@ export const th = {
       showLess: "แสดงน้อยลง",
       settings: "การตั้งค่า",
       api: "API",
+      benchmarks: "เบนช์มาร์ก",
       lightMode: "โหมดสว่าง",
       darkMode: "โหมดมืด",
       guidedTour: "ทัวร์แนะนำ",

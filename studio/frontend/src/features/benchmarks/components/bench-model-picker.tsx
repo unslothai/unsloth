@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The model dropdown both benchmark pages share: the config-sweep page's header pill
-// ("Pick a GGUF to benchmark") and the Evals page's Setup field. What picking *means*
-// differs per page — sweeps records the pick for the runner to load later, Evals loads
-// it right away — so the selection state stays with the caller. This fixes the shared
-// look and wiring: same ModelSelector, same locked treatment, same loaded/variant markers.
+// The model dropdown every Benchmarks tab shares. Picking means something different per tab,
+// so the selection state stays with the caller.
 
 import { ModelSelector } from "@/features/model-picker";
 import type {
