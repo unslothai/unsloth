@@ -22,6 +22,8 @@ class _Session:
 
     def admit(self, request, _handle):
         self.backend.temperatures.append(request["temperature"])
+        if self.backend._speculative_draft is not None:
+            self.backend._speculative_draft.controller.replies += 1
         self.rows_in_flight = 1
 
     def step(self):
@@ -32,9 +34,15 @@ class _Session:
         self.backend.closed += 1
 
 
-def _warmed(fail = None, room = None):
+def _warmed(
+    fail = None,
+    room = None,
+    draft = None,
+):
     backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
-    vars(backend).update(temperatures = [], closed = 0, cleared = 0, _prompt_cache_room = room)
+    vars(backend).update(
+        temperatures = [], closed = 0, cleared = 0, _prompt_cache_room = room, _speculative_draft = draft
+    )
 
     def clear():
         backend.cleared += 1
@@ -51,6 +59,13 @@ def test_warm_serves_greedy_twice_then_sampled_and_clears_the_cache():
     backend = _warmed(room = 123)
     assert backend.temperatures == [0.0, 0.0, 0.7] and backend.closed == 3
     assert backend.cleared == 1 and backend._prompt_cache_room == 123
+
+
+def test_warm_replies_leave_the_drafter_controller_untaught():
+    controller = SimpleNamespace(replies = 0)
+    draft = SimpleNamespace(controller = controller)
+    _warmed(draft = draft)
+    assert draft.controller is controller and controller.replies == 0
 
 
 def test_the_load_warms_the_batch_with_the_rng_preserved():

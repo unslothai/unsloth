@@ -6574,6 +6574,11 @@ class MLXInferenceBackend:
         if self.resident_unavailable_reason({}) is not None:
             return
         messages = [{"role": "user", "content": "Count from one to ten."}]
+        # Cold replies would teach the drafter's controller that drafting does not pay.
+        draft = self._speculative_draft
+        controller = getattr(draft, "controller", None)
+        if controller is not None:
+            draft.controller = copy.deepcopy(controller)
         try:
             for temperature in (0.0, 0.0, 0.7):
                 session = self.open_resident_batch(width = 1)
@@ -6597,6 +6602,8 @@ class MLXInferenceBackend:
                 error,
             )
         finally:
+            if controller is not None:
+                draft.controller = controller
             room = self._prompt_cache_room
             self._clear_prompt_cache()
             self._prompt_cache_room = room
