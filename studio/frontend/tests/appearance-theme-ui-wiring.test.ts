@@ -13,13 +13,13 @@ const THEME_FILE_KEYS = [
   "settings.appearance.themeFile.exportLabel",
 ];
 
-test("the Appearance tab shows the theme file section above the theme rows", () => {
+test("the Appearance tab shows the theme file section between Code and Rendering", () => {
   const tab = readSrc("features/settings/tabs/appearance-tab.tsx");
   assert.match(tab, /import \{ ThemeFileSection \} from "\.\.\/appearance-theme\/ui\/theme-file-section";/);
   const section = tab.indexOf("<ThemeFileSection />");
-  const themeTitle = tab.indexOf('t("settings.appearance.theme.title")');
   assert.ok(section !== -1, "ThemeFileSection is not rendered");
-  assert.ok(section < themeTitle, "ThemeFileSection should come before the Theme section");
+  assert.ok(section > tab.indexOf('t("settings.appearance.code.title")'), "ThemeFileSection should follow Code");
+  assert.ok(section < tab.indexOf("<GpuRenderingRow />"), "ThemeFileSection should precede Rendering");
 });
 
 test("settings search finds the theme file rows", () => {

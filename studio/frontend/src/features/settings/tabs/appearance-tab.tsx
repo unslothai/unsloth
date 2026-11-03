@@ -197,8 +197,6 @@ export function AppearanceTab() {
         </p>
       </header>
 
-      <ThemeFileSection />
-
       <SettingsSection title={t("settings.appearance.theme.title")}>
         <SettingsRow label={t("settings.appearance.theme.label")}>
           <ThemeSegmented />
@@ -337,6 +335,8 @@ export function AppearanceTab() {
           </SettingsRow>
         ))}
       </SettingsSection>
+
+      <ThemeFileSection />
 
       {isTauri ? (
         <SettingsSection title={t("settings.appearance.gpuRendering.sectionTitle")}>
