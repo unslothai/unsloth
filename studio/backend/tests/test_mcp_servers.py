@@ -2346,8 +2346,7 @@ def test_mcp_tool_search_loads_exact_names_then_ranked_matches(tmp_path, monkeyp
     assert "- mcp__srv1__query: [A] Query rows." in out
     # The full schema rides the result, so the declared tools (prompt prefix) never change mid-turn.
     assert (
-        "schema: "
-        + json.dumps(tools_mod.mcp_tool_spec("mcp__srv1__query"), separators=(",", ":"))
+        "schema: " + json.dumps(tools_mod.mcp_tool_spec("mcp__srv1__query"), separators = (",", ":"))
         in out
     )
     assert tools_mod.execute_tool("mcp_tool_search", {"query": "zzzz"}).startswith(
@@ -2485,7 +2484,10 @@ def test_controller_loads_searched_and_named_mcp_tools(tmp_path, monkeypatch, se
     # was: the full schema rides the search result instead (#16538).
     assert _names(controller.active_tools()) == ["mcp_tool_search"]
     assert "schema: " in result
-    assert json.dumps(tools_mod.mcp_tool_spec("mcp__srv1__move-pages"), separators=(",", ":")) in result
+    assert (
+        json.dumps(tools_mod.mcp_tool_spec("mcp__srv1__move-pages"), separators = (",", ":"))
+        in result
+    )
     # The searched tool still executes under its catalog schema.
     moved_call = controller.prepare_call(
         {"function": {"name": "mcp__srv1__move-pages", "arguments": "{}"}}
