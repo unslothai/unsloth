@@ -504,7 +504,10 @@ export function LlmSettingsPanel({
               />
             </div>
           )}
-          {has("reasoning_effort") && node.params.thinking === true && (
+          {/* JSON output runs with thinking off, so a level would do nothing there. */}
+          {has("reasoning_effort") &&
+            node.params.thinking === true &&
+            !node.params.json_schema && (
             <div className="flex items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-1.5">
                 <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">

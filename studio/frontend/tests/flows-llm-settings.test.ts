@@ -322,3 +322,15 @@ test("the reload hint's resident model is read from the server when a flow opens
   const runs = readSrc("features/flows/editor/run-controller.ts");
   assert.match(runs, /if \(controller\.signal\.aborted\) return;\s*\/\/[^\n]*\n\s*syncResidentModel\(\);/);
 });
+
+test("Reasoning Effort hides when a JSON schema is set: JSON output runs with thinking off", async () => {
+  const { readFileSync } = await import("node:fs");
+  const panel = readFileSync(
+    new URL("../src/features/flows/editor/llm-settings-panel.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    panel,
+    /has\("reasoning_effort"\) &&\s+node\.params\.thinking === true &&\s+!node\.params\.json_schema/,
+  );
+});
