@@ -89,7 +89,11 @@ def _backend(monkeypatch, streams: list, payloads: list) -> LlamaCppBackend:
         payloads.append(copy.deepcopy(payload))
         yield type("FakeResponse", (), {"status_code": 200, "chunks": streams.pop(0)})()
 
-    def fake_iter_text_cancellable(response, _cancel_event, first_token_deadline = None):
+    def fake_iter_text_cancellable(
+        response,
+        _cancel_event,
+        first_token_deadline = None,
+    ):
         yield from response.chunks
 
     monkeypatch.setattr(backend, "_stream_with_retry", fake_stream_with_retry)
