@@ -6527,9 +6527,7 @@ class MLXInferenceBackend:
         return True
 
     def narrow_context(self, max_seq_length):
-        """Serve a smaller pinned context from the weights already held, answering the entry's new
-        context fields. None where a fresh load could decide differently: a wider context is priced
-        again, and a narrower one may admit a drafter or drop an offload."""
+        """Serve a smaller context from the held weights; None where a fresh load could decide differently."""
         entry = self.models.get(self.active_model_name)
         pinned = _positive_int(max_seq_length)
         if entry is None or pinned is None or not self._served_context:
@@ -6566,11 +6564,7 @@ class MLXInferenceBackend:
         return fields
 
     def _warm_resident_batch(self):
-        """Serve short replies through the batch requests take, whose first-use work Zoo's warm-up generation misses.
-
-        Twice greedy, since the Qwen4 scopes build their kernels only on opening after a reply has
-        imported their mlx-vlm module, then sampled.
-        """
+        """Warm the request batch Zoo's warm-up misses: twice greedy (Qwen4 scopes build kernels only after a reply), then sampled."""
         if self.resident_unavailable_reason({}) is not None:
             return
         messages = [{"role": "user", "content": "Count from one to ten."}]

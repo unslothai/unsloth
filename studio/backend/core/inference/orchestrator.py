@@ -2643,8 +2643,7 @@ class InferenceOrchestrator:
         parallel_slots,
         cancel_event = None,
     ) -> bool:
-        """Whether the idle MLX worker already holding this load took a smaller context, which needs
-        no weight read. A worker that declines is replaced as usual."""
+        """Whether the idle MLX worker holding this load took a smaller context in place."""
         proc = self._proc
         entry = self.models.get(model_name)
         held = getattr(self, "_worker_load_settings", None)

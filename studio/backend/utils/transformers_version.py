@@ -134,7 +134,7 @@ _hf_json_ahead: dict[tuple[str, str | None], Future] = {}
 
 
 def read_activation_files_ahead(model_name: str, hf_token: str | None) -> None:
-    """Start activation's raw Hub reads together, since each otherwise waits on its own TLS handshake. An answer serves one read."""
+    """Start activation's raw Hub reads together so TLS handshakes overlap; each answer serves one read."""
     if not _is_canonical_repo_id(model_name) or _env_offline():
         return
 

@@ -676,7 +676,7 @@ def _in_token_rejection_scope(handler):
 
 
 def _loaded_auto_map(backend, mc) -> bool | None:
-    """Whether the snapshot an MLX load just opened declares remote code, or None when its files do not answer for the requested repo (an adapter, a precision folder, a bitsandbytes substitution)."""
+    """Whether the opened MLX snapshot declares remote code; None when it is not the requested repo (adapter, precision folder, bnb substitute)."""
     if getattr(backend, "device", None) != "mlx" or mc.is_lora or getattr(mc, "gguf_variant", None):
         return None
     try:
@@ -2223,7 +2223,6 @@ def run_inference_process(
     ):
         from utils.models.model_config import read_hub_model_info_ahead, shared_hub_model_info
 
-        # The imports in detect_hardware outlast this read, so the wait for it disappears.
         hub_answers.enter_context(shared_hub_model_info())
         model_info_ahead = read_hub_model_info_ahead(model_name, _config_hf_token(config))
 
@@ -2237,7 +2236,6 @@ def run_inference_process(
             from utils.models.model_config import shared_hub_model_info
             from utils.utils import pinned_hf_reachability
 
-            # One load is one request: its checks read the Hub's answer once, and only the load holds it.
             hub_answers.enter_context(pinned_hf_reachability(_probed_offline))
             hub_answers.enter_context(shared_hub_model_info())
             if model_info_ahead is not None:
