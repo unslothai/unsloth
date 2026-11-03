@@ -14,11 +14,6 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""A compressed-tensors checkpoint loaded with plain transformers in a process where Unsloth is
-imported (say, reloading what Unsloth saved) is decompressed in compressed-tensors' first-forward
-hook, which wraps each module's parameters in an OffloadCache. Unsloth's compiled forwards cannot
-trace that cache, so Unsloth unwraps the same-device ones right after the hook runs."""
-
 import types
 from dataclasses import dataclass
 
@@ -49,9 +44,6 @@ class _Tiny(nn.Module):
 
 
 class _LazyCompressor:
-    """compressed-tensors' own add_decompress_hook / remove_decompression_hook, with a
-    decompress_model that does what 0.19's does to the module tree (from_accelerate dispatch)."""
-
     add_decompress_hook = ModelCompressor.add_decompress_hook
     remove_decompression_hook = ModelCompressor.remove_decompression_hook
 
@@ -87,7 +79,7 @@ def test_unwrap_hook_runs_after_the_decompress_hook_and_removes_itself():
     reference.load_state_dict(model.state_dict())
     x = torch.randn(2, 4)
     assert mcl._unwrap_offload_after_lazy_decompress(model) is True
-    assert mcl._unwrap_offload_after_lazy_decompress(model) is False  # idempotent
+    assert mcl._unwrap_offload_after_lazy_decompress(model) is False
     out = model(x)
     assert _caches(model) == 0
     assert not hasattr(model, "ct_decompress_hook")
