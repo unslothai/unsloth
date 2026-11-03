@@ -5860,7 +5860,6 @@ class VideoBackend:
 
             from .diffusion_families import pinned_repo_revision
 
-            # Avoid diffusers' untimed model_info when the cache can serve an unreachable Hub.
             checkpoint_cached_repo = (
                 str(checkpoint_local) if checkpoint_local is not None else kwargs["repo_id"]
             )
