@@ -10545,7 +10545,6 @@ def block_swap_shaped(model, init_lora_weights = True):
 
 @contextlib.contextmanager
 def _block_swap_shaped_fallback(swapper):
-    # unsloth_zoo before BlockSwap.shaped: the same zero-stride placeholders over its block fields.
     held = []
     try:
         try:

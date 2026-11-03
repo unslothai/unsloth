@@ -1,5 +1,4 @@
-"""block_swap_shaped from _utils.py, extracted with ast: PEFT must see an evicted MoE expert weight's real shape."""
-
+# SPDX-License-Identifier: AGPL-3.0-only
 import ast, contextlib, os, types
 import torch
 
@@ -22,7 +21,6 @@ def _load():
 
 
 def _evicted_swapper(shape = (4, 16, 8)):
-    """A zoo-2026.10.6-style swapper: no shaped(), one evicted block holding an expert weight."""
     w = torch.nn.Parameter(torch.randn(shape), requires_grad = False)
     empty = torch.empty(0)
     w.data = empty
@@ -80,5 +78,5 @@ def test_fallback_leaves_a_block_fetched_inside_the_context():
     w = torch.nn.Parameter(torch.empty(0), requires_grad = False)
     blk = types.SimpleNamespace(resident = False, params = [w], empties = [w.data], sig = [((4, 8),)])
     with _load()["_block_swap_shaped_fallback"](types.SimpleNamespace(blocks = [blk])):
-        w.data, blk.resident = torch.ones(4, 8), True  # what a fetch does
+        w.data, blk.resident = torch.ones(4, 8), True
     assert w.shape == (4, 8)
