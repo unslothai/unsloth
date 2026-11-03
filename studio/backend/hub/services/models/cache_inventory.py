@@ -329,7 +329,9 @@ def _is_real_cache_blob(blob: Optional[Path], repo_dir: Optional[Path]) -> bool:
     if blob is None or repo_dir is None:
         return False
     try:
-        return blob.parent.resolve(strict = False) == (repo_dir / "blobs").resolve(strict = False)
+        parent = blob.parent.resolve(strict = False)
+        store = (repo_dir / "blobs").resolve(strict = False)
+        return parent == store or parent.samefile(store)
     except OSError:
         return False
 

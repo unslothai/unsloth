@@ -5114,6 +5114,9 @@ class FastBaseModel:
                     revision = _tokenizer_revision,
                 )
                 model, _fallback_tok = patch_tokenizer(model, _fallback_tok)
+                from ..tokenizer_utils import _sync_pad_token_id
+
+                model = _sync_pad_token_id(model, _fallback_tok)
                 # Re-attach as a processor wrapper if the original was a processor (audio ones included).
                 if any(
                     hasattr(tokenizer, k)
@@ -5754,8 +5757,16 @@ class FastBaseModel:
             _LoraModel._create_and_replace = _patched_car
 
         from .lora_init import fast_lora_init, record_fast_pissa
+        from ._utils import block_swap_shaped
 
-        with fast_lora_init() as fast:
+        with (
+            fast_lora_init() as fast,
+            block_swap_shaped(
+                model,
+                init_lora_weights,
+                lora_config = lora_config,
+            ),
+        ):
             model = _get_peft_model(model, lora_config)
         if fast["pissa"]:
             record_fast_pissa(model)
