@@ -66,7 +66,7 @@ test("the minimum size keeps the header and every port row", () => {
   assert.equal(cardMinHeight(spec), 56 + 3 * 24 + 16);
   assert.ok(CARD_MIN_WIDTH >= 200);
   const src = readSrc("features/flows/editor/flow-node.tsx");
-  assert.match(src, /minWidth: CARD_MIN_WIDTH, minHeight, onResizeEnd/);
+  assert.match(src, /minWidth: CARD_MIN_WIDTH,\s*minHeight,\s*onResizeEnd/);
 });
 
 test("the canvas draws resizes live and commits nothing until release", () => {
@@ -141,4 +141,10 @@ test("the resize handles and a saved size both respect the measured floor", () =
 test("Tidy's frame clamp only limits growth, never shrinking a card below its size", () => {
   const src = readSrc("features/flows/editor/layout.ts");
   assert.match(src, /Math\.min\(fit\[1\], frame\[1\] \+ frame\[3\] - node\.pos\[1\] - pad\),\s*Math\.min\(fit\[1\], size\.height\),/);
+});
+
+test("a card's first resize is laid out sized while it drags", () => {
+  const src = readSrc("features/flows/editor/flow-node.tsx");
+  assert.match(src, /sized=\{\(!!node\.size \|\| resizing\) && !collapsed\}/);
+  assert.match(src, /onResizeStart: \(\) => onResizing\(true\)/);
 });
