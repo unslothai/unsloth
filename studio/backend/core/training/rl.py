@@ -246,6 +246,12 @@ def grpo_reward_inputs(
         system_prompt = system_prompt,
     )
     out = formatted[0]
+    prompt = out["prompt"]
+    if isinstance(prompt, list) and prompt and prompt[-1].get("role") == "assistant":
+        from core.training.rewards import PREFILL_COLUMN
+
+        # Training continues an assistant-ended prompt and scores that prefill plus the reply.
+        out[PREFILL_COLUMN] = prompt[-1].get("content") or ""
     return [out.pop("prompt")], {k: [v] for k, v in out.items()}
 
 

@@ -259,6 +259,16 @@ def test_try_it_gives_rewards_the_inputs_training_does(column, cell):
     ]
 
 
+def test_try_it_scores_the_prefill_of_an_assistant_ended_prompt():
+    # Training continues the assistant turn and scores the prefill plus the reply.
+    spec = {"name": "same", "kind": "rule", "rule": rewards.validate_rule({"type": "exact_match"})}
+    spec["rule"]["score"] = {"match": 1.0, "miss": -1.0}
+    turns = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "It is "}]
+    row = {"messages": turns, "answer": "It is 72"}
+    [result] = rewards.preview_scores([spec], "72", row, {"messages": "prompt"})
+    assert result["score"] == 1.0
+
+
 def test_bundled_root_is_packaged():
     pyproject = Path(rewards.__file__).parents[4] / "pyproject.toml"
     assert "backend/core/training/bundled_rewards/**/*.md" in pyproject.read_text("utf-8")
