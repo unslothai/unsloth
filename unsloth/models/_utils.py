@@ -10538,7 +10538,6 @@ def block_swap_shaped(
     use_dora = False,
     modules_to_save = None,
 ):
-    """PEFT wraps MoE expert weights by their shape, which reads as empty on a layer offload_layers evicted."""
     swapper = getattr(model, "_unsloth_block_swap", None)
     if use_dora and any(not block.resident for block in getattr(swapper, "blocks", ())):
         raise ValueError(
