@@ -2006,12 +2006,9 @@ if hasattr(torch._dynamo, "assume_constant_result"):
 # torch < 2.14 rowwise CUTLASS takes its output type from the bias dtype: no bias + fp16 out = bf16 bits (garbage).
 # 2.14 dispatches on out.dtype, where a bf16 detour would lose precision and overflow 65408..65504. Pre-releases keep it.
 _SCALED_MM_FP16_OUT_BROKEN = torch.__version__ < "2.14.0"
-# 2.10-2.13 CUTLASS has an fp16-bias specialization with an fp16 epilogue; a zero fp16 bias selects it, so fp16 keeps
-# its range (the bf16 detour turns finite 65408..65504 into inf). Older CUTLASS and hipBLASLt rowwise write bf16 only.
+# 2.10-2.13 rowwise CUTLASS writes bf16 bits without a bias; a zero fp16 bias makes it write fp16.
 _SCALED_MM_FP16_BIAS_OUT = torch.__version__ >= "2.10.0" and torch.version.hip is None
-# Folded once (tests patch these): 2.10-2.13 CUDA passes a zero fp16 bias; where rowwise writes bf16 only
-# (torch < 2.10, ROCm before 2.14) a bf16 detour rounds 65450..65504 up to 65536 = fp16 inf, so fp16 always
-# takes the exact dequant + fp16 GEMM there.
+# torch < 2.10 and ROCm < 2.14 cannot write fp16 (bf16 detour overflows to inf), so fp16 dequantizes.
 _SCALED_MM_FP16_ZERO_BIAS = _SCALED_MM_FP16_OUT_BROKEN and _SCALED_MM_FP16_BIAS_OUT
 _SCALED_MM_FP16_DEQUANT_ONLY = _SCALED_MM_FP16_OUT_BROKEN and not _SCALED_MM_FP16_BIAS_OUT
 
@@ -2037,12 +2034,10 @@ if hasattr(torch._dynamo, "assume_constant_result"):
 
 
 def _scaled_mm_fp16_dequant_only(dtype):
-    """fp16 where rowwise _scaled_mm cannot write fp16: the scaled_mm backend dequantizes at every row count."""
     return dtype == torch.float16 and _SCALED_MM_FP16_DEQUANT_ONLY
 
 
 def _scaled_mm_dtype_supported(x):
-    """Whether rowwise torch._scaled_mm can write x.dtype here."""
     dtype = x.dtype
     if dtype != torch.float32:
         return not _scaled_mm_fp16_dequant_only(dtype)
@@ -2051,30 +2046,24 @@ def _scaled_mm_dtype_supported(x):
 
 
 def _scaled_mm_out_dtype(dtype):
-    """Rowwise torch._scaled_mm out dtype: bf16 for fp16 where only bf16 exists (routed to dequant), else `dtype`."""
     return torch.bfloat16 if _scaled_mm_fp16_dequant_only(dtype) else dtype
 
 
-# Zero fp16 biases by (rows, device, stream), so eager calls do not allocate + fill one per forward. Keyed by stream:
-# the fill is asynchronous on the stream that made it, and the caching allocator ties its storage to that stream.
-# Bounded: cleared when full.
+# Keyed by stream (async fill); never used during CUDA graph capture (eviction under a live graph).
 _SCALED_MM_FP16_ZERO_BIAS_CACHE = {}
 _SCALED_MM_FP16_ZERO_BIAS_CACHE_MAX = 64
 
 
 def _scaled_mm_fp16_bias(x, weight):
-    """Zero fp16 bias that makes torch 2.10-2.13 rowwise CUTLASS write fp16 (no bias = bf16 bits), else None."""
     if not _SCALED_MM_FP16_ZERO_BIAS or x.dtype != torch.float16:
         return None
     n = weight.shape[0]
     device = x.device
     if torch.compiler.is_compiling():
-        # Traced: a constant in the graph, no Python cache lookup to guard on.
         return torch.zeros(n, dtype = torch.float16, device = device)
-    # A real CUDA tensor means CUDA is initialized; a fake one (tests, tracing) must not initialize it.
+    # A fake tensor must not initialize CUDA.
     cuda = device.type == "cuda" and torch.cuda.is_initialized()
     if cuda and torch.cuda.is_current_stream_capturing():
-        # Graph-private: a cached bias could be evicted and its memory reused while the graph still reads it.
         return torch.zeros(n, dtype = torch.float16, device = device)
     key = (n, device, torch.cuda.current_stream(device).cuda_stream if cuda else None)
     bias = _SCALED_MM_FP16_ZERO_BIAS_CACHE.get(key)
@@ -2190,8 +2179,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             and rowwise
             and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
             and x.shape[-1] == weight.shape[1]
-            # Traced, a dtype that always dequantizes must not guard on the row count (an extra graph, and a
-            # strict mark_dynamic range violation); eager, rows go first so decode calls never probe float32.
+            # Traced, an always-dequant dtype must not guard on the row count (strict mark_dynamic).
             and (
                 x.dtype == torch.bfloat16
                 or not torch.compiler.is_compiling()

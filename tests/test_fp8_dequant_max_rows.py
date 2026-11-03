@@ -141,7 +141,6 @@ def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled, dtype,
 
 
 def test_scaled_mm_asks_for_bf16_when_activations_are_fp16(monkeypatch):
-    # torch < 2.10 (or ROCm before 2.14): rowwise writes bf16 only (these fp16 calls are routed to dequant).
     monkeypatch.setattr(F8, "_SCALED_MM_FP16_DEQUANT_ONLY", True)
     assert F8._scaled_mm_out_dtype(torch.float16) is torch.bfloat16
     assert F8._scaled_mm_out_dtype(torch.bfloat16) is torch.bfloat16
@@ -195,7 +194,6 @@ def test_every_rowwise_scaled_mm_call_uses_the_out_dtype_helper():
     }
     assert len(data_calls) >= 2, out
     assert all(v.startswith("_scaled_mm_out_dtype(") for v in data_calls.values()), out
-    # The fp16 epilogue on torch 2.10-2.13 is selected by the bias dtype: every data call passes the helper's.
     assert all(bias.get(line, "").startswith("_scaled_mm_fp16_bias(") for line in data_calls), bias
 
 
