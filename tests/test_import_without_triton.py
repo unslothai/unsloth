@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Without Triton `import unsloth` must still work; only unsloth.* modules may see unsloth_zoo's triton stub."""
 
 import os
 import subprocess
@@ -9,7 +8,6 @@ import textwrap
 
 import pytest
 
-# Triton made unfindable for the child, as on a host where the package is not installed.
 _NO_TRITON = textwrap.dedent("""
     import importlib.machinery, sys
     _find = importlib.machinery.PathFinder.find_spec.__func__
