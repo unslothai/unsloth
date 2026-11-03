@@ -703,7 +703,8 @@ def enable_fp8_lora(
             continue
         why = kernels.eligible_base(base)
         if why is None and not allow_cpu:
-            device = base.weight.device
+            state = base.__dict__.get("_unsloth_fp8_lora")
+            device = state.device if state is not None and state.offloaded else base.weight.device
             if device.type != "cuda" or torch.version.hip is not None:
                 why = f"weight on {device}"
             elif torch.cuda.get_device_capability(device) < (8, 9):

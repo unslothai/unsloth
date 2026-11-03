@@ -664,6 +664,25 @@ def test_generation_restores_exact_base_then_training_reenables_fp8(
     assert any(torch.count_nonzero(grad) for grad in grads.values())
 
 
+def test_enabling_an_offloaded_base_again_keeps_engagement(offload_on_cpu, monkeypatch):
+    model = _tiny_qwen3_peft()
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    expected = f8t.enable_fp8_lora(model, allow_cpu = True)
+    states = [
+        module.__dict__["_unsloth_fp8_lora"]
+        for module in model.modules()
+        if "_unsloth_fp8_lora" in module.__dict__
+    ]
+    for state in states:
+        assert state.offloaded
+        state.device = torch.device("cuda:0")
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: (8, 9))
+    monkeypatch.setenv("UNSLOTH_STRICT_ENGAGE", "1")
+    assert f8t.enable_fp8_lora(model) == expected
+    assert P.engaged(model)[f8t.FP8_LORA_RECIPE]["modules"] == len(expected)
+    assert all(state.offloaded and state.quantizations == 1 for state in states)
+
+
 def test_host_master_dequantize_is_exact(offload_on_cpu):
     lin = _frozen_linear()
     W0 = lin.weight.detach().clone()
