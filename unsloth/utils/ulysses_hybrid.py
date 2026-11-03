@@ -329,6 +329,19 @@ def _sliding_window(module, kwargs):
     )
 
 
+def _refuse_non_causal(module, is_causal = None) -> None:
+    # The rebuilt whole-sequence mask is causal, and bidirectional windows differ per model (Gemma3 `<`, the
+    # generic overlay `<=`), so non-causal attention would silently train causal.
+    if is_causal is None:
+        is_causal = getattr(module, "is_causal", True)
+    if is_causal is False:
+        raise NotImplementedError(
+            f"Unsloth: Ulysses context parallelism only supports causal attention, but {type(module).__name__} "
+            "is bidirectional (for example use_bidirectional_attention = True). Turn off context parallelism "
+            "for this model."
+        )
+
+
 def _whole_sequence_mask(total, device, dtype, window, cu_seqlens):
     """Additive [1, 1, T, T] mask over the gathered sequence: causal, the sliding window (key > query - window,
     as transformers' masks), and packed documents closed off from one another."""
@@ -371,6 +384,7 @@ def _ulysses_hf_attention(
         raise NotImplementedError(
             "Unsloth: Ulysses context parallelism does not support attention dropout."
         )
+    _refuse_non_causal(module, kwargs.get("is_causal"))
     bsz, n_heads, local_len, _ = query.shape
     size = dist.get_world_size(group)
     rank = dist.get_rank(group)
@@ -458,6 +472,7 @@ def _ulysses_attention_wrapper(current, implementation, get_cp_manager):
 def install_hf_attention_wrapper(module, implementation, get_cp_manager) -> None:
     """Route this module's attention function (ALL_ATTENTION_FUNCTIONS[implementation], or the modeling
     module's eager_attention_forward for "eager") through Ulysses while a Ulysses manager is active."""
+    _refuse_non_causal(module)
     _route_hf_forward(module, get_cp_manager)
     if implementation == "eager":
         globs = _forward_globals(module)
