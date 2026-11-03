@@ -234,11 +234,11 @@ logger = get_logger(__name__)
 threading.Thread(target = _get_task_cache, daemon = True).start()
 
 
-
 def _run_output_path(task: str) -> str:
     """The run's results folder; its name is also the run id, so two runs in one second need a suffix."""
     ts = time.strftime("%Y%m%d_%H%M%S")
     return str(outputs_root() / "evals" / f"benchmark_{task}_{ts}_{uuid.uuid4().hex[:6]}")
+
 
 @router.get("/tasks", response_model = BenchmarkTasksResponse)
 async def list_benchmark_tasks(current_subject: str = Depends(get_current_subject)):
