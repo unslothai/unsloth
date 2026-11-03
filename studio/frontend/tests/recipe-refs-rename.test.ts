@@ -16,3 +16,14 @@ test("renaming a column rewrites it wherever it is a variable root, and nowhere 
       "{{ ticket_id }} {{ other.ticket }} {% if x == 'the ticket' %}{% endif %} ticket",
   );
 });
+
+test("a filter or test with the column's name is left alone", () => {
+  assert.equal(
+    replaceRef(
+      "{{ length }} {{ response | length }} {% if x is length %}{% endif %} {{ length + 1 }}",
+      "length",
+      "word_count",
+    ),
+    "{{ word_count }} {{ response | length }} {% if x is length %}{% endif %} {{ word_count + 1 }}",
+  );
+});

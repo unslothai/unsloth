@@ -79,7 +79,11 @@ export function replaceRef(
   const renamed = template.replace(pattern, `{{ ${to} }}`);
   // Inside any other tag (`{{ ticket.title }}`, `{% if ticket.priority %}`) the name is renamed
   // where it is a variable root: outside string literals, not after a dot or inside a longer name.
-  const root = new RegExp(`(?<![\\w.])${escapeRegExp(from)}(?!\\w)`, "g");
+  // A filter (`| length`) or test (`is defined`) of the same name is not the column.
+  const root = new RegExp(
+    `(?<![\\w.])(?<!\\|\\s*)(?<!\\bis\\s+(?:not\\s+)?)${escapeRegExp(from)}(?!\\w)`,
+    "g",
+  );
   return renamed.replace(/{{[\s\S]*?}}|{%[\s\S]*?%}/g, (tag) =>
     tag
       .split(/('[^']*'|"[^"]*")/)

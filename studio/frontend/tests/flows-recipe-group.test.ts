@@ -759,3 +759,13 @@ test("the schema transform form edits the group it shows now, after a switch or 
   assert.match(form, /const view = useMemo\(\(\) => viewOf\(groupId\), \[groupId, signature\]\);/);
   assert.doesNotMatch(form, /useState\(/);
 });
+
+test("a column dropped in a recipe frame's setup-card space stays in the recipe", () => {
+  const canvas = readFileSync(
+    new URL("../src/features/flows/editor/canvas.tsx", import.meta.url),
+    "utf8",
+  );
+  // Membership is tested against the height the frame is drawn at, not only the saved one.
+  assert.match(canvas, /const h = Math\.max\(g\.rect\[3\], heights\[groupId\] \?\? 0\);/);
+  assert.match(canvas, /groupMembership\(positions, sizesRef\.current, setupRef\.current\.heights\)/);
+});
