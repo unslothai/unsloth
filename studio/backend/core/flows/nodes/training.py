@@ -685,23 +685,28 @@ def _compound_rows(
     rows: list = []
     seen = 0  # rows of the joined split before this part
     for name, lo, hi in parts:
-        size = None if hi is None else hi - lo
-        skip = max(start - seen, 0)
-        want = (
-            size if end is None else (end + 1 - seen if size is None else min(size, end + 1 - seen))
-        )
-        if want is not None and want <= skip:
-            seen += size if size is not None else 0
-            if end is not None and seen > end:
-                break
-            continue
-        take = HOLDOUT_MAX_ROWS + 1 - len(rows) if want is None else want - skip
+        if end is not None and seen > end:
+            break
         streamed = load_dataset(ref, subset, split = name, token = token, streaming = True)
-        got = list(streamed.skip(lo + skip).take(take))
-        rows += got
-        if len(rows) > HOLDOUT_MAX_ROWS:
-            raise _too_many(f"More than {HOLDOUT_MAX_ROWS}")
-        seen += size if size is not None else skip + len(got)
+        if hi is None:
+            # A part of unknown length: walk it, counting the rows it really has.
+            for row in streamed:
+                if end is not None and seen > end:
+                    break
+                if seen >= start:
+                    rows.append(row)
+                    if len(rows) > HOLDOUT_MAX_ROWS:
+                        raise _too_many(f"More than {HOLDOUT_MAX_ROWS}")
+                seen += 1
+            continue
+        size = hi - lo
+        skip = max(start - seen, 0)
+        want = size if end is None else min(size, end + 1 - seen)
+        if want > skip:
+            rows += list(streamed.skip(lo + skip).take(want - skip))
+            if len(rows) > HOLDOUT_MAX_ROWS:
+                raise _too_many(f"More than {HOLDOUT_MAX_ROWS}")
+        seen += size
     return Dataset.from_list(rows)
 
 
