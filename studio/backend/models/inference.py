@@ -461,8 +461,10 @@ class LoadRequest(BaseModel):
             "Load a vision-capable GGUF without its multimodal projector, as a "
             "text-only model. Frees the VRAM the projector would hold, at the cost "
             "of image input, which is off for the session; text generation is "
-            "unaffected. Ignored for models with no vision projector, and for "
-            "non-GGUF models."
+            "unaffected. On MLX, stops image input, and loads the text model without "
+            "its vision weights where it builds on its own (an adapter or audio-input "
+            "model keeps them). Ignored for models with no "
+            "vision input, and for other non-GGUF models."
         ),
     )
     engram_precision: Optional[str] = Field(

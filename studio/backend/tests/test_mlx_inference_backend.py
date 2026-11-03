@@ -5752,6 +5752,20 @@ def test_a_vision_checkpoint_served_through_mlx_lm_reads_images_only_where_zoo_p
     assert backend._is_vlm is True and backend._reads_vision_input() is True
     assert backend.models["org/vision"]["is_vision"] is True
 
+    # Vision off builds the text model alone where that drops the tower; otherwise it only stops images.
+    plain = SimpleNamespace(identifier = "org/vision", is_vision = True, is_lora = False)
+    for config, drops, text_only, off in (
+        (plain, True, True, True),
+        (plain, False, False, True),
+        (vision, True, False, False),
+    ):
+        monkeypatch.setattr(mlx_inference, "_text_load_drops_the_tower", lambda *a: drops)
+        attempts.clear()
+        backend = mlx_inference.MLXInferenceBackend()
+        backend.load_model(config, disable_vision = True)
+        assert attempts == [text_only] and backend._reads_vision_input() is not off
+        assert backend.models["org/vision"]["vision_disabled_by_user"] is off
+
 
 def test_a_uniformly_quantized_text_load_goes_through_mlx_vlm_only_when_that_batches(monkeypatch):
     pytest.importorskip("mlx.core")

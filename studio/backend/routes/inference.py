@@ -8759,6 +8759,8 @@ def _unsloth_serving_fields(model_info: dict) -> dict:
         "spec_draft_model": model_info.get("spec_draft_model"),
         "spec_drafter_kind": model_info.get("spec_drafter_kind"),
         "spec_fallback_reason": model_info.get("spec_fallback_reason"),
+        "disable_vision": bool(model_info.get("disable_vision")),
+        "vision_disabled_by_user": bool(model_info.get("vision_disabled_by_user")),
     }
 
 
@@ -18318,6 +18320,7 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         == bool(getattr(request, "mlx_ane_prefill", False))
         and bool(entry.get("mlx_fast_verify_requested"))
         == bool(getattr(request, "mlx_fast_verify", False))
+        and bool(entry.get("disable_vision")) == bool(getattr(request, "disable_vision", False))
         and all(
             normalize_mlx_offload(
                 ((entry.get("mlx_offload") or {}).get(part) or {}).get("requested")
@@ -20837,6 +20840,7 @@ async def _load_model_impl(
                     _discoverable_drafters, request.model_path
                 ),
                 chat_template_override = request.chat_template_override,
+                disable_vision = request.disable_vision,
                 load_cancel_event = load_cancel_event,
                 on_prior_worker_released = _release_chat_after_teardown,
                 post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,

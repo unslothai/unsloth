@@ -1209,6 +1209,41 @@ function AdvancedGroup({
   );
 }
 
+const GGUF_VISION_HINT =
+  "Loads the vision projector so the model can read images. Turning it off " +
+  "frees that VRAM for more layers on the GPU. Text generation is unaffected " +
+  "either way.";
+
+const MLX_VISION_HINT =
+  "Lets the model read images. Turning it off stops image input, and frees the " +
+  "vision weights' memory where the text model loads on its own. Text " +
+  "generation works either way. Adapters and models that take audio keep it on.";
+
+function VisionRow({
+  config,
+  update,
+  hint,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  hint: string;
+}) {
+  return (
+    <div className={ROW_CLASS}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={LABEL_CLASS}>Vision</span>
+        <InfoHint>{hint}</InfoHint>
+      </div>
+      <Switch
+        className="shrink-0"
+        aria-label="Vision"
+        checked={!config.disableVision}
+        onCheckedChange={(checked) => update({ disableVision: !checked })}
+      />
+    </div>
+  );
+}
+
 const GGUF_PARALLEL_HINT =
   "Decode slots (--parallel) for concurrent requests. Leave blank for the server " +
   "default. More slots share the context pool and use more VRAM.";
@@ -1669,6 +1704,9 @@ function MlxAdvancedSettings({
       ) : null}
         </div>
       )}
+      {servedByMlx && (
+        <VisionRow config={config} update={update} hint={MLX_VISION_HINT} />
+      )}
       {servedByMlx && (int8PrefillAvailable || config.mlxInt8Prefill) && (
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
@@ -2069,22 +2107,7 @@ function GgufAdvancedSettings({
       />
 
       {!isDiffusion && (
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS}>Vision</span>
-            <InfoHint>
-              Loads the vision projector so the model can read images. Turning
-              it off frees that VRAM for more layers on the GPU. Text generation
-              is unaffected either way.
-            </InfoHint>
-          </div>
-          <Switch
-            className="shrink-0"
-            aria-label="Vision"
-            checked={!config.disableVision}
-            onCheckedChange={(checked) => update({ disableVision: !checked })}
-          />
-        </div>
+        <VisionRow config={config} update={update} hint={GGUF_VISION_HINT} />
       )}
       {!isDiffusion && (
         <EngramTableRow config={config} update={update} source={engramSource} />

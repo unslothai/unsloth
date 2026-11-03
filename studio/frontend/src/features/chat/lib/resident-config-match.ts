@@ -373,10 +373,13 @@ const SETTING_CHECKS: SettingCheck[] = [
         s.tensor_parallel_dropped_by_arch_gate === true),
   },
   {
-    // Backend reloads on mismatch, so adopting would keep projector VRAM spent.
+    // Backend reloads on mismatch, so adopting would keep projector VRAM spent. Only GGUF and MLX read it.
     chatOnly: true,
+    mlxComparable: true,
     pinned: () => true,
-    agrees: (c, s) => c.disableVision === (s.disable_vision ?? false),
+    agrees: (c, s) =>
+      (s.is_gguf === false && s.is_mlx !== true) ||
+      c.disableVision === (s.disable_vision ?? false),
   },
   {
     // The table is part of the weights, so a different one is a different load.

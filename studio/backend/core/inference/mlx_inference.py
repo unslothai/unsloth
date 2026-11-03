@@ -2156,6 +2156,21 @@ def _zoo_builds_text_on_mlx_vlm(model_name, hf_token = None) -> bool:
         return False
 
 
+def _text_load_drops_the_tower(model_name, hf_token = None) -> bool:
+    """Whether a text-only load builds mlx-lm's text model without the vision weights. unsloth-zoo keeps a
+    family whose mlx-lm build strips the tower only in sanitize on mlx-vlm, tower attached, so that one
+    keeps its vision load and only stops reading images."""
+    try:
+        from utils.models.model_config import _read_raw_config_json
+        from unsloth_zoo.mlx.loader import _prefer_vlm_loader_for_text
+
+        config = _read_raw_config_json(model_name, hf_token) or {}
+        return not _prefer_vlm_loader_for_text(config, config.get("model_type") or "")
+    except Exception as exc:  # noqa: BLE001 -- detection must never fail a load
+        logger.debug("MLX text-only route check skipped for %s (%s)", model_name, exc)
+        return False
+
+
 def _classify_mlx_audio_type(
     model,
     processor,
@@ -6088,6 +6103,7 @@ class MLXInferenceBackend:
         spec_draft_model = None,
         spec_drafters_allowed = None,
         offload = (None, None),
+        disable_vision = False,
     ) -> bool:
         import mlx.core as mx
 
@@ -6107,6 +6123,15 @@ class MLXInferenceBackend:
         vlm_only_text = not (is_vision or zoo_multimodal) and _zoo_builds_text_on_mlx_vlm(
             route_config, hf_token
         )
+        # Vision off reads no images. An adapter or audio input keeps the processor it was built for.
+        vision_off = bool(
+            disable_vision
+            and (is_vision or zoo_multimodal)
+            and not is_lora
+            and not is_audio_input_type(getattr(config, "audio_type", None))
+        )
+        if vision_off and _text_load_drops_the_tower(route_config, hf_token):
+            is_vision = zoo_multimodal = False
         kv_bits, turboquant = parse_mlx_kv_quant(kv_quant)
         self._turboquant = turboquant
         if self._turboquant:
@@ -6328,6 +6353,8 @@ class MLXInferenceBackend:
         zoo_loaded_multimodal = zoo_multimodal and not served_by_mlx_lm
         if zoo_loaded_multimodal:
             is_vision = getattr(model, "_unsloth_supports_images", None) is True
+        if vision_off:
+            is_vision = False
         self._reads_vision = bool(is_vision)
         if use_vlm:
             processor = tokenizer_or_processor
@@ -6575,6 +6602,8 @@ class MLXInferenceBackend:
             "tokenizer": self._tokenizer,
             "processor": self._processor,
             "is_vision": is_vision,
+            "disable_vision": bool(disable_vision),
+            "vision_disabled_by_user": vision_off,
             "is_lora": getattr(config, "is_lora", False),
             # For a LoRA adapter the native chat template lives on the base model.
             "base_model": getattr(config, "base_model", None)

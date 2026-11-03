@@ -828,6 +828,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["spec_draft_model"] = config.get("spec_draft_model")
                 load_kwargs["spec_drafters_allowed"] = config.get("spec_drafters_allowed")
                 load_kwargs["chat_template_override"] = config.get("chat_template_override")
+                load_kwargs["disable_vision"] = bool(config.get("disable_vision"))
             from utils.security.file_security import escaping_weight_references
 
             # Right before the load: the folder may have been edited since the route checked it.
@@ -939,6 +940,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "mlx_fast_verify_requested",
                         "mlx_fast_verify_reason",
                         "mlx_offload",
+                        "disable_vision",
+                        "vision_disabled_by_user",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
                         "speculative_type",
