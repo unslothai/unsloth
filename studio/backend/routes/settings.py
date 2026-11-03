@@ -1093,7 +1093,7 @@ class ModelOverridePayload(BaseModel):
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
     # -1 is Auto (llama.cpp --fit sizes the offload); the normalizer treats it as unset.
-    gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 1024)
+    gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 2**31 - 1)
     n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
     tensor_split: Optional[list[float]] = Field(default = None, min_length = 2, max_length = MAX_GPU_IDS)
     gpu_ids: Optional[list[int]] = Field(default = None, max_length = MAX_GPU_IDS)
