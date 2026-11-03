@@ -739,4 +739,7 @@ def enable_fp8_lora(
         )
     else:
         print(f"Unsloth: fp8 LoRA base on {len(converted)} Linear layers.")
+    if converted and getattr(model, "_unsloth_block_compile_installed", False):
+        from ._block_compile import patch_block_compile
+        patch_block_compile(model)
     return converted

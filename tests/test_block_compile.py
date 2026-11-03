@@ -328,6 +328,57 @@ def _install_blocks(M, model, monkeypatch):
     return inner
 
 
+@pytest.mark.parametrize("fp8_first", [False, True])
+def test_fp8_precision_options_are_per_instance_and_reused(monkeypatch, fp8_first):
+    import copy
+
+    M = _load()
+
+    class PrecisionDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, x):
+            return self.proj(x)
+
+    plain, fp8 = PrecisionDecoderLayer(), PrecisionDecoderLayer()
+    fp8.proj._unsloth_fp8_lora = object()
+    options = []
+
+    def compile(fn, **kwargs):
+        precision = kwargs["options"].get("emulate_precision_casts", False)
+        options.append(precision)
+
+        def run(*args, **kw):
+            return fn(*args, **kw) + int(precision)
+
+        return run
+
+    monkeypatch.setattr(torch, "compile", compile)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(M, "_layers", lambda model: [(model, True)])
+    monkeypatch.setattr(M, "_torch_supported", lambda: True)
+    monkeypatch.setattr(M, "_zero3_partitioned", lambda *args: False)
+    original = PrecisionDecoderLayer.forward
+    for layer in (fp8, plain) if fp8_first else (plain, fp8):
+        M.patch_block_compile(layer)
+    x = torch.randn(2, 4, 8)
+    torch.testing.assert_close(plain(x), original(plain, x))
+    torch.testing.assert_close(fp8(x), original(fp8, x) + 1)
+    assert "forward" not in plain.__dict__
+    assert not M._COMPILE_OPTIONS.get("emulate_precision_casts", False)
+    assert options == [False, True]
+    forward = fp8.forward
+    M.patch_block_compile(fp8)
+    assert fp8.forward is forward and options == [False, True]
+    twin = copy.deepcopy(fp8)
+    assert twin.forward.__self__ is twin
+    torch.testing.assert_close(twin(x), original(twin, x) + 1)
+    fp8.eval()
+    torch.testing.assert_close(fp8(x), original(fp8, x))
+
+
 def _outer_loss(
     model,
     ids,
@@ -886,6 +937,10 @@ def test_sm_count_is_read_outside_the_trace(monkeypatch):
 
     fla.get_multiprocessor_count = get_multiprocessor_count
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(
+        torch._C, "_cuda_init", lambda: pytest.fail("CPU test initialized CUDA"), raising = False
+    )
     M._route_sm_count({fla.__name__: fla})
     out = torch.compile(
         lambda x: x * fla.get_multiprocessor_count(0), fullgraph = True, backend = "eager"

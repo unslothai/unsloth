@@ -920,6 +920,25 @@ def test_compiled_fused_fp8_lora_ops_are_counted(monkeypatch):
 
 
 @needs_cpu_scaled_mm
+@pytest.mark.parametrize("compiled_first", [False, True])
+def test_enable_fp8_refreshes_only_an_existing_block_compiler(monkeypatch, compiled_first):
+    from unsloth.models import _block_compile
+
+    model = _tiny_qwen3_peft()
+    model._unsloth_block_compile_installed = compiled_first
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    calls = []
+
+    def refresh(model):
+        assert FL.fp8_lora_memory(model)["layers"]
+        calls.append(model)
+
+    monkeypatch.setattr(_block_compile, "patch_block_compile", refresh)
+    assert f8t.enable_fp8_lora(model, allow_cpu = True)
+    assert calls == ([model] if compiled_first else [])
+
+
+@needs_cpu_scaled_mm
 def test_merge_requantizes_the_fp8_copy(offload_on_cpu):
     import copy
 
