@@ -123,12 +123,13 @@ def test_rewriting_a_reply_does_not_shrink_its_count(limiter_db):
     assert _pools()["combined"]["used"] == 500
 
 
-def test_a_fork_does_not_count_the_history_it_copies(limiter_db):
+@pytest.mark.parametrize("clock_offset", [-10, 1, 10])
+def test_a_fork_does_not_count_the_history_it_copies(limiter_db, clock_offset):
     now = _now_ms()
     _thread("t1", now)
     _reply("a1", "t1", now + 1, prompt = 400, completion = 100)
     forked = studio_db.fork_chat_thread(
-        "t1", "a1", "fork", now + 10, id_factory = iter(["copy"]).__next__
+        "t1", "a1", "fork", now + clock_offset, id_factory = iter(["copy"]).__next__
     )
     assert forked is not None
     _reply("a2", "fork", now + 20, prompt = 600, completion = 50)
@@ -360,8 +361,30 @@ def test_durable_usage_is_counted_before_a_browser_recovers_the_run(limiter_db, 
     runs.finish_run("run", worker_token = token, status = "completed")
     if via_api_key:
         _api_request("durable-receipt", now, 100)
-    _enable(limit = 100)
+    _enable(limit = 100, method = "incremental")
     assert _pools()["combined"]["used"] == 100
+    expected = 100
+    if not via_api_key:
+        studio_db.fork_chat_thread(
+            "t1",
+            "assistant",
+            "fork",
+            now + 10,
+            id_factory = iter(["copy-user", "copy-assistant"]).__next__,
+        )
+        studio_db.upsert_chat_message(
+            {
+                "id": "fork-user",
+                "threadId": "fork",
+                "role": "user",
+                "parentId": "copy-assistant",
+                "createdAt": now + 30,
+                "content": [{"type": "text", "text": "next"}],
+            }
+        )
+        _reply("fork-reply", "fork", now + 31, prompt = 120, completion = 10, parent = "fork-user")
+        expected = 130
+        assert _pools()["combined"]["used"] == expected
     message = studio_db.get_chat_message("t1", "assistant")
     message["metadata"] = {
         **(message["metadata"] or {}),
@@ -372,7 +395,7 @@ def test_durable_usage_is_counted_before_a_browser_recovers_the_run(limiter_db, 
         },
     }
     studio_db.upsert_chat_message(message)
-    assert _pools()["combined"]["used"] == 100
+    assert _pools()["combined"]["used"] == expected
     with pytest.raises(HTTPException):
         token_limit.enforce(api = False)
 

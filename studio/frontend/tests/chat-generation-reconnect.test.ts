@@ -75,6 +75,32 @@ const createInput = () => ({
   requestPayload: run("queued", 1).requestPayload,
 });
 
+for (const limited of [false, true]) {
+  test(`token cap admission stops retries; transient 429 still retries (${limited})`, async () => {
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return calls === 1
+        ? new Response(JSON.stringify({ detail: "daily token limit" }), {
+            status: 429,
+            headers: {
+              "content-type": "application/json",
+              ...(limited ? { "X-Unsloth-Token-Limit": "combined" } : {}),
+            },
+          })
+        : new Response(JSON.stringify(run("queued", 0)), {
+            headers: { "content-type": "application/json" },
+          });
+    };
+    if (limited) {
+      await assert.rejects(createChatGenerationRun(createInput()), /daily token limit/);
+    } else {
+      assert.equal((await createChatGenerationRun(createInput())).id, "run-1");
+    }
+    assert.equal(calls, limited ? 1 : 2);
+  });
+}
+
 const frame = (
   seq: number,
   type: string,

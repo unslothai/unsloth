@@ -42,12 +42,7 @@ def _ledger_insert(message: str, rows: str = "") -> str:
         INSERT INTO {LEDGER_TABLE}
             (message_id, thread_id, created_at, source,
              prompt_tokens, completion_tokens, total_tokens, context_tokens, parent_message_id)
-        SELECT u.id, u.thread_id, u.created_at,
-               CASE WHEN EXISTS (
-                   SELECT 1 FROM chat_threads t
-                   WHERE t.id = u.thread_id AND t.forked_from_thread_id IS NOT NULL
-                     AND u.created_at < t.created_at
-               ) THEN 'inherited' ELSE u.source END,
+        SELECT u.id, u.thread_id, u.created_at, u.source,
                u.prompt_tokens, u.completion_tokens,
                CASE WHEN u.reported_total > 0 THEN u.reported_total
                     ELSE u.prompt_tokens + u.completion_tokens END, u.context_tokens,
@@ -67,7 +62,7 @@ def _ledger_insert(message: str, rows: str = "") -> str:
               AND json_extract(r.request_json, '$.api_monitor_via_api_key') = 1
           )
         ON CONFLICT(message_id) DO UPDATE SET
-            source = excluded.source,
+            source = CASE WHEN source = 'inherited' THEN source ELSE excluded.source END,
             prompt_tokens = MAX(prompt_tokens, excluded.prompt_tokens),
             completion_tokens = MAX(completion_tokens, excluded.completion_tokens),
             total_tokens = MAX(total_tokens, excluded.total_tokens),
@@ -139,6 +134,18 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
                 "FROM chat_messages m WHERE m.role = 'assistant' AND json_valid(m.metadata_json)",
             )
         )
+        conn.execute(f"""
+            WITH RECURSIVE inherited(id, parent_id, thread_id) AS (
+                SELECT m.id, m.parent_id, m.thread_id FROM chat_messages m
+                JOIN chat_threads t ON t.fork_boundary_message_id = m.id
+                WHERE t.forked_from_thread_id IS NOT NULL
+                UNION
+                SELECT m.id, m.parent_id, m.thread_id FROM chat_messages m
+                JOIN inherited i ON m.id = i.parent_id AND m.thread_id = i.thread_id
+            )
+            UPDATE {LEDGER_TABLE} SET source = 'inherited'
+            WHERE message_id IN (SELECT id FROM inherited)
+        """)
 
 
 def record_run_usage(conn: sqlite3.Connection, run_id: str, chunk: dict) -> None:

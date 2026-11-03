@@ -121,11 +121,13 @@ export class ChatGenerationStalledError extends Error {
 
 export class ChatGenerationApiError extends Error {
   readonly status: number;
+  readonly tokenLimit: boolean;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, tokenLimit = false) {
     super(message);
     this.name = "ChatGenerationApiError";
     this.status = status;
+    this.tokenLimit = tokenLimit;
   }
 }
 
@@ -178,6 +180,7 @@ async function json<T>(response: Response): Promise<T> {
           ? message
           : `Chat generation request failed (${response.status})`,
       response.status,
+      response.headers.has("X-Unsloth-Token-Limit"),
     );
   }
   return body as T;
@@ -188,8 +191,7 @@ function isPermanent(error: unknown): boolean {
     error instanceof ChatGenerationApiError &&
     error.status >= 400 &&
     error.status < 500 &&
-    error.status !== 408 &&
-    error.status !== 429
+    (error.tokenLimit || (error.status !== 408 && error.status !== 429))
   );
 }
 
