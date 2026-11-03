@@ -586,12 +586,15 @@ def _fine_tune_in(root: Path, folder_name: str) -> Checkpoint | None:
         # A NUL byte or a symlink loop in a caller's name.
         return None
     if clef_folder_kind(folder) is not None:
+        d1 = is_d1_folder(folder)
         checkpoint = Checkpoint(
             CLEF_FINE_TUNE_PREFIX + folder_name,
             str(folder),
             None,
-            "d1 fine-tuned in Unsloth." if is_d1_folder(folder) else "Clef fine-tuned in Unsloth.",
+            "d1 fine-tuned in Unsloth." if d1 else "Clef fine-tuned in Unsloth.",
             layout = "clef",
+            # Only unsloth-zoo's MLX engine reads a d1: the PyTorch Clef loader would add an untrained head.
+            backend = "mlx" if d1 else "pytorch",
         )
     else:
         checkpoint = Checkpoint(

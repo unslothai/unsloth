@@ -1703,12 +1703,18 @@ def test_a_trained_d1_is_found_and_served_as_a_d1(home, client, engine):
     (folder / "config.json").write_text(json.dumps(config), encoding = "utf-8")
     (folder / "processor_config.json").write_text("{}", encoding = "utf-8")
     (folder / "model.safetensors").write_bytes(b"")
+    engine.cached.add(catalog.CLEF_FINE_TUNE_PREFIX + "d1_ft")
     tuned = catalog.fine_tune(catalog.CLEF_FINE_TUNE_PREFIX + "d1_ft")
     assert tuned.layout == "clef" and tuned.description.startswith("d1 fine-tuned")
     assert laya_runtime._mlx_family(laya_runtime._mlx_target(tuned)) == "d1"
     zoo = sys.modules["unsloth_zoo.mlx.decision"]
     zoo.ClefModel = SimpleNamespace(takes_images = True, takes_audio = True)
     assert laya_runtime.input_modalities(tuned) == ["text", "image", "audio"]
+    assert laya_runtime.select(tuned)[0].backend == "mlx"
+    # Elsewhere it is refused, not handed to the PyTorch Clef loader.
+    for runtime in ("pytorch", "llama.cpp"):
+        with pytest.raises(laya_runtime.Unavailable, match = "served only by MLX"):
+            laya_runtime.select(tuned, preference = runtime)
     # A head on the same model makes it a Clef, not a d1 by name alone.
     plain = catalog.fine_tune(_clef_fine_tune(home, "clef_ft"))
     assert laya_runtime._mlx_family(laya_runtime._mlx_target(plain)) == "clef"

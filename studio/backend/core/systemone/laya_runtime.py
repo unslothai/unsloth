@@ -163,8 +163,12 @@ def _mlx_target(checkpoint: Checkpoint) -> Checkpoint | None:
     if not _engine_available():
         return None
     if _is_mlx(checkpoint):
-        # Only a catalog entry is its own MLX form; a target has none further.
-        return checkpoint if CHECKPOINTS.get(checkpoint.name) == checkpoint else None
+        # Only a catalog entry or a local folder (a d1 fine-tune) is its own MLX form; a target has none further.
+        return (
+            checkpoint
+            if checkpoint.is_local or CHECKPOINTS.get(checkpoint.name) == checkpoint
+            else None
+        )
     if checkpoint.layout == "clef":
         if checkpoint.is_local:
             from utils.models.model_config import clef_folder_kind
