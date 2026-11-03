@@ -87,7 +87,7 @@ def _kernel() -> Any:
     global _rsqrt, _mul, _add
     _rsqrt, _mul, _add = libdevice.rsqrt, libdevice.mul_rn, libdevice.add_rn
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["n_rows", "n_seq"])
     def _norm_rope_kernel(
         x_ptr,
         w_ptr,

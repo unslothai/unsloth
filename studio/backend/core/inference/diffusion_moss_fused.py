@@ -190,7 +190,7 @@ def _qk_rope_kernel() -> Any:
         tl.store(o_ptr + out + j, o1.to(tl.bfloat16), mask = mask)
         tl.store(o_ptr + out + D // 2 + j, o2.to(tl.bfloat16), mask = mask)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["S"])
     def kernel(
         q_ptr,
         k_ptr,

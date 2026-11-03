@@ -55,7 +55,7 @@ def _kernel() -> Optional[Callable]:
     except Exception:  # noqa: BLE001
         return None
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["S"])
     def _rope_fwd(
         X,
         COS,

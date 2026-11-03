@@ -183,7 +183,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     def _rbf16(x):
         return x.to(tl.bfloat16).to(tl.float32)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["M"])
     def i8mm_dq(
         a_ptr,
         w_ptr,
@@ -256,7 +256,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
         tl.store(c_ptrs, y.to(tl.bfloat16), mask = mask)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["M"])
     def i8mm_dq_tma(
         a_desc,
         w_desc,
