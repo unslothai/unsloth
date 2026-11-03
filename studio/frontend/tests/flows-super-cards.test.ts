@@ -590,7 +590,17 @@ test("tidy up keeps a card's blocks together when the card holds part of a group
     portY: () => undefined,
     wireStyle: "curved" as const,
   };
-  const folded = foldLayout(tidyRequest(ctx), state, () => undefined);
+  const { tidyGraph } = await import("../src/features/flows/editor/super-cards.ts");
+  const folded = foldLayout(
+    tidyRequest({ ...ctx, graph: tidyGraph(state.graph, state.meta.editor) }),
+    state,
+    () => undefined,
+  );
+  // tpl's wires (prompt -> tpl, tpl -> img, tpl -> raw) reach the card, not group g's placeholder.
+  const wires = folded.request.edges.map((e) => `${e.source}>${e.target}`).sort();
+  assert.deepEqual(wires, ["group:g>view", "prompt>super:sc1", "super:sc1>group:g"]);
+  const layout = readFileSync(new URL("../src/features/flows/editor/layout.ts", import.meta.url), "utf8");
+  assert.match(layout, /tidyRequest\(\{ \.\.\.ctx, graph: tidyGraph\(graph, useDocStore\.getState\(\)\.meta\.editor\) \}\)/);
   const result = folded.unfold({ "super:sc1": [1000, 500], "group:g": [0, 0], prompt: [0, 0], view: [0, 0] });
   const patch = tidyPatch(ctx, result);
   const [tx, ty] = patch.nodes.tpl.pos;
@@ -633,4 +643,31 @@ test("a note inside one card's folded frame and another card's blocks moves only
     "super:sc2": [900, 500],
   });
   assert.deepEqual(result["note:n1"], [980, 70]);
+});
+
+test("a free reroute folded into a card moves with it on Tidy", async () => {
+  const { tidyPatch } = await import("../src/features/flows/editor/tidy.ts");
+  const d = comic();
+  d.editor = { reroutes: [{ id: "rr1", pos: [450, 60] }] };
+  useDocStore.getState().load(d);
+  select("tpl", "img");
+  combineSelection();
+  const state = useDocStore.getState();
+  const request = {
+    direction: "LR" as const,
+    nodes: state.graph.nodeOrder.map((id) => ({ id, width: 260, height: 140 })),
+    edges: [],
+  };
+  const result = foldLayout(request, state, () => undefined).unfold({ "super:sc1": [400, 100] });
+  assert.deepEqual(result.rr1, [550, 160]);
+  const patch = tidyPatch(
+    {
+      graph: state.graph,
+      size: () => ({ width: 260, height: 140 }),
+      portY: () => undefined,
+      wireStyle: "curved",
+    },
+    result,
+  );
+  assert.deepEqual(patch.reroutes.rr1, [550, 160]);
 });

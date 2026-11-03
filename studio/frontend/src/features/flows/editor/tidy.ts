@@ -164,7 +164,13 @@ export function tidyPatch(
     if (d) patch.notes[id] = [rect[0] + d[0], rect[1] + d[1], rect[2], rect[3]];
   }
 
-  Object.assign(patch.reroutes, placeReroutes(ctx, patch));
+  // A reroute folded into a closed card was placed with the card; the rest go back on their wires.
+  const carried = Object.fromEntries(
+    graph.rerouteOrder.flatMap((id) =>
+      result[id] ? [[id, [Math.round(result[id][0]), Math.round(result[id][1])]]] : [],
+    ),
+  ) as Record<string, [number, number]>;
+  Object.assign(patch.reroutes, placeReroutes(ctx, patch), carried);
   return patch;
 }
 

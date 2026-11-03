@@ -12,7 +12,9 @@ import {
 } from "./derive-rf";
 import type { LayoutRequest, LayoutResult } from "./layout-core";
 import type { PortRowSpec } from "./node-card";
+import { rerouteSize } from "./reroutes";
 import {
+  foldedGroups,
   readSuperCards,
   SUPER_CARDS_KEY,
   type SuperCard,
@@ -416,6 +418,26 @@ export function rollUpStatus(statuses: (NodeStatus | undefined)[]): {
 }
 
 /** Auto layout places a closed card as one block and moves its blocks by the same amount. */
+/** The graph Tidy up's request is built from: a closed card's blocks leave a group the card holds only
+ *  part of, so their wires reach the card instead of the group's placeholder. */
+export function tidyGraph(
+  graph: DocGraph,
+  editor: Record<string, unknown> | undefined,
+): DocGraph {
+  const folded = foldedGroups(editor, graph);
+  let nodes: DocGraph["nodes"] | null = null;
+  for (const card of readSuperCards(editor, graph)) {
+    if (card.open) continue;
+    for (const id of card.members) {
+      const group = graph.nodes[id].group;
+      if (!group || folded.has(group)) continue;
+      nodes ??= { ...graph.nodes };
+      nodes[id] = { ...graph.nodes[id], group: null };
+    }
+  }
+  return nodes ? { ...graph, nodes } : graph;
+}
+
 export function foldLayout(
   request: LayoutRequest,
   state: { graph: DocGraph; meta: Pick<DocMeta, "editor"> },
@@ -506,6 +528,19 @@ export function foldLayout(
           cx >= ax && cy >= ay && cx <= ax + aw && cy <= ay + ah,
       );
       if (owner) next[NOTE_PREFIX + noteId] = [x + owner[0][0], y + owner[0][1]];
+    }
+    // Reroutes folded in move the same way; a free one has no wire to put it back on.
+    for (const id of graph.rerouteOrder ?? []) {
+      const reroute = graph.reroutes[id];
+      const [x, y] = reroute.pos;
+      const size = rerouteSize(reroute.dir);
+      const cx = x + size.width / 2;
+      const cy = y + size.height / 2;
+      const owner = [...frameAreas, ...boxAreas].find(
+        ([, [ax, ay, aw, ah]]) =>
+          cx >= ax && cy >= ay && cx <= ax + aw && cy <= ay + ah,
+      );
+      if (owner) next[id] = [x + owner[0][0], y + owner[0][1]];
     }
     return next;
   };

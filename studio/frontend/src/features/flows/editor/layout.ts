@@ -8,7 +8,7 @@ import { useUiStore } from "../stores/ui-store";
 import { CARD_MIN_WIDTH } from "./card-size";
 import { inHandle, outHandle } from "./connection-rules";
 import type { LayoutRequest, LayoutResult } from "./layout-core";
-import { foldLayout } from "./super-cards";
+import { foldLayout, tidyGraph } from "./super-cards";
 import {
   type TidyContext,
   fittedCardSize,
@@ -164,7 +164,7 @@ export async function autoLayout(
   };
   // A closed super card is laid out as one block; its blocks move with it.
   const folded = foldLayout(
-    tidyRequest(ctx),
+    tidyRequest({ ...ctx, graph: tidyGraph(graph, useDocStore.getState().meta.editor) }),
     useDocStore.getState(),
     sizeLookup(getInternalNode),
   );
