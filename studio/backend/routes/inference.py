@@ -8328,6 +8328,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         audio_server_task = None,
         audio_convert = None,
         audio_convert_route = None,
+        audio_clone = None,
         audio_music = None,
         # Older/custom backend doubles predate this additive runtime field.
         preserve_thinking_default = bool(getattr(llama_backend, "preserve_thinking_default", False)),
@@ -14942,7 +14943,6 @@ def _mlx_offload_warning(info: dict) -> Optional[str]:
 
 def _mlx_estimate_speculates(request, model_dir) -> bool:
     from core.inference import mlx_speculative
-    from core.inference.mlx_inference import parse_mlx_kv_quant
     from core.inference.mlx_memory import _loads_as_vision, _snapshot_config
 
     mode = mlx_speculative.mlx_spec_mode(request.speculative_type)
@@ -14950,10 +14950,7 @@ def _mlx_estimate_speculates(request, model_dir) -> bool:
         mode, _loads_as_vision(_snapshot_config(model_dir) or {}), request.spec_draft_model
     ):
         return False
-    bits, turboquant = parse_mlx_kv_quant(request.mlx_kv_quant)
-    legacy_bits = request.mlx_kv_quant is None and request.mlx_kv_bits is not None
-    kv_quant = bits is not None or turboquant or legacy_bits
-    return not mlx_speculative.speculation_refusal(kv_quant = kv_quant, distributed = False, lora = False)
+    return not mlx_speculative.speculation_refusal(distributed = False, lora = False)
 
 
 def _mlx_estimate_drafter(
@@ -14964,6 +14961,7 @@ def _mlx_estimate_drafter(
     load_in_4bit: bool,
     offload_route: Optional[dict] = None,
     baseline: Optional[dict] = None,
+    kv_bits: Optional[int] = None,
 ):
     """``((path, builtin), fitted context, speculates, stretched)`` of an MLX load of *request*: the drafter it
     would attach, chosen as the load chooses it, whether it speculates at all (so loads through mlx-vlm), and
@@ -14991,6 +14989,7 @@ def _mlx_estimate_drafter(
             load_in_4bit = load_in_4bit,
             costless = mode == "auto",
             baseline = baseline,
+            kv_bits = kv_bits,
             **kwargs,
             **(offload_route or {}),
         )
@@ -15054,6 +15053,7 @@ def _mlx_load_estimate(
         load_in_4bit,
         offload,
         offload_baseline,
+        kv_bits,
     )
     route = {**({"vision": True} if speculates else {}), **offload}
     if not named_ctx and fitted_ctx is None:
@@ -15080,6 +15080,7 @@ def _mlx_load_estimate(
             priced_ctx,
             SimpleNamespace(path = drafter[0], builtin = drafter[1]),
             load_in_4bit = load_in_4bit,
+            kv_bits = kv_bits,
             **offload,
         )
     if breakdown is None:
@@ -19847,6 +19848,7 @@ async def _load_model_impl(
             audio_server_task = _model_info.get("audio_server_task"),
             audio_convert = _model_info.get("audio_convert"),
             audio_convert_route = _model_info.get("audio_convert_route"),
+            audio_clone = _model_info.get("audio_clone"),
             audio_required_inputs = _model_info.get("audio_required_inputs"),
             audio_request_inputs = _model_info.get("audio_request_inputs"),
             audio_device_fallback = _model_info.get("audio_device_fallback"),
@@ -22411,6 +22413,7 @@ async def _slot_status(current_subject: str):
             audio_server_task = model_info.get("audio_server_task"),
             audio_convert = model_info.get("audio_convert"),
             audio_convert_route = model_info.get("audio_convert_route"),
+            audio_clone = model_info.get("audio_clone"),
             audio_reference_text = model_info.get("audio_reference_text"),
             audio_required_inputs = model_info.get("audio_required_inputs"),
             audio_request_inputs = model_info.get("audio_request_inputs"),
@@ -27024,6 +27027,11 @@ def _llama_passthrough_audio(raw: bytes) -> Optional[tuple[str, float]]:
 _VIDEO_INPUT_REFUSAL = (
     "Video input is only supported on a local GGUF or MLX model with video support."
 )
+_VIDEO_NEEDS_FFMPEG_DETAIL = (
+    "This model takes video, but ffmpeg and ffprobe were not found in llama-server's search path. "
+    "Install FFmpeg so both are on PATH, or correct --video-ffmpeg-dir / "
+    "LLAMA_ARG_VIDEO_FFMPEG_DIR if configured. Then restart Unsloth and reload the model."
+)
 
 
 def _local_video_clips(payload, model_info) -> list[str]:
@@ -27295,12 +27303,20 @@ def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
 
 async def _shrink_clip_for_llama(video_b64: str, llama_backend) -> str:
     """Transcodes before llama-server samples frames, so the explicit rate must reach the transcode."""
+    process_env = getattr(llama_backend, "_process_env", None)
+    child_env = (
+        process_env[1]
+        if process_env is not None and process_env[0] is getattr(llama_backend, "_process", None)
+        else None
+    )
     try:
         return await asyncio.to_thread(
             shrink_video_for_llama,
             video_b64,
             _MAX_VIDEO_BYTES,
             sampled_fps = requested_video_fps(getattr(llama_backend, "extra_args", None)),
+            ffmpeg_dir = getattr(llama_backend, "_video_ffmpeg_dir", None),
+            env = child_env,
         )
     except Exception as e:
         # The helper absorbs ffmpeg errors, so a raw 500 would leak the monitor row; reject with a 400.
@@ -31777,6 +31793,8 @@ async def produce_openai_chat_completions(
         video_b64 = None
         if _request_has_video(payload):
             if not getattr(llama_backend, "_has_video_input", False):
+                if getattr(llama_backend, "_video_needs_ffmpeg", False):
+                    raise _reject(400, _VIDEO_NEEDS_FFMPEG_DETAIL)
                 raise _reject(
                     400,
                     "Video provided but the current GGUF model cannot take video input. "

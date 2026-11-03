@@ -988,6 +988,29 @@ class DecodedReferenceAudios:
 
 
 @dataclass(frozen = True)
+class DecodedReferenceImages:
+    """One RGB image and its pre-EXIF dimensions per input slot."""
+
+    entries: tuple = ()
+
+    def pool(self) -> list:
+        return list(self.entries)
+
+
+def take_decoded_image(
+    pool: Optional[list], source: str, *, max_side: int, max_pixels: Optional[int]
+) -> Any:
+    from .diffusion import decode_b64_image, refuse_oversized_image
+    if pool:
+        for index, (known, size, image) in enumerate(pool):
+            if known is source or known == source:
+                del pool[index]
+                refuse_oversized_image(*size, max_side, max_pixels)
+                return image
+    return decode_b64_image(source, mode = "RGB", max_side = max_side, max_pixels = max_pixels)
+
+
+@dataclass(frozen = True)
 class MiniMaxH3StagedReferences:
     """``MiniMaxH3References`` written to disk the way sd-cli reads them back."""
 

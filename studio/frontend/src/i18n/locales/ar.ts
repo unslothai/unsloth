@@ -1060,6 +1060,7 @@ export const ar = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "اختر كلمة مرور مالك التثبيت قبل إضافة حساب آخر. ستستخدمها لتسجيل الدخول عندما يحتوي هذا التثبيت على عدة حسابات.",
       signsInAs: "يسجّل الدخول باسم {username}",
       signsInAsOwner: "يسجّل الدخول باسم {alias} أو {username}",
       signInName: "اسم تسجيل الدخول",

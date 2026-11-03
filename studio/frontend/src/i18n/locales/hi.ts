@@ -1064,6 +1064,7 @@ export const hi = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "दूसरा खाता जोड़ने से पहले इंस्टॉलेशन के मालिक का पासवर्ड तय करें। इस इंस्टॉलेशन में एक से अधिक खाते होने पर आप इसी पासवर्ड से साइन इन करेंगे।",
       signsInAs: "{username} के रूप में साइन इन करता है",
       signsInAsOwner: "{alias} या {username} के रूप में साइन इन करता है",
       signInName: "आपका साइन-इन नाम",

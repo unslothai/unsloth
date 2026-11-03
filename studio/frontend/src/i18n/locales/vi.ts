@@ -1166,6 +1166,7 @@ export const vi = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Đặt mật khẩu của chủ sở hữu bản cài đặt trước khi thêm tài khoản khác. Bạn sẽ dùng mật khẩu này để đăng nhập khi bản cài đặt có nhiều tài khoản.",
       signsInAs: "Đăng nhập với tên {username}",
       signsInAsOwner: "Đăng nhập với tên {alias} hoặc {username}",
       signInName: "Tên đăng nhập của bạn",

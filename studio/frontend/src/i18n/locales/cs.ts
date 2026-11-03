@@ -1167,6 +1167,7 @@ export const cs = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Před přidáním dalšího účtu nastavte heslo vlastníka instalace. Až bude mít instalace více účtů, budete ho používat k přihlášení.",
       signsInAs: "Přihlašuje se jako {username}",
       signsInAsOwner: "Přihlašuje se jako {alias} nebo {username}",
       signInName: "Vaše přihlašovací jméno",

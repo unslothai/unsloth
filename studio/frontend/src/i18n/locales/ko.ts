@@ -1060,6 +1060,7 @@ export const ko = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "다른 계정을 추가하기 전에 설치 소유자의 비밀번호를 설정하세요. 이 설치에 계정이 여러 개 있으면 이 비밀번호로 로그인하게 됩니다.",
       signsInAs: "{username}(으)로 로그인",
       signsInAsOwner: "{alias} 또는 {username}(으)로 로그인",
       signInName: "로그인 이름",

@@ -1158,6 +1158,7 @@ export const fa = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "پیش از افزودن حساب دیگر، گذرواژهٔ مالک این نصب را تعیین کنید. وقتی این نصب چند حساب داشته باشد، برای ورود از این گذرواژه استفاده خواهید کرد.",
       signsInAs: "ورود با نام {username}",
       signsInAsOwner: "ورود با نام {alias} یا {username}",
       signInName: "نام ورود شما",
