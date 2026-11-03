@@ -7,7 +7,7 @@ import type {
   NodeConfig,
   SamplerConfig,
 } from "../../types";
-import { removeRef, replaceRef } from "../../utils/refs";
+import { removeRef, renameRoot, replaceRef } from "../../utils/refs";
 
 function updateTemplateFields(
   config: NodeConfig,
@@ -65,6 +65,21 @@ export function applyRenameToConfig(
       // biome-ignore lint/style/useNamingConvention: api schema
       subcategory_parent: to,
     };
+  }
+  if (config.kind === "sampler" && config.conditional_params) {
+    // A sampler rule's condition (`topic == 'science'`) names columns too; its params stay.
+    const rules = Object.entries(config.conditional_params);
+    const renamed = rules.map(
+      ([condition, params]) => [renameRoot(condition, from, to), params] as const,
+    );
+    if (renamed.some(([condition], i) => condition !== rules[i][0])) {
+      const base = next as SamplerConfig;
+      next = {
+        ...base,
+        // biome-ignore lint/style/useNamingConvention: api schema
+        conditional_params: Object.fromEntries(renamed),
+      };
+    }
   }
   if (
     config.kind === "sampler" &&

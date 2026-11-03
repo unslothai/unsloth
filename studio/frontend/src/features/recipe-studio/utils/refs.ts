@@ -78,19 +78,26 @@ export function replaceRef(
   const pattern = new RegExp(`{{\\s*${escapeRegExp(from)}\\s*}}`, "g");
   const renamed = template.replace(pattern, `{{ ${to} }}`);
   // Inside any other tag (`{{ ticket.title }}`, `{% if ticket.priority %}`) the name is renamed
-  // where it is a variable root: outside string literals, not after a dot or inside a longer name.
-  // A filter (`| length`), test (`is defined`) or keyword argument (`length=10`) of the same name
-  // is not the column.
+  // where it is a variable root.
+  return renamed.replace(/{{[\s\S]*?}}|{%[\s\S]*?%}/g, (tag) =>
+    renameRoot(tag, from, to),
+  );
+}
+
+/** Rename a variable in a Jinja expression (a tag's inside, or a sampler condition such as
+ * `topic == 'science'`) where it is a root: outside string literals, not after a dot or inside a
+ * longer name. A filter (`| length`), test (`is defined`) or keyword argument (`length=10`) of the
+ * same name is not the column. */
+export function renameRoot(expression: string, from: string, to: string): string {
+  if (!expression || !from || from === to) return expression;
   const root = new RegExp(
     `(?<![\\w.])(?<!\\|\\s*)(?<!\\bis\\s+(?:not\\s+)?)${escapeRegExp(from)}(?!\\w)(?!\\s*=(?!=))`,
     "g",
   );
-  return renamed.replace(/{{[\s\S]*?}}|{%[\s\S]*?%}/g, (tag) =>
-    tag
-      .split(/('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/)
-      .map((part, i) => (i % 2 ? part : part.replace(root, to)))
-      .join(""),
-  );
+  return expression
+    .split(/('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/)
+    .map((part, i) => (i % 2 ? part : part.replace(root, to)))
+    .join("");
 }
 
 export function removeRef(template: string, ref: string): string {

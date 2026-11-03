@@ -2187,7 +2187,8 @@ def _origin(account: AccountContext, kind: Optional[str]) -> dict:
 
 
 def _implicit_local_model(recipe: Any) -> bool:
-    """A compiled recipe with a local-provider model left to Chat's loaded one (blank or "local")."""
+    """A compiled recipe with a model on the local provider: it runs on whichever copy and quant
+    Chat holds (blank or "local" is Chat's model; a named one is checked against it by repo only)."""
     if not isinstance(recipe, dict):
         return False
     if isinstance(recipe.get("recipe"), dict):
@@ -2198,9 +2199,7 @@ def _implicit_local_model(recipe: Any) -> bool:
         if isinstance(p, dict) and p.get("is_local") is True
     }
     return any(
-        isinstance(mc, dict)
-        and mc.get("provider") in local
-        and str(mc.get("model") or "").strip().lower() in ("", "local")
+        isinstance(mc, dict) and mc.get("provider") in local
         for mc in recipe.get("model_configs") or []
     )
 

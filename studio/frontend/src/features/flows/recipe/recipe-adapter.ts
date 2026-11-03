@@ -215,14 +215,19 @@ export function commitStudioEdit(
     else config[key] = value;
   }
   const seed = Object.values(configs).find((c) => c.kind === "seed");
-  if (
-    seed?.kind === "seed" &&
-    seed.seed_source_type === "github_repo" &&
-    config.seed_config === undefined
-  ) {
-    // A GitHub seed with no repository yet builds nothing; keep a placeholder so its form opens.
-    // biome-ignore lint/style/useNamingConvention: api schema
-    config.seed_config = { source: { seed_type: "github_repo", repos: [] } };
+  if (seed?.kind === "seed" && config.seed_config === undefined) {
+    // A seed whose form is mid-edit (an End cleared to retype) builds nothing: keep its last
+    // valid config, so the card and its form stay; only removing the seed block deletes it.
+    const kept = group.config?.seed_config as
+      | { source?: { seed_type?: string } }
+      | undefined;
+    const github = seed.seed_source_type === "github_repo";
+    if (kept !== undefined && (!github || kept.source?.seed_type === "github_repo"))
+      config.seed_config = kept;
+    else if (github)
+      // A GitHub seed with no repository yet builds nothing; keep a placeholder so its form opens.
+      // biome-ignore lint/style/useNamingConvention: api schema
+      config.seed_config = { source: { seed_type: "github_repo", repos: [] } };
   }
   const ui: Record<string, unknown> = { ...(group.ui ?? {}) };
   for (const [key, value] of Object.entries(built.payload.ui)) {
