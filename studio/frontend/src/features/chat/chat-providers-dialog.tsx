@@ -145,6 +145,10 @@ function hasPublicModelCatalog(providerType: string | null | undefined): boolean
   return providerType === "openrouter";
 }
 
+export function withSavedModelIds(catalog: string[], saved: string[]): string[] {
+  return [...catalog, ...saved.filter((id) => !catalog.includes(id))];
+}
+
 function parseManualModelIds(text: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -817,10 +821,14 @@ export function ChatProvidersSettings({
           ].filter((id) => id.length > 0),
         ),
       ]);
-      setAvailableModels(modelIds);
-      setSelectedModelIds((prev) =>
-        prev.filter((id) => modelIds.includes(id)),
-      );
+      if (silent) {
+        setAvailableModels(withSavedModelIds(modelIds, selectedModelIds));
+      } else {
+        setAvailableModels(modelIds);
+        setSelectedModelIds((prev) =>
+          prev.filter((id) => modelIds.includes(id)),
+        );
+      }
       if (!silent && modelIds.length === 0) {
         const hint =
           providerType === LEGACY_CUSTOM_PROVIDER_TYPE && apiType === "systemone"

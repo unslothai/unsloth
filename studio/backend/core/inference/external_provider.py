@@ -1151,6 +1151,14 @@ async def _stream_post_with_compat_fallbacks(
 _OPENROUTER_CATALOG_TTL_S = 3600.0
 _openrouter_catalog: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _openrouter_catalog_lock = asyncio.Lock()
+_OPENROUTER_MODEL_KEYS = (
+    "id",
+    "context_length",
+    "architecture",
+    "reasoning",
+    "top_provider",
+    "supported_parameters",
+)
 
 
 def _slim_openrouter_models(payload: Any) -> list[dict[str, Any]]:
@@ -1165,13 +1173,9 @@ def _slim_openrouter_models(payload: Any) -> list[dict[str, Any]]:
         outputs = (m.get("architecture") or {}).get("output_modalities")
         if isinstance(outputs, list) and "text" not in outputs:
             continue
-        models.append(
-            {
-                "id": m["id"],
-                "context_length": m.get("context_length"),
-                "created": m.get("created") or 0,
-            }
-        )
+        slim = {k: m[k] for k in _OPENROUTER_MODEL_KEYS if k in m}
+        slim["created"] = m.get("created") or 0
+        models.append(slim)
     models.sort(key = lambda m: m["created"], reverse = True)
     return models
 
@@ -7365,11 +7369,13 @@ class ExternalProviderClient:
             raise
 
     async def _list_openrouter_models(self) -> list[dict[str, Any]]:
-        cached = _openrouter_catalog.get(self.base_url)
+        key_digest = hashlib.sha256((self.api_key or "").encode("utf-8")).hexdigest()[:16]
+        cache_key = f"{self.base_url}\n{key_digest}"
+        cached = _openrouter_catalog.get(cache_key)
         if cached and time.monotonic() - cached[0] < _OPENROUTER_CATALOG_TTL_S:
             return cached[1]
         async with _openrouter_catalog_lock:
-            cached = _openrouter_catalog.get(self.base_url)
+            cached = _openrouter_catalog.get(cache_key)
             if cached and time.monotonic() - cached[0] < _OPENROUTER_CATALOG_TTL_S:
                 return cached[1]
             try:
@@ -7387,7 +7393,7 @@ class ExternalProviderClient:
                 logger.error("Failed to list models from openrouter: %s", exc)
                 raise
             if models:
-                _openrouter_catalog[self.base_url] = (time.monotonic(), models)
+                _openrouter_catalog[cache_key] = (time.monotonic(), models)
             return models
 
     async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:

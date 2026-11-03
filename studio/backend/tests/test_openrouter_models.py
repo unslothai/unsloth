@@ -8,7 +8,10 @@ import pytest
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
+from core.inference.provider_model_capabilities import provider_model_capabilities
 from core.inference.providers import get_provider_info
+from models.providers import ProviderTestRequest
+from routes import providers as providers_route
 
 CATALOG = {
     "data": [
@@ -23,8 +26,11 @@ CATALOG = {
             "id": "new/chat",
             "created": 300,
             "context_length": 131072,
-            "architecture": {"output_modalities": ["text"]},
+            "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
             "endpoints": ["/api/v1/chat/completions", "/api/v1/messages"],
+            "reasoning": {"supported_efforts": ["low", "high"], "mandatory": False},
+            "top_provider": {"max_completion_tokens": 32768},
+            "supported_parameters": ["reasoning", "tools"],
         },
         {
             "id": "new/chat:batch",
@@ -62,11 +68,11 @@ def catalog_server(monkeypatch):
     return state
 
 
-def _client() -> ExternalProviderClient:
+def _client(api_key: str = "") -> ExternalProviderClient:
     return ExternalProviderClient(
         provider_type = "openrouter",
         base_url = "https://openrouter.ai/api/v1",
-        api_key = "",
+        api_key = api_key,
     )
 
 
@@ -82,6 +88,15 @@ def test_filters_non_chat_models_and_sorts_newest_first(catalog_server):
     assert models[0]["context_length"] == 131072
 
 
+def test_keeps_metadata_for_model_capabilities(catalog_server):
+    models = asyncio.run(_client().list_models())
+    caps = {c["id"]: c for c in provider_model_capabilities("openrouter", models)}
+    assert caps["new/chat"]["input_modalities"] == ["text"]
+    assert caps["new/chat"]["reasoning"]["supported_efforts"] == ["low", "high"]
+    assert caps["new/chat"]["max_output_tokens"] == 32768
+    assert caps["new/chat"]["supported_parameters"] == ["reasoning", "tools"]
+
+
 def test_catalog_is_cached_across_clients(catalog_server):
     async def run():
         await asyncio.gather(*(_client().list_models() for _ in range(5)))
@@ -89,6 +104,16 @@ def test_catalog_is_cached_across_clients(catalog_server):
 
     asyncio.run(run())
     assert catalog_server["calls"] == 1
+
+
+def test_catalog_cache_is_scoped_to_the_api_key(catalog_server):
+    async def run():
+        await _client("key-a").list_models()
+        await _client("key-b").list_models()
+        await _client("key-a").list_models()
+
+    asyncio.run(run())
+    assert catalog_server["calls"] == 2
 
 
 def test_serves_stale_catalog_when_refresh_fails(catalog_server, monkeypatch):
@@ -103,3 +128,13 @@ def test_raises_when_no_cache_and_fetch_fails(catalog_server):
     catalog_server["fail"] = True
     with pytest.raises(httpx.HTTPStatusError):
         asyncio.run(_client().list_models())
+
+
+def test_connection_test_does_not_pass_on_a_cached_catalog(catalog_server, monkeypatch):
+    monkeypatch.setattr(providers_route, "validate_provider_base_url", lambda url: url)
+    monkeypatch.setattr(providers_route, "resolve_provider_api_key_or_400", lambda *a, **k: "")
+    request = ProviderTestRequest(provider_type = "openrouter")
+    assert asyncio.run(providers_route.test_provider(request, "tester", False)).success
+    catalog_server["fail"] = True
+    result = asyncio.run(providers_route.test_provider(request, "tester", False))
+    assert not result.success
