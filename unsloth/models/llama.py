@@ -2427,11 +2427,17 @@ class _PerDeviceRopeCache:
     def _init_rope_cache_state(self, dtype):
         self._rope_cache_dtype = dtype
         if not hasattr(self, "inv_freq") and not self._rope_rows_pick_factors:
-            # Keep Gemma's CPU pow rounding before the compiled division.
+            # Keep Gemma's CPU FP32 constants before widening the compiled arithmetic.
             exponents = (2.0 / self.dim) * torch.arange(
                 self.dim // 2, dtype = torch.int64, device = "cpu"
             ).float()
             self._rope_timescale_cpu = self.base**exponents
+            self._rope_reciprocal_cpu = self._rope_timescale_cpu.double().reciprocal()
+            self._rope_scaling_factor = float(
+                torch.tensor(
+                    getattr(self, "scaling_factor", 1.0), dtype = torch.float32, device = "cpu"
+                )
+            )
         self._rope_cache_version = 0
         self._rope_cache_versions = [None] * DEVICE_COUNT
         self._rope_rows_ready = [0] * DEVICE_COUNT
@@ -2535,14 +2541,16 @@ class _PerDeviceRopeCache:
         return self._slice_rope_cache(device_index, seq_len)
 
     def _compiled_position_embeddings(self, x, position_ids):
-        # Gemma divides by timescale rather than multiplying by its reciprocal.
         positions = position_ids.to(x.device).float()
         # Arc and Metal do not support FP64 tensors.
         compute_dtype = torch.float64 if x.device.type in ("cpu", "cuda") else torch.float32
-        positions = (positions.to(compute_dtype) / getattr(self, "scaling_factor", 1.0)).float()
-        timescale = self._rope_timescale_cpu.to(x.device)
-        # Narrow only after division; a float32 reciprocal shifts large positions.
-        freqs = (positions[..., None].to(compute_dtype) / timescale.to(compute_dtype)).float()
+        positions = (positions.to(compute_dtype) / self._rope_scaling_factor).float()
+        if compute_dtype == torch.float64:
+            # FP64 reciprocals preserve FP32 division rounding without slow GPU divides.
+            reciprocal = self._rope_reciprocal_cpu.to(x.device)
+            freqs = (positions[..., None].double() * reciprocal).float()
+        else:
+            freqs = positions[..., None] / self._rope_timescale_cpu.to(x.device)
         emb = torch.cat((freqs, freqs), dim = -1)
         return emb.cos().to(x.dtype), emb.sin().to(x.dtype)
 

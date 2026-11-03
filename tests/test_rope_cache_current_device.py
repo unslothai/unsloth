@@ -694,7 +694,7 @@ def test_compiled_stock_positions_cross_configured_extent(kind, backend):
     }[kind]
     kwargs = {"dim": DIM, "max_position_embeddings": 16, "base": BASE}
     if kind.endswith("linear"):
-        kwargs["scaling_factor"] = 2.0
+        kwargs["scaling_factor"] = 1.3 if kind == "gemma_linear" else 2.0
     rope = ns[name](**kwargs)
     reference = ns[name](**kwargs)
     torch._dynamo.reset()
@@ -772,10 +772,13 @@ def test_compiled_gemma_stock_cuda_preserves_cpu_timescale(kind, dtype):
             "_PerDeviceRopeCache": ns["_PerDeviceRopeCache"],
         },
     )
-    rope = ns[kind](dim = DIM, max_position_embeddings = 16)
-    reference = ns[kind](dim = DIM, max_position_embeddings = 16)
-    positions = torch.tensor([[0, 15, 32768, 65536]], device = "cuda")
-    x = torch.ones(1, 4, DIM, device = "cuda", dtype = dtype, requires_grad = True)
+    kwargs = {"dim": 128, "max_position_embeddings": 16}
+    if kind == "GemmaFixedLinearScalingRotaryEmbedding":
+        kwargs["scaling_factor"] = 1.3
+    rope = ns[kind](**kwargs)
+    reference = ns[kind](**kwargs)
+    positions = torch.tensor([[0, 15, 32767, 131071]], device = "cuda")
+    x = torch.ones(1, 4, 128, device = "cuda", dtype = dtype, requires_grad = True)
     torch._dynamo.reset()
     cos, sin = torch.compile(rope, fullgraph = True, dynamic = True)(x, positions)
     ref_cos, ref_sin = reference(x, positions)
