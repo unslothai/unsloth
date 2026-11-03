@@ -20,6 +20,7 @@ from utils import gguf_archs as _gguf_archs
 from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS,
     is_audio_cpp_gguf_architecture,
+    is_foreign_asr_gguf_architecture,
     is_speech_gguf_architecture,
 )
 from utils.paths.path_utils import file_contents_available_locally
@@ -38,6 +39,7 @@ _SPEECH_GGUF_ARCHS = SPEECH_GGUF_ARCHS
 _SPEECH_TASK = "text-to-speech"
 # An audio.cpp GGUF of a kind Studio has no page for (separation, diarization, ...): not chat either.
 _AUDIO_CPP_UNSUPPORTED_TASK = "audio-to-audio"
+_UNSUPPORTED_ASR_TASK = "speech-recognition-unsupported"
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 _H3_DENOISER_GGUF_PREFIXES = ("minimax_h3_fl2va", "minimax_h3_ref2va")
 _LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK})
@@ -281,6 +283,8 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
     normalized = arch.lower()
     if is_audio_cpp_gguf_architecture(normalized):
         return _audio_cpp_classification(None, name_hints)[0]
+    if is_foreign_asr_gguf_architecture(normalized):
+        return _UNSUPPORTED_ASR_TASK
     if normalized == "qwen3" and any(
         _QWEN3_ASR_HINT.search(str(hint)) for hint in name_hints if hint
     ):
@@ -430,7 +434,7 @@ def _gguf_folder_task(
         if task == _SPEECH_TASK:
             if speech is None:
                 speech = task
-        elif task == _UNSUPPORTED_DIFFUSION_TASK:
+        elif task in (_UNSUPPORTED_DIFFUSION_TASK, _UNSUPPORTED_ASR_TASK):
             unsupported = unsupported or task
         elif task is not None and fallback is None:
             fallback = task
@@ -513,7 +517,7 @@ def _local_name_needles(model) -> list[Optional[str]]:
 def _local_family_needles(model) -> tuple[str, ...]:
     needles = _local_name_needles(model)
     try:
-        from core.inference.diffusion import resolve_local_single_file
+        from core.inference.diffusion_local_files import resolve_local_single_file
         single = resolve_local_single_file(model.path)
         if single:
             needles.append(single)
@@ -555,7 +559,6 @@ def _local_model_task(model) -> Optional[str]:
     if not _local_is_diffusers(model):
         return None
     try:
-        from core.inference.video import _is_trusted_video_repo
         from core.inference.video_families import (
             detect_video_family,
             unsupported_video_checkpoint_reason,
@@ -565,7 +568,11 @@ def _local_model_task(model) -> Optional[str]:
         if not unsupported_video_checkpoint_reason(*_local_name_needles(model), path):
             for needle in _local_family_needles(model):
                 family = detect_video_family(needle)
-                if family is None or not _is_trusted_video_repo(path):
+                if family is None:
+                    continue
+                from core.inference.video import _is_trusted_video_repo
+
+                if not _is_trusted_video_repo(path):
                     continue
                 if _pipeline_only_video_family(family) and not _is_diffusers_pipeline_dir(
                     Path(path)
@@ -657,15 +664,20 @@ def _local_is_diffusers(model) -> bool:
             return True
     except Exception:
         pass
+    needles: Optional[tuple[str, ...]] = None
     try:
         from core.inference.diffusion_families import detect_family
-        if any(detect_family(needle) is not None for needle in _local_family_needles(model)):
+        needles = _local_family_needles(model)
+        if any(detect_family(needle) is not None for needle in needles):
             return True
     except Exception:
         pass
     try:
         from core.inference.video_families import detect_video_family
-        families = (detect_video_family(needle) for needle in _local_family_needles(model))
+
+        if needles is None:
+            needles = _local_family_needles(model)
+        families = (detect_video_family(needle) for needle in needles)
         return any(
             family is not None and not _pipeline_only_video_family(family) for family in families
         )
@@ -726,11 +738,11 @@ def _untrusted_repo_single_files_loadable(repo_info, selected: Optional[Path] = 
 def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[str]:
     repo_id = getattr(repo_info, "repo_id", "") or ""
     try:
-        from core.inference.video import _is_trusted_video_repo
         from core.inference.video_families import detect_video_family
-
         family = detect_video_family(repo_id)
         if family is not None:
+            from core.inference.video import _is_trusted_video_repo
+
             if _pipeline_only_video_family(family):
                 # Generator-first: nvidia/Cosmos3-Edge also has a reasoner root config.json but lists as video.
                 trusted = _is_trusted_video_repo(repo_id) and _repo_has_pipeline_index(

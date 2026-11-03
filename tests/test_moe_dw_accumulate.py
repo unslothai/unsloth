@@ -5,7 +5,6 @@
 
 import os
 import re
-import socket
 import sys
 from pathlib import Path
 
@@ -439,9 +438,8 @@ def test_compiled_fullgraph_zero_breaks_and_matches_eager(monkeypatch):
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _ddp_worker(rank, world, port, inplace, bucket_view, out_path):

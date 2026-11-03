@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Stems out of a saved separation answer, decoded in chunks from an mmap.
-
-Not ``json.loads``: ~42 MB of base64 per stem for a 180 s track would be held three times over.
-"""
+"""Stems from a saved separation answer, base64-decoded in chunks from an mmap; json.loads would
+hold ~42 MB of base64 per 180 s stem three times over."""
 
 from __future__ import annotations
 

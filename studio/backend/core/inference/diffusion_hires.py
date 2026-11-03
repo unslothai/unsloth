@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hires fix: txt2img, upscale, then refine (img2img at a denoise) in one request.
-
-Defaults follow ComfyUI's 2_pass_txt2img example (1.5x, denoise 0.5, 14 steps). Hires steps is the exact refine
-count, as in ComfyUI (``new_steps = int(steps / denoise)``) and A1111 (``hr_second_pass_steps or steps``).
-"""
+"""Hires fix (txt2img, upscale, img2img refine); hires steps is the exact refine count, as in ComfyUI."""
 
 from __future__ import annotations
 
@@ -128,6 +124,18 @@ def steps_run(num_inference_steps: int, strength: float, rule: str) -> int:
         return min(int(n * s), n)
     t_start = int(max(n - min(n * s, n), 0))
     return n - t_start
+
+
+def min_inference_steps(steps: int, strength: float, rule: str) -> int:
+    """``steps``, raised to the smallest count that still denoises at least one step at ``strength``."""
+    n = max(1, int(steps))
+    s = float(strength)
+    if s <= 0.0 or s >= 1.0:
+        return n
+    limit = int(math.ceil(1.0 / max(s, MIN_DENOISE))) + 2
+    while steps_run(n, s, rule) < 1 and n < limit:
+        n += 1
+    return n
 
 
 def refine_inference_steps(steps: int, denoise: float, rule: str) -> int:

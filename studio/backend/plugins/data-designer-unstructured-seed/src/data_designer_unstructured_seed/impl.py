@@ -38,5 +38,6 @@ class UnstructuredSeedReader(SeedReader[UnstructuredSeedSource]):
             file_entries = file_entries,
             chunk_size = self.source.chunk_size,
             chunk_overlap = self.source.chunk_overlap,
+            include_rows = False,
         )
         return str(path)

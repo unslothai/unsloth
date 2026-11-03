@@ -92,7 +92,7 @@ export {
   emitTrainingRunDeleted,
   emitTrainingRunsChanged,
 } from "./events";
-export { parseYamlConfig, serializeConfigToYaml } from "./lib/yaml-config";
+// lib/yaml-config is imported directly: re-exporting it here would make js-yaml eager.
 export {
   type StartValidationResult,
   validateTrainingConfig,

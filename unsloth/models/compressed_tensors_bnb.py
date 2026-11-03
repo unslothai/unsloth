@@ -10,9 +10,8 @@
 # GNU Affero General Public License for more details.
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Re-quantize a compressed-tensors ``pack-quantized`` W4A16/W8A16 checkpoint into bitsandbytes
-4-bit per tensor during ``from_pretrained`` (no 16-bit copy on disk). Native MoE stacks keep
-transformers' ``DecompressExperts``; needs the transformers 5 weight-conversion loader."""
+"""Re-quantize compressed-tensors W4A16/W8A16 to bnb 4-bit during load, not native MoE (keeps
+DecompressExperts); needs transformers 5 weight-conversion loader."""
 
 import inspect
 import os

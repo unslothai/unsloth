@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""API routes for external LLM provider management: the provider-type registry, CRUD for saved provider
-configurations and their API keys, the RSA public key used to encrypt those keys, connectivity tests, and model
-listing.
-"""
+"""External LLM provider routes: types, saved configs; API keys RSA-encrypted; tests, model listing."""
 
 import asyncio
 import hashlib

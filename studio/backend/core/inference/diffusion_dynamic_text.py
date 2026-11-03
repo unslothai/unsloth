@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Mark a DiT's prompt-length inputs dynamic (``dynamic_sources``, scoped to its forward) so a new prompt length
-never recompiles; blanket ``dynamic=True`` hits torchao CantSplit.
-
-torch 2.13+ guards symbolic slice bounds on ``s is None`` (Qwen-Image-2.1 ``cache_write_slice``), recompiling per
-prompt length; ``install`` restores 2.12's answer. Probe-gated; kill switch ``UNSLOTH_DIFFUSION_SLICE_IDENTITY_FIX=0``."""
+"""Prompt-length inputs dynamic so new lengths never recompile; blanket dynamic=True hits torchao."""
 
 from __future__ import annotations
 
@@ -16,6 +12,12 @@ from typing import Any, Optional
 SLICE_IDENTITY_ENV = "UNSLOTH_DIFFUSION_SLICE_IDENTITY_FIX"
 _SLICE_LOCK = threading.Lock()
 _SLICE_STATE: dict[str, Any] = {}
+
+
+def _hooked_args(tail: str) -> tuple[str, ...]:
+    """Positional block input under group offload hooks (``L['args']``, or ``___stack0[0]`` after the graph break)."""
+    return tuple(root + tail + "$" for root in (r".*\['args'\]", r".*\['___stack\d+'\]\[0\]"))
+
 
 # segments[0][0] (always 0) stays static: a symbol there trips torchao CantSplit (rows become ``s0 - s_start``).
 _QWEN_IMAGE_21_SOURCES: tuple[str, ...] = (
@@ -28,8 +30,12 @@ _QWEN_IMAGE_21_SOURCES: tuple[str, ...] = (
     "L['layer_cache'].v",
     "L['cache_write_slice'].stop",
     "L['segments'][0][1]",
-    r"L\['segments'\]\[\d+\]\[1\]$",
-    r"L\['segments'\]\[[1-9]\d*\]\[0\]$",
+    # Group offload hook paths: ``L['kwargs'][...]``, and ``___stack0[1][...]`` after the eager hook's graph break.
+    r".*\['(hidden_states|rotary_emb|target_token_mask|key_valid|attention_mask)'\]$",
+    r".*\['layer_cache'\]\.[kv]$",
+    r".*\['cache_write_slice'\]\.stop$",
+    r".*\['segments'\]\[\d+\]\[1\]$",
+    r".*\['segments'\]\[[1-9]\d*\]\[0\]$",
 )
 
 # Suffix regexes cover FBCache hook paths: ``L['kwargs'][...]`` and, after a graph break, ``___stack0[1][...]``.
@@ -49,6 +55,9 @@ _MINIMAX_H3_SOURCES: tuple[str, ...] = (
     "L['rotary_emb'][0]",
     "L['rotary_emb'][1]",
     "L['temb']",
+    *_hooked_args(r"\[[02]\]"),
+    *_hooked_args(r"\[3\]\[[01]\]"),
+    *_hooked_args(r"\[1\]"),
 )
 
 # FLUX.3 Klein (distilled and base): the pipeline pads the prompt to a multiple of 80 tokens, so every new bucket was
@@ -63,6 +72,10 @@ _FLUX3_SOURCES: tuple[str, ...] = (
     "L['temb_mod_context']",
     "L['image_rotary_emb'][0]",
     "L['image_rotary_emb'][1]",
+    r".*\['(hidden_states|temb_mod|encoder_hidden_states|temb_mod_context)'\]$",
+    r".*\['image_rotary_emb'\]\[[01]\]$",
+    *_hooked_args(r"\[[01]\]"),
+    *_hooked_args(r"\[2\]\[[01]\]"),
 )
 
 # FLUX.1: Studio pads T5 to 256 tokens, or 512 for a longer prompt (diffusion_text_length.flux_t5_sequence_length),
@@ -86,7 +99,7 @@ _ZIMAGE_SOURCES: tuple[str, ...] = (
     "L['x']",
     "L['attn_mask']",
     "L['freqs_cis']",
-    r".*\['args'\]\[[0-2]\]$",
+    *_hooked_args(r"\[[0-2]\]"),
 )
 
 # Cosmos3 tokenizes the prompt unpadded (pipeline_cosmos3_omni.py ``_tokenize``): every prompt length is a new shape.
@@ -101,6 +114,8 @@ _MOSS_IMAGE_SOURCES: tuple[str, ...] = (
     "L['x']",
     "L['rope'][0]",
     "L['rope'][1]",
+    *_hooked_args(r"\[0\]"),
+    *_hooked_args(r"\[1\]\[[01]\]"),
 )
 # Prompt-length policy for every denoiser class Studio loads (the ONE list; test_diffusion_prompt_length_policy checks
 # it covers diffusion_families and video_families). A tuple: the denoiser's text length follows the prompt, and these
@@ -159,7 +174,7 @@ def _armed_when_dynamic(transformer: Any) -> bool:
 
 # Unbacked: a backed symbol specialises size 1, and H3's temb has 1 row on step 1, 2 after (a second compile).
 _FAMILY_UNBACKED: dict[str, tuple[str, ...]] = {
-    "MiniMaxH3Transformer3DModel": ("L['temb']",),
+    "MiniMaxH3Transformer3DModel": ("L['temb']", *_hooked_args(r"\[1\]")),
 }
 
 

@@ -88,6 +88,13 @@ windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 windows-core = "0.62.2"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_Networking_WinHttp"] }
 
+# Whole-program LTO: a 25% smaller Linux binary (53.8 -> 40.4 MB) for a longer final link.
+# panic and strip stay at their defaults: catch_unwind guards cleanup, and the panic hook
+# symbolizes backtraces.
+[profile.release]
+lto = true
+codegen-units = 1
+
 [build-dependencies]
 tauri-build = { version = "~2.7.0", features = [] }
 

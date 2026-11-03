@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Opt-in serving environments. No engine packages are imported into Studio.
-
-When Studio's own PyTorch and CUDA libraries are the ones an engine is locked to,
-its environment runs on Studio's interpreter and holds only the packages Studio
-lacks or pins differently; Studio's site-packages follow its own on sys.path.
-Otherwise it is a complete isolated environment.
-
-Installation is serialized across Studio processes. Environments are built at
-their final paths (venv scripts contain absolute paths); only the active marker
-is replaced. Runtime leases prevent removing an environment another Studio uses.
-"""
+"""Opt-in engine envs share Studio torch/CUDA when locked, else isolated; none imported into Studio;
+installs serialized; runtime leases block removing an env in use"""
 
 from __future__ import annotations
 

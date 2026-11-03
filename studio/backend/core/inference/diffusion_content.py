@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What a single-file diffusion checkpoint IS (DiT of which family / text encoder / VAE / LoRA /
-ControlNet), from the safetensors or GGUF header only: no torch, no weight bytes, cached per
-(path, size, mtime). ComfyUI and diffusers layouts, bare or under a container prefix.
-
-Same-architecture variants (FLUX.1 dev / Krea / Kontext, Qwen-Image / 2512 / Edit / Edit-2509,
-klein distilled / base, Z-Image base / Turbo, HiDream full / dev / fast, LTX-2 / 2.3,
-HunyuanVideo-1.5 480p / 720p, Wan A14B high / low noise, Wan2.1-T2V-14B vs an A14B expert) have identical keys: the
-file name decides.
-"""
+"""Checkpoint parts from the header alone (no torch, no weight bytes); same-arch variants share
+keys, so the file name decides"""
 
 from __future__ import annotations
 

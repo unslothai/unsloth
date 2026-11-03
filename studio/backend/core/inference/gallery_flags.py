@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pin / archive / manual-order flags for the image and video galleries.
-
-Library state, NOT part of a generation recipe: a PNG's text chunk and a clip's sidecar
-describe how the media was made, while "I pinned this" describes how the user files it. So
-flags live in their own ``.flags.json`` beside the media rather than in the recipe, and a
-record missing from the store simply has no flags.
-
-One store per gallery directory, keyed by the same id the gallery uses (the file stem):
-
-    {"version": 1, "items": {"<id>": {"pinned_at": 1712345678.0, "archived": true}}}
-
-A dragged item also stores ``order_at``, a sort key on the mtime scale used in place of its mtime.
-Only moved items get one, and new media still lands first.
-
-The filename is skipped by the galleries' ``*.png`` / ``*.mp4`` globs, so a store sitting in
-the directory is invisible to listing. Every read fails safe: a corrupt, hand-edited or
-unreadable store degrades to "no flags", never to an error, because losing a pin is a far
-better outcome than a gallery that will not list.
-"""
+"""Pin/archive/order flags in .flags.json beside media, not the recipe; corrupt store means no flags"""
 
 from __future__ import annotations
 

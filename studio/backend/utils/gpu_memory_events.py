@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Generation counter bumped when Studio changes what is resident on the GPUs.
-Import-free so backends can decorate load/unload without pulling in utils.hardware."""
+"""Generation counter bumped when Studio changes GPU residency; import-free to avoid utils.hardware."""
 
 import functools
 import threading

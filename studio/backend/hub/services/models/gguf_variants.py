@@ -783,9 +783,6 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
     return found >= set(range(1, total + 1))
 
 
-# Cache scan's looser grammar (hub.utils.inventory_scan._GGUF_SPLIT_RE), not the five digits above.
-_CACHE_SPLIT_RE = re.compile(r"-(\d{3,})-of-(\d{3,})(?=\.gguf$)", re.IGNORECASE)
-
 # Only enumerates candidates for the resolver to adjudicate; drift costs a candidate, not a verdict.
 _KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"

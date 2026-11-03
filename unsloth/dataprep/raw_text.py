@@ -359,7 +359,7 @@ class TextPreprocessor:
     _TEXT_CHARS = _TextCharTable()
     _MULTIPLE_SPACES_PATTERN = re.compile(r"[ ]{2,}")
     _NEWLINE_SPACES_PATTERN = re.compile(r" *\n *")
-    _MULTIPLE_NEWLINES_PATTERN = re.compile(r"\n{3,}")
+    _MULTIPLE_NEWLINES_PATTERN = re.compile(r"\n\n\n+")
     _CHAPTER_PATTERN = re.compile(r"^# (.+)$", re.MULTILINE)
     _SECTION_PATTERN = re.compile(r"^## (.+)$", re.MULTILINE)
     _SUBSECTION_PATTERN = re.compile(r"^### (.+)$", re.MULTILINE)

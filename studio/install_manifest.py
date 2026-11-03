@@ -1,24 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Install-completeness manifest for Unsloth Studio.
-
-install_python_stack.py drops the manifest before the dependency pass and writes
-it back only after the last step, so its presence means "the install finished".
-Read by `unsloth studio verify-install`, `desktop-capabilities` (and through it
-the Tauri preflight) and setup.sh/setup.ps1's fast path.
-
-Without it an installer killed part-way leaves a venv with `unsloth` but not
-studio.txt's dependencies, which still answers `-h` and so looked ready right up
-until the backend died on `import structlog`.
-
-Must import inside that half-installed venv: stdlib only, `packaging` optional.
-"""
+"""Install-completeness marker: install_python_stack.py drops it before the dependency pass and
+writes it after the last step, so presence means the install finished. Read by verify-install,
+desktop-capabilities and setup.sh/setup.ps1; stdlib only, packaging optional."""
 
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import errno
+import functools
 import hashlib
 import json
 import os
@@ -195,36 +187,136 @@ def _metadata_scan_paths() -> List[str]:
     return paths
 
 
-def _installed_metadata_records(dist_name: str) -> List[Tuple[str, Optional[Path]]]:
-    """Every matching metadata version and its directory, when available."""
+_METADATA_TEXT_FILES = frozenset(("METADATA", "PKG-INFO", ""))
+_SINGLE_READ_TYPE = None
+_METADATA_SCAN: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar(
+    "unsloth_install_manifest_metadata_scan", default = None
+)
+
+
+def _header_block(text: str) -> str:
+    """*text* through its first blank line, where the email parser stops (the README is unused)."""
+    cut = -1
+    for separator in ("\n\n", "\r\n\r\n"):
+        at = text.find(separator)
+        if at != -1 and (cut == -1 or at + len(separator) < cut):
+            cut = at + len(separator)
+    return text if cut == -1 else text[:cut]
+
+
+def _single_read(dist):
+    """*dist* parsing its metadata headers once (stdlib re-parses per access); errors uncached."""
+    global _SINGLE_READ_TYPE
+    from importlib.metadata import PathDistribution
+
+    if type(dist) is not PathDistribution:
+        return dist
+    if _SINGLE_READ_TYPE is None:
+
+        class _SingleReadDistribution(PathDistribution):
+            def read_text(self, filename):
+                text = super().read_text(filename)
+                if text and filename in _METADATA_TEXT_FILES:
+                    return _header_block(text)
+                return text
+
+            @property
+            def metadata(self):
+                cached = self.__dict__.get("_unsloth_metadata")
+                if cached is None:
+                    cached = super().metadata
+                    self.__dict__["_unsloth_metadata"] = cached
+                return cached
+
+        _SINGLE_READ_TYPE = _SingleReadDistribution
+    return _SINGLE_READ_TYPE(dist._path)
+
+
+@contextlib.contextmanager
+def _one_metadata_scan():
+    """One record scan for the block, never across calls: the installer changes site-packages."""
+    if _METADATA_SCAN.get() is not None:
+        yield
+        return
+    token = _METADATA_SCAN.set({})
+    try:
+        yield
+    finally:
+        _METADATA_SCAN.reset(token)
+
+
+def _one_metadata_scan_per_call(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _one_metadata_scan():
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def _metadata_record_index(backups_only: bool = False) -> Dict[str, list]:
+    """Canonical name -> [(dist, dir, dir-name key)]; nameless records file by dir name, no dist."""
     from importlib.metadata import MetadataPathFinder, distributions
 
-    wanted = _canonical(dist_name)
     paths = _metadata_scan_paths()
     # The listing cache is keyed on directory mtime, so a new dist-info can stay invisible.
     # Via an INSTANCE: invalidate_caches is a classmethod only from 3.11.9 / 3.12.3.
     if getattr(MetadataPathFinder, "invalidate_caches", None) is not None:
         MetadataPathFinder().invalidate_caches()
     kwargs = {"path": paths} if paths else {}
-    found: List[Tuple[str, Optional[Path]]] = []
+    index: Dict[str, list] = {}
     for dist in distributions(**kwargs):
         path = getattr(dist, "_path", None)
         try:
             record_path = Path(os.fspath(path)) if path is not None else None
         except (TypeError, ValueError):
             record_path = None
+        if backups_only and (record_path is None or not record_path.name.startswith("~")):
+            continue
+        stem = record_path.name if record_path is not None else ""
+        path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
+        path_key = _canonical(path_name) if stem.endswith(".dist-info") and separator else None
+        dist = _single_read(dist)
         try:
             name = dist.metadata.get("Name")
             if name:
-                if _canonical(name) == wanted:
-                    found.append((dist.version or "", record_path))
+                index.setdefault(_canonical(name), []).append((dist, record_path, path_key))
                 continue
         except Exception:
             pass
-        stem = record_path.name if record_path is not None else ""
-        path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
-        if stem.endswith(".dist-info") and separator and _canonical(path_name) == wanted:
+        if path_key is not None:
+            index.setdefault(path_key, []).append((None, record_path, None))
+    return index
+
+
+def _records_named(index: Dict[str, list], key: str) -> List[Tuple[str, Optional[Path]]]:
+    found: List[Tuple[str, Optional[Path]]] = []
+    for dist, record_path, path_key in index.get(key, ()):
+        if dist is None:
             found.append(("", record_path))
+            continue
+        try:
+            found.append((dist.version or "", record_path))
+        except Exception:
+            # An unreadable version leaves only the directory name to match on.
+            if path_key == key:
+                found.append(("", record_path))
+    return _sorted_records(found)
+
+
+def _installed_metadata_records(dist_name: str) -> List[Tuple[str, Optional[Path]]]:
+    """Every matching metadata version and its directory, when available."""
+    scan = _METADATA_SCAN.get()
+    if scan is None:
+        index = _metadata_record_index()
+    else:
+        index = scan.get("records")
+        if index is None:
+            index = scan["records"] = _metadata_record_index()
+    return _records_named(index, _canonical(dist_name))
+
+
+def _sorted_records(found) -> List[Tuple[str, Optional[Path]]]:
     return sorted(found, key = lambda record: (record[0], os.fspath(record[1] or "")))
 
 
@@ -255,11 +347,11 @@ def pip_backup_metadata_paths(dist_name: str) -> List[Path]:
     still names the real project, so it counts as a duplicate here, but pip
     calls the directory invalid: `pip uninstall <name>` can never consume it.
     """
-    return [
-        path
-        for _version, path in _installed_metadata_records(dist_name)
-        if path is not None and path.name.startswith("~")
-    ]
+    if _METADATA_SCAN.get() is not None:
+        records = _installed_metadata_records(dist_name)
+    else:
+        records = _records_named(_metadata_record_index(backups_only = True), _canonical(dist_name))
+    return [path for _version, path in records if path is not None and path.name.startswith("~")]
 
 
 def metadata_conflict(versions: Sequence[str]) -> bool:
@@ -280,6 +372,7 @@ def _metadata_is_inconsistent(dist_name: str, versions: Optional[List[str]] = No
     return bool(metadata_conflict(versions) or pip_backup_metadata_paths(dist_name))
 
 
+@_one_metadata_scan_per_call
 def installed_version_probe(
     dist_name: str, companion_names: Sequence[str] = ()
 ) -> Tuple[str, bool]:
@@ -922,6 +1015,7 @@ def installed_dependency_index() -> Optional[Dict[str, Tuple[str, List[str]]]]:
             # An interrupted pip upgrade leaves ~ame-1.0.dist-info with no payload; pip ignores those.
             if _is_pip_backup(dist):
                 continue
+            dist = _single_read(dist)
             try:
                 name = dist.metadata["Name"]
                 version = dist.version
@@ -1045,6 +1139,7 @@ def closure_unmet_requirements(
     return unmet
 
 
+@_one_metadata_scan_per_call
 def violated_constraints(
     req_file: Optional[Path] = None, installed: Optional[Dict[str, str]] = None
 ) -> List[str]:
@@ -1231,6 +1326,7 @@ def _scan_payload_files(
             return found
         seen: set = set()
         for dist in distributions(path = paths):
+            dist = _single_read(dist)
             try:
                 name = _canonical(dist.metadata["Name"] or "")
                 if name not in wanted or name in seen:
@@ -1299,6 +1395,7 @@ def _scan_payload_files(
     return found
 
 
+@_one_metadata_scan_per_call
 def verify_install(
     root: Optional[Path] = None,
     req_root: Optional[Path] = None,
@@ -1460,6 +1557,7 @@ def _sidecar_pin_ok(root: Path, spec: str) -> Optional[str]:
     payload_present = False
     try:
         for dist in distributions(path = [str(root)]):
+            dist = _single_read(dist)
             try:
                 dist_name = dist.metadata.get("Name") or ""
             except Exception:

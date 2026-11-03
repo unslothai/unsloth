@@ -289,6 +289,25 @@ def test_a_rejected_hosted_file_refuses_the_dense_fallback_without_room(tmp_path
     assert config["_te_source"] == "quantized_at_load"
 
 
+@pytest.mark.parametrize(
+    "dtype, free_gb, refused",
+    [
+        ("float32", 30, True),
+        ("float32", 50, False),
+        ("bfloat16", 30, False),
+        ("float16", 30, False),
+    ],
+)
+def test_the_dense_fallback_room_check_prices_the_load_dtype(dtype, free_gb, refused, monkeypatch):
+    monkeypatch.setattr(worker, "_available_host_bytes", lambda: free_gb * 1000**3)
+    config = {"dtype": dtype, "dense_te_gb": v25.LTX25_TE_BF16_GB}
+    if refused:
+        with pytest.raises(RuntimeError, match = "needs about 48 GB"):
+            worker._require_room_for_dense(config, OSError("hosted file absent"))
+    else:
+        worker._require_room_for_dense(config, OSError("hosted file absent"))
+
+
 def test_offline_dense_fallback_still_tries_the_cached_hub_id(tmp_path, monkeypatch):
     _write_tiny_encoder(tmp_path / "hub")
     _fake_transformers(monkeypatch, tmp_path / "hub")

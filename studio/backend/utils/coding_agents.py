@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Detect which `unsloth start <agent>` coding-agent CLIs are on PATH.
-
-The web UI only ever shows the user the "claude" flavor of the `unsloth start`
-command (see agent-command.ts), leaving anyone using Codex, OpenCode, and the
-other supported agents to manually edit the copied command. This module gives
-the frontend a way to ask which of those CLIs are actually installed so it can
-default to one the user can run immediately.
-"""
+"""Detects which unsloth start <agent> CLIs are on PATH so the UI can default to a runnable one"""
 
 import os
 import shutil

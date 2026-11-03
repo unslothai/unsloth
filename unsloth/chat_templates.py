@@ -1109,6 +1109,8 @@ gemma4_template = \
     {%- endif -%}
     {{ '<turn|>\n' }}
 {%- endif -%}
+{%- set ns_turn = namespace(last_user_idx=-1) -%}
+{%- for m in loop_messages -%}{%- if m['role'] == 'user' -%}{%- set ns_turn.last_user_idx = loop.index0 -%}{%- endif -%}{%- endfor -%}
 {%- set ns_tool = namespace(turns=0, tool_calls=false, tool_response=false) -%}
 {%- for message in loop_messages -%}
     {%- if message['role'] != 'tool' -%}
@@ -1124,6 +1126,12 @@ gemma4_template = \
     {%- if not continues -%}
         {%- set ns_tool.turns = ns_tool.turns + 1 -%}
         {{ '<|turn>' + role + '\n' }}
+    {%- endif -%}
+    {%- if role == "model" -%}
+        {%- set thinking_text = message.get('reasoning') or message.get('reasoning_content') -%}
+        {%- if thinking_text and loop.index0 > ns_turn.last_user_idx -%}
+            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}
+        {%- endif -%}
     {%- endif -%}
     {%- set ns_tool.tool_calls = message.get('tool_calls') -%}
     {%- if ns_tool.tool_calls -%}

@@ -11,12 +11,9 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Train through compressed-tensors ``mxfp4-pack-quantized`` Linears without unpacking them.
+"""Trains mxfp4-pack-quantized Linears in place; frozen weight dequantized per use, no 16-bit copy."""
 
-Forward and backward dequantize the frozen weight per use (exact in bf16/fp16), so no 16-bit copy is kept.
-Remote-code MoE experts are stacked into unsloth_zoo ``Mxfp4StackedExperts`` instead (see ``compressed_tensors_bnb``).
-"""
-
+import contextlib
 import functools
 import os
 import types
@@ -76,7 +73,22 @@ def mxfp4_keep_packed_enabled() -> bool:
     return os.environ.get(MXFP4_KEEP_PACKED_ENV, "1").strip() != "0"
 
 
+def _operand_device_guard(tensor):
+    """Make ``tensor``'s GPU current: torch.ldexp (>= 2.11) launches on the current device, so split-model operands
+    decode garbage or fault otherwise. Compiled code gets Inductor's own guard."""
+    device = tensor.device
+    if device.index is None or device.type not in ("cuda", "xpu") or torch.compiler.is_compiling():
+        return contextlib.nullcontext()
+    guard = getattr(getattr(torch, device.type, None), "device", None)
+    return contextlib.nullcontext() if guard is None else guard(device)
+
+
 def _dequantize_torch(blocks, scales, dtype):
+    with _operand_device_guard(blocks):
+        return _dequantize_torch_impl(blocks, scales, dtype)
+
+
+def _dequantize_torch_impl(blocks, scales, dtype):
     work = torch.float32 if dtype == torch.float16 and _LDEXP_IN_INPUT_DTYPE else dtype
     key = (blocks.device, work)
     lut = _LUT_CACHE.get(key)

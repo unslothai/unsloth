@@ -1,40 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Install a prebuilt ``audiocpp_server`` (audio.cpp) for Studio's audio.cpp engine.
-
-audio.cpp vendors its own patched ggml, so unlike whisper.cpp it cannot share the
-llama.cpp runtime: every bundle is self-contained (the server links ggml statically).
-Releases are named ``audio-<tag>-bin-<os>-<arch>-<backend>.{zip,tar.gz}``, the scheme
-upstream uses and the Unsloth fork keeps, so one resolver serves both. Windows CUDA
-bundles need the CUDA runtime DLLs, which upstream publishes as a separate
-``audio-<tag>-cudart-windows-x64-<line>.zip``; that download is skipped when the
-running Python's torch already ships the same CUDA runtime line.
-
-The bundle is extracted into a staging directory beside the managed tree, started once
-with ``--help`` so a bundle this host cannot load is refused, and swapped in only then,
-so an interrupted or unusable install never replaces a working tree.
-
-The newest unslothai/audio.cpp release is installed unless ``UNSLOTH_AUDIO_CPP_TAG`` (or
-``--published-release-tag``) names one. The release is resolved like whisper.cpp's, through
-prebuilt_core: the download host first, then the GitHub API. Every bundle and CUDA runtime
-archive must match the sha256 in the release's own ``audio-cpp-prebuilt-sha256.json``, which
-is bound to the release tag; an archive the index does not cover is refused. That checksum
-comes from the same release as the archive, so it proves integrity (a corrupt or swapped
-download), not authenticity. A user-picked repo or tag whose release publishes no index
-falls back to GitHub's asset digest.
-
-A re-run whose install record already names the newest release (one HEAD to github.com,
-no API call) or the pinned one (no network call) downloads nothing, an intact install newer
-than the release a lookup names is never replaced by it, and a lookup that cannot answer
-keeps a complete install.
-
-Usage:
-    python studio/install_audio_cpp_prebuilt.py                 # auto-detect host
-    python studio/install_audio_cpp_prebuilt.py --accelerator cpu
-    python studio/install_audio_cpp_prebuilt.py --print-asset   # resolve only
-    python studio/install_audio_cpp_prebuilt.py --published-release-tag v0.9.1-unsloth.1
-"""
+"""Installs prebuilt audiocpp_server, checked with --help before swap; archives must match audio-
+cpp-prebuilt-sha256.json (uncovered refused); newest release unless UNSLOTH_AUDIO_CPP_TAG or
+--published-release-tag names one; a newer intact install is never replaced; a failed lookup
+keeps the install."""
 
 from __future__ import annotations
 
@@ -446,13 +416,22 @@ def resolve_release_asset(
 
 
 def cudart_asset_for(asset_names: Sequence[str], bundle: str) -> Optional[str]:
-    """The separate Windows CUDA runtime archive matching a CUDA bundle's line."""
-    match = _CUDA_LINE.search(bundle)
-    if not match or "-windows-" not in bundle:
+    """The Windows CUDA runtime matching the bundle's architecture and CUDA line."""
+    host = re.search(r"-bin-(?:windows|win)-([^-]+)-", bundle, re.IGNORECASE)
+    arch = _ARCH_TOKENS.get(host.group(1).lower()) if host else None
+    if host is None or arch is None:
+        return None
+    match = _CUDA_LINE.match("-" + bundle[host.end() :])
+    if not match:
         return None
     line = match.group(0)[1:]
     for name in asset_names:
-        if "-cudart-windows-" in name and name.endswith(f"-{line}.zip"):
+        runtime = re.search(r"-cudart-(?:windows|win)-([^-]+)-", name, re.IGNORECASE)
+        if (
+            runtime is not None
+            and _ARCH_TOKENS.get(runtime.group(1).lower()) == arch
+            and name.endswith(f"-{line}.zip")
+        ):
             return name
     return None
 

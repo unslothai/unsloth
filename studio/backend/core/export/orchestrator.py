@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Export orchestrator: same API as ExportBackend, but delegates all ML work to a persistent
-subprocess spawned on first checkpoint load and reused for later exports. Switching between
-checkpoints that need different transformers versions kills the old subprocess and spawns a new
-one. Pattern follows core/inference/orchestrator.py."""
+"""Same API as ExportBackend; ML runs in a subprocess respawned on transformers version change."""
 
 from core.training.account_jobs import (
     account_process_spec,

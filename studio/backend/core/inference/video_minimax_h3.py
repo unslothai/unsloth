@@ -605,7 +605,9 @@ def _fit_h3_video_frame(
 ) -> tuple[Any, tuple[int, int]]:
     from PIL import Image
 
-    image = frame.to_image().convert("RGB")
+    image = frame.to_image()
+    if image.mode != "RGB":  # PyAV already returns a fresh RGB image; convert only copies it
+        image = image.convert("RGB")
     if fitted_size is None:
         fitted_size = h3_reference_frame_size(*image.size)
     if image.size != fitted_size:
@@ -975,6 +977,40 @@ class MiniMaxH3References:
 
 
 @dataclass(frozen = True)
+class DecodedReferenceAudios:
+    """Untrimmed ``decode_h3_reference_audio`` results for ``sources``, reused only for those exact inputs."""
+
+    sources: tuple = ()
+    decoded: tuple = ()
+
+    def for_inputs(self, audios: list) -> Optional[tuple]:
+        return self.decoded if tuple(audios) == self.sources else None
+
+
+@dataclass(frozen = True)
+class DecodedReferenceImages:
+    """One RGB image and its pre-EXIF dimensions per input slot."""
+
+    entries: tuple = ()
+
+    def pool(self) -> list:
+        return list(self.entries)
+
+
+def take_decoded_image(
+    pool: Optional[list], source: str, *, max_side: int, max_pixels: Optional[int]
+) -> Any:
+    from .diffusion import decode_b64_image, refuse_oversized_image
+    if pool:
+        for index, (known, size, image) in enumerate(pool):
+            if known is source or known == source:
+                del pool[index]
+                refuse_oversized_image(*size, max_side, max_pixels)
+                return image
+    return decode_b64_image(source, mode = "RGB", max_side = max_side, max_pixels = max_pixels)
+
+
+@dataclass(frozen = True)
 class MiniMaxH3StagedReferences:
     """``MiniMaxH3References`` written to disk the way sd-cli reads them back."""
 
@@ -985,6 +1021,46 @@ class MiniMaxH3StagedReferences:
     audios: tuple[str, ...] = ()
 
 
+# Pillow's zlib encoder releases the GIL, so a few threads write a reference video's PNGs in parallel.
+H3_REF_FRAME_WRITERS = 4
+
+
+def _write_h3_reference_frames(directory: Path, frames: Any) -> None:
+    """Write ``frames`` as 00000.png onward, encoding a repeated frame object (24 fps fill) once."""
+    import io
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Keyed by identity: ``frames`` holds every object, so no id is reused while this runs.
+    slots: dict[int, tuple[Any, list[Path]]] = {}
+    for frame_index, frame in enumerate(frames):
+        slots.setdefault(id(frame), (frame, []))[1].append(directory / f"{frame_index:05d}.png")
+
+    def write(slot: tuple[Any, list[Path]]) -> None:
+        frame, paths = slot
+        if len(paths) == 1:
+            frame.save(paths[0], format = "PNG", compress_level = 1)
+            return
+        buffer = io.BytesIO()
+        frame.save(buffer, format = "PNG", compress_level = 1)
+        data = buffer.getvalue()
+        for path in paths:
+            path.write_bytes(data)
+
+    work = list(slots.values())
+    workers = min(H3_REF_FRAME_WRITERS, len(work), os.cpu_count() or 1)
+    if workers <= 1:
+        for slot in work:
+            write(slot)
+        return
+    pool = ThreadPoolExecutor(max_workers = workers, thread_name_prefix = "h3-ref-frames")
+    try:
+        futures = [pool.submit(write, slot) for slot in work]
+        for future in futures:
+            future.result()  # first failure in frame order, as the sequential loop raised
+    finally:
+        pool.shutdown(wait = True, cancel_futures = True)
+
+
 def stage_h3_references(
     references: MiniMaxH3References, scratch: Path
 ) -> MiniMaxH3StagedReferences:
@@ -992,7 +1068,8 @@ def stage_h3_references(
     images: list[str] = []
     for index, image in enumerate(references.images):
         path = scratch / f"ref-image-{index:02d}.png"
-        image.save(path, format = "PNG")
+        # Scratch files sd-cli decodes once: zlib level 1 is lossless and faster than Pillow's default.
+        image.save(path, format = "PNG", compress_level = 1)
         images.append(str(path))
 
     videos: list[str] = []
@@ -1001,8 +1078,7 @@ def stage_h3_references(
     for index, (frames, waveform, sample_rate) in enumerate(references.videos):
         directory = scratch / f"ref-video-{index:02d}"
         directory.mkdir()
-        for frame_index, frame in enumerate(frames):
-            frame.save(directory / f"{frame_index:05d}.png", format = "PNG")
+        _write_h3_reference_frames(directory, frames)
         videos.append(str(directory))
         if waveform is None:
             # Positional pairing cannot express "skip this one", so stop pairing here.
@@ -2102,6 +2178,34 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
         target.unlink(missing_ok = True)
 
 
+def _shown_vp8_key_frames(container: Any, stream: Any) -> Optional[int]:
+    """Frames of a VP8 track whose every packet is a shown key frame (sd.cpp's WebM), from headers; else None."""
+    if getattr(stream.codec_context, "name", None) != "vp8":
+        return None
+    count = 0
+    try:
+        for packet in container.demux(stream):
+            size = int(packet.size)
+            if size == 0:
+                continue
+            head = bytes(memoryview(packet)[:10])
+            if len(head) < 10:
+                return None
+            tag = head[0] | (head[1] << 8) | (head[2] << 16)
+            # RFC 6386 9.1: bit 0 = 0 key frame, bit 4 show_frame, bits 5-23 first partition size
+            if (
+                tag & 0x1
+                or not tag & 0x10
+                or head[3:6] != b"\x9d\x01\x2a"
+                or (tag >> 5) > size - 10
+            ):
+                return None
+            count += 1
+    except Exception:  # noqa: BLE001
+        return None
+    return count or None
+
+
 def inspect_video(path: Path) -> tuple[int, int, int, bool]:
     """Return width, height, decoded frame count, and audio presence."""
     import av
@@ -2112,9 +2216,11 @@ def inspect_video(path: Path) -> tuple[int, int, int, bool]:
         height = int(stream.codec_context.height)
         frames = int(stream.frames or 0)
         has_audio = bool(container.streams.audio)
-        if frames <= 0:
-            frames = sum(1 for _ in container.decode(video = 0))
-    return width, height, frames, has_audio
+        counted = _shown_vp8_key_frames(container, stream) if frames <= 0 else frames
+    if counted is None:
+        with av.open(str(path)) as container:
+            counted = sum(1 for _ in container.decode(video = 0))
+    return width, height, counted, has_audio
 
 
 def _full_scale_constant(samples: Any) -> Optional[float]:

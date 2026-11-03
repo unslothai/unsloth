@@ -1,16 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Why a prompt did not fit, carried from the context fit to the message the user reads.
-
-The fit knows the SHAPE of a refusal (how much is the turn just sent vs the floor
-eviction could not reduce); `_friendly_error` builds the message much later from
-llama-server's text, which knows only a total, and so tells a two-message thread to
-"shorten the conversation". Threading the diagnosis through `_friendly_error`'s
-forty-odd call sites would be worse than the disease, so it rides the request in a
-ContextVar: per-task, and asyncio copies the context per request, so one request's
-refusal cannot describe another's.
-"""
+"""Carries the context fit's refusal diagnosis to the user-facing message via a ContextVar;
+_friendly_error sees only llama-server's total, so a two-message thread would be told to shorten
+the conversation; asyncio copies the context per request, so one refusal cannot describe another."""
 
 from contextvars import ContextVar
 from typing import Optional

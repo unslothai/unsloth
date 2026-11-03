@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Stop one image generation without touching any other run of the same account.
-
-A caller binds a ticket in its context; ``asyncio.to_thread`` copies the context into the engine
-thread, where the engine hands the ticket its per-generation cancel event. Stopping the ticket
-sets only that event, whether the run is still queued or already denoising.
-"""
+"""Cancels one image run via a context ticket; asyncio.to_thread carries it, other runs untouched"""
 
 from __future__ import annotations
 
@@ -29,12 +24,26 @@ class GenerationTicket:
         if stopped:
             event.set()
 
+    def cancelled(self) -> bool:
+        with self._lock:
+            return self._stopped or any(event.is_set() for event in self._events)
+
     def stop(self) -> None:
         with self._lock:
             self._stopped = True
             events = list(self._events)
         for event in events:
             event.set()
+
+
+class TicketStopEvent(threading.Event):
+    def __init__(self, ticket: GenerationTicket) -> None:
+        super().__init__()
+        self._ticket = ticket
+
+    def set(self) -> None:
+        super().set()
+        self._ticket.stop()
 
 
 _ticket: contextvars.ContextVar[Optional[GenerationTicket]] = contextvars.ContextVar(

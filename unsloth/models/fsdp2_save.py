@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Saving an FSDP2-sharded model. Every rank must call the save: the shards are all-gathered one
-parameter at a time, rank 0 swaps the full tensors (on CPU) into the modules, runs the ordinary
-single-GPU save code, and puts the sharded parameters back. bitsandbytes 4-bit weights are gathered
-as raw bytes and rebuilt as Params4bit with their QuantState, so a merge can still dequantize them.
-"""
+"""FSDP2 save: every rank must call it; rank 0 runs the single-GPU save on gathered CPU tensors."""
 
 __all__ = [
     "fsdp2_units",
@@ -94,6 +90,34 @@ def _unit_mesh(unit):
         return None
 
 
+def _root_mesh(mesh):
+    get = getattr(mesh, "_get_root_mesh", None)
+    if get is not None:
+        return get()
+    from torch.distributed.device_mesh import _mesh_resources
+
+    return _mesh_resources.get_root_mesh(mesh)
+
+
+def _composed_writer_rank(meshes):
+    try:
+        root = _root_mesh(meshes[0])
+        if any(_root_mesh(m) is not root for m in meshes[1:]):
+            return None
+        axes = set()
+        for m in meshes:
+            # Flattened mesh names need not exist in the root.
+            coordinates = torch.isin(root.mesh, m.mesh.reshape(-1)).nonzero()
+            if coordinates.shape[0] != m.mesh.numel():
+                return None
+            axes.update((coordinates != coordinates[0]).any(dim = 0).nonzero().flatten().tolist())
+        coordinate = root.get_coordinate()
+        index = tuple(slice(None) if axis in axes else c for axis, c in enumerate(coordinate))
+        return int(root.mesh[index].min())
+    except Exception:
+        return None
+
+
 def mesh_writer_rank(model):
     """Lowest global rank of the model's FSDP2 mesh: a sub-mesh without rank 0 never gathers there."""
     dist = _dist()
@@ -103,7 +127,15 @@ def mesh_writer_rank(model):
     mesh = None
     if isinstance(model, torch.nn.Module):
         if DTensor is not None:
-            mesh = next((p.device_mesh for p in model.parameters() if isinstance(p, DTensor)), None)
+            meshes = []
+            for p in model.parameters():
+                if isinstance(p, DTensor) and p.device_mesh not in meshes:
+                    meshes.append(p.device_mesh)
+            if len(meshes) > 1:
+                writer = _composed_writer_rank(meshes)
+                if writer is not None:
+                    return writer
+            mesh = meshes[0] if meshes else None
         if mesh is None:
             # Unsharded parameters (eval forward, no reshard) carry no mesh; the units still do.
             mesh = next(filter(None, map(_unit_mesh, fsdp2_units(model))), None)
@@ -1200,6 +1232,8 @@ def _without_quant_state_entries(name, args, kwargs):
 
 
 def _in_backward():
+    if torch.compiler.is_compiling():
+        return False
     try:
         return torch._C._current_graph_task_id() != -1
     except Exception:
@@ -1250,7 +1284,8 @@ def _sync_replicated_grads(
         dtype = torch.float64 if p.dtype == torch.float64 else torch.float32
         groups.setdefault((str(p.device), dtype), []).append(p)
     for (device, dtype), group in groups.items():
-        sizes = [p.numel() for p in group]
+        # A TP DTensor outside FSDP2: dp ranks hold the same tp slice, so average the local shard.
+        sizes = [_local_tensor(p).numel() for p in group]
         total = sum(sizes)
         key = tuple((id(p), n) for p, n in zip(group, sizes))
         cached = buffers.get((device, dtype)) if buffers is not None else None
@@ -1260,7 +1295,7 @@ def _sync_replicated_grads(
             flat = torch.empty(total + len(group), dtype = dtype, device = group[0].device)
             if buffers is not None:
                 buffers[(device, dtype)] = (key, flat)
-        grads = [p.grad for p in group]
+        grads = [_local_tensor(p.grad) for p in group]
         local_all = all(g is not None for g in grads)
         flags = flat[total:]
         if local_all:
@@ -1283,12 +1318,64 @@ def _sync_replicated_grads(
         offset = 0
         for i, (p, g, n) in enumerate(zip(group, grads, sizes)):
             if g is not None or used[i] > 0:
-                value = flat[offset : offset + n].view(p.shape)
-                if p.grad is None:
-                    p.grad = value.to(p.dtype, copy = True)
+                value = flat[offset : offset + n].view(_local_tensor(p).shape)
+                if g is None:
+                    p.grad = _like_param(p, value.to(p.dtype, copy = True))
                 else:
-                    p.grad.copy_(value)
+                    g.copy_(value)
             offset += n
+
+
+def _local_tensor(t):
+    """Local shard view of a DTensor (writes reach it); anything else unchanged."""
+    local = getattr(t, "_local_tensor", None)
+    return local if local is not None and getattr(t, "device_mesh", None) is not None else t
+
+
+def _like_param(p, local):
+    if getattr(p, "device_mesh", None) is None or getattr(p, "_local_tensor", None) is None:
+        return local
+    return _dtensor_class().from_local(local, p.device_mesh, p.placements, run_check = False)
+
+
+def _fsdp_managed_param_ids(model):
+    """ids of FSDP2-managed params, or None when no FSDP2 state is readable (treat all DTensors as FSDP2's).
+    A readable state managing no params (every trainable param ignored) gives an empty set."""
+    ids = set()
+    found = False
+    for unit in fsdp2_units(model):
+        try:
+            st = unit._get_fsdp_state()
+        except Exception:
+            continue
+        groups = getattr(st, "_fsdp_param_groups", None)
+        if groups is None:
+            if not hasattr(st, "_fsdp_param_group"):
+                continue
+            group = st._fsdp_param_group
+            groups = [group] if group is not None else []
+        found = True
+        for group in groups:
+            for fp in getattr(group, "fsdp_params", None) or ():
+                for attr in ("sharded_param", "_unsharded_param"):
+                    t = getattr(fp, attr, None)
+                    if t is not None:
+                        ids.add(id(t))
+    return ids if found else None
+
+
+def _tp_shard_outside(param, mesh, dist):
+    """True when param's mesh meets the dp `mesh` only at this rank, so its local shard is replicated
+    over `mesh`; any other overlap would average different shards."""
+    if mesh is None:
+        return False
+    try:
+        mine = dist.get_rank()
+        own = set(param.device_mesh.mesh.flatten().tolist())
+        dp = set(mesh.mesh.flatten().tolist())
+    except Exception:
+        return False
+    return own & dp == {mine}
 
 
 def _fsdp_grad_sync_deferred(model, cache):
@@ -1359,9 +1446,16 @@ def reduce_unsharded_trainable_grads(model):
             state["queued"] = True
             torch.autograd.Variable._execution_engine.queue_callback(_sync)
 
+    managed = False
     for name, param in model.named_parameters():
-        if id(param) in seen or not param.requires_grad or isinstance(param, DTensor):
+        if id(param) in seen or not param.requires_grad:
             continue
+        if isinstance(param, DTensor):
+            # FSDP2 does not reduce TP DTensors in ignored_params; average them here.
+            if managed is False:
+                managed = _fsdp_managed_param_ids(model)
+            if managed is None or id(param) in managed or not _tp_shard_outside(param, mesh, dist):
+                continue
         seen.add(id(param))
         if getattr(param, "_unsloth_grad_all_reduce", False):
             continue

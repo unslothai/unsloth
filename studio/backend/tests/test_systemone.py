@@ -1382,6 +1382,27 @@ def test_long_state_is_tokenized_only_as_far_as_the_model_reads():
     assert max(tok.calls) < 100_000
 
 
+@pytest.fixture
+def word_laya(monkeypatch):
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("torch")
+    tok = WordTokenizer()
+    tok.mask_token_id, tok.cls_token_id, tok.sep_token_id = 1, 2, 3
+    agent = SimpleNamespace(
+        tok = tok,
+        cfg = {"max_len": 512, "head_max_len": 192},
+        _to_internal = laya_runtime._laya().Agent._to_internal,
+        temperature = [1.0, 1.0, 1.0],
+        temperature_by_options = {},
+    )
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", lambda c: (agent, "cpu"))
+    monkeypatch.setattr(laya_runtime, "_predict", _REAL_PREDICT)
+    monkeypatch.setattr(
+        laya_runtime, "_forward", lambda agent, items: (np.zeros((len(items), 256)), 1)
+    )
+    return agent
+
+
 _CHARGED = "the customer was charged twice and wants the money back"
 
 
@@ -1399,24 +1420,9 @@ _CHARGED = "the customer was charged twice and wants the money back"
     ],
 )
 def test_choice_options_laya_would_cut_short_are_refused(
-    client, monkeypatch, options, description, status, refusal
+    client, word_laya, options, description, status, refusal
 ):
-    np = pytest.importorskip("numpy")
-    pytest.importorskip("torch")
-    tok = WordTokenizer()
-    tok.mask_token_id, tok.cls_token_id, tok.sep_token_id = 1, 2, 3
-    agent = SimpleNamespace(
-        tok = tok,
-        cfg = {"max_len": 512, "head_max_len": 192},
-        _to_internal = laya_runtime._laya().Agent._to_internal,
-        temperature = [1.0, 1.0, 1.0],
-        temperature_by_options = {},
-    )
-    monkeypatch.setattr(laya_runtime, "_load_checkpoint", lambda c: (agent, "cpu"))
-    monkeypatch.setattr(laya_runtime, "_predict", _REAL_PREDICT)
-    monkeypatch.setattr(
-        laya_runtime, "_forward", lambda agent, items: (np.zeros((len(items), 256)), 1)
-    )
+    agent, tok = word_laya, word_laya.tok
     question = {
         "type": "choice",
         "instructions": "Which queue should handle this ticket?",
@@ -1432,6 +1438,36 @@ def test_choice_options_laya_would_cut_short_are_refused(
         message = response.json()["detail"]["message"]
         assert "'route'" in message and refusal in message
         assert "answers" not in response.json()
+
+
+_ESCALATE = (
+    "Pick the team that owns this ticket. Send it to the security team instead, and page "
+    "the on-call lead, whenever the customer mentions a breach, a leaked password, a stolen "
+    "card or legal action."
+)
+_TEAMS = {f"team_{i}": "tickets and questions about this product area " * 2 for i in range(10)}
+
+
+@pytest.mark.parametrize(
+    "instructions, criteria, refusal",
+    [
+        (_ESCALATE, dict(list(_TEAMS.items())[:4]), None),
+        (_ESCALATE, _TEAMS, "instructions would be cut short"),
+        ("Which queue?", {"billing": "word " * 60, "outage": None}, None),
+    ],
+)
+def test_choice_instructions_laya_would_cut_are_refused(
+    client, word_laya, instructions, criteria, refusal
+):
+    question = {"type": "choice", "instructions": instructions, "criteria": criteria}
+    response = _post(client, questions = {"route": question})
+    if refusal is None:
+        assert response.status_code == 200, response.text
+        return
+    assert response.status_code == 422, response.text
+    message = response.json()["detail"]["message"]
+    assert "'route'" in message and refusal in message
+    assert "answers" not in response.json()
 
 
 @pytest.mark.parametrize("words, cut", [(900, False), (901, True), (5000, True)])

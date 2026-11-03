@@ -33,7 +33,7 @@ const LOCALES = { ar, de, en, es, fr, he, hi, it, ja, ko, ptBR, ru, sv, zhCN };
 test("only the owner sees it, in the access group, and settings search finds it", () => {
   assert.match(
     API_TAB,
-    /\{isOwner \? <McpAccessSection apiKey=\{revealed\} \/> : null\}/,
+    /\{isOwner \? <McpAccessSection apiKey=\{freshKey\} \/> : null\}/,
   );
   assert.match(
     API_TAB,

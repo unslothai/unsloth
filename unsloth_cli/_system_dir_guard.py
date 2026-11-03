@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Windows system-folder guard for the `unsloth` console script.
-
-C:\\Windows\\System32 is unwritable for a normal user, and cwd-relative paths
-(`./models`, `unsloth_compiled_cache`) would resolve inside the Windows tree.
-
-Two ways in. "Run as administrator" opens a terminal there, a mistake that still
-stops with an actionable error. And "Run Unsloth at login" starts the desktop
-from an HKCU Run value, which carries no working directory, so it and every CLI
-child inherit System32 (issue #8510). That one is not the user's mistake: the
-desktop's own commands take no paths from the user, so they move to ~/.unsloth
-rather than leaving a tray icon and no server.
-
-Imports stay at `os`: this runs before the command modules, which resolve
-STUDIO_HOME against the working directory.
-"""
+"""Windows System32 guard: login-started desktop's commands run in ~/.unsloth; imports are os only."""
 
 import os as _os
 

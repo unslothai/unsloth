@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep a managed account's dataset media to files it may read, and validate Arrow data files.
-
-Media decoders open a cell's ``path`` locally or fetch Hub URLs with the server's token as fallback, so for a
-managed account local paths must be readable by it (extracted archive members only via a recorded, readable
-source archive), Hub URLs use only a caller-supplied token, and other URLs are refused. ``.arrow`` tables are
-validated in full because pyarrow's IPC reader trusts declared offsets. ``install()`` patches lazily, idempotent.
-"""
+"""Managed-account dataset media limited to readable local paths and Hub URLs with caller token
+only; other URLs refused; .arrow fully validated; install() lazy, idempotent."""
 
 import functools
 import importlib.abc

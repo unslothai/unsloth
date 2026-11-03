@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Videos queued over MCP. Unsloth Studio makes one video at a time and refuses a second while one runs, so an agent submitting a shot list would have to retry each clip itself. generate_video instead queues a refused clip here, in order, and a background task per account submits each one once the video before it ends; get_job and cancel take the queue id.
-
-The queue lives only as long as the Unsloth Studio MCP server process: a restart drops every queued video that has not started. It is per account, shared by that account's keys, and an id from another account reads as unknown."""
+"""Queues videos Studio refused while busy, submitting each in order once the previous one ends; per
+account; lost on MCP server restart"""
 
 from __future__ import annotations
 

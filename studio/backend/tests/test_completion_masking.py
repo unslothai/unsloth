@@ -9,7 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from utils.datasets.completion_masking import apply_completion_masking, lookup_manual_markers
+from utils.datasets.completion_masking import (
+    apply_completion_masking,
+    count_truncated_drops,
+    lookup_manual_markers,
+    truncated_drop_cause,
+)
 from utils.datasets.model_mappings import TEMPLATE_TO_RESPONSES_MAPPER
 
 
@@ -514,3 +519,22 @@ def test_gemma4_turn_text_inside_tool_output_stays_masked():
     )
     assert "Station" not in trained
     assert "Here is the prompt." in trained
+
+
+def test_truncated_drops_count_only_dropped_rows_at_the_cap():
+    rows = [[1] * 8, [2] * 8, [3] * 3, [1] * 8]
+    assert count_truncated_drops(rows, [[2] * 8, [1] * 8], 8) == 1
+    assert count_truncated_drops(rows, [[2] * 8], 8) == 2
+    assert count_truncated_drops(rows, rows, 8) == 0
+
+
+def test_truncated_drop_cause_names_the_context_length():
+    assert truncated_drop_cause(0, 5, 2048) is None
+    only_cut = truncated_drop_cause(5, 5, 2048)
+    assert "5 of them reach the context length (2048 tokens)" in only_cut
+    assert "If they are not that long" in only_cut
+    mixed = truncated_drop_cause(3, 5, 2048)
+    assert (
+        "For the other 2, this model's response template was not found" in mixed
+        and "turned off" in mixed
+    )

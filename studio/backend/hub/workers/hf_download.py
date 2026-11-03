@@ -1,17 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HuggingFace Hub download worker, spawned as a subprocess so SIGKILL stops all chunk threads.
-
-Resume safety: downloads here MUST be single-stream sequential writers so the parent's SIGKILL then restart loop can rely on ``os.path.getsize(.incomplete)`` for the resume offset. Enforced by setting ``HF_HUB_DISABLE_XET=1`` and ``HF_HUB_ENABLE_HF_TRANSFER=0`` on the spawning side (see :mod:`hub.utils.download_registry`) for transport=http; passing ``max_workers=1`` to ``snapshot_download`` so files download serially and the at-most-one-active-`.incomplete` invariant holds globally; letting ``prepare_cache_for_transport`` purge any pre-existing ``.incomplete`` blobs not provably from the same sequential writer; and restoring huggingface_hub's 1.17 append-mode writer where safe (see :mod:`hub.utils.resumable_partials`), since 1.18+ writes a process-unique partial and unlinks it, leaving this loop nothing to resume from.
-
-If the final byte count does not match what HF declared, huggingface_hub raises ``EnvironmentError`` ("Consistency check failed: ..."), which is surfaced on stderr so the watcher can show the exact message to the user.
-"""
+"""HF download subprocess (SIGKILL stops chunk threads); resume needs single-stream writes per file, enforced
+by HF_HUB_DISABLE_XET=1, HF_HUB_ENABLE_HF_TRANSFER=0 (http), one writer per blob, purge of unprovable
+.incomplete blobs."""
 
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import signal
 import sys
 import threading
@@ -41,10 +39,25 @@ from hub.utils.gguf_plan import (
     sibling_sha256,
 )
 from hub.utils.state_dir import RepoType
-from hub.utils.resumable_partials import restore_resumable_partials
+from hub.utils.resumable_partials import (
+    LAST_STOCK_RESUMABLE_VERSION,
+    _hub_version,
+    restore_resumable_partials,
+)
 
 # Put huggingface_hub's 1.17 HTTP writer back: the SIGKILL then restart loop reads .incomplete for its resume offset, and 1.18+ leaves nothing to read.
 _PARTIALS_RESUMABLE = restore_resumable_partials()
+
+# Each file is still one sequential writer under huggingface_hub's per-blob lock, so overlapping files only hides request latency and per-connection caps.
+_HTTP_FILE_WORKERS = 4
+
+
+def _file_workers(mode: str) -> int:
+    """``snapshot_download(max_workers=...)``. Xet stays serial: hf_xet fans out inside a file and a killed Xet file restarts from zero. HTTP overlaps only where a killed partial resumes: the stock writer up to 1.17, past it only the writer restored at import."""
+    version = _hub_version()
+    resumes = _PARTIALS_RESUMABLE or (bool(version) and version <= LAST_STOCK_RESUMABLE_VERSION)
+    return _HTTP_FILE_WORKERS if mode == "http" and resumes else 1
+
 
 # typing.Union, not `str | bool | None`: an alias is evaluated on import and PEP 604 raises below 3.10.
 HfTokenArg = Union[str, bool, None]
@@ -59,6 +72,15 @@ _METADATA_RETRY_DELAY = 1.0
 def _on_signal(signum, frame):
     # 130 is what `classify_exit` maps to the "cancelled" job state.
     sys.exit(130)
+
+
+def _lift_http_ceiling_on_modelscope() -> None:
+    """The hub refuses large HTTP transfers on the client side, for Hugging Face's storage; ModelScope's CDN serves them."""
+    from huggingface_hub import constants
+    from utils.hub_settings import MODELSCOPE, active_source
+
+    if active_source() == MODELSCOPE:
+        constants.MAX_HTTP_DOWNLOAD_SIZE = sys.maxsize
 
 
 def _install_signal_handlers() -> None:
@@ -211,6 +233,8 @@ def _retry_metadata_fetch(repo_id: str, fetch, *, label: str):
 
 
 _RESOLVED_COMMITS: dict[str, str] = {}
+# huggingface_hub's REGEX_COMMIT_HASH: only a full sha is taken as already resolved.
+_COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 def _model_info_with_retry(repo_id: str, hf_token: str | None):
@@ -231,6 +255,110 @@ def _model_info_with_retry(repo_id: str, hf_token: str | None):
     if isinstance(commit, str) and commit:
         _RESOLVED_COMMITS[repo_id] = commit
     return info
+
+
+def _read_ref(ref: Path):
+    try:
+        return ref.read_text(encoding = "utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _write_ref(ref: Path, commit: str) -> None:
+    """Atomic; no temp file may survive, since every file under refs/ reads as a ref (scan_cache_dir)."""
+    ref.parent.mkdir(parents = True, exist_ok = True)
+    tmp = ref.with_name(f"main.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(commit, encoding = "utf-8")
+        os.replace(tmp, ref)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _pinned_revision(repo_type: RepoType, repo_id: str, commit) -> dict:
+    """Pin to the commit the manifest was planned from. A sha revision leaves refs/main unwritten, yet loads by
+    repo id (offline too) resolve through it, so it is written here as an unpinned download would."""
+    if not isinstance(commit, str) or not _COMMIT_SHA.fullmatch(commit):
+        return {}
+    from hub.utils.snapshot_reuse import repo_cache_dir
+
+    ref = repo_cache_dir(repo_type, repo_id) / "refs" / "main"
+    if _read_ref(ref) == commit:
+        return {"revision": commit}
+    try:
+        _write_ref(ref, commit)
+    except OSError as e:
+        print(
+            f"Could not record refs/main for {repo_id} ({e}); downloading unpinned.",
+            file = sys.stderr,
+        )
+        return {}
+    return {"revision": commit}
+
+
+def _landed_state(repo_dir: Path, commit: str) -> frozenset:
+    """``commit``'s snapshot entries plus partial blob sizes: what changes once a download transfers bytes."""
+    state = set()
+    snapshot = repo_dir / "snapshots" / commit
+    try:
+        state.update(("s", str(p.relative_to(snapshot))) for p in snapshot.rglob("*"))
+    except OSError:
+        pass
+    try:
+        for p in (repo_dir / "blobs").glob("*.incomplete"):
+            try:
+                state.add(("b", p.name, p.stat().st_size))
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return frozenset(state)
+
+
+def _pinned_snapshot_download(snapshot_download, commit, **kwargs):
+    """``snapshot_download(**kwargs)`` at ``commit``. A failure before anything of ``commit`` lands puts refs/main
+    back and reruns the unpinned call, keeping its offline fallback to the older snapshot (an unpinned download
+    moves the ref only after the Hub answers)."""
+    from hub.utils.snapshot_reuse import repo_cache_dir
+
+    repo_type, repo_id = kwargs.get("repo_type") or "model", kwargs["repo_id"]
+    repo_dir = repo_cache_dir(repo_type, repo_id)
+    ref = repo_dir / "refs" / "main"
+    previous = _read_ref(ref)
+    pin = _pinned_revision(repo_type, repo_id, commit)
+    if not pin:
+        return snapshot_download(**kwargs)
+    before = None if previous == commit else _landed_state(repo_dir, commit)
+    try:
+        path = snapshot_download(**kwargs, **pin)
+    except BaseException as e:
+        if before is None or _landed_state(repo_dir, commit) != before:
+            raise
+        try:
+            # Only our own write is undone: a peer may have moved the ref since.
+            if _read_ref(ref) == commit:
+                if previous is None:
+                    ref.unlink()
+                else:
+                    _write_ref(ref, previous)
+        except OSError:
+            raise e
+        if not isinstance(e, Exception):
+            raise
+        print(
+            f"Pinned download of {repo_id} failed before any file landed "
+            f"({type(e).__name__}: {e}); retrying unpinned.",
+            file = sys.stderr,
+        )
+        return snapshot_download(**kwargs)
+    # A concurrent variant download that failed early may have put back the ref this one or a peer replaced.
+    if _read_ref(ref) in (previous, None) or previous == commit:
+        _pinned_revision(repo_type, repo_id, commit)
+    return path
 
 
 def _rebuild_header_only_ggufs(
@@ -668,11 +796,13 @@ def _download_snapshot(
         "model", repo_id, getattr(info, "sha", None), expected_files, hf_token
     )
     _preflight_disk_space("model", repo_id, to_download)
-    snapshot_path = snapshot_download(
+    snapshot_path = _pinned_snapshot_download(
+        snapshot_download,
+        getattr(info, "sha", None),
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         ignore_patterns = ignore_patterns,
-        max_workers = 1,
+        max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
     )
     if info is None:
@@ -817,11 +947,13 @@ def _download_gguf_variant(
         )
     )
     _preflight_disk_space("model", repo_id, to_download)
-    snapshot_path = snapshot_download(
+    snapshot_path = _pinned_snapshot_download(
+        snapshot_download,
+        None if metadata_unavailable else _RESOLVED_COMMITS.get(repo_id),
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = targets,
-        max_workers = 1,
+        max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
     )
     _verify_completed_download(
@@ -918,11 +1050,13 @@ def _download_scoped_snapshot(
         "model", repo_id, getattr(info, "sha", None), expected_files, hf_token
     )
     _preflight_disk_space("model", repo_id, to_download)
-    snapshot_path = snapshot_download(
+    snapshot_path = _pinned_snapshot_download(
+        snapshot_download,
+        getattr(info, "sha", None),
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = files,
-        max_workers = 1,
+        max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
     )
     if info is None:
@@ -995,7 +1129,7 @@ def _download_dataset(
         "repo_id": repo_id,
         "token": _hf_token_arg(hf_token),
         "repo_type": "dataset",
-        "max_workers": 1,
+        "max_workers": _file_workers(mode),
         "tqdm_class": tqdm_class,
     }
     if isinstance(commit_hash, str) and commit_hash.strip():
@@ -1097,6 +1231,7 @@ def main() -> None:
     _install_parent_death_watchdog(args.parent_pid, args.heartbeat)
 
     hf_token = os.environ.get("HF_TOKEN") or None
+    _lift_http_ceiling_on_modelscope()
 
     if args.transport == "xet" and os.environ.get("UNSLOTH_HF_XET_FORCE_STALL") == "1":
         _force_stall_for_tests(args.repo_id, "dataset" if args.dataset else "model")

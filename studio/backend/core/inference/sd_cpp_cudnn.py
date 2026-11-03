@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A CUDA 12 cuDNN for sd.cpp fork builds with cuDNN attention (sm80+ Linux), named to the child via GGML_CUDA_CUDNN_LIB.
-
-torch cu130's cuDNN (CUDA 13) loads in a CUDA 12 binary but builds no plan. Installed with ``--target`` outside the venv:
-the cu12 and cu13 wheels both write ``nvidia/cudnn/lib/libcudnn.so.9``. Never loaded into this process.
-"""
+"""CUDA 12 cuDNN for sd.cpp, named via GGML_CUDA_CUDNN_LIB, installed with --target outside the
+venv; never loaded into this process"""
 
 from __future__ import annotations
 

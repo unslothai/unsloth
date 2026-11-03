@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { apiMonitorTourSteps } from "./tour";
@@ -57,18 +58,16 @@ import {
   Clock01Icon,
   CodeIcon,
   ComputerTerminal01Icon,
-  Delete02Icon,
   FileSearchIcon,
-  FlashIcon,
   PlusSignIcon,
   Refresh01Icon,
   RemoveCircleIcon,
   Search01Icon,
-  Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { PauseIcon } from "@/lib/media-control-icons";
 import { ReloadIcon } from "@/lib/reload-icon";
+import { Settings01Icon, SpeedMeterIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   type CSSProperties,
@@ -116,6 +115,7 @@ import {
   useApiMonitor,
 } from "./use-api-monitor";
 import { PlayIcon } from "lucide-react";
+import { useFreshApiKeyStore } from "@/features/settings/stores/fresh-api-key-store";
 
 const API_INFERENCE_PREFIX_RE = /^\/api\/inference/;
 const V1_PREFIX_RE = /^\/v1\//;
@@ -152,14 +152,14 @@ const INSET_OPAQUE =
   "bg-[color-mix(in_oklab,var(--muted)_40%,var(--card))] dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
 
 function formatTime(value: number): string {
-  return new Date(value * 1000).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return new Date(value * 1000).toLocaleTimeString(
+    [],
+    withTimeFormat({ hour: "numeric", minute: "2-digit" }),
+  );
 }
 
 function formatFullTime(value: number): string {
-  return new Date(value * 1000).toLocaleString();
+  return new Date(value * 1000).toLocaleString(undefined, withTimeFormat());
 }
 
 function formatAgo(value: number, now: number): string {
@@ -549,6 +549,7 @@ const RequestRow = memo(function RequestRow({
   onSelect: (id: string) => void;
   now: number;
 }): ReactElement {
+  useTimeFormat();
   const age = (
     <span title={formatFullTime(entry.started_at)}>
       {formatAgo(entry.started_at, now)}
@@ -642,7 +643,7 @@ const RequestRow = memo(function RequestRow({
           {speed ? (
             <span className="flex items-center gap-1" title="Generation speed">
               <HugeiconsIcon
-                icon={FlashIcon}
+                icon={SpeedMeterIcon}
                 strokeWidth={1.75}
                 className="size-3"
               />
@@ -801,6 +802,7 @@ function RequestDetail({
   detail?: ApiMonitorEntry;
   loading: boolean;
 }): ReactElement {
+  useTimeFormat();
   // Prefer the detail only once it is as fresh as the list row, or the panel rewinds.
   const detailIsCurrent =
     detail != null &&
@@ -916,6 +918,7 @@ function QuickStart({
   const choices = useApiExampleChoices(baseUrl, "curl");
   const [useTunnel] = useApiTunnelPref();
   const [kind, setKind] = useState<ApiExampleKind>("chat");
+  const freshKey = useFreshApiKeyStore((s) => s.key);
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
       <span className="flex size-10 items-center justify-center icon-disc text-muted-foreground">
@@ -940,10 +943,12 @@ function QuickStart({
         <div className="w-full max-w-2xl text-left">
           <ApiExampleBox
             choices={choices}
+            hasRealKey={freshKey !== null}
             code={buildApiExample({
               baseUrl,
               model: model ?? "MODEL_ID",
               sampling: {},
+              apiKey: freshKey ?? undefined,
               language: choices.language,
               os: choices.os,
             })}
@@ -952,9 +957,17 @@ function QuickStart({
       ) : (
         <div className="w-full max-w-3xl text-left">
           {kind === "media" ? (
-            <MediaApiExamples useTunnel={useTunnel} showHeading={false} />
+            <MediaApiExamples
+              apiKey={freshKey}
+              useTunnel={useTunnel}
+              showHeading={false}
+            />
           ) : kind === "audio" ? (
-            <AudioApiExamples useTunnel={useTunnel} showHeading={false} />
+            <AudioApiExamples
+              apiKey={freshKey}
+              useTunnel={useTunnel}
+              showHeading={false}
+            />
           ) : (
             <DecisionApiSection showHeading={false} />
           )}
@@ -1304,7 +1317,7 @@ export function ApiMonitorPage(): ReactElement {
         className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground dark:hover:bg-chat-icon-bg-hover"
       >
         <HugeiconsIcon
-          icon={Settings02Icon}
+          icon={Settings01Icon}
           strokeWidth={1.75}
           className="size-3.5"
         />
@@ -1433,7 +1446,7 @@ export function ApiMonitorPage(): ReactElement {
         </dl>
         <dl className={FACT_CELL}>
           {rowStats.tokensPerSecond != null ? (
-            <Fact label="Speed" icon={FlashIcon}>
+            <Fact label="Speed" icon={SpeedMeterIcon}>
               <span className="tabular-nums">
                 {rowStats.tokensPerSecond.toFixed(1)} tok/s
               </span>
@@ -1540,7 +1553,7 @@ export function ApiMonitorPage(): ReactElement {
               className="size-8 rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(14%*var(--contrast-wash-gain,1)),transparent)]"
             >
               <HugeiconsIcon
-                icon={Settings02Icon}
+                icon={Settings01Icon}
                 strokeWidth={1.75}
                 className="size-[calc(18px*var(--ui-space-scale,1))]"
               />
@@ -1896,7 +1909,7 @@ export function ApiMonitorPage(): ReactElement {
                   className="rounded-full text-red-500/80 hover:text-red-500 dark:text-red-400/80 dark:hover:text-red-400"
                 >
                   <HugeiconsIcon
-                    icon={Delete02Icon}
+                    icon={TrashIcon}
                     strokeWidth={1.75}
                     className="size-4"
                   />

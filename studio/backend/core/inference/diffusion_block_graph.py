@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CUDA graphs per denoiser block, for denoisers whose weights an offload tier moves.
-
-A whole-forward graph only holds while every weight stays at one address. Here each repeated block records on its
-own, keyed by its inputs AND the device addresses of its weights: moved weights run eagerly once, then record again.
-Streamed blocks get fixed addresses from the prefetcher's slot ring (``GroupPrefetcher.enable_slots``). The offload
-hooks stay eager around the recorded compute. Static inputs are shared per (block class, layout) since replays never
-overlap, and all recordings share one pool per denoiser.
-"""
+"""Per-block CUDA graphs keyed by inputs and weight addresses; moved weights re-record once; offload
+hooks stay eager; static inputs shared since replays never overlap"""
 
 from __future__ import annotations
 
@@ -256,15 +250,35 @@ _LIVE: "weakref.WeakSet" = weakref.WeakSet()
 
 
 def pool_bytes(device: Optional[int] = None) -> int:
-    """Device bytes held in every live block-graph pool (on CUDA ``device`` when given): reserved by the allocator yet
-    never free for other work, so the memory guard must not credit them back as reclaimable."""
+    """Unused graph-private bytes; retained outputs already count as allocated."""
     total = 0
+    tracked = 0
+    pools: set = set()
     for shared in tuple(_LIVE):
         index = getattr(shared, "device_index", None)
         if device is not None and index is not None and index != device:
             continue
-        total += int(getattr(shared, "pool_bytes", 0) or 0)
-    return total
+        recorded = int(getattr(shared, "pool_bytes", 0) or 0)
+        handles = getattr(shared, "pools", None)
+        if handles:
+            tracked += recorded
+            pools.update(tuple(h) for h in handles)
+        else:
+            total += recorded
+    if not pools:
+        return total
+    try:
+        free = 0
+        from .diffusion_cuda_graph import _allocator_segments
+
+        for seg in _allocator_segments():
+            if device is not None and seg.get("device", device) != device:
+                continue
+            if tuple(seg.get("segment_pool_id") or ()) in pools:
+                free += int(seg.get("total_size", 0)) - int(seg.get("allocated_size", 0))
+        return total + max(0, free)
+    except Exception:  # noqa: BLE001
+        return total + tracked
 
 
 class _Shared:
@@ -284,6 +298,7 @@ class _Shared:
         self.static_out: dict = {}
         self.static_refs: dict = {}  # slot -> recordings reading its buffers
         self.warmed: set = set()
+        self.pools: list = []  # Includes retired pools.
         self.pool_bytes = 0
         self.static_bytes = 0
         self.strict_device = False
@@ -299,6 +314,7 @@ class _Shared:
         if self.pool is None:
             torch = _torch()
             self.pool = torch.cuda.graph_pool_handle()
+            self.pools.append(self.pool)
         return self.pool
 
     def statics_for(self, slot: tuple, live: list) -> list:
@@ -343,6 +359,7 @@ class _Shared:
         self.static_refs.clear()
         self.warmed.clear()
         self.pool = None
+        self.pools = []
         self.pool_bytes = 0
         self.static_bytes = 0
 
@@ -593,7 +610,6 @@ class BlockGraph:
                 dst.copy_(src)
             static_args, static_kwargs = _unwalk(key, iter(entry.static_in))
             if slot not in self.shared.warmed:
-                # Any guard the static buffers trip recompiles here, never inside the recording.
                 self.compute(*static_args, **static_kwargs)
                 self.shared.warmed.add(slot)
                 self.stats["warmups"] += 1
@@ -605,7 +621,6 @@ class BlockGraph:
             pool = self.shared.graph_pool()
             with torch.cuda.stream(stream):
                 with _capturing():
-                    # read after the entry, which first hands back any retired graph pool
                     before = torch.cuda.memory_reserved()
                     try:
                         # Inside the try: a capture_begin that raised after taking the pool is abandoned too.
@@ -626,9 +641,10 @@ class BlockGraph:
                         if self.shared.pool == pool:
                             self.shared.pool = None
                         raise
+                    after = torch.cuda.memory_reserved()
                 del out, flat
             current.wait_stream(stream)
-            self.shared.pool_bytes += max(0, torch.cuda.memory_reserved() - before)
+            self.shared.pool_bytes += max(0, after - before)
         except CaptureRefused:
             # Refused before capture_begin: nothing recorded, the pool untouched. Eager now, record on a later call.
             self.seen[full] = (out_spec, metas)
@@ -1049,7 +1065,6 @@ class SegmentGraph:
             pool = self.shared.graph_pool()
             with torch.cuda.stream(stream):
                 with _capturing():
-                    # read after the entry, which first hands back any retired graph pool
                     before = torch.cuda.memory_reserved()
                     try:
                         graph.capture_begin(pool = pool, capture_error_mode = "thread_local")
@@ -1062,8 +1077,9 @@ class SegmentGraph:
                         if self.shared.pool == pool:
                             self.shared.pool = None
                         raise
+                    after = torch.cuda.memory_reserved()
             current.wait_stream(stream)
-            self.shared.pool_bytes += max(0, torch.cuda.memory_reserved() - before)
+            self.shared.pool_bytes += max(0, after - before)
         except CaptureRefused:
             self.seen[full] = rec
             self.stats["segment_refusals"] = self.stats.get("segment_refusals", 0) + 1

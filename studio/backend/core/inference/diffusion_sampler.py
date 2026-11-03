@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Sampler (scheduler) choice for the diffusers image engine, plus the v-prediction markers a
-single-file SDXL checkpoint carries. Names follow AUTOMATIC1111; the mapping is the diffusers
-scheduler overview table. No torch/diffusers imports at module level."""
+"""A1111 sampler names mapped to diffusers schedulers; no torch/diffusers imports at module level."""
 
 from __future__ import annotations
 

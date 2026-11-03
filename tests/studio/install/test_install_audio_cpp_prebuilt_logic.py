@@ -105,6 +105,50 @@ def test_cudart_archive_matches_the_bundle_line():
     assert M.cudart_asset_for(ASSETS, f"audio-{TAG}-bin-windows-x64-cpu.zip") is None
 
 
+@pytest.mark.parametrize("arch", ["arm64", "x64"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_cudart_archive_matches_architecture_independently_of_release_asset_order(arch, reverse):
+    tag = "v0.9.2-drama3-base-small-unsloth.2"
+    names = [
+        f"audio-{tag}-bin-windows-arm64-cpu.zip",
+        f"audio-{tag}-bin-windows-arm64-cuda13.zip",
+        f"audio-{tag}-cudart-windows-x64-cuda13.zip",
+        f"audio-{tag}-cudart-windows-arm64-cuda13.zip",
+        f"audio-{tag}-cudart-windows-{arch}-cuda12.zip",
+    ]
+    if reverse:
+        names.reverse()
+    assert M.cudart_asset_for(names, f"audio-{tag}-bin-windows-{arch}-cuda13.zip") == (
+        f"audio-{tag}-cudart-windows-{arch}-cuda13.zip"
+    )
+
+
+@pytest.mark.parametrize("arch,other", [("arm64", "x64"), ("x64", "arm64")])
+def test_cudart_never_falls_back_to_another_or_an_unspecified_architecture(arch, other):
+    names = [
+        f"audio-{TAG}-cudart-windows-{other}-cuda13.zip",
+        f"audio-{TAG}-cudart-windows-cuda13.zip",
+        f"audio-{TAG}-cudart-windows-unknown-cuda13.zip",
+    ]
+    assert M.cudart_asset_for(names, f"audio-{TAG}-bin-windows-{arch}-cuda13.zip") is None
+
+
+@pytest.mark.parametrize("arch", ["unknown", "riscv64", ""])
+def test_cudart_requires_a_known_bundle_architecture(arch):
+    names = [f"audio-{TAG}-cudart-windows-x64-cuda13.zip"]
+    assert M.cudart_asset_for(names, f"audio-{TAG}-bin-windows-{arch}-cuda13.zip") is None
+
+
+@pytest.mark.parametrize(
+    "bundle_arch,runtime_arch", [("x64", "AMD64"), ("amd64", "x86_64"), ("ARM64", "aarch64")]
+)
+def test_cudart_preserves_explicit_legacy_architecture_aliases(bundle_arch, runtime_arch):
+    runtime = f"audio-{TAG}-cudart-windows-{runtime_arch}-cuda12.4.zip"
+    assert (
+        M.cudart_asset_for([runtime], f"audio-{TAG}-bin-win-{bundle_arch}-cuda12.4.zip") == runtime
+    )
+
+
 @pytest.mark.parametrize(
     "version,major",
     [("2.10.0+cu130", 13), ("2.8.0+cu128", 12), ("2.5.1+cu124", 12), ("2.8.0", None)],

@@ -1,37 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Selects the diffusion engine (diffusers vs native sd.cpp) for the live route.
-
-One engine at a time. On a CUDA/ROCm/XPU GPU it is the diffusers ``DiffusionBackend`` (the default,
-the only path with the torchao fast-quant / compile stack); with no usable GPU (CPU, or MPS when
-enabled) the native ``SdCppDiffusionBackend`` (faster, lighter on RAM there). Chosen once at load
-and remembered, so ``generate`` / ``unload`` / ``status`` / progress all act on the same engine.
-
-Built on the pure ``select_diffusion_engine`` decision; this module adds the policy (env opt-out,
-MPS gating, per-family native-asset support, lazy binary availability) and records fallbacks.
-
-Per load, ``/images/load``'s ``engine`` field (auto | diffusers | sd_cpp) asks for an engine; the env override below
-wins over it. An explicit pick the engine cannot serve is refused, never silently swapped for the other engine.
-
-Env knobs:
-  UNSLOTH_DIFFUSION_ENGINE=auto|diffusers|sd_cpp   force an engine (auto = decide); wins over a per-load pick
-  UNSLOTH_DIFFUSION_SD_CPP=auto|0|1                 enable/disable the native route
-  UNSLOTH_DIFFUSION_SD_CPP_MPS=0|1                  allow native on Apple MPS (default off)
-  UNSLOTH_DIFFUSION_SD_CPP_INSTALL=auto|0|1         allow lazy binary install (in sd_cpp_backend)
-  UNSLOTH_DIFFUSION_SD_CPP_DEVICE=nvidia[:N]        run native on a card torch cannot see
-  UNSLOTH_DIFFUSION_MLX=auto|0|1                    the Apple Silicon MLX engine: auto (default) routes each request,
-                                                    1 forces MLX alone, 0 turns it off (diffusers MPS as before)
-
-The MLX engine (``mlx_diffusion_backend``) is considered on macOS 14+ on Apple Silicon, for a GGUF of a family that
-declares ``mlx_model_config`` in a quant the converter handles (Q4_0 / Q4_1 / Q5_0 / Q5_1 / Q8_0, the Q4_K / Q5_K /
-Q6_K mixes, BF16 / F16), with ``mlx`` and ``mflux`` installed. With ``auto`` the load goes to the routed engine
-(``mlx_diffusion_routing``): plain text-to-image runs on MLX, and a request that needs a feature MLX lacks is served
-by diffusers on MPS, loaded on demand. A load that itself needs such a feature (LoRA, separate component files, an
-explicit precision) stays on diffusers. With ``1`` the MLX engine runs alone and refuses those requests. Every refusal
-is recorded (``mlx_fallback_reason`` in the status) and falls through to the choice this module makes without it; on
-a host that is not an Apple Silicon Mac ``auto`` records nothing.
-"""
+"""One engine per load: diffusers on CUDA/ROCm/XPU, native sd.cpp on CPU or MPS when enabled; MLX
+auto takes plain text-to-image on Apple Silicon, else diffusers MPS; explicit picks refused,
+never swapped; env override wins over a per-load pick."""
 
 from __future__ import annotations
 
@@ -510,8 +482,8 @@ def mlx_selection(
 ) -> tuple[bool, Optional[str]]:
     """``(use_mlx, refusal)``. Shared by selection and ``predict_engine`` so the download plan and the load
     cannot disagree about MLX. ``engine`` is the load's own pick (``/images/load``'s ``engine`` field).
-    ``with_loras`` says the load applies LoRA adapters, which the MLX engine cannot, so the load keeps the engine it
-    would have had without MLX (in every mode) instead of reaching the MLX LoRA refusal.
+    ``with_loras`` says the load applies LoRA adapters: a family whose MLX build cannot keeps the engine it would have
+    had without MLX (in every mode) instead of reaching the MLX LoRA refusal.
     ``load_blocker`` (``mlx_load_blocker``) names a load option MLX cannot honour: in ``auto`` it keeps the load on
     diffusers; a forced MLX engine refuses that load in the route instead, as before."""
     mode = mlx_mode()
@@ -528,11 +500,13 @@ def mlx_selection(
         return False, "UNSLOTH_DIFFUSION_SD_CPP_MPS=1 asks for the native engine on the Mac GPU"
     if model_kind and model_kind != "gguf":
         return False, f"the MLX engine loads GGUF picks only (got {model_kind})"
-    if with_loras:
-        return False, "the MLX engine does not apply LoRA adapters yet"
     if fam is None or not family_mlx_supported(fam):
         name = getattr(fam, "name", None) or "unknown"
         return False, f"family '{name}' has no MLX implementation"
+    if with_loras:
+        from core.inference.mlx_diffusion_routing import mlx_capabilities
+        if not mlx_capabilities(fam.name).loras:
+            return False, f"the MLX engine does not apply LoRA adapters to {fam.name} yet"
     from core.inference.mlx_diffusion_convert import quant_convertible
 
     convertible, why = quant_convertible(gguf_filename)
@@ -555,14 +529,12 @@ def mlx_selection(
 
 def mlx_load_blocker(
     *,
-    loras: Any = None,
     component_files: Any = None,
     transformer_quant: Optional[str] = None,
     text_encoder_quant: Optional[str] = None,
 ) -> Optional[str]:
     from core.inference.mlx_diffusion_routing import load_blocker
     return load_blocker(
-        loras = loras,
         component_files = component_files,
         transformer_quant = transformer_quant,
         text_encoder_quant = text_encoder_quant,
@@ -586,9 +558,7 @@ def _refuse_lora_fallback(
 
     if supports_lora(engine = choice, family = fam.name, model_kind = "gguf", transformer_quant = None):
         return
-    via = (
-        "the native sd.cpp engine" if choice == ENGINE_SD_CPP else "the diffusers engine on a GGUF"
-    )
+    via = "the native sd.cpp engine" if choice == ENGINE_SD_CPP else "the diffusers engine"
     raise ValueError(
         "LoRA adapters are not supported on the MLX engine yet, and this load would fall back to "
         f"{via}, which cannot apply them here either. Load it without LoRA adapters."

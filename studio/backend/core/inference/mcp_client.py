@@ -63,9 +63,15 @@ def _account_key(value):
     return current_account_id(), value
 
 
-def _public_mcp_address(url: str) -> str:
+def _public_mcp_addresses(url: str) -> list[str]:
     from fastapi import HTTPException
+    from core.inference.providers import _metadata_address, _metadata_host, managed_private_url_hint
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
+
+    private_allowed = get_managed_private_provider_urls_allowed()
     detail = "Managed accounts may only use public-network HTTP MCP servers."
+    if not private_allowed:
+        detail += managed_private_url_hint()
     try:
         parsed = urlsplit(url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -75,6 +81,8 @@ def _public_mcp_address(url: str) -> str:
         host = parsed.hostname
         if "%" in host:
             raise ValueError("Scoped addresses are not public")
+        if _metadata_host(host):
+            raise ValueError("Cloud metadata address")
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         addresses = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)
         if not addresses:
@@ -82,9 +90,13 @@ def _public_mcp_address(url: str) -> str:
         for *_, sockaddr in addresses:
             address = ipaddress.ip_address(sockaddr[0])
             address = getattr(address, "ipv4_mapped", None) or address
+            if _metadata_address(str(address)):
+                raise ValueError("Cloud metadata address")
+            if private_allowed:
+                continue
             if not address.is_global or address.is_multicast or address.is_reserved:
                 raise ValueError("Non-public address")
-        return addresses[0][4][0]
+        return list(dict.fromkeys(sockaddr[0] for *_, sockaddr in addresses))
     except (OSError, ValueError, UnicodeError) as exc:
         raise HTTPException(status_code = 400, detail = detail) from exc
 
@@ -99,7 +111,7 @@ def validate_mcp_address(url: str) -> None:
             status_code = 400,
             detail = "Only the installation owner may register local-command MCP servers.",
         )
-    _public_mcp_address(url)
+    _public_mcp_addresses(url)
 
 
 def _public_http_client_factory(**kwargs):
@@ -115,18 +127,24 @@ def _public_http_client_factory(**kwargs):
             self.transports = {}
 
         async def handle_async_request(self, request):
-            address = await asyncio.to_thread(_public_mcp_address, str(request.url))
+            addresses = await asyncio.to_thread(_public_mcp_addresses, str(request.url))
             origin = (request.url.scheme, request.url.host, request.url.port)
             if origin not in self.transports:
                 self.transports[origin] = http.AsyncHTTPTransport(trust_env = False)
-            pinned = http.Request(
-                method = request.method,
-                url = request.url.copy_with(host = address),
-                headers = request.headers,
-                stream = request.stream,
-                extensions = {**request.extensions, "sni_hostname": request.url.host},
-            )
-            return await self.transports[origin].handle_async_request(pinned)
+            # localhost answers ::1 first while most local servers bind 127.0.0.1 only.
+            for index, address in enumerate(addresses):
+                pinned = http.Request(
+                    method = request.method,
+                    url = request.url.copy_with(host = address),
+                    headers = request.headers,
+                    stream = request.stream,
+                    extensions = {**request.extensions, "sni_hostname": request.url.host},
+                )
+                try:
+                    return await self.transports[origin].handle_async_request(pinned)
+                except (http.ConnectError, http.ConnectTimeout):
+                    if index == len(addresses) - 1:
+                        raise
 
         async def aclose(self):
             for transport in self.transports.values():
@@ -843,6 +861,21 @@ def _is_protocol_error(exc: BaseException) -> bool:
     return False
 
 
+# HTTP 404 for an unknown Mcp-Session-Id, so the request never ran: the client SDK's "Session terminated"
+# stand-in, or the server body mcp 2.x relays (Python SDK -32600 / TypeScript SDK -32001 "Session not found").
+_SESSION_GONE_MESSAGES = ("Session terminated", "Session not found")
+_SESSION_GONE_CODES = (32600, -32600, -32001)
+
+
+def _is_session_terminated(exc: BaseException) -> bool:
+    error = getattr(exc, "error", None)
+    return (
+        _is_protocol_error(exc)
+        and getattr(error, "message", None) in _SESSION_GONE_MESSAGES
+        and getattr(error, "code", None) in _SESSION_GONE_CODES
+    )
+
+
 def _transport_dead(session) -> bool:
     """Only stdio can prove a transport dead; HTTP always reads unknown, so this returns False there."""
     client = getattr(session, "client", None)
@@ -900,7 +933,7 @@ def _session_responsive(
         return not timeout_is_fatal
     except Exception as exc:  # noqa: BLE001
         # A JSON-RPC error means the transport works; reconnecting would lose session state.
-        if not _is_protocol_error(exc):
+        if _is_session_terminated(exc) or not _is_protocol_error(exc):
             return False
     session.dirty = False
     session.proved_at = time.monotonic()
@@ -2215,13 +2248,18 @@ def _call_session_tool(
                 # Intentional close may look like a transport error or AttributeError; do not treat as crash
                 discard_session = True
                 raise RuntimeError("MCP server was updated or removed during the call")
+            if _is_session_terminated(exc):
+                # A 404 means the server never processed the request, so reconnect and replay once.
+                discard_session = True
+                retry = attempt == 0
             # Protocol error = server alive, keep session. Transport error: evict but DO NOT replay.
-            if _is_protocol_error(exc):
+            elif _is_protocol_error(exc):
                 # A protocol error means the server replied, so keep the session but probe it before the next call.
                 session.dirty = True
             elif not _is_tool_error(exc):
                 discard_session = True
-            raise
+            if not retry:
+                raise
         finally:
             if slot is not None:
                 session.posts.settle(slot, abandoned = False)

@@ -1,30 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in model auto-switch for the image and video generation APIs.
-
-The chat twin lives in ``local_model_resolver`` + ``routes.inference``: a ``/v1`` request
-naming a downloaded GGUF loads it before serving. Media had no equivalent, so
-``POST /v1/images/generations`` answered 503 unless someone had already picked a model on the
-Images page, and ``model`` was documented as informational. This resolves that name against
-the downloaded image/video models, drains what the backend is doing, and runs the load the
-picker would run.
-
-Off by default (``media_api_auto_switch_model``), so existing clients see no change.
-
-Only downloaded models resolve, and an unknown name is refused rather than answered by
-whatever is resident. Nothing here starts a download: the media equivalent of the chat
-auto-download setting would let one API key spend tens of GB, which is its own decision.
-
-Both waits are bounded, because Unsloth's secure-mode tunnel caps an origin response near 100
-seconds. Exceeding a bound leaves the work running and asks the caller to retry, the contract
-``begin_load`` already gives the UI.
-
-This module is the orchestration. The pieces it drives live next to it: ``media_model_index``
-resolves a name and recognises the resident model, ``media_locality`` proves a pick is already
-downloaded, ``media_switch_backends`` waits out work a switch would interrupt,
-``media_switch_locks`` serializes switches, and ``media_switch_errors`` holds the refusals.
-"""
+"""Opt-in media auto-switch (media_api_auto_switch_model); never downloads; refuses unknown names;
+waits are bounded near the ~100 s tunnel cap, and exceeding one leaves work running and asks
+retry."""
 
 from __future__ import annotations
 

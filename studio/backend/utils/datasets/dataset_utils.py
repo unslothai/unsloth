@@ -10,6 +10,7 @@ from .format_detection import (
     detect_multimodal_dataset,
     detect_vlm_dataset_structure,
     detect_custom_format_heuristic,
+    is_plain_text_dataset,
 )
 from .format_conversion import (
     standardize_chat_format,
@@ -18,6 +19,7 @@ from .format_conversion import (
     convert_to_vlm_format,
     convert_llava_to_vlm_format,
     convert_sharegpt_with_images_to_vlm_format,
+    normalize_chatml_roles,
 )
 from .chat_templates import (
     _custom_prompt_template_error,
@@ -399,6 +401,10 @@ def format_dataset(dataset, *args, **kwargs):
             "requires_manual_mapping": False,
             "warnings": [],
         }
+    if info["final_format"] in ("chatml_messages", "chatml_conversations") and info["chat_column"]:
+        info["dataset"] = normalize_chatml_roles(
+            info["dataset"], info["chat_column"], bound.arguments["batch_size"]
+        )
     return info
 
 
@@ -429,6 +435,10 @@ def _format_dataset(
     """Formats dataset and returns {dataset, detected_format, final_format, chat_column, is_standardized, requires_manual_mapping, warnings}."""
 
     multimodal_info = detect_multimodal_dataset(dataset)
+
+    if format_type == "auto" and not custom_format_mapping and is_plain_text_dataset(dataset):
+        # Matches the preview's "raw" verdict; auto would otherwise fail as "unknown".
+        format_type = "raw"
 
     if format_type == "raw":
         raw_result = prepare_raw_text_dataset(
@@ -882,6 +892,9 @@ def format_and_template_dataset(
     raw_text_column = None,
 ):
     """Combines format_dataset and apply_chat_template_to_dataset, for UI workflows where one call does everything. custom_prompt_template is retained for signature compatibility; non-None values are rejected because Studio cannot persist a matching inference template. Returns {dataset (with a 'text' column), detected_format, final_format, success, requires_manual_mapping, warnings, errors, summary}."""
+    from .tokenizer_fingerprint import install_tokenizer_fingerprint
+
+    install_tokenizer_fingerprint()
 
     custom_prompt_error = _custom_prompt_template_error(custom_prompt_template)
     if custom_prompt_error:

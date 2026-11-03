@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Probe two consumer-GPU-motivated levers on the real dense Z-Image transformer:
-
-  * fp8 fast_accum on/off -- on consumer Blackwell, fp8 with FP16 accumulate is ~2x
-    fp8 with FP32 accumulate (838 vs 419 TFLOPS). torchao defaults use_fast_accum=True,
-    so this confirms we are already on the fast path and quantifies it (muted on a B200,
-    which is not nerfed, but the knob still moves latency).
-  * 2:4 semi-structured sparsity -- doubles tensor-core rate in theory. Two blockers to
-    test empirically: (a) QUALITY -- inference-only 2:4 magnitude-pruning drops 50% of
-    weights with no fine-tune; (b) it does NOT compose with torch.compile, so the real
-    sparse path runs eager. We measure sparse-no-compile speed vs our fp8+compile
-    baseline (the bar it must beat) and the LPIPS of 2:4 pruning.
-
-Reference for quality is the dense bf16 eager image. Run on one CUDA GPU.
-"""
+"""Probes fp8 fast_accum and 2:4 sparsity on Z-Image; 2:4 is eager-only and lossy without fine-tuning."""
 
 from __future__ import annotations
 

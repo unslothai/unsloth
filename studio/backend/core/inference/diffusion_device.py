@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Device + dtype policy for the local diffusion backend.
-
-torch imported lazily so this stays importable in a no-torch runtime. Unsloth's hardware layer
-reports product backends (CUDA, XPU, MLX, CPU); diffusers runs on PyTorch devices, so Apple
-Silicon maps to MPS and ROCm to ``cuda``. Centralises that mapping plus the per-backend dtype and
-the capability flags optimisation paths key off.
-"""
+"""Device/dtype policy: Apple Silicon maps to MPS and ROCm to cuda; torch imported lazily."""
 
 from __future__ import annotations
 
