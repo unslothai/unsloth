@@ -14,14 +14,19 @@ from core.inference import diffusion_vae_upcast as vu  # noqa: E402
 
 
 class _Budget:
-    def __init__(self, cap: int):
+    def __init__(
+        self,
+        cap: int,
+        error_type = torch.OutOfMemoryError,
+    ):
         self.cap, self.used = cap, 0
         self.ooms = 0
+        self.error_type = error_type
 
     def alloc(self, n: int) -> None:
         if self.used + n > self.cap:
             self.ooms += 1
-            raise torch.OutOfMemoryError("simulated")
+            raise self.error_type("out of memory")
         self.used += n
 
 
@@ -182,30 +187,52 @@ def test_kept_host_rollback_restores_tight_budgets(monkeypatch, cap, dtype, kind
 
 
 @pytest.mark.parametrize("chained", [False, True])
-def test_forward_oom_frees_dead_frame_activations_before_restoring(chained):
+@pytest.mark.parametrize("error_type", [torch.OutOfMemoryError, RuntimeError])
+def test_forward_oom_frees_dead_frame_activations_before_restoring(chained, error_type):
     budget = _Budget(54)
     model = _Model(budget)
-    error = torch.OutOfMemoryError("forward")
+    error = error_type("MPS backend out of memory")
 
     def inner():
         _activation = _Tensor(budget, 4, torch.float32)
-        raise torch.OutOfMemoryError("inner") if chained else error
+        raise error_type("out of memory") if chained else error
 
     def forward():
         try:
             inner()
-        except torch.OutOfMemoryError as cause:
+        except RuntimeError as cause:
             if chained:
                 raise error from cause
             raise
 
-    with pytest.raises(torch.OutOfMemoryError) as caught:
+    with pytest.raises(error_type) as caught:
         with vu.fp32_keeping_storage(model):
             forward()
     assert caught.value is error
     assert "forward" in [f.name for f in traceback.extract_tb(error.__traceback__)]
     assert all(p.dtype == torch.float16 for p in model._parameters.values())
     assert budget.used == 18
+
+
+def test_kept_host_rollback_handles_backend_runtime_oom(monkeypatch):
+    budget = _Budget(20, RuntimeError)
+    model, state, table = _kept_model(monkeypatch, budget)
+    with pytest.raises(RuntimeError, match = "out of memory"):
+        vu.upcast_keeping_storage(model)
+    assert all(t.device.type == "cuda" and t.dtype == torch.float16 for t in table.values())
+    assert budget.used == 18
+
+
+def test_backend_cache_failure_does_not_replace_the_original_oom(monkeypatch):
+    def fail():
+        raise RuntimeError("cache unavailable")
+
+    monkeypatch.setattr(torch.cuda, "empty_cache", fail)
+    budget = _Budget(34)
+    model = _Model(budget)
+    with pytest.raises(torch.OutOfMemoryError, match = "out of memory"):
+        vu.upcast_keeping_storage(model)
+    assert all(p.dtype == torch.float16 for p in model._parameters.values())
 
 
 def test_host_fallback_preserves_inplace_parameter_changes(monkeypatch):

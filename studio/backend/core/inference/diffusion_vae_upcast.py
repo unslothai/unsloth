@@ -227,8 +227,9 @@ def _restore_one(rec: list) -> None:
     if data.dtype != load_dtype:
         try:
             cast = data.to(load_dtype)
-        except torch.OutOfMemoryError:
-            if untouched and cast_version is not None and how == "host":
+        except RuntimeError as exc:
+            from .diffusion_vae_oom import is_oom
+            if is_oom(exc) and untouched and cast_version is not None and how == "host":
                 _set(kind, m, name, kept)
                 rec[5], rec[6] = None, None
             raise
@@ -240,9 +241,38 @@ def _restore_one(rec: list) -> None:
             _mark_onloaded(state, kind, full, m, name)
 
 
+def _release_restore_memory(token: list, exc: Optional[BaseException] = None) -> None:
+    import torch
+    import traceback
+
+    errors, seen = [exc], set()
+    while errors:
+        error = errors.pop()
+        if error is None or id(error) in seen:
+            continue
+        seen.add(id(error))
+        traceback.clear_frames(error.__traceback__)
+        errors.extend((error.__cause__, error.__context__))
+        errors.extend(getattr(error, "exceptions", ()))
+    backends = dict.fromkeys(rec[4][0].type for rec in token if rec[3] in ("dev", "host"))
+    for backend in backends:
+        clear = getattr(getattr(torch, backend, None), "empty_cache", None)
+        if callable(clear):
+            try:
+                clear()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def restore_storage(token: list) -> None:
+    import sys
+
     pending = list(reversed(token))
-    cleared = False
+    exc = sys.exc_info()[1]
+    if exc is not None:
+        from .diffusion_vae_oom import is_oom
+        if is_oom(exc):
+            _release_restore_memory(pending, exc)
     while pending:
         failed = []
         released = False
@@ -253,24 +283,9 @@ def restore_storage(token: list) -> None:
             except Exception:  # noqa: BLE001 - retried below; a later cast back can free the room it needs
                 failed.append(rec)
                 released |= cast_ptr is not None and rec[5] is None
-        if len(failed) == len(pending) and not released:
-            if not cleared:
-                import sys
-                import traceback
-                import torch
-
-                exc = sys.exc_info()[1]
-                if isinstance(exc, torch.OutOfMemoryError):
-                    errors, seen = [exc], set()
-                    while errors:
-                        error = errors.pop()
-                        if error is None or id(error) in seen:
-                            continue
-                        seen.add(id(error))
-                        traceback.clear_frames(error.__traceback__)
-                        errors.extend((error.__cause__, error.__context__))
-                    cleared = True
-                    continue
+        if released:
+            _release_restore_memory(failed)
+        elif len(failed) == len(pending):
             break
         pending = failed
     token.clear()
