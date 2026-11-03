@@ -62,7 +62,7 @@ def _ledger_insert(message: str, rows: str = "") -> str:
               AND json_extract(r.request_json, '$.api_monitor_via_api_key') = 1
           )
         ON CONFLICT(message_id) DO UPDATE SET
-            source = CASE WHEN source = 'inherited' THEN source ELSE excluded.source END,
+            source = CASE WHEN source IN ('inherited', 'api') THEN source ELSE excluded.source END,
             prompt_tokens = MAX(prompt_tokens, excluded.prompt_tokens),
             completion_tokens = MAX(completion_tokens, excluded.completion_tokens),
             total_tokens = MAX(total_tokens, excluded.total_tokens),
@@ -246,6 +246,7 @@ def window_usage(conn: sqlite3.Connection, start_ms: int, method: str) -> dict[s
                 (start_ms, start_ms),
             )
         )
+    # API receipts supply the debit; ledger rows only retain origin.
     usage["api"] = int(
         conn.execute(
             "SELECT COALESCE(SUM(total_tokens), 0) FROM api_usage_events WHERE created_at >= ?",

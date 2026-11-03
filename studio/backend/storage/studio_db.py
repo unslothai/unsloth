@@ -3896,7 +3896,7 @@ def _detach_terminal_generation_for_edit(
     conn: sqlite3.Connection, thread_id: str, message: dict
 ) -> bool:
     stored = conn.execute(
-        """SELECT parent_id, role, metadata_json, attachments_json
+        """SELECT parent_id, role, metadata_json, attachments_json, created_at
            FROM chat_messages WHERE thread_id = ? AND id = ?""",
         (thread_id, str(message["id"])),
     ).fetchone()
@@ -3910,7 +3910,8 @@ def _detach_terminal_generation_for_edit(
     # id, but create_run stamps created_at itself, so a tab that kept its own Date would
     # fail a createdAt match (#15004). The run row is the authority.
     row = conn.execute(
-        """SELECT id AS run_id, status AS run_status
+        """SELECT id AS run_id, status AS run_status,
+                  json_extract(request_json, '$.api_monitor_via_api_key') AS api_origin
            FROM chat_generation_runs
            WHERE id = ? AND thread_id = ? AND assistant_message_id = ?""",
         (run_id, thread_id, str(message["id"])),
@@ -3935,6 +3936,14 @@ def _detach_terminal_generation_for_edit(
         stored_attachments, sort_keys = True
     ):
         return False
+    if row["api_origin"]:
+        conn.execute(
+            """INSERT INTO token_usage_ledger
+                (message_id, thread_id, created_at, source, prompt_tokens, completion_tokens, total_tokens)
+                VALUES (?, ?, ?, 'api', 0, 0, 0)
+                ON CONFLICT(message_id) DO UPDATE SET source = 'api'""",
+            (str(message["id"]), thread_id, stored["created_at"]),
+        )
     conn.execute("DELETE FROM chat_generation_runs WHERE id = ?", (row["run_id"],))
     return True
 

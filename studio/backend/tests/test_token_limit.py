@@ -403,6 +403,15 @@ def test_durable_usage_is_counted_before_a_browser_recovers_the_run(limiter_db, 
     with pytest.raises(HTTPException):
         token_limit.enforce(api = False)
 
+    message["metadata"] = {"contextUsage": message["metadata"]["contextUsage"]}
+    message["content"] = [{"type": "text", "text": "edited"}]
+    studio_db.upsert_chat_message(message, allow_generation_edit = True)
+    assert _pools()["combined"]["used"] == expected
+    if via_api_key:
+        _enable(mode = "split", localLimit = 100, apiLimit = 100)
+        assert _pools()["local"]["used"] == 0
+        assert _pools()["api"]["used"] == 100
+
 
 def test_a_password_locks_every_change_until_it_is_given(limiter_db):
     token_limit.update_settings(
