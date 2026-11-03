@@ -381,3 +381,23 @@ test("crouching behind cover hides the player from hostile fire", () => {
   assert.deepEqual(A.enemiesAct(w, A.newCombat(), { ...me, h: A.STAND_H }, [grim], none), ["grim"]);
   assert.deepEqual(A.enemiesAct(w, A.newCombat(), { ...me, h: A.CROUCH_H }, [grim], none), []);
 });
+
+test("a door the player's capsule reaches into from the next tile cannot be closed", async () => {
+  const V = await import("../src/features/flows/player/world/action-verbs.ts");
+  const door = { id: "d", kind: "door", x: 5.5, y: 5.5 } as Prop;
+  const flat = () => 0;
+  const me = { x: 4.9, y: 5.5 };
+  // Tile 4 vs the door's tile 5: a tile check sees nothing in the way.
+  assert.notEqual(Math.floor(me.x), Math.floor(door.x));
+  assert.equal(A.capsuleOverlapsProp(door, flat, me.x, me.y), true);
+  assert.equal(A.capsuleOverlapsProp(door, flat, 3.5, 5.5), false);
+  const out = V.interactProp(door, [door], { d: { open: true } }, [], {
+    occupied: (p) => A.capsuleOverlapsProp(p, flat, me.x, me.y),
+  });
+  assert.deepEqual(out.changed, []);
+  const player = readFileSync(
+    new URL("../src/features/flows/player/world/world-player.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(player, /occupied: \(p\) =>\s*g\.blocksProp\?\.\(p\) === true/);
+});

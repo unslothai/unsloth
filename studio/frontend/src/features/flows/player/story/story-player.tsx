@@ -75,6 +75,7 @@ import {
   stageAt,
   visibleChoices,
 } from "./reducer";
+import { playCues } from "./sound-cues";
 
 const SPEED_KEY = "unsloth.flows.player.textSpeed";
 const VOICE_KEY = "unsloth.flows.player.voice";
@@ -630,13 +631,13 @@ export function StoryPlayer({
       return;
     }
     if (skip) return;
-    for (const name of stage.sounds) {
-      const media = manifest.sounds?.[name];
-      if (!media) continue;
-      void mediaObjectUrl(api, media)
-        .then((url) => new Audio(url).play())
-        .catch(() => undefined);
-    }
+    const rev = state.rev;
+    playCues(
+      stage.sounds,
+      manifest.sounds,
+      (media) => mediaObjectUrl(api, media),
+      () => stateRef.current.rev === rev,
+    );
   }, [api, manifest.sounds, stage, started, skip, state]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: two pauses in a row restart the timer

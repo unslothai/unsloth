@@ -230,6 +230,38 @@ def test_recall_uses_embeddings_and_caches_vectors():
     assert "embedding" not in memory[0]
 
 
+def test_recall_does_not_reuse_vectors_from_another_embedding_model():
+    world_nodes._VECTORS.clear()
+    spaces = {
+        "old": {"fruit": [1.0, 0.0], "apple": [1.0, 0.0], "pear": [0.0, 1.0]},
+        "new": {"fruit": [1.0, 0.0], "apple": [0.0, 1.0], "pear": [1.0, 0.0]},
+    }
+    active = ["old"]
+    embedded = []
+
+    class TwoModels(SimCtx):
+        async def call(
+            self,
+            method,
+            path,
+            json = None,
+            **kw,
+        ):
+            embedded.append(list(json["input"]))
+            space = spaces[active[0]]
+            data = [{"index": i, "embedding": space[t]} for i, t in enumerate(json["input"])]
+            return {"model": active[0], "data": data}
+
+    ctx = TwoModels("world.npc_reply")
+    memory = [_record(0, "apple", 5), _record(1, "pear", 5)]
+    assert run(world_nodes._recall(ctx, memory, "fruit", 9.0, 1))[0]["id"] == "m0"
+    active[0] = "new"
+    run(world_nodes._recall(ctx, memory, "fruit", 9.0, 1))
+    picked = run(world_nodes._recall(ctx, memory, "fruit", 9.0, 1))
+    assert embedded[-1] == ["fruit", "apple", "pear"]
+    assert picked[0]["id"] == "m1"
+
+
 def test_plan_places_are_restricted():
     world = normalize_world(SIM_RAW, seed = 1)
     seen = {}
@@ -378,9 +410,9 @@ def test_a_slow_embedder_never_holds_up_a_live_reply(monkeypatch):
     async def slow_embed(ctx, texts):
         calls.append(list(texts))
         await asyncio.sleep(1.5)
-        return [[1.0, 0.0] for _ in texts]
+        return [[1.0, 0.0] for _ in texts], None
 
-    monkeypatch.setattr(world_nodes, "embed", slow_embed)
+    monkeypatch.setattr(world_nodes, "_embed", slow_embed)
     monkeypatch.setattr(world_nodes, "REPLY_RECALL_BUDGET_S", 0.2)
     memory = [
         _record(0, "I am hosting a party at the cafe", 8),

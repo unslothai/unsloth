@@ -159,6 +159,14 @@ def test_npc_reply_actions_are_a_fixed_validated_set():
         ("Could you follow me? I want to show you something.", "follow_player"),
         ("Come with me to the pond", "follow_player"),
         ("Thanks, you can go home now. Stop following me.", "stop_following"),
+        ("Please don't follow me", "stop_following"),
+        ("Please don\u2019t follow me", "stop_following"),
+        ("Do not come with me", "stop_following"),
+        ("No need to walk with me", "stop_following"),
+        ("I don't want you to follow me", None),
+        ("Don't forget to follow me", None),
+        ("Do not hesitate to come with me", None),
+        ("Don't stop following me", None),
     ):
         out = validate_npc_reply(
             {"text": "Sure", "action": "go_to", "place": "pond"}, _state(player_message = msg)
