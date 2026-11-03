@@ -2726,8 +2726,9 @@ export function useChatModelRuntime() {
                 ? (loadNBatch ?? null)
                 : null;
             const committedNUbatch =
-              (loadResponse.is_gguf ?? false) &&
-              !(loadResponse.is_diffusion ?? false)
+              ((loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)) ||
+              (loadResponse.is_mlx ?? false)
                 ? (loadNUbatch ?? null)
                 : null;
             const committedServerTuning =

@@ -1319,6 +1319,56 @@ function ReasoningBudgetRows({
   );
 }
 
+const MLX_MICRO_BATCH_HINT =
+  "Prompt tokens each prefill step reads. Leave blank for the default (2048). " +
+  "Larger values read long prompts faster but use more memory; when experts " +
+  "are read from disk, Unsloth's own step is the most it uses.";
+
+/** A blank-means-default count, clamped to the batch bounds llama.cpp and MLX share. */
+function BatchCountRow({
+  label,
+  hint,
+  ariaLabel,
+  value,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  ariaLabel: string;
+  value: number | null | undefined;
+  onChange: (value: number | null) => void;
+}) {
+  return (
+    <div className={ROW_CLASS}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={LABEL_CLASS}>{label}</span>
+        <InfoHint>{hint}</InfoHint>
+      </div>
+      <input
+        type="number"
+        min={N_BATCH_MIN}
+        max={N_BATCH_MAX}
+        step={1}
+        value={value ?? ""}
+        placeholder="auto"
+        onChange={(event) => {
+          const raw = event.target.value;
+          if (raw === "") {
+            onChange(null);
+            return;
+          }
+          const parsed = Number.parseInt(raw, 10);
+          if (Number.isFinite(parsed)) {
+            onChange(Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, parsed)));
+          }
+        }}
+        aria-label={ariaLabel}
+        className={NUMBER_INPUT_CLASS}
+      />
+    </div>
+  );
+}
+
 const GGUF_PARALLEL_HINT =
   "Decode slots (--parallel) for concurrent requests. Leave blank for the server " +
   "default. More slots share the context pool and use more VRAM.";
@@ -1833,6 +1883,15 @@ function MlxAdvancedSettings({
       )}
       {servedByMlx && (
         <ParallelSlotsRow config={config} update={update} hint={MLX_PARALLEL_HINT} />
+      )}
+      {servedByMlx && (
+        <BatchCountRow
+          label="Micro-batch Size"
+          hint={MLX_MICRO_BATCH_HINT}
+          ariaLabel="Prompt micro-batch size"
+          value={config.nUbatch}
+          onChange={(nUbatch) => update({ nUbatch })}
+        />
       )}
       {servedByMlx && (
         <ReasoningBudgetRows

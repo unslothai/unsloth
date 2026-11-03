@@ -115,7 +115,7 @@ export type StandingConfigDefaults = {
   normalizeSpeculative: (value: string | null | undefined) => string | null;
 };
 
-/** A transformers resident reads neither the reasoning budget nor the vision switch; GGUF and MLX do. */
+/** A transformers resident reads none of these load settings; GGUF and MLX do. */
 function readsNoLoadSwitches(s: ResidentRuntime): boolean {
   return s.is_gguf === false && s.is_mlx !== true;
 }
@@ -322,8 +322,11 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     chatOnly: true,
+    mlxComparable: true,
     pinned: () => true,
-    agrees: (c, s) => (c.nUbatch ?? null) === (s.requested_n_ubatch ?? null),
+    agrees: (c, s) =>
+      readsNoLoadSwitches(s) ||
+      (c.nUbatch ?? null) === (s.requested_n_ubatch ?? null),
   },
   {
     chatOnly: true,

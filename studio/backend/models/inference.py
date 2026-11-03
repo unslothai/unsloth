@@ -394,7 +394,9 @@ class LoadRequest(BaseModel):
             "2048 for a projector whose family cannot be read. Every other "
             "vision model keeps the 512 default. "
             "llama.cpp caps it at the batch size. Larger values speed up prompt "
-            "processing at the cost of compute-buffer VRAM. Ignored for "
+            "processing at the cost of compute-buffer VRAM. On MLX it is the "
+            "prefill step, tokens per prefill forward (default 2048); an "
+            "expert-offload plan's own chunk caps it. Ignored for other "
             "non-GGUF models."
         ),
     )

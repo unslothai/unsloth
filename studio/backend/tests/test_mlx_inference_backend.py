@@ -5765,6 +5765,9 @@ def test_a_vision_checkpoint_served_through_mlx_lm_reads_images_only_where_zoo_p
         backend.load_model(config, disable_vision = True)
         assert attempts == [text_only] and backend._reads_vision_input() is not off
         assert backend.models["org/vision"]["vision_disabled_by_user"] is off
+    backend.load_model(plain, prefill_step = 512)
+    assert (backend._prefill_step, backend._grid_step()) == (512, 512)
+    assert backend.models["org/vision"]["n_ubatch"] == 512
 
 
 def test_a_uniformly_quantized_text_load_goes_through_mlx_vlm_only_when_that_batches(monkeypatch):
@@ -11173,7 +11176,7 @@ def test_mlx_vlm_prompt_cache_session_prefills_on_mlx_vlm_default_step(monkeypat
     zoo = types.SimpleNamespace(wide_prefill_step = lambda model: 1234 if model == "wide" else None)
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.offload", zoo)
     probe = [
-        mlx_inference._prefill_layer_step(*args)
+        mlx_inference._prefill_layer_step(*args, 1234)
         for args in (("wide", 4936), ("wide", 8192), ("whole", 4936))
     ]
     assert probe == [1234, None, None]
@@ -11183,6 +11186,10 @@ def test_mlx_vlm_prompt_cache_session_prefills_on_mlx_vlm_default_step(monkeypat
     assert grid() == (1234, 1234)
     backend._kv_runtime_quant_kwargs, backend._kv_cache_window = lambda: {}, 4096
     assert grid() == (1234, 1234)
+    # A chosen micro-batch is the grid every request of the load prefills and banks on.
+    backend._prefill_grid, backend._prefill_step, backend._prefill_layer_step = 512, 512, None
+    assert grid() == (512, 512) and backend._vlm_batch_row_cache("base", ())._step == 512
+    assert backend._prefill_step_kwargs(grid = True) == {"prefill_step_size": 512}
 
 
 _BUDGET_WINDOW = 2048
@@ -12920,3 +12927,28 @@ def test_a_reasoning_budget_runs_last_on_a_text_reply_and_a_change_reloads(monke
     assert not _mlx_runtime_settings_match(be, req(reasoning_budget = 64))
     assert not _mlx_runtime_settings_match(be, req(reasoning_budget_message = "x"))
     assert _unsloth_serving_fields(entry)["requested_reasoning_budget"] == 64
+
+
+def test_a_chosen_micro_batch_caps_at_the_offload_chunk_and_a_change_reloads():
+    from core.inference import mlx_inference
+    from models.inference import LoadRequest
+    from routes.inference import (
+        _mlx_runtime_settings_match,
+        _unsloth_serving_fields,
+        _with_chosen_prefill_chunk,
+    )
+
+    req = lambda **knobs: LoadRequest(model = "m", model_path = "m", **knobs)
+    planned = {"offload": (None, 0.5), "prefill_chunk": 256}
+    assert _with_chosen_prefill_chunk({}, req(n_ubatch = 512)) == {"prefill_chunk": 512}
+    assert _with_chosen_prefill_chunk(planned, req(n_ubatch = 512))["prefill_chunk"] == 256
+    assert _with_chosen_prefill_chunk(planned, req()) is planned
+    assert mlx_inference._prefill_choice(256, 128) == (128, 128)
+    assert mlx_inference._prefill_choice(256, 512) == (256, None)
+
+    for key in ("n_ubatch",):
+        entry = {"mlx_kv_quant_requested": "auto", key: 512}
+        be = SimpleNamespace(active_model_name = "m", models = {"m": entry})
+        assert _mlx_runtime_settings_match(be, req(**{key: 512}))
+        assert not _mlx_runtime_settings_match(be, req())
+        assert _unsloth_serving_fields(entry)[f"requested_{key}"] == 512

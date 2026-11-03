@@ -8766,6 +8766,7 @@ def _unsloth_serving_fields(model_info: dict) -> dict:
             for name, default in (("reasoning_budget", -1), ("reasoning_budget_message", ""))
             for prefix in ("", "requested_")
         },
+        "requested_n_ubatch": model_info.get("n_ubatch"),
     }
 
 
@@ -15959,7 +15960,7 @@ def _mlx_estimate_offload(
     if load_in_4bit and not (
         checkpoint.get("quantization") or checkpoint.get("quantization_config")
     ):
-        return {}, (), None
+        return _with_chosen_prefill_chunk({}, request), (), None
     vision = True if _mlx_estimate_speculates(request, model_dir) else None
     try:
         parts = mlx_offloadable_parts(model_dir, vision)
@@ -15994,7 +15995,15 @@ def _mlx_estimate_offload(
     *offload, step = offload
     route = {"offload": tuple(offload)} if any(offload) else {}
     route = {**route, "prefill_chunk": step} if step else route
-    return route, parts, alone and mlx_offload_route(alone)
+    return _with_chosen_prefill_chunk(route, request), parts, alone and mlx_offload_route(alone)
+
+
+def _with_chosen_prefill_chunk(route: dict, request) -> dict:
+    """The micro-batch an MLX load prefills with, as the load picks it: the offload planner's chunk is a ceiling."""
+    chosen = getattr(request, "n_ubatch", None)
+    if not chosen:
+        return route
+    return {**route, "prefill_chunk": min(chosen, route.get("prefill_chunk") or chosen)}
 
 
 def _mlx_offload_warning(info: dict) -> Optional[str]:
@@ -18328,6 +18337,7 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         and bool(entry.get("disable_vision")) == bool(getattr(request, "disable_vision", False))
         and entry.get("reasoning_budget", -1) == request.reasoning_budget
         and entry.get("reasoning_budget_message", "") == request.reasoning_budget_message
+        and entry.get("n_ubatch") == request.n_ubatch
         and all(
             normalize_mlx_offload(
                 ((entry.get("mlx_offload") or {}).get(part) or {}).get("requested")
@@ -20850,6 +20860,7 @@ async def _load_model_impl(
                 disable_vision = request.disable_vision,
                 reasoning_budget = request.reasoning_budget,
                 reasoning_budget_message = request.reasoning_budget_message,
+                mlx_prefill_step = request.n_ubatch,
                 load_cancel_event = load_cancel_event,
                 on_prior_worker_released = _release_chat_after_teardown,
                 post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,

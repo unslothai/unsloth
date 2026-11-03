@@ -32,7 +32,9 @@ export function llamaServerLoadFields(
     ...(target.isGguf && settings.nBatch != null
       ? { n_batch: settings.nBatch }
       : {}),
-    ...(target.isGguf && settings.nUbatch != null
+    // MLX reads it as its prefill step.
+    ...((target.isGguf || (target.isMlx === true && !target.isDiffusion)) &&
+    settings.nUbatch != null
       ? { n_ubatch: settings.nUbatch }
       : {}),
     ...(llamaServer ? serverTuningLoadPayload(settings) : {}),

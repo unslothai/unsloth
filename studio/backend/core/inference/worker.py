@@ -831,6 +831,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["disable_vision"] = bool(config.get("disable_vision"))
                 load_kwargs["reasoning_budget"] = config.get("reasoning_budget", -1)
                 load_kwargs["reasoning_budget_message"] = config.get("reasoning_budget_message", "")
+                load_kwargs["prefill_step"] = config.get("mlx_prefill_step")
             from utils.security.file_security import escaping_weight_references
 
             # Right before the load: the folder may have been edited since the route checked it.
@@ -946,6 +947,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "vision_disabled_by_user",
                         "reasoning_budget",
                         "reasoning_budget_message",
+                        "n_ubatch",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
                         "speculative_type",

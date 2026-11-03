@@ -2126,7 +2126,7 @@ export function SharedComposer({
             ? (ownConfig.nBatch ?? null)
             : null;
         const committedNUbatch =
-          targetIsGguf && !(resp.is_diffusion ?? false)
+          (targetIsGguf || targetIsMlx) && !(resp.is_diffusion ?? false)
             ? (ownConfig.nUbatch ?? null)
             : null;
         useChatRuntimeStore.setState({

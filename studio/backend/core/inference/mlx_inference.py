@@ -74,7 +74,7 @@ VLM_PREFILL_STEP = 2048
 VLM_PROMPT_CACHE_ENTRIES = 6
 
 
-def _prefill_layer_step(model, step):
+def _prefill_layer_step(model, step, own):
     if not step:
         return None
     try:
@@ -82,8 +82,14 @@ def _prefill_layer_step(model, step):
         wide = wide_prefill_step(model)
     except Exception:
         return None
-    own = vlm_prefill_step()
     return own if wide == own and step % own == 0 else None
+
+
+def _prefill_choice(planned, chosen):
+    """(step, grid) for a load. Memory was priced at the offload planner's chunk, so a larger chosen
+    step never replaces it, and the grid keeps its default rather than outgrow it."""
+    step = min(filter(None, (planned, chosen)), default = None)
+    return step, chosen if chosen and (planned is None or chosen <= planned) else None
 
 
 def vlm_prefill_step():
@@ -5364,6 +5370,7 @@ class MLXInferenceBackend:
         self._turboquant_refusal = ""
         self._speculative_draft = None
         self._prefill_step = None
+        self._prefill_grid = None
         self._prefill_layer_step = None
         self._reasoning_budget = -1
         self._reasoning_budget_message = ""
@@ -5470,6 +5477,7 @@ class MLXInferenceBackend:
             bool(self._ane_prefill.get("active")),
             bool(self._fast_verify.get("active")),
             self._prefill_step,
+            getattr(self, "_prefill_grid", None),
             self._resume_load_args,
         )
 
@@ -5635,7 +5643,7 @@ class MLXInferenceBackend:
                 releases_unserved = bool(images),
                 media_block = block,
                 policy_hosts = (self._model, language_model) if block is not None else (),
-                step = vlm_prefill_step(),
+                step = self._grid_step(),
                 window = self._session_window(),
             )
         except Exception as exc:
@@ -5694,7 +5702,7 @@ class MLXInferenceBackend:
             make_cache,
             media_ids,
             releases_unserved = bool(images),
-            step = vlm_prefill_step(),
+            step = self._grid_step(),
             alone = alone,
         )
 
@@ -5861,7 +5869,11 @@ class MLXInferenceBackend:
             and not self._kv_runtime_quant_kwargs()
         ):
             return step
-        return vlm_prefill_step()
+        return self._grid_step()
+
+    def _grid_step(self):
+        """The prefill grid every request of this load runs on: the chosen micro-batch, else mlx-vlm's own."""
+        return getattr(self, "_prefill_grid", None) or vlm_prefill_step()
 
     def _budgets_reasoning(self) -> bool:
         return getattr(self, "_reasoning_budget", -1) >= 0
@@ -5883,7 +5895,7 @@ class MLXInferenceBackend:
     ):
         step = getattr(self, "_prefill_step", None)
         if step is not None and grid:
-            step = vlm_prefill_step()
+            step = self._grid_step()
         if step is None or not (target is None or _takes_prefill_step(target)):
             return {}
         return {"prefill_step_size": step}
@@ -6129,6 +6141,7 @@ class MLXInferenceBackend:
         disable_vision = False,
         reasoning_budget = -1,
         reasoning_budget_message = "",
+        prefill_step = None,
     ) -> bool:
         import mlx.core as mx
 
@@ -6415,8 +6428,12 @@ class MLXInferenceBackend:
         _offload = _mlx_offload_status(offload, self._model)
         _offloaded = (_offload["ple"]["applied"], _offload["experts"]["applied"])
         _offloaded = {"offload": _offloaded} if any(_offloaded) else {}
-        self._prefill_step = offload["prefill_step"] if _offload["experts"]["applied"] else None
-        self._prefill_layer_step = _prefill_layer_step(self._model, self._prefill_step)
+        planned = offload["prefill_step"] if _offload["experts"]["applied"] else None
+        chosen_step = _positive_int(prefill_step)
+        self._prefill_step, self._prefill_grid = _prefill_choice(planned, chosen_step)
+        self._prefill_layer_step = _prefill_layer_step(
+            self._model, self._prefill_step, self._grid_step()
+        )
         if self._prefill_step:
             _offloaded["prefill_chunk"] = self._prefill_step
         _priceable = not (is_distributed or is_lora or dtype is not None)
@@ -6681,6 +6698,7 @@ class MLXInferenceBackend:
             "spec_fallback_reason": spec_reason,
             "reasoning_budget": self._reasoning_budget,
             "reasoning_budget_message": self._reasoning_budget_message,
+            "n_ubatch": chosen_step,
         }
         # Capture chat_template_info for the worker IPC reply and route capability classification.
         self._populate_chat_template_info(model_name, native_template)
@@ -6892,6 +6910,7 @@ class MLXInferenceBackend:
             del self.models[model_name]
         self._speculative_draft = None
         self._prefill_step = None
+        self._prefill_grid = None
         self._prefill_layer_step = None
         self._reasoning_budget = -1
         self._model = None
