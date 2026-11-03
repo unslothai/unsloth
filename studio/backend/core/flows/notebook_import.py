@@ -311,9 +311,25 @@ class _Reader(ast.NodeVisitor):
                         value = self.collections.get(k.value.id, _MISSING)
                     self.found["reward_weights"] = None if value is _MISSING else value
             loss = self.kw(node, "loss_type")
-            if fn == "GRPOConfig" and isinstance(loss, str):
-                level = self.kw(node, "importance_sampling_level")
-                self.tune["grpo_variant"] = "gspo" if level == "sequence" else loss.lower()
+            if fn == "GRPOConfig":
+                if isinstance(loss, str):
+                    level = self.kw(node, "importance_sampling_level")
+                    self.tune["grpo_variant"] = "gspo" if level == "sequence" else loss.lower()
+                high = self.kw(node, "epsilon_high")
+                if isinstance(high, (int, float)) and not isinstance(high, bool):
+                    self.tune["epsilon_high"] = float(high)
+                mask = self.kw(node, "mask_truncated_completions")
+                if isinstance(mask, bool):
+                    self.tune["mask_truncated_completions"] = mask
+            elif fn == "DPOConfig":
+                given = next((k.value for k in node.keywords if k.arg == "loss_type"), None)
+                value = loss if loss is not None else (_literal(given) if given else None)
+                # Studio's DPO trains on TRL's default sigmoid loss only.
+                if given is not None and value not in ("sigmoid", ["sigmoid"], ("sigmoid",)):
+                    self.approximated.append(
+                        f"DPOConfig(loss_type = {ast.unparse(given)}): not carried over, so DPO "
+                        "trains with the default sigmoid loss"
+                    )
         elif fn == "get_chat_template":
             template = self.kw(node, "chat_template")
             if isinstance(template, str):

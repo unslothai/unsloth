@@ -793,3 +793,45 @@ def test_a_dpo_completion_cap_is_reported_not_claimed():
     doc, report = notebook_import.read_notebook(nb, "Zephyr_(7B)-DPO.ipynb")
     assert "max_completion_length" not in _tune(doc)
     assert any("max_completion_length = 128" in line for line in report["approximated"])
+
+
+def test_grpo_clipping_and_truncation_masking_are_imported():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+        "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+        "def correctness_reward_func(prompts, completions, answer, **kwargs):\n    return []",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [correctness_reward_func], args = GRPOConfig("
+        "epsilon_high = 0.28, mask_truncated_completions = True))",
+    )
+    tune = _tune(notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")[0])
+    assert tune["epsilon_high"] == pytest.approx(0.28)
+    assert tune["mask_truncated_completions"] is True
+    off = nb.replace(b"True", b"False")
+    assert (
+        _tune(notebook_import.read_notebook(off, "Qwen3_(4B)-GRPO.ipynb")[0])[
+            "mask_truncated_completions"
+        ]
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "loss, reported",
+    [
+        ("'ipo'", True),
+        ("['sigmoid', 'bco_pair']", True),
+        ("LOSS", True),
+        ("'sigmoid'", False),
+        (None, False),
+    ],
+)
+def test_a_dpo_loss_other_than_sigmoid_is_reported(loss, reported):
+    args = f"loss_type = {loss}, max_steps = 5" if loss else "max_steps = 5"
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/zephyr-sft')",
+        "dataset = load_dataset('a/prefs', split = 'train')",
+        "LOSS = 'hinge'",
+        f"trainer = DPOTrainer(model = model, args = DPOConfig({args}))",
+    )
+    _doc, report = notebook_import.read_notebook(nb, "Zephyr_(7B)-DPO.ipynb")
+    assert any("loss_type" in line for line in report["approximated"]) is reported
