@@ -233,10 +233,19 @@ def _rewrite_audio_references(
             if not isinstance(value, str) or not value.lower().endswith(_AUDIO_EXTENSIONS):
                 return None
             direct = lookup.get(value)
-            if direct is not None:
+            if value.startswith("s3://"):
                 return direct
             relative_to_manifest = os.path.normpath(os.path.join(manifest_dir, value))
-            return lookup.get(relative_to_manifest.replace(os.sep, "/"))
+            relative = lookup.get(relative_to_manifest.replace(os.sep, "/"))
+            if value.startswith("./"):
+                return relative
+            if direct is not None and relative is not None and direct != relative:
+                raise ValueError(
+                    f"Ambiguous audio reference {value!r} in S3 manifest {manifest_key!r}: "
+                    "it matches different prefix-relative and manifest-relative files. "
+                    "Use './' for a manifest-relative path or a full 's3://' URI."
+                )
+            return direct if direct is not None else relative
 
         if manifest_path.lower().endswith(".csv"):
             _rewrite_csv_manifest(manifest_path, resolve)
