@@ -291,6 +291,7 @@ from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_cust
 from ._mamba_lora import patch_mamba_fused_lora
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
+from . import _generic_decode_graphs
 from .loader_utils import (
     _bnb_bits_requested,
     vlm_gradient_checkpointing_reentrant,
@@ -1537,6 +1538,37 @@ class _EagerDecodeSteps:
         return False
 
 
+class _GraphDecodeSteps(_EagerDecodeSteps):
+    """One generate() call over a static cache with decode CUDA graphs on: each one-token decode
+    step replays a captured graph of the eager forward (_generic_decode_graphs), else runs as
+    before (eagerly inside `unsloth_eager_decode()` for the models that compile their decode)."""
+
+    def __init__(self, model):
+        super().__init__(model)
+        self.eager_decodes = _eager_decodes(model)
+
+    def _forward(self, *args, **kwargs):
+        if not args and not torch.compiler.is_compiling():
+            out = _generic_decode_graphs.decode_step(
+                self.model, self.forward, kwargs, unsloth_eager_decode
+            )
+            if out is not None:
+                return out
+        if self.eager_decodes:
+            return super()._forward(*args, **kwargs)
+        return self.forward(*args, **kwargs)
+
+    def __enter__(self):
+        _generic_decode_graphs.begin(self.model)
+        return super().__enter__()
+
+    def __exit__(self, *exc):
+        try:
+            return super().__exit__(*exc)
+        finally:
+            _generic_decode_graphs.end(self.model)
+
+
 # One-token decode is slower on flex than SDPA, but prefill must stay on flex (its block mask skips tiles a
 # dense mask computes). The path is picked in prepare_inputs_for_generation, where the step's mask is built.
 _FLEX_GENERATE_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_GENERATE"
@@ -2386,7 +2418,17 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             kwargs["compile_config"] = compile_config
 
     decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
-    eager_scope = _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
+    if (
+        cache_implementation == "static"
+        and not force_dynamic_cache
+        and not compile_decode
+        and _generic_decode_graphs.wanted(self)
+    ):
+        eager_scope = _GraphDecodeSteps(self)
+    elif _eager_decodes(self):
+        eager_scope = _EagerDecodeSteps(self)
+    else:
+        eager_scope = contextlib.nullcontext()
     try:
         with (
             _NonFlexGenerate(self),

@@ -1,0 +1,640 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+
+"""CUDA-graph decode for any FastModel model generating over a transformers StaticCache.
+
+Each one-token decode step of `unsloth_base_fast_generate` replays a torch.cuda.CUDAGraph of the
+model's own eager forward. Every tensor argument (input ids, positions, cache position, the 4D mask
+generate builds for a static cache) is copied into a static buffer; the step's outputs are cloned out.
+Runs only where `_decode_graphs.enabled()` (RL rollouts, Studio, UNSLOTH_DECODE_CUDA_GRAPHS=1), on
+NVIDIA CUDA, and only over static attention layers whose update indexes the cache on the device:
+recurrent / linear-attention / offloaded caches and a sliding window about to fill stay eager.
+
+Per graph key (batch, argument structure / dtypes / devices, cache layout, autocast):
+  - the first step runs eagerly (it is the warm-up), then the same step is captured;
+  - a capture that syncs the host, or a step that changes cache host state beyond the length
+    counters, refuses the key for the process (eager from then on);
+  - the first replay of a key is compared bitwise against the eager step (same cache state);
+    a mismatch refuses the key.
+Graphs are dropped when the generate() call ends and when parameters, adapters or quant state change.
+UNSLOTH_DECODE_GENERIC_GRAPHS=0 turns this path off."""
+
+import collections
+import contextlib
+import os
+
+import torch
+
+from . import _decode_graphs as G
+
+__all__ = [
+    "wanted",
+    "begin",
+    "end",
+    "decode_step",
+    "release",
+    "stats",
+]
+
+_ATTR = "_unsloth_generic_decode_graphs"
+# Host-side length counters of the static cache layers (transformers 4.57: `cumulative_length` int on
+# sliding layers; 5.x: `cumulative_length_int` on sliding layers, `cumulative_length` device scalar).
+_COUNTERS = ("cumulative_length", "cumulative_length_int")
+# Tensor arguments larger than this are not copied into static buffers every step.
+_MAX_ARG_BYTES = 16 * 1024 * 1024
+_CONSTANTS = (bool, int, float, str, torch.dtype, torch.device)
+# Refused / validated keys remembered per model.
+_MAX_KEYS = 4096
+
+
+class _Refuse(Exception):
+    pass
+
+
+class _Cuda:
+    """The CUDA calls this path makes (tests swap in a host stand-in)."""
+
+    device_type = "cuda"
+
+    @staticmethod
+    def current_device():
+        return torch.cuda.current_device()
+
+    @staticmethod
+    def device(index):
+        return torch.cuda.device(index)
+
+    @staticmethod
+    def capturing():
+        return torch.cuda.is_current_stream_capturing()
+
+    @staticmethod
+    def pool():
+        return torch.cuda.graph_pool_handle()
+
+    @staticmethod
+    def new_stream():
+        return torch.cuda.Stream()
+
+    @staticmethod
+    def stream(stream):
+        return torch.cuda.stream(stream)
+
+    @staticmethod
+    def current_stream():
+        return torch.cuda.current_stream()
+
+    @staticmethod
+    def record(pool, fn, cache):
+        """(graph, fn()) with fn's launches captured into graph (`cache`: for host stand-ins)."""
+        graph = torch.cuda.CUDAGraph()
+        G._begin(graph, pool)
+        try:
+            out = fn()
+        finally:
+            if torch.cuda.is_current_stream_capturing():
+                G._end(graph)
+        return graph, out
+
+
+_BACKEND = _Cuda
+
+
+def _static_layer_types():
+    try:
+        from transformers import cache_utils
+    except Exception:
+        return (), ()
+    full = tuple(
+        t for t in (getattr(cache_utils, "StaticLayer", None),) if isinstance(t, type)
+    )
+    sliding = tuple(
+        t
+        for t in (
+            getattr(cache_utils, name, None)
+            for name in ("StaticSlidingWindowLayer", "SlidingWindowLayer", "ChunkedSlidingLayer")
+        )
+        if isinstance(t, type)
+    )
+    return full, sliding
+
+
+_FULL_LAYERS, _SLIDING_LAYERS = _static_layer_types()
+
+
+def wanted(model):
+    """Whether this generate() call routes its decode steps through decode_step()."""
+    if torch.compiler.is_compiling():
+        return False
+    if os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPHS", "1") == "0" or not G.enabled():
+        return False
+    # NVIDIA CUDA only: HIP replay is not verified against the eager step.
+    if torch.version.hip is not None or not torch.cuda.is_available():
+        return False
+    if not _FULL_LAYERS:
+        return False
+    device = getattr(model, "device", None)
+    return getattr(device, "type", None) == "cuda" and "forward" not in model.__dict__
+
+
+class _Entry:
+    __slots__ = ("graph", "leaves", "outputs", "validated")
+
+    def __init__(self, graph, leaves, outputs, validated):
+        self.graph = graph
+        self.leaves = leaves
+        self.outputs = outputs
+        self.validated = validated
+
+
+class _State:
+    def __init__(self):
+        self.graphs = collections.OrderedDict()
+        self.pool = None
+        self.stream = None
+        self.fingerprint = None
+        self.optimizer_steps = -1
+        self.recheck = True
+        self.cache_sig = None
+        # Keys refused for the process (host sync in capture, host state, validation mismatch).
+        self.refused = {}
+        self.validated = set()
+        self.moved = None
+        self.captures = 0
+        self.replays = 0
+        self.validations = 0
+        self.eager_steps = 0
+        self.refusals = collections.Counter()
+
+    def clear(self):
+        self.graphs.clear()
+        self.cache_sig = None
+        # A pool whose graphs are all freed is released by the allocator: never reuse its handle.
+        self.pool = None
+
+
+def _state(model):
+    state = model.__dict__.get(_ATTR)
+    if state is None:
+        state = model.__dict__[_ATTR] = _State()
+    return state
+
+
+def begin(model):
+    """Start of a generate() call: the first graph step re-checks the fingerprint."""
+    state = _state(model)
+    state.recheck = True
+    state.moved = None
+    # Keys carry the cache length, so they accumulate over calls of many lengths.
+    if len(state.refused) + len(state.validated) > _MAX_KEYS:
+        state.refused.clear()
+        state.validated.clear()
+
+
+def end(model):
+    """End of a generate() call: its graphs read this call's cache, so free them."""
+    state = model.__dict__.get(_ATTR)
+    if state is not None:
+        state.clear()
+
+
+def release(model):
+    for module in model.modules():
+        state = module.__dict__.get(_ATTR)
+        if state is not None:
+            state.clear()
+            state.fingerprint = None
+
+
+def stats(model):
+    state = getattr(model, "__dict__", {}).get(_ATTR)
+    if state is None:
+        return {}
+    return {
+        "captures": state.captures,
+        "replays": state.replays,
+        "validations": state.validations,
+        "eager_steps": state.eager_steps,
+        "graphs": len(state.graphs),
+        "refusals": dict(state.refusals),
+        "refused_keys": len(state.refused),
+    }
+
+
+def _refusal(state, reason):
+    state.refusals[reason] += 1
+    state.eager_steps += 1
+    return None
+
+
+def _cache_reason(cache):
+    """None when every layer of `cache` is a static attention layer this path can replay."""
+    if cache is None:
+        return "no cache"
+    try:
+        from transformers import StaticCache
+    except Exception:
+        return "no StaticCache"
+    if not isinstance(cache, StaticCache):
+        return f"cache {type(cache).__name__}"
+    if getattr(cache, "offloading", False):
+        return "offloaded cache"
+    layers = getattr(cache, "layers", None)
+    if not layers:
+        return "legacy cache"
+    for layer in layers:
+        kind = type(layer)
+        # Exact types: 5.x linear-attention / indexed layers subclass StaticLayer.
+        if kind not in _FULL_LAYERS and kind not in _SLIDING_LAYERS:
+            return f"layer {kind.__name__}"
+        keys = getattr(layer, "keys", None)
+        if not getattr(layer, "is_initialized", False) or not isinstance(keys, torch.Tensor):
+            return "uninitialized layer"
+        if keys.device.type != _BACKEND.device_type:
+            return "cache not on CUDA"
+    return None
+
+
+def _host_counter(layer):
+    for name in ("cumulative_length_int", "cumulative_length"):
+        value = layer.__dict__.get(name)
+        if type(value) is int:
+            return value
+    return None
+
+
+def _window_reason(cache, q_len):
+    # A sliding layer updates by index only while the window does not fill this step; once full it
+    # rolls, which a replay cannot repeat with a moving host counter.
+    for layer in cache.layers:
+        if type(layer) in _SLIDING_LAYERS:
+            count = _host_counter(layer)
+            if count is None:
+                return "sliding layer without host counter"
+            if count + q_len > layer.max_cache_len:
+                return "sliding window full"
+    return None
+
+
+def _host_state(cache):
+    """Non-tensor scalar attributes of the cache and its layers."""
+    out = []
+    for owner in (cache, *cache.layers):
+        out.append(
+            {k: v for k, v in owner.__dict__.items() if v is None or type(v) in _CONSTANTS}
+        )
+    return out
+
+
+def _host_state_reason(before, after, q_len):
+    for b, a in zip(before, after):
+        for name in set(b) | set(a):
+            if b.get(name) == a.get(name):
+                continue
+            if name in _COUNTERS and type(b.get(name)) is int and a.get(name) == b[name] + q_len:
+                continue
+            return f"cache host state {name}"
+    return None
+
+
+def _snapshot(cache):
+    """Length counters (host ints, device scalars) a step advances; restored by _restore."""
+    host, device = [], []
+    for layer in cache.layers:
+        for name in _COUNTERS:
+            value = layer.__dict__.get(name)
+            if type(value) is int:
+                host.append((layer, name, value))
+            elif isinstance(value, torch.Tensor) and value.numel() == 1:
+                device.append((value, value.clone()))
+    return host, device
+
+
+def _restore(snapshot):
+    host, device = snapshot
+    for layer, name, value in host:
+        layer.__dict__[name] = value
+    for live, saved in device:
+        live.copy_(saved)
+
+
+def _advance(cache, q_len):
+    # The replay advanced the device counters; the host ones are advanced here, as the eager update.
+    for layer in cache.layers:
+        for name in _COUNTERS:
+            value = layer.__dict__.get(name)
+            if type(value) is int:
+                layer.__dict__[name] = value + q_len
+
+
+def _spec(value, leaves, cache):
+    """Hashable structure of a forward argument; its tensors appended to `leaves` in order."""
+    if isinstance(value, torch.Tensor):
+        if value.requires_grad or value.device.type != _BACKEND.device_type:
+            raise _Refuse("tensor argument")
+        if value.numel() * value.element_size() > _MAX_ARG_BYTES:
+            raise _Refuse("large tensor argument")
+        leaves.append(value)
+        return ("T", tuple(value.shape), value.dtype, value.device)
+    if value is cache:
+        return ("C",)
+    if value is None or type(value) in _CONSTANTS:
+        return ("V", value)
+    if type(value) in (tuple, list):
+        return (type(value).__name__, tuple(_spec(v, leaves, cache) for v in value))
+    if type(value) is dict and all(type(k) is str for k in value):
+        return ("D", tuple((k, _spec(v, leaves, cache)) for k, v in value.items()))
+    raise _Refuse(f"argument {type(value).__name__}")
+
+
+def _build(value, buffers, cache):
+    """`value` with its tensors replaced by the next static buffers (same order as _spec)."""
+    if isinstance(value, torch.Tensor):
+        return next(buffers)
+    if type(value) in (tuple, list):
+        return type(value)(_build(v, buffers, cache) for v in value)
+    if type(value) is dict:
+        return {k: _build(v, buffers, cache) for k, v in value.items()}
+    return value
+
+
+def _map_outputs(value, fn):
+    if isinstance(value, torch.Tensor):
+        return fn(value)
+    if isinstance(value, collections.OrderedDict) and hasattr(value, "to_tuple"):
+        # transformers ModelOutput: rebuilt with the same fields set.
+        return type(value)(**{k: _map_outputs(v, fn) for k, v in value.items()})
+    if type(value) in (tuple, list):
+        return type(value)(_map_outputs(v, fn) for v in value)
+    if type(value) is dict:
+        return {k: _map_outputs(v, fn) for k, v in value.items()}
+    return value
+
+
+def _tensors(value, out):
+    _map_outputs(value, lambda t: out.append(t) or t)
+    return out
+
+
+def _outputs_equal(a, b):
+    xs, ys = _tensors(a, []), _tensors(b, [])
+    if len(xs) != len(ys):
+        return False
+    for x, y in zip(xs, ys):
+        if x.shape != y.shape or x.dtype != y.dtype:
+            return False
+        if not torch.equal(x, y):
+            same_nan = torch.isnan(x) & torch.isnan(y) if x.is_floating_point() else None
+            if same_nan is None or not torch.equal(torch.where(same_nan, 0, x), torch.where(same_nan, 0, y)):
+                return False
+    return True
+
+
+def _fingerprint(model):
+    """Parameters (address, dtype, shape, in-place version), quant state and adapter state; None
+    when the model is not on exactly one CUDA device."""
+    from ..kernels import utils as K
+
+    items = []
+    devices = set()
+    for p in model.parameters():
+        devices.add(p.device)
+        items.append((p.data_ptr(), p.dtype, tuple(p.shape), G._version(p)))
+    if len(devices) != 1 or next(iter(devices)).type != _BACKEND.device_type:
+        return None
+    for b in model.buffers():
+        items.append((b.data_ptr(), b.dtype, tuple(b.shape)))
+    for module in model.modules():
+        weight = getattr(module, "weight", None)
+        quant_state = getattr(weight, "quant_state", None)
+        if quant_state is not None:
+            absmax = getattr(quant_state, "absmax", None)
+            items.append(
+                (id(quant_state), absmax.data_ptr() if isinstance(absmax, torch.Tensor) else None)
+            )
+    adapters = G._adapter_state(model)
+    if adapters is None:
+        return None
+    items.extend(adapters)
+    items.append(K._OPTIMIZER_STEPS)
+    return tuple(items)
+
+
+# Models whose forward derives decode positions from `cache_position[0] == 0` (a host sync) when
+# position_ids is None (transformers 4.x Qwen3-VL; 5.x builds them in prepare_inputs_for_generation).
+_MROPE_MODEL_TYPES = ("qwen3_vl", "qwen3_vl_moe")
+
+
+def _mrope_positions(model, kwargs):
+    """kwargs with the decode position_ids the model's forward would derive, computed outside the
+    graph (same ops, so the same values); unchanged when they do not apply."""
+    if kwargs.get("position_ids") is not None:
+        return kwargs
+    if getattr(getattr(model, "config", None), "model_type", None) not in _MROPE_MODEL_TYPES:
+        return kwargs
+    inner = getattr(model, "model", None)
+    deltas = getattr(inner, "rope_deltas", None)
+    cache_position = kwargs.get("cache_position")
+    ids = kwargs.get("input_ids")
+    if ids is None:
+        ids = kwargs.get("inputs_embeds")
+    if not isinstance(deltas, torch.Tensor) or not isinstance(cache_position, torch.Tensor):
+        return kwargs
+    batch_size, seq_length = ids.shape[0], ids.shape[1]
+    if deltas.shape[0] == 0 or batch_size % deltas.shape[0] != 0:
+        return kwargs
+    delta = (cache_position[0] + deltas).to(ids.device)
+    position_ids = torch.arange(seq_length, device = ids.device)
+    position_ids = position_ids.view(1, -1).expand(batch_size, -1)
+    delta = delta.repeat_interleave(batch_size // delta.shape[0], dim = 0)
+    position_ids = position_ids.add(delta)
+    position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
+    return {**kwargs, "position_ids": position_ids}
+
+
+def _autocast_no_cache(autocast):
+    enabled, dtype = autocast
+    if not enabled:
+        return contextlib.nullcontext()
+    # No autocast weight cache: a cast cached during capture would be freed into the graph's pool.
+    return torch.autocast("cuda", dtype = dtype, enabled = True, cache_enabled = False)
+
+
+def decode_step(
+    model,
+    forward,
+    kwargs,
+    eager_regions = None,
+):
+    """The outputs of one decode step run through a CUDA graph (captured on first use), or None for
+    the caller's eager step. `forward` is the model's real forward; `eager_regions` an optional
+    context manager (zoo `unsloth_eager_decode`) every graph-path step runs inside."""
+    if torch.compiler.is_compiling() or torch.is_grad_enabled():
+        return None
+    if _BACKEND.capturing():
+        return None
+    ids = kwargs.get("input_ids")
+    if ids is None:
+        ids = kwargs.get("inputs_embeds")
+    if (
+        not isinstance(ids, torch.Tensor)
+        or ids.dim() < 2
+        or ids.shape[1] != 1
+        or ids.device.type != _BACKEND.device_type
+    ):
+        return None
+    state = _state(model)
+    cache = kwargs.get("past_key_values")
+    reason = _cache_reason(cache)
+    if reason is None:
+        reason = _window_reason(cache, 1)
+    if reason is not None:
+        return _refusal(state, reason)
+    index = ids.device.index
+    if index is not None and index != _BACKEND.current_device():
+        with _BACKEND.device(index):
+            return decode_step(model, forward, kwargs, eager_regions)
+
+    from ..kernels import utils as K
+
+    if state.recheck or state.optimizer_steps != K._OPTIMIZER_STEPS:
+        fingerprint = _fingerprint(model)
+        if fingerprint is None:
+            state.clear()
+            return _refusal(state, "not one CUDA device / adapters")
+        if fingerprint != state.fingerprint:
+            state.clear()
+            state.fingerprint = fingerprint
+        state.recheck = False
+        state.optimizer_steps = K._OPTIMIZER_STEPS
+    elif state.fingerprint is None:
+        return _refusal(state, "not one CUDA device / adapters")
+
+    kwargs = _mrope_positions(model, kwargs)
+    leaves = []
+    try:
+        spec = tuple((k, _spec(v, leaves, cache)) for k, v in kwargs.items())
+    except _Refuse as error:
+        return _refusal(state, str(error))
+    layout = tuple(
+        (type(layer).__name__, layer.max_cache_len, tuple(layer.keys.shape), layer.keys.dtype)
+        for layer in cache.layers
+    )
+    autocast = G._autocast_state()
+    key = (spec, layout, autocast, torch.is_inference_mode_enabled(), eager_regions is not None)
+    refused = state.refused.get(key)
+    if refused is not None:
+        return _refusal(state, refused)
+    # Graphs address this cache's tensors: a new cache (a new generate call) re-captures, while
+    # the same cache moved in place (beam search reorders it) stays eager for the rest of the call.
+    cache_sig = (id(cache),) + tuple(
+        (layer.keys.data_ptr(), layer.values.data_ptr()) for layer in cache.layers
+    )
+    if cache_sig != state.cache_sig:
+        moved = state.cache_sig is not None and state.cache_sig[0] == id(cache)
+        state.clear()
+        if moved or state.moved == id(cache):
+            state.moved = id(cache)
+            return _refusal(state, "cache moved")
+        state.cache_sig = cache_sig
+    regions = eager_regions() if eager_regions is not None else contextlib.nullcontext()
+    with regions, _autocast_no_cache(autocast):
+        entry = state.graphs.get(key)
+        if entry is None:
+            return _capture(state, key, forward, kwargs, leaves, cache)
+        for buffer, leaf in zip(entry.leaves, leaves):
+            if buffer is not leaf:
+                buffer.copy_(leaf)
+        if not entry.validated:
+            return _validate(state, key, entry, forward, kwargs, cache)
+        entry.graph.replay()
+        _advance(cache, 1)
+        state.replays += 1
+        return _map_outputs(entry.outputs, torch.Tensor.clone)
+
+
+def _capture(state, key, forward, kwargs, leaves, cache):
+    """Runs this step eagerly (warm-up, its outputs are returned), then captures it."""
+    if len(state.graphs) >= G.MAX_GRAPHS:
+        sig = state.cache_sig
+        state.clear()
+        state.cache_sig = sig
+    if state.stream is not None and state.stream.device.index != _BACKEND.current_device():
+        state.stream = None
+        state.pool = None
+    if state.pool is None:
+        state.pool = _BACKEND.pool()
+    if state.stream is None:
+        state.stream = _BACKEND.new_stream()
+    stream = state.stream
+    with G._no_inference_tensors():
+        buffers = [torch.empty_like(leaf) for leaf in leaves]
+    for buffer, leaf in zip(buffers, leaves):
+        buffer.copy_(leaf)
+    it = iter(buffers)
+    static_kwargs = {k: _build(v, it, cache) for k, v in kwargs.items()}
+    before = _host_state(cache)
+    stream.wait_stream(_BACKEND.current_stream())
+    graph = None
+    try:
+        with _BACKEND.stream(stream):
+            # The real step: JIT, cuBLAS workspaces and lazy caches are built outside the capture.
+            outputs = forward(**static_kwargs)
+            stream.synchronize()
+            reason = _host_state_reason(before, _host_state(cache), 1)
+            if reason is not None:
+                state.refused[key] = reason
+                state.refusals[reason] += 1
+                return outputs
+            after = _snapshot(cache)
+            graph = False
+            try:
+                graph, static_outputs = _BACKEND.record(
+                    state.pool, lambda: forward(**static_kwargs), cache
+                )
+            finally:
+                # Capturing ran the Python update again: put the host counters back.
+                _restore((after[0], []))
+    except Exception as error:
+        if graph is None:
+            # The eager step itself failed: as without graphs.
+            raise
+        reason = f"capture failed: {type(error).__name__}"
+        state.pool = None
+        state.refused[key] = reason
+        state.refusals[reason] += 1
+        if os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_STRICT", "0") == "1":
+            raise
+        return outputs
+    finally:
+        # Also after a failed capture: the eager steps must not race the side stream.
+        _BACKEND.current_stream().wait_stream(stream)
+    state.graphs[key] = _Entry(graph, buffers, static_outputs, key in state.validated)
+    state.captures += 1
+    return outputs
+
+
+def _validate(state, key, entry, forward, kwargs, cache):
+    """First replay of a key: the eager step and the replay from the same cache state must agree
+    bitwise; else the key is refused and the eager result kept."""
+    state.validations += 1
+    start = _snapshot(cache)
+    eager = forward(**kwargs)
+    _restore(start)
+    entry.graph.replay()
+    _advance(cache, 1)
+    if _outputs_equal(eager, entry.outputs):
+        entry.validated = True
+        state.validated.add(key)
+        state.replays += 1
+        return eager
+    # The replay wrote the same cache rows: redo the eager step over them.
+    reason = "validation mismatch"
+    state.refused[key] = reason
+    state.refusals[reason] += 1
+    state.graphs.pop(key, None)
+    _restore(start)
+    eager = forward(**kwargs)
+    if os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_STRICT", "0") == "1":
+        raise RuntimeError("Unsloth: decode CUDA graph replay differs from the eager step")
+    return eager
