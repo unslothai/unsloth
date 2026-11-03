@@ -744,20 +744,33 @@ class MultiLoraExpertParam(nn.Module):
 
     def grouped_stacks(self, reversed_io: bool, dtype: torch.dtype) -> tuple:
         """Every adapter's factors as (E*(U+1), in, R) and (E*(U+1), R, out), group e*(U+1) + u, R the largest rank
-        rounded up to 8 (zero padding is exact); scales of magnitude <= 1 stay folded, group e*(U+1) + U is zero."""
+        rounded up to 8, plus per-group output scales; group e*(U+1) + U is zero."""
         R = -(-max(self.ranks) // 8) * 8
-        firsts, seconds = [], []
+        firsts, seconds, scales = [], [], []
+        scale_dtype = torch.float64 if dtype == torch.float64 else torch.float32
         for u in range(self.num_adapters):
             first, second, scale, _ = self.grouped_mm_factors(u, reversed_io)
             r = first.shape[-1]
             firsts.append(F.pad(first.to(dtype), (0, R - r)))
             second = second.to(dtype)
-            if abs(scale) <= 1:
-                second = second * scale
+            scaled = second * scale
+            if abs(scale) > 1:
+                # Keep the original gradient path unless folding actually overflows this expert.
+                finite = torch.isfinite(scaled).all(dim = (-2, -1), keepdim = True)
+                second = torch.where(finite, scaled, second)
+                scales.append(torch.where(finite.flatten(), 1.0, scale).to(scale_dtype))
+            else:
+                second = scaled
+                scales.append(torch.ones(second.shape[0], device = second.device, dtype = scale_dtype))
             seconds.append(F.pad(second, (0, 0, 0, R - r)))
         firsts.append(torch.zeros_like(firsts[0]))
         seconds.append(torch.zeros_like(seconds[0]))
-        return torch.stack(firsts, 1).flatten(0, 1), torch.stack(seconds, 1).flatten(0, 1)
+        scales.append(torch.zeros_like(scales[0]))
+        return (
+            torch.stack(firsts, 1).flatten(0, 1),
+            torch.stack(seconds, 1).flatten(0, 1),
+            torch.stack(scales, 1).flatten(),
+        )
 
     def folded(self, W: torch.Tensor, adapter: int, transposed: bool) -> torch.Tensor:
         """W + delta in W's dtype, as PEFT's ParamWrapper folds it (one baddbmm, autocast off)."""
@@ -1183,17 +1196,10 @@ class MultiLoraExperts(nn.Module):
         )
         if name in self.adapters:
             adapter = self.adapters[name]
-            first, second = adapter.grouped_stacks(self.reversed_io, dtype)
+            first, second, scales = adapter.grouped_stacks(self.reversed_io, dtype)
             h = moe_utils._grouped_mm_with_backward_fix(x, first, offs_pair).contiguous()
             delta = moe_utils._grouped_mm_with_backward_fix(h, second, offs_pair)
-            # Amplify after GEMM; attenuate the factor so an unscaled GEMM cannot newly overflow.
-            if any(abs(s) > 1 for s in adapter.scales):
-                scales = torch.tensor(
-                    [*(s if abs(s) > 1 else 1.0 for s in adapter.scales), 0.0],
-                    device = x.device,
-                    dtype = torch.float64 if dtype == torch.float64 else torch.float32,
-                )
-                delta = (delta * scales[pair_slots].unsqueeze(-1)).to(dtype)
+            delta = (delta * scales[pair_slots].unsqueeze(-1)).to(dtype)
             y = y + delta
         return y
 
@@ -1226,7 +1232,7 @@ class MultiLoraExperts(nn.Module):
         slot = torch.where(adapter_ids < 0, U, adapter_ids).to(index.device).unsqueeze(1)
         key = (torch.where(valid, index, 0) * Ug + torch.where(valid, slot, U)).reshape(-1)
         order = torch.argsort(key, stable = True)
-        pair_slots = key[order] % Ug
+        pair_slots = key[order]
         # Fixed-size counts: bincount's output size depends on the data, so it syncs on CUDA and breaks a compiled graph.
         counts = torch.zeros(E * Ug, dtype = torch.int32, device = key.device)
         counts.scatter_add_(0, key, torch.ones_like(key, dtype = torch.int32))

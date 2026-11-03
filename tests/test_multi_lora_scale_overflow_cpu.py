@@ -44,8 +44,13 @@ def _grouped_mm(x, weight, offsets):
 
 
 @pytest.mark.parametrize("reversed_io", [False, True])
-@pytest.mark.parametrize("scale", [-0.25, 0.25, 2.0, 16.0, 100000.0])
-def test_grouped_projection_scales_output_without_fp16_factor_overflow(reversed_io, scale):
+@pytest.mark.parametrize(
+    "scale,small_factors",
+    [(s, False) for s in [-0.25, 0.25, 2.0, 16.0, 100000.0]] + [(100000.0, True)],
+)
+def test_grouped_projection_scales_output_without_fp16_factor_overflow(
+    reversed_io, scale, small_factors
+):
     ml = _load_experts()
     base = nn.Module()
     base.gate_up_proj = nn.Parameter(torch.zeros(1, 16, 8, dtype = torch.float16))
@@ -58,6 +63,8 @@ def test_grouped_projection_scales_output_without_fp16_factor_overflow(reversed_
         if scale == 100000
         else (0.01, 40000.0 if scale == 2 or abs(scale) < 1 else 5000.0)
     )
+    if small_factors:
+        first_value, second_value = 0.001, 0.001
     with torch.no_grad():
         for u, (A, B) in enumerate(zip(adapter.lora_A, adapter.lora_B)):
             value = 1.0 if abs(scale) < 1 and u == 0 else first_value
@@ -66,7 +73,7 @@ def test_grouped_projection_scales_output_without_fp16_factor_overflow(reversed_
     in_dim, out_dim = (16, 8) if reversed_io else (8, 16)
     x = torch.full(
         (3, in_dim),
-        4 / in_dim if abs(scale) < 1 else 0.01,
+        1.0 if small_factors else 4 / in_dim if abs(scale) < 1 else 0.01,
         dtype = torch.float16,
         requires_grad = True,
     )
@@ -97,12 +104,12 @@ def test_grouped_projection_scales_output_without_fp16_factor_overflow(reversed_
     for u in range(2):
         a, b, scaling, _ = adapter.grouped_mm_factors(u, reversed_io)
         h = x[u : u + 1] @ a[0].half()
-        if abs(scaling) <= 1:
+        if abs(scaling) <= 1 or small_factors:
             refs.append(h @ (b[0].half() * scaling))
         else:
             refs.append((h @ b[0].half()) * scaling)
     ref = torch.cat([*refs, x[2:3] @ torch.zeros(in_dim, out_dim, dtype = x.dtype)])
-    grad = torch.full_like(got, 1e-6)
+    grad = torch.full_like(got, 1.0 if small_factors else 1e-6)
     leaves = [x, *adapter.lora_A, *adapter.lora_B]
     got_grads = torch.autograd.grad(got, leaves, grad, retain_graph = True)
     ref_grads = torch.autograd.grad(ref, leaves, grad)
