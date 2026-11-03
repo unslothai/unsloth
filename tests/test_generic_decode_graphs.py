@@ -218,6 +218,68 @@ def test_counts_captures_refusals_and_recompiles_separately(host, llama):
     assert s["captures"] == 2 and s["max_captures_per_key"] == 1, s
 
 
+def test_graph_path_runs_the_compiled_variant_eager_runs(host, llama):
+    """A compiled region on the step's arguments (zoo compiles create_causal_mask) guards on their
+    inference-ness and strides: the graph path must hit the variant the eager step compiled, never
+    a new one, and give the eager logits. (Dynamo's global-state guard also covers the autocast cache
+    flag, so the step keeps the ambient autocast; CUDA autocast is not reachable on the host.)"""
+    from torch._dynamo.utils import counters
+
+    seen = []
+
+    @torch.compile(backend = "eager", dynamic = False)
+    def region(mask, position):
+        # A different variant would add to the logits: the tokens would move.
+        flip = 0.0 if mask.is_inference() else 1000.0
+        return mask.float().mean() * 0 + position.float().mean() * 0 + flip
+
+    def pre_hook(module, args, kwargs):
+        seen.append(kwargs.get("attention_mask"))
+        seen.append(kwargs.get("cache_position"))
+
+    def head_hook(module, args, out):
+        mask, position = seen[-2], seen[-1]
+        if mask is None or position is None:
+            return out
+        if isinstance(mask, dict):
+            mask = next(iter(mask.values()))
+        return out + region(mask, position)
+
+    handles = [
+        llama.model.register_forward_pre_hook(pre_hook, with_kwargs = True),
+        llama.lm_head.register_forward_hook(head_hook),
+    ]
+    try:
+        _fresh(llama)
+        ids, mask = _ids(llama, 3, pad = 2)
+        eager = _generate(llama, ids, mask, False)
+        before = counters["stats"]["unique_graphs"]
+        graphed = _generate(llama, ids, mask, True)
+        # No Dynamo variant beyond the eager step's: same inference-ness / strides / global state.
+        assert counters["stats"]["unique_graphs"] == before
+        assert torch.equal(eager, graphed)
+        s = GG.stats(llama)
+        assert s["replays"] == 8 and not s["refusals"], s
+    finally:
+        for h in handles:
+            h.remove()
+
+
+def test_static_buffers_match_their_arguments(host):
+    with torch.inference_mode():
+        x = torch.arange(6.0).view(2, 3)
+        wide = torch.zeros(1, 4).expand(3, 4)  # broadcast, as Qwen3-VL positions
+    assert GG._buffer_like(x).is_inference()
+    assert not GG._buffer_like(torch.zeros(2)).is_inference()
+    t = torch.zeros(4, 6).t()  # non-contiguous
+    assert GG._buffer_like(t).stride() == t.stride()
+    compact = GG._compact(wide)
+    assert compact.shape == (1, 4)
+    assert GG._buffer_like(compact).expand(wide.shape).stride() == wide.stride()
+    spec = GG._spec(t, [], None)
+    assert t.stride() in spec and False in spec
+
+
 def test_second_call_recaptures_without_revalidating(host, llama):
     _fresh(llama)
     ids, mask = _ids(llama)

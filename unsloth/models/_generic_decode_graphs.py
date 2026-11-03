@@ -16,6 +16,9 @@ Per graph key (batch, argument structure / dtypes / devices, cache layout, autoc
     counters, refuses the key for the process (eager from then on);
   - the first replay of a key is compared bitwise against the eager step (same cache state);
     a mismatch refuses the key.
+The step runs in the eager step's exact state (inference-ness and strides of every argument, ambient
+autocast and its cache flag, compiled regions as eager runs them): Dynamo guards on all of these, and a
+different compiled variant rounds differently.
 Graphs are dropped when the generate() call ends and when parameters, adapters or quant state change.
 UNSLOTH_DECODE_GENERIC_GRAPHS_VALIDATE_ALL=1 (debug) compares every replay with the eager step and
 records the first mismatching step, max abs logit diff, max KL and top-1 disagreements (stats()["check"]).
@@ -406,7 +409,11 @@ def _spec(value, leaves, cache):
         if value.numel() * value.element_size() > _MAX_ARG_BYTES:
             raise _Refuse("large tensor argument")
         leaves.append(value)
-        return ("T", tuple(value.shape), value.dtype, value.device)
+        # Inference-ness is part of the key: compiled regions (zoo-compiled create_causal_mask) guard
+        # on the dispatch key set and pick another variant for a non-inference input.
+        return (
+            "T", tuple(value.shape), value.stride(), value.dtype, value.device, value.is_inference()
+        )
     if value is cache:
         return ("C",)
     if value is None or type(value) in _CONSTANTS:
@@ -523,14 +530,6 @@ def _mrope_positions(model, kwargs):
     return {**kwargs, "position_ids": position_ids}
 
 
-def _autocast_no_cache(autocast):
-    enabled, dtype = autocast
-    if not enabled:
-        return contextlib.nullcontext()
-    # No autocast weight cache: a cast cached during capture would be freed into the graph's pool.
-    return torch.autocast("cuda", dtype = dtype, enabled = True, cache_enabled = False)
-
-
 def decode_step(
     model,
     forward,
@@ -594,11 +593,16 @@ def decode_step(
         spec = tuple((k, _spec(v, leaves, cache)) for k, v in kwargs.items())
     except _Refuse as error:
         return _refusal(state, str(error))
+    if not torch.is_inference_mode_enabled() and any(leaf.is_inference() for leaf in leaves):
+        # Their static buffers could not be refilled outside inference mode.
+        return _refusal(state, "inference tensor outside inference mode")
     layout = tuple(
         (type(layer).__name__, layer.max_cache_len, tuple(layer.keys.shape), layer.keys.dtype)
         for layer in cache.layers
     )
-    autocast = G._autocast_state()
+    # The ambient autocast state, cache flag included (Dynamo guards on it too). Casts the autocast
+    # cache holds live until the outermost autocast exits, which in generate() is after end().
+    autocast = (G._autocast_state(), torch.is_autocast_cache_enabled())
     key = (spec, layout, autocast, torch.is_inference_mode_enabled(), eager_regions is not None)
     refused = state.refused.get(key)
     if refused is not None:
@@ -616,19 +620,33 @@ def decode_step(
             return _refusal(state, "cache moved")
         state.cache_sig = cache_sig
     regions = eager_regions() if eager_regions is not None else contextlib.nullcontext()
-    with regions, _autocast_no_cache(autocast):
+    with regions:
         entry = state.graphs.get(key)
         if entry is None:
             return _capture(state, key, forward, kwargs, leaves, cache)
         for buffer, leaf in zip(entry.leaves, leaves):
-            if buffer is not leaf:
-                buffer.copy_(leaf)
+            buffer.copy_(_compact(leaf))
         if not entry.validated or _validate_all():
             return _validate(state, key, entry, forward, kwargs, cache)
         entry.graph.replay()
         _advance(cache, 1)
         state.replays += 1
         return _map_outputs(entry.outputs, torch.Tensor.clone)
+
+
+def _compact(leaf):
+    """`leaf` without its broadcast (stride 0) dimensions: one row of each."""
+    if 0 not in leaf.stride():
+        return leaf
+    return leaf[tuple(slice(0, 1) if st == 0 else slice(None) for st in leaf.stride())]
+
+
+def _buffer_like(leaf):
+    if leaf.is_inference():
+        with torch.inference_mode():
+            return torch.empty_like(leaf)
+    with G._no_inference_tensors():
+        return torch.empty_like(leaf)
 
 
 def _capture(state, key, forward, kwargs, leaves, cache):
@@ -645,11 +663,13 @@ def _capture(state, key, forward, kwargs, leaves, cache):
     if state.stream is None:
         state.stream = _BACKEND.new_stream()
     stream = state.stream
-    with G._no_inference_tensors():
-        buffers = [torch.empty_like(leaf) for leaf in leaves]
+    # Each static buffer is what its argument is: same dtype, strides and inference-ness, so every
+    # compiled region in the step (warm-up, capture, replay) runs the variant the eager step runs.
+    buffers = [_buffer_like(_compact(leaf)) for leaf in leaves]
     for buffer, leaf in zip(buffers, leaves):
-        buffer.copy_(leaf)
-    it = iter(buffers)
+        buffer.copy_(_compact(leaf))
+    # Broadcast (stride 0) arguments are passed broadcast again, with the eager argument's strides.
+    it = iter([buffer.expand(leaf.shape) for buffer, leaf in zip(buffers, leaves)])
     static_kwargs = {k: _build(v, it, cache) for k, v in kwargs.items()}
     before = _host_state(cache)
     stream.wait_stream(_BACKEND.current_stream())
