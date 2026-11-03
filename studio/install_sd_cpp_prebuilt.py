@@ -701,8 +701,7 @@ _WINDOWS_LOADER_FAILURES = {
     0xC0000139: "a DLL it imports is the wrong build",  # STATUS_ENTRYPOINT_NOT_FOUND
     0xC0000142: "a DLL it imports failed to initialise",  # STATUS_DLL_INIT_FAILED
 }
-# glibc's version check (elf/dl-version.c) prints "version `X' not found (required by Y)" without the
-# "error while loading shared libraries" prefix, then exits before main().
+# glibc elf/dl-version.c exits before main without the shared-libraries error prefix.
 _POSIX_LOADER_MARKERS = (
     "error while loading shared libraries",
     "Library not loaded",

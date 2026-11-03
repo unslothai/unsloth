@@ -125,7 +125,6 @@ def test_the_loader_refusal_is_read_from_the_exit_status_and_output():
 
 
 def test_a_glibc_symbol_version_failure_is_a_loader_refusal():
-    """Regression: glibc's version check exits before main without the shared-libraries prefix."""
     assert sdmod.loader_refusal(
         1,
         "./sd-cli: /opt/sd/libstable-diffusion.so: version `LIBDEMO_2' not found "
@@ -135,12 +134,10 @@ def test_a_glibc_symbol_version_failure_is_a_loader_refusal():
         1,
         "./sd-cli: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found (required by ./sd-cli)",
     )
-    # Application output mentioning "not found" is still not a refusal.
     assert sdmod.loader_refusal(1, "error: model file not found") is None
 
 
 def _build_version_mismatch(tmp: Path) -> Optional[Path]:
-    """A real ELF needing LIBDEMO_2 next to a same-named library exporting only LIBDEMO_1."""
     import shutil
     import subprocess
 
