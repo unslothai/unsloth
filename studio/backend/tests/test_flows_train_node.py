@@ -618,6 +618,51 @@ def test_hub_eval_split_survives_the_hold_out(monkeypatch):
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
     assert splits == ["train"] and "local_eval_datasets" not in started[0]
+    # A blank eval split is the Hub's validation/test split, as the trainer would pick it.
+    import datasets
+
+    monkeypatch.setattr(datasets, "get_dataset_split_names", lambda *a, **k: ["train", "test"])
+    splits.clear()
+    started.clear()
+    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, eval_steps = 0.1)
+    ctx.inputs = {
+        "dataset": {"kind": "dataset", "source": "hf", "ref": "org/data", "split": "train"}
+    }
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    assert splits == ["train", "test"] and len(started[0]["local_eval_datasets"]) == 1
+
+
+def test_a_sliced_hub_split_is_read_without_streaming_the_instruction(monkeypatch):
+    from types import SimpleNamespace
+
+    import datasets
+
+    asked = []
+
+    def load(
+        ref,
+        subset = None,
+        split = None,
+        streaming = False,
+        **k,
+    ):
+        asked.append((split, streaming))
+        rows = [{"q": i} for i in range(50)]
+        if streaming:
+            assert "[" not in split, "Bad split"
+            return SimpleNamespace(
+                skip = lambda n: SimpleNamespace(take = lambda m: rows[n : n + m]),
+                take = lambda m: rows[:m],
+            )
+        return datasets.Dataset.from_list(rows[:10])
+
+    monkeypatch.setattr(datasets, "load_dataset", load)
+    hub = {"source": "hf", "ref": "org/ds"}
+    rows = training._load_rows({**hub, "split": "train[5:20]"}, None, None)
+    assert [r["q"] for r in rows] == list(range(5, 20)) and asked[-1] == ("train", True)
+    rows = training._load_rows({**hub, "split": "train[:10%]"}, None, None)
+    assert len(rows) == 10 and asked[-1] == ("train[:10%]", False)
 
 
 def test_one_column_for_two_rl_roles_is_refused():

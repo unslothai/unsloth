@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import random
+import re
 import secrets
 import time
 from typing import Any, Optional
@@ -155,6 +157,11 @@ async def finetune(ctx: NodeContext) -> dict:
         config.pop("dataset_slice_end", None)
         eval_split = str(ctx.params.get("eval_split") or "").strip()
         train_split = source.get("split") or "train"
+        if source.get("source") == "hf" and not eval_split and config["eval_steps"] > 0:
+            # Blank means the trainer picks the Hub's validation/test split, which it can no longer see.
+            from core.training.account_jobs import account_hf_token
+            token = account_hf_token(getattr(ctx.caller, "hf_token", None))
+            eval_split = await _off_thread(ctx, _auto_eval_split, source, train_split, token) or ""
         if (
             source.get("source") == "hf"
             and eval_split not in ("", train_split)
@@ -418,6 +425,14 @@ async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
     found = await dataset_material(ctx)
     if found is None:
         return None
+    base = str(ctx.params.get("base_model") or "").strip()
+    if base and os.path.isabs(base):
+        from core.flows.engine import _local_fingerprint
+
+        # Weights replaced at the same path must train again, as a local model's cache key does.
+        found["base_model_files"] = await asyncio.to_thread(_local_fingerprint, base)
+        if found["base_model_files"] is None:
+            return None
     if str(ctx.params.get("objective") or "sft") == "grpo":
         # A reward can be saved again under the same name, so the key holds what each rule checks.
         found["rewards"] = reward_rules(ctx.params.get("rewards"))
@@ -650,7 +665,22 @@ def _hub_rows(dataset: dict, token: Any, start: int, end: Optional[int]) -> Any:
     from datasets import load_dataset, load_dataset_builder
 
     ref, subset = str(dataset["ref"]), dataset.get("subset") or None
-    split = dataset.get("split") or "train"
+    split = str(dataset.get("split") or "train").replace(" ", "")
+    # Streaming takes only plain split names: `train[10:100]` becomes a bounded read of train.
+    sliced = re.fullmatch(r"([\w.-]+)\[(\d*):(\d*)\]", split)
+    if sliced:
+        lo = int(sliced.group(2) or 0)
+        split, start = sliced.group(1), lo + start
+        end = None if end is None else lo + end
+        if sliced.group(3):
+            end = int(sliced.group(3)) - 1 if end is None else min(end, int(sliced.group(3)) - 1)
+    elif "[" in split or "+" in split:
+        # Percent slices and joined splits: read the way the trainer does, then check the cap.
+        loaded = load_dataset(ref, subset, split = split, token = token)
+        stop = len(loaded) if end is None else min(len(loaded), end + 1)
+        if stop - start > HOLDOUT_MAX_ROWS:
+            raise _too_many(stop - start)
+        return loaded.select(range(min(start, stop), stop))
 
     def stream() -> Any:
         streamed = load_dataset(ref, subset, split = split, token = token, streaming = True)
@@ -775,6 +805,25 @@ def _eval_rows(dataset: dict, token: Any, split: str) -> list[dict]:
         str(dataset["ref"]), dataset.get("subset") or None, split = split, token = token
     )
     return _jsonable(loaded.to_list())
+
+
+def _auto_eval_split(dataset: dict, train_split: str, token: Any) -> Optional[str]:
+    """The split the trainer would pick for a blank eval split: the first named candidate the Hub has."""
+    from datasets import get_dataset_split_names
+
+    from core.training.eval_dataset import EVAL_SPLIT_CANDIDATES
+
+    try:
+        names = get_dataset_split_names(
+            str(dataset["ref"]), dataset.get("subset") or None, token = token
+        )
+    except Exception:
+        return None
+    base = re.match(r"[\w.-]+", train_split)
+    return next(
+        (c for c in EVAL_SPLIT_CANDIDATES if c in names and c != (base and base.group(0))),
+        None,
+    )
 
 
 async def hub_eval_upload(ctx: NodeContext, dataset: dict, split: str) -> str:

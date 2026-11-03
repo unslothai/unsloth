@@ -59,7 +59,7 @@ def _flow(prompt = "q1", **tune):
     return doc(
         [
             node("data", "data.hf_dataset", repo = "org/data"),
-            node("tune", "train.finetune", base_model = "unsloth/Qwen3-0.6B", **tune),
+            node("tune", "train.finetune", **{"base_model": "unsloth/Qwen3-0.6B", **tune}),
             node("chat", "train.chat_checkpoint", prompt = prompt),
         ],
         [
@@ -137,4 +137,21 @@ async def test_a_reward_saved_again_under_its_name_trains_again(world, monkeypat
     assert len(world["trained"]) == 1
     rule["answer"] = "numeric"
     await _run(eng, _flow(objective = "grpo"))
+    assert len(world["trained"]) == 2
+
+
+@run_async
+async def test_new_weights_at_a_local_base_model_path_train_again(world, tmp_path):
+    import os
+
+    base = tmp_path / "my-model"
+    base.mkdir()
+    (base / "model.safetensors").write_bytes(b"old")
+    eng = _engine(world)
+    await _run(eng, _flow(base_model = str(base)))
+    await _run(eng, _flow(base_model = str(base)))
+    assert len(world["trained"]) == 1
+    (base / "model.safetensors").write_bytes(b"new weights")
+    os.utime(base / "model.safetensors", ns = (1, 1))
+    await _run(eng, _flow(base_model = str(base)))
     assert len(world["trained"]) == 2
