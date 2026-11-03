@@ -2344,6 +2344,11 @@ def test_mcp_tool_search_loads_exact_names_then_ranked_matches(tmp_path, monkeyp
     out = tools_mod.execute_tool("mcp_tool_search", {"query": "query rows with sql"})
     assert out.startswith("Loaded 1 MCP tool. Call the one that fits directly")
     assert "- mcp__srv1__query: [A] Query rows." in out
+    # The full schema rides the result, so the declared tools (prompt prefix) never change mid-turn.
+    assert (
+        "schema: " + json.dumps(tools_mod.mcp_tool_spec("mcp__srv1__query"), separators = (",", ":"))
+        in out
+    )
     assert tools_mod.execute_tool("mcp_tool_search", {"query": "zzzz"}).startswith(
         "No MCP tool matched 'zzzz'."
     )
@@ -2473,19 +2478,29 @@ def test_controller_loads_searched_and_named_mcp_tools(tmp_path, monkeypatch, se
         "function": {"name": "mcp_tool_search", "arguments": '{"query": "move pages", "limit": 1}'}
     }
     decision = controller.prepare_call(call)
-    controller.record_result(
-        decision, tools_mod.execute_tool("mcp_tool_search", decision.arguments)
+    result = tools_mod.execute_tool("mcp_tool_search", decision.arguments)
+    controller.record_result(decision, result)
+    # The declaration (and with it the prompt prefix llama-server caches) is left exactly as it
+    # was: the full schema rides the search result instead (#16538).
+    assert _names(controller.active_tools()) == ["mcp_tool_search"]
+    assert "schema: " in result
+    assert (
+        json.dumps(tools_mod.mcp_tool_spec("mcp__srv1__move-pages"), separators = (",", ":"))
+        in result
     )
-    active = controller.active_tools()
-    assert _names(active) == ["mcp_tool_search", "mcp__srv1__move-pages"]
-    assert active[1] == tools_mod.mcp_tool_spec("mcp__srv1__move-pages")
+    # The searched tool still executes under its catalog schema.
+    moved_call = controller.prepare_call(
+        {"function": {"name": "mcp__srv1__move-pages", "arguments": "{}"}}
+    )
+    assert moved_call.action == "execute"
+    assert _names(controller.active_tools()) == ["mcp_tool_search"]
 
-    # A deferred tool named without a search loads too, typed by its full schema.
+    # A deferred tool named without a search runs too, typed by its full catalog schema.
     named = controller.prepare_call(
         {"function": {"name": "mcp__srv1__ping", "arguments": '{"n": "3"}'}}
     )
     assert named.action == "execute" and named.arguments == {"n": 3}
-    assert "mcp__srv1__ping" in _names(controller.active_tools())
+    assert "mcp__srv1__ping" not in _names(controller.active_tools())
 
     # Later turns of the thread list the tools it ran, newest first; a tool only loaded is not relisted.
     assert _names(listing_for("thread-1")) == ["mcp_tool_search"]
@@ -2522,7 +2537,10 @@ def test_a_search_loads_only_what_fits_the_window(tmp_path, monkeypatch):
     assert out.endswith("are too large for this model's context window.")
 
 
-def test_controller_retires_older_loads_to_stay_within_the_window(tmp_path, monkeypatch):
+def test_controller_keeps_the_declared_tools_stable_across_searches(tmp_path, monkeypatch):
+    # #16538: injecting searched schemas into the declaration mid-turn shifts the prompt prefix,
+    # which forces llama-server to re-evaluate the whole conversation; on hybrid/recurrent models
+    # without a checkpoint at the divergence that is a full prefill.
     from core.inference import tools as tools_mod
     from core.inference.tool_loop_controller import ToolLoopController
 
@@ -2535,23 +2553,22 @@ def test_controller_retires_older_loads_to_stay_within_the_window(tmp_path, monk
         lambda: int(2.5 * cost / tools_mod._MCP_TOOL_LOAD_SHARE),
     )
     controller = ToolLoopController(tools = [tools_mod._mcp_tool_search_spec([])])
+    before = controller.active_tools()
     for name in ("query-0", "query-1", "query-2"):
         decision = controller.prepare_call(
             {"function": {"name": "mcp_tool_search", "arguments": json.dumps({"query": name})}}
         )
         controller.record_result(decision, "Loaded")
-    assert _names(controller.active_tools()) == [
-        "mcp_tool_search",
-        "mcp__srv1__query-1",
-        "mcp__srv1__query-2",
-    ]
-    assert (
-        controller.prepare_call(
-            {"function": {"name": "mcp__srv1__query-0", "arguments": "{}"}}
-        ).action
-        == "execute"
-    )
-    assert _names(controller.active_tools())[1:] == ["mcp__srv1__query-2", "mcp__srv1__query-0"]
+    assert controller.active_tools() == before
+    # Every searched tool still executes, whether or not its schema fit the search results.
+    for name in ("query-0", "query-2"):
+        assert (
+            controller.prepare_call(
+                {"function": {"name": f"mcp__srv1__{name}", "arguments": "{}"}}
+            ).action
+            == "execute"
+        )
+    assert controller.active_tools() == before
 
 
 def test_forced_and_image_mapped_tools_stay_listed(tmp_path, monkeypatch, searching):
@@ -2665,3 +2682,87 @@ def test_controller_without_the_search_tool_never_loads_mcp_tools(tmp_path, monk
     decision = controller.prepare_call({"function": {"name": "mcp__srv1__ping", "arguments": "{}"}})
     assert decision.action == "disabled"
     assert controller.active_tools() == []
+
+
+@pytest.mark.parametrize("searched", [False, True])
+def test_deferred_mcp_calls_keep_catalog_coercion_on_every_call(monkeypatch, searched):
+    from core.inference import tool_loop_controller as controller_mod
+
+    ping = {
+        "type": "function",
+        "function": {
+            "name": "mcp__srv1__ping",
+            "parameters": {"type": "object", "properties": {"n": {"type": "integer"}}},
+        },
+    }
+    monkeypatch.setattr(
+        controller_mod,
+        "_mcp_tool_spec",
+        lambda name: ping if name == "mcp__srv1__ping" else None,
+    )
+    monkeypatch.setattr(controller_mod, "_mcp_tool_search_specs", lambda arguments: [ping])
+    search_spec = {
+        "type": "function",
+        "function": {
+            "name": "mcp_tool_search",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    controller = controller_mod.ToolLoopController(tools = [search_spec])
+    before = controller.active_tools()
+    if searched:
+        search = controller.prepare_call(
+            {"function": {"name": "mcp_tool_search", "arguments": '{"query":"ping"}'}}
+        )
+        controller.record_result(search, "Loaded")
+    for number in (3, 4):
+        decision = controller.prepare_call(
+            {
+                "function": {
+                    "name": "mcp__srv1__ping",
+                    "arguments": json.dumps({"n": str(number)}),
+                }
+            }
+        )
+        assert decision.action == "execute"
+        assert decision.arguments == {"n": number}
+        assert controller.active_tools() == before
+    unknown = controller.prepare_call(
+        {"function": {"name": "mcp__srv1__unknown", "arguments": "{}"}}
+    )
+    assert unknown.action == "disabled"
+    assert controller.active_tools() == before
+
+
+@pytest.mark.parametrize(
+    "schema_chars,context_tokens,result_tokens",
+    [(20_000, 32_768, 32_768), (3_000, 2_048, 2_048), (1_200, 32_768, 300)],
+)
+def test_search_returns_whole_schemas_within_the_result_budget(
+    tmp_path, monkeypatch, listing_window, schema_chars, context_tokens, result_tokens
+):
+    from core.inference import tools as tools_mod
+
+    big = {
+        "name": "large",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"value": {"type": "string", "description": "x" * schema_chars}},
+        },
+    }
+    _cache_server_tools(tmp_path, monkeypatch, [big, _PING])
+    listing_window(context_tokens)
+    result = tools_mod.execute_tool(
+        "mcp_tool_search",
+        {"query": "large ping"},
+        context_tokens = context_tokens,
+        result_budget_tokens = result_tokens,
+    )
+    assert result.startswith("Loaded 1 MCP tool.")
+    schemas = [
+        json.loads(line.removeprefix("  schema: "))
+        for line in result.splitlines()
+        if line.startswith("  schema: ")
+    ]
+    assert _names(schemas) == ["mcp__srv1__ping"]
+    assert "truncated" not in result
