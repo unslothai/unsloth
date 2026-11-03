@@ -48,7 +48,6 @@ export interface CompareContext {
   controlnetEngaged: boolean;
   // Hires CFG makes the refine pass read the negative prompt at any base CFG; no axis varies Hires, so it is grid-wide.
   hiresEngagesNegative?: boolean;
-  // Likewise the Detailer's CFG: the Detailer inherits the main negative prompt; no axis varies it.
   detailerEngagesNegative?: boolean;
 }
 

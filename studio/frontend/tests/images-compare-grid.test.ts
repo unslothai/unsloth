@@ -969,7 +969,6 @@ test("Detailer CFG keeps the negative prompt on a CFG cell whose base guidance l
   const g = plan([{ axisId: "guidance", text: "1, 7" }]);
   const seeds = { base: 1, keepRandom: false, seedFieldEmpty: false };
   const ctx = sdxl({ detailerEngagesNegative: true });
-  // Cell 0 runs base CFG 1; the Detailer pass (CFG 7) still inherits the main negative prompt.
   assert.equal(buildCellRequest(g, 0, base({ detailer }), ctx, seeds).negative_prompt, "blurry");
   assert.equal(buildCellRequest(g, 1, base({ detailer }), ctx, seeds).negative_prompt, "blurry");
   assert.equal(buildCellRequest(g, 0, base(), sdxl(), seeds).negative_prompt, undefined);
