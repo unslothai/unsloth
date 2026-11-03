@@ -1841,8 +1841,7 @@ class PipelineParallel:
         return total.float()
 
     def unscale_(self, scaler, optimizer):
-        """scaler.unscale_(optimizer), then found_inf is the MAX over every stage, so all stages skip the
-        same steps (scaler.step / scaler.update after this)."""
+        """Unscale gradients and agree on overflow across stages before scaler.step / scaler.update."""
         if scaler.is_enabled():
             self._bind_scaler(scaler)
         scaler.unscale_(optimizer)
