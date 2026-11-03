@@ -8767,6 +8767,7 @@ def _unsloth_serving_fields(model_info: dict) -> dict:
             for prefix in ("", "requested_")
         },
         "requested_n_ubatch": model_info.get("n_ubatch"),
+        "requested_n_batch": model_info.get("n_batch"),
     }
 
 
@@ -18338,6 +18339,7 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         and entry.get("reasoning_budget", -1) == request.reasoning_budget
         and entry.get("reasoning_budget_message", "") == request.reasoning_budget_message
         and entry.get("n_ubatch") == request.n_ubatch
+        and entry.get("n_batch") == request.n_batch
         and all(
             normalize_mlx_offload(
                 ((entry.get("mlx_offload") or {}).get(part) or {}).get("requested")
@@ -20861,6 +20863,7 @@ async def _load_model_impl(
                 reasoning_budget = request.reasoning_budget,
                 reasoning_budget_message = request.reasoning_budget_message,
                 mlx_prefill_step = request.n_ubatch,
+                mlx_prefill_batch = request.n_batch,
                 load_cancel_event = load_cancel_event,
                 on_prior_worker_released = _release_chat_after_teardown,
                 post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,

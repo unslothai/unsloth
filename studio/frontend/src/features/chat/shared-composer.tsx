@@ -2122,7 +2122,7 @@ export function SharedComposer({
             ? (ownConfig.nParallel ?? null)
             : null;
         const committedNBatch =
-          targetIsGguf && !(resp.is_diffusion ?? false)
+          (targetIsGguf || targetIsMlx) && !(resp.is_diffusion ?? false)
             ? (ownConfig.nBatch ?? null)
             : null;
         const committedNUbatch =

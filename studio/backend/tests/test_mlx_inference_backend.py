@@ -659,12 +659,16 @@ def test_experts_on_disk_prefill_every_text_and_batch_path_in_the_planned_step(
     with monkeypatch.context() as patch:
         patch.setitem(sys.modules, "mlx_lm.generate", generate)
         mlx_inference._TextBatchSession(backend, width = 2).close()
+        backend._prefill_batch = 8192  # one step's worth: the batch prefills a reply at a time
+        mlx_inference._TextBatchSession(backend, width = 2).close()
+        backend._prefill_batch = None
         generate.BatchGenerator = (
             lambda model, stop_tokens, completion_batch_size, prefill_batch_size: (
                 built.append({}) or SimpleNamespace(close = lambda: None)
             )
         )
         mlx_inference._TextBatchSession(backend, width = 2).close()
+    assert [k["prefill_batch_size"] for k in built[:2]] == [2, 1]
     assert built[-2]["prefill_step_size"] == 8192 and built[-1] == {}
 
     @dataclass
@@ -12946,9 +12950,20 @@ def test_a_chosen_micro_batch_caps_at_the_offload_chunk_and_a_change_reloads():
     assert mlx_inference._prefill_choice(256, 128) == (128, 128)
     assert mlx_inference._prefill_choice(256, 512) == (256, None)
 
-    for key in ("n_ubatch",):
+    for key in ("n_ubatch", "n_batch"):
         entry = {"mlx_kv_quant_requested": "auto", key: 512}
         be = SimpleNamespace(active_model_name = "m", models = {"m": entry})
         assert _mlx_runtime_settings_match(be, req(**{key: 512}))
         assert not _mlx_runtime_settings_match(be, req())
         assert _unsloth_serving_fields(entry)[f"requested_{key}"] == 512
+
+
+def test_a_chosen_batch_size_caps_the_replies_one_batched_prefill_takes():
+    from core.inference import mlx_inference
+
+    backend = mlx_inference.MLXInferenceBackend()
+    assert backend._prefill_rows(6) == 6
+    backend._prefill_batch, backend._prefill_step, backend._prefill_grid = 4096, 1024, 1024
+    assert [backend._prefill_rows(width) for width in (1, 3, 6)] == [1, 3, 4]
+    backend._prefill_step, backend._prefill_grid = 256, None  # the grid's default step is wider
+    assert backend._prefill_rows(6) == max(1, 4096 // mlx_inference.vlm_prefill_step())

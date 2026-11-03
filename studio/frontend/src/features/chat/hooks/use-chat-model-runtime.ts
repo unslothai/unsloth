@@ -2721,8 +2721,9 @@ export function useChatModelRuntime() {
                 ? (loadNParallel ?? null)
                 : null;
             const committedNBatch =
-              (loadResponse.is_gguf ?? false) &&
-              !(loadResponse.is_diffusion ?? false)
+              ((loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)) ||
+              (loadResponse.is_mlx ?? false)
                 ? (loadNBatch ?? null)
                 : null;
             const committedNUbatch =

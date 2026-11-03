@@ -672,6 +672,7 @@ test("MLX-only load settings are judged on an MLX resident, not on a transformer
     [{ reasoningBudget: 64 }, { requested_reasoning_budget: 64 }],
     [{ reasoningBudgetMessage: "Done." }, { requested_reasoning_budget_message: "Done." }],
     [{ nUbatch: 512 }, { requested_n_ubatch: 512 }],
+    [{ nBatch: 512 }, { requested_n_batch: 512 }],
   ] as [object, object][]) {
     const config = { ...BLANK, ...chosen };
     const resident = { ...mlx, ...running };

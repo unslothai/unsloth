@@ -740,12 +740,11 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
     if mlx_kv_quant:
         kwargs["mlx_kv_quant"] = mlx_kv_quant
 
-    # MLX reads the micro-batch as its prefill step.
-    if override.get("n_ubatch") is not None:
-        kwargs["n_ubatch"] = override["n_ubatch"]
+    # MLX reads the micro-batch as its prefill step and the batch as its cap on a batched prefill.
+    for key in ("n_batch", "n_ubatch"):
+        if override.get(key) is not None:
+            kwargs[key] = override[key]
     if is_gguf:
-        if override.get("n_batch") is not None:
-            kwargs["n_batch"] = override["n_batch"]
         for key in (
             "load_mode",
             "spec_draft_cache_type",

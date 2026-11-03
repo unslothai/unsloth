@@ -150,10 +150,10 @@ test("llama-server's knobs reach a GGUF llama-server and nothing else", () => {
   );
 });
 
-test("an MLX load carries the reasoning budget and micro-batch, and none of llama-server's own knobs", () => {
+test("an MLX load carries the reasoning budget and both batch sizes, and none of llama-server's own knobs", () => {
   assert.deepEqual(
     llamaServerLoadFields(TUNED, { isGguf: false, isDiffusion: false, isMlx: true }),
-    { reasoning_budget: 512, reasoning_budget_message: "stop", n_ubatch: 256 },
+    { reasoning_budget: 512, reasoning_budget_message: "stop", n_batch: 1024, n_ubatch: 256 },
   );
   assert.deepEqual(
     llamaServerLoadFields(TUNED, { isGguf: false, isDiffusion: true, isMlx: true }),

@@ -4794,7 +4794,7 @@ class _TextBatchSession:
                     [token] for token in _mlx_stop_token_ids(backend._tokenizer, backend._model)
                 ],
                 completion_batch_size = width,
-                prefill_batch_size = width,
+                prefill_batch_size = backend._prefill_rows(width),
                 **backend._prefill_step_kwargs(BatchGenerator),
             )
         except BaseException:
@@ -5371,6 +5371,7 @@ class MLXInferenceBackend:
         self._speculative_draft = None
         self._prefill_step = None
         self._prefill_grid = None
+        self._prefill_batch = None
         self._prefill_layer_step = None
         self._reasoning_budget = -1
         self._reasoning_budget_message = ""
@@ -5875,6 +5876,16 @@ class MLXInferenceBackend:
         """The prefill grid every request of this load runs on: the chosen micro-batch, else mlx-vlm's own."""
         return getattr(self, "_prefill_grid", None) or vlm_prefill_step()
 
+    def _prefill_rows(self, width):
+        """Replies one batched prefill forward takes. The chosen batch size caps that forward's tokens,
+        as llama.cpp's logical batch does, and never below one reply."""
+        cap = getattr(self, "_prefill_batch", None)
+        if not cap:
+            return width
+        # A batch prefills at the step or on the grid, depending on the path: count the wider one.
+        step = max(filter(None, (getattr(self, "_prefill_step", None), self._grid_step())))
+        return max(1, min(width, cap // step))
+
     def _budgets_reasoning(self) -> bool:
         return getattr(self, "_reasoning_budget", -1) >= 0
 
@@ -6142,6 +6153,7 @@ class MLXInferenceBackend:
         reasoning_budget = -1,
         reasoning_budget_message = "",
         prefill_step = None,
+        prefill_batch = None,
     ) -> bool:
         import mlx.core as mx
 
@@ -6431,6 +6443,7 @@ class MLXInferenceBackend:
         planned = offload["prefill_step"] if _offload["experts"]["applied"] else None
         chosen_step = _positive_int(prefill_step)
         self._prefill_step, self._prefill_grid = _prefill_choice(planned, chosen_step)
+        self._prefill_batch = _positive_int(prefill_batch)
         self._prefill_layer_step = _prefill_layer_step(
             self._model, self._prefill_step, self._grid_step()
         )
@@ -6699,6 +6712,7 @@ class MLXInferenceBackend:
             "reasoning_budget": self._reasoning_budget,
             "reasoning_budget_message": self._reasoning_budget_message,
             "n_ubatch": chosen_step,
+            "n_batch": self._prefill_batch,
         }
         # Capture chat_template_info for the worker IPC reply and route capability classification.
         self._populate_chat_template_info(model_name, native_template)
@@ -6911,6 +6925,7 @@ class MLXInferenceBackend:
         self._speculative_draft = None
         self._prefill_step = None
         self._prefill_grid = None
+        self._prefill_batch = None
         self._prefill_layer_step = None
         self._reasoning_budget = -1
         self._model = None
@@ -8874,7 +8889,7 @@ class MLXInferenceBackend:
         plans = [self._plan_vlm_request(request) for request in requests]
         defaults = GenerationDefaults(
             max_tokens = max(plan.max_tokens for plan in plans),
-            prefill_batch_size = len(plans),
+            prefill_batch_size = self._prefill_rows(len(plans)),
             completion_batch_size = len(plans),
             **self._prefill_step_kwargs(GenerationDefaults, grid = True),
         )

@@ -317,8 +317,11 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     chatOnly: true,
+    mlxComparable: true,
     pinned: () => true,
-    agrees: (c, s) => (c.nBatch ?? null) === (s.requested_n_batch ?? null),
+    agrees: (c, s) =>
+      readsNoLoadSwitches(s) ||
+      (c.nBatch ?? null) === (s.requested_n_batch ?? null),
   },
   {
     chatOnly: true,

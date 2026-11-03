@@ -379,7 +379,9 @@ class LoadRequest(BaseModel):
         description = (
             "Logical prompt batch size for llama-server (--batch-size) for "
             f"this load ({BATCH_MIN}..{BATCH_MAX}). Omit for the llama.cpp "
-            "default (2048). Ignored for non-GGUF models."
+            "default (2048). On MLX it caps the tokens one batched prefill forward "
+            "takes across replies (never below one reply); omit to prefill every "
+            "waiting reply together. Ignored for other non-GGUF models."
         ),
     )
     n_ubatch: Optional[int] = Field(

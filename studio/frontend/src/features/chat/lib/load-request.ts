@@ -24,17 +24,17 @@ export function llamaServerLoadFields(
   const llamaServer = target.isGguf && !target.isDiffusion;
   // MLX enforces the budget itself, per reply.
   const budgeted = llamaServer || (target.isMlx === true && !target.isDiffusion);
+  const mlx = target.isMlx === true && !target.isDiffusion;
   return {
     reasoning_budget: budgeted ? (settings.reasoningBudget ?? -1) : -1,
     reasoning_budget_message: budgeted
       ? (settings.reasoningBudgetMessage ?? "")
       : "",
-    ...(target.isGguf && settings.nBatch != null
+    // MLX reads the batch as its cap on a batched prefill and the micro-batch as its prefill step.
+    ...((target.isGguf || mlx) && settings.nBatch != null
       ? { n_batch: settings.nBatch }
       : {}),
-    // MLX reads it as its prefill step.
-    ...((target.isGguf || (target.isMlx === true && !target.isDiffusion)) &&
-    settings.nUbatch != null
+    ...((target.isGguf || mlx) && settings.nUbatch != null
       ? { n_ubatch: settings.nUbatch }
       : {}),
     ...(llamaServer ? serverTuningLoadPayload(settings) : {}),

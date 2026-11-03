@@ -1319,6 +1319,11 @@ function ReasoningBudgetRows({
   );
 }
 
+const MLX_BATCH_HINT =
+  "Most prompt tokens one prefill step reads across replies started together. " +
+  "Leave blank to read every waiting reply at once. Lower values hold less " +
+  "memory at once; below the micro-batch size, replies are read one at a time.";
+
 const MLX_MICRO_BATCH_HINT =
   "Prompt tokens each prefill step reads. Leave blank for the default (2048). " +
   "Larger values read long prompts faster but use more memory; when experts " +
@@ -1883,6 +1888,15 @@ function MlxAdvancedSettings({
       )}
       {servedByMlx && (
         <ParallelSlotsRow config={config} update={update} hint={MLX_PARALLEL_HINT} />
+      )}
+      {servedByMlx && (
+        <BatchCountRow
+          label="Batch Size"
+          hint={MLX_BATCH_HINT}
+          ariaLabel="Prompt batch size"
+          value={config.nBatch}
+          onChange={(nBatch) => update({ nBatch })}
+        />
       )}
       {servedByMlx && (
         <BatchCountRow
