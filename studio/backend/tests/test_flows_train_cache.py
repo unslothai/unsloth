@@ -17,7 +17,7 @@ def world(monkeypatch):
     """A Hub revision per dataset and the run folders Studio still has."""
     from studio_mcp import checkpoints
 
-    state = {"sha": "rev1", "folders": set(), "trained": [], "asked": []}
+    state = {"sha": "rev1", "model_sha": "m1", "folders": set(), "trained": [], "asked": []}
 
     def revision(dataset, token):
         if state["sha"] is None:
@@ -29,7 +29,13 @@ def world(monkeypatch):
             raise RuntimeError("gone")
         return name
 
+    def model_revision(repo, token):
+        if state["model_sha"] is None:
+            raise OSError("offline")
+        return state["model_sha"]
+
     monkeypatch.setattr(training, "_hub_revision", revision)
+    monkeypatch.setattr(training, "_hub_model_revision", model_revision)
     monkeypatch.setattr(checkpoints, "resolve", resolve)
     return state
 
@@ -155,3 +161,18 @@ async def test_new_weights_at_a_local_base_model_path_train_again(world, tmp_pat
     os.utime(base / "model.safetensors", ns = (1, 1))
     await _run(eng, _flow(base_model = str(base)))
     assert len(world["trained"]) == 2
+
+
+@run_async
+async def test_new_weights_pushed_to_a_hub_base_model_train_again(world):
+    eng = _engine(world)
+    await _run(eng, _flow())
+    await _run(eng, _flow())
+    assert len(world["trained"]) == 1
+    world["model_sha"] = "m2"
+    await _run(eng, _flow())
+    assert len(world["trained"]) == 2
+    # A base revision the Hub cannot confirm trains again rather than guessing.
+    world["model_sha"] = None
+    await _run(eng, _flow())
+    assert len(world["trained"]) == 3

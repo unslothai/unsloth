@@ -380,6 +380,11 @@ def _hub_revision(dataset: dict, token: Any) -> Optional[str]:
     return HfApi().dataset_info(str(dataset["ref"]), token = token).sha
 
 
+def _hub_model_revision(repo: str, token: Any) -> Optional[str]:
+    from huggingface_hub import HfApi
+    return HfApi().model_info(repo, token = token).sha
+
+
 def _content_hash(path: str) -> str:
     import glob
     import hashlib
@@ -408,6 +413,20 @@ async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
         found["base_model_files"] = await asyncio.to_thread(_local_fingerprint, base)
         if found["base_model_files"] is None:
             return None
+    elif base:
+        from core.flows.nodes.data import _REPO
+        from core.training.account_jobs import account_hf_token
+        if _REPO.match(base):
+            # New weights pushed to the same Hub repo must train again too.
+            token = account_hf_token(getattr(ctx.caller, "hf_token", None))
+            try:
+                found["base_model_revision"] = await asyncio.to_thread(
+                    _hub_model_revision, base, token
+                )
+            except Exception:
+                return None
+            if not found["base_model_revision"]:
+                return None
     if str(ctx.params.get("objective") or "sft") == "grpo":
         # A reward can be saved again under the same name, so the key holds what each rule checks.
         found["rewards"] = reward_rules(ctx.params.get("rewards"))
@@ -633,6 +652,59 @@ def _stream_rows(streamed: Any, start: int, end: Optional[int]) -> Any:
     return Dataset.from_list(rows)
 
 
+def _compound_rows(
+    ref: str, subset: Optional[str], split: str, token: Any, start: int, end: Optional[int]
+) -> Any:
+    """Percent slices and joined splits (`train[:50%]`, `train+validation`), resolved against the
+    Hub's split sizes and streamed one bounded range at a time, so nothing past the hold-out's rows
+    or the cap is downloaded. Percents need those sizes; without them the split is refused."""
+    from datasets import Dataset, ReadInstruction, load_dataset, load_dataset_builder
+
+    try:
+        info = load_dataset_builder(ref, subset, token = token).info.splits or {}
+        sizes = {name: s.num_examples for name, s in info.items() if s.num_examples}
+    except Exception:
+        sizes = {}
+    try:
+        parts = [
+            (p.splitname, p.from_, p.to)
+            for p in ReadInstruction.from_spec(split).to_absolute(sizes)
+        ]
+    except Exception:
+        if "[" in split:
+            raise FlowNodeError(
+                f"The Hub does not list the split sizes {split!r} needs; use a row slice such as "
+                "train[:1000], or set Hold out % to 0"
+            )
+        parts = [(name, 0, None) for name in split.split("+")]
+    if all(hi is not None for _, _, hi in parts):
+        total = sum(hi - lo for _, lo, hi in parts)
+        stop = total if end is None else min(total, end + 1)
+        if stop - start > HOLDOUT_MAX_ROWS:
+            raise _too_many(stop - start)
+    rows: list = []
+    seen = 0  # rows of the joined split before this part
+    for name, lo, hi in parts:
+        size = None if hi is None else hi - lo
+        skip = max(start - seen, 0)
+        want = (
+            size if end is None else (end + 1 - seen if size is None else min(size, end + 1 - seen))
+        )
+        if want is not None and want <= skip:
+            seen += size if size is not None else 0
+            if end is not None and seen > end:
+                break
+            continue
+        take = HOLDOUT_MAX_ROWS + 1 - len(rows) if want is None else want - skip
+        streamed = load_dataset(ref, subset, split = name, token = token, streaming = True)
+        got = list(streamed.skip(lo + skip).take(take))
+        rows += got
+        if len(rows) > HOLDOUT_MAX_ROWS:
+            raise _too_many(f"More than {HOLDOUT_MAX_ROWS}")
+        seen += size if size is not None else skip + len(got)
+    return Dataset.from_list(rows)
+
+
 def _hub_rows(dataset: dict, token: Any, start: int, end: Optional[int]) -> Any:
     """A Hub split, without downloading more than the hold-out can use: a slice streams just its
     rows, a split the Hub says is over the cap is refused before anything is fetched, and one of
@@ -650,12 +722,7 @@ def _hub_rows(dataset: dict, token: Any, start: int, end: Optional[int]) -> Any:
         if sliced.group(3):
             end = int(sliced.group(3)) - 1 if end is None else min(end, int(sliced.group(3)) - 1)
     elif "[" in split or "+" in split:
-        # Percent slices and joined splits: read the way the trainer does, then check the cap.
-        loaded = load_dataset(ref, subset, split = split, token = token)
-        stop = len(loaded) if end is None else min(len(loaded), end + 1)
-        if stop - start > HOLDOUT_MAX_ROWS:
-            raise _too_many(stop - start)
-        return loaded.select(range(min(start, stop), stop))
+        return _compound_rows(ref, subset, split, token, start, end)
 
     def stream() -> Any:
         streamed = load_dataset(ref, subset, split = split, token = token, streaming = True)
