@@ -25,10 +25,10 @@ def _add_rms_layernorm_inference(
     W,
     X_row_stride,
     R_row_stride,
-    n_cols: tl.constexpr,
-    eps: tl.constexpr,
-    HAS_RESIDUAL: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
+    n_cols: tl.constexpr,  # hidden size (last dim of X)
+    eps: tl.constexpr,  # norm epsilon from the module
+    HAS_RESIDUAL: tl.constexpr,  # add R into X first, else R is just written
+    BLOCK_SIZE: tl.constexpr,  # next pow2 of n_cols, one row per program
 ):
     row = tl.program_id(0).to(tl.int64)
     cols = tl.arange(0, BLOCK_SIZE)

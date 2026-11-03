@@ -88,11 +88,11 @@ def _unpack_tile3(
     stride_pn,
     stride_sn,
     stride_zn,
-    BITS: tl.constexpr,
-    PF: tl.constexpr,
-    GROUP: tl.constexpr,
-    HAS_Z: tl.constexpr,
-    HAS_G: tl.constexpr,
+    BITS: tl.constexpr,  # bits per weight (4 or 8)
+    PF: tl.constexpr,  # weights per int32 word (32 // BITS)
+    GROUP: tl.constexpr,  # weights per scale group (K if per channel)
+    HAS_Z: tl.constexpr,  # packed zero points present, else symmetric
+    HAS_G: tl.constexpr,  # per-column group index (act order or straddling groups)
 ):
     # fp32 decode of W[rn, words rkp] as [BLOCK_N, BLOCK_KP, PF] (column = word * PF + j).
     MASK: tl.constexpr = (1 << BITS) - 1
@@ -150,13 +150,13 @@ def _unpack_tile(
     stride_pn,
     stride_sn,
     stride_zn,
-    BITS: tl.constexpr,
-    PF: tl.constexpr,
-    GROUP: tl.constexpr,
-    HAS_Z: tl.constexpr,
-    HAS_G: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_KP: tl.constexpr,
+    BITS: tl.constexpr,  # bits per weight (4 or 8)
+    PF: tl.constexpr,  # weights per int32 word (32 // BITS)
+    GROUP: tl.constexpr,  # weights per scale group (K if per channel)
+    HAS_Z: tl.constexpr,  # packed zero points present, else symmetric
+    HAS_G: tl.constexpr,  # per-column group index (act order or straddling groups)
+    BLOCK_N: tl.constexpr,  # weight rows in the tile
+    BLOCK_KP: tl.constexpr,  # packed words per row in the tile
 ):
     w = _unpack_tile3(
         P, S, Z, G, rn, rkp, N, K, KP, stride_pn, stride_sn, stride_zn,
@@ -179,13 +179,13 @@ def _dequant_kernel(
     stride_sn,
     stride_zn,
     stride_on,
-    BITS: tl.constexpr,
-    PF: tl.constexpr,
-    GROUP: tl.constexpr,
-    HAS_Z: tl.constexpr,
-    HAS_G: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_KP: tl.constexpr,
+    BITS: tl.constexpr,  # bits per weight (4 or 8)
+    PF: tl.constexpr,  # weights per int32 word (32 // BITS)
+    GROUP: tl.constexpr,  # weights per scale group (K if per channel)
+    HAS_Z: tl.constexpr,  # packed zero points present, else symmetric
+    HAS_G: tl.constexpr,  # per-column group index (act order or straddling groups)
+    BLOCK_N: tl.constexpr,  # rows per program (16)
+    BLOCK_KP: tl.constexpr,  # packed words per program (512 // PF)
 ):
     pid_n = tl.program_id(0)
     pid_k = tl.program_id(1)
@@ -221,14 +221,14 @@ def _gemv_kernel(
     stride_sn,
     stride_zn,
     stride_ym,
-    BITS: tl.constexpr,
-    PF: tl.constexpr,
-    GROUP: tl.constexpr,
-    HAS_Z: tl.constexpr,
-    HAS_G: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_KP: tl.constexpr,
-    SPLIT_K: tl.constexpr,
+    BITS: tl.constexpr,  # bits per weight (4 or 8)
+    PF: tl.constexpr,  # weights per int32 word (32 // BITS)
+    GROUP: tl.constexpr,  # weights per scale group (K if per channel)
+    HAS_Z: tl.constexpr,  # packed zero points present, else symmetric
+    HAS_G: tl.constexpr,  # per-column group index (act order or straddling groups)
+    BLOCK_N: tl.constexpr,  # output rows per program (8)
+    BLOCK_KP: tl.constexpr,  # packed words per step (512 // PF)
+    SPLIT_K: tl.constexpr,  # K splits (1-4), only when N tiles x rows underfill the SMs
 ):
     # Decode: one activation row per program axis 2 (M tiny), CUDA-core reduction.
     pid_n = tl.program_id(0)
@@ -565,13 +565,13 @@ def _dequant_repacked_kernel(
     stride_sn,
     stride_zn,
     stride_on,
-    MARLIN: tl.constexpr,
-    TN: tl.constexpr,
-    TK: tl.constexpr,
-    R: tl.constexpr,
-    GROUP: tl.constexpr,
-    HAS_Z: tl.constexpr,
-    RAW: tl.constexpr,
+    MARLIN: tl.constexpr,  # Marlin tile layout, else tinygemm
+    TN: tl.constexpr,  # tile rows (64 Marlin, 8 tinygemm)
+    TK: tl.constexpr,  # tile cols (16 Marlin, 128 tinygemm)
+    R: tl.constexpr,  # tiles along K per program
+    GROUP: tl.constexpr,  # weights per scale group
+    HAS_Z: tl.constexpr,  # packed zero points present, else 8
+    RAW: tl.constexpr,  # store raw nibbles as int8, no dequant
 ):
     # One program: tile row tn, R tiles along K, written as [TN, R * TK] contiguous rows.
     pid = tl.program_id(0)

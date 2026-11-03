@@ -41,14 +41,14 @@ def _gemv_nf4_kernel(
     K,
     M,
     OUT_STRIDE,
-    BLOCKSIZE: tl.constexpr,
-    BLOCKSIZE2: tl.constexpr,
-    NESTED: tl.constexpr,
-    USE_MUL_RN: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    EVEN_K: tl.constexpr,
-    LUT_MODE: tl.constexpr,
+    BLOCKSIZE: tl.constexpr,  # NF4 quant block (absmax group, 64)
+    BLOCKSIZE2: tl.constexpr,  # absmax blocks per second-level scale (1 if not nested)
+    NESTED: tl.constexpr,  # absmax is itself 8-bit quantized
+    USE_MUL_RN: tl.constexpr,  # unfused libdevice mul_rn (off on HIP / interpreter)
+    BLOCK_N: tl.constexpr,  # output rows per program, from the N / K config
+    BLOCK_K: tl.constexpr,  # K per step: next pow2 of K, capped at 1024 or 2048
+    EVEN_K: tl.constexpr,  # K % BLOCK_K == 0, so K masks are skipped
+    LUT_MODE: tl.constexpr,  # NF4 table lookup: 0 load, 2 tl.gather (see _nf4_lut)
 ):
     # FSDP-QLoRA packs the 4bit weight into float storage; it is bytes either way.
     W = W.to(tl.pointer_type(tl.uint8))
@@ -110,12 +110,12 @@ def _gemv_nf4_words_kernel(
     K,
     M,
     OUT_STRIDE,
-    BLOCKSIZE: tl.constexpr,
-    BLOCKSIZE2: tl.constexpr,
-    NESTED: tl.constexpr,
-    USE_MUL_RN: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
+    BLOCKSIZE: tl.constexpr,  # NF4 quant block (absmax group, 64)
+    BLOCKSIZE2: tl.constexpr,  # absmax blocks per second-level scale (1 if not nested)
+    NESTED: tl.constexpr,  # absmax is itself 8-bit quantized
+    USE_MUL_RN: tl.constexpr,  # unfused libdevice mul_rn (off on HIP / interpreter)
+    BLOCK_N: tl.constexpr,  # output rows per program (1)
+    BLOCK_K: tl.constexpr,  # K per step: next pow2 of K, capped at 2048
 ):
     # _gemv_nf4_kernel reading int32 words of 8 nibbles; faster before Triton 3.7, slower on 3.7.
     W = W.to(tl.pointer_type(tl.int32))

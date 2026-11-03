@@ -31,7 +31,11 @@ _HAS_MUL_RN = torch.version.hip is None and os.environ.get("TRITON_INTERPRET", "
 
 
 @triton.jit
-def _mul(a, b, USE_MUL_RN: tl.constexpr):
+def _mul(
+    a,
+    b,
+    USE_MUL_RN: tl.constexpr,  # unfused libdevice mul_rn, else a plain multiply
+):
     if USE_MUL_RN:
         return libdevice.mul_rn(a, b)
     else:
@@ -56,7 +60,11 @@ else:
 
 
 @triton.jit
-def _nf4_lut(lut_ptr, n, LUT_MODE: tl.constexpr):
+def _nf4_lut(
+    lut_ptr,
+    n,
+    LUT_MODE: tl.constexpr,  # 0 table load, 1 select tree, 2 tl.gather
+):
     # n: int32 nibbles. Every mode returns the same fp32 table entry, so the choice is speed only.
     if LUT_MODE == 0:
         # A 64-byte table gather stays in L1.
@@ -100,9 +108,9 @@ def _nf4_dequant_kernel(
     n_bytes,
     n_blocks,
     HALF: tl.constexpr,  # packed bytes per absmax block (blocksize // 2)
-    BLOCKSIZE2_SHIFT: tl.constexpr,
-    NESTED: tl.constexpr,
-    USE_MUL_RN: tl.constexpr,
+    BLOCKSIZE2_SHIFT: tl.constexpr,  # log2 of absmax blocks per second-level scale
+    NESTED: tl.constexpr,  # absmax is itself 8-bit quantized
+    USE_MUL_RN: tl.constexpr,  # unfused libdevice mul_rn (off on HIP / interpreter)
     ROWS: tl.constexpr,  # absmax blocks per program
     WORDS: tl.constexpr,  # load the packed bytes as int32 words (needs n_bytes % 4 == 0)
     EVICT: tl.constexpr,  # "evict_first" streams the weight and the output past L2, else ""

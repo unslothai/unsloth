@@ -23,26 +23,26 @@ def _grouped_gemm_forward_kernel(
     gather_indices_ptr,
     topk_weights_ptr,
     # Constant problem shapes
-    NUM_EXPERTS: tl.constexpr,
+    NUM_EXPERTS: tl.constexpr,  # experts in the weight stack
     NUM_TOKENS,
-    TOPK: tl.constexpr,
-    N: tl.constexpr,
-    K: tl.constexpr,
+    TOPK: tl.constexpr,  # experts per token
+    N: tl.constexpr,  # output features per expert
+    K: tl.constexpr,  # input features (reduction dim)
     NUM_SMS,
     # Tuning params
-    BLOCK_SIZE_M: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
-    BLOCK_SIZE_K: tl.constexpr,
-    PERMUTE_X: tl.constexpr = False,
-    PERMUTE_Y: tl.constexpr = False,
-    FUSE_MUL_PRE: tl.constexpr = False,
-    FUSE_MUL_POST: tl.constexpr = False,
-    USE_FAST_ACCUM: tl.constexpr = False,
-    USE_TMA_LOAD_W: tl.constexpr = False,
-    USE_TMA_LOAD_X: tl.constexpr = False,
-    USE_TMA_STORE: tl.constexpr = False,
-    acc_dtype: tl.constexpr = tl.float32,
-    FLATTEN: tl.constexpr = True,
+    BLOCK_SIZE_M: tl.constexpr,  # rows per tile, from config / autotune (not keyed on tokens)
+    BLOCK_SIZE_N: tl.constexpr,  # output cols per tile, from the kernel config / autotune
+    BLOCK_SIZE_K: tl.constexpr,  # K per step, from the kernel config / autotune
+    PERMUTE_X: tl.constexpr = False,  # gather x from token to expert order on load
+    PERMUTE_Y: tl.constexpr = False,  # scatter y back to token order on store
+    FUSE_MUL_PRE: tl.constexpr = False,  # scale x by topk weights pre-GEMM (launchers leave it off)
+    FUSE_MUL_POST: tl.constexpr = False,  # scale y by topk weights after the GEMM
+    USE_FAST_ACCUM: tl.constexpr = False,  # unused; launchers leave it off
+    USE_TMA_LOAD_W: tl.constexpr = False,  # load W tiles via a TMA descriptor
+    USE_TMA_LOAD_X: tl.constexpr = False,  # load x tiles via a TMA descriptor
+    USE_TMA_STORE: tl.constexpr = False,  # store y tiles via a TMA descriptor
+    acc_dtype: tl.constexpr = tl.float32,  # accumulator dtype (fp32)
+    FLATTEN: tl.constexpr = True,  # flatten the expert loop (tl.range flatten)
 ) -> None:
     tl.static_assert(K % BLOCK_SIZE_K == 0)
 

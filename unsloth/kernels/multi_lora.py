@@ -132,14 +132,14 @@ if HAS_TRITON:
         stride_wu,
         stride_wk,
         stride_wn,
-        IN_SORTED: tl.constexpr,
-        OUT_SORTED: tl.constexpr,
-        ADD: tl.constexpr,
-        SCALE: tl.constexpr,
-        IEEE: tl.constexpr,
-        BLOCK_M: tl.constexpr,
-        BLOCK_N: tl.constexpr,
-        BLOCK_K: tl.constexpr,
+        IN_SORTED: tl.constexpr,  # IN rows are in sorted (per-adapter) order
+        OUT_SORTED: tl.constexpr,  # OUT rows are in sorted (per-adapter) order
+        ADD: tl.constexpr,  # accumulate into OUT instead of overwrite
+        SCALE: tl.constexpr,  # multiply by the per-adapter scale
+        IEEE: tl.constexpr,  # fp32 inputs: ieee tl.dot, no tf32
+        BLOCK_M: tl.constexpr,  # tokens per program, fixed 64
+        BLOCK_N: tl.constexpr,  # pow2 of N clamped to [16, 128]
+        BLOCK_K: tl.constexpr,  # pow2 of K clamped to [16, 64] (128 when BLOCK_N <= 32)
     ):
         # OUT[rows] (+)= scale_u * IN[rows] @ W_u, W_u read as (K, N) through strides. A row is either the
         # token's position in the sorted order (H, dH live there) or its original row (X, Y, dY, dX).
@@ -210,13 +210,13 @@ if HAS_TRITON:
         stride_ou,
         stride_oi,
         stride_oj,
-        P_SORTED: tl.constexpr,
-        Q_SORTED: tl.constexpr,
-        SCALE: tl.constexpr,
-        IEEE: tl.constexpr,
-        BLOCK_T: tl.constexpr,
-        BLOCK_I: tl.constexpr,
-        BLOCK_J: tl.constexpr,
+        P_SORTED: tl.constexpr,  # P rows are in sorted (per-adapter) order
+        Q_SORTED: tl.constexpr,  # Q rows are in sorted (per-adapter) order
+        SCALE: tl.constexpr,  # multiply by the per-adapter scale
+        IEEE: tl.constexpr,  # fp32 inputs: ieee tl.dot, no tf32
+        BLOCK_T: tl.constexpr,  # tokens per inner step, fixed 64
+        BLOCK_I: tl.constexpr,  # pow2 of I clamped to [16, 64]
+        BLOCK_J: tl.constexpr,  # pow2 of J clamped to [16, 64]
     ):
         # OUT_u = scale_u * P[seg_u].T @ Q[seg_u]; an adapter with no tokens stores zeros.
         pid = tl.program_id(0)

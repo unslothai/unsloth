@@ -262,7 +262,14 @@ def _variance_update(var, grad, beta2):
         import triton.language as tl
 
         @triton.jit
-        def kernel(var_ptr, grad_ptr, out_ptr, n, beta2, BLOCK: tl.constexpr):
+        def kernel(
+            var_ptr,
+            grad_ptr,
+            out_ptr,
+            n,
+            beta2,
+            BLOCK: tl.constexpr,  # 1024 elements per program
+        ):
             offsets = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
             mask = offsets < n
             v = tl.load(var_ptr + offsets, mask = mask)

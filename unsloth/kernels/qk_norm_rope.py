@@ -56,8 +56,8 @@ def _norm_rope_fwd_block(
     sin1,
     cols,
     eps,
-    HEAD_DIM: tl.constexpr,
-    HAS_ROPE_INDICES: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # head_dim (normed and rotated as two halves)
+    HAS_ROPE_INDICES: tl.constexpr,  # position ids tensor given, else seq index
 ):
     HALF = HEAD_DIM // 2
     hmask = heads < n_heads
@@ -108,9 +108,9 @@ def _qk_norm_rope_forward(
     sin_row_stride,
     rope_indices,
     seqlen,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_H: tl.constexpr,
-    HAS_ROPE_INDICES: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # head_dim of Q and K
+    BLOCK_H: tl.constexpr,  # heads per program, pow2 from head counts and head_dim
+    HAS_ROPE_INDICES: tl.constexpr,  # position ids tensor given, else seq index
 ):
     row = tl.program_id(0).to(tl.int64)
     hblock = tl.program_id(1)
@@ -156,7 +156,7 @@ def _norm_rope_bwd_block(
     cos1,
     sin1,
     cols,
-    HEAD_DIM: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # head_dim (normed and rotated as two halves)
 ):
     HALF = HEAD_DIM // 2
     hmask = heads < n_heads
@@ -224,9 +224,9 @@ def _qk_norm_rope_backward(
     sin_row_stride,
     rope_indices,
     seqlen,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_H: tl.constexpr,
-    HAS_ROPE_INDICES: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # head_dim of Q and K
+    BLOCK_H: tl.constexpr,  # heads per program, pow2 from head counts and head_dim
+    HAS_ROPE_INDICES: tl.constexpr,  # position ids tensor given, else seq index
 ):
     row = tl.program_id(0).to(tl.int64)
     hblock = tl.program_id(1)

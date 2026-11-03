@@ -197,8 +197,8 @@ def weight_dequant_kernel(
     y_ptr,
     M,
     N,
-    BLOCK_SIZE: tl.constexpr,
-    EXACT_F16: tl.constexpr = False,
+    BLOCK_SIZE: tl.constexpr,  # square quant block edge (block_size, 128)
+    EXACT_F16: tl.constexpr = False,  # round fp32 to fp16 in software (RNE)
 ):
     pid_m = tl.program_id(axis = 0)
     pid_n = tl.program_id(axis = 1)
@@ -381,8 +381,8 @@ def act_quant_kernel(
     x_ptr,
     y_ptr,
     s_ptr,
-    BLOCK_SIZE: tl.constexpr,
-    LONG_INDEXING: tl.constexpr = False,
+    BLOCK_SIZE: tl.constexpr,  # elements per quant group (block_size, 128)
+    LONG_INDEXING: tl.constexpr = False,  # int64 offsets when numel can pass 2**31
 ):
     pid = tl.program_id(axis = 0)
     if LONG_INDEXING:
@@ -448,11 +448,11 @@ def _w8a8_block_fp8_matmul(
     stride_As_k,
     stride_Bs_k,
     stride_Bs_n,
-    BLOCK_SIZE_M: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
-    BLOCK_SIZE_K: tl.constexpr,
-    GROUP_SIZE_M: tl.constexpr,
-    LONG_INDEXING: tl.constexpr = False,
+    BLOCK_SIZE_M: tl.constexpr,  # rows per program: 128, or next pow2 of M (min 16) when M < 128
+    BLOCK_SIZE_N: tl.constexpr,  # output cols per program (= group_n)
+    BLOCK_SIZE_K: tl.constexpr,  # K per step (= group_k)
+    GROUP_SIZE_M: tl.constexpr,  # M tiles per swizzle group (8)
+    LONG_INDEXING: tl.constexpr = False,  # int64 offsets when numel can pass 2**31
 ):
     """Triton-accelerated function used to perform linear operations (dot
     product) on input tensors `A` and `B` with block-wise quantization, and
@@ -542,12 +542,12 @@ def _w8a8_block_fp8_matmul_tma(
     stride_As_k,
     stride_Bs_k,
     stride_Bs_n,
-    BLOCK_SIZE_M: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
-    BLOCK_SIZE_K: tl.constexpr,
-    GROUP_SIZE_M: tl.constexpr,
-    NUM_STAGES: tl.constexpr,
-    OUT_DTYPE: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr,  # rows per program (128)
+    BLOCK_SIZE_N: tl.constexpr,  # output cols per program (= group_n, 128)
+    BLOCK_SIZE_K: tl.constexpr,  # K per step (= group_k, 128)
+    GROUP_SIZE_M: tl.constexpr,  # M tiles per swizzle group (8)
+    NUM_STAGES: tl.constexpr,  # K loop pipeline stages (4)
+    OUT_DTYPE: tl.constexpr,  # tl dtype of C
 ):
     # _w8a8_block_fp8_matmul with A, B and C moved by TMA descriptors (out-of-range rows and K tail
     # are zero filled on load, clipped on store) and a pipelined K loop; same per-tile math and order,
@@ -851,11 +851,11 @@ def _w8a8_block_fp8_small_m(
     stride_Bs_n,
     stride_Bs_k,
     KB_PER_SPLIT,
-    GROUP_N: tl.constexpr,
-    BLOCK_SIZE_M: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
-    BLOCK_SIZE_K: tl.constexpr,
-    SPLIT_K: tl.constexpr,
+    GROUP_N: tl.constexpr,  # weight scale block along N (128)
+    BLOCK_SIZE_M: tl.constexpr,  # padded rows per program (16, covers M <= 16)
+    BLOCK_SIZE_N: tl.constexpr,  # output cols per program, from N and SM count
+    BLOCK_SIZE_K: tl.constexpr,  # K per step = quant block (128)
+    SPLIT_K: tl.constexpr,  # K splits, from N, K and SM count
 ):
     pid_n = tl.program_id(axis = 0)
     pid_k = tl.program_id(axis = 1)
@@ -1208,9 +1208,9 @@ def _fp8_rowwise_gemv_kernel(
     N,
     K,
     stride_wn,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    LONG_INDEXING: tl.constexpr = False,
+    BLOCK_N: tl.constexpr,  # output rows per program (1, 4 or 8 by N)
+    BLOCK_K: tl.constexpr,  # K per step (512)
+    LONG_INDEXING: tl.constexpr = False,  # int64 offsets when numel can pass 2**31
 ):
     pid = tl.program_id(0)
     # Widen before the multiply: row * stride_wn overflows int32 past 2^31 weight elements.
@@ -1254,11 +1254,11 @@ def _fp8_rowwise_gemv_rows_kernel(
     N,
     K,
     stride_wn,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    SPLIT_K: tl.constexpr,
-    LONG_INDEXING: tl.constexpr = False,
+    BLOCK_M: tl.constexpr,  # padded token rows (16, covers 2..16)
+    BLOCK_N: tl.constexpr,  # output cols per program, from the N / K config
+    BLOCK_K: tl.constexpr,  # K per step, from the N / K config
+    SPLIT_K: tl.constexpr,  # K splits (1 or 8), from the N / K config
+    LONG_INDEXING: tl.constexpr = False,  # int64 offsets when numel can pass 2**31
 ):
     pid = tl.program_id(0)
     pid_k = tl.program_id(1)
@@ -1297,7 +1297,13 @@ def _fp8_rowwise_gemv_rows_kernel(
 
 @triton.jit(do_not_specialize = ["M"])
 def _fp8_rowwise_gemv_rows_reduce(
-    p_ptr, s_ptr, y_ptr, M, N, SPLIT_K: tl.constexpr, BLOCK: tl.constexpr
+    p_ptr,
+    s_ptr,
+    y_ptr,
+    M,
+    N,
+    SPLIT_K: tl.constexpr,  # partials to sum
+    BLOCK: tl.constexpr,  # elements per program (1024)
 ):
     offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < M * N
@@ -1453,12 +1459,12 @@ def _fp8_block_gemv_kernel(
     stride_sk,
     stride_ys,
     stride_ym,
-    GROUP_N: tl.constexpr,
-    GROUP_K: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    LONG_INDEXING: tl.constexpr = False,
+    GROUP_N: tl.constexpr,  # scale block along N
+    GROUP_K: tl.constexpr,  # scale block along K
+    BLOCK_M: tl.constexpr,  # padded token rows (16)
+    BLOCK_N: tl.constexpr,  # output cols per program (16 or 32 by SM count)
+    BLOCK_K: tl.constexpr,  # K per step, min(128, GROUP_K)
+    LONG_INDEXING: tl.constexpr = False,  # int64 offsets when numel can pass 2**31
 ):
     pid_n = tl.program_id(0)
     pid_k = tl.program_id(1)
@@ -1713,12 +1719,12 @@ def _e4m3fn_bytes_dequant_kernel(
     stride_xn,
     stride_sm,
     stride_sn,
-    BLOCK_M_Q: tl.constexpr,
-    BLOCK_N_Q: tl.constexpr,
-    BLOCK_R: tl.constexpr,
-    BLOCK_C: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    EXACT_F16: tl.constexpr = False,
+    BLOCK_M_Q: tl.constexpr,  # quant block rows
+    BLOCK_N_Q: tl.constexpr,  # quant block cols
+    BLOCK_R: tl.constexpr,  # rows per program (8)
+    BLOCK_C: tl.constexpr,  # cols per program (512)
+    LONG_INDEXING: tl.constexpr,  # int64 offsets when numel can pass 2**31
+    EXACT_F16: tl.constexpr = False,  # round fp32 to fp16 in software (RNE)
 ):
     pid_r = tl.program_id(0)
     pid_c = tl.program_id(1)
@@ -1754,11 +1760,11 @@ def _e4m3fn_scale_dequant_kernel(
     M,
     N,
     stride_s,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    SCALE_ON_COLS: tl.constexpr,
-    ROUND_SCALE: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
+    BLOCK_M: tl.constexpr,  # rows per program (16)
+    BLOCK_N: tl.constexpr,  # cols per program (256)
+    SCALE_ON_COLS: tl.constexpr,  # scale per column (transposed view), else per row
+    ROUND_SCALE: tl.constexpr,  # round scale to the output dtype first (not fp16)
+    LONG_INDEXING: tl.constexpr,  # int64 offsets when numel can pass 2**31
 ):
     # Scale per tensor (stride_s 0), row or column. ROUND_SCALE mirrors x.to(dtype) * s.to(dtype) (fp16 keeps
     # the fp32 scale); e4m3 times a bf16 scale is exact in fp32, so one rounding gives torch's bits.
@@ -2233,9 +2239,9 @@ def _fp8_act_quant_per_row_kernel(
     ub_ptr,
     K,
     stride_xm,
-    HAS_UB: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    ONE_BLOCK: tl.constexpr,
+    HAS_UB: tl.constexpr,  # clamp the row max to input_scale_ub
+    BLOCK_K: tl.constexpr,  # K tile, next pow2 of K capped at 16384
+    ONE_BLOCK: tl.constexpr,  # whole row fits one BLOCK_K tile
 ):
     # Same fp32 math Inductor emits for _quantize_fp8_per_row; [1, BLOCK_K] tile is faster than 1D on sm120.
     row = tl.program_id(0).to(tl.int64)
@@ -2277,7 +2283,14 @@ def _fp8_act_quant_per_row_kernel(
 
 
 @triton.jit
-def _fp8_rowwise_dequant_kernel(w_ptr, s_ptr, y_ptr, numel, K, BLOCK: tl.constexpr):
+def _fp8_rowwise_dequant_kernel(
+    w_ptr,
+    s_ptr,
+    y_ptr,
+    numel,
+    K,
+    BLOCK: tl.constexpr,  # elements per program (1024)
+):
     # One fp32 multiply, one rounding, as Inductor fuses it (eager x.to(dtype) * s.to(dtype) rounds twice).
     offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < numel

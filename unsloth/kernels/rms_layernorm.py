@@ -27,14 +27,14 @@ def _rms_layernorm_forward(
     X,
     W,
     r,
-    Y_row_stride: tl.constexpr,
-    X_row_stride: tl.constexpr,
-    W_row_stride: tl.constexpr,
-    r_row_stride: tl.constexpr,
-    n_cols: tl.constexpr,
-    eps: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
+    Y_row_stride: tl.constexpr,  # Y.stride(0), row pitch of Y
+    X_row_stride: tl.constexpr,  # X.stride(0), row pitch of X
+    W_row_stride: tl.constexpr,  # W.stride(0), unused (W is 1D)
+    r_row_stride: tl.constexpr,  # r.stride(0), 1 for the per-row inv_var buffer
+    n_cols: tl.constexpr,  # hidden size (last dim of X)
+    eps: tl.constexpr,  # norm epsilon from the module
+    LONG_INDEXING: tl.constexpr,  # int64 offsets when numel can pass 2**31
+    BLOCK_SIZE: tl.constexpr,  # next pow2 of n_cols, one row per program
 ):
     """
     Fast RMS Layernorm kernel
@@ -68,22 +68,22 @@ def _rms_layernorm_forward(
 @triton.jit
 def _rms_backward_row(
     dY,
-    dY_row_stride: tl.constexpr,
+    dY_row_stride: tl.constexpr,  # row pitch of dY
     dX,
-    dX_row_stride: tl.constexpr,
+    dX_row_stride: tl.constexpr,  # row pitch of dX
     X,
-    X_row_stride: tl.constexpr,
+    X_row_stride: tl.constexpr,  # row pitch of X (holds Y when FROM_Y)
     W,
     r,
-    r_row_stride: tl.constexpr,
+    r_row_stride: tl.constexpr,  # row pitch of r, 1
     row_idx,
     col_offsets,
     mask,
-    n_cols: tl.constexpr,
-    GEMMA: tl.constexpr,
+    n_cols: tl.constexpr,  # hidden size (last dim of X)
+    GEMMA: tl.constexpr,  # weight is applied as (1 + W)
     dW_acc,
-    TRAIN_W: tl.constexpr,
-    FROM_Y: tl.constexpr,
+    TRAIN_W: tl.constexpr,  # accumulate dW partials for this row
+    FROM_Y: tl.constexpr,  # X holds the saved output Y, normed = Y / W
 ):
     # with FROM_Y, X holds Y and normed = Y / W; r still scales dX.
     dY += row_idx * dY_row_stride
@@ -129,18 +129,18 @@ def _rms_layernorm_backward(
     dW,
     n_rows,
     rows_per_program,
-    dY_row_stride: tl.constexpr,
-    dX_row_stride: tl.constexpr,
-    X_row_stride: tl.constexpr,
-    W_row_stride: tl.constexpr,
-    r_row_stride: tl.constexpr,
-    n_cols: tl.constexpr,
-    eps: tl.constexpr,
-    GEMMA: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    TRAIN_W: tl.constexpr,
-    FROM_Y: tl.constexpr,
+    dY_row_stride: tl.constexpr,  # dY.stride(0), row pitch of dY
+    dX_row_stride: tl.constexpr,  # dX.stride(0), row pitch of dX
+    X_row_stride: tl.constexpr,  # X.stride(0), row pitch of X (or Y when FROM_Y)
+    W_row_stride: tl.constexpr,  # W.stride(0), unused (W is 1D)
+    r_row_stride: tl.constexpr,  # r.stride(0), 1 for the per-row inv_var buffer
+    n_cols: tl.constexpr,  # hidden size (last dim of X)
+    eps: tl.constexpr,  # norm epsilon, unused in backward
+    GEMMA: tl.constexpr,  # weight is applied as (1 + W)
+    LONG_INDEXING: tl.constexpr,  # int64 offsets when numel can pass 2**31
+    BLOCK_SIZE: tl.constexpr,  # next pow2 of n_cols
+    TRAIN_W: tl.constexpr,  # W needs grad: write per-program fp32 dW partials
+    FROM_Y: tl.constexpr,  # X holds the saved output Y, normed = Y / W
 ):
     """
     Fast RMS Layernorm kernel for the backward pass
@@ -219,14 +219,14 @@ def _gemma_rms_layernorm_forward(
     X,
     W,
     r,
-    Y_row_stride: tl.constexpr,
-    X_row_stride: tl.constexpr,
-    W_row_stride: tl.constexpr,
-    r_row_stride: tl.constexpr,
-    n_cols: tl.constexpr,
-    eps: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
+    Y_row_stride: tl.constexpr,  # Y.stride(0), row pitch of Y
+    X_row_stride: tl.constexpr,  # X.stride(0), row pitch of X
+    W_row_stride: tl.constexpr,  # W.stride(0), unused (W is 1D)
+    r_row_stride: tl.constexpr,  # r.stride(0), 1 for the per-row inv_var buffer
+    n_cols: tl.constexpr,  # hidden size (last dim of X)
+    eps: tl.constexpr,  # norm epsilon from the module
+    LONG_INDEXING: tl.constexpr,  # int64 offsets when numel can pass 2**31
+    BLOCK_SIZE: tl.constexpr,  # next pow2 of n_cols, one row per program
 ):
     # Copies google-deepmind/gemma layers.py#L31 and keras-nlp gemma/rms_normalization.py#L33 exactly:
     # essentially all in float32.
@@ -255,7 +255,12 @@ def _gemma_rms_layernorm_forward(
 
 
 @triton.jit
-def _fold_lanes(x, ROWS: tl.constexpr, WARPS: tl.constexpr, HALF: tl.constexpr):
+def _fold_lanes(
+    x,
+    ROWS: tl.constexpr,  # rows per block
+    WARPS: tl.constexpr,  # warps per row
+    HALF: tl.constexpr,  # lanes folded this step
+):
     return tl.sum(tl.reshape(x, (ROWS, WARPS, 2, HALF)), axis = 2)
 
 
@@ -265,7 +270,12 @@ _HIP_ROW_ORDER = tl.constexpr(bool(torch.version.hip))
 
 
 @triton.jit
-def _row_dot_in_hip_row_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
+def _row_dot_in_hip_row_order(
+    a,
+    b,
+    ROWS: tl.constexpr,  # rows per block
+    WARPS: tl.constexpr,  # wavefronts per row (BLOCK_SIZE // wavefront)
+):
     # Bit-exact replay of the one-row kernels' tl.sum on AMD (WARPS = BLOCK_SIZE // wavefront):
     # fma(a_l, b_l, a_(l-8) * b_(l-8)), row_shr 4, 2, 1, 16-lane rows by lane bit 4 then 5, warps.
     LANES: tl.constexpr = a.shape[1] // WARPS
@@ -287,7 +297,12 @@ def _row_dot_in_hip_row_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
 
 
 @triton.jit
-def _row_dot_in_cuda_row_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
+def _row_dot_in_cuda_row_order(
+    a,
+    b,
+    ROWS: tl.constexpr,  # rows per block
+    WARPS: tl.constexpr,  # warps per row (BLOCK_SIZE // 32)
+):
     # Bit-exact replay of the one-row kernels' tl.sum (4 warps, 64 <= BLOCK_SIZE <= 128):
     # fma(a_l, b_l, a_(l+16) * b_(l+16)), lane xor 8, 4, 2, 1, warp xor 2, 1; explicit steps only.
     a = tl.permute(tl.reshape(a, (ROWS, WARPS, 2, 16)), (0, 1, 3, 2))
@@ -306,7 +321,12 @@ def _row_dot_in_cuda_row_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
 
 
 @triton.jit
-def _row_dot_in_row_kernel_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
+def _row_dot_in_row_kernel_order(
+    a,
+    b,
+    ROWS: tl.constexpr,  # rows per block
+    WARPS: tl.constexpr,  # warps (wavefronts) per row
+):
     if _HIP_ROW_ORDER:
         total = _row_dot_in_hip_row_order(a, b, ROWS, WARPS)
     else:
@@ -321,15 +341,15 @@ def _rms_layernorm_forward_rows(
     W,
     r,
     n_rows,
-    Y_row_stride: tl.constexpr,
-    X_row_stride: tl.constexpr,
-    n_cols: tl.constexpr,
-    eps: tl.constexpr,
-    GEMMA: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    ROWS: tl.constexpr,
-    WARPS: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
+    Y_row_stride: tl.constexpr,  # Y.stride(0), row pitch of Y
+    X_row_stride: tl.constexpr,  # X.stride(0), row pitch of X
+    n_cols: tl.constexpr,  # hidden size (last dim of X), 33..128 here
+    eps: tl.constexpr,  # norm epsilon from the module
+    GEMMA: tl.constexpr,  # Gemma norm: weight is applied as (1 + W)
+    BLOCK_SIZE: tl.constexpr,  # next pow2 of n_cols, 64 or 128
+    ROWS: tl.constexpr,  # rows per program, 4096 // BLOCK_SIZE
+    WARPS: tl.constexpr,  # warps (wavefronts) spanned by one row
+    LONG_INDEXING: tl.constexpr,  # int64 offsets when numel can pass 2**31 (always on for Gemma)
 ):
     pid = tl.program_id(0)
     if LONG_INDEXING:
@@ -364,21 +384,21 @@ def _rms_layernorm_forward_rows(
 @triton.jit
 def _rms_backward_rows_block(
     dY,
-    dY_row_stride: tl.constexpr,
+    dY_row_stride: tl.constexpr,  # row pitch of dY
     dX,
-    dX_row_stride: tl.constexpr,
+    dX_row_stride: tl.constexpr,  # row pitch of dX
     X,
-    X_row_stride: tl.constexpr,
+    X_row_stride: tl.constexpr,  # row pitch of X (holds Y when FROM_Y)
     W,
     r,
     rows,
     n_rows,
-    n_cols: tl.constexpr,
-    GEMMA: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    ROWS: tl.constexpr,
-    WARPS: tl.constexpr,
-    FROM_Y: tl.constexpr,
+    n_cols: tl.constexpr,  # hidden size (last dim of X)
+    GEMMA: tl.constexpr,  # weight is applied as (1 + W)
+    BLOCK_SIZE: tl.constexpr,  # next pow2 of n_cols, 64 or 128
+    ROWS: tl.constexpr,  # rows in this block, 4096 // BLOCK_SIZE
+    WARPS: tl.constexpr,  # warps (wavefronts) spanned by one row
+    FROM_Y: tl.constexpr,  # X holds the saved output Y, normed = Y / W
 ):
     col_offsets = tl.arange(0, BLOCK_SIZE)
     row_mask = rows < n_rows
@@ -426,18 +446,18 @@ def _rms_layernorm_backward_rows(
     dW,
     n_rows,
     blocks_per_program,
-    dY_row_stride: tl.constexpr,
-    dX_row_stride: tl.constexpr,
-    X_row_stride: tl.constexpr,
-    n_cols: tl.constexpr,
-    eps: tl.constexpr,
-    GEMMA: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    ROWS: tl.constexpr,
-    WARPS: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    TRAIN_W: tl.constexpr,
-    FROM_Y: tl.constexpr,
+    dY_row_stride: tl.constexpr,  # dY.stride(0), row pitch of dY
+    dX_row_stride: tl.constexpr,  # dX.stride(0), row pitch of dX
+    X_row_stride: tl.constexpr,  # X.stride(0), row pitch of X (or Y when FROM_Y)
+    n_cols: tl.constexpr,  # hidden size (last dim of X), 33..128 here
+    eps: tl.constexpr,  # norm epsilon, unused in backward
+    GEMMA: tl.constexpr,  # weight is applied as (1 + W)
+    BLOCK_SIZE: tl.constexpr,  # next pow2 of n_cols, 64 or 128
+    ROWS: tl.constexpr,  # rows per block, 4096 // BLOCK_SIZE
+    WARPS: tl.constexpr,  # warps (wavefronts) spanned by one row
+    LONG_INDEXING: tl.constexpr,  # int64 offsets when numel can pass 2**31
+    TRAIN_W: tl.constexpr,  # W needs grad: write per-program fp32 dW partials
+    FROM_Y: tl.constexpr,  # X holds the saved output Y, normed = Y / W
 ):
     pid = tl.program_id(0)
     if LONG_INDEXING:
@@ -490,7 +510,12 @@ def _rms_layernorm_backward_rows(
 
 @triton.jit(do_not_specialize = ("n_programs",))
 def _rms_sum_dw_partials(
-    partials, dW, n_programs, n_cols, BLOCK_ROWS: tl.constexpr, BLOCK_COLS: tl.constexpr
+    partials,
+    dW,
+    n_programs,
+    n_cols,
+    BLOCK_ROWS: tl.constexpr,  # partial rows per step, 64
+    BLOCK_COLS: tl.constexpr,  # dW cols per program, 64
 ):
     # Fixed tile order, so eager and torch.compile give the same bytes.
     cols = tl.program_id(0) * BLOCK_COLS + tl.arange(0, BLOCK_COLS)
