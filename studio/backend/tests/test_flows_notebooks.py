@@ -50,7 +50,8 @@ GRPO = _nb(
     "def correctness_reward_func(prompts, completions, answer, **kwargs):\n    return []\n"
     "def soft_format_reward_func(completions, **kwargs):\n    return []",
     "trainer = GRPOTrainer(model = model, reward_funcs = [correctness_reward_func, soft_format_reward_func, "
-    "int_reward_func], args = GRPOConfig(max_steps = 100, num_generations = 6))",
+    "int_reward_func], args = GRPOConfig(max_steps = 100, num_generations = 6, max_prompt_length = 1024, "
+    "max_completion_length = 1024))",
 )
 
 
@@ -94,6 +95,7 @@ def test_grpo_notebook_imports_onto_the_fine_tune_node():
         {"name": "soft-xml-format", "weight": 1.0},
     ]
     assert tune["num_generations"] == 6 and tune["system_prompt"].startswith("Answer in")
+    assert tune["max_prompt_length"] == 1024 and tune["max_completion_length"] == 1024
     assert any("int_reward_func" in line for line in report["approximated"])
     assert not any("correctness_reward_func" in line for line in report["approximated"])
 
@@ -656,6 +658,11 @@ def test_lora_settings_carry_over_to_the_finetune_node():
     )
     assert lines == [] and tune["lora_dropout"] == 0.0 and "lora_variant" not in tune
     assert len(tune["target_modules"]) == 7
+    # "all-linear" carries over; a PEFT regex string cannot be a module list, so it is reported.
+    tune, lines = read(", target_modules = 'all-linear'")
+    assert lines == [] and tune["target_modules"] == ["all-linear"]
+    tune, lines = read(", target_modules = '.*q_proj'")
+    assert "target_modules" not in tune and len(lines) == 1 and "PEFT regex" in lines[0]
 
 
 _SEVEN = "['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj']"

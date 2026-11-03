@@ -691,8 +691,17 @@ def _load_rows(
             raise FlowNodeError(
                 "Hold-out works on Parquet, CSV or JSON datasets; set Hold out % to 0 for this one"
             )
-        # Streamed, so a big local file is never read past the slice end or the cap.
-        streamed = load_dataset(builder, data_files = path, split = "train", streaming = True)
+        from utils.datasets.cells import csv_as_text_kwargs
+
+        # Streamed, so a big local file is never read past the slice end or the cap. CSV cells stay
+        # text as training reads them ("00501" keeps its zeros, "NA" stays a value).
+        streamed = load_dataset(
+            builder,
+            data_files = path,
+            split = "train",
+            streaming = True,
+            **csv_as_text_kwargs([path]),
+        )
         loaded = _stream_rows(streamed, start, end)
     if len(loaded) > HOLDOUT_MAX_ROWS:
         raise _too_many(len(loaded))
