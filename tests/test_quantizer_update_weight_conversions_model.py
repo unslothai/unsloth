@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""transformers 5.21+ calls HfQuantizer.update_weight_conversions(weight_conversions, model). Unsloth's bitsandbytes
-4-bit subclasses (installed at import) and the Mistral FP8 wrapper took one argument, so every 4-bit load raised
-TypeError there. Each override must forward whatever the installed transformers passes."""
+"""transformers 5.21+ passes the model to update_weight_conversions; Unsloth's 4-bit subclasses (installed at import)
+and the Mistral FP8 wrapper took one argument, so every 4-bit load raised TypeError."""
 
 import inspect
 
