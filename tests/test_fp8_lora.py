@@ -15,6 +15,7 @@ from unsloth import precision as P
 from unsloth.kernels import fp8_lora as FL
 from unsloth.kernels import fast_lora as FLK
 from unsloth.models import float8_training as f8t
+from real_accelerator import has_real_cuda
 
 pytestmark = pytest.mark.skipif(
     not hasattr(torch, "float8_e4m3fn") or not hasattr(torch, "_scaled_mm"),
@@ -40,6 +41,30 @@ needs_cpu_scaled_mm = pytest.mark.skipif(
 
 FP8_FWD_TOL = 0.06
 FP8_DGRAD_TOL = 0.09
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not has_real_cuda(), reason = "requires a real CUDA device for Triton rounding")
+@pytest.mark.skipif(FL.triton is None, reason = "requires Triton for the CUDA cast kernels")
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+@pytest.mark.parametrize("rowwise", [False, True])
+def test_cuda_casts_match_native_rounding(dtype, fp8_dtype, rowwise):
+    limit = torch.finfo(fp8_dtype).max
+    for seed in range(16):
+        generator = torch.Generator(device = "cuda").manual_seed(seed)
+        x = torch.randn(32, 256, device = "cuda", dtype = dtype, generator = generator)
+        if seed == 0:
+            x[0].fill_(-0.0)
+            x[1].fill_(torch.finfo(dtype).tiny)
+            x[2, 0] = torch.finfo(dtype).max
+        amax = x.float().abs().amax(dim = 1, keepdim = True) if rowwise else x.float().abs().amax()
+        amax = amax.clamp_min(1e-12)
+        expected = (x.float() * (limit / amax)).clamp(-limit, limit).to(fp8_dtype)
+        quantize = FL.quantize_rowwise if rowwise else FL.quantize_tensorwise
+        actual, inverse = quantize(x, fp8_dtype)
+        assert torch.equal(actual.view(torch.uint8), expected.view(torch.uint8))
+        assert torch.equal(inverse, amax / limit)
 
 
 def _rel(a, b):
@@ -689,6 +714,23 @@ def test_host_master_dequantize_is_exact(offload_on_cpu):
 
     assert torch.equal(fast_dequantize(lin.weight, state), W0)
     assert torch.equal(fast_dequantize(lin.weight.t(), state), W0.t())
+
+
+def test_repeated_inference_does_not_rescan_restored_layers(offload_on_cpu, monkeypatch):
+    model = _tiny_qwen3_peft()
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    f8t.enable_fp8_lora(model, allow_cpu = True)
+    f8t.restore_fp8_lora_for_inference(model)
+    calls = []
+    original = model.modules
+
+    def modules():
+        calls.append(True)
+        return original()
+
+    monkeypatch.setattr(model, "modules", modules)
+    f8t.restore_fp8_lora_for_inference(model)
+    assert calls == []
 
 
 @needs_cpu_scaled_mm

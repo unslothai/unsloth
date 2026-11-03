@@ -656,13 +656,20 @@ def _block_swapped_modules(model) -> set:
     return out
 
 
+def _fp8_lora_owner(model):
+    getter = getattr(model, "get_base_model", None)
+    return getter() if getattr(model, "peft_config", None) and callable(getter) else model
+
+
 def restore_fp8_lora_for_inference(model):
-    if _fp8_lora_request(model) is None:
+    owner = _fp8_lora_owner(model)
+    bases = owner.__dict__.get("_unsloth_fp8_lora_bases", ())
+    if not bases:
         return
     kernels = _load_fp8_lora_kernels()
-    for module in model.modules():
-        if "_unsloth_fp8_lora" in module.__dict__:
-            kernels.detach_fp8_lora_base(module)
+    for module in bases:
+        kernels.detach_fp8_lora_base(module)
+    owner.__dict__["_unsloth_fp8_lora_bases"] = ()
 
 
 def enable_fp8_lora(
@@ -717,6 +724,9 @@ def enable_fp8_lora(
         converted.append(name)
     if offloaded and torch.cuda.is_available():
         torch.cuda.empty_cache()
+    _fp8_lora_owner(model).__dict__["_unsloth_fp8_lora_bases"] = tuple(
+        module for module in model.modules() if "_unsloth_fp8_lora" in module.__dict__
+    )
     detail = {"skipped": len(skipped)} if skipped else {}
     if offloaded:
         detail["master_offloaded"] = offloaded

@@ -123,7 +123,8 @@ if triton is not None:
         amax = tl.load(amax_ptr).to(tl.float32)
         # NaN / inf amax propagates into the output, so a GradScaler still sees the overflow.
         amax = tl.maximum(amax, 1e-12, propagate_nan = tl.PropagateNan.ALL)
-        scale = FP8_MAX / amax
+        # Match PyTorch's reciprocal-then-multiply rounding order (_tensor.py::__rdiv__).
+        scale = tl.div_rn(1.0, amax) * FP8_MAX
         x = tl.load(x_ptr + offs, mask = mask, other = 0.0).to(tl.float32)
         y = tl.maximum(x * scale, -FP8_MAX, propagate_nan = tl.PropagateNan.ALL)
         y = tl.minimum(y, FP8_MAX, propagate_nan = tl.PropagateNan.ALL)
@@ -132,7 +133,7 @@ if triton is not None:
         else:
             tl.store(y_ptr + offs, y.to(tl.float8e4nv), mask = mask)
         if pid == 0:
-            tl.store(inv_ptr, amax / FP8_MAX)
+            tl.store(inv_ptr, amax * (1.0 / FP8_MAX))
 
 
 def quantize_tensorwise(x: torch.Tensor, fp8_dtype = E4M3):
@@ -196,7 +197,7 @@ if triton is not None:
         # tl.max drops NaN: put it back so a GradScaler still sees the overflow.
         amax = tl.where(nans > 0, float("nan"), amax)
         amax = tl.maximum(amax, 1e-12, propagate_nan = tl.PropagateNan.ALL)
-        scale = FP8_MAX / amax
+        scale = tl.div_rn(1.0, amax) * FP8_MAX
         if ONE_BLOCK:
             y = tl.maximum(x * scale, -FP8_MAX, propagate_nan = tl.PropagateNan.ALL)
             y = tl.minimum(y, FP8_MAX, propagate_nan = tl.PropagateNan.ALL)
@@ -214,7 +215,7 @@ if triton is not None:
                     tl.store(y_row + k + offs, y.to(tl.float8e5), mask = mask)
                 else:
                     tl.store(y_row + k + offs, y.to(tl.float8e4nv), mask = mask)
-        tl.store(inv_ptr + row, amax / FP8_MAX)
+        tl.store(inv_ptr + row, amax * (1.0 / FP8_MAX))
 
 
 def quantize_rowwise(x: torch.Tensor, fp8_dtype = E4M3):
