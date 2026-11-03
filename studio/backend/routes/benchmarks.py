@@ -137,14 +137,13 @@ class BenchmarkLease(BaseModel):
     kind: Literal["sweep", "llama-bench", "evals"] = "sweep"
 
 
-@router.post("/lease")
-def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current_subject)):
-    """One benchmark at a time across tabs and devices: each reloads the one llama-server, so a
-    second runner would swap settings under the first and credit its rows to the wrong row."""
+def claim_lease(holder: str, kind: str, ttl: float = LEASE_TTL_SECONDS) -> int:
+    """Take or renew the one Benchmarks lease; 409 while another holder's is live or a load
+    admitted before it is still running. Returns the holder's count of outside generations."""
     global _lease
     now = time.monotonic()
     with _lease_lock:
-        if _lease and _lease["holder"] != lease.holder and _lease["expires"] > now:
+        if _lease and _lease["holder"] != holder and _lease["expires"] > now:
             raise HTTPException(
                 status_code = 409,
                 detail = {
@@ -154,7 +153,7 @@ def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current
                     "Stop it or let it finish first.",
                 },
             )
-        if _loads_pending(lease.holder) and not (_lease and _lease["holder"] == lease.holder):
+        if _loads_pending(holder) and not (_lease and _lease["holder"] == holder):
             # It passed the fence before this lease existed and would land after the run's first load.
             raise HTTPException(
                 status_code = 409,
@@ -163,13 +162,29 @@ def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current
                     "message": "A model is loading. Start the run once it finishes.",
                 },
             )
-        outside = _lease["outside"] if _lease and _lease["holder"] == lease.holder else 0
-        _lease = {
-            "holder": lease.holder,
-            "kind": lease.kind,
-            "expires": now + LEASE_TTL_SECONDS,
-            "outside": outside,
-        }
+        outside = _lease["outside"] if _lease and _lease["holder"] == holder else 0
+        _lease = {"holder": holder, "kind": kind, "expires": now + ttl, "outside": outside}
+    return outside
+
+
+def extend_lease(holder: str, ttl: float = LEASE_TTL_SECONDS) -> None:
+    with _lease_lock:
+        if _lease and _lease["holder"] == holder:
+            _lease["expires"] = time.monotonic() + ttl
+
+
+def drop_lease(holder: str) -> None:
+    global _lease
+    with _lease_lock:
+        if _lease and _lease["holder"] == holder:
+            _lease = None
+
+
+@router.post("/lease")
+def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current_subject)):
+    """One benchmark at a time across tabs and devices: each reloads the one llama-server, so a
+    second runner would swap settings under the first and credit its rows to the wrong row."""
+    outside = claim_lease(lease.holder, lease.kind)
     return {"ttl": LEASE_TTL_SECONDS, "outside": outside}
 
 
@@ -177,10 +192,7 @@ def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current
 def release_lease(
     holder: str = Query(max_length = 64), current_subject: str = Depends(get_current_subject)
 ):
-    global _lease
-    with _lease_lock:
-        if _lease and _lease["holder"] == holder:
-            _lease = None
+    drop_lease(holder)
 
 
 LEASE_HEADER = b"x-unsloth-bench-lease"
@@ -244,6 +256,15 @@ SWEEP_BUSY_DETAIL = (
     "A benchmark is running on this model. Stop it on the Benchmarks page or let it finish, "
     "then try again."
 )
+# llama-bench unloads the model for its run, so "on this model" would be wrong there.
+GPU_BUSY_DETAIL = (
+    "A benchmark is using the GPU. Stop it on the Benchmarks page or let it finish, then try again."
+)
+
+
+def _busy_detail() -> str:
+    lease = _lease
+    return GPU_BUSY_DETAIL if lease and lease["kind"] == "llama-bench" else SWEEP_BUSY_DETAIL
 
 
 def refuse_if_sweep_holds(request) -> None:
@@ -297,7 +318,7 @@ class BenchmarkTrafficMiddleware:
             if path.rstrip("/") in LOAD_PATHS and _carries_bearer_credentials(scope, path):
                 if not await _admit_load_in_turn(holder):
                     from starlette.responses import JSONResponse
-                    await JSONResponse({"detail": SWEEP_BUSY_DETAIL}, status_code = 409)(
+                    await JSONResponse({"detail": _busy_detail()}, status_code = 409)(
                         scope, receive, send
                     )
                     return

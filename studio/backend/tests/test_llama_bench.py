@@ -22,6 +22,8 @@ for i, (p, n, ts) in enumerate(rows, 1):
     print(f"llama-bench: benchmark {i}/{len(rows)}: starting", file=sys.stderr, flush=True)
     if "--slow" in sys.argv:
         time.sleep(30)
+    if "--stall" in sys.argv and i == 2:
+        time.sleep(30)
     print(json.dumps({
         "build_commit": "abc123", "build_number": 9000, "gpu_info": "Radeon AI PRO R9700",
         "backends": "ROCm", "model_type": "qwen3 4B Q4_K_M", "model_size": 2500000000,
@@ -45,6 +47,7 @@ def bench(tmp_path, monkeypatch):
     script.write_text(FAKE, encoding = "utf-8")
     slow = {"on": False}
     unloads = []
+    tracked = []
 
     async def unload(request, subject):
         unloads.append(request.model_path)
@@ -54,7 +57,13 @@ def bench(tmp_path, monkeypatch):
         llama_bench,
         "_command",
         lambda binary, gguf, request: [sys.executable, str(script)]
-        + (["--slow"] if slow["on"] else []),
+        + ([slow["on"]] if isinstance(slow["on"], str) else ["--slow"] if slow["on"] else []),
+    )
+    monkeypatch.setattr(
+        "utils.process_lifetime.adopt_pid", lambda pid, *a, **k: tracked.append(("adopt", pid))
+    )
+    monkeypatch.setattr(
+        "utils.process_lifetime.forget_pid", lambda pid: tracked.append(("forget", pid))
     )
     monkeypatch.setattr(inference_routes, "get_llama_cpp_backend", lambda: _Backend())
     monkeypatch.setattr(inference_routes, "_unload_model_impl", unload)
@@ -69,7 +78,9 @@ def bench(tmp_path, monkeypatch):
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
     app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
-    return TestClient(app), slow, unloads
+    client = TestClient(app)
+    client.tracked = tracked
+    return client, slow, unloads
 
 
 def _wait(client, until = ("done", "error", "cancelled")):
@@ -193,7 +204,7 @@ def test_api_key_callers_get_paths_redacted_from_the_error_and_log(bench, tmp_pa
     secret = str(tmp_path / "private" / "owner-model.gguf")
     failing = tmp_path / "failing.py"
     failing.write_text(
-        f"import sys; print(\"main: error: failed to load model '{secret}'\", file=sys.stderr); sys.exit(1)\n",
+        f"import sys; print('main: error: failed to load model ' + {secret!r}, file=sys.stderr); sys.exit(1)\n",
         encoding = "utf-8",
     )
     monkeypatch.setattr(
@@ -257,3 +268,66 @@ def test_a_run_waits_out_a_load_that_passed_the_fence_first(bench, monkeypatch):
     monkeypatch.setattr(benchmarks_routes, "_loads_in_flight", {})
     assert client.post("/api/benchmarks/llama-bench/run", json = {}).status_code == 200
     _wait(client)
+
+
+def test_the_run_is_saved_with_its_status_before_the_job_reads_terminal(bench, monkeypatch):
+    client, _, _ = bench
+    seen = []
+    save = llama_bench._save
+
+    def record(job, status):
+        seen.append(job.status)
+        save(job, status)
+
+    monkeypatch.setattr(llama_bench, "_save", record)
+    assert client.post("/api/benchmarks/llama-bench/run", json = {}).status_code == 200
+    job = _wait(client)
+    assert job["status"] == "done" and seen == ["running"]
+    runs = client.get("/api/benchmarks/runs", params = {"kind": "llama-bench"}).json()["runs"]
+    assert runs[0]["meta"]["status"] == "done" and runs[0]["meta"]["total"] == 2
+
+
+def test_a_stopped_run_keeps_its_rows_and_says_it_stopped(bench):
+    client, slow, _ = bench
+    slow["on"] = "--stall"
+    assert client.post("/api/benchmarks/llama-bench/run", json = {}).status_code == 200
+    for _ in range(200):
+        if client.get("/api/benchmarks/llama-bench/run").json()["job"]["rows"]:
+            break
+        time.sleep(0.05)
+    client.delete("/api/benchmarks/llama-bench/run")
+    assert _wait(client)["status"] == "cancelled"
+    run = client.get("/api/benchmarks/runs", params = {"kind": "llama-bench"}).json()["runs"][0]
+    assert run["meta"]["status"] == "cancelled" and len(run["outcomes"]) == 1
+
+
+def test_llama_bench_is_tracked_as_a_child_until_it_exits(bench):
+    client, _, _ = bench
+    assert client.post("/api/benchmarks/llama-bench/run", json = {}).status_code == 200
+    _wait(client)
+    assert [kind for kind, _ in client.tracked] == ["adopt", "forget"]
+    assert client.tracked[0][1] == client.tracked[1][1]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "SIGTERM can't be ignored there")
+def test_a_stop_that_terminate_does_not_end_is_killed(bench, tmp_path, monkeypatch):
+    client, _, _ = bench
+    stubborn = tmp_path / "stubborn.py"
+    stubborn.write_text(
+        "import signal, sys, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "print('llama-bench: benchmark 1/1: starting', file=sys.stderr, flush=True)\n"
+        "time.sleep(60)\n",
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(
+        llama_bench, "_command", lambda binary, gguf, request: [sys.executable, str(stubborn)]
+    )
+    monkeypatch.setattr(llama_bench, "KILL_AFTER_SECONDS", 0.5)
+    assert client.post("/api/benchmarks/llama-bench/run", json = {}).status_code == 200
+    for _ in range(200):
+        if client.get("/api/benchmarks/llama-bench/run").json()["job"]["log"]:
+            break
+        time.sleep(0.05)
+    client.delete("/api/benchmarks/llama-bench/run")
+    assert _wait(client)["status"] == "cancelled"

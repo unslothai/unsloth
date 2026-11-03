@@ -247,7 +247,10 @@ def test_a_sweep_refuses_other_loads_until_it_lets_go(monkeypatch):
     # llama-bench unloaded the server for its own process: a load would take the GPU back.
     bench = {"holder": "tab-bbbbbbbb", "kind": "llama-bench"}
     client.post("/api/benchmarks/lease", json = bench)
-    assert client.post("/api/inference/load").status_code == 409
+    refused = client.post("/api/inference/load")
+    assert refused.status_code == 409
+    # The model is unloaded under llama-bench, so the sweep's "on this model" would be wrong.
+    assert refused.json()["detail"] == benchmarks_routes.GPU_BUSY_DETAIL
     own = client.post("/api/inference/load", headers = {"X-Unsloth-Bench-Lease": bench["holder"]})
     assert own.status_code == 200
     # Only a sweep shares the server with other generations, so only a sweep counts them.

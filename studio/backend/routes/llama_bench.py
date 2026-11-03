@@ -28,7 +28,9 @@ from storage.benchmark_runs_db import upsert_run
 router = APIRouter()
 
 KIND = "llama-bench"
-_PROGRESS_RE = re.compile(r"^llama-bench: benchmark (\d+)/(\d+): (.+)$")
+# A Stop that terminate() doesn't end within this is killed.
+KILL_AFTER_SECONDS = 10
+_PROGRESS_RE = re.compile(r"^llama-bench: benchmark \d+/\d+: (.+)$")
 # Fields worth keeping per row; the full jsonl row carries ~40, mostly echoes of the flags.
 _ROW_KEYS = (
     "n_prompt",
@@ -141,49 +143,25 @@ def _refuse_if_running() -> None:
 
 
 def _claim_lease(holder: str) -> None:
-    """Hold the Benchmarks lease for the run, so a config sweep can't start and load a model beside
-    it, and a sweep already holding it refuses this run."""
+    """Hold the Benchmarks lease for the whole run, so a config sweep can't start and load a
+    model beside it, and a sweep already holding it refuses this run."""
     from routes import benchmarks
 
-    now = time.monotonic()
-    with benchmarks._lease_lock:
-        lease = benchmarks._lease
-        if lease and lease["holder"] != holder and lease["expires"] > now:
-            raise HTTPException(
-                status_code = 409,
-                detail = {
-                    "error": "benchmark_running",
-                    "kind": lease["kind"],
-                    "message": "Another benchmark is running in another tab or on another device. "
-                    "Stop it or let it finish first.",
-                },
-            )
-        if benchmarks._loads_pending(holder):
-            # It passed the fence before this lease and would reload the server under llama-bench.
-            raise HTTPException(
-                status_code = 409,
-                detail = {
-                    "error": "model_loading",
-                    "message": "A model is loading. Start the run once it finishes.",
-                },
-            )
-        benchmarks._lease = {"holder": holder, "kind": KIND, "expires": float("inf"), "outside": 0}
+    benchmarks.claim_lease(holder, KIND, ttl = float("inf"))
 
 
 def _lease_until_restored(holder: str) -> None:
     """The tab puts chat's model back under this lease (the job id as its header), then releases
     it; a closed tab's lease lapses like any other."""
     from routes import benchmarks
-    with benchmarks._lease_lock:
-        if benchmarks._lease and benchmarks._lease["holder"] == holder:
-            benchmarks._lease["expires"] = time.monotonic() + benchmarks.LEASE_TTL_SECONDS
+
+    benchmarks.extend_lease(holder)
 
 
 def _release_lease(holder: str) -> None:
     from routes import benchmarks
-    with benchmarks._lease_lock:
-        if benchmarks._lease and benchmarks._lease["holder"] == holder:
-            benchmarks._lease = None
+
+    benchmarks.drop_lease(holder)
 
 
 def find_llama_bench() -> Optional[Path]:
@@ -225,7 +203,7 @@ def _row(raw: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
-def _save(job: _Job) -> None:
+def _save(job: _Job, status: str) -> None:
     upsert_run(
         {
             "id": job.id,
@@ -234,7 +212,7 @@ def _save(job: _Job) -> None:
             "model": job.model,
             "ggufVariant": job.variant,
             "config": job.request.model_dump(),
-            "meta": job.meta,
+            "meta": {**job.meta, "status": status, "total": job.total},
             "outcomes": job.rows,
             "results": [],
             "createdAt": job.created_at,
@@ -243,12 +221,21 @@ def _save(job: _Job) -> None:
     )
 
 
-def _run(job: _Job, binary: Path, gguf: str) -> None:
-    from core.inference.llama_cpp import LlamaCppBackend
-    try:
-        env = LlamaCppBackend._llama_server_env_for_binary(str(binary))
-        job.proc = subprocess.Popen(
-            _command(binary, gguf, job.request),
+def _spawn(cmd: list[str], env) -> subprocess.Popen:
+    """Tracked like llama-server, so a crash or quit of Unsloth Studio doesn't leave it on the GPU."""
+    from utils.process_lifetime import (
+        adopt_pid,
+        child_popen_kwargs,
+        is_process_shutting_down,
+        spawn_on_lifetime_thread,
+    )
+    from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+
+    if is_process_shutting_down():
+        raise RuntimeError("Unsloth Studio is shutting down")
+    proc = spawn_on_lifetime_thread(
+        lambda: subprocess.Popen(
+            cmd,
             stdout = subprocess.PIPE,
             stderr = subprocess.PIPE,
             stdin = subprocess.DEVNULL,
@@ -256,8 +243,22 @@ def _run(job: _Job, binary: Path, gguf: str) -> None:
             text = True,
             encoding = "utf-8",
             errors = "replace",
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            **windows_hidden_subprocess_kwargs(),
+            **child_popen_kwargs(),
         )
+    )
+    adopt_pid(proc.pid)
+    return proc
+
+
+def _run(job: _Job, binary: Path, gguf: str) -> None:
+    from core.inference.llama_cpp import LlamaCppBackend
+    from utils.process_lifetime import forget_pid
+
+    status = "error"
+    try:
+        env = LlamaCppBackend._llama_server_env_for_binary(str(binary))
+        job.proc = _spawn(_command(binary, gguf, job.request), env)
         if job.cancelled:
             job.proc.terminate()
 
@@ -269,7 +270,7 @@ def _run(job: _Job, binary: Path, gguf: str) -> None:
                 job.log.append(line)
                 m = _PROGRESS_RE.match(line)
                 if m:
-                    job.stage = m.group(3).capitalize()
+                    job.stage = m.group(1).capitalize()
 
         reader = threading.Thread(target = read_stderr, args = (job.proc.stderr,), daemon = True)
         reader.start()
@@ -286,29 +287,32 @@ def _run(job: _Job, binary: Path, gguf: str) -> None:
             job.rows.append(_row(raw))
         code = job.proc.wait()
         reader.join(timeout = 2)
-        # Before the status turns terminal: the tab puts chat's model back as soon as it sees it.
-        _lease_until_restored(job.id)
         if job.cancelled:
-            job.status = "cancelled"
+            status = "cancelled"
         elif code != 0:
-            job.status = "error"
             tail = [l for l in job.log if "error" in l.lower()] or list(job.log)
             job.error = (tail[-1] if tail else f"llama-bench exited with code {code}")[:500]
         else:
-            job.status = "done"
+            status = "done"
     except Exception as exc:  # the job must end in a terminal state whatever went wrong
-        _lease_until_restored(job.id)
-        job.status = "error"
         job.error = str(exc)[:500]
+        if job.proc is not None and job.proc.poll() is None:
+            job.proc.kill()
+            job.proc.wait()
     finally:
+        if job.proc is not None:
+            forget_pid(job.proc.pid)
+        # Before the status turns terminal: the tab puts chat's model back as soon as it sees it.
         _lease_until_restored(job.id)
         job.finished_at = int(time.time() * 1000)
         job.stage = ""
         if job.rows:
             try:
-                _save(job)
+                _save(job, status)
             except Exception as exc:
                 job.error = job.error or f"Couldn't save the run: {exc}"[:500]
+        # Last, so a client that sees it terminal finds the run already saved.
+        job.status = status
 
 
 def _owner_only() -> None:
@@ -397,6 +401,13 @@ def current(
     return {"job": _public(job, via_api_key)}
 
 
+def _kill_if_stuck(proc: subprocess.Popen) -> None:
+    try:
+        proc.wait(timeout = KILL_AFTER_SECONDS)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
 @router.delete("/run")
 def cancel(
     current_subject: str = Depends(get_current_subject),
@@ -409,4 +420,5 @@ def cancel(
         job.cancelled = True
         if job.proc is not None and job.proc.poll() is None:
             job.proc.terminate()
+            threading.Thread(target = _kill_if_stuck, args = (job.proc,), daemon = True).start()
     return {"job": _public(job.snapshot() if job else None, via_api_key)}

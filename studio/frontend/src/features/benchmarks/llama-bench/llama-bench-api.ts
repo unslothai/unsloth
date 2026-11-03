@@ -35,9 +35,12 @@ export interface LlamaBenchMeta {
   model_type?: string | null;
   model_size?: number | null;
   model_n_params?: number | null;
+  /** Saved runs only: how the run ended and how many tests it planned. */
+  status?: LlamaBenchStatus;
+  total?: number;
 }
 
-export type LlamaBenchStatus = "running" | "done" | "error" | "cancelled";
+type LlamaBenchStatus = "running" | "done" | "error" | "cancelled";
 
 export interface LlamaBenchJob {
   id: string;

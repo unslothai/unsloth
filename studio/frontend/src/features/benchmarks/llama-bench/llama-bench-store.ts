@@ -26,8 +26,9 @@ import {
   listLlamaBenchRuns,
   startLlamaBench,
 } from "./llama-bench-api";
+import { ownsRestore, shouldPutBack } from "./llama-bench-restore";
 
-export const DEFAULT_LLAMA_BENCH: LlamaBenchConfig = {
+const DEFAULT_LLAMA_BENCH: LlamaBenchConfig = {
   prompt_tokens: [512],
   gen_tokens: [128],
   depths: [0],
@@ -48,16 +49,21 @@ interface LlamaBenchState {
   runs: SavedLlamaBenchRun[];
   shownId: string | null;
   /** Chat's model before the swap, persisted so a reload mid-run can still put it back. */
-  pendingRestore: {
-    original: InferenceStatusResponse;
-    originalLoad: ReturnType<typeof chatBaseLoad>;
-  } | null;
+  pendingRestore: PendingRestore | null;
   setConfig: (patch: Partial<LlamaBenchConfig>) => void;
   refresh: () => Promise<void>;
   start: (model: string | null, variant: string | null) => Promise<void>;
   cancel: () => Promise<void>;
   show: (id: string | null) => void;
   remove: (id: string) => Promise<void>;
+}
+
+interface PendingRestore {
+  original: InferenceStatusResponse;
+  originalLoad: ReturnType<typeof chatBaseLoad>;
+  /** The run it belongs to; null until the server has answered with one. */
+  jobId: string | null;
+  benched: { model: string | null; variant: string | null };
 }
 
 const POLL_MISS_LIMIT = 30;
@@ -74,15 +80,29 @@ async function putChatBack(
     return;
   }
   set({ phase: "restoring", pendingRestore: null });
-  await restore(pending.original, pending.originalLoad, holder)
-    .catch((err) =>
-      set({
-        error: `The run finished, but chat's model didn't load back: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      }),
+  try {
+    const now = await getInferenceStatus();
+    // Another tab's restore, or a model the user loaded since, stays.
+    if (
+      shouldPutBack(
+        { model: now.active_model, variant: now.gguf_variant },
+        {
+          model: pending.original.active_model,
+          variant: pending.original.gguf_variant,
+        },
+        pending.benched,
+      )
     )
-    .finally(() => (holder ? releaseBenchLease(holder) : undefined));
+      await restore(pending.original, pending.originalLoad, holder);
+  } catch (err) {
+    set({
+      error: `The run finished, but chat's model didn't load back: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    });
+  } finally {
+    if (holder) await releaseBenchLease(holder);
+  }
 }
 
 async function pollUntilDone(
@@ -128,7 +148,9 @@ export const useLlamaBenchStore = create<LlamaBenchState>()(
         // A run started in another tab or before a reload: follow it, then put chat's model back.
         if (status.job) set({ job: status.job });
         const running = status.job?.status === "running";
-        if (!running && !get().pendingRestore) return;
+        const owned = ownsRestore(get().pendingRestore?.jobId, status.job?.id);
+        if (!owned) set({ pendingRestore: null });
+        if (!running && !owned) return;
         set({ phase: "running" });
         try {
           if (running) await pollUntilDone(set);
@@ -139,18 +161,27 @@ export const useLlamaBenchStore = create<LlamaBenchState>()(
       },
       start: async (model, variant) => {
         if (get().phase !== "idle") return;
-        set({ error: null, shownId: null, phase: "loading" });
+        set({ error: null, shownId: null, job: null, phase: "loading" });
         let status: Awaited<ReturnType<typeof getInferenceStatus>>;
         try {
           await useChatRuntimeStore.getState().hydratePersistedSettings();
           status = await getInferenceStatus();
         } catch (err) {
-          // Nothing has been touched yet; leaving "loading" here locked the controls until a reload.
+          // Nothing touched yet, so straight back to idle.
           set({ phase: "idle", error: err instanceof Error ? err.message : String(err) });
           return;
         }
         const original = status;
         const originalLoad = chatBaseLoad(original);
+        const pending = (jobId: string | null): PendingRestore => ({
+          original,
+          originalLoad,
+          jobId,
+          benched: {
+            model: model ?? original.active_model,
+            variant: model ? variant : (original.gguf_variant ?? null),
+          },
+        });
         let touched = false;
         try {
           if (
@@ -159,7 +190,7 @@ export const useLlamaBenchStore = create<LlamaBenchState>()(
               (variant ?? null) !== (status.gguf_variant ?? null))
           ) {
             touched = true;
-            if (original.active_model) set({ pendingRestore: { original, originalLoad } });
+            if (original.active_model) set({ pendingRestore: pending(null) });
             await loadModel(
               {
                 ...chatBaseLoad({
@@ -178,10 +209,11 @@ export const useLlamaBenchStore = create<LlamaBenchState>()(
             throw new Error(
               "Load a GGUF model first. llama-bench measures the model chat has loaded.",
             );
-          const job = await startLlamaBench(get().config);
-          // The server unloaded chat's model to give llama-bench the GPU.
+          // Before the POST: the server unloads chat's model, and a lost answer must still restore it.
           touched = true;
-          if (original.active_model) set({ pendingRestore: { original, originalLoad } });
+          if (original.active_model) set({ pendingRestore: pending(null) });
+          const job = await startLlamaBench(get().config);
+          if (original.active_model) set({ pendingRestore: pending(job.id) });
           set({ job, phase: "running" });
           const done = await pollUntilDone(set);
           if (done?.status === "error")
@@ -190,7 +222,7 @@ export const useLlamaBenchStore = create<LlamaBenchState>()(
           set({ error: err instanceof Error ? err.message : String(err) });
         } finally {
           if (touched && original.active_model) {
-            set({ pendingRestore: { original, originalLoad } });
+            set({ pendingRestore: pending(get().job?.id ?? null) });
             await putChatBack(set, get);
           } else {
             const held = get().job?.id;
@@ -215,7 +247,7 @@ export const useLlamaBenchStore = create<LlamaBenchState>()(
       },
     }),
     {
-      name: "unsloth-llama-bench",
+      name: "unsloth_llama_bench",
       partialize: (s) => ({ config: s.config, pendingRestore: s.pendingRestore }),
     },
   ),

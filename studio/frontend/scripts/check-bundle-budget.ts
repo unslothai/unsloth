@@ -445,7 +445,8 @@ export const BUDGET = {
   // the eager English catalog and its search rows. Raised by that.
   // Chat wallpaper prefs, reset and English strings: +6,365 B raw / +3,589 B transfer (Node 24,
   // 85 -> 89 eager chunks). Renderer, contrast and pixel worker stay lazy.
-  // The llama-bench tab (#12522), the lazy Benchmarks route's longer preload list: +1,540 B raw / +259 B transfer. Raised by that on top of main.
+  // The llama-bench tab (#12522), the lazy Benchmarks route's longer preload list: +1,540 B raw /
+  // +259 B transfer. Raised by that.
   transferBytes: 1_854_258,
   rawBytes: 5_999_295,
 };

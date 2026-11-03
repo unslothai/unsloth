@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A live log, drawn like Settings > Logs: framed mono text that follows the tail, a wrap
-// toggle and a jump back to the latest line once the reader scrolls up. Settings' own
-// viewer (debugging-tab.tsx) is still inline and can move onto this.
+// A live log drawn like Settings > Logs: follows the tail, wrap toggle, jump to latest.
 
 import { Button } from "@/components/ui/button";
 import {
@@ -28,13 +26,10 @@ const FOLLOW_THRESHOLD_PX = 40;
 
 export function LogPane({
   text,
-  empty,
   className,
 }: {
   /** The whole log as one string; lines joined with "\n". */
   text: string;
-  /** Shown muted while there is nothing yet. */
-  empty?: string;
   /** Height of the frame; defaults to Settings' pane. */
   className?: string;
 }): ReactElement {
@@ -88,10 +83,9 @@ export function LogPane({
           className={cn(
             "h-full w-full overflow-auto [overflow-anchor:none] scroll-rounded rounded-md py-2 pr-11 pl-2.5 font-mono text-ui-11 leading-[1.55] text-foreground/90",
             wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
-            !text && "text-muted-foreground",
           )}
         >
-          {text || empty}
+          {text}
         </pre>
       </div>
       <Tooltip>

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// llama-bench: llama.cpp's own prompt-processing and generation benchmark on the picked
-// GGUF, drawn with Config sweeps' setup column, tiles and live card.
+// llama-bench: llama.cpp's own pp/tg benchmark on the picked GGUF.
 
 import { LogPane } from "@/components/log-pane";
 import { SectionCard } from "@/components/section-card";
@@ -43,7 +42,7 @@ import type {
   LlamaBenchMeta,
   LlamaBenchRow,
 } from "./llama-bench-api";
-import { toLlamaBenchMarkdown } from "./llama-bench-markdown";
+import { runEnding, toLlamaBenchMarkdown } from "./llama-bench-markdown";
 import { useLlamaBenchStore } from "./llama-bench-store";
 
 const PROMPT_SIZES = [128, 512, 1024, 2048, 4096, 8192];
@@ -261,7 +260,7 @@ function RateBars({
               tip: [
                 `${title} · ${r.test}`,
                 `${rate(r.avg_ts)} ± ${rate(r.stddev_ts || 0)} t/s`,
-                `${r.samples_ts.map(rate).join(", ")} tok/s`,
+                `${r.samples_ts.map(rate).join(", ")} t/s`,
               ],
             })),
           },
@@ -274,8 +273,8 @@ function RateBars({
   );
 }
 
-function gbOf(bytes: number | null | undefined): string | null {
-  return bytes ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : null;
+function gibOf(bytes: number | null | undefined): string | null {
+  return bytes ? `${(bytes / 1024 ** 3).toFixed(1)} GiB` : null;
 }
 
 function Results({
@@ -316,7 +315,7 @@ function Results({
           label="Model"
           value={variant ?? meta.model_type ?? modelShort(model)}
           detail={
-            [modelShort(model), gbOf(meta.model_size)]
+            [modelShort(model), gibOf(meta.model_size)]
               .filter(Boolean)
               .join(" · ") || undefined
           }
@@ -329,6 +328,7 @@ function Results({
           </span>
           <span className="min-w-0 truncate text-ui-11 text-muted-foreground">
             {[
+              runEnding(meta, rows.length),
               meta.backends,
               meta.gpu_info,
               meta.build_number ? `llama.cpp b${meta.build_number}` : null,
@@ -443,7 +443,7 @@ function SavedRuns(): ReactElement | null {
   const show = useLlamaBenchStore((s) => s.show);
   const remove = useLlamaBenchStore((s) => s.remove);
   const locale = useLocale();
-  if (runs.length < 2) return null;
+  if (runs.length === 0) return null;
   const current = shownId ?? runs[0]?.id;
   return (
     <section className={cn(BENCH_CARD, "flex flex-col gap-1 p-3 sm:p-4")}>
@@ -472,6 +472,7 @@ function SavedRuns(): ReactElement | null {
               </span>
               <span className="shrink-0 tabular-nums text-muted-foreground">
                 {[
+                  runEnding(r.meta, r.outcomes.length),
                   pp ? `${pp.test} ${rate(pp.avg_ts)}` : null,
                   tg ? `${tg.test} ${rate(tg.avg_ts)}` : null,
                 ]

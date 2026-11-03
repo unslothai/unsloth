@@ -18,3 +18,8 @@ test("llama-bench draws with the shared tiles, bar chart and log pane", () => {
   assert.match(tab, /<LogPane\s+text=\{job\.log\.map\(stripAnsi\)\.join\("\\n"\)\}/);
   assert.doesNotMatch(tab, /bg-black\/80/);
 });
+
+test("Past runs shows from the first saved run, so a lone run can be deleted", () => {
+  assert.match(tab, /if \(runs\.length === 0\) return null;/);
+  assert.doesNotMatch(tab, /runs\.length < 2/);
+});
