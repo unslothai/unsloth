@@ -1444,11 +1444,14 @@ class PipelineParallel:
         policy = MixedPrecisionPolicy(
             param_dtype = None,
             reduce_dtype = getattr(mp_policy, "reduce_dtype", None),
-            cast_forward_inputs = False,  # the received hidden states keep PPConfig.activation_dtype
+            cast_forward_inputs = False,
         )
         fully_shard(self.module, mesh = dp_mesh, mp_policy = policy, reshard_after_forward = False)
+        from .fsdp2_save import _install_replicated_grad_reset
+
+        _install_replicated_grad_reset(self.module)
         self.dp_mesh = dp_mesh
-        self._shapes.clear()  # stages built before hold the unwrapped module
+        self._shapes.clear()
 
     @property
     def is_first(self):
@@ -1774,7 +1777,11 @@ class PipelineParallel:
 
         state = self.model.__dict__.setdefault("_unsloth_replicated_grad_state", {"queued": False})
         _sync_replicated_grads(
-            params, dist, model_mesh(self.model) or self.dp_mesh, state.setdefault("buffers", {})
+            params,
+            dist,
+            model_mesh(self.model) or self.dp_mesh,
+            state.setdefault("buffers", {}),
+            state.pop("pending", None),
         )
 
     def _grad_copies(self, grad):
