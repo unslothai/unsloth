@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import ast
+import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
-import types
 import zipfile
 from pathlib import Path
 
@@ -48,19 +51,19 @@ def lagging_index(tmp_path, monkeypatch):
     _wheel(index, "unsloth-zoo", "2026.10.6")
     for key in ("UV_NO_DEPS", "UV_CONSTRAINT", "UV_OVERRIDE", "UV_RESOLUTION", "UV_EXCLUDE_NEWER"):
         monkeypatch.delenv(key, raising = False)
-    monkeypatch.setenv("UV_NO_CONFIG", "1")
+    config = tmp_path / "uv.toml"
+    config.write_text(
+        "[pip]\nno-index = true\nfind-links = [" + json.dumps(str(index)) + "]\n", encoding = "utf-8"
+    )
+    monkeypatch.delenv("UV_NO_CONFIG", raising = False)
+    monkeypatch.setenv("UV_CONFIG_FILE", str(config))
+    monkeypatch.setenv("PIP_NO_INDEX", "1")
+    monkeypatch.setenv("PIP_FIND_LINKS", str(index))
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
     monkeypatch.setenv("UNSLOTH_DESKTOP_BACKEND_VERSION", "2026.10.6")
     monkeypatch.setattr(ips, "USE_UV", True)
 
-    def offline_run(argv, **kwargs):
-        argv = [*argv[:3], "--no-index", "--find-links", str(index), *argv[3:]]
-        return subprocess.run(argv, **kwargs)
-
-    offline = types.SimpleNamespace(
-        run = offline_run, DEVNULL = subprocess.DEVNULL, SubprocessError = subprocess.SubprocessError
-    )
-    monkeypatch.setattr(ips, "subprocess", offline)
     monkeypatch.setattr(ips.sys, "prefix", str(tmp_path))
     return index
 
@@ -101,3 +104,153 @@ def test_no_torch_install_gets_the_resolved_unsloth_not_a_lower_bound(lagging_in
 def test_with_deps_install_keeps_the_floor(lagging_index, monkeypatch):
     monkeypatch.setattr(ips, "NO_TORCH", False)
     assert ips._desktop_unsloth_spec("unsloth") == ("unsloth>=2026.10.6", "unsloth-zoo>=2026.10.6")
+
+
+@pytest.fixture(params = ["python", "sh", "powershell"])
+def installer_pair(request, tmp_path, monkeypatch):
+    monkeypatch.setattr(ips, "NO_TORCH", True)
+
+    def resolve():
+        if request.param == "python":
+            return ips._desktop_unsloth_spec("unsloth")
+        floor = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "")
+        release = f"unsloth>={floor or '2026.10.6'}"
+        marker = tmp_path / ips.FEED_CEILING_MARKER
+        if request.param == "sh":
+            shell = shutil.which("sh")
+            if not shell:
+                pytest.skip("POSIX shell unavailable")
+            source = (STUDIO_DIR.parent / "install.sh").read_text(encoding = "utf-8")
+            functions = "\n".join(
+                m.group(0)
+                for name in ("_rfi_newest", "_rfi_no_torch_pair", "_relax_unsloth_floors_to_index")
+                if (m := re.search(rf"(?ms)^{name}\(\) \{{.*?^\}}", source))
+            )
+            values = {
+                "VENV_DIR": tmp_path.as_posix(),
+                "_VENV_PY": Path(sys.executable).as_posix(),
+                "SKIP_TORCH": "true",
+                "PACKAGE_NAME": "unsloth",
+                "C_WARN": "",
+                "_unsloth_release_install_spec": release,
+                "_unsloth_desktop_install_spec": f"unsloth>={floor}" if floor else "",
+                "_unsloth_zoo_install_spec": "unsloth-zoo>=2026.10.6",
+                "_UNSLOTH_FEED_CEILING_MARKER": marker.as_posix(),
+            }
+            script = tmp_path / "pair.sh"
+            script.write_text(
+                "set -e\n"
+                + functions
+                + "\n"
+                + "\n".join(f"{k}={shlex.quote(v)}" for k, v in values.items())
+                + '\nsubstep() { printf "%s\\n" "$1" >&2; }\n_relax_unsloth_floors_to_index\n'
+                + 'printf "%s\\n" "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec"\n',
+                encoding = "utf-8",
+            )
+            argv = [shell, str(script)]
+        else:
+            shell = shutil.which("powershell") or shutil.which("pwsh")
+            if not shell:
+                pytest.skip("PowerShell unavailable")
+            source = (STUDIO_DIR.parent / "install.ps1").read_text(encoding = "utf-8")
+            functions = "\n".join(
+                m.group(0)
+                for name in ("Resolve-NoTorchPair", "Resolve-UnslothFloorsForIndex")
+                if (m := re.search(rf"(?ms)^    function {name} \{{.*?^    \}}", source))
+            )
+            quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+            script = tmp_path / "pair.ps1"
+            script.write_text(
+                '$ErrorActionPreference = "Stop"\n'
+                + functions
+                + f"\n$VenvDir = {quote(tmp_path)}\n$VenvPython = {quote(sys.executable)}\n$script:UvExe = 'uv'\n"
+                + "function substep { param($Message, $Color); [Console]::Error.WriteLine($Message) }\n"
+                + f"$r = Resolve-UnslothFloorsForIndex -ReleaseSpec {quote(release)} -ZooSpec 'unsloth-zoo>=2026.10.6' -DesktopVersion {quote(floor)} -Marker {quote(marker)}"
+                + (" -NoTorch $true" if "[bool]$NoTorch" in functions else "")
+                + "\nWrite-Output $r.Release\nWrite-Output $r.Zoo\n",
+                encoding = "utf-8-sig",
+            )
+            argv = [shell, "-NoProfile", "-File", str(script)]
+        result = subprocess.run(argv, capture_output = True, text = True, timeout = 180)
+        if result.returncode:
+            raise RuntimeError(result.stderr)
+        return tuple(result.stdout.strip().splitlines()[-2:])
+
+    return resolve
+
+
+@pytest.mark.parametrize("desktop", [True, False])
+def test_every_no_torch_entrypoint_installs_a_compatible_pair(
+    lagging_index, installer_pair, monkeypatch, desktop
+):
+    if not desktop:
+        monkeypatch.delenv("UNSLOTH_DESKTOP_BACKEND_VERSION")
+    assert _no_deps_selection(installer_pair(), lagging_index) == {
+        "unsloth": "2026.10.6",
+        "unsloth-zoo": "2026.10.6",
+    }
+
+
+def test_no_torch_does_not_backtrack_for_missing_torch(lagging_index, installer_pair):
+    _wheel(lagging_index, "unsloth", "2026.10.7", ["unsloth-zoo>=2026.10.6", "torch>=999"])
+    assert _no_deps_selection(installer_pair(), lagging_index) == {
+        "unsloth": "2026.10.7",
+        "unsloth-zoo": "2026.10.6",
+    }
+
+
+def test_feed_ceiling_is_cleared_when_the_pair_becomes_available(
+    lagging_index, installer_pair, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("UNSLOTH_DESKTOP_BACKEND_VERSION", "2026.10.7")
+    assert _no_deps_selection(installer_pair(), lagging_index)["unsloth"] == "2026.10.6"
+    marker = tmp_path / ips.FEED_CEILING_MARKER
+    assert json.loads(marker.read_text(encoding = "utf-8")) == {
+        "requested": "2026.10.7",
+        "available": "2026.10.6",
+    }
+    _wheel(lagging_index, "unsloth-zoo", "2026.10.7")
+    assert _no_deps_selection(installer_pair(), lagging_index) == {
+        "unsloth": "2026.10.7",
+        "unsloth-zoo": "2026.10.7",
+    }
+    assert not marker.exists()
+
+
+def test_an_index_with_no_compatible_pair_is_refused(lagging_index, installer_pair):
+    _wheel(lagging_index, "unsloth", "2026.10.6", ["unsloth-zoo>=9999"])
+    _wheel(lagging_index, "unsloth", "2026.10.7", ["unsloth-zoo>=9999"])
+    with pytest.raises(RuntimeError):
+        installer_pair()
+
+
+def test_pip_fallback_resolves_the_same_pair(lagging_index, monkeypatch):
+    monkeypatch.setattr(ips, "NO_TORCH", True)
+    monkeypatch.setattr(ips, "USE_UV", False)
+    monkeypatch.setenv("PIP_CONFIG_FILE", os.devnull)
+    assert _no_deps_selection(ips._desktop_unsloth_spec("unsloth"), lagging_index) == {
+        "unsloth": "2026.10.6",
+        "unsloth-zoo": "2026.10.6",
+    }
+
+
+def test_bootstrap_pair_resolvers_match_the_python_installer():
+    source = (STUDIO_DIR / "install_python_stack.py").read_text(encoding = "utf-8")
+    reference = next(
+        n
+        for n in ast.parse(source).body
+        if isinstance(n, ast.FunctionDef) and n.name == "_no_torch_pair"
+    )
+    shell = (STUDIO_DIR.parent / "install.sh").read_text(encoding = "utf-8")
+    powershell = (STUDIO_DIR.parent / "install.ps1").read_text(encoding = "utf-8")
+    snippets = [
+        shell.split("<<'UNSLOTH_PAIR_PY'\n", 1)[1].split("\nUNSLOTH_PAIR_PY", 1)[0],
+        powershell.split("$pairCode = @'\n", 1)[1].split("\n'@", 1)[0],
+    ]
+    for snippet in snippets:
+        actual = next(
+            n
+            for n in ast.parse(snippet).body
+            if isinstance(n, ast.FunctionDef) and n.name == "_no_torch_pair"
+        )
+        assert ast.dump(actual) == ast.dump(reference)
