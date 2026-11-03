@@ -1298,8 +1298,7 @@ class ToolLoopController:
             canonical = _canonical_tool_name(tool_name, self._allowed_tool_names)
             if canonical is not None:
                 tool_name, name_healed = canonical, True
-        # A deferred MCP tool called by name runs under its catalog schema without joining the declared
-        # tools: growing the declaration mid-turn shifts the prompt prefix and drops llama-server's cache.
+        # Deferred schemas must not shift the cached prompt prefix.
         extra_schema = None
         if (
             self._mcp_search
@@ -1348,8 +1347,6 @@ class ToolLoopController:
             # Not the browser tools: each acts on or reads the page as it is now, so a second
             # scroll down or a snapshot after a click is new work, and two such no-ops ended the turn.
             # Nor the media tools: the same prompt again is another image with a fresh seed.
-            # Nor mcp_tool_search: a repeat asks for other matches, and a same-query repeat only
-            # re-returns schemas the model already has.
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
 
@@ -1424,8 +1421,6 @@ class ToolLoopController:
         if not failed:
             self._successful_keys.add(decision.key)
             if self._mcp_search and decision.tool_name == MCP_TOOL_SEARCH_NAME:
-                # The result already carries the full schemas; only the call gate opens, so the
-                # declared tools (and the prompt prefix llama-server caches) stay as they were.
                 for spec in _mcp_tool_search_specs(decision.arguments):
                     name = _tool_name_from_schema(spec) if isinstance(spec, Mapping) else None
                     if name:

@@ -2344,7 +2344,6 @@ def test_mcp_tool_search_loads_exact_names_then_ranked_matches(tmp_path, monkeyp
     out = tools_mod.execute_tool("mcp_tool_search", {"query": "query rows with sql"})
     assert out.startswith("Loaded 1 MCP tool. Call the one that fits directly")
     assert "- mcp__srv1__query: [A] Query rows." in out
-    # The full schema rides the result, so the declared tools (prompt prefix) never change mid-turn.
     assert (
         "schema: " + json.dumps(tools_mod.mcp_tool_spec("mcp__srv1__query"), separators = (",", ":"))
         in out
@@ -2480,22 +2479,18 @@ def test_controller_loads_searched_and_named_mcp_tools(tmp_path, monkeypatch, se
     decision = controller.prepare_call(call)
     result = tools_mod.execute_tool("mcp_tool_search", decision.arguments)
     controller.record_result(decision, result)
-    # The declaration (and with it the prompt prefix llama-server caches) is left exactly as it
-    # was: the full schema rides the search result instead (#16538).
     assert _names(controller.active_tools()) == ["mcp_tool_search"]
     assert "schema: " in result
     assert (
         json.dumps(tools_mod.mcp_tool_spec("mcp__srv1__move-pages"), separators = (",", ":"))
         in result
     )
-    # The searched tool still executes under its catalog schema.
     moved_call = controller.prepare_call(
         {"function": {"name": "mcp__srv1__move-pages", "arguments": "{}"}}
     )
     assert moved_call.action == "execute"
     assert _names(controller.active_tools()) == ["mcp_tool_search"]
 
-    # A deferred tool named without a search runs too, typed by its full catalog schema.
     named = controller.prepare_call(
         {"function": {"name": "mcp__srv1__ping", "arguments": '{"n": "3"}'}}
     )
@@ -2538,9 +2533,6 @@ def test_a_search_loads_only_what_fits_the_window(tmp_path, monkeypatch):
 
 
 def test_controller_keeps_the_declared_tools_stable_across_searches(tmp_path, monkeypatch):
-    # #16538: injecting searched schemas into the declaration mid-turn shifts the prompt prefix,
-    # which forces llama-server to re-evaluate the whole conversation; on hybrid/recurrent models
-    # without a checkpoint at the divergence that is a full prefill.
     from core.inference import tools as tools_mod
     from core.inference.tool_loop_controller import ToolLoopController
 
@@ -2560,7 +2552,6 @@ def test_controller_keeps_the_declared_tools_stable_across_searches(tmp_path, mo
         )
         controller.record_result(decision, "Loaded")
     assert controller.active_tools() == before
-    # Every searched tool still executes, whether or not its schema fit the search results.
     for name in ("query-0", "query-2"):
         assert (
             controller.prepare_call(

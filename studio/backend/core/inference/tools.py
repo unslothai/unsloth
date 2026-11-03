@@ -12358,8 +12358,6 @@ _MCP_TOOL_SEARCH_LIMIT = 5
 # window: small models often answer that a tool is unavailable rather than search for it (#10997).
 _MCP_TOOL_PRELOAD = 5
 _MCP_TOOL_PRELOAD_SHARE = 0.33
-# Schemas a search result carries, newest first: the match list stops when they would take more than this
-# share of the window. They ride the result, not the tools declaration, so the prompt prefix never moves.
 _MCP_TOOL_LOAD_SHARE = 0.5
 _MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
 _MCP_TOOL_SEARCH_MAX_LIMIT = 10
@@ -12870,7 +12868,7 @@ def _mcp_search_matches(arguments) -> tuple[list[dict], list[dict]]:
         if len(mcp_fit_loaded(retained)) != len(retained):
             continue
         candidate = _mcp_search_result(retained)
-        # Price the complete response so the final result cap never cuts a schema in half.
+        # Include the envelope so the result cap cannot split a schema.
         if _fit_result_to_room(candidate, MCP_TOOL_SEARCH_NAME) == candidate:
             fitted.append(spec)
     return fitted, [spec for spec in picked if spec not in fitted]
