@@ -399,7 +399,6 @@ def test_ppo_rollout_logprobs_match_trl_generation_scores(inherited):
 
 
 def test_ppo_rollout_check_follows_the_patched_generate():
-    # generate_with_clone keeps TRL's sampling on 4.x, so an inherited top_p must not count.
     from transformers import GenerationConfig
     from unsloth.models.rl import _caller_sampling_only, _generate_accepts_use_model_defaults
 
