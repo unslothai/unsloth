@@ -66,6 +66,7 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    backfill_fp8_modules_to_convert,
     _prepare_compressed_tensors_model,
     fsdp_will_wrap,
     fsdp2_keeps_fused_lora,
@@ -3773,6 +3774,16 @@ class FastLlamaModel:
                 revision = revision,
             )
         model_config.model_name = model_name
+        backfill_fp8_modules_to_convert(
+            model_config,
+            model_name,
+            token,
+            revision,
+            local_files_only = kwargs.get("local_files_only", False),
+            subfolder = kwargs.get("subfolder"),
+            cache_dir = kwargs.get("cache_dir"),
+            variant = kwargs.get("variant"),
+        )
         model_max_seq_length = model_config.max_position_embeddings
 
         verify_fp8_support_if_applicable(

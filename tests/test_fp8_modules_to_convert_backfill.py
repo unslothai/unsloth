@@ -102,3 +102,12 @@ def test_index_only_never_downloads_a_single_file(monkeypatch):
     )
     assert ns["_load_fp8_weight_map"]("org/single-file-fp8", False, None, index_only = True) is None
     assert fetched == ["model.safetensors.index.json"]
+
+
+def test_both_loaders_backfill_before_loading():
+    # FastLanguageModel sends llama/mistral/gemma/qwen2/qwen3 through llama.py, everything else through vision.py.
+    for name in ("llama.py", "vision.py"):
+        src = open(os.path.join(HERE, "unsloth", "models", name), encoding = "utf-8").read()
+        assert "backfill_fp8_modules_to_convert(" in src, name
+        call = src.index("backfill_fp8_modules_to_convert(", src.index("def from_pretrained"))
+        assert call < src.index(".from_pretrained(", call), name
