@@ -127,6 +127,31 @@ def test_the_reasoning_format_defaults_to_the_notebooks_warmup(kw, steps):
     assert _request(**kw).grpo_format_warmup_steps == steps
 
 
+@pytest.mark.parametrize(
+    "kw, completion",
+    [
+        # The Colab A/B setup: prompt 256, cap 512 at a 2048 context left no warm-up answer.
+        (dict(rl_max_prompt_length = 256, grpo_max_completion_length = 512), 1024),
+        (dict(grpo_max_completion_length = 1500), 1500),
+        (dict(), None),
+        (dict(grpo_format_warmup_steps = 0, grpo_max_completion_length = 512), 512),
+    ],
+)
+def test_the_warmup_raises_a_completion_cap_its_answers_dont_fit(kw, completion):
+    request = _request(grpo_reasoning_format = True, max_seq_length = 2048, **kw)
+    assert request.grpo_max_completion_length == completion
+
+
+def test_a_prompt_that_leaves_no_room_for_the_warmup_is_a_clear_error():
+    with pytest.raises(ValueError, match = "lower the max prompt length from 1500"):
+        _request(
+            grpo_reasoning_format = True,
+            max_seq_length = 2048,
+            rl_max_prompt_length = 1500,
+            grpo_max_completion_length = 512,
+        )
+
+
 def test_nothing_fits_is_a_clear_error():
     with pytest.raises(ValueError, match = "max sequence length"):
         build_warmup_dataset(_tok(), max_seq_length = 4, rows = 10, dataset = ROWS)

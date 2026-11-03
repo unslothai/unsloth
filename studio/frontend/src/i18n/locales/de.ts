@@ -5262,6 +5262,7 @@ export const de = {
       warmupSteps: "Format-Aufwärmschritte",
       warmupStepsHint: "Kurzer SFT-Durchlauf mit formatierten Mathe-Beispielen vor GRPO, damit das Modell die Tags schon schreibt. 0 überspringt ihn; die Notebooks nutzen etwa 100.",
       warmupContext: "Braucht eine maximale Sequenzlänge von {n} oder mehr: die Aufwärmbeispiele sind lang.",
+      warmupCompletion: "Mit Aufwärmen ist die maximale Completion-Länge mindestens {n} (die Hälfte des Kontexts), damit seine langen Antworten nicht abgeschnitten werden.",
     },
     charts: {
       reward: "Belohnung",

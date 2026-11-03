@@ -33,6 +33,12 @@ WARMUP_MIN_SEQ_LENGTH = 2048
 WARMUP_DEFAULT_STEPS = 100
 
 
+def warmup_completion_floor(max_seq_length: int) -> int:
+    """The GRPO completion cap the warm-up needs: every kept example fits half the context, so
+    its answer does too."""
+    return max(int(max_seq_length or 2048), 64) // 2
+
+
 def _jinja_string(text: str) -> str:
     return "'" + text.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n") + "'"
 

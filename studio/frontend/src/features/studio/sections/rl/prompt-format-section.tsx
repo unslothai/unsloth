@@ -11,6 +11,7 @@ import {
   GRPO_DEFAULT_SYSTEM_PROMPT,
   GRPO_FORMAT_WARMUP_MIN_CONTEXT,
   GRPO_REASONING_SYSTEM_PROMPT,
+  grpoWarmupCompletionFloor,
 } from "@/config/training";
 import {
   configuredSystemPrompt,
@@ -51,6 +52,7 @@ export function PromptFormatSection(): ReactElement {
       setReasoning: state.setGrpoReasoningFormat,
       warmupSteps: state.grpoFormatWarmupSteps,
       contextLength: state.contextLength,
+      completionCap: state.grpoMaxCompletionLength,
       setWarmupSteps: state.setGrpoFormatWarmupSteps,
       rewards: state.grpoRewards,
       mapping: state.rlRoleMapping,
@@ -159,6 +161,16 @@ export function PromptFormatSection(): ReactElement {
               <HugeiconsIcon icon={Alert02Icon} className="size-3.5 shrink-0" />
               {t("rl.prompt.warmupContext", {
                 n: GRPO_FORMAT_WARMUP_MIN_CONTEXT,
+              })}
+            </p>
+          )}
+        {s.reasoning &&
+          s.warmupSteps > 0 &&
+          s.completionCap !== null &&
+          s.completionCap <= grpoWarmupCompletionFloor(s.contextLength) && (
+            <p className="text-ui-11p5 leading-ui-15 text-muted-foreground/85">
+              {t("rl.prompt.warmupCompletion", {
+                n: grpoWarmupCompletionFloor(s.contextLength),
               })}
             </p>
           )}

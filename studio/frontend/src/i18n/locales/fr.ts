@@ -5272,6 +5272,7 @@ export const fr = {
       warmupSteps: "Étapes d'échauffement du format",
       warmupStepsHint: "Courte passe SFT sur des exemples de maths formatés avant GRPO, pour que le modèle écrive déjà les balises. 0 la saute ; les notebooks en font environ 100.",
       warmupContext: "Nécessite une longueur de séquence maximale d'au moins {n} : les exemples d'échauffement sont longs.",
+      warmupCompletion: "Avec l'échauffement activé, la longueur maximale de complétion est d'au moins {n} (la moitié du contexte), pour que ses longues réponses ne soient pas coupées.",
     },
     charts: {
       reward: "Récompense",

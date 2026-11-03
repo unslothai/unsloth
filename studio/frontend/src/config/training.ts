@@ -152,6 +152,11 @@ export const GRPO_DEFAULT_SYSTEM_PROMPT =
 export const GRPO_FORMAT_WARMUP_STEPS = 100;
 export const GRPO_FORMAT_WARMUP_MIN_CONTEXT = 2048;
 
+/** Matches warmup_completion_floor in rl_format.py: its answers fit half the context. */
+export function grpoWarmupCompletionFloor(contextLength: number): number {
+  return Math.floor(Math.max(contextLength || 2048, 64) / 2);
+}
+
 export const GRPO_REASONING_SYSTEM_PROMPT =
   "You are given a problem.\nThink about the problem and provide your working out.\nPlace it between <start_working_out> and <end_working_out>.\nThen, provide your solution between <SOLUTION></SOLUTION>";
 

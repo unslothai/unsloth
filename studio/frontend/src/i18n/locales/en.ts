@@ -5219,6 +5219,7 @@ export const en = {
       warmupSteps: "Format warm-up steps",
       warmupStepsHint: "Short SFT pass on formatted math examples before GRPO, so the model already writes the tags. 0 skips it; the notebooks use about 100.",
       warmupContext: "Needs a max sequence length of {n} or more: the warm-up examples are long.",
+      warmupCompletion: "With the warm-up on, the max completion length is at least {n} (half the context), so its long answers aren't cut off.",
     },
     charts: {
       reward: "Reward",

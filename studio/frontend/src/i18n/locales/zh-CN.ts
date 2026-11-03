@@ -5090,6 +5090,7 @@ export const zhCN = {
       warmupSteps: "格式预热步数",
       warmupStepsHint: "在 GRPO 之前用格式化的数学示例做一小段 SFT,让模型一开始就会写这些标签。0 表示跳过;笔记本中约为 100。",
       warmupContext: "需要最大序列长度至少为 {n}:预热示例较长。",
+      warmupCompletion: "开启预热时,最大补全长度至少为 {n}(上下文的一半),以免其较长的回答被截断。",
     },
     charts: {
       reward: "奖励",

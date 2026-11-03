@@ -5179,6 +5179,7 @@ export const ko = {
       warmupSteps: "형식 워밍업 단계",
       warmupStepsHint: "GRPO 전에 형식을 갖춘 수학 예제로 짧게 SFT를 해서 모델이 처음부터 태그를 쓰게 합니다. 0이면 건너뜁니다. 노트북은 약 100을 씁니다.",
       warmupContext: "최대 시퀀스 길이가 {n} 이상이어야 합니다. 워밍업 예제가 깁니다.",
+      warmupCompletion: "워밍업이 켜져 있으면 최대 완성 길이가 {n}(컨텍스트의 절반) 이상이 되어 긴 답변이 잘리지 않습니다.",
     },
     charts: {
       reward: "보상",

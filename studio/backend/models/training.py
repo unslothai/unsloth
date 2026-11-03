@@ -3,7 +3,11 @@
 
 """Pydantic schemas for Training API"""
 
-from core.training.rl_format import WARMUP_DEFAULT_STEPS, WARMUP_MIN_SEQ_LENGTH
+from core.training.rl_format import (
+    WARMUP_DEFAULT_STEPS,
+    WARMUP_MIN_SEQ_LENGTH,
+    warmup_completion_floor,
+)
 import math
 import re
 from pathlib import Path, PureWindowsPath
@@ -733,7 +737,10 @@ class TrainingStartRequest(BaseModel):
     )
     grpo_num_generations: int = Field(4, ge = 2, le = 16, description = "Completions sampled per prompt")
     grpo_max_completion_length: Optional[int] = Field(
-        None, ge = 16, description = "Completion token budget. Null uses what the prompt leaves."
+        None,
+        ge = 16,
+        description = "Completion token budget. Null uses what the prompt leaves. With the format "
+        "warm-up on it is raised to at least half of max_seq_length, the length of its answers.",
     )
     grpo_temperature: float = Field(1.0, gt = 0, le = 2.0, allow_inf_nan = False)
     grpo_variant: Literal["dapo", "dr_grpo", "bnpo", "grpo", "gspo"] = Field(
@@ -919,7 +926,22 @@ class TrainingStartRequest(BaseModel):
                 f"The format warm-up needs a max sequence length of {WARMUP_MIN_SEQ_LENGTH} or more; "
                 "its examples are 800+ tokens and only those under half the context are used."
             )
+        if self.grpo_format_warmup_steps:
+            self._fit_completion_to_warmup()
         return self
+
+    def _fit_completion_to_warmup(self) -> None:
+        # A cap under the warm-up's answers would leave it nothing to train on, so raise it.
+        floor = warmup_completion_floor(self.max_seq_length)
+        prompt = self.rl_max_prompt_length or self.max_seq_length // 4
+        if prompt + floor > self.max_seq_length:
+            raise ValueError(
+                f"The format warm-up needs completions of up to {floor} tokens, which leaves "
+                f"{self.max_seq_length - floor} for the prompt; lower the max prompt length "
+                f"from {prompt} or raise the max sequence length."
+            )
+        if self.grpo_max_completion_length is not None:
+            self.grpo_max_completion_length = max(self.grpo_max_completion_length, floor)
 
     @model_validator(mode = "after")
     def _check_preference_beta(self) -> "TrainingStartRequest":

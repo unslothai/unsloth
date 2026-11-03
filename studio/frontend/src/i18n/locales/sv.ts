@@ -5430,6 +5430,7 @@ export const sv = {
       warmupSteps: "Uppvärmningssteg för formatet",
       warmupStepsHint: "Ett kort SFT-pass på formaterade matteexempel före GRPO, så att modellen redan skriver taggarna. 0 hoppar över det; notebookarna använder ungefär 100.",
       warmupContext: "Kräver en maximal sekvenslängd på {n} eller mer: uppvärmningsexemplen är långa.",
+      warmupCompletion: "Med uppvärmningen på är den maximala completion-längden minst {n} (halva kontexten), så att dess långa svar inte klipps av.",
     },
     charts: {
       reward: "Belöning",

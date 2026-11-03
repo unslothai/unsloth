@@ -5629,6 +5629,7 @@ export const pl = {
       warmupSteps: "Kroki rozgrzewki formatu",
       warmupStepsHint: "Krótki przebieg SFT na sformatowanych przykładach matematycznych przed GRPO, aby model już pisał tagi. 0 pomija to; notatniki używają około 100.",
       warmupContext: "Wymaga maksymalnej długości sekwencji co najmniej {n}: przykłady rozgrzewkowe są długie.",
+      warmupCompletion: "Przy włączonej rozgrzewce maksymalna długość uzupełnienia wynosi co najmniej {n} (połowa kontekstu), żeby jej długie odpowiedzi nie były ucinane.",
     },
     charts: {
       reward: "Nagroda",

@@ -76,3 +76,25 @@ test("the reasoning format turns on the notebooks' 100-step format warm-up", () 
   store.getState().setGrpoReasoningFormat(true);
   assert.equal(store.getState().grpoFormatWarmupSteps, 0);
 });
+
+test("turning the warm-up on raises a completion cap its answers don't fit", () => {
+  store.getState().reset();
+  store.getState().setContextLength(2048);
+  store.getState().setRlMaxPromptLength(256);
+  store.getState().setGrpoMaxCompletionLength(512);
+  store.getState().setGrpoReasoningFormat(true);
+  assert.equal(store.getState().grpoFormatWarmupSteps, 100);
+  assert.equal(store.getState().grpoMaxCompletionLength, 1024);
+  // A cap already above the floor, or none (what the prompt leaves), stays as it is.
+  store.getState().setGrpoMaxCompletionLength(1500);
+  store.getState().setGrpoFormatWarmupSteps(50);
+  assert.equal(store.getState().grpoMaxCompletionLength, 1500);
+  store.getState().setGrpoMaxCompletionLength(null);
+  store.getState().setGrpoFormatWarmupSteps(80);
+  assert.equal(store.getState().grpoMaxCompletionLength, null);
+  // With the warm-up off the user's lower cap is left alone.
+  store.getState().setGrpoFormatWarmupSteps(0);
+  store.getState().setGrpoMaxCompletionLength(512);
+  store.getState().setGrpoFormatWarmupSteps(0);
+  assert.equal(store.getState().grpoMaxCompletionLength, 512);
+});

@@ -5576,6 +5576,7 @@ export const vi = {
       warmupSteps: "Số bước làm nóng định dạng",
       warmupStepsHint: "Một lượt SFT ngắn trên các ví dụ toán đã được định dạng trước khi chạy GRPO, để model đã biết viết các tag từ đầu. 0 sẽ bỏ qua bước này; các notebook dùng khoảng 100.",
       warmupContext: "Cần độ dài sequence tối đa từ {n} trở lên: các ví dụ làm nóng khá dài.",
+      warmupCompletion: "Khi bật làm nóng, độ dài completion tối đa ít nhất là {n} (một nửa ngữ cảnh), để các câu trả lời dài không bị cắt.",
     },
     charts: {
       reward: "Reward",

@@ -5596,6 +5596,7 @@ export const cs = {
       warmupSteps: "Kroky zahřívání formátu",
       warmupStepsHint: "Krátký SFT průchod na formátovaných matematických příkladech před GRPO, aby model tagy už psal. 0 ho vynechá; notebooky používají asi 100.",
       warmupContext: "Vyžaduje max. délku sekvence {n} nebo víc: ukázky zahřívání jsou dlouhé.",
+      warmupCompletion: "Se zapnutým zahříváním je max. délka dokončení aspoň {n} (polovina kontextu), aby se jeho dlouhé odpovědi neořízly.",
     },
     charts: {
       reward: "Reward",

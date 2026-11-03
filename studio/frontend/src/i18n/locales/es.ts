@@ -5261,6 +5261,7 @@ export const es = {
       warmupSteps: "Pasos de calentamiento de formato",
       warmupStepsHint: "Una pasada corta de SFT con ejemplos de matemáticas formateados antes de GRPO, para que el modelo ya escriba las etiquetas. 0 la omite; los notebooks usan unos 100.",
       warmupContext: "Necesita una longitud máxima de secuencia de {n} o más: los ejemplos de calentamiento son largos.",
+      warmupCompletion: "Con el calentamiento activo, la longitud máxima de completado es al menos {n} (la mitad del contexto), para que sus respuestas largas no se corten.",
     },
     charts: {
       reward: "Recompensa",

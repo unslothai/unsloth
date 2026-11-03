@@ -5275,6 +5275,7 @@ export const zhTW = {
       warmupSteps: "格式暖身步數",
       warmupStepsHint: "在 GRPO 之前，先用格式化的數學範例做一小段 SFT，讓模型一開始就會寫出這些標籤。0 表示略過；筆記本中大約使用 100。",
       warmupContext: "需要最大序列長度至少為 {n}：暖身範例的長度較長。",
+      warmupCompletion: "開啟暖身時，最大補全長度至少為 {n}（上下文的一半），以免較長的回答被截斷。",
     },
     charts: {
       reward: "獎勵",

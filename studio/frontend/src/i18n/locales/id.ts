@@ -5575,6 +5575,7 @@ export const id = {
       warmupSteps: "Langkah pemanasan format",
       warmupStepsHint: "Tahap SFT singkat pada contoh matematika yang sudah diformat sebelum GRPO, agar model sudah bisa menulis tag tersebut. 0 melewatinya; notebook memakai sekitar 100.",
       warmupContext: "Membutuhkan panjang sequence maksimum {n} atau lebih: contoh pemanasan ini panjang.",
+      warmupCompletion: "Saat pemanasan aktif, panjang completion maksimum minimal {n} (setengah konteks), agar jawaban panjangnya tidak terpotong.",
     },
     charts: {
       reward: "Reward",

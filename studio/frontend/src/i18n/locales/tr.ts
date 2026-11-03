@@ -5573,6 +5573,7 @@ export const tr = {
       warmupSteps: "Biçim ısınma adımları",
       warmupStepsHint: "GRPO'dan önce biçimlendirilmiş matematik örnekleri üzerinde kısa bir SFT geçişi, böylece model etiketleri zaten yazar. 0 bunu atlar; not defterleri yaklaşık 100 kullanır.",
       warmupContext: "En az {n} maksimum dizi uzunluğu gerekir: ısınma örnekleri uzundur.",
+      warmupCompletion: "Isınma açıkken maksimum tamamlama uzunluğu en az {n} olur (bağlamın yarısı), böylece uzun yanıtları kesilmez.",
     },
     charts: {
       reward: "Ödül",

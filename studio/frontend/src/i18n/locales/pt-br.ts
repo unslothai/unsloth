@@ -5217,6 +5217,7 @@ export const ptBR = {
       warmupSteps: "Passos de aquecimento de formato",
       warmupStepsHint: "Uma passada curta de SFT com exemplos de matemática formatados antes do GRPO, para o modelo já escrever as tags. 0 pula; os notebooks usam cerca de 100.",
       warmupContext: "Precisa de um comprimento máximo de sequência de {n} ou mais: os exemplos de aquecimento são longos.",
+      warmupCompletion: "Com o aquecimento ativo, o comprimento máximo de conclusão é de pelo menos {n} (metade do contexto), para que as respostas longas não sejam cortadas.",
     },
     charts: {
       reward: "Recompensa",

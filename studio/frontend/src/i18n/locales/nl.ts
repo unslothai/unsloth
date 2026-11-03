@@ -5632,6 +5632,7 @@ export const nl = {
       warmupSteps: "Format-warm-up-stappen",
       warmupStepsHint: "Korte SFT-pass op geformatteerde wiskundevoorbeelden vóór GRPO, zodat het model de tags al schrijft. 0 slaat dit over; de notebooks gebruiken ongeveer 100.",
       warmupContext: "Vereist een max. sequentielengte van {n} of meer: de warm-up-voorbeelden zijn lang.",
+      warmupCompletion: "Met de warm-up aan is de max. completion-lengte minstens {n} (de helft van de context), zodat de lange antwoorden niet worden afgekapt.",
     },
     charts: {
       reward: "Reward",
