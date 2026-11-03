@@ -33,6 +33,7 @@ _STREAMS = {}
 # they would run on weights being folded / restored (LoRA applied twice or not at all).
 _OWNER = None
 _RESTORED = threading.Condition(_LOCK)
+_POISON_ATTR = "_unsloth_lora_fold_poisoned"
 
 
 def stats():
@@ -85,7 +86,7 @@ def requested_new_tokens(
     max_length = kwargs.get("max_length", getattr(config, "max_length", None))
     if max_length is None:
         return 0
-    ids = kwargs.get("input_ids", args[0] if len(args) else None)
+    ids = kwargs.get("input_ids", kwargs.get("inputs", args[0] if len(args) else None))
     prompt = ids.shape[-1] if isinstance(ids, torch.Tensor) and ids.dim() >= 1 else 0
     return int(max_length) - prompt
 
@@ -136,6 +137,14 @@ def fold_refusal(model):
             return "vllm", None
     if _distributed(model):
         return "distributed", None
+    # Merged experts push grouped MoE onto its per-expert loop.
+    for m in _model_chain(model):
+        config = getattr(m, "config", None)
+        text = getattr(config, "text_config", None) or config
+        if any(
+            getattr(text, k, None) for k in ("num_experts", "num_local_experts", "n_routed_experts")
+        ):
+            return "moe", None
     try:
         from peft.tuners.tuners_utils import BaseTunerLayer
         from peft.tuners.lora import LoraLayer, Linear as LoraLinear
@@ -186,13 +195,14 @@ def fold_refusal(model):
         if isinstance(scale, bool) or not isinstance(scale, (int, float)):
             return "scaling", None
         base = module.get_base_layer()
-        if not isinstance(base, torch.nn.Linear):
-            return "unsupported_layer", None
-        W = base.weight
+        W = getattr(base, "weight", None)
         A = module.lora_A[adapter]
         B = module.lora_B[adapter]
-        if not isinstance(A, torch.nn.Linear) or not isinstance(B, torch.nn.Linear):
+        # Exact nn.Linear: subclasses (QAT FakeQuantizedLinear, custom forwards) compute something else.
+        if any(type(m) is not torch.nn.Linear for m in (base, A, B)):
             return "unsupported_layer", None
+        if A.bias is not None or B.bias is not None:
+            return "lora_bias", None
         # QAT computes fake_quant(W) + B @ A; a fold would give fake_quant(W + B @ A).
         if any(
             getattr(m, "weight_fake_quantizer", None) is not None
@@ -222,11 +232,22 @@ def fold_refusal(model):
                 "quantized" if not W.is_floating_point() or W.element_size() < 2 else "not_16bit",
                 None,
             )
-        if W.device.type == "meta":
+        if any(type(t) is not torch.nn.Parameter for t in (A.weight, B.weight)):
+            return "quantized", None
+        if any(t.device.type == "meta" for t in (W, A.weight, B.weight)):
             return "offloaded", None
+        if A.weight.device != W.device or B.weight.device != W.device:
+            return "multi_device", None
         if W.requires_grad:
             return "base_trainable", None
-        if W.dim() != 2 or A.weight.shape[1] != W.shape[1] or B.weight.shape[0] != W.shape[0]:
+        if (
+            W.dim() != 2
+            or A.weight.dim() != 2
+            or B.weight.dim() != 2
+            or A.weight.shape[1] != W.shape[1]
+            or B.weight.shape[0] != W.shape[0]
+            or B.weight.shape[1] != A.weight.shape[0]
+        ):
             return "unsupported_layer", None
         devices.add(W.device)
         targets.append((module, adapter, W))
@@ -293,6 +314,12 @@ def lora_fold_generate(
         if first:
             _set_owner(me)
     try:
+        poisoned = getattr(model, _POISON_ATTR, None)
+        if poisoned is not None:
+            raise RuntimeError(
+                "Unsloth: an earlier LoRA-folded generate() could not restore this model's base weights "
+                f"({poisoned}). Reload the model."
+            )
         reason, targets = None, None
         if os.environ.get("UNSLOTH_LORA_FOLD_GENERATE", "1") == "0":
             reason = "kill_switch"
@@ -314,7 +341,7 @@ def lora_fold_generate(
             _refuse(reason)
             yield False
             return
-        with _scope(targets) as engaged:
+        with _scope(model, targets) as engaged:
             if not engaged:
                 _release(me)
             yield engaged
@@ -337,7 +364,7 @@ def _release(me):
 
 
 @contextlib.contextmanager
-def _scope(entries):
+def _scope(model, entries):
     api = _exact_api()
     device = entries[0][2].device
     targets, flagged, stream = [], [], None
@@ -361,16 +388,31 @@ def _scope(entries):
             module.merged_adapters.append(adapter)
             flagged.append(module)
         _sync(device)
+        t1 = time.perf_counter()
+        _record_fold(info, targets, t1 - t0)
     except Exception:
         # Nothing ran on folded weights yet: undo what was folded and take the normal LoRA path.
-        _restore(api, targets, flagged, stream)
+        _restore(model, api, targets, flagged, stream)
         _refuse("fold_failed")
         yield False
         return
     except BaseException:
-        _restore(api, targets, flagged, stream)
+        _restore(model, api, targets, flagged, stream)
         raise
-    t1 = time.perf_counter()
+    t2 = None
+    try:
+        yield True
+        t2 = time.perf_counter()
+    finally:
+        _restore(model, api, targets, flagged, stream)
+        _sync(device)
+        with _LOCK:
+            STATS["restored"] += 1
+            if t2 is not None:
+                STATS["last"]["unfold_s"] = time.perf_counter() - t2
+
+
+def _record_fold(info, targets, fold_s):
     # Pinned host RAM of the fix-up store, held for the whole call.
     host_bytes, pinned = 0, None
     for t in targets:
@@ -382,24 +424,15 @@ def _scope(entries):
         STATS["engaged"] += 1
         STATS["last"] = {
             **info,
-            "fold_s": t1 - t0,
+            "fold_s": fold_s,
             "unfold_s": None,
             "targets": len(targets),
             "host_store_bytes": host_bytes,
             "host_store_pinned": pinned,
         }
-    try:
-        yield True
-    finally:
-        t2 = time.perf_counter()
-        _restore(api, targets, flagged, stream)
-        _sync(device)
-        with _LOCK:
-            STATS["restored"] += 1
-            STATS["last"]["unfold_s"] = time.perf_counter() - t2
 
 
-def _restore(api, targets, flagged, stream):
+def _restore(model, api, targets, flagged, stream):
     global _POISONED
     for module in flagged:
         module.merged_adapters.clear()
@@ -408,7 +441,12 @@ def _restore(api, targets, flagged, stream):
     try:
         api.exact_unfold(targets, stream = stream)
     except BaseException as error:
+        # No more folds in this process, and this model refuses to generate on its unknown weights.
         _POISONED = repr(error)
+        try:
+            setattr(model, _POISON_ATTR, _POISONED)
+        except Exception:
+            pass
         raise RuntimeError(
             "Unsloth: restoring the base weights after a LoRA-folded generate() failed; the weights may "
             "still hold the folded adapter. Reload the model. Set UNSLOTH_LORA_FOLD_GENERATE=0 to avoid it."

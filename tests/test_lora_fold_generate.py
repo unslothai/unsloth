@@ -218,6 +218,7 @@ def test_requested_new_tokens():
     assert fold.requested_new_tokens(model, (), {"input_ids": ids, "max_new_tokens": 5}) == 5
     assert fold.requested_new_tokens(model, (ids,), {}) == 20
     assert fold.requested_new_tokens(model, (), {"input_ids": ids, "max_length": 12}) == 2
+    assert fold.requested_new_tokens(model, (), {"inputs": ids, "max_length": 12}) == 2
     config = transformers.GenerationConfig(max_new_tokens = 64)
     assert (
         fold.requested_new_tokens(model, (), {"input_ids": ids, "generation_config": config}) == 64
@@ -334,6 +335,22 @@ def test_fold_failure_part_way_is_undone(error, _clean, monkeypatch):
     assert fold.stats()["engaged"] == 0 and fold._ACTIVE == 0 and fold._POISONED is None
 
 
+def test_interrupt_after_fold_restores(monkeypatch, _clean):
+    model = _make(MODELS[0])
+    before = _bits(model)
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(fold, "_record_fold", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        with torch.inference_mode(), fold.lora_fold_generate(model, (), {"max_new_tokens": 32}):
+            pass
+    assert _clean.folds == 1 and _clean.unfolds == 1
+    assert _same_bits(before, _bits(model))
+    assert all(not m.merged_adapters for m in model.modules() if hasattr(m, "merged_adapters"))
+
+
 def test_checksum_mismatch_raises_and_poisons():
     model = _make(MODELS[0])
     W = model.base_model.model.model.layers[0].self_attn.q_proj.base_layer.weight
@@ -346,7 +363,12 @@ def test_checksum_mismatch_raises_and_poisons():
             W.data[3].add_(1.0)
     assert fold._POISONED is not None
     assert all(not m.merged_adapters for m in model.modules() if hasattr(m, "merged_adapters"))
-    assert _generate(model, 32)[0] is False
+    # This model's weights are unknown: every later generate raises, short ones too.
+    for n in (32, 1):
+        with pytest.raises(RuntimeError, match = "Reload the model"):
+            _generate(model, n)
+    # Other models generate normally but never fold again in this process.
+    assert _generate(_make(MODELS[0]), 32)[0] is False
     assert fold.stats()["refused"] == {"poisoned": 1}
 
 
@@ -453,6 +475,31 @@ def _refusal_cases():
             0
         ].mlp.up_proj.base_layer.weight_fake_quantizer = torch.nn.Identity()
 
+    def linear_subclass(m):
+        layer = m.base_model.model.model.layers[0].mlp.up_proj.base_layer
+
+        class Custom(torch.nn.Linear):
+            pass
+
+        layer.__class__ = Custom
+
+    def adapter_bias(m):
+        lora_a = m.base_model.model.model.layers[0].self_attn.q_proj.lora_A["default"]
+        lora_a.bias = torch.nn.Parameter(
+            torch.zeros(lora_a.out_features, dtype = lora_a.weight.dtype)
+        )
+
+    def adapter_param_subclass(m):
+        lora_b = m.base_model.model.model.layers[0].self_attn.q_proj.lora_B["default"]
+
+        class Packed(torch.nn.Parameter):
+            pass
+
+        lora_b.weight = Packed(lora_b.weight.data)
+
+    def moe_config(m):
+        m.base_model.model.config.num_experts = 4
+
     def mixed_hooks(m):
         from functools import partial
         from peft.tuners.lora.model import _adapter_names_pre_forward_hook
@@ -479,6 +526,10 @@ def _refusal_cases():
         ("not_16bit", {}, "fp32", None),
         ("qat", {}, None, qat),
         ("mixed_adapters", {}, None, mixed_hooks),
+        ("unsupported_layer", {}, None, linear_subclass),
+        ("lora_bias", {}, None, adapter_bias),
+        ("quantized", {}, None, adapter_param_subclass),
+        ("moe", {}, None, moe_config),
     ]
 
 
