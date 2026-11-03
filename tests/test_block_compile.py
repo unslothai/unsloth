@@ -1788,9 +1788,7 @@ def test_graphs_off_compile_gets_the_same_region_limit(monkeypatch):
 
 
 def test_shared_kv_writer_recompute_reuses_the_forward_graph(monkeypatch):
-    """Gemma-4 E2B: the KV-storing layer's checkpoint recompute saw `shared_kv_states` already filled,
-    failed dynamo's `not shared_kv_states.data` guard and compiled a second graph in backward whose
-    saved tensors differ from the forward's (CheckpointError: [680, 2048] vs [2, 340, 8, 256])."""
+    """Gemma-4 E2B: recompute saw `shared_kv_states` filled and compiled a second graph (CheckpointError)."""
     from collections import UserDict
     from torch._dynamo.testing import CompileCounter
     from torch.utils.checkpoint import checkpoint

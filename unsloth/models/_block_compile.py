@@ -1386,15 +1386,12 @@ def _has_cache(args, kwargs):
 
 
 def _shared_kv_scratch(layer, kwargs):
-    """Gemma-4 / Gemma-3n layers that store KV for later layers write into the model's
-    `shared_kv_states`, and dynamo guards on that dict being empty. A checkpoint recompute sees it
-    filled (by this layer and the ones after it), so it compiled a second graph whose saved tensors
-    differ from the forward's (CheckpointError). Writers get an empty scratch dict, copied back."""
+    """KV-storing layers get an empty `shared_kv_states` (copied back): dynamo guards on it being empty and a recompute sees it filled."""
     shared = kwargs.get("shared_kv_states")
     if shared is None or not hasattr(shared, "update"):
         return kwargs, None
     attn = getattr(layer, "self_attn", None)
-    # Readers keep the real dict: every key is already present in both forward and recompute.
+    # Readers keep the real dict.
     if attn is None or getattr(attn, "is_kv_shared_layer", False):
         return kwargs, None
     try:
@@ -1454,7 +1451,6 @@ def _wrap(
     except Exception:
         capture_scratch = contextlib.nullcontext
     try:
-        # Newer zoo replays the collector layout for a checkpoint recompute when told the layer.
         scratch_takes_owner = "owner" in inspect.signature(capture_scratch).parameters
     except (TypeError, ValueError):
         scratch_takes_owner = False
