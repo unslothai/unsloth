@@ -635,13 +635,21 @@ def _mcp_tool_spec(tool_name: str) -> Any:
         return None
 
 
-def _mcp_tool_search_specs(arguments: Any) -> list:
-    try:
-        from core.inference.tools import mcp_tool_search_specs  # noqa: PLC0415 -- cycle at import time
-        from core.inference.chat_template_helpers import neutralize_tool_descriptions  # noqa: PLC0415
-        return neutralize_tool_descriptions(mcp_tool_search_specs(arguments)) or []
-    except Exception:  # noqa: BLE001 -- a failed load leaves the listing as it was
-        return []
+def _mcp_tool_search_specs(result: str) -> list:
+    specs = []
+    # The worker's result budget is absent here; its returned schemas are authoritative.
+    for line in result.splitlines():
+        if not line.startswith("  schema: "):
+            continue
+        try:
+            schema = json.loads(line.removeprefix("  schema: "))
+        except (ValueError, TypeError):
+            continue
+        name = _tool_name_from_schema(schema) if isinstance(schema, Mapping) else None
+        spec = _mcp_tool_spec(name) if name else None
+        if spec is not None:
+            specs.append(spec)
+    return specs
 
 
 def _tool_name_key(name: str) -> str:
@@ -1421,7 +1429,7 @@ class ToolLoopController:
         if not failed:
             self._successful_keys.add(decision.key)
             if self._mcp_search and decision.tool_name == MCP_TOOL_SEARCH_NAME:
-                for spec in _mcp_tool_search_specs(decision.arguments):
+                for spec in _mcp_tool_search_specs(result_text):
                     name = _tool_name_from_schema(spec) if isinstance(spec, Mapping) else None
                     if name:
                         self._allowed_tool_names.add(name)

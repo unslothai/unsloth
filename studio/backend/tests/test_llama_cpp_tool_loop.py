@@ -7104,7 +7104,6 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
             "parameters": {"type": "object"},
         },
     }
-    monkeypatch.setattr(tools_mod, "mcp_tool_search_specs", lambda arguments: [ping])
     monkeypatch.setattr(tools_mod, "mcp_tool_spec", lambda name: ping)
     monkeypatch.setattr(tools_mod, "mcp_loadable_specs", lambda tools: [ping])
     monkeypatch.setattr(tools_mod, "mcp_record_loaded_tools", lambda *a: None)
@@ -7114,7 +7113,12 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
         [_sse({"content": "Pinged."}), _done()],
     ]
     backend, payloads = _backend_and_payloads(monkeypatch, streams)
-    calls = _record_tool_calls(monkeypatch, "ok")
+    calls = _record_tool_calls(
+        monkeypatch,
+        lambda name: "Loaded 1 MCP tool.\n  schema: " + json.dumps(ping)
+        if name == "mcp_tool_search"
+        else "ok",
+    )
 
     _run_tool_loop(
         backend,

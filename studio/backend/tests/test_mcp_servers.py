@@ -2799,3 +2799,53 @@ def test_deferred_mcp_tools_keep_schema_identifier_filter(tmp_path, monkeypatch,
     controller.record_result(search, "Loaded")
     assert controller.prepare_call(call).action == "disabled"
     assert len(controller.active_tools(include_deferred = True)) == 1
+
+
+def test_search_grammar_uses_the_schemas_returned_by_the_worker(
+    tmp_path, monkeypatch, listing_window
+):
+    import contextvars
+
+    from core.inference import tools as tools_mod
+    from core.inference.tool_loop_controller import ToolLoopController
+    from core.inference.tool_stream_exec import stream_tool_execution
+
+    large = {
+        "name": "large",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"value": {"type": "string", "description": "x" * 30_000}},
+        },
+    }
+    _cache_server_tools(tmp_path, monkeypatch, [large, dict(_PING, description = "p" * 4_000)])
+    listing_window(32_768)
+    monkeypatch.setattr(
+        tools_mod,
+        "_REQUEST_RESULT_BUDGET",
+        contextvars.ContextVar("test_result_budget", default = None),
+    )
+    controller = ToolLoopController(tools = [tools_mod._mcp_tool_search_spec([])])
+    arguments = {"query": "large ping"}
+    decision = controller.prepare_call(
+        {"function": {"name": "mcp_tool_search", "arguments": json.dumps(arguments)}}
+    )
+    stream = stream_tool_execution(
+        lambda callback: tools_mod.execute_tool(
+            "mcp_tool_search", arguments, context_tokens = 32_768, result_budget_tokens = 3_000
+        ),
+        tool_name = "mcp_tool_search",
+    )
+    while True:
+        try:
+            next(stream)
+        except StopIteration as stop:
+            result = stop.value
+            break
+    assert "- mcp__srv1__ping:" in result
+    assert "- mcp__srv1__large:" not in result
+    assert tools_mod._REQUEST_RESULT_BUDGET.get() is None
+    controller.record_result(decision, result)
+    assert _names(controller.active_tools(include_deferred = True)) == [
+        "mcp_tool_search",
+        "mcp__srv1__ping",
+    ]
