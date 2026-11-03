@@ -354,6 +354,18 @@ test("the fastest tile names the baseline when nothing beats it, and the ratio d
   assert.ok(hl.speedup !== null && hl.speedup < 0.05);
 });
 
+test("KV and draft-cache rows drop chat's inherited cache-type flags", () => {
+  const sent = (load: Variant["load"], args: string[]) =>
+    variantLoad({ model_path: "m.gguf", llama_extra_args: args }, { label: "row", load }).llama_extra_args;
+  assert.deepEqual(sent({ cache_type_kv: "f16" }, ["-ctk", "q8_0", "--cache-type-v=q8_0", "-t", "8"]), ["-t", "8"]);
+  assert.deepEqual(
+    sent({ spec_draft_cache_type: "q4_0" }, ["-ctkd", "q8_0", "--spec-draft-type-v", "q8_0", "--jinja"]),
+    ["--jinja"],
+  );
+  // Rows that don't set the field keep chat's flags.
+  assert.deepEqual(sent({ n_parallel: 2 }, ["-ctk", "q8_0"]), ["-ctk", "q8_0"]);
+});
+
 test("offload rows drop chat's --fit with its value and --cpu-moe alone", () => {
   const row = offloadVariants({ layers: 48, moeLayers: 40 })[1];
   const own = row.load.llama_extra_args ?? [];

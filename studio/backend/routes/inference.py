@@ -10703,6 +10703,9 @@ async def _auto_switch_npu_model(
     _note_switch_waiter(key, 1)
     try:
         async with _auto_switch_lock():
+            from routes.benchmarks import refuse_if_sweep_holds
+
+            refuse_if_sweep_holds(fastapi_request)
             await _acquire_swap_gate()
             try:
                 async with model_load_gate(), inference_lifecycle_gate():
@@ -11398,6 +11401,9 @@ async def _maybe_auto_switch_model(
         waiter_noted = True
         try:
             async with _auto_switch_lock():
+                from routes.benchmarks import refuse_if_sweep_holds
+
+                refuse_if_sweep_holds(fastapi_request)
                 # Process-wide gate: the asyncio lock is per loop.
                 await _acquire_swap_gate()
                 try:
@@ -12127,6 +12133,13 @@ async def load_model_for_preview(
     # A refused preview must not stamp keep-warm activity, or public /p spam could pin an idle model in VRAM; untrack balances the counter.
     scope = getattr(fastapi_request, "scope", None)
     async with _auto_switch_lock():
+        from routes.benchmarks import refuse_if_sweep_holds
+
+        try:
+            refuse_if_sweep_holds(fastapi_request)
+        except HTTPException:
+            untrack_current_request(scope)
+            raise
         await _acquire_swap_gate()
         _swap_begun = False
         try:

@@ -436,3 +436,35 @@ def test_a_holders_restore_waits_for_the_load_it_abandoned(monkeypatch):
     asyncio.run(main())
     assert order == ["variant", "restore"]
     assert benchmarks_routes._loads_in_flight == {}
+
+
+def test_a_model_swap_outside_the_load_routes_is_refused_mid_sweep(monkeypatch):
+    import time
+    from pathlib import Path
+
+    import pytest
+    from fastapi import HTTPException
+
+    class _Req:
+        def __init__(self, holder = None):
+            self.headers = {"x-unsloth-bench-lease": holder} if holder else {}
+
+    lease = {
+        "holder": "tab-aaaaaaaa",
+        "kind": "sweep",
+        "expires": time.monotonic() + 60,
+        "outside": 0,
+    }
+    monkeypatch.setattr(benchmarks_routes, "_lease", lease)
+    with pytest.raises(HTTPException) as refused:
+        benchmarks_routes.refuse_if_sweep_holds(_Req())
+    assert refused.value.status_code == 409
+    benchmarks_routes.refuse_if_sweep_holds(_Req("tab-aaaaaaaa"))
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    benchmarks_routes.refuse_if_sweep_holds(_Req())
+
+    # Auto-switch (GGUF/NPU) and preview swap the server without a /load call; each checks first.
+    src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    assert src.count("refuse_if_sweep_holds(fastapi_request)") == 3

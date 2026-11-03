@@ -1004,6 +1004,7 @@ export const cs = {
       showLess: "Zobrazit méně",
       settings: "Nastavení",
       api: "API",
+      benchmarks: "Benchmarky",
       lightMode: "Světlý režim",
       darkMode: "Tmavý režim",
       guidedTour: "Průvodce",

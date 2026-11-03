@@ -166,8 +166,7 @@ def list_runs(limit: int = 100, kind: str | None = None) -> list[dict[str, Any]]
         counts: dict[str, int] = {}
         means: dict[str, dict[str, float]] = {}
         run_ids = [row["id"] for row in rows]
-        # Server rate per completion, the client rate when a completion lacks one, as the page
-        # aggregates it: the fallback is per run, not per row. Scoped to the listed runs so the
+        # Per completion: the server rate, else the client rate. Scoped to the listed runs so the
         # scan does not grow with every run ever stored.
         placeholders = ",".join("?" for _ in run_ids)
         for run_id, variant, n, rate in (

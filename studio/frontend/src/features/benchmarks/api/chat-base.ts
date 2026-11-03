@@ -165,7 +165,6 @@ export function useChatSettings(): BaseSetting[] {
   });
 }
 
-/** The load chat would send for the loaded model with its sheet as it stands now. */
 export interface ChatSampling {
   temperature: number;
   top_p: number;
@@ -188,6 +187,7 @@ export function chatSampling(s: ChatState): ChatSampling {
   };
 }
 
+/** The load chat would send for the loaded model with its sheet as it stands now. */
 export function chatBaseLoad(
   status: InferenceStatusResponse,
 ): LoadModelRequest {

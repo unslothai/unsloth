@@ -1016,6 +1016,7 @@ export const nl = {
       showLess: "Minder weergeven",
       settings: "Instellingen",
       api: "API",
+      benchmarks: "Benchmarks",
       lightMode: "Lichte modus",
       darkMode: "Donkere modus",
       guidedTour: "Rondleiding",

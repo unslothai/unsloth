@@ -904,7 +904,6 @@ export const he = {
       runOptions: "אפשרויות הרצה",
     },
     navigation: {
-      benchmarks: "בנצ'מרקים",
       newChat: "צ'אט חדש",
       returnToChat: "חזרה לצ'אט",
       returnToChats: "חזרה ל-{count} צ'אטים",
@@ -938,6 +937,7 @@ export const he = {
       showLess: "הצג פחות",
       settings: "הגדרות",
       api: "API",
+      benchmarks: "בנצ'מרקים",
       lightMode: "מצב בהיר",
       darkMode: "מצב כהה",
       guidedTour: "סיור מודרך",

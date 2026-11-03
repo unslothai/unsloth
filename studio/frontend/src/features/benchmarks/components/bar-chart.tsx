@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Horizontal bars on one axis: Config sweeps' throughput, Evals' scores and llama-bench's rates
-// all draw through here, so the three tabs read as one page.
+// Horizontal bars on one axis with an optional min-max whisker, shared by every Benchmarks tab.
 
 import {
   Fragment,

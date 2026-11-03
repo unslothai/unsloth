@@ -91,6 +91,8 @@ interface BenchmarksState {
 }
 
 let controller: AbortController | null = null;
+// Set before the lease round trip, so a second Run click in it doesn't race for its own lease.
+let starting = false;
 
 /** Saves collapse to one in flight plus one pending, so a fast sweep never queues a save per token. */
 function makeSaver(): {
@@ -211,7 +213,7 @@ export const useBenchmarksStore = create<BenchmarksState>()(
         }
       },
       start: async () => {
-        if (get().live) return;
+        if (get().live || starting) return;
         const { config, disabled } = get();
         const variants: Variant[] = config.variants.filter(
           (v) => !disabled.includes(v.label),
@@ -221,15 +223,17 @@ export const useBenchmarksStore = create<BenchmarksState>()(
           return;
         }
         const holder = `sweep-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        starting = true;
         try {
           await takeBenchLease(holder);
         } catch (err) {
           set({ error: err instanceof Error ? err.message : String(err) });
           return;
+        } finally {
+          starting = false;
         }
-        // A missed renewal is retried; a lease another runner now holds means its loads would be
-        // charted under this run's rows, so stop.
-        // Bound to this run: a renewal still in flight after it ends must not stop the next one.
+        // A missed renewal retries; another runner's lease stops this run. Checked against this
+        // run's controller, so a late renewal can't stop the next one.
         let leaseLost: string | null = null;
         const runController = new AbortController();
         const renew = window.setInterval(
