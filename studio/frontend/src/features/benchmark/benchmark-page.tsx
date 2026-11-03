@@ -12,15 +12,8 @@ import {
   ComboboxList,
 } from "@/components/ui/combobox";
 import { Spinner } from "@/components/ui/spinner";
-import { prepareHfTokenForUse } from "@/features/hf-auth";
-import { useHfTokenStore } from "@/features/hub";
-import {
-  DOWNLOAD_KIND,
-  downloadManager,
-  subscribeJobListeners,
-} from "@/features/hub/download-manager";
 import { useT } from "@/i18n";
-import { AlertCircleIcon, Rocket01Icon } from "@hugeicons/core-free-icons";
+import { Rocket01Icon } from "@hugeicons/core-free-icons";
 import { cn } from "@/lib/utils";
 import { BENCH_CARD, RUN_BUTTON } from "@/features/benchmarks/components/bench-ui";
 import { CountInput, Field } from "@/features/benchmarks/components/setup-panel";
@@ -40,12 +33,9 @@ import {
 } from "./stores/benchmark-runtime-store";
 import { useChatRuntimeStore } from "@/features/chat";
 
-/** The Evals tab of the Benchmarks page: lm-eval tasks on a picked model. The model
- * itself is picked in the header pill next to the tabs (EvalsModelPicker), so the
- * selection state arrives via the `evals` bundle BenchmarksPage owns. */
+/** The Evals tab of the Benchmarks page: lm-eval tasks on the model picked in the header. */
 export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
   const t = useT();
-  const hfToken = useHfTokenStore((s) => s.token);
 
   const [batchSize, setBatchSize] = useState(0); // 0 = auto
   const [numFewshot, setNumFewshot] = useState<number | null>(null); // null = task default
@@ -69,7 +59,6 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
   const [taskConfig, setTaskConfig] = useState<BenchmarkTaskConfig | null>(null);
   const fewshotSupported = taskConfig?.num_fewshot !== 0;
 
-  // Fetch task config when selected task changes
   useEffect(() => {
     let cancelled = false;
     setTaskConfig(null);
@@ -109,7 +98,7 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
         }
       })
       .catch(() => {
-        // silently ignore — the dropdown will just be empty
+        // the dropdown stays empty
       })
       .finally(() => {
         if (!cancelled) setLoadingTasks(false);
@@ -126,7 +115,7 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
     const curated = new Set([
       "mmlu", "mmlu_pro", "gpqa_main_cot_zeroshot", "hellaswag",
       "arc_challenge", "winogrande", "gsm8k", "hendrycks_math",
-      "ifeval", "truthfulqa_mc1", "longbench",
+      "ifeval", "truthfulqa_mc1", "truthfulqa_mc2", "longbench",
       "bbh", "bbh_fewshot", "bbh_zeroshot",
     ]);
     const curatedIds: string[] = [];
@@ -177,70 +166,16 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
   const handleStartAndOpenPanel = useCallback(() => {
     const model = evals.selectedModel;
     if (!model) return;
-
-    const resolvedSource = evals.selectedModelSource === "lora" ? "checkpoint" : "local";
-
     if (!isRunning) {
       resetBenchmarkRun();
     }
-    setPanelOpen(false);
-
-    const extraParams = {
+    setPanelOpen(true);
+    void runBenchmark(model, selectedTask, {
       batch_size: batchSize > 0 ? String(batchSize) : "auto",
       num_fewshot: fewshotParam(numFewshot, fewshotSupported),
       max_tokens: maxTokens,
-    };
-
-    const needsDownload =
-      evals.selectedModelSource === "hub" &&
-      evals.selectedModelIsDownloaded === false &&
-      !evals.downloadingForBenchmark;
-    if (needsDownload) {
-      evals.setDownloadingForBenchmark(true);
-      evals.setDownloadWatch(subscribeJobListeners(DOWNLOAD_KIND.MODEL, model, {
-        onComplete: () => {
-          evals.setDownloadWatch(null);
-          evals.setDownloadingForBenchmark(false);
-          evals.setSelectedModelIsDownloaded(true);
-          setPanelOpen(true);
-          prepareHfTokenForUse(hfToken, { allowAnonymous: true }).then((preparedToken) => {
-            if (preparedToken.proceed) {
-              void runBenchmark(model, resolvedSource, selectedTask, extraParams);
-            } else {
-              // Declined token prompt: nothing runs, so don't leave a "Starting" panel open.
-              setPanelOpen(false);
-            }
-          });
-        },
-        onError: () => {
-          evals.setDownloadWatch(null);
-          evals.setDownloadingForBenchmark(false);
-          setPanelOpen(false);
-        },
-        onCancelled: () => {
-          evals.setDownloadWatch(null);
-          evals.setDownloadingForBenchmark(false);
-          setPanelOpen(false);
-        },
-      }));
-      void downloadManager.requestStart({
-        kind: DOWNLOAD_KIND.MODEL,
-        repoId: model,
-        variant: evals.selectedGgufVariant,
-        expectedBytes: 0,
-      });
-      return;
-    }
-
-    setPanelOpen(true);
-    prepareHfTokenForUse(hfToken, { allowAnonymous: true }).then((preparedToken) => {
-      if (preparedToken.proceed) {
-        void runBenchmark(model, resolvedSource, selectedTask, extraParams);
-      } else {
-        setPanelOpen(false);
-      }
     });
-  }, [evals, selectedTask, hfToken, runBenchmark, isRunning, resetBenchmarkRun, batchSize, numFewshot, fewshotSupported, maxTokens]);
+  }, [evals.selectedModel, selectedTask, runBenchmark, isRunning, resetBenchmarkRun, batchSize, numFewshot, fewshotSupported, maxTokens]);
 
   const handleClosePanel = useCallback(() => {
     resetBenchmarkRun();
@@ -269,159 +204,143 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
           )}
         >
           <span className="text-ui-11 font-medium tracking-nav text-muted-foreground">
-            Setup
+            {t("benchmark.setupTitle")}
           </span>
 
-          {evals.modelsError && (
-            <div className="flex items-center gap-2 text-ui-12 text-destructive">
-              <HugeiconsIcon icon={AlertCircleIcon} className="size-4" />
-              {evals.modelsError}
-            </div>
-          )}
-
-          {!evals.modelsError && (
-            <>
-              <Field label={t("benchmark.taskLabel")}>
-                {loadingTasks ? (
-                  <span className="flex h-9 items-center gap-2 text-ui-12 text-muted-foreground">
-                    <Spinner className="size-3.5" />
-                    {t("benchmark.loadingTasks")}
-                  </span>
-                ) : (
-                  <div ref={taskAnchorRef}>
-                    <Combobox
-                      items={taskItems}
-                      filteredItems={taskItems}
-                      filter={null}
-                      value={selectedTask}
-                      onValueChange={(next) => {
-                        if (next) setSelectedTask(next);
-                      }}
-                      onInputValueChange={(next) => {
-                        if (selectingTaskRef.current) {
-                          selectingTaskRef.current = false;
-                          return;
-                        }
-                        setTaskSearch(next);
-                      }}
-                      itemToStringValue={(item) => {
-                        const info = tasks.find((x) => x.id === item);
-                        return info ? info.name : item;
-                      }}
-                      autoHighlight={true}
-                    >
-                      <ComboboxInput
-                        placeholder={t("benchmark.searchTaskPlaceholder")}
-                        className="w-full"
-                        showClear={true}
-                      />
-                      <ComboboxContent anchor={taskAnchorRef}>
-                        <ComboboxEmpty>{t("benchmark.noTasksFound")}</ComboboxEmpty>
-                        <ComboboxList>
-                          {taskItems.map((id) => {
-                            const info = tasks.find((x) => x.id === id);
-                            const tl = info?.task_type;
-                            const typeLabel = !tl
-                              ? null
-                              : tl.includes("log")
-                                ? "log likelihood"
-                                : tl === "greedy_until"
-                                  ? "generation"
-                                  : tl;
-                            return (
-                              <ComboboxItem
-                                key={id}
-                                value={id}
-                                onPointerDown={() => {
-                                  selectingTaskRef.current = true;
-                                }}
-                              >
-                                <span className="truncate font-medium">
-                                  {info?.name ?? id}
-                                </span>
-                                {typeLabel && (
-                                  <span className="ml-2 shrink-0 text-xs text-muted-foreground">
-                                    {typeLabel}
-                                  </span>
-                                )}
-                              </ComboboxItem>
-                            );
-                          })}
-                        </ComboboxList>
-                      </ComboboxContent>
-                    </Combobox>
-                  </div>
-                )}
-              </Field>
-
-              <div className="grid grid-cols-2 gap-2">
-                <Field label={t("benchmark.numFewshotLabel")}>
-                  {fewshotSupported ? (
-                    <CountInput
-                      value={numFewshot ?? 0}
-                      min={0}
-                      max={20}
-                      step={1}
-                      onCommit={setNumFewshot}
-                    />
-                  ) : (
-                    <span className="flex h-9 items-center text-ui-11 text-muted-foreground/60">
-                      {t("benchmark.fewshotNotSupported")}
-                    </span>
-                  )}
-                </Field>
-                <Field label={t("benchmark.batchSizeLabel")}>
-                  <Input
-                    type="number"
-                    value={batchSize > 0 ? String(batchSize) : ""}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setBatchSize(v === "" ? 0 : Math.max(0, Number(v) || 0));
-                    }}
-                    placeholder="auto"
-                    min={0}
-                    max={512}
-                    step={1}
-                    className="text-center font-mono tabular-nums"
-                  />
-                </Field>
-              </div>
-
-              <Field label={t("benchmark.maxTokensLabel")}>
-                <CountInput
-                  value={maxTokens}
-                  min={1024}
-                  max={262144}
-                  step={1024}
-                  onCommit={setMaxTokens}
-                />
-              </Field>
-
-              {!showPanel && (
-                <Button
-                  size="lg"
-                  className={RUN_BUTTON}
-                  disabled={
-                    !evals.selectedModel ||
-                    modelLoading ||
-                    !!evals.loadingModel ||
-                    evals.downloadingForBenchmark
-                  }
-                  onClick={handleStartAndOpenPanel}
+          <Field label={t("benchmark.taskLabel")}>
+            {loadingTasks ? (
+              <span className="flex h-9 items-center gap-2 text-ui-12 text-muted-foreground">
+                <Spinner className="size-3.5" />
+                {t("benchmark.loadingTasks")}
+              </span>
+            ) : (
+              <div ref={taskAnchorRef}>
+                <Combobox
+                  items={taskItems}
+                  filteredItems={taskItems}
+                  filter={null}
+                  value={selectedTask}
+                  onValueChange={(next) => {
+                    if (next) setSelectedTask(next);
+                  }}
+                  onInputValueChange={(next) => {
+                    if (selectingTaskRef.current) {
+                      selectingTaskRef.current = false;
+                      return;
+                    }
+                    setTaskSearch(next);
+                  }}
+                  itemToStringValue={(item) => {
+                    const info = tasks.find((x) => x.id === item);
+                    return info ? info.name : item;
+                  }}
+                  autoHighlight={true}
                 >
-                  <HugeiconsIcon
-                    icon={Rocket01Icon}
-                    strokeWidth={1.75}
-                    className="size-4"
+                  <ComboboxInput
+                    placeholder={t("benchmark.searchTaskPlaceholder")}
+                    className="w-full"
+                    showClear={true}
                   />
-                  {evals.loadingModel
-                    ? t("benchmark.loadingModel")
-                    : evals.downloadingForBenchmark
-                      ? t("benchmark.downloadingModel")
-                      : t("benchmark.runButton")}
-                </Button>
+                  <ComboboxContent anchor={taskAnchorRef}>
+                    <ComboboxEmpty>{t("benchmark.noTasksFound")}</ComboboxEmpty>
+                    <ComboboxList>
+                      {taskItems.map((id) => {
+                        const info = tasks.find((x) => x.id === id);
+                        const tl = info?.task_type;
+                        const typeLabel = !tl
+                          ? null
+                          : tl === "log_likelihood"
+                            ? t("benchmark.taskTypeLogLikelihood")
+                            : tl === "generation"
+                              ? t("benchmark.taskTypeGeneration")
+                              : tl;
+                        return (
+                          <ComboboxItem
+                            key={id}
+                            value={id}
+                            onPointerDown={() => {
+                              selectingTaskRef.current = true;
+                            }}
+                          >
+                            <span className="truncate font-medium">
+                              {info?.name ?? id}
+                            </span>
+                            {typeLabel && (
+                              <span className="ml-2 shrink-0 text-xs text-muted-foreground">
+                                {typeLabel}
+                              </span>
+                            )}
+                          </ComboboxItem>
+                        );
+                      })}
+                    </ComboboxList>
+                  </ComboboxContent>
+                </Combobox>
+              </div>
+            )}
+          </Field>
+
+          <div className="grid grid-cols-2 gap-2">
+            <Field label={t("benchmark.numFewshotLabel")}>
+              {fewshotSupported ? (
+                <CountInput
+                  value={numFewshot ?? 0}
+                  min={0}
+                  max={20}
+                  step={1}
+                  onCommit={setNumFewshot}
+                />
+              ) : (
+                <span className="flex h-9 items-center text-ui-11 text-muted-foreground/60">
+                  {t("benchmark.fewshotNotSupported")}
+                </span>
               )}
-            </>
+            </Field>
+            <Field label={t("benchmark.batchSizeLabel")}>
+              <Input
+                type="number"
+                value={batchSize > 0 ? String(batchSize) : ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setBatchSize(v === "" ? 0 : Math.max(0, Number(v) || 0));
+                }}
+                placeholder={t("benchmark.batchSizeAuto")}
+                min={0}
+                max={512}
+                step={1}
+                className="text-center font-mono tabular-nums"
+              />
+            </Field>
+          </div>
+
+          <Field label={t("benchmark.maxTokensLabel")}>
+            <CountInput
+              value={maxTokens}
+              min={1024}
+              max={262144}
+              step={1024}
+              onCommit={setMaxTokens}
+            />
+          </Field>
+
+          {!showPanel && (
+            <Button
+              size="lg"
+              className={RUN_BUTTON}
+              disabled={
+                !evals.selectedModel || modelLoading || !!evals.loadingModel
+              }
+              onClick={handleStartAndOpenPanel}
+            >
+              <HugeiconsIcon
+                icon={Rocket01Icon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+              {evals.loadingModel
+                ? t("benchmark.loadingModel")
+                : t("benchmark.runButton")}
+            </Button>
           )}
         </div>
 

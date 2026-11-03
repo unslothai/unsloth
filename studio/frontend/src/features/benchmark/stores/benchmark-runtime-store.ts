@@ -11,6 +11,9 @@ import {
   type BenchmarkOperationResponse,
   type BenchmarkStatus,
 } from "../api/benchmark-api";
+import { applyLogEntry, type BenchmarkProgress } from "../lib/log-entry";
+
+export type { BenchmarkProgress };
 
 class BenchmarkCanceledError extends Error {
   constructor() {
@@ -75,8 +78,6 @@ async function recoverViaStatus(
   throw new Error("Timed out waiting for benchmark to finish.");
 }
 
-const MAX_LOG_LINES = 4000;
-
 export type BenchmarkPhase =
   | "idle"
   | "starting"
@@ -84,15 +85,6 @@ export type BenchmarkPhase =
   | "success"
   | "error"
   | "canceled";
-
-export interface BenchmarkProgress {
-  pct: number;
-  current: number;
-  total: number;
-  /** Formatted by the backend's ``tqdm.format_interval`` — null before a rate is known. */
-  elapsed: string | null;
-  eta: string | null;
-}
 
 interface BenchmarkRuntimeState {
   phase: BenchmarkPhase;
@@ -114,15 +106,22 @@ interface BenchmarkRuntimeState {
   hasHydrated: boolean;
   backendActive: boolean;
   runId: number;
+  /** Bumped when runs are deleted, so lists of them refetch. */
+  runsVersion: number;
 }
 
 interface BenchmarkRuntimeActions {
-  run: (checkpointPath: string, modelSource: "checkpoint" | "hf" | "local", task?: string, extraParams?: { batch_size?: string; num_fewshot?: number | null; max_tokens?: number | null }) => Promise<void>;
+  run: (
+    checkpointPath: string,
+    task?: string,
+    extraParams?: { batch_size?: string; num_fewshot?: number | null; max_tokens?: number | null },
+  ) => Promise<void>;
   requestCancel: () => Promise<void>;
   appendLog: (entry: BenchmarkLogEntry, seq?: number) => void;
   setConnected: (value: boolean) => void;
   applyBackendStatus: (status: BenchmarkStatus) => void;
   reset: () => void;
+  bumpRunsVersion: () => void;
 }
 
 export type BenchmarkRuntimeStore = BenchmarkRuntimeState & BenchmarkRuntimeActions;
@@ -146,54 +145,17 @@ const initialState: BenchmarkRuntimeState = {
   hasHydrated: false,
   backendActive: false,
   runId: 0,
+  runsVersion: 0,
 };
-
-function _parseProgress(line: string): { pct: number; detail: BenchmarkProgress | null } {
-  try {
-    const parsed = JSON.parse(line);
-    return { pct: parsed.pct, detail: parsed };
-  } catch {
-    const pct = Number(line);
-    return { pct: Number.isFinite(pct) ? pct : 0, detail: null };
-  }
-}
 
 export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, get) => ({
   ...initialState,
 
   setConnected: (value) => set({ connected: value }),
 
-  appendLog: (entry, seq) =>
-    set((state) => {
-      if (
-        typeof seq === "number" &&
-        state.lastSeq !== null &&
-        seq <= state.lastSeq
-      ) {
-        return state;
-      }
+  appendLog: (entry, seq) => set((state) => applyLogEntry(state, entry, seq)),
 
-      let progressPercent = state.progressPercent;
-      let progressDetail: BenchmarkProgress | null = state.progressDetail;
-      if (entry.stream === "progress") {
-        const parsed = _parseProgress(entry.line);
-        progressPercent = parsed.pct;
-        progressDetail = parsed.detail;
-      }
-
-      const next =
-        state.logLines.length >= MAX_LOG_LINES
-          ? state.logLines.slice(state.logLines.length - MAX_LOG_LINES + 1)
-          : state.logLines.slice();
-      next.push(entry);
-      return {
-        logLines: next,
-        lastSeq: typeof seq === "number" ? seq : state.lastSeq,
-        stage: entry.stream === "status" ? entry.line : state.stage,
-        progressPercent,
-        progressDetail,
-      };
-    }),
+  bumpRunsVersion: () => set((state) => ({ runsVersion: state.runsVersion + 1 })),
 
   applyBackendStatus: (status) =>
     set((state) => {
@@ -219,11 +181,7 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
           return { ...base, isRunning: false, phase: "canceled" as const };
         }
         if (status.last_op_status === "success") {
-          return {
-            ...base,
-            isRunning: false,
-            phase: "success" as const,
-          };
+          return { ...base, isRunning: false, phase: "success" as const };
         }
         return { ...base, isRunning: false, phase: "idle" as const };
       }
@@ -236,6 +194,7 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
       hasHydrated: state.hasHydrated,
       backendActive: state.backendActive,
       runId: state.runId,
+      runsVersion: state.runsVersion,
     })),
 
   requestCancel: async () => {
@@ -248,7 +207,7 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
     }
   },
 
-  run: async (checkpointPath, modelSource, task, extraParams) => {
+  run: async (checkpointPath, task, extraParams) => {
     // A Config sweep reloads the server between rows; scoring under it is meaningless.
     // Loaded on use: this store is on the startup path, the sweeps store is not.
     const { useBenchmarksStore } = await import(
@@ -314,28 +273,20 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
     };
 
     try {
-const apiParams = {
-          checkpoint_path: checkpointPath,
-          model_source: modelSource,
-          task: task ?? "mmlu",
-          batch_size: extraParams?.batch_size ?? "auto",
-          num_fewshot: extraParams?.num_fewshot ?? null,
-          max_tokens: extraParams?.max_tokens ?? null,
-        };
-      await runRecoverableOp(() =>
-        runBenchmark(apiParams),
-      );
-      if (!isCurrent()) return;
-
-      set({
-        phase: "running",
-      });
-
+      const apiParams = {
+        checkpoint_path: checkpointPath,
+        task: task ?? "mmlu",
+        batch_size: extraParams?.batch_size ?? "auto",
+        num_fewshot: extraParams?.num_fewshot ?? null,
+        max_tokens: extraParams?.max_tokens ?? null,
+      };
+      await runRecoverableOp(() => runBenchmark(apiParams));
       if (!isCurrent()) return;
 
       set({
         phase: "success",
         isRunning: false,
+        ownsRun: false,
         reconnecting: false,
         result: "Benchmark completed",
       });
@@ -345,6 +296,7 @@ const apiParams = {
         set({
           phase: "canceled",
           isRunning: false,
+          ownsRun: false,
           reconnecting: false,
           error: null,
         });
@@ -352,6 +304,7 @@ const apiParams = {
         set({
           phase: "error",
           isRunning: false,
+          ownsRun: false,
           reconnecting: false,
           error: err instanceof Error ? err.message : "Benchmark failed",
         });
@@ -362,11 +315,5 @@ const apiParams = {
 
 export function isBenchmarkPanelActive(state: BenchmarkRuntimeStore): boolean {
   return state.isRunning || state.phase !== "idle";
-}
-
-export function selectBenchmarkProgressPercent(state: BenchmarkRuntimeStore): number {
-  if (state.phase === "idle") return 0;
-  if (state.phase === "success") return 100;
-  return state.progressPercent;
 }
 

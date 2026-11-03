@@ -1,13 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""lm_eval's ``gguf`` backend, pointed at Studio instead of a bare llama-server.
-
-The upstream backend tokenizes through ``<server>/tokenize``. Studio requires a
-bearer key on every route and serves tokenize under ``/v1``. This subclass
-sends the run's key, uses ``/v1/tokenize``, and supplies neutral
-sampling defaults so evaluation does not inherit Studio's chat recommendations.
-"""
+"""lm_eval's ``gguf`` backend pointed at Unsloth Studio instead of a bare llama-server: it sends
+the run's bearer key, tokenizes through ``/v1/tokenize``, and pins neutral sampling so scoring
+doesn't inherit the chat recommendations."""
 
 import logging
 import time
@@ -44,9 +40,8 @@ class StudioGGUFLM(GGUFLM):
         delay = 5,
     ):
         if url == self.completions_url:
-            # Omitted values otherwise inherit per-model chat recommendations
-            # in Studio's completions route. Penalties affect greedy decoding
-            # too, and must also stay neutral for teacher-forced scoring.
+            # Omitted values inherit per-model chat recommendations; penalties sway greedy
+            # decoding and teacher-forced scoring too.
             payload = {
                 "presence_penalty": 0.0,
                 "frequency_penalty": 0.0,

@@ -1052,10 +1052,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
-    if "score" not in {
-        row[1] for row in conn.execute("PRAGMA table_info(eval_samples)").fetchall()
-    }:
-        conn.execute("ALTER TABLE eval_samples ADD COLUMN score REAL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_eval_runs_created_at ON eval_runs(created_at)")
     conn.execute(
         """
@@ -6102,9 +6098,6 @@ def record_external_import_mark(
         conn.commit()
     finally:
         conn.close()
-
-
-# ── Benchmark runs ──────────────────────────────────
 
 
 def insert_benchmark_run(

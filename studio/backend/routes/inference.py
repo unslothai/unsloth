@@ -38079,13 +38079,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
 @router.post("/tokenize")
 @account_access.gpu_busy_route
 async def llama_tokenize(request: Request, current_subject: str = Depends(get_current_subject)):
-    """llama.cpp ``/tokenize`` passthrough (GGUF only).
-
-    Exposed for clients that need the server's exact tokenization — notably
-    lm_eval's ``gguf`` backend, which tokenizes contexts with the model's own
-    tokenizer to split context/continuations at true token boundaries for
-    teacher-forced loglikelihood scoring.
-    """
+    """llama-server ``/tokenize`` passthrough (GGUF only), for lm_eval's ``gguf`` backend."""
     llama_backend = get_llama_cpp_backend()
     body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
     if not llama_backend.is_loaded:

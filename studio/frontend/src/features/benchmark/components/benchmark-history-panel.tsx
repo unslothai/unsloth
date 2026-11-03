@@ -54,6 +54,7 @@ import {
   listBenchmarkRuns,
 } from "../api/benchmark-api";
 import { GraphDialog } from "./benchmark-graph-dialog";
+import { deleteEach } from "../lib/delete-runs";
 import { modelName } from "../lib/score-bars";
 import { useBenchmarkRuntimeStore } from "../stores/benchmark-runtime-store";
 
@@ -614,47 +615,26 @@ export function BenchmarkHistoryPanel() {
     [t],
   );
 
-  const handleDelete = useCallback(
-    async (runId: string) => {
-      try {
-        await deleteBenchmarkRun(runId);
-        setRuns((prev) => prev.filter((r) => r.id !== runId));
-        if (selectedRun?.id === runId) {
-          setSelectedRun(null);
-        }
-      } catch {
-        // ignore
-      }
+  const bumpRunsVersion = useBenchmarkRuntimeStore((s) => s.bumpRunsVersion);
+  const deleteRuns = useCallback(
+    async (ids: string[]) => {
+      const { deleted, failed } = await deleteEach(ids, deleteBenchmarkRun);
+      setRuns((prev) => prev.filter((r) => !deleted.has(r.id)));
+      setSelectedRun((prev) => (prev && deleted.has(prev.id) ? null : prev));
+      setSelectedIds((prev) => new Set([...prev].filter((id) => !deleted.has(id))));
+      if (deleted.size > 0) bumpRunsVersion();
+      setError(failed);
       setDeleteTarget(null);
     },
-    [selectedRun],
+    [bumpRunsVersion],
+  );
+  const handleDelete = useCallback((runId: string) => deleteRuns([runId]), [deleteRuns]);
+  const handleBulkDelete = useCallback(
+    () => deleteRuns(Array.from(selectedIds)),
+    [deleteRuns, selectedIds],
   );
 
-  const handleBulkDelete = useCallback(async () => {
-    const ids = Array.from(selectedIds);
-    for (const id of ids) {
-      try {
-        await deleteBenchmarkRun(id);
-      } catch {
-        // ignore individual failures
-      }
-    }
-    setRuns((prev) => prev.filter((r) => !selectedIds.has(r.id)));
-    if (selectedRun && selectedIds.has(selectedRun.id)) {
-      setSelectedRun(null);
-    }
-    setSelectedIds(new Set());
-    setDeleteTarget(null);
-  }, [selectedIds, selectedRun]);
-
   const detail = selectedRun;
-
-  const handleCompare = useCallback(() => {
-    if (selectedIds.size < 2) {
-      return;
-    }
-    setCompareMode(true);
-  }, [selectedIds]);
 
   const [compareMode, setCompareMode] = useState(false);
   const [compareDetails, setCompareDetails] = useState<BenchmarkRunDetail[]>(

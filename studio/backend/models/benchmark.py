@@ -33,24 +33,18 @@ class BenchmarkRunRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name = True)
 
-    checkpoint_path: str = Field(..., description = "Path to the model checkpoint")
-    model_source: str = Field(
-        ...,
-        description = "Source of the model: 'checkpoint', 'hf', or 'local'",
-    )
-    hf_token: Optional[str] = Field(
-        None,
-        description = "Hugging Face token for accessing gated models",
-    )
+    checkpoint_path: str = Field(..., description = "Identifier of the loaded GGUF model")
     task: str = Field("mmlu", description = "Benchmark task to run (e.g. 'mmlu', 'hellaswag')")
     batch_size: str = Field(
-        "auto", description = "Concurrency for lm_eval (integer or 'auto' = server slot count)"
+        "auto",
+        pattern = r"^(auto|[1-9]\d*)$",
+        description = "Concurrency for lm_eval (integer or 'auto' = server slot count)",
     )
     num_fewshot: Optional[int] = Field(
-        None, description = "Number of few-shot examples (None = task default)"
+        None, ge = 0, description = "Number of few-shot examples (None = task default)"
     )
     max_tokens: Optional[int] = Field(
-        None, description = "Maximum tokens to generate per sample (None = 32768)"
+        None, ge = 1, description = "Maximum tokens to generate per sample (None = 32768)"
     )
 
 
@@ -130,7 +124,7 @@ class BenchmarkRunSummary(BaseModel):
 
 
 class BenchmarkRunListResponse(BaseModel):
-    """Paginated list of past benchmark runs."""
+    """Past benchmark runs."""
 
     model_config = ConfigDict(populate_by_name = True)
 

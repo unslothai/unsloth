@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A live log, drawn like Settings > Logs: framed mono text that follows the tail, a wrap
-// toggle and a jump back to the latest line once the reader scrolls up. Settings' own
-// viewer (debugging-tab.tsx) is still inline and can move onto this.
+// A live log drawn like Settings > Logs: follows the tail, wrap toggle, jump to latest.
 
 import { Button } from "@/components/ui/button";
 import {

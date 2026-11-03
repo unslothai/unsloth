@@ -1827,7 +1827,6 @@ from routes.benchmarks import BenchmarkTrafficMiddleware  # noqa: E402
 
 app.add_middleware(BenchmarkTrafficMiddleware)
 
-
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
 
 

@@ -27,10 +27,11 @@ export function EvalScoreboard(): ReactElement | null {
   const running = useBenchmarkRuntimeStore(
     (s) => s.phase === "running" || s.phase === "starting",
   );
+  const runsVersion = useBenchmarkRuntimeStore((s) => s.runsVersion);
   const [runs, setRuns] = useState<BenchmarkRunSummary[]>([]);
   const exportRef = useRef<SVGSVGElement | null>(null);
 
-  // On mount (even mid-run, e.g. after a reload) and again when a run ends, which lands in the list.
+  // On mount (even mid-run, e.g. after a reload), when a run ends and when runs are deleted.
   useEffect(() => {
     let cancelled = false;
     void listBenchmarkRuns()
@@ -41,7 +42,7 @@ export function EvalScoreboard(): ReactElement | null {
     return () => {
       cancelled = true;
     };
-  }, [running]);
+  }, [running, runsVersion]);
 
   const { groups, models, labels, best } = useMemo(
     () => latestScores(runs, palette.length),
@@ -70,25 +71,27 @@ export function EvalScoreboard(): ReactElement | null {
     <div className="flex flex-col gap-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <StatTile
-          label="Best score"
+          label={t("benchmark.scoreboard.bestScore")}
           value={best ? pct(best.score) : "—"}
           detail={best ? `${best.run.task} · ${best.label}` : undefined}
         />
         <StatTile
-          label="Benchmarks"
+          label={t("benchmark.scoreboard.benchmarks")}
           value={groups.length}
           detail={groups.map((g) => g.task).join(", ")}
         />
         <StatTile
-          label="Models"
+          label={t("benchmark.scoreboard.models")}
           value={models.length}
-          detail="Latest run of each shown"
+          detail={t("benchmark.scoreboard.latestRunEach")}
         />
       </div>
 
       <section className={cn(BENCH_CARD, "flex flex-col gap-3 p-3 sm:p-4")}>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-1">
-          <span className="text-ui-13 font-medium text-foreground">Scores</span>
+          <span className="text-ui-13 font-medium text-foreground">
+            {t("benchmark.scoreboard.scores")}
+          </span>
           {models.length > 1 && (
             <ul className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-ui-11 text-muted-foreground">
               {models.map((m) => (

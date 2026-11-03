@@ -30,26 +30,6 @@ export function isRecoverableTransportError(err: unknown): boolean {
   return false;
 }
 
-export interface CheckpointInfo {
-  display_name: string;
-  path: string;
-  loss?: number | null;
-}
-
-export interface ModelCheckpoints {
-  name: string;
-  checkpoints: CheckpointInfo[];
-  base_model?: string | null;
-  peft_type?: string | null;
-  lora_rank?: number | null;
-  is_quantized?: boolean;
-}
-
-export interface CheckpointListResponse {
-  outputs_dir: string;
-  models: ModelCheckpoints[];
-}
-
 export interface BenchmarkOperationResponse {
   success: boolean;
   message: string;
@@ -80,12 +60,6 @@ export async function fetchBenchmarkTasks(): Promise<BenchmarkTasksResponse> {
   return parseJson<BenchmarkTasksResponse>(response);
 }
 
-/** Fetch training checkpoints (hits /api/models/checkpoints — not a benchmark endpoint). */
-export async function fetchCheckpoints(): Promise<CheckpointListResponse> {
-  const response = await authFetch("/api/models/checkpoints");
-  return parseJson<CheckpointListResponse>(response);
-}
-
 export interface BenchmarkTaskConfig {
   task_id: string;
   num_fewshot: number | null;
@@ -98,8 +72,6 @@ export async function fetchBenchmarkTaskConfig(taskId: string): Promise<Benchmar
 
 export interface BenchmarkRunParams {
   checkpoint_path: string;
-  model_source: "checkpoint" | "hf" | "local";
-  hf_token?: string | null;
   task?: string;
   batch_size?: string;
   num_fewshot?: number | null;
@@ -132,8 +104,6 @@ export interface BenchmarkLogEntry {
   line: string;
   ts: number | null;
 }
-
-// ── Benchmark Results (past runs) ─────────────────────
 
 export interface BenchmarkRunMetric {
   name: string;
@@ -192,8 +162,6 @@ export async function deleteBenchmarkRun(runId: string): Promise<BenchmarkOperat
   return parseJson<BenchmarkOperationResponse>(response);
 }
 
-// ── Benchmark Export ─────────────────────────────────
-
 export async function exportBenchmarkRuns(runIds: string[]): Promise<void> {
   const response = await authFetch("/api/benchmarks/evals/export", {
     method: "POST",
@@ -211,8 +179,6 @@ export async function exportBenchmarkRuns(runIds: string[]): Promise<void> {
   a.click();
   URL.revokeObjectURL(url);
 }
-
-// ── Benchmark Graph ─────────────────────────────────
 
 export interface BenchmarkGraphParams {
   runIds: string[];
@@ -242,19 +208,16 @@ export async function generateBenchmarkGraph(params: BenchmarkGraphParams): Prom
   return response.blob();
 }
 
-
-export type BenchmarkLogEventName = "log" | "heartbeat" | "complete" | "error";
+export type BenchmarkLogEventName = "log" | "heartbeat" | "error";
 
 export interface BenchmarkLogEvent {
   event: BenchmarkLogEventName;
   id: number | null;
   entry?: BenchmarkLogEntry;
   error?: string;
-  /** Present on `heartbeat` events — mirrors the backend's run-active flag. */
+  /** The backend's run-active flag, on `heartbeat` events. */
   active?: boolean;
 }
-
-
 
 export async function streamBenchmarkLogs(options: {
   signal: AbortSignal;
@@ -337,13 +300,11 @@ export async function streamBenchmarkLogs(options: {
               const payload = JSON.parse(parsed.data) as { active?: boolean };
               if (typeof payload.active === "boolean") active = payload.active;
             } catch {
-              // no active flag available — ignore
+              // no active flag
             }
             options.onEvent({ event: "heartbeat", id: parsed.id, active });
           } else if (parsed.event === "progress") {
-            // tqdm progress arrives as a dedicated (unsequenced) SSE event; the store's
-            // progress bar consumes it as a "progress"-stream log entry, which the log
-            // console filters out of its stdout/stderr view.
+            // Unsequenced; the store reads it as a "progress" entry and keeps it out of the log.
             options.onEvent({
               event: "log",
               id: null,
@@ -353,10 +314,6 @@ export async function streamBenchmarkLogs(options: {
                 ts: null,
               },
             });
-          } else if (parsed.event === "complete") {
-            options.onEvent({ event: "complete", id: parsed.id });
-            // The stream is long-lived and stays open across runs — do NOT
-            // close on complete; the run's phase is driven by /status polling.
           } else if (parsed.event === "error") {
             let errorMessage = "Benchmark log stream error";
             try {

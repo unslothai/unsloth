@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Benchmark API routes for model benchmarking."""
+"""Evals routes: lm_eval runs against the loaded GGUF."""
 
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 import os
 import sys
@@ -55,7 +54,6 @@ from core.benchmark import (
 )
 
 
-# ── Curated benchmark tasks ──────────────────────────
 _CURATED_TASKS: list[BenchmarkTaskInfo] = [
     BenchmarkTaskInfo(
         id = "mmlu",
@@ -67,7 +65,7 @@ _CURATED_TASKS: list[BenchmarkTaskInfo] = [
         id = "mmlu_pro",
         name = "MMLU-Pro",
         description = "MMLU-Pro (more challenging MMLU variant)",
-        task_type = "log_likelihood",
+        task_type = "generation",
     ),
     BenchmarkTaskInfo(
         id = "gpqa_main_cot_zeroshot",
@@ -118,6 +116,12 @@ _CURATED_TASKS: list[BenchmarkTaskInfo] = [
         task_type = "log_likelihood",
     ),
     BenchmarkTaskInfo(
+        id = "truthfulqa_mc2",
+        name = "TruthfulQA MC2",
+        description = "Truthfulness & safety (multi-true)",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
         id = "longbench",
         name = "LongBench",
         description = "Long-context understanding (multi-task)",
@@ -127,19 +131,19 @@ _CURATED_TASKS: list[BenchmarkTaskInfo] = [
         id = "bbh",
         name = "BBH",
         description = "Big Bench Hard (chain-of-thought few-shot)",
-        task_type = "log_likelihood",
+        task_type = "generation",
     ),
     BenchmarkTaskInfo(
         id = "bbh_fewshot",
         name = "BBH (few-shot)",
         description = "Big Bench Hard (few-shot, no CoT)",
-        task_type = "log_likelihood",
+        task_type = "generation",
     ),
     BenchmarkTaskInfo(
         id = "bbh_zeroshot",
         name = "BBH (zero-shot)",
         description = "Big Bench Hard (zero-shot, no CoT)",
-        task_type = "log_likelihood",
+        task_type = "generation",
     ),
 ]
 
@@ -150,11 +154,10 @@ def _build_task_cache() -> list[BenchmarkTaskInfo]:
     curated_map = {t.id: t for t in _CURATED_TASKS}
     try:
         if _lm_eval_available:
-            logger.info("lm_eval available — building task index...")
             all_names = _get_task_manager().all_tasks
-            logger.info(f"Loaded {len(all_names)} tasks from lm_eval: first 5 = {all_names[:5]}")
+            logger.debug("Loaded %d tasks from lm_eval", len(all_names))
         else:
-            logger.warning("lm_eval not available — using curated tasks only")
+            logger.warning("lm_eval not available, using curated tasks only")
             all_names = list(curated_map.keys())
     except Exception as e:
         logger.warning(f"Failed to load lm_eval tasks: {e}")
@@ -188,9 +191,8 @@ def _get_task_cache() -> list[BenchmarkTaskInfo]:
     global _task_cache
     if _task_cache is None:
         try:
-            logger.info("Building task cache...")
             _task_cache = _build_task_cache()
-            logger.info(f"Task cache built: {len(_task_cache)} tasks")
+            logger.debug("Task cache built: %d tasks", len(_task_cache))
         except Exception as e:
             logger.error(f"Task cache build failed: {e}", exc_info = True)
             _task_cache = [t for t in _CURATED_TASKS]
@@ -216,17 +218,15 @@ except ImportError:
 router = APIRouter()
 logger = get_logger(__name__)
 
-# Warm the task cache in the background at startup so the first /tasks
-# request doesn't pay the cost of building the full lm_eval task index.
+# Building the lm_eval task index is slow; warm it so the first /tasks doesn't wait.
 threading.Thread(target = _get_task_cache, daemon = True).start()
 
 
 @router.get("/tasks", response_model = BenchmarkTasksResponse)
 async def list_benchmark_tasks(current_subject: str = Depends(get_current_subject)):
-    """List available benchmark tasks — curated shortlist merged with all lm_eval tasks."""
+    """The curated shortlist merged with every lm_eval task."""
     try:
         tasks = _get_task_cache()
-        logger.info(f"Returning {len(tasks)} tasks")
         return BenchmarkTasksResponse(tasks = tasks)
     except Exception as e:
         logger.error(f"Error listing benchmark tasks: {e}", exc_info = True)
@@ -248,13 +248,11 @@ async def get_task_config(task_id: str, current_subject: str = Depends(get_curre
         if idx is None:
             return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
 
-        # task_index entries may be dicts or Entry objects — handle both
+        # task_index entries are dicts or Entry objects depending on the lm_eval version.
         yaml_path = idx.get("yaml_path") if hasattr(idx, "get") else getattr(idx, "yaml_path", None)
         if not yaml_path or yaml_path == -1:
             return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
 
-        # Read the raw YAML — num_fewshot is null if absent (user can customize)
-        # or 0 if explicitly disabled (slider hidden).
         # lm_eval YAMLs use !function tags; register a no-op constructor for them.
         yaml.add_constructor("!function", lambda loader, node: None, Loader = yaml.FullLoader)
         with open(yaml_path, encoding = "utf-8") as f:
@@ -262,8 +260,7 @@ async def get_task_config(task_id: str, current_subject: str = Depends(get_curre
         if not isinstance(cfg, dict):
             return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
         nf = cfg.get("num_fewshot")
-        # lm_eval treats null as "no default" (user can still set it),
-        # and 0 as "explicitly disabled"
+        # null: no default, the user can set one. 0: few-shot is disabled.
         if nf is None:
             num_fewshot: int | None = None
         else:
@@ -276,7 +273,7 @@ async def get_task_config(task_id: str, current_subject: str = Depends(get_curre
 
 # lm_eval with the gguf backend is not on PyPI yet (EleutherAI/lm-evaluation-harness#4012).
 _LM_EVAL_INSTALL_HINT = (
-    "lm_eval is not installed. Install it into Studio's Python environment with: "
+    "lm_eval is not installed. Install it into Unsloth Studio's Python environment with: "
     "pip install 'lm_eval[hf,api] @ git+https://github.com/EleutherAI/lm-evaluation-harness.git"
     "@ad8737ae7fad24cf64e50fc7fc31397bff586b9e'"
 )
@@ -357,7 +354,7 @@ def _run_model_label(model: str) -> str:
 
 
 def _studio_base_url(http_request: Request) -> Optional[str]:
-    """The address this Studio actually listens on, for lm_eval's requests back to it."""
+    """The address this server listens on, for lm_eval's requests back to it."""
     state = http_request.app.state
     port = getattr(state, "server_port", None)
     if not isinstance(port, int) or port <= 0:
@@ -417,22 +414,12 @@ async def run_benchmark(
             )
         lease_holder = f"evals-{run_seq}"
 
-        logger.info("=== Benchmark Run Request =========================")
-        logger.info(f"checkpoint_path: {request.checkpoint_path}")
-        logger.info(f"model_source:    {request.model_source}")
-        logger.info(f"hf_token:        {'<provided>' if request.hf_token else '<not provided>'}")
-        logger.info(f"hf_token length: {len(request.hf_token) if request.hf_token else 0}")
-        logger.info(f"request model_dump: {request.model_dump(exclude = {'hf_token'})}")
-        logger.info("===================================================")
-
         _run_start = time.monotonic()
 
-        # Results are always written to an auto-managed directory; there is no
-        # user-supplied output path.
         ts = time.strftime("%Y%m%d_%H%M%S")
         output_path = str(outputs_root() / "evals" / f"benchmark_{request.task}_{ts}")
 
-        model_lines, lm_eval_kwargs = resolve_model_details(
+        lm_eval_kwargs = resolve_model_details(
             request.checkpoint_path,
             task = request.task,
             server_url = _studio_base_url(http_request),
@@ -440,28 +427,9 @@ async def run_benchmark(
             num_fewshot = request.num_fewshot,
             max_tokens = request.max_tokens,
         )
-        log_kwargs = copy.deepcopy(lm_eval_kwargs)
-        log_model_args = log_kwargs.get("model_args", {})
-        if "auth_token" in log_model_args:
-            log_model_args["auth_token"] = f"<redacted ({len(log_model_args['auth_token'])} chars)>"
-        kwargs_json = json.dumps(log_kwargs, indent = 2, default = str)
-        logger.info(f"lm_eval.simple_evaluate kwargs:\n{kwargs_json}")
-        model_lines.append(f"lm_eval kwargs: {kwargs_json}")
-
-        if lm_eval_kwargs is None:
-            error_lines = [l for l in model_lines if l.startswith("ERROR:")]
-            detail = (
-                "; ".join(error_lines)
-                if error_lines
-                else (
-                    "Could not resolve model path for benchmarking. "
-                    "Ensure the model is downloaded and accessible."
-                )
-            )
-            raise HTTPException(
-                status_code = 400,
-                detail = detail,
-            )
+        logger.debug(
+            "lm_eval.simple_evaluate kwargs:\n%s", json.dumps(lm_eval_kwargs, indent = 2, default = str)
+        )
 
         if lm_eval_kwargs.get("model") == "unsloth-studio-gguf":
             from datetime import datetime, timedelta, timezone
@@ -482,10 +450,7 @@ async def run_benchmark(
 
         model_label = _run_model_label(request.checkpoint_path)
 
-        # ── Run lm_eval in the orchestrator worker thread ─────────
         backend.clear_logs()
-        for line in model_lines:
-            backend._append_log("stdout", line)
 
         loop = asyncio.get_event_loop()
         started = True
@@ -502,7 +467,6 @@ async def run_benchmark(
                 details = {"checkpoint_path": request.checkpoint_path, "cancelled": True},
             )
 
-        # ── Post-run: save to disk + DB ───────────────────────────
         if output_path:
             try:
                 os.makedirs(output_path, exist_ok = True)
@@ -654,21 +618,8 @@ async def stream_benchmark_logs(
     ),
     current_subject: str = Depends(get_current_subject),
 ):
-    """
-    Stream benchmark logs as Server-Sent Events.
-
-    This single long-lived stream replaces the old `/logs` poll + short-lived
-    `/logs/stream` pair: it replays everything from the start of the current run,
-    then pushes each new log line as it arrives, keeping the connection open
-    (with periodic heartbeats) until the client disconnects. Clients resume on
-    reconnect via `?since=` or the `Last-Event-ID` header.
-
-    Events:
-      - `log`      : a single log line (data: {"stream","line","ts"})
-      - `heartbeat`: periodic keepalive carrying {"active": bool} when idle
-
-    Each event's `id:` is the log entry's monotonic seq, used for resume.
-    """
+    """Eval logs as SSE: `log` lines (id = seq, resumed via `since` or Last-Event-ID),
+    `progress` while a run is live, and an idle `heartbeat` carrying {"active"}."""
     backend = get_benchmark_backend()
     viewer = current_account()
 
@@ -686,9 +637,7 @@ async def stream_benchmark_logs(
         # First connect mid-run: replay the whole current run.
         cursor = backend.get_run_start_seq()
     else:
-        # First connect while idle — e.g. the stream opens just before the
-        # `/run` POST lands — so don't replay stale logs from an earlier run;
-        # wait for the live ones instead.
+        # Idle (the stream can open just before /run lands): skip the last run's logs.
         cursor = backend.get_current_log_seq()
 
     async def event_generator() -> AsyncGenerator[str, None]:
@@ -768,9 +717,6 @@ async def stream_benchmark_logs(
     )
 
 
-# ── Past eval runs ─────────────────────────────
-
-
 @router.get("/runs", response_model = BenchmarkRunListResponse)
 async def list_benchmark_runs(
     current_subject: str = Depends(get_current_subject),
@@ -821,7 +767,6 @@ async def delete_benchmark_run(run_id: str, current_subject: str = Depends(get_c
         if run is None:
             raise HTTPException(status_code = 404, detail = "Benchmark run not found")
 
-        # Remove results.json directory if it exists
         output_path = run.get("output_path")
         if output_path and os.path.isdir(output_path):
             try:

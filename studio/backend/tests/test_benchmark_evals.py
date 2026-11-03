@@ -117,7 +117,7 @@ def test_samples_fit_the_text_columns(results, task):
 
 
 def test_run_targets_the_bound_studio_address():
-    _, kwargs = resolve_model_details(
+    kwargs = resolve_model_details(
         "model.gguf", task = "arc_easy", server_url = "http://127.0.0.1:18921"
     )
     assert kwargs["model"] == "unsloth-studio-gguf"
@@ -467,11 +467,11 @@ def test_concurrent_run_requests_get_one_slot(monkeypatch):
     monkeypatch.setattr(
         benchmark_routes,
         "resolve_model_details",
-        lambda *a, **k: ([], {"model": "stub", "model_args": {}, "tasks": ["arc_easy"]}),
+        lambda *a, **k: {"model": "stub", "model_args": {}, "tasks": ["arc_easy"]},
     )
     monkeypatch.setattr(benchmark_routes, "parse_run_summary", lambda *a, **k: None)
     req = benchmark_routes.BenchmarkRunRequest(
-        checkpoint_path = "m.gguf", model_source = "local", task = "arc_easy"
+        checkpoint_path = "m.gguf", task = "arc_easy"
     )
     http = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(server_port = 1)))
 
@@ -598,13 +598,13 @@ def test_a_run_without_a_gguf_loaded_is_refused_up_front(monkeypatch):
     monkeypatch.setattr(
         benchmark_routes,
         "resolve_model_details",
-        lambda *a, **k: ([], {"model": "stub", "model_args": {}, "tasks": ["arc_easy"]}),
+        lambda *a, **k: {"model": "stub", "model_args": {}, "tasks": ["arc_easy"]},
     )
     monkeypatch.setattr(benchmark_routes, "parse_run_summary", lambda *a, **k: None)
     llama = SimpleNamespace(is_loaded = False)
     monkeypatch.setattr(inference_routes, "get_llama_cpp_backend", lambda: llama)
     req = benchmark_routes.BenchmarkRunRequest(
-        checkpoint_path = "mlx-community/Qwen3-4B-4bit", model_source = "local", task = "arc_easy"
+        checkpoint_path = "mlx-community/Qwen3-4B-4bit", task = "arc_easy"
     )
     http = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     with pytest.raises(benchmark_routes.HTTPException) as exc:
@@ -692,11 +692,11 @@ def test_an_eval_and_a_sweep_never_share_the_server(monkeypatch):
     monkeypatch.setattr(
         benchmark_routes,
         "resolve_model_details",
-        lambda *a, **k: ([], {"model": "stub", "model_args": {}, "tasks": ["arc_easy"]}),
+        lambda *a, **k: {"model": "stub", "model_args": {}, "tasks": ["arc_easy"]},
     )
     monkeypatch.setattr(benchmark_routes, "parse_run_summary", lambda *a, **k: None)
     req = benchmark_routes.BenchmarkRunRequest(
-        checkpoint_path = "m.gguf", model_source = "local", task = "arc_easy"
+        checkpoint_path = "m.gguf", task = "arc_easy"
     )
     http = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(server_port = 1)))
 
@@ -794,10 +794,10 @@ def test_a_stopped_eval_keeps_the_lease_until_its_worker_returns(monkeypatch):
     monkeypatch.setattr(
         benchmark_routes,
         "resolve_model_details",
-        lambda *a, **k: ([], {"model": "stub", "model_args": {}, "tasks": ["arc_easy"]}),
+        lambda *a, **k: {"model": "stub", "model_args": {}, "tasks": ["arc_easy"]},
     )
     req = benchmark_routes.BenchmarkRunRequest(
-        checkpoint_path = "m.gguf", model_source = "local", task = "arc_easy"
+        checkpoint_path = "m.gguf", task = "arc_easy"
     )
     http = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     route = threading.Thread(
@@ -822,3 +822,76 @@ def test_a_stopped_eval_keeps_the_lease_until_its_worker_returns(monkeypatch):
     while lease_routes._lease is not None and time.monotonic() < deadline:
         time.sleep(0.01)
     assert client.post("/api/benchmarks/lease", json = sweep).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [{"batch_size": "abc"}, {"batch_size": "0"}, {"num_fewshot": -1}, {"max_tokens": 0}],
+)
+def test_bad_run_params_are_a_422(monkeypatch, bad):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+
+    def no_backend():
+        raise AssertionError("validation must refuse before the route runs")
+
+    monkeypatch.setattr(benchmark_routes, "get_benchmark_backend", no_backend)
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(benchmark_routes.router, prefix = "/api/benchmark")
+    res = TestClient(app).post(
+        "/api/benchmark/run", json = {"checkpoint_path": "m.gguf", "task": "arc_easy", **bad}
+    )
+    assert res.status_code == 422
+
+
+def test_good_batch_sizes_validate():
+    for ok in ("auto", "1", "16"):
+        assert benchmark_routes.BenchmarkRunRequest(checkpoint_path = "m", batch_size = ok)
+
+
+def test_curated_task_types_match_the_pinned_harness():
+    # generate_until at lm-evaluation-harness ad8737ae7f.
+    by_id = {t.id: t.task_type for t in benchmark_routes._CURATED_TASKS}
+    for task in ("bbh", "bbh_fewshot", "bbh_zeroshot", "mmlu_pro"):
+        assert by_id[task] == "generation", task
+    assert by_id["truthfulqa_mc2"] == "log_likelihood"
+
+
+def test_progress_ignores_tqdm_bars_on_other_threads():
+    from tqdm import tqdm
+
+    orch.clear_progress()
+    orch._install_tqdm_progress_patch()
+    try:
+
+        def other():
+            bar = tqdm(total = 10, mininterval = 0, miniters = 1, disable = False)
+            bar.update(5)
+            bar.close()
+
+        t = threading.Thread(target = other)
+        t.start()
+        t.join()
+        assert orch.get_latest_progress() is None
+
+        bar = tqdm(total = 4, mininterval = 0, miniters = 1)
+        bar.update(2)
+        bar.close()
+        assert orch.get_latest_progress()["current"] == 2
+    finally:
+        orch._uninstall_tqdm_progress_patch()
+        orch.clear_progress()
+
+
+def test_chart_titles_name_the_headline_metric():
+    from core.benchmark.graph import _metric_title
+
+    gsm = {"default_metric": "exact_match,strict-match"}
+    arc = {"default_metric": "acc_norm,none"}
+    assert _metric_title([gsm, dict(gsm)], "__accuracy__") == "exact_match,strict-match"
+    assert _metric_title([gsm, arc], "__accuracy__") == "Score"
+    assert _metric_title([{"default_metric": ""}], "__accuracy__") == "Score"
+    assert _metric_title([gsm], "f1,none") == "f1,none"

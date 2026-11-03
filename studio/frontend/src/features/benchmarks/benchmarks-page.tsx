@@ -415,9 +415,7 @@ export function BenchmarksPage(): ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the resolved window
   }, [contextSweep, maxContext]);
   const [tab, setTab] = useState<BenchTab>("benchmark");
-  // The Evals tab's model pick lives up here because its picker sits in this header,
-  // in the same slot the config-sweep picker uses.
-  const evals = useEvalsModel();
+  const evals = useEvalsModel(tab === "quality");
   const resultsRef = useRef<HTMLDivElement | null>(null);
   // Switching tabs keeps the scroll, and below 72rem the chart sits above the preview, so bring it up.
   const showResults = useCallback(() => {
@@ -501,8 +499,6 @@ export function BenchmarksPage(): ReactElement {
             </div>
             <div className="flex min-w-0 flex-wrap items-center gap-3 border-b border-border/60">
               <BenchSubNav value={tab} runCount={runs.length} />
-              {/* Both tabs pick their model in this slot: the sweep pill drives the sweeps
-                  runner, the evals pill loads the pick through chat's runtime. */}
               <div className="ml-auto min-w-0 max-w-full pb-1.5 sm:max-w-[60%]">
                 {tab === "quality" ? (
                   <EvalsModelPicker evals={evals} />

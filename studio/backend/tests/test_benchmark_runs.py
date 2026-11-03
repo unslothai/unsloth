@@ -63,7 +63,7 @@ def _run(run_id = "run-1", results = None):
 
 
 def _client(via_api_key = False):
-    """A caller with a UI session (the get_current_subject override) — or, with via_api_key,
+    """A caller with a UI session (the get_current_subject override) or, with via_api_key,
     an sk-unsloth API key, the other caller class the runs routes distinguish."""
     app = FastAPI()
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"

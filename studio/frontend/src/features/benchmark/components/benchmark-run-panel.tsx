@@ -83,7 +83,11 @@ export function BenchmarkRunPanel({
   return (
     <SectionCard
       icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
-      title={task ? `Evals · ${task}` : "Evals"}
+      title={
+        task
+          ? `${t("benchmark.runPanel.title")} · ${task}`
+          : t("benchmark.runPanel.title")
+      }
       description={stage || t(phaseLabel)}
       className="shadow-border border border-border/60 bg-card/90 ring-0"
       headerAction={
@@ -121,13 +125,19 @@ export function BenchmarkRunPanel({
           </span>
           {progressDetail && (
             <span className="rounded-full border border-border/60 px-2.5 py-1 text-ui-10 font-medium tabular-nums text-foreground/80">
-              {progressDetail.current} of {progressDetail.total}
+              {t("benchmark.runPanel.progressCount", {
+                current: progressDetail.current,
+                total: progressDetail.total,
+              })}
             </span>
           )}
           {progressDetail && (
             <span className="text-ui-10 tabular-nums text-muted-foreground">
-              {formatDuration(progressDetail.elapsed)} elapsed
-              {isActive && ` · ${formatDuration(progressDetail.eta)} left`}
+              {t("benchmark.runPanel.elapsed", {
+                time: formatDuration(progressDetail.elapsed),
+              })}
+              {isActive &&
+                ` · ${t("benchmark.runPanel.left", { time: formatDuration(progressDetail.eta) })}`}
             </span>
           )}
         </div>
@@ -162,7 +172,9 @@ export function BenchmarkRunPanel({
                   showLog && "rotate-180",
                 )}
               />
-              {showLog ? "Hide log" : `Show log (${lines.length} lines)`}
+              {showLog
+                ? t("benchmark.runPanel.hideLog")
+                : t("benchmark.runPanel.showLog", { count: lines.length })}
             </button>
             {showLog && (
               <LogPane text={logText} className="h-[min(20rem,40vh)]" />

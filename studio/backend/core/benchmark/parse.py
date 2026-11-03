@@ -22,9 +22,7 @@ _NON_METRIC_KEYS = frozenset(
 )
 _NON_METRIC_KEYS_LOWER = frozenset(k.lower() for k in _NON_METRIC_KEYS)
 
-# Priority list for selecting the default metric from lm_eval results.
-# First match wins. Shared by the summary parser and the DB read path, which
-# derives the headline metric for historical runs instead of storing it.
+# Headline metric, first match wins. The DB derives it at read time instead of storing it.
 _DEFAULT_METRIC_PRIORITY = (
     "acc_norm,none",
     "acc_norm",
@@ -35,22 +33,24 @@ _DEFAULT_METRIC_PRIORITY = (
     "mc2",
     "f1,none",
     "f1",
+    "prompt_level_strict_acc",
     "acc,none",
     "acc",
 )
 
 
 def pick_default_metric(metrics: list) -> str:
-    """Pick the headline metric from an already-filtered metrics list.
-
-    Walks :data:`_DEFAULT_METRIC_PRIORITY` over the metric names. Because the
-    priority ordering is deterministic given the names, runs derive their
-    headline metric at read time (see the DB layer) instead of persisting it.
-    """
-    names = {m.get("name") for m in metrics if isinstance(m, dict)}
+    """The headline metric name from a parsed metrics list, or "" if none is known."""
+    names = [m.get("name") for m in metrics if isinstance(m, dict) and m.get("name")]
     for candidate in _DEFAULT_METRIC_PRIORITY:
         if candidate in names:
             return candidate
+    # Task-specific filters: "exact_match,custom-extract" (MMLU-Pro), "exact_match,none" (MATH).
+    for candidate in _DEFAULT_METRIC_PRIORITY:
+        base = candidate.partition(",")[0]
+        for name in names:
+            if name.partition(",")[0] == base:
+                return name
     return ""
 
 
@@ -167,20 +167,8 @@ def parse_run_summary(
     }
 
 
-# lm_eval writes per-sample metric values under version-dependent keys:
-# older releases use the bare metric name ("exact_match"), newer ones append
-# the filter group ("exact_match,strict-match"). Prefer the strict-match EM so
-# per-sample correctness stays consistent with the headline metric.
-
-
 def _sample_score(s: dict):
-    """The sample's value for the task's primary scoring metric, or None.
-
-    Reuses the same priority ordering used to pick the headline metric in
-    ``parse_run_summary`` so per-sample scores stay consistent with the score
-    shown in the UI. Every metric in ``_DEFAULT_METRIC_PRIORITY`` is normalized
-    to 0–1, where 1.0 is full credit.
-    """
+    """The sample's value for the headline metric (0 to 1, 1.0 is full credit), or None."""
     for candidate in _DEFAULT_METRIC_PRIORITY:
         val = s.get(candidate)
         if isinstance(val, (int, float)):
@@ -206,6 +194,14 @@ def _as_text(value):
     return json.dumps(value, default = str)
 
 
+def _headline_filter(data: dict, task_name: str) -> Optional[str]:
+    results = data.get("results") or {}
+    task_results = (data.get("groups") or {}).get(task_name) or results.get(task_name) or {}
+    names = [{"name": k} for k in task_results if isinstance(k, str)]
+    _, sep, filt = pick_default_metric(names).partition(",")
+    return filt if sep else None
+
+
 def extract_samples(data: dict, task_name: str) -> list[dict]:
     """Extract per-sample results from lm_eval output."""
     samples = []
@@ -215,6 +211,13 @@ def extract_samples(data: dict, task_name: str) -> list[dict]:
     if isinstance(raw_samples, dict):
         for leaf in leaves:
             task_samples.extend(raw_samples.get(leaf, []))
+    # lm_eval logs each doc once per filter (gsm8k: strict-match and flexible-extract).
+    filters = {s.get("filter") for s in task_samples if s.get("filter")}
+    if len(filters) > 1:
+        keep = _headline_filter(data, task_name)
+        if keep not in filters:
+            keep = next(s.get("filter") for s in task_samples if s.get("filter"))
+        task_samples = [s for s in task_samples if s.get("filter") == keep]
     # doc_ids restart in every subtask of a group, and eval_samples is keyed
     # on (run_id, doc_id): number a group's samples in order instead.
     renumber = len(leaves) > 1

@@ -88,7 +88,7 @@ const fmtRaw = (v: number) =>
 function runLabel(run: BenchmarkRunSummary): string {
   const model = run.model.split("/").pop() ?? run.model;
   const short = model.length > 20 ? `${model.slice(0, 18)}…` : model;
-  return `${run.task} — ${short}`;
+  return `${run.task} · ${short}`;
 }
 
 interface GraphDialogProps {
@@ -103,9 +103,8 @@ export function GraphDialog({
   selectedRuns,
 }: GraphDialogProps) {
   const t = useT();
-  const [orderedIds, setOrderedIds] = useState<string[]>(() =>
-    selectedRuns.map((r) => r.id),
-  );
+  // The user's reorder; runs selected since then join at the end.
+  const [order, setOrder] = useState<string[]>([]);
   const [chartType, setChartType] = useState<
     "bar" | "line" | "grouped_bar" | "radar"
   >("bar");
@@ -119,17 +118,11 @@ export function GraphDialog({
   const palette = useModelPalette();
   const exportRef = useRef<SVGSVGElement | null>(null);
 
-  // Keep orderedIds in sync with selectedRuns
-  useMemo(() => {
-    setOrderedIds((prev) => {
-      const selected = new Set(selectedRuns.map((r) => r.id));
-      const existing = prev.filter((id) => selected.has(id));
-      const newIds = selectedRuns
-        .map((r) => r.id)
-        .filter((id) => !existing.includes(id));
-      return [...existing, ...newIds];
-    });
-  }, [selectedRuns]);
+  const orderedIds = useMemo(() => {
+    const selected = selectedRuns.map((r) => r.id);
+    const kept = order.filter((id) => selected.includes(id));
+    return [...kept, ...selected.filter((id) => !kept.includes(id))];
+  }, [order, selectedRuns]);
 
   const orderedRuns = useMemo(() => {
     const runMap = new Map(selectedRuns.map((r) => [r.id, r]));
@@ -138,10 +131,15 @@ export function GraphDialog({
       .filter((r): r is BenchmarkRunSummary => r != null);
   }, [orderedIds, selectedRuns]);
 
-  // Collect available metrics, with "Accuracy" always first
+  // Each run's headline metric comes first, named when the runs share one.
   const availableMetrics = useMemo(() => {
+    const headlines = new Set(selectedRuns.map((r) => r.default_metric));
+    const [shared] = headlines;
     const metrics: { label: string; value: string }[] = [
-      { label: t("benchmark.graph.accuracy"), value: ACCURACY },
+      {
+        label: headlines.size === 1 && shared ? shared : t("benchmark.graph.score"),
+        value: ACCURACY,
+      },
     ];
     const seen = new Set<string>();
     for (const run of selectedRuns) {
@@ -157,32 +155,30 @@ export function GraphDialog({
 
   const [pickedMetric, setSelectedMetric] = useState(ACCURACY);
   // The dialog stays mounted across selections; a metric the current runs lack
-  // would chart every bar as 0, so fall back to accuracy.
+  // would chart every bar as 0, so fall back to the headline.
   const selectedMetric = availableMetrics.some((m) => m.value === pickedMetric)
     ? pickedMetric
     : ACCURACY;
 
-  const moveUp = useCallback((index: number) => {
-    setOrderedIds((prev) => {
-      if (index <= 0) {
-        return prev;
-      }
-      const next = [...prev];
+  const moveUp = useCallback(
+    (index: number) => {
+      if (index <= 0) return;
+      const next = [...orderedIds];
       [next[index - 1], next[index]] = [next[index], next[index - 1]];
-      return next;
-    });
-  }, []);
+      setOrder(next);
+    },
+    [orderedIds],
+  );
 
-  const moveDown = useCallback((index: number) => {
-    setOrderedIds((prev) => {
-      if (index >= prev.length - 1) {
-        return prev;
-      }
-      const next = [...prev];
+  const moveDown = useCallback(
+    (index: number) => {
+      if (index >= orderedIds.length - 1) return;
+      const next = [...orderedIds];
       [next[index], next[index + 1]] = [next[index + 1], next[index]];
-      return next;
-    });
-  }, []);
+      setOrder(next);
+    },
+    [orderedIds],
+  );
 
   // Matplotlib, in any chart type and theme, for a figure outside the app.
   const handleStyledExport = useCallback(async () => {

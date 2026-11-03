@@ -14,7 +14,7 @@ import matplotlib.ticker as mticker
 import numpy as np
 
 
-# ── Theme dicts (passed to plt.style.context) ─────────
+# Themes for plt.style.context.
 _DARK_THEME: dict[str, Any] = {
     "figure.facecolor": "#181818",
     "axes.facecolor": "#212121",
@@ -93,7 +93,7 @@ def _resolve_palette(theme: str, n: int) -> list[str]:
     if theme in _DARK_THEMES or theme in _LIGHT_THEMES:
         palette = _get_palette(theme)
         return [palette[i % len(palette)] for i in range(n)]
-    # For ggplot, bmh, seaborn, etc — read from current rcParams color cycle
+    # Other styles (ggplot, bmh, seaborn): read the rcParams color cycle.
     prop_cycle = plt.rcParams.get("axes.prop_cycle")
     if hasattr(prop_cycle, "by_key"):
         colors = prop_cycle.by_key().get("color", _DARK_PALETTE)
@@ -118,7 +118,7 @@ def _get_metric_score(metrics: list[dict], metric_name: str) -> float:
     """Find the score for a given metric name.
 
     Returns the score as a value suitable for display on a percentage axis.
-    If the raw score is in ratio form (0–1), it is scaled to 0–100.
+    If the raw score is in ratio form (0 to 1), it is scaled to 0 to 100.
     If it is already in percentage form (>1), it is returned as-is.
     """
     raw = None
@@ -140,7 +140,7 @@ def _get_metric_score(metrics: list[dict], metric_name: str) -> float:
 
 
 def _resolve_accuracy(run: dict[str, Any]) -> float:
-    """Return the primary metric score for a run (0–100 scale)."""
+    """Return the primary metric score for a run (0 to 100)."""
     default = run.get("default_metric", "")
     if default:
         for m in run.get("metrics", []):
@@ -150,8 +150,16 @@ def _resolve_accuracy(run: dict[str, Any]) -> float:
     return 0.0
 
 
+def _metric_title(runs: list[dict[str, Any]], metric_name: str) -> str:
+    """``__accuracy__`` is each run's headline metric: name it when the runs share one."""
+    if metric_name != "__accuracy__":
+        return metric_name
+    names = {r.get("default_metric") or "" for r in runs}
+    return names.pop() if len(names) == 1 and "" not in names else "Score"
+
+
 def _get_score_for_metric(run: dict[str, Any], metric_name: str) -> float:
-    """Get the score for a run, handling the special __accuracy__ metric."""
+    """Score for a run; ``__accuracy__`` is its headline metric."""
     if metric_name == "__accuracy__":
         return _resolve_accuracy(run)
     return _get_metric_score(run.get("metrics", []), metric_name)
@@ -163,7 +171,7 @@ def _resolve_theme_context(theme: str):
         return [_DARK_THEME]
     if theme in _LIGHT_THEMES:
         return [_LIGHT_THEME]
-    # Built-in matplotlib style or custom string — pass through
+    # A built-in matplotlib style or a custom one, passed through.
     return [theme]
 
 
@@ -208,8 +216,8 @@ def _bar_chart_inner(
     ax.set_xticks(x)
     ax.set_xticklabels(labels, fontsize = 8, ha = "center")
     ax.set_ylabel("Score (%)", fontsize = 10)
-    title = "Accuracy" if metric_name == "__accuracy__" else metric_name
-    ax.set_title(f"Benchmark Comparison — {title}", fontsize = 12, fontweight = "bold", pad = 12)
+    title = _metric_title(runs, metric_name)
+    ax.set_title(f"Benchmark Comparison: {title}", fontsize = 12, fontweight = "bold", pad = 12)
     ax.set_ylim(0, max(max(scores) * 1.15, 10) if scores else 10)
     ax.yaxis.set_major_formatter(mticker.PercentFormatter())
     fig.tight_layout()
@@ -249,8 +257,8 @@ def _line_chart_inner(
     ax.set_xticks(x)
     ax.set_xticklabels(labels, fontsize = 8, ha = "center")
     ax.set_ylabel("Score (%)", fontsize = 10)
-    title = "Accuracy" if metric_name == "__accuracy__" else metric_name
-    ax.set_title(f"Benchmark Trend — {title}", fontsize = 12, fontweight = "bold", pad = 12)
+    title = _metric_title(runs, metric_name)
+    ax.set_title(f"Benchmark Trend: {title}", fontsize = 12, fontweight = "bold", pad = 12)
     ax.set_ylim(
         min(min(scores) * 0.9, 0) if scores else 0, max(max(scores) * 1.15, 10) if scores else 10
     )
@@ -329,7 +337,7 @@ def _grouped_bar_chart_inner(
     ax.set_xticks(x)
     ax.set_xticklabels(tasks, fontsize = 8, ha = "center")
     ax.set_ylabel("Score (%)", fontsize = 10)
-    ax.set_title("Benchmark Comparison — All Metrics", fontsize = 12, fontweight = "bold", pad = 12)
+    ax.set_title("Benchmark Comparison: All Metrics", fontsize = 12, fontweight = "bold", pad = 12)
     ax.yaxis.set_major_formatter(mticker.PercentFormatter())
     ax.legend(fontsize = 7, loc = "upper right", framealpha = 0.8)
     fig.tight_layout()
@@ -416,7 +424,7 @@ def generate_chart(
     Args:
         runs: List of run summary dicts.
         chart_type: One of 'bar', 'line', 'grouped_bar', 'radar'.
-        metric: Metric name to plot, or '__accuracy__' for raw accuracy.
+        metric: Metric name to plot, or '__accuracy__' for each run's headline metric.
         width: Chart width in inches.
         height: Chart height in inches.
         theme: Theme name.
