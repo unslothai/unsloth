@@ -224,3 +224,51 @@ def test_unet_compiled_whole_after_install_runs_whole_on_the_source():
     unet._compiled_call_impl = lambda *a, **k: unet.forward(*a, **k)
     _sdxl_loop(unet, torch.randn(1, 4, 8, 8), steps = 2)
     assert unet.calls == [2, 2] and replicas == []
+class _Dit(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.proj = torch.nn.Linear(4, 4)
+
+    def forward(self, hidden_states, timestep = None, encoder_hidden_states = None, return_dict = False):
+        return (self.proj(hidden_states),)
+
+
+def _automatic_install(monkeypatch, used_mib, names = ("Tesla T4", "Tesla T4"), env = None):
+    class Pipe:
+        transformer = _Dit()
+
+    probes = {
+        o: mg.DeviceProbe(ordinal = o, name = names[o], total_mib = 15360, free_mib = 15360 - used_mib[o])
+        for o in (0, 1)
+    }
+    if env is not None:
+        monkeypatch.setenv(mg.AUTO_CFG_PARALLEL_ENV, env)
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
+    monkeypatch.setattr(mg, "probe_devices", lambda ordinals, **kw: {o: probes[o] for o in ordinals})
+    monkeypatch.setattr(mg, "_hooks_present", lambda m: None)
+    monkeypatch.setattr(mg, "is_layer_split", lambda p: False, raising = False)
+    pipe = Pipe()
+    try:
+        with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,), automatic = True)):
+            return mg.install_cfg_parallel(pipe, offload_policy = "none")
+    finally:
+        mg.uninstall_cfg_parallel(pipe)
+
+
+def test_automatic_arms_cfg_parallel_on_an_idle_card_of_the_same_model(monkeypatch):
+    assert _automatic_install(monkeypatch, used_mib = (9000, 3)) is None
+
+
+def test_automatic_keeps_a_busy_second_card_free(monkeypatch):
+    reason = _automatic_install(monkeypatch, used_mib = (9000, 4000))
+    assert reason is not None and "no idle card" in reason
+
+
+def test_automatic_never_borrows_a_different_card_model(monkeypatch):
+    reason = _automatic_install(monkeypatch, used_mib = (9000, 3), names = ("Tesla T4", "Tesla P4"))
+    assert reason is not None and "different model" in reason
+
+
+def test_automatic_cfg_parallel_kill_switch(monkeypatch):
+    reason = _automatic_install(monkeypatch, used_mib = (9000, 3), env = "0")
+    assert reason is not None and "automatic GPU placement" in reason

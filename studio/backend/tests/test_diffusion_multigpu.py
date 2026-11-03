@@ -1879,11 +1879,14 @@ def test_automatic_load_splits_only_when_one_card_would_offload(monkeypatch):
     assert fits.secondary_ordinal is None
 
 
-def test_automatic_placement_does_not_arm_cfg_parallel(monkeypatch):
+def test_automatic_placement_arms_cfg_parallel_only_with_the_auto_lever(monkeypatch):
     class Pipe:
         transformer = _Dit()
 
     automatic = mg.MultiGpuSelection(primary = 0, secondaries = (1,), automatic = True)
+    # default: past the automatic gate (install_cfg_parallel then keeps only idle cards of the same model)
+    assert "CUDA" in mg.cfg_parallel_decline(Pipe(), offload_policy = "none", selection = automatic)
+    monkeypatch.setenv(mg.AUTO_CFG_PARALLEL_ENV, "0")
     assert "automatic" in mg.cfg_parallel_decline(
         Pipe(), offload_policy = "none", selection = automatic
     )

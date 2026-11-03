@@ -53,6 +53,21 @@ def multigpu_mode() -> str:
 
 
 UNET_CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL_UNET"
+# Automatic (no gpu_ids) arms CFG-parallel on an idle card of the same model; 0 keeps the replica to explicit picks.
+AUTO_CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL_AUTO"
+# A card counts as idle when no more than this is in use on it (driver + another process's context).
+AUTO_CFG_PARALLEL_IDLE_USED_MIB = 1024
+
+
+def automatic_cfg_parallel_off() -> bool:
+    return (os.environ.get(AUTO_CFG_PARALLEL_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def _idle_card(probe: Any) -> bool:
+    free, total = getattr(probe, "free_mib", None), getattr(probe, "total_mib", None)
+    if free is None or total is None:
+        return False
+    return int(total) - int(free) <= AUTO_CFG_PARALLEL_IDLE_USED_MIB
 
 
 def cfg_parallel_mode() -> str:
@@ -3168,8 +3183,9 @@ def cfg_parallel_decline(
     # A replica is a whole denoiser on one card, which a denoiser cut across cards cannot be.
     if is_layer_split(pipe):
         return "denoiser is split across cards (layer split)"
-    # A replica takes a whole denoiser's worth of another card; automatic placement only borrows one to avoid offload.
-    if selection.automatic and mode != "force":
+    # A replica takes a whole denoiser's worth of another card: automatic placement borrows one only when it is the
+    # same card model and idle at load (install_cfg_parallel keeps only those), or always under force.
+    if selection.automatic and mode != "force" and automatic_cfg_parallel_off():
         return f"automatic GPU placement (select several cards or set {CFG_PARALLEL_ENV}=force)"
     from .diffusion_bg_compile import load_time_enabled as bg_compile_enabled
 
@@ -3243,6 +3259,10 @@ def install_cfg_parallel(
             and probes[o].name == probes[primary.index].name
         ]
         candidates = same if cfg_parallel_mode() != "force" else list(selection.secondaries)
+        automatic = selection.automatic and cfg_parallel_mode() != "force"
+        if automatic:
+            # nothing else may live on a card Automatic borrows for a replica
+            candidates = [o for o in candidates if _idle_card(probes.get(o))]
         try:
             placed = ((_PLACEMENTS.get(pipe) or {}).get("placement") or {}).values()
         except TypeError:
@@ -3252,6 +3272,11 @@ def install_cfg_parallel(
             candidates = [o for o in candidates if f"cuda:{o}" not in occupied]
         if not candidates and occupied:
             reason = f"the only replica card ({', '.join(sorted(occupied))}) holds the split's components"
+        elif not candidates and automatic and same:
+            reason = (
+                f"automatic GPU placement: no idle card for a replica (more than "
+                f"{AUTO_CFG_PARALLEL_IDLE_USED_MIB} MiB in use; select several cards or set {CFG_PARALLEL_ENV}=force)"
+            )
         elif not candidates:
             reason = "secondary card is a different model (bit-identity needs the same kernels)"
         else:
