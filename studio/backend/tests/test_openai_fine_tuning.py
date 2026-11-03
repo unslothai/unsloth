@@ -163,6 +163,45 @@ def test_unused_weighted_messages_do_not_block_other_training_data(studio, mode)
     assert len(calls["start"]) == 1
 
 
+@pytest.mark.parametrize("mode", ["cpt", "sparse_alpaca"])
+@pytest.mark.parametrize("file_param", ["training_file", "validation_file"])
+def test_dataset_selection_ignores_unused_message_weights(studio, tmp_path, mode, file_param):
+    from datasets import load_dataset
+    from utils.datasets.dataset_utils import format_dataset
+
+    client, calls, _live = studio
+    weighted = [{"role": "assistant", "content": "CONTEXT_ONLY", "weight": 0}]
+    if mode == "cpt":
+        rows = [{"text": "TARGET", "messages": weighted}]
+        extra = {"training_type": "Continued Pretraining"}
+    else:
+        rows = [
+            {"instruction": "Question", "output": "TARGET", "messages": weighted},
+            {"output": "TARGET", "messages": weighted},
+        ]
+        extra = {}
+    content = "".join(json.dumps(row) + "\n" for row in rows).encode()
+    source = tmp_path / "selected.jsonl"
+    source.write_bytes(content)
+    dataset = load_dataset(
+        "json", data_files = str(source), split = "train", cache_dir = str(tmp_path / "cache")
+    )
+    formatted = format_dataset(dataset, format_type = "raw" if mode == "cpt" else "auto")
+    assert formatted["final_format"] == ("raw_text" if mode == "cpt" else "alpaca")
+
+    async def flow():
+        uploaded = await client.files.create(file = ("selected.jsonl", content), purpose = "fine-tune")
+        plain = await client.files.create(file = ("plain.jsonl", CHATS), purpose = "fine-tune")
+        kwargs = {"training_file": plain.id, file_param: uploaded.id}
+        return await client.fine_tuning.jobs.create(
+            model = "unsloth/Qwen3-0.6B", extra_body = extra, **kwargs
+        )
+
+    job = _run(flow())
+    assert job.status == "validating_files"
+    assert len(calls["start"]) == 1
+
+
 def test_a_mapping_that_selects_weighted_messages_is_still_refused(studio):
     client, calls, _live = studio
     rows = b'{"messages":[{"role":"assistant","content":"CONTEXT_ONLY","weight":0}]}\n'

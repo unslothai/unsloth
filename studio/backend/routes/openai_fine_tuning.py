@@ -134,7 +134,11 @@ def _refuse_message_weights(
     from utils.datasets.format_detection import detect_dataset_format
 
     config = config or {}
-    if path.suffix.lower() != ".jsonl" or config.get("format_type") == "raw":
+    if (
+        path.suffix.lower() != ".jsonl"
+        or config.get("format_type") == "raw"
+        or config.get("training_type") == "Continued Pretraining"
+    ):
         return
     mapping = config.get("custom_format_mapping")
     if mapping:
@@ -152,8 +156,6 @@ def _refuse_message_weights(
                 continue
             if not isinstance(row, dict):
                 continue
-            if not mapping and detect_dataset_format([row])["chat_column"] != "messages":
-                continue
             messages = row.get("messages")
             for message in messages if isinstance(messages, list) else ():
                 if (
@@ -161,6 +163,13 @@ def _refuse_message_weights(
                     and message.get("weight") is not None
                     and message["weight"] != 1
                 ):
+                    if not mapping:
+                        from utils.datasets.cache_safe import load_dataset_cache_safe
+                        dataset = load_dataset_cache_safe(
+                            "json", data_files = str(path), split = "train"
+                        )
+                        if detect_dataset_format(dataset)["chat_column"] != "messages":
+                            return
                     raise _bad_request(
                         f"{param} line {number}: per-message 'weight' {message.get('weight')!r} is not "
                         "supported; Unsloth Studio trains every assistant message. Remove the message "
