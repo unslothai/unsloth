@@ -557,6 +557,9 @@ async def test_the_best_checkpoint_is_the_scored_fine_tunes_not_another_in_the_l
     rs = await _run(eng, d)
     assert rs.status == "completed", rs.error
     assert rs.nodes["loop"].outputs["checkpoint"]["name"] == "run2"
+    # Each round's history names the start of the trainer it scored, not the other trainer's.
+    rounds = rs.nodes["loop"].outputs["history"]["rounds"]
+    assert rounds[1]["continued_from"] not in (None, "unscored")
 
 
 def test_shared_boilerplate_in_test_rows_does_not_hide_probe_failures():
@@ -627,3 +630,17 @@ def test_arithmetic_failures_whose_answers_differ_only_in_sign_stay_apart():
     ]
     kept = loop_rounds.distinct([loop_rounds.failure_row(f, "", "") for f in failures])
     assert [r["failed_reference"] for r in kept] == ["-1", "1"]
+
+
+def test_a_single_alpaca_test_row_bans_only_its_own_question():
+    shared = "Translate the following sentence to French."
+    test_rows = [{"instruction": shared, "input": "The weather is lovely today.", "output": "x"}]
+    probe = {"instruction": shared, "input": "Where is the train station?", "output": "y"}
+    leaked = {"instruction": shared, "input": "The weather is lovely today.", "output": "z"}
+    # A Benchmark failure names the question it asked: instruction plus input.
+    asked = {
+        "question": f"{shared}\n\nThe weather is lovely today.",
+        "target": "t",
+        "model_output": "o",
+    }
+    assert loop_rounds.drop_test_rows([probe, leaked, asked], test_rows) == [probe]

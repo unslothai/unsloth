@@ -2248,7 +2248,12 @@ class FlowEngine:
                 for b in carry:
                     if b in last:
                         override(b, "start", last[b])
-                continued = next((last[b].get("name") for b in carry if b in last), None)
+                # The scored Fine-tune's start, not whichever trainer comes first.
+                continued = (
+                    last[held_src[0]].get("name")
+                    if held_src[0] in carry and held_src[0] in last
+                    else None
+                )
                 await self._run_scope(rs, before, child, key)
                 if rs.cancelled:
                     break

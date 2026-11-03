@@ -194,6 +194,17 @@ async def run_recipe_heldout(
                     targets["judge"]["body"]["use_adapter"] = False
         except ValueError as exc:
             raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        aliases = {
+            "candidate": spec.model_alias,
+            "baseline": spec.baseline.alias if spec.baseline.mode == "alias" else spec.model_alias,
+            "judge": spec.judge_alias,
+        }
+        for role, target in targets.items():
+            if configs.get(aliases[role] or "", {}).get("provider") in local_names:
+                # A score is the model's own answer: Studio's tools stay off even where the launcher
+                # turns them on by default (`tool_choice: none` also withdraws them under it).
+                target["body"]["enable_tools"] = False
+                target["body"]["tool_choice"] = "none"
 
         candidate_model = _model_label(spec.model_alias, configs, local_names)
         if spec.baseline.mode == "adapter_off":

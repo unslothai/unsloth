@@ -101,14 +101,27 @@ def _strings(value: Any) -> list[str]:
     return found
 
 
+def _identifying(row: Any) -> frozenset:
+    """The long strings that could name one test row. An Alpaca row's question is its instruction
+    plus input, so the instruction alone (one task's rows share it) is not one of them."""
+    strings = {s for s in _strings(row) if len(s) >= LEAK_MIN_CHARS}
+    if isinstance(row, dict):
+        lowered = {str(k).lower(): v for k, v in row.items()}
+        instruction, extra = lowered.get("instruction"), lowered.get("input")
+        if isinstance(instruction, str) and isinstance(extra, str) and extra.strip():
+            strings.discard(instruction.strip())
+            asked = f"{instruction}\n\n{extra.strip()}".strip()
+            if len(asked) >= LEAK_MIN_CHARS:
+                strings.add(asked)
+    return frozenset(strings)
+
+
 def drop_test_rows(failures: list[dict], test_rows: list[dict]) -> list[dict]:
     """Guard: a failure carrying a long string that identifies one test row never reaches the seed.
     A value many test rows share (a fixed Alpaca instruction, a label) identifies none of them."""
     seen: dict[str, int] = {}
     # A row repeated in the test split is still one row: its question stays banned.
-    distinct = {
-        frozenset(s for s in _strings(row) if len(s) >= LEAK_MIN_CHARS) for row in test_rows
-    }
+    distinct = {_identifying(row) for row in test_rows}
     for strings in distinct:
         for s in strings:
             seen[s] = seen.get(s, 0) + 1
