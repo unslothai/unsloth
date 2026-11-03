@@ -111,8 +111,7 @@ def _adapter_state(modules):
 
 
 def _site_watch(projs):
-    # One PEFT layer per site (toggles apply model-wide); any projection may carry it, not just the first.
-    return [p for p in projs if hasattr(p, "lora_A")][:1]
+    return [p for p in projs if hasattr(p, "lora_A")]
 
 
 def _plan_stale(plan):
@@ -187,6 +186,8 @@ def _proj_parts(proj, K):
         if not (A.is_contiguous() and B.is_contiguous()) or A.device != W.device:
             return "LoRA layout"
         if isinstance(S, torch.Tensor):
+            if S.is_inference():
+                return "inference tensor LoRA scale"
             S = float(S)
         lora = (A, B, float(S))
     return W, qs, N, lora

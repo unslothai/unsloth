@@ -38,7 +38,7 @@ _CHECKS = textwrap.dedent(
 
     H, NH, D, NKV, I, R, L = 256, 2, 64, 1, 512, 8, 16
     EPS = 1e-5
-    CAP = (8, 0)
+    CAP = torch.cuda.get_device_capability() if device == "cuda" else (8, 0)
 
     def quant(n, k, g):
         W = (torch.randn(n, k, generator = g) / k ** 0.5).to(device)
@@ -222,9 +222,13 @@ def test_call_sites_match_fp64_in_the_interpreter(negative_control):
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
 @pytest.mark.skipif(torch.version.hip is not None, reason = "the fused path is gated off on ROCm")
-def test_call_sites_match_fp64_on_gpu():
-    proc = _run("cuda")
-    assert proc.returncode == 0 and "FUSED OK" in proc.stdout, proc.stdout + proc.stderr
+@pytest.mark.parametrize("negative_control", [False, True])
+def test_call_sites_match_fp64_on_gpu(negative_control):
+    proc = _run("cuda", negative_control)
+    if negative_control:
+        assert proc.returncode != 0 and "AssertionError" in proc.stderr, proc.stdout + proc.stderr
+    else:
+        assert proc.returncode == 0 and "FUSED OK" in proc.stdout, proc.stdout + proc.stderr
 
 
 def _driver():
@@ -422,15 +426,25 @@ def test_plan_goes_stale_when_adapters_change():
 
 
 def test_each_site_watches_a_projection_with_lora():
-    # LoRA on k / v (or up) only: the first projection has no adapter, the site still needs a watch.
+    peft = pytest.importorskip("peft")
     D = _driver()
-    plain, lora_k, lora_v = (
-        object(),
-        types.SimpleNamespace(lora_A = {}),
-        types.SimpleNamespace(lora_A = {}),
+    model = peft.get_peft_model(
+        torch.nn.Sequential(*[torch.nn.Linear(8, 8, bias = False) for _ in range(3)]),
+        peft.LoraConfig(r = 2, lora_alpha = 2, target_modules = ["0", "1", "2"]),
     )
-    assert D._site_watch([plain, lora_k, lora_v]) == [lora_k]
-    assert D._site_watch([plain, plain]) == []
+    projections = list(model.base_model.model)
+    watch = D._site_watch([object(), *projections])
+    x = torch.ones(1, 8)
+    for projection in projections:
+        torch.nn.init.ones_(projection.lora_A["default"].weight)
+        torch.nn.init.ones_(projection.lora_B["default"].weight)
+        plan = types.SimpleNamespace(watch = watch, adapter_state = D._adapter_state(watch))
+        assert not D._plan_stale(plan)
+        before = projection(x).detach().clone()
+        projection.scale_layer(3.0)
+        assert not torch.equal(before, projection(x))
+        assert D._plan_stale(plan), "a projection's scale change must invalidate the fused plan"
+    assert D._site_watch([object(), object()]) == []
 
 
 def test_signature_follows_saved_norm_weights():
@@ -476,6 +490,63 @@ def test_plan_goes_stale_when_a_tensor_scale_changes_in_place():
     assert not D._plan_stale(plan)
     layer.scaling["default"] *= 0.5  # LoraLayer.scale_layer
     assert D._plan_stale(plan)
+
+
+@pytest.mark.parametrize("inference_scale", [False, True])
+def test_hotswap_inference_scales_keep_the_regular_path(monkeypatch, inference_scale):
+    peft = pytest.importorskip("peft")
+    hotswap = pytest.importorskip("peft.utils.hotswap")
+    BF = pytest.importorskip("bitsandbytes.functional")
+    D = _driver()
+    model = peft.get_peft_model(
+        torch.nn.Sequential(torch.nn.Linear(256, 64, bias = False)),
+        peft.LoraConfig(r = 2, lora_alpha = 2, target_modules = ["0"]),
+    )
+    projection = model.base_model.model[0]
+    torch.nn.init.ones_(projection.lora_A["default"].weight)
+    torch.nn.init.ones_(projection.lora_B["default"].weight)
+    with torch.inference_mode(inference_scale):
+        hotswap.prepare_model_for_compiled_hotswap(model)
+    scale = projection.scaling["default"]
+    assert scale.is_inference() == inference_scale
+    packed, state = BF.quantize_4bit(
+        projection.weight.detach().to(torch.float16), quant_type = "nf4", compress_statistics = True
+    )
+    for name in (
+        "_has_non_lora_adapter",
+        "_has_multiple_active_adapters",
+        "_has_active_dora_adapter",
+        "_has_active_lora_bias",
+        "_has_packed_qweight",
+    ):
+        monkeypatch.setattr(D.KU, name, lambda p: False, raising = False)
+    monkeypatch.setattr(D.KU, "_quant_state_dtype", lambda qs: qs.dtype, raising = False)
+    monkeypatch.setattr(
+        D.KU,
+        "get_lora_parameters_bias",
+        lambda p: (
+            packed,
+            state,
+            p.lora_A["default"].weight,
+            p.lora_B["default"].weight,
+            p.scaling["default"],
+            None,
+        ),
+        raising = False,
+    )
+    parts = D._proj_parts(projection, 256)
+    plan = types.SimpleNamespace(watch = [projection], adapter_state = D._adapter_state([projection]))
+    with torch.inference_mode():
+        x = torch.ones(1, 256)
+        before = projection(x).clone()
+        scale.fill_(2.0)
+        assert not torch.equal(before, projection(x))
+    if not inference_scale:
+        assert parts[3][2] == 1.0
+        assert D._plan_stale(plan)
+    else:
+        assert parts == "inference tensor LoRA scale"
+        assert D._proj_parts(projection, 256) == "inference tensor LoRA scale"
 
 
 _NO_TRITON_OP = textwrap.dedent(
