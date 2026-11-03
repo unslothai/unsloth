@@ -217,10 +217,14 @@ export function imageHeaderSize(bytes: Uint8Array): [number, number] | null {
 		// Walk the JPEG segments to the first start-of-frame marker.
 		let at = 2;
 		while (at + 9 < bytes.length && bytes[at] === 0xff) {
+			// Any number of 0xFF fill bytes may precede a marker.
+			while (bytes[at + 1] === 0xff && at + 10 < bytes.length) at += 1;
 			const marker = bytes[at + 1];
 			const isFrame = marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker);
 			if (isFrame) return [view.getUint16(at + 7), view.getUint16(at + 5)];
-			at += 2 + view.getUint16(at + 2);
+			// RSTn and TEM stand alone; every other marker carries a length.
+			const standalone = marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7);
+			at += standalone ? 2 : 2 + view.getUint16(at + 2);
 		}
 		return null;
 	}

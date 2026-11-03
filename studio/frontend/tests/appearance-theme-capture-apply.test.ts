@@ -164,3 +164,16 @@ test("fonts pushed out by the cap are named, and export drops names of fonts it 
   assert.equal(exported.typography.uiFont, null);
   assert.equal(exported.typography.codeFont, "Fira Code");
 });
+
+test("undo keeps an imported font the user selected after applying", () => {
+  const theme = parseOk(JSON.stringify(file({ assets: { fonts: [font("Theirs")] } })));
+  const applied = apply(BASE, theme);
+  const now = { ...BASE, palette: applied.palette, glass: applied.glass,
+    customization: { ...applied.customization, uiFont: "Theirs" } };
+  const undone = planUndo(BASE, applied, now);
+  assert.equal(undone.customization.uiFont, "Theirs");
+  assert.deepEqual(undone.customization.importedFonts.map((f) => f.name), ["Theirs"]);
+  // Without the later pick, Undo removes the theme's font as before.
+  const untouched = { ...now, customization: applied.customization };
+  assert.deepEqual(planUndo(BASE, applied, untouched).customization.importedFonts, []);
+});
