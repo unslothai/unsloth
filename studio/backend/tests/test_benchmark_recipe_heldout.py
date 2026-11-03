@@ -13,6 +13,7 @@ from core.benchmark.recipe_heldout import (
     eval_metrics,
     parse_judge_verdict,
     run_benchmark,
+    resolve_chat_target,
     score_with_validator,
 )
 from models.benchmark import BenchmarkRunRequest
@@ -303,3 +304,65 @@ def test_managed_account_cannot_reach_external_providers(harness, monkeypatch):
     with pytest.raises(HTTPException) as exc:
         _run(request)
     assert exc.value.status_code == 403
+
+
+def test_two_providers_sharing_a_name_are_refused(harness):
+    # Providers are found by name, so a second "local" would be the one the run calls.
+    request = _request(
+        scorer = "reference",
+        judge_alias = None,
+        baseline = {"mode": "none"},
+        model_providers = [
+            {"name": "local", "is_local": True},
+            {
+                "name": "local",
+                "endpoint": "https://example.com/v1",
+                "api_key_env": "OPENAI_API_KEY",
+            },
+        ],
+    )
+    with pytest.raises(HTTPException) as exc:
+        _run(request)
+    assert exc.value.status_code == 400 and harness.bodies == []
+    assert not harness.backend.is_active()
+
+
+def test_a_managed_account_never_reads_a_server_env_key(monkeypatch):
+    monkeypatch.setenv("BENCH_TEST_KEY", "sk-from-the-server")
+    configs = {"remote": {"alias": "remote", "model": "gpt", "provider": "openai"}}
+    providers = {
+        "openai": {
+            "name": "openai",
+            "endpoint": "https://example.com/v1",
+            "api_key_env": "BENCH_TEST_KEY",
+        }
+    }
+    monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: True)
+    assert "sk-from-the-server" not in str(resolve_chat_target("remote", configs, providers))
+    monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
+    assert "sk-from-the-server" in str(resolve_chat_target("remote", configs, providers))
+
+
+def test_stop_leaves_the_key_until_the_worker_turns_the_adapter_back_on(harness, monkeypatch):
+    import threading
+
+    release, events = threading.Event(), []
+
+    def slow_post(client, target, messages):
+        events.append(("post", target["body"].get("use_adapter"), target["body"].get("max_tokens")))
+        if len(events) == 1:
+            harness.backend.cancel()
+            release.wait(10)
+        return "right"
+
+    monkeypatch.setattr(route, "post_chat", slow_post)
+    monkeypatch.setattr(
+        route, "_revoke_internal_api_key_safe", lambda key: events.append(("revoke", key))
+    )
+    response = _run(_request(scorer = "reference", judge_alias = None))
+    assert response.details == {"cancelled": True}
+    # The worker is still mid-run, so the route left the key alone.
+    assert not any(e[0] == "revoke" for e in events)
+    release.set()
+    harness.backend._worker.result(timeout = 10)
+    assert events[-2] == ("post", True, 1) and events[-1] == ("revoke", 7)
