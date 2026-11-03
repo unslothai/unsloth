@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Cold fullgraph regression with static tiny experts and isolated backend probes."""
 
 from __future__ import annotations
 import ast
@@ -106,11 +105,11 @@ def test_cold_fullgraph_does_not_run_grouped_probes(monkeypatch, dtype, probe):
     batch = ml.MultiLoraBatch.from_adapter_ids(torch.tensor([0, 1, 0, 1]), 2)
     for adapter in experts.adapters.values():
         adapter.batch = batch
-    ml._adapter_groups(batch)  # batch preparation is intentionally eager in both arms
+    ml._adapter_groups(batch)
     hidden = torch.full((4, 8), 0.1, dtype = dtype, requires_grad = True)
     index = torch.zeros(4, 1, dtype = torch.long)
     weights = torch.ones(4, 1, dtype = dtype, requires_grad = True)
-    assert experts.mode is None  # no eager module call before compilation
+    assert experts.mode is None
     torch._dynamo.reset()
     try:
         with torch._dynamo.config.patch(capture_scalar_outputs = True):

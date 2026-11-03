@@ -1034,8 +1034,7 @@ class MultiLoraExperts(nn.Module):
             )
         self.peft_mode = "fold" if probe is None else "stash"
         self.mode = self.peft_mode
-        # Backend support and numerical parity probes must run eagerly. A cold compiled
-        # call keeps the existing per-adapter path, just as unsupported experts do.
+        # Cold traces cannot run the data-dependent grouped parity probe.
         if torch.compiler.is_compiling() or _grouped_disabled():
             return
         try:
