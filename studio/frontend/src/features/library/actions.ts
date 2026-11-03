@@ -22,7 +22,7 @@ import { useImageEditHandoffStore } from "@/stores/image-edit-handoff";
 import { MAX_AUDIO_SIZE } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { MAX_UPLOAD_IMAGE_SIDE, blobToDataUrl, fitImageDataUrl } from "@/lib/image-fit";
-import { downloadFile, downloadUrlStreaming, downloadUrlsStreaming, isDownloadCancelled } from "@/lib/native-files";
+import { downloadFile, downloadUrlStreaming, downloadUrlInDirectory, pickNativeDownloadDirectory, releaseNativeDownloadDirectory, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";
 import {
@@ -59,13 +59,15 @@ function fitsInChat(item: LibraryItem): boolean {
 export async function downloadLibraryItem(
   item: LibraryItem,
   epoch = getAuthSessionEpoch(),
+  directory?: { token: string; fileName: string },
 ): Promise<boolean> {
   if (getAuthSessionEpoch() !== epoch) return false;
   try {
     if (isTauri && !item.textOnly && hasOwnFile(item.id)) {
       const url = await libraryDownloadUrl(item);
       if (getAuthSessionEpoch() !== epoch) return false;
-      await downloadUrlStreaming(url, libraryFileName(item));
+      if (directory) await downloadUrlInDirectory(directory.token, url, directory.fileName);
+      else await downloadUrlStreaming(url, libraryFileName(item));
       return true;
     }
     const file = await libraryItemFile(item);
@@ -87,14 +89,16 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
   const epoch = getAuthSessionEpoch();
   if (isTauri && items.length > 1 && items.every((item) => !item.textOnly && hasOwnFile(item.id))) {
     try {
-      const files: { url: string; fileName: string }[] = [];
-      for (const item of items) {
-        if (getAuthSessionEpoch() !== epoch) return;
-        const url = await libraryDownloadUrl(item);
-        if (getAuthSessionEpoch() !== epoch) return;
-        files.push({ url, fileName: libraryFileName(item) });
+      const token = await pickNativeDownloadDirectory();
+      try {
+        const width = String(items.length).length;
+        for (const [index, item] of items.entries()) {
+          const fileName = `${String(index + 1).padStart(width, "0")}-${libraryFileName(item)}`;
+          if (!(await downloadLibraryItem(item, epoch, { token, fileName }))) break;
+        }
+      } finally {
+        await releaseNativeDownloadDirectory(token);
       }
-      await downloadUrlsStreaming(files, () => getAuthSessionEpoch() === epoch);
     } catch (error) {
       if (isDownloadCancelled(error)) return;
       toast.error(translate("library.toast.downloadManyFailed"), { description: errorMessage(error) });

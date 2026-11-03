@@ -194,69 +194,59 @@ test("a native URL save reports the basename the dialog wrote", async (t) => {
 });
 
 
-test("a native batch picks one directory and saves numbered files through its lease", async () => {
-  const entries = Array.from({ length: 10 }, (_, index) => ({
-    url: `http://127.0.0.1:8000/${index}.png`,
-    fileName: "same.png",
-  }));
+test("a native directory picker returns its save lease", async () => {
   const calls: string[] = [];
-  const saved: unknown[] = [];
   const files = loadNativeFiles(true, async (command, args) => {
     calls.push(command);
-    if (command === "pick_native_download_directory") return "directory-token";
-    if (command === "release_native_download_directory") {
-      assert.deepEqual(args, { token: "directory-token" });
-      return;
-    }
-    assert.equal(command, "save_native_file_in_directory");
-    saved.push(args);
-    return "saved.png";
+    assert.equal(args, undefined);
+    return "directory-token";
   });
-  await files.downloadUrlsStreaming(entries);
-  assert.equal(calls[0], "pick_native_download_directory");
-  assert.equal(calls.at(-1), "release_native_download_directory");
-  assert.equal(calls.filter((command) => command === "pick_native_download_directory").length, 1);
-  assert.deepEqual(saved, [
-    "01-same.png", "02-same.png", "03-same.png", "04-same.png", "05-same.png",
-    "06-same.png", "07-same.png", "08-same.png", "09-same.png", "10-same.png",
-  ].map((fileName, index) => ({ token: "directory-token", url: entries[index]!.url, fileName })));
+  assert.equal(await files.pickNativeDownloadDirectory(), "directory-token");
+  assert.deepEqual(calls, ["pick_native_download_directory"]);
 });
 
-test("cancelling the native batch rejects as cancellation without opening another picker", async () => {
+test("cancelling the native directory picker rejects as cancellation", async () => {
   const calls: string[] = [];
   const files = loadNativeFiles(true, async (command) => {
     calls.push(command);
     return null;
   });
   await assert.rejects(
-    files.downloadUrlsStreaming([
-      { url: "http://127.0.0.1:8000/first.png", fileName: "first.png" },
-      { url: "http://127.0.0.1:8000/second.png", fileName: "second.png" },
-    ]),
+    files.pickNativeDownloadDirectory(),
     (error: unknown) => files.isDownloadCancelled(error),
   );
   assert.deepEqual(calls, ["pick_native_download_directory"]);
 });
 
-test("a native batch releases its directory lease when a file cannot be saved", async () => {
-  const calls: string[] = [];
-  const failure = new Error("Disk full");
-  const files = loadNativeFiles(true, async (command) => {
-    calls.push(command);
-    if (command === "pick_native_download_directory") return "directory-token";
-    if (command === "release_native_download_directory") return;
-    throw failure;
+test("a native directory save sends the file through its existing lease", async () => {
+  let calls = 0;
+  const files = loadNativeFiles(true, async (command, args) => {
+    calls += 1;
+    assert.equal(command, "save_native_file_in_directory");
+    assert.deepEqual(args, {
+      token: "directory-token", url: "http://127.0.0.1:8000/image.png", fileName: "01-image.png",
+    });
+    return "01-image.png";
   });
+  await files.downloadUrlInDirectory("directory-token", "http://127.0.0.1:8000/image.png", "01-image.png");
+  assert.equal(calls, 1);
+});
+
+test("a native directory save propagates a file failure", async () => {
+  const failure = new Error("Disk full");
+  const files = loadNativeFiles(true, async () => { throw failure; });
   await assert.rejects(
-    files.downloadUrlsStreaming([
-      { url: "http://127.0.0.1:8000/first.png", fileName: "first.png" },
-      { url: "http://127.0.0.1:8000/second.png", fileName: "second.png" },
-    ]),
+    files.downloadUrlInDirectory("directory-token", "http://127.0.0.1:8000/image.png", "image.png"),
     (error: unknown) => error === failure,
   );
-  assert.deepEqual(calls, [
-    "pick_native_download_directory",
-    "save_native_file_in_directory",
-    "release_native_download_directory",
-  ]);
+});
+
+test("a native directory release drops the named lease", async () => {
+  const calls: string[] = [];
+  const files = loadNativeFiles(true, async (command, args) => {
+    calls.push(command);
+    assert.deepEqual(args, { token: "directory-token" });
+  });
+  await files.releaseNativeDownloadDirectory("directory-token");
+  assert.deepEqual(calls, ["release_native_download_directory"]);
 });

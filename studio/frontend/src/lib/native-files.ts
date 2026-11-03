@@ -158,40 +158,21 @@ export async function downloadBlobStreaming(
   }
 }
 
-export interface NativeDownloadFile {
-  url: string;
-  fileName: string;
-}
-
-export async function downloadUrlsStreaming(
-  files: NativeDownloadFile[],
-  shouldContinue: () => boolean = () => true,
-): Promise<void> {
-  if (files.length === 0 || !shouldContinue()) return;
-  if (!isTauri) {
-    for (const file of files) {
-      if (!shouldContinue()) break;
-      browserUrlDownload(file.url, file.fileName);
-    }
-    return;
-  }
+export async function pickNativeDownloadDirectory(): Promise<string> {
   const { invoke } = await import("@tauri-apps/api/core");
-  if (!shouldContinue()) return;
   const token = await invoke<string | null>("pick_native_download_directory");
   if (token === null) throw new DownloadCancelledError();
-  try {
-    const width = String(files.length).length;
-    for (const [index, file] of files.entries()) {
-      if (!shouldContinue()) break;
-      await invoke<string>("save_native_file_in_directory", {
-        token,
-        url: file.url,
-        fileName: `${String(index + 1).padStart(width, "0")}-${file.fileName}`,
-      });
-    }
-  } finally {
-    await invoke<void>("release_native_download_directory", { token });
-  }
+  return token;
+}
+
+export async function downloadUrlInDirectory(token: string, url: string, fileName: string): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke<string>("save_native_file_in_directory", { token, url, fileName });
+}
+
+export async function releaseNativeDownloadDirectory(token: string): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke<void>("release_native_download_directory", { token });
 }
 
 export async function urlToBlob(url: string): Promise<Blob> {

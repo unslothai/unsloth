@@ -4,6 +4,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import type * as NativeFilesModule from "../src/lib/native-files.ts";
 import * as fflate from "fflate";
 import * as zustand from "zustand";
 import * as zustandMiddleware from "zustand/middleware";
@@ -433,7 +434,8 @@ function loadDownloads(
   options: {
     native?: boolean;
     save?: (file: File | Blob) => Promise<unknown>;
-    batch?: (files: { url: string; fileName: string }[], shouldContinue?: () => boolean) => Promise<void>;
+    nativeFiles?: Partial<typeof NativeFilesModule>;
+    downloadUrl?: (item: { id: string }) => Promise<string>;
     errors?: unknown[];
   } = {},
 ) {
@@ -459,14 +461,14 @@ function loadDownloads(
         const save = options.save ?? (async (f: File | Blob) => saved.push(f));
         return save(file(name));
       },
-      downloadUrlsStreaming: options.batch,
       isDownloadCancelled: (error: unknown) => error === cancelledDownload,
+      ...options.nativeFiles,
     },
     "@/lib/toast": { toast },
     "@/lib/video-utils": {},
     "./api": {
       errorMessage: String,
-      libraryDownloadUrl: async (i: { id: string }) => `/download/${i.id}`,
+      libraryDownloadUrl: options.downloadUrl ?? (async (i: { id: string }) => `/download/${i.id}`),
       libraryItemFile: async (i: { name: string }) => {
         fetched(i.name);
         return file(i.name);
@@ -561,43 +563,94 @@ test("a file named __proto__ is kept in a zipped download", async () => {
 });
 
 
-test("Desktop exports generated images through one native batch and cancellation stays quiet", async () => {
-  const saved: File[] = [];
+function loadNativeDownloads(
+  invoke: (command: string, args?: { token?: string; url?: string; fileName?: string }) => Promise<unknown>,
+) {
+  return loadWithStubs<typeof NativeFilesModule>(new URL("../src/lib/native-files.ts", import.meta.url), {
+    "@/lib/api-base": { isTauri: true },
+    "@/lib/data-uri": {},
+    "@tauri-apps/api/core": { invoke },
+  });
+}
+
+test("Desktop exports images with numbered names through one directory without fetching their bodies", async () => {
+  const saved: { token?: string; url?: string; fileName?: string }[] = [];
   const fetched: string[] = [];
-  const batches: { url: string; fileName: string }[][] = [];
-  const errors: unknown[] = [];
-  const download = loadDownloads({}, saved, {}, undefined, (name) => fetched.push(name), {
+  let pickers = 0;
+  let released = 0;
+  const nativeFiles = loadNativeDownloads(async (command, args) => {
+    if (command === "pick_native_download_directory") {
+      pickers += 1;
+      return "directory-token";
+    }
+    if (command === "release_native_download_directory") {
+      assert.deepEqual(args, { token: "directory-token" });
+      released += 1;
+      return;
+    }
+    assert.equal(command, "save_native_file_in_directory");
+    saved.push(args!);
+    return "saved.png";
+  });
+  const download = loadDownloads({}, [], {}, undefined, (name) => fetched.push(name), {
     native: true,
+    nativeFiles,
+  });
+  await download(Array.from({ length: 10 }, (_, index) => ({
+    id: `image:${index}`,
+    name: "same.png",
+    sizeBytes: index % 2 ? null : 300 * 1024 * 1024,
+  })));
+  assert.deepEqual(saved, [
+    "01-same.png", "02-same.png", "03-same.png", "04-same.png", "05-same.png",
+    "06-same.png", "07-same.png", "08-same.png", "09-same.png", "10-same.png",
+  ].map((fileName, index) => ({ token: "directory-token", url: `/download/image:${index}`, fileName })));
+  assert.deepEqual(fetched, []);
+  assert.equal(pickers, 1);
+  assert.equal(released, 1);
+});
+
+test("cancelling the directory picker stops a batch without fetching or saving its files", async () => {
+  const calls: string[] = [];
+  const errors: unknown[] = [];
+  const nativeFiles = loadNativeDownloads(async (command) => {
+    calls.push(command);
+    return null;
+  });
+  let lookups = 0;
+  const download = loadDownloads({}, [], {}, undefined, undefined, {
+    native: true,
+    nativeFiles,
     errors,
-    batch: async (files) => {
-      batches.push(files);
-      throw cancelledDownload;
+    downloadUrl: async () => {
+      lookups += 1;
+      return "/download/image";
     },
   });
-  const images = [
-    { id: "image:first", name: "same.png", sizeBytes: null },
-    { id: "image:second", name: "same.png", sizeBytes: 300 * 1024 * 1024 },
-  ];
-  await download(images);
-  assert.deepEqual(batches, [[
-    { url: "/download/image:first", fileName: "same.png" },
-    { url: "/download/image:second", fileName: "same.png" },
-  ]]);
-  assert.deepEqual(fetched, []);
-  assert.deepEqual(saved, []);
+  await download([
+    { id: "image:first", name: "first.png", sizeBytes: 1 },
+    { id: "image:second", name: "second.png", sizeBytes: 1 },
+  ]);
+  assert.deepEqual(calls, ["pick_native_download_directory"]);
+  assert.equal(lookups, 0);
   assert.deepEqual(errors, []);
 });
 
 test("a single Desktop image retains its individual save", async () => {
   const saved: File[] = [];
-  let batches = 0;
+  let pickers = 0;
   const download = loadDownloads({}, saved, {}, undefined, undefined, {
     native: true,
-    batch: async () => { batches += 1; },
+    nativeFiles: {
+      pickNativeDownloadDirectory: async () => {
+        pickers += 1;
+        return "directory-token";
+      },
+    },
   });
   await download([{ id: "image:first", name: "single.png", sizeBytes: 1 }]);
   assert.deepEqual(names(saved), ["single.png"]);
-  assert.equal(batches, 0);
+  assert.equal(pickers, 0);
 });
 
 test("a native batch stops after an account switch and a fresh attempt can save the full batch", async () => {
@@ -606,32 +659,21 @@ test("a native batch stops after an account switch and a fresh attempt can save 
   let pickers = 0;
   let released = 0;
   let switchAccount = true;
-  const native = loadWithStubs<{
-    downloadUrlsStreaming: (files: { url: string; fileName: string }[], shouldContinue?: () => boolean) => Promise<void>;
-  }>(new URL("../src/lib/native-files.ts", import.meta.url), {
-    "@/lib/api-base": { isTauri: true },
-    "@/lib/data-uri": {},
-    "@tauri-apps/api/core": {
-      invoke: async (command: string, args: { url?: string }) => {
-        if (command === "pick_native_download_directory") return `directory-${++pickers}`;
-        if (command === "release_native_download_directory") {
-          released += 1;
-          return;
-        }
-        assert.equal(command, "save_native_file_in_directory");
-        saved.push(args.url!);
-        if (switchAccount) {
-          session.epoch += 1;
-          switchAccount = false;
-        }
-        return "saved.png";
-      },
-    },
+  const nativeFiles = loadNativeDownloads(async (command, args) => {
+    if (command === "pick_native_download_directory") return `directory-${++pickers}`;
+    if (command === "release_native_download_directory") {
+      released += 1;
+      return;
+    }
+    assert.equal(command, "save_native_file_in_directory");
+    saved.push(args!.url!);
+    if (switchAccount) {
+      session.epoch += 1;
+      switchAccount = false;
+    }
+    return "saved.png";
   });
-  const download = loadDownloads({}, [], {}, session, undefined, {
-    native: true,
-    batch: native.downloadUrlsStreaming,
-  });
+  const download = loadDownloads({}, [], {}, session, undefined, { native: true, nativeFiles });
   const images = [
     { id: "image:first", name: "first.png", sizeBytes: null },
     { id: "image:second", name: "second.png", sizeBytes: null },
@@ -644,6 +686,48 @@ test("a native batch stops after an account switch and a fresh attempt can save 
   assert.equal(pickers, 2);
   assert.equal(released, 2);
 });
+
+for (const failure of ["lookup", "save"]) {
+  test(`a native batch reports a failed ${failure} but continues to the remaining images`, async () => {
+    const attempted: string[] = [];
+    const saved: string[] = [];
+    const errors: unknown[] = [];
+    let released = 0;
+    const nativeFiles = loadNativeDownloads(async (command, args) => {
+      if (command === "pick_native_download_directory") return "directory-token";
+      if (command === "release_native_download_directory") {
+        released += 1;
+        return;
+      }
+      assert.equal(command, "save_native_file_in_directory");
+      attempted.push(args!.url!);
+      if (failure === "save" && args!.url === "/download/image:failed") throw new Error("Disk full");
+      saved.push(args!.url!);
+      return "saved.png";
+    });
+    const lookedUp: string[] = [];
+    const download = loadDownloads({}, [], {}, undefined, undefined, {
+      native: true,
+      nativeFiles,
+      errors,
+      downloadUrl: async ({ id }) => {
+        lookedUp.push(id);
+        if (failure === "lookup" && id === "image:failed") throw new Error("Download failed with status 404");
+        return `/download/${id}`;
+      },
+    });
+    await download(["first", "failed", "remaining"].map((id) => ({
+      id: `image:${id}`, name: `${id}.png`, sizeBytes: 1,
+    })));
+    assert.deepEqual(lookedUp, ["image:first", "image:failed", "image:remaining"]);
+    assert.deepEqual(attempted, failure === "lookup"
+      ? ["/download/image:first", "/download/image:remaining"]
+      : ["/download/image:first", "/download/image:failed", "/download/image:remaining"]);
+    assert.deepEqual(saved, ["/download/image:first", "/download/image:remaining"]);
+    assert.equal(errors.length, 1);
+    assert.equal(released, 1);
+  });
+}
 
 test("cancelling a sequential export stops it and a later retry still saves every file", async () => {
   const saved: File[] = [];
