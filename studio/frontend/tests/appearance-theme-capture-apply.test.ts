@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { sanitizeAdjustments } from "../src/features/chat-background/model.ts";
 import { captureTheme } from "../src/features/settings/appearance-theme/application/capture.ts";
-import { type AppearanceSnapshot, planThemeApply } from "../src/features/settings/appearance-theme/application/plan-apply.ts";
+import { type AppearanceSnapshot, planThemeApply, planUndo } from "../src/features/settings/appearance-theme/application/plan-apply.ts";
 import { LAYOUT_FIELDS } from "../src/features/settings/appearance-theme/domain/classification.ts";
 import { parseThemeFile } from "../src/features/settings/appearance-theme/domain/parse.ts";
 import { type AppearanceTheme, THEME_FILE_KIND } from "../src/features/settings/appearance-theme/domain/schema.ts";
@@ -139,4 +139,28 @@ test("changes follow THEME_CHANGES order whatever order the file lists them in",
   assert.deepEqual(apply(BASE, theme).changes, [
     "palette", "typography", "code", "chat", "glass", "layout", "fonts", "background",
   ]);
+});
+
+test("undo reverts only what the theme set and nobody changed since", () => {
+  const before = { ...BASE, customization: { ...DEFAULT_CUSTOMIZATION, contrast: 40, uiFontSize: 14 } };
+  const theme = parseOk(JSON.stringify(file({ base: { palette: "matcha" }, colors: { contrast: 70 }, typography: { uiFontSize: 18 } })));
+  const applied = apply(before, theme);
+  // After applying, the user edits the font size and turns on pointer cursors.
+  const now = { ...BASE, palette: applied.palette, glass: applied.glass,
+    customization: { ...applied.customization, uiFontSize: 16, pointerCursors: true } };
+  const undone = planUndo(before, applied, now);
+  assert.equal(undone.palette, "standard");
+  assert.equal(undone.customization.contrast, 40);
+  assert.equal(undone.customization.uiFontSize, 16);
+  assert.equal(undone.customization.pointerCursors, true);
+});
+
+test("fonts pushed out by the cap are named, and export drops names of fonts it leaves out", () => {
+  const current = { ...BASE, customization: sanitizeCustomization({ ...DEFAULT_CUSTOMIZATION, importedFonts: [font("Mine A"), font("Mine B")] }) };
+  const theme = parseOk(JSON.stringify(file({ assets: { fonts: [font("Theirs A"), font("Theirs B")] } })));
+  assert.deepEqual(apply(current, theme).droppedFonts, ["Mine B"]);
+  const withBrand = { ...current, customization: { ...current.customization, uiFont: "Mine A", codeFont: "Fira Code" } };
+  const exported = captureTheme(withBrand, { name: "x", includeLayout: false, includeAssets: false }) as { typography: Record<string, unknown> };
+  assert.equal(exported.typography.uiFont, null);
+  assert.equal(exported.typography.codeFont, "Fira Code");
 });

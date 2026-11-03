@@ -18,7 +18,7 @@ import { toast } from "@/lib/toast";
 import { useId, useMemo, useState } from "react";
 
 import { COLOR_THEMES } from "../../lib/color-themes";
-import { planThemeApply } from "../application/plan-apply";
+import { planThemeApply, planUndo } from "../application/plan-apply";
 import type { AppearanceTheme, ThemeParseResult, ThemeWarning } from "../domain/schema";
 import {
   applyAppearanceSnapshot,
@@ -119,6 +119,11 @@ function ImportThemeForm({
     () => planThemeApply(snapshot, theme, { applyLayout, applyAssets }),
     [snapshot, theme, applyLayout, applyAssets],
   );
+  // Fonts pushed out by the 3-font cap are listed with the file's own warnings.
+  const shownWarnings: ThemeWarning[] = [
+    ...warnings,
+    ...plan.droppedFonts.map((name): ThemeWarning => ({ kind: "dropped", path: name })),
+  ];
 
   async function apply() {
     if (busy) return;
@@ -127,10 +132,12 @@ function ImportThemeForm({
       const prev = readAppearanceSnapshot();
       const next = planThemeApply(prev, theme, { applyLayout, applyAssets });
       applyAppearanceSnapshot(next);
-      const backgroundChanged = next.background !== "keep";
+      // Undo restores the background only while it is still the one the theme set.
+      let appliedBackground: Blob | null = null;
       if (next.background !== "keep") {
-        const ok = await applyThemeBackground(next.background);
-        if (!ok) {
+        if (await applyThemeBackground(next.background)) {
+          appliedBackground = readAppearanceSnapshot().background?.blob ?? null;
+        } else {
           toast.warning(
             t("settings.appearance.themeFile.warning.backgroundSkipped"),
           );
@@ -143,8 +150,11 @@ function ImportThemeForm({
           action: {
             label: t("settings.appearance.themeFile.undo"),
             onClick: () => {
-              applyAppearanceSnapshot(prev);
-              if (backgroundChanged) void restoreBackground(prev.background);
+              const now = readAppearanceSnapshot();
+              applyAppearanceSnapshot(planUndo(prev, next, now));
+              if (appliedBackground && now.background?.blob === appliedBackground) {
+                void restoreBackground(prev.background);
+              }
               toast(t("settings.appearance.themeFile.undone"));
             },
           },
@@ -203,7 +213,7 @@ function ImportThemeForm({
           )}
         </section>
 
-        {warnings.length > 0 ? (
+        {shownWarnings.length > 0 ? (
           <section aria-labelledby={`${id}-warnings`} className="flex flex-col gap-2">
             <p id={`${id}-warnings`} className="text-sm font-medium text-foreground">
               {t("settings.appearance.themeFile.warningsTitle")}
@@ -212,7 +222,7 @@ function ImportThemeForm({
               tabIndex={0}
               className="scroll-rounded flex max-h-40 flex-col gap-1 overflow-y-auto rounded-xl bg-wash-5 px-4 py-3 text-xs text-muted-foreground"
             >
-              {warnings.map((warning, index) => (
+              {shownWarnings.map((warning, index) => (
                 <li key={`${warning.kind}-${index}`}>
                   {warningText(t, warning)}
                 </li>

@@ -41,8 +41,13 @@ export function captureTheme(snapshot: AppearanceSnapshot, opts: CaptureOptions)
     meta,
     base: { palette: snapshot.palette },
   };
+  // Without the font files, a name that points at an imported font would mean nothing elsewhere.
+  const droppedFonts = new Set(opts.includeAssets ? [] : c.importedFonts.map((font) => font.name));
   const writeSection = (name: string, start: Dict = {}) => {
-    for (const [field, key] of sectionFields(name)) if (key) start[key] = c[field];
+    for (const [field, key] of sectionFields(name)) {
+      const value = c[field];
+      if (key) start[key] = typeof value === "string" && droppedFonts.has(value) ? null : value;
+    }
     file[name] = start;
   };
   writeSection("colors", { light: c.colors.light, dark: c.colors.dark });

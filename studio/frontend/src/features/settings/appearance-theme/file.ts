@@ -18,8 +18,10 @@ export type ExportThemeResult =
   | { status: "saved"; fileName: string; backgroundOmitted: boolean }
   | { status: "cancelled" };
 
-/** Base64 length of `bytes`, plus room for the "data:image/...;base64," prefix. */
-const fitsInFile = (bytes: number) => Math.ceil(bytes / 3) * 4 + 32 <= MAX_BACKGROUND_DATA_URL_CHARS;
+/** Base64 length of `bytes` plus the "data:image/...;base64," prefix. */
+const dataUrlLength = (bytes: number) => Math.ceil(bytes / 3) * 4 + 32;
+/** Room for the background object's own keys and adjustments in the JSON. */
+const BACKGROUND_JSON_OVERHEAD = 2048;
 
 function slugify(name: string): string {
   const slug = name
@@ -30,13 +32,14 @@ function slugify(name: string): string {
   return slug || "theme";
 }
 
-/** The stored background as a data URL that fits the file, re-encoded as JPEG if needed, or null. */
-async function backgroundDataUrl(blob: Blob): Promise<string | null> {
+/** The stored background as a data URL within `budget`, re-encoded as JPEG if needed, or null. */
+async function backgroundDataUrl(blob: Blob, budget: number): Promise<string | null> {
   try {
-    const source = fitsInFile(blob.size)
-      ? blob
-      : await redrawImage(blob, { type: "image/jpeg", quality: 0.85, fill: "#ffffff" });
-    return fitsInFile(source.size) ? await blobToDataUrl(source) : null;
+    const source =
+      dataUrlLength(blob.size) <= budget
+        ? blob
+        : await redrawImage(blob, { type: "image/jpeg", quality: 0.85, fill: "#ffffff" });
+    return dataUrlLength(source.size) <= budget ? await blobToDataUrl(source) : null;
   } catch {
     return null;
   }
@@ -50,14 +53,17 @@ export async function exportThemeFile(opts: {
   includeAssets: boolean;
 }): Promise<ExportThemeResult> {
   const snapshot = readAppearanceSnapshot();
-  const blob = opts.includeAssets ? (snapshot.background?.blob ?? null) : null;
-  const background = blob ? await backgroundDataUrl(blob) : null;
   const serialize = (backgroundDataUrl: string | null) =>
     `${JSON.stringify(captureTheme(snapshot, { ...opts, backgroundDataUrl }), null, 2)}\n`;
-  let text = serialize(background);
-  // Fonts and background together can pass the import cap; the background gives way first.
-  const dropBackground = background !== null && text.length > MAX_THEME_FILE_CHARS;
-  if (dropBackground) text = serialize(null);
+  let text = serialize(null);
+  const blob = opts.includeAssets ? (snapshot.background?.blob ?? null) : null;
+  // The background gets whatever room the fonts and settings leave under the import cap.
+  const budget = Math.min(
+    MAX_BACKGROUND_DATA_URL_CHARS,
+    MAX_THEME_FILE_CHARS - text.length - BACKGROUND_JSON_OVERHEAD,
+  );
+  const background = blob ? await backgroundDataUrl(blob, budget) : null;
+  if (background) text = serialize(background);
 
   const fileName = `${slugify(opts.name)}${THEME_FILE_EXTENSION}`;
   try {
@@ -65,7 +71,7 @@ export async function exportThemeFile(opts: {
     return {
       status: "saved",
       fileName: savedName ?? fileName,
-      backgroundOmitted: blob !== null && (background === null || dropBackground),
+      backgroundOmitted: blob !== null && background === null,
     };
   } catch (error) {
     if (isDownloadCancelled(error)) return { status: "cancelled" };
@@ -75,6 +81,7 @@ export async function exportThemeFile(opts: {
 
 /** Reads a picked file. Oversized files are rejected before any of their text is read. */
 export async function readThemeFile(file: Blob): Promise<ThemeParseResult> {
-  if (file.size > MAX_THEME_FILE_CHARS) return { ok: false, error: "tooLarge" };
+  // The cap counts characters; UTF-8 needs at most 3 bytes for each, and the parser checks exactly.
+  if (file.size > MAX_THEME_FILE_CHARS * 3) return { ok: false, error: "tooLarge" };
   return parseThemeFile(await file.text());
 }

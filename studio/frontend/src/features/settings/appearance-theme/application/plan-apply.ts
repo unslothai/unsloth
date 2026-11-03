@@ -32,7 +32,19 @@ export type AppearanceSnapshot = {
 export type ThemeApplyPlan = Omit<AppearanceSnapshot, "background"> & {
   background: "keep" | ThemeBackground;
   changes: ThemeChange[];
+  /** Fonts that no longer fit under the imported-font cap once the theme's are added. */
+  droppedFonts: string[];
 };
+
+/** Equality for customization values; font lists compare entries without serializing their data. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b) && (a[0] as ImportedFont | undefined)?.dataUrl !== undefined) {
+    const fonts = b as ImportedFont[];
+    return a.length === b.length &&
+      (a as ImportedFont[]).every((font, i) => font.name === fonts[i].name && font.dataUrl === fonts[i].dataUrl);
+  }
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 /** Theme fonts first, then the current fonts the theme does not replace by name. */
 function mergeFonts(themeFonts: ImportedFont[], currentFonts: ImportedFont[]): ImportedFont[] {
@@ -52,15 +64,17 @@ export function planThemeApply(
   theme: AppearanceTheme,
   opts: { applyLayout: boolean; applyAssets: boolean },
 ): ThemeApplyPlan {
+  const importedFonts =
+    opts.applyAssets && theme.fonts
+      ? mergeFonts(theme.fonts, current.customization.importedFonts)
+      : current.customization.importedFonts;
   const customization = sanitizeCustomization({
     ...current.customization,
     ...theme.look,
     ...(opts.applyLayout && theme.layout ? theme.layout : {}),
-    importedFonts:
-      opts.applyAssets && theme.fonts
-        ? mergeFonts(theme.fonts, current.customization.importedFonts)
-        : current.customization.importedFonts,
+    importedFonts,
   });
+  const kept = new Set(customization.importedFonts.map((font) => font.name));
   const { material } = theme.glass;
   const glass = { ...theme.glass, style: material === "solid" ? current.glass.style : material };
   const background = opts.applyAssets && theme.background ? theme.background : "keep";
@@ -68,7 +82,7 @@ export function planThemeApply(
   const changed = new Set<ThemeChange>();
   if (current.palette !== theme.palette) changed.add("palette");
   for (const field of PLACED_FIELDS) {
-    if (JSON.stringify(current.customization[field]) !== JSON.stringify(customization[field])) {
+    if (!sameValue(current.customization[field], customization[field])) {
       changed.add(changeOf(field));
     }
   }
@@ -81,5 +95,31 @@ export function planThemeApply(
     glass,
     background,
     changes: THEME_CHANGES.filter((change) => changed.has(change)),
+    droppedFonts: importedFonts.filter((font) => !kept.has(font.name)).map((font) => font.name),
+  };
+}
+
+/**
+ * What Undo writes: each value the theme set goes back to `before`, unless it changed again since
+ * the theme was applied, so later edits (and personal settings) survive an Undo.
+ */
+export function planUndo(
+  before: AppearanceSnapshot,
+  applied: ThemeApplyPlan,
+  now: AppearanceSnapshot,
+): Omit<AppearanceSnapshot, "background"> {
+  const revert = <T>(was: T, set: T, is: T): T => (sameValue(is, set) ? was : is);
+  const customization = { ...now.customization } as Record<string, unknown>;
+  for (const key of Object.keys(now.customization) as (keyof AppearanceCustomization)[]) {
+    customization[key] = revert(before.customization[key], applied.customization[key], now.customization[key]);
+  }
+  const glass = { ...now.glass } as Record<string, unknown>;
+  for (const key of Object.keys(now.glass) as (keyof AppearanceSnapshot["glass"])[]) {
+    glass[key] = revert(before.glass[key], applied.glass[key], now.glass[key]);
+  }
+  return {
+    palette: revert(before.palette, applied.palette, now.palette),
+    customization: sanitizeCustomization(customization),
+    glass: glass as AppearanceSnapshot["glass"],
   };
 }

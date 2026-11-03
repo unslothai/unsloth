@@ -15,8 +15,7 @@ export async function uploadBackgroundImage(
 	const ticket = beginBackgroundUpload();
 	try {
 		const blob = await prepareBackgroundImage(source);
-		await finishBackgroundUpload(ticket, { ...adjustments, blob });
-		return true;
+		return await finishBackgroundUpload(ticket, { ...adjustments, blob });
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : "";
 		failBackgroundUpload(

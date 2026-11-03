@@ -165,7 +165,19 @@ const WARNING_CASES: [string, Record<string, unknown>, ThemeWarning[]][] = [
     [{ kind: "backgroundSkipped" }],
   ],
   ["a 200-character name is clamped", { meta: { name: "a".repeat(200) } }, [{ kind: "clamped", path: "meta.name" }]],
+  [
+    "background adjustments that had to change are reported",
+    { assets: { background: { dataUrl: "data:image/png;base64,iVBORw0KGgo=", adjustments: { visibility: 500, glow: 1 } } } },
+    [
+      { kind: "unknown", path: "assets.background.adjustments.glow" },
+      { kind: "clamped", path: "assets.background.adjustments.visibility" },
+    ],
+  ],
 ];
+
+test("hidden bidi and zero-width characters are stripped from the name", () => {
+  assert.equal(okOf(parse({ meta: { name: "Safe\u202Eeman\u200B" } })).theme.meta.name, "Safe eman");
+});
 
 for (const [name, extra, expected] of WARNING_CASES) {
   test(`warnings: ${name}`, () => {
@@ -190,9 +202,13 @@ for (const [name, text, error] of ERROR_CASES) {
   });
 }
 
-test("the same size with assets is accepted", () => {
-  const json = pad(JSON.stringify(file({ assets: {} })), MAX_THEME_FILE_CHARS_NO_ASSETS + 1);
-  assert.equal(okOf(parseThemeFile(json)).warnings.length, 0);
+test("the same size is accepted only when assets carry fonts or a background", () => {
+  const withFont = file({ assets: { fonts: [{ name: "Brand", dataUrl: "data:font/woff2;base64,QUJD" }] } });
+  assert.equal(okOf(parseThemeFile(pad(JSON.stringify(withFont), MAX_THEME_FILE_CHARS_NO_ASSETS + 1))).warnings.length, 0);
+  for (const assets of [{}, { fonts: [] }]) {
+    const text = pad(JSON.stringify(file({ assets })), MAX_THEME_FILE_CHARS_NO_ASSETS + 1);
+    assert.deepEqual(parseThemeFile(text), { ok: false, error: "tooLarge" });
+  }
 });
 
 test("__proto__ inside a section is reported unknown and never touches Object.prototype", () => {

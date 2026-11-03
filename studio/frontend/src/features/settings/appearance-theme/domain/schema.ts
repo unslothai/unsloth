@@ -54,9 +54,12 @@ export type ThemeParseResult =
   | { ok: true; theme: AppearanceTheme; warnings: ThemeWarning[] }
   | { ok: false; error: "tooLarge" | "invalidJson" | "notTheme" };
 
-/** Removes control characters and trims to `max` code points. Export and import share it. */
+/** Control, bidi-override and zero-width characters, which could make a name read as another. ZWJ stays for emoji. */
+const HIDDEN_CHARS = /[\p{Cc}\u061C\u200B\u200C\u200E\u200F\u202A-\u202E\u2060-\u2069\uFEFF]+/gu;
+
+/** Removes hidden characters and trims to `max` code points. Export and import share it. */
 export function cleanThemeText(value: string, max: number): { text: string; clamped: boolean } {
   // Two UTF-16 units per code point is enough to tell whether the text runs over `max`.
-  const chars = Array.from(value.slice(0, max * 2 + 2).replace(/\p{Cc}+/gu, " ").trim());
+  const chars = Array.from(value.slice(0, max * 2 + 2).replace(HIDDEN_CHARS, " ").trim());
   return { text: chars.slice(0, max).join("").trim(), clamped: chars.length > max };
 }

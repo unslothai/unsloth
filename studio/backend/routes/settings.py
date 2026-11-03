@@ -4699,7 +4699,7 @@ def _check_font_name(value: str) -> str:
     return value
 
 
-# Matches FONT_DATA_URL_PATTERN in the frontend appearance-custom-store.
+# Matches FONT_DATA_URL_PATTERN in the frontend lib/appearance-customization.ts.
 _FONT_DATA_URL_PATTERN = re.compile(
     r"^data:(?:font/(?:woff2?|ttf|otf|sfnt)"
     r"|application/(?:octet-stream|x-font-\w+|font-\w+));base64,[A-Za-z0-9+/=]+$"
@@ -4739,7 +4739,7 @@ SIDEBAR_MENU_ITEM_DEFAULTS = {
     "connections": False,
 }
 
-# Must match SIDEBAR_NAV_ITEM_IDS / SIDEBAR_NAV_DEFAULT_PINNED in appearance-custom-store.ts.
+# Must match SIDEBAR_NAV_ITEM_IDS / SIDEBAR_NAV_DEFAULT_PINNED in lib/appearance-customization.ts.
 # The client sends every id, so a missing one 422s the PUT.
 SIDEBAR_NAV_ITEM_DEFAULTS = {
     "hub": True,

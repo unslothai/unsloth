@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  type BackgroundAdjustments,
+  DEFAULT_ADJUSTMENTS,
   DEFAULT_GLASS,
   type GlassSettings,
   sanitizeAdjustments,
@@ -62,11 +64,12 @@ const KNOWN_KEYS: Record<string, readonly string[]> = {
   "glass.strength": ["light", "dark"],
   assets: ["fonts", "background"],
   "assets.background": ["dataUrl", "adjustments"],
+  "assets.background.adjustments": Object.keys(DEFAULT_ADJUSTMENTS),
 };
 
 /** Reads only own properties, so a JSON "__proto__" key is never followed. */
-function own(source: Dict | null, key: string): unknown {
-  return source && Object.hasOwn(source, key) ? source[key] : undefined;
+function own(source: unknown, key: string): unknown {
+  return isDict(source) && Object.hasOwn(source, key) ? source[key] : undefined;
 }
 
 function isDict(value: unknown): value is Dict {
@@ -170,9 +173,13 @@ function readBackground(assets: Dict | null, warn: Warn): ThemeBackground | null
     warn({ kind: "backgroundSkipped" });
     return null;
   }
-  // sanitizeAdjustments reads only the keys it knows.
-  const adjustments = own(background, "adjustments");
-  return { dataUrl, adjustments: sanitizeAdjustments(isDict(adjustments) ? adjustments : {}) };
+  // sanitizeAdjustments reads only the keys it knows; report any value it had to change.
+  const given = readObject(own(background, "adjustments"), "assets.background.adjustments", warn) ?? {};
+  const adjustments = sanitizeAdjustments(given);
+  for (const key of Object.keys(DEFAULT_ADJUSTMENTS) as (keyof BackgroundAdjustments)[]) {
+    readValue(own(given, key), adjustments[key], () => adjustments[key], `assets.background.adjustments.${key}`, warn);
+  }
+  return { dataUrl, adjustments };
 }
 
 /**
@@ -197,7 +204,13 @@ export function parseThemeFile(text: string): ThemeParseResult {
   ) {
     return { ok: false, error: "notTheme" };
   }
-  if (text.length > MAX_THEME_FILE_CHARS_NO_ASSETS && !Object.hasOwn(root, "assets")) {
+  // Only fonts or a background justify a big file; an empty "assets" key does not.
+  const rootAssets = own(root, "assets");
+  const rootFonts = own(rootAssets, "fonts");
+  const carriesAssets =
+    isDict(rootAssets) &&
+    ((Array.isArray(rootFonts) && rootFonts.length > 0) || isDict(own(rootAssets, "background")));
+  if (text.length > MAX_THEME_FILE_CHARS_NO_ASSETS && !carriesAssets) {
     return { ok: false, error: "tooLarge" };
   }
 
