@@ -202,6 +202,9 @@ cython_debug/
 # Firebase
 firebase-debug.log
 
+# macos
+.DS_Store
+
 # Other
 resources/
 tmp/
@@ -272,3 +275,4 @@ studio/backend/requirements/.*-filtered-*.txt
 tests/security/fixtures/malicious_wheel.whl
 tests/security/fixtures/malicious_sdist.tar.gz
 tests/security/fixtures/clean_wheel.whl
+
