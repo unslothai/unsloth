@@ -115,21 +115,21 @@ def period_window(
     zone = _zone(tz_name)
     now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     now = datetime.fromtimestamp(now_ms / 1000, zone)
-    day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day = now.replace(hour = 0, minute = 0, second = 0, microsecond = 0)
     if period == "week":
-        start = day - timedelta(days=day.weekday())
-        end = start + timedelta(days=7)
+        start = day - timedelta(days = day.weekday())
+        end = start + timedelta(days = 7)
     elif period == "month":
-        start = day.replace(day=1)
+        start = day.replace(day = 1)
         if start.month == 12:
-            end = start.replace(year=start.year + 1, month=1)
+            end = start.replace(year = start.year + 1, month = 1)
         else:
-            end = start.replace(month=start.month + 1)
+            end = start.replace(month = start.month + 1)
     else:
         start = day
-        end = start + timedelta(days=1)
-    start = start.replace(tzinfo=None).replace(tzinfo=zone)
-    end = end.replace(tzinfo=None).replace(tzinfo=zone)
+        end = start + timedelta(days = 1)
+    start = start.replace(tzinfo = None).replace(tzinfo = zone)
+    end = end.replace(tzinfo = None).replace(tzinfo = zone)
     return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
 
 
@@ -145,7 +145,7 @@ def request_pool(settings: dict[str, Any], *, api: bool) -> str:
     return "api" if api else "local"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class PoolUsage:
     pool: str
     used: int
@@ -173,7 +173,7 @@ def _pool_usage(settings: dict[str, Any], start_ms: int) -> dict[str, PoolUsage]
         "api": external + api,
     }
     return {
-        pool: PoolUsage(pool=pool, used=used[pool], limit=limit)
+        pool: PoolUsage(pool = pool, used = used[pool], limit = limit)
         for pool, limit in _pools(settings).items()
     }
 
@@ -227,29 +227,29 @@ def update_settings(
     merged = _clean_settings({**current, **patch, "passwordHash": stored_hash})
     if new_password is not None:
         merged["passwordHash"] = hash_password(new_password) if new_password else None
-    upsert_app_settings({SETTINGS_KEY: merged}, read_back=False)
+    upsert_app_settings({SETTINGS_KEY: merged}, read_back = False)
     return status()
 
 
 def grant_override(pool: str) -> dict[str, Any]:
     settings = load_settings()
     if not settings["enabled"]:
-        raise HTTPException(status_code=409, detail="The token limit is off.")
+        raise HTTPException(status_code = 409, detail = "The token limit is off.")
     start_ms, _end_ms = period_window(settings["period"], settings["timezone"])
     usage = _pool_usage(settings, start_ms).get(pool)
     if usage is None:
-        raise HTTPException(status_code=400, detail=f"Unknown token limit pool: {pool}")
+        raise HTTPException(status_code = 400, detail = f"Unknown token limit pool: {pool}")
     if not usage.reached:
-        raise HTTPException(status_code=409, detail="This limit has not been reached.")
+        raise HTTPException(status_code = 409, detail = "This limit has not been reached.")
     with _override_lock:
         overrides = _overrides()
         if _override_state(overrides, pool, start_ms) is not None:
             raise HTTPException(
-                status_code=409,
-                detail="The one-time override for this period was already used.",
+                status_code = 409,
+                detail = "The one-time override for this period was already used.",
             )
         overrides[pool] = {"periodStart": start_ms, "state": "granted"}
-        upsert_app_settings({OVERRIDES_KEY: overrides}, read_back=False)
+        upsert_app_settings({OVERRIDES_KEY: overrides}, read_back = False)
     return status()
 
 
@@ -262,7 +262,7 @@ def enforce(*, api: bool) -> None:
     if not settings["enabled"]:
         return
     start_ms, end_ms = period_window(settings["period"], settings["timezone"])
-    pool = request_pool(settings, api=api)
+    pool = request_pool(settings, api = api)
     usage = _pool_usage(settings, start_ms)[pool]
     if not usage.reached:
         return
@@ -271,16 +271,16 @@ def enforce(*, api: bool) -> None:
         state = _override_state(overrides, pool, start_ms)
         if state == "granted":
             overrides[pool] = {"periodStart": start_ms, "state": "used"}
-            upsert_app_settings({OVERRIDES_KEY: overrides}, read_back=False)
+            upsert_app_settings({OVERRIDES_KEY: overrides}, read_back = False)
             return
     scope = {"local": "local model ", "api": "API "}.get(pool, "")
     retry_after = max(1, (end_ms - int(time.time() * 1000)) // 1000)
     raise HTTPException(
-        status_code=429,
-        detail=(
+        status_code = 429,
+        detail = (
             f"You have reached your {_period_label(settings['period'])} {scope}token limit "
             f"({usage.used:,} of {usage.limit:,} tokens). It resets "
             f"{datetime.fromtimestamp(end_ms / 1000, _zone(settings['timezone'])):%Y-%m-%d %H:%M}."
         ),
-        headers={"X-Unsloth-Token-Limit": pool, "Retry-After": str(retry_after)},
+        headers = {"X-Unsloth-Token-Limit": pool, "Retry-After": str(retry_after)},
     )
