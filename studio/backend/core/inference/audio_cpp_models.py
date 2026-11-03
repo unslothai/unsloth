@@ -91,6 +91,8 @@ class CloneSpec:
     language_names: bool = False
     speed: bool = False
     instructions: bool = False
+    # Reads a free voice or style description beside the reference (Breeze, VoxCPM2).
+    description: bool = False
 
 
 @dataclass(frozen = True)
@@ -556,9 +558,10 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
             instructions = True,
         ),
     ),
-    AudioCppFamily("voxcpm2", "tts", clone = CloneSpec("optional")),
+    AudioCppFamily("voxcpm2", "tts", clone = CloneSpec("optional", description = True)),
     AudioCppFamily("fish_audio", "tts", clone = CloneSpec("required")),
-    AudioCppFamily("breeze_tts", "tts", clone = CloneSpec("required")),
+    AudioCppFamily("breeze_tts", "tts", clone = CloneSpec("required", description = True)),
+    # Its clone instruction takes only fixed attribute words; free text fails the run.
     AudioCppFamily("omnivoice", "tts", clone = CloneSpec("required")),
     AudioCppFamily("voxcpm1", "tts", clone = CloneSpec("required")),
     AudioCppFamily("dots_tts", "tts", clone = CloneSpec("optional")),
@@ -566,6 +569,7 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
     # MOSS ignores a transcript; Irodori refuses one ("unknown Irodori-TTS request option").
     AudioCppFamily("moss_tts_local", "tts", clone = CloneSpec("unused")),
     AudioCppFamily("moss_tts_nano", "tts", clone = CloneSpec("unused")),
+    # No description: the 500M v3 checkpoint refuses one (no caption conditioning weights).
     AudioCppFamily("irodori_tts", "tts", clone = CloneSpec("unused")),
     AudioCppFamily("echo_tts", "tts", server_task = "clon", speaks = False, clone = CloneSpec("unused")),
     AudioCppFamily(

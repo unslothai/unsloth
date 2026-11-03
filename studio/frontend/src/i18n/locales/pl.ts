@@ -741,6 +741,8 @@ export const pl = {
     plainText: "Pole wiadomości z czystym tekstem",
     plainTextDescription:
       "Zachowuj kod, Markdown i linki jako zwykły tekst. Wyłącz, aby pokazywać sformatowany podgląd.",
+    richPaste: "Wklejanie sformatowanego tekstu",
+    richPasteDescription: "Wkleja linki, tabele i formatowanie jako Markdown. {shortcut} wkleja zwykły tekst. Pełny edytor tekstu sformatowanego wkrótce.",
     showContext: "Użycie okna kontekstu",
     sendShortcut: "Skrót wysyłania",
     sendMultiline: "{mod} + Enter dla promptów wielowierszowych",
@@ -1171,6 +1173,7 @@ export const pl = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Przed dodaniem kolejnego konta ustaw hasło właściciela instalacji. Będziesz go używać do logowania, gdy ta instalacja będzie miała wiele kont.",
       signsInAs: "Logowanie jako {username}",
       signsInAsOwner: "Logowanie jako {alias} lub {username}",
       signInName: "Twoja nazwa logowania",

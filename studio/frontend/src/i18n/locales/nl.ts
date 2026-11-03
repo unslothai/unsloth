@@ -741,6 +741,8 @@ export const nl = {
     plainText: "Invoerveld met platte tekst",
     plainTextDescription:
       "Behoud code, Markdown en links als letterlijke tekst. Schakel uit om een opgemaakt voorbeeld te tonen.",
+    richPaste: "Opgemaakte tekst plakken",
+    richPasteDescription: "Plakt links, tabellen en opmaak als Markdown. {shortcut} plakt platte tekst. Volledige rich-text-editor volgt binnenkort.",
     showContext: "Gebruik van contextvenster",
     sendShortcut: "Sneltoets voor versturen",
     sendMultiline: "{mod} + Enter voor prompts met meerdere regels",
@@ -1176,6 +1178,7 @@ export const nl = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Stel het wachtwoord van de installatie-eigenaar in voordat je een ander account toevoegt. Je gebruikt het om in te loggen zodra deze installatie meerdere accounts heeft.",
       signsInAs: "Logt in als {username}",
       signsInAsOwner: "Logt in als {alias} of {username}",
       signInName: "Je inlognaam",

@@ -652,6 +652,8 @@ export const zhCN = {
     title: "消息输入",
     plainText: "纯文本输入",
     plainTextDescription: "将代码、Markdown 和链接保留为原始文本。关闭后显示格式化预览。",
+    richPaste: "粘贴富文本",
+    richPasteDescription: "将链接、表格和格式粘贴为 Markdown。{shortcut} 粘贴纯文本。完整的富文本输入框即将推出。",
     showContext: "显示上下文窗口使用量",
     sendShortcut: "发送快捷键",
     sendMultiline: "多行消息使用 {mod} + Enter",
@@ -1056,6 +1058,7 @@ export const zhCN = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "添加其他账户前，请先设置此安装实例所有者的密码。此安装实例有多个账户后，你将使用该密码登录。",
       signsInAs: "以 {username} 登录",
       signsInAsOwner: "以 {alias} 或 {username} 登录",
       signInName: "你的登录名",

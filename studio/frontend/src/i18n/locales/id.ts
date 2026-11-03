@@ -734,6 +734,8 @@ export const id = {
     plainText: "Kolom pesan teks biasa",
     plainTextDescription:
       "Pertahankan kode, Markdown, dan tautan sebagai teks literal. Nonaktifkan untuk menampilkan pratinjau berformat.",
+    richPaste: "Tempel teks berformat",
+    richPasteDescription: "Menempel tautan, tabel, dan format sebagai Markdown. {shortcut} menempel teks biasa. Composer teks kaya lengkap segera hadir.",
     showContext: "Penggunaan jendela konteks",
     sendShortcut: "Pintasan kirim",
     sendMultiline: "{mod} + Enter untuk prompt multibaris",
@@ -1162,6 +1164,7 @@ export const id = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Tetapkan kata sandi pemilik instalasi sebelum menambahkan akun lain. Anda akan menggunakannya untuk masuk setelah instalasi ini memiliki beberapa akun.",
       signsInAs: "Masuk sebagai {username}",
       signsInAsOwner: "Masuk sebagai {alias} atau {username}",
       signInName: "Nama masuk Anda",
