@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-only
+﻿# SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 from pathlib import Path
@@ -156,7 +156,7 @@ def inference(
     )
     # Only when asked, so the existing loader payloads stay byte-identical.
     if trust_remote_code:
-        load_opts["trust_remote_code"] = True
+        load_opts["trust_remote_code"] = trust_remote_code
     if speculative_type is not None:
         load_opts["speculative_type"] = speculative_type
     if spec_draft_n_max is not None:

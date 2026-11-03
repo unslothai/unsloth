@@ -807,9 +807,10 @@ def load_chat_backend(
                 tensor_parallel = tensor_parallel,
                 mlx_distributed = is_mlx_distributed,
             )
-            # Only when asked: the default call stays identical for every other load.
+            # Only when asked: the default call stays identical for every other load, and the
+            # value stays the caller's so no code path switches remote execution on by itself.
             if trust_remote_code:
-                load_kwargs["trust_remote_code"] = True
+                load_kwargs["trust_remote_code"] = trust_remote_code
             loaded = backend.load_model(**load_kwargs)
         except Exception as exc:
             if not is_mlx_distributed:
@@ -1090,7 +1091,7 @@ class HttpChatBackend:
             payload["spec_draft_n_max"] = spec_draft_n_max
         # Only when asked, so an existing payload stays byte-identical for everyone else.
         if trust_remote_code:
-            payload["trust_remote_code"] = True
+            payload["trust_remote_code"] = trust_remote_code
         resident_variant = self._resident_gguf_variant(model)
         if resident_variant:
             payload["gguf_variant"] = resident_variant
