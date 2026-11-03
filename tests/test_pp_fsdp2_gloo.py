@@ -302,16 +302,16 @@ def _case_scaler(rank, world, tmp):
         ids[4 * dp_rank : 4 * dp_rank + 4], labels[4 * dp_rank : 4 * dp_rank + 4], scaler = scaler
     )
     if rank == world - 1:
-        # One rank (last stage, dp replica 1) finds an inf in its unscale (as a replicated gradient would);
-        # set on its found_inf directly: an inf in a DTensor shard is already reduced over dp by GradScaler.
-        unscale = scaler.unscale_
+        # Inject before PP agreement; DTensor gradients already reduce infs over DP during unscale.
+        unscale_grads = scaler._unscale_grads_
 
-        def unscale_with_inf(optimizer):
-            unscale(optimizer)
-            for t in scaler._per_optimizer_states[id(optimizer)]["found_inf_per_device"].values():
+        def unscale_with_inf(*args, **kwargs):
+            found = unscale_grads(*args, **kwargs)
+            for t in found.values():
                 t.fill_(1.0)
+            return found
 
-        scaler.unscale_ = unscale_with_inf
+        scaler._unscale_grads_ = unscale_with_inf
     before = [tpn._local(p).detach().clone() for p in pp.parameters()]
     pp.unscale_(scaler, opt)
     scaler.step(opt)
