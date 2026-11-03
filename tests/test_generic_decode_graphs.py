@@ -13,6 +13,8 @@ import pytest
 import torch
 
 import unsloth  # noqa: F401  (must precede transformers)
+
+from real_accelerator import has_real_cuda
 import unsloth.models._decode_graphs as G
 import unsloth.models._generic_decode_graphs as GG
 from unsloth.models import vision
@@ -652,9 +654,7 @@ def test_generate_routes_only_static_cache_calls():
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.version.hip is not None, reason = "NVIDIA CUDA"
-)
+@pytest.mark.skipif(not has_real_cuda() or torch.version.hip is not None, reason = "NVIDIA CUDA")
 @pytest.mark.parametrize("name", [LLAMA, GEMMA3])
 def test_real_capture_matches_eager(name, monkeypatch):
     monkeypatch.setattr(G, "ENABLED", True)
