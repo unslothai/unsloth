@@ -134,14 +134,10 @@ def attach_failure(exc: BaseException, failure: Optional[AudioCppFailure]) -> Ba
     return exc
 
 
-# Sizes in GiB. Resident = weights * per_weight + fixed. Generic: Qwen3-TTS peaks near 3x its
-# weights at the 8192-token cap (1.7B q8: 2.6 GiB file, 7.5 GiB peak).
+# GiB; resident = weights * per_weight + fixed. Generic matches Qwen3-TTS at its 8192-token cap.
 _GENERIC_PROFILE = (2.5, 1.5)
-# family -> (per_weight, fixed, largest package measured): the peak CUDA use on audio.cpp v0.9.3
-# reading ~1,250 words, plus headroom (at least 0.9 GiB on every measured package). Peaks:
-# Chatterbox q8 4.2 / f16 4.7, Higgs Audio v3 4B q8 5.7, Kokoro q8 / bf16 2.7, VoxCPM2 q8 9.7 /
-# bf16 13.3 (flat past ~3 minutes of speech), Voxtral 4B q8 5.3. Not listed: families whose peak
-# grows with the input, e.g. VibeVoice 1.5B q8 (5.7 GiB at ~300 words, 12 GiB at ~1,250).
+# family -> (per_weight, fixed, largest package measured): audio.cpp v0.9.3 CUDA peak plus at least
+# 0.9 GiB. Families whose peak grows with the input (VibeVoice) must stay on the generic formula.
 _MEASURED_PROFILES = {
     "chatterbox": (1.0, 3.5, 3.5),
     "higgs_audio_tts": (1.0, 2.0, 4.8),
