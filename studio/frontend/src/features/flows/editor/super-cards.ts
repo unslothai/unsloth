@@ -229,6 +229,78 @@ function foldedFrames(
   );
 }
 
+type Measured = (id: string) => { width?: number; height?: number } | undefined;
+
+/** Which closed card each note ("note:<id>") and reroute folds into: a card's saved list where it
+ * has one, else by position (a folded frame first, then the card's blocks), from saved sizes. */
+export function extraOwners(
+  graph: DocGraph,
+  closed: SuperCard[],
+  measured: Measured = () => undefined,
+): Map<string, string> {
+  const found = new Map<string, string>();
+  const owner = new Map<string, string>();
+  for (const card of closed) for (const id of card.members) owner.set(id, card.id);
+  for (const card of closed)
+    for (const id of card.extras ?? []) if (!found.has(id)) found.set(id, card.id);
+  const byPosition = new Set(closed.filter((c) => !c.extras).map((c) => c.id));
+  if (!byPosition.size) return found;
+  const areas: [string, [number, number, number, number]][] = [];
+  for (const [group, card] of foldedFrames(graph, owner))
+    if (byPosition.has(card) && graph.groups[group]) areas.push([card, graph.groups[group].rect]);
+  for (const card of closed) {
+    if (!byPosition.has(card.id)) continue;
+    const members = card.members.filter((id) => graph.nodes[id]);
+    if (!members.length) continue;
+    const x0 = Math.min(...members.map((id) => graph.nodes[id].pos[0]));
+    const y0 = Math.min(...members.map((id) => graph.nodes[id].pos[1]));
+    let right = x0;
+    let bottom = y0;
+    for (const id of members) {
+      const size = measured(id);
+      const saved = graph.nodes[id].collapsed ? null : graph.nodes[id].size;
+      const [x, y] = graph.nodes[id].pos;
+      right = Math.max(right, x + (size?.width ?? saved?.[0] ?? DEFAULT_SIZE.width));
+      bottom = Math.max(bottom, y + (size?.height ?? saved?.[1] ?? DEFAULT_SIZE.height));
+    }
+    areas.push([card.id, [x0, y0, right - x0, bottom - y0]]);
+  }
+  const place = (id: string, cx: number, cy: number) => {
+    if (found.has(id)) return;
+    const hit = areas.find(
+      ([, [ax, ay, aw, ah]]) => cx >= ax && cy >= ay && cx <= ax + aw && cy <= ay + ah,
+    );
+    if (hit) found.set(id, hit[0]);
+  };
+  for (const noteId of graph.noteOrder) {
+    const [x, y, w, h] = graph.notes[noteId].rect;
+    place(NOTE_PREFIX + noteId, x + w / 2, y + h / 2);
+  }
+  for (const id of graph.rerouteOrder ?? []) {
+    const reroute = graph.reroutes[id];
+    const size = rerouteSize(reroute.dir);
+    place(id, reroute.pos[0] + size.width / 2, reroute.pos[1] + size.height / 2);
+  }
+  return found;
+}
+
+/** The card list with ``id`` closed and its notes and reroutes recorded as they sit now. */
+export function closeWithExtras(
+  graph: DocGraph,
+  cards: SuperCard[],
+  id: string,
+  measured: Measured = () => undefined,
+): SuperCard[] {
+  const closing: SuperCard[] = cards.map((c) => {
+    if (c.id !== id) return c;
+    const { open: _open, extras: _extras, ...rest } = c;
+    return rest;
+  });
+  const owners = extraOwners(graph, closing.filter((c) => !c.open), measured);
+  const extras = [...owners].flatMap(([extra, card]) => (card === id ? [extra] : []));
+  return closing.map((c) => (c.id === id ? { ...c, extras } : c));
+}
+
 export function applySuperCards(
   nodes: RfNode[],
   edges: RfEdge[],
@@ -257,12 +329,21 @@ export function applySuperCards(
   // another card's blocks overlap it.
   const areas: [string, Box][] = [];
   const colors = new Map<string, string>();
+  // A card that recorded its notes and reroutes when it closed keeps exactly those.
+  const listed = new Set<string>();
+  for (const card of closed)
+    for (const id of card.extras ?? [])
+      if (!owner.has(id)) {
+        owner.set(id, card.id);
+        listed.add(id);
+      }
+  const byPosition = new Set(closed.filter((c) => !c.extras).map((c) => c.id));
   for (const [group, card] of foldedFrames(graph, owner)) {
     owner.set(GROUP_PREFIX + group, card);
     const color = graph.groups[group]?.color;
     if (color && !colors.has(card)) colors.set(card, color);
     const rect = graph.groups[group]?.rect;
-    if (rect)
+    if (rect && byPosition.has(card))
       areas.push([
         card,
         {
@@ -273,9 +354,9 @@ export function applySuperCards(
         },
       ]);
   }
-  areas.push(...boxes);
+  areas.push(...[...boxes].filter(([card]) => byPosition.has(card)));
   for (const n of nodes) {
-    if (graph.nodes[n.id] || n.id.startsWith(GROUP_PREFIX)) continue;
+    if (graph.nodes[n.id] || n.id.startsWith(GROUP_PREFIX) || listed.has(n.id)) continue;
     // A note not yet mounted has no measurement: its saved size is in its style.
     const style = n.style as { width?: unknown; height?: unknown } | undefined;
     const w = n.measured?.width ?? (typeof style?.width === "number" ? style.width : 0);
@@ -524,8 +605,6 @@ export function foldLayout(
   });
   const unfold = (result: LayoutResult): LayoutResult => {
     const next = { ...result };
-    type Area = [[number, number], [number, number, number, number]];
-    const boxAreas: Area[] = [];
     const shift = new Map<string, [number, number]>();
     for (const card of closed) {
       const at = result[SUPER_PREFIX + card.id];
@@ -539,50 +618,26 @@ export function foldLayout(
         const [x, y] = graph.nodes[id].pos;
         next[id] = [x + dx, y + dy];
       }
-      let right = x0;
-      let bottom = y0;
-      for (const id of card.members) {
-        const size = measured(id);
-        const saved = graph.nodes[id].collapsed ? null : graph.nodes[id].size;
-        const [x, y] = graph.nodes[id].pos;
-        right = Math.max(right, x + (size?.width ?? saved?.[0] ?? DEFAULT_SIZE.width));
-        bottom = Math.max(bottom, y + (size?.height ?? saved?.[1] ?? DEFAULT_SIZE.height));
-      }
-      boxAreas.push([[dx, dy], [x0, y0, right - x0, bottom - y0]]);
       shift.set(SUPER_PREFIX + card.id, [dx, dy]);
     }
     // Frames and notes folded into a card move with it, as they do when it is dragged.
-    const frameAreas: Area[] = [];
     for (const [groupId, card] of frames) {
       const d = shift.get(card);
       const rect = graph.groups[groupId]?.rect;
       if (!d || !rect) continue;
-      frameAreas.push([d, rect]);
       next[GROUP_PREFIX + groupId] = [rect[0] + d[0], rect[1] + d[1]];
     }
-    // One owner per note, as the canvas folds it: a folded frame first, then a card's blocks.
-    for (const noteId of graph.noteOrder) {
-      const [x, y, w, h] = graph.notes[noteId].rect;
-      const cx = x + w / 2;
-      const cy = y + h / 2;
-      const owner = [...frameAreas, ...boxAreas].find(
-        ([, [ax, ay, aw, ah]]) =>
-          cx >= ax && cy >= ay && cx <= ax + aw && cy <= ay + ah,
-      );
-      if (owner) next[NOTE_PREFIX + noteId] = [x + owner[0][0], y + owner[0][1]];
-    }
-    // Reroutes folded in move the same way; a free one has no wire to put it back on.
-    for (const id of graph.rerouteOrder ?? []) {
-      const reroute = graph.reroutes[id];
-      const [x, y] = reroute.pos;
-      const size = rerouteSize(reroute.dir);
-      const cx = x + size.width / 2;
-      const cy = y + size.height / 2;
-      const owner = [...frameAreas, ...boxAreas].find(
-        ([, [ax, ay, aw, ah]]) =>
-          cx >= ax && cy >= ay && cx <= ax + aw && cy <= ay + ah,
-      );
-      if (owner) next[id] = [x + owner[0][0], y + owner[0][1]];
+    // Notes and reroutes folded in move the same way, with the card the canvas folds them into.
+    for (const [id, card] of extraOwners(graph, closed, measured)) {
+      const d = shift.get(SUPER_PREFIX + card);
+      if (!d) continue;
+      if (id.startsWith(NOTE_PREFIX)) {
+        const note = graph.notes[id.slice(NOTE_PREFIX.length)];
+        if (note) next[id] = [note.rect[0] + d[0], note.rect[1] + d[1]];
+      } else if (graph.reroutes[id]) {
+        const [x, y] = graph.reroutes[id].pos;
+        next[id] = [x + d[0], y + d[1]];
+      }
     }
     return next;
   };

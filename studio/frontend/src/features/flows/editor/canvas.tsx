@@ -373,8 +373,13 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
             });
           }
         } else if (change.type === "select") {
-          if (change.selected && boxSkips(store.getState(), change.id))
+          if (change.selected && boxSkips(store.getState(), change.id)) {
+            // React Flow marks the frame selected in its own store before telling us; undo that
+            // too, or dragging the boxed blocks would carry the frame and its other blocks.
+            const internal = store.getState().nodeLookup.get(change.id);
+            if (internal) internal.selected = false;
             continue;
+          }
           selection ??= { add: new Set(), remove: new Set() };
           (change.selected ? selection.add : selection.remove).add(change.id);
         }

@@ -12,6 +12,10 @@ export interface SuperCard {
   title: string;
   members: string[];
   open?: boolean;
+  /** Notes ("note:<id>") and reroutes folded in when the card closed. Kept as a list, so a note
+   * that later lands among the hidden blocks (Tidy up moving its own block) is not swallowed;
+   * absent on cards saved before, which fold by position. */
+  extras?: string[];
 }
 
 type Editor = Record<string, unknown> | undefined;
@@ -43,6 +47,9 @@ export function readSuperCards(
             typeof r.title === "string" && r.title ? r.title : "Super card",
           members: r.members.filter((m): m is string => typeof m === "string"),
           ...(r.open === true ? { open: true } : {}),
+          ...(Array.isArray(r.extras)
+            ? { extras: r.extras.filter((m): m is string => typeof m === "string") }
+            : {}),
         };
       }
     }

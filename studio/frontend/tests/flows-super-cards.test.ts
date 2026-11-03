@@ -99,6 +99,15 @@ function cards() {
   return readSuperCards(meta.editor, graph);
 }
 
+/** Cards as saved before they recorded their notes and reroutes: these fold by position. */
+function legacyCards() {
+  const { meta } = useDocStore.getState();
+  const raw = (meta.editor?.super_cards as Record<string, unknown>[]) ?? [];
+  useDocStore.getState().setMeta({
+    editor: { ...meta.editor, super_cards: raw.map(({ extras: _e, ...rest }) => rest) },
+  });
+}
+
 function withoutEditor() {
   const { editor: _e, ...rest } = documentFromState(useDocStore.getState());
   return rest;
@@ -121,7 +130,7 @@ test("combining two or more selected blocks makes one closed card and selects it
   assert.equal(combineSelection(), "sc1");
   // Exactly a group's blocks: the card takes the group's name.
   assert.deepEqual(cards(), [
-    { id: "sc1", title: "Comic panel", members: ["tpl", "img"] },
+    { id: "sc1", title: "Comic panel", members: ["tpl", "img"], extras: [] },
   ]);
   assert.deepEqual(useUiStore.getState().selectedNodes, ["super:sc1"]);
   // Only editor state changed, so the compiled plan is the same.
@@ -143,7 +152,7 @@ test("a closed card selected with more blocks is absorbed: cards stay one level 
   select("super:sc1", "view");
   assert.equal(combineSelection(), "sc2");
   assert.deepEqual(cards(), [
-    { id: "sc2", title: "Comic panel", members: ["tpl", "img", "view"] },
+    { id: "sc2", title: "Comic panel", members: ["tpl", "img", "view"], extras: [] },
   ]);
 });
 
@@ -422,6 +431,8 @@ test("auto layout moves a note a wide block folded, after the block left React F
   // Centred inside b's measured 500x400 box, outside the 260x140 default.
   d.notes = [{ id: "n1", text: "beside", rect: [700, 250, 100, 60] }];
   useDocStore.getState().load(d);
+  // The mounted canvas has measured b by the time the card closes.
+  rememberSizes(new Map([["b", { width: 500, height: 400 }]]));
   select("a", "b");
   combineSelection();
   const state = useDocStore.getState();
@@ -430,7 +441,6 @@ test("auto layout moves a note a wide block folded, after the block left React F
     nodes: state.graph.nodeOrder.map((id) => ({ id, width: 260, height: 140 })),
     edges: [],
   };
-  rememberSizes(new Map([["b", { width: 500, height: 400 }]]));
   // A closed card's blocks are not in React Flow, so it reports no size for them.
   const lookup = sizeLookup(() => undefined);
   const result = foldLayout(request, state, lookup).unfold({
@@ -449,6 +459,7 @@ test("notes and reroutes drawn among a card's blocks fold with it", () => {
   useDocStore.getState().load(comic());
   select("tpl", "img");
   combineSelection();
+  legacyCards();
   const state = useDocStore.getState();
   const deriver = new RfDeriver();
   const nodes = [
@@ -513,6 +524,7 @@ test("a note in one card's folded frame stays with that card where another card'
   combineSelection();
   select("view", "raw");
   combineSelection();
+  legacyCards();
   const out = view([
     {
       id: "note:edge",
@@ -832,9 +844,13 @@ test("a note where two folded frames overlap moves with the card the canvas fold
     [`super:${first.id}`]: [0, 1000],
     [`super:${second.id}`]: [1000, 0],
   });
-  // The canvas checks folded frames in block order, so the note is the first frame's.
-  assert.deepEqual(result["note:n"], [500, 1100]);
+  // The note was folded into the card made first, and moves with that card, as the canvas shows it.
+  assert.deepEqual(second.extras, ["note:n"]);
+  assert.deepEqual(result["note:n"], [500, 100]);
   assert.deepEqual(result["group:g1"], [-20, 960]);
+  const folded = (id: string) =>
+    (view().nodes.find((n) => n.id === id)?.data as unknown as { folded: { id: string }[] }).folded.map((f) => f.id);
+  assert.ok(folded(`super:${second.id}`).includes("note:n"));
   assert.deepEqual(result["group:g2"], [400, -40]);
 });
 
@@ -863,10 +879,39 @@ test("one output fanned out through folded reroutes is one card port, named by i
   combineSelection();
   const out = view();
   const card = out.nodes.find((n) => n.id.startsWith("super:"));
-  const outputs = (card?.data as { outputs: { handleId: string; label: string }[] }).outputs;
+  const outputs = (card?.data as unknown as { outputs: { handleId: string; label: string }[] }).outputs;
   assert.equal(outputs.length, 1);
   assert.match(outputs[0].label, /^Script · /);
   const crossing = out.edges.filter((e) => e.source === card?.id);
   assert.deepEqual(new Set(crossing.map((e) => e.sourceHandle)), new Set([outputs[0].handleId]));
   assert.deepEqual(crossing.map((e) => e.target).sort(), ["p1", "p2"]);
+});
+
+test("a note Tidy brings next to a closed card's hidden blocks stays out of the card", () => {
+  const d = doc(
+    [node("a", "input.text", [0, 0]), node("b", "input.text", [600, 0]), node("c", "output.preview", [1200, 0])],
+    [],
+  );
+  d.notes = [{ id: "far", text: "about c", rect: [1490, 30, 180, 80] }];
+  useDocStore.getState().load(d);
+  select("a", "b");
+  combineSelection();
+  const [card] = cards();
+  assert.deepEqual(card.extras, []);
+  // Tidy up put c and its note beside the compact card, among the hidden blocks' old spread.
+  useDocStore.getState().moveNodes({ c: [448, 20] });
+  const { graph } = useDocStore.getState();
+  useDocStore.getState().upsertNote({ ...graph.notes.far, rect: [738, 50, 180, 80] });
+  const out = view();
+  assert.ok(out.nodes.some((n) => n.id === "note:far"), "the note stays on the canvas");
+  const folded = (out.nodes.find((n) => n.id === "super:sc1")?.data as unknown as { folded: { id: string }[] }).folded;
+  assert.ok(!folded.some((f) => f.id === "note:far"));
+});
+
+test("a frame the selection box leaves out is unselected in React Flow's store too", () => {
+  const src = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
+  assert.match(
+    src,
+    /if \(change\.selected && boxSkips\(store\.getState\(\), change\.id\)\) \{[\s\S]{0,300}nodeLookup\.get\(change\.id\);\s*if \(internal\) internal\.selected = false;\s*continue;/,
+  );
 });

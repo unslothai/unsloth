@@ -3,13 +3,23 @@
 
 import { useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
+import { sizeLookup } from "./layout";
 import {
   SUPER_PREFIX,
   type SuperCard,
+  closeWithExtras,
   combineSuperCard,
   readSuperCards,
   updateSuperCard,
+  writeSuperCards,
 } from "./super-cards";
+
+/** ``editor`` with card ``id`` closed, its notes and reroutes recorded where they sit now. */
+function closed(editor: Record<string, unknown>, id: string): Record<string, unknown> {
+  const { graph } = useDocStore.getState();
+  const cards = readSuperCards(editor, graph);
+  return writeSuperCards(editor, closeWithExtras(graph, cards, id, sizeLookup(() => undefined)));
+}
 
 function nextId(cards: SuperCard[]): string {
   let max = 0;
@@ -32,7 +42,7 @@ export function combineSelection(): string | null {
     id,
   );
   if (!result) return null;
-  doc.setMeta({ editor: result.editor });
+  doc.setMeta({ editor: closed(result.editor, id) });
   ui.setSelection([SUPER_PREFIX + id], []);
   return id;
 }
@@ -43,9 +53,8 @@ export function setSuperCardOpen(id: string, open: boolean): void {
     (c) => c.id === id,
   );
   if (!card) return;
-  doc.setMeta({
-    editor: updateSuperCard(doc.meta.editor, doc.graph, id, { open }),
-  });
+  const editor = updateSuperCard(doc.meta.editor, doc.graph, id, { open });
+  doc.setMeta({ editor: open ? editor : closed(editor, id) });
   useUiStore
     .getState()
     .setSelection(open ? card.members : [SUPER_PREFIX + id], []);
