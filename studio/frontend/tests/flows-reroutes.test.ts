@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { catalog, doc, edge, node } from "./flows-editor-fixtures.ts";
@@ -520,4 +521,14 @@ test("reroutes face along the wire they land on, and R turns them about their ce
   turnReroutes(["r1"]);
   const back = graphFromDocument(documentFromState(useDocStore.getState()));
   assert.equal(back.reroutes.r1.dir, "down");
+});
+
+test("deleting a style-pinned reroute heals to a plain edge the backend accepts", () => {
+  fresh();
+  useDocStore.getState().addReroute({ id: "r1", pos: [300, 10] }, "e1", "bus");
+  useDocStore.getState().removeElements({ reroutes: ["r1"] });
+  const edges = Object.values(graph().edges);
+  assert.ok(edges.length && edges.every((e) => !("style" in e)));
+  const rerouteNode = readFileSync(new URL("../src/features/flows/editor/reroute-node.tsx", import.meta.url), "utf8");
+  assert.match(rerouteNode, /useEffect\(\(\) => updateNodeInternals\(id\), \[dir, id, updateNodeInternals\]\)/);
 });

@@ -849,7 +849,9 @@ function removeReroutes(
         !graph.reroutes[healed.target] &&
         !graph.reroutes[healed.source]
       ) {
-        plain.push({ ...healed, kind: "data" });
+        // A wire's pinned style is reroute metadata; the healed edge is a plain FlowEdge.
+        const { style: _style, ...edge } = healed as typeof healed & { style?: unknown };
+        plain.push({ ...edge, kind: "data" });
       } else {
         next[id] = healed;
         nextOrder.push(id);
