@@ -24,19 +24,22 @@ _CACHE_DIRS = [
 ]
 
 
-def _configured_cache_dirs() -> List[Path]:
-    """Cache dirs outside the source tree: the configured one, and the CWD. The candidates above are all source-tree relative, so a cache created in the launcher's CWD (the user profile on Windows) was invisible to cleanup. The CWD is still checked for installs that predate the pinned location."""
-    import os
+_DEFAULT_COMPILE_LEAF = "unsloth_compiled_cache"
 
-    dirs: List[Path] = []
-    configured = (os.environ.get("UNSLOTH_COMPILE_LOCATION") or "").strip()
-    if configured:
-        dirs.append(Path(configured).expanduser())
+
+def _configured_location() -> str:
+    """UNSLOTH_COMPILE_LOCATION verbatim, as os.makedirs in unsloth_zoo.compiler takes it (no ``~``, no strip). Blank = unset, as in setup_cache_env."""
+    configured = os.environ.get("UNSLOTH_COMPILE_LOCATION") or ""
+    return configured if configured.strip() else ""
+
+
+def _configured_cache_dirs() -> List[Path]:
+    """Where unsloth_zoo.compiler writes (``_get_compile_folder``), a relative location anchored at the CWD as os.makedirs takes it. Never the CWD default beside a configured location (somebody else's folder), nor the compiler's ``<tempdir>/<leaf>`` fallback: every user on the machine shares that name, so it is not ours to clear or import from."""
+    raw = Path(_configured_location() or _DEFAULT_COMPILE_LEAF)
     try:
-        dirs.append(Path.cwd() / "unsloth_compiled_cache")
-    except OSError:
-        pass
-    return dirs
+        return [raw if raw.is_absolute() else Path.cwd() / raw]
+    except (OSError, RuntimeError, ValueError):
+        return []
 
 
 def get_existing_cache_dirs() -> List[Path]:
@@ -79,9 +82,8 @@ def _is_dedicated_cache(path: Path) -> bool:
 def _trusted_cache_paths() -> set:
     """Where a cache is ours by where it is: the source-tree candidates, and whatever UNSLOTH_COMPILE_LOCATION names, since that is the caller's answer to where the cache lives. Never the launch directory."""
     trusted = _builtin_cache_paths()
-    configured = (os.environ.get("UNSLOTH_COMPILE_LOCATION") or "").strip()
-    if configured:
-        trusted.add(str(Path(configured).expanduser()))
+    if _configured_location():
+        trusted.update(str(path) for path in _configured_cache_dirs())
     return trusted
 
 

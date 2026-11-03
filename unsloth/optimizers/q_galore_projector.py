@@ -150,8 +150,7 @@ class GaLoreProjector:
         assert self.proj_type == "std", "Only proj_type='std' is supported."
 
         if full_rank_grad.shape[0] >= full_rank_grad.shape[1]:
-            # A "tall" matrix takes the right projection (grad @ Q^T), a "wide" one the left (Q^T @ grad).
-            # "wide" matrix → left projection (Q^T @ grad)
+            # "tall" takes the right projection (grad @ Q^T), "wide" the left (Q^T @ grad).
             if self.ortho_matrix is None or step % self.update_proj_gap == 0:
                 float_ortho = self._compute_orthogonal(
                     full_rank_grad,
@@ -224,8 +223,7 @@ class GaLoreProjector:
             U, s, Vh = torch.linalg.svd(matrix, full_matrices = False)
             result = Vh[:rank, :] if side == "right" else U[:, :rank]
         else:
-            # Oversampling p=10, per Halko et al. 2009 (arXiv:0909.4061), which recommends p=5..10 for large
-            # low-rank matrices.
+            # Oversampling p=10, per Halko et al. 2009 (arXiv:0909.4061).
             q = min(rank + 10, min(m, n))
             U, s, V = torch.svd_lowrank(matrix, q = q, niter = 2)
             result = V[:, :rank].t() if side == "right" else U[:, :rank]

@@ -1,5 +1,3 @@
-# Model defaults for unsloth/whisper-large-v3
-# Based on Whisper.ipynb
 # Also applies to: unsloth/whisper-large-v3, openai/whisper-large-v3
 
 audio_type: whisper
@@ -8,7 +6,6 @@ audio_input: true
 training:
   eval_steps: 5
   max_seq_length: 448
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 1e-4
   batch_size: 1

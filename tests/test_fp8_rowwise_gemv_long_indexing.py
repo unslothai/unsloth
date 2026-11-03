@@ -169,13 +169,17 @@ def test_weight_past_2_31_elements(F):
     N = 2**31 // K + 256
     if torch.cuda.mem_get_info()[0] < 4 * 1024**3:
         pytest.skip("needs 4 GB free GPU memory")
-    X = torch.randn(1, K, device = "cuda", dtype = torch.bfloat16)
+    g = torch.Generator(device = "cuda").manual_seed(0)
+    X = torch.randn(1, K, device = "cuda", dtype = torch.bfloat16, generator = g)
     W = torch.empty(N, K, device = "cuda", dtype = torch.float8_e4m3fn)
     tail = slice(N - 512, N)
-    W[tail] = (torch.randn(512, K, device = "cuda") * 0.05).to(torch.float8_e4m3fn)
-    S = torch.rand(N, 1, device = "cuda") * 0.01 + 0.001
+    W[tail] = (torch.randn(512, K, device = "cuda", generator = g) * 0.05).to(torch.float8_e4m3fn)
+    S = torch.rand(N, 1, device = "cuda", generator = g) * 0.01 + 0.001
     assert F.can_use_fp8_rowwise_gemv(X, W, S)
     out = F.fp8_rowwise_gemv(X, W, S)
     ref = F.fp8_rowwise_gemv(X, W[tail].contiguous(), S[tail].contiguous())
     torch.cuda.synchronize()
-    assert torch.equal(out[..., tail], ref)
+    # Different BLOCK_N can flip the last bf16 bit; wrong addressing past 2^31 is far outside this.
+    torch.testing.assert_close(
+        out[..., tail].float(), ref.float(), rtol = 0, atol = 1e-2 * ref.float().abs().max().item()
+    )

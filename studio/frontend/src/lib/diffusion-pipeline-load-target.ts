@@ -3,7 +3,7 @@
 
 type DiffusionPickSource = "hub" | "lora" | "exported" | "local" | "external";
 
-/** A cached row pinned to its validated snapshot loads by path; `displayRepoId` keeps the logical id for planning. */
+/** `displayRepoId` keeps the logical id for planning. */
 export function diffusionPipelineLoadTarget(
   model: string,
   meta: { loadId?: string | null; source: DiffusionPickSource },
@@ -14,7 +14,7 @@ export function diffusionPipelineLoadTarget(
     : { repoId: model, source: meta.source, onDevice: meta.source === "local" };
 }
 
-/** Plan entries to stage. A pinned snapshot is already on disk (and its Hub revision may move), so only companions download. */
+/** A pinned snapshot is already on disk (and its revision may move), so only companions and a hosted denoiser, which it lacks, download. */
 export function diffusionStagingEntries(
   entries: readonly {
     repo_id: string;
@@ -22,6 +22,7 @@ export function diffusionStagingEntries(
     bytes: number;
     gguf_filename: string | null;
     checkpoint?: boolean;
+    hosted_denoiser?: boolean;
   }[],
   repoId: string,
   opts: { filename?: string; displayRepoId?: string },
@@ -33,9 +34,10 @@ export function diffusionStagingEntries(
       files: e.files,
       bytes: e.bytes,
       ggufFilename: e.gguf_filename,
-      // `??`, not `||`: a planner answering false is an answer; the fallback is only for older backends.
+      // `??`: false is an answer; the fallback is only for older backends.
       checkpoint:
         e.checkpoint ?? (opts.filename ? e.files.includes(opts.filename) : e.repo_id === planRepoId),
+      hostedDenoiser: e.hosted_denoiser,
     }))
-    .filter((e) => planRepoId === repoId || !e.checkpoint);
+    .filter((e) => planRepoId === repoId || !e.checkpoint || e.hostedDenoiser);
 }

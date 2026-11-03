@@ -7,7 +7,11 @@ import re
 from typing import Any, Optional
 
 from utils.datasets.cells import text_cell_check, unwrap_message_column
-from utils.datasets.format_detection import detect_dataset_format, has_message_prompt_completion
+from utils.datasets.format_detection import (
+    detect_dataset_format,
+    has_message_prompt_completion,
+    is_plain_text_dataset,
+)
 from utils.datasets.pretokenized import PRETOKENIZED_FORMAT, is_pretokenized_dataset
 
 
@@ -257,9 +261,7 @@ def detect_custom_format_heuristic(dataset):
         if score > 0:
             user_candidates.append((col, score))
     if not user_candidates and not any(col != assistant_col for col in user_potential):
-        # has_keyword drops "context" from user_potential because "text" only matches
-        # inside it. When nothing else can hold the user turn, that column is a better
-        # user turn than an assistant-worded leftover.
+        # "text" only matches inside "context"; prefer it over an assistant-worded leftover.
         shadowed_potential = [
             col
             for col in content_columns
@@ -509,11 +511,9 @@ def detect_multimodal_dataset(dataset):
 
     detected_text_col = None
     if audio_columns:
-        # Two passes, not one list: a set carrying both an instruction-like "prompt" and a real
-        # "transcript" would be mapped by schema order, training an ASR set against its instructions.
+        # Two passes so a real "transcript" beats an instruction-like "prompt".
         transcript_names = ("text", "sentence", "transcript", "transcription", "label")
-        # TTS corpora name the line to speak rather than a transcript of it: SparkTTS sets use "prompt",
-        # LJSpeech derivatives "normalized_text".
+        # TTS sets name the line to speak: SparkTTS "prompt", LJSpeech "normalized_text".
         fallback_names = ("prompt", "normalized_text")
         for candidates in (transcript_names, fallback_names):
             for col_name in column_names:
@@ -738,6 +738,23 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         "detected_speaker_column": multimodal_info.get("detected_speaker_column"),
     }
 
+    if is_plain_text_dataset(dataset):
+        # Before the VLM branch: text-only data trains as raw text on a vision model too.
+        # Media flags off: a name match (a "speech" column) would route an audio model to its audio path.
+        return {
+            "requires_manual_mapping": False,
+            "detected_format": "raw",
+            "columns": columns,
+            "suggested_mapping": None,
+            "detected_image_column": None,
+            "detected_text_column": None,
+            "is_image": False,
+            "multimodal_columns": None,
+            "is_audio": False,
+            "detected_audio_column": None,
+            "detected_speaker_column": None,
+        }
+
     if is_vlm:
         vlm_structure = detect_vlm_dataset_structure(dataset)
         requires_mapping = vlm_structure["format"] == "unknown"
@@ -838,8 +855,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
     }
 
 
-# The aliases `standardize_data_formats` accepts. Keys are normalised: look them up
-# through `_normalize_role_alias`.
+# Aliases standardize_data_formats accepts; keys are normalised, so use _normalize_role_alias.
 _ROLE_MAP = {
     "human": "user",
     "user": "user",

@@ -4,6 +4,7 @@
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AudioApiError, runAudio } from "../api";
+import { reportAudioFailure } from "../audio-failure-actions";
 import {
   type AudioOptionValues,
   audioOptionLabel,
@@ -205,7 +206,6 @@ export function useEditGeneration({
   const sourceBusy =
     sourceStatus.phase === "uploading" || sourceStatus.phase === "recording";
 
-  // A new recording drops the old one's transcription and its error.
   const cancelTranscribe = transcriber.cancel;
   const sourceId = source?.id ?? null;
   // biome-ignore lint/correctness/useExhaustiveDependencies: the recording id is the trigger.
@@ -336,6 +336,7 @@ export function useEditGeneration({
     } catch (error) {
       if (!controller.signal.aborted) {
         updateGenerationPhase("finishing");
+        reportAudioFailure(error);
         const expired =
           error instanceof AudioApiError &&
           error.status === 404 &&

@@ -317,7 +317,7 @@ def test_the_metrics_wait_is_bounded_by_time_not_by_attempts(monkeypatch):
 
     calls = {"n": 0}
 
-    def stalled_check(port = 8000):
+    def stalled_check(port = 8000, host = "localhost"):
         calls["n"] += 1
         clock["now"] += 5.0
         return False
@@ -379,7 +379,7 @@ def test_the_metrics_wait_accepts_an_unbounded_timeout():
     """Same arithmetic, same fix, pinned so the helper is not left half done."""
     calls = {"n": 0}
 
-    def check(port = 8000):
+    def check(port = 8000, host = "localhost"):
         calls["n"] += 1
         return calls["n"] >= 3
 

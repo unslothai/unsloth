@@ -4,7 +4,7 @@
 import { DeleteConfirmDialog } from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Delete02Icon } from "@hugeicons/core-free-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useCallback, useState } from "react";
 
@@ -62,7 +62,6 @@ export function ModelDeleteAction({
         aria-label={ariaLabel}
         disabled={disabled}
         className={cn(
-          // Fixed box, matching the gear and dots menu it sits beside.
           "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-destructive/10 hover:text-destructive",
           disabled &&
             "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-muted-foreground/80",
@@ -70,7 +69,7 @@ export function ModelDeleteAction({
         )}
       >
         <HugeiconsIcon
-          icon={Delete02Icon}
+          icon={TrashIcon}
           strokeWidth={1.75}
           className={cn("size-3.5", iconClassName)}
         />

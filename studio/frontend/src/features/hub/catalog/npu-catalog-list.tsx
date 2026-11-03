@@ -17,7 +17,6 @@ import { toast } from "@/lib/toast";
 import { useState } from "react";
 import { DeleteConfirmDialog } from "./download-card";
 
-/** The Hub's NPU format: Lemonade's FastFlowLM catalog, the same models the chat picker lists. */
 export function NpuCatalogList({
   source,
   query,
@@ -122,7 +121,7 @@ function NpuCatalogRow({
     <div
       data-testid="hub-npu-row"
       data-model={model.id}
-      className="flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors hover:bg-accent/50"
+      className="flex items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-accent/50"
     >
       <span
         aria-hidden={true}
@@ -152,7 +151,7 @@ function NpuCatalogRow({
           <Button size="sm" variant="outline" onClick={onRun}>
             Run
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => setConfirming(true)}>
+          <Button size="sm" variant="destructive" onClick={() => setConfirming(true)}>
             Delete
           </Button>
           <DeleteConfirmDialog

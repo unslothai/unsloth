@@ -28,7 +28,7 @@ if _TESTS_DIR not in sys.path:
 
 from test_native_tls_entrypoints import _ENTRYPOINTS as _NATIVE_TLS_ENTRYPOINTS  # noqa: E402
 
-# Activate inside a spawned child function or inline script, so the native TLS guard does not list them.
+# Activate inside a spawned child, so the native TLS guard does not list them.
 _EXTRA_ENTRYPOINTS = (
     "core/training/diffusion_training_service.py",
     "utils/models/model_config.py",
@@ -113,7 +113,6 @@ def test_eight_black_holed_aaaa_cost_one_stagger(listener, monkeypatch):
     finally:
         sock.close()
 
-    # The stdlib pays 8 x 10s.
     assert elapsed < 3.0, f"took {elapsed:.1f}s; the AAAA records were walked in order"
 
 

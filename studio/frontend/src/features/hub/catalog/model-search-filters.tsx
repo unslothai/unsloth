@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -34,7 +35,7 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import {
   HUB_UPLOADERS,
@@ -48,6 +49,14 @@ import {
   type DatasetModality,
 } from "../lib/dataset-filters";
 import { CAPABILITY_FILTER_OPTIONS } from "../lib/view-models";
+
+/** On Device's own capability picks, kept apart from Discover's. */
+export interface OnDeviceFilters {
+  capabilities: HubCapabilityFilter[];
+  onCapabilitiesChange: (value: HubCapabilityFilter[]) => void;
+  isolateFirstCapability: boolean;
+  onReset: () => void;
+}
 
 const CAPABILITY_ICONS: Record<HubCapabilityFilter, IconSvgElement | null> = {
   text: TextFontIcon,
@@ -186,7 +195,7 @@ const MODALITY_ICONS: Record<DatasetModality, IconSvgElement> = {
   video: FlimSlateIcon,
 };
 
-const THUMB = 12;
+const THUMB = "var(--hub-range-thumb)";
 const SLIDER_FG =
   "[--hub-slider-fg:color-mix(in_oklab,var(--foreground)_68%,var(--background))] dark:[--hub-slider-fg:color-mix(in_oklab,var(--foreground)_86%,var(--background))]";
 const RANGE_FILL = "bg-(--hub-slider-fg)";
@@ -239,7 +248,7 @@ function RangeStops({
   const edge = (i: number) =>
     i === 0 ? { left: 0 } : i === last ? { right: 0 } : undefined;
   const at = (i: number) =>
-    `calc(${THUMB / 2}px + (100% - ${THUMB}px) * ${i / last})`;
+    `calc(${THUMB} / 2 + (100% - ${THUMB}) * ${i / last})`;
   const chip = (i: number) => spec.labels[i] ?? spec.format(spec.stops[i]);
   return (
     <fieldset>
@@ -267,11 +276,7 @@ function RangeStops({
         )}
       </legend>
       {/* Inset by an end pill's overhang, so the pills line up with the labels above. */}
-      {/* Ends at the thumb's edge, which doesn't scale with the h-4 root, so the gap below matches. */}
-      <div
-        style={{ marginBottom: `calc((${THUMB}px - var(--spacing) * 4) / 2)` }}
-        className={cn("relative mx-4.5 pt-7", SLIDER_FG)}
-      >
+      <div className={cn("hub-range relative mx-4.5 pt-7", SLIDER_FG)}>
         <div aria-hidden={true} className="absolute inset-x-0 top-0 h-5">
           {spec.labels.map((label, i) =>
             label === null && !covered(i) ? null : (
@@ -285,7 +290,7 @@ function RangeStops({
                   !edge(i) && "-translate-x-1/2",
                   covered(i)
                     ? cn(
-                        "-mx-1 -my-0.5 rounded-md px-1 py-0.5 font-semibold text-background",
+                        "-mx-1 -my-0.5 rounded-full px-1 py-0.5 font-semibold text-background",
                         RANGE_FILL,
                       )
                     : "text-muted-foreground",
@@ -311,9 +316,9 @@ function RangeStops({
               [spec.max]: next[1] === last ? undefined : spec.stops[next[1]],
             });
           }}
-          className="group/range relative flex h-4 w-full touch-none select-none items-center"
+          className="group/range relative flex h-(--hub-range-thumb) w-full touch-none select-none items-center"
         >
-          <SliderPrimitive.Track className="relative h-[3px] w-full grow rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
+          <SliderPrimitive.Track className="relative h-(--hub-range-track) w-full grow rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
             {spec.stops.map((_, i) =>
               // Under the range, which covers them where it runs, so its fill stays unbroken.
               i === 0 || i === last ? null : (
@@ -335,9 +340,8 @@ function RangeStops({
               key={thumb === 0 ? "min" : "max"}
               aria-label={`${thumb === 0 ? "Minimum" : "Maximum"} ${spec.label.toLowerCase()}`}
               aria-valuetext={chip(index)}
-              style={{ width: THUMB, height: THUMB }}
               className={cn(
-                "relative block cursor-grab rounded-full outline-none transition-shadow duration-150 hover:shadow-[0_0_0_8px_color-mix(in_srgb,var(--hub-slider-fg)_18%,transparent)] focus-visible:shadow-[0_0_0_8px_color-mix(in_srgb,var(--hub-slider-fg)_18%,transparent)] active:cursor-grabbing active:shadow-[0_0_0_10px_color-mix(in_srgb,var(--hub-slider-fg)_22%,transparent)]",
+                "relative block size-(--hub-range-thumb) cursor-grab rounded-full ring-(--hub-slider-fg)/20 outline-none focus-visible:ring-4 active:cursor-grabbing",
                 RANGE_FILL,
               )}
             />
@@ -435,6 +439,7 @@ function SegmentedRow<T extends string>({
   options: readonly (readonly [T, string])[];
   onChange: (value: T) => void;
 }) {
+  const pillId = useId();
   return (
     <div className="flex items-center justify-between gap-3 px-3">
       <span className="text-ui-12 text-muted-foreground">
@@ -463,10 +468,16 @@ function SegmentedRow<T extends string>({
               className={cn(
                 "relative flex h-8 cursor-pointer items-center rounded-full px-3 text-xs font-medium transition-colors",
                 active
-                  ? "hub-tab-toggle-pill text-foreground dark:bg-[color-mix(in_srgb,var(--accent),white_8%)]!"
+                  ? "text-foreground"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
+              {active && (
+                <SegmentedPill
+                  group={`${pillId}-segment`}
+                  className="dark:bg-[color-mix(in_srgb,var(--accent),white_8%)]!"
+                />
+              )}
               <span className="relative z-10">{text}</span>
             </button>
           );
@@ -513,6 +524,75 @@ function HoverInfo({ label, children }: { label: string; children: string }) {
   );
 }
 
+/** Capability ticks: none picked means every box ticked; a model with any pick is listed. */
+function CapabilityTiles({
+  capabilities,
+  onChange,
+  isolateFirst,
+}: {
+  capabilities: HubCapabilityFilter[];
+  onChange: (value: HubCapabilityFilter[]) => void;
+  /** The first pick from the defaults keeps just that one. */
+  isolateFirst: boolean;
+}) {
+  return (
+    <fieldset>
+      <legend className={SECTION_LABEL}>
+        Capabilities
+        {capabilities.length > 0 && (
+          <button
+            type="button"
+            onClick={() => onChange([])}
+            className="cursor-pointer transition-colors hover:text-foreground"
+          >
+            Select all
+          </button>
+        )}
+      </legend>
+      <div className="grid grid-cols-2 gap-1.5 px-3">
+        {CAPABILITY_FILTER_OPTIONS.map((option) => {
+          const ticked = (key: HubCapabilityFilter) =>
+            capabilities.length === 0 || capabilities.includes(key);
+          const checked = ticked(option.value);
+          const glyph = CAPABILITY_ICONS[option.value];
+          // Kept in the list's order, so it doesn't depend on click order.
+          const next = CAPABILITY_FILTER_OPTIONS.map((o) => o.value).filter(
+            (key) => (key === option.value ? !checked : ticked(key)),
+          );
+          return (
+            <OptionTile
+              key={option.value}
+              icon={
+                glyph ? (
+                  <HugeiconsIcon
+                    icon={glyph}
+                    strokeWidth={2}
+                    className="size-4 shrink-0"
+                  />
+                ) : (
+                  <BulbIcon className="size-4 shrink-0" />
+                )
+              }
+              label={option.label}
+              checked={checked}
+              locked={next.length === 0}
+              onToggle={() =>
+                onChange(
+                  capabilities.length === 0 && isolateFirst
+                    ? [option.value]
+                    : next.length === CAPABILITY_FILTER_OPTIONS.length
+                      ? []
+                      : next,
+                )
+              }
+            />
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
 /** The Hub's filter popover: capabilities, then (where the Hub search takes them) size and
  *  context limits and the uploader. Ticks apply at once; the limits on release. */
 export function ModelSearchFiltersControl({
@@ -532,6 +612,7 @@ export function ModelSearchFiltersControl({
   datasetSections,
   modalities,
   onModalitiesChange,
+  onDevice,
   className,
 }: {
   value: ModelSearchFilters;
@@ -557,15 +638,19 @@ export function ModelSearchFiltersControl({
   modalities: DatasetModality[];
   onModalitiesChange: (value: DatasetModality[]) => void;
   onDatasetsChange: (value: boolean) => void;
+  /** Set on On Device, whose sections replace the Hub search's. */
+  onDevice?: OnDeviceFilters;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const unslothOnly = uploaders.length === 1 && uploaders[0] === "unsloth";
-  const filtered =
-    modalities.length > 0 ||
-    (modelSections && capabilities.length > 0) ||
-    uploadersChanged ||
-    ((showModelFilters || datasetSections) && hasModelSearchFilters(value));
+  const onDeviceModels = onDevice !== undefined && !datasets;
+  const filtered = onDevice
+    ? onDeviceModels && onDevice.capabilities.length > 0
+    : modalities.length > 0 ||
+      (modelSections && capabilities.length > 0) ||
+      uploadersChanged ||
+      ((showModelFilters || datasetSections) && hasModelSearchFilters(value));
   return (
     <Popover open={open} onOpenChange={setOpen}>
       {/* Icon-sized so the Discover toolbar keeps its existing single-row layout. */}
@@ -602,64 +687,20 @@ export function ModelSearchFiltersControl({
         className="hub-menu-instant hub-composer-menu menu-soft-surface gap-0 overflow-hidden w-[calc(392px*var(--ui-space-scale,1))] max-w-[calc(100vw-1rem)] ring-0"
       >
         <div className="flex min-h-0 flex-1 flex-col gap-4.25 overflow-y-auto overscroll-contain pt-2.25 pb-4.25 [scrollbar-width:thin]">
+          {onDeviceModels && (
+            <CapabilityTiles
+              capabilities={onDevice.capabilities}
+              onChange={onDevice.onCapabilitiesChange}
+              isolateFirst={onDevice.isolateFirstCapability}
+            />
+          )}
           {modelSections && (
             <>
-              <fieldset>
-                <legend className={SECTION_LABEL}>
-                  Capabilities
-                  {capabilities.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => onCapabilitiesChange([])}
-                      className="cursor-pointer transition-colors hover:text-foreground"
-                    >
-                      Select all
-                    </button>
-                  )}
-                </legend>
-                <div className="grid grid-cols-2 gap-1.5 px-3">
-                  {CAPABILITY_FILTER_OPTIONS.map((option) => {
-                    const ticked = (key: HubCapabilityFilter) =>
-                      capabilities.length === 0 || capabilities.includes(key);
-                    const checked = ticked(option.value);
-                    const glyph = CAPABILITY_ICONS[option.value];
-                    // Kept in the list's order, so it doesn't depend on click order.
-                    const next = CAPABILITY_FILTER_OPTIONS.map(
-                      (o) => o.value,
-                    ).filter((key) =>
-                      key === option.value ? !checked : ticked(key),
-                    );
-                    return (
-                      <OptionTile
-                        key={option.value}
-                        icon={
-                          glyph ? (
-                            <HugeiconsIcon
-                              icon={glyph}
-                              strokeWidth={2}
-                              className="size-4 shrink-0"
-                            />
-                          ) : (
-                            <BulbIcon className="size-4 shrink-0" />
-                          )
-                        }
-                        label={option.label}
-                        checked={checked}
-                        locked={next.length === 0}
-                        onToggle={() =>
-                          onCapabilitiesChange(
-                            capabilities.length === 0 && isolateFirstCapability
-                              ? [option.value]
-                              : next.length === CAPABILITY_FILTER_OPTIONS.length
-                                ? []
-                                : next,
-                          )
-                        }
-                      />
-                    );
-                  })}
-                </div>
-              </fieldset>
+              <CapabilityTiles
+                capabilities={capabilities}
+                onChange={onCapabilitiesChange}
+                isolateFirst={isolateFirstCapability}
+              />
               {showModelFilters &&
                 RANGES.map((spec) => (
                   <RangeStops
@@ -762,7 +803,7 @@ export function ModelSearchFiltersControl({
             // "Reset all" has no descenders: its ink sits 0.25em inside the text box on each side.
             className={cn(TEXT_BOX, "-my-[0.25em]")}
             disabled={!filtered}
-            onClick={onReset}
+            onClick={onDevice ? onDevice.onReset : onReset}
           >
             Reset all
           </Button>

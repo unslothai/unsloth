@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { browserFrameUrl, type PageResponse, requestForPage } from "./api";
-import { type AnnotateEvent, type FrameMessage, parseFrameMessage } from "./frame-message";
+import { type AnnotateEvent, type FrameMessage, parseFrameMessage, userActionGate } from "./frame-message";
 import { pageRequests } from "./page-requests";
+import { type ScrollPosition, useBrowserStore } from "./store";
 import {
   onPageStorageClear,
   onPageStorageWrite,
@@ -19,11 +20,21 @@ export type { FrameMessage };
 let loadCounter = 0;
 
 const frames = new Map<string, HTMLIFrameElement>();
+const frameListeners = new Set<() => void>();
+const subscribeFrames = (listener: () => void) => {
+  frameListeners.add(listener);
+  return () => { frameListeners.delete(listener); };
+};
+
+export function useFrameAvailable(tabId: string | null): boolean {
+  return useSyncExternalStore(subscribeFrames, () => !!tabId && frames.has(tabId), () => false);
+}
 
 export type FrameCommand =
   | { command: "find"; query: string }
   | { command: "findStep"; delta: -1 | 1 }
   | { command: "snapshot" }
+  | { command: "go"; delta: -1 | 1 }
   | { command: "zoom"; value: number }
   | { command: "mute"; on: boolean }
   | { command: "clearStorage" }
@@ -78,6 +89,31 @@ export function onFrameAnnotate(tabId: string, listener: (event: AnnotateEvent) 
   };
 }
 
+/** Register an artifact's opaque-origin frame for annotation commands only. */
+export function registerArtifactFrame(tabId: string, frame: HTMLIFrameElement): () => void {
+  frames.set(tabId, frame);
+  for (const notify of frameListeners) notify();
+  const listener = (event: MessageEvent) => {
+    if (event.source !== frame.contentWindow || event.origin !== "null") return;
+    const message = parseFrameMessage(event.data);
+    if (message?.type === "annotate") annotateListeners.get(tabId)?.(message.event);
+  };
+  window.addEventListener("message", listener);
+  return () => {
+    window.removeEventListener("message", listener);
+    if (frames.get(tabId) === frame) {
+      frames.delete(tabId);
+      for (const notify of frameListeners) notify();
+    }
+  };
+}
+
+/** CSS zoom on a file preview scales the frame as well as its annotation coordinates. */
+export function frameScale(tabId: string): number {
+  const frame = frames.get(tabId);
+  return frame?.offsetWidth ? frame.getBoundingClientRect().width / frame.offsetWidth : 1;
+}
+
 const snapshotRequests = new Map<string, (html: string | null) => void>();
 
 /** The page's markup as it is now (see `snapshot` in routes/browser.py); null if it can't say. */
@@ -106,15 +142,6 @@ export function sendFrameCommand(tabId: string, command: FrameCommand): boolean 
   return true;
 }
 
-// Messages that open tabs or apps, or run shortcuts. Pages can post anything, so check them here.
-const isUserAction = (message: FrameMessage) =>
-  (message.type === "navigate" && message.newTab === true) ||
-  message.type === "external" ||
-  message.type === "shortcut";
-
-// Activation outlives the click that loaded the page, so user actions are also rate limited, per page.
-const USER_ACTION_INTERVAL_MS = 1000;
-
 /** Recent user activation in the focused frame; without the API, focus opens a tab but never the system browser. */
 function userActive(frame: HTMLIFrameElement, message: FrameMessage): boolean {
   if (document.activeElement !== frame) return false;
@@ -134,11 +161,13 @@ export function PageFrame({
   tabId,
   zoom = 1,
   muted = false,
+  scroll,
   onMessage,
 }: {
   tabId: string;
   zoom?: number;
   muted?: boolean;
+  scroll?: ScrollPosition;
   html: string;
   url: string | null;
   base: string | null;
@@ -166,7 +195,7 @@ export function PageFrame({
     // A page loads and leaves once; repeats are spam.
     let loaded = false;
     let left = false;
-    let lastUserAction = Number.NEGATIVE_INFINITY;
+    const userAction = userActionGate();
     // The page's requests to its own site, answered through the shell, which relays to the page.
     const requests = pageRequests(
       requestForPage,
@@ -214,13 +243,9 @@ export function PageFrame({
           );
         return;
       }
-      if (isUserAction(message)) {
-        if (!userActive(frame, message)) return;
-        // Shortcuts too: a script can queue many before the first one moves focus off the page.
-        const now = performance.now();
-        if (now - lastUserAction < USER_ACTION_INTERVAL_MS) return;
-        lastUserAction = now;
-      }
+      if (message.type === "typed" && left) return;
+      message = userAction(message, userActive(frame, message), performance.now());
+      if (!message) return;
       if (message.type === "loaded") {
         if (loaded) message = { type: "title", title: message.title };
         loaded = true;
@@ -229,6 +254,11 @@ export function PageFrame({
         left = true;
         // An unrequested redirect replaces this page, as browsers keep it off Back.
         if (message.type === "navigate" && !userActive(frame, message)) message = { ...message, replace: true };
+      } else if (message.type === "back" || message.type === "forward") {
+        // At the tab's first or last page nothing moves and the frame stays, so it has not left.
+        const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabIdRef.current);
+        if (left || !tab?.history[tab.index + (message.type === "back" ? -1 : 1)]) return;
+        left = true;
       }
       onMessageRef.current(message);
     };
@@ -257,6 +287,7 @@ export function PageFrame({
       stopClearing();
       stopSyncing();
       requests.stop();
+      onMessageRef.current({ type: "typed", reset: true });
     };
   }, [origin]);
 
@@ -264,8 +295,12 @@ export function PageFrame({
     const frame = frameRef.current;
     if (!frame) return;
     frames.set(tabId, frame);
+    for (const notify of frameListeners) notify();
     return () => {
-      if (frames.get(tabId) === frame) frames.delete(tabId);
+      if (frames.get(tabId) === frame) {
+        frames.delete(tabId);
+        for (const notify of frameListeners) notify();
+      }
     };
   }, [tabId]);
 
@@ -291,6 +326,7 @@ export function PageFrame({
       title={title}
       src={browserFrameUrl(loadId)}
       sandbox="allow-scripts allow-forms"
+      allow="clipboard-write"
       allowFullScreen
       referrerPolicy="no-referrer"
       className="size-full border-0 bg-white"
@@ -308,6 +344,7 @@ export function PageFrame({
             refresh: refresh ?? null,
             zoom: zoomRef.current,
             muted: mutedRef.current,
+            scroll: scroll ?? null,
             storage: origin ? readPageStorage(origin, tabId) : null,
           },
           "*",

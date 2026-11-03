@@ -12,7 +12,6 @@ import {
 
 const INTERVAL = 1000;
 
-/** The scheduler reschedules from a promise continuation, so let those run. */
 async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 8; i += 1) {
     await Promise.resolve();
@@ -34,9 +33,7 @@ function createFakeTimers() {
     clearTimeout: (handle) => {
       scheduled.delete(handle);
     },
-    // The staleness bound reads a clock, and this harness already keeps one. Without
-    // this the bound would be measured against the real wall clock, so a test that
-    // advances an hour of fake time would take none of it and never reach the cap.
+    // The staleness bound must read the fake clock, or advancing fake time never reaches the cap.
     now: () => now,
   };
 
@@ -57,15 +54,10 @@ function createFakeTimers() {
   return {
     timers,
     pending: () => scheduled.size,
-    /** Due timers are snapshotted once, exactly like the harness the PR ships. */
     async advance(ms: number): Promise<void> {
       now += ms;
       await fireDue();
     },
-    /**
-     * Advance and then keep firing anything that came due during the pass, so a timer
-     * armed mid-advance still runs. Used where a flush or a settle rearms in the middle.
-     */
     async advanceUntilQuiet(ms: number): Promise<void> {
       now += ms;
       for (let i = 0; i < 50; i += 1) {
@@ -90,7 +82,6 @@ function recordingScheduler(
   return { clock, saved, scheduler };
 }
 
-/** The same, over a save the test settles by hand. */
 function gatedScheduler(
   options: Parameters<typeof createRunCheckpointScheduler>[1] = {},
 ) {
@@ -104,7 +95,6 @@ function gatedScheduler(
   return { clock, gated, scheduler };
 }
 
-/** A save whose settling the test controls. */
 function createGatedSave() {
   const releases: Array<() => void> = [];
   const calls: string[] = [];
@@ -123,16 +113,7 @@ function createGatedSave() {
   };
 }
 
-// A. backwards compatibility of the new options
-
-// This file used to assert that omitting isActive checkpoints INDEFINITELY, and called
-// that intentional. It is no longer true, deliberately. A run that never reaches a
-// terminal status never fires runEnd, and `isActive` reports the runtime's own
-// `isRunning`, which that same stuck run holds true, so the two agreed forever and the
-// schedule outlived the page: a real user log showed 160 four-request cycles at 8-9s
-// against one thread, unbroken by two full app reloads. An absent or always-true liveness
-// probe still must not END a live run, which is what the first twelve intervals below
-// pin; what it may no longer do is run without any bound at all.
+// Omitting isActive no longer checkpoints forever: a stuck run held isRunning true indefinitely.
 
 test("omitting isActive keeps checkpointing until the staleness bound, not forever", async () => {
   const { clock, saved, scheduler } = recordingScheduler({
@@ -178,9 +159,7 @@ test("an isActive that always returns true behaves like no isActive at all", asy
 });
 
 test("the staleness bound is generous enough for a long legitimate run", () => {
-  // Thirty minutes, held at the follow deadline. Tripping it costs only the periodic
-  // partial saves, never the run's own writes, so the bound is set to outlast any answer
-  // a user waits through, including a prefill the backend still allows 1200s for.
+  // Held at the follow deadline; it must outlast any answer, including a 1200s prefill.
   assert.equal(RUN_CHECKPOINT_MAX_DURATION_MS, 30 * 60_000);
   assert.ok(
     RUN_CHECKPOINT_MAX_DURATION_MS / RUN_CHECKPOINT_INTERVAL_MS >= 100,
@@ -258,8 +237,6 @@ test("the original no-options call shape arms a window timer at the production i
     globals.window = original;
   }
 });
-
-// B. the liveness guard
 
 test("a thread that is already inactive at the first tick takes exactly one final save", async () => {
   const clock = createFakeTimers();
@@ -345,7 +322,6 @@ test("a thread can be started again after it self-terminated", async () => {
   assert.equal(saves, 1);
   assert.equal(clock.pending(), 0);
 
-  // The dead-record hazard: a stale Map entry would make this start a silent no-op.
   active = true;
   scheduler.start("thread-a");
   assert.equal(
@@ -502,8 +478,6 @@ test("the liveness probe receives the thread id under checkpoint", async () => {
   scheduler.stopAll();
 });
 
-// C. sync-throw and non-thenable hardening
-
 test("a save that throws synchronously does not stop the schedule", async () => {
   const clock = createFakeTimers();
   let attempts = 0;
@@ -539,7 +513,6 @@ test("a synchronous throw does not escape the timer callback", async () => {
   );
 
   scheduler.start("thread-a");
-  // An escaping throw would reject this advance and fail the test.
   await clock.advance(INTERVAL);
   assert.equal(clock.pending(), 1);
   scheduler.stop("thread-a");
@@ -673,8 +646,6 @@ test("a throwing probe and a throwing save still terminate cleanly", async () =>
   await clock.advance(INTERVAL * 10);
   assert.equal(attempts, 1);
 });
-
-// D. flushAll
 
 test("flushAll checkpoints every started thread", async () => {
   const { clock, saved, scheduler } = recordingScheduler();
@@ -893,8 +864,6 @@ test("flushAll writes a thread that was restarted after stopAll", async () => {
   scheduler.stopAll();
 });
 
-// E. pre-existing behaviour that must not regress
-
 test("the checkpoint interval constant is still eight seconds", () => {
   assert.equal(RUN_CHECKPOINT_INTERVAL_MS, 8_000);
 });
@@ -906,13 +875,11 @@ test("quiet time is measured after the checkpoint settles, not on a fixed cadenc
   await clock.advance(INTERVAL);
   assert.equal(gated.calls.length, 1, "checkpoint 1 at t = interval");
 
-  // The save takes five intervals to land.
   await clock.advance(INTERVAL * 5);
   assert.equal(gated.calls.length, 1);
   gated.releaseAll();
   await flushMicrotasks();
 
-  // Checkpoint 2 must land at save_duration + interval, not at a fixed 2 x interval.
   await clock.advance(INTERVAL - 1);
   assert.equal(
     gated.calls.length,
@@ -1113,7 +1080,6 @@ test("a thread restarted while its old save is in flight keeps exactly one sched
   scheduler.start("thread-a");
   assert.equal(clock.pending(), 1, "the restart arms its own timer");
 
-  // The abandoned save settles; it must not arm a second timer for the new run.
   gated.releaseAll();
   await flushMicrotasks();
   assert.equal(

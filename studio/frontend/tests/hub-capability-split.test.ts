@@ -11,9 +11,12 @@ import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { detectCapabilities, generationKinds, HUB_CAPABILITY_FILTERS } = await import(
-  "../src/features/hub/lib/model-capabilities.ts"
-);
+const {
+  detectCapabilities,
+  generationKinds,
+  HUB_CAPABILITY_FILTERS,
+  isVideoFamilyName,
+} = await import("../src/features/hub/lib/model-capabilities.ts");
 
 test("video models are video gen, image models image gen", () => {
   assert.deepEqual(generationKinds(["diffusers"], "text-to-video", "Wan-AI/Wan2.2-T2V"), { image: false, video: true });
@@ -81,7 +84,8 @@ test("every capability starts ticked, and the last tick can't be removed", () =>
 
 test("the first pick from the default keeps just that capability", () => {
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
-  assert.match(popover, /capabilities\.length === 0 && isolateFirstCapability\s*\? \[option\.value\]/);
+  assert.match(popover, /capabilities\.length === 0 && isolateFirst\s*\? \[option\.value\]/);
+  assert.match(popover, /isolateFirst=\{isolateFirstCapability\}/);
   // Armed once, until the first change from the defaults; the resets arm it again.
   const page = readSrc("features/hub/hub-page.tsx");
   assert.match(page, /setFirstPickArmed\(false\);\s*setCapabilityFilters\(next\);/);
@@ -200,4 +204,27 @@ test("back/forward between models and datasets drops the other kind's hidden bou
 
 test("capabilities light the filter dot only where they apply", () => {
   assert.match(readSrc("features/hub/catalog/model-search-filters.tsx"), /\(modelSections && capabilities\.length > 0\)/);
+});
+
+test("Cosmos3's Nano and Edge are video gen; its Reasoner, Policy, Sim / Transfer and FP8 repos are not", () => {
+  const tags = ["diffusers", "safetensors", "cosmos3", "cosmos3_edge"];
+  for (const id of ["nvidia/Cosmos3-Nano", "nvidia/Cosmos3-Edge", "someone/cosmos3_edge"]) {
+    assert.equal(isVideoFamilyName(id), true, id);
+    assert.deepEqual(generationKinds(tags, undefined, id), { image: false, video: true }, id);
+    const diffusion = detectCapabilities(tags, undefined, id).find((c) => c.key === "diffusion");
+    assert.deepEqual(diffusion, { key: "diffusion", label: "Video gen" }, id);
+  }
+  for (const id of [
+    "nvidia/Cosmos3-Nano-Reasoner",
+    "unsloth/Cosmos3-Nano-Reasoner-GGUF",
+    "nvidia/Cosmos3-Edge-Policy-DROID",
+    "nvidia/Cosmos3-Nano-Sim-Transfer",
+    "nvidia/Cosmos3-Nano-FP8",
+    "nvidia/Cosmos3-Super",
+    "nvidia/Cosmos3-Edgeless",
+    "cosmos3-edge-lab/some-model",
+  ]) {
+    assert.equal(isVideoFamilyName(id), false, id);
+    assert.equal(generationKinds(["diffusers"], undefined, id).video, false, id);
+  }
 });

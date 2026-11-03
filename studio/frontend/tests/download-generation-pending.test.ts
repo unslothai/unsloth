@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// syncServerGeneration persists the new generation before the tick decides
-// whether to poll progress, and status is polled twice as often as progress
-// (500ms against 1000ms). A generation observed on a status-only tick was
-// therefore already stored by the next one, so generationChanged read false and
-// the samples from the previous server were never dropped. Holding the change
-// until a progress poll consumes it is what makes the reset reliable.
+// Status polls twice as often as progress, so a generation change is held until a progress poll.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -34,8 +29,6 @@ test("a generation change is held until a progress poll consumes it", () => {
   assert.ok(set > 0, "a generation change should be recorded on the runtime");
   assert.ok(read > 0, "the progress path should read the held change");
   assert.ok(clear > read, "it should be cleared only after it is read");
-  // It must not be read straight out of syncServerGeneration's return value
-  // again, or the early return swallows it exactly as before.
   assert.doesNotMatch(
     source,
     /const generationChanged = syncServerGeneration\(/,
@@ -43,8 +36,6 @@ test("a generation change is held until a progress poll consumes it", () => {
   );
 });
 
-// The behaviour the flag buys, modelled on the real cadence: a change seen on a
-// status-only tick still reaches the progress path.
 test("a change seen between progress polls still reaches reconcile", () => {
   const consumed: boolean[] = [];
   const rt: { pendingGenerationChange?: boolean } = {};
@@ -52,11 +43,9 @@ test("a change seen between progress polls still reaches reconcile", () => {
   let lastProgressAt = 0;
 
   const tick = (now: number, serverGeneration: number, sticky: boolean) => {
-    // syncServerGeneration: persists immediately, reports the change once.
     const changed = serverGeneration !== storedGeneration;
     storedGeneration = serverGeneration;
     if (sticky && changed) rt.pendingGenerationChange = true;
-    // shouldPollProgress: the early return that drops the signal.
     if (now - lastProgressAt < PROGRESS_POLL_INTERVAL_MS) return;
     lastProgressAt = now;
     if (sticky) {
@@ -72,7 +61,6 @@ test("a change seen between progress polls still reaches reconcile", () => {
     rt.pendingGenerationChange = false;
     storedGeneration = 1;
     lastProgressAt = 0;
-    // The backend restarts at t=500ms, which is a status-only tick.
     for (let now = 0; now <= 3_000; now += POLL_INTERVAL_MS) {
       tick(now, now >= 500 ? 2 : 1, sticky);
     }

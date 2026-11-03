@@ -4,6 +4,8 @@
 """ "off" (Run automatically) asks before a risky python/terminal call without OS isolation."""
 
 import itertools
+import os
+import socket
 import sys
 import threading
 import time
@@ -147,7 +149,6 @@ def test_off_gate_is_armed_only_where_a_prompt_can_reach_the_caller(
     [
         ({}, True),
         ({"confirm_tool_calls": False}, False),
-        # An explicit true is the Ask-every-time contract, not an opt-out.
         ({"confirm_tool_calls": True}, True),
     ],
 )
@@ -271,14 +272,14 @@ def test_forget_discards_a_refresh_that_started_before_it(monkeypatch):
 
 
 def test_an_older_check_that_finishes_last_never_overwrites_a_newer_one():
-    stale = os_sandbox.tool_isolation_generation()  # background refresh of an expired answer
-    forced = os_sandbox.tool_isolation_generation()  # a forced refresh started after it
+    stale = os_sandbox.tool_isolation_generation()
+    forced = os_sandbox.tool_isolation_generation()
     os_sandbox.note_tool_isolation("python", True, backend = "bubblewrap", generation = forced)
     os_sandbox.note_tool_isolation("python", False, backend = "none", generation = stale)
     assert os_sandbox.cached_tool_capability("python")[:2] == (True, "bubblewrap")
-    os_sandbox.note_tool_isolation("python", False, backend = "none")  # a real launch, just now
+    os_sandbox.note_tool_isolation("python", False, backend = "none")
     assert os_sandbox.cached_tool_capability("python")[:2] == (False, "none")
-    os_sandbox.note_tool_isolation("terminal", True, generation = stale)  # other tools are separate
+    os_sandbox.note_tool_isolation("terminal", True, generation = stale)
     assert os_sandbox.cached_tool_capability("terminal")[0] is True
 
 
@@ -318,27 +319,30 @@ def test_no_startup_warmup_on_windows(monkeypatch):
     assert called == []
 
 
-class _Clock:
+class _LeapingClock:
+    """Each read is a day later, so any TTL left in the code expires between two calls."""
+
     def __init__(self):
         self.now = 1000.0
 
     def __call__(self):
+        self.now += 86400.0
         return self.now
+
+
+def _leap_time(monkeypatch, module):
+    import types
+    clock = types.SimpleNamespace(monotonic = _LeapingClock(), time = time.time, sleep = time.sleep)
+    monkeypatch.setattr(module, "time", clock, raising = False)
 
 
 @pytest.fixture
 def probe_env(monkeypatch):
     monkeypatch.setenv(os_sandbox.WARMUP_DISABLE_ENV, "0")
     sandbox_probe.reset_probe_cache()
-    clock = _Clock()
-    import types
-
-    monkeypatch.setattr(
-        sandbox_probe,
-        "time",
-        types.SimpleNamespace(monotonic = clock, time = time.time, sleep = time.sleep),
-    )
-    monkeypatch.setattr(os_sandbox, "_runtime_identity", lambda: "identity")
+    _leap_time(monkeypatch, sandbox_probe)
+    identity = ["identity"]
+    monkeypatch.setattr(os_sandbox, "_runtime_identity", lambda: identity[0])
     verdicts = []
     gate = threading.Event()
     gate.set()
@@ -350,7 +354,7 @@ def probe_env(monkeypatch):
         return verdicts.pop(0)
 
     monkeypatch.setattr(sandbox_probe, "_run_probe", run_probe)
-    yield clock, verdicts, gate, calls
+    yield identity, verdicts, gate, calls
     sandbox_probe.reset_probe_cache()
 
 
@@ -365,78 +369,133 @@ def _wait_for(predicate, timeout = 5.0):
     return predicate()
 
 
-def test_a_stale_pass_is_served_while_one_reprobe_runs(probe_env):
-    clock, verdicts, gate, calls = probe_env
-    verdicts.extend([(True, "first"), (True, "second")])
-    assert sandbox_probe.probe(_Backend()) == (True, "first")
-    clock.now += sandbox_probe._CACHE_TTL_SECONDS + 1
-    gate.clear()
-    assert sandbox_probe.probe(_Backend()) == (True, "first")
-    assert sandbox_probe.probe(_Backend()) == (True, "first")
-    assert _wait_for(lambda: len(calls) == 2)
-    assert calls[1] == "unsloth-sandbox-reprobe"
-    gate.set()
-    assert _wait_for(lambda: sandbox_probe.probe(_Backend()) == (True, "second"))
+@pytest.mark.parametrize("first", [(True, "ok"), (False, "blocked")])
+def test_a_verdict_is_held_until_an_event_not_a_timer(probe_env, first):
+    identity, verdicts, gate, calls = probe_env
+    verdicts.extend([first, (True, "after reset"), (False, "forced"), (True, "new runtime")])
+    assert sandbox_probe.probe(_Backend()) == first
+    for _ in range(20):
+        assert sandbox_probe.probe(_Backend()) == first
+    assert len(calls) == 1
+    sandbox_probe.reset_probe_cache()
+    assert sandbox_probe.probe(_Backend()) == (True, "after reset")
+    assert sandbox_probe.probe(_Backend(), force = True) == (False, "forced")
+    identity[0] = "swapped venv"
+    assert sandbox_probe.probe(_Backend()) == (True, "new runtime")
+    assert len(calls) == 4
+    assert all(name == threading.current_thread().name for name in calls)
+
+
+def test_an_undecided_verdict_is_retried_by_the_next_caller(probe_env):
+    identity, verdicts, gate, calls = probe_env
+    verdicts.extend([(False, sandbox_probe.UndecidedReason("out of disk")), (True, "ok")])
+    assert sandbox_probe.probe(_Backend())[0] is False
+    assert sandbox_probe.probe(_Backend()) == (True, "ok")
+    assert sandbox_probe.probe(_Backend()) == (True, "ok")
     assert len(calls) == 2
 
 
-def test_a_failed_reprobe_replaces_the_stale_pass(probe_env):
-    clock, verdicts, gate, calls = probe_env
-    verdicts.extend([(True, "ok"), (False, "now blocked")])
-    sandbox_probe.probe(_Backend())
-    clock.now += sandbox_probe._CACHE_TTL_SECONDS + 1
-    assert sandbox_probe.probe(_Backend()) == (True, "ok")
-    assert _wait_for(lambda: sandbox_probe.probe(_Backend()) == (False, "now blocked"))
-
-
-def test_a_fail_is_never_served_stale(probe_env):
-    clock, verdicts, gate, calls = probe_env
-    verdicts.extend([(False, "blocked"), (True, "fixed")])
-    assert sandbox_probe.probe(_Backend()) == (False, "blocked")
-    clock.now += sandbox_probe._CACHE_TTL_UNAVAILABLE_SECONDS + 1
-    assert sandbox_probe.probe(_Backend()) == (True, "fixed")
-    assert all(name != "unsloth-sandbox-reprobe" for name in calls)
-
-
-def test_a_pass_past_the_grace_is_probed_in_the_foreground(probe_env):
-    clock, verdicts, gate, calls = probe_env
-    verdicts.extend([(True, "old"), (True, "new")])
-    sandbox_probe.probe(_Backend())
-    clock.now += sandbox_probe._CACHE_TTL_SECONDS + sandbox_probe._STALE_GRACE_SECONDS + 1
-    assert sandbox_probe.probe(_Backend()) == (True, "new")
-    assert all(name != "unsloth-sandbox-reprobe" for name in calls)
-
-
-def test_a_stale_pass_is_reprobed_in_the_foreground_when_background_probes_are_off(
-    probe_env, monkeypatch
-):
-    clock, verdicts, gate, calls = probe_env
-    monkeypatch.setenv(os_sandbox.WARMUP_DISABLE_ENV, "1")
-    verdicts.extend([(True, "old"), (False, "broke")])
-    sandbox_probe.probe(_Backend())
-    clock.now += sandbox_probe._CACHE_TTL_SECONDS + 1
-    assert sandbox_probe.probe(_Backend()) == (False, "broke")
-    assert all(name != "unsloth-sandbox-reprobe" for name in calls)
-    assert not sandbox_probe._refreshing
-
-
-def test_a_reset_during_a_reprobe_keeps_its_result_out(probe_env):
-    clock, verdicts, gate, calls = probe_env
-    verdicts.extend([(True, "ok"), (True, "from before the reset"), (False, "after")])
-    sandbox_probe.probe(_Backend())
-    clock.now += sandbox_probe._CACHE_TTL_SECONDS + 1
+def test_a_reset_during_a_probe_keeps_its_result_out(probe_env):
+    identity, verdicts, gate, calls = probe_env
+    verdicts.extend([(True, "from before the reset"), (False, "after")])
     gate.clear()
-    sandbox_probe.probe(_Backend())
-    assert _wait_for(lambda: len(calls) == 2)
+    worker = threading.Thread(target = sandbox_probe.probe, args = (_Backend(),))
+    worker.start()
+    assert _wait_for(lambda: len(calls) == 1)
     sandbox_probe.reset_probe_cache()
     gate.set()
-    assert _wait_for(lambda: not sandbox_probe._refreshing)
+    worker.join(5)
     assert sandbox_probe.probe(_Backend()) == (False, "after")
+
+
+def test_an_older_probe_finishing_last_never_replaces_a_newer_verdict(probe_env, monkeypatch):
+    """With no TTL, a slow ordinary probe landing after a forced Refresh would have stuck for good."""
+    identity, verdicts, gate, calls = probe_env
+    slow_started, release_slow = threading.Event(), threading.Event()
+
+    def run_probe(backend, name, plan_cls):
+        if not slow_started.is_set():
+            slow_started.set()
+            release_slow.wait(5)
+            return False, "old failure"
+        return True, "forced pass"
+
+    monkeypatch.setattr(sandbox_probe, "_run_probe", run_probe)
+    slow = threading.Thread(target = sandbox_probe.probe, args = (_Backend(),))
+    slow.start()
+    assert slow_started.wait(5)
+    assert sandbox_probe.probe(_Backend(), force = True) == (True, "forced pass")
+    release_slow.set()
+    slow.join(5)
+    assert sandbox_probe.probe(_Backend()) == (True, "forced pass")
+
+
+def test_an_undecided_answer_is_checked_again_by_the_next_read(monkeypatch):
+    monkeypatch.delenv(os_sandbox.WARMUP_DISABLE_ENV, raising = False)
+    started = []
+
+    def refresh(tool, *, force = False):
+        started.append(tool)
+        os_sandbox.note_tool_isolation(tool, True, backend = "bubblewrap")
+        return True
+
+    monkeypatch.setattr(os_sandbox, "refresh_tool_isolation", refresh)
+    os_sandbox.note_tool_isolation(
+        "python", False, backend = "none", reason = sandbox_probe.UndecidedReason("out of disk")
+    )
+    assert os_sandbox.cached_tool_capability("python")[0] is False
+    assert _wait_for(lambda: os_sandbox.cached_tool_isolation("python") is True)
+    for _ in range(5):
+        os_sandbox.cached_tool_capability("python")
+    assert started == ["python"]
+
+
+def test_polling_an_answered_tool_never_probes_again(monkeypatch):
+    monkeypatch.delenv(os_sandbox.WARMUP_DISABLE_ENV, raising = False)
+    _leap_time(monkeypatch, os_sandbox)
+    started = []
+    import types
+
+    monkeypatch.setattr(
+        os_sandbox,
+        "threading",
+        types.SimpleNamespace(
+            Thread = lambda *a, **k: started.append(k.get("name")) or threading.Thread()
+        ),
+    )
+    os_sandbox.note_tool_isolation("python", False, backend = "none", reason = "blocked")
+    for _ in range(50):
+        assert os_sandbox.cached_tool_capability("python")[:3] == (False, "none", "blocked")
+        assert tool_policy.off_mode_still_gates("python") is True
+    assert started == [], "polling an answered tool started a re-probe"
+
+
+def test_an_answer_noted_under_another_host_key_is_checked_once(monkeypatch):
+    monkeypatch.delenv(os_sandbox.WARMUP_DISABLE_ENV, raising = False)
+    key = ["no bwrap"]
+    monkeypatch.setattr(os_sandbox, "_host_key", lambda: key[0])
+    started = []
+
+    def refresh(tool, *, force = False):
+        started.append(tool)
+        os_sandbox.note_tool_isolation(tool, True, backend = "bubblewrap")
+        return True
+
+    monkeypatch.setattr(os_sandbox, "refresh_tool_isolation", refresh)
+    os_sandbox.note_tool_isolation("python", False, backend = "none", reason = "no bwrap")
+    for _ in range(5):
+        assert os_sandbox.cached_tool_capability("python")[0] is False
+    assert started == []
+    key[0] = "bwrap installed"
+    os_sandbox.cached_tool_capability("python")
+    assert _wait_for(lambda: os_sandbox.cached_tool_isolation("python") is True)
+    for _ in range(5):
+        os_sandbox.cached_tool_capability("python")
+    assert started == ["python"]
 
 
 @pytest.fixture(autouse = True)
 def _no_host_setup_probe(monkeypatch):
-    # The setup plan would run `sudo -n true` on this host; the capability tests only need its shape.
     from core.inference import sandbox_setup_plan
     monkeypatch.setattr(
         sandbox_setup_plan,
@@ -611,6 +670,182 @@ def test_the_loop_launches_an_unasked_risky_call_strictly(mode, code, expected):
     assert exec_fn.modes == [expected]
 
 
+def _first_python_call(session_id):
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+    turns = iter(
+        [
+            '<tool_call>{"name": "python", "arguments": {"code": "import shutil; shutil.rmtree(\\"dist\\")"}}</tool_call>',
+            "done",
+        ]
+    )
+
+    def single_turn(_messages):
+        try:
+            yield next(turns)
+        except StopIteration:
+            return
+
+    exec_fn = _ModeRecordingExecuteTool()
+    loop = run_safetensors_tool_loop(
+        single_turn = single_turn,
+        messages = [{"role": "user", "content": "clean dist"}],
+        tools = [{"type": "function", "function": {"name": "python"}}],
+        execute_tool = exec_fn,
+        session_id = session_id,
+        confirm_tool_calls = True,
+        permission_mode = "off",
+    )
+    start = next(e for e in loop if e["type"] == "tool_start")
+    if start["awaiting_confirmation"]:
+        loop.close()
+    else:
+        list(loop)
+    return start["awaiting_confirmation"], exec_fn.modes
+
+
+def test_run_automatically_asks_once_the_chat_folder_is_too_large_to_check(monkeypatch, tmp_path):
+    import uuid
+
+    from core.inference import tools
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path))
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 3)
+    os_sandbox.note_tool_isolation("python", True, backend = "bubblewrap")
+    big, small = f"big-{uuid.uuid4().hex}", f"small-{uuid.uuid4().hex}"
+    workdir = tools._get_workdir(big)
+    tools._get_workdir(small)
+    for i in range(8):
+        with open(os.path.join(workdir, f"f{i}"), "w"):
+            pass
+
+    assert os_sandbox.scan_workdir_for_host_channels(workdir) == (
+        os_sandbox.WORKDIR_SCAN_INCOMPLETE,
+    )
+    assert _first_python_call(big) == (True, [])
+    assert _first_python_call(small) == (False, ["required"])
+
+    for i in range(8):
+        os.remove(os.path.join(workdir, f"f{i}"))
+    assert os_sandbox.scan_workdir_for_host_channels(workdir) == ()
+    assert _first_python_call(big) == (False, ["required"])
+
+
+def test_a_chosen_project_folder_stops_asking_once_it_is_small_again(monkeypatch, tmp_path):
+    from core.inference import tools
+
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 3)
+    monkeypatch.setattr(os_sandbox, "OVERRUN_RECHECK_SECONDS", 0.0)
+    for i in range(8):
+        (tmp_path / f"f{i}").write_text("")
+    os_sandbox.scan_workdir_for_host_channels(str(tmp_path))
+    plan = os_sandbox.ToolLaunchPlan(
+        argv = ("/bin/true",), workdir = str(tmp_path), env = {}, requested_mode = "auto"
+    )
+
+    tools._prepare_tool_launch(plan, user_folder = True)
+    assert os_sandbox.workdir_scan_overran(str(tmp_path))
+
+    for i in range(8):
+        (tmp_path / f"f{i}").unlink()
+    scratch = tmp_path / os_sandbox.TOOL_TEMP_DIRNAME
+    scratch.mkdir(mode = os_sandbox.TOOL_TEMP_MODE)
+    monkeypatch.chdir(scratch)
+    dead = socket.socket(socket.AF_UNIX)
+    dead.bind("s")
+    dead.close()
+    tools._prepare_tool_launch(plan, host_access_approved = True, user_folder = True)
+    assert not os_sandbox.workdir_scan_overran(str(tmp_path))
+
+
+def test_an_oversized_project_folder_is_rechecked_at_most_once_a_minute(monkeypatch, tmp_path):
+    from core.inference import tools
+
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 3)
+    for i in range(8):
+        (tmp_path / f"f{i}").write_text("")
+    os_sandbox.scan_workdir_for_host_channels(str(tmp_path))
+    walks = []
+    real = os_sandbox._walk_for_host_channels
+    monkeypatch.setattr(
+        os_sandbox, "_walk_for_host_channels", lambda *a: walks.append(a) or real(*a)
+    )
+    plan = os_sandbox.ToolLaunchPlan(
+        argv = ("/bin/true",), workdir = str(tmp_path), env = {}, requested_mode = "auto"
+    )
+
+    for _ in range(3):
+        tools._prepare_tool_launch(plan, user_folder = True)
+    assert len(walks) == 1
+    assert os_sandbox.workdir_scan_overran(str(tmp_path))
+
+
+def test_windows_asks_the_model_to_retry_when_the_chat_folder_is_too_large(monkeypatch, tmp_path):
+    from core.inference import mxc_policy
+
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 3)
+    for i in range(8):
+        (tmp_path / f"f{i}").write_text("")
+
+    with pytest.raises(mxc_policy.MxcPolicyError, match = "Call the tool again"):
+        mxc_policy._scan_workdir(str(tmp_path), required = True)
+    assert os_sandbox.workdir_scan_overran(str(tmp_path))
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or not os_sandbox.capability_snapshot().available,
+    reason = "needs a host that can build the OS sandbox",
+)
+def test_an_oversized_chat_folder_refuses_once_then_asks_and_runs_isolated(monkeypatch, tmp_path):
+    import uuid
+
+    from core.inference import tools
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+    from state.tool_approvals import resolve_tool_decision
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path))
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 3)
+    session = f"big-real-{uuid.uuid4().hex}"
+    workdir = tools._get_workdir(session)
+    for i in range(8):
+        with open(os.path.join(workdir, f"f{i}"), "w"):
+            pass
+    capability = os_sandbox.capability_snapshot()
+    os_sandbox.note_tool_isolation("python", True, backend = capability.backend)
+    call = '<tool_call>{"name": "python", "arguments": {"code": "import shutil; shutil.rmtree(\\"dist%d\\", ignore_errors=True); print(\\"RAN\\" + \\"_OK\\")"}}</tool_call>'
+    turns = iter([call % 1, call % 2, "done"])
+
+    def single_turn(_messages):
+        try:
+            yield next(turns)
+        except StopIteration:
+            return
+
+    starts, results, records = [], [], []
+    for ev in run_safetensors_tool_loop(
+        single_turn = single_turn,
+        messages = [{"role": "user", "content": "clean dist"}],
+        tools = [{"type": "function", "function": {"name": "python"}}],
+        execute_tool = tools.execute_tool,
+        session_id = session,
+        confirm_tool_calls = True,
+        permission_mode = "off",
+    ):
+        if ev["type"] == "tool_start":
+            starts.append(ev["awaiting_confirmation"])
+            if ev["awaiting_confirmation"]:
+                resolve_tool_decision(ev["approval_id"], "allow", session_id = session)
+        elif ev["type"] == "tool_end":
+            results.append(ev["result"])
+            records.append(tools._last_tool_execution_record)
+
+    assert starts == [False, True]
+    assert "Call the tool again" in results[0] and "RAN_OK" not in results[0]
+    assert "RAN_OK" in results[1]
+    assert records[1].os_isolation is True
+    assert os_sandbox.WORKDIR_SCAN_INCOMPLETE in records[1].limitations
+
+
 def test_a_strict_launch_is_refused_when_the_sandbox_stopped_working(monkeypatch):
     from core.inference import tools
 
@@ -655,7 +890,6 @@ def test_every_loop_launches_strictly_through_the_mode_parameter():
 
 
 def test_a_launch_does_not_republish_an_answer_a_reset_cleared(monkeypatch, tmp_path):
-    # Settings or a failed launch reset the cached answers while this launch was still checking.
     def snapshot(**_kw):
         os_sandbox.forget_tool_isolation()
         return os_sandbox.SandboxCapability(

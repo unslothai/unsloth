@@ -15,8 +15,8 @@ import { fileNameFromUrl, hostOf } from "./address";
 import { agentDownloadRule, stricterDownloadRule } from "./agent/agent-store";
 import { BrowserFetchError, type BrowserPage, fetchBrowserPage } from "./api";
 import { proxiedFavicon } from "./favicon";
-import { saveBrowserDownload } from "./downloads";
-import { canShowFile } from "./file-kind";
+import { saveBrowserDownload, saveBrowserDownloadOnClick, saveLinkedFile } from "./downloads";
+import { savesFile } from "./file-kind";
 import { FileView } from "./file-view";
 import { BROWSER_FIND_TARGET, pageLoadedForFind, receiveFindResult } from "./find";
 import { useBrowserHistoryStore } from "./history-store";
@@ -36,10 +36,13 @@ import {
   cachedPage,
   currentEntry,
   entryKey,
+  saveScroll,
+  savedScroll,
   sentPosts,
   setPageDownload,
   useBrowserStore,
 } from "./store";
+import { LineBox } from "@/components/ui/line-box";
 
 type LoadState =
   | { status: "loading" }
@@ -80,7 +83,7 @@ function loadTemporary(tabId: string, entry: BrowserEntry): boolean {
   return (entry.kind === "web" && entry.temporary === true) || temporaryLoads.get(tabId) === true;
 }
 
-function useFrameMessages(tabId: string, origin: string | null) {
+function useFrameMessages(tabId: string, origin: string | null, entry: BrowserEntry) {
   const t = useT();
   return useCallback(
     (message: FrameMessage) => {
@@ -104,6 +107,33 @@ function useFrameMessages(tabId: string, origin: string | null) {
         case "external":
           openExternalLink(message.url);
           break;
+        case "download": {
+          const tab = store.tabs.find((candidate) => candidate.id === tabId);
+          const entry = tab ? currentEntry(tab) : null;
+          const site = pageAddress(tab);
+          if (!site || !entry) break;
+          const temporary = loadTemporary(tabId, entry) || undefined;
+          if ("url" in message) {
+            // Pages can post any address: only one on the page's own site saves, as in a browser.
+            if (!origin || !sameOrigin(message.url, origin)) break;
+            const atClick = agentDownloadRule(tabId, site, message.url);
+            const agentRule = (fileUrl: string) => stricterDownloadRule(atClick, agentDownloadRule(tabId, site, fileUrl));
+            saveLinkedFile(message.url, message.name, { site, temporary, agentRule }, message.askFirst);
+            break;
+          }
+          const download = {
+            blob: message.blob,
+            name: message.name,
+            contentType: message.blob.type,
+            url: site,
+            site,
+            temporary,
+            agentRule: agentDownloadRule(tabId, site, site),
+          };
+          if (message.askFirst) saveBrowserDownloadOnClick(download);
+          else void saveBrowserDownload(download);
+          break;
+        }
         case "loaded": {
           store.updateTab(tabId, { title: message.title, favicon: null, loading: false });
           pageLoadedForFind(tabId);
@@ -138,6 +168,23 @@ function useFrameMessages(tabId: string, origin: string | null) {
           break;
         case "reload":
           store.reload(tabId);
+          break;
+        case "back":
+          store.goBack(tabId);
+          break;
+        case "forward":
+          store.goForward(tabId);
+          break;
+        case "scroll": {
+          const tab = store.tabs.find((candidate) => candidate.id === tabId);
+          saveScroll(entry, { x: message.x, y: message.y }, pageAddress(tab) ?? (entry.kind === "web" ? entry.url : ""));
+          break;
+        }
+        case "history":
+          store.updateTab(tabId, { pageHistory: { back: message.back, forward: message.forward } });
+          break;
+        case "typed":
+          store.updateTab(tabId, { typedAt: message.reset ? undefined : Date.now() });
           break;
         case "upload":
         case "scriptNavigation":
@@ -179,7 +226,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           break;
       }
     },
-    [tabId, origin, t],
+    [tabId, origin, entry, t],
   );
 }
 
@@ -234,13 +281,13 @@ function PageError({
               })}
       </p>
       {message ? (
-        <p className="break-all rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs text-muted-foreground">{message}</p>
+        <LineBox as="p" className="break-all bg-muted/60 px-3 py-2 font-mono text-xs text-muted-foreground">{message}</LineBox>
       ) : null}
       <div className="mt-1 flex gap-2">
         <Button type="button" variant={botCheck ? "ghost" : "outline"} size="sm" onClick={onRetry}>
           {t("browser.error.retry")}
         </Button>
-        <Button type="button" variant={botCheck ? "default" : "ghost"} size="sm" onClick={() => openExternalLink(url)}>
+        <Button type="button" variant={botCheck ? "dark" : "ghost"} size="sm" onClick={() => openExternalLink(url)}>
           {t("browser.openExternal")}
         </Button>
       </div>
@@ -267,7 +314,7 @@ function WebPage({
   });
   const blocked = state.status === "error" && state.resubmit === true;
   const pageOrigin = state.status === "ready" ? new URL(state.page.url).origin : null;
-  const onFrameMessage = useFrameMessages(tab.id, pageOrigin);
+  const onFrameMessage = useFrameMessages(tab.id, pageOrigin, entry);
   // A notice's action opens the tab's current address, so it goes with the page it is about.
   useEffect(
     () => () => {
@@ -329,7 +376,7 @@ function WebPage({
         // unsupported files download only on fresh loads, so revisiting the tab does not prompt again.
         if (page.kind === "raw") {
           const name = page.fileName ?? fileNameFromUrl(page.url);
-          if (!canShowFile(name, page.contentType)) {
+          if (savesFile(name, page.contentType, page.attachment)) {
             // use the sender or requested address, not the redirect target, so another site's permission cannot apply.
             void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url, site: entry.from ?? url, temporary: loadTemporary(tab.id, entry) || undefined, agentRule: stricterDownloadRule(agentRuleAtStart, agentDownloadRule(tab.id, entry.from ?? url, page.url)) });
             if (entry.kind === "web" && entry.from) useBrowserStore.getState().leaveDownload(tab.id, entry);
@@ -369,7 +416,13 @@ function WebPage({
   const { page } = state;
   if (page.kind === "raw") {
     return (
-      <FileView blob={page.blob} name={page.fileName ?? fileNameFromUrl(page.url)} contentType={page.contentType} scale={tab.zoom} />
+      <FileView
+        blob={page.blob}
+        name={page.fileName ?? fileNameFromUrl(page.url)}
+        contentType={page.contentType}
+        scale={tab.zoom}
+        saved={page.attachment}
+      />
     );
   }
   return (
@@ -384,6 +437,7 @@ function WebPage({
       tabId={tab.id}
       zoom={tab.zoom}
       muted={tab.muted}
+      scroll={savedScroll(entry, page.url)}
       onMessage={onFrameMessage}
     />
   );

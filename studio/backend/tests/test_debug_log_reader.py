@@ -102,7 +102,6 @@ def test_a_huge_file_is_read_in_a_bounded_window(tmp_path, monkeypatch):
     monkeypatch.undo()
 
     assert len(result.lines) == 1000
-    # One block of slack for the block-aligned backward scan.
     assert read_bytes["total"] <= MAX_TAIL_BYTES + 65_536
 
 
@@ -232,10 +231,7 @@ def test_a_burst_larger_than_one_response_is_delivered_not_dropped(tmp_path):
 
 
 def test_a_record_larger_than_the_window_shows_its_tail_not_an_empty_pane(tmp_path):
-    """A single record bigger than the bounded read (a native dump, a \\r-only
-    progress run, a giant JSON line) filled the whole window, so dropping the
-    partial head left nothing: the viewer rendered an EMPTY pane on a log that
-    was megabytes long, and the cursor advanced past the record anyway."""
+    """A record larger than the read window must still show its tail, not an empty pane."""
     path = tmp_path / "a.log"
     body = "Z" * (MAX_TAIL_BYTES + 100_000)
     path.write_text("older line\n" + body + " END\n", encoding = "utf-8")
@@ -244,7 +240,6 @@ def test_a_record_larger_than_the_window_shows_its_tail_not_an_empty_pane(tmp_pa
     assert result.lines, "a non-empty log must never read as no lines at all"
     assert result.lines[-1].endswith(" END")
     assert result.truncated_head is True
-    # Still bounded: the tail of the record, not the whole record.
     assert sum(len(line) for line in result.lines) <= MAX_TAIL_BYTES
 
 

@@ -4261,7 +4261,7 @@ class TestWindowsRocmWarning:
     def test_windows_amd_warning_has_docs_link(self):
         """Warning should include AMD docs link."""
         source = _STACK_PATH.read_text(encoding = "utf-8")
-        assert "docs.unsloth.ai/get-started/install-and-update/amd" in source
+        assert "unsloth.ai/docs/get-started/install/amd" in source
 
 
 class TestIsRdnaExpansion:

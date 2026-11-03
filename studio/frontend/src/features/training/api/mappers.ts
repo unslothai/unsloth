@@ -41,11 +41,7 @@ function buildS3PayloadConfig(config: TrainingConfigState) {
   return s3;
 }
 
-/** Whether this configuration asks the backend for a bnb 4-bit load.
- *
- * Exported so the UI can say what the run will do: the backend refuses 4-bit for models
- * routed to the latest-transformers sidecar, and a preview reading "QLoRA · 4-bit" for a
- * 16-bit run understates its VRAM by a wide margin. */
+/** The backend refuses 4-bit for models routed to the latest-transformers sidecar. */
 export function trainingLoadsIn4Bit(
   config: Pick<TrainingConfigState, "trainingMethod" | "selectedModel">,
 ): boolean {
@@ -169,6 +165,8 @@ export function buildTrainingStartPayload(
   config: TrainingConfigState,
   hfToken: string | null,
   system: SystemInfoResponse | null = null,
+  // The platform store's isCpuTrainingHost(): settled with the health verdict, unlike /api/system.
+  cpuTrainingHost = false,
 ): TrainingStartRequest {
   const isDecision = config.modelType === "decision";
   // Laya trains in 16-bit (LoRA or full); Clef and an LLM decision model also take QLoRA.
@@ -204,7 +202,6 @@ export function buildTrainingStartPayload(
       ? { ...config.datasetManualMapping }
       : undefined;
 
-  // Inject conversion advisor metadata into the mapping (__ prefix keys)
   const hasAdvisorMeta =
     config.datasetSystemPrompt ||
     Object.keys(config.datasetLabelMapping).length > 0;
@@ -273,9 +270,8 @@ export function buildTrainingStartPayload(
         ? normalizeEarlyStoppingPatience(config.earlyStoppingPatience)
         : 0,
     weight_decay: config.weightDecay,
-    // max_grad_norm omitted on purpose: the backend now honors an explicit value,
-    // so hardcoding 0 here would pin every UI run to "clipping off" and override
-    // that. Guarded by tests/training-start-payload-grad-norm.test.ts.
+    // max_grad_norm omitted on purpose: the backend honors an explicit value. Guarded by
+    // tests/training-start-payload-grad-norm.test.ts.
     max_grad_value: null,
     random_seed: config.randomSeed,
     packing: isEmbedding || isDecision ? false : config.packing,
@@ -320,18 +316,19 @@ export function buildTrainingStartPayload(
       ? config.tensorboardDir.trim() || null
       : null,
     // Spread only when sent: a run without a drafter posts exactly the fields it did before.
-    ...(sendsDrafter(config, system)
+    ...(sendsDrafter(config, system, cpuTrainingHost)
       ? { drafter: drafterRequestFrom(config) }
       : {}),
   };
 }
 
-/** On, a run type with a drafter phase, not MLX, and not a model the backend said cannot train one.
+/** On, a run type with a drafter phase, not MLX or the CPU backend, and not a model the backend said cannot train one.
  * A capability check still pending (or for a previous model) sends it: the backend re-checks the
  * model before the drafter phase and reports a warning instead of dropping the request silently. */
 export function sendsDrafter(
   config: TrainingConfigState,
   system: SystemInfoResponse | null = null,
+  cpuTrainingHost = false,
 ): boolean {
   const capability = config.drafterCapability;
   const refused =
@@ -343,6 +340,8 @@ export function sendsDrafter(
     config.drafterEnabled &&
     drafterEligible(config) &&
     system?.device_backend !== "mlx" &&
+    !cpuTrainingHost &&
+    system?.device_backend !== "cpu" &&
     !refused
   );
 }

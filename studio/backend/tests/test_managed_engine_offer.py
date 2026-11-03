@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""/validate offers vLLM for checkpoints the Default engine cannot run (#11728).
-
-Only where the host can run vLLM, only for the Default engine, and only when the
-checkpoint's own config.json says compressed-tensors, or AWQ / GPTQ without the
-packages the Default engine would need for them.
-"""
+"""/validate offers vLLM only on capable hosts, for Default-engine checkpoints it cannot run."""
 
 import importlib.util
 import json

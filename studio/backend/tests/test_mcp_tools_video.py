@@ -52,9 +52,18 @@ def _thumbnail(request, body):
     return Response(WEBP, media_type = "image/webp")
 
 
+SIGNED = "/api/inference/video/gallery/video-1/signed-url"
+
+
 def _studio(overrides = None):
+    minted = {"url": "/api/inference/video/gallery/video-1/file-signed?token=t.1"}
     return fake_studio(
-        {**PAYLOADS, ("GET", "/v1/videos/video-1/content"): _thumbnail, **(overrides or {})}
+        {
+            **PAYLOADS,
+            ("GET", "/v1/videos/video-1/content"): _thumbnail,
+            ("GET", SIGNED): minted,
+            **(overrides or {}),
+        }
     )
 
 
@@ -75,10 +84,14 @@ def test_generate_video_starts_a_job_with_string_fields(monkeypatch):
     assert result["structuredContent"] == {
         "id": "video-1",
         "status": "queued",
+        "queue_position": None,
+        "eta_s": None,
         "progress": 0,
+        "progress_percent": 0.0,
         "model": "Lightricks/LTX-Video",
         "seconds": "4",
         "size": "704x480",
+        "seed": None,
     }
     assert bodies(studio, "/v1/videos") == [
         {
@@ -97,24 +110,34 @@ def test_a_completed_job_returns_its_thumbnail_and_a_link_never_the_mp4(monkeypa
     assert out == {
         "kind": "video",
         "id": "video-1",
+        "seed": None,
         "status": "completed",
         "progress_percent": 100.0,
+        "poll_after_s": None,
+        "training": None,
+        "load": None,
+        "queue_position": None,
+        "eta_s": None,
         "error": None,
+        "error_code": None,
         "video": {
             "url": "http://192.168.1.20:8888/v1/videos/video-1/content",
+            "download_url": "http://192.168.1.20:8888/api/inference/video/gallery/video-1/file-signed?token=t.1",
             "thumbnail_inline": True,
         },
         "recipe": None,
+        "download": None,
         "export": None,
         "jobs": None,
     }
     content = result["content"]
     assert [c["type"] for c in content[1:]] == ["image", "resource_link"]
     assert base64.b64decode(content[1]["data"]) == WEBP
-    assert content[2]["uri"] == "http://192.168.1.20:8888/v1/videos/video-1/content"
+    assert content[2]["uri"] == out["video"]["download_url"]
     assert content[2]["mimeType"] == "video/mp4"
     assert queries(studio, "/v1/videos/video-1/content") == [{"variant": "thumbnail"}]
-    assert not [c for c in studio.state.calls if "/gallery/" in c[1]]
+    assert queries(studio, SIGNED) == [{"ttl_s": "3600"}]
+    assert [c[1] for c in studio.state.calls if "/gallery/" in c[1]] == [SIGNED]
 
 
 def test_an_unavailable_thumbnail_leaves_only_the_link(monkeypatch):
@@ -147,9 +170,25 @@ def test_an_unfinished_job_reports_progress_and_error_without_media(monkeypatch,
     assert out["status"] == job["status"]
     assert out["progress_percent"] == float(job["progress"])
     assert out["error"] == (job["error"] or {}).get("message")
+    assert out["error_code"] == (job["error"] or {}).get("code")
     assert out["video"] is None
     assert [c["type"] for c in result["content"]] == ["text"]
     assert [c[1] for c in studio.state.calls] == [path]
+
+
+def test_a_cancelled_job_reads_cancelled_not_failed(monkeypatch):
+    # The /v1 job API has no cancelled status: it reports failed with error code "cancelled".
+    job = _job(
+        "video-4",
+        "failed",
+        30,
+        error = {"code": "cancelled", "message": "Video generation was cancelled."},
+    )
+    result, _studio = _get_job(monkeypatch, {"id": "video-4"}, {("GET", "/v1/videos/video-4"): job})
+    out = result["structuredContent"]
+    assert (out["status"], out["error_code"]) == ("cancelled", "cancelled")
+    assert out["error"].startswith("Video generation was cancelled")
+    assert out["video"] is None
 
 
 def test_without_an_id_recent_jobs_are_listed(monkeypatch):
@@ -159,3 +198,9 @@ def test_without_an_id_recent_jobs_are_listed(monkeypatch):
         {"id": "video-1", "status": "completed", "progress_percent": 100.0},
     ]
     assert [c[1] for c in studio.state.calls] == ["/v1/videos"]
+
+
+def test_a_cancelled_job_reads_cancelled_in_the_recent_list(monkeypatch):
+    cancelled = _job("video-4", "failed", 30, error = {"code": "cancelled", "message": "Cancelled."})
+    result, _studio = _get_job(monkeypatch, {}, {("GET", "/v1/videos"): {"data": [cancelled]}})
+    assert result["structuredContent"]["jobs"][0]["status"] == "cancelled"

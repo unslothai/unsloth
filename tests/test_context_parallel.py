@@ -146,7 +146,7 @@ def test_training_step_divides_the_pre_shard_token_count_by_cp_size(monkeypatch)
     import trl
 
     monkeypatch.setattr(trl, "SFTTrainer", Trainer)
-    cp.patch_sft_trainer()
+    cp.patch_sft_trainer(install_cp_methods = True)
     trainer = Trainer()
     manager = _manager(size = 4)
     manager.mesh = None
@@ -226,13 +226,20 @@ def test_every_rank_builds_the_same_global_mesh(monkeypatch):
     assert built == [([[0, 1], [2, 3]], ("dp_replicate", "cp"))] * 4
 
 
-def _patched_trainer(monkeypatch, **init_attrs):
+def _patched_trainer(
+    monkeypatch,
+    install_cp_methods = True,
+    on_init = None,
+    **init_attrs,
+):
     import trl
 
     class Trainer:
         def __init__(self, *a, **k):
             for key, value in init_attrs.items():
                 setattr(self, key, value)
+            if on_init is not None:
+                on_init(self)
 
         def training_step(
             self,
@@ -275,7 +282,7 @@ def _patched_trainer(monkeypatch, **init_attrs):
             return self.gather_function(torch.arange(1.0, 3.0))
 
     monkeypatch.setattr(trl, "SFTTrainer", Trainer)
-    cp.patch_sft_trainer()
+    cp.patch_sft_trainer(install_cp_methods = install_cp_methods)
     return Trainer
 
 
@@ -440,7 +447,7 @@ def test_fsdp2_shards_over_dp_shard_cp_and_a_later_trainer_restores_the_config(m
     accelerator = _fsdp2_accelerator(user_pc)
     Trainer, _, built = _gated_trainer(monkeypatch, accelerator = accelerator)
     Trainer()
-    assert built == [(2, "ring", "allgather", "fsdp2")]
+    assert built == [(2, "ulysses", "allgather", "fsdp2")]  # the default backend: auto
     pc = accelerator.state.parallelism_config
     # What accelerate's fsdp2_prepare_model indexes the mesh with; cp stays Unsloth's own.
     assert pc.fsdp_dim_names == ["dp_shard_cp"]
@@ -666,6 +673,28 @@ def test_transformers_cp_size_is_refused(monkeypatch):
         Trainer()
 
 
+@pytest.mark.parametrize("cp_size", [1, 2])
+def test_accelerate_config_cp_size_is_refused(monkeypatch, cp_size):
+    # `accelerate launch` with parallelism_config_cp_size: the Accelerator builds its
+    # ParallelismConfig from the environment and TrainingArguments.parallelism_config stays None.
+    import types
+
+    accelerator = types.SimpleNamespace(
+        parallelism_config = types.SimpleNamespace(cp_size = cp_size),
+        state = types.SimpleNamespace(device_mesh = None),
+    )
+    Trainer = _patched_trainer(
+        monkeypatch,
+        args = types.SimpleNamespace(context_parallel_size = 1, parallelism_config = None),
+        accelerator = accelerator,
+    )
+    if cp_size == 1:
+        Trainer()
+        return
+    with pytest.raises(NotImplementedError, match = "accelerate config"):
+        Trainer()
+
+
 def test_cp_state_is_reinstalled_at_train_after_another_trainer(monkeypatch):
     import types
 
@@ -805,6 +834,8 @@ def _gated_trainer(
     monkeypatch,
     model = None,
     accelerator = None,
+    install_cp_methods = True,
+    on_init = None,
     **args_overrides,
 ):
     """A trainer that clears every CP gate, with the manager stubbed (no process group)."""
@@ -838,7 +869,37 @@ def _gated_trainer(
             state = types.SimpleNamespace(device_mesh = None),
         )
     init = {"args": args, "accelerator": accelerator, "model": model, "train_dataset": [1]}
-    return _patched_trainer(monkeypatch, **init), args, built
+    return _patched_trainer(monkeypatch, install_cp_methods, on_init, **init), args, built
+
+
+_CP_METHODS = (
+    "train",
+    "training_step",
+    "prediction_step",
+    "evaluate",
+    "predict",
+    "evaluation_loop",
+)
+
+
+def test_cp_methods_are_wrapped_only_once_a_trainer_enables_cp(monkeypatch):
+    # With CP off the wrappers slowed torch 2.10 LoRA steps by ~35%, so only __init__ is patched.
+    import types
+
+    Trainer = _patched_trainer(monkeypatch, install_cp_methods = False)
+    assert hasattr(Trainer.__init__, "__wrapped__")
+    assert not any(hasattr(Trainer.__dict__[name], "__wrapped__") for name in _CP_METHODS)
+    trainer = Trainer(args = types.SimpleNamespace(context_parallel_size = 1))
+    assert trainer._context_parallel_manager is None
+    assert trainer.train() == "trained"
+    assert not any(hasattr(Trainer.__dict__[name], "__wrapped__") for name in _CP_METHODS)
+
+    Trainer, _, built = _gated_trainer(monkeypatch, install_cp_methods = False)
+    plain = {name: Trainer.__dict__[name] for name in _CP_METHODS}
+    Trainer()
+    assert built == [(2, "ulysses", "allgather")]  # the default backend: auto
+    for name in _CP_METHODS:
+        assert Trainer.__dict__[name].__wrapped__ is plain[name]
 
 
 @pytest.mark.parametrize(
@@ -877,17 +938,19 @@ def test_bad_cp_options_fail_before_the_trainer_builds(monkeypatch, overrides, e
 def test_cp_option_defaults_and_size_one():
     import types
 
-    assert cp.context_parallel_options(None) == (1, "ring", "allgather")
+    assert cp.context_parallel_options(None) == (1, "auto", "allgather")
     config = types.SimpleNamespace(context_parallel_size = 1, context_parallel_backend = "ulysses")
     assert cp.context_parallel_options(config) == (1, "ulysses", "allgather")
     config = types.SimpleNamespace(
         context_parallel_size = 4, context_parallel_rotate_method = "alltoall"
     )
-    assert cp.context_parallel_options(config) == (4, "ring", "alltoall")
+    assert cp.context_parallel_options(config) == (4, "auto", "alltoall")
 
 
 def test_manager_gets_the_backend_and_rotate_method(monkeypatch):
-    Trainer, _, built = _gated_trainer(monkeypatch, context_parallel_rotate_method = "alltoall")
+    Trainer, _, built = _gated_trainer(
+        monkeypatch, context_parallel_backend = "ring", context_parallel_rotate_method = "alltoall"
+    )
     Trainer()
     assert built == [(2, "ring", "alltoall")]
 
@@ -1053,7 +1116,7 @@ def test_unsloth_training_arguments_keep_the_cp_options():
         context_parallel_rotate_method = "alltoall",
         report_to = "none",
     )
-    assert cp.context_parallel_options(args) == (2, "ring", "alltoall")
+    assert cp.context_parallel_options(args) == (2, "auto", "alltoall")
 
 
 def test_cli_forwards_the_cp_options():
@@ -1104,9 +1167,9 @@ def test_generated_sft_config_carries_the_cp_options(tmp_path):
         context_parallel_rotate_method = "alltoall",
         report_to = "none",
     )
-    assert cp.context_parallel_options(config) == (2, "ring", "alltoall")
+    assert cp.context_parallel_options(config) == (2, "auto", "alltoall")
     default = config_module.SFTConfig(output_dir = str(tmp_path), report_to = "none")
-    assert cp.context_parallel_options(default) == (1, "ring", "allgather")
+    assert cp.context_parallel_options(default) == (1, "auto", "allgather")
 
 
 class _FakeCPMesh:
@@ -1219,7 +1282,7 @@ def test_inherited_trainer_methods_are_resolved_per_call(monkeypatch):
             pass
 
     monkeypatch.setattr(trl, "SFTTrainer", Trainer)
-    cp.patch_sft_trainer()
+    cp.patch_sft_trainer(install_cp_methods = True)
     monkeypatch.setattr(Base, "train", lambda self: "patched later")
     assert Trainer().train() == "patched later"
 
@@ -1269,7 +1332,7 @@ def test_total_train_batch_size_counts_cp_groups_not_ranks(monkeypatch, fsdp2):
             pass
 
     monkeypatch.setattr(trl, "SFTTrainer", Trainer)
-    cp.patch_sft_trainer()
+    cp.patch_sft_trainer(install_cp_methods = True)
     trainer = object.__new__(Trainer)
     pc = types.SimpleNamespace(cp_size = 1, sp_size = 1, tp_size = 1) if fsdp2 else None
     trainer.accelerator = types.SimpleNamespace(parallelism_config = pc)
@@ -1282,3 +1345,89 @@ def test_total_train_batch_size_counts_cp_groups_not_ranks(monkeypatch, fsdp2):
     # D = 2 data parallel groups of N = 4 CP peers that each consume the same batch.
     trainer._context_parallel_manager = _manager(size = 4)
     assert trainer.get_total_train_batch_size(args) == 2 * 3 * 2
+
+
+def test_instance_wrappers_made_in_init_capture_the_cp_methods(monkeypatch):
+    # Auto packing (self.train) and the token budget (self.training_step) wrap the class methods on
+    # the instance inside __init__; with lazy installation they must already see the CP wrappers.
+    import functools
+
+    captured = {}
+
+    def on_init(self):
+        for name in ("train", "training_step"):
+            method = getattr(type(self), name)
+            captured[name] = method
+            setattr(self, name, functools.partial(method, self))
+
+    import types
+
+    for forwarded in (False, True):
+        captured.clear()
+        Trainer, args, built = _gated_trainer(
+            monkeypatch, install_cp_methods = False, on_init = on_init
+        )
+        plain = {name: Trainer.__dict__[name] for name in ("train", "training_step")}
+        if forwarded:
+            # SFTTrainer(model, args = base_args, context_parallel_size = 2): moved into args in __init__
+            Trainer(
+                None, args = types.SimpleNamespace(context_parallel_size = 1), context_parallel_size = 2
+            )
+        else:
+            Trainer(
+                None, args = args
+            )  # SFTTrainer(model, args = SFTConfig(context_parallel_size = 2))
+        assert built == [(2, "ulysses", "allgather")]  # the default backend: auto
+        for name, method in captured.items():
+            assert method is not plain[name] and method.__wrapped__ is plain[name]
+
+
+@pytest.mark.parametrize("unhashable", [False, True])
+def test_a_trainer_built_before_cp_still_restores_the_accelerator_state(monkeypatch, unhashable):
+    # A non-CP trainer whose __init__ wrapped self.train (auto packing) before any CP trainer existed
+    # must still drop the mesh a later CP trainer installs, as patched_train does.
+    import functools
+    import types
+
+    plain_args = [types.SimpleNamespace(context_parallel_size = 1)]
+
+    def on_init(self):
+        if plain_args:  # the first trainer has CP off
+            self.args = plain_args.pop()
+        self.train = functools.partial(type(self).train, self)
+
+    if unhashable:
+        # A subclass defining __eq__ without __hash__ is unhashable.
+        on_init_plain = on_init
+
+        def on_init(self):
+            type(self).__eq__ = lambda a, b: a is b
+            type(self).__hash__ = None
+            on_init_plain(self)
+
+    Trainer, args, built = _gated_trainer(monkeypatch, install_cp_methods = False, on_init = on_init)
+    restored = []
+    monkeypatch.setattr(cp, "_restore_parallelism_config", lambda state: restored.append(state))
+    early = Trainer(None, args = types.SimpleNamespace(context_parallel_size = 1))
+    assert early._context_parallel_manager is None
+    early.accelerator = types.SimpleNamespace(state = types.SimpleNamespace(device_mesh = None))
+    Trainer(None, args = args)  # enables CP: installs the class wrappers
+    assert built == [(2, "ulysses", "allgather")]  # the default backend: auto
+    restored.clear()
+    assert early.train() == "trained"
+    assert restored == [early.accelerator.state]
+
+
+@pytest.mark.parametrize("forwarded", [1, None])
+def test_a_forwarded_cp_size_of_one_installs_no_wrappers(monkeypatch, forwarded):
+    # SFTTrainer(..., args = config_with_cp_2, context_parallel_size = 1): the keyword wins in
+    # _backwards_compatible_trainer, so CP is off and the class must stay unwrapped.
+    import types
+
+    def on_init(self):
+        self.args = types.SimpleNamespace(context_parallel_size = 1)
+
+    Trainer, args, built = _gated_trainer(monkeypatch, install_cp_methods = False, on_init = on_init)
+    Trainer(None, args = args, context_parallel_size = forwarded)
+    assert built == []
+    assert not any(hasattr(Trainer.__dict__[name], "__wrapped__") for name in _CP_METHODS)

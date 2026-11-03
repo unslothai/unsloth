@@ -64,11 +64,11 @@ def spawned(monkeypatch):
         calls.run.append(list(cmd))
         if calls.run_error is not None:
             raise calls.run_error
-        return types.SimpleNamespace(stdout = _WINDOWS_PATH + "\n")
+        return types.SimpleNamespace(stdout = _WINDOWS_PATH + "\n", returncode = 1)
 
     def fake_popen(cmd, **kwargs):
         calls.popen.append(list(cmd))
-        return types.SimpleNamespace()
+        return types.SimpleNamespace(wait = lambda timeout = None: 0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -103,7 +103,7 @@ def test_wsl_empty_conversion_falls_back_to_xdg_open(linux_host, spawned, monkey
     monkeypatch.setattr(path_utils, "_IS_WSL", True)
 
     def empty_run(cmd, **kwargs):
-        return types.SimpleNamespace(stdout = "\n")
+        return types.SimpleNamespace(stdout = "\n", returncode = 1)
 
     monkeypatch.setattr(subprocess, "run", empty_run)
     path_utils.reveal_in_file_manager(tmp_path)
@@ -117,5 +117,5 @@ def test_native_linux_keeps_xdg_open_on_parent_directory(
     target = tmp_path / "model.gguf"
     target.write_bytes(b"gguf")
     path_utils.reveal_in_file_manager(target)
-    assert spawned.run == []
+    assert [cmd[0] for cmd in spawned.run] == ["gdbus", "dbus-send"]
     assert spawned.popen == [["xdg-open", str(tmp_path)]]

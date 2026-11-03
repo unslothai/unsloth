@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Shared pieces of the diffusion samplers' fast path: in-loop cancellation and throttled canvas frames, the
-active-block-only output head, and regional compile of the backbone for inference."""
+"""Diffusion fast-path helpers: in-loop cancel, throttled frames, active-block head, regional compile."""
 
 import contextlib
 import functools

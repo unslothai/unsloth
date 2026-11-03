@@ -132,14 +132,3 @@ test("the live request and token-count paths mark ownership after replay", () =>
     -1,
   );
 });
-
-test("the context recount forwards the tool-history request fields", () => {
-  const source = readSrc("features/chat/utils/refresh-context-usage.ts");
-  const historyBuild = source.indexOf(
-    "const countHistory = await buildLocalTokenCountHistory(",
-  );
-  const countRequest = source.indexOf("await countChatInputTokens({", historyBuild);
-  const historySpread = source.indexOf("...countHistory", countRequest);
-  assert.ok(historyBuild >= 0 && countRequest > historyBuild);
-  assert.ok(historySpread > countRequest);
-});

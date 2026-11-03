@@ -8,17 +8,15 @@ def exif_upright(image: Any) -> Any:
     """*image* turned per its EXIF orientation, or *image* itself when nothing turns it."""
     from PIL import Image
 
-    # Read the EXIF block directly, not via getexif(), which also recovers orientation from XMP
-    # and ImageMagick profiles that Chromium ignores, and may have cached one during open().
+    # Not getexif(): it also recovers orientation from XMP/ImageMagick profiles Chromium ignores.
     exif = Image.Exif()
     try:
         if image.info.get("exif"):
             exif.load(image.info["exif"])
     except Exception:  # noqa: BLE001 - a malformed block leaves it unrotated, as the preview
         return image
-    # Chromium does not apply orientation to WebP but WebKit does, so macOS desktop keeps a
-    # known divergence: Studio ships on Tauri against three engines and no rule fits them all.
-    # TIFF needs no branch: its plugin applies the IFD orientation during load().
+    # Chromium ignores WebP orientation but WebKit applies it: known macOS desktop divergence.
+    # TIFF needs no branch: its plugin applies orientation during load().
     method = {
         2: Image.Transpose.FLIP_LEFT_RIGHT,
         3: Image.Transpose.ROTATE_180,

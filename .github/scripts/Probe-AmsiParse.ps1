@@ -56,9 +56,6 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
-# The error IDs that mean "the scanner refused this", separated because they have different causes
-# and different fixes. A signature match is something we can get cleared; an administrator policy
-# block is not.
 $blockedIds = @{
     'ScriptContainedMaliciousContent' = 'an AMSI provider matched the content'
     'ScriptHasAdminBlockedContent'    = 'an administrative policy blocked the content'
@@ -77,19 +74,11 @@ function Submit-ToCompiler {
         reason    = ''
     }
     try {
-        # Compilation only. Nothing is invoked, so submitting the real installer here cannot install
-        # anything, and that is what makes running this on every candidate cheap and safe.
+        # Compile only; nothing is invoked.
         $null = [scriptblock]::Create($Text)
     } catch {
         $result.errorType = $_.Exception.GetType().FullName
-        # The OUTER record is useless for this decision. Calling a .NET static method from
-        # PowerShell wraps whatever it threw in a MethodInvocationException whose
-        # FullyQualifiedErrorId is the generic 'ParseException', while the id that says WHY -- and
-        # so whether a scanner refused this or the script simply does not parse -- lives on the
-        # inner ParseException's Errors collection. Verified by execution: a deliberate syntax error
-        # gives outer 'ParseException' and inner ErrorId 'IfStatementMissingCondition'. Matching the
-        # outer id alone meant ScriptContainedMaliciousContent was never seen, so not even the
-        # positive control could fire and the lane could only ever report that it had not measured.
+        # The outer error id is a generic 'ParseException'; the real reason is on the inner Errors.
         $ids = New-Object System.Collections.Generic.List[string]
         $ids.Add([string]$_.FullyQualifiedErrorId)
         $inner = $_.Exception
@@ -101,11 +90,8 @@ function Submit-ToCompiler {
             }
             $inner = $inner.InnerException
         }
-        # Joined, so the recorded id still reads usefully in the summary and a match below can key
-        # on any level of the chain.
         $result.errorId = ($ids | Where-Object { $_ } | Select-Object -Unique) -join '/'
-        # Truncated: a provider can echo a long span of the submitted script back, and the whole
-        # point of this work is to avoid writing suspicious-looking text into files.
+        # Truncated so we do not write echoed suspicious script text to files.
         $msg = [string]$_.Exception.Message
         if ($msg.Length -gt 400) { $msg = $msg.Substring(0, 400) + ' ...' }
         $result.message = $msg
@@ -117,8 +103,6 @@ function Submit-ToCompiler {
             }
         }
         if (-not $result.blocked) {
-            # A syntax error is not a scanner verdict, and conflating the two would let a broken
-            # candidate masquerade as a detection (or the reverse, which is worse).
             $result.reason = 'the script did not compile, for a reason unrelated to a scanner'
         }
     }
@@ -128,9 +112,7 @@ function Submit-ToCompiler {
 $results = New-Object System.Collections.ArrayList
 
 if ($Control) {
-    # Assembled from fragments so this repository is not itself a sample carrying the signature.
-    # Microsoft's own documentation splits it the same way. Reassembled only in memory, never
-    # written to disk.
+    # Assembled from fragments so this repo does not itself carry the AMSI test signature.
     $sample = 'AMSI Test Sample: ' + '7e72c3ce-' + '861b-4339-' + '8740-' + '0ac1484c1386'
     [void]$results.Add((Submit-ToCompiler -Label 'control (AMSI test sample)' -Text $sample))
 }
@@ -144,12 +126,7 @@ foreach ($file in @($Path) | Where-Object { $_ }) {
     }
     $text = $null
     try {
-        # Decoded as UTF-8 explicitly, never by Get-Content's default. Under Windows PowerShell
-        # 5.1 -- which is the host this probe exists to reproduce -- Get-Content assumes the system
-        # ANSI code page for a file with no BOM, and the shipped installers are BOM-less UTF-8 with
-        # non-ASCII text in them. That turns the bytes into mojibake before AMSI ever sees them, so
-        # the provider would be judging a string no user ever runs. It also does not match the
-        # documented `irm ... | iex` path, where the response is decoded as Unicode.
+        # Decode as UTF-8 explicitly: PS 5.1 Get-Content assumes ANSI for BOM-less files.
         $text = [System.IO.File]::ReadAllText($file, [System.Text.UTF8Encoding]::new($false))
     } catch {
         [void]$results.Add([ordered]@{
@@ -180,7 +157,5 @@ foreach ($r in $results) {
     if ($r.errorId) { Write-Host "            id: $($r.errorId)" }
 }
 
-# Always zero. Whether a block is a failure is a decision about controls and about which side of a
-# differential it appeared on, and the caller holds both. A probe that exits non-zero on a detection
-# cannot be used to establish a baseline.
+# Always zero; the caller decides whether a block is a failure.
 exit 0

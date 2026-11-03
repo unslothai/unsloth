@@ -68,7 +68,13 @@ class _Patch:
 def _real_class(name: str) -> Any:
     try:
         import diffusers
-        return getattr(diffusers, name, None)
+
+        found = getattr(diffusers, name, None)
+        if found is None:
+            # Studio's in-tree pipelines (MOSS-Image) define their own denoiser class.
+            from core.inference.diffusion_moss_image import in_tree_class
+            found = in_tree_class(name)
+        return found
     except Exception:  # noqa: BLE001
         return None
 
@@ -209,6 +215,17 @@ def legacy_entry(
         else:
             uninstall_patches()
             uninstall_arch_patches()
+        from core.inference.diffusion_eager_patches import (
+            fp16_rmsnorm_wanted,
+            install_fp16_rmsnorm,
+            uninstall_fp16_rmsnorm,
+        )
+
+        if fp16_rmsnorm_wanted(getattr(pipe, "transformer", None), target.dtype, speed):
+            patches["fp16_eager_rmsnorm"] = _engaged(install_fp16_rmsnorm())
+        else:
+            uninstall_fp16_rmsnorm()
+            patches["fp16_eager_rmsnorm"] = False
         from core.inference.diffusion_flux2_rope import install_for_pipe as flux2
         from core.inference.diffusion_qwenimage21 import install_for_pipe as q21
         from core.inference.diffusion_rocm_fused import install_for_pipe as rocm
@@ -473,6 +490,9 @@ def snapshot(entry: Callable) -> dict:
 
     patch.setattr(diffusion_flux2_rope, "_kernel", lambda: (lambda *a, **k: None))
     patch.setattr(video_wan_fused, "_kernels", lambda: {})
+    from core.inference import diffusion_rocm_fused
+
+    patch.setattr(diffusion_rocm_fused, "_is_nvidia_linux", lambda: False)
     out: dict = {}
     try:
         for backend, fam in _families():
@@ -517,6 +537,17 @@ def test_fixture_covers_every_registered_family(captured):
     ), "a registry family was added / removed: regenerate the fixture"
 
 
+def _uncomparable(want: dict) -> set:
+    """Cases of families whose denoiser class the installed diffusers lacks (FLUX.3 before its diffusers pin): their
+    stub cannot carry the real ``_repeated_blocks`` the fixture was captured with, and such a family cannot load here."""
+    missing = {
+        f"{b}|{f.name}"
+        for b, f in _families()
+        if getattr(f, "transformer_class", None) and _real_class(f.transformer_class) is None
+    }
+    return {case for case in want if "|".join(case.split("|")[:2]) in missing}
+
+
 def test_autoopt_resolves_the_same_optimizations_as_before(captured):
     # The fixture was captured with diffusers installed; without it nothing compiles and the diffusers patches
     # self-disable, so every case differs. Backend CI has no diffusers.
@@ -524,7 +555,8 @@ def test_autoopt_resolves_the_same_optimizations_as_before(captured):
     got = snapshot(autoopt_entry)
     want = captured["cases"]
     assert set(got) == set(want)
-    diffs = [case for case in want if got[case] != want[case]]
+    skip = _uncomparable(want)
+    diffs = [case for case in want if case not in skip and got[case] != want[case]]
     assert not diffs, {case: {"before": want[case], "after": got[case]} for case in diffs[:5]}
 
 
@@ -533,7 +565,8 @@ def test_legacy_sequence_still_matches_fixture(captured):
     pytest.importorskip("diffusers")  # see test_autoopt_resolves_the_same_optimizations_as_before
     got = snapshot(legacy_entry)
     want = captured["cases"]
-    diffs = [case for case in want if got.get(case) != want[case]]
+    skip = _uncomparable(want)
+    diffs = [case for case in want if case not in skip and got.get(case) != want[case]]
     assert not diffs, {case: {"before": want[case], "now": got.get(case)} for case in diffs[:5]}
 
 

@@ -34,6 +34,7 @@ export async function transcribeSourceWithProgress(
     language: string;
     timestamps: boolean;
     speakers: boolean;
+    providerId?: string;
     signal: AbortSignal;
   },
   onProgress: (progress: TranscriptProgress) => void,
@@ -50,6 +51,7 @@ export async function transcribeSourceWithProgress(
       timestamps: options.timestamps,
       speakers: options.speakers,
       title: title.slice(0, 255),
+      ...(options.providerId && { provider_id: options.providerId }),
     }),
     signal: options.signal,
   });
@@ -79,7 +81,6 @@ export function getTranscript(
   return fetchJson(transcriptUrl(id), { signal });
 }
 
-/** null clears a name back to "Speaker N". */
 export function renameTranscriptSpeakers(
   id: string,
   names: Record<string, string | null>,

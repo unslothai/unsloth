@@ -10,10 +10,7 @@ type Prune = (providerType: string, modelIds: string[]) => string[];
 let vite: ViteDevServer;
 let pruneProviderModelIds: Prune;
 
-// The dated id is what `/v1/models` returns for the pre-4.6 generation, and
-// the editor matches a saved selection against that catalog. The undated
-// aliases the API also accepts are not in the listing, so a seed using one
-// gets demoted to a manual entry the first time the catalog loads.
+// /v1/models lists dated ids for pre-4.6 models; undated aliases would be demoted to manual entries.
 const DATED = [
   "claude-opus-4-5-20251101",
   "claude-sonnet-4-5-20250929",
@@ -35,9 +32,6 @@ after(async () => {
 });
 
 test("the frontend prune keeps every dated Anthropic id", () => {
-  // This mirrored the backend `-\d{8}$` denylist, so dropping only the backend
-  // half left the picker unchanged, and worse: the registry's Anthropic seeds
-  // are dated now, so those were pruned too.
   const live = [...UNDATED, ...DATED];
   assert.deepEqual(pruneProviderModelIds("anthropic", live), live);
 });

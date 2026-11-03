@@ -447,12 +447,12 @@ def _fine_tune_in(root: Path, folder_name: str) -> Checkpoint | None:
             CLEF_FINE_TUNE_PREFIX + folder_name,
             str(folder),
             None,
-            "Clef fine-tuned in Studio.",
+            "Clef fine-tuned in Unsloth.",
             layout = "clef",
         )
     else:
         checkpoint = Checkpoint(
-            FINE_TUNE_PREFIX + folder_name, str(folder), None, "Laya fine-tuned in Studio."
+            FINE_TUNE_PREFIX + folder_name, str(folder), None, "Laya fine-tuned in Unsloth."
         )
     return checkpoint if is_cached(checkpoint) else None
 

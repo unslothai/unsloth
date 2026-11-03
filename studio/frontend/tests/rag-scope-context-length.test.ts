@@ -58,9 +58,7 @@ test("every rag_scope window goes through the guard", () => {
   assert.equal((adapter.match(GUARDED_WINDOW) ?? []).length, 2);
 });
 
-// llama-server reduces the pinned n_ctx for a memory fit or a --parallel slot split, and
-// the reduced window is what `loadedContextLength` carries. A budget sized off the pin
-// would inject a document the served window cannot hold.
+// llama-server may reduce n_ctx; loadedContextLength carries the served window.
 test("the served window is budgeted, never the n_ctx the load asked for", () => {
   const helper = readText("../src/features/chat/api/rag-context-length.ts");
   assert.doesNotMatch(
@@ -73,9 +71,7 @@ test("the served window is budgeted, never the n_ctx the load asked for", () => 
   }
 });
 
-// A turn sent while a model is still loading runs later against the runtime the queue
-// snapshotted. A field this budget reads but `QUEUED_SETTING_KEYS` does not carry would
-// be read off whichever model happens to be visible when the turn finally executes.
+// Fields the budget reads must be in QUEUED_SETTING_KEYS or they come from the visible model.
 test("every runtime field the budget reads survives a queued run", () => {
   const queuedKeys = new Set(
     (
@@ -126,8 +122,7 @@ test("the result is only ever a number or undefined, never null", () => {
 });
 
 test("a zero window is passed through, not treated as absent", () => {
-  // `0` is falsy but `??` keeps it: a model serving no window must not silently fall
-  // through to a stale larger one.
+  // `??` keeps 0 so a model serving no window does not fall through to a stale one.
   assert.equal(ragScopeContextLength({ isExternalRequest: false,
     loadedContextLength: 0, maxSeqLength: 8192 }), 0);
 });

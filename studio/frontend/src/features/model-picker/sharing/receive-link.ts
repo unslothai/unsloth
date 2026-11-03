@@ -24,7 +24,7 @@ import { isRunConfigLink, runConfigHash, runConfigInbox } from "./inbox";
 
 const acceptNativeIntent = createDeepLinkIntentGate(2_000);
 const nativeScheme = /^unsloth:/i;
-// Only the startup URL is eligible; hash changes during this session are ignored.
+// Only the startup URL is eligible; later hash changes are ignored.
 let startupUrl = typeof window === "undefined" ? "" : window.location.href;
 const handledNativeUrlKey = "unsloth.run-config-native-handled.v1";
 let handledNativeUrl = readHandledNativeUrl();

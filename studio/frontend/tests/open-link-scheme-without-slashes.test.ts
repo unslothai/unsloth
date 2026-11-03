@@ -34,6 +34,20 @@ test("https: without slashes opens as a web link instead of navigating Studio's 
   }
 });
 
+test("protocol-relative links open as web links instead of navigating Studio's page", () => {
+  for (const [href, expected] of [
+    ["//evil.example/x", "https://evil.example/x"],
+    ["\\\\evil.example\\x", "https://evil.example/x"],
+    ["/\\evil.example/x", "https://evil.example/x"],
+    [" //evil.example/x", "https://evil.example/x"],
+    ["\u0001\t//evil.example/x ", "https://evil.example/x"],
+  ]) {
+    opened.length = 0;
+    assert.equal(openLink(href), true, href);
+    assert.deepEqual(opened, [expected], href);
+  }
+});
+
 test("relative, anchor and ordinary web links are unchanged", () => {
   opened.length = 0;
   assert.equal(openLink("/chat?thread=1"), false);
