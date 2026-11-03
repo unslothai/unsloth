@@ -132,6 +132,66 @@ def test_split_device_model_keeps_the_input_transfer():
     assert model.proj.forward.__func__ is forward
 
 
+def test_split_cleanup_preserves_encoder_outputs():
+    from transformers import BartConfig, BartForConditionalGeneration
+    from transformers.modeling_outputs import BaseModelOutput
+    from unsloth.models.loader_utils import _remove_same_device_compressed_tensors_offload
+
+    config = BartConfig(
+        vocab_size = 32,
+        d_model = 8,
+        encoder_layers = 1,
+        decoder_layers = 1,
+        encoder_attention_heads = 2,
+        decoder_attention_heads = 2,
+        encoder_ffn_dim = 16,
+        decoder_ffn_dim = 16,
+        max_position_embeddings = 8,
+        dropout = 0.0,
+        attention_dropout = 0.0,
+        activation_dropout = 0.0,
+    )
+    model = BartForConditionalGeneration(config).eval()
+    hidden = torch.randn(2, 3, 8, requires_grad = True)
+    encoded = BaseModelOutput(last_hidden_state = hidden)
+    ids = torch.tensor([[2, 3], [2, 4]])
+    expected = model(encoder_outputs = encoded, decoder_input_ids = ids, use_cache = False).logits
+    _split_device_metadata(model)
+    assert _remove_same_device_compressed_tensors_offload(model) > 1
+    actual = model(encoder_outputs = encoded, decoder_input_ids = ids, use_cache = False).logits
+    torch.testing.assert_close(actual, expected, rtol = 0, atol = 0)
+    actual.square().sum().backward()
+    assert hidden.grad is not None
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_split_model_output_fullgraph(dynamic):
+    from transformers.modeling_outputs import BaseModelOutput
+    from unsloth.models.loader_utils import _remove_same_device_compressed_tensors_offload
+
+    class Reader(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.eye(4))
+
+        def forward(self, encoded):
+            return encoded.last_hidden_state @ self.weight
+
+    model = _split_device_metadata(nn.Sequential(Reader(), nn.Linear(4, 4)))
+    assert _remove_same_device_compressed_tensors_offload(model) == 2
+    value = torch.randn(2, 4, requires_grad = True)
+    encoded = BaseModelOutput(last_hidden_state = value)
+    expected = model(encoded)
+    expected.sum().backward()
+    gradient = value.grad.clone()
+    model.zero_grad()
+    value.grad = None
+    actual = torch.compile(model, backend = "eager", fullgraph = True, dynamic = dynamic)(encoded)
+    torch.testing.assert_close(actual, expected, rtol = 0, atol = 0)
+    actual.sum().backward()
+    torch.testing.assert_close(value.grad, gradient, rtol = 0, atol = 0)
+
+
 def test_split_forward_wrapper_deepcopy_uses_the_copy():
     import copy
 

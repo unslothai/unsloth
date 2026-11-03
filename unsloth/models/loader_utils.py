@@ -3359,8 +3359,6 @@ def _move_compressed_tensors_inputs(value, device):
         return [_move_compressed_tensors_inputs(item, device) for item in value]
     if isinstance(value, tuple):
         return tuple(_move_compressed_tensors_inputs(item, device) for item in value)
-    if isinstance(value, dict):
-        return {key: _move_compressed_tensors_inputs(item, device) for key, item in value.items()}
     from dataclasses import fields, is_dataclass
 
     if is_dataclass(value):
@@ -3370,6 +3368,8 @@ def _move_compressed_tensors_inputs(value, device):
                 for field in fields(value)
             }
         )
+    if isinstance(value, dict):
+        return {key: _move_compressed_tensors_inputs(item, device) for key, item in value.items()}
     return value
 
 
