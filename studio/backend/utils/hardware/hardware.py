@@ -2578,6 +2578,10 @@ def _rocm_unmasked_inventory_mismatch() -> bool:
 
     runtime_count = _torch_get_physical_gpu_count()
     physical_count = amd.get_physical_gpu_count()
+    if physical_count is None and platform.system() == "Linux":
+        pci_ids = _rocm_kfd_gpu_pci_ids()
+        if pci_ids:
+            physical_count = len(pci_ids)
     return (
         runtime_count is not None and physical_count is not None and runtime_count != physical_count
     )
