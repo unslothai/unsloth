@@ -2520,6 +2520,11 @@ def get_chat_template(
 
     if type(chat_template) in (list, tuple,):
         # For changing system message later Since it's not supported yet, we will raise an error first!
+        if len(chat_template) == 0:
+            raise ValueError(
+                "Unsloth: `chat_template` is an empty list. Pass a supported template "
+                "name, or a (chat_template, stop_word) pair, instead."
+            )
         type_chat_template = chat_template[0].lower()
         chat_template, stop_word = chat_template
         assert(type(chat_template) is str)
@@ -2530,6 +2535,12 @@ def get_chat_template(
         # For changing system message later
         type_chat_template = chat_template.lower()
 
+        if chat_template not in CHAT_TEMPLATES:
+            raise ValueError(
+                f"Unsloth: unrecognized `chat_template` = {chat_template!r}. "
+                f"Choose one of {sorted(CHAT_TEMPLATES.keys())}, or pass your own "
+                "(chat_template, stop_word) pair instead."
+            )
         chat_template, stop_word, yes_map_eos_token, ollama_modelfile = CHAT_TEMPLATES[chat_template]
 
         if type_chat_template in GEMMA4_TEMPLATE_NAMES and \
