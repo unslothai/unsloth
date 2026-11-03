@@ -1061,6 +1061,24 @@ def _module_device(module: Any) -> Any:
     return None
 
 
+def _execution_device(module: Any) -> Any:
+    """The card ``module`` computes on: its first tensor's device, or, for a group-offloaded denoiser whose first
+    tensors sit in host memory between calls, the CUDA card its offload groups load onto."""
+    device = _module_device(module)
+    if device is not None and getattr(device, "type", None) == "cuda":
+        return device
+    try:
+        from .diffusion_memory import _offload_groups
+
+        for group in _offload_groups(module):
+            onload = getattr(group, "onload_device", None)
+            if onload is not None and getattr(onload, "type", None) == "cuda":
+                return onload
+    except Exception:  # noqa: BLE001 - unknown: the parameter device stands
+        pass
+    return device
+
+
 def _device_context(device: Any):
     torch = _torch()
     if getattr(device, "type", None) == "cuda" and device.index is not None:
@@ -3232,7 +3250,8 @@ def cfg_parallel_decline(
         return "two-expert denoiser"
     if getattr(denoiser, "_compiled_call_impl", None) is not None:
         return "denoiser is compiled whole"
-    if _module_device(denoiser) is None or _module_device(denoiser).type != "cuda":
+    device = _execution_device(denoiser)
+    if device is None or device.type != "cuda":
         return "denoiser is not on a CUDA card"
     return None
 
@@ -3265,7 +3284,7 @@ def install_cfg_parallel(
     reason = cfg_parallel_decline(pipe, offload_policy = offload_policy, selection = selection)
     if reason is None:
         denoiser = _cfg_denoiser(pipe)
-        primary = _module_device(denoiser)
+        primary = _execution_device(denoiser)
         probes = probe_devices((selection.primary, *selection.secondaries))
         same = [
             o
