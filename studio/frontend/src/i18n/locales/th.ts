@@ -1113,6 +1113,7 @@ export const th = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "ตั้งรหัสผ่านของเจ้าของการติดตั้งก่อนเพิ่มบัญชีอื่น เมื่อการติดตั้งนี้มีหลายบัญชี คุณจะใช้รหัสผ่านนี้เพื่อลงชื่อเข้าใช้",
       signsInAs: "ลงชื่อเข้าใช้ในชื่อ {username}",
       signsInAsOwner: "ลงชื่อเข้าใช้ในชื่อ {alias} หรือ {username}",
       signInName: "ชื่อสำหรับลงชื่อเข้าใช้ของคุณ",

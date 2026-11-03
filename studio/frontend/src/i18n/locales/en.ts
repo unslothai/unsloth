@@ -1069,6 +1069,7 @@ export const en = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Choose the owner's password before adding another account. You will use it to sign in once this installation has multiple accounts.",
       signsInAs: "Signs in as {username}",
       signsInAsOwner: "Signs in as {alias} or {username}",
       signInName: "Your sign-in name",

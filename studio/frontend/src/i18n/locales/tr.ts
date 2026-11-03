@@ -1161,6 +1161,7 @@ export const tr = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Başka bir hesap eklemeden önce kurulum sahibinin parolasını belirleyin. Bu kurulumda birden fazla hesap olduğunda oturum açmak için bu parolayı kullanacaksınız.",
       signsInAs: "{username} olarak oturum açar",
       signsInAsOwner: "{alias} veya {username} olarak oturum açar",
       signInName: "Oturum açma adınız",

@@ -1164,6 +1164,7 @@ export const id = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Tetapkan kata sandi pemilik instalasi sebelum menambahkan akun lain. Anda akan menggunakannya untuk masuk setelah instalasi ini memiliki beberapa akun.",
       signsInAs: "Masuk sebagai {username}",
       signsInAsOwner: "Masuk sebagai {alias} atau {username}",
       signInName: "Nama masuk Anda",

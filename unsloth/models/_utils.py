@@ -1085,6 +1085,14 @@ def _flex_decoding_unavailable():
     return FLEX_DECODING_UNAVAILABLE is True
 
 
+def _flex_autocasts_cuda_inputs():
+    try:
+        from torch._higher_order_ops.flex_attention import flex_attention
+        return callable(flex_attention.py_kernels.get(torch._C.DispatchKey.AutocastCUDA))
+    except (ImportError, AttributeError):
+        return False
+
+
 def _flex_main_kernel_forced(kwargs):
     """True when the caller's kernel_options force the main flex kernel over flex_decoding."""
     requested = kwargs.get("kernel_options") or {}
@@ -1213,6 +1221,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
 
     tuned_bwd_device_ok = _flex_tuned_bwd_device_ok()
     small_smem_device_ok = _flex_small_smem_device_ok()
+    small_smem_autocasts = small_smem_device_ok and _flex_autocasts_cuda_inputs()
     small_smem_short_query_tiles = small_smem_device_ok and _flex_small_smem_short_query_tiles()
     # A failed flex_decoding compile makes Dynamo run flex eagerly for the rest of the process (full score matrix).
     decoding_unavailable = _flex_decoding_unavailable()
@@ -1261,9 +1270,17 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             and small_smem_device_ok
             and hasattr(query, "dim")
             and query.dim() == 4
-            # Short no-grad queries go to flex_decoding, whose own tiles are left alone while they
-            # fit, unless the caller (the block compile hook, also for no-grad checkpoint forwards)
-            # forces the main kernel. Shape last, so training calls add no seq >= 128 guard.
+            and (
+                getattr(query, "dtype", None) in (torch.float16, torch.bfloat16)
+                or (
+                    small_smem_autocasts
+                    and getattr(query, "dtype", None) == torch.float32
+                    and query.device.type == "cuda"
+                    and torch.is_autocast_enabled("cuda")
+                    and torch.get_autocast_dtype("cuda") in (torch.float16, torch.bfloat16)
+                )
+            )
+            # Keep shape checks last so training adds no sequence-length guard.
             and (
                 _flex_call_needs_backward(query, key, value)
                 or _flex_main_kernel_forced(kwargs)

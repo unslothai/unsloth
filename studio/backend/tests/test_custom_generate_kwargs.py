@@ -1,14 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LFM3-Omni's custom generate raises on logits_processor and stopping_criteria (#16054)."""
-
 import ast
 import inspect
 import types
 from pathlib import Path
 
 import pytest
+import torch
 
 # Loaded from source: importing core.inference.inference needs unsloth, which the backend matrix lacks.
 _SRC = Path(__file__).resolve().parents[1] / "core" / "inference" / "inference.py"
@@ -20,8 +19,9 @@ _WANTED = {
     "_HaltingStreamer",
     "_generate_supported",
     "_refuse_without_generate",
+    "_think_tag_ids",
 }
-_NS = {"inspect": inspect}
+_NS = {"inspect": inspect, "torch": torch}
 exec(
     compile(
         ast.Module(
@@ -57,9 +57,10 @@ def test_regular_model_keeps_all_kwargs():
     assert _supported_generate_kwargs(types.SimpleNamespace(), _KWARGS) is _KWARGS
 
 
-def test_omni_chat_requests_text_instead_of_unstreamed_speech():
+@pytest.mark.parametrize("model_type", ["lfm3_omni", "lfm3_audio"])
+def test_audio_chat_requests_text_instead_of_unstreamed_speech(model_type):
     model = types.SimpleNamespace(
-        config = types.SimpleNamespace(model_type = "lfm3_omni"),
+        config = types.SimpleNamespace(model_type = model_type),
         _generation_fields_unsupported = {},
     )
     assert _supported_generate_kwargs(model, _KWARGS)["generation_mode"] == "text"
@@ -113,8 +114,6 @@ class _Recorder:
 
 
 class _CustomGenerate:
-    """LFM3-style: rejects stopping_criteria, streams each token, ends its streamers on any exit."""
-
     _generation_fields_unsupported = {"cache_implementation": None}
 
     def __init__(self, on_step = None):
@@ -245,3 +244,96 @@ def test_a_text_load_without_generate_is_refused_by_name():
     with pytest.raises(ValueError, match = "Lfm3AudioModel, which cannot generate text"):
         _refuse_without_generate(Lfm3AudioModel(), "LiquidAI/LFM3-Audio-2B")
     _refuse_without_generate(types.SimpleNamespace(generate = lambda **kw: None), "any/causal-lm")
+
+
+_OPEN, _CLOSE, _EOS = 124901, 124902, 124900
+_THINK_TOKENIZER = types.SimpleNamespace(
+    unk_token_id = 0,
+    convert_tokens_to_ids = lambda t: {"<think>": _OPEN, "</think>": _CLOSE}.get(t, 0),
+)
+
+
+class _ScriptedGenerate:
+    _generation_fields_unsupported = {"cache_implementation": None}
+
+    def __init__(
+        self,
+        reply,
+        model_type = "lfm3_audio",
+    ):
+        self.reply, self.steps = reply, 0
+        self.config = types.SimpleNamespace(model_type = model_type)
+
+    def generate(self, *, input_ids, streamer, **kwargs):
+        try:
+            streamer.put(input_ids)
+            for token in self.reply:
+                self.steps += 1
+                streamer.put(torch.tensor([[token]]))
+        finally:
+            streamer.end()
+        return torch.cat((input_ids, torch.tensor([self.reply])), 1)
+
+
+def _scripted(
+    reply,
+    model_type = "lfm3_audio",
+    **extra,
+):
+    model, streamer = _ScriptedGenerate(reply, model_type), _Recorder()
+    kwargs = {
+        "input_ids": torch.tensor([[1, 2]]),
+        "streamer": streamer,
+        "eos_token_id": [_EOS],
+        **extra,
+    }
+    if "tokenizer" in inspect.signature(_generate_supported).parameters:
+        out = _generate_supported(model, kwargs, _THINK_TOKENIZER)
+    else:
+        out = _generate_supported(model, kwargs)
+    return model, [int(t) for t in streamer.tokens[1:]], out
+
+
+@pytest.mark.parametrize("model_type", ["lfm3_audio", "lfm3_omni", "other_custom_model"])
+def test_literal_think_close_in_an_answer_is_not_a_stop(model_type):
+    import threading
+
+    # LiquidAI/LFM3-Audio-2B: "<think>I should explain the tag.</think>The literal closing tag </think> ends a thinking block."
+    reply = [
+        _OPEN,
+        49,
+        1252,
+        6986,
+        278,
+        10194,
+        22,
+        _CLOSE,
+        597,
+        30020,
+        23189,
+        10194,
+        229,
+        _CLOSE,
+        11676,
+        267,
+        6416,
+        3908,
+        22,
+        _EOS,
+    ]
+    model, streamed, out = _scripted(
+        reply,
+        model_type = model_type,
+        stopping_criteria = _criteria(threading.Event()),
+    )
+    assert streamed == reply and out.tolist() == [[1, 2, *reply]]
+    assert model.steps == len(reply)
+
+
+def test_cancel_still_returns_no_sequences_with_a_tensor_stream():
+    import threading
+
+    cancel = threading.Event()
+    cancel.set()
+    _, streamed, out = _scripted([_OPEN, 10, _CLOSE, 11, _EOS], stopping_criteria = _criteria(cancel))
+    assert out is None and streamed == []

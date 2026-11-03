@@ -1178,6 +1178,7 @@ export const nl = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Stel het wachtwoord van de installatie-eigenaar in voordat je een ander account toevoegt. Je gebruikt het om in te loggen zodra deze installatie meerdere accounts heeft.",
       signsInAs: "Logt in als {username}",
       signsInAsOwner: "Logt in als {alias} of {username}",
       signInName: "Je inlognaam",
