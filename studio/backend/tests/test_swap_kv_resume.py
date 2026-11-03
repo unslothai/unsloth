@@ -106,6 +106,7 @@ def env(monkeypatch, tmp_path):
         monkeypatch.setitem(arb._EVICTORS, owner, lambda: None)
     monkeypatch.setitem(arb._EVICTORS, arb.CHAT, _evict_chat)
     monkeypatch.setattr(kw, "_kv_resume", None)
+    monkeypatch.setattr(kw, "_loaded_by", None, raising = False)
     monkeypatch.setattr(cs, "_pending", None)
     monkeypatch.setattr(cs, "_committed", None)
     monkeypatch.setattr(cs, "_saving", {})
@@ -1006,3 +1007,70 @@ def test_turning_keep_context_off_deletes_saved_unloads(env, monkeypatch):
     kw.purge_kv_resume()
 
     assert _no_files(env)
+
+
+def test_a_save_that_lands_as_the_unload_times_out_is_deleted(env, monkeypatch):
+    monkeypatch.setattr(kw, "_unload_kv", [], raising = False)
+    real_wait_for = asyncio.wait_for
+
+    async def _times_out_after_delivery(aw, timeout):
+        if timeout != cs.SWAP_KV_SAVE_BUDGET_S:
+            return await real_wait_for(aw, timeout)
+        await aw
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", _times_out_after_delivery)
+
+    _unload(monkeypatch, env)
+
+    assert len(env.saves) == 1
+    assert kw._unload_kv == []
+    assert _no_files(env)
+
+
+@pytest.fixture
+def three_byte_cap(monkeypatch):
+    import core.inference.llama_cpp as llama_cpp
+    monkeypatch.setattr(llama_cpp, "_SLOT_SAVE_MAX_BYTES", 3)
+    monkeypatch.setattr(kw, "_unload_kv", [], raising = False)
+
+
+def test_an_idle_or_swap_save_evicts_older_unload_saves_past_the_cap(env, three_byte_cap):
+    first = env.save_slots_for_resume(lambda: False)
+    kw.stash_unload_kv(first)
+    second = env.save_slots_for_resume(lambda: False)
+
+    kw._set_kv_resume({"origin": "idle", **second})
+
+    assert kw._unload_kv == []
+    assert not env.files[0].exists()
+    assert env.files[1].exists()
+
+
+def test_an_unload_save_replaces_an_idle_save_past_the_cap(env, three_byte_cap):
+    idle = env.save_slots_for_resume(lambda: False)
+    kw._set_kv_resume({"origin": "idle", **idle})
+    unloaded = env.save_slots_for_resume(lambda: False)
+
+    kw.stash_unload_kv(unloaded)
+
+    assert kw._kv_resume is None
+    assert kw._unload_kv == [unloaded]
+    assert not env.files[0].exists()
+    assert env.files[1].exists()
+
+
+@pytest.mark.parametrize("loader, saved", [(None, 1), ("someone-else", 0)])
+def test_a_cpu_only_primary_is_saved_for_the_account_that_loaded_it(
+    env, monkeypatch, loader, saved
+):
+    monkeypatch.setattr(kw, "_unload_kv", [], raising = False)
+    monkeypatch.setattr(cs, "_chat_account", lambda: None)
+    env.holds_no_vram = True
+    kw.note_model_loaded(env)
+    if loader is not None:
+        monkeypatch.setattr(kw, "_loaded_by", (env._gguf_path, loader))
+
+    _unload(monkeypatch, env)
+
+    assert len(env.saves) == saved

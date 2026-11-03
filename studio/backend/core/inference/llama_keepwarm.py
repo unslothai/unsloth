@@ -53,6 +53,7 @@ _last_unloaded_mlx = False
 _kv_resume = None
 # Slot saves of manually unloaded GGUFs, oldest first, until that GGUF loads again.
 _unload_kv: list = []
+_loaded_by = None
 # Process-wide, not per-loop: the backend slot is shared across every event loop.
 _lifecycle_lock = threading.Lock()
 
@@ -519,10 +520,15 @@ def model_load_gate():
 
 def note_model_loaded(backend = None) -> None:
     """Stamp activity and synchronously drop any reload stash."""
+    global _loaded_by
     _note_activity()
+    gguf = getattr(backend, "_gguf_path", None)
+    if gguf:
+        from utils.account_context import current_account_id
+        _loaded_by = (str(gguf), current_account_id())
     resume = take_kv_resume()
     _set_last_unloaded(None)
-    kept = _take_unload_kv(getattr(backend, "_gguf_path", None))
+    kept = _take_unload_kv(gguf)
     if kept is not None and (resume is None or resume.get("gguf") != kept.get("gguf")):
         resume, kept = kept, resume
     if kept:
@@ -577,15 +583,22 @@ def _delete_resume_files(manifest) -> None:
         pass
 
 
+def loaded_account(gguf) -> Optional[str]:
+    loaded = _loaded_by
+    return loaded[1] if gguf and loaded and loaded[0] == str(gguf) else None
+
+
 def _set_kv_resume(value) -> None:
     global _kv_resume
-    stale = None
+    stale = []
     with _lock:
         if _kv_resume is not None and _kv_resume is not value:
-            stale = _kv_resume
+            stale.append(_kv_resume)
         _kv_resume = value
-    if stale:
-        _delete_resume_files(stale)
+        if value is not None:
+            _trim_unload_kv(stale, keep_newest = False)
+    for old in stale:
+        _delete_resume_files(old)
 
 
 def take_kv_resume():
@@ -603,14 +616,28 @@ def _resume_bytes(manifest) -> int:
     return total
 
 
-def stash_unload_kv(manifest) -> None:
+def _trim_unload_kv(stale: list, *, keep_newest: bool) -> None:
+    """Caller holds _lock. Evicts the oldest unload saves until every kept save fits the one cap."""
+    global _kv_resume
     from core.inference.llama_cpp import _SLOT_SAVE_MAX_BYTES
+
+    def _kept_bytes() -> int:
+        resume = _resume_bytes(_kv_resume) if _kv_resume else 0
+        return resume + sum(map(_resume_bytes, _unload_kv))
+
+    while len(_unload_kv) > (1 if keep_newest else 0) and _kept_bytes() > _SLOT_SAVE_MAX_BYTES:
+        stale.append(_unload_kv.pop(0))
+    if keep_newest and _kv_resume is not None and _kept_bytes() > _SLOT_SAVE_MAX_BYTES:
+        stale.append(_kv_resume)
+        _kv_resume = None
+
+
+def stash_unload_kv(manifest) -> None:
     with _lock:
         stale = [m for m in _unload_kv if m.get("gguf") == manifest.get("gguf")]
         _unload_kv[:] = [m for m in _unload_kv if m.get("gguf") != manifest.get("gguf")]
         _unload_kv.append(manifest)
-        while len(_unload_kv) > 1 and sum(map(_resume_bytes, _unload_kv)) > _SLOT_SAVE_MAX_BYTES:
-            stale.append(_unload_kv.pop(0))
+        _trim_unload_kv(stale, keep_newest = True)
     for old in stale:
         _delete_resume_files(old)
 
