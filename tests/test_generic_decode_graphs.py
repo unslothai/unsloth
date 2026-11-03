@@ -181,6 +181,42 @@ def test_greedy_tokens_match_eager_llama(host, llama, bsz, pad):
     assert "forward" not in llama.__dict__
 
 
+def test_batches_over_the_knob_decode_eagerly(host, llama, monkeypatch):
+    _fresh(llama)
+    monkeypatch.setattr(GG, "MAX_BSZ", 2)
+    ids, mask = _ids(llama, 3, pad = 1)
+    assert torch.equal(_generate(llama, ids, mask, False), _generate(llama, ids, mask, True))
+    s = GG.stats(llama)
+    assert s["captures"] == 0 and s["refusals"] == {"batch over max": 9}, s
+    monkeypatch.setattr(GG, "MAX_BSZ", 3)
+    _generate(llama, ids, mask, True)
+    assert GG.stats(llama)["replays"] == 8
+
+
+def test_counts_captures_refusals_and_recompiles_separately(host, llama):
+    from torch._dynamo.utils import counters
+
+    def compiles():
+        return counters["stats"]["unique_graphs"], sum(counters["recompiles"].values())
+
+    layer = torch.nn.Linear(4, 4)
+    compiled = torch.compile(lambda x: layer(x).relu(), backend = "eager")
+    compiled(torch.ones(2, 4))
+    before = compiles()
+    _fresh(llama)
+    ids, mask = _ids(llama, 2, pad = 1)
+    _generate(llama, ids, mask, True)
+    compiled(torch.ones(2, 4))
+    # Decode graphs add no Dynamo graph and no recompile of an existing compiled region.
+    assert compiles() == before
+    s = GG.stats(llama)
+    # One capture per key per call; refusals counted on their own.
+    assert s["captures"] == 1 and s["max_captures_per_key"] == 1 and s["refusals"] == {}, s
+    _generate(llama, ids, mask, True)
+    s = GG.stats(llama)
+    assert s["captures"] == 2 and s["max_captures_per_key"] == 1, s
+
+
 def test_second_call_recaptures_without_revalidating(host, llama):
     _fresh(llama)
     ids, mask = _ids(llama)

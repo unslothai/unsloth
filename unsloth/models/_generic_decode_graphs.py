@@ -17,7 +17,9 @@ Per graph key (batch, argument structure / dtypes / devices, cache layout, autoc
   - the first replay of a key is compared bitwise against the eager step (same cache state);
     a mismatch refuses the key.
 Graphs are dropped when the generate() call ends and when parameters, adapters or quant state change.
-UNSLOTH_DECODE_GENERIC_GRAPHS=0 turns this path off."""
+UNSLOTH_DECODE_GENERIC_GRAPHS=0 turns this path off; batches over UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ
+(default 8) decode eagerly. The cache is the one generate() allocates (no larger span, no extra rows):
+the graph adds only its pool (step intermediates and the static argument / output buffers)."""
 
 import collections
 import contextlib
@@ -45,6 +47,9 @@ _MAX_ARG_BYTES = 16 * 1024 * 1024
 _CONSTANTS = (bool, int, float, str, torch.dtype, torch.device)
 # Refused / validated keys remembered per model.
 _MAX_KEYS = 4096
+# Largest batch replayed (larger batches decode eagerly): a graph only removes launch overhead, which
+# shrinks against the GPU time of a bigger batch. Raise / lower it from measurements.
+MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ", "8"))
 
 
 class _Refuse(Exception):
@@ -160,6 +165,8 @@ class _State:
         self.refused = {}
         self.validated = set()
         self.moved = None
+        # Captures per key in the current generate() call (one expected).
+        self.key_captures = collections.Counter()
         self.captures = 0
         self.replays = 0
         self.validations = 0
@@ -185,6 +192,7 @@ def begin(model):
     state = _state(model)
     state.recheck = True
     state.moved = None
+    state.key_captures.clear()
     # Keys carry the cache length, so they accumulate over calls of many lengths.
     if len(state.refused) + len(state.validated) > _MAX_KEYS:
         state.refused.clear()
@@ -218,6 +226,7 @@ def stats(model):
         "graphs": len(state.graphs),
         "refusals": dict(state.refusals),
         "refused_keys": len(state.refused),
+        "max_captures_per_key": max(state.key_captures.values(), default = 0),
     }
 
 
@@ -484,6 +493,8 @@ def decode_step(
     ):
         return None
     state = _state(model)
+    if ids.shape[0] > MAX_BSZ:
+        return _refusal(state, "batch over max")
     cache = kwargs.get("past_key_values")
     reason = _cache_reason(cache)
     if reason is None:
@@ -615,6 +626,7 @@ def _capture(state, key, forward, kwargs, leaves, cache):
         _BACKEND.current_stream().wait_stream(stream)
     state.graphs[key] = _Entry(graph, buffers, static_outputs, key in state.validated)
     state.captures += 1
+    state.key_captures[hash(key)] += 1
     return outputs
 
 
