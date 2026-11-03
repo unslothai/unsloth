@@ -252,7 +252,6 @@ def refuse_if_sweep_holds(request) -> None:
         busy = _sweep_holds_against(holder)
     if busy:
         from fastapi import HTTPException
-
         raise HTTPException(status_code = 409, detail = SWEEP_BUSY_DETAIL)
 
 

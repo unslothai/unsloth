@@ -440,7 +440,12 @@ def test_a_model_swap_outside_the_load_routes_is_refused_mid_sweep(monkeypatch):
         def __init__(self, holder = None):
             self.headers = {"x-unsloth-bench-lease": holder} if holder else {}
 
-    lease = {"holder": "tab-aaaaaaaa", "kind": "sweep", "expires": time.monotonic() + 60, "outside": 0}
+    lease = {
+        "holder": "tab-aaaaaaaa",
+        "kind": "sweep",
+        "expires": time.monotonic() + 60,
+        "outside": 0,
+    }
     monkeypatch.setattr(benchmarks_routes, "_lease", lease)
     with pytest.raises(HTTPException) as refused:
         benchmarks_routes.refuse_if_sweep_holds(_Req())
@@ -450,5 +455,7 @@ def test_a_model_swap_outside_the_load_routes_is_refused_mid_sweep(monkeypatch):
     benchmarks_routes.refuse_if_sweep_holds(_Req())
 
     # Auto-switch (GGUF/NPU) and preview swap the server without a /load call; each checks first.
-    src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(encoding = "utf-8")
+    src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
     assert src.count("refuse_if_sweep_holds(fastapi_request)") == 3
