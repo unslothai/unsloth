@@ -252,7 +252,6 @@ def admit_swap(request) -> Optional[Callable[[], None]]:
     admitted = _admit_load(holder)
     if admitted is False:
         from fastapi import HTTPException
-
         raise HTTPException(status_code = 409, detail = SWEEP_BUSY_DETAIL)
     if admitted is None:
         return None

@@ -441,7 +441,12 @@ def test_a_model_swap_outside_the_load_routes_is_fenced_like_a_load(monkeypatch)
             self.headers = {"x-unsloth-bench-lease": holder} if holder else {}
 
     monkeypatch.setattr(benchmarks_routes, "_loads_in_flight", {})
-    lease = {"holder": "tab-aaaaaaaa", "kind": "sweep", "expires": time.monotonic() + 60, "outside": 0}
+    lease = {
+        "holder": "tab-aaaaaaaa",
+        "kind": "sweep",
+        "expires": time.monotonic() + 60,
+        "outside": 0,
+    }
     monkeypatch.setattr(benchmarks_routes, "_lease", lease)
     with pytest.raises(HTTPException) as refused:
         benchmarks_routes.admit_swap(_Req())
@@ -458,11 +463,18 @@ def test_a_model_swap_outside_the_load_routes_is_fenced_like_a_load(monkeypatch)
     held = client.post("/api/benchmarks/lease", json = {"holder": "tab-bbbbbbbb", "kind": "sweep"})
     assert held.status_code == 409
     release()
-    assert client.post("/api/benchmarks/lease", json = {"holder": "tab-bbbbbbbb", "kind": "sweep"}).status_code == 200
+    assert (
+        client.post(
+            "/api/benchmarks/lease", json = {"holder": "tab-bbbbbbbb", "kind": "sweep"}
+        ).status_code
+        == 200
+    )
     assert benchmarks_routes._loads_in_flight == {}
 
     # Auto-switch (GGUF/NPU) and preview swap the server without a /load call; each is admitted
     # under the swap gate and released with it.
-    src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(encoding = "utf-8")
+    src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
     assert src.count("_begin_swap_admission(fastapi_request)\n") == 3
     assert src.count("_end_swap_admission()\n") == src.count("_auto_switch_process_lock.release()")
