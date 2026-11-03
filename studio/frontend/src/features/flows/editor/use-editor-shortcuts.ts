@@ -168,9 +168,11 @@ export function useEditorShortcuts(active: boolean): void {
       if (mod && key === "c") {
         if (copySelection()) event.preventDefault();
       } else if (mod && key === "x") {
-        if (copySelection()) {
+        const fragment = copySelection();
+        if (fragment) {
           event.preventDefault();
-          doc.removeElements({ nodes: useUiStore.getState().selectedNodes });
+          // Cut what was copied, so a closed super card's blocks go too.
+          doc.removeElements({ nodes: fragment.nodes.map((n) => n.id) });
           useUiStore.getState().setSelection([], []);
         }
       } else if (mod && key === "v") {

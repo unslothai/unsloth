@@ -521,4 +521,7 @@ test("copy and duplicate take the blocks inside a selected closed card", () => {
     selectedBlocks(["super:sc1", "view", "gone"], meta.editor, graph),
     ["tpl", "img", "view"],
   );
+  // Cut removes what copy took, not the card's own selection id.
+  const shortcuts = readFileSync(new URL("../src/features/flows/editor/use-editor-shortcuts.ts", import.meta.url), "utf8");
+  assert.match(shortcuts, /const fragment = copySelection\(\);\s*if \(fragment\) \{[^}]*removeElements\(\{ nodes: fragment\.nodes\.map\(\(n\) => n\.id\) \}\)/);
 });
