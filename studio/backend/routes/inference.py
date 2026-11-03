@@ -2337,6 +2337,9 @@ def _count_gguf_admission_prompt(
                 payload.reasoning_effort,
                 _replay_preserve_thinking(llama_backend, payload, messages),
             )
+            _template_extras = _extra_chat_template_kwargs(payload)
+            if _template_extras:
+                template_kwargs = {**_template_extras, **(template_kwargs or {})}
             continue_final = (
                 _continue_final_message(payload, thought = True)
                 and trailing_assistant_resume_kind(messages) is not None
@@ -30161,6 +30164,21 @@ def _consume_chat_template_reasoning_kwargs(payload) -> None:
     }
 
 
+def _extra_chat_template_kwargs(payload) -> Optional[dict]:
+    """The caller's other ``chat_template_kwargs`` (e.g. a model's ``verification`` tag), forwarded
+    to llama-server as sent; the reasoning keys go through the typed fields instead (#16545)."""
+    extra = getattr(payload, "model_extra", None)
+    template_kwargs = extra.get("chat_template_kwargs") if isinstance(extra, dict) else None
+    if not isinstance(template_kwargs, dict):
+        return None
+    extras = {
+        key: value
+        for key, value in template_kwargs.items()
+        if isinstance(key, str) and key not in _CHAT_TEMPLATE_REASONING_KEYS
+    }
+    return extras or None
+
+
 def _resolve_reasoning_controls(
     enable_thinking: Optional[bool], reasoning_effort: Optional[str]
 ) -> tuple[Optional[bool], Optional[str]]:
@@ -32126,6 +32144,7 @@ async def produce_openai_chat_completions(
                     sandbox_level = payload.sandbox_level,
                     perf_callback = _gguf_perf_callback,
                     on_conversation_grew = _gguf_recost,
+                    chat_template_kwargs = _extra_chat_template_kwargs(payload),
                     # Only streams park and reclaim; an MCP image forces the approval wait in any mode.
                     on_decode_slot = _gguf_record_decode_slot
                     if payload.stream
@@ -32979,6 +32998,7 @@ async def produce_openai_chat_completions(
                 thread_id = payload.thread_id,
                 # Tell the epoch gate tools are withheld; it cannot see that from process policy.
                 tools_withheld = _tool_loop_unusable,
+                chat_template_kwargs = _extra_chat_template_kwargs(payload),
             )
 
         _gguf_sentinel = object()
@@ -39198,6 +39218,10 @@ def _build_chat_request(
     response_format = _responses_text_format(payload.text)
     if response_format is not None:
         chat_kwargs["response_format"] = response_format
+
+    _template_extras = _extra_chat_template_kwargs(payload)
+    if _template_extras:
+        chat_kwargs["chat_template_kwargs"] = _template_extras
 
     chat_request = ChatCompletionRequest(**chat_kwargs)
     _normalize_chat_reasoning_controls(chat_request)
@@ -46333,6 +46357,10 @@ def _build_openai_passthrough_body(
         if llama_backend is not None
         else None
     )
+    _template_extras = _extra_chat_template_kwargs(payload)
+    if _template_extras:
+        # Studio's resolved reasoning keys win over anything the caller sent beside them.
+        tpl_kwargs = {**_template_extras, **(tpl_kwargs or {})}
     response_format = _response_format_for_llama_server(
         _response_format_beside_tools(payload, tools)
     )
