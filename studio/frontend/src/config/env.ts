@@ -148,7 +148,8 @@ export function refreshDeviceTypeAfterSystemInfo(): void {
   if (systemVerdictRead?.generation === backendGeneration) return;
   const entry = {
     generation: backendGeneration,
-    promise: fetchDeviceType({ force: true }),
+    // A cached snapshot may predate a backend restart that never detected; ask this one to.
+    promise: fetchDeviceType({ force: true, detectHardware: true }),
   };
   systemVerdictRead = entry;
   const release = () => {

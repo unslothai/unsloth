@@ -290,6 +290,8 @@ def test_cold_status_does_not_judge_an_overridden_gpu_by_its_kernel_target(amd_h
     assert install.support_reason("vllm", wait = False) == "Checking for a supported AMD GPU."
     monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION")
     assert install.support_reason("vllm", wait = False).startswith("Requires an AMD Instinct")
+    amd_host.targets["value"] = None
+    assert install.support_reason("vllm", wait = False) == "Checking for a supported AMD GPU."
 
 
 def test_sglang_on_amd_points_to_vllm(amd_host):

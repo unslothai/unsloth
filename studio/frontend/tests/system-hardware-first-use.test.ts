@@ -66,7 +66,7 @@ for (const [name, health, initialChatOnly, backend] of [
     const info = await system.fetchSystemInfo();
     await settle();
     assert.equal(info?.device_backend, backend);
-    assert.deepEqual(urls, ["/api/system", "/api/health"]);
+    assert.deepEqual(urls, ["/api/system", "/api/health?detect_hardware=true"]);
     const state = usePlatformStore.getState();
     assert.equal(state.capabilitiesUnknown(), false);
     assert.equal(state.detectionDeferred, false);
@@ -157,6 +157,28 @@ test("a new backend may defer again after the previous backend was measured", as
   await fetchDeviceType({ force: true });
   assert.equal(usePlatformStore.getState().detectionDeferred, true);
   assert.equal(usePlatformStore.getState().capabilitiesUnknown(), true);
+});
+
+test("a cached snapshot from a replaced backend asks the new one to detect", async () => {
+  reset();
+  const urls: string[] = [];
+  globalThis.fetch = (async (url: string) => {
+    urls.push(url);
+    return Response.json(url.includes("detect_hardware=true") ? MLX : DEFERRED);
+  }) as typeof fetch;
+  const system = systemApi(async (url) => {
+    urls.push(url);
+    return Response.json({ device_backend: "mlx" });
+  });
+  await system.fetchSystemInfo();
+  await settle();
+  forgetMeasuredVerdict();
+  urls.length = 0;
+  await system.fetchSystemInfo();
+  await settle();
+  assert.deepEqual(urls, ["/api/health?detect_hardware=true"]);
+  assert.equal(usePlatformStore.getState().capabilitiesUnknown(), false);
+  assert.equal(usePlatformStore.getState().isChatOnly(), false);
 });
 
 test("a pending refresh from a replaced backend cannot block or overwrite its successor", async () => {

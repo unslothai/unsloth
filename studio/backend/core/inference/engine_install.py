@@ -884,9 +884,12 @@ def _rocm_reason(
     if (
         not arches
         and _rocm_arches is None
-        and os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").strip()
+        and (
+            os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").strip()
+            or amd_kfd_gpu_gfx_targets() is None
+        )
     ):
-        # The kernel's target ignores the override; stay provisional until torch reports the presented one.
+        # The kernel's target ignores the override, or is unreadable; stay provisional until torch reports one.
         return "Checking for a supported AMD GPU."
     if gpu_id is None:
         selected = list(arches.values()) or amd_kfd_gpu_gfx_targets() or []
