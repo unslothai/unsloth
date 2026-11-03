@@ -226,3 +226,16 @@ export function rowAnswer(
   }
   return typeof value === "string" ? value : JSON.stringify(value);
 }
+
+/** The reference a reward is scored against, as in training: its compare_to column of the row,
+ * else the answer. An empty cell stays "" (scored as a miss); only a null one is missing. */
+export function rewardPreviewReference(
+  row: Record<string, unknown> | null | undefined,
+  compareTo: unknown,
+  answer: string | null,
+): string | null {
+  if (typeof compareTo === "string" && compareTo !== "answer") {
+    return rowAnswer(row, compareTo) ?? null;
+  }
+  return answer;
+}

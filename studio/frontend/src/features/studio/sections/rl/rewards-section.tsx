@@ -451,8 +451,10 @@ export function RewardsSection(): ReactElement {
   // A blank answer in the row stays blank, as in training; the sample is for no row at all.
   const mappedAnswer = rowAnswer(previewRow, answerColumn);
   const rowReference = mappedAnswer ?? "";
-  const reference =
-    referenceEdit ?? (mappedAnswer === undefined ? "72" : rowReference);
+  // What training compares against: null only for a null cell, which scores as missing.
+  const answerReference =
+    referenceEdit ?? (mappedAnswer === undefined ? "72" : mappedAnswer);
+  const reference = answerReference ?? "";
 
   const active = library.filter((r) => !r.shadowed);
   const byName = new Map(active.map((r) => [r.name, r]));
@@ -485,11 +487,7 @@ export function RewardsSection(): ReactElement {
       // No answer role, no answer kwarg in training; with no dataset yet, assume one.
       const row = pythonRewardRow(
         previewRow ?? {},
-        !answerColumn && previewRow
-          ? undefined
-          : referenceEdit === null && mappedAnswer === null
-            ? null
-            : reference,
+        !answerColumn && previewRow ? undefined : answerReference,
       );
       const { prompt, systemPrompt } = previewPrompt(
         previewRow,
@@ -499,7 +497,7 @@ export function RewardsSection(): ReactElement {
       const res = await previewRewards(
         rewards,
         completion,
-        reference || null,
+        answerReference,
         row,
         prompt,
         systemPrompt,
@@ -531,7 +529,7 @@ export function RewardsSection(): ReactElement {
   }, [
     rewards,
     completion,
-    reference,
+    answerReference,
     previewRow,
     answerColumn,
     mapping,
