@@ -777,3 +777,12 @@ def test_a_recipe_on_chats_loaded_model_is_keyed_on_that_model_and_quant(monkeyp
     assert key() != named
     recipe["model_providers"][0]["is_local"] = False
     assert key() is None
+
+
+def test_recipe_dataset_takes_every_row_count_the_run_dialog_accepts():
+    from core.flows.engine import param_values
+    from core.flows.specs import SPECS_BY_TYPE
+
+    spec = SPECS_BY_TYPE["recipe.generate"]
+    assert param_values(spec, {"params": {"rows": 150000}})["rows"] == 150000
+    assert param_values(spec, {"params": {"rows": 200000}})["rows"] == 200000

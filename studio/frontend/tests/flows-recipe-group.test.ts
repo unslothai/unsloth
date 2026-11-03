@@ -1052,3 +1052,82 @@ test("a copied subcategory and validator follow the copied columns they name", a
   assert.equal((topic.params as { category: string }).category, "domain_2");
   assert.deepEqual(check.target_columns, ["topic_2"]);
 });
+
+test("deleting a column takes its nested and filtered {{ references }} out, and a {% %} reader blocks it", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { disconnectColumns, removeNodes } = await import(
+    "../src/features/flows/recipe/recipe-actions.ts"
+  );
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  const prompt = byName(nodes, "sql_prompt");
+  const sql = byName(nodes, "sql");
+  const column = sql.params.column as Record<string, unknown>;
+  const nested = {
+    ...sql,
+    params: {
+      column: {
+        ...column,
+        prompt: "Write SQL.\n{{ sql_prompt.first }} {{ sql_prompt | upper }}\nKeep {{ sql_context }}",
+      },
+    },
+  };
+  const withNested = nodes.map((n) => (n.id === sql.id ? nested : n));
+  useDocStore.getState().load({ ...doc(withNested, referenceEdges(withNested)), groups: [group] });
+  const graph = useDocStore.getState().graph;
+  const wire = graph.edgeOrder.find(
+    (e) => graph.edges[e].source === prompt.id && graph.edges[e].target === sql.id,
+  );
+  assert.ok(wire);
+  assert.deepEqual(disconnectColumns([wire]), [wire]);
+  const after = useDocStore.getState().graph.nodes[sql.id].params.column as { prompt: string };
+  assert.equal(after.prompt, "Write SQL.\nKeep {{ sql_context }}");
+
+  // A control tag cannot be rewritten safely: the column stays, and so does every template.
+  const control = {
+    ...sql,
+    params: { column: { ...column, prompt: "{% if sql_prompt %}Write SQL{% endif %}" } },
+  };
+  const withControl = nodes.map((n) => (n.id === sql.id ? control : n));
+  useDocStore.getState().load({ ...doc(withControl, referenceEdges(withControl)), groups: [group] });
+  removeNodes([prompt.id]);
+  const kept = useDocStore.getState().graph;
+  assert.ok(kept.nodes[prompt.id]);
+  assert.match(String((kept.nodes[sql.id].params.column as { prompt: string }).prompt), /if sql_prompt/);
+});
+
+test("an edit keeps what its form left alone: a preset's temperature distribution and a column's image list", () => {
+  const { group, nodes } = sqlGroup();
+  const cfg = group.config as Record<string, unknown>;
+  const uniform = { distribution_type: "uniform", params: { low: 0.7, high: 1 } };
+  const presets = (cfg.model_configs as Record<string, unknown>[]).map((m) => ({
+    ...m,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    inference_parameters: { temperature: uniform, max_parallel_requests: 2 },
+  }));
+  const images = [
+    { modality: "image", column_name: "sql_prompt", data_type: "url" },
+    { modality: "image", column_name: "sql_context", data_type: "url" },
+  ];
+  const withImages = nodes.map((n) =>
+    columnName(n) === "sql"
+      ? { ...n, params: { column: { ...(n.params.column as object), multi_modal_context: images } } }
+      : n,
+  );
+  // biome-ignore lint/style/useNamingConvention: api schema
+  const saved = { ...group, config: { ...cfg, model_configs: presets } };
+  const view = studioView(saved, withImages);
+  const preset = Object.values(view.configs).find((c) => c.kind === "model_config");
+  assert.ok(preset);
+  const renamed = commitStudioEdit(saved, withImages, view, applyConfigPatch(view.configs, preset.id, { name: "writer2" }));
+  const params = (renamed.group?.config as { model_configs: { inference_parameters: Record<string, unknown> }[] })
+    .model_configs[0].inference_parameters;
+  assert.deepEqual(params, { temperature: uniform, max_parallel_requests: 2 });
+
+  const sql = Object.values(view.configs).find((c) => c.name === "sql");
+  assert.ok(sql);
+  const dropped = commitStudioEdit(saved, withImages, view, applyConfigPatch(view.configs, sql.id, { drop: true } as never));
+  const column = dropped.nodes.find((n) => columnName(n) === "sql")?.params.column as Record<string, unknown>;
+  assert.equal(column.drop, true);
+  assert.deepEqual(column.multi_modal_context, images);
+});

@@ -1428,7 +1428,7 @@ NODE_SPECS: list[dict] = [
         inputs = [inp("seed", "dataset", "Seed dataset", optional = True)],
         outputs = [out("dataset", "dataset"), out("preview", "json")],
         params = [
-            P("rows", "int", 5, "Rows", min = 1, max = 100000),
+            P("rows", "int", 5, "Rows", min = 1, max = 200000),
             P("mode", "select", "preview", "Mode", options = ["preview", "full"]),
         ],
         lane = "gpu",

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { toast } from "sonner";
 import { type DocGraph, newId, useDocStore } from "../stores/doc-store";
 import type { FlowGroup, FlowNode } from "../types";
 import { CARD_SIZE, setupBoxes, setupLayout } from "./recipe-setup";
@@ -13,6 +14,7 @@ import {
   isRecipeGroup,
   referenceEdgeDiff,
   starterRecipe,
+  templateStillReads,
   withReference,
   withoutReference,
 } from "./recipe-columns";
@@ -94,45 +96,90 @@ export function connectColumns(
   return null;
 }
 
-/** Removes the references behind deleted column wires; returns the edge ids it handled. */
-export function disconnectColumns(
-  edgeIds: string[],
-  coalesceKey?: string,
-): string[] {
-  const graph = useDocStore.getState().graph;
-  const changed = new Map<string, FlowNode>();
-  const handled: string[] = [];
-  const groupIds = new Set<string>();
+type Disconnect = {
+  changed: Map<string, FlowNode>;
+  handled: string[];
+  groupIds: Set<string>;
+  /** "target reads source" for a reference only a `{% ... %}` tag holds, which is not rewritten. */
+  blocked: string[];
+};
+
+function planDisconnect(graph: DocGraph, edgeIds: string[]): Disconnect {
+  const plan: Disconnect = {
+    changed: new Map(),
+    handled: [],
+    groupIds: new Set(),
+    blocked: [],
+  };
   for (const id of edgeIds) {
     const edge = graph.edges[id];
     const source = edge && graph.nodes[edge.source];
     const target =
-      edge && (changed.get(edge.target) ?? graph.nodes[edge.target]);
+      edge && (plan.changed.get(edge.target) ?? graph.nodes[edge.target]);
     if (source?.type !== COLUMN_TYPE || target?.type !== COLUMN_TYPE) continue;
-    handled.push(id);
-    if (target.group) groupIds.add(target.group);
-    const column = withoutReference(columnOf(target), columnName(source));
-    changed.set(target.id, { ...target, params: { ...target.params, column } });
+    const ref = columnName(source);
+    const column = withoutReference(columnOf(target), ref);
+    if (templateStillReads(column, ref)) {
+      plan.blocked.push(`${columnName(target)} reads ${ref}`);
+      continue;
+    }
+    plan.handled.push(id);
+    if (target.group) plan.groupIds.add(target.group);
+    plan.changed.set(target.id, {
+      ...target,
+      params: { ...target.params, column },
+    });
   }
-  // A wire whose reference survives (a sampler's parent) is drawn again by the sync.
-  if (groupIds.size)
-    commitRecipe([...groupIds], [...changed.values()], null, coalesceKey);
-  return handled;
+  return plan;
 }
 
-/** Deletes nodes, taking a deleted column's `{{ reference }}` out of the columns that read it. */
+function refuse(blocked: string[], what: string): void {
+  toast.error(`Cannot ${what}: ${blocked.join(", ")} in a {% %} tag`, {
+    description: "Edit that column's prompt to drop the tag, then try again.",
+  });
+}
+
+function commitDisconnect(plan: Disconnect, coalesceKey?: string): void {
+  // A wire whose reference survives (a sampler's parent) is drawn again by the sync.
+  if (plan.groupIds.size)
+    commitRecipe(
+      [...plan.groupIds],
+      [...plan.changed.values()],
+      null,
+      coalesceKey,
+    );
+}
+
+/** Removes the references behind deleted column wires; returns the edge ids it handled. A reference a
+ * `{% ... %}` tag holds is not rewritten: that wire stays, with a note on how to remove it. */
+export function disconnectColumns(
+  edgeIds: string[],
+  coalesceKey?: string,
+): string[] {
+  const plan = planDisconnect(useDocStore.getState().graph, edgeIds);
+  if (plan.blocked.length) refuse(plan.blocked, "remove the wire");
+  commitDisconnect(plan, coalesceKey);
+  return plan.handled;
+}
+
+/** The wires from deleted nodes into kept ones. */
+function wiresOut(graph: DocGraph, nodeIds: string[]): string[] {
+  const drop = new Set(nodeIds);
+  return graph.edgeOrder.filter((id) => {
+    const edge = graph.edges[id];
+    return drop.has(edge.source) && !drop.has(edge.target);
+  });
+}
+
+/** Deletes nodes, taking a deleted column's `{{ reference }}` out of the columns that read it. A column a
+ * `{% ... %}` tag still reads is not deleted, so no template is left naming a missing column. */
 export function removeNodes(nodeIds: string[]): void {
   const graph = useDocStore.getState().graph;
-  const drop = new Set(nodeIds);
+  const plan = planDisconnect(graph, wiresOut(graph, nodeIds));
+  if (plan.blocked.length) return refuse(plan.blocked, "delete it");
   // One key for both commits, so a single Undo brings the column and its references back together.
   const key = `remove:${nodeIds.join(",")}:${Date.now()}`;
-  disconnectColumns(
-    graph.edgeOrder.filter((id) => {
-      const edge = graph.edges[id];
-      return drop.has(edge.source) && !drop.has(edge.target);
-    }),
-    key,
-  );
+  commitDisconnect(plan, key);
   useDocStore.getState().removeElements({ nodes: nodeIds }, key);
 }
 
@@ -143,8 +190,15 @@ export function removeElementsWithReferences(ids: {
   groups: string[];
   notes: string[];
 }): void {
+  const graph = useDocStore.getState().graph;
+  const plan = planDisconnect(graph, [
+    ...ids.edges,
+    ...wiresOut(graph, ids.nodes).filter((id) => !ids.edges.includes(id)),
+  ]);
+  if (plan.blocked.length) return refuse(plan.blocked, "delete it");
   const key = `delete:${[...ids.nodes, ...ids.edges].join(",")}:${Date.now()}`;
-  const references = new Set(disconnectColumns(ids.edges, key));
+  commitDisconnect(plan, key);
+  const references = new Set(plan.handled);
   useDocStore.getState().removeElements(
     { ...ids, edges: ids.edges.filter((id) => !references.has(id)) },
     key,

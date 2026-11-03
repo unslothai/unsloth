@@ -211,15 +211,42 @@ export function withReference(
   return null;
 }
 
+const TEXT_FIELDS = ["prompt", "system_prompt", "expr"];
+
+/** The template without the `{{ ... }}` tags that read `ref`, plain (`{{ ref }}`) or not (`{{ ref.key }}`,
+ * `{{ ref | upper }}`); `{% ... %}` tags are left, since dropping one would break the template. */
+function withoutOutputTags(template: string, ref: string): string {
+  // A tag is removed line by line, so a line left empty by it goes too (removeRef's rule).
+  return removeRef(template, ref)
+    .split("\n")
+    .flatMap((line) => {
+      const next = line.replace(/\{\{[\s\S]*?\}\}/g, (tag) =>
+        templateNames(tag).includes(ref) ? "" : tag,
+      );
+      if (next === line) return [line];
+      return next.trim() ? [next.replace(/\s+$/g, "")] : [];
+    })
+    .join("\n");
+}
+
+/** Whether a column's prompts still read `ref` (in a `{% ... %}` tag) after its output tags were removed. */
+export function templateStillReads(column: RecipeColumn, ref: string): boolean {
+  return TEXT_FIELDS.some(
+    (key) =>
+      typeof column[key] === "string" &&
+      templateNames(column[key] as string).includes(ref),
+  );
+}
+
 /** The column without `{{ ref }}` in its prompts or targets; samplers keep their parent. */
 export function withoutReference(
   column: RecipeColumn,
   ref: string,
 ): RecipeColumn {
   const next: RecipeColumn = { ...column };
-  for (const key of ["prompt", "system_prompt", "expr"]) {
+  for (const key of TEXT_FIELDS) {
     if (typeof next[key] === "string")
-      next[key] = removeRef(next[key] as string, ref);
+      next[key] = withoutOutputTags(next[key] as string, ref);
   }
   if (Array.isArray(next.target_columns))
     // biome-ignore lint/style/useNamingConvention: api schema

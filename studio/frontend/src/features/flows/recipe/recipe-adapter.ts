@@ -26,6 +26,7 @@ import {
   COLUMN_TYPE,
   type RecipeColumn,
   columnName,
+  columnOf,
   groupPayload,
   pendingToolProfiles,
 } from "./recipe-columns";
@@ -256,15 +257,35 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/** `form` with each field the form left as it was (`prior` = the form's value before the edit) taken from
+ * `original`, so a value the form cannot show (a uniform temperature) survives an edit of another field. */
+function untouchedFromSaved(
+  form: Record<string, unknown>,
+  prior: Record<string, unknown> | null,
+  original: Record<string, unknown>,
+  fields: string[],
+): Record<string, unknown> {
+  const next = { ...form };
+  for (const f of fields) {
+    if (!prior || !same(prior[f], form[f])) continue;
+    if (f in original) next[f] = original[f];
+    else delete next[f];
+  }
+  return next;
+}
+
 /** A provider, preset or tool profile the edit did not touch is kept exactly as saved, settings the
  * forms do not show included (a preset's max_parallel_requests, a uniform temperature); an edited
- * or renamed one keeps those settings and takes every field the form edits from the form. */
+ * or renamed one keeps those settings and every field its form left alone, and takes what the form changed. */
 function keepUnshown(
   key: string,
   built: unknown,
   saved: unknown,
   before: StudioView,
   configs: Record<string, NodeConfig>,
+  priorBuilt: unknown,
 ): unknown {
   const field = ENTRY_NAME[key];
   if (!field || !Array.isArray(built) || !Array.isArray(saved)) return built;
@@ -286,13 +307,26 @@ function keepUnshown(
     if (config && was === config) return original;
     const fields = FORM_FIELDS[key];
     if (!fields) return entry;
-    const merged: Record<string, unknown> = { ...without(original, fields), ...item };
+    const prior = Array.isArray(priorBuilt)
+      ? (priorBuilt.map(asRecord).find((e) => e?.[field] === (was?.name ?? name)) ?? null)
+      : null;
+    const shown = fields.filter((f) => f !== "inference_parameters");
+    const merged: Record<string, unknown> = {
+      ...without(original, fields),
+      ...untouchedFromSaved(without(item, ["inference_parameters"]), prior, original, shown),
+    };
+    if ("inference_parameters" in item) merged.inference_parameters = item.inference_parameters;
     const savedParams = asRecord(original.inference_parameters);
     if (key === "model_configs" && savedParams) {
       // biome-ignore lint/style/useNamingConvention: api schema
       merged.inference_parameters = {
         ...without(savedParams, FORM_INFERENCE),
-        ...(asRecord(item.inference_parameters) ?? {}),
+        ...untouchedFromSaved(
+          asRecord(item.inference_parameters) ?? {},
+          prior ? (asRecord(prior.inference_parameters) ?? {}) : null,
+          savedParams,
+          FORM_INFERENCE,
+        ),
       };
     }
     return merged;
@@ -312,8 +346,17 @@ export function commitStudioEdit(
     const id = before.byNode[node.id];
     const config = id ? configs[id] : undefined;
     if (!config || config === before.configs[id]) continue;
-    const column = buildColumn(config, configs);
-    if (!column) continue;
+    const built = buildColumn(config, configs);
+    if (!built) continue;
+    const prior = buildColumn(before.configs[id], before.configs);
+    const column = prior
+      ? (untouchedFromSaved(
+          built as Record<string, unknown>,
+          prior as Record<string, unknown>,
+          columnOf(node),
+          [...new Set([...Object.keys(prior), ...Object.keys(built), ...Object.keys(columnOf(node))])],
+        ) as typeof built)
+      : built;
     nodes.push({
       ...node,
       label: config.name.slice(0, 200),
@@ -337,10 +380,24 @@ export function commitStudioEdit(
     string,
     unknown
   >;
+  const priorRecipe = buildRecipePayload(
+    before.configs,
+    asNodes(before.configs),
+    [],
+    before.processors,
+  ).payload.recipe as Record<string, unknown>;
   const config: Record<string, unknown> = { ...(group.config ?? {}) };
   for (const [key, value] of Object.entries(recipe)) {
     if (value === undefined) delete config[key];
-    else config[key] = keepUnshown(key, value, group.config?.[key], before, configs);
+    else
+      config[key] = keepUnshown(
+        key,
+        value,
+        group.config?.[key],
+        before,
+        configs,
+        priorRecipe[key],
+      );
   }
   // Recipe Studio's forms carry schema transforms and the seed's drop list only; any other
   // processor (a named drop_columns) is kept as it was, not lost to an unrelated edit.
