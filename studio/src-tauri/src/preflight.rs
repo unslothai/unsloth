@@ -991,8 +991,6 @@ exit 1
         let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
         let _cache_home = ManagedCapabilityCacheHome::new("cache-hit-tree-change");
         remove_managed_capability_cache();
-        // `changeonh` makes -h rewrite the launcher's mtime (an update landing mid-probe) and
-        // `modecap` makes the new tree's capability probe fail.
         let fake = fake_cli(
             "cap-cache-hit-tree-change",
             r#"#!/bin/sh
@@ -1012,7 +1010,6 @@ exit 1
         let bin = fake.bin.clone();
         let calls = bin.with_extension("calls");
 
-        // Warm the cache for the current tree.
         assert!(matches!(
             probe_managed_bin(bin.clone()).await,
             ManagedProbe::Ready { .. }
