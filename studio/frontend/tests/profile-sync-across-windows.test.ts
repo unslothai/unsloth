@@ -7,7 +7,8 @@ import { test } from "node:test";
 const KEY = "unsloth_user_profile";
 const APPEARANCE_KEY = "unsloth_appearance_customization";
 const data = new Map<string, string>();
-const listeners: ((event: { key: string | null }) => void)[] = [];
+type StorageEvent = { key: string | null; newValue: string | null };
+const listeners: ((event: StorageEvent) => void)[] = [];
 const localStorage = {
   getItem: (key: string) => data.get(key) ?? null,
   setItem: (key: string, value: string) => void data.set(key, value),
@@ -19,7 +20,7 @@ Object.assign(globalThis, {
     localStorage,
     addEventListener: (
       type: string,
-      listener: (event: { key: string | null }) => void,
+      listener: (event: StorageEvent) => void,
     ) => {
       if (type === "storage") listeners.push(listener);
     },
@@ -35,11 +36,12 @@ const { useAppearanceCustomStore } = await import(
 
 function otherWindowWrites(change: Record<string, unknown>, key = KEY) {
   const saved = JSON.parse(data.get(key) ?? "{}");
-  data.set(
-    key,
-    JSON.stringify({ ...saved, state: { ...saved.state, ...change } }),
-  );
-  for (const listener of listeners) listener({ key });
+  const newValue = JSON.stringify({
+    ...saved,
+    state: { ...saved.state, ...change },
+  });
+  data.set(key, newValue);
+  for (const listener of listeners) listener({ key, newValue });
 }
 
 test("a name set in another window is not overwritten by an edit in this one", async () => {
@@ -80,4 +82,14 @@ test("an appearance change made in another window is not overwritten by an edit 
   assert.equal(stored.customization.uiFont, "Other Font");
   assert.equal(stored.customization.colors.light.accent, "#ff0000");
   assert.equal(stored.customization.headingFont, "Heading");
+});
+
+test("another window resetting local preferences keeps this window's appearance", async () => {
+  const store = useAppearanceCustomStore;
+  store.getState().patch({ uiFont: "Kept Font" });
+  data.delete(APPEARANCE_KEY);
+  for (const listener of listeners)
+    listener({ key: APPEARANCE_KEY, newValue: null });
+  await Promise.resolve();
+  assert.equal(store.getState().customization.uiFont, "Kept Font");
 });

@@ -629,7 +629,10 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
 
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
-    if (event.key === useAppearanceCustomStore.persist.getOptions().name) {
+    if (
+      event.key === useAppearanceCustomStore.persist.getOptions().name &&
+      event.newValue !== null
+    ) {
       void useAppearanceCustomStore.persist.rehydrate();
     }
   });
