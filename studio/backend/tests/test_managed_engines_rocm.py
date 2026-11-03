@@ -282,6 +282,16 @@ def test_sdk_rocm_torch_still_maps_each_gpu_to_its_target(monkeypatch):
     assert install._rocm_gpu_arches() == {0: "gfx1100", 1: "gfx1030"}
 
 
+def test_cold_status_does_not_judge_an_overridden_gpu_by_its_kernel_target(amd_host, monkeypatch):
+    amd_host.targets["value"] = ["gfx1102"]
+    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
+    monkeypatch.setattr(install, "_rocm_arches", None)
+    monkeypatch.delitem(install.sys.modules, "torch", raising = False)
+    assert install.support_reason("vllm", wait = False) == "Checking for a supported AMD GPU."
+    monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION")
+    assert install.support_reason("vllm", wait = False).startswith("Requires an AMD Instinct")
+
+
 def test_sglang_on_amd_points_to_vllm(amd_host):
     assert install.support_reason("sglang", wait = False) == (
         "SGLang requires an NVIDIA GPU. Use vLLM on AMD GPUs."
