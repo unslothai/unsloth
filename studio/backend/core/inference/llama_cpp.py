@@ -3061,7 +3061,6 @@ _REASONING_EFFORT_ALLOWLIST_RE = re.compile(
 
 
 def _reasoning_effort_allowlist(chat_template: str) -> list:
-    """Levels from an `if reasoning_effort not in [...]` guard that raises, so the template enforces them."""
     match = _REASONING_EFFORT_ALLOWLIST_RE.search(chat_template)
     return _extract_reasoning_effort_levels(match.group(1)) if match else []
 
@@ -3170,7 +3169,6 @@ def detect_reasoning_flags(
         scanned = _extract_reasoning_effort_levels(tpl)
         allowed = _reasoning_effort_allowlist(tpl)
         if any(level != "none" for level in allowed):
-            # Mistral Small 4 raises unless reasoning_effort is in ['none', 'high'].
             flags["reasoning_effort_levels"] = allowed
         elif "low" in scanned and "high" in scanned:
             flags["reasoning_effort_levels"] = scanned

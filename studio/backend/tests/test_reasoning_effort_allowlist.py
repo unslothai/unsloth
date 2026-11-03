@@ -128,7 +128,6 @@ def test_template_raise_with_quotes_reaches_the_client(mistral_template_loaded):
 
 
 def test_template_raise_from_an_override_reaches_the_client(monkeypatch):
-    # llama-server renders the override, not the GGUF's own template.
     class _Backend:
         chat_template = (
             "{{ bos_token }}{% for message in messages %}{{ message['content'] }}{% endfor %}"
