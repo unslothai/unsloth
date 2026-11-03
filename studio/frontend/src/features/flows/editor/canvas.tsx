@@ -113,9 +113,11 @@ function insideRect(
   );
 }
 
-function groupMembership(
+export function groupMembership(
   positions: Record<string, [number, number]>,
   sizes: Map<string, Size>,
+  // A recipe frame drawn taller than it is saved (its setup cards) holds what lands in the extra space.
+  heights: Record<string, number> = {},
 ): Record<string, string | null> {
   const { graph } = useDocStore.getState();
   const membership: Record<string, string | null> = {};
@@ -126,9 +128,10 @@ function groupMembership(
     for (const groupId of graph.groupOrder) {
       const key = GROUP_PREFIX + groupId;
       const g = graph.groups[groupId];
+      const h = Math.max(g.rect[3], heights[groupId] ?? 0);
       const rect: [number, number, number, number] = positions[key]
-        ? [positions[key][0], positions[key][1], g.rect[2], g.rect[3]]
-        : g.rect;
+        ? [positions[key][0], positions[key][1], g.rect[2], h]
+        : [g.rect[0], g.rect[1], g.rect[2], h];
       if (!insideRect(pos[0] + width / 2, pos[1] + 16, rect)) continue;
       const area = rect[2] * rect[3];
       if (!best || area < best.area) best = { id: groupId, area };
@@ -184,6 +187,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     () => setupLayout(graph, drag, sizes),
     [graph, drag, sizes],
   );
+  const setupRef = useRef(setup);
+  setupRef.current = setup;
   const nodes = useMemo(() => {
     if (!setup.elements.length) return derivedNodes;
     const grown = derivedNodes.map((node) => {
@@ -358,7 +363,10 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         if (group) groups.set(card.groupId, withSetupPosition(group, id, [p.x, p.y]));
       }
       if (Object.keys(positions).length)
-        doc.moveNodes(positions, groupMembership(positions, sizesRef.current));
+        doc.moveNodes(
+          positions,
+          groupMembership(positions, sizesRef.current, setupRef.current.heights),
+        );
       if (groups.size) doc.patchGraph({ groups: [...groups.values()] });
     }
     setDrag(null);
