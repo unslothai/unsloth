@@ -66,7 +66,8 @@ def _d1_zoo(tmp_path, family = None):
         D1Network = lambda pipeline, checkpointing: network(),
         d1_training_network = lambda pipeline, **kwargs: (calls.update(lora = kwargs), network())[1],
         clef_training_network = lambda *args, **kwargs: pytest.fail("a d1 took the Clef network"),
-        d1_training_item = lambda *args: calls.update(item = args) or {"slots": []},
+        d1_training_item = lambda *args: calls.update(item = args)
+        or {"slots": [], "input_ids": [0] * 8},
         clef_training_item = lambda *args, **kwargs: pytest.fail("a d1 took the Clef item"),
         save_d1_model = lambda *args: calls.update(saved = args),
         save_clef_model = lambda *args: pytest.fail("a d1 took the Clef saver"),
@@ -102,6 +103,10 @@ def test_a_d1_trains_saves_and_tokenizes_as_one(decision_mlx, monkeypatch, tmp_p
     monkeypatch.setattr(decision_mlx, "_laya", lambda: types.SimpleNamespace(common = common))
     decision_mlx._clef_item(zoo, pipeline, "s", {"q": {}}, 64, ["image"], ["clip"])
     assert calls["item"] == (pipeline, "s", {"q": {}}, ["image"], ["clip"])
+    # Its 8 tokens fit 8 and not 7: a row past the limit is refused, and build_dataset skips it.
+    decision_mlx._clef_item(zoo, pipeline, "s", {"q": {}}, 8, ["image"], ["clip"])
+    with pytest.raises(ValueError, match = "past max_seq_length 7"):
+        decision_mlx._clef_item(zoo, pipeline, "s", {"q": {}}, 7, ["image"], ["clip"])
     model = decision_mlx.FastDecisionModel.get_peft_model(model, r = 8, lora_alpha = 8)
     assert calls["lora"]["r"] == 8 and model.is_clef and model._unsloth_lora
     model.encoder = types.SimpleNamespace(

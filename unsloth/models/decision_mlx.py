@@ -453,7 +453,11 @@ def _clef_item(
     audio = (),
 ):
     if _is_d1(pipeline):
-        return zoo.d1_training_item(pipeline, state, questions, images, audio)
+        # A d1 reads its questions beside the whole state, so a record past the limit is skipped, not cut.
+        item = zoo.d1_training_item(pipeline, state, questions, images, audio)
+        if max_length is not None and len(item["input_ids"]) > max_length:
+            raise ValueError(f"{len(item['input_ids'])} tokens is past max_seq_length {max_length}")
+        return item
     media = {name: value for name, value in (("images", images), ("audio", audio)) if value}
     taken = inspect.signature(zoo.clef_training_item).parameters
     for name in media:
