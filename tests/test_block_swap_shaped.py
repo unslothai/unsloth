@@ -117,3 +117,45 @@ def test_dora_without_block_swap_keeps_real_magnitudes():
             model = get_peft_model(model, config)
         magnitude = model.base_model.model[0].lora_magnitude_vector["default"].weight
         torch.testing.assert_close(magnitude, expected)
+
+
+def test_modules_to_save_rejects_copying_evicted_weights():
+    import inspect
+    import pytest
+    from peft import LoraConfig, get_peft_model
+
+    model = torch.nn.Sequential(
+        torch.nn.Linear(8, 4, bias = False), torch.nn.Linear(4, 4, bias = False)
+    )
+    model.requires_grad_(False)
+    swapper, weight = _evicted_swapper((4, 8))
+    model[0].weight = weight
+    model._unsloth_block_swap = swapper
+    config = LoraConfig(r = 2, target_modules = ["1"], modules_to_save = ["0"])
+    shaped = _load()["block_swap_shaped"]
+    options = (
+        {"modules_to_save": config.modules_to_save}
+        if "modules_to_save" in inspect.signature(shaped).parameters
+        else {}
+    )
+    with pytest.raises(ValueError, match = "modules_to_save"):
+        with shaped(model, **options):
+            get_peft_model(model, config)
+    assert weight.numel() == 0
+
+
+def test_modules_to_save_preserves_resident_modules_beside_evicted_weights():
+    from peft import LoraConfig, get_peft_model
+
+    model = torch.nn.Sequential(
+        torch.nn.Linear(8, 4, bias = False), torch.nn.Linear(4, 4, bias = False)
+    )
+    expected = model[1].weight.detach().clone()
+    swapper, weight = _evicted_swapper((4, 8))
+    model[0].weight = weight
+    model._unsloth_block_swap = swapper
+    config = LoraConfig(r = 2, target_modules = ["0"], modules_to_save = ["1"])
+    with _load()["block_swap_shaped"](model, modules_to_save = config.modules_to_save):
+        model = get_peft_model(model, config)
+    saved = model.base_model.model[1].modules_to_save["default"].weight
+    torch.testing.assert_close(saved, expected)
