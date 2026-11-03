@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const hi = {
+  turns: {
+    label: "टर्न {number}",
+    bookmarkedLabel: "टर्न {number}, बुकमार्क किया गया",
+    bookmark: "टर्न बुकमार्क करें",
+    removeBookmark: "बुकमार्क हटाएँ",
+    navigator: "टर्न",
+  },
   chatBackground: {
     noBackground: "कोई पृष्ठभूमि नहीं",
     sizing: "छवि का आकार",
@@ -645,6 +652,8 @@ export const hi = {
     title: "संदेश लिखना",
     plainText: "सादा टेक्स्ट इनपुट",
     plainTextDescription: "कोड, Markdown और लिंक को मूल टेक्स्ट के रूप में रखें। फ़ॉर्मैट किया हुआ पूर्वावलोकन दिखाने के लिए इसे बंद करें।",
+    richPaste: "रिच टेक्स्ट पेस्ट",
+    richPasteDescription: "लिंक, टेबल और फ़ॉर्मैटिंग को Markdown के रूप में पेस्ट करता है। {shortcut} सादा टेक्स्ट पेस्ट करता है। पूरा रिच टेक्स्ट कंपोज़र जल्द आ रहा है।",
     showContext: "कॉन्टेक्स्ट विंडो का उपयोग दिखाएँ",
     sendShortcut: "भेजने का शॉर्टकट",
     sendMultiline: "कई पंक्तियों वाले संदेशों के लिए {mod} + Enter",
@@ -1055,6 +1064,7 @@ export const hi = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "दूसरा खाता जोड़ने से पहले इंस्टॉलेशन के मालिक का पासवर्ड तय करें। इस इंस्टॉलेशन में एक से अधिक खाते होने पर आप इसी पासवर्ड से साइन इन करेंगे।",
       signsInAs: "{username} के रूप में साइन इन करता है",
       signsInAsOwner: "{alias} या {username} के रूप में साइन इन करता है",
       signInName: "आपका साइन-इन नाम",
@@ -1971,6 +1981,14 @@ export const hi = {
         loadError: "प्रबंधित खाता कनेक्शन सेटिंग्स लोड नहीं हो सकीं।",
         saveError: "प्रबंधित खाता कनेक्शन सेटिंग्स सहेजी नहीं जा सकीं।",
       },
+      display: {
+        title: "दिखावट",
+        timeFormat: "समय प्रारूप",
+        timeFormatDescription: "समय को 12-घंटे या 24-घंटे के प्रारूप में दिखाएँ।",
+        timeFormatSystem: "सिस्टम डिफ़ॉल्ट",
+        timeFormat12: "12-घंटे",
+        timeFormat24: "24-घंटे",
+      },
       notifications: {
         sectionTitle: "सूचनाएं",
         showLoadedModels: "लोड किए गए मॉडल कार्ड",
@@ -2338,6 +2356,9 @@ export const hi = {
         description: "लाइट और डार्क मोड में पूरे Unsloth में दिखने वाले रंग।",
         standard: "मानक",
         moreThemes: "और थीम",
+      },
+      composer: {
+        title: "कंपोज़र",
       },
       code: {
         title: "कोड",
@@ -2938,6 +2959,8 @@ export const hi = {
         "सूचनाएँ ब्लॉक हैं। ब्राउज़र या सिस्टम सेटिंग्स में Unsloth के लिए इन्हें अनुमति दें, फिर दोबारा कोशिश करें।",
       replyNotificationKeywords:
         "सूचना अलर्ट पूरा तैयार जवाब बैकग्राउंड notify notification alert done finished reply background",
+      showLinkPreviews: "लिंक पूर्वावलोकन",
+      showLinkPreviewsDescription: "स्रोत लिंक पर कर्सर ले जाने पर पूर्वावलोकन दिखाएं।",
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
@@ -2952,6 +2975,8 @@ export const hi = {
         "विवरण गति टोकन आँकड़े परतें verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
       inlineEditResponseDescription: "जवाब संपादित करें को “और” मेन्यू के बजाय हर जवाब पर दिखाएँ।",
+      turnNavigation: "टर्न नेविगेशन",
+      turnNavigationDescription: "लंबी चैट के बाएँ किनारे पर आपके संदेशों की एक पट्टी दिखाएँ। किसी टर्न का प्रीव्यू देखने के लिए होवर करें, उस पर जाने के लिए क्लिक करें, और बाद में ढूँढने के लिए बुकमार्क करें।",
       composerAtBottom: "कंपोज़र नीचे",
       composerAtBottomDescription: "नई चैट में कंपोज़र को पेज के बीच के बजाय नीचे दिखाएँ।",
       projectAttachments: "प्रोजेक्ट भर में फ़ाइलें साझा करें",
@@ -3568,8 +3593,6 @@ export const hi = {
         repoCheckoutFallback:
           "यदि आपके पास अभी भी रेपो checkout है, तो उससे स्थानीय इंस्टॉलर चलाएं:",
         restartAfterUpdate: "अपडेट करने के बाद Unsloth को पुनः आरंभ करें।",
-        desktopManaged:
-          "डेस्कटॉप ऐप नए ऐप संस्करणों की अपने-आप जाँच करता है। आप यहाँ कभी भी अपडेट की जाँच कर सकते हैं या अपडेट कर सकते हैं।",
         desktopReady: "डेस्कटॉप ऐप अपडेट",
         desktopReadyDescription:
           "जाँचें कि डेस्कटॉप ऐप का कोई नया संस्करण उपलब्ध है या नहीं।",
@@ -5446,5 +5469,60 @@ export const hi = {
     later: "बाद में",
     update: "अपडेट करें",
     undo: "पूर्ववत करें",
+  },
+  generationStats: {
+    working: "प्रक्रिया जारी है...",
+    processingPrompt: "प्रॉम्प्ट प्रोसेस हो रहा है {percent}%",
+    timeLeft: "{eta} बाकी",
+    tokensOne: "{count} टोकन",
+    tokens: "{count} टोकन",
+    tokensOf: "{done} / {total} टोकन",
+    draftAccepted: "ड्राफ़्ट {accepted}/{drafted} स्वीकृत ({percent}%)",
+    timing: {
+      trigger: "संदेश का समय",
+      firstToken: "पहला टोकन",
+      speedInStep: "गति (स्टेप में)",
+      effective: "प्रभावी",
+      output: "आउटपुट",
+      denoising: "डीनॉइज़िंग",
+      stepsOne: "{count} स्टेप",
+      steps: "{count} स्टेप्स",
+      blocksOne: "{count} ब्लॉक",
+      blocks: "{count} ब्लॉक",
+      canvas: "कैनवास",
+      generation: "जनरेशन",
+      answerTokens: "उत्तर टोकन",
+      prompt: "प्रॉम्प्ट",
+      total: "कुल",
+      chunks: "चंक",
+      promptEval: "प्रॉम्प्ट मूल्यांकन",
+      promptSpeed: "प्रॉम्प्ट गति",
+      speed: "गति",
+      tokens: "टोकन",
+      draftAccepted: "स्वीकृत ड्राफ़्ट",
+      denoisingSteps: "डीनॉइज़िंग स्टेप्स",
+      blocksLabel: "ब्लॉक",
+      cacheHits: "कैश हिट",
+      cacheWrites: "कैश राइट",
+      stopReason: "रुकने का कारण",
+      stoppedByYou: "आपने रोका",
+      endOfTurn: "टर्न समाप्त",
+      lengthLimit: "लंबाई सीमा",
+      toolCall: "टूल कॉल",
+      contentFilter: "कंटेंट फ़िल्टर",
+    },
+    placement: {
+      title: "वेट्स का स्थान",
+      allOnCpu: "सभी {total} परतें CPU पर",
+      split: "{total} में से {gpu} परतें GPU पर, {cpu} CPU पर",
+      allOnGpu: "सभी {total} परतें GPU पर",
+      expertCache: "सभी {total} परतें GPU पर, सभी एक्सपर्ट RAM में (GPU पर {amount} एक्सपर्ट कैश)",
+      expertSpillOne: "सभी {total} परतें GPU पर, {count} परत के एक्सपर्ट वेट्स RAM में",
+      expertSpill: "सभी {total} परतें GPU पर, {count} परतों के एक्सपर्ट वेट्स RAM में",
+      inUnifiedMemory: "{amount} यूनिफाइड मेमोरी में",
+      inSharedMemory: "{amount} साझा मेमोरी में",
+      inVram: "{amount} VRAM में",
+      inRam: "{amount} RAM में",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

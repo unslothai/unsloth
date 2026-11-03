@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -46,6 +47,7 @@ export function OpenAICodexConnect({
   initialFlow = null,
 }: Props) {
   const [flow, setFlow] = useState<CodexOAuthFlow | null>(initialFlow);
+  useTimeFormat();
   const [callbackUrl, setCallbackUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -197,7 +199,7 @@ export function OpenAICodexConnect({
           </Button>
 
           <p className="text-xs text-muted-foreground">
-            Expires {new Date(flow.expires_at * 1000).toLocaleTimeString()}.
+            Expires {new Date(flow.expires_at * 1000).toLocaleTimeString(undefined, withTimeFormat())}.
           </p>
         </div>
       ) : null}

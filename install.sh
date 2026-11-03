@@ -7597,8 +7597,105 @@ _rfi_newest() {
     sed -n "s/^$1==\([0-9][0-9A-Za-z.+!-]*\).*/\1/p" "$_rfi_out"
     rm -f "$_rfi_out"
 }
+_rfi_no_torch_pair() {
+    "$_VENV_PY" -I - "$1" "$2" <<'UNSLOTH_PAIR_PY'
+def _no_torch_pair(unsloth_spec, zoo_spec, use_uv=True, uv_executable="uv", install_env=None):
+    """Resolve the pair from wheel metadata without resolving training dependencies."""
+    import re
+    import subprocess
+    import sys
+    import tempfile
+    from importlib.metadata import distributions
+
+    cache = {}
+
+    def metadata(name, requirements):
+        key = (name, tuple(requirements))
+        if key in cache:
+            return cache[key]
+        with tempfile.TemporaryDirectory(prefix="unsloth-pair-") as target:
+            cmd = (
+                [uv_executable, "pip", "install", "--python", sys.executable, "--resolution", "highest"]
+                if use_uv
+                else [sys.executable, "-m", "pip", "install", "--upgrade"]
+            )
+            cmd += ["--no-deps", "--quiet", "--target", target, *requirements]
+            try:
+                result = subprocess.run(
+                    cmd,
+                    env=install_env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=120,
+                    **(
+                        {"creationflags": subprocess.CREATE_NO_WINDOW}
+                        if sys.platform == "win32"
+                        else {}
+                    ),
+                )
+                dist = (
+                    next(
+                        d
+                        for d in distributions(path=[target])
+                        if re.sub(r"[-_.]+", "-", d.metadata["Name"]).lower() == name
+                    )
+                    if result.returncode == 0
+                    else None
+                )
+                value = (dist.version, dist.requires or []) if dist else None
+            except (OSError, subprocess.SubprocessError, StopIteration, ValueError):
+                value = None
+        cache[key] = value
+        return value
+
+    if metadata("unsloth-zoo", [zoo_spec]) is None:
+        zoo_spec = "unsloth-zoo"
+    request, cap, seen = unsloth_spec, [], set()
+    while True:
+        unsloth = metadata("unsloth", [request, *cap])
+        if unsloth is None:
+            if request != "unsloth":
+                request = "unsloth"
+                continue
+            return None
+        version, requires = unsloth
+        if version in seen or not re.fullmatch(r"[0-9][0-9A-Za-z.+!-]*", version):
+            return None
+        seen.add(version)
+        zoo_requires = [r for r in requires if re.match(r"(?i)^unsloth[-_.]zoo\b", r)]
+        zoo = metadata("unsloth-zoo", [zoo_spec, *zoo_requires])
+        if zoo is not None:
+            return version, zoo[0], int(request != unsloth_spec)
+        cap = [f"unsloth<{version}"]
+
+import sys
+pair = _no_torch_pair(*sys.argv[1:])
+if pair is None:
+    raise SystemExit(1)
+print(*pair)
+UNSLOTH_PAIR_PY
+}
+
 _relax_unsloth_floors_to_index() {
     rm -f "$_UNSLOTH_FEED_CEILING_MARKER"
+    if [ "${SKIP_TORCH:-false}" = true ] && [ "${PACKAGE_NAME:-unsloth}" = unsloth ]; then
+        _rfi_pair=$(_rfi_no_torch_pair "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec") || {
+            substep "[ERROR] Could not resolve a compatible unsloth / unsloth-zoo pair for no-torch mode." "$C_WARN"
+            return 1
+        }
+        set -- $_rfi_pair
+        _unsloth_release_install_spec="unsloth==$1"
+        _unsloth_zoo_install_spec="unsloth-zoo==$2"
+        if [ -n "$_unsloth_desktop_install_spec" ]; then
+            _unsloth_desktop_install_spec=$_unsloth_release_install_spec
+            if [ "$3" = 1 ]; then
+                substep "[WARN] your package index cannot meet unsloth>=$UNSLOTH_DESKTOP_BACKEND_VERSION; installing unsloth $1 + unsloth-zoo $2" "$C_WARN"
+                printf '{"requested": "%s", "available": "%s"}\n' "$UNSLOTH_DESKTOP_BACKEND_VERSION" "$1" \
+                    > "$_UNSLOTH_FEED_CEILING_MARKER" 2>/dev/null || true
+            fi
+        fi
+        return 0
+    fi
     printf '%s\n%s\n' "$_unsloth_release_install_spec" "$_unsloth_zoo_install_spec" | _rfi_newest unsloth > /dev/null && return 0
     # The newest zoo, then the newest unsloth not above it (an unsloth never needs a newer zoo), pinned as a pair.
     _rfi_zoo=$(printf 'unsloth-zoo\n' | _rfi_newest unsloth-zoo) || return 0

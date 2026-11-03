@@ -16,7 +16,10 @@ const CHAT_STUB =
 
 export function resolve(specifier, context, next) {
   if (specifier === "@/components/file-viewer") return { url: FILE_VIEWER_STUB, shortCircuit: true };
-  if (specifier === "@/features/chat" && context.parentURL?.includes("/src/features/browser/file-kind")) {
+  if (
+    (specifier === "@/features/chat" || specifier === "@/features/chat/attachment-content") &&
+    context.parentURL?.includes("/src/features/browser/file-kind")
+  ) {
     return { url: CHAT_STUB, shortCircuit: true };
   }
   return next(specifier, context);

@@ -115,7 +115,7 @@ import {
 } from "./utils/conversation-markdown";
 import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Archive03Icon,
+  ArchiveIcon,
   Download01Icon,
   Edit03Icon,
   LayoutAlignRightIcon,
@@ -2478,7 +2478,7 @@ function ProjectLanding({
                           onSelect={() => void handleArchive(item)}
                         >
                           <HugeiconsIcon
-                            icon={Archive03Icon}
+                            icon={ArchiveIcon}
                             strokeWidth={1.75}
                             className="size-icon"
                           />
