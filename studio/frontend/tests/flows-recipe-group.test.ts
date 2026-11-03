@@ -893,3 +893,47 @@ test("a pasted or duplicated second Recipe Dataset step comes into its recipe sw
   const keys = readFileSync(new URL("../src/features/flows/editor/use-editor-shortcuts.ts", import.meta.url), "utf8");
   assert.match(keys, /doc\.graph\.nodes\[id\]\.type !== GENERATE_TYPE/);
 });
+
+test("an edit elsewhere keeps a processor the recipe forms do not show", () => {
+  const { group, nodes } = sqlGroup();
+  const drop = {
+    // biome-ignore lint/style/useNamingConvention: api schema
+    processor_type: "drop_columns",
+    name: "drop_helpers",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    column_names: ["topic"],
+  };
+  const withDrop = { ...group, config: { ...group.config, processors: [drop] } };
+  const view = studioView(withDrop, nodes);
+  const provider = Object.values(view.configs).find((c) => c.kind === "model_provider");
+  assert.ok(provider);
+  const configs = applyConfigPatch(view.configs, provider.id, { name: "renamed" });
+  const edit = commitStudioEdit(withDrop, nodes, view, configs);
+  assert.deepEqual((edit.group?.config as { processors?: unknown[] }).processors, [drop]);
+});
+
+test("a column duplicated into its recipe gets the next free name", async () => {
+  const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group: small, nodes } = sqlGroup();
+  const group = { ...small, rect: [-100, -100, 4000, 1000] as [number, number, number, number] };
+  useDocStore.getState().load({ ...doc(nodes as never), groups: [group] });
+  const first = nodes[0];
+  const store = useDocStore.getState();
+  store.insertFragment(cloneFragment(store.graph, [first.id], [40, 40]));
+  store.insertFragment(cloneFragment(useDocStore.getState().graph, [first.id], [80, 80]));
+  const name = (first.params as { column: { name: string } }).column.name;
+  const names = Object.values(useDocStore.getState().graph.nodes)
+    .map((n) => (n.params as { column?: { name?: string } }).column?.name)
+    .filter((n) => n?.startsWith(name));
+  assert.deepEqual(names.sort(), [name, `${name}_2`, `${name}_3`].sort());
+});
+
+test("a recipe column's toolbar has no Run or Regenerate, and a setup card is found while its name ends in a space", () => {
+  const toolbar = readFileSync(new URL("../src/features/flows/editor/node-toolbar.tsx", import.meta.url), "utf8");
+  assert.match(toolbar, /\{!spec\.design && \(\s*<>\s*<Button[\s\S]*node-toolbar-run[\s\S]*node-toolbar-reroll[\s\S]*<\/>\s*\)\}/);
+  const blocks = readFileSync(new URL("../src/features/flows/recipe/recipe-blocks.ts", import.meta.url), "utf8");
+  assert.match(blocks, /config\.name\.trim\(\) === target\.name\.trim\(\)/);
+  const forms = readFileSync(new URL("../src/features/flows/recipe/recipe-forms.tsx", import.meta.url), "utf8");
+  assert.match(forms, /setRecipeSetup\(\{ \.\.\.target, name: name\.trim\(\) \}, true\)/);
+});

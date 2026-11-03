@@ -169,7 +169,9 @@ export function SetupForm({ target }: { target: RecipeSetupTarget }) {
         target.kind === "seed"
           ? undefined
           : (name) =>
-              useUiStore.getState().setRecipeSetup({ ...target, name }, true)
+              useUiStore
+                .getState()
+                .setRecipeSetup({ ...target, name: name.trim() }, true)
       }
     />
   );

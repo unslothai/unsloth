@@ -14,6 +14,41 @@ import {
 
 /** recipe-columns.ts GENERATE_TYPE; kept here so the store imports nothing from the recipe editor. */
 const RECIPE_DATASET = "recipe.generate";
+/** recipe-columns.ts COLUMN_TYPE. */
+const RECIPE_COLUMN = "recipe.column";
+
+/** A recipe column's name, from its params. */
+function columnNameOf(node: FlowNode): string | null {
+  const column = (node.params as { column?: { name?: unknown } } | undefined)?.column;
+  return typeof column?.name === "string" ? column.name : null;
+}
+
+/** A column pasted or duplicated into a recipe that already has its name gets the next free one,
+ * since a recipe's column names are unique. */
+function uniqueColumn(
+  node: FlowNode,
+  group: string | null,
+  nodes: Record<string, FlowNode>,
+  order: string[],
+): FlowNode {
+  const name = columnNameOf(node);
+  if (node.type !== RECIPE_COLUMN || !group || !name) return node;
+  const taken = new Set(
+    order
+      .filter((id) => nodes[id].type === RECIPE_COLUMN && nodes[id].group === group)
+      .map((id) => columnNameOf(nodes[id])),
+  );
+  if (!taken.has(name)) return node;
+  let n = 2;
+  while (taken.has(`${name}_${n}`)) n += 1;
+  const next = `${name}_${n}`;
+  const params = node.params as { column: Record<string, unknown> };
+  return {
+    ...node,
+    label: next,
+    params: { ...node.params, column: { ...params.column, name: next } },
+  };
+}
 
 /** Graph state normalized by id. Every record is immutable: an edit replaces only what it touches,
  *  so a node component selecting `nodes[id]` re-renders only when that node changed. */
@@ -467,7 +502,11 @@ export const useDocStore = create<DocState>((set, get) => {
                 nodes[id].group === group &&
                 !nodes[id].disabled,
             );
-          nodes[node.id] = { ...node, group, ...(extra ? { disabled: true } : {}) };
+          nodes[node.id] = {
+            ...uniqueColumn(node, group, nodes, nodeOrder),
+            group,
+            ...(extra ? { disabled: true } : {}),
+          };
           nodeOrder.push(node.id);
         }
         const edges = { ...s.graph.edges };
