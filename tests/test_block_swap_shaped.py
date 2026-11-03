@@ -80,3 +80,40 @@ def test_fallback_leaves_a_block_fetched_inside_the_context():
     with _load()["_block_swap_shaped_fallback"](types.SimpleNamespace(blocks = [blk])):
         w.data, blk.resident = torch.ones(4, 8), True
     assert w.shape == (4, 8)
+
+
+def test_dora_rejects_evicted_weights_before_initializing_magnitudes():
+    import inspect
+    import pytest
+    from peft import LoraConfig, get_peft_model
+
+    model = torch.nn.Sequential(torch.nn.Linear(8, 4, bias = False))
+    model.requires_grad_(False)
+    swapper, weight = _evicted_swapper((4, 8))
+    model[0].weight = weight
+    model._unsloth_block_swap = swapper
+    config = LoraConfig(r = 2, target_modules = ["0"], use_dora = True)
+    shaped = _load()["block_swap_shaped"]
+    options = (
+        {"use_dora": config.use_dora} if "use_dora" in inspect.signature(shaped).parameters else {}
+    )
+    with pytest.raises(ValueError, match = "DoRA"):
+        with shaped(model, **options):
+            get_peft_model(model, config)
+    assert weight.numel() == 0
+
+
+def test_dora_without_block_swap_keeps_real_magnitudes():
+    from peft import LoraConfig, get_peft_model
+    for resident_swap in (False, True):
+        model = torch.nn.Sequential(torch.nn.Linear(8, 4, bias = False))
+        expected = model[0].weight.detach().norm(dim = 1)
+        if resident_swap:
+            model._unsloth_block_swap = types.SimpleNamespace(
+                blocks = [types.SimpleNamespace(resident = True)]
+            )
+        config = LoraConfig(r = 2, target_modules = ["0"], use_dora = True)
+        with _load()["block_swap_shaped"](model, use_dora = config.use_dora):
+            model = get_peft_model(model, config)
+        magnitude = model.base_model.model[0].lora_magnitude_vector["default"].weight
+        torch.testing.assert_close(magnitude, expected)

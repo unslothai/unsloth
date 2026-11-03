@@ -10532,9 +10532,19 @@ def planned_prefetch_depth(device_map_planner_kwargs):
     return depth if depth == "auto" else int(depth)
 
 
-def block_swap_shaped(model, init_lora_weights = True):
+def block_swap_shaped(
+    model,
+    init_lora_weights = True,
+    use_dora = False,
+):
     """PEFT wraps MoE expert weights by their shape, which reads as empty on a layer offload_layers evicted."""
     swapper = getattr(model, "_unsloth_block_swap", None)
+    if use_dora and any(not block.resident for block in getattr(swapper, "blocks", ())):
+        raise ValueError(
+            "Unsloth: DoRA needs the real base weights to initialize its magnitudes, "
+            "so it cannot be initialized after offload_layers evicted them. "
+            "Load without offload_layers or disable use_dora."
+        )
     # PiSSA, OLoRA, LoftQ, CorDA, MiCA... read the weights: a placeholder would silently init them from zeros.
     # EVA only zeroes lora_B here; its activation pass runs after get_peft_model, through the swap.
     if swapper is None or init_lora_weights not in (True, False, "gaussian", "eva"):
