@@ -3099,6 +3099,13 @@ def _fit_reasoning_effort_to_template(
     return _clamp_reasoning_effort_to_levels(effort, allowed) or effort
 
 
+def _rendered_chat_template(backend) -> Optional[str]:
+    # getattr: test doubles skip __init__ and borrow backend methods unbound.
+    return getattr(backend, "_chat_template_override", None) or getattr(
+        backend, "_chat_template", None
+    )
+
+
 # Keyed on identity, not name, so a rebuilt GGUF at the same path is logged again.
 _GGUF_METADATA_LOGGED: "dict[tuple, bool]" = {}
 _GGUF_METADATA_LOGGED_MAX = 32
@@ -9113,7 +9120,7 @@ class LlamaCppBackend:
             return {"enable_thinking": enable_thinking}
         if self._reasoning_style == "reasoning_effort":
             effort = _fit_reasoning_effort_to_template(
-                self._rendered_chat_template(),
+                _rendered_chat_template(self),
                 effort or ("high" if enable_thinking else "low"),
                 thinking_off = not effort and not enable_thinking,
             )
@@ -9121,12 +9128,6 @@ class LlamaCppBackend:
                 getattr(self, "_architecture", None), {"reasoning_effort": effort}
             )
         return {"enable_thinking": enable_thinking}
-
-    def _rendered_chat_template(self) -> Optional[str]:
-        # getattr: test doubles skip __init__.
-        return getattr(self, "_chat_template_override", None) or getattr(
-            self, "_chat_template", None
-        )
 
     def _replay_preserve_thinking(
         self,
@@ -9272,7 +9273,7 @@ class LlamaCppBackend:
                     kwargs["reasoning_effort"] = effort
             elif self._reasoning_style == "reasoning_effort":
                 _levels = getattr(self, "_reasoning_effort_levels", None) or ()
-                _template = self._rendered_chat_template()
+                _template = _rendered_chat_template(self)
                 reasoning_effort = _fit_reasoning_effort_to_template(_template, reasoning_effort)
                 if reasoning_effort in ("none", "low", "medium", "high") or (
                     reasoning_effort in _levels
