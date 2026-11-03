@@ -726,6 +726,8 @@ def _norm_plan(
     strided = False,
     capability = (8, 0),
     graphs = False,
+    attention = None,
+    batch = 1,
 ):
     from torch._subclasses.fake_tensor import FakeTensor, FakeTensorMode
 
@@ -735,18 +737,23 @@ def _norm_plan(
     monkeypatch.setattr(D._decode_graphs, "ENABLED", graphs)
     monkeypatch.setattr(D.F, "supported_capability", lambda capability: True, raising = False)
     monkeypatch.setattr(D, "_signature", lambda plan: ())
+    monkeypatch.setattr(D, "_track_moves", lambda model: None)
     device = torch.device("cuda", 0)
     with FakeTensorMode():
         weight = torch.empty_strided((8,), (2 if strided else 1,), device = device)
         assert isinstance(weight, FakeTensor)
         norm = lambda w: types.SimpleNamespace(weight = w, variance_epsilon = 1e-5)
-        attn = types.SimpleNamespace(
-            head_dim = 8,
-            rotary_emb = object(),
-            q_proj = object(),
-            k_proj = object(),
-            v_proj = object(),
-            o_proj = object(),
+        attn = (
+            types.SimpleNamespace(
+                head_dim = 8,
+                rotary_emb = object(),
+                q_proj = object(),
+                k_proj = object(),
+                v_proj = object(),
+                o_proj = object(),
+            )
+            if attention is None
+            else attention
         )
         mlp = types.SimpleNamespace(gate_proj = object(), up_proj = object(), down_proj = object())
         layer = types.SimpleNamespace(
@@ -770,11 +777,17 @@ def _norm_plan(
         monkeypatch.setattr(
             D,
             "_site",
-            lambda model, key, kind, projs, width, allow_bias = False: types.SimpleNamespace(
-                packed = packed, bounds = bounds[kind], N = bounds[kind][-1]
+            lambda model,
+            key,
+            kind,
+            projs,
+            width,
+            allow_bias = False,
+            **kwargs: types.SimpleNamespace(
+                packed = packed, bounds = bounds[kind], N = bounds[kind][-1], lora = False
             ),
         )
-        plan = D._build(model, torch.empty((1, 1, 8), device = device, dtype = torch.float16))
+        plan = D._build(model, torch.empty((batch, 1, 8), device = device, dtype = torch.float16))
     return D, plan, weight
 
 
@@ -889,6 +902,7 @@ def test_plan_goes_stale_when_peft_is_unloaded(monkeypatch):
     monkeypatch.setattr(D.torch.cuda, "get_device_capability", lambda device: (8, 0))
     monkeypatch.setattr(D.F, "supported_capability", lambda capability: True, raising = False)
     monkeypatch.setattr(D, "_signature", lambda plan: ())
+    monkeypatch.setattr(D, "_track_moves", lambda model: None)
     device = torch.device("cuda", 0)
     with FakeTensorMode():
         norm = lambda: types.SimpleNamespace(
@@ -1171,3 +1185,84 @@ def test_kernels_unavailable_keeps_the_regular_path():
     )
     assert result.returncode == 0, result.stderr[-2000:]
     assert "refused: fused NF4 kernels unavailable" in result.stdout
+
+
+@pytest.mark.parametrize("plan_key", ["_PLAN", "_BATCH_PLAN"])
+def test_adapter_reload_invalidates_cached_weights(tmp_path, plan_key):
+    peft = pytest.importorskip("peft")
+    D = _driver()
+    model = peft.get_peft_model(
+        torch.nn.Sequential(torch.nn.Linear(8, 8, bias = False)),
+        peft.LoraConfig(r = 2, lora_alpha = 2, target_modules = ["0"]),
+    )
+    owner = model.base_model.model
+    projection = owner[0]
+    with torch.no_grad():
+        projection.lora_A["default"].weight.fill_(1)
+        projection.lora_B["default"].weight.fill_(2)
+    checkpoint = tmp_path / "adapter"
+    model.save_pretrained(checkpoint)
+    with torch.no_grad():
+        projection.lora_B["default"].weight.fill_(1)
+    old_a = projection.lora_A["default"].weight
+    old_b = projection.lora_B["default"].weight
+    watch = D._site_watch([projection])
+    plan = types.SimpleNamespace(
+        watch = watch,
+        adapter_state = D._adapter_state(watch),
+        bindings = [(owner, "0", projection)],
+        a = old_a,
+        b = old_b,
+    )
+    key = getattr(D, plan_key)
+    setattr(owner, key, plan)
+    D._track_moves(owner)
+    x = torch.ones(1 if plan_key == "_PLAN" else 2, 8)
+    with torch.no_grad():
+        before = model(x).clone()
+        model.delete_adapter("default")
+        model.load_adapter(checkpoint, adapter_name = "default", torch_device = "cpu")
+        model.set_adapter("default")
+        after = model(x)
+        cached = projection.base_layer(x) + (x @ old_a.T) @ old_b.T
+    assert owner[0] is projection
+    assert projection.lora_A["default"].weight is not old_a
+    assert projection.lora_B["default"].weight is not old_b
+    torch.testing.assert_close(cached, before, rtol = 0, atol = 1e-6)
+    assert (after - cached).abs().max() >= 15
+    assert getattr(owner, key, None) is not plan or D._plan_stale(plan)
+    current = types.SimpleNamespace(
+        watch = watch,
+        adapter_state = D._adapter_state(watch),
+        bindings = [(owner, "0", projection)],
+    )
+    setattr(owner, key, current)
+    D._track_moves(owner)
+    projection.lora_A["default"].to(dtype = torch.float64)
+    assert key not in owner.__dict__
+
+
+@pytest.mark.parametrize("batch", [1, 2])
+def test_first_adapter_invalidates_plain_projection_bindings(monkeypatch, batch):
+    peft = pytest.importorskip("peft")
+    names = ["q_proj", "k_proj", "v_proj", "o_proj"]
+    owner = torch.nn.ModuleDict({name: torch.nn.Linear(8, 8, bias = False) for name in names})
+    owner.head_dim, owner.rotary_emb = 8, object()
+    projection = owner.q_proj
+    x = torch.ones(batch, 8)
+    before = projection(x).detach().clone()
+    D, plan, _ = _norm_plan(monkeypatch, capability = (7, 5), attention = owner, batch = batch)
+    assert isinstance(plan, D._Plan)
+    assert not plan.watch and not D._plan_stale(plan)
+    assert any(
+        parent is owner and name == "q_proj" and module is projection
+        for parent, name, module in plan.bindings
+    )
+    model = peft.get_peft_model(owner, peft.LoraConfig(r = 2, lora_alpha = 2, target_modules = names))
+    assert model.base_model.model is owner
+    assert owner.q_proj.get_base_layer() is projection
+    with torch.no_grad():
+        owner.q_proj.lora_A["default"].weight.fill_(1)
+        owner.q_proj.lora_B["default"].weight.fill_(1)
+    assert (owner.q_proj(x) - before).abs().max() >= 15
+    assert D._plan_stale(plan)

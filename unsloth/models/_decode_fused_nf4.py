@@ -72,11 +72,10 @@ class _ApplyReleasing:
 
 
 def _track_moves(model):
-    if "_apply" not in model.__dict__:
-        # Export/offload can move an individual quantized projection instead of the root.
-        for module in model.modules():
-            if "_apply" not in module.__dict__:
-                module.__dict__["_apply"] = _ApplyReleasing(model, module)
+    # Reloaded adapters add modules after the root has already been tracked.
+    for module in model.modules():
+        if "_apply" not in module.__dict__:
+            module.__dict__["_apply"] = _ApplyReleasing(model, module)
 
 
 class _Refused:
@@ -120,21 +119,22 @@ def _adapter_key(module):
         scaling = tuple(_scale_key(v) for v in (scaling.get(a) for a in active))
     else:
         scaling = None
-    shapes = None
+    weights = None
     lora_A = getattr(module, "lora_A", None)
     lora_B = getattr(module, "lora_B", None)
     if lora_A is not None and lora_B is not None and isinstance(active, tuple):
-        shapes = tuple(
-            (lora_A[a].weight.shape, lora_B[a].weight.shape)
-            for a in active
-            if a in lora_A and a in lora_B
-        )
+        weights = []
+        for a in active:
+            if a in lora_A and a in lora_B:
+                A, B = lora_A[a].weight, lora_B[a].weight
+                weights.append((id(A), id(B), A.shape, B.shape))
+        weights = tuple(weights)
     return (
         getattr(module, "disable_adapters", None),
         getattr(module, "merged", None),
         active,
         scaling,
-        shapes,
+        weights,
     )
 
 
@@ -148,12 +148,9 @@ def _site_watch(projs):
 
 def _plan_stale(plan):
     """Adapter state or module bindings changed since this plan was built."""
-    return bool(plan.watch) and (
-        _adapter_state(plan.watch) != plan.adapter_state
-        or any(
-            getattr(owner, name, None) is not module
-            for owner, name, module in getattr(plan, "bindings", ())
-        )
+    return _adapter_state(plan.watch) != plan.adapter_state or any(
+        getattr(owner, name, None) is not module
+        for owner, name, module in getattr(plan, "bindings", ())
     )
 
 
@@ -292,7 +289,8 @@ def _site(
         ):
             return "LoRA ranks / scales / dtypes differ"
         lora = [(l[0], l[1]) for l in loras]
-    _track_moves(model)
+    if "_apply" not in model.__dict__:
+        _track_moves(model)
     if any(not torch.equal(qs.code, st0.code) for qs in states[1:]):
         return "NF4 tables differ"
     if nested and any(not torch.equal(qs.state2.code, st0.state2.code) for qs in states[1:]):
@@ -408,9 +406,9 @@ def _build(model, X):
             return "head dim"
         for name in ("input_layernorm", "post_attention_layernorm"):
             module = getattr(layer, name)
+            bindings.append((layer, name, module))
             if hasattr(module, "modules_to_save"):  # a norm in modules_to_save
                 watch.append(module)
-                bindings.append((layer, name, module))
         entry = _Layer()
         entry.attn = attn
         entry.ln1 = layer.input_layernorm.weight
@@ -423,9 +421,9 @@ def _build(model, X):
                 return "head dim"
             norms = (attn.q_norm, attn.k_norm)
             for name, module in zip(("q_norm", "k_norm"), norms):
+                bindings.append((attn, name, module))
                 if hasattr(module, "modules_to_save"):
                     watch.append(module)
-                    bindings.append((attn, name, module))
             for w in (n.weight for n in norms):
                 if (
                     w.device != device or w.shape != (head_dim,) or not w.is_contiguous()
@@ -464,9 +462,7 @@ def _build(model, X):
             if isinstance(site, str):
                 return f"{kind}: {site}"
             watch.extend(_site_watch(projs))
-            bindings.extend(
-                (owner, name, proj) for name, proj in zip(names, projs) if hasattr(proj, "lora_A")
-            )
+            bindings.extend((owner, name, proj) for name, proj in zip(names, projs))
             if site.packed.device != device:
                 return "several devices"
             sites[kind] = site
@@ -489,9 +485,9 @@ def _build(model, X):
         or not norm.weight.is_contiguous()
     ):
         return "final norm"
+    bindings.append((model.model, "norm", norm))
     if hasattr(norm, "modules_to_save"):
         watch.append(norm)
-        bindings.append((model.model, "norm", norm))
     plan.watch = watch
     plan.bindings = tuple(bindings)
     plan.adapter_state = _adapter_state(watch)
@@ -547,6 +543,7 @@ def _build(model, X):
             workspaces,
             plan.sdpa_gqa_with_batch_mask,
         )
+    _track_moves(model)
     STATS["plans"] += 1
     return plan
 
