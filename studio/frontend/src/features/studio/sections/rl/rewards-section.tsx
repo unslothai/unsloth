@@ -35,9 +35,9 @@ import {
   deleteReward,
   exportReward,
   importReward,
-  previewCell,
   previewRewards,
   readRewardHead,
+  rewardPreviewReference,
   rowAnswer,
   summarizeRule,
   useRlWorkspaceStore,
@@ -319,8 +319,10 @@ export function RewardsSection(): ReactElement {
   // A blank answer in the row stays blank, as in training; the sample is for no row at all.
   const mappedAnswer = rowAnswer(previewRow, answerColumn);
   const rowReference = mappedAnswer ?? "";
-  const reference =
-    referenceEdit ?? (mappedAnswer === undefined ? "72" : rowReference);
+  // What training compares against: null only for a null cell, which scores as missing.
+  const answerReference =
+    referenceEdit ?? (mappedAnswer === undefined ? "72" : mappedAnswer);
+  const reference = answerReference ?? "";
 
   const active = library.filter((r) => !r.shadowed);
   const byName = new Map(active.map((r) => [r.name, r]));
@@ -345,19 +347,17 @@ export function RewardsSection(): ReactElement {
       return;
     }
     // Each reward compares against its own compare_to column, as in training.
-    const groups = new Map<string, typeof rewards>();
+    const groups = new Map<string, [string | null, typeof rewards]>();
     for (const reward of rewards) {
       const column = byName.get(reward.name)?.rule?.compare_to;
-      const key =
-        typeof column === "string" && column !== "answer"
-          ? previewCell(previewRow?.[column])
-          : reference;
-      groups.set(key, [...(groups.get(key) ?? []), reward]);
+      const ref = rewardPreviewReference(previewRow, column, answerReference);
+      const key = JSON.stringify(ref);
+      groups.set(key, [ref, [...(groups.get(key)?.[1] ?? []), reward]]);
     }
     try {
       const parts = await Promise.all(
-        [...groups].map(([ref, group]) =>
-          previewRewards(group, completion, ref || null),
+        [...groups.values()].map(([ref, group]) =>
+          previewRewards(group, completion, ref),
         ),
       );
       if (request !== previewRequest.current) return;
@@ -371,7 +371,7 @@ export function RewardsSection(): ReactElement {
     }
     // selectedRules stands in for the library entries (byName is rebuilt every render).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rewards, completion, reference, previewRow, selectedRules]);
+  }, [rewards, completion, answerReference, previewRow, selectedRules]);
 
   useEffect(() => {
     const timer = window.setTimeout(runPreview, 350);

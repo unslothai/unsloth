@@ -12,6 +12,7 @@ const {
   effectiveTrainingObjective,
   missingRlRoles,
   resolveRlMapping,
+  rewardPreviewReference,
   rowAnswer,
   syncRlMapping,
 } = await import("../src/features/training/lib/rl-roles.ts");
@@ -199,4 +200,13 @@ test("a reward preview reads a blank mapped answer as blank, as GRPO training do
   // Only no row or no answer role leaves the preview to its sample answer.
   assert.equal(rowAnswer(null, "answer"), undefined);
   assert.equal(rowAnswer({ answer: "72" }, undefined), undefined);
+});
+
+test("a reward preview scores a blank reference as blank and a null one as missing", () => {
+  const row = { answer: "", sol: "", gold: null };
+  assert.equal(rewardPreviewReference(row, "sol", "72"), "");
+  assert.equal(rewardPreviewReference(row, "gold", "72"), null);
+  assert.equal(rewardPreviewReference(row, undefined, ""), "");
+  assert.equal(rewardPreviewReference(row, "answer", null), null);
+  assert.equal(rewardPreviewReference(null, "sol", "72"), null);
 });
