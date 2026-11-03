@@ -368,12 +368,26 @@ def _fit_rolling_remembered(messages, kwargs):
     return fitted, truncation
 
 
-def _reports_compaction(count_tokens, on_compacting, *, context_length, max_tokens, force_reset):
+def _reports_compaction(
+    count_tokens,
+    on_compacting,
+    *,
+    message_count,
+    context_length,
+    max_tokens,
+    force_reset,
+    sticky_dropped,
+):
     """Calls ``on_compacting`` once, when the fit is about to evict: a forced reset, or a count over the prompt budget
-    (both fit policies start evicting there). Under the budget it never fires, so a fit that keeps everything is silent."""
+    (both fit policies start evicting there). Under the budget it never fires, so a fit that keeps everything is silent.
+
+    With a saved cut (``sticky_dropped``) the full history is over budget on every request after the first compaction,
+    and replaying that cut evicts nothing new. Only counts of a candidate already shorter by the saved cut can report,
+    so the label shows when the replay itself no longer fits, not on every later turn."""
     if on_compacting is None or count_tokens is None:
         return count_tokens
     target = prompt_budget(context_length or 0, max_tokens)
+    longest_reporting = message_count - max(0, int(sticky_dropped or 0))
     fired = False
 
     def fire() -> None:
@@ -391,7 +405,7 @@ def _reports_compaction(count_tokens, on_compacting, *, context_length, max_toke
 
     def counted(messages):
         tokens = count_tokens(messages)
-        if tokens > target:
+        if tokens > target and len(messages) <= longest_reporting:
             fire()
         return tokens
 
@@ -416,9 +430,11 @@ def _fit_with_instruction_pins(
         kwargs["count_tokens"] = _reports_compaction(
             kwargs.get("count_tokens"),
             on_compacting,
+            message_count = len(messages),
             context_length = kwargs.get("context_length"),
             max_tokens = kwargs.get("max_tokens"),
             force_reset = bool(kwargs.get("force_reset")),
+            sticky_dropped = kwargs.get("sticky_dropped"),
         )
     anchors = set(anchor_ids or ())
     try:

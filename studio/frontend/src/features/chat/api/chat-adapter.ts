@@ -7669,6 +7669,8 @@ export function createOpenAIStreamAdapter(
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {
+                  // The round boundary: the last pass's prompt and decode figures must not stand in for the next one's.
+                  runtime.clearLiveGenerationForThread(liveThreadKey(serverCancel));
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
                   const id = resolveToolPartId(backendToolCallId);

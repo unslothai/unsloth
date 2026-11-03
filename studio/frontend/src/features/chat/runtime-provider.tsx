@@ -1764,6 +1764,13 @@ function scheduleGenerationRecovery(
                 context_truncated?: OpenAIChatChunk["context_truncated"];
                 quote_cut?: boolean;
               };
+              // The round boundary, as in the live adapter: the last pass's figures must not stand in for the next one's.
+              if (
+                caughtUp(update.run) &&
+                (chunk as { _toolEvent?: { type?: unknown } })._toolEvent?.type === "tool_end"
+              ) {
+                useChatRuntimeStore.getState().clearLiveGenerationForThread(threadId);
+              }
               // Live figures only once caught up: a replayed backlog would flash every old sample.
               if ("_generationProgress" in chunk) {
                 if (caughtUp(update.run)) {

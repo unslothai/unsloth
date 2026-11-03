@@ -213,6 +213,19 @@ test("compaction shows until the pass's context_truncated or first prefill sampl
   assert.doesNotMatch(status, />\s*Compacting/);
 });
 
+test("a tool result drops the last pass's figures, live or followed, so the next round starts at Working", () => {
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(
+    adapter,
+    /toolEvent\.type === "tool_end"\) \{\s*\/\/[^\n]*\n\s*runtime\.clearLiveGenerationForThread\(liveThreadKey\(serverCancel\)\);/,
+  );
+  const provider = readSrc("features/chat/runtime-provider.tsx");
+  assert.match(
+    provider,
+    /caughtUp\(update\.run\) &&\s*\(chunk as \{ _toolEvent\?: \{ type\?: unknown \} \}\)\._toolEvent\?\.type === "tool_end"\s*\) \{\s*useChatRuntimeStore\.getState\(\)\.clearLiveGenerationForThread\(threadId\);/,
+  );
+});
+
 test("the status line comes back between tool rounds, after the finished call", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   const indicator = thread.slice(thread.indexOf("const NextRoundIndicator"), thread.indexOf("// Mounted only under a running reply"));

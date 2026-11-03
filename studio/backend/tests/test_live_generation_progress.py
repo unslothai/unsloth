@@ -332,6 +332,52 @@ def test_a_replay_only_fit_never_reports():
     assert reports == []
 
 
+def _compacted_chat(recent_size):
+    """Four turns a previous request already cut (the saved boundary), then the turns still in the window."""
+    old = [
+        {"role": role, "content": letter * 300}
+        for role, letter in (("user", "A"), ("assistant", "B"), ("user", "C"), ("assistant", "D"))
+    ]
+    recent = [
+        {"role": "user", "content": "E" * recent_size},
+        {"role": "assistant", "content": "F" * recent_size},
+        {"role": "user", "content": "G" * 50},
+    ]
+    return old + recent
+
+
+_REPLAYS = {
+    "rolling": {"context_policy": "rolling", "sticky_is_checkpoint": False, "keeps_boundary": True},
+    "checkpoint": {
+        "context_policy": "checkpoint",
+        "sticky_is_checkpoint": True,
+        "can_reset": False,
+    },
+}
+
+
+@pytest.mark.parametrize("policy", sorted(_REPLAYS))
+def test_replaying_a_saved_cut_is_not_reported(policy):
+    # The full history is over budget on every request after the first compaction; replaying the cut it
+    # already made evicts nothing new, so "Compacting context..." must not flash on each later turn.
+    reports = []
+    fitted, info = _fit(
+        _compacted_chat(100), lambda: reports.append(True), sticky_dropped = 4, **_REPLAYS[policy]
+    )
+    assert info is not None and info["fits"] and info["dropped_messages"] == 4
+    assert reports == []
+
+
+@pytest.mark.parametrize("policy", sorted(_REPLAYS))
+def test_a_replay_that_no_longer_fits_is_reported(policy):
+    reports = []
+    fitted, info = _fit(
+        _compacted_chat(500), lambda: reports.append(True), sticky_dropped = 4, **_REPLAYS[policy]
+    )
+    assert info is not None and info["dropped_messages"] > 4
+    assert reports == [True]
+
+
 def test_a_failing_report_never_breaks_the_fit():
     def boom():
         raise RuntimeError("closed stream")
