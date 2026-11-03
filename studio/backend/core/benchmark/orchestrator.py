@@ -230,8 +230,10 @@ class BenchmarkOrchestrator:
         worker = self._worker
         return worker is not None and not worker.done()
 
-    def was_cancelled(self) -> bool:
-        return self._cancel_requested
+    def was_cancelled(self, op_seq: Optional[int] = None) -> bool:
+        """With ``op_seq``, also true once another run has taken the slot: a Stop then a new Run
+        resets the shared flag before the stopped run's route checks it."""
+        return self._cancel_requested or (op_seq is not None and op_seq != self._op_seq)
 
     def get_last_error(self) -> Optional[str]:
         return self._last_error

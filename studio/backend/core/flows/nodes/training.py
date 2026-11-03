@@ -38,6 +38,17 @@ LOADERS = {".parquet": "parquet", ".csv": "csv", ".json": "json", ".jsonl": "jso
 EXPORT_QUANTS = {"q4_k_m": "Q4_K_M", "q5_k_m": "Q5_K_M", "q8_0": "Q8_0", "f16": "F16"}
 
 
+async def checkpoint_path(ctx: NodeContext, checkpoint: dict) -> str:
+    """A checkpoint value carries its run name only; the path comes from the checkpoint listing."""
+    from studio_mcp import checkpoints as named
+
+    name = str(checkpoint.get("name") or "")
+    try:
+        return (await named.resolve(ctx.caller, name)).path
+    except Exception as exc:
+        raise FlowNodeError(f"The checkpoint {name!r} to continue from was not found") from exc
+
+
 @handler("train.finetune")
 async def finetune(ctx: NodeContext) -> dict:
     from studio_mcp.tools.jobs import TRAINING_STATUS, _run_folder
@@ -61,9 +72,9 @@ async def finetune(ctx: NodeContext) -> dict:
         raise FlowNodeError("Name the base model to fine-tune")
     base_model = config["model_name"]
     start = ctx.inputs.get("start")
-    if isinstance(start, dict) and start.get("output_dir"):
+    if isinstance(start, dict) and start.get("kind") == "checkpoint":
         # Keep training that LoRA instead of stacking a new one on the base model.
-        config["model_name"] = str(start["output_dir"])
+        config["model_name"] = start.get("output_dir") or await checkpoint_path(ctx, start)
         config["model_format"] = "adapter"
         base_model = str(start.get("base_model") or base_model)
     config.update(TASK_FLAGS.get(str(ctx.params.get("task") or "text"), {}))

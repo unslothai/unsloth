@@ -471,6 +471,27 @@ def test_fine_tune_continues_a_wired_checkpoint_as_an_adapter(monkeypatch):
     assert started[0]["model_name"] == "/out/run1" and started[0]["model_format"] == "adapter"
 
 
+
+def test_fine_tune_continues_the_checkpoint_fine_tune_emits(monkeypatch):
+    # The carried value is Fine-tune's own output: a run name and no directory.
+    from types import SimpleNamespace
+
+    from core.flows.nodes import training
+
+    from .test_flows_train_node import _Ctx as TrainCtx, _recipe_routes
+
+    async def resolve(caller, name):
+        assert name == "run1"
+        return SimpleNamespace(path = "/out/run1")
+
+    monkeypatch.setattr("studio_mcp.checkpoints.resolve", resolve)
+    started = []
+    ctx = TrainCtx(_recipe_routes(started))
+    ctx.inputs["start"] = {"kind": "checkpoint", "name": "run1", "base_model": "unsloth/Qwen3-0.6B"}
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    assert started[0]["model_name"] == "/out/run1" and started[0]["model_format"] == "adapter"
+
 @run_async
 async def test_identical_seed_rows_reuse_one_upload_across_runs(monkeypatch):
     from core.flows.nodes import data

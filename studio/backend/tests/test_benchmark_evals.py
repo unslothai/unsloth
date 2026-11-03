@@ -174,6 +174,16 @@ def test_failed_and_cancelled_runs_report_their_outcome(monkeypatch):
     assert backend.get_last_op_status() == "cancelled"
 
 
+def test_a_run_stopped_then_superseded_still_reads_as_cancelled(monkeypatch):
+    # Stop lands after run() returned, then a new Run resets the shared flag before the route checks.
+    backend = _orchestrator(monkeypatch, lambda params: {"results": {}})
+    seq = backend.try_begin()
+    assert backend.run({}, op_seq = seq) == {"results": {}}
+    assert backend.cancel()
+    assert backend.try_begin() is not None
+    assert not backend.was_cancelled()
+    assert backend.was_cancelled(seq)
+
 def test_another_accounts_run_is_hidden(monkeypatch):
     backend = SimpleNamespace(_result_account = AccountContext("alice-id", "alice"))
     bob = AccountContext("bob-id", "bob")

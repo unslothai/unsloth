@@ -214,7 +214,7 @@ async def run_recipe_heldout(
             None,
             lambda: backend.run(params, account, op_seq = run_seq, task_fn = _recipe_task),
         )
-        if not result or backend.was_cancelled():
+        if not result or backend.was_cancelled(run_seq):
             backend._append_log("status", "Benchmark cancelled.")
             return BenchmarkOperationResponse(
                 success = False,

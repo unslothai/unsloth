@@ -486,7 +486,7 @@ async def run_benchmark(
         )
 
         # A cancelled run returns {}; by then a new run may already own the backend.
-        if not results or backend.was_cancelled():
+        if not results or backend.was_cancelled(run_seq):
             backend._append_log("status", "Benchmark cancelled.")
             return BenchmarkOperationResponse(
                 success = False,
