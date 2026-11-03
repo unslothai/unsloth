@@ -399,7 +399,6 @@ export async function refreshSessionOutcome(): Promise<RefreshOutcome> {
               if (!current) return "rejected";
               if (accountTransitionPending() || getAuthSessionMark() !== sessionMark)
                 return "unavailable";
-              // A peer already rotated this session while we waited for the lock.
               if (current !== refreshToken) return "ok";
               return runRefresh(current, true);
             },
