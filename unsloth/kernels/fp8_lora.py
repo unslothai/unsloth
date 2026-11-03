@@ -107,6 +107,30 @@ _MULTI_GPU = torch.cuda.is_available() and torch.cuda.device_count() > 1
 if triton is not None:
 
     @triton.jit
+    def _cast_fp8_rn(x, IS_E5M2: tl.constexpr):
+        # Triton 3.8 rounds through fp16 on sm89; native f32 conversion avoids double rounding.
+        if IS_E5M2:
+            packed = tl.inline_asm_elementwise(
+                "cvt.rn.satfinite.e5m2x2.f32 $0, $1, $1;",
+                constraints = "=h,f",
+                args = [x],
+                dtype = tl.uint16,
+                is_pure = True,
+                pack = 1,
+            )
+            return packed.to(tl.uint8).to(tl.float8e5, bitcast = True)
+        else:
+            packed = tl.inline_asm_elementwise(
+                "cvt.rn.satfinite.e4m3x2.f32 $0, $1, $1;",
+                constraints = "=h,f",
+                args = [x],
+                dtype = tl.uint16,
+                is_pure = True,
+                pack = 1,
+            )
+            return packed.to(tl.uint8).to(tl.float8e4nv, bitcast = True)
+
+    @triton.jit
     def _fp8_tensorwise_cast_kernel(
         x_ptr,
         y_ptr,
@@ -128,10 +152,7 @@ if triton is not None:
         x = tl.load(x_ptr + offs, mask = mask, other = 0.0).to(tl.float32)
         y = tl.maximum(x * scale, -FP8_MAX, propagate_nan = tl.PropagateNan.ALL)
         y = tl.minimum(y, FP8_MAX, propagate_nan = tl.PropagateNan.ALL)
-        if IS_E5M2:
-            tl.store(y_ptr + offs, y.to(tl.float8e5), mask = mask)
-        else:
-            tl.store(y_ptr + offs, y.to(tl.float8e4nv), mask = mask)
+        tl.store(y_ptr + offs, _cast_fp8_rn(y, IS_E5M2), mask = mask)
         if pid == 0:
             tl.store(inv_ptr, amax * (1.0 / FP8_MAX))
 
@@ -201,20 +222,14 @@ if triton is not None:
         if ONE_BLOCK:
             y = tl.maximum(x * scale, -FP8_MAX, propagate_nan = tl.PropagateNan.ALL)
             y = tl.minimum(y, FP8_MAX, propagate_nan = tl.PropagateNan.ALL)
-            if IS_E5M2:
-                tl.store(y_row + offs, y.to(tl.float8e5), mask = offs < K)
-            else:
-                tl.store(y_row + offs, y.to(tl.float8e4nv), mask = offs < K)
+            tl.store(y_row + offs, _cast_fp8_rn(y, IS_E5M2), mask = offs < K)
         else:
             for k in range(0, K, BLOCK_K):
                 mask = k + offs < K
                 xk = tl.load(x_row + k + offs, mask = mask, other = 0.0).to(tl.float32)
                 y = tl.maximum(xk * scale, -FP8_MAX, propagate_nan = tl.PropagateNan.ALL)
                 y = tl.minimum(y, FP8_MAX, propagate_nan = tl.PropagateNan.ALL)
-                if IS_E5M2:
-                    tl.store(y_row + k + offs, y.to(tl.float8e5), mask = mask)
-                else:
-                    tl.store(y_row + k + offs, y.to(tl.float8e4nv), mask = mask)
+                tl.store(y_row + k + offs, _cast_fp8_rn(y, IS_E5M2), mask = mask)
         tl.store(inv_ptr + row, amax * (1.0 / FP8_MAX))
 
 
