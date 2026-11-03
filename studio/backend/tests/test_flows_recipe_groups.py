@@ -197,6 +197,11 @@ def test_a_loop_or_a_lost_group_fails_on_the_generate_step():
         }
     )
     compile_flow(doc)
+    # Copy recipe JSON / Download count the wired seed the same way.
+    from routes import flows as flows_routes
+
+    body = flows_routes.RecipeExportBody(doc = doc, group_id = doc["groups"][0]["id"])
+    assert flows_routes.export_recipe(body)["recipe"]["columns"]
     doc = _flow()
     extra = copy.deepcopy(next(n for n in doc["nodes"] if n["type"] == GENERATE_TYPE))
     extra["id"] = "extra_generate"
@@ -764,5 +769,11 @@ def test_a_recipe_on_chats_loaded_model_is_keyed_on_that_model_and_quant(monkeyp
     before = key()
     (ckpt / "model.safetensors").write_bytes(b"bb")
     assert key() != before
+    # A model named on the local provider still runs on whatever quant Chat holds of it.
     recipe["model_configs"][0]["model"] = "unsloth/Qwen3-4B-GGUF"
+    loaded["name"], loaded["variant"] = "unsloth/Qwen3-4B-GGUF", "Q4_K_M"
+    named = key()
+    loaded["variant"] = "Q8_0"
+    assert key() != named
+    recipe["model_providers"][0]["is_local"] = False
     assert key() is None

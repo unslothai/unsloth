@@ -402,8 +402,20 @@ def _recipe_notes(doc: dict, group: dict) -> list[dict]:
 def export_recipe(body: RecipeExportBody) -> dict:
     """One Recipe group of ``doc`` as recipe JSON Recipe Studio imports (`{recipe, run, ui}`), without
     credentials, local tool servers or this machine's upload paths."""
+    # A seed wired into the group's Recipe Dataset step supplies columns, as the flow compiler counts it.
+    steps = {
+        n.get("id")
+        for n in body.doc.get("nodes") or []
+        if n.get("type") == GENERATE_TYPE
+        and n.get("group") == body.group_id
+        and not n.get("disabled")
+    }
+    wired = any(
+        e.get("target") in steps and e.get("target_port") == "seed"
+        for e in body.doc.get("edges") or []
+    )
     try:
-        graph = recipe_graph(body.doc, body.group_id)
+        graph = recipe_graph(body.doc, body.group_id, wired)
         compiled = compile_recipe(graph)
     except RecipeCompileError as exc:
         raise HTTPException(status_code = 400, detail = str(exc))

@@ -5,6 +5,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { replaceRef } from "../src/features/recipe-studio/utils/refs.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
 
 test("renaming a column rewrites it wherever it is a variable root, and nowhere else", () => {
   const before =
@@ -44,4 +47,29 @@ test("an escaped quote inside a string literal keeps the rest of the literal unt
     replaceRef(`{{ "he said \\"answer\\"" ~ answer }} {{ 'it\\'s answer' }}`, "answer", "result"),
     `{{ "he said \\"answer\\"" ~ result }} {{ 'it\\'s answer' }}`,
   );
+});
+
+test("renaming a column rewrites a sampler rule that conditions on it, keeping the rule's params", async () => {
+  const { applyRenameToConfigs } = await import(
+    "../src/features/recipe-studio/stores/helpers/reference-sync.ts"
+  );
+  const configs = {
+    a: {
+      id: "a",
+      kind: "sampler",
+      name: "difficulty",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      sampler_type: "category",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      conditional_params: {
+        "topic == 'science'": { values: ["hard"] },
+        "other == 'topic'": { values: ["easy"] },
+      },
+    },
+  } as never;
+  const out = applyRenameToConfigs(configs, "topic", "subject") as Record<string, { conditional_params: object }>;
+  assert.deepEqual(out.a.conditional_params, {
+    "subject == 'science'": { values: ["hard"] },
+    "other == 'topic'": { values: ["easy"] },
+  });
 });

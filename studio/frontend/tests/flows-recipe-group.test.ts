@@ -826,3 +826,29 @@ test("clearing a provider or model preset name keeps its form open until the new
   assert.match(blank, /setConfigs\(\{\s*\.\.\.latest\.current,/);
   assert.doesNotMatch(blank, /latest\.current =|commitConfigs|applyConfigPatch/);
 });
+
+test("a seed whose selection is mid-edit keeps its last valid config and its card", () => {
+  const { group, nodes } = sqlGroup();
+  const seeded = {
+    ...group,
+    config: {
+      ...group.config,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      seed_config: {
+        source: { seed_type: "hf", path: "org/data" },
+        // biome-ignore lint/style/useNamingConvention: api schema
+        selection_strategy: { start: 0, end: 10 },
+      },
+    },
+  };
+  const view = studioView(seeded, nodes);
+  const seed = Object.values(view.configs).find((c) => c.kind === "seed");
+  assert.ok(seed);
+  // End cleared to type a new one: the form holds the blank, the recipe keeps the last range.
+  const configs = applyConfigPatch(view.configs, seed.id, { selection_end: "" } as never);
+  const edit = commitStudioEdit(seeded, nodes, view, configs);
+  assert.deepEqual(
+    (edit.group?.config as Record<string, unknown> | undefined)?.seed_config,
+    seeded.config.seed_config,
+  );
+});
