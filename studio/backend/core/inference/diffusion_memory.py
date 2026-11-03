@@ -1336,34 +1336,12 @@ def _settle_delay(delay_s: float) -> float:
         return delay_s  # a typo in the env must not change production behaviour
 
 
-def _release_cuda_cache() -> None:
-    try:
-        import torch
-        from .diffusion_cuda_graph import synchronize_outside_capture
-
-        synchronize_outside_capture()
-        torch.cuda.empty_cache()
-    except Exception:  # noqa: BLE001 - settle is best-effort; the snapshot below still runs
-        pass
-
-
-def settled_memory_unchanged(target: Any, previous: Optional[DeviceMemory]) -> bool:
-    """Whether one fresh CUDA read matches; later reads can still change."""
-    try:
-        if previous is None or getattr(target, "device", None) != "cuda":
-            return False
-        if previous.free_mib is None or previous.total_mib is None:
-            return False
-        _release_cuda_cache()
-        return snapshot_device_memory(target) == previous
-    except Exception:  # noqa: BLE001 - a failed probe settles as before
-        return False
-
-
 def settled_snapshot_device_memory(
     target: Any,
     attempts: int = 3,
     delay_s: float = 1.0,
+    *,
+    can_stop: Optional[Callable[[DeviceMemory], bool]] = None,
 ) -> DeviceMemory:
     """Max free over spaced reads (a transient only shrinks free); on mps, empty_cache first so freed pool is not budgeted as used memory."""
     device = getattr(target, "device", "cpu")
@@ -1378,14 +1356,23 @@ def settled_snapshot_device_memory(
         return snapshot_device_memory(target)
     if device != "cuda":
         return snapshot_device_memory(target)
-    _release_cuda_cache()
+    try:
+        import torch
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture()
+        torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - settle is best-effort; the snapshot below still runs
+        pass
     best = snapshot_device_memory(target)
     delay_s = _settle_delay(delay_s)
-    for _ in range(max(0, attempts - 1)):
+    for attempt in range(max(0, attempts - 1)):
         if best.free_mib is not None and best.total_mib is not None:
             # Free already within the reserve of total: nothing transient to wait out.
             if best.free_mib >= best.total_mib - max(2048, int(best.total_mib * 0.10)):
                 break
+        if attempt == 0 and can_stop is not None and can_stop(best):
+            break
         try:
             import time
             time.sleep(delay_s)
