@@ -82,11 +82,13 @@ function ParamRow({
   bound,
   value,
   onChange,
+  onPatch,
 }: {
   param: ParamSpec;
   bound: boolean;
   value: unknown;
   onChange: (value: unknown) => void;
+  onPatch?: (patch: Record<string, unknown>) => void;
 }) {
   return (
     <div className="grid gap-1.5">
@@ -96,7 +98,7 @@ function ParamRow({
           Set by its connected input
         </p>
       ) : (
-        <ParamField spec={param} value={value} onChange={onChange} />
+        <ParamField spec={param} value={value} onChange={onChange} onPatch={onPatch} />
       )}
     </div>
   );
@@ -284,6 +286,7 @@ function InspectorImpl() {
                   bound={param.bindable === true && boundParams.has(param.id)}
                   value={node.params[param.id]}
                   onChange={(value) => setParam(param.id, value)}
+                  onPatch={setParams}
                 />
               ))
           )}
@@ -305,6 +308,7 @@ function InspectorImpl() {
                       bound={param.bindable === true && boundParams.has(param.id)}
                       value={node.params[param.id]}
                       onChange={(value) => setParam(param.id, value)}
+                      onPatch={setParams}
                     />
                   ))}
               </CollapsibleContent>

@@ -13,11 +13,14 @@ test("Fine-tune's base model opens the Train page's picker and stores a plain st
   const fields = readSrc("features/flows/editor/param-fields.tsx");
   assert.match(
     fields,
-    /spec\.id === "base_model"[\s\S]{0,200}<FlowTrainModelPicker\s*value=\{String\(value \?\? ""\)\}\s*onChange=\{\(model\) => onChange\(model\)\}/,
+    /spec\.id === "base_model"[\s\S]{0,200}<FlowTrainModelPicker\s*value=\{String\(value \?\? ""\)\}\s*onChange=\{\(model, cache\) =>\s*onPatch\s*\?\s*onPatch\(\{ base_model: model, base_model_cache: cache \}\)\s*:\s*onChange\(model\)/,
   );
   const picker = readSrc("features/flows/editor/model-picker-field.tsx");
-  assert.match(picker, /import \{ TrainModelSelector \} from "@\/features\/train-model-picker";/);
-  assert.match(picker, /<TrainModelSelector value=\{value\} onValueChange=\{onChange\} \/>/);
+  assert.match(picker, /TrainModelSelector,\n\} from "@\/features\/train-model-picker";/);
+  // The On device copy picked rides beside the plain repo string, so the run trains on it.
+  assert.match(picker, /onChange\(model, cache \? \{ known_cached: true, local_path: cache\.localPath \} : null\)/);
+  const inspector = readSrc("features/flows/editor/inspector.tsx");
+  assert.equal(inspector.match(/onPatch=\{setParams\}/g)?.length, 2);
   // The generic picker no longer has a train kind.
   assert.doesNotMatch(picker, /kind === "train"|train: \{/);
 });
@@ -26,7 +29,7 @@ test("TrainModelSelector in controlled mode reads the value and reports picks in
   const src = readSrc("features/train-model-picker/components/train-model-selector.tsx");
   assert.match(src, /const controlled = onValueChange !== undefined;/);
   assert.match(src, /const selectedModel = controlled \? value \|\| null : store\.selectedModel;/);
-  assert.match(src, /\? \(model\) => model && onValueChange\(model\)\s*: store\.selectTrainingModel;/);
+  assert.match(src, /\? \(model, _type, options\) =>\s*model &&\s*onValueChange\(\s*model,\s*options\?\.knownCached\s*\?\s*\{ knownCached: true, localPath: options\.localPath \?\? null \}\s*:\s*null,\s*\)\s*: store\.selectTrainingModel;/);
 });
 
 test("the Hugging Face Dataset node renders the Train page's dataset picker and subset/split dropdowns", () => {
