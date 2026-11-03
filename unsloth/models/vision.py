@@ -5761,8 +5761,7 @@ class FastBaseModel:
             block_swap_shaped(
                 model,
                 init_lora_weights,
-                use_dora = lora_config.use_dora,
-                modules_to_save = lora_config.modules_to_save,
+                lora_config = lora_config,
             ),
         ):
             model = _get_peft_model(model, lora_config)

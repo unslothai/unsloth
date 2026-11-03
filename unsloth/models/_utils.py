@@ -10537,22 +10537,42 @@ def block_swap_shaped(
     init_lora_weights = True,
     use_dora = False,
     modules_to_save = None,
+    lora_config = None,
+    loading_adapter = False,
 ):
     swapper = getattr(model, "_unsloth_block_swap", None)
-    if use_dora and any(not block.resident for block in getattr(swapper, "blocks", ())):
-        raise ValueError(
-            "Unsloth: DoRA needs the real base weights to initialize its magnitudes, "
-            "so it cannot be initialized after offload_layers evicted them. "
-            "Load without offload_layers or disable use_dora."
-        )
-    if modules_to_save:
+    use_dora = getattr(lora_config, "use_dora", use_dora)
+    modules_to_save = getattr(lora_config, "modules_to_save", modules_to_save)
+    use_kasa = getattr(lora_config, "kasa_config", None) is not None
+    if use_dora or use_kasa or modules_to_save:
         evicted = {
             id(param)
             for block in getattr(swapper, "blocks", ())
             if not block.resident
             for param in block.params
         }
-        if evicted:
+        if evicted and (use_dora or use_kasa):
+            targeted = True
+            if lora_config is not None:
+                from copy import copy
+                from peft.tuners.tuners_utils import (
+                    _maybe_include_all_linear_layers,
+                    check_target_module_exists,
+                )
+
+                config = _maybe_include_all_linear_layers(copy(lora_config), model)
+                targeted = any(
+                    check_target_module_exists(config, name)
+                    and any(id(param) in evicted for param in module.parameters())
+                    for name, module in model.named_modules()
+                )
+            if targeted:
+                variant = "DoRA" if use_dora else "KaSA"
+                raise ValueError(
+                    f"Unsloth: {variant} needs real base weights to initialize, "
+                    "but offload_layers evicted its targets. Load without offload_layers."
+                )
+        if evicted and modules_to_save and not loading_adapter:
             for name, module in model.named_modules():
                 if any(name.endswith(target) for target in modules_to_save) and any(
                     id(param) in evicted for param in module.parameters()

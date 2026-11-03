@@ -159,3 +159,111 @@ def test_modules_to_save_preserves_resident_modules_beside_evicted_weights():
         model = get_peft_model(model, config)
     saved = model.base_model.model[1].modules_to_save["default"].weight
     torch.testing.assert_close(saved, expected)
+
+
+def test_dora_targets_can_stay_resident_beside_evicted_blocks():
+    import inspect
+    from peft import LoraConfig, get_peft_model
+
+    model = torch.nn.Sequential(
+        torch.nn.Linear(8, 4, bias = False), torch.nn.Linear(4, 4, bias = False)
+    )
+    expected = model[1].weight.detach().norm(dim = 1)
+    swapper, weight = _evicted_swapper((4, 8))
+    model[0].weight = weight
+    model._unsloth_block_swap = swapper
+    config = LoraConfig(r = 2, target_modules = ["1"], use_dora = True)
+    shaped = _load()["block_swap_shaped"]
+    options = (
+        {"lora_config": config} if "lora_config" in inspect.signature(shaped).parameters else {}
+    )
+    with shaped(model, use_dora = True, **options):
+        model = get_peft_model(model, config)
+    torch.testing.assert_close(
+        model.base_model.model[1].lora_magnitude_vector["default"].weight, expected
+    )
+
+
+def test_kasa_never_truncates_placeholder_weights():
+    import inspect
+    import pytest
+    import peft
+
+    if not hasattr(peft, "KasaConfig"):
+        pytest.skip("Installed PEFT has no KaSA")
+    model = torch.nn.Sequential(torch.nn.Linear(8, 6, bias = False))
+    model.requires_grad_(False)
+    swapper, weight = _evicted_swapper((6, 8))
+    model[0].weight = weight
+    model._unsloth_block_swap = swapper
+    config = peft.LoraConfig(r = 2, target_modules = ["0"], kasa_config = peft.KasaConfig())
+    shaped = _load()["block_swap_shaped"]
+    options = (
+        {"lora_config": config} if "lora_config" in inspect.signature(shaped).parameters else {}
+    )
+    with pytest.raises(ValueError, match = "KaSA"):
+        with shaped(model, **options):
+            peft.get_peft_model(model, config)
+    assert weight.numel() == 0
+
+
+def test_both_adapter_reload_paths_wrap_evicted_experts(tmp_path):
+    from peft import LoraConfig, PeftModel, get_peft_model
+
+    class Experts(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.experts = torch.nn.Parameter(torch.randn(4, 16, 8))
+
+    config = LoraConfig(
+        r = 2, target_modules = [], target_parameters = ["0.experts"], modules_to_save = ["1"]
+    )
+    original = torch.nn.Sequential(Experts(), torch.nn.Linear(8, 8, bias = False))
+    expected = original[1].weight.detach().clone()
+    saved = get_peft_model(original, config)
+    saved.save_pretrained(tmp_path)
+    source = open(os.path.join(HERE, "unsloth", "models", "loader.py"), encoding = "utf-8").read()
+    contexts = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.With)
+        and any(
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Attribute)
+            and isinstance(child.func.value, ast.Name)
+            and child.func.value.id == "PeftModel"
+            and child.func.attr == "from_pretrained"
+            for statement in node.body
+            for child in ast.walk(statement)
+        )
+    ]
+    assert len(contexts) == 2
+    for node in contexts:
+        model = torch.nn.Sequential(Experts(), torch.nn.Linear(8, 8, bias = False))
+        swapper, weight = _evicted_swapper()
+        model[0].experts = weight
+        saved_swapper, saved_weight = _evicted_swapper((8, 8))
+        model[1].weight = saved_weight
+        swapper.blocks.extend(saved_swapper.blocks)
+        model._unsloth_block_swap = swapper
+        ns = dict(
+            _load(),
+            model = model,
+            PeftModel = PeftModel,
+            contextlib = contextlib,
+            fast_pissa = False,
+            old_model_name = str(tmp_path),
+            token = None,
+            revision = None,
+            local_files_only = True,
+            trust_remote_code = False,
+            peft_load_kwargs = {"config": config},
+            load_config = config,
+        )
+        exec(compile(ast.Module(body = [node], type_ignores = []), "loader_reload", "exec"), ns)
+        assert isinstance(ns["model"], PeftModel)
+        assert weight.numel() == 0
+        assert saved_weight.numel() == 0
+        torch.testing.assert_close(
+            ns["model"].base_model.model[1].modules_to_save["default"].weight, expected
+        )
