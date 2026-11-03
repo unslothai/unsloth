@@ -25,17 +25,15 @@ PW = os.environ["STUDIO_PW"]
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_fontscale"))
 ART.mkdir(parents = True, exist_ok = True)
 
-# Read the range from the store: the default size has already moved once (16 -> 15).
-_STORE = (
-    Path(__file__).resolve().parents[2]
-    / "studio/frontend/src/features/settings/stores/appearance-custom-store.ts"
-).read_text(encoding = "utf-8")
+# Read the range from the source: the default size has already moved once (16 -> 15).
+_SETTINGS = Path(__file__).resolve().parents[2] / "studio/frontend/src/features/settings"
+_STORE = (_SETTINGS / "stores/appearance-custom-store.ts").read_text(encoding = "utf-8")
 _RANGE = re.search(
     r"UI_FONT_SIZE_RANGE\s*=\s*\{\s*min:\s*(\d+),\s*max:\s*(\d+),\s*default:\s*(\d+)",
-    _STORE,
+    (_SETTINGS / "lib/appearance-customization.ts").read_text(encoding = "utf-8"),
 )
 if _RANGE is None:
-    raise AssertionError("[font-scale] FAIL: no UI_FONT_SIZE_RANGE in appearance-custom-store.ts")
+    raise AssertionError("[font-scale] FAIL: no UI_FONT_SIZE_RANGE in appearance-customization.ts")
 SIZES = (int(_RANGE.group(1)), int(_RANGE.group(2)))
 DEFAULT = int(_RANGE.group(3))
 _BASE = re.search(r"UI_FONT_SIZE_CSS_BASE\s*=\s*(\d+)", _STORE)
